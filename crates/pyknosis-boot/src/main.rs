@@ -11,6 +11,7 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 
 mod mmio;
+mod mmu;
 mod page;
 mod uart;
 
@@ -45,6 +46,13 @@ pub extern "C" fn kernel_main() -> ! {
     serial.write_str("\r\n").ok();
 
     serial.write_str("Rust kernel running on MT6739\r\n").ok();
+
+    // Enable MMU with identity mapping
+    serial.write_str("Enabling MMU...\r\n").ok();
+    unsafe {
+        mmu::init_and_enable();
+    }
+    serial.write_str("MMU enabled. Caches active.\r\n").ok();
     serial.write_str("UART: ttyMT0 @ 0x11002000\r\n").ok();
 
     // Read CPU ID register
