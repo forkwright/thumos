@@ -3,12 +3,10 @@
 //! Parses standard GPS sentences: GGA (fix data), RMC (recommended minimum),
 //! GSA (DOP and active satellites), GSV (satellites in view).
 
-use nom::Parser;
-use nom::bytes::complete::{tag, take, take_until, take_while1};
-use nom::character::complete::{char, digit1};
-use nom::combinator::{map_res, opt};
-use nom::sequence::preceded;
 use nom::IResult;
+use nom::Parser;
+use nom::bytes::complete::{take, take_while1};
+use nom::character::complete::char;
 
 use crate::error::{self, Error};
 use crate::position::{Fix, FixQuality, Position};
@@ -22,13 +20,14 @@ pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
             message: "missing $ prefix or * checksum delimiter".to_owned(),
         })?;
 
-    let expected_str = sentence
-        .split('*')
-        .nth(1)
-        .map(|s| s.trim())
-        .ok_or_else(|| Error::ParseError {
-            message: "missing checksum after *".to_owned(),
-        })?;
+    let expected_str =
+        sentence
+            .split('*')
+            .nth(1)
+            .map(str::trim)
+            .ok_or_else(|| Error::ParseError {
+                message: "missing checksum after *".to_owned(),
+            })?;
 
     let expected = u8::from_str_radix(expected_str, 16).map_err(|_| Error::ParseError {
         message: format!("invalid checksum hex: {expected_str}"),
@@ -250,7 +249,10 @@ mod tests {
     #[test]
     fn checksum_invalid() {
         let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*FF";
-        assert!(validate_checksum(sentence).is_err(), "should reject bad checksum");
+        assert!(
+            validate_checksum(sentence).is_err(),
+            "should reject bad checksum"
+        );
     }
 
     #[test]
@@ -266,10 +268,19 @@ mod tests {
         assert_eq!(fix.quality, FixQuality::Gps);
         assert_eq!(fix.satellites, 8);
         // 53 degrees 21.6802 minutes N = 53.36133... degrees
-        assert!((fix.position.lat - 53.36134).abs() < 0.001, "lat should be ~53.361");
+        assert!(
+            (fix.position.lat - 53.36134).abs() < 0.001,
+            "lat should be ~53.361"
+        );
         // 6 degrees 30.3372 minutes W = -6.50562 degrees
-        assert!((fix.position.lon - (-6.50562)).abs() < 0.001, "lon should be ~-6.506");
-        assert!((fix.position.alt.expect("should have altitude") - 61.7).abs() < 0.1, "alt should be ~61.7");
+        assert!(
+            (fix.position.lon - (-6.50562)).abs() < 0.001,
+            "lon should be ~-6.506"
+        );
+        assert!(
+            (fix.position.alt.expect("should have altitude") - 61.7).abs() < 0.1,
+            "alt should be ~61.7"
+        );
     }
 
     #[test]
@@ -282,9 +293,18 @@ mod tests {
     fn parse_rmc_valid() {
         let sentence = "$GPRMC,092750.000,A,5321.6802,N,00630.3372,W,0.02,31.66,280511,,,A*43";
         let fix = parse_rmc(sentence).expect("should parse RMC");
-        assert!((fix.position.lat - 53.36134).abs() < 0.001, "lat should be ~53.361");
-        assert!((fix.speed_knots.expect("should have speed") - 0.02).abs() < 0.01, "speed should be ~0.02");
-        assert!((fix.course.expect("should have course") - 31.66).abs() < 0.01, "course should be ~31.66");
+        assert!(
+            (fix.position.lat - 53.36134).abs() < 0.001,
+            "lat should be ~53.361"
+        );
+        assert!(
+            (fix.speed_knots.expect("should have speed") - 0.02).abs() < 0.01,
+            "speed should be ~0.02"
+        );
+        assert!(
+            (fix.course.expect("should have course") - 31.66).abs() < 0.01,
+            "course should be ~31.66"
+        );
     }
 
     #[test]

@@ -10,6 +10,8 @@
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
+mod mmio;
+mod page;
 mod uart;
 
 // ARM boot stub — this is the entry point from the bootloader
@@ -18,7 +20,7 @@ core::arch::global_asm!(
     ".global _start",
     ".arm",
     "_start:",
-    "    cpsid   if",              // Disable interrupts
+    "    cpsid   if",               // Disable interrupts
     "    ldr     sp, =__stack_top", // Set stack pointer
     "    ldr     r0, =__bss_start", // Zero BSS
     "    ldr     r1, =__bss_end",
@@ -26,8 +28,8 @@ core::arch::global_asm!(
     "1:  cmp     r0, r1",
     "    strlt   r2, [r0], #4",
     "    blt     1b",
-    "    bl      kernel_main",      // Jump to Rust
-    "2:  wfe",                      // Hang if kernel_main returns
+    "    bl      kernel_main", // Jump to Rust
+    "2:  wfe",                 // Hang if kernel_main returns
     "    b       2b",
 );
 
@@ -47,17 +49,44 @@ pub extern "C" fn kernel_main() -> ! {
 
     // Read CPU ID register
     let cpuid: u32;
+    #[allow(asm_sub_register)]
     unsafe {
-        core::arch::asm!("mrc p15, 0, {}, c0, c0, 0", out(reg) cpuid);
+        core::arch::asm!("mrc p15, 0, {}, c0, c0, 0", out(reg) cpuid, options(nostack));
     }
     write!(serial, "CPU ID: {cpuid:#010x}\r\n").ok();
 
     // Read MPIDR (core ID)
     let mpidr: u32;
+    #[allow(asm_sub_register)]
     unsafe {
-        core::arch::asm!("mrc p15, 0, {}, c0, c0, 5", out(reg) mpidr);
+        core::arch::asm!("mrc p15, 0, {}, c0, c0, 5", out(reg) mpidr, options(nostack));
     }
     write!(serial, "MPIDR: {mpidr:#010x} (core {})\r\n", mpidr & 0x3).ok();
+
+    // Initialize physical page allocator
+    // MT6739: RAM from 0x40000000 to 0x7FFFFFFF (1 GB)
+    // Kernel loaded at 0x40008000, assume kernel ends at 0x40100000 (1 MB reserved)
+    unsafe {
+        page::init(0x4000_0000, 0x8000_0000, 0x4010_0000);
+    }
+    write!(
+        serial,
+        "\r\nMemory: {} pages free ({} MB)\r\n",
+        page::free_count(),
+        page::free_bytes() / 1024 / 1024
+    )
+    .ok();
+
+    // Test page allocation
+    if let Some(addr) = page::alloc_page() {
+        write!(serial, "Allocated page at {addr:#010x}\r\n").ok();
+        unsafe {
+            page::free_page(addr);
+        }
+        serial.write_str("Freed page OK\r\n").ok();
+    } else {
+        serial.write_str("Page allocation failed!\r\n").ok();
+    }
 
     serial.write_str("\r\nKernel halted. Waiting.\r\n").ok();
 
