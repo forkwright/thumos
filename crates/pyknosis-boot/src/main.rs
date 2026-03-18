@@ -10,6 +10,7 @@
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
+mod exceptions;
 mod gic;
 mod mmio;
 mod mmu;
@@ -98,9 +99,20 @@ pub extern "C" fn kernel_main() -> ! {
         serial.write_str("Page allocation failed!\r\n").ok();
     }
 
-    serial.write_str("\r\nKernel halted. Waiting.\r\n").ok();
+    serial
+        .write_str("\r\nKernel running. Tick counter active.\r\n")
+        .ok();
 
+    // Main loop: print tick count periodically
+    let mut last_print: u64 = 0;
     loop {
+        let ticks = exceptions::ticks();
+        let ms = exceptions::uptime_ms();
+        if ms - last_print >= 1000 {
+            write!(serial, "  ticks={ticks} uptime={ms}ms\r\n").ok();
+            last_print = ms;
+        }
+        // WHY: wfe (wait for event) sleeps until next interrupt
         unsafe {
             core::arch::asm!("wfe");
         }
