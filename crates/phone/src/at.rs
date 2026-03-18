@@ -3,13 +3,13 @@
 //! Handles standard 3GPP TS 27.007 AT commands used for voice calls,
 //! SMS, network registration, and signal monitoring.
 
+use nom::IResult;
 use nom::Parser;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until, take_while1};
 use nom::character::complete::{char, digit1};
 use nom::combinator::{map, map_res, opt, value};
 use nom::sequence::{delimited, preceded};
-use nom::IResult;
 
 /// Raw AT response from the modem.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,17 +149,15 @@ pub fn parse_creg(input: &str) -> IResult<&str, Urc> {
     let (input, lac_ci) = opt((
         preceded(
             char(','),
-            map_res(
-                take_while1(|c: char| c.is_ascii_hexdigit()),
-                |s: &str| u16::from_str_radix(s, 16),
-            ),
+            map_res(take_while1(|c: char| c.is_ascii_hexdigit()), |s: &str| {
+                u16::from_str_radix(s, 16)
+            }),
         ),
         preceded(
             char(','),
-            map_res(
-                take_while1(|c: char| c.is_ascii_hexdigit()),
-                |s: &str| u32::from_str_radix(s, 16),
-            ),
+            map_res(take_while1(|c: char| c.is_ascii_hexdigit()), |s: &str| {
+                u32::from_str_radix(s, 16)
+            }),
         ),
     ))
     .parse(input)?;
@@ -187,12 +185,8 @@ pub fn parse_ring(input: &str) -> IResult<&str, Urc> {
 /// Parse a +CMTI URC: +CMTI: "<storage>",<index>
 pub fn parse_cmti(input: &str) -> IResult<&str, Urc> {
     let (input, _) = tag("+CMTI: ").parse(input)?;
-    let (input, storage) = delimited(
-        char('"'),
-        map(take_until("\""), String::from),
-        char('"'),
-    )
-    .parse(input)?;
+    let (input, storage) =
+        delimited(char('"'), map(take_until("\""), String::from), char('"')).parse(input)?;
     let (input, _) = char(',').parse(input)?;
     let (input, index) = map_res(digit1, str::parse::<u16>).parse(input)?;
     Ok((input, Urc::Cmti { storage, index }))
@@ -264,9 +258,9 @@ mod tests {
 
     #[test]
     fn parse_ok() {
-        let (rest, resp) = parse_final_result("OK").expect("should parse OK");
+        let (remaining, resp) = parse_final_result("OK").expect("should parse OK");
         assert_eq!(resp, Response::Ok);
-        assert!(rest.is_empty(), "expected empty rest");
+        assert!(remaining.is_empty(), "expected empty rest");
     }
 
     #[test]
@@ -317,14 +311,13 @@ mod tests {
 
     #[test]
     fn parse_creg_with_location() {
-        let (_, urc) =
-            parse_creg("+CREG: 1,1A2B,0000FFEE").expect("should parse CREG with loc");
+        let (_, urc) = parse_creg("+CREG: 1,1A2B,0000FFEE").expect("should parse CREG with loc");
         assert_eq!(
             urc,
             Urc::Creg {
                 stat: RegStatus::RegisteredHome,
                 lac: Some(0x1A2B),
-                ci: Some(0x0000FFEE),
+                ci: Some(0x0000_FFEE),
             }
         );
     }
