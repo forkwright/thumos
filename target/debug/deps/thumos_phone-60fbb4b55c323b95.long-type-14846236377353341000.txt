@@ -1,0 +1,1 @@
+impl Parser<&str, Output = Option<<impl FnMut(&str) -> std::result::Result<(&str, (u16, u32)), nom::Err<_>> as Parser<&str>>::Output>, Error = _>
