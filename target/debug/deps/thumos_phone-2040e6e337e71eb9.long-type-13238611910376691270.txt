@@ -1,1 +1,0 @@
-Choice<(impl Parser<_, Output = at::Response, Error = _>, impl Parser<_, Output = at::Response, Error = _>, impl Parser<&str, Output = at::Response, Error = _>, impl Parser<&str, Output = at::Response, Error = _>)>
