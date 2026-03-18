@@ -194,3 +194,20 @@ Note: `com.android.fmradio` confirms an FM radio receiver is present. This is ad
 ## Full property dump
 
 See `full-props.txt` (883 properties).
+
+## Bootloader unlock (2026-03-18)
+
+Unlocked via mtkclient BROM exploit. The fastboot  button confirmation is non-functional on this device (LK bootloader does not respond to any physical key input in fastboot mode).
+
+**Method**: mtkclient  via BROM mode
+- Required: Vol Up + Vol Down + Power held while connecting USB
+- ModemManager and cdc_acm kernel module must be stopped/removed
+- mtkclient detected MT6739, used HACC (Hardware AES) to decrypt seccfg
+- V4 lockstate modified and written back
+
+**Post-unlock state**:
+- `ro.boot.flash.locked: 0`
+- `ro.boot.verifiedbootstate: orange`
+- Boot shows "orange state" warning (expected, same as GrapheneOS on Pixel)
+- Factory reset occurred (expected)
+- Device boots normally to Android 8.1
