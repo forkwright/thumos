@@ -15,6 +15,7 @@ mod gic;
 mod mmio;
 mod mmu;
 mod page;
+mod process;
 mod timer;
 mod uart;
 
