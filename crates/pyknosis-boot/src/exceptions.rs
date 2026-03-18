@@ -15,6 +15,7 @@
 //! Offset 0x1C: FIQ
 
 use crate::gic;
+use crate::process;
 use crate::timer;
 use crate::uart::Uart;
 use core::fmt::Write;
@@ -78,8 +79,8 @@ core::arch::global_asm!(
     "    sub     lr, lr, #4",       // Adjust return address
     "    push    {{r0-r12, lr}}",   // Save registers
     "    bl      irq_handler_rust", // Call Rust handler
-    "    pop     {{r0-r12, lr}}",        // Restore registers
-    "    movs    pc, lr",                // Return from IRQ (restores CPSR)
+    "    pop     {{r0-r12, lr}}",   // Restore registers
+    "    movs    pc, lr",           // Return from IRQ (restores CPSR)
     // Abort handlers: print info and hang
     "data_abort_handler_asm:",
     "    push    {{r0-r12, lr}}",
@@ -123,6 +124,14 @@ pub extern "C" fn irq_handler_rust() {
         }
         // Reset timer for next tick
         timer::set_ms(TICK_MS);
+
+        // Run scheduler
+        let next = process::schedule();
+        if next != process::current_pid() {
+            unsafe {
+                process::switch_to(next);
+            }
+        }
     }
 
     gic::end_of_interrupt(irq);
