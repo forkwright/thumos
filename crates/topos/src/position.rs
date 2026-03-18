@@ -37,7 +37,6 @@ pub enum FixQuality {
 impl From<u8> for FixQuality {
     fn from(val: u8) -> Self {
         match val {
-            0 => Self::NoFix,
             1 => Self::Gps,
             2 => Self::Dgps,
             3 => Self::Pps,
