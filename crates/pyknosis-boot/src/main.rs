@@ -16,6 +16,7 @@ mod mmio;
 mod mmu;
 mod page;
 mod process;
+mod syscall;
 mod timer;
 mod uart;
 
