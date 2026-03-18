@@ -1,0 +1,81 @@
+//! Thumos kernel: pyknosis
+//!
+//! Bare-metal Rust kernel for the MT6739. ARM boot stub is inline
+//! assembly that sets up the stack and zeros BSS before jumping to
+//! kernel_main.
+
+#![no_std]
+#![no_main]
+
+use core::fmt::Write;
+use core::panic::PanicInfo;
+
+mod uart;
+
+// ARM boot stub — this is the entry point from the bootloader
+core::arch::global_asm!(
+    ".section .text.boot, \"ax\"",
+    ".global _start",
+    ".arm",
+    "_start:",
+    "    cpsid   if",              // Disable interrupts
+    "    ldr     sp, =__stack_top", // Set stack pointer
+    "    ldr     r0, =__bss_start", // Zero BSS
+    "    ldr     r1, =__bss_end",
+    "    mov     r2, #0",
+    "1:  cmp     r0, r1",
+    "    strlt   r2, [r0], #4",
+    "    blt     1b",
+    "    bl      kernel_main",      // Jump to Rust
+    "2:  wfe",                      // Hang if kernel_main returns
+    "    b       2b",
+);
+
+/// Kernel entry point. Called from boot stub after ARM initialization.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_main() -> ! {
+    let mut serial = uart::Uart::new();
+
+    serial.write_str("\r\n").ok();
+    serial.write_str("=============================\r\n").ok();
+    serial.write_str("  THUMOS / pyknosis v0.1.0\r\n").ok();
+    serial.write_str("=============================\r\n").ok();
+    serial.write_str("\r\n").ok();
+
+    serial.write_str("Rust kernel running on MT6739\r\n").ok();
+    serial.write_str("UART: ttyMT0 @ 0x11002000\r\n").ok();
+
+    // Read CPU ID register
+    let cpuid: u32;
+    unsafe {
+        core::arch::asm!("mrc p15, 0, {}, c0, c0, 0", out(reg) cpuid);
+    }
+    write!(serial, "CPU ID: {cpuid:#010x}\r\n").ok();
+
+    // Read MPIDR (core ID)
+    let mpidr: u32;
+    unsafe {
+        core::arch::asm!("mrc p15, 0, {}, c0, c0, 5", out(reg) mpidr);
+    }
+    write!(serial, "MPIDR: {mpidr:#010x} (core {})\r\n", mpidr & 0x3).ok();
+
+    serial.write_str("\r\nKernel halted. Waiting.\r\n").ok();
+
+    loop {
+        unsafe {
+            core::arch::asm!("wfe");
+        }
+    }
+}
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    let mut serial = uart::Uart::new();
+    serial.write_str("\r\n!!! KERNEL PANIC !!!\r\n").ok();
+    write!(serial, "{info}\r\n").ok();
+    loop {
+        unsafe {
+            core::arch::asm!("wfe");
+        }
+    }
+}
