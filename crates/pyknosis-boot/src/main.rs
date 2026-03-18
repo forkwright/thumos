@@ -10,9 +10,11 @@
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
+mod gic;
 mod mmio;
 mod mmu;
 mod page;
+mod timer;
 mod uart;
 
 // ARM boot stub — this is the entry point from the bootloader
