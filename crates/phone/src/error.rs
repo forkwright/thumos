@@ -3,6 +3,7 @@
 use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
+#[snafu(visibility(pub(crate)))]
 pub enum Error {
     #[snafu(display("AT command timed out after {timeout_ms}ms"))]
     Timeout { timeout_ms: u64 },
