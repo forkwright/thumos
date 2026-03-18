@@ -14,6 +14,7 @@ use core::panic::PanicInfo;
 mod exceptions;
 mod gic;
 mod heap;
+mod ipc;
 mod mmio;
 mod mmu;
 mod page;
