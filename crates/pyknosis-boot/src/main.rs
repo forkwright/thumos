@@ -6,12 +6,14 @@
 
 #![no_std]
 #![no_main]
+extern crate alloc;
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
 mod exceptions;
 mod gic;
+mod heap;
 mod mmio;
 mod mmu;
 mod page;
@@ -19,6 +21,9 @@ mod process;
 mod syscall;
 mod timer;
 mod uart;
+
+#[global_allocator]
+static ALLOCATOR: heap::KernelAllocator = heap::KernelAllocator;
 
 // ARM boot stub — this is the entry point from the bootloader
 core::arch::global_asm!(
@@ -89,6 +94,30 @@ pub extern "C" fn kernel_main() -> ! {
         page::free_bytes() / 1024 / 1024
     )
     .ok();
+
+    // Initialize kernel heap (1 MB from page allocator)
+    unsafe {
+        heap::init();
+    }
+    let (used, total) = heap::stats();
+    write!(
+        serial,
+        "Heap: {used} / {total} bytes
+"
+    )
+    .ok();
+
+    // Test heap allocation
+    {
+        let v: alloc::vec::Vec<u32> = alloc::vec![1, 2, 3, 4, 5];
+        write!(
+            serial,
+            "Vec test: {:?}
+",
+            v.as_slice()
+        )
+        .ok();
+    }
 
     // Test page allocation
     if let Some(addr) = page::alloc_page() {
