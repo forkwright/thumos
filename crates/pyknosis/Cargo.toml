@@ -1,0 +1,12 @@
+[package]
+name = "thumos-pyknosis"
+description = "Thumos kernel core: memory management, scheduler, syscalls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

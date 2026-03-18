@@ -1,0 +1,14 @@
+[package]
+name = "thumos-pteron"
+description = "Bluetooth HCI driver and BLE scanning"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+snafu = { workspace = true }
+log = { workspace = true }

@@ -1,0 +1,15 @@
+[package]
+name = "thumos-leipsanon"
+description = "Panic mode: selective wipe, anti-forensics, memory scrubbing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rustix = { workspace = true }
+snafu = { workspace = true }
+log = { workspace = true }

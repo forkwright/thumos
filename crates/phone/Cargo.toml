@@ -1,0 +1,16 @@
+[package]
+name = "thumos-phone"
+description = "Telephony daemon: AT commands, voice calls, SMS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nom = { workspace = true }
+rustix = { workspace = true }
+snafu = { workspace = true }
+log = { workspace = true }
