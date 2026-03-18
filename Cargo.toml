@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/forkwright/thumos"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[workspace.dependencies]
+# Syscalls (no libc)
+rustix = { version = "1", features = ["fs", "net", "process", "mm", "event", "time"] }
+
+# Crypto
+ring = "0.17"
+
+# Networking
+smoltcp = { version = "0.12", default-features = false, features = ["medium-ethernet", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "socket-dns"] }
+
+# Parsing
+nom = "8"
+
+# Display
+embedded-graphics = "0.8"
+embedded-graphics-core = "0.4"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+
+# Errors
+snafu = "0.8"
+
+# Logging
+log = "0.4"
+
+# Time
+jiff = "0.2"
+
+# Strings
+compact_str = "0.8"
+
+# Async (for userspace daemons)
+tokio = { version = "1", features = ["rt", "io-util", "net", "time", "sync", "signal", "macros"] }
+
+# CLI (for tools)
+clap = { version = "4", features = ["derive"] }
