@@ -1,0 +1,16 @@
+[package]
+name = "thumos-stegnos"
+description = "Encrypted storage: dm-crypt, key management, TPM sealing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ring = { workspace = true }
+rustix = { workspace = true }
+snafu = { workspace = true }
+log = { workspace = true }
