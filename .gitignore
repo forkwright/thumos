@@ -1,0 +1,30 @@
+# Build artifacts
+out/
+build/
+*.img
+*.bin
+
+# Firmware dumps (large, not in repo)
+firmware/
+blobs/
+
+# Tooling
+.venv/
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.key
+*.pem
+*.p12
+credentials/
