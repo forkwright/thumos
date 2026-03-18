@@ -29,3 +29,5 @@ Thumbs.db
 *.p12
 credentials/
 dump/
+target/
+kernel-*/
