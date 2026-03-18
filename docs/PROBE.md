@@ -247,3 +247,23 @@ vmalloc=496M, maxcpus=8, console=ttyMT0,921600n1
 ### Vendor init services (57 .rc files)
 
 Full MediaTek HAL stack: audio, bluetooth, broadcastradio, camera, configstore, DRM, gatekeeper, graphics, keymaster, media, sensors, wifi. Plus connectivity management, modem init, thermal management, IMS/VoLTE, and FM radio.
+
+## Touchscreen (discovered 2026-03-18)
+
+The AGM M7 has a capacitive multi-touch panel, not documented in specs.
+
+| Property | Value |
+|----------|-------|
+| Device | /dev/input/event2 |
+| Name | mtk-tpd (MediaTek Touch Panel Device) |
+| Type | Capacitive, direct (INPUT_PROP_DIRECT) |
+| Resolution | 240x320 (matches display exactly) |
+| Multi-touch | Up to 10 simultaneous tracking IDs |
+| Pressure | 0-255 (ABS_MT_PRESSURE) |
+| Touch width | 0-100 (ABS_MT_TOUCH_MAJOR/MINOR) |
+| Protocol | Linux MT protocol B (ABS_MT_TRACKING_ID + ABS_MT_POSITION_X/Y) |
+
+Input devices summary:
+- event0: ACCDET (headset jack detection)
+- event1: mtk-kpd (keypad, 21-key matrix)
+- event2: mtk-tpd (touchscreen, 10-point multi-touch)
