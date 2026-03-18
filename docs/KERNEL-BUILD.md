@@ -1,6 +1,186 @@
-# Kernel Build — W1-01
+# Kernel Build
 
 MT6739 Linux 4.4 BSP kernel for AGM M7, compiled from `kernel-wiite/` (cateajansmedya BSP).
+
+---
+
+## W1-02 — Stock config + USB serial initramfs
+
+**Status:** Built. `boot-v2.img` at `~/thumos/boot-v2.img`. Not yet flashed.
+
+### What changed from W1-01
+
+| Item | W1-01 | W1-02 |
+|------|-------|-------|
+| Base config | `hct6739_36_n1_defconfig` | `kernel-config-stock` (extracted from `/proc/config.gz` on running device) |
+| LCM driver | `hct_ili9881p_dsi_vdo_hdp_panda_55_hz` (wrong DSI placeholder) | `gc9306_dbi_c_qvgal` (correct DBI panel, stub — source absent from BSP) |
+| Initramfs | Shell only | Shell + USB serial gadget (ACM) |
+| CMDLINE | `console=ttyMT0` only | `console=ttyMT0,921600n1 vmalloc=496M` |
+| FPSGO | Disabled | Disabled (same root cause: undefined FBT game symbols) |
+
+### Why W1-01 didn't boot visibly
+
+The W1-01 LCM driver (`hct_ili9881p`) is a 1080p DSI panel driver. The AGM M7 uses a
+240×320 DBI parallel-interface panel driven by GC9306. The wrong driver left the display
+controller unconfigured; the kernel booted but nothing was visible and there was no console.
+
+### GC9306 LCM driver status
+
+**Not found in any BSP tree** (`kernel-wiite`, `kernel-lumi`, `kernel-orangepi`).
+
+A stub driver was created at:
+```
+drivers/misc/mediatek/lcm/gc9306_dbi_c_qvgal/gc9306_dbi_c_qvgal.c
+```
+
+The stub sets DBI parallel interface, 240×320, RGB565, and logs a warning at boot.
+Display will not initialize. The actual GC9306 init sequence must be extracted from
+the stock system partition (`/system/lib/hw/` or display HAL) in a future sprint.
+
+### Additional patches applied in W1-02
+
+#### CONFIG changes (on top of stock config)
+
+| Option | Stock | W1-02 | Reason |
+|--------|-------|-------|--------|
+| `CONFIG_CROSS_COMPILE` | `"arm-eabi-"` | `"arm-linux-gnueabihf-"` | Installed toolchain |
+| `CONFIG_HARDENED_USERCOPY` | `y` | disabled | `mm/slub.c` references `kmem_cache.red_left_pad` which is absent from this BSP's `slub_def.h` (kernel version skew) |
+| `CONFIG_MTK_FPSGO` | `y` | disabled | FBT game symbols (`min_boost_freq`, `cpufreq_notifier_fp`) undefined — same issue as W1-01 |
+| `CONFIG_USB_C_SWITCH` | `y` | disabled | `register_typec_switch_callback` defined only in Type-C chip drivers (MT6336/ANX7418), none of which are built; AGM M7 uses micro-USB |
+| `CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES` | `"mt6739"` | `"hct6739_36_n1"` | No `mt6739.dts` in BSP; `hct6739_36_n1.dts` is the only MT6739 DTS |
+
+#### New code patches (kernel-wiite in-tree edits)
+
+**drivers/usb/gadget/function/u_ether.c — missing rndis.h include**
+
+`u_ether.c` uses `sizeof(struct rndis_packet_msg_type)` but did not include `rndis.h`,
+causing an "incomplete type" compile error. Fixed by adding `#include "rndis.h"`.
+
+**drivers/misc/mediatek/lcm/mt65xx_lcm_list.h — gc9306 registration**
+
+Added `extern LCM_DRIVER gc9306_dbi_c_qvgal_lcm_drv` and the corresponding
+`#if defined(GC9306_DBI_C_QVGAL)` entry in `lcm_driver_list[]`.
+
+**drivers/misc/mediatek/imgsensor/src/common/v1/gc030amipi_raw/ (stub)**
+**drivers/misc/mediatek/imgsensor/src/common/v1/gc02m2_mipi_raw/ (stub)**
+
+Stock config requests sensors `gc030amipi_raw` and `gc02m2_mipi_raw` via
+`CONFIG_CUSTOM_KERNEL_IMGSENSOR`. Neither exists in this BSP (BSP has `gc030a_mipi_raw`
+with a different name, and `gc02m2` entirely absent). Stub `Makefile` + empty `.c`
+files created so the linker finds `built-in.o` objects.
+
+Also note: `Wno-error` flags added for:
+- `-Wno-error=builtin-declaration-mismatch` (crypto/xts.c: `free` name collision with GCC built-in)
+- `-Wno-error=incompatible-pointer-types` (mm/memcontrol.c: cgroup callback signature mismatch)
+- `-Wno-error=unused-function` (USB gadget MTP/accessory functions)
+
+### Configure
+
+```bash
+cd ~/thumos/kernel-wiite
+cp ~/thumos/kernel-config-stock .config
+# Fix CROSS_COMPILE and disable incompatible options:
+sed -i 's/CONFIG_CROSS_COMPILE="arm-eabi-"/CONFIG_CROSS_COMPILE="arm-linux-gnueabihf-"/' .config
+sed -i 's/^CONFIG_HARDENED_USERCOPY=y/# CONFIG_HARDENED_USERCOPY is not set/' .config
+sed -i 's/^CONFIG_MTK_FPSGO=y/# CONFIG_MTK_FPSGO is not set/' .config
+sed -i 's/^CONFIG_USB_C_SWITCH=y/# CONFIG_USB_C_SWITCH is not set/' .config
+sed -i 's/CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES="mt6739"/CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES="hct6739_36_n1"/' .config
+yes "" | make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- oldconfig
+```
+
+### Build
+
+```bash
+make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+  KCFLAGS="-march=armv7-a \
+    -Wno-error=address \
+    -Wno-error=array-compare \
+    -Wno-error=stringop-overread \
+    -Wno-error=dangling-pointer \
+    -Wno-error=int-to-pointer-cast \
+    -Wno-error=enum-int-mismatch \
+    -Wno-error=restrict \
+    -Wno-error=builtin-declaration-mismatch \
+    -Wno-error=incompatible-pointer-types \
+    -Wno-error=unused-function" \
+  DTC_FLAGS="-f" \
+  -j$(nproc) zImage dtbs
+
+cat arch/arm/boot/zImage arch/arm/boot/dts/hct6739_36_n1.dtb \
+  > arch/arm/boot/zImage-dtb
+```
+
+Produces:
+
+| File | Size | Notes |
+|------|------|-------|
+| `arch/arm/boot/zImage` | ~7.5 MB | Compressed kernel |
+| `arch/arm/boot/dts/hct6739_36_n1.dtb` | ~62 KB | Device tree blob |
+| `arch/arm/boot/zImage-dtb` | ~7.5 MB | zImage + DTB appended |
+
+### Initramfs
+
+Static ARM BusyBox 1.36.1. Adds USB ACM gadget setup:
+
+```bash
+mkdir -p /tmp/initramfs-v2/{bin,dev,proc,sys,etc,tmp,mnt,root,lib/modules}
+cp /tmp/busybox-1.36.1/busybox /tmp/initramfs-v2/bin/
+cd /tmp/initramfs-v2/bin && ln -sf busybox sh && ln -sf busybox mount && \
+  ln -sf busybox ls && ln -sf busybox cat && ln -sf busybox echo && \
+  ln -sf busybox sleep && ln -sf busybox setsid
+# write /tmp/initramfs-v2/init (USB gadget + diagnostics + shell)
+chmod 755 /tmp/initramfs-v2/init
+cd /tmp/initramfs-v2 && find . | cpio -H newc -o | gzip > /tmp/ramdisk-v2.gz
+```
+
+The `/init` script:
+1. Mounts proc/sysfs/devtmpfs/configfs
+2. Configures a USB ACM gadget (`/sys/kernel/config/usb_gadget/g1`) for serial console
+3. Spawns a shell on `/dev/ttyGS0` (USB serial, visible on host as `/dev/ttyUSBx`)
+4. Prints diagnostics (cpuinfo, meminfo, partitions, CCCI, framebuffer, input, modules)
+5. Falls through to an interactive shell on the UART console
+
+### Boot Image
+
+```bash
+python3 /tmp/mkbootimg-tools/mkbootimg.py \
+  --kernel ~/thumos/kernel-wiite/arch/arm/boot/zImage-dtb \
+  --ramdisk /tmp/ramdisk-v2.gz \
+  --base 0x40000000 \
+  --kernel_offset 0x00008000 \
+  --ramdisk_offset 0x05000000 \
+  --second_offset 0x00f00000 \
+  --tags_offset 0x04000000 \
+  --pagesize 2048 \
+  --cmdline "bootopt=64S3,32S1,32S1 console=ttyMT0,921600n1 root=/dev/ram vmalloc=496M" \
+  -o ~/thumos/boot-v2.img
+```
+
+Output: `~/thumos/boot-v2.img` (~8.6 MB)
+
+Header:
+```
+Magic:         ANDROID!
+Page size:     2048
+Kernel addr:   0x40008000
+Ramdisk addr:  0x45000000
+Cmdline:       bootopt=64S3,32S1,32S1 console=ttyMT0,921600n1 root=/dev/ram vmalloc=496M
+```
+
+### Observations
+
+- **Stock CMDLINE** uses `console=ttyMT3` (not `ttyMT0`). W1-02 uses `ttyMT0` for
+  compatibility with the BSP defconfig pattern. If no console output appears, try
+  `ttyMT3` in the next build.
+- **GC9306 DBI driver** will need to be reverse-engineered from the stock display HAL
+  or extracted from a different BSP that includes it (e.g., MT6739 Android 9 trees).
+- **Camera sensors**: `gc030amipi_raw` vs `gc030a_mipi_raw` naming divergence suggests
+  the stock firmware may use a downstream vendor BSP not aligned with this tree.
+- **vmalloc=496M** in cmdline matches stock config CMDLINE setting (`vmalloc=496M`).
+
+---
+
+# W1-01 — First boot attempt (wrong LCM driver)
 
 ## Environment
 
@@ -211,7 +391,7 @@ adb shell dd if=/sdcard/boot.img of=/dev/block/platform/*/by-name/boot
 fastboot boot ~/thumos/boot.img   # test without flashing
 ```
 
-## Known Limitations (W1-01)
+## Known Limitations (W1-01 — superseded by W1-02)
 
 - **LCM**: `hct_ili9881p_dsi_vdo_hdp_panda_55_hz` is a placeholder. The AGM M7's actual panel (nt35521) driver is absent from this BSP. Display will not initialize; boot console only.
 - **GPIO/EINT**: `cust.dtsi` is a stub (no DrvGen output). Drivers that depend on GPIO bindings will not probe.
