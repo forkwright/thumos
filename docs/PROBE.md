@@ -211,3 +211,39 @@ Unlocked via mtkclient BROM exploit. The fastboot  button confirmation is non-fu
 - Boot shows "orange state" warning (expected, same as GrapheneOS on Pixel)
 - Factory reset occurred (expected)
 - Device boots normally to Android 8.1
+
+## Deep audit with root (2026-03-18)
+
+### Kernel modules (7 loaded)
+
+| Module | Size | Purpose |
+|--------|------|---------|
+| wlan_drv_gen2 | 1.0 MB | WiFi driver (MT6739 integrated) |
+| wmt_drv | 919 KB | Wireless Management Task — connectivity core |
+| fmradio_drv | 135 KB | FM radio receiver driver |
+| bt_drv | 12 KB | Bluetooth driver |
+| gps_drv | 11 KB | GPS driver |
+| wmt_chrdev_wifi | 6 KB | WMT WiFi character device |
+| fpsgo | 3 KB | Frame pacing (GPU scheduling) |
+
+These are the binary kernel modules thumos must preserve. All depend on wmt_drv (connectivity management core).
+
+### Modem interface map
+
+The modem exposes AT command channels via /dev/radio/ pseudo-terminals:
+- Dual SIM: pttycmd1-11 (SIM 1), ptty2cmd1-11 (SIM 2)
+- AT command interfaces: atci1, atci2
+- IMS channels: pttyims, ptty2ims, ptty3ims, ptty4ims
+- Notification: pttynoti, ptty2noti
+- Network: pttynwcmd, pttynwurc
+
+Direct AT access requires owning the CCCI channel (not sharing with Android RIL). In thumos, the telephony daemon will open /dev/ccci_* directly.
+
+### Kernel command line
+
+bootopt=64S3,32S1,32S1 (64-bit SoC, 32-bit secondary, 32-bit OS)
+vmalloc=496M, maxcpus=8, console=ttyMT0,921600n1
+
+### Vendor init services (57 .rc files)
+
+Full MediaTek HAL stack: audio, bluetooth, broadcastradio, camera, configstore, DRM, gatekeeper, graphics, keymaster, media, sensors, wifi. Plus connectivity management, modem init, thermal management, IMS/VoLTE, and FM radio.
