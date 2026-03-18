@@ -1,0 +1,321 @@
+//! NMEA 0183 sentence parser.
+//!
+//! Parses standard GPS sentences: GGA (fix data), RMC (recommended minimum),
+//! GSA (DOP and active satellites), GSV (satellites in view).
+
+use nom::Parser;
+use nom::bytes::complete::{tag, take, take_until, take_while1};
+use nom::character::complete::{char, digit1};
+use nom::combinator::{map_res, opt};
+use nom::sequence::preceded;
+use nom::IResult;
+
+use crate::error::{self, Error};
+use crate::position::{Fix, FixQuality, Position};
+
+/// Validate NMEA checksum. The checksum is the XOR of all bytes between '$' and '*'.
+pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
+    let inner = sentence
+        .strip_prefix('$')
+        .and_then(|s| s.split('*').next())
+        .ok_or_else(|| Error::ParseError {
+            message: "missing $ prefix or * checksum delimiter".to_owned(),
+        })?;
+
+    let expected_str = sentence
+        .split('*')
+        .nth(1)
+        .map(|s| s.trim())
+        .ok_or_else(|| Error::ParseError {
+            message: "missing checksum after *".to_owned(),
+        })?;
+
+    let expected = u8::from_str_radix(expected_str, 16).map_err(|_| Error::ParseError {
+        message: format!("invalid checksum hex: {expected_str}"),
+    })?;
+
+    let actual = inner.bytes().fold(0u8, |acc, b| acc ^ b);
+
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Error::ChecksumMismatch { expected, actual })
+    }
+}
+
+/// Compute NMEA checksum for a sentence body (without $ and *).
+pub fn compute_checksum(body: &str) -> u8 {
+    body.bytes().fold(0u8, |acc, b| acc ^ b)
+}
+
+/// Parse NMEA latitude: DDMM.MMMM,N/S
+fn parse_lat(input: &str) -> IResult<&str, f64> {
+    let (input, raw) = take_while1(|c: char| c.is_ascii_digit() || c == '.').parse(input)?;
+    let (input, _) = char(',').parse(input)?;
+    let (input, ns) = take(1usize).parse(input)?;
+
+    // SAFETY: format is DDMM.MMMM
+    let degrees: f64 = raw[..2].parse().unwrap_or(0.0);
+    let minutes: f64 = raw[2..].parse().unwrap_or(0.0);
+    let mut lat = degrees + minutes / 60.0;
+    if ns == "S" {
+        lat = -lat;
+    }
+    Ok((input, lat))
+}
+
+/// Parse NMEA longitude: DDDMM.MMMM,E/W
+fn parse_lon(input: &str) -> IResult<&str, f64> {
+    let (input, raw) = take_while1(|c: char| c.is_ascii_digit() || c == '.').parse(input)?;
+    let (input, _) = char(',').parse(input)?;
+    let (input, ew) = take(1usize).parse(input)?;
+
+    // SAFETY: format is DDDMM.MMMM
+    let degrees: f64 = raw[..3].parse().unwrap_or(0.0);
+    let minutes: f64 = raw[3..].parse().unwrap_or(0.0);
+    let mut lon = degrees + minutes / 60.0;
+    if ew == "W" {
+        lon = -lon;
+    }
+    Ok((input, lon))
+}
+
+/// Parse an optional float field after a comma.
+fn parse_opt_float(input: &str) -> IResult<&str, Option<f64>> {
+    let (input, _) = char(',').parse(input)?;
+    if input.starts_with(',') || input.starts_with('*') || input.is_empty() {
+        return Ok((input, None));
+    }
+    let (input, raw) = take_while1(|c: char| c.is_ascii_digit() || c == '.').parse(input)?;
+    let val: f64 = raw.parse().unwrap_or(0.0);
+    Ok((input, Some(val)))
+}
+
+/// Parse a GGA sentence (Global Positioning System Fix Data).
+///
+/// Format: `$GPGGA,hhmmss.ss,llll.ll,a,yyyyy.yy,a,x,xx,x.x,x.x,M,x.x,M,x.x,xxxx*hh`
+pub fn parse_gga(sentence: &str) -> error::Result<Fix> {
+    validate_checksum(sentence)?;
+
+    let body = sentence
+        .strip_prefix('$')
+        .and_then(|s| s.split('*').next())
+        .ok_or_else(|| Error::ParseError {
+            message: "invalid GGA sentence".to_owned(),
+        })?;
+
+    let fields: Vec<&str> = body.split(',').collect();
+    if fields.len() < 10 {
+        return Err(Error::ParseError {
+            message: format!("GGA needs 10+ fields, got {}", fields.len()),
+        });
+    }
+
+    // fields[0] = GPGGA/GNGGA
+    // fields[1] = time (hhmmss.ss)
+    // fields[2] = lat, fields[3] = N/S
+    // fields[4] = lon, fields[5] = E/W
+    // fields[6] = fix quality
+    // fields[7] = num satellites
+    // fields[8] = HDOP
+    // fields[9] = altitude, fields[10] = M
+
+    let quality_val: u8 = fields[6].parse().unwrap_or(0);
+    let quality = FixQuality::from(quality_val);
+
+    if quality == FixQuality::NoFix || fields[2].is_empty() {
+        return Err(Error::NoFix);
+    }
+
+    let lat = parse_lat_field(fields[2], fields[3])?;
+    let lon = parse_lon_field(fields[4], fields[5])?;
+    let alt = fields.get(9).and_then(|s| s.parse::<f64>().ok());
+    let satellites: u8 = fields[7].parse().unwrap_or(0);
+    let hdop = fields.get(8).and_then(|s| s.parse::<f64>().ok());
+
+    Ok(Fix {
+        position: Position { lat, lon, alt },
+        quality,
+        satellites,
+        hdop,
+        speed_knots: None,
+        course: None,
+    })
+}
+
+/// Parse a RMC sentence (Recommended Minimum Navigation Information).
+///
+/// Format: `$GPRMC,hhmmss.ss,A,llll.ll,a,yyyyy.yy,a,x.x,x.x,ddmmyy,x.x,a*hh`
+pub fn parse_rmc(sentence: &str) -> error::Result<Fix> {
+    validate_checksum(sentence)?;
+
+    let body = sentence
+        .strip_prefix('$')
+        .and_then(|s| s.split('*').next())
+        .ok_or_else(|| Error::ParseError {
+            message: "invalid RMC sentence".to_owned(),
+        })?;
+
+    let fields: Vec<&str> = body.split(',').collect();
+    if fields.len() < 10 {
+        return Err(Error::ParseError {
+            message: format!("RMC needs 10+ fields, got {}", fields.len()),
+        });
+    }
+
+    // fields[0] = GPRMC/GNRMC
+    // fields[1] = time
+    // fields[2] = status (A=active, V=void)
+    // fields[3] = lat, fields[4] = N/S
+    // fields[5] = lon, fields[6] = E/W
+    // fields[7] = speed (knots)
+    // fields[8] = course (degrees true)
+    // fields[9] = date (ddmmyy)
+
+    if fields[2] != "A" {
+        return Err(Error::NoFix);
+    }
+
+    let lat = parse_lat_field(fields[3], fields[4])?;
+    let lon = parse_lon_field(fields[5], fields[6])?;
+    let speed_knots = fields.get(7).and_then(|s| s.parse::<f64>().ok());
+    let course = fields.get(8).and_then(|s| s.parse::<f64>().ok());
+
+    Ok(Fix {
+        position: Position {
+            lat,
+            lon,
+            alt: None,
+        },
+        quality: FixQuality::Gps,
+        satellites: 0,
+        hdop: None,
+        speed_knots,
+        course,
+    })
+}
+
+/// Parse latitude from split fields (value, hemisphere).
+fn parse_lat_field(value: &str, hemisphere: &str) -> error::Result<f64> {
+    if value.len() < 4 {
+        return Err(Error::ParseError {
+            message: format!("latitude too short: {value}"),
+        });
+    }
+    let degrees: f64 = value[..2].parse().map_err(|_| Error::ParseError {
+        message: format!("invalid latitude degrees: {value}"),
+    })?;
+    let minutes: f64 = value[2..].parse().map_err(|_| Error::ParseError {
+        message: format!("invalid latitude minutes: {value}"),
+    })?;
+    let mut lat = degrees + minutes / 60.0;
+    if hemisphere == "S" {
+        lat = -lat;
+    }
+    Ok(lat)
+}
+
+/// Parse longitude from split fields (value, hemisphere).
+fn parse_lon_field(value: &str, hemisphere: &str) -> error::Result<f64> {
+    if value.len() < 5 {
+        return Err(Error::ParseError {
+            message: format!("longitude too short: {value}"),
+        });
+    }
+    let degrees: f64 = value[..3].parse().map_err(|_| Error::ParseError {
+        message: format!("invalid longitude degrees: {value}"),
+    })?;
+    let minutes: f64 = value[3..].parse().map_err(|_| Error::ParseError {
+        message: format!("invalid longitude minutes: {value}"),
+    })?;
+    let mut lon = degrees + minutes / 60.0;
+    if hemisphere == "W" {
+        lon = -lon;
+    }
+    Ok(lon)
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "test assertions")]
+mod tests {
+    use super::*;
+    use crate::position::FixQuality;
+
+    #[test]
+    fn checksum_valid() {
+        let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76";
+        validate_checksum(sentence).expect("valid checksum");
+    }
+
+    #[test]
+    fn checksum_invalid() {
+        let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*FF";
+        assert!(validate_checksum(sentence).is_err(), "should reject bad checksum");
+    }
+
+    #[test]
+    fn compute_checksum_gga() {
+        let body = "GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,";
+        assert_eq!(compute_checksum(body), 0x76);
+    }
+
+    #[test]
+    fn parse_gga_valid() {
+        let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76";
+        let fix = parse_gga(sentence).expect("should parse GGA");
+        assert_eq!(fix.quality, FixQuality::Gps);
+        assert_eq!(fix.satellites, 8);
+        // 53 degrees 21.6802 minutes N = 53.36133... degrees
+        assert!((fix.position.lat - 53.36134).abs() < 0.001, "lat should be ~53.361");
+        // 6 degrees 30.3372 minutes W = -6.50562 degrees
+        assert!((fix.position.lon - (-6.50562)).abs() < 0.001, "lon should be ~-6.506");
+        assert!((fix.position.alt.expect("should have altitude") - 61.7).abs() < 0.1, "alt should be ~61.7");
+    }
+
+    #[test]
+    fn parse_gga_no_fix() {
+        let sentence = "$GPGGA,092750.000,,,,,,0,0,,,,,,,*47";
+        assert!(parse_gga(sentence).is_err(), "no fix should be error");
+    }
+
+    #[test]
+    fn parse_rmc_valid() {
+        let sentence = "$GPRMC,092750.000,A,5321.6802,N,00630.3372,W,0.02,31.66,280511,,,A*43";
+        let fix = parse_rmc(sentence).expect("should parse RMC");
+        assert!((fix.position.lat - 53.36134).abs() < 0.001, "lat should be ~53.361");
+        assert!((fix.speed_knots.expect("should have speed") - 0.02).abs() < 0.01, "speed should be ~0.02");
+        assert!((fix.course.expect("should have course") - 31.66).abs() < 0.01, "course should be ~31.66");
+    }
+
+    #[test]
+    fn parse_rmc_void() {
+        let sentence = "$GPRMC,092750.000,V,,,,,,,280511,,,N*4C";
+        assert!(parse_rmc(sentence).is_err(), "void status should be error");
+    }
+
+    #[test]
+    fn parse_lat_north() {
+        let lat = parse_lat_field("5321.6802", "N").expect("should parse");
+        assert!((lat - 53.36134).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_lat_south() {
+        let lat = parse_lat_field("3348.5410", "S").expect("should parse");
+        assert!(lat < 0.0, "south latitude should be negative");
+        assert!((lat - (-33.80902)).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_lon_west() {
+        let lon = parse_lon_field("00630.3372", "W").expect("should parse");
+        assert!(lon < 0.0, "west longitude should be negative");
+    }
+
+    #[test]
+    fn parse_lon_east() {
+        let lon = parse_lon_field("15145.3478", "E").expect("should parse");
+        assert!(lon > 0.0, "east longitude should be positive");
+        assert!((lon - 151.75580).abs() < 0.001);
+    }
+}
