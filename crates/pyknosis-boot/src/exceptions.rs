@@ -16,6 +16,7 @@
 
 use crate::gic;
 use crate::process;
+use crate::syscall;
 use crate::timer;
 use crate::uart::Uart;
 use core::fmt::Write;
@@ -179,5 +180,8 @@ pub extern "C" fn undefined_handler_rust() {
 /// SVC handler (placeholder for future syscall implementation).
 #[unsafe(no_mangle)]
 pub extern "C" fn svc_handler_rust() {
-    // NOTE: will become the syscall entry point in Wave 3
+    // NOTE: in a full implementation, extract SVC number from the instruction
+    // at the return address (lr - 4), and read r0-r3 from the saved context
+    // on the stack. For now this is a placeholder that will be properly
+    // wired when we have userspace processes making SVC calls.
 }
