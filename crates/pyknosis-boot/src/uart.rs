@@ -46,7 +46,8 @@ impl Uart {
             let thr = (self.base + THR) as *mut u32;
 
             // Wait until transmit holding register is empty
-            while (*lsr) & LSR_THRE == 0 {}
+            #[allow(clippy::while_immutable_condition)]
+            while core::ptr::read_volatile(lsr) & LSR_THRE == 0 {}
 
             // Write byte
             *thr = byte as u32;
