@@ -19,6 +19,7 @@ mod gic;
 mod heap;
 mod ipc;
 mod kconfig;
+mod kinit;
 mod mmio;
 mod mmu;
 mod page;
