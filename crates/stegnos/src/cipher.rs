@@ -1,0 +1,199 @@
+//! AES-256-XTS block encryption and decryption (sector-level, like dm-crypt).
+
+use aes::{Aes256, cipher::KeyInit};
+use snafu::Snafu;
+use xts_mode::Xts128;
+
+/// Block size in bytes — matches the OS page size and dm-crypt sector size.
+pub const BLOCK_SIZE: usize = 4096;
+
+/// XTS key length: two AES-256 keys (32 bytes each = 64 bytes total).
+const XTS_KEY_LEN: usize = 64;
+
+/// Length of each AES-256 sub-key within the XTS key.
+const KEY_HALF_LEN: usize = XTS_KEY_LEN / 2;
+
+/// Errors from block cipher operations.
+#[derive(Debug, Snafu)]
+pub enum Error {
+    /// The provided key is not `XTS_KEY_LEN` (64) bytes.
+    #[snafu(display("invalid XTS key length: expected {XTS_KEY_LEN} bytes, got {actual}"))]
+    InvalidKeyLength {
+        actual: usize,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    /// The plaintext or ciphertext buffer is not exactly `BLOCK_SIZE` (4096) bytes.
+    #[snafu(display("invalid block size: expected {BLOCK_SIZE} bytes, got {actual}"))]
+    InvalidBlockSize {
+        actual: usize,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+}
+
+/// Convenience alias.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Encrypt `plaintext` in-place into `ciphertext` using AES-256-XTS.
+///
+/// `block_number` is used as the XTS tweak (sector index), matching dm-crypt behaviour.
+/// Both `plaintext` and `ciphertext` must be exactly [`BLOCK_SIZE`] bytes.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidKeyLength`] if `key` is not 64 bytes.
+/// Returns [`Error::InvalidBlockSize`] if either buffer is not 4096 bytes.
+pub fn encrypt_block(
+    key: &[u8; XTS_KEY_LEN],
+    block_number: u64,
+    plaintext: &[u8],
+    ciphertext: &mut [u8],
+) -> Result<()> {
+    if plaintext.len() != BLOCK_SIZE {
+        return Err(InvalidBlockSizeSnafu {
+            actual: plaintext.len(),
+        }
+        .build());
+    }
+    if ciphertext.len() != BLOCK_SIZE {
+        return Err(InvalidBlockSizeSnafu {
+            actual: ciphertext.len(),
+        }
+        .build());
+    }
+
+    ciphertext.copy_from_slice(plaintext);
+    make_xts(key)?.encrypt_sector(ciphertext, block_number_to_tweak(block_number));
+    Ok(())
+}
+
+/// Decrypt `ciphertext` in-place into `plaintext` using AES-256-XTS.
+///
+/// `block_number` must match the value used during encryption.
+/// Both `ciphertext` and `plaintext` must be exactly [`BLOCK_SIZE`] bytes.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidKeyLength`] if `key` is not 64 bytes.
+/// Returns [`Error::InvalidBlockSize`] if either buffer is not 4096 bytes.
+pub fn decrypt_block(
+    key: &[u8; XTS_KEY_LEN],
+    block_number: u64,
+    ciphertext: &[u8],
+    plaintext: &mut [u8],
+) -> Result<()> {
+    if ciphertext.len() != BLOCK_SIZE {
+        return Err(InvalidBlockSizeSnafu {
+            actual: ciphertext.len(),
+        }
+        .build());
+    }
+    if plaintext.len() != BLOCK_SIZE {
+        return Err(InvalidBlockSizeSnafu {
+            actual: plaintext.len(),
+        }
+        .build());
+    }
+
+    plaintext.copy_from_slice(ciphertext);
+    make_xts(key)?.decrypt_sector(plaintext, block_number_to_tweak(block_number));
+    Ok(())
+}
+
+/// Encode `block_number` as a 16-byte little-endian XTS tweak (sector index).
+///
+/// XTS places the sector index in a 128-bit little-endian integer. The upper 8
+/// bytes are always zero for 64-bit block numbers.
+fn block_number_to_tweak(block_number: u64) -> [u8; 16] {
+    let mut tweak = [0u8; 16];
+    let le_bytes = block_number.to_le_bytes();
+    // Copy 8 bytes into the low half; upper 8 bytes remain zero.
+    tweak[..8].copy_from_slice(&le_bytes);
+    tweak
+}
+
+/// Build an `Xts128<Aes256>` cipher from a 64-byte XTS key.
+fn make_xts(key: &[u8; XTS_KEY_LEN]) -> Result<Xts128<Aes256>> {
+    let (k1, k2) = key.split_at(KEY_HALF_LEN);
+
+    // split_at(32) on a [u8; 64] always produces two 32-byte slices, so
+    // new_from_slice cannot fail here. The map_err is for completeness.
+    let c1 = Aes256::new_from_slice(k1)
+        .map_err(|_| InvalidKeyLengthSnafu { actual: k1.len() }.build())?;
+    let c2 = Aes256::new_from_slice(k2)
+        .map_err(|_| InvalidKeyLengthSnafu { actual: k2.len() }.build())?;
+
+    Ok(Xts128::new(c1, c2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_key() -> [u8; XTS_KEY_LEN] {
+        let mut key = [0u8; XTS_KEY_LEN];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = u8::try_from(i % 256).unwrap_or(0);
+        }
+        key
+    }
+
+    fn test_plaintext() -> [u8; BLOCK_SIZE] {
+        let mut buf = [0u8; BLOCK_SIZE];
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = u8::try_from(i % 256).unwrap_or(0);
+        }
+        buf
+    }
+
+    #[test]
+    fn encrypt_decrypt_round_trip() -> super::Result<()> {
+        let key = test_key();
+        let plaintext = test_plaintext();
+        let mut ciphertext = [0u8; BLOCK_SIZE];
+        let mut recovered = [0u8; BLOCK_SIZE];
+
+        encrypt_block(&key, 0, &plaintext, &mut ciphertext)?;
+        decrypt_block(&key, 0, &ciphertext, &mut recovered)?;
+
+        assert_eq!(
+            plaintext, recovered,
+            "decrypted block must match the original plaintext"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn different_block_numbers_produce_different_ciphertext() -> super::Result<()> {
+        let key = test_key();
+        let plaintext = test_plaintext();
+        let mut ct0 = [0u8; BLOCK_SIZE];
+        let mut ct1 = [0u8; BLOCK_SIZE];
+
+        encrypt_block(&key, 0, &plaintext, &mut ct0)?;
+        encrypt_block(&key, 1, &plaintext, &mut ct1)?;
+
+        assert_ne!(
+            ct0, ct1,
+            "XTS tweak must produce distinct ciphertext for different block numbers"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ciphertext_differs_from_plaintext() -> super::Result<()> {
+        let key = test_key();
+        let plaintext = [0x42u8; BLOCK_SIZE];
+        let mut ciphertext = [0u8; BLOCK_SIZE];
+
+        encrypt_block(&key, 42, &plaintext, &mut ciphertext)?;
+
+        assert_ne!(
+            plaintext, ciphertext,
+            "encrypted block must differ from the plaintext"
+        );
+        Ok(())
+    }
+}
