@@ -35,7 +35,7 @@ impl Console {
     }
 
     /// Print the prompt.
-    fn prompt(&mut self) {
+    pub fn prompt(&mut self) {
         self.serial.write_str("thumos> ").ok();
     }
 
