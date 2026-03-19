@@ -10,7 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-jiff = { workspace = true }
+jiff = { workspace = true, features = ["serde"] }
 snafu = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
