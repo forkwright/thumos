@@ -18,6 +18,7 @@ mod exceptions;
 mod gic;
 mod heap;
 mod ipc;
+mod kconfig;
 mod mmio;
 mod mmu;
 mod page;
