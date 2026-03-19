@@ -11,6 +11,7 @@ extern crate alloc;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
+mod console;
 mod device;
 mod elf;
 mod exceptions;
