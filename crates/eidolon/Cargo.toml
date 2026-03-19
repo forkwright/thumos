@@ -12,3 +12,4 @@ workspace = true
 [dependencies]
 embedded-graphics = { workspace = true }
 embedded-graphics-core = { workspace = true }
+thumos-haphe = { path = "../haphe" }
