@@ -20,6 +20,7 @@ mod ipc;
 mod mmio;
 mod mmu;
 mod page;
+mod power;
 mod process;
 mod ramfs;
 mod syscall;
