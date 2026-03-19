@@ -10,6 +10,8 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+log = { workspace = true }
+ring = { workspace = true }
 rustix = { workspace = true }
 snafu = { workspace = true }
-log = { workspace = true }
+zeroize = "1"
