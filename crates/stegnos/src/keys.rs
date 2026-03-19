@@ -1,0 +1,266 @@
+//! Key management: PBKDF2 key derivation, AES-256-GCM master key seal/unseal.
+
+use std::num::NonZeroU32;
+
+use jiff::Timestamp;
+use ring::{
+    aead::{self, AES_256_GCM, LessSafeKey, Nonce, UnboundKey},
+    pbkdf2,
+    rand::{SecureRandom, SystemRandom},
+};
+use snafu::Snafu;
+
+const SALT_LEN: usize = 32;
+const KEY_LEN: usize = 32;
+const NONCE_LEN: usize = 12;
+const TAG_LEN: usize = 16;
+const SEALED_KEY_LEN: usize = KEY_LEN + TAG_LEN;
+
+/// Default PBKDF2 iterations (NIST SP 800-132 recommends ≥ 1000; 100k is a practical minimum).
+const DEFAULT_ITERATIONS: u32 = 100_000;
+
+/// Errors from key management operations.
+#[derive(Debug, Snafu)]
+pub enum Error {
+    /// The iteration count passed to key derivation was zero.
+    #[snafu(display("iterations must be non-zero"))]
+    ZeroIterations {
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    /// The system random number generator failed.
+    #[snafu(display("random number generation failed"))]
+    RandomGeneration {
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    /// AES-256-GCM key construction failed (invalid key length).
+    #[snafu(display("invalid key material for AES-256-GCM"))]
+    InvalidKey {
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    /// Encryption of the master key failed.
+    #[snafu(display("key sealing failed"))]
+    KeySeal {
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    /// Decryption failed — wrong passphrase or corrupted data.
+    #[snafu(display("key unsealing failed: wrong passphrase or corrupted slot data"))]
+    KeyUnseal {
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    /// Decrypted plaintext has an unexpected length.
+    #[snafu(display("decrypted key has unexpected length"))]
+    BadPlaintextLength {
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+}
+
+/// Convenience alias.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// A key derived from a passphrase via PBKDF2-HMAC-SHA256.
+#[derive(Debug)]
+pub struct DerivedKey {
+    /// The 32-byte derived key bytes.
+    pub key: [u8; KEY_LEN],
+    /// The salt used during derivation.
+    pub salt: [u8; SALT_LEN],
+    /// The PBKDF2 iteration count.
+    pub iterations: u32,
+}
+
+/// Encryption algorithm used to seal a master key in a [`KeySlot`].
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum Algorithm {
+    /// AES-256-GCM authenticated encryption.
+    Aes256Gcm,
+}
+
+/// An encrypted master key plus metadata needed to unseal it.
+#[derive(Debug, Clone)]
+pub struct KeySlot {
+    /// PBKDF2 salt (randomly generated at seal time).
+    pub salt: [u8; SALT_LEN],
+    /// PBKDF2 iteration count used when sealing.
+    pub iterations: u32,
+    /// AES-GCM nonce (randomly generated at seal time).
+    pub nonce: [u8; NONCE_LEN],
+    /// Encryption algorithm used to protect the master key.
+    pub algorithm: Algorithm,
+    /// When this slot was created.
+    pub created: Timestamp,
+    /// Encrypted master key (ciphertext || GCM tag), 48 bytes total.
+    pub ciphertext: [u8; SEALED_KEY_LEN],
+}
+
+/// Derive a 32-byte key from `passphrase` and `salt` using PBKDF2-HMAC-SHA256.
+///
+/// # Errors
+///
+/// Returns [`Error::ZeroIterations`] if `iterations` is zero.
+pub fn derive_key(passphrase: &[u8], salt: &[u8; SALT_LEN], iterations: u32) -> Result<DerivedKey> {
+    let iters = NonZeroU32::new(iterations).ok_or_else(|| ZeroIterationsSnafu.build())?;
+    let mut key = [0u8; KEY_LEN];
+    pbkdf2::derive(
+        pbkdf2::PBKDF2_HMAC_SHA256,
+        iters,
+        salt,
+        passphrase,
+        &mut key,
+    );
+    Ok(DerivedKey {
+        key,
+        salt: *salt,
+        iterations,
+    })
+}
+
+/// Seal `master_key` with a key derived from `passphrase` using AES-256-GCM.
+///
+/// Generates a random salt and nonce. The resulting [`KeySlot`] contains everything
+/// needed to unseal the key later.
+///
+/// # Errors
+///
+/// Returns an error if random generation fails, key construction fails, or encryption fails.
+pub fn seal_key(master_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlot> {
+    let rng = SystemRandom::new();
+
+    let mut salt = [0u8; SALT_LEN];
+    rng.fill(&mut salt)
+        .map_err(|_| RandomGenerationSnafu.build())?;
+
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rng.fill(&mut nonce_bytes)
+        .map_err(|_| RandomGenerationSnafu.build())?;
+
+    let derived = derive_key(passphrase, &salt, DEFAULT_ITERATIONS)?;
+
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, &derived.key).map_err(|_| InvalidKeySnafu.build())?;
+    let sealing_key = LessSafeKey::new(unbound);
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+
+    let mut buf = master_key.to_vec();
+    sealing_key
+        .seal_in_place_append_tag(nonce, aead::Aad::empty(), &mut buf)
+        .map_err(|_| KeySealSnafu.build())?;
+
+    let mut ciphertext = [0u8; SEALED_KEY_LEN];
+    ciphertext.copy_from_slice(&buf);
+
+    Ok(KeySlot {
+        salt,
+        iterations: DEFAULT_ITERATIONS,
+        nonce: nonce_bytes,
+        algorithm: Algorithm::Aes256Gcm,
+        created: Timestamp::now(),
+        ciphertext,
+    })
+}
+
+/// Unseal a master key from `slot` using `passphrase`.
+///
+/// Re-derives the wrapping key from the passphrase and stored salt, then
+/// decrypts and authenticates the master key via AES-256-GCM.
+///
+/// # Errors
+///
+/// Returns [`Error::KeyUnseal`] if the passphrase is wrong or the slot is corrupted.
+/// Returns [`Error::ZeroIterations`] if the stored iteration count is zero.
+/// Returns [`Error::InvalidKey`] if key construction fails.
+pub fn unseal_key(slot: &KeySlot, passphrase: &[u8]) -> Result<[u8; KEY_LEN]> {
+    let derived = derive_key(passphrase, &slot.salt, slot.iterations)?;
+
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, &derived.key).map_err(|_| InvalidKeySnafu.build())?;
+    let opening_key = LessSafeKey::new(unbound);
+    let nonce = Nonce::assume_unique_for_key(slot.nonce);
+
+    let mut buf = slot.ciphertext.to_vec();
+    let plaintext = opening_key
+        .open_in_place(nonce, aead::Aad::empty(), &mut buf)
+        .map_err(|_| KeyUnsealSnafu.build())?;
+
+    let slice = plaintext
+        .get(..KEY_LEN)
+        .ok_or_else(|| BadPlaintextLengthSnafu.build())?;
+    let mut master_key = [0u8; KEY_LEN];
+    master_key.copy_from_slice(slice);
+    Ok(master_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_passphrase_and_salt_yields_same_key() -> Result<()> {
+        let passphrase = b"correct horse battery staple";
+        let salt = [0x42u8; SALT_LEN];
+        let a = derive_key(passphrase, &salt, 1)?;
+        let b = derive_key(passphrase, &salt, 1)?;
+        assert_eq!(
+            a.key, b.key,
+            "PBKDF2 must be deterministic for same passphrase and salt"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn different_salt_yields_different_key() -> Result<()> {
+        let passphrase = b"correct horse battery staple";
+        let salt_a = [0x11u8; SALT_LEN];
+        let salt_b = [0x22u8; SALT_LEN];
+        let a = derive_key(passphrase, &salt_a, 1)?;
+        let b = derive_key(passphrase, &salt_b, 1)?;
+        assert_ne!(
+            a.key, b.key,
+            "different salts must produce different derived keys"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn zero_iterations_returns_error() {
+        let salt = [0u8; SALT_LEN];
+        let result = derive_key(b"pass", &salt, 0);
+        assert!(result.is_err(), "zero iterations must be rejected");
+    }
+
+    #[test]
+    fn seal_unseal_round_trip() -> Result<()> {
+        let master_key = [0xABu8; KEY_LEN];
+        let passphrase = b"test passphrase";
+        let slot = seal_key(&master_key, passphrase)?;
+        let recovered = unseal_key(&slot, passphrase)?;
+        assert_eq!(
+            master_key, recovered,
+            "unseal must return the original master key"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wrong_passphrase_fails_unseal() -> Result<()> {
+        let master_key = [0xCDu8; KEY_LEN];
+        let slot = seal_key(&master_key, b"correct passphrase")?;
+        let result = unseal_key(&slot, b"wrong passphrase");
+        assert!(
+            result.is_err(),
+            "unseal with wrong passphrase must return an error"
+        );
+        Ok(())
+    }
+}

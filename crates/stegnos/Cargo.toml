@@ -10,7 +10,11 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+aes = "0.8"
+jiff = { workspace = true }
 ring = { workspace = true }
 rustix = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
+xts-mode = "0.5"
+zeroize = "1"
