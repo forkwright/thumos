@@ -616,8 +616,10 @@ name = "thumos-leipsanon"
 version = "0.1.0"
 dependencies = [
  "log",
+ "ring",
  "rustix",
  "snafu",
+ "zeroize",
 ]
 
 [[package]]
@@ -634,6 +636,7 @@ dependencies = [
 name = "thumos-pteron"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "log",
  "snafu",
 ]
