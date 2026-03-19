@@ -22,6 +22,15 @@ pub enum Error {
 
     #[snafu(display("modem not ready"))]
     NotReady,
+
+    #[snafu(display("PDU decode error at byte {offset}: {message}"))]
+    PduDecode { offset: usize, message: String },
+
+    #[snafu(display("invalid PDU hex: {message}"))]
+    InvalidHex { message: String },
+
+    #[snafu(display("GSM-7 encode: unmappable character U+{codepoint:04X}"))]
+    Gsm7Encode { codepoint: u32 },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
