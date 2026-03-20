@@ -2,7 +2,9 @@
 
 ## Reporting vulnerabilities
 
-Email codykickertz@proton.me with:
+Use [GitHub Security Advisories](https://github.com/forkwright/thumos/security/advisories/new) to report vulnerabilities privately.
+
+Include:
 - Description of the vulnerability
 - Steps to reproduce
 - Affected components
