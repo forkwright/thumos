@@ -1,0 +1,23 @@
+title = "forkwright gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key"
+regex = '''sk-ant-[a-zA-Z0-9_-]{90,}'''
+tags = ["key", "anthropic"]
+
+[[rules]]
+id = "jwt-secret"
+description = "JWT secret or token"
+regex = '''eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}'''
+tags = ["token", "jwt"]
+
+[allowlist]
+paths = [
+  '''vendor/''',
+  '''\.gitleaks\.toml''',
+  '''SECURITY\.md''',
+]
