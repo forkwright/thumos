@@ -5,6 +5,9 @@ on:
     - cron: "0 8 * * *" # 02:00 CST
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   rust-full:
     runs-on: ubuntu-latest
