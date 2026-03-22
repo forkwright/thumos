@@ -76,7 +76,7 @@ pub struct StpFrame {
 
 impl StpFrame {
     /// Create an empty frame.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             header: StpHeader {
                 frame_type: FrameType::Data,
@@ -164,7 +164,7 @@ impl Default for StpFrame {
 }
 
 /// Compute header checksum (XOR of header bytes).
-fn compute_header_checksum(hdr: StpHeader) -> u8 {
+const fn compute_header_checksum(hdr: StpHeader) -> u8 {
     let h0 =
         ((hdr.frame_type as u8) << 4) | (if hdr.ack { 0x08 } else { 0 }) | ((hdr.seq & 0x07) >> 1);
     let h1 = ((hdr.seq & 0x01) << 7) | ((hdr.length >> 5) as u8 & 0x7F);
@@ -198,7 +198,7 @@ fn compute_crc(frame: &StpFrame) -> u16 {
 }
 
 /// `CRC-16` CCITT update for one byte.
-fn crc16_ccitt_byte(crc: u16, byte: u8) -> u16 {
+const fn crc16_ccitt_byte(crc: u16, byte: u8) -> u16 {
     let mut crc = crc;
     let data = byte as u16;
     crc = crc.rotate_right(8);
