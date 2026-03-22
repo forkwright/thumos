@@ -3,11 +3,6 @@
 //! Parses standard GPS sentences: GGA (fix data), RMC (recommended minimum),
 //! GSA (DOP and active satellites), GSV (satellites in view).
 
-use nom::IResult;
-use nom::Parser;
-use nom::bytes::complete::{take, take_while1};
-use nom::character::complete::char;
-
 use crate::error::{self, Error};
 use crate::position::{Fix, FixQuality, Position};
 
@@ -45,49 +40,6 @@ pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
 /// Compute NMEA checksum for a sentence body (without $ and *).
 pub fn compute_checksum(body: &str) -> u8 {
     body.bytes().fold(0u8, |acc, b| acc ^ b)
-}
-
-/// Parse NMEA latitude: DDMM.MMMM,N/S
-fn parse_lat(input: &str) -> IResult<&str, f64> {
-    let (input, raw) = take_while1(|c: char| c.is_ascii_digit() || c == '.').parse(input)?;
-    let (input, _) = char(',').parse(input)?;
-    let (input, ns) = take(1usize).parse(input)?;
-
-    // SAFETY: format is DDMM.MMMM
-    let degrees: f64 = raw[..2].parse().unwrap_or(0.0);
-    let minutes: f64 = raw[2..].parse().unwrap_or(0.0);
-    let mut lat = degrees + minutes / 60.0;
-    if ns == "S" {
-        lat = -lat;
-    }
-    Ok((input, lat))
-}
-
-/// Parse NMEA longitude: DDDMM.MMMM,E/W
-fn parse_lon(input: &str) -> IResult<&str, f64> {
-    let (input, raw) = take_while1(|c: char| c.is_ascii_digit() || c == '.').parse(input)?;
-    let (input, _) = char(',').parse(input)?;
-    let (input, ew) = take(1usize).parse(input)?;
-
-    // SAFETY: format is DDDMM.MMMM
-    let degrees: f64 = raw[..3].parse().unwrap_or(0.0);
-    let minutes: f64 = raw[3..].parse().unwrap_or(0.0);
-    let mut lon = degrees + minutes / 60.0;
-    if ew == "W" {
-        lon = -lon;
-    }
-    Ok((input, lon))
-}
-
-/// Parse an optional float field after a comma.
-fn parse_opt_float(input: &str) -> IResult<&str, Option<f64>> {
-    let (input, _) = char(',').parse(input)?;
-    if input.starts_with(',') || input.starts_with('*') || input.is_empty() {
-        return Ok((input, None));
-    }
-    let (input, raw) = take_while1(|c: char| c.is_ascii_digit() || c == '.').parse(input)?;
-    let val: f64 = raw.parse().unwrap_or(0.0);
-    Ok((input, Some(val)))
 }
 
 /// Parse a GGA sentence (Global Positioning System Fix Data).
