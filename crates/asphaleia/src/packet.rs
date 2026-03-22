@@ -40,6 +40,7 @@ pub enum ParseError {
 
 /// Parsed IPv4 header fields.
 #[derive(Debug, Clone)]
+#[allow(dead_code, reason = "public API — consumed by downstream crates")]
 pub struct IpHeader {
     /// IP version (always 4 for a successfully parsed header).
     pub version: u8,
@@ -57,6 +58,7 @@ pub struct IpHeader {
 
 /// Parsed TCP header fields.
 #[derive(Debug, Clone)]
+#[allow(dead_code, reason = "public API — consumed by downstream crates")]
 pub struct TcpHeader {
     /// Source TCP port.
     pub src_port: u16,
@@ -72,6 +74,7 @@ pub struct TcpHeader {
 
 /// Parsed UDP header fields.
 #[derive(Debug, Clone)]
+#[allow(dead_code, reason = "public API — consumed by downstream crates")]
 pub struct UdpHeader {
     /// Source UDP port.
     pub src_port: u16,
