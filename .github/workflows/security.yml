@@ -9,6 +9,9 @@ on:
     - cron: "0 10 * * 1" # Monday 04:00 CST
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: security-${{ github.ref }}
   cancel-in-progress: true
