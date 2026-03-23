@@ -354,7 +354,7 @@ mod tests {
             "must be inside Settings submenu with 2 items"
         );
         assert!(
-            !menu.can_go_back() == false,
+            menu.can_go_back(),
             "can_go_back must be true inside submenu"
         );
     }

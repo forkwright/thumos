@@ -480,6 +480,7 @@ fn count_gsm7_septets(text: &str) -> Result<usize> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "test assertions")]
 mod tests {
     use super::*;
 
