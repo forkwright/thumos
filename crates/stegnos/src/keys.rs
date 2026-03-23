@@ -126,6 +126,14 @@ pub fn derive_key(passphrase: &[u8], salt: &[u8; SALT_LEN], iterations: u32) -> 
     })
 }
 
+/// Generate `N` cryptographically random bytes.
+fn random_bytes<const N: usize>(rng: &SystemRandom) -> Result<[u8; N]> {
+    let mut buf = [0u8; N];
+    rng.fill(&mut buf)
+        .map_err(|_| RandomGenerationSnafu.build())?;
+    Ok(buf)
+}
+
 /// Seal `master_key` with a key derived from `passphrase` using AES-256-GCM.
 ///
 /// Generates a random salt and nonce. The resulting [`KeySlot`] contains everything
@@ -137,13 +145,8 @@ pub fn derive_key(passphrase: &[u8], salt: &[u8; SALT_LEN], iterations: u32) -> 
 pub fn seal_key(master_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlot> {
     let rng = SystemRandom::new();
 
-    let mut salt = [0u8; SALT_LEN];
-    rng.fill(&mut salt)
-        .map_err(|_| RandomGenerationSnafu.build())?;
-
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rng.fill(&mut nonce_bytes)
-        .map_err(|_| RandomGenerationSnafu.build())?;
+    let salt = random_bytes::<SALT_LEN>(&rng)?;
+    let nonce_bytes = random_bytes::<NONCE_LEN>(&rng)?;
 
     let derived = derive_key(passphrase, &salt, DEFAULT_ITERATIONS)?;
 
@@ -207,6 +210,7 @@ mod tests {
 
     #[test]
     fn same_passphrase_and_salt_yields_same_key() -> Result<()> {
+        // SAFETY: test fixture — deterministic values for PBKDF2 reproducibility check
         let passphrase = b"correct horse battery staple";
         let salt = [0x42u8; SALT_LEN];
         let a = derive_key(passphrase, &salt, 1)?;
@@ -220,6 +224,7 @@ mod tests {
 
     #[test]
     fn different_salt_yields_different_key() -> Result<()> {
+        // SAFETY: test fixture — distinct fixed salts to verify PBKDF2 salt sensitivity
         let passphrase = b"correct horse battery staple";
         let salt_a = [0x11u8; SALT_LEN];
         let salt_b = [0x22u8; SALT_LEN];
@@ -234,6 +239,7 @@ mod tests {
 
     #[test]
     fn zero_iterations_returns_error() {
+        // SAFETY: test fixture — value irrelevant, testing iteration-count validation
         let salt = [0u8; SALT_LEN];
         let result = derive_key(b"pass", &salt, 0);
         assert!(result.is_err(), "zero iterations must be rejected");
