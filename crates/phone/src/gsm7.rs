@@ -175,6 +175,7 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "test assertions")]
 mod tests {
     use super::*;
 
