@@ -158,3 +158,178 @@ pub unsafe fn init_and_enable() {
 pub fn table_base() -> usize {
     unsafe { core::ptr::addr_of!(L1) as usize }
 }
+
+// --- Per-process address space pool ---
+
+/// Per-process L1 page table: 4096 entries × 4 bytes = 16 KB.
+/// Must be 16 KB aligned to satisfy TTBR0 requirements.
+#[repr(C, align(16384))]
+pub struct UserL1Table {
+    entries: [u32; 4096],
+}
+
+/// Pool of 16 user-process L1 page tables (256 KB total in BSS).
+// INVARIANT: only one owner per slot; ownership tracked by ADDR_SPACE_ALLOC bitmask.
+static mut USER_TABLES: [UserL1Table; 16] = {
+    const EMPTY: UserL1Table = UserL1Table { entries: [0; 4096] };
+    [EMPTY; 16]
+};
+
+/// Allocation bitmask for USER_TABLES. Bit N = 1 means slot N is in use.
+// NOTE: cfg(test) makes it pub(crate) so process.rs tests can call reset helpers.
+#[cfg(test)]
+pub(crate) static mut ADDR_SPACE_ALLOC: u16 = 0;
+#[cfg(not(test))]
+static mut ADDR_SPACE_ALLOC: u16 = 0;
+
+/// Allocate a free user L1 page table from the pool.
+/// Zeroes the slot before returning its physical address.
+/// Returns None if all 16 slots are occupied.
+pub fn alloc_addr_space() -> Option<usize> {
+    unsafe {
+        let alloc = core::ptr::addr_of_mut!(ADDR_SPACE_ALLOC);
+        let mask = core::ptr::read_volatile(alloc);
+        // WHY: find first zero bit (free slot)
+        let slot = (0u16..16).find(|&i| mask & (1 << i) == 0)?;
+        core::ptr::write_volatile(alloc, mask | (1 << slot));
+        let table = &mut (*core::ptr::addr_of_mut!(USER_TABLES))[slot as usize];
+        for entry in table.entries.iter_mut() {
+            *entry = 0;
+        }
+        Some(core::ptr::addr_of!(*table) as usize)
+    }
+}
+
+/// Return a user L1 page table slot to the pool.
+///
+/// # Safety
+///
+/// `phys_addr` must have been returned by `alloc_addr_space` and not yet freed.
+pub unsafe fn free_addr_space(phys_addr: usize) {
+    unsafe {
+        let tables = &*core::ptr::addr_of!(USER_TABLES);
+        for (i, table) in tables.iter().enumerate() {
+            if core::ptr::addr_of!(*table) as usize == phys_addr {
+                let alloc = core::ptr::addr_of_mut!(ADDR_SPACE_ALLOC);
+                let mask = core::ptr::read_volatile(alloc);
+                core::ptr::write_volatile(alloc, mask & !(1 << i));
+                return;
+            }
+        }
+    }
+}
+
+/// Copy all 4096 L1 entries from the source address space into the destination.
+/// Used by fork() to clone the kernel's mappings into a new process table.
+///
+/// # Safety
+///
+/// Both `src_phys` and `dst_phys` must be valid physical addresses of
+/// 16 KB-aligned L1 tables (either the kernel L1 or a USER_TABLES slot).
+pub unsafe fn clone_addr_space(src_phys: usize, dst_phys: usize) {
+    // SAFETY: caller guarantees both pointers are valid 16 KB-aligned L1 tables.
+    unsafe {
+        let src = src_phys as *const u32;
+        let dst = dst_phys as *mut u32;
+        for i in 0..4096isize {
+            dst.offset(i).write_volatile(src.offset(i).read_volatile());
+        }
+    }
+}
+
+/// Switch the active user address space by writing TTBR0 and flushing the TLB.
+///
+/// # Safety
+///
+/// `table_phys` must be the physical address of a valid, correctly populated
+/// 16 KB-aligned L1 page table. Must be called with interrupts disabled.
+#[cfg(target_arch = "arm")]
+pub unsafe fn switch_addr_space(table_phys: usize) {
+    // SAFETY: TTBR0 write followed by full TLB invalidation and barriers.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {ttbr}, c2, c0, 0",
+            "mcr p15, 0, {zero}, c8, c7, 0",  // TLBIALL
+            "dsb sy",
+            "isb sy",
+            ttbr = in(reg) (table_phys as u32) | 0x6B,
+            zero = in(reg) 0u32,
+        );
+    }
+}
+
+/// No-op stub for non-ARM builds so process.rs compiles on the host.
+#[cfg(not(target_arch = "arm"))]
+pub unsafe fn switch_addr_space(_table_phys: usize) {}
+
+/// Reset the address space pool (test helper only).
+#[cfg(test)]
+pub(crate) fn reset_addr_space_pool() {
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(ADDR_SPACE_ALLOC), 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reset() {
+        reset_addr_space_pool();
+    }
+
+    #[test]
+    fn alloc_addr_space_gives_different_addresses() {
+        reset();
+        let a = alloc_addr_space().expect("first alloc");
+        let b = alloc_addr_space().expect("second alloc");
+        assert_ne!(a, b, "two allocations must return distinct table addresses");
+        // cleanup
+        unsafe { free_addr_space(a); free_addr_space(b); }
+    }
+
+    #[test]
+    fn alloc_addr_space_pool_exhaustion() {
+        reset();
+        let mut addrs = [0usize; 16];
+        for slot in &mut addrs {
+            *slot = alloc_addr_space().expect("should succeed for slots 0-15");
+        }
+        let overflow = alloc_addr_space();
+        assert!(overflow.is_none(), "17th allocation must return None");
+        for addr in &addrs {
+            unsafe { free_addr_space(*addr); }
+        }
+    }
+
+    #[test]
+    fn free_addr_space_allows_reuse() {
+        reset();
+        let a = alloc_addr_space().expect("first alloc");
+        unsafe { free_addr_space(a); }
+        let b = alloc_addr_space().expect("second alloc after free");
+        // WHY: slot 0 freed then reallocated — must come back at the same address.
+        assert_eq!(a, b, "freed slot must be reused");
+        unsafe { free_addr_space(b); }
+    }
+
+    #[test]
+    fn clone_addr_space_is_independent() {
+        reset();
+        let src = alloc_addr_space().expect("src alloc");
+        let dst = alloc_addr_space().expect("dst alloc");
+        // Write a sentinel value into src entry 42
+        unsafe {
+            (src as *mut u32).add(42).write(0xDEAD_BEEF);
+            clone_addr_space(src, dst);
+            // Verify dst received the sentinel
+            assert_eq!((dst as *const u32).add(42).read(), 0xDEAD_BEEF);
+            // Modify src after clone — dst must be unaffected
+            (src as *mut u32).add(42).write(0x1234_5678);
+            assert_eq!((dst as *const u32).add(42).read(), 0xDEAD_BEEF,
+                "dst must be independent after clone");
+            free_addr_space(src);
+            free_addr_space(dst);
+        }
+    }
+}
