@@ -5,36 +5,55 @@
 //! kernel_main.
 
 #![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_main)]
 extern crate alloc;
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
+#[expect(dead_code, reason = "CCCI driver API not wired into kernel_main yet")]
+mod ccci;
+#[cfg(not(test))]
 mod console;
+#[cfg(not(test))]
 mod device;
+#[cfg(not(test))]
 mod elf;
+#[cfg(not(test))]
 mod emmc;
+#[cfg(not(test))]
 mod exceptions;
+#[cfg(not(test))]
 mod gic;
+#[cfg(not(test))]
 mod heap;
+#[cfg(not(test))]
 mod ipc;
+#[cfg(not(test))]
 mod kconfig;
+#[cfg(not(test))]
 mod kinit;
 mod mmio;
+#[cfg(not(test))]
 mod mmu;
 mod page;
 mod power;
+#[cfg(not(test))]
 mod process;
 mod ramfs;
+#[cfg(not(test))]
 mod syscall;
+#[cfg(not(test))]
 mod timer;
+#[cfg(not(test))]
 mod uart;
 
+#[cfg(not(test))]
 #[global_allocator]
 static ALLOCATOR: heap::KernelAllocator = heap::KernelAllocator;
 
 // ARM boot stub — this is the entry point from the bootloader
+#[cfg(not(test))]
 core::arch::global_asm!(
     ".section .text.boot, \"ax\"",
     ".global _start",
@@ -54,6 +73,7 @@ core::arch::global_asm!(
 );
 
 /// Kernel entry point. Called from boot stub after ARM initialization.
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main() -> ! {
     let mut serial = uart::Uart::new();
@@ -159,6 +179,7 @@ pub extern "C" fn kernel_main() -> ! {
     }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     let mut serial = uart::Uart::new();
