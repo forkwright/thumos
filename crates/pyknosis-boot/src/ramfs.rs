@@ -143,6 +143,7 @@ const fn align4(n: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn empty_fs() {
