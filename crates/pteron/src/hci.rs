@@ -30,6 +30,7 @@ const OCF_RESET: u16 = 0x0003;
 const OCF_READ_BD_ADDR: u16 = 0x0009;
 
 // OCF — LE Controller
+const OCF_LE_SET_RANDOM_ADDRESS: u16 = 0x0005;
 const OCF_LE_SET_SCAN_PARAMETERS: u16 = 0x000B;
 const OCF_LE_SET_SCAN_ENABLE: u16 = 0x000C;
 
@@ -169,6 +170,17 @@ pub enum HciCommand {
         enable: bool,
         /// `true` to suppress duplicate advertising reports.
         filter_duplicates: bool,
+    },
+
+    /// Set the LE random device address (OGF=0x08, OCF=0x0005).
+    ///
+    /// Must be called before enabling advertising or scanning with
+    /// `Own_Address_Type = 0x01` (Random).  The address must be a valid
+    /// static random, non-resolvable private, or resolvable private address.
+    LESetRandomAddress {
+        /// Six-byte random address in display order (MSB first).
+        /// The command encoder reverses to LSB-first for HCI transmission.
+        address: BdAddr,
     },
 }
 
@@ -389,6 +401,14 @@ fn build_command_parts(cmd: &HciCommand) -> (u16, Vec<u8>) {
         } => {
             let opcode = (OGF_LE_CONTROLLER << 10) | OCF_LE_SET_SCAN_ENABLE;
             let params = vec![u8::from(*enable), u8::from(*filter_duplicates)];
+            (opcode, params)
+        }
+        HciCommand::LESetRandomAddress { address } => {
+            let opcode = (OGF_LE_CONTROLLER << 10) | OCF_LE_SET_RANDOM_ADDRESS;
+            // WHY: HCI spec §7.8.4 transmits BD_ADDR LSB-first; BdAddr stores
+            // MSB-first for display, so we reverse when encoding.
+            let a = address.as_bytes();
+            let params = vec![a[5], a[4], a[3], a[2], a[1], a[0]];
             (opcode, params)
         }
     }

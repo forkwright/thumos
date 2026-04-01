@@ -1,8 +1,11 @@
-//! BLE advertising data parsing and iBeacon detection.
+//! BLE advertising data parsing, iBeacon detection, and scan parameter helpers.
 //!
 //! Advertising payloads are encoded as a sequence of *AD structures*, each
 //! consisting of a length byte, a type byte, and zero or more data bytes.
 //! This module parses that format and identifies Apple iBeacon packets.
+//!
+//! Scan parameter helpers always set `Own_Address_Type = 0x01` (Random) to
+//! avoid broadcasting the permanent `BD_ADDR` during passive or active scanning.
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -13,6 +16,12 @@ const AD_TYPE_SHORT_NAME: u8 = 0x08;
 const AD_TYPE_COMPLETE_NAME: u8 = 0x09;
 const AD_TYPE_TX_POWER_LEVEL: u8 = 0x0A;
 const AD_TYPE_MANUFACTURER_DATA: u8 = 0xFF;
+
+// Own_Address_Type = 0x01 (Random) — used in all LE scanning commands.
+//
+// WHY: always use the random address when scanning to prevent the permanent
+// BD_ADDR from being exposed in scan requests or connection initiations.
+const OWN_ADDR_TYPE_RANDOM: u8 = 0x01;
 
 // iBeacon constants
 const APPLE_COMPANY_ID_LO: u8 = 0x4C;
@@ -115,6 +124,41 @@ impl AdvertisingData {
     pub fn parse(data: &[u8]) -> Self {
         Self {
             structures: parse_ad_structures(data),
+        }
+    }
+}
+
+/// Scan parameter set for passive BLE scanning with random address.
+///
+/// All fields use the recommended defaults from the BLE spec and Thumos
+/// privacy policy: passive scan, random own address, no filter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanParameters {
+    /// Scan type: `0x00` = passive, `0x01` = active.
+    pub scan_type: u8,
+    /// Scan interval in 0.625 ms units.
+    pub scan_interval: u16,
+    /// Scan window in 0.625 ms units.
+    pub scan_window: u16,
+    /// Own address type: always `0x01` (Random).
+    pub own_address_type: u8,
+    /// Scanning filter policy: `0x00` = accept all.
+    pub filter_policy: u8,
+}
+
+impl ScanParameters {
+    /// Construct passive scan parameters with random own address type.
+    ///
+    /// WHY: passive scanning does not transmit scan requests, so the scanner's
+    /// address is never broadcast; combined with a random own address type,
+    /// this eliminates `BD_ADDR` exposure during discovery.
+    pub const fn passive_random() -> Self {
+        Self {
+            scan_type: 0x00,       // passive
+            scan_interval: 0x0010, // 10 ms
+            scan_window: 0x0010,   // 10 ms
+            own_address_type: OWN_ADDR_TYPE_RANDOM,
+            filter_policy: 0x00, // accept all
         }
     }
 }
