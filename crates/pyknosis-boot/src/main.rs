@@ -14,6 +14,7 @@ use core::panic::PanicInfo;
 mod console;
 mod device;
 mod elf;
+mod emmc;
 mod exceptions;
 mod gic;
 mod heap;
