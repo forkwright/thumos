@@ -5,3 +5,5 @@
 //! the WMT layer via STP (Serial Transport Protocol).
 
 pub mod stp;
+pub mod transport;
+pub mod wmt;
