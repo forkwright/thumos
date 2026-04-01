@@ -13,6 +13,8 @@ use core::panic::PanicInfo;
 
 #[expect(dead_code, reason = "CCCI driver API not wired into kernel_main yet")]
 mod ccci;
+#[expect(dead_code, reason = "USB ACM gadget not yet wired into kernel_main")]
+mod usb;
 #[cfg(not(test))]
 mod console;
 #[cfg(not(test))]
