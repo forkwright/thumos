@@ -17,6 +17,8 @@ mod ccci;
 mod console;
 #[cfg(not(test))]
 mod device;
+#[expect(dead_code, reason = "display driver not wired into kernel_main yet")]
+mod display;
 #[cfg(not(test))]
 mod elf;
 #[cfg(not(test))]
