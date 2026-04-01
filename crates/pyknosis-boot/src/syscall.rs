@@ -338,7 +338,7 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         // ---- Legacy handlers (implemented) ----
 
         Syscall::Exit => {
-            process::exit();
+            process::exit_with_status(arg0 as i32);
         }
         Syscall::Write => {
             // SAFETY: we trust the userspace pointer for now.
@@ -403,13 +403,20 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             None => u32::MAX,
         },
 
-        // ---- Process management (stubs) ----
+        // ---- Process management ----
 
-        Syscall::Fork
-        | Syscall::Execve
-        | Syscall::Waitpid
-        | Syscall::Kill
-        | Syscall::Getuid => ENOSYS,
+        Syscall::Fork => match process::fork() {
+            Some(child_pid) => child_pid as u32,
+            None => u32::MAX,
+        },
+        Syscall::Waitpid => {
+            let child_pid = arg0 as u8;
+            match process::waitpid(child_pid) {
+                Some(status) => status as u32,
+                None => u32::MAX,
+            }
+        }
+        Syscall::Execve | Syscall::Kill | Syscall::Getuid => ENOSYS,
 
         // ---- Memory management (stubs) ----
 
