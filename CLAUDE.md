@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Thumos is a custom Linux-based mobile OS targeting the AGM M7 (MT6739).
+Thumos is a custom Rust mobile OS targeting the AGM M7 (MT6739).
 
 ## Repository
 
@@ -10,17 +10,27 @@ Thumos is a custom Linux-based mobile OS targeting the AGM M7 (MT6739).
 
 ## Architecture
 
-Path B: Linux kernel + vendor HAL + custom userspace. No Android framework above HAL.
+Full Rust from kernel to UI. No C we author, no Linux in the final system. Monolithic kernel (pyknosis).
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Kernel | Not started | Linux 4.4 from MT6739 BSP sources |
-| Vendor blobs | Not extracted | Modem, WiFi, BT, GPS from stock firmware |
-| RIL/telephony | Not started | Direct modem interface for calls/SMS |
-| WiFi/BT | Not started | wpa_supplicant + bluez or custom |
-| UI | Not started | Framebuffer-based, 240x320, keypad input |
-| Privacy | Not started | Firewall, DNS filtering, anti-tracking |
-| Radio tools | Not started | WiFi scan, BT scan, cell analysis |
+| Kernel (pyknosis-boot) | Phase 03 | MMU, page allocator, heap, GIC, timer, scheduler, syscalls (~46), IPC, ELF loader, ramfs |
+| eMMC driver | Phase 03 | MSDC controller, PIO + DMA, GPD/BD descriptors |
+| Display driver | Phase 03 | DDP pipeline (OVL→RDMA→DSI→LCM), pluggable LcmDriver trait |
+| CCCI modem driver | Phase 03 | CLDMA ring buffers, CCIF mailbox, identity containment |
+| USB driver | Phase 03 | MUSB ACM serial gadget |
+| WiFi MAC (aither) | Phase 03 | WiFi gen2 HIF, MAC randomization, passive scanning |
+| BT HCI (pteron) | Phase 03 | STP transport, LE Privacy address rotation |
+| WMT (kelyphos) | Phase 03 | CONSYS power-on, STP transport, subsystem management |
+| Input (haphe) | Phase 03 | GPIO keypad, mtk-tpd touchscreen, T9 |
+| Telephony (phone) | Substantial | AT parser, CCCI/CLDMA framing, SMS PDU |
+| UI (eidolon) | Substantial | Framebuffer 240x320, widgets, dialer |
+| Firewall (asphaleia) | Substantial | Packet filter, DNS blocklist |
+| Encrypted storage (stegnos) | Substantial | AES-256-XTS, LUKS key derivation |
+| Signal protocol (krypta) | Substantial | X3DH, double ratchet |
+| Panic mode (leipsanon) | Substantial | Priority-ordered wipe, triggers |
+| Radio tools (sema) | Substantial | WiFi scanner, IMSI catcher detection |
+| GPS (topos) | Substantial | NMEA parser, geofencing |
 
 ## Key constraints
 
@@ -36,9 +46,23 @@ Path B: Linux kernel + vendor HAL + custom userspace. No Android framework above
 - **SP Flash Tool**: MediaTek firmware flashing via scatter file
 - **adb**: Android Debug Bridge for device probing
 
+## Device identity protection
+
+Thumos treats all hardware identifiers as sensitive. Every radio driver implements identity protection at the register level:
+
+| Identifier | Mitigation |
+|---|---|
+| WiFi MAC | Random locally-administered MAC per connection via ring CSPRNG |
+| BT MAC | LE Privacy with rotating random addresses (15-min interval) |
+| IMEI | Filtered at CCCI kernel boundary, audit-logged, capability-gated |
+| IMSI | SIM-resident, logged on modem access, removable battery = easy SIM swap |
+| Probe requests | Passive WiFi scanning by default, no SSID broadcast |
+| BLE advertisements | Non-resolvable private address (NRPA) by default |
+| RF fingerprint | Accepted risk on M7 hardware. Custom PCB future addresses this. |
+
 ## Build
 
-Not yet buildable. Research phase.
+Workspace compiles on host. Cross-compilation for `armv7-unknown-none-eabihf` (kernel) and `armv7-unknown-linux-musleabihf` (userspace) via Nix on Verda.
 
 ## Standards
 
