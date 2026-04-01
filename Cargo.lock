@@ -600,6 +600,9 @@ version = "0.1.0"
 [[package]]
 name = "thumos-kelyphos"
 version = "0.1.0"
+dependencies = [
+ "snafu",
+]
 
 [[package]]
 name = "thumos-krypta"
