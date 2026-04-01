@@ -37,7 +37,7 @@ MT6739 hardware (modem on separate core, firewalled at CCCI driver level)
 
 ## Status
 
-Phase 03: Kernel and Drivers. Hardware probe complete (bootloader unlocked, firmware dumped, surveillance audit done). Linux bootstrap complete (BSP kernel cross-compiled, hardware interfaces documented). All 13 crates have code, 375+ tests. Kernel has MMU, page allocator, slab heap, interrupts, process model, IPC, ELF loader, syscall dispatch.
+Phase 03 complete (2026-04-01). All 14 crates have code, 486 tests, ~31K LOC. Kernel boots with 46 syscalls, MMU, page allocator, slab heap, GIC interrupts, preemptive scheduler, IPC, ELF loader, and ramfs. Hardware drivers operational: eMMC (MSDC), display (DDP pipeline), WiFi MAC (randomization, passive scan), BT HCI (STP, LE Privacy), WMT power sequencing, CCCI modem containment, USB ACM, GPIO keypad, and touchscreen. Two isolated userspace processes proven with separate page tables.
 
 ## Related
 
