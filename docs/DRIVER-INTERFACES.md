@@ -1,4 +1,4 @@
-# Driver Interface Specification — MT6739 Hardware Subsystems
+# Driver Interface Specification  -  MT6739 Hardware Subsystems
 
 This document is the hardware interface specification for the eight core driver
 subsystems on the AGM M7 (MediaTek MT6739). It is derived entirely from BSP
@@ -13,8 +13,8 @@ protocol descriptions.
 
 ## Table of Contents
 
-1. [CCCI — Modem Interface](#1-ccci--modem-interface)
-2. [WMT — Connectivity Manager](#2-wmt--connectivity-manager)
+1. [CCCI  -  Modem Interface](#1-ccci--modem-interface)
+2. [WMT  -  Connectivity Manager](#2-wmt--connectivity-manager)
 3. [WiFi gen2](#3-wifi-gen2)
 4. [Bluetooth](#4-bluetooth)
 5. [GPS](#5-gps)
@@ -24,7 +24,7 @@ protocol descriptions.
 
 ---
 
-## 1. CCCI — Modem Interface
+## 1. CCCI  -  Modem Interface
 
 **Source tree:** `eccci/`
 
@@ -32,9 +32,9 @@ CCCI (Cross-Core Communication Interface) manages the AP↔modem link. On
 MT6739 the modem is MD 6293, a separate ARM core. The interface has two
 physical transports:
 
-- **CLDMA** (Communication Link DMA) — high-throughput ring-buffer DMA for
+- **CLDMA** (Communication Link DMA)  -  high-throughput ring-buffer DMA for
   data channels (network, audio, logging).
-- **CCIF** (Cross-Core Interrupt/FIFO) — low-latency mailbox for control
+- **CCIF** (Cross-Core Interrupt/FIFO)  -  low-latency mailbox for control
   messages and exceptions (24 channels, 512-byte SRAM on MT6739).
 
 ### 1.1 Physical Register Map
@@ -54,7 +54,7 @@ physical transports:
 
 Source: `eccci/mt6739/modem_reg_base.h:21–128`
 
-#### CLDMA AO (Always-On) Register Offsets — Power-down backup
+#### CLDMA AO (Always-On) Register Offsets  -  Power-down backup
 
 These live at base `CLDMA_AP_BASE + AO block` and survive power-down.
 
@@ -175,7 +175,7 @@ Source: `eccci/mt6739/ccif_hif_platform.h:27–85`
 
 CCCI shared memory (bank4) is split into two regions.
 
-**Non-cacheable region** — control structures visible to both AP and modem:
+**Non-cacheable region**  -  control structures visible to both AP and modem:
 
 | ID | Name | Purpose |
 |---|---|---|
@@ -187,7 +187,7 @@ CCCI shared memory (bank4) is split into two regions.
 | `DHL_RAW_SHARE_MEMORY` | DHLogger raw | |
 | `MD_CONSYS_SHARE_MEMORY` | Modem-consys shared | |
 
-**Cacheable region** — bulk data:
+**Cacheable region**  -  bulk data:
 
 | ID | Name | Purpose |
 |---|---|---|
@@ -280,7 +280,7 @@ Full list is in `eccci/inc/ccci_core.h:46+`. Key channels:
 needed, read `CLDMA_AP_L3TISAR0/1` or `L3RISAR0/1` for per-queue detail.
 Mask future interrupts by writing to `L2TIMCR0` / `L2RIMCR0`.
 
-**CCIF IRQ** (two IRQs — one per direction): Read `APCCIF_RCHNUM` to get the
+**CCIF IRQ** (two IRQs  -  one per direction): Read `APCCIF_RCHNUM` to get the
 set of triggered MD→AP channels. Write the bitmask to `APCCIF_ACK` to clear.
 Dispatch by channel number.
 
@@ -289,7 +289,7 @@ Force dump via CCIF exception channels, then full chip reset.
 
 ---
 
-## 2. WMT — Connectivity Manager
+## 2. WMT  -  Connectivity Manager
 
 **Source tree:** `connectivity/common/common_main/`
 
@@ -310,7 +310,7 @@ firmware loading, and the STP (Serial Transport Protocol) multiplexer.
 
 Source: `connectivity/common/common_main/platform/include/mt6739.h:72–75`
 
-### 2.2 SPM Power Control Register — `CONSYS_TOP1_PWR_CTRL_REG` (`0xF000632C`)
+### 2.2 SPM Power Control Register  -  `CONSYS_TOP1_PWR_CTRL_REG` (`0xF000632C`)
 
 | Bit | Name | Function |
 |---|---|---|
@@ -337,7 +337,7 @@ Source: `connectivity/common/common_main/platform/include/mt6739.h:122–128`
 | `CONSYS_TOPAXI_PROT_EN` | `TOPCKGEN + 0x1220` | bits 13,14 | AXI bus protect |
 | `CONSYS_TOPAXI_PROT_STA1` | `TOPCKGEN + 0x1228` | bits 13,14 | AXI protect status |
 | `CONSYS_MCU_CFG_ACR_REG` | `CONN_MCU + 0x110` | bit 18 = MBIST | ACR register |
-| `CONSYS_EMI_MAPPING` | `TOPCKGEN + 0x1380` | — | EMI remapping |
+| `CONSYS_EMI_MAPPING` | `TOPCKGEN + 0x1380` |  -  | EMI remapping |
 | `CONSYS_AP2CONN_OSC_EN_REG` | `TOPCKGEN + 0x1800` | bit 10 = OSC_EN, bit 9 = WAKEUP | OSC enable |
 
 Source: `connectivity/common/common_main/platform/include/mt6739.h:83–158`
@@ -362,8 +362,8 @@ The CONSYS firmware region in external RAM:
 
 | Region | Physical Base | Size | Purpose |
 |---|---|---|---|
-| Firmware base | `0xF0080000` | — | CONSYS MCU firmware load target |
-| Paged trace | `FW_BASE + 0x400` | — | Live trace ring |
+| Firmware base | `0xF0080000` |  -  | CONSYS MCU firmware load target |
+| Paged trace | `FW_BASE + 0x400` |  -  | Live trace ring |
 | Paged dump | `FW_BASE + 0x8400` | 32 KB | Crash paged dump |
 | Full dump (DLM) | `FW_BASE + 0x10400` | 0x1F000 | Full core dump |
 | Full dump SYSB2 | DLM end | 0x6800 | |
@@ -496,8 +496,8 @@ Source: `connectivity/wlan/gen2/os/linux/hif/ahb/include/hif_pdma.h`
 | Packet length | [15:0] | Total TX packet byte length |
 | Packet type | [1:0] of word1 | 0=data, 1=command |
 | User priority | [4:2] | WMM UP 0–7 |
-| Resource mask | — | TX resource allocation hint |
-| Port index | — | Target TX queue |
+| Resource mask |  -  | TX resource allocation hint |
+| Port index |  -  | Target TX queue |
 
 `static_assert(sizeof(HIF_TX_HEADER_T) == 16)`
 
@@ -508,13 +508,13 @@ Source: `connectivity/wlan/gen2/include/nic/hif_tx.h`
 | Field | Bits | Description |
 |---|---|---|
 | Packet length | [15:0] | RX packet byte length |
-| Packet type | — | 0=data, others=event |
-| Network index | — | BSS index (0..3) |
+| Packet type |  -  | 0=data, others=event |
+| Network index |  -  | BSS index (0..3) |
 | TID | [3:0] | Traffic ID (AC) |
-| Security mode | — | WEP/TKIP/CCMP etc. |
+| Security mode |  -  | WEP/TKIP/CCMP etc. |
 | 802.11 header present | bit | Whether 802.11 header is in payload |
 | Reorder flag | bit | Needs BA reorder |
-| Channel number | — | Raw HW channel (2.4G: 1–14, 5G: 36–165) |
+| Channel number |  -  | Raw HW channel (2.4G: 1–14, 5G: 36–165) |
 
 `static_assert(sizeof(HIF_RX_HEADER_T) == 12)`
 
@@ -620,7 +620,7 @@ BT is STP function type 0. All HCI packets are encapsulated in STP frames
 
 1. STP delivers a complete frame from the receive ring.
 2. `mtk_wcn_stp_receive_data()` copies into `i_buf[2048]`.
-3. Userspace reads via `read()` — blocks on `BT_wq` wait queue.
+3. Userspace reads via `read()`  -  blocks on `BT_wq` wait queue.
 4. Write path: `mtk_wcn_stp_send_data()` wraps the HCI payload in an STP frame
    and queues it to the BTIF UART.
 
@@ -667,7 +667,7 @@ Power control modes: `GPS_PWRCTL_OFF`, `GPS_PWRCTL_ON`, `GPS_PWRCTL_RST`,
 
 Source: `connectivity/gps/gps.h`
 
-### 5.2 Frequency Hopping — MT6739
+### 5.2 Frequency Hopping  -  MT6739
 
 MT6739 requires frequency hopping mitigation for GPS. The GPS driver registers
 with the FH (Frequency Hopping) subsystem using `FH_MEM_PLLID` to configure
@@ -694,7 +694,7 @@ STP command channel.
 
 ### 5.5 MT3337 Standalone GPS (`gps_mt3337.c`)
 
-Alternate driver for the standalone MT3337 GPS chip over UART — not used when
+Alternate driver for the standalone MT3337 GPS chip over UART  -  not used when
 CONSYS STP GPS is active.
 
 ---
