@@ -4,7 +4,7 @@ MT6739 Linux 4.4 BSP kernel for AGM M7, compiled from `kernel-wiite/` (cateajans
 
 ---
 
-## W1-02 — Stock config + USB serial initramfs
+## W1-02  -  Stock config + USB serial initramfs
 
 **Status:** Built. `boot-v2.img` at `~/thumos/boot-v2.img`. Not yet flashed.
 
@@ -13,7 +13,7 @@ MT6739 Linux 4.4 BSP kernel for AGM M7, compiled from `kernel-wiite/` (cateajans
 | Item | W1-01 | W1-02 |
 |------|-------|-------|
 | Base config | `hct6739_36_n1_defconfig` | `kernel-config-stock` (extracted from `/proc/config.gz` on running device) |
-| LCM driver | `hct_ili9881p_dsi_vdo_hdp_panda_55_hz` (wrong DSI placeholder) | `gc9306_dbi_c_qvgal` (correct DBI panel, stub — source absent from BSP) |
+| LCM driver | `hct_ili9881p_dsi_vdo_hdp_panda_55_hz` (wrong DSI placeholder) | `gc9306_dbi_c_qvgal` (correct DBI panel, stub  -  source absent from BSP) |
 | Initramfs | Shell only | Shell + USB serial gadget (ACM) |
 | CMDLINE | `console=ttyMT0` only | `console=ttyMT0,921600n1 vmalloc=496M` |
 | FPSGO | Disabled | Disabled (same root cause: undefined FBT game symbols) |
@@ -45,18 +45,18 @@ the stock system partition (`/system/lib/hw/` or display HAL) in a future sprint
 |--------|-------|-------|--------|
 | `CONFIG_CROSS_COMPILE` | `"arm-eabi-"` | `"arm-linux-gnueabihf-"` | Installed toolchain |
 | `CONFIG_HARDENED_USERCOPY` | `y` | disabled | `mm/slub.c` references `kmem_cache.red_left_pad` which is absent from this BSP's `slub_def.h` (kernel version skew) |
-| `CONFIG_MTK_FPSGO` | `y` | disabled | FBT game symbols (`min_boost_freq`, `cpufreq_notifier_fp`) undefined — same issue as W1-01 |
+| `CONFIG_MTK_FPSGO` | `y` | disabled | FBT game symbols (`min_boost_freq`, `cpufreq_notifier_fp`) undefined  -  same issue as W1-01 |
 | `CONFIG_USB_C_SWITCH` | `y` | disabled | `register_typec_switch_callback` defined only in Type-C chip drivers (MT6336/ANX7418), none of which are built; AGM M7 uses micro-USB |
 | `CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES` | `"mt6739"` | `"hct6739_36_n1"` | No `mt6739.dts` in BSP; `hct6739_36_n1.dts` is the only MT6739 DTS |
 
 #### New code patches (kernel-wiite in-tree edits)
 
-**drivers/usb/gadget/function/u_ether.c — missing rndis.h include**
+**drivers/usb/gadget/function/u_ether.c  -  missing rndis.h include**
 
 `u_ether.c` uses `sizeof(struct rndis_packet_msg_type)` but did not include `rndis.h`,
 causing an "incomplete type" compile error. Fixed by adding `#include "rndis.h"`.
 
-**drivers/misc/mediatek/lcm/mt65xx_lcm_list.h — gc9306 registration**
+**drivers/misc/mediatek/lcm/mt65xx_lcm_list.h  -  gc9306 registration**
 
 Added `extern LCM_DRIVER gc9306_dbi_c_qvgal_lcm_drv` and the corresponding
 `#if defined(GC9306_DBI_C_QVGAL)` entry in `lcm_driver_list[]`.
@@ -180,7 +180,7 @@ Cmdline:       bootopt=64S3,32S1,32S1 console=ttyMT0,921600n1 root=/dev/ram vmal
 
 ---
 
-# W1-01 — First boot attempt (wrong LCM driver)
+# W1-01  -  First boot attempt (wrong LCM driver)
 
 ## Environment
 
@@ -244,7 +244,7 @@ cat arch/arm/boot/zImage arch/arm/boot/dts/hct6739_36_n1.dtb \
 
 All patches are in-tree edits; none are separate patch files.
 
-### scripts/dtc/Makefile — dtc yylloc multiple definition
+### scripts/dtc/Makefile  -  dtc yylloc multiple definition
 
 GCC 13 / GNU AS 2.44 rejects the `yylloc` symbol appearing in both `.lex.o` and `.tab.o`. Fix:
 
@@ -253,11 +253,11 @@ HOSTCFLAGS_dtc-lexer.lex.o  := $(HOSTCFLAGS_DTC) -fcommon
 HOSTCFLAGS_dtc-parser.tab.o := $(HOSTCFLAGS_DTC) -fcommon
 ```
 
-### arch/arm/ — ARM assembly `#alloc`/`#execinstr` section flags
+### arch/arm/  -  ARM assembly `#alloc`/`#execinstr` section flags
 
 GNU AS 2.44 rejects the historic `#alloc`, `#execinstr` section flag syntax in `.section` directives. Changed all 33 occurrences across `arch/arm/` to string form (`"a"` / `"ax"`).
 
-### arch/arm/Makefile — global MTK include paths + armv7-a march
+### arch/arm/Makefile  -  global MTK include paths + armv7-a march
 
 GCC 13 evaluates `cc-option(-march=armv7-a)` against `arm-linux-gnueabihf-gcc` whose default `-mfloat-abi=hard` causes the test to fail with a hard-float/soft-float ABI mismatch, making the Makefile fall back to `-march=armv5t`. GCC 13 then emits `.arch armv5t` in assembly output, overriding the `-Wa,-march=armv7-a` assembler flag and breaking DSB/ISB instructions.
 
@@ -282,7 +282,7 @@ KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/mmp
 
 **Note:** `videox/` and `dispsys/` are intentionally NOT added globally. Adding them caused `videox/debug.h` to shadow `gen2/include/debug.h` for the WiFi driver, breaking the `DBGLOG`/`ASSERT` macros. These paths are added per-driver instead (see below).
 
-### drivers/misc/mediatek/connectivity/wlan/gen2/Makefile — absolute include paths
+### drivers/misc/mediatek/connectivity/wlan/gen2/Makefile  -  absolute include paths
 
 The gen2 WiFi driver Makefile used `$(src)` for include paths, which resolves incorrectly when objects in subdirectories (hif/ahb/) are compiled from the parent Makefile. Replaced with absolute `$(srctree)` paths:
 
@@ -294,7 +294,7 @@ ccflags-y += -I$(GEN2_DIR)/os -I$(GEN2_DIR)/os/linux/include \
              -I$(GEN2_DIR)/include/mgmt
 ```
 
-### drivers/misc/mediatek/video/mt6739/videox/Makefile — self-include path
+### drivers/misc/mediatek/video/mt6739/videox/Makefile  -  self-include path
 
 `videox/` was missing itself from its own include path. When dispsys headers (included by videox source files) in turn include other videox headers (e.g., `disp_drv_log.h` → `display_recorder.h`), the videox directory was not in the search path. Added:
 
@@ -302,7 +302,7 @@ ccflags-y += -I$(GEN2_DIR)/os -I$(GEN2_DIR)/os/linux/include \
 -I$(srctree)/drivers/misc/mediatek/video/$(MTK_PLATFORM)/videox/
 ```
 
-### drivers/misc/mediatek/video/mt6739/dispsys/Makefile — self-include path
+### drivers/misc/mediatek/video/mt6739/dispsys/Makefile  -  self-include path
 
 Same issue: dispsys files include each other via videox-mediated chains. Added:
 
@@ -310,19 +310,19 @@ Same issue: dispsys files include each other via videox-mediated chains. Added:
 -I$(srctree)/drivers/misc/mediatek/video/$(MTK_PLATFORM)/dispsys/
 ```
 
-### arch/arm/boot/dts/cust.dtsi — stub (replaces DrvGen output)
+### arch/arm/boot/dts/cust.dtsi  -  stub (replaces DrvGen output)
 
 `DrvGen.py` requires Python 2 to generate `cust.dtsi` from `hct6739_36_n1.dws`. Python 2 is unavailable. Created a minimal stub:
 
 ```c
-/* stub — GPIO/EINT bindings absent; hardware drivers won't probe */
+/* stub  -  GPIO/EINT bindings absent; hardware drivers won't probe */
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 ```
 
 Hardware drivers that rely on DTS GPIO bindings will not probe on boot, but the kernel boots.
 
-### vendor/haocheng/drivers/hct_include/hct_project_all_config.h — stub
+### vendor/haocheng/drivers/hct_include/hct_project_all_config.h  -  stub
 
 `include/linux/hct_include` is a broken symlink to `../../../vendor/haocheng/drivers/hct_include`. Created the target directory and a stub header to satisfy `lcm_i2c.h`.
 
@@ -391,7 +391,7 @@ adb shell dd if=/sdcard/boot.img of=/dev/block/platform/*/by-name/boot
 fastboot boot ~/thumos/boot.img   # test without flashing
 ```
 
-## Known Limitations (W1-01 — superseded by W1-02)
+## Known Limitations (W1-01  -  superseded by W1-02)
 
 - **LCM**: `hct_ili9881p_dsi_vdo_hdp_panda_55_hz` is a placeholder. The AGM M7's actual panel (nt35521) driver is absent from this BSP. Display will not initialize; boot console only.
 - **GPIO/EINT**: `cust.dtsi` is a stub (no DrvGen output). Drivers that depend on GPIO bindings will not probe.
