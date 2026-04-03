@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(
             list.selected_index(),
             2,
-            "touch at row 2 must select index 2"
+            "touch at row 2 must SELECT index 2"
         );
     }
 
