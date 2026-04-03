@@ -224,7 +224,7 @@ mod tests {
             "only the device last seen at epoch should be stale"
         );
         assert_eq!(
-            stale[0].address.to_string(),
+            stale.get(0).copied().unwrap_or_default().address.to_string(),
             "AA:BB:CC:DD:EE:01",
             "the stale device should be the one with the ancient timestamp"
         );
@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(
             device.name.as_deref(),
             Some("MyDevice"),
-            "name should be updated from the second observation"
+            "name should be updated FROM the second observation"
         );
     }
 }

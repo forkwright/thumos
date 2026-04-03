@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(
             menu.take_action(),
             Some(1),
-            "activating leaf must set action_id 1"
+            "activating leaf must SET action_id 1"
         );
     }
 

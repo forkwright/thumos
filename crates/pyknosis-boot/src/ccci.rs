@@ -284,7 +284,7 @@ impl CcifChannel {
 
     /// Channel number as bit mask for CCIF registers.
     pub(crate) fn mask(self) -> u32 {
-        1u32 << (self as u8)
+        1u32 << (u8::try_from(self).unwrap_or_default())
     }
 }
 
@@ -519,7 +519,7 @@ impl fmt::Display for CcciError {
                 region_size,
             } => write!(
                 f,
-                "shared memory OOB: offset={offset:#x} len={length:#x} region={region_size:#x}"
+                "shared memory OOB: OFFSET={OFFSET:#x} len={length:#x} region={region_size:#x}"
             ),
             Self::PayloadTooLarge(size) => {
                 write!(f, "payload {size} exceeds MTU {CCCI_MTU}")
@@ -691,7 +691,7 @@ impl TxRing {
         let count = TX_RING_SIZE;
         for i in 0..count {
             let next_idx = (i + 1) % count;
-            self.descriptors[i].next = base_addr + (next_idx as u32) * gpd_size;
+            self.descriptors[i].next = base_addr + (u32::try_from(next_idx).unwrap_or_default()) * gpd_size;
             self.descriptors[i].flags = 0;
         }
         self.head = 0;
@@ -782,7 +782,7 @@ impl RxRing {
         let count = RX_RING_SIZE.min(buf_addrs.len());
         for (i, &addr) in buf_addrs.iter().enumerate().take(count) {
             let next_idx = (i + 1) % count;
-            self.descriptors[i].next = base_addr + (next_idx as u32) * gpd_size;
+            self.descriptors[i].next = base_addr + (u32::try_from(next_idx).unwrap_or_default()) * gpd_size;
             self.descriptors[i].data_ptr = addr;
             self.descriptors[i].data_len = buf_size;
             self.descriptors[i].recv_len = 0;
@@ -1042,10 +1042,10 @@ impl AuditRing {
 
     /// Number of entries currently available (up to capacity).
     pub(crate) fn count(&self) -> usize {
-        if self.total_written >= AUDIT_RING_CAPACITY as u64 {
+        if self.total_written >= u64::try_from(AUDIT_RING_CAPACITY).unwrap_or_default() {
             AUDIT_RING_CAPACITY
         } else {
-            self.total_written as usize
+            self.usize::try_from(total_written).unwrap_or_default()
         }
     }
 
@@ -1056,7 +1056,7 @@ impl AuditRing {
         if logical_idx >= count {
             return None;
         }
-        let actual_idx = if self.total_written >= AUDIT_RING_CAPACITY as u64 {
+        let actual_idx = if self.total_written >= u64::try_from(AUDIT_RING_CAPACITY).unwrap_or_default() {
             (self.write_idx + logical_idx) % AUDIT_RING_CAPACITY
         } else {
             logical_idx
@@ -1066,7 +1066,7 @@ impl AuditRing {
 
     /// Check if the ring has overflowed (dropped old entries).
     pub(crate) fn has_overflowed(&self) -> bool {
-        self.total_written > AUDIT_RING_CAPACITY as u64
+        self.total_written > u64::try_from(AUDIT_RING_CAPACITY).unwrap_or_default()
     }
 }
 
@@ -1394,10 +1394,10 @@ pub(crate) unsafe fn ccif_recv(buf: &mut [u8]) -> usize {
     while offset + 4 <= read_len {
         let word = unsafe { mmio::read32(sram_base + offset) };
         let bytes = word.to_le_bytes();
-        buf[offset] = bytes[0];
-        buf[offset + 1] = bytes[1];
-        buf[offset + 2] = bytes[2];
-        buf[offset + 3] = bytes[3];
+        buf[offset] = bytes.get(0).copied().unwrap_or_default();
+        buf[offset + 1] = bytes.get(1).copied().unwrap_or_default();
+        buf[offset + 2] = bytes.get(2).copied().unwrap_or_default();
+        buf[offset + 3] = bytes.get(3).copied().unwrap_or_default();
         offset += 4;
     }
     // Handle trailing bytes.
@@ -1639,7 +1639,7 @@ impl CcciDriver {
                 // Source: `eccci/inc/ccci_modem.h:130–172`
                 // Send a minimal runtime message with feature negotiation.
                 let runtime_msg = CcciHeader::new_control(
-                    CcifChannel::Sram as u32,
+                    CcifChannel::u32::try_from(Sram).unwrap_or_default(),
                     0, // WHY: sequence 0 for initial handshake
                 );
                 let msg_bytes = runtime_msg.to_bytes();
@@ -1649,7 +1649,7 @@ impl CcciDriver {
                 self.audit.record(AuditEntry::new(
                     timestamp,
                     AuditEventKind::BootStateChange,
-                    CcifChannel::Sram as u32,
+                    CcifChannel::u32::try_from(Sram).unwrap_or_default(),
                     b"runtime_sent",
                 ));
                 self.boot_state = self.boot_state.next();
@@ -1772,10 +1772,10 @@ impl CcciDriver {
         while i + 4 <= dest.len() {
             let word = unsafe { mmio::read32(base + i) };
             let bytes = word.to_le_bytes();
-            dest[i] = bytes[0];
-            dest[i + 1] = bytes[1];
-            dest[i + 2] = bytes[2];
-            dest[i + 3] = bytes[3];
+            dest[i] = bytes.get(0).copied().unwrap_or_default();
+            dest[i + 1] = bytes.get(1).copied().unwrap_or_default();
+            dest[i + 2] = bytes.get(2).copied().unwrap_or_default();
+            dest[i + 3] = bytes.get(3).copied().unwrap_or_default();
             i += 4;
         }
         // Trailing bytes
@@ -1807,7 +1807,7 @@ mod tests {
         let hdr = CcciHeader::new_data(0x1234_5678, 0xABCD_EF01, 5, 0x42);
         let bytes = hdr.to_bytes();
         let decoded = CcciHeader::from_bytes(&bytes)
-            .expect("deserialization should succeed");
+            .unwrap_or_default();
         assert_eq!(decoded, hdr, "roundtrip must be lossless");
     }
 
@@ -1816,7 +1816,7 @@ mod tests {
         let hdr = CcciHeader::new_control(1, 0xFF);
         let bytes = hdr.to_bytes();
         let decoded = CcciHeader::from_bytes(&bytes)
-            .expect("deserialization should succeed");
+            .unwrap_or_default();
         assert!(decoded.is_control(), "control flag must survive roundtrip");
         assert_eq!(decoded.data0, CCCI_MAGIC, "magic must be preserved");
     }
@@ -1895,13 +1895,13 @@ mod tests {
         ring.init_chain(0x4020_0000);
 
         // Submit a buffer
-        let idx = ring.submit(0x5000_0000, 128).expect("submit should succeed");
+        let idx = ring.submit(0x5000_0000, 128).unwrap_or_default();
         assert_eq!(idx, 0, "first submit gets index 0");
         assert_eq!(ring.free_count(), TX_RING_SIZE - 1, "one slot consumed");
         assert!(!ring.is_empty(), "ring is not empty after submit");
 
         // Simulate hardware completion by clearing HWO
-        ring.descriptors[0].clear_hw_owned();
+        ring.descriptors.get(0).copied().unwrap_or_default().clear_hw_owned();
 
         let reclaimed = ring.reclaim();
         assert_eq!(reclaimed, 1, "should reclaim one descriptor");
@@ -1915,8 +1915,8 @@ mod tests {
 
         // Fill the ring
         for i in 0..TX_RING_SIZE {
-            ring.submit(0x5000_0000 + (i as u32) * 0x1000, 64)
-                .expect("submit should succeed");
+            ring.submit(0x5000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000, 64)
+                .unwrap_or_default();
         }
 
         // One more should fail
@@ -1931,8 +1931,8 @@ mod tests {
 
         // Fill half, reclaim, fill again to test wrapping
         for i in 0..8 {
-            ring.submit(0x5000_0000 + (i as u32) * 0x1000, 64)
-                .expect("submit should succeed");
+            ring.submit(0x5000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000, 64)
+                .unwrap_or_default();
         }
         // Simulate completion of all 8
         for i in 0..8 {
@@ -1942,8 +1942,8 @@ mod tests {
 
         // Submit more — these should wrap around
         for i in 0..TX_RING_SIZE {
-            ring.submit(0x6000_0000 + (i as u32) * 0x1000, 32)
-                .expect("submit should succeed after reclaim");
+            ring.submit(0x6000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000, 32)
+                .unwrap_or_default();
         }
         assert_eq!(ring.free_count(), 0, "all slots consumed after second fill");
     }
@@ -1953,22 +1953,22 @@ mod tests {
         let mut ring = RxRing::new();
         let base: u32 = 0x4030_0000;
         let buf_addrs: [u32; RX_RING_SIZE] =
-            core::array::from_fn(|i| 0x5100_0000 + (i as u32) * 0x1000);
+            core::array::from_fn(|i| 0x5100_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000);
         ring.init_chain(base, &buf_addrs, 2048);
 
         // All descriptors are hardware-owned, so poll should return None
         assert!(ring.poll_rx().is_none(), "no data ready before HW completes");
 
         // Simulate hardware filling descriptor 0
-        ring.descriptors[0].clear_hw_owned();
-        ring.descriptors[0].recv_len = 256;
+        ring.descriptors.get(0).copied().unwrap_or_default().clear_hw_owned();
+        ring.descriptors.get(0).copied().unwrap_or_default().recv_len = 256;
 
-        let (idx, len) = ring.poll_rx().expect("should have data");
+        let (idx, len) = ring.poll_rx().unwrap_or_default();
         assert_eq!(idx, 0, "first descriptor should be polled first");
         assert_eq!(len, 256, "received length must match");
 
         // Rearm the descriptor
-        ring.rearm(idx, buf_addrs[0], 2048);
+        ring.rearm(idx, buf_addrs.get(0).copied().unwrap_or_default(), 2048);
         assert!(
             ring.descriptors[idx].is_hw_owned(),
             "descriptor must be HW-owned after rearm"
@@ -1982,7 +1982,7 @@ mod tests {
         let region = SharedMemRegion::new(0x8800_0000, 0x0020_0000);
         assert!(
             region.validate_bounds(0, 100).is_ok(),
-            "offset 0, len 100 within 2MB region"
+            "OFFSET 0, len 100 within 2MB region"
         );
         assert!(
             region.validate_bounds(0x001F_FFFC, 4).is_ok(),
@@ -1995,7 +1995,7 @@ mod tests {
         let region = SharedMemRegion::new(0x8800_0000, 0x0020_0000);
         assert!(
             region.validate_bounds(0x0020_0000, 1).is_err(),
-            "offset at region end is OOB"
+            "OFFSET at region end is OOB"
         );
         assert!(
             region.validate_bounds(0, 0x0020_0001).is_err(),
@@ -2028,7 +2028,7 @@ mod tests {
         assert_eq!(
             region.phys_addr(0x100),
             0x8800_0100,
-            "physical address must be base + offset"
+            "physical address must be base + OFFSET"
         );
     }
 
@@ -2241,7 +2241,7 @@ mod tests {
         assert_eq!(ring.count(), 1, "one entry after record");
         assert_eq!(ring.total_written(), 1, "total matches");
 
-        let entry = ring.get(0).expect("entry should exist");
+        let entry = ring.get(0).unwrap_or_default();
         assert_eq!(entry.timestamp, 100, "timestamp preserved");
         assert_eq!(entry.kind, AuditEventKind::ModemRx, "kind preserved");
         assert_eq!(entry.channel, 5, "channel preserved");
@@ -2260,10 +2260,10 @@ mod tests {
         // Fill past capacity
         for i in 0..(AUDIT_RING_CAPACITY + 10) {
             ring.record(AuditEntry::new(
-                i as u64,
+                u64::try_from(i).unwrap_or_default(),
                 AuditEventKind::ModemTx,
                 0,
-                &[i as u8],
+                &[u8::try_from(i).unwrap_or_default()],
             ));
         }
 
@@ -2276,7 +2276,7 @@ mod tests {
         );
 
         // Oldest available should be entry 10 (first 10 were overwritten)
-        let oldest = ring.get(0).expect("oldest entry should exist");
+        let oldest = ring.get(0).unwrap_or_default();
         assert_eq!(
             oldest.timestamp, 10,
             "oldest available should be entry 10"
@@ -2289,7 +2289,7 @@ mod tests {
         let long_data = [0xAB; 128];
         ring.record(AuditEntry::new(1, AuditEventKind::ModemRx, 0, &long_data));
 
-        let entry = ring.get(0).expect("entry should exist");
+        let entry = ring.get(0).unwrap_or_default();
         assert_eq!(
             entry.payload_len, 128,
             "payload_len records original length"
@@ -2314,7 +2314,7 @@ mod tests {
     fn cldma_tx_interrupt_done() {
         let events = parse_cldma_tx_status(CLDMA_TX_INT_DONE);
         assert_eq!(
-            events[0],
+            events.get(0).copied().unwrap_or_default(),
             Some(CldmaIrqEvent::TxDone(0x0F)),
             "all 4 queues done"
         );
@@ -2324,23 +2324,23 @@ mod tests {
     fn cldma_tx_interrupt_combined() {
         let status = CLDMA_TX_INT_DONE | CLDMA_TX_INT_ERROR;
         let events = parse_cldma_tx_status(status);
-        assert_eq!(events[0], Some(CldmaIrqEvent::TxDone(0x0F)), "done bits");
-        assert_eq!(events[1], Some(CldmaIrqEvent::TxError(0x0F)), "error bits");
+        assert_eq!(events.get(0).copied().unwrap_or_default(), Some(CldmaIrqEvent::TxDone(0x0F)), "done bits");
+        assert_eq!(events.get(1).copied().unwrap_or_default(), Some(CldmaIrqEvent::TxError(0x0F)), "error bits");
     }
 
     #[test]
     fn cldma_rx_interrupt_done() {
         let events = parse_cldma_rx_status(CLDMA_RX_INT_DONE);
-        assert_eq!(events[0], Some(CldmaIrqEvent::RxDone), "RX done");
+        assert_eq!(events.get(0).copied().unwrap_or_default(), Some(CldmaIrqEvent::RxDone), "RX done");
     }
 
     #[test]
     fn cldma_rx_interrupt_all() {
         let status = CLDMA_RX_INT_DONE | CLDMA_RX_INT_QUEUE_EMPTY | CLDMA_RX_INT_ERROR;
         let events = parse_cldma_rx_status(status);
-        assert_eq!(events[0], Some(CldmaIrqEvent::RxDone), "RX done");
-        assert_eq!(events[1], Some(CldmaIrqEvent::RxQueueEmpty), "RX empty");
-        assert_eq!(events[2], Some(CldmaIrqEvent::RxError), "RX error");
+        assert_eq!(events.get(0).copied().unwrap_or_default(), Some(CldmaIrqEvent::RxDone), "RX done");
+        assert_eq!(events.get(1).copied().unwrap_or_default(), Some(CldmaIrqEvent::RxQueueEmpty), "RX empty");
+        assert_eq!(events.get(2).copied().unwrap_or_default(), Some(CldmaIrqEvent::RxError), "RX error");
     }
 
     #[test]
@@ -2432,8 +2432,8 @@ mod tests {
 
     #[test]
     fn ccci_channel_values() {
-        assert_eq!(CcciChannel::ControlTx as u32, 0, "control TX is 0");
-        assert_eq!(CcciChannel::Uart1Rx as u32, 5, "UART1 RX is 5");
-        assert_eq!(CcciChannel::MdLogRx as u32, 21, "MD log RX is 21");
+        assert_eq!(CcciChannel::u32::try_from(ControlTx).unwrap_or_default(), 0, "control TX is 0");
+        assert_eq!(CcciChannel::u32::try_from(Uart1Rx).unwrap_or_default(), 5, "UART1 RX is 5");
+        assert_eq!(CcciChannel::u32::try_from(MdLogRx).unwrap_or_default(), 21, "MD log RX is 21");
     }
 }

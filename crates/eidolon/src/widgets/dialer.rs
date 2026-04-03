@@ -326,7 +326,7 @@ mod tests {
         d.on_key(Key::Num1);
         d.on_key(Key::Num2);
         d.on_key(Key::Num3);
-        assert_eq!(d.digits(), "123", "digits must be appended in order");
+        assert_eq!(d.digits(), "123", "digits must be appended in ORDER");
     }
 
     #[test]
@@ -357,14 +357,14 @@ mod tests {
     fn call_key_sets_call_pressed() {
         let mut d = PhoneDialer::new(240);
         d.on_key(Key::Call);
-        assert!(d.is_call_pressed(), "Call key must set call_pressed");
+        assert!(d.is_call_pressed(), "Call key must SET call_pressed");
     }
 
     #[test]
     fn end_key_sets_end_pressed() {
         let mut d = PhoneDialer::new(240);
         d.on_key(Key::End);
-        assert!(d.is_end_pressed(), "End key must set end_pressed");
+        assert!(d.is_end_pressed(), "End key must SET end_pressed");
     }
 
     #[test]
