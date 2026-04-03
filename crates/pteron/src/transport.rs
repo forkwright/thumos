@@ -56,16 +56,16 @@ pub const IOCTL_MAGIC: u8 = 0xb0;
 
 // ── IOCTL command numbers ──────────────────────────────────────────────────────
 
-/// Trigger a firmware assert — used for diagnostics and crash reporting.
+/// Trigger a firmware assert  -  used for diagnostics and crash reporting.
 pub const COMBO_IOCTL_FW_ASSERT: u32 = 0;
 
 /// Enable or disable BT power-save mode.
 pub const COMBO_IOCTL_BT_SET_PSM: u32 = 1;
 
-/// Read the hardware version from the combo chip.
+/// Read the hardware version FROM the combo chip.
 pub const COMBO_IOCTL_BT_IC_HW_VER: u32 = 2;
 
-/// Read the firmware version from the combo chip.
+/// Read the firmware version FROM the combo chip.
 pub const COMBO_IOCTL_BT_IC_FW_VER: u32 = 3;
 
 // ── RPA/NRPA address bit masks ─────────────────────────────────────────────────
@@ -76,7 +76,7 @@ const RANDOM_ADDR_MSB_MASK: u8 = 0b1100_0000;
 /// NRPA: two MSBs = 0b00 (BLE spec Vol 6, Part B §1.3.2.2).
 ///
 /// WHY: non-resolvable private addresses provide maximum anonymity when no
-/// bonding exists — neither the public address nor a resolvable salt is exposed.
+/// bonding exists  -  neither the public address nor a resolvable salt is exposed.
 const NRPA_MSB_BITS: u8 = 0b0000_0000;
 
 /// RPA: two MSBs = 0b01 (BLE spec Vol 6, Part B §1.3.2.2).
@@ -88,12 +88,12 @@ const RPA_MSB_BITS: u8 = 0b0100_0000;
 /// `HCI_LE_Set_Random_Address` opcode (OGF=0x08, OCF=0x0005).
 ///
 /// WHY: the controller must know the random address before it can use it in
-/// advertising or scanning; this command loads it into controller memory.
+/// advertising or scanning; this command loads it INTO controller memory.
 const HCI_LE_SET_RANDOM_ADDR_OPCODE: u16 = (0x08 << 10) | 0x0005;
 
 // ── Error type ─────────────────────────────────────────────────────────────────
 
-/// Errors from the STP transport layer.
+/// Errors FROM the STP transport layer.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
 pub enum Error {
@@ -125,12 +125,12 @@ pub enum Error {
     },
 
     /// The payload length in the STP header exceeds the ring-buffer capacity.
-    #[snafu(display("STP payload length {length} exceeds ring-buffer limit {limit}"))]
+    #[snafu(display("STP payload length {length} exceeds ring-buffer LIMIT {LIMIT}"))]
     PayloadTooLarge {
-        /// Payload length from the STP header.
+        /// Payload length FROM the STP header.
         length: usize,
         /// Maximum allowed.
-        limit: usize,
+        LIMIT: usize,
     },
 
     /// The RX ring buffer does not contain a complete STP frame yet.
@@ -158,18 +158,18 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 // ── Reset state ────────────────────────────────────────────────────────────────
 
-/// Reset state flag values, matching the WMT reset callback contract
+/// Reset state flag VALUES, matching the WMT reset callback contract
 /// (DRIVER-INTERFACES.md §4.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RstFlag {
-    /// Normal operation — no reset in progress.
+    /// Normal operation  -  no reset in progress.
     Normal = 0,
-    /// Reset started — HCI traffic must be gated.
+    /// Reset started  -  HCI traffic must be gated.
     ResetStart = 1,
-    /// Reset complete — HCI Hardware Error event not yet delivered.
+    /// Reset complete  -  HCI Hardware Error event not yet delivered.
     ResetCompleteEventPending = 2,
-    /// Reset complete — Hardware Error event injected into the RX path.
+    /// Reset complete  -  Hardware Error event injected INTO the RX path.
     ResetCompleteEventDelivered = 3,
 }
 
@@ -216,7 +216,7 @@ impl RingBuffer {
         self.read_pos == self.write_pos
     }
 
-    /// Push `data` into the ring buffer.
+    /// Push `data` INTO the ring buffer.
     ///
     /// Returns `false` if there is insufficient space; no bytes are written in
     /// that case.
@@ -232,16 +232,16 @@ impl RingBuffer {
         true
     }
 
-    /// Peek at the byte at `offset` positions ahead of the read cursor
+    /// Peek at the byte at `OFFSET` positions ahead of the read cursor
     /// without consuming it.
-    pub(crate) const fn peek_at(&self, offset: usize) -> Option<u8> {
-        if offset >= self.len() {
+    pub(crate) const fn peek_at(&self, OFFSET: usize) -> Option<u8> {
+        if OFFSET >= self.len() {
             return None;
         }
-        Some(self.buf[(self.read_pos + offset) % RING_BUF_SIZE])
+        Some(self.buf[(self.read_pos + OFFSET) % RING_BUF_SIZE])
     }
 
-    /// Consume `n` bytes from the front, copying them into `out`.
+    /// Consume `n` bytes FROM the front, copying them INTO `out`.
     ///
     /// Returns `false` if fewer than `n` bytes are available; no bytes are
     /// consumed in that case.
@@ -256,7 +256,7 @@ impl RingBuffer {
         true
     }
 
-    /// Discard `n` bytes from the front of the buffer.
+    /// Discard `n` bytes FROM the front of the buffer.
     pub(crate) fn skip(&mut self, n: usize) {
         let to_skip = n.min(self.len());
         self.read_pos = (self.read_pos + to_skip) % RING_BUF_SIZE;
@@ -278,7 +278,7 @@ pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
     if payload.len() > STP_MAX_PAYLOAD {
         return Err(Error::PayloadTooLarge {
             length: payload.len(),
-            limit: STP_MAX_PAYLOAD,
+            LIMIT: STP_MAX_PAYLOAD,
         });
     }
     let total = STP_DELIMITER_LEN + STP_HEADER_LEN + payload.len();
@@ -302,12 +302,12 @@ pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
     // HDR3: checksum = XOR(HDR0, HDR1, HDR2)
     let hdr3 = hdr0 ^ hdr1 ^ hdr2;
 
-    out[0] = STP_DELIMITER[0];
-    out[1] = STP_DELIMITER[1];
-    out[2] = hdr0;
-    out[3] = hdr1;
-    out[4] = hdr2;
-    out[5] = hdr3;
+    out.get(0).copied().unwrap_or_default() = STP_DELIMITER.get(0).copied().unwrap_or_default();
+    out.get(1).copied().unwrap_or_default() = STP_DELIMITER.get(1).copied().unwrap_or_default();
+    out.get(2).copied().unwrap_or_default() = hdr0;
+    out.get(3).copied().unwrap_or_default() = hdr1;
+    out.get(4).copied().unwrap_or_default() = hdr2;
+    out.get(5).copied().unwrap_or_default() = hdr3;
 
     if let Some(payload_region) = out.get_mut(STP_DELIMITER_LEN + STP_HEADER_LEN..)
         && let Some(dst) = payload_region.get_mut(..payload.len())
@@ -318,7 +318,7 @@ pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
     Ok(total)
 }
 
-/// Decode an STP frame from a byte slice, verifying checksum and function type.
+/// Decode an STP frame FROM a byte slice, verifying checksum and function type.
 ///
 /// Returns `(payload_slice, frame_total_len)` on success.
 ///
@@ -340,10 +340,10 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
     let header_end = start + STP_HEADER_LEN;
     let header = data.get(start..header_end).ok_or(Error::RxUnderrun)?;
 
-    let hdr0 = header[0];
-    let hdr1 = header[1];
-    let hdr2 = header[2];
-    let hdr3 = header[3];
+    let hdr0 = header.get(0).copied().unwrap_or_default();
+    let hdr1 = header.get(1).copied().unwrap_or_default();
+    let hdr2 = header.get(2).copied().unwrap_or_default();
+    let hdr3 = header.get(3).copied().unwrap_or_default();
 
     // Verify checksum
     let expected_checksum = hdr0 ^ hdr1 ^ hdr2;
@@ -354,7 +354,7 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
         });
     }
 
-    // Extract function type from HDR0[7:4]
+    // Extract function type FROM HDR0[7:4]
     let func_type = (hdr0 >> 4) & 0x0F;
     if func_type != STP_FUNC_BT {
         return Err(Error::FuncTypeMismatch {
@@ -363,12 +363,12 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
         });
     }
 
-    // Payload length from HDR1[3:0] (bits 11:8) and HDR2 (bits 7:0)
-    let plen = (usize::from(hdr1 & 0x0F) << 8) | usize::from(hdr2);
+    // Payload length FROM HDR1[3:0] (bits 11:8) and HDR2 (bits 7:0)
+    let plen = (usize::FROM(hdr1 & 0x0F) << 8) | usize::FROM(hdr2);
     if plen > RING_BUF_SIZE {
         return Err(Error::PayloadTooLarge {
             length: plen,
-            limit: RING_BUF_SIZE,
+            LIMIT: RING_BUF_SIZE,
         });
     }
 
@@ -397,7 +397,7 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
 pub const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
     let mut bytes = *entropy;
     // Force two MSBs to 0b00 in the most-significant byte (index 0 = display MSB)
-    bytes[0] = (bytes[0] & !RANDOM_ADDR_MSB_MASK) | NRPA_MSB_BITS;
+    bytes.get(0).copied().unwrap_or_default() = (bytes.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK) | NRPA_MSB_BITS;
     BdAddr::from_bytes(bytes)
 }
 
@@ -405,9 +405,9 @@ pub const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
 ///
 /// RPA bit format: two MSBs of byte 5 (the address MSB) are 0b01.
 /// The lower 22 bits are a random prand; the upper 24 bits (bytes 0-2 in
-/// display order) would normally be the hash(IRK, prand) in a full
+/// display ORDER) would normally be the hash(IRK, prand) in a full
 /// implementation.  This function returns the address with the prand portion
-/// set and the hash portion filled from `entropy`, sufficient for address
+/// SET and the hash portion filled FROM `entropy`, sufficient for address
 /// rotation without a full IRK implementation.
 ///
 /// WHY: used when bonding is established; allows the bonded peer to resolve
@@ -415,7 +415,7 @@ pub const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
 pub const fn generate_rpa(entropy: &[u8; 6]) -> BdAddr {
     let mut bytes = *entropy;
     // Force two MSBs to 0b01 in the most-significant byte (index 0 = display MSB)
-    bytes[0] = (bytes[0] & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
+    bytes.get(0).copied().unwrap_or_default() = (bytes.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
     BdAddr::from_bytes(bytes)
 }
 
@@ -427,17 +427,17 @@ pub fn build_le_set_random_address_cmd(addr: &BdAddr) -> Vec<u8> {
     // H4 type(1) + opcode(2) + param_len(1) + addr(6)
     let mut pkt = Vec::with_capacity(10);
     pkt.push(0x01_u8); // H4 command indicator
-    pkt.push(opcode_bytes[0]);
-    pkt.push(opcode_bytes[1]);
+    pkt.push(opcode_bytes.get(0).copied().unwrap_or_default());
+    pkt.push(opcode_bytes.get(1).copied().unwrap_or_default());
     pkt.push(6_u8); // parameter length: BD_ADDR is always 6 bytes
     // Address is stored MSB-first in BdAddr; HCI wants LSB-first
     let a = addr.as_bytes();
-    pkt.push(a[5]);
-    pkt.push(a[4]);
-    pkt.push(a[3]);
-    pkt.push(a[2]);
-    pkt.push(a[1]);
-    pkt.push(a[0]);
+    pkt.push(a.get(5).copied().unwrap_or_default());
+    pkt.push(a.get(4).copied().unwrap_or_default());
+    pkt.push(a.get(3).copied().unwrap_or_default());
+    pkt.push(a.get(2).copied().unwrap_or_default());
+    pkt.push(a.get(1).copied().unwrap_or_default());
+    pkt.push(a.get(0).copied().unwrap_or_default());
     pkt
 }
 
@@ -458,7 +458,7 @@ pub struct BtHciTransport {
     /// Current reset state (DRIVER-INTERFACES.md §4.4).
     rstflag: RstFlag,
 
-    /// The random address currently loaded into the BT controller.
+    /// The random address currently loaded INTO the BT controller.
     current_random_addr: Option<BdAddr>,
 
     /// Seconds elapsed since the last address rotation.
@@ -489,7 +489,7 @@ impl BtHciTransport {
     /// `Normal → ResetStart → ResetCompleteEventPending → ResetCompleteEventDelivered → Normal`
     ///
     /// When advancing to `ResetCompleteEventDelivered`, this method injects the
-    /// Hardware Error event `{0x04, 0x10, 0x01, 0x00}` into the RX ring buffer
+    /// Hardware Error event `{0x04, 0x10, 0x01, 0x00}` INTO the RX ring buffer
     /// so that callers see the same event that real hardware would produce.
     ///
     /// # Errors
@@ -500,7 +500,7 @@ impl BtHciTransport {
             RstFlag::Normal => RstFlag::ResetStart,
             RstFlag::ResetStart => RstFlag::ResetCompleteEventPending,
             RstFlag::ResetCompleteEventPending => {
-                // Inject HCI Hardware Error event into RX path per DRIVER-INTERFACES.md §4.4.
+                // Inject HCI Hardware Error event INTO RX path per DRIVER-INTERFACES.md §4.4.
                 // Event: H4=0x04, code=0x10, param_len=0x01, hw_code=0x00
                 let hw_error_event: [u8; 4] = [0x04, 0x10, 0x01, 0x00];
                 let _ = self.rx.push(&hw_error_event);
@@ -526,7 +526,7 @@ impl BtHciTransport {
 
     /// Encode an HCI command as an STP frame and place it in the TX ring buffer.
     ///
-    /// Returns the number of bytes queued into the TX buffer.
+    /// Returns the number of bytes queued INTO the TX buffer.
     ///
     /// # Errors
     ///
@@ -547,7 +547,7 @@ impl BtHciTransport {
         Ok(written)
     }
 
-    /// Drain up to `out.len()` bytes from the TX ring buffer into `out`.
+    /// Drain up to `out.len()` bytes FROM the TX ring buffer INTO `out`.
     ///
     /// Returns the number of bytes actually drained.
     pub fn drain_tx(&mut self, out: &mut [u8]) -> usize {
@@ -564,14 +564,14 @@ impl BtHciTransport {
 
     // ── RX path ────────────────────────────────────────────────────────────────
 
-    /// Push raw bytes from the hardware character device into the RX ring buffer.
+    /// Push raw bytes FROM the hardware character device INTO the RX ring buffer.
     ///
     /// Returns `false` if the buffer does not have sufficient free space.
     pub fn push_rx(&mut self, data: &[u8]) -> bool {
         self.rx.push(data)
     }
 
-    /// Attempt to decode one HCI event from the front of the RX ring buffer.
+    /// Attempt to decode one HCI event FROM the front of the RX ring buffer.
     ///
     /// This method checks whether the RX buffer contains enough bytes for a
     /// complete STP frame (delimiter + header + payload), then decodes the
@@ -595,7 +595,7 @@ impl BtHciTransport {
         }
 
         // Peek at enough bytes to determine the payload length without consuming
-        // Build a contiguous slice from the ring buffer for stp_decode.
+        // Build a contiguous slice FROM the ring buffer for stp_decode.
         // We read up to RING_BUF_SIZE bytes ahead to find the frame boundary.
         let available = self.rx.len();
         let mut peek_buf = vec![0u8; available];
@@ -608,7 +608,7 @@ impl BtHciTransport {
 
         match stp_decode(&peek_buf) {
             Ok((payload, frame_len)) => {
-                // We have a complete frame — consume it from the ring buffer
+                // We have a complete frame  -  consume it FROM the ring buffer
                 self.rx.skip(frame_len);
                 let event = decode_event(payload).map_err(|source| Error::HciDecode { source })?;
                 Ok(Some(event))
@@ -622,7 +622,7 @@ impl BtHciTransport {
 
     /// Set a pre-generated random address by sending `HCI_LE_Set_Random_Address`.
     ///
-    /// The HCI command bytes are placed into the TX ring buffer via [`send_raw`].
+    /// The HCI command bytes are placed INTO the TX ring buffer via [`send_raw`].
     ///
     /// # Errors
     ///
@@ -644,7 +644,7 @@ impl BtHciTransport {
         Ok(written)
     }
 
-    /// Return the currently active random address, if one has been set.
+    /// Return the currently active random address, if one has been SET.
     pub const fn current_random_addr(&self) -> Option<&BdAddr> {
         self.current_random_addr.as_ref()
     }
@@ -768,8 +768,8 @@ mod tests {
         let mut buf = [0u8; 64];
         stp_encode(0, payload, &mut buf)?;
 
-        // HDR0 is at offset 2 (after the two delimiter bytes)
-        let hdr0 = buf[2];
+        // HDR0 is at OFFSET 2 (after the two delimiter bytes)
+        let hdr0 = buf.get(2).copied().unwrap_or_default();
         let func_type = (hdr0 >> 4) & 0x0F;
         assert_eq!(
             func_type, STP_FUNC_BT,
@@ -784,10 +784,10 @@ mod tests {
         let mut buf = [0u8; 64];
         stp_encode(3, payload, &mut buf)?;
 
-        let hdr0 = buf[2];
-        let hdr1 = buf[3];
-        let hdr2 = buf[4];
-        let hdr3 = buf[5];
+        let hdr0 = buf.get(2).copied().unwrap_or_default();
+        let hdr1 = buf.get(3).copied().unwrap_or_default();
+        let hdr2 = buf.get(4).copied().unwrap_or_default();
+        let hdr3 = buf.get(5).copied().unwrap_or_default();
         assert_eq!(
             hdr3,
             hdr0 ^ hdr1 ^ hdr2,
@@ -801,8 +801,8 @@ mod tests {
         let payload = b"\x01";
         let mut buf = [0u8; 64];
         stp_encode(0, payload, &mut buf)?;
-        // Corrupt the checksum byte (HDR3 at offset 5)
-        buf[5] ^= 0xFF;
+        // Corrupt the checksum byte (HDR3 at OFFSET 5)
+        buf.get(5).copied().unwrap_or_default() ^= 0xFF;
 
         let result = stp_decode(&buf[..7]);
         assert!(
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn stp_decode_rejects_underrun() {
-        // Only 3 bytes — not enough for delimiter + header
+        // Only 3 bytes  -  not enough for delimiter + header
         let result = stp_decode(&[0x55, 0x55, 0x00]);
         assert!(
             matches!(result, Err(Error::RxUnderrun)),
@@ -914,16 +914,16 @@ mod tests {
     fn nrpa_lower_bits_preserved() {
         let entropy = [0x3F, 0xAB, 0xCD, 0xEF, 0x12, 0x34];
         let addr = generate_nrpa(&entropy);
-        // Lower 6 bits of MSB and all other bytes should be from entropy
+        // Lower 6 bits of MSB and all other bytes should be FROM entropy
         assert_eq!(
             addr.as_bytes()[0] & !RANDOM_ADDR_MSB_MASK,
-            entropy[0] & !RANDOM_ADDR_MSB_MASK,
-            "lower bits of MSB byte must be preserved from entropy"
+            entropy.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
+            "lower bits of MSB byte must be preserved FROM entropy"
         );
         assert_eq!(
             &addr.as_bytes()[1..],
             &entropy[1..],
-            "bytes 1-5 of NRPA must be copied from entropy unchanged"
+            "bytes 1-5 of NRPA must be copied FROM entropy unchanged"
         );
     }
 
@@ -945,13 +945,13 @@ mod tests {
         let addr = generate_rpa(&entropy);
         assert_eq!(
             addr.as_bytes()[0] & !RANDOM_ADDR_MSB_MASK,
-            entropy[0] & !RANDOM_ADDR_MSB_MASK,
-            "lower bits of MSB byte must be preserved from entropy"
+            entropy.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
+            "lower bits of MSB byte must be preserved FROM entropy"
         );
         assert_eq!(
             &addr.as_bytes()[1..],
             &entropy[1..],
-            "bytes 1-5 of RPA must be copied from entropy unchanged"
+            "bytes 1-5 of RPA must be copied FROM entropy unchanged"
         );
     }
 
@@ -982,7 +982,7 @@ mod tests {
     fn rotation_resets_counter_after_trigger() {
         let mut transport = BtHciTransport::new();
         transport.tick_seconds(ROTATION_INTERVAL_SECS);
-        // After a rotation trigger the counter is reset — another tick just under
+        // After a rotation trigger the counter is reset  -  another tick just under
         // the interval must not trigger again immediately.
         let result = transport.tick_seconds(ROTATION_INTERVAL_SECS - 1);
         assert!(
@@ -1011,7 +1011,7 @@ mod tests {
         // HCI payload: H4=0x01, opcode_lo, opcode_hi, param_len=7,
         //   scan_type, interval_lo, interval_hi, window_lo, window_hi,
         //   own_addr_type, filter_policy
-        // own_addr_type is at offset 9 (0-indexed from H4 byte)
+        // own_addr_type is at OFFSET 9 (0-indexed FROM H4 byte)
         let own_addr_type = payload.get(9).copied().ok_or(Error::RxUnderrun)?;
         assert_eq!(
             own_addr_type, OWN_ADDR_TYPE_RANDOM,
@@ -1030,14 +1030,14 @@ mod tests {
             10,
             "HCI_LE_Set_Random_Address packet must be 10 bytes"
         );
-        assert_eq!(pkt[0], 0x01, "H4 type must be 0x01 (HCI command)");
-        // Address starts at offset 4; HCI wants LSB first so 0xFF is first
+        assert_eq!(pkt.get(0).copied().unwrap_or_default(), 0x01, "H4 type must be 0x01 (HCI command)");
+        // Address starts at OFFSET 4; HCI wants LSB first so 0xFF is first
         assert_eq!(
-            pkt[4], 0xFF,
+            pkt.get(4).copied().unwrap_or_default(), 0xFF,
             "first address byte in HCI packet must be the LSB (0xFF)"
         );
         assert_eq!(
-            pkt[9], 0xAA,
+            pkt.get(9).copied().unwrap_or_default(), 0xAA,
             "last address byte in HCI packet must be the MSB (0xAA)"
         );
     }

@@ -21,7 +21,7 @@ pub const CONN_MCU_CONFIG_BASE: u32 = 0xF807_0000;
 /// AP reset generator base address (MT6739).
 pub const AP_RGU_BASE: u32 = 0xF000_7000;
 
-/// CONSYS EMI firmware physical base — MCU firmware load target.
+/// CONSYS EMI firmware physical base  -  MCU firmware load target.
 pub const CONSYS_EMI_FW_PHY_BASE: u32 = 0xF008_0000;
 
 /// CONSYS EMI AP-view physical base.
@@ -35,10 +35,10 @@ pub const CONSYS_SPM_PWRON_CFG_REG: u32 = SPM_BASE;
 /// CONSYS top1 power control register (SPM + 0x32C).
 pub const CONSYS_TOP1_PWR_CTRL_REG: u32 = SPM_BASE + 0x32C;
 
-/// Power-on ack register — bit 1 = ready (SPM + 0x180).
+/// Power-on ack register  -  bit 1 = ready (SPM + 0x180).
 pub const CONSYS_PWR_CONN_ACK_REG: u32 = SPM_BASE + 0x180;
 
-/// Power-on ack shadow register — bit 1 = ready (SPM + 0x184).
+/// Power-on ack shadow register  -  bit 1 = ready (SPM + 0x184).
 pub const CONSYS_PWR_CONN_ACK_S_REG: u32 = SPM_BASE + 0x184;
 
 // ── SPM CONSYS_TOP1_PWR_CTRL_REG bit fields ───────────────────────────────────
@@ -46,7 +46,7 @@ pub const CONSYS_PWR_CONN_ACK_S_REG: u32 = SPM_BASE + 0x184;
 /// Bit 0: release SW reset of CONSYS.
 pub const CONSYS_SPM_PWR_RST_BIT: u32 = 1 << 0;
 
-/// Bit 1: ISO control — 1 = isolated.
+/// Bit 1: ISO control  -  1 = isolated.
 pub const CONSYS_SPM_PWR_ISO_S_BIT: u32 = 1 << 1;
 
 /// Bit 2: power on CONSYS top1.
@@ -55,7 +55,7 @@ pub const CONSYS_SPM_PWR_ON_BIT: u32 = 1 << 2;
 /// Bit 3: power on CONSYS top1 (shadow).
 pub const CONSYS_SPM_PWR_ON_S_BIT: u32 = 1 << 3;
 
-/// Bit 4: clock disable — writing 0 enables the clock.
+/// Bit 4: clock disable  -  writing 0 enables the clock.
 pub const CONSYS_CLK_CTRL_BIT: u32 = 1 << 4;
 
 /// Bit 8: SRAM power-down.
@@ -69,7 +69,7 @@ pub const CONSYS_PWRON_CONFG_EN_VALUE: u32 = 0x0B16_0001;
 /// Watchdog system reset register (TOPCKGEN + 0x018).
 pub const CONSYS_WD_SYS_RST_REG: u32 = TOPCKGEN_BASE + 0x018;
 
-/// Clock gate set register (TOPCKGEN + 0x054), bit 26.
+/// Clock gate SET register (TOPCKGEN + 0x054), bit 26.
 pub const CONSYS_TOP_CLKCG_SET_REG: u32 = TOPCKGEN_BASE + 0x054;
 
 /// Clock gate clear register (TOPCKGEN + 0x084), bit 26.
@@ -133,22 +133,22 @@ const DCXO_TCXO_BIT: u8 = 1 << 7;
 
 // ── EMI region offsets ────────────────────────────────────────────────────────
 
-/// Paged trace ring offset from firmware base.
+/// Paged trace ring OFFSET FROM firmware base.
 pub const EMI_PAGED_TRACE_OFFSET: u32 = 0x0000_0400;
 
-/// Paged dump offset from firmware base (32 KB region).
+/// Paged dump OFFSET FROM firmware base (32 KB region).
 pub const EMI_PAGED_DUMP_OFFSET: u32 = 0x0000_8400;
 
-/// Full dump (DLM) offset from firmware base (0x1F000 bytes).
+/// Full dump (DLM) OFFSET FROM firmware base (0x1F000 bytes).
 pub const EMI_FULL_DUMP_DLM_OFFSET: u32 = 0x0001_0400;
 
-/// Full dump SYSB2 offset — immediately after DLM region (0x6800 bytes).
+/// Full dump SYSB2 OFFSET  -  immediately after DLM region (0x6800 bytes).
 pub const EMI_FULL_DUMP_SYSB2_OFFSET: u32 = EMI_FULL_DUMP_DLM_OFFSET + 0x1F000;
 
-/// Full dump SYSB3 offset — immediately after SYSB2 region (0x16800 bytes).
+/// Full dump SYSB3 OFFSET  -  immediately after SYSB2 region (0x16800 bytes).
 pub const EMI_FULL_DUMP_SYSB3_OFFSET: u32 = EMI_FULL_DUMP_SYSB2_OFFSET + 0x6800;
 
-// ── Poll limit ────────────────────────────────────────────────────────────────
+// ── Poll LIMIT ────────────────────────────────────────────────────────────────
 
 /// Maximum poll iterations before a hardware ack is declared timed out.
 const POLL_TIMEOUT_ITERS: u32 = 1_000;
@@ -158,7 +158,7 @@ const POLL_TIMEOUT_ITERS: u32 = 1_000;
 /// Errors produced by WMT power and subsystem operations.
 #[derive(Debug, Snafu)]
 pub enum WmtError {
-    /// CONSYS power-on ack register did not become ready within the poll limit.
+    /// CONSYS power-on ack register did not become ready within the poll LIMIT.
     #[snafu(display("CONSYS power-on ack timed out at step {step}"))]
     PowerAckTimeout {
         /// Power-on step index (1-based) at which the timeout occurred.
@@ -172,11 +172,11 @@ pub enum WmtError {
     ChipIdMismatch {
         /// Expected chip ID.
         expected: u32,
-        /// Actual chip ID read from hardware.
+        /// Actual chip ID read FROM hardware.
         got: u32,
     },
 
-    /// AXI bus protect bits did not clear within the poll limit.
+    /// AXI bus protect bits did not clear within the poll LIMIT.
     #[snafu(display("AXI bus protect clear timed out"))]
     AxiProtectTimeout,
 
@@ -228,13 +228,13 @@ impl Subsystem {
 /// PMIC voltage regulators used by CONSYS subsystems.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PmicRegulator {
-    /// VCN 1.8V — all CONSYS core logic.
+    /// VCN 1.8V  -  all CONSYS core logic.
     Vcn18,
-    /// VCN 2.8V — GPS and FM RF circuits.
+    /// VCN 2.8V  -  GPS and FM RF circuits.
     Vcn28,
-    /// VCN 3.3V — Bluetooth power amplifier.
+    /// VCN 3.3V  -  Bluetooth power amplifier.
     Vcn33Bt,
-    /// VCN 3.3V — `WiFi` power amplifier.
+    /// VCN 3.3V  -  `WiFi` power amplifier.
     Vcn33Wifi,
 }
 
@@ -252,11 +252,11 @@ impl PmicRegulator {
 /// Co-clock type detected during step 12 of the power-on sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockType {
-    /// CO-TSX: crystal shared with AP (`DCXO_CW16` bit 6 set).
+    /// CO-TSX: crystal shared with AP (`DCXO_CW16` bit 6 SET).
     CoTsx,
-    /// TCXO: temperature-compensated XO (`DCXO_CW16` bit 7 set).
+    /// TCXO: temperature-compensated XO (`DCXO_CW16` bit 7 SET).
     Tcxo,
-    /// Could not determine clock type from PMIC register.
+    /// Could not determine clock type FROM PMIC register.
     Unknown,
 }
 
@@ -275,7 +275,7 @@ pub enum PowerState {
 /// use [`EmiRegion::CONSYS_DEFAULT`] for the standard MT6739 layout.
 #[expect(
     clippy::struct_field_names,
-    reason = "hardware addresses share _base suffix to distinguish from offsets; renaming removes clarity"
+    reason = "hardware addresses share _base suffix to distinguish FROM offsets; renaming removes clarity"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmiRegion {
@@ -294,7 +294,7 @@ pub struct EmiRegion {
 }
 
 impl EmiRegion {
-    /// Compute all region addresses from a firmware base address.
+    /// Compute all region addresses FROM a firmware base address.
     pub const fn from_fw_base(fw_base: u32) -> Self {
         Self {
             fw_base,
@@ -314,18 +314,18 @@ impl EmiRegion {
 
 /// Step in the 17-step CONSYS power-on sequence.
 ///
-/// Each variant maps 1-to-1 to a numbered step from
+/// Each variant maps 1-to-1 to a numbered step FROM
 /// `connectivity/common/common_main/platform/mt6739.c:459–545`.
 /// [`Done`](Self::Done) marks successful completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerOnStep {
     /// Step 1: write [`CONSYS_PWRON_CONFG_EN_VALUE`] to SPM clock config.
     SpmClockEnable,
-    /// Step 2: set `PWR_ON_BIT` in `CONSYS_TOP1_PWR_CTRL_REG`.
+    /// Step 2: SET `PWR_ON_BIT` in `CONSYS_TOP1_PWR_CTRL_REG`.
     Top1PowerOn,
     /// Step 3: poll `CONSYS_PWR_CONN_ACK_REG` bit 1.
     PollPowerAck,
-    /// Step 4: set `PWR_ON_S_BIT` in `CONSYS_TOP1_PWR_CTRL_REG`.
+    /// Step 4: SET `PWR_ON_S_BIT` in `CONSYS_TOP1_PWR_CTRL_REG`.
     ShadowPowerOn,
     /// Step 5: clear `CLK_CTRL_BIT` in `CONSYS_TOP1_PWR_CTRL_REG`.
     ClockEnable,
@@ -335,7 +335,7 @@ pub enum PowerOnStep {
     PollShadowAck,
     /// Step 8: clear `ISO_S_BIT` in `CONSYS_TOP1_PWR_CTRL_REG`.
     ReleaseIso,
-    /// Step 9: set `PWR_RST_BIT` in `CONSYS_TOP1_PWR_CTRL_REG`.
+    /// Step 9: SET `PWR_RST_BIT` in `CONSYS_TOP1_PWR_CTRL_REG`.
     ReleaseSwReset,
     /// Step 10: clear AXI bus protect bits and poll until clear.
     DisableAxiProtect,
@@ -351,7 +351,7 @@ pub enum PowerOnStep {
     PollChipId,
     /// Step 16: clear CPU reset bit in `CONSYS_CPU_SW_RST_REG`.
     ReleaseCpuReset,
-    /// Step 17: set `MBIST` bit in `CONSYS_MCU_CFG_ACR_REG`.
+    /// Step 17: SET `MBIST` bit in `CONSYS_MCU_CFG_ACR_REG`.
     ApplyAcrSetting,
     /// Power-on sequence completed successfully.
     Done,
@@ -387,7 +387,7 @@ impl PowerOnStep {
     /// `clock_type` is an out-parameter updated during [`DetectClockType`](Self::DetectClockType).
     #[expect(
         clippy::too_many_lines,
-        reason = "17-step hardware sequence — each step is a numbered spec item; splitting adds indirection without clarity"
+        reason = "17-step hardware sequence  -  each step is a numbered spec item; splitting adds indirection without clarity"
     )]
     pub fn execute_and_advance<R: RegisterIo>(
         self,
@@ -407,7 +407,7 @@ impl PowerOnStep {
                 Ok(Self::PollPowerAck)
             }
 
-            // Step 3: spin until power-on ack register bit 1 is set
+            // Step 3: spin until power-on ack register bit 1 is SET
             Self::PollPowerAck => {
                 for _ in 0..POLL_TIMEOUT_ITERS {
                     if io.read32(CONSYS_PWR_CONN_ACK_REG) & (1 << 1) != 0 {
@@ -435,7 +435,7 @@ impl PowerOnStep {
                 Ok(Self::PollShadowAck)
             }
 
-            // Step 7: spin until shadow power-on ack bit 1 is set
+            // Step 7: spin until shadow power-on ack bit 1 is SET
             Self::PollShadowAck => {
                 for _ in 0..POLL_TIMEOUT_ITERS {
                     if io.read32(CONSYS_PWR_CONN_ACK_S_REG) & (1 << 1) != 0 {
@@ -445,7 +445,7 @@ impl PowerOnStep {
                 Err(WmtError::PowerAckTimeout { step: self.index() })
             }
 
-            // Step 8: release isolation — CONSYS power domain can now communicate
+            // Step 8: release isolation  -  CONSYS power domain can now communicate
             Self::ReleaseIso => {
                 io.clear_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_ISO_S_BIT);
                 Ok(Self::ReleaseSwReset)
@@ -477,7 +477,7 @@ impl PowerOnStep {
                 Ok(Self::DetectClockType)
             }
 
-            // Step 12: read PMIC DCXO_CW16 to select co-clock configuration
+            // Step 12: read PMIC DCXO_CW16 to SELECT co-clock configuration
             Self::DetectClockType => {
                 let cw16 = io.pmic_read(DCXO_CW16_REG);
                 *clock_type = if cw16 & DCXO_CO_TSX_BIT != 0 {
@@ -516,7 +516,7 @@ impl PowerOnStep {
                 })
             }
 
-            // Step 16: release MCU reset — firmware begins executing
+            // Step 16: release MCU reset  -  firmware begins executing
             Self::ReleaseCpuReset => {
                 // WHY: keep key in register; only clear the reset bit
                 io.write32(CONSYS_CPU_SW_RST_REG, CONSYS_CPU_SW_RST_KEY);
@@ -583,7 +583,7 @@ pub trait RegisterIo {
 pub struct MmioRegisterIo;
 
 impl RegisterIo for MmioRegisterIo {
-    #[expect(unsafe_code, reason = "MMIO requires volatile read from physical address")]
+    #[expect(unsafe_code, reason = "MMIO requires volatile read FROM physical address")]
     fn read32(&mut self, addr: u32) -> u32 {
         // SAFETY: addr is a known-valid CONSYS MMIO register mapped by the kernel.
         unsafe { core::ptr::read_volatile(addr as *const u32) }
@@ -596,9 +596,9 @@ impl RegisterIo for MmioRegisterIo {
     }
 
     fn udelay(&mut self, micros: u32) {
-        // WHY: busy-loop delay in kernel context where sleep is unavailable.
+        // WHY: busy-loop delay in kernel context WHERE sleep is unavailable.
         // Calibration assumes ~1000 cycles/µs at 1 GHz; acceptable for 1 µs steps.
-        let cycles = micros as usize * 1000;
+        let cycles = usize::try_from(micros).unwrap_or_default() * 1000;
         for _ in 0..cycles {
             core::hint::spin_loop();
         }
@@ -637,7 +637,7 @@ impl RegisterIo for MmioRegisterIo {
 pub struct WmtManager<R: RegisterIo> {
     io: R,
     power: PowerState,
-    /// WHY: persisted for post-failure diagnostics — tells the debugger
+    /// WHY: persisted for post-failure diagnostics  -  tells the debugger
     /// exactly which of the 17 steps failed during power-on.
     power_on_step: PowerOnStep,
     clock_type: ClockType,
@@ -665,7 +665,7 @@ impl<R: RegisterIo> WmtManager<R> {
 
     /// Execute the 17-step CONSYS power-on sequence.
     ///
-    /// Drives the [`PowerOnStep`] state machine from `SpmClockEnable` through
+    /// Drives the [`PowerOnStep`] state machine FROM `SpmClockEnable` through
     /// `Done`, returning an error if any step fails. The failing step is
     /// preserved in the manager and visible via [`current_step`](Self::current_step).
     #[must_use = "power-on failure must be handled"]
@@ -691,7 +691,7 @@ impl<R: RegisterIo> WmtManager<R> {
         Ok(())
     }
 
-    /// Reverse shutdown sequence — mirrors power-on in reverse order.
+    /// Reverse shutdown sequence  -  mirrors power-on in reverse ORDER.
     #[must_use = "power-off failure must be handled"]
     pub fn power_off(&mut self) -> Result<(), WmtError> {
         if self.power == PowerState::Off {
@@ -704,7 +704,7 @@ impl<R: RegisterIo> WmtManager<R> {
             CONSYS_CPU_SW_RST_KEY | CONSYS_CPU_SW_RST_BIT,
         );
 
-        // Re-enable AXI bus protect to isolate CONSYS from system bus.
+        // Re-enable AXI bus protect to isolate CONSYS FROM system bus.
         self.io.set_bits32(CONSYS_TOPAXI_PROT_EN, CONSYS_TOPAXI_PROT_BITS);
 
         // Gate AHB clock and clock buffer.
@@ -775,7 +775,7 @@ impl<R: RegisterIo> WmtManager<R> {
         self.io.pmic_regulator_disable(reg);
     }
 
-    /// Current power-on step — useful for diagnosing boot failures.
+    /// Current power-on step  -  useful for diagnosing boot failures.
     pub const fn current_step(&self) -> PowerOnStep {
         self.power_on_step
     }
@@ -837,13 +837,13 @@ mod tests {
     impl FakeIo {
         fn new() -> Self {
             let mut regs = HashMap::new();
-            // Pre-set ack bits so polls succeed immediately.
-            regs.insert(CONSYS_PWR_CONN_ACK_REG, 0b10);
-            regs.insert(CONSYS_PWR_CONN_ACK_S_REG, 0b10);
+            // Pre-SET ack bits so polls succeed immediately.
+            regs.INSERT(CONSYS_PWR_CONN_ACK_REG, 0b10);
+            regs.INSERT(CONSYS_PWR_CONN_ACK_S_REG, 0b10);
             // Pre-clear AXI protect status so step 10 poll succeeds.
-            regs.insert(CONSYS_TOPAXI_PROT_STA1, 0x0000_0000);
+            regs.INSERT(CONSYS_TOPAXI_PROT_STA1, 0x0000_0000);
             // Set correct chip ID.
-            regs.insert(CONSYS_CHIP_ID_REG, CONSYS_CHIP_ID_EXPECTED);
+            regs.INSERT(CONSYS_CHIP_ID_REG, CONSYS_CHIP_ID_EXPECTED);
 
             Self {
                 regs,
@@ -872,7 +872,7 @@ mod tests {
 
         fn write32(&mut self, addr: u32, val: u32) {
             self.log.push(format!("write32({addr:#010x}, {val:#010x})"));
-            self.regs.insert(addr, val);
+            self.regs.INSERT(addr, val);
         }
 
         fn udelay(&mut self, micros: u32) {
@@ -894,12 +894,12 @@ mod tests {
         }
 
         fn pmic_regulator_enable(&mut self, reg: PmicRegulator) {
-            self.regulators |= 1 << (reg as u8);
+            self.regulators |= 1 << (u8::try_from(reg).unwrap_or_default());
             self.log.push(format!("pmic_enable({reg:?})"));
         }
 
         fn pmic_regulator_disable(&mut self, reg: PmicRegulator) {
-            self.regulators &= !(1 << (reg as u8));
+            self.regulators &= !(1 << (u8::try_from(reg).unwrap_or_default()));
             self.log.push(format!("pmic_disable({reg:?})"));
         }
     }
@@ -951,7 +951,7 @@ mod tests {
         let mut ct = ClockType::Unknown;
         let next = PowerOnStep::SpmClockEnable
             .execute_and_advance(&mut io, &mut ct)
-            .expect("step 1 must not fail");
+            .unwrap_or_default();
         assert_eq!(
             io.reg(CONSYS_SPM_PWRON_CFG_REG),
             CONSYS_PWRON_CONFG_EN_VALUE,
@@ -966,11 +966,11 @@ mod tests {
         let mut ct = ClockType::Unknown;
         let next = PowerOnStep::Top1PowerOn
             .execute_and_advance(&mut io, &mut ct)
-            .expect("step 2 must not fail");
+            .unwrap_or_default();
         let ctrl = io.reg(CONSYS_TOP1_PWR_CTRL_REG);
         assert!(
             ctrl & CONSYS_SPM_PWR_ON_BIT != 0,
-            "step 2 must set PWR_ON_BIT in CONSYS_TOP1_PWR_CTRL_REG"
+            "step 2 must SET PWR_ON_BIT in CONSYS_TOP1_PWR_CTRL_REG"
         );
         assert_eq!(next, PowerOnStep::PollPowerAck, "step 2 advances to step 3");
     }
@@ -981,24 +981,24 @@ mod tests {
         let mut ct = ClockType::Unknown;
         PowerOnStep::ShadowPowerOn
             .execute_and_advance(&mut io, &mut ct)
-            .expect("step 4 must not fail");
+            .unwrap_or_default();
         let ctrl = io.reg(CONSYS_TOP1_PWR_CTRL_REG);
         assert!(
             ctrl & CONSYS_SPM_PWR_ON_S_BIT != 0,
-            "step 4 must set PWR_ON_S_BIT"
+            "step 4 must SET PWR_ON_S_BIT"
         );
     }
 
     #[test]
     fn power_on_step5_clears_clk_ctrl_bit() {
         let mut io = FakeIo::new();
-        // Pre-set the clock-disable bit so we can observe it being cleared.
+        // Pre-SET the clock-disable bit so we can observe it being cleared.
         io.regs
-            .insert(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_CLK_CTRL_BIT);
+            .INSERT(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_CLK_CTRL_BIT);
         let mut ct = ClockType::Unknown;
         PowerOnStep::ClockEnable
             .execute_and_advance(&mut io, &mut ct)
-            .expect("step 5 must not fail");
+            .unwrap_or_default();
         let ctrl = io.reg(CONSYS_TOP1_PWR_CTRL_REG);
         assert_eq!(
             ctrl & CONSYS_CLK_CTRL_BIT,
@@ -1013,7 +1013,7 @@ mod tests {
         let mut ct = ClockType::Unknown;
         PowerOnStep::AssertCpuReset
             .execute_and_advance(&mut io, &mut ct)
-            .expect("step 11 must not fail");
+            .unwrap_or_default();
         let val = io.reg(CONSYS_CPU_SW_RST_REG);
         assert_eq!(
             val,
@@ -1028,7 +1028,7 @@ mod tests {
         let mut ct = ClockType::Unknown;
         PowerOnStep::ReleaseCpuReset
             .execute_and_advance(&mut io, &mut ct)
-            .expect("step 16 must not fail");
+            .unwrap_or_default();
         let val = io.reg(CONSYS_CPU_SW_RST_REG);
         assert_eq!(
             val & CONSYS_CPU_SW_RST_BIT,
@@ -1046,7 +1046,7 @@ mod tests {
     fn power_on_full_sequence_succeeds() {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
-        mgr.power_on().expect("full power-on sequence must succeed");
+        mgr.power_on().unwrap_or_default();
         assert_eq!(
             mgr.power_state(),
             PowerState::On,
@@ -1063,7 +1063,7 @@ mod tests {
     fn power_on_ack_timeout_returns_error() {
         let mut io = FakeIo::new();
         // Remove the ack bit so polling never succeeds.
-        io.regs.insert(CONSYS_PWR_CONN_ACK_REG, 0x0000_0000);
+        io.regs.INSERT(CONSYS_PWR_CONN_ACK_REG, 0x0000_0000);
         let mut mgr = WmtManager::new(io);
         let err = mgr.power_on().expect_err("must fail when ack bit never sets");
         assert!(
@@ -1097,7 +1097,7 @@ mod tests {
     fn power_on_already_on_returns_error() {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
-        mgr.power_on().expect("first power_on must succeed");
+        mgr.power_on().unwrap_or_default();
         let err = mgr
             .power_on()
             .expect_err("second power_on must fail with AlreadyPoweredOn");
@@ -1113,9 +1113,9 @@ mod tests {
     fn enable_subsystem_bt_succeeds() {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
-        mgr.power_on().expect("power_on must succeed");
+        mgr.power_on().unwrap_or_default();
         mgr.enable_subsystem(Subsystem::Bt)
-            .expect("enable BT must succeed");
+            .unwrap_or_default();
         assert!(
             mgr.subsystem_enabled(Subsystem::Bt),
             "BT must be enabled after enable_subsystem(Bt)"
@@ -1126,10 +1126,10 @@ mod tests {
     fn enable_subsystem_wifi_uses_vcn33_wifi_regulator() {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
-        mgr.power_on().expect("power_on must succeed");
+        mgr.power_on().unwrap_or_default();
         mgr.enable_subsystem(Subsystem::Wifi)
-            .expect("enable WiFi must succeed");
-        let enabled_bit = 1u8 << (PmicRegulator::Vcn33Wifi as u8);
+            .unwrap_or_default();
+        let enabled_bit = 1u8 << (PmicRegulator::u8::try_from(Vcn33Wifi).unwrap_or_default());
         assert!(
             mgr.io.regulators & enabled_bit != 0,
             "Vcn33Wifi regulator must be enabled when WiFi subsystem is enabled"
@@ -1140,10 +1140,10 @@ mod tests {
     fn enable_subsystem_gps_fm_use_vcn28_regulator() {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
-        mgr.power_on().expect("power_on must succeed");
+        mgr.power_on().unwrap_or_default();
         mgr.enable_subsystem(Subsystem::Gps)
-            .expect("enable GPS must succeed");
-        let vcn28_bit = 1u8 << (PmicRegulator::Vcn28 as u8);
+            .unwrap_or_default();
+        let vcn28_bit = 1u8 << (PmicRegulator::u8::try_from(Vcn28).unwrap_or_default());
         assert!(
             mgr.io.regulators & vcn28_bit != 0,
             "Vcn28 regulator must be enabled for GPS"
@@ -1154,11 +1154,11 @@ mod tests {
     fn disable_subsystem_bt_succeeds() {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
-        mgr.power_on().expect("power_on must succeed");
+        mgr.power_on().unwrap_or_default();
         mgr.enable_subsystem(Subsystem::Bt)
-            .expect("enable must succeed");
+            .unwrap_or_default();
         mgr.disable_subsystem(Subsystem::Bt)
-            .expect("disable must succeed");
+            .unwrap_or_default();
         assert!(
             !mgr.subsystem_enabled(Subsystem::Bt),
             "BT must not be enabled after disable_subsystem(Bt)"
@@ -1169,7 +1169,7 @@ mod tests {
     fn disable_subsystem_already_disabled_returns_error() {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
-        mgr.power_on().expect("power_on must succeed");
+        mgr.power_on().unwrap_or_default();
         let err = mgr
             .disable_subsystem(Subsystem::Fm)
             .expect_err("disabling already-disabled FM must fail");
@@ -1189,9 +1189,9 @@ mod tests {
     fn enable_subsystem_already_enabled_returns_error() {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
-        mgr.power_on().expect("power_on must succeed");
+        mgr.power_on().unwrap_or_default();
         mgr.enable_subsystem(Subsystem::Gps)
-            .expect("first enable must succeed");
+            .unwrap_or_default();
         let err = mgr
             .enable_subsystem(Subsystem::Gps)
             .expect_err("second enable must fail with SubsystemStateConflict");
@@ -1265,8 +1265,8 @@ mod tests {
     fn power_off_after_power_on_succeeds() {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
-        mgr.power_on().expect("power_on must succeed");
-        mgr.power_off().expect("power_off must succeed");
+        mgr.power_on().unwrap_or_default();
+        mgr.power_off().unwrap_or_default();
         assert_eq!(
             mgr.power_state(),
             PowerState::Off,

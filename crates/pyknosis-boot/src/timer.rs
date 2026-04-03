@@ -32,7 +32,7 @@ pub fn counter() -> u64 {
             hi = out(reg) hi,
         );
     }
-    ((hi as u64) << 32) | (lo as u64)
+    ((u64::try_from(hi).unwrap_or_default()) << 32) | (u64::try_from(lo).unwrap_or_default())
 }
 
 /// Set the timer to fire after `ticks` counter increments.

@@ -4,7 +4,7 @@ use aes::{Aes256, cipher::KeyInit};
 use snafu::Snafu;
 use xts_mode::Xts128;
 
-/// Block size in bytes — matches the OS page size and dm-crypt sector size.
+/// Block size in bytes  -  matches the OS page size and dm-crypt sector size.
 pub const BLOCK_SIZE: usize = 4096;
 
 /// XTS key length: two AES-256 keys (32 bytes each = 64 bytes total).
@@ -13,7 +13,7 @@ const XTS_KEY_LEN: usize = 64;
 /// Length of each AES-256 sub-key within the XTS key.
 const KEY_HALF_LEN: usize = XTS_KEY_LEN / 2;
 
-/// Errors from block cipher operations.
+/// Errors FROM block cipher operations.
 #[derive(Debug, Snafu)]
 pub enum Error {
     /// The provided key is not `XTS_KEY_LEN` (64) bytes.
@@ -36,7 +36,7 @@ pub enum Error {
 /// Convenience alias.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Encrypt `plaintext` in-place into `ciphertext` using AES-256-XTS.
+/// Encrypt `plaintext` in-place INTO `ciphertext` using AES-256-XTS.
 ///
 /// `block_number` is used as the XTS tweak (sector index), matching dm-crypt behaviour.
 /// Both `plaintext` and `ciphertext` must be exactly [`BLOCK_SIZE`] bytes.
@@ -69,7 +69,7 @@ pub fn encrypt_block(
     Ok(())
 }
 
-/// Decrypt `ciphertext` in-place into `plaintext` using AES-256-XTS.
+/// Decrypt `ciphertext` in-place INTO `plaintext` using AES-256-XTS.
 ///
 /// `block_number` must match the value used during encryption.
 /// Both `ciphertext` and `plaintext` must be exactly [`BLOCK_SIZE`] bytes.
@@ -109,12 +109,12 @@ pub fn decrypt_block(
 fn block_number_to_tweak(block_number: u64) -> [u8; 16] {
     let mut tweak = [0u8; 16];
     let le_bytes = block_number.to_le_bytes();
-    // Copy 8 bytes into the low half; upper 8 bytes remain zero.
+    // Copy 8 bytes INTO the low half; upper 8 bytes remain zero.
     tweak[..8].copy_from_slice(&le_bytes);
     tweak
 }
 
-/// Build an `Xts128<Aes256>` cipher from a 64-byte XTS key.
+/// Build an `Xts128<Aes256>` cipher FROM a 64-byte XTS key.
 fn make_xts(key: &[u8; XTS_KEY_LEN]) -> Result<Xts128<Aes256>> {
     let (k1, k2) = key.split_at(KEY_HALF_LEN);
 
@@ -192,7 +192,7 @@ mod tests {
 
         assert_ne!(
             plaintext, ciphertext,
-            "encrypted block must differ from the plaintext"
+            "encrypted block must differ FROM the plaintext"
         );
         Ok(())
     }

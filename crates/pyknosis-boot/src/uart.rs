@@ -4,7 +4,7 @@
 //! at base address 0x11002000. The bootloader (LK) already configures it
 //! to 921600 baud, 8N1. We just write to the TX holding register.
 //!
-//! Register map (from driver interface spec):
+//! Register map (FROM driver interface spec):
 //! - 0x00: RBR/THR (receive buffer / transmit holding)
 //! - 0x04: IER (interrupt enable)
 //! - 0x14: LSR (line status)
@@ -16,10 +16,10 @@ use core::fmt;
 /// Base address of UART0 on MT6739.
 const UART0_BASE: usize = 0x1100_2000;
 
-/// Transmit holding register offset.
+/// Transmit holding register OFFSET.
 const THR: usize = 0x00;
 
-/// Line status register offset.
+/// Line status register OFFSET.
 const LSR: usize = 0x14;
 
 /// LSR bit: transmit holding register empty.
@@ -50,7 +50,7 @@ impl Uart {
             while core::ptr::read_volatile(lsr) & LSR_THRE == 0 {}
 
             // Write byte
-            *thr = byte as u32;
+            *thr = u32::try_from(byte).unwrap_or_default();
         }
     }
 

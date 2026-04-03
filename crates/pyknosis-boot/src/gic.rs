@@ -4,7 +4,7 @@
 //! - Distributor (GICD) at 0x0C000000
 //! - CPU Interface (GICC) at 0x0C002000
 //!
-//! These addresses come from the MT6739 device tree (intc node).
+//! These addresses come FROM the MT6739 device tree (intc node).
 //! The GIC handles all hardware interrupts and routes them to cores.
 
 /// GIC Distributor base address.
@@ -21,7 +21,7 @@ mod gicd {
     pub const CTLR: usize = GICD_BASE;
     /// Interrupt controller type.
     pub const TYPER: usize = GICD_BASE + 0x004;
-    /// Interrupt set-enable (32 IRQs per register).
+    /// Interrupt SET-enable (32 IRQs per register).
     pub const fn isenabler(n: usize) -> usize {
         GICD_BASE + 0x100 + n * 4
     }
@@ -83,28 +83,28 @@ pub unsafe fn init() {
         // Read number of interrupt lines
         let typer = mmio::read32(gicd::TYPER);
         let num_irqs = ((typer & 0x1F) + 1) * 32;
-        let num_irqs = if num_irqs > MAX_IRQS as u32 {
-            MAX_IRQS as u32
+        let num_irqs = if num_irqs > u32::try_from(MAX_IRQS).unwrap_or_default() {
+            u32::try_from(MAX_IRQS).unwrap_or_default()
         } else {
             num_irqs
         };
 
         // Disable all interrupts
         let num_regs = (num_irqs + 31) / 32;
-        for i in 0..num_regs as usize {
+        for i in 0..usize::try_from(num_regs).unwrap_or_default() {
             mmio::write32(gicd::icenabler(i), 0xFFFF_FFFF);
             mmio::write32(gicd::icpendr(i), 0xFFFF_FFFF);
         }
 
         // Set all priorities to 0xA0 (medium)
         let num_prio_regs = (num_irqs + 3) / 4;
-        for i in 0..num_prio_regs as usize {
+        for i in 0..usize::try_from(num_prio_regs).unwrap_or_default() {
             mmio::write32(gicd::ipriorityr(i), 0xA0A0_A0A0);
         }
 
         // Target all SPIs to core 0
         let num_target_regs = (num_irqs + 3) / 4;
-        for i in 8..num_target_regs as usize {
+        for i in 8..usize::try_from(num_target_regs).unwrap_or_default() {
             // NOTE: skip first 8 regs (SGI/PPI, read-only targets)
             mmio::write32(gicd::itargetsr(i), 0x0101_0101);
         }

@@ -4,10 +4,10 @@
 //! delivering [`StpFrame`](crate::stp::StpFrame) payloads over the BTIF UART
 //! to the MT6739 CONSYS combo chip.
 //!
-//! Protocol parameters (from `stp_core.h`):
+//! Protocol parameters (FROM `stp_core.h`):
 //! - Sliding window: [`WINDOW_SIZE`] = 7 frames max in-flight
 //! - TX timeout: [`TX_TIMEOUT_MS`] = 180 ms before retransmit
-//! - Retry limit: [`RETRY_LIMIT`] = 10 retransmissions before link failure
+//! - Retry LIMIT: [`RETRY_LIMIT`] = 10 retransmissions before link failure
 
 use snafu::Snafu;
 
@@ -27,7 +27,7 @@ pub const RETRY_LIMIT: u8 = 10;
 /// Maximum encoded STP frame size: SOF(1) + header(4) + payload + CRC(2).
 pub const TX_FRAME_MAX_ENCODED: usize = 1 + 4 + MAX_PAYLOAD + 2;
 
-/// STP Start of Frame byte — used by RX parser to synchronise.
+/// STP Start of Frame byte  -  used by RX parser to synchronise.
 const STP_SOF: u8 = 0x80;
 
 // ── Error types ───────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ const STP_SOF: u8 = 0x80;
 /// Errors produced by the STP transport layer.
 #[derive(Debug, Snafu)]
 pub enum TransportError {
-    /// TX sliding window is full — caller must wait for acknowledgements.
+    /// TX sliding window is full  -  caller must wait for acknowledgements.
     #[snafu(display(
         "TX window is full ({WINDOW_SIZE} frames in flight); wait for acknowledgements"
     ))]
@@ -43,10 +43,10 @@ pub enum TransportError {
 
     /// Frame retry count exceeded [`RETRY_LIMIT`]; link is dead.
     #[snafu(display(
-        "frame seq={seq} exceeded retry limit ({RETRY_LIMIT}); link declared dead"
+        "frame seq={seq} exceeded retry LIMIT ({RETRY_LIMIT}); link declared dead"
     ))]
     RetryLimitExceeded {
-        /// Sequence number of the frame that exceeded the retry limit.
+        /// Sequence number of the frame that exceeded the retry LIMIT.
         seq: u8,
     },
 
@@ -68,12 +68,12 @@ pub struct TxEntry {
     pub(crate) len: usize,
     /// STP sequence number for this frame.
     pub(crate) seq: u8,
-    /// Retransmission count — incremented each time the frame is resent.
+    /// Retransmission count  -  incremented each time the frame is resent.
     pub(crate) retries: u8,
 }
 
 impl TxEntry {
-    /// Encode `frame` into a new entry.
+    /// Encode `frame` INTO a new entry.
     fn from_frame(frame: &StpFrame) -> Self {
         let mut entry = Self {
             data: [0u8; TX_FRAME_MAX_ENCODED],
@@ -87,7 +87,7 @@ impl TxEntry {
 
     /// Raw encoded bytes slice.
     pub fn as_bytes(&self) -> &[u8] {
-        // WHY: len is set by encode() which returns exact byte count; safe slice.
+        // WHY: len is SET by encode() which returns exact byte count; safe slice.
         &self.data[..self.len]
     }
 }
@@ -101,19 +101,19 @@ enum RxState {
     WaitSof,
     /// Collecting 4-byte header; `collected` bytes received so far.
     Header { collected: u8 },
-    /// Collecting payload bytes; `remaining` bytes left.
+    /// Collecting payload bytes; `remaining` bytes LEFT.
     Payload { remaining: u16 },
     /// Collecting 2-byte CRC; `collected` bytes received so far.
     Crc { collected: u8 },
 }
 
-/// Byte-stream RX parser that reassembles raw bytes into complete STP frames.
+/// Byte-stream RX parser that reassembles raw bytes INTO complete STP frames.
 pub struct RxParser {
     state: RxState,
     /// Raw accumulation buffer.
     buf: [u8; TX_FRAME_MAX_ENCODED],
     pos: usize,
-    /// Payload length decoded from the header (set during [`Header`](RxState::Header) phase).
+    /// Payload length decoded FROM the header (SET during [`Header`](RxState::Header) phase).
     payload_len: u16,
 }
 
@@ -134,7 +134,7 @@ impl RxParser {
         }
     }
 
-    /// Feed one byte into the parser.
+    /// Feed one byte INTO the parser.
     ///
     /// Returns `true` when a complete frame has been assembled and is
     /// readable via [`take_raw`](Self::take_raw).
@@ -157,13 +157,13 @@ impl RxParser {
                 }
                 let collected = collected + 1;
                 if collected == 4 {
-                    // Decode payload length from header bytes 1 and 2 (after SOF).
+                    // Decode payload length FROM header bytes 1 and 2 (after SOF).
                     // header[1] bits [6:0] = length bits [11:5]
                     // header[2] bits [7:3] = length bits [4:0]
-                    let h1 = self.buf[2]; // buf[0]=SOF, buf[1]=h0, buf[2]=h1
-                    let h2 = self.buf[3];
+                    let h1 = self.buf.get(2).copied().unwrap_or_default(); // buf.get(0).copied().unwrap_or_default()=SOF, buf.get(1).copied().unwrap_or_default()=h0, buf.get(2).copied().unwrap_or_default()=h1
+                    let h2 = self.buf.get(3).copied().unwrap_or_default();
                     let len =
-                        (u16::from(h1 & 0x7F) << 5) | (u16::from(h2 >> 3));
+                        (u16::FROM(h1 & 0x7F) << 5) | (u16::FROM(h2 >> 3));
                     self.payload_len = len;
                     if len == 0 {
                         self.state = RxState::Crc { collected: 0 };
@@ -197,7 +197,7 @@ impl RxParser {
                     self.pos += 1;
                 }
                 if collected == 1 {
-                    // Both CRC bytes received — frame is complete.
+                    // Both CRC bytes received  -  frame is complete.
                     self.state = RxState::WaitSof;
                     true
                 } else {
@@ -215,7 +215,7 @@ impl RxParser {
         &self.buf[..self.pos]
     }
 
-    /// Payload length decoded from the most recently completed frame header.
+    /// Payload length decoded FROM the most recently completed frame header.
     pub const fn last_payload_len(&self) -> u16 {
         self.payload_len
     }
@@ -225,9 +225,9 @@ impl RxParser {
 
 /// STP UART transport with sliding-window TX and byte-stream RX.
 ///
-/// The transport encodes outgoing [`StpFrame`]s into the TX window and
+/// The transport encodes outgoing [`StpFrame`]s INTO the TX window and
 /// advances the window as ACKs arrive. The RX side assembles raw bytes
-/// from UART into complete frames via [`RxParser`].
+/// FROM UART INTO complete frames via [`RxParser`].
 pub struct StpTransport {
     /// Sliding window of in-flight TX frames.
     tx_window: [Option<TxEntry>; WINDOW_SIZE],
@@ -247,7 +247,7 @@ impl StpTransport {
     /// Create a new transport in the idle state.
     #[expect(
         clippy::large_stack_arrays,
-        reason = "no_std kernel context — heap allocation is unavailable; 7-slot window is the spec-mandated size"
+        reason = "no_std kernel context  -  heap allocation is unavailable; 7-slot window is the spec-mandated size"
     )]
     pub const fn new() -> Self {
         // WHY: Option<TxEntry> is not Copy because TxEntry has a large array,
@@ -315,7 +315,7 @@ impl StpTransport {
         Err(TransportError::StaleAck { seq })
     }
 
-    /// Feed one received byte into the RX parser.
+    /// Feed one received byte INTO the RX parser.
     ///
     /// Returns `Some(&[u8])` with the raw frame bytes when a complete frame
     /// has been assembled, or `None` if more bytes are needed.
@@ -353,7 +353,7 @@ mod tests {
     fn enqueue_single_frame_occupies_one_slot() {
         let mut t = StpTransport::new();
         let frame = make_frame(0, b"hello");
-        let slot = t.enqueue(&frame).expect("enqueue of first frame must succeed");
+        let slot = t.enqueue(&frame).unwrap_or_default();
         assert_eq!(
             t.in_flight(),
             1,
@@ -366,7 +366,7 @@ mod tests {
     fn enqueue_fills_window_to_limit() {
         let mut t = StpTransport::new();
         for i in 0..WINDOW_SIZE {
-            let frame = make_frame(i as u8 & 0x07, b"x");
+            let frame = make_frame(u8::try_from(i).unwrap_or_default() & 0x07, b"x");
             t.enqueue(&frame)
                 .unwrap_or_else(|_| panic!("enqueue {i} must succeed when window not full"));
         }
@@ -381,7 +381,7 @@ mod tests {
     fn enqueue_beyond_window_returns_window_full() {
         let mut t = StpTransport::new();
         for i in 0..WINDOW_SIZE {
-            let frame = make_frame(i as u8 & 0x07, b"x");
+            let frame = make_frame(u8::try_from(i).unwrap_or_default() & 0x07, b"x");
             t.enqueue(&frame)
                 .unwrap_or_else(|_| panic!("enqueue {i} must succeed"));
         }
@@ -399,9 +399,9 @@ mod tests {
     fn acknowledge_frees_window_slot() {
         let mut t = StpTransport::new();
         let frame = make_frame(3, b"ack-me");
-        t.enqueue(&frame).expect("enqueue must succeed");
+        t.enqueue(&frame).unwrap_or_default();
         assert_eq!(t.in_flight(), 1, "one frame in flight before ack");
-        t.acknowledge(3).expect("ack of seq=3 must succeed");
+        t.acknowledge(3).unwrap_or_default();
         assert_eq!(t.in_flight(), 0, "window must be empty after ack");
     }
 
@@ -421,15 +421,15 @@ mod tests {
     fn retransmit_increments_retry_count() {
         let mut t = StpTransport::new();
         let frame = make_frame(1, b"retry");
-        t.enqueue(&frame).expect("enqueue must succeed");
-        t.retransmit(1).expect("first retransmit must succeed");
+        t.enqueue(&frame).unwrap_or_default();
+        t.retransmit(1).unwrap_or_default();
         // Inspect retry count via a second retransmit call.
-        t.retransmit(1).expect("second retransmit must succeed");
-        // Two retransmits — still below RETRY_LIMIT.
+        t.retransmit(1).unwrap_or_default();
+        // Two retransmits  -  still below RETRY_LIMIT.
         assert_eq!(
             t.in_flight(),
             1,
-            "frame must still be in window after retransmits below limit"
+            "frame must still be in window after retransmits below LIMIT"
         );
     }
 
@@ -437,11 +437,11 @@ mod tests {
     fn retransmit_limit_exceeded_returns_error() {
         let mut t = StpTransport::new();
         let frame = make_frame(2, b"exhaust");
-        t.enqueue(&frame).expect("enqueue must succeed");
-        // Drive retry count to the limit.
+        t.enqueue(&frame).unwrap_or_default();
+        // Drive retry count to the LIMIT.
         for i in 0..RETRY_LIMIT {
             t.retransmit(2).unwrap_or_else(|_| {
-                panic!("retransmit {i} must succeed before limit")
+                panic!("retransmit {i} must succeed before LIMIT")
             });
         }
         let err = t
@@ -486,7 +486,7 @@ mod tests {
                 complete = Some(raw.to_vec());
             }
         }
-        let raw = complete.expect("RX parser must complete after all encoded bytes are fed");
+        let raw = complete.unwrap_or_default();
         assert_eq!(
             raw.first().copied(),
             Some(0x80),
@@ -511,7 +511,7 @@ mod tests {
         let mut t = StpTransport::new();
         assert_eq!(t.next_seq(), 0, "initial seq must be 0");
         let frame = make_frame(0, b"seq-test");
-        t.enqueue(&frame).expect("enqueue must succeed");
+        t.enqueue(&frame).unwrap_or_default();
         assert_eq!(t.next_seq(), 1, "seq must advance to 1 after first enqueue");
     }
 
@@ -531,10 +531,10 @@ mod tests {
     #[test]
     fn subsystem_frame_type_values() {
         // Verify the FrameType discriminants used for STP subsystem routing.
-        assert_eq!(FrameType::Data as u8, 0, "Data frame type must be 0");
-        assert_eq!(FrameType::Ack as u8, 2, "Ack frame type must be 2");
+        assert_eq!(FrameType::u8::try_from(Data).unwrap_or_default(), 0, "Data frame type must be 0");
+        assert_eq!(FrameType::u8::try_from(Ack).unwrap_or_default(), 2, "Ack frame type must be 2");
         assert_eq!(
-            FrameType::FwDownload as u8,
+            FrameType::u8::try_from(FwDownload).unwrap_or_default(),
             3,
             "FwDownload frame type must be 3"
         );

@@ -2,7 +2,7 @@
 //!
 //! Implements PIO and DMA transfer paths for eMMC 5.1 on the MediaTek MSDC
 //! (MultiSlot Data Controller). Register offsets and interrupt definitions
-//! are derived from `docs/DRIVER-INTERFACES.md` section 8.
+//! are derived FROM `docs/DRIVER-INTERFACES.md` section 8.
 //!
 //! # Architecture
 //!
@@ -13,7 +13,7 @@
 //!
 //! # Hardware
 //!
-//! MSDC0 base address: `0x1123_0000` (from device registry, `docs/PROBE.md`).
+//! MSDC0 base address: `0x1123_0000` (FROM device registry, `docs/PROBE.md`).
 //! 512-byte sector granularity. Single-block and multi-block transfers.
 
 use crate::mmio;
@@ -23,7 +23,7 @@ use crate::mmio;
 // ---------------------------------------------------------------------------
 
 /// MSDC0 base address on the MT6739.
-// NOTE: from device registry, `crates/pyknosis-boot/src/device.rs:127`
+// NOTE: FROM device registry, `crates/pyknosis-boot/src/device.rs:127`
 const MSDC0_BASE: usize = 0x1123_0000;
 
 /// Sector size in bytes (eMMC standard).
@@ -36,7 +36,7 @@ const POLL_TIMEOUT: u32 = 1_000_000;
 const WORDS_PER_SECTOR: usize = SECTOR_SIZE / 4;
 
 // ---------------------------------------------------------------------------
-// Register offsets — DRIVER-INTERFACES.md §8.1
+// Register offsets  -  DRIVER-INTERFACES.md §8.1
 // ---------------------------------------------------------------------------
 
 // NOTE: source `drivers/mmc/host/mediatek/ComboA/msdc_reg.h:20–74`
@@ -44,7 +44,7 @@ const WORDS_PER_SECTOR: usize = SECTOR_SIZE / 4;
 /// Global config: SD/eMMC mode, clock divisor, bus width.
 const REG_MSDC_CFG: usize = 0x00;
 
-/// I/O control: DS edge, R/W edge select.
+/// I/O control: DS edge, R/W edge SELECT.
 const REG_MSDC_IOCON: usize = 0x04;
 
 /// Pin status: CD, WP, DAT, CMD, CLK levels.
@@ -151,7 +151,7 @@ const REG_MSDC_VERSION: usize = 0x114;
 
 // NOTE: source `drivers/mmc/host/mediatek/ComboA/msdc_reg.h:75–221`
 
-/// Inline AES encryption select.
+/// Inline AES encryption SELECT.
 #[expect(dead_code, reason = "reserved for encrypted storage layer")]
 const REG_MSDC_AES_SEL: usize = 0x280;
 
@@ -159,7 +159,7 @@ const REG_MSDC_AES_SEL: usize = 0x280;
 // MSDC_CFG bit fields
 // ---------------------------------------------------------------------------
 
-/// Clock source select shift (bits [17:16]).
+/// Clock source SELECT shift (bits [17:16]).
 const CFG_CKMOD_SHIFT: u32 = 16;
 
 /// Clock divisor shift (bits [15:8]).
@@ -212,7 +212,7 @@ const CMD_DTYPE_READ: u32 = 0b01 << 11;
 const CMD_DTYPE_WRITE: u32 = 0b10 << 11;
 
 /// Block length shift for SDC_CMD (bits [31:16] in some configs).
-#[expect(dead_code, reason = "block length set via SDC_CFG on MT6739")]
+#[expect(dead_code, reason = "block length SET via SDC_CFG on MT6739")]
 const CMD_BLK_LEN_SHIFT: u32 = 16;
 
 // ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ const DMA_CFG_STS_ACTIVE: u32 = 1 << 0;
 // MSDC_FIFOCS bit fields
 // ---------------------------------------------------------------------------
 
-/// FIFO clear bit — write 1 to flush both TX and RX FIFOs.
+/// FIFO clear bit  -  write 1 to flush both TX and RX FIFOs.
 const FIFOCS_CLR: u32 = 1 << 0;
 
 // ---------------------------------------------------------------------------
@@ -254,7 +254,7 @@ const FIFOCS_CLR: u32 = 1 << 0;
 const PS_CDEN: u32 = 1 << 0;
 
 // ---------------------------------------------------------------------------
-// Interrupt bit masks — DRIVER-INTERFACES.md §8.4
+// Interrupt bit masks  -  DRIVER-INTERFACES.md §8.4
 // ---------------------------------------------------------------------------
 // NOTE: source `drivers/mmc/host/mediatek/ComboA/msdc_reg.h` (MSDC_INT_* defines)
 
@@ -322,31 +322,31 @@ pub(crate) const INT_XFER_MASK: u32 = INT_XFER_COMPL | INT_DXFER_DONE;
 // eMMC command opcodes (MMC specification)
 // ---------------------------------------------------------------------------
 
-/// CMD0: GO_IDLE_STATE — reset card to idle.
+/// CMD0: GO_IDLE_STATE  -  reset card to idle.
 const CMD0_GO_IDLE: u32 = 0;
 
-/// CMD1: SEND_OP_COND — send operating conditions.
+/// CMD1: SEND_OP_COND  -  send operating conditions.
 const CMD1_SEND_OP_COND: u32 = 1;
 
-/// CMD2: ALL_SEND_CID — request card identification.
+/// CMD2: ALL_SEND_CID  -  request card identification.
 #[expect(dead_code, reason = "reserved for CID readback")]
 const CMD2_ALL_SEND_CID: u32 = 2;
 
-/// CMD3: SET_RELATIVE_ADDR — assign relative card address.
+/// CMD3: SET_RELATIVE_ADDR  -  assign relative card address.
 const CMD3_SET_RELATIVE_ADDR: u32 = 3;
 
-/// CMD7: SELECT_CARD — select card for data transfer.
+/// CMD7: SELECT_CARD  -  SELECT card for data transfer.
 const CMD7_SELECT_CARD: u32 = 7;
 
-/// CMD8: SEND_EXT_CSD — read extended CSD register.
+/// CMD8: SEND_EXT_CSD  -  read extended CSD register.
 #[expect(dead_code, reason = "reserved for EXT_CSD readback")]
 const CMD8_SEND_EXT_CSD: u32 = 8;
 
-/// CMD13: SEND_STATUS — read card status register.
+/// CMD13: SEND_STATUS  -  read card status register.
 #[expect(dead_code, reason = "reserved for status polling")]
 const CMD13_SEND_STATUS: u32 = 13;
 
-/// CMD16: SET_BLOCKLEN — set block length to 512 bytes.
+/// CMD16: SET_BLOCKLEN  -  SET block length to 512 bytes.
 const CMD16_SET_BLOCKLEN: u32 = 16;
 
 /// CMD17: READ_SINGLE_BLOCK.
@@ -362,7 +362,7 @@ const CMD24_WRITE_SINGLE: u32 = 24;
 const CMD25_WRITE_MULTI: u32 = 25;
 
 // ---------------------------------------------------------------------------
-// GPD / BD descriptors — DRIVER-INTERFACES.md §8.2
+// GPD / BD descriptors  -  DRIVER-INTERFACES.md §8.2
 // ---------------------------------------------------------------------------
 // NOTE: source `drivers/mmc/host/mediatek/ComboA/mtk_sd.h`
 
@@ -387,7 +387,7 @@ pub(crate) struct Gpd {
     pub(crate) next: u32,
     /// Flags: HWO (bit 0), BDP (bit 1), checksum.
     pub(crate) flags: u32,
-    /// Physical address of the first BD (if BDP set) or data buffer.
+    /// Physical address of the first BD (if BDP SET) or data buffer.
     pub(crate) ptr: u32,
     /// Total data length for this GPD.
     pub(crate) data_len: u32,
@@ -462,7 +462,7 @@ impl Bd {
 // Error types
 // ---------------------------------------------------------------------------
 
-/// Errors from the MSDC controller.
+/// Errors FROM the MSDC controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MsdcError {
     /// Command engine timed out waiting for busy clear.
@@ -514,10 +514,10 @@ impl MsdcController {
         }
     }
 
-    /// Absolute register address from offset.
+    /// Absolute register address FROM OFFSET.
     #[inline(always)]
-    fn reg(&self, offset: usize) -> usize {
-        self.base + offset
+    fn reg(&self, OFFSET: usize) -> usize {
+        self.base + OFFSET
     }
 
     // -- Register access helpers --
@@ -527,8 +527,8 @@ impl MsdcController {
     /// # Safety
     ///
     /// Caller must ensure the controller base is valid and mapped.
-    unsafe fn read_reg(&self, offset: usize) -> u32 {
-        unsafe { mmio::read32(self.reg(offset)) }
+    unsafe fn read_reg(&self, OFFSET: usize) -> u32 {
+        unsafe { mmio::read32(self.reg(OFFSET)) }
     }
 
     /// Write a controller register.
@@ -536,8 +536,8 @@ impl MsdcController {
     /// # Safety
     ///
     /// Caller must ensure the controller base is valid and mapped.
-    unsafe fn write_reg(&self, offset: usize, val: u32) {
-        unsafe { mmio::write32(self.reg(offset), val) }
+    unsafe fn write_reg(&self, OFFSET: usize, val: u32) {
+        unsafe { mmio::write32(self.reg(OFFSET), val) }
     }
 
     // -- Initialization --
@@ -569,7 +569,7 @@ impl MsdcController {
         // STEP 2: Flush FIFOs
         unsafe { self.write_reg(REG_MSDC_FIFOCS, FIFOCS_CLR) };
 
-        // STEP 3: Configure clock — use divisor 0x10 for initial low speed
+        // STEP 3: Configure clock  -  use divisor 0x10 for initial low speed
         // Clock mode 0 (PLL / (divisor + 1)), 8-bit bus width
         let cfg = (0x00 << CFG_CKMOD_SHIFT) | (0x10 << CFG_CKDIV_SHIFT) | CFG_BUSWIDTH_8;
         unsafe { self.write_reg(REG_MSDC_CFG, cfg) };
@@ -597,7 +597,7 @@ impl MsdcController {
         unsafe { self.send_command(CMD7_SELECT_CARD, 0x0001_0000, CMD_RSPTYP_R1)? };
 
         // CMD16: SET_BLOCKLEN to 512 bytes
-        unsafe { self.send_command(CMD16_SET_BLOCKLEN, SECTOR_SIZE as u32, CMD_RSPTYP_R1)? };
+        unsafe { self.send_command(CMD16_SET_BLOCKLEN, u32::try_from(SECTOR_SIZE).unwrap_or_default(), CMD_RSPTYP_R1)? };
 
         self.initialized = true;
         Ok(())
@@ -712,12 +712,12 @@ impl MsdcController {
             self.send_data_command(CMD17_READ_SINGLE, lba, CMD_RSPTYP_R1, CMD_DTYPE_READ, 1)?;
         }
 
-        // PIO: read 128 words (512 bytes) from MSDC_RXDATA
+        // PIO: read 128 words (512 bytes) FROM MSDC_RXDATA
         let buf_ptr = buf.as_mut_ptr().cast::<u32>();
         for i in 0..WORDS_PER_SECTOR {
             // Poll until FIFO has data (check dat busy clears for completion)
             if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_DATBUSY, POLL_TIMEOUT) } {
-                // NOTE: datbusy stays set until the full block is transferred,
+                // NOTE: datbusy stays SET until the full block is transferred,
                 // so we read word-by-word and only check at the end
             }
             let word = unsafe { self.read_reg(REG_MSDC_RXDATA) };
@@ -788,7 +788,7 @@ impl MsdcController {
     /// Read sectors via DMA using a GPD/BD descriptor chain.
     ///
     /// `gpd_phys` is the physical address of the first GPD in the chain.
-    /// The GPD must be set up with HWO=1 and point to BD(s) or a data buffer.
+    /// The GPD must be SET up with HWO=1 and point to BD(s) or a data buffer.
     ///
     /// # Safety
     ///
@@ -903,7 +903,7 @@ impl MsdcController {
         Ok(())
     }
 
-    /// Read the 32-bit response from SDC_RESP0.
+    /// Read the 32-bit response FROM SDC_RESP0.
     ///
     /// # Safety
     ///
@@ -912,7 +912,7 @@ impl MsdcController {
         unsafe { self.read_reg(REG_SDC_RESP0) }
     }
 
-    /// Read the full 128-bit response from SDC_RESP0–3.
+    /// Read the full 128-bit response FROM SDC_RESP0–3.
     ///
     /// # Safety
     ///
@@ -971,17 +971,17 @@ impl MsdcController {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: build a command word from components
+// Helper: build a command word FROM components
 // ---------------------------------------------------------------------------
 
-/// Encode a command register value from opcode, response type, and data type.
+/// Encode a command register value FROM opcode, response type, and data type.
 ///
 /// Used by tests to verify command encoding independently of MMIO.
 pub(crate) fn encode_command(opcode: u32, rsptyp: u32, dtype: u32) -> u32 {
     (opcode & CMD_OPCODE_MASK) | rsptyp | dtype
 }
 
-/// Build an interrupt enable mask from a slice of individual interrupt bits.
+/// Build an interrupt enable mask FROM a slice of individual interrupt bits.
 pub(crate) fn compose_interrupt_mask(bits: &[u32]) -> u32 {
     let mut mask = 0u32;
     for &bit in bits {
@@ -1007,9 +1007,9 @@ pub(crate) fn build_single_bd_chain(buf_phys: u32, len: u32) -> (Gpd, Bd) {
     (gpd, bd)
 }
 
-/// Build a multi-segment BD chain from an array of (phys_addr, len) pairs.
+/// Build a multi-segment BD chain FROM an array of (phys_addr, len) pairs.
 ///
-/// Returns a vector of BDs with next pointers set to zero. The caller must
+/// Returns a vector of BDs with next pointers SET to zero. The caller must
 /// fixup next pointers after placing BDs in contiguous physical memory.
 pub(crate) fn build_bd_chain(segments: &[(u32, u32)]) -> Option<(Gpd, [Bd; 8])> {
     let count = segments.len();
@@ -1044,42 +1044,42 @@ pub(crate) fn build_bd_chain(segments: &[(u32, u32)]) -> Option<(Gpd, [Bd; 8])> 
 mod tests {
     use super::*;
 
-    // -- Register offset tests --
+    // -- Register OFFSET tests --
 
     #[test]
     fn register_offsets_match_spec() {
         // INVARIANT: offsets must match DRIVER-INTERFACES.md §8.1
-        assert_eq!(REG_MSDC_CFG, 0x00, "MSDC_CFG offset");
-        assert_eq!(REG_MSDC_IOCON, 0x04, "MSDC_IOCON offset");
-        assert_eq!(REG_MSDC_PS, 0x08, "MSDC_PS offset");
-        assert_eq!(REG_MSDC_INT, 0x0C, "MSDC_INT offset");
-        assert_eq!(REG_MSDC_INTEN, 0x10, "MSDC_INTEN offset");
-        assert_eq!(REG_MSDC_FIFOCS, 0x14, "MSDC_FIFOCS offset");
-        assert_eq!(REG_MSDC_TXDATA, 0x18, "MSDC_TXDATA offset");
-        assert_eq!(REG_MSDC_RXDATA, 0x1C, "MSDC_RXDATA offset");
-        assert_eq!(REG_SDC_CFG, 0x30, "SDC_CFG offset");
-        assert_eq!(REG_SDC_CMD, 0x34, "SDC_CMD offset");
-        assert_eq!(REG_SDC_ARG, 0x38, "SDC_ARG offset");
-        assert_eq!(REG_SDC_STS, 0x3C, "SDC_STS offset");
-        assert_eq!(REG_SDC_RESP0, 0x40, "SDC_RESP0 offset");
-        assert_eq!(REG_SDC_BLK_NUM, 0x50, "SDC_BLK_NUM offset");
-        assert_eq!(REG_MSDC_DMA_SA, 0x90, "MSDC_DMA_SA offset");
-        assert_eq!(REG_MSDC_DMA_CTRL, 0x98, "MSDC_DMA_CTRL offset");
-        assert_eq!(REG_MSDC_DMA_CFG, 0x9C, "MSDC_DMA_CFG offset");
+        assert_eq!(REG_MSDC_CFG, 0x00, "MSDC_CFG OFFSET");
+        assert_eq!(REG_MSDC_IOCON, 0x04, "MSDC_IOCON OFFSET");
+        assert_eq!(REG_MSDC_PS, 0x08, "MSDC_PS OFFSET");
+        assert_eq!(REG_MSDC_INT, 0x0C, "MSDC_INT OFFSET");
+        assert_eq!(REG_MSDC_INTEN, 0x10, "MSDC_INTEN OFFSET");
+        assert_eq!(REG_MSDC_FIFOCS, 0x14, "MSDC_FIFOCS OFFSET");
+        assert_eq!(REG_MSDC_TXDATA, 0x18, "MSDC_TXDATA OFFSET");
+        assert_eq!(REG_MSDC_RXDATA, 0x1C, "MSDC_RXDATA OFFSET");
+        assert_eq!(REG_SDC_CFG, 0x30, "SDC_CFG OFFSET");
+        assert_eq!(REG_SDC_CMD, 0x34, "SDC_CMD OFFSET");
+        assert_eq!(REG_SDC_ARG, 0x38, "SDC_ARG OFFSET");
+        assert_eq!(REG_SDC_STS, 0x3C, "SDC_STS OFFSET");
+        assert_eq!(REG_SDC_RESP0, 0x40, "SDC_RESP0 OFFSET");
+        assert_eq!(REG_SDC_BLK_NUM, 0x50, "SDC_BLK_NUM OFFSET");
+        assert_eq!(REG_MSDC_DMA_SA, 0x90, "MSDC_DMA_SA OFFSET");
+        assert_eq!(REG_MSDC_DMA_CTRL, 0x98, "MSDC_DMA_CTRL OFFSET");
+        assert_eq!(REG_MSDC_DMA_CFG, 0x9C, "MSDC_DMA_CFG OFFSET");
     }
 
     #[test]
     fn emmc_register_offsets_match_spec() {
-        // INVARIANT: eMMC-specific offsets from §8.1
-        assert_eq!(REG_EMMC_CFG0, 0x70, "EMMC_CFG0 offset");
-        assert_eq!(REG_EMMC_CFG1, 0x74, "EMMC_CFG1 offset");
-        assert_eq!(REG_EMMC_STS, 0x78, "EMMC_STS offset");
-        assert_eq!(REG_EMMC_IOCON, 0x7C, "EMMC_IOCON offset");
-        assert_eq!(REG_MSDC_DMA_SA_HIGH, 0x8C, "DMA_SA_HIGH offset");
-        assert_eq!(REG_MSDC_DMA_CA, 0x94, "DMA_CA offset");
-        assert_eq!(REG_MSDC_DMA_LEN, 0xA8, "DMA_LEN offset");
-        assert_eq!(REG_MSDC_AES_SEL, 0x280, "AES_SEL offset");
-        assert_eq!(REG_MSDC_VERSION, 0x114, "VERSION offset");
+        // INVARIANT: eMMC-specific offsets FROM §8.1
+        assert_eq!(REG_EMMC_CFG0, 0x70, "EMMC_CFG0 OFFSET");
+        assert_eq!(REG_EMMC_CFG1, 0x74, "EMMC_CFG1 OFFSET");
+        assert_eq!(REG_EMMC_STS, 0x78, "EMMC_STS OFFSET");
+        assert_eq!(REG_EMMC_IOCON, 0x7C, "EMMC_IOCON OFFSET");
+        assert_eq!(REG_MSDC_DMA_SA_HIGH, 0x8C, "DMA_SA_HIGH OFFSET");
+        assert_eq!(REG_MSDC_DMA_CA, 0x94, "DMA_CA OFFSET");
+        assert_eq!(REG_MSDC_DMA_LEN, 0xA8, "DMA_LEN OFFSET");
+        assert_eq!(REG_MSDC_AES_SEL, 0x280, "AES_SEL OFFSET");
+        assert_eq!(REG_MSDC_VERSION, 0x114, "VERSION OFFSET");
     }
 
     // -- Command encoding tests --
@@ -1141,7 +1141,7 @@ mod tests {
     fn gpd_new_direct_sets_hwo_no_bdp() {
         let gpd = Gpd::new_direct(0x4000_0000, 512);
         assert!(gpd.is_hw_owned(), "GPD must be hardware-owned");
-        assert!(!gpd.has_bd(), "direct GPD must not have BDP set");
+        assert!(!gpd.has_bd(), "direct GPD must not have BDP SET");
         assert_eq!(gpd.ptr, 0x4000_0000, "buffer pointer");
         assert_eq!(gpd.data_len, 512, "data length");
         assert_eq!(gpd.next, 0, "no next GPD");
@@ -1151,7 +1151,7 @@ mod tests {
     fn gpd_new_with_bd_sets_hwo_and_bdp() {
         let gpd = Gpd::new_with_bd(0xDEAD_0000, 4096);
         assert!(gpd.is_hw_owned(), "GPD must be hardware-owned");
-        assert!(gpd.has_bd(), "BD-backed GPD must have BDP set");
+        assert!(gpd.has_bd(), "BD-backed GPD must have BDP SET");
         assert_eq!(gpd.ptr, 0xDEAD_0000, "BD chain pointer");
         assert_eq!(gpd.data_len, 4096, "total data length");
     }
@@ -1188,19 +1188,19 @@ mod tests {
             (0x4000_1000, 512),
             (0x4000_2000, 512),
         ];
-        let (gpd, bds) = build_bd_chain(&segments).expect("chain must build for 3 segments");
+        let (gpd, bds) = build_bd_chain(&segments).unwrap_or_default();
 
         assert!(gpd.is_hw_owned(), "GPD must be HWO");
         assert!(gpd.has_bd(), "GPD must have BDP");
         assert_eq!(gpd.data_len, 1536, "total length = 3 * 512");
 
-        assert!(!bds[0].is_eol(), "first BD is not EOL");
-        assert!(!bds[1].is_eol(), "second BD is not EOL");
-        assert!(bds[2].is_eol(), "third BD is EOL");
+        assert!(!bds.get(0).copied().unwrap_or_default().is_eol(), "first BD is not EOL");
+        assert!(!bds.get(1).copied().unwrap_or_default().is_eol(), "second BD is not EOL");
+        assert!(bds.get(2).copied().unwrap_or_default().is_eol(), "third BD is EOL");
 
-        assert_eq!(bds[0].ptr, 0x4000_0000, "segment 0 address");
-        assert_eq!(bds[1].ptr, 0x4000_1000, "segment 1 address");
-        assert_eq!(bds[2].ptr, 0x4000_2000, "segment 2 address");
+        assert_eq!(bds.get(0).copied().unwrap_or_default().ptr, 0x4000_0000, "segment 0 address");
+        assert_eq!(bds.get(1).copied().unwrap_or_default().ptr, 0x4000_1000, "segment 1 address");
+        assert_eq!(bds.get(2).copied().unwrap_or_default().ptr, 0x4000_2000, "segment 2 address");
     }
 
     #[test]
@@ -1266,10 +1266,10 @@ mod tests {
     #[test]
     fn compose_interrupt_mask_combines_bits() {
         let mask = compose_interrupt_mask(&[INT_CMDRDY, INT_CMDTMO, INT_XFER_COMPL]);
-        assert_ne!(mask & INT_CMDRDY, 0, "CMDRDY set");
-        assert_ne!(mask & INT_CMDTMO, 0, "CMDTMO set");
-        assert_ne!(mask & INT_XFER_COMPL, 0, "XFER_COMPL set");
-        assert_eq!(mask & INT_DATTMO, 0, "DATTMO not set");
+        assert_ne!(mask & INT_CMDRDY, 0, "CMDRDY SET");
+        assert_ne!(mask & INT_CMDTMO, 0, "CMDTMO SET");
+        assert_ne!(mask & INT_XFER_COMPL, 0, "XFER_COMPL SET");
+        assert_eq!(mask & INT_DATTMO, 0, "DATTMO not SET");
     }
 
     #[test]
@@ -1330,8 +1330,8 @@ mod tests {
     #[test]
     fn dma_ctrl_start_and_desc_mode() {
         let ctrl = DMA_CTRL_START | DMA_CTRL_MODE_DESC;
-        assert_ne!(ctrl & DMA_CTRL_START, 0, "start bit set");
-        assert_ne!(ctrl & DMA_CTRL_MODE_DESC, 0, "descriptor mode set");
+        assert_ne!(ctrl & DMA_CTRL_START, 0, "start bit SET");
+        assert_ne!(ctrl & DMA_CTRL_MODE_DESC, 0, "descriptor mode SET");
         assert_eq!(ctrl & DMA_CTRL_STOP, 0, "stop bit clear");
     }
 
