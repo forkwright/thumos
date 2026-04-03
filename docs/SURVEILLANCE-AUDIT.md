@@ -112,7 +112,7 @@ Freeme OS is a Chinese Android customization framework (similar to MIUI, ColorOS
 | 21.28.129.209:42318 | 10.166.154.5:5060 | TCP | Carrier IMS/SIP (VoLTE) |
 | 21.28.129.209:50001 | 10.166.154.5:65529 | TCP | Carrier IMS control |
 
-Only carrier IMS traffic observed. WiFi was connected but no outbound connections to surveillance infrastructure during the probe window. This does not mean no exfiltration occurs — Adups typically exfiltrates on a 72-hour cycle, and the device may have been recently powered on.
+Only carrier IMS traffic observed. WiFi was connected but no outbound connections to surveillance infrastructure during the probe window. This does not mean no exfiltration occurs  -  Adups typically exfiltrates on a 72-hour cycle, and the device may have been recently powered on.
 
 ## Conclusion
 

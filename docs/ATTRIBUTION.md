@@ -39,7 +39,7 @@ Hardcoded domains include: `app-measurement.com`, `googleads.g.doubleclick.net`,
 
 This means: a Chinese OTA framework embeds Google's full advertising and analytics stack. Your "OTA updater" is also an ad platform and telemetry beacon. Adups sends data to their servers in China. Google Analytics/Firebase sends data to Google in the US. Both run on every boot via `BOOT_COMPLETED` receiver.
 
-The `sysoper` companion package has `RecoveryService` and `SysService` — these can flash firmware and trigger recovery mode. Combined with Firebase Cloud Messaging push, this allows remote code execution: push a message to the device, download a payload, flash it via recovery. This is a remote exploitation chain built into the firmware.
+The `sysoper` companion package has `RecoveryService` and `SysService`  -  these can flash firmware and trigger recovery mode. Combined with Firebase Cloud Messaging push, this allows remote code execution: push a message to the device, download a payload, flash it via recovery. This is a remote exploitation chain built into the firmware.
 
 **TYD Technology Co., Ltd.** (天意德科技)
 Packages: `com.tyd.customkey`, `com.tydtech.clean`, `freeme` framework, `com.freeme.provider.badge`, `com.freeme.factory`
@@ -88,7 +88,7 @@ Push-to-talk app. Requires location permission. US-based, subject to US governme
 T9 keyboard input method. Has access to every keystroke. No public information about Marshaltec as a company. A compromised or malicious keyboard captures everything typed: passwords, messages, search queries.
 
 **com.example** (`/vendor/app/AutoDialer/AutoDialer.apk`)
-Package name is literally `com.example` — a placeholder. This is a vendor partition app called "AutoDialer" with a default/test package name. Unknown origin, unknown purpose. The fact that a production device ships with a `com.example` package on the vendor partition suggests minimal QA on the firmware build.
+Package name is literally `com.example`  -  a placeholder. This is a vendor partition app called "AutoDialer" with a default/test package name. Unknown origin, unknown purpose. The fact that a production device ships with a `com.example` package on the vendor partition suggests minimal QA on the firmware build.
 
 ## The dual-exfiltration architecture
 
