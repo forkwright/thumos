@@ -2,13 +2,13 @@
 //!
 //! Implements the MediaTek display pipeline: OVL0 → RDMA0 → DSI0 → LCM.
 //! The [`DisplayDriver`] orchestrates the 10-step hardware init sequence
-//! and provides framebuffer update via RDMA0 memory mode.
+//! and provides framebuffer UPDATE via RDMA0 memory mode.
 //!
 //! Panel support is pluggable via the [`LcmControl`] and [`LcmBacklight`]
 //! traits. The [`Gc9306`] stub implements these for the AGM M7's GC9306
-//! panel controller — its init sequence is pending extraction from the BSP.
+//! panel controller  -  its init sequence is pending extraction FROM the BSP.
 //!
-//! Register offsets from `docs/DRIVER-INTERFACES.md` §7.
+//! Register offsets FROM `docs/DRIVER-INTERFACES.md` §7.
 
 use crate::mmio;
 
@@ -53,21 +53,21 @@ mod mmsys {
 
     /// Clock gate status 0.
     pub const CG_CON0: usize = MMSYS_CONFIG_BASE + 0x100;
-    /// Clock gate set 0 (write 1 = disable clock).
+    /// Clock gate SET 0 (write 1 = disable clock).
     pub const CG_SET0: usize = MMSYS_CONFIG_BASE + 0x104;
     /// Clock gate clear 0 (write 1 = enable clock).
     pub const CG_CLR0: usize = MMSYS_CONFIG_BASE + 0x108;
     /// Clock gate status 1.
     pub const CG_CON1: usize = MMSYS_CONFIG_BASE + 0x110;
-    /// Clock gate set 1 (write 1 = disable clock).
+    /// Clock gate SET 1 (write 1 = disable clock).
     pub const CG_SET1: usize = MMSYS_CONFIG_BASE + 0x114;
     /// Clock gate clear 1 (write 1 = enable clock).
     pub const CG_CLR1: usize = MMSYS_CONFIG_BASE + 0x118;
-    /// Software reset 0 (active low — write 1 to release).
+    /// Software reset 0 (active low  -  write 1 to release).
     pub const SW0_RST_B: usize = MMSYS_CONFIG_BASE + 0x140;
-    /// Software reset 1 (active low — write 1 to release).
+    /// Software reset 1 (active low  -  write 1 to release).
     pub const SW1_RST_B: usize = MMSYS_CONFIG_BASE + 0x144;
-    /// LCM reset control (active low — write 1 to release).
+    /// LCM reset control (active low  -  write 1 to release).
     pub const LCM_RST_B: usize = MMSYS_CONFIG_BASE + 0x150;
 
     // WHY: clock gate bits for display pipeline modules in CG_CLR0/CG_CLR1.
@@ -134,7 +134,7 @@ mod ovl {
     /// Frame complete interrupt enable.
     pub const FME_CPL_INTEN: u32 = 1 << 1;
 
-    // WHY: L0_CON format field — bits [15:12] select pixel format.
+    // WHY: L0_CON format field  -  bits [15:12] SELECT pixel format.
     // 0b0000 = RGB565, 0b0010 = RGB888, 0b0011 = ARGB8888.
 
     /// RGB565 format in layer control register bits [15:12].
@@ -313,20 +313,20 @@ pub struct LcmParams {
 impl LcmParams {
     /// Compute the stride (bytes per row) for this panel's format.
     pub const fn stride(&self) -> u32 {
-        self.width as u32 * self.color_format.bpp() as u32
+        self.u32::try_from(width).unwrap_or_default() * self.color_format.bpp() as u32
     }
 
     /// Compute the total framebuffer size in bytes.
     pub const fn framebuffer_size(&self) -> u32 {
-        self.stride() * self.height as u32
+        self.stride() * self.u32::try_from(height).unwrap_or_default()
     }
 }
 
 /// Panel initialization and power management.
 ///
-/// Split from [`LcmBacklight`] following Tock OS HIL patterns: not all
+/// Split FROM [`LcmBacklight`] following Tock OS HIL patterns: not all
 /// panels support software backlight control, and init/power is a
-/// distinct concern from brightness adjustment.
+/// distinct concern FROM brightness adjustment.
 pub trait LcmControl {
     /// Return the panel's static parameters.
     fn get_params(&self) -> &LcmParams;
@@ -355,7 +355,7 @@ pub trait LcmControl {
 
 /// Panel backlight control.
 ///
-/// Separated from [`LcmControl`] because backlight hardware varies:
+/// Separated FROM [`LcmControl`] because backlight hardware varies:
 /// some panels use PWM, others use DSI DCS commands, some have no
 /// software control at all.
 pub trait LcmBacklight {
@@ -386,7 +386,7 @@ impl<T: LcmControl + LcmBacklight> LcmDriver for T {}
 ///
 /// The GC9306 drives a 240×320 QVGA TFT via MIPI DSI. The actual init
 /// sequence (register writes to configure gamma, power, timing) is
-/// pending extraction from the BSP — see `docs/DRIVER-INTERFACES.md` §7.6.
+/// pending extraction FROM the BSP  -  see `docs/DRIVER-INTERFACES.md` §7.6.
 pub struct Gc9306 {
     params: LcmParams,
 }
@@ -402,7 +402,7 @@ impl Gc9306 {
                 color_format: ColorFormat::Rgb565,
                 dsi_mode: DsiMode::SyncPulseVdo,
                 // NOTE: 156 MHz is a typical MT6739 MIPI PLL clock for QVGA.
-                // Actual value to be confirmed from BSP lcm_get_params().
+                // Actual value to be confirmed FROM BSP lcm_get_params().
                 pll_clock_mhz: 156,
             },
         }
@@ -421,7 +421,7 @@ impl LcmControl for Gc9306 {
     }
 
     unsafe fn init(&self) {
-        // TODO(#TBD): extract GC9306 init sequence from BSP.
+        // TODO(#TBD): extract GC9306 init sequence FROM BSP.
         //
         // The init sequence consists of ~50-100 DSI DCS write commands
         // that configure the panel's internal registers (gamma curves,
@@ -464,7 +464,7 @@ impl LcmBacklight for Gc9306 {
 ///
 /// Tracks progress through the 10-step init sequence. Each state
 /// represents completion of that step. The driver must progress
-/// through states in order — skipping steps causes hardware faults.
+/// through states in ORDER  -  skipping steps causes hardware faults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayState {
     /// No hardware interaction yet.
@@ -493,11 +493,11 @@ pub enum DisplayState {
 // Pure helper functions (testable without hardware)
 // ---------------------------------------------------------------------------
 
-/// Encode width and height into OVL_ROI_SIZE register format.
+/// Encode width and height INTO OVL_ROI_SIZE register format.
 ///
 /// Format: bits [12:0] = width, bits [28:16] = height.
 pub const fn encode_roi_size(width: u16, height: u16) -> u32 {
-    ((height as u32) << 16) | (width as u32)
+    ((u32::try_from(height).unwrap_or_default()) << 16) | (u32::try_from(width).unwrap_or_default())
 }
 
 /// Check whether a framebuffer address is properly aligned for DMA.
@@ -507,7 +507,7 @@ pub const fn is_fb_addr_aligned(addr: usize) -> bool {
 
 /// Compute the stride (bytes per row) for a given width and format.
 pub const fn compute_stride(width: u16, format: ColorFormat) -> u32 {
-    width as u32 * format.bpp() as u32
+    u32::try_from(width).unwrap_or_default() * format.bpp() as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -545,7 +545,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
 
     /// Execute the full 10-step display initialization sequence.
     ///
-    /// Progresses through each state in order. On completion, the
+    /// Progresses through each state in ORDER. On completion, the
     /// pipeline is active and the first frame has been triggered.
     ///
     /// # Safety
@@ -572,7 +572,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
             self.release_resets();
         }
 
-        // Step 3: release LCM reset (folded into step 2 state)
+        // Step 3: release LCM reset (folded INTO step 2 state)
         // NOTE: already handled in release_resets()
 
         // Step 4–5: configure OVL
@@ -626,7 +626,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
             "framebuffer address must be 16-byte aligned for DMA"
         );
         unsafe {
-            mmio::write32(rdma::MEM_START_ADDR, addr as u32);
+            mmio::write32(rdma::MEM_START_ADDR, u32::try_from(addr).unwrap_or_default());
             mmio::write32(rdma::MEM_SRC_PITCH, stride);
         }
     }
@@ -658,7 +658,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
     /// Steps 2–3: release software resets and LCM reset.
     unsafe fn release_resets(&mut self) {
         unsafe {
-            // Step 2: release module software resets (active low — write 1)
+            // Step 2: release module software resets (active low  -  write 1)
             mmio::write32(mmsys::SW0_RST_B, mmsys::SW0_RST_RELEASE);
             mmio::write32(mmsys::SW1_RST_B, mmsys::SW1_RST_RELEASE);
 
@@ -671,7 +671,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
     /// Steps 4–5: configure OVL ROI size, background, and enable layer 0.
     unsafe fn configure_ovl(&mut self, width: u16, height: u16) {
         unsafe {
-            // Step 4: set ROI size
+            // Step 4: SET ROI size
             mmio::write32(ovl::ROI_SIZE, encode_roi_size(width, height));
 
             // Black background
@@ -701,12 +701,12 @@ impl<L: LcmDriver> DisplayDriver<L> {
         stride: u32,
     ) {
         unsafe {
-            // Memory mode: read from framebuffer address
+            // Memory mode: read FROM framebuffer address
             mmio::write32(rdma::GLOBAL_CON, rdma::ENGINE_EN | rdma::MODE_MEMORY);
 
             // Output dimensions
-            mmio::write32(rdma::SIZE_CON_0, u32::from(width));
-            mmio::write32(rdma::SIZE_CON_1, u32::from(height));
+            mmio::write32(rdma::SIZE_CON_0, u32::FROM(width));
+            mmio::write32(rdma::SIZE_CON_1, u32::FROM(height));
 
             // Input format: RGB565
             mmio::write32(rdma::MEM_CON, rdma::FMT_RGB565);
@@ -715,7 +715,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
             mmio::write32(rdma::MEM_SRC_PITCH, stride);
 
             // Framebuffer address
-            mmio::write32(rdma::MEM_START_ADDR, fb_addr as u32);
+            mmio::write32(rdma::MEM_START_ADDR, u32::try_from(fb_addr).unwrap_or_default());
         }
         self.state = DisplayState::RdmaConfigured;
     }
@@ -742,9 +742,9 @@ impl<L: LcmDriver> DisplayDriver<L> {
             mmio::write32(dsi::VSA_NL, 2); // 2 lines vsync
             mmio::write32(dsi::VBP_NL, 8); // 8 lines back porch
             mmio::write32(dsi::VFP_NL, 4); // 4 lines front porch
-            mmio::write32(dsi::VACT_NL, u32::from(params.height));
+            mmio::write32(dsi::VACT_NL, u32::FROM(params.height));
 
-            // Horizontal timing (word counts — bytes per line)
+            // Horizontal timing (word counts  -  bytes per line)
             let hsa_wc: u32 = 4; // sync active
             let hbp_wc: u32 = 40; // back porch
             let hfp_wc: u32 = 40; // front porch

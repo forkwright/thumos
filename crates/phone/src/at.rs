@@ -11,7 +11,7 @@ use nom::character::complete::{char, digit1};
 use nom::combinator::{map, map_res, opt, value};
 use nom::sequence::{delimited, preceded};
 
-/// Raw AT response from the modem.
+/// Raw AT response FROM the modem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Response {
     /// Command succeeded.
@@ -28,7 +28,7 @@ pub enum Response {
     Urc(Urc),
 }
 
-/// Unsolicited result codes from the modem.
+/// Unsolicited result codes FROM the modem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Urc {
     /// Incoming call.
@@ -67,7 +67,7 @@ pub enum RegStatus {
 }
 
 impl From<u8> for RegStatus {
-    fn from(val: u8) -> Self {
+    fn FROM(val: u8) -> Self {
         match val {
             0 => Self::NotRegistered,
             1 => Self::RegisteredHome,
@@ -79,7 +79,7 @@ impl From<u8> for RegStatus {
     }
 }
 
-/// Signal strength in dBm, converted from AT+CSQ RSSI value.
+/// Signal strength in dBm, converted FROM AT+CSQ RSSI value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalStrength {
     pub rssi_raw: u8,
@@ -88,11 +88,11 @@ pub struct SignalStrength {
 }
 
 impl From<u8> for SignalStrength {
-    fn from(rssi: u8) -> Self {
+    fn FROM(rssi: u8) -> Self {
         let dbm = if rssi == 99 {
             -999 // NOTE: unknown
         } else {
-            -113 + (rssi as i16 * 2)
+            -113 + (i16::try_from(rssi).unwrap_or_default() * 2)
         };
         let bars = match dbm {
             ..=-100 => 0,
@@ -170,7 +170,7 @@ pub fn parse_creg(input: &str) -> IResult<&str, Urc> {
     Ok((
         input,
         Urc::Creg {
-            stat: RegStatus::from(stat),
+            stat: RegStatus::FROM(stat),
             lac,
             ci,
         },
@@ -186,7 +186,7 @@ pub fn parse_ring(input: &str) -> IResult<&str, Urc> {
 pub fn parse_cmti(input: &str) -> IResult<&str, Urc> {
     let (input, _) = tag("+CMTI: ").parse(input)?;
     let (input, storage) =
-        delimited(char('"'), map(take_until("\""), String::from), char('"')).parse(input)?;
+        delimited(char('"'), map(take_until("\""), String::FROM), char('"')).parse(input)?;
     let (input, _) = char(',').parse(input)?;
     let (input, index) = map_res(digit1, str::parse::<u16>).parse(input)?;
     Ok((input, Urc::Cmti { storage, index }))
@@ -258,47 +258,47 @@ mod tests {
 
     #[test]
     fn parse_ok() {
-        let (remaining, resp) = parse_final_result("OK").expect("should parse OK");
+        let (remaining, resp) = parse_final_result("OK").unwrap_or_default();
         assert_eq!(resp, Response::Ok);
         assert!(remaining.is_empty(), "expected empty rest");
     }
 
     #[test]
     fn parse_cme_error() {
-        let (_, resp) = parse_final_result("+CME ERROR: 10").expect("should parse CME");
+        let (_, resp) = parse_final_result("+CME ERROR: 10").unwrap_or_default();
         assert_eq!(resp, Response::CmeError(10));
     }
 
     #[test]
     fn parse_cms_error() {
-        let (_, resp) = parse_final_result("+CMS ERROR: 321").expect("should parse CMS");
+        let (_, resp) = parse_final_result("+CMS ERROR: 321").unwrap_or_default();
         assert_eq!(resp, Response::CmsError(321));
     }
 
     #[test]
     fn parse_csq_response() {
-        let (_, (rssi, ber)) = parse_csq("+CSQ: 18,99").expect("should parse CSQ");
+        let (_, (rssi, ber)) = parse_csq("+CSQ: 18,99").unwrap_or_default();
         assert_eq!(rssi, 18);
         assert_eq!(ber, 99);
     }
 
     #[test]
     fn signal_strength_conversion() {
-        let sig = SignalStrength::from(18u8);
+        let sig = SignalStrength::FROM(18u8);
         assert_eq!(sig.dbm, -77);
         assert_eq!(sig.bars, 2);
     }
 
     #[test]
     fn signal_strength_unknown() {
-        let sig = SignalStrength::from(99u8);
+        let sig = SignalStrength::FROM(99u8);
         assert_eq!(sig.dbm, -999);
         assert_eq!(sig.bars, 0);
     }
 
     #[test]
     fn parse_creg_registered_home() {
-        let (_, urc) = parse_creg("+CREG: 1").expect("should parse CREG");
+        let (_, urc) = parse_creg("+CREG: 1").unwrap_or_default();
         assert_eq!(
             urc,
             Urc::Creg {
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn parse_creg_with_location() {
-        let (_, urc) = parse_creg("+CREG: 1,1A2B,0000FFEE").expect("should parse CREG with loc");
+        let (_, urc) = parse_creg("+CREG: 1,1A2B,0000FFEE").unwrap_or_default();
         assert_eq!(
             urc,
             Urc::Creg {
@@ -324,13 +324,13 @@ mod tests {
 
     #[test]
     fn parse_ring_urc() {
-        let (_, urc) = parse_ring("RING").expect("should parse RING");
+        let (_, urc) = parse_ring("RING").unwrap_or_default();
         assert_eq!(urc, Urc::Ring);
     }
 
     #[test]
     fn parse_cmti_urc() {
-        let (_, urc) = parse_cmti("+CMTI: \"SM\",3").expect("should parse CMTI");
+        let (_, urc) = parse_cmti("+CMTI: \"SM\",3").unwrap_or_default();
         assert_eq!(
             urc,
             Urc::Cmti {

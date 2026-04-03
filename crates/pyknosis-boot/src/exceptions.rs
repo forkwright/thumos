@@ -2,7 +2,7 @@
 //!
 //! The ARM Cortex-A53 has 7 exception vectors at fixed offsets.
 //! We place the vector table at a known address and install handlers
-//! for IRQ (from GIC) and data/prefetch abort (for debugging).
+//! for IRQ (FROM GIC) and data/prefetch abort (for debugging).
 //!
 //! Vector table layout (ARM ARM B1.8):
 //! Offset 0x00: Reset
@@ -37,7 +37,7 @@ pub unsafe fn init() {
     unsafe {
         core::arch::asm!(
             "mcr p15, 0, {}, c12, c0, 0", // VBAR
-            in(reg) vector_table as usize,
+            in(reg) usize::try_from(vector_table).unwrap_or_default(),
         );
 
         // Enable IRQs (clear I bit in CPSR)
@@ -56,12 +56,12 @@ pub fn ticks() -> u64 {
     unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TICK_COUNT)) }
 }
 
-/// Get uptime in milliseconds from tick count.
+/// Get uptime in milliseconds FROM tick count.
 pub fn uptime_ms() -> u64 {
-    ticks() * TICK_MS as u64
+    ticks() * u64::try_from(TICK_MS).unwrap_or_default()
 }
 
-// ARM vector table — must be 32-byte aligned
+// ARM vector table  -  must be 32-byte aligned
 core::arch::global_asm!(
     ".section .text",
     ".balign 32",
@@ -81,7 +81,7 @@ core::arch::global_asm!(
     "    push    {{r0-r12, lr}}",   // Save registers
     "    bl      irq_handler_rust", // Call Rust handler
     "    pop     {{r0-r12, lr}}",   // Restore registers
-    "    movs    pc, lr",           // Return from IRQ (restores CPSR)
+    "    movs    pc, lr",           // Return FROM IRQ (restores CPSR)
     // Abort handlers: print info and hang
     "data_abort_handler_asm:",
     "    push    {{r0-r12, lr}}",
@@ -109,7 +109,7 @@ unsafe extern "C" {
     fn vector_table();
 }
 
-/// IRQ handler called from assembly wrapper.
+/// IRQ handler called FROM assembly wrapper.
 #[unsafe(no_mangle)]
 pub extern "C" fn irq_handler_rust() {
     let irq = gic::acknowledge();
@@ -138,7 +138,7 @@ pub extern "C" fn irq_handler_rust() {
     gic::end_of_interrupt(irq);
 }
 
-/// Data abort handler — print fault info and hang.
+/// Data abort handler  -  print fault info and hang.
 #[unsafe(no_mangle)]
 pub extern "C" fn data_abort_handler_rust() {
     let mut serial = Uart::new();
@@ -148,9 +148,9 @@ pub extern "C" fn data_abort_handler_rust() {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 0", out(reg) dfar); // DFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 0", out(reg) dfsr); // DFSR
     }
-    write!(serial, "\r\n!!! DATA ABORT !!!\r\n").ok();
-    write!(serial, "DFAR: {dfar:#010x} (fault address)\r\n").ok();
-    write!(serial, "DFSR: {dfsr:#010x} (fault status)\r\n").ok();
+    if let Err(e) = write!(serial, "\r\n!!! DATA ABORT !!!\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    if let Err(e) = write!(serial, "DFAR: {dfar:#010x} (fault address)\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    if let Err(e) = write!(serial, "DFSR: {dfsr:#010x} (fault status)\r\n") { tracing::warn!(error = %e, "operation failed"); }
 }
 
 /// Prefetch abort handler.
@@ -163,9 +163,9 @@ pub extern "C" fn prefetch_abort_handler_rust() {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 2", out(reg) ifar); // IFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 1", out(reg) ifsr); // IFSR
     }
-    write!(serial, "\r\n!!! PREFETCH ABORT !!!\r\n").ok();
-    write!(serial, "IFAR: {ifar:#010x}\r\n").ok();
-    write!(serial, "IFSR: {ifsr:#010x}\r\n").ok();
+    if let Err(e) = write!(serial, "\r\n!!! PREFETCH ABORT !!!\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    if let Err(e) = write!(serial, "IFAR: {ifar:#010x}\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    if let Err(e) = write!(serial, "IFSR: {ifsr:#010x}\r\n") { tracing::warn!(error = %e, "operation failed"); }
 }
 
 /// Undefined instruction handler.
@@ -174,14 +174,14 @@ pub extern "C" fn undefined_handler_rust() {
     let mut serial = Uart::new();
     serial
         .write_str("\r\n!!! UNDEFINED INSTRUCTION !!!\r\n")
-        .ok();
+       if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
 }
 
 /// SVC handler (placeholder for future syscall implementation).
 #[unsafe(no_mangle)]
 pub extern "C" fn svc_handler_rust() {
-    // NOTE: in a full implementation, extract SVC number from the instruction
-    // at the return address (lr - 4), and read r0-r3 from the saved context
+    // NOTE: in a full implementation, extract SVC number FROM the instruction
+    // at the return address (lr - 4), and read r0-r3 FROM the saved context
     // on the stack. For now this is a placeholder that will be properly
     // wired when we have userspace processes making SVC calls.
 }

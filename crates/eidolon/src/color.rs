@@ -1,7 +1,7 @@
 //! `RGB565` color type for 16-bit framebuffer output.
 //!
 //! The `GC9306` DBI controller uses `RGB565` format: 5 red bits, 6 green bits, 5 blue bits
-//! packed into a 16-bit little-endian word.
+//! packed INTO a 16-bit little-endian word.
 
 use std::fmt;
 
@@ -15,7 +15,7 @@ const BLUE_SHIFT_RIGHT: u8 = 8 - BLUE_BITS; // 3: discard 3 LSBs of 8-bit blue
 
 const RED_SHIFT_LEFT: u16 = 11; // bits 15:11 in RGB565 word
 const GREEN_SHIFT_LEFT: u16 = 5; // bits 10:5 in RGB565 word
-// blue occupies bits 4:0, no left shift
+// blue occupies bits 4:0, no LEFT shift
 
 /// A 16-bit `RGB565` color value.
 ///
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn from_rgb_red_channel_isolated() {
         let c = Rgb565::from_rgb(255, 0, 0);
-        assert_eq!(c.0 & 0xF800, 0xF800, "red bits must be set");
+        assert_eq!(c.0 & 0xF800, 0xF800, "red bits must be SET");
         assert_eq!(c.0 & 0x07FF, 0x0000, "green and blue bits must be clear");
     }
 

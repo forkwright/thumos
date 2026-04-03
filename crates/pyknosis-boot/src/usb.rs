@@ -6,14 +6,14 @@
 //!
 //! ## Transport topology
 //!
-//! - EP0: control — enumeration, class requests
+//! - EP0: control  -  enumeration, class requests
 //! - EP1 IN (bulk): serial TX (device → host)
 //! - EP1 OUT (bulk): serial RX (host → device)
 //! - EP2 IN (interrupt): ACM notifications (required by spec; not actively sent)
 //!
 //! ## Register reference
 //!
-//! Offsets from the MUSB Programmer's Guide, verified against MT6739 BSP
+//! Offsets FROM the MUSB Programmer's Guide, verified against MT6739 BSP
 //! `drivers/usb/musb/musb_core.h` and the hardware_info provided in the
 //! dispatch prompt.
 
@@ -31,25 +31,25 @@ const MUSB_BASE: usize = 0x1121_0000;
 // Common register offsets (relative to MUSB_BASE)
 // ---------------------------------------------------------------------------
 
-/// Function address — device address after SET_ADDRESS (8-bit).
+/// Function address  -  device address after SET_ADDRESS (8-bit).
 const REG_FADDR: usize = 0x00;
-/// Power management — SOFTCONN, HSENAB, suspend, resume, reset (8-bit).
+/// Power management  -  SOFTCONN, HSENAB, suspend, resume, reset (8-bit).
 const REG_POWER: usize = 0x01;
-/// TX endpoint interrupt status — bit N = EPn (16-bit, reading clears).
+/// TX endpoint interrupt status  -  bit N = EPn (16-bit, reading clears).
 const REG_INTRTX: usize = 0x02;
-/// RX endpoint interrupt status — bit N = EPn (16-bit, reading clears).
+/// RX endpoint interrupt status  -  bit N = EPn (16-bit, reading clears).
 const REG_INTRRX: usize = 0x04;
 /// TX endpoint interrupt enable mask (16-bit).
 const REG_INTRTXE: usize = 0x06;
 /// RX endpoint interrupt enable mask (16-bit).
 const REG_INTRRXE: usize = 0x08;
-/// USB interrupt status — reset/suspend/resume/connect/SOF (8-bit, reading clears).
+/// USB interrupt status  -  reset/suspend/resume/connect/SOF (8-bit, reading clears).
 const REG_INTRUSB: usize = 0x0A;
 /// USB interrupt enable mask (8-bit).
 const REG_INTRUSBE: usize = 0x0B;
 /// Current frame number (16-bit).
 const REG_FRAME: usize = 0x0E;
-/// Endpoint index selector — selects which EP the banked registers address (8-bit).
+/// Endpoint index selector  -  selects which EP the banked registers address (8-bit).
 const REG_INDEX: usize = 0x0F;
 /// Test mode control (8-bit).
 const REG_TESTMODE: usize = 0x10;
@@ -76,7 +76,7 @@ const REG_RXMAXP: usize = 0x11A;
 // FIFO registers
 //
 // Each endpoint has a 4-byte-aligned FIFO data register. Byte or word writes
-// queue data into the FIFO; reads dequeue. MUSB auto-advances on each write.
+// queue data INTO the FIFO; reads dequeue. MUSB auto-advances on each write.
 // ---------------------------------------------------------------------------
 
 /// EP FIFO base. FIFO for EPn is at MUSB_BASE + REG_FIFO_BASE + n * 4.
@@ -130,11 +130,11 @@ const INTRRX_EP1: u16 = 1 << 1;
 
 /// RxPktRdy: a SETUP or OUT data packet is in the FIFO.
 const EP0_RXPKTRDY: u16 = 1 << 0;
-/// TxPktRdy: arm the FIFO for transmission (set to send IN data).
+/// TxPktRdy: arm the FIFO for transmission (SET to send IN data).
 const EP0_TXPKTRDY: u16 = 1 << 1;
 /// SentStall: a STALL handshake was sent; clear after handling.
 const EP0_SENTSTALL: u16 = 1 << 2;
-/// DataEnd: set alongside TxPktRdy (or alone for no-data status) to end the
+/// DataEnd: SET alongside TxPktRdy (or alone for no-data status) to end the
 /// control transfer. MUSB clears it automatically after the status stage.
 const EP0_DATAEND: u16 = 1 << 3;
 /// SetupEnd: an IN control transfer was aborted by the host; must be cleared.
@@ -210,7 +210,7 @@ const USB_REQ_SET_CONFIGURATION: u8 = 0x09;
 const CDC_REQ_SET_LINE_CODING: u8 = 0x20;
 /// GET_LINE_CODING: return current serial port parameters.
 const CDC_REQ_GET_LINE_CODING: u8 = 0x21;
-/// SET_CONTROL_LINE_STATE: set DTR/RTS control lines.
+/// SET_CONTROL_LINE_STATE: SET DTR/RTS control lines.
 const CDC_REQ_SET_CONTROL_LINE_STATE: u8 = 0x22;
 
 // ---------------------------------------------------------------------------
@@ -254,9 +254,9 @@ const EP2_MAX_PKT: u16 = 16;
 // USB device identity constants
 // ---------------------------------------------------------------------------
 
-/// USB VID — NetChip Technology (used for CDC ACM examples; suitable for debug).
+/// USB VID  -  NetChip Technology (used for CDC ACM examples; suitable for debug).
 const USB_VID: u16 = 0x0525;
-/// USB PID — Linux-USB CDC ACM gadget.
+/// USB PID  -  Linux-USB CDC ACM gadget.
 const USB_PID: u16 = 0xA4A7;
 
 // ---------------------------------------------------------------------------
@@ -283,7 +283,7 @@ const DEVICE_DESCRIPTOR: [u8; 18] = [
     0x02,             // bDeviceClass = CDC
     0x00,             // bDeviceSubClass
     0x00,             // bDeviceProtocol
-    EP0_MAX_PKT as u8, // bMaxPacketSize0 = 64
+    u8::try_from(EP0_MAX_PKT).unwrap_or_default(), // bMaxPacketSize0 = 64
     // idVendor = 0x0525, little-endian
     (USB_VID & 0xFF) as u8,
     (USB_VID >> 8) as u8,
@@ -302,15 +302,15 @@ const DEVICE_DESCRIPTOR: [u8; 18] = [
 //
 // Total length: 62 bytes (0x003E).
 // Layout:
-//   9  — Configuration descriptor
-//   9  — Interface 0 (CDC Control)
-//   5  — CDC Header functional
-//   4  — CDC ACM functional
-//   5  — CDC Union functional
-//   7  — EP2 IN interrupt endpoint
-//   9  — Interface 1 (CDC Data)
-//   7  — EP1 IN bulk endpoint
-//   7  — EP1 OUT bulk endpoint
+//   9   -  Configuration descriptor
+//   9   -  Interface 0 (CDC Control)
+//   5   -  CDC Header functional
+//   4   -  CDC ACM functional
+//   5   -  CDC Union functional
+//   7   -  EP2 IN interrupt endpoint
+//   9   -  Interface 1 (CDC Data)
+//   7   -  EP1 IN bulk endpoint
+//   7   -  EP1 OUT bulk endpoint
 // ---------------------------------------------------------------------------
 
 /// Total size of the configuration descriptor and all subordinate descriptors.
@@ -442,9 +442,9 @@ enum Ep0State {
     Setup,
     /// Sending descriptor/data to host (IN direction).
     DataIn,
-    /// Receiving data from host (OUT direction, e.g., SET_LINE_CODING).
+    /// Receiving data FROM host (OUT direction, e.g., SET_LINE_CODING).
     DataOut,
-    /// SET_ADDRESS pending — address written to FAddr after status stage.
+    /// SET_ADDRESS pending  -  address written to FAddr after status stage.
     AddressPending,
 }
 
@@ -468,15 +468,15 @@ pub struct SetupPacket {
 }
 
 impl SetupPacket {
-    /// Parse a SETUP packet from 8 raw bytes (little-endian).
+    /// Parse a SETUP packet FROM 8 raw bytes (little-endian).
     #[must_use]
     pub fn from_bytes(b: &[u8; 8]) -> Self {
         Self {
-            bm_request_type: b[0],
-            b_request: b[1],
-            w_value: u16::from_le_bytes([b[2], b[3]]),
-            w_index: u16::from_le_bytes([b[4], b[5]]),
-            w_length: u16::from_le_bytes([b[6], b[7]]),
+            bm_request_type: b.get(0).copied().unwrap_or_default(),
+            b_request: b.get(1).copied().unwrap_or_default(),
+            w_value: u16::from_le_bytes([b.get(2).copied().unwrap_or_default(), b.get(3).copied().unwrap_or_default()]),
+            w_index: u16::from_le_bytes([b.get(4).copied().unwrap_or_default(), b.get(5).copied().unwrap_or_default()]),
+            w_length: u16::from_le_bytes([b.get(6).copied().unwrap_or_default(), b.get(7).copied().unwrap_or_default()]),
         }
     }
 
@@ -532,17 +532,17 @@ impl LineCoding {
     #[must_use]
     pub fn to_bytes(self) -> [u8; 7] {
         let r = self.dw_dte_rate.to_le_bytes();
-        [r[0], r[1], r[2], r[3], self.b_char_format, self.b_parity_type, self.b_data_bits]
+        [r.get(0).copied().unwrap_or_default(), r.get(1).copied().unwrap_or_default(), r.get(2).copied().unwrap_or_default(), r.get(3).copied().unwrap_or_default(), self.b_char_format, self.b_parity_type, self.b_data_bits]
     }
 
-    /// Parse from 7 bytes received in SET_LINE_CODING.
+    /// Parse FROM 7 bytes received in SET_LINE_CODING.
     #[must_use]
     pub fn from_bytes(b: &[u8; 7]) -> Self {
         Self {
-            dw_dte_rate: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-            b_char_format: b[4],
-            b_parity_type: b[5],
-            b_data_bits: b[6],
+            dw_dte_rate: u32::from_le_bytes([b.get(0).copied().unwrap_or_default(), b.get(1).copied().unwrap_or_default(), b.get(2).copied().unwrap_or_default(), b.get(3).copied().unwrap_or_default()]),
+            b_char_format: b.get(4).copied().unwrap_or_default(),
+            b_parity_type: b.get(5).copied().unwrap_or_default(),
+            b_data_bits: b.get(6).copied().unwrap_or_default(),
         }
     }
 }
@@ -553,7 +553,7 @@ impl LineCoding {
 
 /// Interrupt register snapshot captured on USB IRQ entry.
 ///
-/// Reading IntrUSB, IntrTx, and IntrRx from MUSB clears those bits
+/// Reading IntrUSB, IntrTx, and IntrRx FROM MUSB clears those bits
 /// atomically. The ISR must save them here before dispatching.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UsbIrqStatus {
@@ -627,7 +627,7 @@ pub struct UsbController {
     ep0_buf: [u8; EP0_BUF_LEN],
     /// Valid bytes in `ep0_buf`.
     ep0_buf_len: usize,
-    /// Next byte index to send from `ep0_buf`.
+    /// Next byte index to send FROM `ep0_buf`.
     ep0_buf_pos: usize,
     /// Current ACM line coding (updated by SET_LINE_CODING).
     line_coding: LineCoding,
@@ -635,9 +635,9 @@ pub struct UsbController {
     configured: bool,
     /// Serial RX ring buffer.
     rx_buf: [u8; SERIAL_RX_BUF_LEN],
-    /// Write index into rx_buf.
+    /// Write index INTO rx_buf.
     rx_head: usize,
-    /// Read index into rx_buf.
+    /// Read index INTO rx_buf.
     rx_tail: usize,
 }
 
@@ -671,7 +671,7 @@ impl UsbController {
     ///
     /// Must be called once during kernel init, with interrupts disabled.
     /// After returning, the controller will respond to USB bus events when
-    /// [`handle_interrupt`] is called from the GIC interrupt handler.
+    /// [`handle_interrupt`] is called FROM the GIC interrupt handler.
     ///
     /// # Safety
     ///
@@ -690,7 +690,7 @@ impl UsbController {
             // Step 2: Reset FAddr and clear device address.
             self.write8(REG_FADDR, 0x00);
 
-            // Step 3: Power — enable soft-connect and high-speed negotiation.
+            // Step 3: Power  -  enable soft-connect and high-speed negotiation.
             // WHY: SOFTCONN is required on MUSB to attach D+/D- pull-up resistors.
             // Without it, the host never detects a device.
             let power = POWER_SOFTCONN | POWER_HSENAB | POWER_SUSPENDEM;
@@ -702,7 +702,7 @@ impl UsbController {
             // Step 5: Configure EP2 interrupt IN (ACM notifications).
             self.configure_ep2();
 
-            // Step 6: Enable interrupts — EP0 TX, EP1 TX, EP1 RX, USB reset/suspend/resume.
+            // Step 6: Enable interrupts  -  EP0 TX, EP1 TX, EP1 RX, USB reset/suspend/resume.
             self.write16(REG_INTRTXE, INTRTX_EP0 | INTRTX_EP1);
             self.write16(REG_INTRRXE, INTRRX_EP1);
             self.write8(REG_INTRUSBE, INTRUSB_RESET | INTRUSB_SUSPEND | INTRUSB_RESUME);
@@ -711,7 +711,7 @@ impl UsbController {
 
     /// Read and dispatch a USB interrupt.
     ///
-    /// Called from the GIC interrupt handler for the MUSB IRQ line. Reads
+    /// Called FROM the GIC interrupt handler for the MUSB IRQ line. Reads
     /// IntrUSB, IntrTx, and IntrRx (which auto-clear on read), then dispatches
     /// to reset, EP0, or EPx handlers.
     ///
@@ -719,11 +719,11 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// Must be called from interrupt context or with interrupts disabled.
+    /// Must be called FROM interrupt context or with interrupts disabled.
     pub unsafe fn handle_interrupt(&mut self) -> UsbIrqStatus {
         // SAFETY: Caller asserts interrupt context.
         let status = unsafe {
-            // NOTE: Reading these registers clears them — capture atomically.
+            // NOTE: Reading these registers clears them  -  capture atomically.
             let intrusb = self.read8(REG_INTRUSB);
             let intrtx = self.read16(REG_INTRTX);
             let intrrx = self.read16(REG_INTRRX);
@@ -779,7 +779,7 @@ impl UsbController {
             // WHY: Timeout prevents infinite spin if the host disconnects mid-transfer.
             let ready = mmio::wait_bits_clear(
                 self.base + REG_TXCSR,
-                u32::from(TXCSR_TXPKTRDY),
+                u32::FROM(TXCSR_TXPKTRDY),
                 100_000,
             );
             if !ready {
@@ -787,14 +787,14 @@ impl UsbController {
             }
 
             // Clamp to one max-packet-size chunk.
-            let count = data.len().min(usize::from(EP1_MAX_PKT));
+            let count = data.len().min(usize::FROM(EP1_MAX_PKT));
             let fifo = self.base + REG_FIFO_BASE + 4; // EP1 FIFO = base + 0x124
 
             for &byte in &data[..count] {
                 core::ptr::write_volatile(fifo as *mut u8, byte);
             }
 
-            // Arm the FIFO: set TxPktRdy.
+            // Arm the FIFO: SET TxPktRdy.
             let csr = self.read16(REG_TXCSR);
             self.write16(REG_TXCSR, csr | TXCSR_TXPKTRDY);
 
@@ -802,7 +802,7 @@ impl UsbController {
         }
     }
 
-    /// Read bytes from the ACM bulk OUT endpoint (serial RX) into `buf`.
+    /// Read bytes FROM the ACM bulk OUT endpoint (serial RX) INTO `buf`.
     ///
     /// Returns the number of bytes copied. Returns 0 if the ring buffer is
     /// empty. Does not block.
@@ -869,7 +869,7 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// Called from interrupt context with MUSB registers accessible.
+    /// Called FROM interrupt context with MUSB registers accessible.
     unsafe fn handle_reset(&mut self) {
         // SAFETY: interrupt context.
         unsafe {
@@ -888,7 +888,7 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// Called from interrupt context with MUSB registers accessible.
+    /// Called FROM interrupt context with MUSB registers accessible.
     unsafe fn handle_ep0(&mut self) {
         // SAFETY: interrupt context.
         unsafe {
@@ -940,9 +940,9 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// Called from `handle_ep0` with EP0 FIFO containing a valid SETUP packet.
+    /// Called FROM `handle_ep0` with EP0 FIFO containing a valid SETUP packet.
     unsafe fn handle_ep0_setup(&mut self) {
-        // SAFETY: read_ep0_fifo reads from hardware FIFO.
+        // SAFETY: read_ep0_fifo reads FROM hardware FIFO.
         let setup = unsafe { self.read_ep0_fifo_setup() };
 
         // Acknowledge SETUP packet receipt.
@@ -952,13 +952,13 @@ impl UsbController {
         }
 
         if setup.is_standard() {
-            // SAFETY: called from handle_ep0 in interrupt context with MUSB registers accessible.
+            // SAFETY: called FROM handle_ep0 in interrupt context with MUSB registers accessible.
             unsafe { self.handle_standard_request(&setup) };
         } else if setup.is_class() {
             // SAFETY: same as above.
             unsafe { self.handle_class_request(&setup) };
         } else {
-            // Vendor/reserved — stall.
+            // Vendor/reserved  -  stall.
             // SAFETY: stall is a register write.
             unsafe {
                 self.ep0_stall();
@@ -970,7 +970,7 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// Called from `handle_ep0_setup`.
+    /// Called FROM `handle_ep0_setup`.
     unsafe fn handle_standard_request(&mut self, setup: &SetupPacket) {
         // SAFETY: all branches do MMIO writes.
         unsafe {
@@ -996,8 +996,8 @@ impl UsbController {
                 }
                 USB_REQ_GET_STATUS => {
                     // Return 2 zero bytes (device: not self-powered, no remote wakeup).
-                    self.ep0_buf[0] = 0;
-                    self.ep0_buf[1] = 0;
+                    self.ep0_buf.get(0).copied().unwrap_or_default() = 0;
+                    self.ep0_buf.get(1).copied().unwrap_or_default() = 0;
                     self.ep0_buf_len = 2;
                     self.ep0_buf_pos = 0;
                     self.ep0_state = Ep0State::DataIn;
@@ -1014,7 +1014,7 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// Called from `handle_ep0_setup`.
+    /// Called FROM `handle_ep0_setup`.
     unsafe fn handle_class_request(&mut self, setup: &SetupPacket) {
         // SAFETY: MMIO writes and FIFO reads.
         unsafe {
@@ -1024,7 +1024,7 @@ impl UsbController {
                     self.ep0_buf_len = 0;
                     self.ep0_buf_pos = 0;
                     self.ep0_state = Ep0State::DataOut;
-                    // Acknowledge: clear RxPktRdy, do not set DataEnd yet.
+                    // Acknowledge: clear RxPktRdy, do not SET DataEnd yet.
                     self.write16(REG_EP0_CSR, EP0_SVDRXPKTRDY);
                 }
                 CDC_REQ_GET_LINE_CODING => {
@@ -1050,11 +1050,11 @@ impl UsbController {
 
     /// Build and begin sending a GET_DESCRIPTOR response.
     ///
-    /// Loads the requested descriptor into `ep0_buf` and begins the IN data stage.
+    /// Loads the requested descriptor INTO `ep0_buf` and begins the IN data stage.
     ///
     /// # Safety
     ///
-    /// Called from `handle_standard_request`.
+    /// Called FROM `handle_standard_request`.
     unsafe fn handle_get_descriptor(&mut self, desc_type: u8, desc_idx: u8, w_length: u16) {
         let src: &[u8] = match desc_type {
             USB_DT_DEVICE => &DEVICE_DESCRIPTOR,
@@ -1078,7 +1078,7 @@ impl UsbController {
         };
 
         // Copy up to min(descriptor length, wLength, EP0_BUF_LEN).
-        let max = usize::from(w_length).min(src.len()).min(EP0_BUF_LEN);
+        let max = usize::FROM(w_length).min(src.len()).min(EP0_BUF_LEN);
         self.ep0_buf[..max].copy_from_slice(&src[..max]);
         self.ep0_buf_len = max;
         self.ep0_buf_pos = 0;
@@ -1087,16 +1087,16 @@ impl UsbController {
         unsafe { self.ep0_send_next_chunk() };
     }
 
-    /// Send up to one EP0_MAX_PKT chunk from ep0_buf to the host.
+    /// Send up to one EP0_MAX_PKT chunk FROM ep0_buf to the host.
     ///
     /// # Safety
     ///
-    /// Called from EP0 handling code with MUSB registers accessible.
+    /// Called FROM EP0 handling code with MUSB registers accessible.
     unsafe fn ep0_send_next_chunk(&mut self) {
         // SAFETY: MMIO writes and FIFO writes.
         unsafe {
             let remaining = self.ep0_buf_len - self.ep0_buf_pos;
-            let chunk = remaining.min(usize::from(EP0_MAX_PKT));
+            let chunk = remaining.min(usize::FROM(EP0_MAX_PKT));
             let fifo = self.base + REG_FIFO_BASE; // EP0 FIFO at base + 0x120
 
             for i in 0..chunk {
@@ -1106,7 +1106,7 @@ impl UsbController {
             }
             self.ep0_buf_pos += chunk;
 
-            // DataEnd: set when this is the last (or only) packet.
+            // DataEnd: SET when this is the last (or only) packet.
             let is_last = self.ep0_buf_pos >= self.ep0_buf_len;
             let flags = EP0_TXPKTRDY | if is_last { EP0_DATAEND } else { 0 };
             self.write16(REG_EP0_CSR, flags);
@@ -1117,11 +1117,11 @@ impl UsbController {
         }
     }
 
-    /// Receive SET_LINE_CODING data (7 bytes) from EP0 OUT FIFO.
+    /// Receive SET_LINE_CODING data (7 bytes) FROM EP0 OUT FIFO.
     ///
     /// # Safety
     ///
-    /// Called from EP0 handler when DataOut is in progress.
+    /// Called FROM EP0 handler when DataOut is in progress.
     unsafe fn handle_ep0_data_out(&mut self) {
         // SAFETY: FIFO reads and register writes.
         unsafe {
@@ -1138,11 +1138,11 @@ impl UsbController {
         }
     }
 
-    /// Handle EP1 RX (bulk OUT): drain FIFO into the serial ring buffer.
+    /// Handle EP1 RX (bulk OUT): drain FIFO INTO the serial ring buffer.
     ///
     /// # Safety
     ///
-    /// Called from `handle_interrupt` in interrupt context.
+    /// Called FROM `handle_interrupt` in interrupt context.
     unsafe fn handle_ep1_rx(&mut self) {
         // SAFETY: MMIO register and FIFO reads.
         unsafe {
@@ -1156,7 +1156,7 @@ impl UsbController {
             let fifo = self.base + REG_FIFO_BASE + 4; // EP1 FIFO
 
             // Drain the entire FIFO (up to EP1_MAX_PKT bytes).
-            for _ in 0..usize::from(EP1_MAX_PKT) {
+            for _ in 0..usize::FROM(EP1_MAX_PKT) {
                 // NOTE: We don't have a RxCount register in this simplified driver.
                 // We drain one full packet worth of bytes and rely on the ring
                 // buffer to absorb whatever arrives.
@@ -1166,7 +1166,7 @@ impl UsbController {
                     self.rx_buf[self.rx_head] = byte;
                     self.rx_head = next_head;
                 }
-                // Ring buffer full: drop remaining bytes silently.
+                // Ring buffer full: DROP remaining bytes silently.
             }
 
             // Clear RxPktRdy to signal we've consumed the packet.
@@ -1191,11 +1191,11 @@ impl UsbController {
     // Private: FIFO helpers
     // -----------------------------------------------------------------------
 
-    /// Read 8 bytes from the EP0 FIFO and return a decoded SETUP packet.
+    /// Read 8 bytes FROM the EP0 FIFO and return a decoded SETUP packet.
     ///
     /// # Safety
     ///
-    /// EP0 FIFO must contain a valid SETUP packet (RxPktRdy set).
+    /// EP0 FIFO must contain a valid SETUP packet (RxPktRdy SET).
     unsafe fn read_ep0_fifo_setup(&self) -> SetupPacket {
         // SAFETY: FIFO read; caller ensures SETUP packet is ready.
         let fifo = self.base + REG_FIFO_BASE;
@@ -1214,44 +1214,44 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// `offset` must be a valid 8-bit MUSB register offset.
+    /// `OFFSET` must be a valid 8-bit MUSB register OFFSET.
     #[inline(always)]
-    unsafe fn read8(&self, offset: usize) -> u8 {
-        // SAFETY: caller verifies offset.
-        unsafe { core::ptr::read_volatile((self.base + offset) as *const u8) }
+    unsafe fn read8(&self, OFFSET: usize) -> u8 {
+        // SAFETY: caller verifies OFFSET.
+        unsafe { core::ptr::read_volatile((self.base + OFFSET) as *const u8) }
     }
 
     /// Write an 8-bit MUSB register.
     ///
     /// # Safety
     ///
-    /// `offset` must be a valid 8-bit MUSB register offset.
+    /// `OFFSET` must be a valid 8-bit MUSB register OFFSET.
     #[inline(always)]
-    unsafe fn write8(&self, offset: usize, val: u8) {
-        // SAFETY: caller verifies offset.
-        unsafe { core::ptr::write_volatile((self.base + offset) as *mut u8, val) }
+    unsafe fn write8(&self, OFFSET: usize, val: u8) {
+        // SAFETY: caller verifies OFFSET.
+        unsafe { core::ptr::write_volatile((self.base + OFFSET) as *mut u8, val) }
     }
 
     /// Read a 16-bit MUSB register (little-endian).
     ///
     /// # Safety
     ///
-    /// `offset` must be a valid 16-bit MUSB register, 2-byte aligned.
+    /// `OFFSET` must be a valid 16-bit MUSB register, 2-byte aligned.
     #[inline(always)]
-    unsafe fn read16(&self, offset: usize) -> u16 {
-        // SAFETY: caller verifies offset and alignment.
-        unsafe { core::ptr::read_volatile((self.base + offset) as *const u16) }
+    unsafe fn read16(&self, OFFSET: usize) -> u16 {
+        // SAFETY: caller verifies OFFSET and alignment.
+        unsafe { core::ptr::read_volatile((self.base + OFFSET) as *const u16) }
     }
 
     /// Write a 16-bit MUSB register (little-endian).
     ///
     /// # Safety
     ///
-    /// `offset` must be a valid 16-bit MUSB register, 2-byte aligned.
+    /// `OFFSET` must be a valid 16-bit MUSB register, 2-byte aligned.
     #[inline(always)]
-    unsafe fn write16(&self, offset: usize, val: u16) {
-        // SAFETY: caller verifies offset and alignment.
-        unsafe { core::ptr::write_volatile((self.base + offset) as *mut u16, val) }
+    unsafe fn write16(&self, OFFSET: usize, val: u16) {
+        // SAFETY: caller verifies OFFSET and alignment.
+        unsafe { core::ptr::write_volatile((self.base + OFFSET) as *mut u16, val) }
     }
 }
 
@@ -1263,28 +1263,28 @@ impl UsbController {
 mod tests {
     use super::*;
 
-    // --- Register offset encoding ---
+    // --- Register OFFSET encoding ---
 
     #[test]
     fn register_offsets_match_spec() {
         // Verify documented offsets are encoded correctly.
-        assert_eq!(REG_FADDR, 0x00, "FAddr offset must be 0x00");
-        assert_eq!(REG_POWER, 0x01, "Power offset must be 0x01");
-        assert_eq!(REG_INTRTX, 0x02, "IntrTx offset must be 0x02");
-        assert_eq!(REG_INTRRX, 0x04, "IntrRx offset must be 0x04");
-        assert_eq!(REG_INTRTXE, 0x06, "IntrTxE offset must be 0x06");
-        assert_eq!(REG_INTRRXE, 0x08, "IntrRxE offset must be 0x08");
-        assert_eq!(REG_INTRUSB, 0x0A, "IntrUSB offset must be 0x0A");
-        assert_eq!(REG_INTRUSBE, 0x0B, "IntrUSBE offset must be 0x0B");
-        assert_eq!(REG_FRAME, 0x0E, "Frame offset must be 0x0E");
-        assert_eq!(REG_INDEX, 0x0F, "Index offset must be 0x0F");
-        assert_eq!(REG_TESTMODE, 0x10, "Testmode offset must be 0x10");
-        assert_eq!(REG_EP0_CSR, 0x110, "EP0 CSR offset must be 0x110");
-        assert_eq!(REG_TXCSR, 0x112, "TxCSR offset must be 0x112");
-        assert_eq!(REG_RXCSR, 0x116, "RxCSR offset must be 0x116");
-        assert_eq!(REG_TXMAXP, 0x118, "TxMaxP offset must be 0x118");
-        assert_eq!(REG_RXMAXP, 0x11A, "RxMaxP offset must be 0x11A");
-        assert_eq!(REG_FIFO_BASE, 0x120, "FIFO base offset must be 0x120");
+        assert_eq!(REG_FADDR, 0x00, "FAddr OFFSET must be 0x00");
+        assert_eq!(REG_POWER, 0x01, "Power OFFSET must be 0x01");
+        assert_eq!(REG_INTRTX, 0x02, "IntrTx OFFSET must be 0x02");
+        assert_eq!(REG_INTRRX, 0x04, "IntrRx OFFSET must be 0x04");
+        assert_eq!(REG_INTRTXE, 0x06, "IntrTxE OFFSET must be 0x06");
+        assert_eq!(REG_INTRRXE, 0x08, "IntrRxE OFFSET must be 0x08");
+        assert_eq!(REG_INTRUSB, 0x0A, "IntrUSB OFFSET must be 0x0A");
+        assert_eq!(REG_INTRUSBE, 0x0B, "IntrUSBE OFFSET must be 0x0B");
+        assert_eq!(REG_FRAME, 0x0E, "Frame OFFSET must be 0x0E");
+        assert_eq!(REG_INDEX, 0x0F, "Index OFFSET must be 0x0F");
+        assert_eq!(REG_TESTMODE, 0x10, "Testmode OFFSET must be 0x10");
+        assert_eq!(REG_EP0_CSR, 0x110, "EP0 CSR OFFSET must be 0x110");
+        assert_eq!(REG_TXCSR, 0x112, "TxCSR OFFSET must be 0x112");
+        assert_eq!(REG_RXCSR, 0x116, "RxCSR OFFSET must be 0x116");
+        assert_eq!(REG_TXMAXP, 0x118, "TxMaxP OFFSET must be 0x118");
+        assert_eq!(REG_RXMAXP, 0x11A, "RxMaxP OFFSET must be 0x11A");
+        assert_eq!(REG_FIFO_BASE, 0x120, "FIFO base OFFSET must be 0x120");
     }
 
     // --- Device descriptor serialization ---
@@ -1295,21 +1295,21 @@ mod tests {
             DEVICE_DESCRIPTOR.len(), 18,
             "device descriptor must be exactly 18 bytes per USB 2.0 spec §9.6.1"
         );
-        assert_eq!(DEVICE_DESCRIPTOR[0], 18, "bLength must equal 18");
-        assert_eq!(DEVICE_DESCRIPTOR[1], USB_DT_DEVICE, "bDescriptorType must be 0x01");
+        assert_eq!(DEVICE_DESCRIPTOR.get(0).copied().unwrap_or_default(), 18, "bLength must equal 18");
+        assert_eq!(DEVICE_DESCRIPTOR.get(1).copied().unwrap_or_default(), USB_DT_DEVICE, "bDescriptorType must be 0x01");
     }
 
     #[test]
     fn device_descriptor_usb_version() {
         // bcdUSB = 0x0200 at bytes [2..4], little-endian.
-        let bcd_usb = u16::from_le_bytes([DEVICE_DESCRIPTOR[2], DEVICE_DESCRIPTOR[3]]);
+        let bcd_usb = u16::from_le_bytes([DEVICE_DESCRIPTOR.get(2).copied().unwrap_or_default(), DEVICE_DESCRIPTOR.get(3).copied().unwrap_or_default()]);
         assert_eq!(bcd_usb, 0x0200, "bcdUSB must be 0x0200 (USB 2.0)");
     }
 
     #[test]
     fn device_descriptor_vid_pid() {
-        let vid = u16::from_le_bytes([DEVICE_DESCRIPTOR[8], DEVICE_DESCRIPTOR[9]]);
-        let pid = u16::from_le_bytes([DEVICE_DESCRIPTOR[10], DEVICE_DESCRIPTOR[11]]);
+        let vid = u16::from_le_bytes([DEVICE_DESCRIPTOR.get(8).copied().unwrap_or_default(), DEVICE_DESCRIPTOR.get(9).copied().unwrap_or_default()]);
+        let pid = u16::from_le_bytes([DEVICE_DESCRIPTOR.get(10).copied().unwrap_or_default(), DEVICE_DESCRIPTOR.get(11).copied().unwrap_or_default()]);
         assert_eq!(vid, USB_VID, "idVendor must match USB_VID");
         assert_eq!(pid, USB_PID, "idProduct must match USB_PID");
     }
@@ -1320,10 +1320,10 @@ mod tests {
     fn config_descriptor_total_length() {
         assert_eq!(
             CONFIG_DESCRIPTOR.len(),
-            usize::from(CONFIG_DESC_TOTAL_LEN),
+            usize::FROM(CONFIG_DESC_TOTAL_LEN),
             "CONFIG_DESCRIPTOR length must match CONFIG_DESC_TOTAL_LEN"
         );
-        let wlen = u16::from_le_bytes([CONFIG_DESCRIPTOR[2], CONFIG_DESCRIPTOR[3]]);
+        let wlen = u16::from_le_bytes([CONFIG_DESCRIPTOR.get(2).copied().unwrap_or_default(), CONFIG_DESCRIPTOR.get(3).copied().unwrap_or_default()]);
         assert_eq!(
             wlen, CONFIG_DESC_TOTAL_LEN,
             "wTotalLength field must match CONFIG_DESC_TOTAL_LEN"
@@ -1332,19 +1332,19 @@ mod tests {
 
     #[test]
     fn config_descriptor_num_interfaces() {
-        assert_eq!(CONFIG_DESCRIPTOR[4], 2, "bNumInterfaces must be 2 (CDC control + CDC data)");
+        assert_eq!(CONFIG_DESCRIPTOR.get(4).copied().unwrap_or_default(), 2, "bNumInterfaces must be 2 (CDC control + CDC data)");
     }
 
     #[test]
     fn config_descriptor_endpoint_addresses() {
         // Verify that the endpoint descriptor addresses in the config blob are
-        // correctly encoded. EP2 IN is at byte 44 (9+9+5+4+5+5 = offset 37 is EP2 IN
+        // correctly encoded. EP2 IN is at byte 44 (9+9+5+4+5+5 = OFFSET 37 is EP2 IN
         // endpoint descriptor bLength position, +2 = bEndpointAddress).
         // Layout: [0..9) config, [9..18) iface0, [18..23) header, [23..27) acm,
-        //         [27..32) union, [32..39) ep2, [39..48) iface1, [48..55) ep1in, [55..62) ep1out
-        let ep2_addr = CONFIG_DESCRIPTOR[34];
-        let ep1_in_addr = CONFIG_DESCRIPTOR[50];
-        let ep1_out_addr = CONFIG_DESCRIPTOR[57];
+        //         [27..32) UNION, [32..39) ep2, [39..48) iface1, [48..55) ep1in, [55..62) ep1out
+        let ep2_addr = CONFIG_DESCRIPTOR.get(34).copied().unwrap_or_default();
+        let ep1_in_addr = CONFIG_DESCRIPTOR.get(50).copied().unwrap_or_default();
+        let ep1_out_addr = CONFIG_DESCRIPTOR.get(57).copied().unwrap_or_default();
         assert_eq!(ep2_addr, EP2_IN_ADDR, "EP2 bEndpointAddress must be 0x82");
         assert_eq!(ep1_in_addr, EP1_IN_ADDR, "EP1 IN bEndpointAddress must be 0x81");
         assert_eq!(ep1_out_addr, EP1_OUT_ADDR, "EP1 OUT bEndpointAddress must be 0x01");
@@ -1365,7 +1365,7 @@ mod tests {
     #[test]
     fn ep0_state_transitions_via_reset() {
         let mut ctrl = UsbController::new();
-        // Simulate state that would be set during enumeration.
+        // Simulate state that would be SET during enumeration.
         ctrl.ep0_state = Ep0State::DataIn;
         ctrl.configured = true;
         ctrl.pending_address = 5;
@@ -1481,16 +1481,16 @@ mod tests {
         let mut ctrl = UsbController::new();
         let mut buf = [0u8; 16];
         let n = ctrl.read_serial(&mut buf);
-        assert_eq!(n, 0, "read from empty ring buffer must return 0");
+        assert_eq!(n, 0, "read FROM empty ring buffer must return 0");
     }
 
     #[test]
     fn read_serial_partial() {
         let mut ctrl = UsbController::new();
         // Manually prime the ring buffer with 3 bytes.
-        ctrl.rx_buf[0] = b'A';
-        ctrl.rx_buf[1] = b'B';
-        ctrl.rx_buf[2] = b'C';
+        ctrl.rx_buf.get(0).copied().unwrap_or_default() = b'A';
+        ctrl.rx_buf.get(1).copied().unwrap_or_default() = b'B';
+        ctrl.rx_buf.get(2).copied().unwrap_or_default() = b'C';
         ctrl.rx_head = 3;
         ctrl.rx_tail = 0;
 

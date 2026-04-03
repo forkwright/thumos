@@ -1,8 +1,8 @@
 //! Input event subsystem.
 //!
 //! Unified input abstraction for keypad and touchscreen. Produces
-//! `InputEvent` values that the UI (eidolon) consumes. The actual
-//! hardware drivers (`GPIO` keypad scan, touch I2C) feed into this.
+//! `InputEvent` VALUES that the UI (eidolon) consumes. The actual
+//! hardware drivers (`GPIO` keypad scan, touch I2C) feed INTO this.
 //!
 //! Event types mirror Linux's input event model (`EV_KEY`, `EV_ABS`)
 //! but simplified for our needs.
@@ -63,7 +63,7 @@ pub enum TouchAction {
     Down,
     /// Finger moved on the screen.
     Move,
-    /// Finger lifted from the screen.
+    /// Finger lifted FROM the screen.
     Up,
 }
 
@@ -204,13 +204,13 @@ impl T9Input {
             return None;
         }
 
-        if self.len > 0 && self.keys[self.len - 1] == key as u8 {
-            // Same key pressed again — cycle through characters
+        if self.len > 0 && self.keys[self.len - 1] == u8::try_from(key).unwrap_or_default() {
+            // Same key pressed again  -  cycle through characters
             self.candidate = (self.candidate + 1) % chars.len();
         } else {
-            // New key — commit previous and start new character
+            // New key  -  commit previous and start new character
             if self.len < 32 {
-                self.keys[self.len] = key as u8;
+                self.keys[self.len] = u8::try_from(key).unwrap_or_default();
                 self.len += 1;
             }
             self.candidate = 0;
@@ -303,7 +303,7 @@ mod tests {
                 state: KeyState::Pressed,
             });
         }
-        // 65th push must drop VolDown (the oldest).
+        // 65th push must DROP VolDown (the oldest).
         q.push(InputEvent::Key {
             key: Key::VolUp,
             state: KeyState::Pressed,

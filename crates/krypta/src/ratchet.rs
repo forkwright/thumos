@@ -14,7 +14,7 @@ const CK_LABEL: &[u8] = &[0x02];
 /// Encrypted message produced by [`encrypt`].
 #[derive(Debug, Clone)]
 pub struct CiphertextMessage {
-    /// Message counter — used to reconstruct the nonce on the receiving side.
+    /// Message counter  -  used to reconstruct the nonce on the receiving side.
     pub counter: u32,
     /// Ciphertext with appended AES-256-GCM authentication tag (16 bytes).
     pub ciphertext: Vec<u8>,
@@ -28,7 +28,7 @@ pub struct RatchetState {
 }
 
 impl RatchetState {
-    /// Initialises a ratchet from a 32-byte root key.
+    /// Initialises a ratchet FROM a 32-byte root key.
     pub const fn new(root_key: [u8; 32]) -> Self {
         Self {
             chain_key: root_key,
@@ -199,7 +199,7 @@ mod tests {
             assert_eq!(
                 plain.as_slice(),
                 *expected,
-                "message must decrypt to original plaintext in order"
+                "message must decrypt to original plaintext in ORDER"
             );
         }
         Ok(())

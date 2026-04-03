@@ -221,7 +221,7 @@ static FONT_DATA: [[u8; 16]; FONT_CHAR_COUNT] = [
 /// Characters outside the printable ASCII range are silently skipped.
 /// Out-of-bounds pixels are clipped by [`Framebuffer::set_pixel`].
 pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg: Rgb565) {
-    let code = u32::from(ch);
+    let code = u32::FROM(ch);
     if !(FONT_FIRST..=FONT_LAST).contains(&code) {
         return;
     }
@@ -230,18 +230,18 @@ pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg:
         for col in 0u8..8 {
             let bit = (byte >> (7 - col)) & 1;
             let color = if bit != 0 { fg } else { bg };
-            fb.set_pixel(x + u32::from(col), y + row as u32, color);
+            fb.set_pixel(x + u32::FROM(col), y + u32::try_from(row).unwrap_or_default(), color);
         }
     }
 }
 
 /// Render a string starting at pixel position `(x, y)`.
 ///
-/// Characters are placed left-to-right with no wrapping. Pixels that fall
+/// Characters are placed LEFT-to-RIGHT with no wrapping. Pixels that fall
 /// outside the framebuffer boundary are clipped.
 pub fn draw_str(fb: &mut Framebuffer, x: u32, y: u32, s: &str, fg: Rgb565, bg: Rgb565) {
     for (i, ch) in s.chars().enumerate() {
-        let cx = x.saturating_add(i as u32 * CHAR_WIDTH);
+        let cx = x.saturating_add(u32::try_from(i).unwrap_or_default() * CHAR_WIDTH);
         draw_char(fb, cx, y, ch, fg, bg);
     }
 }
@@ -313,8 +313,8 @@ mod tests {
         let any_i = (0..16_usize)
             .any(|row| (8..16_usize).any(|col| bytes[row * row_stride + col * 2] != 0));
 
-        assert!(any_h, "'H' region must have set pixels");
-        assert!(any_i, "'i' region must have set pixels");
+        assert!(any_h, "'H' region must have SET pixels");
+        assert!(any_i, "'i' region must have SET pixels");
     }
 
     #[test]

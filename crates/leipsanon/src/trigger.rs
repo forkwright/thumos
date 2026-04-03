@@ -206,7 +206,7 @@ mod tests {
     fn mismatched_input_type_does_not_fire() {
         let mut cfg = TriggerConfig::new();
         cfg.add(PanicTrigger::KeyCombo(vec![1]), WipeLevel::Keys);
-        // Supply a Signal input against a KeyCombo trigger — must not fire.
+        // Supply a Signal input against a KeyCombo trigger  -  must not fire.
         let result = cfg.check_trigger(&TriggerInput::Signal(1));
         assert!(
             result.is_none(),
