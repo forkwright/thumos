@@ -87,13 +87,13 @@ impl KeyInfo {
         (self.0 & 0x0007) as u8
     }
 
-    /// True if pairwise (unicast) key; false for group/broadcast key.
+    /// True if pairwise (unicast) key; false for GROUP/broadcast key.
     #[must_use]
     pub const fn pairwise(self) -> bool {
         self.0 & 0x0008 != 0
     }
 
-    /// Key index for group keys (bits 4–5).
+    /// Key index for GROUP keys (bits 4–5).
     #[must_use]
     pub const fn key_index(self) -> u8 {
         ((self.0 >> 4) & 0x03) as u8
@@ -168,7 +168,7 @@ pub struct EapolFrame {
     pub raw_body: Vec<u8>,
 }
 
-/// Parse an EAPOL frame from a byte slice.
+/// Parse an EAPOL frame FROM a byte slice.
 ///
 /// # Errors
 ///
@@ -183,9 +183,9 @@ pub fn parse(data: &[u8]) -> Result<EapolFrame, Error> {
         }
     );
 
-    let version = data[0];
-    let packet_type = EapolType::from_byte(data[1])?;
-    let body_len = u16::from_be_bytes([data[2], data[3]]) as usize;
+    let version = data.get(0).copied().unwrap_or_default();
+    let packet_type = EapolType::from_byte(data.get(1).copied().unwrap_or_default())?;
+    let body_len = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]) as usize;
     let total = EAPOL_HEADER_LEN + body_len;
 
     ensure!(
@@ -226,29 +226,29 @@ fn parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, Error> {
     );
 
     // Safe: all offsets guaranteed by the ensure above.
-    let descriptor_type = body[0];
-    let key_info = KeyInfo(u16::from_be_bytes([body[1], body[2]]));
-    let key_length = u16::from_be_bytes([body[3], body[4]]);
+    let descriptor_type = body.get(0).copied().unwrap_or_default();
+    let key_info = KeyInfo(u16::from_be_bytes([body.get(1).copied().unwrap_or_default(), body.get(2).copied().unwrap_or_default()]));
+    let key_length = u16::from_be_bytes([body.get(3).copied().unwrap_or_default(), body.get(4).copied().unwrap_or_default()]);
 
     let mut replay_buf = [0u8; 8];
-    replay_buf.copy_from_slice(&body[5..13]);
+    replay_buf.copy_from_slice(body.get(5..13).unwrap_or_default());
     let replay_counter = u64::from_be_bytes(replay_buf);
 
     let mut nonce = [0u8; NONCE_LEN];
-    nonce.copy_from_slice(&body[13..45]);
+    nonce.copy_from_slice(body.get(13..45).unwrap_or_default());
 
     let mut iv = [0u8; IV_LEN];
-    iv.copy_from_slice(&body[45..61]);
+    iv.copy_from_slice(body.get(45..61).unwrap_or_default());
 
     let mut seq_buf = [0u8; 8];
-    seq_buf.copy_from_slice(&body[61..69]);
+    seq_buf.copy_from_slice(body.get(61..69).unwrap_or_default());
     let rsc = u64::from_be_bytes(seq_buf);
     // body[69..77] is reserved; skip.
 
     let mut mic = [0u8; MIC_LEN];
-    mic.copy_from_slice(&body[77..93]);
+    mic.copy_from_slice(body.get(77..93).unwrap_or_default());
 
-    let key_data_len = u16::from_be_bytes([body[93], body[94]]) as usize;
+    let key_data_len = u16::from_be_bytes([body.get(93).copied().unwrap_or_default(), body.get(94).copied().unwrap_or_default()]) as usize;
     let key_data_end = EAPOL_KEY_FIXED_LEN + key_data_len;
 
     ensure!(
@@ -274,7 +274,7 @@ fn parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, Error> {
     })
 }
 
-/// Encode an EAPOL frame into a byte vector.
+/// Encode an EAPOL frame INTO a byte vector.
 #[must_use]
 pub fn encode(frame: &EapolFrame) -> Vec<u8> {
     let body = frame

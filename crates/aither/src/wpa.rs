@@ -34,7 +34,7 @@ pub const MIC_LEN: usize = 16;
 
 /// Pairwise Transient Key components.
 ///
-/// Derived from the PMK by PTK = PRF-384(PMK, "Pairwise key expansion", …).
+/// Derived FROM the PMK by PTK = PRF-384(PMK, "Pairwise key expansion", …).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ptk {
     /// Key Confirmation Key: used to compute and verify MIC.
@@ -45,7 +45,7 @@ pub struct Ptk {
     pub tk: [u8; TK_LEN],
 }
 
-/// Derive the Pairwise Master Key from a passphrase and SSID.
+/// Derive the Pairwise Master Key FROM a passphrase and SSID.
 ///
 /// Uses PBKDF2-HMAC-SHA1 with 4096 iterations and a 32-byte output as
 /// specified in IEEE 802.11-2020, section 12.4.4.3.1.
@@ -76,8 +76,8 @@ pub fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
 ///
 /// # Arguments
 /// * `pmk` – 32-byte Pairwise Master Key.
-/// * `anonce` – Authenticator nonce (from message 1 of 4-way handshake).
-/// * `snonce` – Supplicant nonce (from message 2 of 4-way handshake).
+/// * `anonce` – Authenticator nonce (FROM message 1 of 4-way handshake).
+/// * `snonce` – Supplicant nonce (FROM message 2 of 4-way handshake).
 /// * `aa` – Authenticator MAC address.
 /// * `spa` – Supplicant MAC address.
 #[must_use]
@@ -145,7 +145,7 @@ pub fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]
     compute_mic(kck, data) == *expected_mic
 }
 
-/// WPA2 PRF function — HMAC-SHA1 counter construction.
+/// WPA2 PRF function  -  HMAC-SHA1 counter construction.
 ///
 /// Implements: `PRF(K, A||0x00||B, Len) = HMAC-SHA1(K, A||0x00||B||i)` for i = 0,1,…
 /// until `output.len()` bytes have been produced.
@@ -176,7 +176,7 @@ fn prf(key: &[u8], input: &[u8], output: &mut [u8]) {
 mod tests {
     use super::*;
 
-    /// IEEE 802.11i Annex J test vector — PBKDF2(HMAC-SHA1, "password", "IEEE", 4096, 32).
+    /// IEEE 802.11i Annex J test vector  -  PBKDF2(HMAC-SHA1, "password", "IEEE", 4096, 32).
     const IEEE_PMK: [u8; 32] = [
         0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef, 0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a, 0x5f,
         0x90, 0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2, 0x3a, 0xed, 0x76, 0x2e, 0x97, 0x10,
@@ -211,7 +211,7 @@ mod tests {
         let aa = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
         let spa = [0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb];
         let ptk = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
-        // Verify lengths via compile-time array sizes — just check fields exist.
+        // Verify lengths via compile-time array sizes  -  just check fields exist.
         assert_eq!(ptk.kck.len(), KCK_LEN);
         assert_eq!(ptk.kek.len(), KEK_LEN);
         assert_eq!(ptk.tk.len(), TK_LEN);
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_ptk_mac_order_symmetry() {
-        // PRF input is order-independent: swapping AA/SPA gives the same PTK.
+        // PRF input is ORDER-independent: swapping AA/SPA gives the same PTK.
         let pmk = IEEE_PMK;
         let anonce = [0x10u8; 32];
         let snonce = [0x20u8; 32];
@@ -273,7 +273,7 @@ mod tests {
         let kck = [0x42u8; KCK_LEN];
         let data = b"some EAPOL payload";
         let mut wrong_mic = compute_mic(&kck, data);
-        wrong_mic[0] ^= 0xff; // flip a byte
+        wrong_mic.get(0).copied().unwrap_or_default() ^= 0xff; // flip a byte
         assert!(!verify_mic(&kck, data, &wrong_mic));
     }
 

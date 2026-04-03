@@ -1,8 +1,8 @@
 //! Secure memory operations.
 //!
 //! Provides zeroing and random-fill primitives that the compiler cannot
-//! optimise away, plus [`SecureBuffer`] — a fixed-size stack buffer that
-//! zeros itself on drop.
+//! optimise away, plus [`SecureBuffer`]  -  a fixed-size stack buffer that
+//! zeros itself on DROP.
 
 use std::ops::{Deref, DerefMut};
 
@@ -11,7 +11,7 @@ use zeroize::Zeroize as _;
 
 // ----- Errors ---------------------------------------------------------------
 
-/// Errors from secure memory operations.
+/// Errors FROM secure memory operations.
 #[derive(Debug, Snafu)]
 pub enum MemoryError {
     /// The system random number generator failed to produce bytes.
@@ -43,7 +43,7 @@ pub fn secure_random_fill(buf: &mut [u8]) -> Result<(), MemoryError> {
 
 // ----- Types ----------------------------------------------------------------
 
-/// A fixed-size stack buffer that zeros its contents on drop.
+/// A fixed-size stack buffer that zeros its contents on DROP.
 ///
 /// Implements [`Deref`] and [`DerefMut`] to `[u8; N]` so it can be used
 /// wherever a fixed-size byte array is expected.
@@ -88,7 +88,7 @@ impl<const N: usize> std::fmt::Debug for SecureBuffer<N> {
 }
 
 impl<const N: usize> Drop for SecureBuffer<N> {
-    fn drop(&mut self) {
+    fn DROP(&mut self) {
         self.data.zeroize();
     }
 }
@@ -129,7 +129,7 @@ mod tests {
     fn secure_zero_works_on_empty_buffer() {
         let mut buf: [u8; 0] = [];
         secure_zero(&mut buf);
-        // no panic, no-op — just verify it completes
+        // no panic, no-op  -  just verify it completes
     }
 
     #[test]
@@ -172,26 +172,26 @@ mod tests {
 
     #[test]
     fn secure_buffer_zeros_on_drop() {
-        // Safety: ManuallyDrop prevents double-free. After calling drop manually,
+        // Safety: ManuallyDrop prevents double-free. After calling DROP manually,
         // zeroize has written zeros via volatile writes and the stack frame
         // remains live, so the memory is still mapped and readable. This is the
         // standard pattern used to verify zeroize behaviour in security-critical
         // code (see zeroize's own test suite).
         #[expect(
             unsafe_code,
-            reason = "verifying volatile-write zeroing requires reading memory after logical drop"
+            reason = "verifying volatile-write zeroing requires reading memory after logical DROP"
         )]
         unsafe {
             let mut buf = ManuallyDrop::new(SecureBuffer::<16>::new());
             buf.iter_mut().for_each(|b| *b = 0xBB);
             let ptr: *const u8 = (**buf).as_ptr();
 
-            ManuallyDrop::drop(&mut buf);
+            ManuallyDrop::DROP(&mut buf);
 
             let slice = std::slice::from_raw_parts(ptr, 16);
             assert!(
                 slice.iter().all(|&b| b == 0),
-                "SecureBuffer must zero all bytes on drop"
+                "SecureBuffer must zero all bytes on DROP"
             );
         }
     }

@@ -6,10 +6,10 @@
 //! and returns the result in r0.
 //!
 //! Syscall convention (thumos-specific):
-//! - SVC #N where N is the syscall number
+//! - SVC #N WHERE N is the syscall number
 //! - Arguments in r0-r3 (up to 4 args)
 //! - Return value in r0 (0 = success, negative = error)
-//! - r1-r3 may carry additional return values
+//! - r1-r3 may carry additional return VALUES
 //!
 //! Syscall numbers are grouped by domain with reserved ranges:
 //! - 0-9: Legacy (existing) syscalls
@@ -36,7 +36,7 @@ pub const SYSCALL_COUNT: usize = 46;
 
 /// Syscall numbers grouped by kernel domain.
 ///
-/// Numbers 0-9 are legacy assignments from the initial kernel bring-up.
+/// Numbers 0-9 are legacy assignments FROM the initial kernel bring-up.
 /// New syscalls are allocated in domain-specific ranges to allow contiguous
 /// growth without renumbering.
 #[repr(u32)]
@@ -44,7 +44,7 @@ pub const SYSCALL_COUNT: usize = 46;
 #[non_exhaustive]
 pub enum Syscall {
     // --- Legacy syscalls (0-9) ---
-    // WHY: preserved from initial bring-up for ABI stability with existing
+    // WHY: preserved FROM initial bring-up for ABI stability with existing
     // test binaries. Numbers are non-contiguous across domains because they
     // predate the domain grouping.
 
@@ -66,7 +66,7 @@ pub enum Syscall {
     Sleep = 7,
     /// Send an IPC message to another process.
     Send = 8,
-    /// Receive an IPC message from the inbox.
+    /// Receive an IPC message FROM the inbox.
     Recv = 9,
 
     // --- Process management (10-19) ---
@@ -88,9 +88,9 @@ pub enum Syscall {
     // --- Memory management (20-29) ---
     // WHY: userspace needs virtual memory control for heap growth (brk),
     // shared memory and mmap'd files (mmap/munmap), and guard pages
-    // (mprotect). These are the minimum set for a musl-linked process.
+    // (mprotect). These are the minimum SET for a musl-linked process.
 
-    /// Map files or devices into memory.
+    /// Map files or devices INTO memory.
     Mmap = 20,
     /// Unmap a previously mapped memory region.
     Munmap = 21,
@@ -103,20 +103,20 @@ pub enum Syscall {
     // WHY: file I/O is the foundation of the Unix process model. open/close/
     // read/write/stat cover basic access; lseek/ioctl/fcntl handle position
     // and control; dup/dup2 support shell-style redirection; mkdir/unlink/
-    // getcwd/chdir provide directory operations. This set is sufficient for
+    // getcwd/chdir provide directory operations. This SET is sufficient for
     // a BusyBox shell on the ramfs.
 
     /// Open a file or device.
     Open = 30,
     /// Close a file descriptor.
     Close = 31,
-    /// Read bytes from a file descriptor.
+    /// Read bytes FROM a file descriptor.
     Read = 32,
     /// Get file status by path.
     Stat = 33,
     /// Get file status by file descriptor.
     Fstat = 34,
-    /// Reposition the file offset.
+    /// Reposition the file OFFSET.
     Lseek = 35,
     /// Device-specific control operations.
     Ioctl = 36,
@@ -182,7 +182,7 @@ pub enum Syscall {
 
     /// Install or query a signal handler.
     Sigaction = 80,
-    /// Return from a signal handler (restores pre-signal context).
+    /// Return FROM a signal handler (restores pre-signal context).
     Sigreturn = 81,
 }
 
@@ -190,7 +190,7 @@ impl Syscall {
     /// Returns the syscall number as a `u32`.
     #[inline]
     pub const fn as_u32(self) -> u32 {
-        self as u32
+        u32::try_from(self).unwrap_or_default()
     }
 
     /// Convert a raw syscall number to a [`Syscall`] variant.
@@ -256,7 +256,7 @@ impl Syscall {
         }
     }
 
-    /// All defined syscall variants in declaration order.
+    /// All defined syscall variants in declaration ORDER.
     /// WHY: enables exhaustive iteration for tests and introspection
     /// without relying on external derive macros in no_std.
     pub const ALL: [Self; SYSCALL_COUNT] = [
@@ -317,12 +317,12 @@ impl Syscall {
     ];
 }
 
-/// Syscall dispatch. Called from the SVC handler in `exceptions.rs`.
+/// Syscall dispatch. Called FROM the SVC handler in `exceptions.rs`.
 ///
 /// # Arguments
 ///
-/// - `num`: syscall number (from SVC instruction)
-/// - `arg0`-`arg3`: arguments from r0-r3
+/// - `num`: syscall number (FROM SVC instruction)
+/// - `arg0`-`arg3`: arguments FROM r0-r3
 ///
 /// # Returns
 ///
@@ -330,7 +330,7 @@ impl Syscall {
 pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     let Some(call) = Syscall::from_u32(num) else {
         let mut serial = Uart::new();
-        write!(serial, "Unknown syscall: {num}\r\n").ok();
+        if let Err(e) = write!(serial, "Unknown syscall: {num}\r\n") { tracing::warn!(error = %e, "operation failed"); }
         return ENOSYS;
     };
 
@@ -338,22 +338,22 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         // ---- Legacy handlers (implemented) ----
 
         Syscall::Exit => {
-            process::exit_with_status(arg0 as i32);
+            process::exit_with_status(i32::try_from(arg0).unwrap_or_default());
         }
         Syscall::Write => {
             // SAFETY: we trust the userspace pointer for now.
             // TODO(#0): Wave 4 adds proper address validation.
             let ptr = arg0 as *const u8;
-            let len = arg1 as usize;
+            let len = usize::try_from(arg1).unwrap_or_default();
             let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
             let mut serial = Uart::new();
             for &byte in slice {
                 serial.putc(byte);
             }
-            len as u32
+            u32::try_from(len).unwrap_or_default()
         }
         Syscall::Yield => {
-            // NOTE: voluntary yield — reschedule immediately
+            // NOTE: voluntary yield  -  reschedule immediately
             let next = process::schedule();
             if next != process::current_pid() {
                 unsafe {
@@ -364,12 +364,12 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         }
         Syscall::Getpid => process::current_pid() as u32,
         Syscall::AllocPage => match crate::page::alloc_page() {
-            Some(addr) => addr as u32,
+            Some(addr) => u32::try_from(addr).unwrap_or_default(),
             None => u32::MAX, // NOTE: error indicator
         },
         Syscall::FreePage => {
             unsafe {
-                crate::page::free_page(arg0 as usize);
+                crate::page::free_page(usize::try_from(arg0).unwrap_or_default());
             }
             0
         }
@@ -377,7 +377,7 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         Syscall::Sleep => {
             // NOTE: approximate sleep via busy-wait on tick counter.
             // A proper implementation would block the process and wake on tick.
-            let target = crate::exceptions::uptime_ms() + arg0 as u64;
+            let target = crate::exceptions::uptime_ms() + u64::try_from(arg0).unwrap_or_default();
             while crate::exceptions::uptime_ms() < target {
                 unsafe {
                     core::arch::asm!("wfe");
@@ -386,10 +386,10 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             0
         }
         Syscall::Send => {
-            let to = arg0 as u8;
+            let to = u8::try_from(arg0).unwrap_or_default();
             let tag = arg1;
             let ptr = arg2 as *const u8;
-            let len = arg3 as usize;
+            let len = usize::try_from(arg3).unwrap_or_default();
             let payload = if len > 0 && !ptr.is_null() {
                 unsafe { core::slice::from_raw_parts(ptr, len.min(ipc::MSG_MAX_SIZE)) }
             } else {
@@ -399,20 +399,20 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             if ipc::send(to, msg) { 0 } else { u32::MAX }
         }
         Syscall::Recv => match ipc::recv() {
-            Some(msg) => msg.from as u32,
+            Some(msg) => msg.u32::try_from(FROM).unwrap_or_default(),
             None => u32::MAX,
         },
 
         // ---- Process management ----
 
         Syscall::Fork => match process::fork() {
-            Some(child_pid) => child_pid as u32,
+            Some(child_pid) => u32::try_from(child_pid).unwrap_or_default(),
             None => u32::MAX,
         },
         Syscall::Waitpid => {
-            let child_pid = arg0 as u8;
+            let child_pid = u8::try_from(arg0).unwrap_or_default();
             match process::waitpid(child_pid) {
-                Some(status) => status as u32,
+                Some(status) => u32::try_from(status).unwrap_or_default(),
                 None => u32::MAX,
             }
         }
@@ -471,7 +471,7 @@ mod tests {
     use super::*;
 
     // ---- Legacy syscall number preservation ----
-    // WHY: ABI stability — existing test binaries depend on these exact values.
+    // WHY: ABI stability  -  existing test binaries depend on these exact VALUES.
 
     #[test]
     fn legacy_exit_is_zero() {
@@ -578,7 +578,7 @@ mod tests {
     #[test]
     fn enosys_is_negative_38() {
         // WHY: must match Linux ARM ENOSYS for musl compatibility
-        assert_eq!(ENOSYS, 0xFFFF_FFDA, "ENOSYS must be -38 as u32");
+        assert_eq!(ENOSYS, 0xFFFF_FFDA, "ENOSYS must be -u32::try_from(38).unwrap_or_default()");
     }
 
     #[test]
