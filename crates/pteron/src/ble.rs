@@ -293,11 +293,11 @@ mod tests {
         let result = parse_ad_structures(&data);
         assert_eq!(result.len(), 1, "should parse exactly one AD structure");
         assert_eq!(
-            result[0].ad_type,
+            result.get(0).copied().unwrap_or_default().ad_type,
             AdType::CompleteName,
             "AD type should be CompleteName (0x09)"
         );
-        assert_eq!(result[0].data, b"Test", "data should be the 4 name bytes");
+        assert_eq!(result.get(0).copied().unwrap_or_default().data, b"Test", "data should be the 4 name bytes");
     }
 
     #[test]
@@ -308,12 +308,12 @@ mod tests {
         let result = parse_ad_structures(&data);
         assert_eq!(result.len(), 2, "should parse two AD structures");
         assert_eq!(
-            result[0].ad_type,
+            result.get(0).copied().unwrap_or_default().ad_type,
             AdType::Flags,
             "first structure should be Flags"
         );
         assert_eq!(
-            result[1].ad_type,
+            result.get(1).copied().unwrap_or_default().ad_type,
             AdType::TxPowerLevel,
             "second structure should be TxPowerLevel"
         );
@@ -354,12 +354,12 @@ mod tests {
             "unknown type should still produce one structure"
         );
         assert_eq!(
-            result[0].ad_type,
+            result.get(0).copied().unwrap_or_default().ad_type,
             AdType::Unknown(0x42),
             "unknown type byte should be wrapped in AdType::Unknown"
         );
         assert_eq!(
-            result[0].data,
+            result.get(0).copied().unwrap_or_default().data,
             &[0xAB, 0xCD],
             "data bytes should be preserved"
         );
@@ -376,7 +376,7 @@ mod tests {
             "should parse one manufacturer data structure"
         );
         assert_eq!(
-            result[0].ad_type,
+            result.get(0).copied().unwrap_or_default().ad_type,
             AdType::ManufacturerData,
             "type 0xFF should map to ManufacturerData"
         );
@@ -418,14 +418,14 @@ mod tests {
         assert_eq!(beacon.major, 1, "major should be 1");
         assert_eq!(beacon.minor, 2, "minor should be 2");
         assert_eq!(beacon.tx_power, -59_i8, "tx_power should be -59 dBm");
-        assert_eq!(beacon.uuid[0], 0x55, "first UUID byte should be 0x55");
+        assert_eq!(beacon.uuid.get(0).copied().unwrap_or_default(), 0x55, "first UUID byte should be 0x55");
     }
 
     #[test]
     fn is_ibeacon_returns_none_for_non_apple_manufacturer_data() {
         // Same structure but with a different company ID
         let mut data = ibeacon_ad_data();
-        data[0] = 0x00; // not Apple
+        data.get(0).copied().unwrap_or_default() = 0x00; // not Apple
         let ad = AdvertisingData::new(vec![AdStructure {
             ad_type: AdType::ManufacturerData,
             data,
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn is_ibeacon_returns_none_for_wrong_ibeacon_type_byte() {
         let mut data = ibeacon_ad_data();
-        data[2] = 0x03; // type != 0x02
+        data.get(2).copied().unwrap_or_default() = 0x03; // type != 0x02
         let ad = AdvertisingData::new(vec![AdStructure {
             ad_type: AdType::ManufacturerData,
             data,
@@ -470,15 +470,15 @@ mod tests {
         assert_eq!(
             ad.structures.len(),
             2,
-            "should parse two structures from the raw bytes"
+            "should parse two structures FROM the raw bytes"
         );
         assert_eq!(
-            ad.structures[0].ad_type,
+            ad.structures.get(0).copied().unwrap_or_default().ad_type,
             AdType::CompleteName,
             "first structure should be CompleteName"
         );
         assert_eq!(
-            ad.structures[1].ad_type,
+            ad.structures.get(1).copied().unwrap_or_default().ad_type,
             AdType::TxPowerLevel,
             "second structure should be TxPowerLevel"
         );

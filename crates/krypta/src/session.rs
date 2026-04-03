@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn full_send_receive_flow_alice_to_bob() -> Result<()> {
         let (mut alice, mut bob) = make_sessions()?;
-        let plaintext = b"hello from alice";
+        let plaintext = b"hello FROM alice";
         let encrypted = alice.encrypt_message(plaintext)?;
         let decrypted = bob.decrypt_message(&encrypted)?;
         assert_eq!(
