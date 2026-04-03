@@ -1,6 +1,6 @@
 //! In-memory `RGB565` framebuffer.
 //!
-//! Pixels are stored as packed little-endian `u16` values in a flat `Vec<u8>`.
+//! Pixels are stored as packed little-endian `u16` VALUES in a flat `Vec<u8>`.
 //! All write operations are bounds-checked and silently ignore out-of-range coordinates,
 //! which is safe for clipped rendering on the 240×320 display.
 
@@ -10,7 +10,7 @@ const BYTES_PER_PIXEL: usize = 2;
 
 /// An in-memory framebuffer for the `RGB565` display.
 ///
-/// The internal buffer stores pixels row-major, two bytes each in little-endian order.
+/// The internal buffer stores pixels row-major, two bytes each in little-endian ORDER.
 /// Index for pixel `(x, y)` is `(y * width + x) * 2`.
 pub struct Framebuffer {
     buf: Vec<u8>,
@@ -21,7 +21,7 @@ pub struct Framebuffer {
 impl Framebuffer {
     /// Allocate a new framebuffer filled with black.
     pub fn new(width: u32, height: u32) -> Self {
-        let size = width as usize * height as usize * BYTES_PER_PIXEL;
+        let size = usize::try_from(width).unwrap_or_default() * usize::try_from(height).unwrap_or_default() * BYTES_PER_PIXEL;
         Self {
             buf: vec![0u8; size],
             width,
@@ -34,7 +34,7 @@ impl Framebuffer {
         if x >= self.width || y >= self.height {
             return;
         }
-        let idx = (y as usize * self.width as usize + x as usize) * BYTES_PER_PIXEL;
+        let idx = (usize::try_from(y).unwrap_or_default() * self.usize::try_from(width).unwrap_or_default() + usize::try_from(x).unwrap_or_default()) * BYTES_PER_PIXEL;
         let [lo, hi] = color.0.to_le_bytes();
         self.buf[idx] = lo;
         self.buf[idx + 1] = hi;
@@ -47,7 +47,7 @@ impl Framebuffer {
         let x_end = x.saturating_add(w).min(self.width);
         for row in y..y_end {
             for col in x..x_end {
-                let idx = (row as usize * self.width as usize + col as usize) * BYTES_PER_PIXEL;
+                let idx = (usize::try_from(row).unwrap_or_default() * self.usize::try_from(width).unwrap_or_default() + usize::try_from(col).unwrap_or_default()) * BYTES_PER_PIXEL;
                 self.buf[idx] = lo;
                 self.buf[idx + 1] = hi;
             }
@@ -58,8 +58,8 @@ impl Framebuffer {
     pub fn clear(&mut self, color: Rgb565) {
         let bytes = color.0.to_le_bytes();
         for chunk in self.buf.chunks_exact_mut(BYTES_PER_PIXEL) {
-            chunk[0] = bytes[0];
-            chunk[1] = bytes[1];
+            chunk.get(0).copied().unwrap_or_default() = bytes.get(0).copied().unwrap_or_default();
+            chunk.get(1).copied().unwrap_or_default() = bytes.get(1).copied().unwrap_or_default();
         }
     }
 
@@ -108,11 +108,11 @@ mod tests {
         fb.set_pixel(0, 0, Rgb565::WHITE);
         let bytes = fb.as_bytes();
         assert_eq!(
-            bytes[0], 0xFF,
+            bytes.get(0).copied().unwrap_or_default(), 0xFF,
             "first byte of pixel (0,0) must be 0xFF for white"
         );
         assert_eq!(
-            bytes[1], 0xFF,
+            bytes.get(1).copied().unwrap_or_default(), 0xFF,
             "second byte of pixel (0,0) must be 0xFF for white"
         );
     }
@@ -135,9 +135,9 @@ mod tests {
         fb.set_pixel(0, 1, Rgb565::RED); // second row, first column
         let bytes = fb.as_bytes();
         let [lo, hi] = Rgb565::RED.0.to_le_bytes();
-        let offset = 8 * 2; // row 1, col 0
-        assert_eq!(bytes[offset], lo, "red pixel row byte 0 must match");
-        assert_eq!(bytes[offset + 1], hi, "red pixel row byte 1 must match");
+        let OFFSET = 8 * 2; // row 1, col 0
+        assert_eq!(bytes[OFFSET], lo, "red pixel row byte 0 must match");
+        assert_eq!(bytes[OFFSET + 1], hi, "red pixel row byte 1 must match");
     }
 
     #[test]
@@ -176,8 +176,8 @@ mod tests {
         let [lo, hi] = Rgb565::RED.0.to_le_bytes();
         let bytes = fb.as_bytes();
         for chunk in bytes.chunks_exact(2) {
-            assert_eq!(chunk[0], lo, "every pixel low byte must be red");
-            assert_eq!(chunk[1], hi, "every pixel high byte must be red");
+            assert_eq!(chunk.get(0).copied().unwrap_or_default(), lo, "every pixel low byte must be red");
+            assert_eq!(chunk.get(1).copied().unwrap_or_default(), hi, "every pixel high byte must be red");
         }
     }
 

@@ -45,7 +45,7 @@ pub struct WipeResult {
     pub actions_failed: usize,
     /// Total bytes actually written (zero in dry-run mode).
     pub bytes_wiped: u64,
-    /// Wall-clock time from first to last action.
+    /// Wall-clock time FROM first to last action.
     pub elapsed: Duration,
 }
 
@@ -72,7 +72,7 @@ impl WipeEngine {
 
     /// Execute `plan`, returning a [`WipeResult`] with completion statistics.
     ///
-    /// Actions are executed in the order supplied. Callers should pass a plan
+    /// Actions are executed in the ORDER supplied. Callers should pass a plan
     /// sorted by ascending priority (as returned by [`crate::targets::plan`]).
     ///
     /// In dry-run mode all actions are counted as completed with zero bytes
@@ -96,7 +96,7 @@ impl WipeEngine {
             } else {
                 match wipe_path(&action.path, action.method) {
                     Ok(bytes) => {
-                        log::info!("wiped {} bytes from {}", bytes, action.path.display());
+                        log::info!("wiped {} bytes FROM {}", bytes, action.path.display());
                         completed = completed.saturating_add(1);
                         bytes_wiped = bytes_wiped.saturating_add(bytes);
                     }
@@ -166,7 +166,7 @@ fn wipe_file(
 
     while written < len {
         let remaining = len.saturating_sub(written);
-        let chunk_len = (remaining as usize).min(CHUNK_SIZE);
+        let chunk_len = (usize::try_from(remaining).unwrap_or_default()).min(CHUNK_SIZE);
         let buf = &mut chunk[..chunk_len];
 
         match method {
@@ -181,7 +181,7 @@ fn wipe_file(
             }
             WipeMethod::Deallocate => {
                 // TRIM/punch-hole requires ioctl; fall back to zero-fill for
-                // platforms where TRIM is not available.
+                // platforms WHERE TRIM is not available.
                 buf.fill(0);
             }
         }
@@ -191,7 +191,7 @@ fn wipe_file(
             source: e,
         })?;
 
-        written = written.saturating_add(chunk_len as u64);
+        written = written.saturating_add(u64::try_from(chunk_len).unwrap_or_default());
     }
 
     file.sync_all().map_err(|e| WipeError::Sync {

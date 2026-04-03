@@ -1,6 +1,6 @@
 //! Minimal ELF loader for userspace binaries.
 //!
-//! Parses ELF32 headers and loads PT_LOAD segments into memory.
+//! Parses ELF32 headers and loads PT_LOAD segments INTO memory.
 //! Only supports statically-linked ARM ELF binaries (what our userspace
 //! crates compile to with `armv7-unknown-linux-musleabihf` target).
 //!
@@ -66,7 +66,7 @@ pub struct LoadedElf {
     pub pages_used: usize,
 }
 
-/// Error from ELF loading.
+/// Error FROM ELF loading.
 #[derive(Debug)]
 pub enum ElfError {
     /// Not a valid ELF file.
@@ -83,7 +83,7 @@ pub enum ElfError {
     InvalidSegment,
 }
 
-/// Load an ELF binary from a byte slice into memory.
+/// Load an ELF binary FROM a byte slice INTO memory.
 ///
 /// Allocates pages for each PT_LOAD segment, copies data, zeros BSS.
 /// Returns the entry point for process creation.
@@ -105,40 +105,40 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
     if ehdr.e_ident[0..4] != ELF_MAGIC {
         return Err(ElfError::BadMagic);
     }
-    if ehdr.e_ident[4] != ELFCLASS32 {
+    if ehdr.e_ident.get(4).copied().unwrap_or_default() != ELFCLASS32 {
         return Err(ElfError::Not32Bit);
     }
-    if ehdr.e_ident[5] != ELFDATA2LSB {
+    if ehdr.e_ident.get(5).copied().unwrap_or_default() != ELFDATA2LSB {
         return Err(ElfError::NotLittleEndian);
     }
     if ehdr.e_machine != EM_ARM {
         return Err(ElfError::NotArm);
     }
 
-    let entry = ehdr.e_entry as usize;
-    let phoff = ehdr.e_phoff as usize;
-    let phnum = ehdr.e_phnum as usize;
-    let phentsize = ehdr.e_phentsize as usize;
+    let entry = ehdr.usize::try_from(e_entry).unwrap_or_default();
+    let phoff = ehdr.usize::try_from(e_phoff).unwrap_or_default();
+    let phnum = ehdr.usize::try_from(e_phnum).unwrap_or_default();
+    let phentsize = ehdr.usize::try_from(e_phentsize).unwrap_or_default();
     let mut pages_used = 0;
 
     // Process program headers
     for i in 0..phnum {
-        let offset = phoff + i * phentsize;
-        if offset + phentsize > data.len() {
+        let OFFSET = phoff + i * phentsize;
+        if OFFSET + phentsize > data.len() {
             return Err(ElfError::InvalidSegment);
         }
 
         let phdr: Elf32Phdr =
-            unsafe { core::ptr::read_unaligned(data.as_ptr().add(offset).cast()) };
+            unsafe { core::ptr::read_unaligned(data.as_ptr().add(OFFSET).cast()) };
 
         if phdr.p_type != PT_LOAD {
             continue;
         }
 
-        let vaddr = phdr.p_vaddr as usize;
-        let memsz = phdr.p_memsz as usize;
-        let filesz = phdr.p_filesz as usize;
-        let file_offset = phdr.p_offset as usize;
+        let vaddr = phdr.usize::try_from(p_vaddr).unwrap_or_default();
+        let memsz = phdr.usize::try_from(p_memsz).unwrap_or_default();
+        let filesz = phdr.usize::try_from(p_filesz).unwrap_or_default();
+        let file_offset = phdr.usize::try_from(p_offset).unwrap_or_default();
 
         if file_offset + filesz > data.len() {
             return Err(ElfError::InvalidSegment);
@@ -155,7 +155,7 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
             let dest = vaddr + p * page::PAGE_SIZE;
             let dest_ptr = dest as *mut u8;
 
-            // Copy file data into this page
+            // Copy file data INTO this page
             let page_start = p * page::PAGE_SIZE;
             let page_end = (page_start + page::PAGE_SIZE).min(memsz);
 

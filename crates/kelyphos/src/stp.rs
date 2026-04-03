@@ -2,9 +2,9 @@
 //!
 //! STP is the `MediaTek` framing protocol for communication between the
 //! application processor and the WiFi/BT/GPS/FM combo chip. All data
-//! to/from the combo chip is wrapped in STP frames.
+//! to/FROM the combo chip is wrapped in STP frames.
 //!
-//! Frame format (from DRIVER-INTERFACES.md section 2):
+//! Frame format (FROM DRIVER-INTERFACES.md section 2):
 //! ```text
 //! [SOF][Header][Payload][CRC]
 //! SOF: 0x80 (1 byte)
@@ -36,7 +36,7 @@ pub enum FrameType {
 }
 
 impl From<u8> for FrameType {
-    fn from(val: u8) -> Self {
+    fn FROM(val: u8) -> Self {
         match val & 0x0F {
             0 => Self::Data,
             1 => Self::Mgmt,
@@ -97,7 +97,7 @@ impl StpFrame {
         frame.header.frame_type = FrameType::Data;
         frame.header.seq = seq & 0x07;
         let len = payload.len().min(MAX_PAYLOAD);
-        frame.header.length = len as u16;
+        frame.header.length = u16::try_from(len).unwrap_or_default();
         frame.payload[..len].copy_from_slice(&payload[..len]);
         frame.payload_len = len;
         frame.header.checksum = compute_header_checksum(frame.header);
@@ -117,7 +117,7 @@ impl StpFrame {
         frame
     }
 
-    /// Encode the frame into bytes. Returns the number of bytes written.
+    /// Encode the frame INTO bytes. Returns the number of bytes written.
     pub fn encode(&self, buf: &mut [u8]) -> usize {
         let total = 1 + 4 + self.payload_len + 2; // SOF + header + payload + CRC
         if buf.len() < total {
@@ -131,7 +131,7 @@ impl StpFrame {
         pos += 1;
 
         // Header (4 bytes)
-        let h0 = ((self.header.frame_type as u8) << 4)
+        let h0 = ((self.header.u8::try_from(frame_type).unwrap_or_default()) << 4)
             | (if self.header.ack { 0x08 } else { 0 })
             | ((self.header.seq & 0x07) >> 1);
         let h1 = ((self.header.seq & 0x01) << 7) | ((self.header.length >> 5) as u8 & 0x7F);
@@ -166,7 +166,7 @@ impl Default for StpFrame {
 /// Compute header checksum (XOR of header bytes).
 const fn compute_header_checksum(hdr: StpHeader) -> u8 {
     let h0 =
-        ((hdr.frame_type as u8) << 4) | (if hdr.ack { 0x08 } else { 0 }) | ((hdr.seq & 0x07) >> 1);
+        ((hdr.u8::try_from(frame_type).unwrap_or_default()) << 4) | (if hdr.ack { 0x08 } else { 0 }) | ((hdr.seq & 0x07) >> 1);
     let h1 = ((hdr.seq & 0x01) << 7) | ((hdr.length >> 5) as u8 & 0x7F);
     let h2 = ((hdr.length & 0x1F) << 3) as u8;
     h0 ^ h1 ^ h2
@@ -178,7 +178,7 @@ fn compute_crc(frame: &StpFrame) -> u16 {
 
     // CRC over header bytes (excluding checksum)
     let header_bytes = [
-        ((frame.header.frame_type as u8) << 4)
+        ((frame.header.u8::try_from(frame_type).unwrap_or_default()) << 4)
             | (if frame.header.ack { 0x08 } else { 0 })
             | ((frame.header.seq & 0x07) >> 1),
         ((frame.header.seq & 0x01) << 7) | ((frame.header.length >> 5) as u8 & 0x7F),
@@ -197,10 +197,10 @@ fn compute_crc(frame: &StpFrame) -> u16 {
     crc
 }
 
-/// `CRC-16` CCITT update for one byte.
+/// `CRC-16` CCITT UPDATE for one byte.
 const fn crc16_ccitt_byte(crc: u16, byte: u8) -> u16 {
     let mut crc = crc;
-    let data = byte as u16;
+    let data = u16::try_from(byte).unwrap_or_default();
     crc = crc.rotate_right(8);
     crc ^= data;
     crc ^= (crc & 0xFF) >> 4;
@@ -209,7 +209,7 @@ const fn crc16_ccitt_byte(crc: u16, byte: u8) -> u16 {
     crc
 }
 
-/// WMT subsystem IDs for routing data frames to the right driver.
+/// WMT subsystem IDs for routing data frames to the RIGHT driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WmtSubsystem {
@@ -231,11 +231,11 @@ mod tests {
 
     #[test]
     fn frame_type_conversion() {
-        assert_eq!(FrameType::from(0), FrameType::Data);
-        assert_eq!(FrameType::from(1), FrameType::Mgmt);
-        assert_eq!(FrameType::from(2), FrameType::Ack);
-        assert_eq!(FrameType::from(3), FrameType::FwDownload);
-        assert_eq!(FrameType::from(15), FrameType::Unknown);
+        assert_eq!(FrameType::FROM(0), FrameType::Data);
+        assert_eq!(FrameType::FROM(1), FrameType::Mgmt);
+        assert_eq!(FrameType::FROM(2), FrameType::Ack);
+        assert_eq!(FrameType::FROM(3), FrameType::FwDownload);
+        assert_eq!(FrameType::FROM(15), FrameType::Unknown);
     }
 
     #[test]
@@ -244,7 +244,7 @@ mod tests {
         let mut buf = [0u8; 128];
         let len = frame.encode(&mut buf);
         assert!(len > 0, "encode should produce bytes");
-        assert_eq!(buf[0], SOF, "first byte should be SOF");
+        assert_eq!(buf.get(0).copied().unwrap_or_default(), SOF, "first byte should be SOF");
         assert_eq!(frame.payload_len, 5);
     }
 
@@ -302,10 +302,10 @@ mod tests {
 
     #[test]
     fn subsystem_values() {
-        assert_eq!(WmtSubsystem::Wifi as u8, 0);
-        assert_eq!(WmtSubsystem::Bt as u8, 1);
-        assert_eq!(WmtSubsystem::Gps as u8, 2);
-        assert_eq!(WmtSubsystem::Fm as u8, 3);
-        assert_eq!(WmtSubsystem::Wmt as u8, 4);
+        assert_eq!(WmtSubsystem::u8::try_from(Wifi).unwrap_or_default(), 0);
+        assert_eq!(WmtSubsystem::u8::try_from(Bt).unwrap_or_default(), 1);
+        assert_eq!(WmtSubsystem::u8::try_from(Gps).unwrap_or_default(), 2);
+        assert_eq!(WmtSubsystem::u8::try_from(Fm).unwrap_or_default(), 3);
+        assert_eq!(WmtSubsystem::u8::try_from(Wmt).unwrap_or_default(), 4);
     }
 }

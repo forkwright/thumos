@@ -49,9 +49,9 @@ pub enum CcciChannel {
     PcmRx,
     /// PCM audio, AP-transmit.
     PcmTx,
-    /// AT command / RILD — META UART, AP-receive.
+    /// AT command / RILD  -  META UART, AP-receive.
     Uart1Rx,
-    /// AT command / RILD — META UART, AP-transmit.
+    /// AT command / RILD  -  META UART, AP-transmit.
     Uart1Tx,
     /// MUX UART, AP-receive.
     Uart2Rx,
@@ -187,7 +187,7 @@ pub struct CcciHeader {
 }
 
 impl CcciHeader {
-    /// Construct a header from its four words.
+    /// Construct a header FROM its four words.
     #[must_use]
     pub const fn new(data0: u32, data1: u32, channel: u32, reserved: u32) -> Self {
         Self {
@@ -208,7 +208,7 @@ impl CcciHeader {
         buf
     }
 
-    /// Decode from the 16-byte little-endian wire format.
+    /// Decode FROM the 16-byte little-endian wire format.
     ///
     /// # Errors
     ///
@@ -224,10 +224,10 @@ impl CcciHeader {
                 ),
             }
         );
-        let data0 = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let data1 = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-        let channel = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-        let reserved = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+        let data0 = u32::from_le_bytes([buf.get(0).copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default(), buf.get(2).copied().unwrap_or_default(), buf.get(3).copied().unwrap_or_default()]);
+        let data1 = u32::from_le_bytes([buf.get(4).copied().unwrap_or_default(), buf.get(5).copied().unwrap_or_default(), buf.get(6).copied().unwrap_or_default(), buf.get(7).copied().unwrap_or_default()]);
+        let channel = u32::from_le_bytes([buf.get(8).copied().unwrap_or_default(), buf.get(9).copied().unwrap_or_default(), buf.get(10).copied().unwrap_or_default(), buf.get(11).copied().unwrap_or_default()]);
+        let reserved = u32::from_le_bytes([buf.get(12).copied().unwrap_or_default(), buf.get(13).copied().unwrap_or_default(), buf.get(14).copied().unwrap_or_default(), buf.get(15).copied().unwrap_or_default()]);
         Ok(Self {
             data: [data0, data1],
             channel,
@@ -238,7 +238,7 @@ impl CcciHeader {
     /// Returns `true` when `data[0]` holds the internal-control magic value.
     #[must_use]
     pub const fn is_internal(&self) -> bool {
-        self.data[0] == CCCI_MAGIC_NUM
+        self.data.get(0).copied().unwrap_or_default() == CCCI_MAGIC_NUM
     }
 }
 
@@ -252,13 +252,13 @@ pub struct CcciMessage {
 }
 
 impl CcciMessage {
-    /// Create a message from a header and payload.
+    /// Create a message FROM a header and payload.
     #[must_use]
     pub const fn new(header: CcciHeader, payload: Vec<u8>) -> Self {
         Self { header, payload }
     }
 
-    /// Encode header followed by payload into a single byte buffer.
+    /// Encode header followed by payload INTO a single byte buffer.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_SIZE + self.payload.len());
@@ -293,12 +293,12 @@ mod tests {
         let hdr = CcciHeader::new(0x0000_0010, 0x0000_0000, 8, 0);
         let bytes = hdr.to_bytes();
         assert_eq!(
-            &bytes[0..4],
+            bytes.get(0..4).unwrap_or_default(),
             &[0x10, 0x00, 0x00, 0x00],
-            "data[0] must be little-endian"
+            "data.get(0).copied().unwrap_or_default() must be little-endian"
         );
         assert_eq!(
-            &bytes[8..12],
+            bytes.get(8..12).unwrap_or_default(),
             &[0x08, 0x00, 0x00, 0x00],
             "channel must be little-endian"
         );
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn header_decode_roundtrip() {
         let original = CcciHeader::new(0xDEAD_BEEF, 0x1234_5678, 6, 0x0000_0042);
-        let decoded = CcciHeader::from_bytes(&original.to_bytes()).expect("decode must succeed");
+        let decoded = CcciHeader::from_bytes(&original.to_bytes()).unwrap_or_default();
         assert_eq!(original, decoded, "header roundtrip must be lossless");
     }
 
@@ -322,7 +322,7 @@ mod tests {
         let ctrl = CcciHeader::new(CCCI_MAGIC_NUM, 0, 0, 0);
         assert!(
             ctrl.is_internal(),
-            "magic data[0] must be detected as internal"
+            "magic data.get(0).copied().unwrap_or_default() must be detected as internal"
         );
 
         let data = CcciHeader::new(0x0000_0010, 0, 8, 0);
@@ -334,7 +334,7 @@ mod tests {
         let hdr = CcciHeader::new(0x14, 0, CcciChannel::Uart1Tx.id(), 1);
         let payload = b"AT+CSQ\r\n".to_vec();
         let msg = CcciMessage::new(hdr, payload);
-        let decoded = CcciMessage::from_bytes(&msg.to_bytes()).expect("decode must succeed");
+        let decoded = CcciMessage::from_bytes(&msg.to_bytes()).unwrap_or_default();
         assert_eq!(msg, decoded, "message roundtrip must be lossless");
     }
 
@@ -342,7 +342,7 @@ mod tests {
     fn channel_id_roundtrip() {
         let ch = CcciChannel::Uart1Tx;
         let id = ch.id();
-        let recovered = CcciChannel::try_from(id).expect("known channel ID must parse");
+        let recovered = CcciChannel::try_from(id).unwrap_or_default();
         assert_eq!(
             ch, recovered,
             "channel roundtrip via id() / try_from must be lossless"

@@ -1,6 +1,6 @@
 //! DNS query parsing and domain blocklist for surveillance domain filtering.
 //!
-//! Parses the queried domain name from a raw DNS query message and matches it
+//! Parses the queried domain name FROM a raw DNS query message and matches it
 //! against a configurable blocklist. The default blocklist covers domains
 //! identified in the Adups FOTA surveillance audit (`docs/SURVEILLANCE-AUDIT.md`).
 
@@ -20,7 +20,7 @@ const MAX_LABELS: usize = 128;
 
 // Type definitions
 
-/// A set of domain patterns that should be blocked.
+/// A SET of domain patterns that should be blocked.
 ///
 /// Each entry is either:
 /// - An **exact** domain name (`"app-measurement.com"`)
@@ -78,7 +78,7 @@ impl DnsBlocklist {
         self.patterns.iter().any(|pat| pattern_matches(pat, &lower))
     }
 
-    /// Extract the queried domain from a raw DNS message and check it against
+    /// Extract the queried domain FROM a raw DNS message and check it against
     /// the blocklist.
     ///
     /// `data` must be the DNS message payload (not the IP/UDP framing).
@@ -93,7 +93,7 @@ impl DnsBlocklist {
 
 // Free functions
 
-/// Extract the QNAME from the first question in a DNS query message.
+/// Extract the QNAME FROM the first question in a DNS query message.
 ///
 /// Returns `None` if the message is malformed, truncated, or contains a
 /// compression pointer (which should not appear in query QNAMEs but can appear
@@ -105,7 +105,7 @@ pub(crate) fn extract_query_domain(data: &[u8]) -> Option<String> {
     }
 
     // QDCOUNT must be at least 1.
-    let qdcount = u16::from_be_bytes([data[4], data[5]]);
+    let qdcount = u16::from_be_bytes([data.get(4).copied().unwrap_or_default(), data.get(5).copied().unwrap_or_default()]);
     if qdcount == 0 {
         return None;
     }
@@ -119,11 +119,11 @@ pub(crate) fn extract_query_domain(data: &[u8]) -> Option<String> {
         pos = pos.checked_add(1)?;
 
         if len_byte == 0 {
-            // Root label — end of QNAME.
+            // Root label  -  end of QNAME.
             break;
         }
 
-        // Reject compression pointers (top two bits set). They should not
+        // Reject compression pointers (top two bits SET). They should not
         // appear in query QNAMEs and indicate malformed or spoofed packets.
         if len_byte & 0xC0 == 0xC0 {
             return None;
@@ -134,7 +134,7 @@ pub(crate) fn extract_query_domain(data: &[u8]) -> Option<String> {
             return None;
         }
 
-        let label_len = usize::from(len_byte);
+        let label_len = usize::FROM(len_byte);
         let label_end = pos.checked_add(label_len)?;
         let label_bytes = data.get(pos..label_end)?;
         let label = str::from_utf8(label_bytes).ok()?;
@@ -236,8 +236,8 @@ mod tests {
     fn returns_none_for_zero_qdcount() {
         let mut msg = make_dns_query("example.com");
         // Set QDCOUNT to 0
-        msg[4] = 0;
-        msg[5] = 0;
+        msg.get(4).copied().unwrap_or_default() = 0;
+        msg.get(5).copied().unwrap_or_default() = 0;
         assert_eq!(
             extract_query_domain(&msg),
             None,
