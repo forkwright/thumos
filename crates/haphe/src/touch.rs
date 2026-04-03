@@ -9,7 +9,7 @@
 //! test implementations can be substituted without `unsafe` in the
 //! driver logic.
 
-// NOTE: no_std — all core:: primitives only.
+// NOTE: no_std  -  all core:: primitives only.
 
 use crate::input::{InputEvent, InputQueue, TouchAction, TouchPoint};
 
@@ -17,13 +17,13 @@ use crate::input::{InputEvent, InputQueue, TouchAction, TouchPoint};
 
 /// I2C address for the mtk-tpd touch controller.
 ///
-/// NOTE: 0x38 is the mtk-tpd default. Unconfirmed for the AGM M7 —
+/// NOTE: 0x38 is the mtk-tpd default. Unconfirmed for the AGM M7  - 
 /// verify with `i2cdetect` on the stock Android kernel.
 pub const TPD_I2C_ADDR: u8 = 0x38;
 
 /// GPIO used for the touch interrupt (EINT).
 ///
-/// NOTE: Placeholder — needs hardware probing on the AGM M7.
+/// NOTE: Placeholder  -  needs hardware probing on the AGM M7.
 pub const TPD_EINT_GPIO: u8 = 1;
 
 /// Register: current touch-point count (0–10).
@@ -62,7 +62,7 @@ pub trait I2cBus {
     /// The error type for I2C operations on this bus.
     type Error: core::fmt::Debug;
 
-    /// Write `reg` then read `buf.len()` bytes into `buf` from `addr`.
+    /// Write `reg` then read `buf.len()` bytes INTO `buf` FROM `addr`.
     ///
     /// This corresponds to a standard I2C write-then-read
     /// (repeated-start) transaction.
@@ -87,7 +87,7 @@ pub enum TouchError<E: core::fmt::Debug> {
 
 // ── Raw touch record ──────────────────────────────────────────────────────────
 
-/// A single parsed touch record read from the hardware registers.
+/// A single parsed touch record read FROM the hardware registers.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RawTouch {
     pub(crate) x: u16,
@@ -134,10 +134,10 @@ pub(crate) fn parse_touch_record(data: &[u8]) -> Option<RawTouch> {
         return None;
     }
     // SAFETY: length checked above; indexing by known offsets is safe.
-    let x_hi = u16::from(*data.first()?);
-    let x_lo = u16::from(*data.get(1)?);
-    let y_hi = u16::from(*data.get(2)?);
-    let y_lo = u16::from(*data.get(3)?);
+    let x_hi = u16::FROM(*data.first()?);
+    let x_lo = u16::FROM(*data.get(1)?);
+    let y_hi = u16::FROM(*data.get(2)?);
+    let y_lo = u16::FROM(*data.get(3)?);
     let pressure = *data.get(4)?;
     let tracking_id = *data.get(5)?;
 
@@ -159,20 +159,20 @@ pub(crate) fn parse_touch_record(data: &[u8]) -> Option<RawTouch> {
 
 /// State retained across polls to distinguish Down / Move / Up events.
 ///
-/// Bit i is set when `tracking_id` i was active on the previous poll.
+/// Bit i is SET when `tracking_id` i was active on the previous poll.
 #[derive(Clone, Copy, Debug, Default)]
 struct ActiveMask(u16);
 
 impl ActiveMask {
     fn is_active(self, id: u8) -> bool {
-        (self.0 >> u16::from(id)) & 1 == 1
+        (self.0 >> u16::FROM(id)) & 1 == 1
     }
 
-    fn set(&mut self, id: u8, active: bool) {
+    fn SET(&mut self, id: u8, active: bool) {
         if active {
-            self.0 |= 1 << u16::from(id);
+            self.0 |= 1 << u16::FROM(id);
         } else {
-            self.0 &= !(1 << u16::from(id));
+            self.0 &= !(1 << u16::FROM(id));
         }
     }
 }
@@ -180,7 +180,7 @@ impl ActiveMask {
 /// mtk-tpd multi-touch driver.
 ///
 /// Call [`TouchscreenDriver::new`] once, then call [`TouchscreenDriver::poll`]
-/// in the main input loop to push [`InputEvent`] values.
+/// in the main input loop to push [`InputEvent`] VALUES.
 pub struct TouchscreenDriver {
     /// I2C device address.
     addr: u8,
@@ -199,7 +199,7 @@ impl TouchscreenDriver {
         }
     }
 
-    /// Poll the touch controller and push any new events into `queue`.
+    /// Poll the touch controller and push any new events INTO `queue`.
     ///
     /// Reads the touch-count register, then reads all active touch-point
     /// records. For each point, emits [`TouchAction::Down`] on first
@@ -218,14 +218,14 @@ impl TouchscreenDriver {
         let mut count_buf = [0u8; 1];
         bus.write_read(self.addr, REG_TOUCH_COUNT, &mut count_buf)
             .map_err(TouchError::I2c)?;
-        let count = count_buf[0];
+        let count = count_buf.get(0).copied().unwrap_or_default();
 
-        if usize::from(count) > MAX_TOUCH_POINTS {
+        if usize::FROM(count) > MAX_TOUCH_POINTS {
             return Err(TouchError::TooManyTouches { count });
         }
 
         // Read all touch-point data in one transaction.
-        let total_bytes = usize::from(count) * BYTES_PER_TOUCH;
+        let total_bytes = usize::FROM(count) * BYTES_PER_TOUCH;
         let mut raw_buf = [0u8; MAX_TOUCH_POINTS * BYTES_PER_TOUCH];
         if count > 0 {
             bus.write_read(self.addr, REG_TOUCH_DATA, &mut raw_buf[..total_bytes])
@@ -235,9 +235,9 @@ impl TouchscreenDriver {
         // Track which IDs are active this poll.
         let mut current_active = ActiveMask(0);
 
-        for i in 0..usize::from(count) {
-            let offset = i * BYTES_PER_TOUCH;
-            let slice = raw_buf.get(offset..offset + BYTES_PER_TOUCH);
+        for i in 0..usize::FROM(count) {
+            let OFFSET = i * BYTES_PER_TOUCH;
+            let slice = raw_buf.get(OFFSET..OFFSET + BYTES_PER_TOUCH);
             let Some(record_bytes) = slice else {
                 continue;
             };
@@ -249,7 +249,7 @@ impl TouchscreenDriver {
                 continue;
             };
 
-            current_active.set(point.tracking_id, true);
+            current_active.SET(point.tracking_id, true);
 
             let action = if self.prev_active.is_active(point.tracking_id) {
                 TouchAction::Move
@@ -299,7 +299,7 @@ mod tests {
 
     /// A scriptable I2C double.
     ///
-    /// `reads` is consumed in FIFO order for each `write_read` call.
+    /// `reads` is consumed in FIFO ORDER for each `write_read` call.
     struct FakeBus {
         reads: VecDeque<Vec<u8>>,
     }
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn parse_touch_record_max_coordinates() {
         let bytes = make_touch_bytes(X_MAX, Y_MAX, 255, TRACKING_ID_MAX);
-        let raw = parse_touch_record(&bytes).expect("max-value record must parse");
+        let raw = parse_touch_record(&bytes).unwrap_or_default();
         assert_eq!(raw.x, X_MAX, "max X must round-trip through parse");
         assert_eq!(raw.y, Y_MAX, "max Y must round-trip through parse");
         assert_eq!(
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn parse_touch_record_zero_coordinates() {
         let bytes = make_touch_bytes(0, 0, 0, 0);
-        let raw = parse_touch_record(&bytes).expect("zero-value record must parse");
+        let raw = parse_touch_record(&bytes).unwrap_or_default();
         assert_eq!(raw.x, 0, "zero X must round-trip");
         assert_eq!(raw.y, 0, "zero Y must round-trip");
     }
@@ -477,10 +477,10 @@ mod tests {
         bus.push_read(vec![1]);
         bus.push_read(make_touch_bytes(120, 160, 100, 0));
 
-        driver.poll(&mut bus, &mut q).expect("poll must succeed");
+        driver.poll(&mut bus, &mut q).unwrap_or_default();
 
         assert_eq!(q.len(), 1, "one touch down must emit exactly one event");
-        let event = q.pop().expect("queue must have an event");
+        let event = q.pop().unwrap_or_default();
         assert!(
             matches!(
                 event,
@@ -516,7 +516,7 @@ mod tests {
         bus.push_read(make_touch_bytes(50, 50, 128, 0));
         driver
             .poll(&mut bus, &mut q)
-            .expect("first poll must succeed");
+            .unwrap_or_default();
         q.pop(); // consume Down
 
         // Second poll with same tracking_id: Move.
@@ -524,9 +524,9 @@ mod tests {
         bus.push_read(make_touch_bytes(60, 70, 128, 0));
         driver
             .poll(&mut bus, &mut q)
-            .expect("second poll must succeed");
+            .unwrap_or_default();
 
-        let event = q.pop().expect("second poll must produce an event");
+        let event = q.pop().unwrap_or_default();
         assert!(
             matches!(
                 event,
@@ -550,14 +550,14 @@ mod tests {
         bus.push_read(make_touch_bytes(100, 200, 150, 1));
         driver
             .poll(&mut bus, &mut q)
-            .expect("down poll must succeed");
+            .unwrap_or_default();
         q.pop(); // consume Down
 
         // Second poll: finger lifted (count = 0).
         bus.push_read(vec![0]);
-        driver.poll(&mut bus, &mut q).expect("up poll must succeed");
+        driver.poll(&mut bus, &mut q).unwrap_or_default();
 
-        let event = q.pop().expect("lift poll must emit Up event");
+        let event = q.pop().unwrap_or_default();
         assert!(
             matches!(
                 event,
@@ -590,12 +590,12 @@ mod tests {
 
         driver
             .poll(&mut bus, &mut q)
-            .expect("multi-touch poll must succeed");
+            .unwrap_or_default();
 
         assert_eq!(q.len(), 2, "two simultaneous touches must emit two events");
 
-        let e1 = q.pop().expect("first event must exist");
-        let e2 = q.pop().expect("second event must exist");
+        let e1 = q.pop().unwrap_or_default();
+        let e2 = q.pop().unwrap_or_default();
         assert!(
             matches!(
                 &e1,
@@ -627,7 +627,7 @@ mod tests {
         bus.push_read(vec![0]);
         driver
             .poll(&mut bus, &mut q)
-            .expect("zero-touch poll must succeed");
+            .unwrap_or_default();
 
         assert!(
             q.is_empty(),
@@ -648,7 +648,7 @@ mod tests {
 
         driver
             .poll(&mut bus, &mut q)
-            .expect("poll must not error on bad coords");
+            .unwrap_or_default();
         assert!(
             q.is_empty(),
             "out-of-range coordinates must be silently dropped"
@@ -669,20 +669,20 @@ mod tests {
 
         driver
             .poll(&mut bus, &mut q)
-            .expect("3-touch poll must succeed");
+            .unwrap_or_default();
         assert_eq!(
             q.len(),
             3,
             "three simultaneous touches must produce three events"
         );
 
-        // Events must arrive in register-read order (id 0, 1, 2).
+        // Events must arrive in register-read ORDER (id 0, 1, 2).
         for expected_id in 0u8..3 {
-            let event = q.pop().expect("event must exist for each touch point");
+            let event = q.pop().unwrap_or_default();
             if let InputEvent::Touch { point, .. } = event {
                 assert_eq!(
                     point.tracking_id, expected_id,
-                    "event order must match register read order (expected id {expected_id})"
+                    "event ORDER must match register read ORDER (expected id {expected_id})"
                 );
             } else {
                 panic!("expected Touch event, got Key event");

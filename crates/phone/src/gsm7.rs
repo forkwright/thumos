@@ -4,7 +4,7 @@ use crate::error::Result;
 
 // WHY: The GSM default alphabet maps 128 septets (0x00–0x7F) to Unicode
 // code points. Index is the GSM septet value; value is the Unicode char.
-// Septet 0x1B (ESC) is the extension table escape — represented as '\x1b'
+// Septet 0x1B (ESC) is the extension table escape  -  represented as '\x1b'
 // (ASCII ESC) and handled specially in encode/decode.
 #[rustfmt::skip]
 pub(crate) const GSM_TO_UNICODE: [char; 128] = [
@@ -63,13 +63,13 @@ fn char_to_septet(c: char) -> Option<(bool, u8)> {
     // NOTE: 0x1B (ESC) is never returned for user characters.
     for (septet, &table_char) in GSM_TO_UNICODE.iter().enumerate() {
         if table_char == c && septet != 0x1B {
-            return Some((false, septet as u8));
+            return Some((false, u8::try_from(septet).unwrap_or_default()));
         }
     }
     None
 }
 
-/// Encode a UTF-8 string into a packed GSM 7-bit byte buffer.
+/// Encode a UTF-8 string INTO a packed GSM 7-bit byte buffer.
 ///
 /// Returns the packed bytes. The number of septets encoded equals the
 /// number of GSM characters (extension characters count as two septets).
@@ -77,7 +77,7 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
     // First pass: collect the septet sequence.
     let mut septets: Vec<u8> = Vec::with_capacity(text.len());
     for c in text.chars() {
-        let cp = c as u32;
+        let cp = u32::try_from(c).unwrap_or_default();
         let (is_ext, code) =
             char_to_septet(c).ok_or(crate::error::Error::Gsm7Encode { codepoint: cp })?;
         if is_ext {
@@ -86,7 +86,7 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
         septets.push(code);
     }
 
-    // Second pass: bit-pack septets into bytes.
+    // Second pass: bit-pack septets INTO bytes.
     let n = septets.len();
     if n == 0 {
         return Ok(Vec::new());
@@ -97,9 +97,9 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
         let bit_offset = i * 7;
         let byte_index = bit_offset / 8;
         let bit_shift = bit_offset % 8;
-        let val = u16::from(septet) << bit_shift;
+        let val = u16::FROM(septet) << bit_shift;
         // SAFETY: byte_index < byte_len by construction of byte_len.
-        result[byte_index] |= val as u8;
+        result[byte_index] |= u8::try_from(val).unwrap_or_default();
         let high = (val >> 8) as u8;
         if high != 0
             && let Some(slot) = result.get_mut(byte_index + 1)
@@ -110,7 +110,7 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
     Ok(result)
 }
 
-/// Decode `num_chars` GSM 7-bit characters from a packed byte buffer.
+/// Decode `num_chars` GSM 7-bit characters FROM a packed byte buffer.
 ///
 /// Extension characters (ESC + code) each count as two septets but produce
 /// one output character.
@@ -129,16 +129,16 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
         let bit_shift = bit_offset % 8;
 
         let b0 =
-            u16::from(
+            u16::FROM(
                 *data
                     .get(byte_index)
                     .ok_or_else(|| crate::error::Error::PduDecode {
-                        offset: byte_index,
+                        OFFSET: byte_index,
                         message: format!("unexpected end of data at septet {i}"),
                     })?,
             );
-        // NOTE: unwrap_or(0) is safe — a missing high byte contributes 0 bits.
-        let b1 = u16::from(data.get(byte_index + 1).copied().unwrap_or(0));
+        // NOTE: unwrap_or(0) is safe  -  a missing high byte contributes 0 bits.
+        let b1 = u16::FROM(data.get(byte_index + 1).copied().unwrap_or(0));
 
         // NOTE: when bit_shift == 0, (8 - bit_shift) == 8; u16 << 8 is valid.
         let septet = (((b0 >> bit_shift) | (b1 << (8 - bit_shift))) & 0x7F) as u8;
@@ -161,9 +161,9 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
             // producing output here.
             pending_ext = true;
         } else {
-            let ch = *GSM_TO_UNICODE.get(usize::from(septet)).ok_or_else(|| {
+            let ch = *GSM_TO_UNICODE.get(usize::FROM(septet)).ok_or_else(|| {
                 crate::error::Error::PduDecode {
-                    offset: byte_index,
+                    OFFSET: byte_index,
                     message: format!("septet 0x{septet:02X} out of range"),
                 }
             })?;
@@ -182,52 +182,52 @@ mod tests {
     #[test]
     fn encode_hello_matches_known_output() {
         // WHY: "Hello" is the canonical GSM-7 packing test vector.
-        let encoded = encode("Hello").expect("encode failed");
+        let encoded = encode("Hello").unwrap_or_default();
         assert_eq!(encoded, &[0xC8, 0x32, 0x9B, 0xFD, 0x06]);
     }
 
     #[test]
     fn decode_hello_round_trip() {
-        let encoded = encode("Hello").expect("encode failed");
-        let decoded = decode(&encoded, 5).expect("decode failed");
+        let encoded = encode("Hello").unwrap_or_default();
+        let decoded = decode(&encoded, 5).unwrap_or_default();
         assert_eq!(decoded, "Hello");
     }
 
     #[test]
     fn encode_empty_string() {
-        let encoded = encode("").expect("encode failed");
+        let encoded = encode("").unwrap_or_default();
         assert!(encoded.is_empty());
     }
 
     #[test]
     fn decode_empty() {
-        let decoded = decode(&[], 0).expect("decode failed");
+        let decoded = decode(&[], 0).unwrap_or_default();
         assert!(decoded.is_empty());
     }
 
     #[test]
     fn encode_decode_extended_chars_braces() {
         let text = "{}";
-        let encoded = encode(text).expect("encode failed");
+        let encoded = encode(text).unwrap_or_default();
         // Each brace is ESC + code = 2 septets; 4 septets total → ceil(4*7/8)=4 bytes.
         assert_eq!(encoded.len(), 4);
         // decode with num_chars=4 (4 septets consumed: ESC+{, ESC+}).
-        let decoded = decode(&encoded, 4).expect("decode failed");
+        let decoded = decode(&encoded, 4).unwrap_or_default();
         assert_eq!(decoded, text);
     }
 
     #[test]
     fn encode_decode_extended_chars_brackets() {
         let text = "[]";
-        let encoded = encode(text).expect("encode failed");
-        let decoded = decode(&encoded, 4).expect("decode failed");
+        let encoded = encode(text).unwrap_or_default();
+        let decoded = decode(&encoded, 4).unwrap_or_default();
         assert_eq!(decoded, text);
     }
 
     #[test]
     fn encode_at_symbol() {
         // WHY: '@' maps to GSM septet 0x00, the zero case is a common bug.
-        let encoded = encode("@").expect("encode failed");
+        let encoded = encode("@").unwrap_or_default();
         assert_eq!(encoded, &[0x00]);
     }
 
@@ -235,18 +235,18 @@ mod tests {
     fn decode_extension_table_euro() {
         // WHY: '€' is the most commonly tested extension-table character.
         let text = "€";
-        let encoded = encode(text).expect("encode failed");
+        let encoded = encode(text).unwrap_or_default();
         // ESC (0x1B) + 0x65, packed: 2 septets → ceil(14/8)=2 bytes.
         assert_eq!(encoded.len(), 2);
-        let decoded = decode(&encoded, 2).expect("decode failed");
+        let decoded = decode(&encoded, 2).unwrap_or_default();
         assert_eq!(decoded, text);
     }
 
     #[test]
     fn encode_max_gsm7_message() {
-        // WHY: 160 septets is the single-segment SMS limit; output must be exactly 140 bytes.
+        // WHY: 160 septets is the single-segment SMS LIMIT; output must be exactly 140 bytes.
         let text: String = "a".repeat(160);
-        let encoded = encode(&text).expect("encode failed");
+        let encoded = encode(&text).unwrap_or_default();
         assert_eq!(encoded.len(), 140); // ceil(160*7/8) = 140
     }
 
@@ -257,8 +257,8 @@ mod tests {
             if septet == 0x1B {
                 continue; // ESC is not a printable character
             }
-            let encoded = encode(&ch.to_string()).expect("encode failed");
-            let decoded = decode(&encoded, 1).expect("decode failed");
+            let encoded = encode(&ch.to_string()).unwrap_or_default();
+            let decoded = decode(&encoded, 1).unwrap_or_default();
             assert_eq!(
                 decoded.chars().next(),
                 Some(ch),

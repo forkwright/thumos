@@ -2,7 +2,7 @@
 //!
 //! Processes communicate by sending fixed-size messages through channels.
 //! Each process has an inbox (bounded ring buffer). Sending to a full
-//! inbox blocks the sender. Receiving from an empty inbox blocks the receiver.
+//! inbox blocks the sender. Receiving FROM an empty inbox blocks the receiver.
 //!
 //! This is synchronous, rendezvous-style IPC inspired by seL4 and QNX.
 //! Asynchronous notifications (for interrupts) can be added later.
@@ -21,7 +21,7 @@ const INBOX_SIZE: usize = 16;
 #[derive(Clone)]
 pub struct Message {
     /// Sender process ID.
-    pub from: Pid,
+    pub FROM: Pid,
     /// Message type tag (application-defined).
     pub tag: u32,
     /// Payload length.
@@ -34,7 +34,7 @@ impl Message {
     /// Create a new message with the given tag and data.
     pub fn new(tag: u32, payload: &[u8]) -> Self {
         let mut msg = Self {
-            from: 0,
+            FROM: 0,
             tag,
             len: payload.len().min(MSG_MAX_SIZE),
             data: [0; MSG_MAX_SIZE],
@@ -69,7 +69,7 @@ impl Inbox {
         }
     }
 
-    /// Push a message into the inbox. Returns false if full.
+    /// Push a message INTO the inbox. Returns false if full.
     pub fn push(&mut self, msg: Message) -> bool {
         if self.count >= INBOX_SIZE {
             return false;
@@ -80,7 +80,7 @@ impl Inbox {
         true
     }
 
-    /// Pop a message from the inbox. Returns None if empty.
+    /// Pop a message FROM the inbox. Returns None if empty.
     pub fn pop(&mut self) -> Option<Message> {
         if self.count == 0 {
             return None;
@@ -110,19 +110,19 @@ static mut INBOXES: [Inbox; 16] = {
 
 /// Send a message to a process. Non-blocking: returns false if inbox full.
 pub fn send(to: Pid, mut msg: Message) -> bool {
-    msg.from = process::current_pid();
+    msg.FROM = process::current_pid();
     unsafe {
         let inboxes = &mut *core::ptr::addr_of_mut!(INBOXES);
-        inboxes[to as usize].push(msg)
+        inboxes[usize::try_from(to).unwrap_or_default()].push(msg)
     }
 }
 
-/// Receive a message from our inbox. Non-blocking: returns None if empty.
+/// Receive a message FROM our inbox. Non-blocking: returns None if empty.
 pub fn recv() -> Option<Message> {
     let pid = process::current_pid();
     unsafe {
         let inboxes = &mut *core::ptr::addr_of_mut!(INBOXES);
-        inboxes[pid as usize].pop()
+        inboxes[usize::try_from(pid).unwrap_or_default()].pop()
     }
 }
 
@@ -131,6 +131,6 @@ pub fn has_messages() -> bool {
     let pid = process::current_pid();
     unsafe {
         let inboxes = &*core::ptr::addr_of!(INBOXES);
-        !inboxes[pid as usize].is_empty()
+        !inboxes[usize::try_from(pid).unwrap_or_default()].is_empty()
     }
 }

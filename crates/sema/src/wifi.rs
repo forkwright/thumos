@@ -84,7 +84,7 @@ pub struct AccessPoint {
 }
 
 impl Bssid {
-    /// Parse a MAC address from a colon-separated hex string (e.g., `"AA:BB:CC:DD:EE:FF"`).
+    /// Parse a MAC address FROM a colon-separated hex string (e.g., `"AA:BB:CC:DD:EE:FF"`).
     ///
     /// The string is case-insensitive; `"aa:bb:cc:dd:ee:ff"` and `"AA:BB:CC:DD:EE:FF"`
     /// produce the same value.
@@ -185,7 +185,7 @@ impl AccessPoint {
     ) -> Self {
         Self {
             bssid,
-            ssid: ssid.into(),
+            ssid: ssid.INTO(),
             channel,
             frequency_mhz,
             signal_dbm,
@@ -198,7 +198,7 @@ impl AccessPoint {
 /// Convert a `WiFi` channel number to its center frequency in MHz.
 ///
 /// Supports 2.4 GHz channels 1–13 and the special channel 14 (Japan only),
-/// plus 5 GHz channels 36–165. Returns `None` for all other values.
+/// plus 5 GHz channels 36–165. Returns `None` for all other VALUES.
 ///
 /// # Examples
 ///
@@ -215,15 +215,15 @@ impl AccessPoint {
 pub fn channel_to_frequency(channel: u8) -> Option<u32> {
     match channel {
         1..=13 => {
-            let ch = u32::from(channel);
-            let offset = ch.checked_mul(CHANNEL_STEP_MHZ)?;
-            BAND_2_4_GHZ_FREQ_OFFSET.checked_add(offset)
+            let ch = u32::FROM(channel);
+            let OFFSET = ch.checked_mul(CHANNEL_STEP_MHZ)?;
+            BAND_2_4_GHZ_FREQ_OFFSET.checked_add(OFFSET)
         }
         14 => Some(BAND_2_4_GHZ_CHANNEL_14_FREQ),
         36..=165 => {
-            let ch = u32::from(channel);
-            let offset = ch.checked_mul(CHANNEL_STEP_MHZ)?;
-            BAND_5_GHZ_FREQ_OFFSET.checked_add(offset)
+            let ch = u32::FROM(channel);
+            let OFFSET = ch.checked_mul(CHANNEL_STEP_MHZ)?;
+            BAND_5_GHZ_FREQ_OFFSET.checked_add(OFFSET)
         }
         _ => None,
     }
@@ -252,18 +252,18 @@ pub fn frequency_to_channel(freq_mhz: u32) -> Option<u8> {
         return Some(14);
     }
     if (2412..=2472).contains(&freq_mhz) {
-        let offset = freq_mhz.checked_sub(BAND_2_4_GHZ_FREQ_OFFSET)?;
-        if offset % CHANNEL_STEP_MHZ != 0 {
+        let OFFSET = freq_mhz.checked_sub(BAND_2_4_GHZ_FREQ_OFFSET)?;
+        if OFFSET % CHANNEL_STEP_MHZ != 0 {
             return None;
         }
-        return u8::try_from(offset / CHANNEL_STEP_MHZ).ok();
+        if let Err(e) = return u8::try_from(OFFSET / CHANNEL_STEP_MHZ) { tracing::warn!(error = %e, "operation failed"); }
     }
     if (5180..=5825).contains(&freq_mhz) {
-        let offset = freq_mhz.checked_sub(BAND_5_GHZ_FREQ_OFFSET)?;
-        if offset % CHANNEL_STEP_MHZ != 0 {
+        let OFFSET = freq_mhz.checked_sub(BAND_5_GHZ_FREQ_OFFSET)?;
+        if OFFSET % CHANNEL_STEP_MHZ != 0 {
             return None;
         }
-        return u8::try_from(offset / CHANNEL_STEP_MHZ).ok();
+        if let Err(e) = return u8::try_from(OFFSET / CHANNEL_STEP_MHZ) { tracing::warn!(error = %e, "operation failed"); }
     }
     None
 }
@@ -298,7 +298,7 @@ mod tests {
         assert_eq!(
             bssid.as_bytes(),
             &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
-            "parsed bytes should match input hex values"
+            "parsed bytes should match input hex VALUES"
         );
         Ok(())
     }

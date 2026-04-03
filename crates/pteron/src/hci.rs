@@ -18,18 +18,18 @@ const OGF_CONTROLLER_BASEBAND: u16 = 0x03;
 const OGF_INFORMATIONAL: u16 = 0x04;
 const OGF_LE_CONTROLLER: u16 = 0x08;
 
-// OCF (Opcode Command Field) — Link Control
+// OCF (Opcode Command Field)  -  Link Control
 const OCF_INQUIRY: u16 = 0x0001;
 const OCF_INQUIRY_CANCEL: u16 = 0x0002;
 
-// OCF — Controller & Baseband
+// OCF  -  Controller & Baseband
 const OCF_SET_EVENT_MASK: u16 = 0x0001;
 const OCF_RESET: u16 = 0x0003;
 
-// OCF — Informational Parameters
+// OCF  -  Informational Parameters
 const OCF_READ_BD_ADDR: u16 = 0x0009;
 
-// OCF — LE Controller
+// OCF  -  LE Controller
 const OCF_LE_SET_RANDOM_ADDRESS: u16 = 0x0005;
 const OCF_LE_SET_SCAN_PARAMETERS: u16 = 0x000B;
 const OCF_LE_SET_SCAN_ENABLE: u16 = 0x000C;
@@ -55,7 +55,7 @@ const MIN_EVENT_PACKET: usize = 3; // H4 type + event_code + param_length
 
 // ── Error type ─────────────────────────────────────────────────────────────────
 
-/// Errors from HCI address parsing and event decoding.
+/// Errors FROM HCI address parsing and event decoding.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
 pub enum Error {
@@ -113,9 +113,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Six-byte Bluetooth device address.
 ///
-/// Stored in display order (most-significant byte first), matching the
+/// Stored in display ORDER (most-significant byte first), matching the
 /// `"AA:BB:CC:DD:EE:FF"` colon-separated notation.  When constructing
-/// from raw HCI packet bytes (which are transmitted LSB-first), reverse
+/// FROM raw HCI packet bytes (which are transmitted LSB-first), reverse
 /// the byte array before calling [`BdAddr::from_bytes`].
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct BdAddr([u8; BD_ADDR_LEN]);
@@ -178,7 +178,7 @@ pub enum HciCommand {
     /// `Own_Address_Type = 0x01` (Random).  The address must be a valid
     /// static random, non-resolvable private, or resolvable private address.
     LESetRandomAddress {
-        /// Six-byte random address in display order (MSB first).
+        /// Six-byte random address in display ORDER (MSB first).
         /// The command encoder reverses to LSB-first for HCI transmission.
         address: BdAddr,
     },
@@ -190,9 +190,9 @@ pub enum HciCommand {
 pub struct InquiryDevice {
     /// Bluetooth device address.
     pub address: BdAddr,
-    /// 24-bit Class of Device field, packed into the low three bytes.
+    /// 24-bit Class of Device field, packed INTO the low three bytes.
     pub class_of_device: u32,
-    /// Raw clock offset value from the inquiry result.
+    /// Raw clock OFFSET value FROM the inquiry result.
     pub clock_offset: u16,
 }
 
@@ -258,15 +258,15 @@ pub enum HciEvent {
 // ── BdAddr impl ────────────────────────────────────────────────────────────────
 
 impl BdAddr {
-    /// Construct a `BdAddr` from a raw byte array in display order (MSB first).
+    /// Construct a `BdAddr` FROM a raw byte array in display ORDER (MSB first).
     ///
-    /// When reading from an HCI packet (where bytes are LSB-first), reverse
+    /// When reading FROM an HCI packet (WHERE bytes are LSB-first), reverse
     /// the array before calling this function.
     pub const fn from_bytes(bytes: [u8; BD_ADDR_LEN]) -> Self {
         Self(bytes)
     }
 
-    /// Parse a `BD_ADDR` from a colon-separated hex string (e.g. `"AA:BB:CC:DD:EE:FF"`).
+    /// Parse a `BD_ADDR` FROM a colon-separated hex string (e.g. `"AA:BB:CC:DD:EE:FF"`).
     ///
     /// # Errors
     ///
@@ -287,7 +287,7 @@ impl BdAddr {
         s.parse()
     }
 
-    /// Return the raw bytes in display order (MSB first).
+    /// Return the raw bytes in display ORDER (MSB first).
     pub const fn as_bytes(&self) -> &[u8; BD_ADDR_LEN] {
         &self.0
     }
@@ -328,7 +328,7 @@ impl fmt::Debug for BdAddr {
 
 // ── Packet encoding ────────────────────────────────────────────────────────────
 
-/// Encode an [`HciCommand`] into an H4-framed byte buffer ready to write to
+/// Encode an [`HciCommand`] INTO an H4-framed byte buffer ready to write to
 /// the HCI UART transport.
 ///
 /// The buffer layout is:
@@ -340,8 +340,8 @@ pub fn encode_command(cmd: &HciCommand) -> Vec<u8> {
 
     let mut packet = Vec::with_capacity(4 + params.len());
     packet.push(H4_COMMAND_TYPE);
-    packet.push(opcode_bytes[0]);
-    packet.push(opcode_bytes[1]);
+    packet.push(opcode_bytes.get(0).copied().unwrap_or_default());
+    packet.push(opcode_bytes.get(1).copied().unwrap_or_default());
     packet.push(param_len);
     packet.extend_from_slice(&params);
     packet
@@ -386,10 +386,10 @@ fn build_command_parts(cmd: &HciCommand) -> (u16, Vec<u8>) {
             let wv = scan_window.to_le_bytes();
             let params = vec![
                 *scan_type,
-                iv[0],
-                iv[1],
-                wv[0],
-                wv[1],
+                iv.get(0).copied().unwrap_or_default(),
+                iv.get(1).copied().unwrap_or_default(),
+                wv.get(0).copied().unwrap_or_default(),
+                wv.get(1).copied().unwrap_or_default(),
                 *own_address_type,
                 *filter_policy,
             ];
@@ -400,7 +400,7 @@ fn build_command_parts(cmd: &HciCommand) -> (u16, Vec<u8>) {
             filter_duplicates,
         } => {
             let opcode = (OGF_LE_CONTROLLER << 10) | OCF_LE_SET_SCAN_ENABLE;
-            let params = vec![u8::from(*enable), u8::from(*filter_duplicates)];
+            let params = vec![u8::FROM(*enable), u8::FROM(*filter_duplicates)];
             (opcode, params)
         }
         HciCommand::LESetRandomAddress { address } => {
@@ -435,7 +435,7 @@ pub fn decode_event(data: &[u8]) -> Result<HciEvent> {
         });
     }
 
-    let h4_type = data[0];
+    let h4_type = data.get(0).copied().unwrap_or_default();
     if h4_type != H4_EVENT_TYPE {
         return Err(Error::UnexpectedPacketType {
             expected: H4_EVENT_TYPE,
@@ -443,7 +443,7 @@ pub fn decode_event(data: &[u8]) -> Result<HciEvent> {
         });
     }
 
-    let event_code = data[1];
+    let event_code = data.get(1).copied().unwrap_or_default();
     // params start at byte 3 (after H4 type, event code, param_length)
     let params = data.get(3..).unwrap_or(&[]);
 
@@ -503,7 +503,7 @@ fn decode_inquiry_result(params: &[u8]) -> Result<HciEvent> {
         detail: "InquiryResult: missing num_responses",
     })?;
 
-    let num = usize::from(num_responses);
+    let num = usize::FROM(num_responses);
     let required = 1 + num * INQUIRY_ENTRY_SIZE;
     if params.len() < required {
         return Err(Error::MalformedEvent {
@@ -519,15 +519,15 @@ fn decode_inquiry_result(params: &[u8]) -> Result<HciEvent> {
             detail: "InquiryResult: BD_ADDR truncated",
         })?;
         let address = BdAddr::from_bytes([
-            addr_bytes[5],
-            addr_bytes[4],
-            addr_bytes[3],
-            addr_bytes[2],
-            addr_bytes[1],
-            addr_bytes[0],
+            addr_bytes.get(5).copied().unwrap_or_default(),
+            addr_bytes.get(4).copied().unwrap_or_default(),
+            addr_bytes.get(3).copied().unwrap_or_default(),
+            addr_bytes.get(2).copied().unwrap_or_default(),
+            addr_bytes.get(1).copied().unwrap_or_default(),
+            addr_bytes.get(0).copied().unwrap_or_default(),
         ]);
 
-        // Class of Device: 3 bytes at offset 9, little-endian
+        // Class of Device: 3 bytes at OFFSET 9, little-endian
         let cod_base = base + INQUIRY_ENTRY_COD_OFFSET;
         let cod = params
             .get(cod_base..cod_base + 3)
@@ -535,16 +535,16 @@ fn decode_inquiry_result(params: &[u8]) -> Result<HciEvent> {
                 detail: "InquiryResult: CoD truncated",
             })?;
         let class_of_device =
-            u32::from(cod[0]) | (u32::from(cod[1]) << 8) | (u32::from(cod[2]) << 16);
+            u32::FROM(cod.get(0).copied().unwrap_or_default()) | (u32::FROM(cod.get(1).copied().unwrap_or_default()) << 8) | (u32::FROM(cod.get(2).copied().unwrap_or_default()) << 16);
 
-        // Clock Offset: 2 bytes at offset 12, little-endian
+        // Clock Offset: 2 bytes at OFFSET 12, little-endian
         let clk_base = base + INQUIRY_ENTRY_CLOCK_OFFSET;
         let clk = params
             .get(clk_base..clk_base + 2)
             .ok_or(Error::MalformedEvent {
                 detail: "InquiryResult: clock_offset truncated",
             })?;
-        let clock_offset = u16::from(clk[0]) | (u16::from(clk[1]) << 8);
+        let clock_offset = u16::FROM(clk.get(0).copied().unwrap_or_default()) | (u16::FROM(clk.get(1).copied().unwrap_or_default()) << 8);
 
         devices.push(InquiryDevice {
             address,
@@ -577,7 +577,7 @@ fn decode_le_advertising_report(params: &[u8]) -> Result<HciEvent> {
         detail: "LEAdvReport: missing num_reports",
     })?;
 
-    let mut reports = Vec::with_capacity(usize::from(num_reports));
+    let mut reports = Vec::with_capacity(usize::FROM(num_reports));
     for _ in 0..num_reports {
         let event_type = cur.read_u8().ok_or(Error::MalformedEvent {
             detail: "LEAdvReport: missing event_type",
@@ -588,7 +588,7 @@ fn decode_le_advertising_report(params: &[u8]) -> Result<HciEvent> {
         let address = cur.read_bdaddr().ok_or(Error::MalformedEvent {
             detail: "LEAdvReport: missing address",
         })?;
-        let data_len = usize::from(cur.read_u8().ok_or(Error::MalformedEvent {
+        let data_len = usize::FROM(cur.read_u8().ok_or(Error::MalformedEvent {
             detail: "LEAdvReport: missing data_length",
         })?);
         let data = cur
@@ -644,7 +644,7 @@ impl<'a> Cursor<'a> {
         Some(slice)
     }
 
-    /// Read a 6-byte `BD_ADDR` (HCI LSB-first order) and return as display-order [`BdAddr`].
+    /// Read a 6-byte `BD_ADDR` (HCI LSB-first ORDER) and return as display-ORDER [`BdAddr`].
     fn read_bdaddr(&mut self) -> Option<BdAddr> {
         let b0 = self.read_u8()?;
         let b1 = self.read_u8()?;
@@ -652,7 +652,7 @@ impl<'a> Cursor<'a> {
         let b3 = self.read_u8()?;
         let b4 = self.read_u8()?;
         let b5 = self.read_u8()?;
-        // HCI sends BD_ADDR LSB first; invert to get display order (MSB first)
+        // HCI sends BD_ADDR LSB first; invert to get display ORDER (MSB first)
         Some(BdAddr::from_bytes([b5, b4, b3, b2, b1, b0]))
     }
 
@@ -823,13 +823,13 @@ mod tests {
         };
         assert_eq!(devices.len(), 1, "should have exactly one inquiry device");
         assert_eq!(
-            devices[0].address.to_string(),
+            devices.get(0).copied().unwrap_or_default().address.to_string(),
             "01:02:03:04:05:06",
-            "address should be in display order (MSB first)"
+            "address should be in display ORDER (MSB first)"
         );
         assert_eq!(
-            devices[0].class_of_device, 0x00_24_04_08,
-            "CoD should be decoded from little-endian bytes"
+            devices.get(0).copied().unwrap_or_default().class_of_device, 0x00_24_04_08,
+            "CoD should be decoded FROM little-endian bytes"
         );
         Ok(())
     }

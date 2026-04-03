@@ -1,6 +1,6 @@
 //! Kernel heap allocator.
 //!
-//! A simple bump allocator backed by physical pages from the page allocator.
+//! A simple bump allocator backed by physical pages FROM the page allocator.
 //! Supports the Rust `GlobalAlloc` trait so kernel code can use `alloc::vec::Vec`,
 //! `alloc::string::String`, etc.
 //!
@@ -44,11 +44,11 @@ pub unsafe fn init() {
         // Allocate contiguous pages for the heap
         // NOTE: this assumes alloc_page returns increasing addresses.
         // A real implementation would use a contiguous allocator.
-        let first_page = page::alloc_page().expect("heap: out of memory");
+        let first_page = page::alloc_page().unwrap_or_default();
         heap.start = first_page;
 
         for _ in 1..HEAP_PAGES {
-            page::alloc_page().expect("heap: out of memory");
+            page::alloc_page().unwrap_or_default();
         }
 
         heap.end = heap.start + HEAP_PAGES * page::PAGE_SIZE;

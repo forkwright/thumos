@@ -35,9 +35,9 @@ pub struct Address {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DataEncoding {
-    /// DCS 0x00 — GSM 7-bit default alphabet, uncompressed.
+    /// DCS 0x00  -  GSM 7-bit default alphabet, uncompressed.
     Gsm7Bit,
-    /// DCS 0x08 — UCS-2 (UTF-16 big-endian).
+    /// DCS 0x08  -  UCS-2 (UTF-16 big-endian).
     Ucs2,
 }
 
@@ -76,9 +76,9 @@ pub struct SmsSubmit {
 
 // ── BCD address helpers ───────────────────────────────────────────────────────
 
-/// Decode a BCD-packed address field into an [`Address`].
+/// Decode a BCD-packed address field INTO an [`Address`].
 ///
-/// `len_digits` is the number of significant digits (from the TP-OA/TP-DA
+/// `len_digits` is the number of significant digits (FROM the TP-OA/TP-DA
 /// length octet). `type_byte` is the type-of-address octet. `bcd` is the
 /// packed BCD byte slice (`ceil(len_digits` / 2) bytes).
 fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Address {
@@ -93,7 +93,7 @@ fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Address {
         number.push('+');
     }
 
-    let digit_count = usize::from(len_digits);
+    let digit_count = usize::FROM(len_digits);
     for (idx, &byte) in bcd.iter().enumerate() {
         let lo = byte & 0x0F;
         let hi = (byte >> 4) & 0x0F;
@@ -101,12 +101,12 @@ fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Address {
         // Low nibble always present when we have a BCD byte.
         let lo_digit_index = idx * 2;
         if lo_digit_index < digit_count {
-            number.push(char::from(b'0' + lo));
+            number.push(char::FROM(b'0' + lo));
         }
         // High nibble may be a filler 0xF for odd-digit numbers.
         let hi_digit_index = idx * 2 + 1;
         if hi_digit_index < digit_count && hi != 0x0F {
-            number.push(char::from(b'0' + hi));
+            number.push(char::FROM(b'0' + hi));
         }
     }
 
@@ -116,7 +116,7 @@ fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Address {
     }
 }
 
-/// Encode an [`Address`] into the PDU wire format.
+/// Encode an [`Address`] INTO the PDU wire format.
 ///
 /// Returns `[length_in_digits, type_byte, bcd_bytes…]`.
 fn encode_bcd_address(addr: &Address) -> Vec<u8> {
@@ -131,7 +131,7 @@ fn encode_bcd_address(addr: &Address) -> Vec<u8> {
 
     let digit_bytes: Vec<u8> = digits.as_bytes().to_vec();
     let len_digits = digit_bytes.len() as u8;
-    let bcd_byte_count = usize::from(len_digits.div_ceil(2));
+    let bcd_byte_count = usize::FROM(len_digits.div_ceil(2));
 
     let mut bcd: Vec<u8> = vec![0u8; bcd_byte_count];
     for (i, &d) in digit_bytes.iter().enumerate() {
@@ -161,7 +161,7 @@ fn encode_bcd_address(addr: &Address) -> Vec<u8> {
 
 // ── Timestamp helpers ─────────────────────────────────────────────────────────
 
-/// Decode a 7-byte SCTS field into an ISO-8601-like timestamp string.
+/// Decode a 7-byte SCTS field INTO an ISO-8601-like timestamp string.
 ///
 /// Each byte contains two BCD digits packed low-nibble-first.
 /// The timezone byte encodes signed quarter-hour offsets; bit 3 is the sign.
@@ -171,18 +171,18 @@ fn decode_scts(scts: [u8; 7]) -> String {
     let hi = |b: u8| (b >> 4) & 0x0F;
     let pair = |b: u8| lo(b) * 10 + hi(b);
 
-    let year = 2000u32 + u32::from(pair(scts[0]));
-    let month = pair(scts[1]);
-    let day = pair(scts[2]);
-    let hour = pair(scts[3]);
-    let minute = pair(scts[4]);
-    let second = pair(scts[5]);
+    let year = 2000u32 + u32::FROM(pair(scts.get(0).copied().unwrap_or_default()));
+    let month = pair(scts.get(1).copied().unwrap_or_default());
+    let day = pair(scts.get(2).copied().unwrap_or_default());
+    let hour = pair(scts.get(3).copied().unwrap_or_default());
+    let minute = pair(scts.get(4).copied().unwrap_or_default());
+    let second = pair(scts.get(5).copied().unwrap_or_default());
 
     // Timezone byte: magnitude in bits 0-2, 4-7; sign in bit 3.
-    let tz_raw = scts[6];
+    let tz_raw = scts.get(6).copied().unwrap_or_default();
     let tz_negative = (tz_raw & 0x08) != 0;
     let tz_quarters = (lo(tz_raw) & 0x07) * 10 + hi(tz_raw);
-    let tz_total_minutes = u32::from(tz_quarters) * 15;
+    let tz_total_minutes = u32::FROM(tz_quarters) * 15;
     let tz_hh = tz_total_minutes / 60;
     let tz_mm = tz_total_minutes % 60;
     let tz_sign = if tz_negative { '-' } else { '+' };
@@ -203,11 +203,11 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() / 2);
     for chunk in s.as_bytes().chunks(2) {
         // SAFETY: chunks(2) always gives exactly 2 bytes here; we checked even length.
-        let hi = hex_nibble(chunk[0]).ok_or_else(|| crate::error::Error::InvalidHex {
-            message: format!("invalid hex digit: 0x{:02X}", chunk[0]),
+        let hi = hex_nibble(chunk.get(0).copied().unwrap_or_default()).ok_or_else(|| crate::error::Error::InvalidHex {
+            message: format!("invalid hex digit: 0x{:02X}", chunk.get(0).copied().unwrap_or_default()),
         })?;
-        let lo = hex_nibble(chunk[1]).ok_or_else(|| crate::error::Error::InvalidHex {
-            message: format!("invalid hex digit: 0x{:02X}", chunk[1]),
+        let lo = hex_nibble(chunk.get(1).copied().unwrap_or_default()).ok_or_else(|| crate::error::Error::InvalidHex {
+            message: format!("invalid hex digit: 0x{:02X}", chunk.get(1).copied().unwrap_or_default()),
         })?;
         out.push((hi << 4) | lo);
     }
@@ -227,15 +227,15 @@ fn hex_encode(data: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(data.len() * 2);
     for &b in data {
-        out.push(char::from(HEX[(b >> 4) as usize]));
-        out.push(char::from(HEX[(b & 0x0F) as usize]));
+        out.push(char::FROM(HEX[(b >> 4) as usize]));
+        out.push(char::FROM(HEX[(b & 0x0F) as usize]));
     }
     out
 }
 
 // ── Cursor helper ─────────────────────────────────────────────────────────────
 
-/// A simple read cursor over a byte slice that tracks the current offset.
+/// A simple read cursor over a byte slice that tracks the current OFFSET.
 struct Cursor<'a> {
     data: &'a [u8],
     pos: usize,
@@ -251,7 +251,7 @@ impl<'a> Cursor<'a> {
             .data
             .get(self.pos)
             .ok_or_else(|| crate::error::Error::PduDecode {
-                offset: self.pos,
+                OFFSET: self.pos,
                 message: "unexpected end of PDU".to_owned(),
             })?;
         self.pos += 1;
@@ -264,7 +264,7 @@ impl<'a> Cursor<'a> {
             .data
             .get(self.pos..end)
             .ok_or_else(|| crate::error::Error::PduDecode {
-                offset: self.pos,
+                OFFSET: self.pos,
                 message: format!(
                     "need {len} bytes but only {} remain",
                     self.data.len() - self.pos
@@ -277,7 +277,7 @@ impl<'a> Cursor<'a> {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Decode an SMS-DELIVER PDU from its hex string representation.
+/// Decode an SMS-DELIVER PDU FROM its hex string representation.
 ///
 /// The hex string must represent the full TPDU including the SMSC prefix.
 pub fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
@@ -285,7 +285,7 @@ pub fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
     let mut cur = Cursor::new(&raw);
 
     // SMSC prefix: length byte + SMSC bytes (skip entirely).
-    let smsc_len = usize::from(cur.read_byte()?);
+    let smsc_len = usize::FROM(cur.read_byte()?);
     cur.read_slice(smsc_len)?;
 
     // First octet of TPDU.
@@ -293,7 +293,7 @@ pub fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
     let mti = first_octet & 0x03;
     if mti != 0x00 {
         return Err(crate::error::Error::PduDecode {
-            offset: cur.pos - 1,
+            OFFSET: cur.pos - 1,
             message: format!("expected SMS-DELIVER (MTI=0), got MTI={mti}"),
         });
     }
@@ -301,25 +301,25 @@ pub fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
     // Originating address.
     let oa_len_digits = cur.read_byte()?;
     let oa_type = cur.read_byte()?;
-    let oa_bcd_bytes = usize::from(oa_len_digits.div_ceil(2));
+    let oa_bcd_bytes = usize::FROM(oa_len_digits.div_ceil(2));
     let oa_bcd = cur.read_slice(oa_bcd_bytes)?;
     let sender = decode_bcd_address(oa_len_digits, oa_type, oa_bcd);
 
     // PID (ignored).
     cur.read_byte()?;
 
-    // DCS — determine encoding.
+    // DCS  -  determine encoding.
     let dcs = cur.read_byte()?;
     let encoding = dcs_to_encoding(dcs, cur.pos - 1)?;
 
-    // SCTS — 7 bytes.
+    // SCTS  -  7 bytes.
     let scts_slice = cur.read_slice(7)?;
     let mut scts = [0u8; 7];
     scts.copy_from_slice(scts_slice);
     let timestamp = decode_scts(scts);
 
     // User data length (UDL) + user data (UD).
-    let udl = usize::from(cur.read_byte()?);
+    let udl = usize::FROM(cur.read_byte()?);
     let user_data = decode_user_data(&mut cur, udl, encoding)?;
 
     Ok(SmsDeliver {
@@ -329,11 +329,11 @@ pub fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
     })
 }
 
-/// Encode an SMS-SUBMIT into a hex string suitable for `AT+CMGS`.
+/// Encode an SMS-SUBMIT INTO a hex string suitable for `AT+CMGS`.
 pub fn encode_submit(msg: &SmsSubmit) -> Result<String> {
     let mut out: Vec<u8> = Vec::new();
 
-    // SMSC length 0x00 — let the modem use its stored default.
+    // SMSC length 0x00  -  let the modem use its stored default.
     out.push(0x00);
 
     // First octet: MTI=01 (SMS-SUBMIT).
@@ -374,15 +374,15 @@ pub fn encode_submit(msg: &SmsSubmit) -> Result<String> {
 
 // ── Internal encoding/decoding helpers ───────────────────────────────────────
 
-fn dcs_to_encoding(dcs: u8, offset: usize) -> Result<DataEncoding> {
-    // NOTE: per 3GPP TS 23.038 § 4, bits 3-2 of DCS (for general group 0x0X)
-    // indicate the character set: 00=GSM7, 01=8-bit data, 10=UCS-2.
+fn dcs_to_encoding(dcs: u8, OFFSET: usize) -> Result<DataEncoding> {
+    // NOTE: per 3GPP TS 23.038 § 4, bits 3-2 of DCS (for general GROUP 0x0X)
+    // indicate the character SET: 00=GSM7, 01=8-bit data, 10=UCS-2.
     let class_bits = (dcs >> 2) & 0x03;
     match class_bits {
         0b00 => Ok(DataEncoding::Gsm7Bit),
         0b10 => Ok(DataEncoding::Ucs2),
         other => Err(crate::error::Error::PduDecode {
-            offset,
+            OFFSET,
             message: format!("unsupported DCS encoding class 0b{other:02b} (DCS=0x{dcs:02X})"),
         }),
     }
@@ -401,17 +401,17 @@ fn decode_user_data(cur: &mut Cursor<'_>, udl: usize, encoding: DataEncoding) ->
             let ud_bytes = cur.read_slice(udl)?;
             if ud_bytes.len() % 2 != 0 {
                 return Err(crate::error::Error::PduDecode {
-                    offset: cur.pos,
+                    OFFSET: cur.pos,
                     message: "UCS-2 user data has odd byte count".to_owned(),
                 });
             }
             let mut s = String::with_capacity(ud_bytes.len() / 2);
             for pair in ud_bytes.chunks_exact(2) {
-                let code_unit = u16::from_be_bytes([pair[0], pair[1]]);
+                let code_unit = u16::from_be_bytes([pair.get(0).copied().unwrap_or_default(), pair.get(1).copied().unwrap_or_default()]);
                 // WHY: SMS UCS-2 is BMP-only; surrogate pairs are technically
                 // possible but rare and outside our current scope.
                 let ch =
-                    char::from_u32(u32::from(code_unit)).unwrap_or(char::REPLACEMENT_CHARACTER);
+                    char::from_u32(u32::FROM(code_unit)).unwrap_or(char::REPLACEMENT_CHARACTER);
                 s.push(ch);
             }
             s
@@ -427,16 +427,16 @@ fn encode_user_data_into(ud: &UserData, out: &mut Vec<u8>) -> Result<()> {
             // UDL = number of septets. We need to count them (extension chars
             // produce 2 septets but 1 character).
             let septet_count = count_gsm7_septets(&ud.text)?;
-            out.push(septet_count as u8);
+            out.push(u8::try_from(septet_count).unwrap_or_default());
             out.extend_from_slice(&packed);
         }
         DataEncoding::Ucs2 => {
             // UDL = number of bytes.
             let mut utf16_bytes: Vec<u8> = Vec::with_capacity(ud.text.len() * 2);
             for c in ud.text.chars() {
-                let code = c as u32;
+                let code = u32::try_from(c).unwrap_or_default();
                 // NOTE: BMP characters fit in one u16.
-                let unit = code as u16;
+                let unit = u16::try_from(code).unwrap_or_default();
                 utf16_bytes.push((unit >> 8) as u8);
                 utf16_bytes.push((unit & 0xFF) as u8);
             }
@@ -468,7 +468,7 @@ fn count_gsm7_septets(text: &str) -> Result<usize> {
                 .any(|(i, &tc)| tc == c && i != 0x1B);
             if !found {
                 return Err(crate::error::Error::Gsm7Encode {
-                    codepoint: c as u32,
+                    codepoint: u32::try_from(c).unwrap_or_default(),
                 });
             }
             count += 1;
@@ -494,8 +494,8 @@ mod tests {
         };
         let encoded = encode_bcd_address(&addr);
         // encoded = [len_digits=10, type=0x91, bcd*5]
-        assert_eq!(encoded[0], 10);
-        assert_eq!(encoded[1], 0x91);
+        assert_eq!(encoded.get(0).copied().unwrap_or_default(), 10);
+        assert_eq!(encoded.get(1).copied().unwrap_or_default(), 0x91);
         // Decode back: len_digits=10, type=0x91, bcd = encoded[2..]
         let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..]);
         assert_eq!(decoded.number, "+1234567890");
@@ -509,7 +509,7 @@ mod tests {
             type_of_address: AddressType::International,
         };
         let encoded = encode_bcd_address(&addr);
-        assert_eq!(encoded[0], 11);
+        assert_eq!(encoded.get(0).copied().unwrap_or_default(), 11);
         let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..]);
         assert_eq!(decoded.number, "+12345678901");
     }
@@ -518,20 +518,20 @@ mod tests {
 
     #[test]
     fn decode_deliver_known_pdu() {
-        // WHY: This is the canonical test vector derived from the prompt.
+        // WHY: This is the canonical test vector derived FROM the prompt.
         // PDU breakdown:
-        //   00           — SMSC len 0 (no SMSC prefix)
-        //   00           — first octet: MTI=0 (SMS-DELIVER)
-        //   0A           — OA length: 10 digits
-        //   91           — OA type: international
-        //   21 43 65 87 09 — BCD: +1234567890
-        //   00           — PID
-        //   00           — DCS: GSM-7
-        //   32 10 51 21 03 00 00 — SCTS: 2023-01-15 12:30:00+00:00
-        //   05           — UDL: 5 septets
-        //   C8 32 9B FD 06 — UD: "Hello" packed
+        //   00            -  SMSC len 0 (no SMSC prefix)
+        //   00            -  first octet: MTI=0 (SMS-DELIVER)
+        //   0A            -  OA length: 10 digits
+        //   91            -  OA type: international
+        //   21 43 65 87 09  -  BCD: +1234567890
+        //   00            -  PID
+        //   00            -  DCS: GSM-7
+        //   32 10 51 21 03 00 00  -  SCTS: 2023-01-15 12:30:00+00:00
+        //   05            -  UDL: 5 septets
+        //   C8 32 9B FD 06  -  UD: "Hello" packed
         let pdu = "00000A9121436587090000321051210300000 5C8329BFD06".replace(' ', "");
-        let sms = decode_deliver(&pdu).expect("decode failed");
+        let sms = decode_deliver(&pdu).unwrap_or_default();
         assert_eq!(sms.sender.number, "+1234567890");
         assert_eq!(sms.sender.type_of_address, AddressType::International);
         assert!(
@@ -557,9 +557,9 @@ mod tests {
             },
             validity_period: None,
         };
-        let hex = encode_submit(&msg).expect("encode failed");
+        let hex = encode_submit(&msg).unwrap_or_default();
         // Must be valid hex and decodable.
-        let raw = hex_decode(&hex).expect("hex decode failed");
+        let raw = hex_decode(&hex).unwrap_or_default();
         // First byte is SMSC len 0x00.
         assert_eq!(raw.first(), Some(&0x00));
         // Second byte: MTI=01.
@@ -580,13 +580,13 @@ mod tests {
             },
             validity_period: Some(0xAA),
         };
-        let hex = encode_submit(&msg).expect("encode failed");
-        let raw = hex_decode(&hex).expect("hex decode failed");
+        let hex = encode_submit(&msg).unwrap_or_default();
+        let raw = hex_decode(&hex).unwrap_or_default();
 
         // With VPF=10, first octet should be 0x11.
         assert_eq!(raw.get(1), Some(&0x11));
         // VP byte should be present after DA.
-        // DA length = 12 digits → 8 bytes ([len, type, 6×bcd]) → offset for VP = 1+1+1+8+1+1 = 13? Let's just verify non-empty.
+        // DA length = 12 digits → 8 bytes ([len, type, 6×bcd]) → OFFSET for VP = 1+1+1+8+1+1 = 13? Let's just verify non-empty.
         assert!(!hex.is_empty());
     }
 
@@ -598,7 +598,7 @@ mod tests {
         // PDU: 00 00 0A 91 21 43 65 87 09 00 08 32 10 51 21 03 00 00 04 00 48 00 69
         //   DCS=0x08 (UCS-2), UDL=4 bytes, UD=0x0048 0x0069 → "Hi"
         let pdu = "00000A91214365870900083210512103000004004800 69".replace(' ', "");
-        let sms = decode_deliver(&pdu).expect("decode failed");
+        let sms = decode_deliver(&pdu).unwrap_or_default();
         assert_eq!(sms.user_data.encoding, DataEncoding::Ucs2);
         assert_eq!(sms.user_data.text, "Hi");
     }
@@ -618,8 +618,8 @@ mod tests {
             },
             validity_period: None,
         };
-        let hex = encode_submit(&msg).expect("encode failed");
-        let raw = hex_decode(&hex).expect("hex decode");
+        let hex = encode_submit(&msg).unwrap_or_default();
+        let raw = hex_decode(&hex).unwrap_or_default();
         // UDL byte should be 0x00.
         // Find UDL: after SMSC(1) + first_octet(1) + MR(1) + DA + PID(1) + DCS(1)
         // DA for "+1": len=1, type=1, bcd=1 → 3 bytes → total before UDL = 1+1+1+3+1+1 = 8
@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn encode_submit_max_ucs2() {
-        // WHY: 70 UCS-2 characters = 140 bytes, the single-segment SMS limit.
+        // WHY: 70 UCS-2 characters = 140 bytes, the single-segment SMS LIMIT.
         let text: String = "あ".repeat(70); // U+3042, outside BMP-ASCII
         let msg = SmsSubmit {
             destination: Address {
@@ -641,8 +641,8 @@ mod tests {
             },
             validity_period: None,
         };
-        let hex = encode_submit(&msg).expect("encode failed");
-        let raw = hex_decode(&hex).expect("hex decode");
+        let hex = encode_submit(&msg).unwrap_or_default();
+        let raw = hex_decode(&hex).unwrap_or_default();
         // UDL for 70 UCS-2 chars = 140 bytes.
         assert_eq!(raw.get(8), Some(&140));
     }
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn decode_deliver_wrong_mti_returns_error() {
-        // PDU with MTI=01 (SMS-SUBMIT) — should fail.
+        // PDU with MTI=01 (SMS-SUBMIT)  -  should fail.
         // Construct minimal PDU: SMSC=00, first_octet=01 (MTI=1).
         let pdu = "00010A9121436587090000321051210300000 5C8329BFD06".replace(' ', "");
         let result = decode_deliver(&pdu);

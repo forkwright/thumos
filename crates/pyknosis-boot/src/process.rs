@@ -40,14 +40,14 @@ pub enum State {
 pub enum FaultKind {
     /// ARM data abort (load/store to unmapped or protected address).
     DataAbort { fault_addr: u32, fault_status: u32 },
-    /// ARM prefetch abort (instruction fetch from unmapped address).
+    /// ARM prefetch abort (instruction fetch FROM unmapped address).
     PrefetchAbort { fault_addr: u32, fault_status: u32 },
     /// Undefined instruction executed.
     UndefinedInstruction,
 }
 
 /// Saved CPU context for context switching.
-/// Only callee-saved registers need explicit saving — the IRQ entry
+/// Only callee-saved registers need explicit saving  -  the IRQ entry
 /// stub already saves r0-r3, r12, lr on the IRQ stack.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -90,7 +90,7 @@ pub struct Process {
     pub ctx: Context,
     /// Parent PID, if this process was created via fork().
     pub parent: Option<Pid>,
-    /// Exit status set by exit_with_status() / exit_cleanup().
+    /// Exit status SET by exit_with_status() / exit_cleanup().
     pub exit_status: i32,
     /// Physical address of this process's L1 page table.
     /// 0 means "use kernel global L1" (process 0 / kinit).
@@ -114,7 +114,7 @@ static mut CURRENT: Pid = 0;
 const STACK_PAGES: usize = 4;
 
 /// Initialize the process subsystem.
-/// Creates process 0 (the kernel/idle process) from the current execution context.
+/// Creates process 0 (the kernel/idle process) FROM the current execution context.
 ///
 /// # Safety
 ///
@@ -132,7 +132,7 @@ pub unsafe fn init() {
             stack_pages: 0,
         };
         let procs = &mut *addr_of_mut!(PROCS);
-        procs[0] = Some(proc0);
+        procs.get(0).copied().unwrap_or_default() = Some(proc0);
         CURRENT = 0;
     }
 }
@@ -146,7 +146,7 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
         let slot = procs.iter().position(|p| p.is_none())?;
         let pid = slot as Pid;
 
-        // Allocate new address space cloned from kernel table
+        // Allocate new address space cloned FROM kernel table
         let new_pt = mmu::alloc_addr_space()?;
         mmu::clone_addr_space(mmu::table_base(), new_pt);
 
@@ -180,8 +180,8 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
             r9: 0,
             r10: 0,
             r11: 0,
-            sp: stack_top as u32,
-            lr: entry_point as u32,
+            sp: u32::try_from(stack_top).unwrap_or_default(),
+            lr: u32::try_from(entry_point).unwrap_or_default(),
             cpsr: 0x1F, // NOTE: system mode, IRQs enabled
         };
 
@@ -205,7 +205,7 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
 /// Create a child process by cloning the current process's address space.
 /// Returns Some(child_pid) to the parent on success, or None on OOM.
 ///
-/// NOTE: unlike POSIX fork(), both parent and child continue from the next
+/// NOTE: unlike POSIX fork(), both parent and child continue FROM the next
 /// scheduler tick. The child inherits the parent's saved context exactly.
 pub fn fork() -> Option<Pid> {
     unsafe {
@@ -217,7 +217,7 @@ pub fn fork() -> Option<Pid> {
         let parent_pid = CURRENT;
 
         // Get parent's page table
-        let parent_pt = procs[parent_pid as usize]
+        let parent_pt = procs[usize::try_from(parent_pid).unwrap_or_default()]
             .as_ref()
             .map(|p| p.page_table_phys)
             .unwrap_or(0);
@@ -225,7 +225,7 @@ pub fn fork() -> Option<Pid> {
         // Allocate child address space
         let child_pt = mmu::alloc_addr_space()?;
 
-        // Clone parent mappings into child (use kernel table as base if parent has none)
+        // Clone parent mappings INTO child (use kernel table as base if parent has none)
         let src_pt = if parent_pt == 0 { mmu::table_base() } else { parent_pt };
         mmu::clone_addr_space(src_pt, child_pt);
 
@@ -247,8 +247,8 @@ pub fn fork() -> Option<Pid> {
             }
         }
 
-        // Inherit parent context (child resumes from same saved state)
-        let parent_ctx = procs[parent_pid as usize]
+        // Inherit parent context (child resumes FROM same saved state)
+        let parent_ctx = procs[usize::try_from(parent_pid).unwrap_or_default()]
             .as_ref()
             .map(|p| p.ctx)
             .unwrap_or_else(Context::zero);
@@ -274,7 +274,7 @@ pub fn fork() -> Option<Pid> {
 pub fn waitpid(child_pid: Pid) -> Option<i32> {
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let child = procs[child_pid as usize].as_ref()?;
+        let child = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref()?;
         // INVARIANT: only the direct parent may retrieve the exit status.
         if child.parent != Some(CURRENT) {
             return None;
@@ -314,10 +314,10 @@ pub fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
 
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        if let Some(ref mut proc) = procs[faulting_pid as usize] {
+        if let Some(ref mut proc) = procs[usize::try_from(faulting_pid).unwrap_or_default()] {
             proc.state = State::Dead;
         }
-        // WHY: ipc::send stamps msg.from = current_pid(); temporarily set CURRENT
+        // WHY: ipc::send stamps msg.FROM = current_pid(); temporarily SET CURRENT
         // to faulting_pid so the message arrives with the correct sender identity.
         let saved = CURRENT;
         CURRENT = faulting_pid;
@@ -330,7 +330,7 @@ pub fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
 /// Marks the process Dead, reclaims its page table, and frees stack pages.
 pub(crate) fn exit_cleanup(status: i32) {
     unsafe {
-        let cur = CURRENT as usize;
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
         let procs = &mut *addr_of_mut!(PROCS);
         if let Some(ref mut proc) = procs[cur] {
             proc.exit_status = status;
@@ -381,37 +381,37 @@ pub fn current_pid() -> Pid {
     unsafe { CURRENT }
 }
 
-/// Simple round-robin scheduler. Called from the timer tick handler.
+/// Simple round-robin scheduler. Called FROM the timer tick handler.
 /// Returns the PID to switch to (may be the same as current).
 pub fn schedule() -> Pid {
     unsafe {
-        let cur = CURRENT as usize;
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
         // Round-robin: find next ready process after current
         let procs = &*core::ptr::addr_of!(PROCS);
-        for offset in 1..MAX_PROCS {
-            let idx = (cur + offset) % MAX_PROCS;
+        for OFFSET in 1..MAX_PROCS {
+            let idx = (cur + OFFSET) % MAX_PROCS;
             if let Some(ref proc) = procs[idx] {
                 if proc.state == State::Ready {
                     return proc.pid;
                 }
             }
         }
-        // No other ready process — stay on current
+        // No other ready process  -  stay on current
         CURRENT
     }
 }
 
-/// Perform a context switch from current process to `next_pid`.
+/// Perform a context switch FROM current process to `next_pid`.
 /// Also switches TTBR0 so the next process gets its own address space.
 ///
 /// # Safety
 ///
-/// Must be called from the timer IRQ handler (in IRQ mode with
+/// Must be called FROM the timer IRQ handler (in IRQ mode with
 /// interrupts disabled).
 pub unsafe fn switch_to(next_pid: Pid) {
     unsafe {
-        let cur_pid = CURRENT as usize;
-        let next = next_pid as usize;
+        let cur_pid = usize::try_from(CURRENT).unwrap_or_default();
+        let next = usize::try_from(next_pid).unwrap_or_default();
 
         if cur_pid == next {
             return;
@@ -439,7 +439,7 @@ pub unsafe fn switch_to(next_pid: Pid) {
     }
 }
 
-/// Save callee-saved registers into the context struct.
+/// Save callee-saved registers INTO the context struct.
 #[inline(always)]
 unsafe fn save_context(ctx: &mut Context) {
     #[cfg(target_arch = "arm")]
@@ -466,7 +466,7 @@ unsafe fn save_context(ctx: &mut Context) {
     let _ = ctx;
 }
 
-/// Restore callee-saved registers from the context struct.
+/// Restore callee-saved registers FROM the context struct.
 #[inline(always)]
 unsafe fn restore_context(ctx: &Context) {
     #[cfg(target_arch = "arm")]
@@ -513,12 +513,12 @@ mod tests {
 
         // Reset page allocator with a modest test pool
         // WHY: 0x4000_0000..0x8000_0000 is DRAM; kernel_end just above base so
-        // pages from 0x4010_0000 onward are available.
+        // pages FROM 0x4010_0000 onward are available.
         page::init(0x4000_0000, 0x8000_0000, 0x4010_0000);
 
         // Reset IPC inboxes by re-initialising as process 0 and draining
         // (no direct reset API; we just reconstruct process 0 and let
-        // tests ignore stale messages — each test calls reset_all fresh)
+        // tests ignore stale messages  -  each test calls reset_all fresh)
     }
 
     #[test]
@@ -528,7 +528,7 @@ mod tests {
             // Construct a minimal process 0
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -540,9 +540,9 @@ mod tests {
             });
             CURRENT = 0;
 
-            let child_pid = fork().expect("fork should succeed");
+            let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
-            assert!(procs[child_pid as usize].is_some(), "child slot must be populated");
+            assert!(procs[usize::try_from(child_pid).unwrap_or_default()].is_some(), "child slot must be populated");
         }
     }
 
@@ -552,7 +552,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -564,10 +564,10 @@ mod tests {
             });
             CURRENT = 0;
 
-            let child_pid = fork().expect("fork should succeed");
+            let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
-            let parent_pt = procs[0].as_ref().unwrap().page_table_phys;
-            let child_pt = procs[child_pid as usize].as_ref().unwrap().page_table_phys;
+            let parent_pt = procs.get(0).copied().unwrap_or_default().as_ref().unwrap().page_table_phys;
+            let child_pt = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap().page_table_phys;
             assert_ne!(parent_pt, child_pt, "parent and child must have distinct page tables");
         }
     }
@@ -578,7 +578,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -590,9 +590,9 @@ mod tests {
             });
             CURRENT = 0;
 
-            let child_pid = fork().expect("fork should succeed");
+            let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
-            let child_parent = procs[child_pid as usize].as_ref().unwrap().parent;
+            let child_parent = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap().parent;
             assert_eq!(child_parent, Some(0u8), "child.parent must be parent PID");
         }
     }
@@ -603,7 +603,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -615,12 +615,12 @@ mod tests {
             });
             CURRENT = 0;
 
-            let child_pid = fork().expect("fork should succeed");
+            let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
-            let parent_pt = procs[0].as_ref().unwrap().page_table_phys;
-            let child_pt = procs[child_pid as usize].as_ref().unwrap().page_table_phys;
+            let parent_pt = procs.get(0).copied().unwrap_or_default().as_ref().unwrap().page_table_phys;
+            let child_pt = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap().page_table_phys;
 
-            // Write into entry 100 in the child's table
+            // Write INTO entry 100 in the child's table
             (child_pt as *mut u32).add(100).write(0xCAFE_BABE);
             // Parent's entry 100 must be unchanged
             let parent_val = (parent_pt as *const u32).add(100).read();
@@ -635,7 +635,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -647,8 +647,8 @@ mod tests {
             });
             CURRENT = 0;
 
-            let child_pid = fork().expect("fork");
-            // Child is Ready, not Dead — waitpid must return None
+            let child_pid = fork().unwrap_or_default();
+            // Child is Ready, not Dead  -  waitpid must return None
             assert_eq!(waitpid(child_pid), None, "should return None while child is alive");
         }
     }
@@ -659,7 +659,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -671,11 +671,11 @@ mod tests {
             });
             CURRENT = 0;
 
-            let child_pid = fork().expect("fork");
+            let child_pid = fork().unwrap_or_default();
 
             // Manually mark child as dead with exit status 42
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
-            if let Some(ref mut child) = procs[child_pid as usize] {
+            if let Some(ref mut child) = procs[usize::try_from(child_pid).unwrap_or_default()] {
                 child.state = State::Dead;
                 child.exit_status = 42;
             }
@@ -690,7 +690,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -702,7 +702,7 @@ mod tests {
             });
             CURRENT = 0;
 
-            let child_pid = fork().expect("fork");
+            let child_pid = fork().unwrap_or_default();
 
             let free_before = page::free_count();
 
@@ -711,7 +711,7 @@ mod tests {
             exit_cleanup(0);
 
             let procs = &*core::ptr::addr_of!(PROCS);
-            let child = procs[child_pid as usize].as_ref().unwrap();
+            let child = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap();
             assert_eq!(child.state, State::Dead, "exit_cleanup must mark state Dead");
 
             let free_after = page::free_count();
@@ -727,7 +727,7 @@ mod tests {
 
             // Process 0: kinit supervisor
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -740,7 +740,7 @@ mod tests {
 
             // Process 1: faulting process
             let pt1 = mmu::alloc_addr_space().unwrap();
-            procs[1] = Some(Process {
+            procs.get(1).copied().unwrap_or_default() = Some(Process {
                 pid: 1,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -755,7 +755,7 @@ mod tests {
             notify_fault(1, FaultKind::DataAbort { fault_addr: 0xDEAD, fault_status: 0x05 });
 
             let procs = &*core::ptr::addr_of!(PROCS);
-            assert_eq!(procs[1].as_ref().unwrap().state, State::Dead,
+            assert_eq!(procs.get(1).copied().unwrap_or_default().as_ref().unwrap().state, State::Dead,
                 "faulting process must be marked Dead");
         }
     }
@@ -767,7 +767,7 @@ mod tests {
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
 
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -778,7 +778,7 @@ mod tests {
                 stack_pages: 0,
             });
             let pt1 = mmu::alloc_addr_space().unwrap();
-            procs[1] = Some(Process {
+            procs.get(1).copied().unwrap_or_default() = Some(Process {
                 pid: 1,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -794,7 +794,7 @@ mod tests {
 
             // PID 0 receives the message; tag must be 3 (UndefinedInstruction)
             CURRENT = 0;
-            let msg = ipc::recv().expect("kinit must have received a fault notification");
+            let msg = ipc::recv().unwrap_or_default();
             assert_eq!(msg.tag, 3, "UndefinedInstruction tag must be 3");
             assert_eq!(msg.payload()[0], 1u8, "first payload byte must be faulting PID");
         }
@@ -806,7 +806,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
+            procs.get(0).copied().unwrap_or_default() = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -818,16 +818,16 @@ mod tests {
             });
             CURRENT = 0;
 
-            let child_pid = fork().expect("fork");
+            let child_pid = fork().unwrap_or_default();
             let procs_ref = &*core::ptr::addr_of!(PROCS);
-            let child_pt = procs_ref[child_pid as usize].as_ref().unwrap().page_table_phys;
+            let child_pt = procs_ref[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap().page_table_phys;
 
-            // Exit the child — should free its page table slot
+            // Exit the child  -  should free its page table slot
             CURRENT = child_pid;
             exit_cleanup(0);
 
-            // Allocate again — must get the same address (slot was reclaimed)
-            let new_pt = mmu::alloc_addr_space().expect("slot must be available after teardown");
+            // Allocate again  -  must get the same address (slot was reclaimed)
+            let new_pt = mmu::alloc_addr_space().unwrap_or_default();
             assert_eq!(new_pt, child_pt, "reclaimed table slot must be reused");
 
             mmu::free_addr_space(new_pt);

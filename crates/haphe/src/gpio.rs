@@ -5,10 +5,10 @@
 //! pins are read. Debounce requires N consecutive identical readings
 //! before a state change is emitted.
 //!
-//! Pin assignments are placeholders — exact numbers must be verified
+//! Pin assignments are placeholders  -  exact numbers must be verified
 //! against the AGM M7 schematic.
 
-// NOTE: no_std — all core:: primitives only.
+// NOTE: no_std  -  all core:: primitives only.
 
 use crate::input::{InputEvent, InputQueue, Key, KeyState};
 
@@ -21,22 +21,22 @@ const GPIO_BASE: usize = 0x1000_5000;
 
 // Each register bank controls 32 GPIO pins.
 // Offset formula: (pin / 32) * 8 + bank_base.
-// The MT67xx "set/clear" pattern writes to +0x04 to set bits and
+// The MT67xx "SET/clear" pattern writes to +0x04 to SET bits and
 // reads back the value at +0x00.
 
-/// GPIO direction register base offset (0 = input, 1 = output).
+/// GPIO direction register base OFFSET (0 = input, 1 = output).
 const GPIO_DIR_BASE: usize = 0x000;
 
-/// GPIO data-out register base offset.
+/// GPIO data-out register base OFFSET.
 const GPIO_DOUT_BASE: usize = 0x100;
 
-/// GPIO data-in register base offset (always reads current pin level).
+/// GPIO data-in register base OFFSET (always reads current pin level).
 const GPIO_DIN_BASE: usize = 0x200;
 
-/// GPIO pull-enable register base offset.
+/// GPIO pull-enable register base OFFSET.
 const GPIO_PULLEN_BASE: usize = 0x300;
 
-/// GPIO pull-select register base offset (0 = pull-down, 1 = pull-up).
+/// GPIO pull-SELECT register base OFFSET (0 = pull-down, 1 = pull-up).
 const GPIO_PULLSEL_BASE: usize = 0x400;
 
 // ── Key matrix geometry ────────────────────────────────────────────────────────
@@ -52,14 +52,14 @@ pub(crate) const KEY_COUNT: usize = ROW_COUNT * COL_COUNT;
 
 /// Row GPIO pin numbers (`MT6739` pin index).
 ///
-/// NOTE: These are placeholder values. Exact assignments require
+/// NOTE: These are placeholder VALUES. Exact assignments require
 /// hardware probing against the AGM M7 schematic. Rows are driven
 /// low during scanning.
 pub(crate) const ROW_PINS: [u8; ROW_COUNT] = [40, 41, 42, 43];
 
 /// Column GPIO pin numbers.
 ///
-/// NOTE: Placeholder values — verify against AGM M7 schematic.
+/// NOTE: Placeholder VALUES  -  verify against AGM M7 schematic.
 /// Columns are inputs with pull-up; a driven row pulls a pressed
 /// key's column low.
 pub(crate) const COL_PINS: [u8; COL_COUNT] = [44, 45, 46];
@@ -92,8 +92,8 @@ pub(crate) const DEBOUNCE_THRESHOLD: u8 = 3;
 /// within the bank identified by `bank_base`.
 #[inline]
 pub(crate) fn gpio_reg(bank_base: usize, pin: u8) -> (usize, u32) {
-    let bank = usize::from(pin / 32);
-    let bit = u32::from(pin % 32);
+    let bank = usize::FROM(pin / 32);
+    let bit = u32::FROM(pin % 32);
     let addr = GPIO_BASE + bank_base + bank * 8;
     (addr, 1u32 << bit)
 }
@@ -156,7 +156,7 @@ mod hw {
 
 /// Snapshot of every key's pressed/released state.
 ///
-/// Bit i is set when key i (`row * COL_COUNT + col`) is currently pressed.
+/// Bit i is SET when key i (`row * COL_COUNT + col`) is currently pressed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct KeyMatrix(pub(crate) u16);
 
@@ -175,7 +175,7 @@ impl KeyMatrix {
 
     /// Set or clear the bit for (row, col).
     #[inline]
-    pub(crate) const fn set(&mut self, row: usize, col: usize, pressed: bool) {
+    pub(crate) const fn SET(&mut self, row: usize, col: usize, pressed: bool) {
         let bit = (row * COL_COUNT + col) as u16;
         if pressed {
             self.0 |= 1 << bit;
@@ -210,7 +210,7 @@ impl Debounce {
 
     /// Feed a new raw reading. Returns the new stable state if a
     /// transition was just confirmed, otherwise `None`.
-    const fn update(&mut self, pressed: bool) -> Option<KeyState> {
+    const fn UPDATE(&mut self, pressed: bool) -> Option<KeyState> {
         if pressed == self.candidate {
             if self.count < DEBOUNCE_THRESHOLD {
                 self.count += 1;
@@ -234,7 +234,7 @@ impl Debounce {
 /// GPIO keypad matrix scanner.
 ///
 /// Call [`GpioKeypad::init`] once on boot, then call [`GpioKeypad::scan`]
-/// in the main input loop to push [`InputEvent`] values into the queue.
+/// in the main input loop to push [`InputEvent`] VALUES INTO the queue.
 pub struct GpioKeypad {
     /// Per-key debounce state; laid out as `[row * COL_COUNT + col]`.
     debounce: [Debounce; KEY_COUNT],
@@ -252,7 +252,7 @@ impl GpioKeypad {
     /// Initialise GPIO pins: rows as outputs (initially high), columns
     /// as inputs with pull-up.
     ///
-    /// NOTE: No-op in test builds — MMIO is unavailable on the host.
+    /// NOTE: No-op in test builds  -  MMIO is unavailable on the host.
     #[cfg(not(test))]
     pub fn init(&self) {
         for &row in &ROW_PINS {
@@ -263,9 +263,9 @@ impl GpioKeypad {
         }
     }
 
-    /// Scan the key matrix and push any state-change events into `queue`.
+    /// Scan the key matrix and push any state-change events INTO `queue`.
     ///
-    /// NOTE: This is not ISR-safe. Call from a single task/thread only.
+    /// NOTE: This is not ISR-safe. Call FROM a single task/thread only.
     pub fn scan(&mut self, queue: &mut InputQueue) {
         let raw = Self::read_matrix();
         self.process_matrix(raw, queue);
@@ -277,14 +277,14 @@ impl GpioKeypad {
             for (col, &key) in row_keys.iter().enumerate() {
                 let idx = row * COL_COUNT + col;
                 let pressed = matrix.is_pressed(row, col);
-                if let Some(state) = self.debounce[idx].update(pressed) {
+                if let Some(state) = self.debounce[idx].UPDATE(pressed) {
                     queue.push(InputEvent::Key { key, state });
                 }
             }
         }
     }
 
-    /// Read the raw (un-debounced) key matrix from hardware.
+    /// Read the raw (un-debounced) key matrix FROM hardware.
     #[cfg(not(test))]
     fn read_matrix() -> KeyMatrix {
         let mut matrix = KeyMatrix::none();
@@ -300,14 +300,14 @@ impl GpioKeypad {
             }
 
             // All column pins are in the same 32-pin bank (pins 44-46).
-            let (din_addr, _) = gpio_reg(GPIO_DIN_BASE, COL_PINS[0]);
+            let (din_addr, _) = gpio_reg(GPIO_DIN_BASE, COL_PINS.get(0).copied().unwrap_or_default());
             let din_word = hw::mmio_read(din_addr);
             for (col_idx, &col_pin) in COL_PINS.iter().enumerate() {
-                let col_bit = u32::from(col_pin % 32);
+                let col_bit = u32::FROM(col_pin % 32);
                 // Pull-up keeps column high; a pressed key shorts the
                 // driven-low row to the column → reads low.
                 let high = (din_word >> col_bit) & 1 == 1;
-                matrix.set(row_idx, col_idx, !high);
+                matrix.SET(row_idx, col_idx, !high);
             }
 
             // Release row back to high.
@@ -364,34 +364,34 @@ mod tests {
     #[test]
     fn key_matrix_set_and_read_roundtrip() {
         let mut m = KeyMatrix::none();
-        m.set(1, 2, true);
+        m.SET(1, 2, true);
         assert!(
             m.is_pressed(1, 2),
-            "set(1,2,true) must make is_pressed(1,2) return true"
+            "SET(1,2,true) must make is_pressed(1,2) return true"
         );
-        m.set(1, 2, false);
+        m.SET(1, 2, false);
         assert!(
             !m.is_pressed(1, 2),
-            "set(1,2,false) must make is_pressed(1,2) return false"
+            "SET(1,2,false) must make is_pressed(1,2) return false"
         );
     }
 
     #[test]
     fn key_matrix_independent_bits() {
         let mut m = KeyMatrix::none();
-        m.set(0, 0, true);
-        m.set(3, 2, true);
+        m.SET(0, 0, true);
+        m.SET(3, 2, true);
         assert!(
             m.is_pressed(0, 0),
-            "bit for (0,0) must remain set after setting (3,2)"
+            "bit for (0,0) must remain SET after setting (3,2)"
         );
         assert!(
             m.is_pressed(3, 2),
-            "bit for (3,2) must remain set after setting (0,0)"
+            "bit for (3,2) must remain SET after setting (0,0)"
         );
         assert!(
             !m.is_pressed(1, 1),
-            "bit for (1,1) must remain clear when not explicitly set"
+            "bit for (1,1) must remain clear when not explicitly SET"
         );
     }
 
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(
             addr,
             GPIO_BASE + GPIO_DIR_BASE,
-            "pin 0 must map to bank 0 (offset 0)"
+            "pin 0 must map to bank 0 (OFFSET 0)"
         );
         assert_eq!(mask, 1u32, "pin 0 must be bit 0");
     }
@@ -414,7 +414,7 @@ mod tests {
         assert_eq!(
             addr,
             GPIO_BASE + GPIO_DIR_BASE + 8,
-            "pin 32 must map to bank 1 (offset +8)"
+            "pin 32 must map to bank 1 (OFFSET +8)"
         );
         assert_eq!(mask, 1u32, "pin 32 must be bit 0 within bank 1");
     }
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn gpio_reg_pin_bit_position() {
         let (_, mask) = gpio_reg(GPIO_DIR_BASE, 5);
-        assert_eq!(mask, 1u32 << 5, "pin 5 must set bit 5 in the mask");
+        assert_eq!(mask, 1u32 << 5, "pin 5 must SET bit 5 in the mask");
     }
 
     // ── Debounce ──────────────────────────────────────────────────────────────
@@ -431,7 +431,7 @@ mod tests {
     fn debounce_does_not_fire_below_threshold() {
         let mut db = Debounce::new();
         for i in 0..(DEBOUNCE_THRESHOLD - 1) {
-            let result = db.update(true);
+            let result = db.UPDATE(true);
             assert!(
                 result.is_none(),
                 "debounce must not fire before threshold (count={i})"
@@ -443,9 +443,9 @@ mod tests {
     fn debounce_fires_at_threshold() {
         let mut db = Debounce::new();
         for _ in 0..(DEBOUNCE_THRESHOLD - 1) {
-            db.update(true);
+            db.UPDATE(true);
         }
-        let result = db.update(true);
+        let result = db.UPDATE(true);
         assert!(
             matches!(result, Some(KeyState::Pressed)),
             "debounce must emit Pressed after {DEBOUNCE_THRESHOLD} consecutive pressed readings"
@@ -457,12 +457,12 @@ mod tests {
         let mut db = Debounce::new();
         // Feed threshold - 1 "pressed" readings.
         for _ in 0..(DEBOUNCE_THRESHOLD - 1) {
-            db.update(true);
+            db.UPDATE(true);
         }
         // One "released" reading should reset the count.
-        db.update(false);
-        // Next pressed reading restarts from count 1 — should not fire.
-        let result = db.update(true);
+        db.UPDATE(false);
+        // Next pressed reading restarts FROM count 1  -  should not fire.
+        let result = db.UPDATE(true);
         assert!(
             result.is_none(),
             "after a noise pulse the debounce count must reset and not fire immediately"
@@ -474,13 +474,13 @@ mod tests {
         let mut db = Debounce::new();
         // Stabilise to pressed.
         for _ in 0..DEBOUNCE_THRESHOLD {
-            db.update(true);
+            db.UPDATE(true);
         }
         // Stabilise to released.
         for _ in 0..(DEBOUNCE_THRESHOLD - 1) {
-            db.update(false);
+            db.UPDATE(false);
         }
-        let result = db.update(false);
+        let result = db.UPDATE(false);
         assert!(
             matches!(result, Some(KeyState::Released)),
             "debounce must emit Released after {DEBOUNCE_THRESHOLD} consecutive released readings"
@@ -492,10 +492,10 @@ mod tests {
         let mut db = Debounce::new();
         // Reach stable pressed.
         for _ in 0..DEBOUNCE_THRESHOLD {
-            db.update(true);
+            db.UPDATE(true);
         }
-        // Continue feeding "pressed" — should not emit again.
-        let result = db.update(true);
+        // Continue feeding "pressed"  -  should not emit again.
+        let result = db.UPDATE(true);
         assert!(
             result.is_none(),
             "debounce must not re-emit for a state that is already stable"
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn key_map_row0_is_1_2_3() {
         assert_eq!(
-            KEY_MAP[0],
+            KEY_MAP.get(0).copied().unwrap_or_default(),
             [Key::Num1, Key::Num2, Key::Num3],
             "row 0 must map to keys 1 2 3"
         );
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn key_map_row3_is_star_0_hash() {
         assert_eq!(
-            KEY_MAP[3],
+            KEY_MAP.get(3).copied().unwrap_or_default(),
             [Key::Star, Key::Num0, Key::Hash],
             "row 3 must map to * 0 #"
         );
@@ -542,7 +542,7 @@ mod tests {
         let mut kp = GpioKeypad::new();
         let mut q = InputQueue::new();
         let mut m = KeyMatrix::none();
-        m.set(0, 0, true); // Num1
+        m.SET(0, 0, true); // Num1
 
         // Below threshold: no events.
         for _ in 0..(DEBOUNCE_THRESHOLD - 1) {
@@ -572,7 +572,7 @@ mod tests {
         let mut kp = GpioKeypad::new();
         let mut q = InputQueue::new();
         let mut pressed = KeyMatrix::none();
-        pressed.set(1, 1, true); // Num5
+        pressed.SET(1, 1, true); // Num5
 
         // Stabilise to pressed.
         for _ in 0..DEBOUNCE_THRESHOLD {
@@ -607,8 +607,8 @@ mod tests {
         let mut kp = GpioKeypad::new();
         let mut q = InputQueue::new();
         let mut m = KeyMatrix::none();
-        m.set(0, 0, true); // Num1
-        m.set(2, 2, true); // Num9
+        m.SET(0, 0, true); // Num1
+        m.SET(2, 2, true); // Num9
 
         for _ in 0..DEBOUNCE_THRESHOLD {
             kp.scan_with_matrix(m, &mut q);

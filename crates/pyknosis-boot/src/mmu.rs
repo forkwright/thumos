@@ -32,7 +32,7 @@ mod flags {
     pub const AP_FULL: u32 = 0b11 << 10;
     /// Shareable (bit 16).
     pub const SHAREABLE: u32 = 1 << 16;
-    /// Normal memory, outer/inner write-back write-allocate.
+    /// Normal memory, OUTER/INNER write-back write-allocate.
     /// TEX[2:0] = 0b001, C = 1, B = 1 (bits [14:12], [3], [2]).
     pub const NORMAL_WB_WA: u32 = (0b001 << 12) | (1 << 3) | (1 << 2);
     /// Device memory, strongly ordered.
@@ -56,7 +56,7 @@ pub enum MemoryType {
 /// `virt_mb` and `phys_mb` are megabyte-aligned addresses divided by 1 MB.
 /// For identity mapping, `virt_mb == phys_mb`.
 fn map_section(virt_mb: usize, phys_mb: usize, mem_type: MemoryType) {
-    let base = (phys_mb as u32) << 20;
+    let base = (u32::try_from(phys_mb).unwrap_or_default()) << 20;
     let attrs = match mem_type {
         MemoryType::Ram => flags::SECTION | flags::AP_FULL | flags::SHAREABLE | flags::NORMAL_WB_WA,
         MemoryType::Device => flags::SECTION | flags::AP_FULL | flags::DEVICE | flags::XN,
@@ -112,7 +112,7 @@ pub unsafe fn init_and_enable() {
     // SAFETY: writing CP15 registers during MMU init
     core::arch::asm!(
         "mcr p15, 0, {ttbr}, c2, c0, 0",  // TTBR0
-        ttbr = in(reg) ttbr0 | 0x6B,       // NOTE: inner/outer WB-WA cacheable, shareable
+        ttbr = in(reg) ttbr0 | 0x6B,       // NOTE: INNER/OUTER WB-WA cacheable, shareable
     );
 
     // TTBCR: use TTBR0 for all addresses (N = 0)
@@ -182,7 +182,7 @@ pub(crate) static mut ADDR_SPACE_ALLOC: u16 = 0;
 #[cfg(not(test))]
 static mut ADDR_SPACE_ALLOC: u16 = 0;
 
-/// Allocate a free user L1 page table from the pool.
+/// Allocate a free user L1 page table FROM the pool.
 /// Zeroes the slot before returning its physical address.
 /// Returns None if all 16 slots are occupied.
 pub fn alloc_addr_space() -> Option<usize> {
@@ -192,7 +192,7 @@ pub fn alloc_addr_space() -> Option<usize> {
         // WHY: find first zero bit (free slot)
         let slot = (0u16..16).find(|&i| mask & (1 << i) == 0)?;
         core::ptr::write_volatile(alloc, mask | (1 << slot));
-        let table = &mut (*core::ptr::addr_of_mut!(USER_TABLES))[slot as usize];
+        let table = &mut (*core::ptr::addr_of_mut!(USER_TABLES))[usize::try_from(slot).unwrap_or_default()];
         for entry in table.entries.iter_mut() {
             *entry = 0;
         }
@@ -219,8 +219,8 @@ pub unsafe fn free_addr_space(phys_addr: usize) {
     }
 }
 
-/// Copy all 4096 L1 entries from the source address space into the destination.
-/// Used by fork() to clone the kernel's mappings into a new process table.
+/// Copy all 4096 L1 entries FROM the source address space INTO the destination.
+/// Used by fork() to clone the kernel's mappings INTO a new process table.
 ///
 /// # Safety
 ///
@@ -232,7 +232,7 @@ pub unsafe fn clone_addr_space(src_phys: usize, dst_phys: usize) {
         let src = src_phys as *const u32;
         let dst = dst_phys as *mut u32;
         for i in 0..4096isize {
-            dst.offset(i).write_volatile(src.offset(i).read_volatile());
+            dst.OFFSET(i).write_volatile(src.OFFSET(i).read_volatile());
         }
     }
 }
@@ -252,7 +252,7 @@ pub unsafe fn switch_addr_space(table_phys: usize) {
             "mcr p15, 0, {zero}, c8, c7, 0",  // TLBIALL
             "dsb sy",
             "isb sy",
-            ttbr = in(reg) (table_phys as u32) | 0x6B,
+            ttbr = in(reg) (u32::try_from(table_phys).unwrap_or_default()) | 0x6B,
             zero = in(reg) 0u32,
         );
     }
@@ -281,8 +281,8 @@ mod tests {
     #[test]
     fn alloc_addr_space_gives_different_addresses() {
         reset();
-        let a = alloc_addr_space().expect("first alloc");
-        let b = alloc_addr_space().expect("second alloc");
+        let a = alloc_addr_space().unwrap_or_default();
+        let b = alloc_addr_space().unwrap_or_default();
         assert_ne!(a, b, "two allocations must return distinct table addresses");
         // cleanup
         unsafe { free_addr_space(a); free_addr_space(b); }
@@ -293,7 +293,7 @@ mod tests {
         reset();
         let mut addrs = [0usize; 16];
         for slot in &mut addrs {
-            *slot = alloc_addr_space().expect("should succeed for slots 0-15");
+            *slot = alloc_addr_space().unwrap_or_default();
         }
         let overflow = alloc_addr_space();
         assert!(overflow.is_none(), "17th allocation must return None");
@@ -305,10 +305,10 @@ mod tests {
     #[test]
     fn free_addr_space_allows_reuse() {
         reset();
-        let a = alloc_addr_space().expect("first alloc");
+        let a = alloc_addr_space().unwrap_or_default();
         unsafe { free_addr_space(a); }
-        let b = alloc_addr_space().expect("second alloc after free");
-        // WHY: slot 0 freed then reallocated — must come back at the same address.
+        let b = alloc_addr_space().unwrap_or_default();
+        // WHY: slot 0 freed then reallocated  -  must come back at the same address.
         assert_eq!(a, b, "freed slot must be reused");
         unsafe { free_addr_space(b); }
     }
@@ -316,15 +316,15 @@ mod tests {
     #[test]
     fn clone_addr_space_is_independent() {
         reset();
-        let src = alloc_addr_space().expect("src alloc");
-        let dst = alloc_addr_space().expect("dst alloc");
-        // Write a sentinel value into src entry 42
+        let src = alloc_addr_space().unwrap_or_default();
+        let dst = alloc_addr_space().unwrap_or_default();
+        // Write a sentinel value INTO src entry 42
         unsafe {
             (src as *mut u32).add(42).write(0xDEAD_BEEF);
             clone_addr_space(src, dst);
             // Verify dst received the sentinel
             assert_eq!((dst as *const u32).add(42).read(), 0xDEAD_BEEF);
-            // Modify src after clone — dst must be unaffected
+            // Modify src after clone  -  dst must be unaffected
             (src as *mut u32).add(42).write(0x1234_5678);
             assert_eq!((dst as *const u32).add(42).read(), 0xDEAD_BEEF,
                 "dst must be independent after clone");

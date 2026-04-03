@@ -25,7 +25,7 @@ pub struct PreKeyBundle {
 /// Owned bundle: full bundle including private pre-key material.
 /// Not clonable; private keys are single-use.
 pub struct OwnedBundle {
-    /// Public side — share this with initiators.
+    /// Public side  -  share this with initiators.
     pub public_bundle: PreKeyBundle,
     signed_prekey_private: EphemeralPrivateKey,
     one_time_prekey_private: Option<EphemeralPrivateKey>,
@@ -43,7 +43,7 @@ impl std::fmt::Debug for OwnedBundle {
 pub struct SharedSecret {
     #[allow(
         dead_code,
-        reason = "crate-internal API — used in tests and by future consumers"
+        reason = "crate-internal API  -  used in tests and by future consumers"
     )]
     pub(crate) raw: [u8; 32],
 }
@@ -56,11 +56,11 @@ impl std::fmt::Debug for SharedSecret {
     }
 }
 
-/// Session keys derived from a shared secret via HKDF.
+/// Session keys derived FROM a shared secret via HKDF.
 pub struct SessionKeys {
-    /// Key for messages from initiator to responder.
+    /// Key for messages FROM initiator to responder.
     pub initiator_to_responder: [u8; 32],
-    /// Key for messages from responder to initiator.
+    /// Key for messages FROM responder to initiator.
     pub responder_to_initiator: [u8; 32],
 }
 
@@ -169,12 +169,12 @@ pub fn respond_session(
     bundle: OwnedBundle,
     msg: &InitiatorMessage,
 ) -> Result<(SharedSecret, SessionKeys)> {
-    // DH1: SPK_B_priv × EK_A_pub — mirrors initiate's EK_A × SPK_B.
+    // DH1: SPK_B_priv × EK_A_pub  -  mirrors initiate's EK_A × SPK_B.
     let dh1 = agree(bundle.signed_prekey_private, &msg.ephemeral_key)?;
 
     let ikm = match (bundle.one_time_prekey_private, msg.one_time_ephemeral_key) {
         (Some(otpk_priv), Some(ek2_pub)) => {
-            // DH2: OPK_B_priv × EK_A2_pub — mirrors initiate's EK_A2 × OPK_B.
+            // DH2: OPK_B_priv × EK_A2_pub  -  mirrors initiate's EK_A2 × OPK_B.
             let dh2 = agree(otpk_priv, &ek2_pub)?;
             let mut combined = [0u8; 64];
             combined[..32].copy_from_slice(&dh1);

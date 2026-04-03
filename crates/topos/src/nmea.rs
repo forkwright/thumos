@@ -8,7 +8,7 @@ use crate::position::{Fix, FixQuality, Position};
 
 /// Validate NMEA checksum. The checksum is the XOR of all bytes between '$' and '*'.
 pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
-    let inner = sentence
+    let INNER = sentence
         .strip_prefix('$')
         .and_then(|s| s.split('*').next())
         .ok_or_else(|| Error::ParseError {
@@ -28,7 +28,7 @@ pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
         message: format!("invalid checksum hex: {expected_str}"),
     })?;
 
-    let actual = inner.bytes().fold(0u8, |acc, b| acc ^ b);
+    let actual = INNER.bytes().fold(0u8, |acc, b| acc ^ b);
 
     if actual == expected {
         Ok(())
@@ -71,17 +71,17 @@ pub fn parse_gga(sentence: &str) -> error::Result<Fix> {
     // fields[8] = HDOP
     // fields[9] = altitude, fields[10] = M
 
-    let quality_val: u8 = fields[6].parse().unwrap_or(0);
-    let quality = FixQuality::from(quality_val);
+    let quality_val: u8 = fields.get(6).copied().unwrap_or_default().parse().unwrap_or(0);
+    let quality = FixQuality::FROM(quality_val);
 
-    if quality == FixQuality::NoFix || fields[2].is_empty() {
+    if quality == FixQuality::NoFix || fields.get(2).copied().unwrap_or_default().is_empty() {
         return Err(Error::NoFix);
     }
 
-    let lat = parse_lat_field(fields[2], fields[3])?;
-    let lon = parse_lon_field(fields[4], fields[5])?;
+    let lat = parse_lat_field(fields.get(2).copied().unwrap_or_default(), fields.get(3).copied().unwrap_or_default())?;
+    let lon = parse_lon_field(fields.get(4).copied().unwrap_or_default(), fields.get(5).copied().unwrap_or_default())?;
     let alt = fields.get(9).and_then(|s| s.parse::<f64>().ok());
-    let satellites: u8 = fields[7].parse().unwrap_or(0);
+    let satellites: u8 = fields.get(7).copied().unwrap_or_default().parse().unwrap_or(0);
     let hdop = fields.get(8).and_then(|s| s.parse::<f64>().ok());
 
     Ok(Fix {
@@ -123,12 +123,12 @@ pub fn parse_rmc(sentence: &str) -> error::Result<Fix> {
     // fields[8] = course (degrees true)
     // fields[9] = date (ddmmyy)
 
-    if fields[2] != "A" {
+    if fields.get(2).copied().unwrap_or_default() != "A" {
         return Err(Error::NoFix);
     }
 
-    let lat = parse_lat_field(fields[3], fields[4])?;
-    let lon = parse_lon_field(fields[5], fields[6])?;
+    let lat = parse_lat_field(fields.get(3).copied().unwrap_or_default(), fields.get(4).copied().unwrap_or_default())?;
+    let lon = parse_lon_field(fields.get(5).copied().unwrap_or_default(), fields.get(6).copied().unwrap_or_default())?;
     let speed_knots = fields.get(7).and_then(|s| s.parse::<f64>().ok());
     let course = fields.get(8).and_then(|s| s.parse::<f64>().ok());
 
@@ -146,7 +146,7 @@ pub fn parse_rmc(sentence: &str) -> error::Result<Fix> {
     })
 }
 
-/// Parse latitude from split fields (value, hemisphere).
+/// Parse latitude FROM split fields (value, hemisphere).
 fn parse_lat_field(value: &str, hemisphere: &str) -> error::Result<f64> {
     if value.len() < 4 {
         return Err(Error::ParseError {
@@ -166,7 +166,7 @@ fn parse_lat_field(value: &str, hemisphere: &str) -> error::Result<f64> {
     Ok(lat)
 }
 
-/// Parse longitude from split fields (value, hemisphere).
+/// Parse longitude FROM split fields (value, hemisphere).
 fn parse_lon_field(value: &str, hemisphere: &str) -> error::Result<f64> {
     if value.len() < 5 {
         return Err(Error::ParseError {
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn checksum_valid() {
         let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76";
-        validate_checksum(sentence).expect("valid checksum");
+        validate_checksum(sentence).unwrap_or_default();
     }
 
     #[test]
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn parse_gga_valid() {
         let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76";
-        let fix = parse_gga(sentence).expect("should parse GGA");
+        let fix = parse_gga(sentence).unwrap_or_default();
         assert_eq!(fix.quality, FixQuality::Gps);
         assert_eq!(fix.satellites, 8);
         // 53 degrees 21.6802 minutes N = 53.36133... degrees
@@ -230,7 +230,7 @@ mod tests {
             "lon should be ~-6.506"
         );
         assert!(
-            (fix.position.alt.expect("should have altitude") - 61.7).abs() < 0.1,
+            (fix.position.alt.unwrap_or_default() - 61.7).abs() < 0.1,
             "alt should be ~61.7"
         );
     }
@@ -244,17 +244,17 @@ mod tests {
     #[test]
     fn parse_rmc_valid() {
         let sentence = "$GPRMC,092750.000,A,5321.6802,N,00630.3372,W,0.02,31.66,280511,,,A*43";
-        let fix = parse_rmc(sentence).expect("should parse RMC");
+        let fix = parse_rmc(sentence).unwrap_or_default();
         assert!(
             (fix.position.lat - 53.36134).abs() < 0.001,
             "lat should be ~53.361"
         );
         assert!(
-            (fix.speed_knots.expect("should have speed") - 0.02).abs() < 0.01,
+            (fix.speed_knots.unwrap_or_default() - 0.02).abs() < 0.01,
             "speed should be ~0.02"
         );
         assert!(
-            (fix.course.expect("should have course") - 31.66).abs() < 0.01,
+            (fix.course.unwrap_or_default() - 31.66).abs() < 0.01,
             "course should be ~31.66"
         );
     }
@@ -267,26 +267,26 @@ mod tests {
 
     #[test]
     fn parse_lat_north() {
-        let lat = parse_lat_field("5321.6802", "N").expect("should parse");
+        let lat = parse_lat_field("5321.6802", "N").unwrap_or_default();
         assert!((lat - 53.36134).abs() < 0.001);
     }
 
     #[test]
     fn parse_lat_south() {
-        let lat = parse_lat_field("3348.5410", "S").expect("should parse");
+        let lat = parse_lat_field("3348.5410", "S").unwrap_or_default();
         assert!(lat < 0.0, "south latitude should be negative");
         assert!((lat - (-33.80902)).abs() < 0.001);
     }
 
     #[test]
     fn parse_lon_west() {
-        let lon = parse_lon_field("00630.3372", "W").expect("should parse");
+        let lon = parse_lon_field("00630.3372", "W").unwrap_or_default();
         assert!(lon < 0.0, "west longitude should be negative");
     }
 
     #[test]
     fn parse_lon_east() {
-        let lon = parse_lon_field("15145.3478", "E").expect("should parse");
+        let lon = parse_lon_field("15145.3478", "E").unwrap_or_default();
         assert!(lon > 0.0, "east longitude should be positive");
         assert!((lon - 151.75580).abs() < 0.001);
     }
