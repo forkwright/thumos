@@ -219,7 +219,7 @@ Unlocked via mtkclient BROM exploit. The fastboot  button confirmation is non-fu
 | Module | Size | Purpose |
 |--------|------|---------|
 | wlan_drv_gen2 | 1.0 MB | WiFi driver (MT6739 integrated) |
-| wmt_drv | 919 KB | Wireless Management Task — connectivity core |
+| wmt_drv | 919 KB | Wireless Management Task  -  connectivity core |
 | fmradio_drv | 135 KB | FM radio receiver driver |
 | bt_drv | 12 KB | Bluetooth driver |
 | gps_drv | 11 KB | GPS driver |
