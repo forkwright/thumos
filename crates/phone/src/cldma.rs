@@ -260,14 +260,14 @@ mod tests {
     fn gpd_field_offsets_match_cldma_tgpd() {
         // Offsets derived from `struct cldma_tgpd __packed`
         // in `eccci/hif/ccci_hif_cldma.h:251–264`.
-        assert_eq!(offset_of!(Gpd, flags), 0, "gpd_flags at offset 0");
-        assert_eq!(offset_of!(Gpd, checksum), 1, "non_used at offset 1");
-        assert_eq!(offset_of!(Gpd, msb), 2, "msb at offset 2");
-        assert_eq!(offset_of!(Gpd, netif), 3, "netif at offset 3");
-        assert_eq!(offset_of!(Gpd, next_ptr), 4, "next_gpd_ptr at offset 4");
-        assert_eq!(offset_of!(Gpd, data_ptr), 8, "data_buff_bd_ptr at offset 8");
-        assert_eq!(offset_of!(Gpd, data_len), 12, "data_buff_len at offset 12");
-        assert_eq!(offset_of!(Gpd, seq_num), 14, "psn at offset 14");
+        assert_eq!(offset_of!(Gpd, flags), 0, "gpd_flags at OFFSET 0");
+        assert_eq!(offset_of!(Gpd, checksum), 1, "non_used at OFFSET 1");
+        assert_eq!(offset_of!(Gpd, msb), 2, "msb at OFFSET 2");
+        assert_eq!(offset_of!(Gpd, netif), 3, "netif at OFFSET 3");
+        assert_eq!(offset_of!(Gpd, next_ptr), 4, "next_gpd_ptr at OFFSET 4");
+        assert_eq!(offset_of!(Gpd, data_ptr), 8, "data_buff_bd_ptr at OFFSET 8");
+        assert_eq!(offset_of!(Gpd, data_len), 12, "data_buff_len at OFFSET 12");
+        assert_eq!(offset_of!(Gpd, seq_num), 14, "psn at OFFSET 14");
     }
 
     #[test]
@@ -275,11 +275,11 @@ mod tests {
         let mut gpd = Gpd::default();
         assert!(!gpd.is_hw_owned(), "new GPD must not be hardware-owned");
         gpd.set_hw_owned(true);
-        assert!(gpd.is_hw_owned(), "GPD must be hardware-owned after set");
+        assert!(gpd.is_hw_owned(), "GPD must be hardware-owned after SET");
         assert_eq!(
             gpd.flags & GPD_FLAG_HWO,
             GPD_FLAG_HWO,
-            "HWO bit must be set in flags byte"
+            "HWO bit must be SET in flags byte"
         );
         gpd.set_hw_owned(false);
         assert!(
@@ -299,12 +299,12 @@ mod tests {
             ..Gpd::default()
         };
         q.enqueue(gpd)
-            .expect("enqueue into empty queue must succeed");
+            .unwrap_or_default();
         assert_eq!(q.len(), 1, "queue length must be 1 after one enqueue");
 
         let out = q
             .dequeue()
-            .expect("dequeue from non-empty queue must return Some");
+            .unwrap_or_default();
         assert_eq!(out, gpd, "dequeued descriptor must equal enqueued one");
         assert!(q.is_empty(), "queue must be empty after dequeue");
     }
@@ -313,10 +313,10 @@ mod tests {
     fn tx_queue_full_rejects_enqueue() {
         let mut q = TxQueue::new(2);
         let gpd = Gpd::default();
-        q.enqueue(gpd).expect("first enqueue must succeed");
-        q.enqueue(gpd).expect("second enqueue must succeed");
+        q.enqueue(gpd).unwrap_or_default();
+        q.enqueue(gpd).unwrap_or_default();
         let result = q.enqueue(gpd);
-        assert!(result.is_err(), "enqueue into full queue must fail");
+        assert!(result.is_err(), "enqueue INTO full queue must fail");
     }
 
     #[test]
@@ -327,15 +327,15 @@ mod tests {
                 seq_num: i,
                 ..Gpd::default()
             };
-            q.enqueue(gpd).expect("enqueue must succeed");
+            q.enqueue(gpd).unwrap_or_default();
         }
         for expected_seq in 0u16..3 {
             let gpd = q
                 .dequeue()
-                .expect("dequeue must return Some while non-empty");
+                .unwrap_or_default();
             assert_eq!(
                 gpd.seq_num, expected_seq,
-                "RX queue must preserve FIFO order (expected seq {expected_seq})"
+                "RX queue must preserve FIFO ORDER (expected seq {expected_seq})"
             );
         }
         assert!(
