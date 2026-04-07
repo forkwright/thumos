@@ -221,7 +221,7 @@ static FONT_DATA: [[u8; 16]; FONT_CHAR_COUNT] = [
 /// Characters outside the printable ASCII range are silently skipped.
 /// Out-of-bounds pixels are clipped by [`Framebuffer::set_pixel`].
 pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg: Rgb565) {
-    let code = u32::FROM(ch);
+    let code = u32::from(ch);
     if !(FONT_FIRST..=FONT_LAST).contains(&code) {
         return;
     }
@@ -230,7 +230,7 @@ pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg:
         for col in 0u8..8 {
             let bit = (byte >> (7 - col)) & 1;
             let color = if bit != 0 { fg } else { bg };
-            fb.set_pixel(x + u32::FROM(col), y + u32::try_from(row).unwrap_or_default(), color);
+            fb.set_pixel(x + u32::from(col), y + u32::try_from(row).unwrap_or_default(), color);
         }
     }
 }

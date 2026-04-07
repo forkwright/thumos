@@ -8,7 +8,7 @@ use crate::position::{Fix, FixQuality, Position};
 
 /// Validate NMEA checksum. The checksum is the XOR of all bytes between '$' and '*'.
 pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
-    let INNER = sentence
+    let inner = sentence
         .strip_prefix('$')
         .and_then(|s| s.split('*').next())
         .ok_or_else(|| Error::ParseError {
@@ -28,7 +28,7 @@ pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
         message: format!("invalid checksum hex: {expected_str}"),
     })?;
 
-    let actual = INNER.bytes().fold(0u8, |acc, b| acc ^ b);
+    let actual = inner.bytes().fold(0u8, |acc, b| acc ^ b);
 
     if actual == expected {
         Ok(())
@@ -72,7 +72,7 @@ pub fn parse_gga(sentence: &str) -> error::Result<Fix> {
     // fields[9] = altitude, fields[10] = M
 
     let quality_val: u8 = fields.get(6).copied().unwrap_or_default().parse().unwrap_or(0);
-    let quality = FixQuality::FROM(quality_val);
+    let quality = FixQuality::from(quality_val);
 
     if quality == FixQuality::NoFix || fields.get(2).copied().unwrap_or_default().is_empty() {
         return Err(Error::NoFix);

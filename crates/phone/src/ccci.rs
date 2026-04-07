@@ -238,7 +238,7 @@ impl CcciHeader {
     /// Returns `true` when `data[0]` holds the internal-control magic value.
     #[must_use]
     pub const fn is_internal(&self) -> bool {
-        self.data.get(0).copied().unwrap_or_default() == CCCI_MAGIC_NUM
+        self.data[0] == CCCI_MAGIC_NUM
     }
 }
 

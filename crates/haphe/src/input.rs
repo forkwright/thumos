@@ -204,13 +204,13 @@ impl T9Input {
             return None;
         }
 
-        if self.len > 0 && self.keys[self.len - 1] == u8::try_from(key).unwrap_or_default() {
+        if self.len > 0 && self.keys[self.len - 1] == key as u8 {
             // Same key pressed again  -  cycle through characters
             self.candidate = (self.candidate + 1) % chars.len();
         } else {
             // New key  -  commit previous and start new character
             if self.len < 32 {
-                self.keys[self.len] = u8::try_from(key).unwrap_or_default();
+                self.keys[self.len] = key as u8;
                 self.len += 1;
             }
             self.candidate = 0;

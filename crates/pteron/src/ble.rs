@@ -425,7 +425,7 @@ mod tests {
     fn is_ibeacon_returns_none_for_non_apple_manufacturer_data() {
         // Same structure but with a different company ID
         let mut data = ibeacon_ad_data();
-        data.get(0).copied().unwrap_or_default() = 0x00; // not Apple
+        data[0] = 0x00; // not Apple
         let ad = AdvertisingData::new(vec![AdStructure {
             ad_type: AdType::ManufacturerData,
             data,
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn is_ibeacon_returns_none_for_wrong_ibeacon_type_byte() {
         let mut data = ibeacon_ad_data();
-        data.get(2).copied().unwrap_or_default() = 0x03; // type != 0x02
+        data[2] = 0x03; // type != 0x02
         let ad = AdvertisingData::new(vec![AdStructure {
             ad_type: AdType::ManufacturerData,
             data,

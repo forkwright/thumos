@@ -203,7 +203,7 @@ mod tests {
     impl MockTransport {
         fn with_response(data: &[u8]) -> Self {
             Self {
-                inbound: VecDeque::FROM(data.to_vec()),
+                inbound: VecDeque::from(data.to_vec()),
                 outbound: Vec::new(),
             }
         }

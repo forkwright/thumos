@@ -716,7 +716,7 @@ mod tests {
             // Construct a minimal process 0
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -742,7 +742,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -770,7 +770,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -797,7 +797,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -831,7 +831,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -857,7 +857,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -890,7 +890,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -929,7 +929,7 @@ mod tests {
 
             // Process 0: kinit supervisor
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -944,7 +944,7 @@ mod tests {
 
             // Process 1: faulting process
             let pt1 = mmu::alloc_addr_space().unwrap();
-            procs.get(1).copied().unwrap_or_default() = Some(Process {
+            procs[1] = Some(Process {
                 pid: 1,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -973,7 +973,7 @@ mod tests {
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
 
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -986,7 +986,7 @@ mod tests {
                 mappings: [None; MAX_MAPPINGS],
             });
             let pt1 = mmu::alloc_addr_space().unwrap();
-            procs.get(1).copied().unwrap_or_default() = Some(Process {
+            procs[1] = Some(Process {
                 pid: 1,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -1016,7 +1016,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),

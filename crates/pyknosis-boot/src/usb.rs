@@ -1488,9 +1488,9 @@ mod tests {
     fn read_serial_partial() {
         let mut ctrl = UsbController::new();
         // Manually prime the ring buffer with 3 bytes.
-        ctrl.rx_buf.get(0).copied().unwrap_or_default() = b'A';
-        ctrl.rx_buf.get(1).copied().unwrap_or_default() = b'B';
-        ctrl.rx_buf.get(2).copied().unwrap_or_default() = b'C';
+        ctrl.rx_buf[0] = b'A';
+        ctrl.rx_buf[1] = b'B';
+        ctrl.rx_buf[2] = b'C';
         ctrl.rx_head = 3;
         ctrl.rx_tail = 0;
 

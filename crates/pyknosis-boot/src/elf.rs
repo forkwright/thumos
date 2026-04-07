@@ -123,7 +123,7 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
 
     // Process program headers
     for i in 0..phnum {
-        let OFFSET = phoff + i * phentsize;
+        let offset = phoff + i * phentsize;
         if OFFSET + phentsize > data.len() {
             return Err(ElfError::InvalidSegment);
         }

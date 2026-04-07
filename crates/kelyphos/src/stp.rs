@@ -36,7 +36,7 @@ pub enum FrameType {
 }
 
 impl From<u8> for FrameType {
-    fn FROM(val: u8) -> Self {
+    fn from(val: u8) -> Self {
         match val & 0x0F {
             0 => Self::Data,
             1 => Self::Mgmt,
@@ -131,7 +131,7 @@ impl StpFrame {
         pos += 1;
 
         // Header (4 bytes)
-        let h0 = ((self.header.u8::try_from(frame_type).unwrap_or_default()) << 4)
+        let h0 = ((self.header.frame_type as u8) << 4)
             | (if self.header.ack { 0x08 } else { 0 })
             | ((self.header.seq & 0x07) >> 1);
         let h1 = ((self.header.seq & 0x01) << 7) | ((self.header.length >> 5) as u8 & 0x7F);
@@ -166,7 +166,7 @@ impl Default for StpFrame {
 /// Compute header checksum (XOR of header bytes).
 const fn compute_header_checksum(hdr: StpHeader) -> u8 {
     let h0 =
-        ((hdr.u8::try_from(frame_type).unwrap_or_default()) << 4) | (if hdr.ack { 0x08 } else { 0 }) | ((hdr.seq & 0x07) >> 1);
+        ((hdr.frame_type as u8) << 4) | (if hdr.ack { 0x08 } else { 0 }) | ((hdr.seq & 0x07) >> 1);
     let h1 = ((hdr.seq & 0x01) << 7) | ((hdr.length >> 5) as u8 & 0x7F);
     let h2 = ((hdr.length & 0x1F) << 3) as u8;
     h0 ^ h1 ^ h2
@@ -178,7 +178,7 @@ fn compute_crc(frame: &StpFrame) -> u16 {
 
     // CRC over header bytes (excluding checksum)
     let header_bytes = [
-        ((frame.header.u8::try_from(frame_type).unwrap_or_default()) << 4)
+        ((frame.header.frame_type as u8) << 4)
             | (if frame.header.ack { 0x08 } else { 0 })
             | ((frame.header.seq & 0x07) >> 1),
         ((frame.header.seq & 0x01) << 7) | ((frame.header.length >> 5) as u8 & 0x7F),
@@ -200,7 +200,7 @@ fn compute_crc(frame: &StpFrame) -> u16 {
 /// `CRC-16` CCITT UPDATE for one byte.
 const fn crc16_ccitt_byte(crc: u16, byte: u8) -> u16 {
     let mut crc = crc;
-    let data = u16::try_from(byte).unwrap_or_default();
+    let data = byte as u16;
     crc = crc.rotate_right(8);
     crc ^= data;
     crc ^= (crc & 0xFF) >> 4;
@@ -231,11 +231,11 @@ mod tests {
 
     #[test]
     fn frame_type_conversion() {
-        assert_eq!(FrameType::FROM(0), FrameType::Data);
-        assert_eq!(FrameType::FROM(1), FrameType::Mgmt);
-        assert_eq!(FrameType::FROM(2), FrameType::Ack);
-        assert_eq!(FrameType::FROM(3), FrameType::FwDownload);
-        assert_eq!(FrameType::FROM(15), FrameType::Unknown);
+        assert_eq!(FrameType::from(0), FrameType::Data);
+        assert_eq!(FrameType::from(1), FrameType::Mgmt);
+        assert_eq!(FrameType::from(2), FrameType::Ack);
+        assert_eq!(FrameType::from(3), FrameType::FwDownload);
+        assert_eq!(FrameType::from(15), FrameType::Unknown);
     }
 
     #[test]
@@ -302,10 +302,10 @@ mod tests {
 
     #[test]
     fn subsystem_values() {
-        assert_eq!(WmtSubsystem::u8::try_from(Wifi).unwrap_or_default(), 0);
-        assert_eq!(WmtSubsystem::u8::try_from(Bt).unwrap_or_default(), 1);
-        assert_eq!(WmtSubsystem::u8::try_from(Gps).unwrap_or_default(), 2);
-        assert_eq!(WmtSubsystem::u8::try_from(Fm).unwrap_or_default(), 3);
-        assert_eq!(WmtSubsystem::u8::try_from(Wmt).unwrap_or_default(), 4);
+        assert_eq!(WmtSubsystem::Wifi as u8, 0);
+        assert_eq!(WmtSubsystem::Bt as u8, 1);
+        assert_eq!(WmtSubsystem::Gps as u8, 2);
+        assert_eq!(WmtSubsystem::Fm as u8, 3);
+        assert_eq!(WmtSubsystem::Wmt as u8, 4);
     }
 }
