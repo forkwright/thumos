@@ -37,7 +37,7 @@ pub unsafe fn init() {
     unsafe {
         core::arch::asm!(
             "mcr p15, 0, {}, c12, c0, 0", // VBAR
-            in(reg) usize::try_from(vector_table).unwrap_or_default(),
+            in(reg) (vector_table as usize),
         );
 
         // Enable IRQs (clear I bit in CPSR)
@@ -148,9 +148,9 @@ pub extern "C" fn data_abort_handler_rust() {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 0", out(reg) dfar); // DFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 0", out(reg) dfsr); // DFSR
     }
-    if let Err(e) = write!(serial, "\r\n!!! DATA ABORT !!!\r\n") { tracing::warn!(error = %e, "operation failed"); }
-    if let Err(e) = write!(serial, "DFAR: {dfar:#010x} (fault address)\r\n") { tracing::warn!(error = %e, "operation failed"); }
-    if let Err(e) = write!(serial, "DFSR: {dfsr:#010x} (fault status)\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = write!(serial, "\r\n!!! DATA ABORT !!!\r\n");
+    let _ = write!(serial, "DFAR: {dfar:#010x} (fault address)\r\n");
+    let _ = write!(serial, "DFSR: {dfsr:#010x} (fault status)\r\n");
 }
 
 /// Prefetch abort handler.
@@ -163,18 +163,17 @@ pub extern "C" fn prefetch_abort_handler_rust() {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 2", out(reg) ifar); // IFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 1", out(reg) ifsr); // IFSR
     }
-    if let Err(e) = write!(serial, "\r\n!!! PREFETCH ABORT !!!\r\n") { tracing::warn!(error = %e, "operation failed"); }
-    if let Err(e) = write!(serial, "IFAR: {ifar:#010x}\r\n") { tracing::warn!(error = %e, "operation failed"); }
-    if let Err(e) = write!(serial, "IFSR: {ifsr:#010x}\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = write!(serial, "\r\n!!! PREFETCH ABORT !!!\r\n");
+    let _ = write!(serial, "IFAR: {ifar:#010x}\r\n");
+    let _ = write!(serial, "IFSR: {ifsr:#010x}\r\n");
 }
 
 /// Undefined instruction handler.
 #[unsafe(no_mangle)]
 pub extern "C" fn undefined_handler_rust() {
     let mut serial = Uart::new();
-    serial
-        .write_str("\r\n!!! UNDEFINED INSTRUCTION !!!\r\n")
-       if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial
+        .write_str("\r\n!!! UNDEFINED INSTRUCTION !!!\r\n");
 }
 
 /// SVC handler (placeholder for future syscall implementation).

@@ -92,8 +92,8 @@ pub(crate) const DEBOUNCE_THRESHOLD: u8 = 3;
 /// within the bank identified by `bank_base`.
 #[inline]
 pub(crate) fn gpio_reg(bank_base: usize, pin: u8) -> (usize, u32) {
-    let bank = usize::FROM(pin / 32);
-    let bit = u32::FROM(pin % 32);
+    let bank = usize::from(pin / 32);
+    let bit = u32::from(pin % 32);
     let addr = GPIO_BASE + bank_base + bank * 8;
     (addr, 1u32 << bit)
 }
@@ -175,7 +175,7 @@ impl KeyMatrix {
 
     /// Set or clear the bit for (row, col).
     #[inline]
-    pub(crate) const fn SET(&mut self, row: usize, col: usize, pressed: bool) {
+    pub(crate) const fn set(&mut self, row: usize, col: usize, pressed: bool) {
         let bit = (row * COL_COUNT + col) as u16;
         if pressed {
             self.0 |= 1 << bit;
@@ -210,7 +210,7 @@ impl Debounce {
 
     /// Feed a new raw reading. Returns the new stable state if a
     /// transition was just confirmed, otherwise `None`.
-    const fn UPDATE(&mut self, pressed: bool) -> Option<KeyState> {
+    const fn update(&mut self, pressed: bool) -> Option<KeyState> {
         if pressed == self.candidate {
             if self.count < DEBOUNCE_THRESHOLD {
                 self.count += 1;
@@ -277,7 +277,7 @@ impl GpioKeypad {
             for (col, &key) in row_keys.iter().enumerate() {
                 let idx = row * COL_COUNT + col;
                 let pressed = matrix.is_pressed(row, col);
-                if let Some(state) = self.debounce[idx].UPDATE(pressed) {
+                if let Some(state) = self.debounce[idx].update(pressed) {
                     queue.push(InputEvent::Key { key, state });
                 }
             }
@@ -303,11 +303,11 @@ impl GpioKeypad {
             let (din_addr, _) = gpio_reg(GPIO_DIN_BASE, COL_PINS.get(0).copied().unwrap_or_default());
             let din_word = hw::mmio_read(din_addr);
             for (col_idx, &col_pin) in COL_PINS.iter().enumerate() {
-                let col_bit = u32::FROM(col_pin % 32);
+                let col_bit = u32::from(col_pin % 32);
                 // Pull-up keeps column high; a pressed key shorts the
                 // driven-low row to the column → reads low.
                 let high = (din_word >> col_bit) & 1 == 1;
-                matrix.SET(row_idx, col_idx, !high);
+                matrix.set(row_idx, col_idx, !high);
             }
 
             // Release row back to high.
@@ -364,12 +364,12 @@ mod tests {
     #[test]
     fn key_matrix_set_and_read_roundtrip() {
         let mut m = KeyMatrix::none();
-        m.SET(1, 2, true);
+        m.set(1, 2, true);
         assert!(
             m.is_pressed(1, 2),
             "SET(1,2,true) must make is_pressed(1,2) return true"
         );
-        m.SET(1, 2, false);
+        m.set(1, 2, false);
         assert!(
             !m.is_pressed(1, 2),
             "SET(1,2,false) must make is_pressed(1,2) return false"
@@ -379,8 +379,8 @@ mod tests {
     #[test]
     fn key_matrix_independent_bits() {
         let mut m = KeyMatrix::none();
-        m.SET(0, 0, true);
-        m.SET(3, 2, true);
+        m.set(0, 0, true);
+        m.set(3, 2, true);
         assert!(
             m.is_pressed(0, 0),
             "bit for (0,0) must remain SET after setting (3,2)"
@@ -431,7 +431,7 @@ mod tests {
     fn debounce_does_not_fire_below_threshold() {
         let mut db = Debounce::new();
         for i in 0..(DEBOUNCE_THRESHOLD - 1) {
-            let result = db.UPDATE(true);
+            let result = db.update(true);
             assert!(
                 result.is_none(),
                 "debounce must not fire before threshold (count={i})"
@@ -443,9 +443,9 @@ mod tests {
     fn debounce_fires_at_threshold() {
         let mut db = Debounce::new();
         for _ in 0..(DEBOUNCE_THRESHOLD - 1) {
-            db.UPDATE(true);
+            db.update(true);
         }
-        let result = db.UPDATE(true);
+        let result = db.update(true);
         assert!(
             matches!(result, Some(KeyState::Pressed)),
             "debounce must emit Pressed after {DEBOUNCE_THRESHOLD} consecutive pressed readings"
@@ -457,12 +457,12 @@ mod tests {
         let mut db = Debounce::new();
         // Feed threshold - 1 "pressed" readings.
         for _ in 0..(DEBOUNCE_THRESHOLD - 1) {
-            db.UPDATE(true);
+            db.update(true);
         }
         // One "released" reading should reset the count.
-        db.UPDATE(false);
+        db.update(false);
         // Next pressed reading restarts FROM count 1  -  should not fire.
-        let result = db.UPDATE(true);
+        let result = db.update(true);
         assert!(
             result.is_none(),
             "after a noise pulse the debounce count must reset and not fire immediately"
@@ -474,13 +474,13 @@ mod tests {
         let mut db = Debounce::new();
         // Stabilise to pressed.
         for _ in 0..DEBOUNCE_THRESHOLD {
-            db.UPDATE(true);
+            db.update(true);
         }
         // Stabilise to released.
         for _ in 0..(DEBOUNCE_THRESHOLD - 1) {
-            db.UPDATE(false);
+            db.update(false);
         }
-        let result = db.UPDATE(false);
+        let result = db.update(false);
         assert!(
             matches!(result, Some(KeyState::Released)),
             "debounce must emit Released after {DEBOUNCE_THRESHOLD} consecutive released readings"
@@ -492,10 +492,10 @@ mod tests {
         let mut db = Debounce::new();
         // Reach stable pressed.
         for _ in 0..DEBOUNCE_THRESHOLD {
-            db.UPDATE(true);
+            db.update(true);
         }
         // Continue feeding "pressed"  -  should not emit again.
-        let result = db.UPDATE(true);
+        let result = db.update(true);
         assert!(
             result.is_none(),
             "debounce must not re-emit for a state that is already stable"
@@ -542,7 +542,7 @@ mod tests {
         let mut kp = GpioKeypad::new();
         let mut q = InputQueue::new();
         let mut m = KeyMatrix::none();
-        m.SET(0, 0, true); // Num1
+        m.set(0, 0, true); // Num1
 
         // Below threshold: no events.
         for _ in 0..(DEBOUNCE_THRESHOLD - 1) {
@@ -572,7 +572,7 @@ mod tests {
         let mut kp = GpioKeypad::new();
         let mut q = InputQueue::new();
         let mut pressed = KeyMatrix::none();
-        pressed.SET(1, 1, true); // Num5
+        pressed.set(1, 1, true); // Num5
 
         // Stabilise to pressed.
         for _ in 0..DEBOUNCE_THRESHOLD {
@@ -607,8 +607,8 @@ mod tests {
         let mut kp = GpioKeypad::new();
         let mut q = InputQueue::new();
         let mut m = KeyMatrix::none();
-        m.SET(0, 0, true); // Num1
-        m.SET(2, 2, true); // Num9
+        m.set(0, 0, true); // Num1
+        m.set(2, 2, true); // Num9
 
         for _ in 0..DEBOUNCE_THRESHOLD {
             kp.scan_with_matrix(m, &mut q);

@@ -115,15 +115,15 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
         return Err(ElfError::NotArm);
     }
 
-    let entry = ehdr.usize::try_from(e_entry).unwrap_or_default();
-    let phoff = ehdr.usize::try_from(e_phoff).unwrap_or_default();
-    let phnum = ehdr.usize::try_from(e_phnum).unwrap_or_default();
-    let phentsize = ehdr.usize::try_from(e_phentsize).unwrap_or_default();
+    let entry = ehdr.e_entry as usize;
+    let phoff = ehdr.e_phoff as usize;
+    let phnum = ehdr.e_phnum as usize;
+    let phentsize = ehdr.e_phentsize as usize;
     let mut pages_used = 0;
 
     // Process program headers
     for i in 0..phnum {
-        let OFFSET = phoff + i * phentsize;
+        let offset = phoff + i * phentsize;
         if OFFSET + phentsize > data.len() {
             return Err(ElfError::InvalidSegment);
         }
@@ -135,10 +135,10 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
             continue;
         }
 
-        let vaddr = phdr.usize::try_from(p_vaddr).unwrap_or_default();
-        let memsz = phdr.usize::try_from(p_memsz).unwrap_or_default();
-        let filesz = phdr.usize::try_from(p_filesz).unwrap_or_default();
-        let file_offset = phdr.usize::try_from(p_offset).unwrap_or_default();
+        let vaddr = phdr.p_vaddr as usize;
+        let memsz = phdr.p_memsz as usize;
+        let filesz = phdr.p_filesz as usize;
+        let file_offset = phdr.p_offset as usize;
 
         if file_offset + filesz > data.len() {
             return Err(ElfError::InvalidSegment);

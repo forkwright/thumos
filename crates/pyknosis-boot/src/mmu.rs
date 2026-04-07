@@ -42,6 +42,252 @@ mod flags {
     pub const XN: u32 = 1 << 4;
 }
 
+/// L2 (small page) descriptor flags (4 KB mapping).
+///
+/// WHY: L1 section mapping (1 MB) is too coarse for userspace memory management.
+/// mmap/brk need page-level (4 KB) granularity. ARMv7 short-descriptor format
+/// uses L2 page tables (256 entries x 4 bytes = 1 KB) pointed to by L1 "page
+/// table" descriptors.
+pub mod page_flags {
+    /// L1 descriptor type: coarse page table pointer (bits [1:0] = 0b01).
+    pub const L1_PAGE_TABLE: u32 = 0b01;
+    /// L2 small page descriptor (bits [1:0] = 0b10, XN in bit 0 = 0).
+    pub const SMALL_PAGE: u32 = 0b10;
+    /// AP[1:0] = 0b11 (bits [5:4]): full access (PL1 + PL0 read/write).
+    pub const AP_FULL: u32 = 0b11 << 4;
+    /// AP[1:0] = 0b10 (bits [5:4]): read-only (PL0 read, PL1 read/write).
+    pub const AP_READ_ONLY: u32 = 0b10 << 4;
+    /// AP[1:0] = 0b01 (bits [5:4]): PL1-only (no PL0 access).
+    pub const AP_KERNEL_ONLY: u32 = 0b01 << 4;
+    /// Execute-never for small pages (XN, bit 0).
+    pub const XN: u32 = 1;
+    /// Shareable (bit 10).
+    pub const SHAREABLE: u32 = 1 << 10;
+    /// Normal memory for small pages: TEX[2:0]=0b001 (bits [8:6]), C=1 (bit 3), B=1 (bit 2).
+    pub const NORMAL_WB_WA: u32 = (0b001 << 6) | (1 << 3) | (1 << 2);
+}
+
+/// L2 page table: 256 entries x 4 bytes = 1 KB, must be 1 KB aligned.
+#[repr(C, align(1024))]
+pub struct L2Table {
+    pub entries: [u32; 256],
+}
+
+/// Pool of L2 page tables for userspace mappings.
+/// WHY: 64 tables supports up to ~64 MB of page-mapped address space
+/// across all processes (each L2 covers 1 MB of VA space at 4 KB granularity).
+const L2_POOL_SIZE: usize = 64;
+static mut L2_TABLES: [L2Table; L2_POOL_SIZE] = {
+    const EMPTY: L2Table = L2Table { entries: [0; 256] };
+    [EMPTY; L2_POOL_SIZE]
+};
+
+/// Allocation bitmask for L2_TABLES. Bit N = 1 means slot N is in use.
+static mut L2_ALLOC: u64 = 0;
+
+/// Allocate an L2 page table from the pool. Returns its physical address.
+pub fn alloc_l2_table() -> Option<usize> {
+    unsafe {
+        let alloc = core::ptr::addr_of_mut!(L2_ALLOC);
+        let mask = core::ptr::read_volatile(alloc);
+        let slot = (0u64..L2_POOL_SIZE as u64).find(|&i| mask & (1 << i) == 0)?;
+        core::ptr::write_volatile(alloc, mask | (1 << slot));
+        let table = &mut (*core::ptr::addr_of_mut!(L2_TABLES))[slot as usize];
+        for entry in table.entries.iter_mut() {
+            *entry = 0;
+        }
+        Some(core::ptr::addr_of!(*table) as usize)
+    }
+}
+
+/// Free an L2 page table back to the pool.
+///
+/// # Safety
+///
+/// `phys_addr` must have been returned by `alloc_l2_table` and not yet freed.
+pub unsafe fn free_l2_table(phys_addr: usize) {
+    unsafe {
+        let tables = &*core::ptr::addr_of!(L2_TABLES);
+        for (i, table) in tables.iter().enumerate() {
+            if core::ptr::addr_of!(*table) as usize == phys_addr {
+                let alloc = core::ptr::addr_of_mut!(L2_ALLOC);
+                let mask = core::ptr::read_volatile(alloc);
+                core::ptr::write_volatile(alloc, mask & !(1u64 << i));
+                return;
+            }
+        }
+    }
+}
+
+/// POSIX protection flag constants (from mman.h).
+pub mod prot {
+    /// Page can be read.
+    pub const PROT_READ: u32 = 0x1;
+    /// Page can be written.
+    pub const PROT_WRITE: u32 = 0x2;
+    /// Page can be executed.
+    pub const PROT_EXEC: u32 = 0x4;
+}
+
+/// Translate POSIX prot flags to ARMv7 L2 small page descriptor attributes.
+///
+/// WHY: userspace passes POSIX prot flags (PROT_READ|PROT_WRITE|PROT_EXEC),
+/// but the ARM MMU uses AP bits and XN to control access and execution.
+pub fn prot_to_l2_flags(prot_flags: u32) -> u32 {
+    let mut attrs = page_flags::SMALL_PAGE | page_flags::SHAREABLE | page_flags::NORMAL_WB_WA;
+
+    // Access permissions
+    if prot_flags & prot::PROT_WRITE != 0 {
+        attrs |= page_flags::AP_FULL; // read/write
+    } else if prot_flags & prot::PROT_READ != 0 {
+        attrs |= page_flags::AP_READ_ONLY; // read-only
+    } else {
+        attrs |= page_flags::AP_KERNEL_ONLY; // no user access
+    }
+
+    // Execute-never if exec permission not requested
+    if prot_flags & prot::PROT_EXEC == 0 {
+        attrs |= page_flags::XN;
+    }
+
+    attrs
+}
+
+/// Map a single 4 KB page in a process's address space.
+///
+/// Installs an L2 page table at the appropriate L1 index if one is not
+/// already present, then writes the L2 entry for the 4 KB page.
+///
+/// # Safety
+///
+/// `l1_phys` must be a valid L1 page table address. `virt_addr` must be
+/// page-aligned. `phys_addr` must be a valid allocated physical page.
+pub unsafe fn map_page(l1_phys: usize, virt_addr: usize, phys_addr: usize, l2_attrs: u32) -> bool {
+    let l1_index = virt_addr >> 20; // which 1 MB section
+    let l2_index = (virt_addr >> 12) & 0xFF; // which 4 KB page within the section
+
+    unsafe {
+        let l1_entry_ptr = (l1_phys as *mut u32).add(l1_index);
+        let l1_val = l1_entry_ptr.read_volatile();
+
+        // Check if an L2 table already exists at this L1 index
+        let l2_phys = if l1_val & 0b11 == page_flags::L1_PAGE_TABLE {
+            // L1 already points to an L2 table
+            (l1_val & 0xFFFF_FC00) as usize
+        } else if l1_val & 0b11 == 0 {
+            // No mapping exists -- allocate a new L2 table
+            let Some(new_l2) = alloc_l2_table() else {
+                return false;
+            };
+            // Write L1 entry pointing to the new L2 table
+            let l1_desc = (new_l2 as u32) | page_flags::L1_PAGE_TABLE;
+            l1_entry_ptr.write_volatile(l1_desc);
+            new_l2
+        } else {
+            // Section mapping exists -- cannot overlay with page mapping
+            return false;
+        };
+
+        // Write the L2 entry
+        let l2_entry_ptr = (l2_phys as *mut u32).add(l2_index);
+        let l2_desc = (phys_addr as u32 & 0xFFFFF000) | l2_attrs;
+        l2_entry_ptr.write_volatile(l2_desc);
+
+        true
+    }
+}
+
+/// Unmap a single 4 KB page from a process's address space.
+///
+/// Zeroes the L2 entry for the given virtual address. Does NOT free the
+/// L2 table even if all entries become zero (simplification).
+///
+/// # Safety
+///
+/// `l1_phys` must be a valid L1 page table address. `virt_addr` must be
+/// page-aligned.
+pub unsafe fn unmap_page(l1_phys: usize, virt_addr: usize) {
+    let l1_index = virt_addr >> 20;
+    let l2_index = (virt_addr >> 12) & 0xFF;
+
+    unsafe {
+        let l1_entry_ptr = (l1_phys as *const u32).add(l1_index);
+        let l1_val = l1_entry_ptr.read_volatile();
+
+        if l1_val & 0b11 == page_flags::L1_PAGE_TABLE {
+            let l2_phys = (l1_val & 0xFFFF_FC00) as usize;
+            let l2_entry_ptr = (l2_phys as *mut u32).add(l2_index);
+            l2_entry_ptr.write_volatile(0);
+        }
+    }
+}
+
+/// Update the protection flags on a single 4 KB page.
+///
+/// Returns true if the page was found and updated, false if not mapped.
+///
+/// # Safety
+///
+/// `l1_phys` must be a valid L1 page table address. `virt_addr` must be
+/// page-aligned.
+pub unsafe fn update_page_prot(l1_phys: usize, virt_addr: usize, l2_attrs: u32) -> bool {
+    let l1_index = virt_addr >> 20;
+    let l2_index = (virt_addr >> 12) & 0xFF;
+
+    unsafe {
+        let l1_entry_ptr = (l1_phys as *const u32).add(l1_index);
+        let l1_val = l1_entry_ptr.read_volatile();
+
+        if l1_val & 0b11 != page_flags::L1_PAGE_TABLE {
+            return false;
+        }
+
+        let l2_phys = (l1_val & 0xFFFF_FC00) as usize;
+        let l2_entry_ptr = (l2_phys as *mut u32).add(l2_index);
+        let old = l2_entry_ptr.read_volatile();
+
+        if old & 0b11 == 0 {
+            return false; // page not mapped
+        }
+
+        // Preserve the physical address, replace the attribute bits
+        let new_desc = (old & 0xFFFFF000) | l2_attrs;
+        l2_entry_ptr.write_volatile(new_desc);
+
+        true
+    }
+}
+
+/// Flush TLB for a single virtual address.
+///
+/// # Safety
+///
+/// Must be called after modifying page table entries to ensure the TLB
+/// reflects the new mapping.
+#[cfg(target_arch = "arm")]
+pub unsafe fn flush_tlb_page(virt_addr: usize) {
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {addr}, c8, c7, 1", // TLBIMVA
+            "dsb sy",
+            "isb sy",
+            addr = in(reg) virt_addr as u32,
+        );
+    }
+}
+
+/// No-op TLB flush for non-ARM builds.
+#[cfg(not(target_arch = "arm"))]
+pub unsafe fn flush_tlb_page(_virt_addr: usize) {}
+
+/// Reset the L2 table pool (test helper only).
+#[cfg(test)]
+pub(crate) fn reset_l2_pool() {
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(L2_ALLOC), 0);
+    }
+}
+
 /// Memory region type for the initial mapping.
 #[derive(Clone, Copy)]
 pub enum MemoryType {
@@ -232,7 +478,7 @@ pub unsafe fn clone_addr_space(src_phys: usize, dst_phys: usize) {
         let src = src_phys as *const u32;
         let dst = dst_phys as *mut u32;
         for i in 0..4096isize {
-            dst.OFFSET(i).write_volatile(src.OFFSET(i).read_volatile());
+            dst.offset(i).write_volatile(src.offset(i).read_volatile());
         }
     }
 }

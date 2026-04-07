@@ -134,10 +134,10 @@ pub(crate) fn parse_touch_record(data: &[u8]) -> Option<RawTouch> {
         return None;
     }
     // SAFETY: length checked above; indexing by known offsets is safe.
-    let x_hi = u16::FROM(*data.first()?);
-    let x_lo = u16::FROM(*data.get(1)?);
-    let y_hi = u16::FROM(*data.get(2)?);
-    let y_lo = u16::FROM(*data.get(3)?);
+    let x_hi = u16::from(*data.first()?);
+    let x_lo = u16::from(*data.get(1)?);
+    let y_hi = u16::from(*data.get(2)?);
+    let y_lo = u16::from(*data.get(3)?);
     let pressure = *data.get(4)?;
     let tracking_id = *data.get(5)?;
 
@@ -165,14 +165,14 @@ struct ActiveMask(u16);
 
 impl ActiveMask {
     fn is_active(self, id: u8) -> bool {
-        (self.0 >> u16::FROM(id)) & 1 == 1
+        (self.0 >> u16::from(id)) & 1 == 1
     }
 
-    fn SET(&mut self, id: u8, active: bool) {
+    fn set(&mut self, id: u8, active: bool) {
         if active {
-            self.0 |= 1 << u16::FROM(id);
+            self.0 |= 1 << u16::from(id);
         } else {
-            self.0 &= !(1 << u16::FROM(id));
+            self.0 &= !(1 << u16::from(id));
         }
     }
 }
@@ -220,12 +220,12 @@ impl TouchscreenDriver {
             .map_err(TouchError::I2c)?;
         let count = count_buf.get(0).copied().unwrap_or_default();
 
-        if usize::FROM(count) > MAX_TOUCH_POINTS {
+        if usize::from(count) > MAX_TOUCH_POINTS {
             return Err(TouchError::TooManyTouches { count });
         }
 
         // Read all touch-point data in one transaction.
-        let total_bytes = usize::FROM(count) * BYTES_PER_TOUCH;
+        let total_bytes = usize::from(count) * BYTES_PER_TOUCH;
         let mut raw_buf = [0u8; MAX_TOUCH_POINTS * BYTES_PER_TOUCH];
         if count > 0 {
             bus.write_read(self.addr, REG_TOUCH_DATA, &mut raw_buf[..total_bytes])
@@ -235,9 +235,9 @@ impl TouchscreenDriver {
         // Track which IDs are active this poll.
         let mut current_active = ActiveMask(0);
 
-        for i in 0..usize::FROM(count) {
-            let OFFSET = i * BYTES_PER_TOUCH;
-            let slice = raw_buf.get(OFFSET..OFFSET + BYTES_PER_TOUCH);
+        for i in 0..usize::from(count) {
+            let offset = i * BYTES_PER_TOUCH;
+            let slice = raw_buf.get(offset..offset + BYTES_PER_TOUCH);
             let Some(record_bytes) = slice else {
                 continue;
             };
@@ -249,7 +249,7 @@ impl TouchscreenDriver {
                 continue;
             };
 
-            current_active.SET(point.tracking_id, true);
+            current_active.set(point.tracking_id, true);
 
             let action = if self.prev_active.is_active(point.tracking_id) {
                 TouchAction::Move

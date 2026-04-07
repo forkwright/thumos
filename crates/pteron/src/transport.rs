@@ -125,12 +125,12 @@ pub enum Error {
     },
 
     /// The payload length in the STP header exceeds the ring-buffer capacity.
-    #[snafu(display("STP payload length {length} exceeds ring-buffer LIMIT {LIMIT}"))]
+    #[snafu(display("STP payload length {length} exceeds ring-buffer limit {limit}"))]
     PayloadTooLarge {
         /// Payload length FROM the STP header.
         length: usize,
         /// Maximum allowed.
-        LIMIT: usize,
+        limit: usize,
     },
 
     /// The RX ring buffer does not contain a complete STP frame yet.
@@ -234,11 +234,11 @@ impl RingBuffer {
 
     /// Peek at the byte at `OFFSET` positions ahead of the read cursor
     /// without consuming it.
-    pub(crate) const fn peek_at(&self, OFFSET: usize) -> Option<u8> {
-        if OFFSET >= self.len() {
+    pub(crate) const fn peek_at(&self, offset: usize) -> Option<u8> {
+        if offset >= self.len() {
             return None;
         }
-        Some(self.buf[(self.read_pos + OFFSET) % RING_BUF_SIZE])
+        Some(self.buf[(self.read_pos + offset) % RING_BUF_SIZE])
     }
 
     /// Consume `n` bytes FROM the front, copying them INTO `out`.
@@ -278,7 +278,7 @@ pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
     if payload.len() > STP_MAX_PAYLOAD {
         return Err(Error::PayloadTooLarge {
             length: payload.len(),
-            LIMIT: STP_MAX_PAYLOAD,
+            limit: STP_MAX_PAYLOAD,
         });
     }
     let total = STP_DELIMITER_LEN + STP_HEADER_LEN + payload.len();
@@ -302,12 +302,12 @@ pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
     // HDR3: checksum = XOR(HDR0, HDR1, HDR2)
     let hdr3 = hdr0 ^ hdr1 ^ hdr2;
 
-    out.get(0).copied().unwrap_or_default() = STP_DELIMITER.get(0).copied().unwrap_or_default();
-    out.get(1).copied().unwrap_or_default() = STP_DELIMITER.get(1).copied().unwrap_or_default();
-    out.get(2).copied().unwrap_or_default() = hdr0;
-    out.get(3).copied().unwrap_or_default() = hdr1;
-    out.get(4).copied().unwrap_or_default() = hdr2;
-    out.get(5).copied().unwrap_or_default() = hdr3;
+    out[0] = STP_DELIMITER[0];
+    out[1] = STP_DELIMITER[1];
+    out[2] = hdr0;
+    out[3] = hdr1;
+    out[4] = hdr2;
+    out[5] = hdr3;
 
     if let Some(payload_region) = out.get_mut(STP_DELIMITER_LEN + STP_HEADER_LEN..)
         && let Some(dst) = payload_region.get_mut(..payload.len())
@@ -364,11 +364,11 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
     }
 
     // Payload length FROM HDR1[3:0] (bits 11:8) and HDR2 (bits 7:0)
-    let plen = (usize::FROM(hdr1 & 0x0F) << 8) | usize::FROM(hdr2);
+    let plen = (usize::from(hdr1 & 0x0F) << 8) | usize::from(hdr2);
     if plen > RING_BUF_SIZE {
         return Err(Error::PayloadTooLarge {
             length: plen,
-            LIMIT: RING_BUF_SIZE,
+            limit: RING_BUF_SIZE,
         });
     }
 
@@ -397,7 +397,7 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
 pub const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
     let mut bytes = *entropy;
     // Force two MSBs to 0b00 in the most-significant byte (index 0 = display MSB)
-    bytes.get(0).copied().unwrap_or_default() = (bytes.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK) | NRPA_MSB_BITS;
+    bytes[0] = (bytes[0] & !RANDOM_ADDR_MSB_MASK) | NRPA_MSB_BITS;
     BdAddr::from_bytes(bytes)
 }
 
@@ -415,7 +415,7 @@ pub const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
 pub const fn generate_rpa(entropy: &[u8; 6]) -> BdAddr {
     let mut bytes = *entropy;
     // Force two MSBs to 0b01 in the most-significant byte (index 0 = display MSB)
-    bytes.get(0).copied().unwrap_or_default() = (bytes.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
+    bytes[0] = (bytes[0] & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
     BdAddr::from_bytes(bytes)
 }
 
@@ -427,8 +427,8 @@ pub fn build_le_set_random_address_cmd(addr: &BdAddr) -> Vec<u8> {
     // H4 type(1) + opcode(2) + param_len(1) + addr(6)
     let mut pkt = Vec::with_capacity(10);
     pkt.push(0x01_u8); // H4 command indicator
-    pkt.push(opcode_bytes.get(0).copied().unwrap_or_default());
-    pkt.push(opcode_bytes.get(1).copied().unwrap_or_default());
+    pkt.push(opcode_bytes[0]);
+    pkt.push(opcode_bytes[1]);
     pkt.push(6_u8); // parameter length: BD_ADDR is always 6 bytes
     // Address is stored MSB-first in BdAddr; HCI wants LSB-first
     let a = addr.as_bytes();
