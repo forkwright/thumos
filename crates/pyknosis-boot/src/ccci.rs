@@ -284,7 +284,7 @@ impl CcifChannel {
 
     /// Channel number as bit mask for CCIF registers.
     pub(crate) fn mask(self) -> u32 {
-        1u32 << (u8::try_from(self).unwrap_or_default())
+        1u32 << (self as u8)
     }
 }
 
@@ -393,15 +393,15 @@ impl CcciHeader {
     /// Validate a header received from the modem.
     ///
     /// Checks:
-    /// - Channel number is within the known range
+    /// - Channel number maps to a known `CcciChannel` variant
     /// - If control message, magic must be exact
     ///
     /// SECURITY: Always call on modem-sourced headers after copying out of
     /// shared memory.
     pub(crate) fn validate(&self) -> Result<(), CcciError> {
-        // NOTE: channel numbers are sparse (0-21 with gaps). Reject obviously
-        // out-of-range values. The dispatch layer further validates per-channel.
-        if self.channel > 255 {
+        // WHY: channel numbers are sparse (0–21). Only known variants are
+        // accepted — anything else is rejected at the boundary.
+        if !CcciChannel::is_valid(self.channel) {
             return Err(CcciError::InvalidChannel(self.channel));
         }
         Ok(())
@@ -417,6 +417,48 @@ impl fmt::Debug for CcciHeader {
             .field("reserved", &format_args!("{:#010x}", self.reserved))
             .finish()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Packet validation
+// ---------------------------------------------------------------------------
+
+/// Validate a modem packet header against its containing buffer.
+///
+/// SECURITY: This is the primary defense at the modem boundary. Must be
+/// called on every packet received from the modem, AFTER copying the header
+/// out of shared memory (TOCTOU defense).
+///
+/// Checks:
+/// 1. Channel number is a known `CcciChannel` variant
+/// 2. `data0` (used as length in data packets) does not exceed `buffer_len`
+/// 3. `data1` (used as offset in some channels) is within `buffer_len`
+///
+/// Control messages (`data0 == CCCI_MAGIC`) skip the length check since
+/// `data0` carries the magic sentinel, not a length.
+pub(crate) fn validate_packet(header: &CcciHeader, buffer_len: usize) -> Result<(), CcciError> {
+    // 1. Channel must be a recognized variant.
+    header.validate()?;
+
+    // 2. For data packets, data0 carries the payload length. Verify it
+    //    fits within the buffer that was actually received.
+    if !header.is_control() && (header.data0 as usize) > buffer_len {
+        return Err(CcciError::PacketLengthExceeded {
+            header_length: header.data0,
+            buffer_len,
+        });
+    }
+
+    // 3. data1 is used as an offset/index on several channels. Verify it
+    //    does not point past the buffer boundary.
+    if header.data1 != 0 && (header.data1 as usize) > buffer_len {
+        return Err(CcciError::OffsetOutOfBounds {
+            offset: header.data1,
+            buffer_len,
+        });
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +516,20 @@ pub(crate) enum CcciChannel {
     MdLogRx = 21,
 }
 
+impl CcciChannel {
+    /// Whether a raw channel number maps to a known variant.
+    ///
+    /// SECURITY: Used at the modem boundary to reject unknown channel IDs.
+    /// Only channels defined in the protocol are accepted.
+    pub(crate) fn is_valid(ch: u32) -> bool {
+        matches!(
+            ch,
+            0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17
+                | 18 | 19 | 20 | 21
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -503,6 +559,13 @@ pub(crate) enum CcciError {
     IdentityFiltered,
     /// Header deserialization failed.
     MalformedHeader,
+    /// Packet header length field exceeds the actual buffer size.
+    PacketLengthExceeded {
+        header_length: u32,
+        buffer_len: usize,
+    },
+    /// data1 offset field points past the end of the buffer.
+    OffsetOutOfBounds { offset: u32, buffer_len: usize },
     /// Poll timeout waiting for hardware.
     Timeout,
 }
@@ -519,7 +582,7 @@ impl fmt::Display for CcciError {
                 region_size,
             } => write!(
                 f,
-                "shared memory OOB: OFFSET={OFFSET:#x} len={length:#x} region={region_size:#x}"
+                "shared memory OOB: offset={offset:#x} len={length:#x} region={region_size:#x}"
             ),
             Self::PayloadTooLarge(size) => {
                 write!(f, "payload {size} exceeds MTU {CCCI_MTU}")
@@ -528,6 +591,17 @@ impl fmt::Display for CcciError {
             Self::ModemWatchdog(status) => write!(f, "modem WDT: {status:#010x}"),
             Self::IdentityFiltered => write!(f, "identity response filtered"),
             Self::MalformedHeader => write!(f, "malformed CCCI header"),
+            Self::PacketLengthExceeded {
+                header_length,
+                buffer_len,
+            } => write!(
+                f,
+                "packet header length {header_length} exceeds buffer {buffer_len}"
+            ),
+            Self::OffsetOutOfBounds { offset, buffer_len } => write!(
+                f,
+                "data1 offset {offset:#x} exceeds buffer {buffer_len}"
+            ),
             Self::Timeout => write!(f, "hardware poll timeout"),
         }
     }
@@ -1042,10 +1116,10 @@ impl AuditRing {
 
     /// Number of entries currently available (up to capacity).
     pub(crate) fn count(&self) -> usize {
-        if self.total_written >= u64::try_from(AUDIT_RING_CAPACITY).unwrap_or_default() {
+        if self.total_written >= AUDIT_RING_CAPACITY as u64 {
             AUDIT_RING_CAPACITY
         } else {
-            self.usize::try_from(total_written).unwrap_or_default()
+            self.total_written as usize
         }
     }
 
@@ -1056,7 +1130,7 @@ impl AuditRing {
         if logical_idx >= count {
             return None;
         }
-        let actual_idx = if self.total_written >= u64::try_from(AUDIT_RING_CAPACITY).unwrap_or_default() {
+        let actual_idx = if self.total_written >= AUDIT_RING_CAPACITY as u64 {
             (self.write_idx + logical_idx) % AUDIT_RING_CAPACITY
         } else {
             logical_idx
@@ -1066,7 +1140,7 @@ impl AuditRing {
 
     /// Check if the ring has overflowed (dropped old entries).
     pub(crate) fn has_overflowed(&self) -> bool {
-        self.total_written > u64::try_from(AUDIT_RING_CAPACITY).unwrap_or_default()
+        self.total_written > AUDIT_RING_CAPACITY as u64
     }
 }
 
@@ -1505,6 +1579,12 @@ pub(crate) struct CcciDriver {
     /// Capability mask for the current userspace process context.
     /// SECURITY: identity data passes only if `CAP_MODEM_IDENTITY` is set.
     user_capabilities: u32,
+    /// Count of malformed packets dropped at the modem boundary.
+    ///
+    /// SECURITY: Monotonically increasing. A non-zero or rapidly growing
+    /// value indicates the modem is sending garbage — possible attack or
+    /// firmware bug.
+    malformed_packet_count: u32,
 }
 
 impl CcciDriver {
@@ -1518,6 +1598,7 @@ impl CcciDriver {
             audit: AuditRing::new(),
             identity_filter_enabled: true,
             user_capabilities: 0,
+            malformed_packet_count: 0,
         }
     }
 
@@ -1539,6 +1620,20 @@ impl CcciDriver {
     /// Set the capability mask for userspace access control.
     pub(crate) fn set_capabilities(&mut self, caps: u32) {
         self.user_capabilities = caps;
+    }
+
+    /// Number of malformed packets dropped at the modem boundary.
+    ///
+    /// SECURITY: A non-zero value means the modem has sent at least one
+    /// packet that failed validation. Useful for anomaly detection.
+    pub(crate) fn malformed_packet_count(&self) -> u32 {
+        self.malformed_packet_count
+    }
+
+    /// Record a malformed packet drop. Increments the counter (saturating
+    /// to avoid wrapping to zero on a long-running attack).
+    fn record_malformed_packet(&mut self) {
+        self.malformed_packet_count = self.malformed_packet_count.saturating_add(1);
     }
 
     /// Execute the 6-step modem boot sequence as a state machine.
@@ -1639,7 +1734,7 @@ impl CcciDriver {
                 // Source: `eccci/inc/ccci_modem.h:130–172`
                 // Send a minimal runtime message with feature negotiation.
                 let runtime_msg = CcciHeader::new_control(
-                    CcifChannel::u32::try_from(Sram).unwrap_or_default(),
+                    CcifChannel::Sram as u32,
                     0, // WHY: sequence 0 for initial handshake
                 );
                 let msg_bytes = runtime_msg.to_bytes();
@@ -1649,7 +1744,7 @@ impl CcciDriver {
                 self.audit.record(AuditEntry::new(
                     timestamp,
                     AuditEventKind::BootStateChange,
-                    CcifChannel::u32::try_from(Sram).unwrap_or_default(),
+                    CcifChannel::Sram as u32,
                     b"runtime_sent",
                 ));
                 self.boot_state = self.boot_state.next();
@@ -1705,7 +1800,7 @@ impl CcciDriver {
     /// SECURITY: This is the kernel boundary filter. Every byte from the
     /// modem passes through here before reaching userspace.
     ///
-    /// 1. Validates the CCCI header
+    /// 1. Validates the CCCI packet header against the payload buffer
     /// 2. Logs the transmission to the audit ring
     /// 3. Checks for identity patterns (AT+CGSN, AT+CIMI)
     /// 4. Blocks identity data unless caller has `CAP_MODEM_IDENTITY`
@@ -1718,8 +1813,13 @@ impl CcciDriver {
         payload: &[u8],
         timestamp: u64,
     ) -> Result<bool, CcciError> {
-        // Step 1: Validate the header (already copied out of shared memory)
-        header.validate()?;
+        // Step 1: Full packet validation (header + buffer bounds)
+        // SECURITY: validate_packet checks channel, length, and offset fields
+        // against the actual buffer size.
+        if let Err(e) = validate_packet(header, payload.len()) {
+            self.record_malformed_packet();
+            return Err(e);
+        }
 
         // Step 2: Log to audit ring
         self.audit.record(AuditEntry::new(
@@ -1855,11 +1955,19 @@ mod tests {
 
     #[test]
     fn header_validate_bad_channel() {
-        let hdr = CcciHeader::new_data(0, 0, 0x1_0000, 0);
+        // WHY: channel 22 is the first unassigned value (valid range 0–21)
+        let hdr = CcciHeader::new_data(0, 0, 22, 0);
         assert_eq!(
             hdr.validate(),
+            Err(CcciError::InvalidChannel(22)),
+            "channel 22 is unassigned and must be rejected"
+        );
+
+        let hdr_large = CcciHeader::new_data(0, 0, 0x1_0000, 0);
+        assert_eq!(
+            hdr_large.validate(),
             Err(CcciError::InvalidChannel(0x1_0000)),
-            "channel > 255 should be rejected"
+            "channel > 255 must be rejected"
         );
     }
 
@@ -2354,8 +2462,9 @@ mod tests {
     #[test]
     fn process_rx_normal_data() {
         let mut driver = CcciDriver::new();
-        let hdr = CcciHeader::new_data(100, 200, 5, 1);
         let payload = b"normal modem data";
+        // WHY: data0 = payload length, data1 = 0 (no offset), channel 5 (Uart1Rx)
+        let hdr = CcciHeader::new_data(payload.len() as u32, 0, 5, 1);
 
         let result = driver.process_modem_rx(&hdr, payload, 1000);
         assert_eq!(result, Ok(true), "normal data should pass through");
@@ -2365,8 +2474,8 @@ mod tests {
     #[test]
     fn process_rx_identity_filtered() {
         let mut driver = CcciDriver::new();
-        let hdr = CcciHeader::new_data(100, 200, 5, 1);
         let payload = b"+CGSN: 123456789012345\r\n";
+        let hdr = CcciHeader::new_data(payload.len() as u32, 0, 5, 1);
 
         let result = driver.process_modem_rx(&hdr, payload, 1000);
         assert_eq!(result, Ok(false), "identity response must be filtered");
@@ -2378,8 +2487,8 @@ mod tests {
     fn process_rx_identity_with_capability() {
         let mut driver = CcciDriver::new();
         driver.set_capabilities(CAP_MODEM_IDENTITY);
-        let hdr = CcciHeader::new_data(100, 200, 5, 1);
         let payload = b"+CGSN: 123456789012345\r\n";
+        let hdr = CcciHeader::new_data(payload.len() as u32, 0, 5, 1);
 
         let result = driver.process_modem_rx(&hdr, payload, 1000);
         assert_eq!(
@@ -2396,6 +2505,11 @@ mod tests {
 
         let result = driver.process_modem_rx(&hdr, b"data", 1000);
         assert!(result.is_err(), "invalid channel must be rejected");
+        assert_eq!(
+            driver.malformed_packet_count(),
+            1,
+            "malformed counter increments on validation failure"
+        );
     }
 
     // -- GPD descriptor flags --
@@ -2432,8 +2546,205 @@ mod tests {
 
     #[test]
     fn ccci_channel_values() {
-        assert_eq!(CcciChannel::u32::try_from(ControlTx).unwrap_or_default(), 0, "control TX is 0");
-        assert_eq!(CcciChannel::u32::try_from(Uart1Rx).unwrap_or_default(), 5, "UART1 RX is 5");
-        assert_eq!(CcciChannel::u32::try_from(MdLogRx).unwrap_or_default(), 21, "MD log RX is 21");
+        assert_eq!(CcciChannel::ControlTx as u32, 0, "control TX is 0");
+        assert_eq!(CcciChannel::Uart1Rx as u32, 5, "UART1 RX is 5");
+        assert_eq!(CcciChannel::MdLogRx as u32, 21, "MD log RX is 21");
+    }
+
+    // -- Packet validation (hardening) --
+
+    #[test]
+    fn validate_packet_valid() {
+        let payload = b"hello modem";
+        let hdr = CcciHeader::new_data(payload.len() as u32, 0, 5, 0);
+        assert!(
+            validate_packet(&hdr, payload.len()).is_ok(),
+            "valid packet with matching length must pass"
+        );
+    }
+
+    #[test]
+    fn validate_packet_control_message() {
+        // Control messages have data0 = CCCI_MAGIC, which is large but
+        // should not be treated as a length field.
+        let hdr = CcciHeader::new_control(5, 0);
+        assert!(
+            validate_packet(&hdr, 16).is_ok(),
+            "control message must pass even though data0 >> buffer_len"
+        );
+    }
+
+    #[test]
+    fn validate_packet_length_exceeds_buffer() {
+        let hdr = CcciHeader::new_data(1024, 0, 5, 0);
+        let result = validate_packet(&hdr, 64);
+        assert_eq!(
+            result,
+            Err(CcciError::PacketLengthExceeded {
+                header_length: 1024,
+                buffer_len: 64,
+            }),
+            "data0 length exceeding buffer must fail"
+        );
+    }
+
+    #[test]
+    fn validate_packet_invalid_channel() {
+        let hdr = CcciHeader::new_data(10, 0, 99, 0);
+        let result = validate_packet(&hdr, 64);
+        assert_eq!(
+            result,
+            Err(CcciError::InvalidChannel(99)),
+            "unknown channel 99 must be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_packet_offset_past_buffer() {
+        // data1 used as offset, points past buffer end
+        let hdr = CcciHeader::new_data(10, 500, 5, 0);
+        let result = validate_packet(&hdr, 64);
+        assert_eq!(
+            result,
+            Err(CcciError::OffsetOutOfBounds {
+                offset: 500,
+                buffer_len: 64,
+            }),
+            "data1 offset past buffer must fail"
+        );
+    }
+
+    #[test]
+    fn validate_packet_zero_offset_ok() {
+        // data1 = 0 is always valid (no offset)
+        let hdr = CcciHeader::new_data(10, 0, 5, 0);
+        assert!(
+            validate_packet(&hdr, 64).is_ok(),
+            "zero offset must pass"
+        );
+    }
+
+    #[test]
+    fn validate_packet_offset_at_boundary() {
+        // data1 exactly at buffer_len is valid (points to end, not past)
+        let hdr = CcciHeader::new_data(10, 64, 5, 0);
+        assert!(
+            validate_packet(&hdr, 64).is_ok(),
+            "offset == buffer_len must pass (points to end)"
+        );
+    }
+
+    #[test]
+    fn validate_packet_offset_past_boundary() {
+        // data1 one past buffer_len is invalid
+        let hdr = CcciHeader::new_data(10, 65, 5, 0);
+        assert!(
+            validate_packet(&hdr, 64).is_err(),
+            "offset == buffer_len + 1 must fail"
+        );
+    }
+
+    // -- Malformed packet counter --
+
+    #[test]
+    fn malformed_counter_starts_at_zero() {
+        let driver = CcciDriver::new();
+        assert_eq!(
+            driver.malformed_packet_count(),
+            0,
+            "counter must start at zero"
+        );
+    }
+
+    #[test]
+    fn malformed_counter_increments_on_bad_channel() {
+        let mut driver = CcciDriver::new();
+        let hdr = CcciHeader::new_data(4, 0, 99, 0);
+        let _ = driver.process_modem_rx(&hdr, b"data", 1000);
+        assert_eq!(
+            driver.malformed_packet_count(),
+            1,
+            "counter increments on invalid channel"
+        );
+    }
+
+    #[test]
+    fn malformed_counter_increments_on_bad_length() {
+        let mut driver = CcciDriver::new();
+        let hdr = CcciHeader::new_data(1000, 0, 5, 0);
+        let _ = driver.process_modem_rx(&hdr, b"short", 1000);
+        assert_eq!(
+            driver.malformed_packet_count(),
+            1,
+            "counter increments on length mismatch"
+        );
+    }
+
+    #[test]
+    fn malformed_counter_increments_on_bad_offset() {
+        let mut driver = CcciDriver::new();
+        let hdr = CcciHeader::new_data(4, 9999, 5, 0);
+        let _ = driver.process_modem_rx(&hdr, b"data", 1000);
+        assert_eq!(
+            driver.malformed_packet_count(),
+            1,
+            "counter increments on offset OOB"
+        );
+    }
+
+    #[test]
+    fn malformed_counter_accumulates() {
+        let mut driver = CcciDriver::new();
+
+        // Three different failure modes
+        let _ = driver.process_modem_rx(
+            &CcciHeader::new_data(0, 0, 99, 0),
+            b"data",
+            1000,
+        );
+        let _ = driver.process_modem_rx(
+            &CcciHeader::new_data(9999, 0, 5, 0),
+            b"data",
+            2000,
+        );
+        let _ = driver.process_modem_rx(
+            &CcciHeader::new_data(4, 9999, 5, 0),
+            b"data",
+            3000,
+        );
+
+        assert_eq!(
+            driver.malformed_packet_count(),
+            3,
+            "counter must accumulate across multiple failures"
+        );
+    }
+
+    #[test]
+    fn malformed_counter_not_incremented_on_valid() {
+        let mut driver = CcciDriver::new();
+        let payload = b"valid data";
+        let hdr = CcciHeader::new_data(payload.len() as u32, 0, 5, 0);
+        let _ = driver.process_modem_rx(&hdr, payload, 1000);
+        assert_eq!(
+            driver.malformed_packet_count(),
+            0,
+            "counter must not increment on valid packet"
+        );
+    }
+
+    // -- CcciChannel::is_valid --
+
+    #[test]
+    fn ccci_channel_is_valid() {
+        for ch in 0..=21u32 {
+            assert!(
+                CcciChannel::is_valid(ch),
+                "channel {ch} must be valid"
+            );
+        }
+        assert!(!CcciChannel::is_valid(22), "22 is unassigned");
+        assert!(!CcciChannel::is_valid(255), "255 is unassigned");
+        assert!(!CcciChannel::is_valid(0x1_0000), "large value is invalid");
     }
 }

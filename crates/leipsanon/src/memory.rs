@@ -88,7 +88,7 @@ impl<const N: usize> std::fmt::Debug for SecureBuffer<N> {
 }
 
 impl<const N: usize> Drop for SecureBuffer<N> {
-    fn DROP(&mut self) {
+    fn drop(&mut self) {
         self.data.zeroize();
     }
 }
@@ -186,7 +186,7 @@ mod tests {
             buf.iter_mut().for_each(|b| *b = 0xBB);
             let ptr: *const u8 = (**buf).as_ptr();
 
-            ManuallyDrop::DROP(&mut buf);
+            ManuallyDrop::drop(&mut buf);
 
             let slice = std::slice::from_raw_parts(ptr, 16);
             assert!(

@@ -94,7 +94,7 @@ impl BootStep {
     /// Returns true if `self` depends on `other` (i.e., `other` must
     /// be attempted before `self`).
     pub(crate) const fn depends_on(self, other: Self) -> bool {
-        (u8::try_from(self).unwrap_or_default()) > (u8::try_from(other).unwrap_or_default())
+        (self as u8) > (other as u8)
     }
 }
 
@@ -240,21 +240,19 @@ pub unsafe fn run() -> ! {
     let mut state = BootState::new();
 
     // Banner
-    if let Err(e) = serial.write_str("\r\n") { tracing::warn!(error = %e, "operation failed"); }
-    serial
-        .write_str("================================\r\n")
-       if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
-    if let Err(e) = serial.write_str("  THUMOS / pyknosis v0.1.0\r\n") { tracing::warn!(error = %e, "operation failed"); }
-    if let Err(e) = serial.write_str("  Sovereign OS for MT6739\r\n") { tracing::warn!(error = %e, "operation failed"); }
-    serial
-        .write_str("================================\r\n")
-       if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
-    if let Err(e) = serial.write_str("\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("\r\n");
+    let _ = serial
+        .write_str("================================\r\n");
+    let _ = serial.write_str("  THUMOS / pyknosis v0.1.0\r\n");
+    let _ = serial.write_str("  Sovereign OS for MT6739\r\n");
+    let _ = serial
+        .write_str("================================\r\n");
+    let _ = serial.write_str("\r\n");
 
     // -----------------------------------------------------------------------
     // Step 0: MMU + caches
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] MMU + caches\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] MMU + caches\r\n");
     unsafe {
         mmu::init_and_enable();
     }
@@ -263,33 +261,32 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 1: Page allocator
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] Page allocator\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] Page allocator\r\n");
     unsafe {
         page::init(kconfig::RAM_START, kconfig::RAM_END, kconfig::KERNEL_END);
     }
-    write!(
+    let _ = write!(
         serial,
         "       {} pages free ({} MB)\r\n",
         page::free_count(),
         page::free_bytes() / 1024 / 1024
-    )
-   if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+    );
 
     // -----------------------------------------------------------------------
     // Step 2: Kernel heap
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] Kernel heap\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] Kernel heap\r\n");
     unsafe {
         heap::init();
     }
     let (used, total) = heap::stats();
-    if let Err(e) = write!(serial, "       {} / {} bytes\r\n", used, total) { tracing::warn!(error = %e, "operation failed"); }
+    let _ = write!(serial, "       {} / {} bytes\r\n", used, total);
     state.heap_ok = true;
 
     // -----------------------------------------------------------------------
     // Step 3: GIC
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] GIC\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] GIC\r\n");
     unsafe {
         gic::init();
     }
@@ -298,7 +295,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 4: Process subsystem
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] Process subsystem\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] Process subsystem\r\n");
     unsafe {
         process::init();
     }
@@ -306,48 +303,45 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 5: Exception handlers + timer
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] Exceptions + timer\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] Exceptions + timer\r\n");
     unsafe {
         exceptions::init();
     }
-    write!(
+    let _ = write!(
         serial,
         "       Timer frequency: {} Hz\r\n",
         crate::timer::frequency()
-    )
-   if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+    );
     state.timer_ok = true;
 
     // -----------------------------------------------------------------------
     // Step 6: Device registry
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] Device registry\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] Device registry\r\n");
     let mut devices = DeviceRegistry::new();
     devices.register_mt6739_devices();
-    write!(
+    let _ = write!(
         serial,
         "       {} devices registered\r\n",
         devices.list().len()
-    )
-   if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+    );
 
     // -----------------------------------------------------------------------
     // Step 7: eMMC block device
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] eMMC (MSDC0)\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] eMMC (MSDC0)\r\n");
     {
         let mut emmc = crate::emmc::MsdcController::new();
         match unsafe { emmc.init() } {
             Ok(()) => {
-                if let Err(e) = serial.write_str("       eMMC initialized OK\r\n") { tracing::warn!(error = %e, "operation failed"); }
+                let _ = serial.write_str("       eMMC initialized OK\r\n");
                 devices.activate("msdc0");
                 state.emmc_ok = true;
             }
             Err(e) => {
-                if let Err(e) = write!(serial, "  WARN eMMC init failed: {:?}\r\n", e) { tracing::warn!(error = %e, "operation failed"); }
-                serial
-                    .write_str("       Continuing without block storage\r\n")
-                   if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+                let _ = write!(serial, "  WARN eMMC init failed: {:?}\r\n", e);
+                let _ = serial
+                    .write_str("       Continuing without block storage\r\n");
             }
         }
     }
@@ -355,7 +349,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 8: Display pipeline (DDP → GC9306)
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] Display (GC9306 240x320)\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] Display (GC9306 240x320)\r\n");
     {
         let gc9306 = Gc9306::new();
         let mut display = DisplayDriver::new(gc9306);
@@ -365,36 +359,34 @@ pub unsafe fn run() -> ! {
             display.init(kconfig::FB_BASE);
         }
         if display.state() != crate::display::DisplayState::Uninitialized {
-            if let Err(e) = serial.write_str("       Display pipeline active\r\n") { tracing::warn!(error = %e, "operation failed"); }
-            write!(
+            let _ = serial.write_str("       Display pipeline active\r\n");
+            let _ = write!(
                 serial,
                 "       Framebuffer @ {:#010x}\r\n",
                 kconfig::FB_BASE
-            )
-           if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+            );
             devices.activate("gc9306-lcm");
             devices.activate("disp-ovl0");
             devices.activate("disp-rdma0");
             state.display_ok = true;
             DISPLAY_AVAILABLE.store(true, Ordering::Release);
         } else {
-            if let Err(e) = serial.write_str("  WARN Display init incomplete\r\n") { tracing::warn!(error = %e, "operation failed"); }
-            serial
-                .write_str("       Falling back to USB serial console only\r\n")
-               if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+            let _ = serial.write_str("  WARN Display init incomplete\r\n");
+            let _ = serial
+                .write_str("       Falling back to USB serial console only\r\n");
         }
     }
 
     // -----------------------------------------------------------------------
     // Step 9: USB ACM serial (primary debug console)
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] USB ACM serial\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] USB ACM serial\r\n");
     {
         let mut usb = UsbController::new();
         unsafe {
             usb.init();
         }
-        if let Err(e) = serial.write_str("       USB ACM gadget connected\r\n") { tracing::warn!(error = %e, "operation failed"); }
+        let _ = serial.write_str("       USB ACM gadget connected\r\n");
         devices.activate("musb-hdrc");
         state.usb_ok = true;
         USB_SERIAL_AVAILABLE.store(true, Ordering::Release);
@@ -403,7 +395,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 10: CCCI modem boot (fault-tolerant with timeout)
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] CCCI modem\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] CCCI modem\r\n");
     {
         let mut ccci = CcciDriver::new();
         let boot_start = crate::timer::elapsed_ms();
@@ -412,29 +404,28 @@ pub unsafe fn run() -> ! {
 
         match boot_result {
             Ok(()) => {
-                if let Err(e) = write!(serial, "       Modem booted in {} ms\r\n", boot_elapsed) { tracing::warn!(error = %e, "operation failed"); }
+                let _ = write!(serial, "       Modem booted in {} ms\r\n", boot_elapsed);
                 devices.activate("ccci-cldma");
                 devices.activate("ccci-ccif");
                 state.modem_ok = true;
                 MODEM_AVAILABLE.store(true, Ordering::Release);
             }
             Err(e) => {
-                if let Err(e) = write!(serial, "  WARN Modem boot failed: {:?}\r\n", e) { tracing::warn!(error = %e, "operation failed"); }
-                if let Err(e) = serial.write_str("       Phone functions disabled\r\n") { tracing::warn!(error = %e, "operation failed"); }
+                let _ = write!(serial, "  WARN Modem boot failed: {:?}\r\n", e);
+                let _ = serial.write_str("       Phone functions disabled\r\n");
             }
         }
 
         if boot_elapsed > MODEM_BOOT_TIMEOUT_MS {
-            serial
-                .write_str("  WARN Modem boot exceeded timeout\r\n")
-               if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+            let _ = serial
+                .write_str("  WARN Modem boot exceeded timeout\r\n");
         }
     }
 
     // -----------------------------------------------------------------------
     // Step 11: GPIO keypad scanning
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] GPIO keypad\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] GPIO keypad\r\n");
     {
         // NOTE: Full keypad driver is in crates/haphe. Here we enable the
         // KPD hardware so interrupt-driven scanning can start.
@@ -447,47 +438,42 @@ pub unsafe fn run() -> ! {
         }
         devices.activate("mtk-kpd");
         state.input_ok = true;
-        if let Err(e) = serial.write_str("       Keypad scanning enabled\r\n") { tracing::warn!(error = %e, "operation failed"); }
+        let _ = serial.write_str("       Keypad scanning enabled\r\n");
     }
 
     // -----------------------------------------------------------------------
     // Step 12: Power manager
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("[init] Power manager\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("[init] Power manager\r\n");
     let _pm = PowerManager::new();
-    serial
-        .write_str("       All radios OFF (silent mode)\r\n")
-       if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial
+        .write_str("       All radios OFF (silent mode)\r\n");
 
     // -----------------------------------------------------------------------
     // Boot status summary
     // -----------------------------------------------------------------------
-    if let Err(e) = serial.write_str("\r\n") { tracing::warn!(error = %e, "operation failed"); }
-    write!(
+    let _ = serial.write_str("\r\n");
+    let _ = write!(
         serial,
         "[init] Boot complete at {} ms\r\n",
         crate::timer::elapsed_ms()
-    )
-   if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
-    if let Err(e) = write!(serial, "       {} / 9 subsystems OK\r\n", state.ok_count()) { tracing::warn!(error = %e, "operation failed"); }
+    );
+    let _ = write!(serial, "       {} / 9 subsystems OK\r\n", state.ok_count());
     if !state.display_ok {
-        serial
-            .write_str("       NOTE: display unavailable, USB serial only\r\n")
-           if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+        let _ = serial
+            .write_str("       NOTE: display unavailable, USB serial only\r\n");
     }
     if !state.modem_ok {
-        serial
-            .write_str("       NOTE: modem unavailable, no phone functions\r\n")
-           if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+        let _ = serial
+            .write_str("       NOTE: modem unavailable, no phone functions\r\n");
     }
-    if let Err(e) = serial.write_str("\r\n") { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial.write_str("\r\n");
 
     // -----------------------------------------------------------------------
     // Step 13: Spawn userspace processes FROM ramfs
     // -----------------------------------------------------------------------
-    serial
-        .write_str("[init] Spawning userspace processes\r\n")
-       if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+    let _ = serial
+        .write_str("[init] Spawning userspace processes\r\n");
     {
         let fs = RamFs::new();
 
@@ -506,25 +492,24 @@ pub unsafe fn run() -> ! {
                     if let Some(pid) = process::spawn(unsafe {
                         core::mem::transmute::<usize, fn() -> !>(loaded.entry)
                     }) {
-                        if let Err(e) = write!(serial, "       /init spawned (PID {})\r\n", pid) { tracing::warn!(error = %e, "operation failed"); }
+                        let _ = write!(serial, "       /init spawned (PID {})\r\n", pid);
                         state.processes_spawned += 1;
                     } else {
-                        if let Err(e) = serial.write_str("  WARN /init spawn failed\r\n") { tracing::warn!(error = %e, "operation failed"); }
+                        let _ = serial.write_str("  WARN /init spawn failed\r\n");
                     }
                 }
                 Err(e) => {
-                    if let Err(e) = write!(serial, "  WARN /init ELF load failed: {:?}\r\n", e) { tracing::warn!(error = %e, "operation failed"); }
+                    let _ = write!(serial, "  WARN /init ELF load failed: {:?}\r\n", e);
                 }
             },
             None => {
                 // Fallback: spawn built-in idle process as init
                 if let Some(pid) = process::spawn(userspace_idle) {
-                    write!(
+                    let _ = write!(
                         serial,
                         "       idle/init spawned (PID {}) [built-in]\r\n",
                         pid
-                    )
-                   if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+                    );
                     state.processes_spawned += 1;
                 }
             }
@@ -537,46 +522,43 @@ pub unsafe fn run() -> ! {
                     if let Some(pid) = process::spawn(unsafe {
                         core::mem::transmute::<usize, fn() -> !>(loaded.entry)
                     }) {
-                        if let Err(e) = write!(serial, "       /shell spawned (PID {})\r\n", pid) { tracing::warn!(error = %e, "operation failed"); }
+                        let _ = write!(serial, "       /shell spawned (PID {})\r\n", pid);
                         state.processes_spawned += 1;
                     } else {
-                        if let Err(e) = serial.write_str("  WARN /shell spawn failed\r\n") { tracing::warn!(error = %e, "operation failed"); }
+                        let _ = serial.write_str("  WARN /shell spawn failed\r\n");
                     }
                 }
                 Err(e) => {
-                    if let Err(e) = write!(serial, "  WARN /shell ELF load failed: {:?}\r\n", e) { tracing::warn!(error = %e, "operation failed"); }
+                    let _ = write!(serial, "  WARN /shell ELF load failed: {:?}\r\n", e);
                 }
             },
             None => {
                 // Fallback: spawn second idle process as shell
                 if let Some(pid) = process::spawn(userspace_idle) {
-                    write!(
+                    let _ = write!(
                         serial,
                         "       idle/shell spawned (PID {}) [built-in]\r\n",
                         pid
-                    )
-                   if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+                    );
                     state.processes_spawned += 1;
                 }
             }
         }
 
-        write!(
+        let _ = write!(
             serial,
             "       {} processes running\r\n",
             state.processes_spawned
-        )
-       if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+        );
     }
 
     // -----------------------------------------------------------------------
     // Debug console or idle
     // -----------------------------------------------------------------------
     if unsafe { kconfig::DEBUG_CONSOLE } {
-        if let Err(e) = serial.write_str("[init] Starting debug console\r\n") { tracing::warn!(error = %e, "operation failed"); }
-        serial
-            .write_str("       Type 'help' for commands\r\n\r\n")
-           if let Err(e) =   { tracing::warn!(error = %e, "operation failed"); }
+        let _ = serial.write_str("[init] Starting debug console\r\n");
+        let _ = serial
+            .write_str("       Type 'help' for commands\r\n\r\n");
         let mut console = Console::new();
         console.prompt();
 
@@ -610,7 +592,7 @@ mod tests {
 
     #[test]
     fn boot_step_mmu_first() {
-        assert_eq!(BootStep::u8::try_from(Mmu).unwrap_or_default(), 0, "MMU must be the first boot step");
+        assert_eq!(BootStep::Mmu as u8, 0, "MMU must be the first boot step");
     }
 
     #[test]
@@ -664,7 +646,7 @@ mod tests {
     #[test]
     fn boot_step_complete_is_last() {
         assert_eq!(
-            BootStep::u8::try_from(Complete).unwrap_or_default(),
+            BootStep::Complete as u8,
             14,
             "Complete must be the highest-numbered step"
         );
@@ -726,8 +708,8 @@ mod tests {
     fn display_failure_does_not_block_usb() {
         // WHY: display and USB are independent  -  display failure must not
         // prevent USB serial FROM being the fallback console.
-        let step_display = BootStep::u8::try_from(Display).unwrap_or_default();
-        let step_usb = BootStep::u8::try_from(UsbSerial).unwrap_or_default();
+        let step_display = BootStep::Display as u8;
+        let step_usb = BootStep::UsbSerial as u8;
         assert!(
             step_usb > step_display,
             "USB init comes after display in sequence"
@@ -746,8 +728,8 @@ mod tests {
     #[test]
     fn modem_failure_does_not_block_input() {
         // WHY: modem failure must not prevent keypad FROM working.
-        let step_modem = BootStep::u8::try_from(CcciModem).unwrap_or_default();
-        let step_input = BootStep::u8::try_from(GpioInput).unwrap_or_default();
+        let step_modem = BootStep::CcciModem as u8;
+        let step_input = BootStep::GpioInput as u8;
         assert!(
             step_input > step_modem,
             "GPIO init comes after modem in sequence"

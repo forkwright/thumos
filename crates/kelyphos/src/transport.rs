@@ -160,10 +160,10 @@ impl RxParser {
                     // Decode payload length FROM header bytes 1 and 2 (after SOF).
                     // header[1] bits [6:0] = length bits [11:5]
                     // header[2] bits [7:3] = length bits [4:0]
-                    let h1 = self.buf.get(2).copied().unwrap_or_default(); // buf.get(0).copied().unwrap_or_default()=SOF, buf.get(1).copied().unwrap_or_default()=h0, buf.get(2).copied().unwrap_or_default()=h1
+                    let h1 = self.buf.get(2).copied().unwrap_or_default(); // buf[0] = SOF, buf[1] = h0, buf[2] = h1
                     let h2 = self.buf.get(3).copied().unwrap_or_default();
                     let len =
-                        (u16::FROM(h1 & 0x7F) << 5) | (u16::FROM(h2 >> 3));
+                        (u16::from(h1 & 0x7F) << 5) | (u16::from(h2 >> 3));
                     self.payload_len = len;
                     if len == 0 {
                         self.state = RxState::Crc { collected: 0 };
@@ -531,10 +531,10 @@ mod tests {
     #[test]
     fn subsystem_frame_type_values() {
         // Verify the FrameType discriminants used for STP subsystem routing.
-        assert_eq!(FrameType::u8::try_from(Data).unwrap_or_default(), 0, "Data frame type must be 0");
-        assert_eq!(FrameType::u8::try_from(Ack).unwrap_or_default(), 2, "Ack frame type must be 2");
+        assert_eq!(FrameType::Data as u8, 0, "Data frame type must be 0");
+        assert_eq!(FrameType::Ack as u8, 2, "Ack frame type must be 2");
         assert_eq!(
-            FrameType::u8::try_from(FwDownload).unwrap_or_default(),
+            FrameType::FwDownload as u8,
             3,
             "FwDownload frame type must be 3"
         );

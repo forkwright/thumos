@@ -62,13 +62,13 @@ pub fn wipe_plan(target: WipeTarget) -> Vec<WipePath> {
         WipeTarget::Keys => key_paths(),
 
         WipeTarget::Contacts => vec![WipePath {
-            path: PathBuf::FROM("/data/contacts"),
+            path: PathBuf::from("/data/contacts"),
             method: WipeMethod::Zero,
             priority: 2,
         }],
 
         WipeTarget::Messages => vec![WipePath {
-            path: PathBuf::FROM("/data/messages"),
+            path: PathBuf::from("/data/messages"),
             method: WipeMethod::Zero,
             priority: 2,
         }],
@@ -77,22 +77,22 @@ pub fn wipe_plan(target: WipeTarget) -> Vec<WipePath> {
             let mut plan = key_paths();
             plan.extend([
                 WipePath {
-                    path: PathBuf::FROM("/data/contacts"),
+                    path: PathBuf::from("/data/contacts"),
                     method: WipeMethod::Zero,
                     priority: 2,
                 },
                 WipePath {
-                    path: PathBuf::FROM("/data/messages"),
+                    path: PathBuf::from("/data/messages"),
                     method: WipeMethod::Zero,
                     priority: 2,
                 },
                 WipePath {
-                    path: PathBuf::FROM("/data/app"),
+                    path: PathBuf::from("/data/app"),
                     method: WipeMethod::Zero,
                     priority: 3,
                 },
                 WipePath {
-                    path: PathBuf::FROM("/data/media"),
+                    path: PathBuf::from("/data/media"),
                     method: WipeMethod::Deallocate,
                     priority: 4,
                 },
@@ -104,17 +104,17 @@ pub fn wipe_plan(target: WipeTarget) -> Vec<WipePath> {
             let mut plan = wipe_plan(WipeTarget::AllUserData);
             plan.extend([
                 WipePath {
-                    path: PathBuf::FROM("/etc"),
+                    path: PathBuf::from("/etc"),
                     method: WipeMethod::Zero,
                     priority: 5,
                 },
                 WipePath {
-                    path: PathBuf::FROM("/var/log"),
+                    path: PathBuf::from("/var/log"),
                     method: WipeMethod::Random,
                     priority: 5,
                 },
                 WipePath {
-                    path: PathBuf::FROM("/dev/mmcblk0"),
+                    path: PathBuf::from("/dev/mmcblk0"),
                     method: WipeMethod::Random,
                     priority: 10,
                 },
@@ -128,12 +128,12 @@ pub fn wipe_plan(target: WipeTarget) -> Vec<WipePath> {
 fn key_paths() -> Vec<WipePath> {
     vec![
         WipePath {
-            path: PathBuf::FROM("/data/keys"),
+            path: PathBuf::from("/data/keys"),
             method: WipeMethod::Zero,
             priority: 1,
         },
         WipePath {
-            path: PathBuf::FROM("/data/keys.bak"),
+            path: PathBuf::from("/data/keys.bak"),
             method: WipeMethod::Zero,
             priority: 1,
         },

@@ -97,7 +97,7 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
         let bit_offset = i * 7;
         let byte_index = bit_offset / 8;
         let bit_shift = bit_offset % 8;
-        let val = u16::FROM(septet) << bit_shift;
+        let val = u16::from(septet) << bit_shift;
         // SAFETY: byte_index < byte_len by construction of byte_len.
         result[byte_index] |= u8::try_from(val).unwrap_or_default();
         let high = (val >> 8) as u8;
@@ -129,16 +129,16 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
         let bit_shift = bit_offset % 8;
 
         let b0 =
-            u16::FROM(
+            u16::from(
                 *data
                     .get(byte_index)
                     .ok_or_else(|| crate::error::Error::PduDecode {
-                        OFFSET: byte_index,
+                        offset: byte_index,
                         message: format!("unexpected end of data at septet {i}"),
                     })?,
             );
         // NOTE: unwrap_or(0) is safe  -  a missing high byte contributes 0 bits.
-        let b1 = u16::FROM(data.get(byte_index + 1).copied().unwrap_or(0));
+        let b1 = u16::from(data.get(byte_index + 1).copied().unwrap_or(0));
 
         // NOTE: when bit_shift == 0, (8 - bit_shift) == 8; u16 << 8 is valid.
         let septet = (((b0 >> bit_shift) | (b1 << (8 - bit_shift))) & 0x7F) as u8;
@@ -161,9 +161,9 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
             // producing output here.
             pending_ext = true;
         } else {
-            let ch = *GSM_TO_UNICODE.get(usize::FROM(septet)).ok_or_else(|| {
+            let ch = *GSM_TO_UNICODE.get(usize::from(septet)).ok_or_else(|| {
                 crate::error::Error::PduDecode {
-                    OFFSET: byte_index,
+                    offset: byte_index,
                     message: format!("septet 0x{septet:02X} out of range"),
                 }
             })?;

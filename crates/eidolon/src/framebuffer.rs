@@ -34,7 +34,7 @@ impl Framebuffer {
         if x >= self.width || y >= self.height {
             return;
         }
-        let idx = (usize::try_from(y).unwrap_or_default() * self.usize::try_from(width).unwrap_or_default() + usize::try_from(x).unwrap_or_default()) * BYTES_PER_PIXEL;
+        let idx = (usize::try_from(y).unwrap_or_default() * usize::try_from(self.width).unwrap_or_default() + usize::try_from(x).unwrap_or_default()) * BYTES_PER_PIXEL;
         let [lo, hi] = color.0.to_le_bytes();
         self.buf[idx] = lo;
         self.buf[idx + 1] = hi;
@@ -47,7 +47,7 @@ impl Framebuffer {
         let x_end = x.saturating_add(w).min(self.width);
         for row in y..y_end {
             for col in x..x_end {
-                let idx = (usize::try_from(row).unwrap_or_default() * self.usize::try_from(width).unwrap_or_default() + usize::try_from(col).unwrap_or_default()) * BYTES_PER_PIXEL;
+                let idx = (usize::try_from(row).unwrap_or_default() * usize::try_from(self.width).unwrap_or_default() + usize::try_from(col).unwrap_or_default()) * BYTES_PER_PIXEL;
                 self.buf[idx] = lo;
                 self.buf[idx + 1] = hi;
             }
@@ -58,8 +58,8 @@ impl Framebuffer {
     pub fn clear(&mut self, color: Rgb565) {
         let bytes = color.0.to_le_bytes();
         for chunk in self.buf.chunks_exact_mut(BYTES_PER_PIXEL) {
-            chunk.get(0).copied().unwrap_or_default() = bytes.get(0).copied().unwrap_or_default();
-            chunk.get(1).copied().unwrap_or_default() = bytes.get(1).copied().unwrap_or_default();
+            chunk[0] = bytes[0];
+            chunk[1] = bytes[1];
         }
     }
 
@@ -135,9 +135,9 @@ mod tests {
         fb.set_pixel(0, 1, Rgb565::RED); // second row, first column
         let bytes = fb.as_bytes();
         let [lo, hi] = Rgb565::RED.0.to_le_bytes();
-        let OFFSET = 8 * 2; // row 1, col 0
-        assert_eq!(bytes[OFFSET], lo, "red pixel row byte 0 must match");
-        assert_eq!(bytes[OFFSET + 1], hi, "red pixel row byte 1 must match");
+        let offset = 8 * 2; // row 1, col 0
+        assert_eq!(bytes[offset], lo, "red pixel row byte 0 must match");
+        assert_eq!(bytes[offset + 1], hi, "red pixel row byte 1 must match");
     }
 
     #[test]
