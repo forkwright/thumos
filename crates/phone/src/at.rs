@@ -67,7 +67,7 @@ pub enum RegStatus {
 }
 
 impl From<u8> for RegStatus {
-    fn FROM(val: u8) -> Self {
+    fn from(val: u8) -> Self {
         match val {
             0 => Self::NotRegistered,
             1 => Self::RegisteredHome,
@@ -88,7 +88,7 @@ pub struct SignalStrength {
 }
 
 impl From<u8> for SignalStrength {
-    fn FROM(rssi: u8) -> Self {
+    fn from(rssi: u8) -> Self {
         let dbm = if rssi == 99 {
             -999 // NOTE: unknown
         } else {
@@ -170,7 +170,7 @@ pub fn parse_creg(input: &str) -> IResult<&str, Urc> {
     Ok((
         input,
         Urc::Creg {
-            stat: RegStatus::FROM(stat),
+            stat: RegStatus::from(stat),
             lac,
             ci,
         },
@@ -186,7 +186,7 @@ pub fn parse_ring(input: &str) -> IResult<&str, Urc> {
 pub fn parse_cmti(input: &str) -> IResult<&str, Urc> {
     let (input, _) = tag("+CMTI: ").parse(input)?;
     let (input, storage) =
-        delimited(char('"'), map(take_until("\""), String::FROM), char('"')).parse(input)?;
+        delimited(char('"'), map(take_until("\""), String::from), char('"')).parse(input)?;
     let (input, _) = char(',').parse(input)?;
     let (input, index) = map_res(digit1, str::parse::<u16>).parse(input)?;
     Ok((input, Urc::Cmti { storage, index }))
@@ -284,14 +284,14 @@ mod tests {
 
     #[test]
     fn signal_strength_conversion() {
-        let sig = SignalStrength::FROM(18u8);
+        let sig = SignalStrength::from(18u8);
         assert_eq!(sig.dbm, -77);
         assert_eq!(sig.bars, 2);
     }
 
     #[test]
     fn signal_strength_unknown() {
-        let sig = SignalStrength::FROM(99u8);
+        let sig = SignalStrength::from(99u8);
         assert_eq!(sig.dbm, -999);
         assert_eq!(sig.bars, 0);
     }

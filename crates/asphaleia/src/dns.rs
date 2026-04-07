@@ -134,7 +134,7 @@ pub(crate) fn extract_query_domain(data: &[u8]) -> Option<String> {
             return None;
         }
 
-        let label_len = usize::FROM(len_byte);
+        let label_len = usize::from(len_byte);
         let label_end = pos.checked_add(label_len)?;
         let label_bytes = data.get(pos..label_end)?;
         let label = str::from_utf8(label_bytes).ok()?;
@@ -236,8 +236,8 @@ mod tests {
     fn returns_none_for_zero_qdcount() {
         let mut msg = make_dns_query("example.com");
         // Set QDCOUNT to 0
-        msg.get(4).copied().unwrap_or_default() = 0;
-        msg.get(5).copied().unwrap_or_default() = 0;
+        msg[4] = 0;
+        msg[5] = 0;
         assert_eq!(
             extract_query_domain(&msg),
             None,

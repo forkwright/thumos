@@ -340,8 +340,8 @@ pub fn encode_command(cmd: &HciCommand) -> Vec<u8> {
 
     let mut packet = Vec::with_capacity(4 + params.len());
     packet.push(H4_COMMAND_TYPE);
-    packet.push(opcode_bytes.get(0).copied().unwrap_or_default());
-    packet.push(opcode_bytes.get(1).copied().unwrap_or_default());
+    packet.push(opcode_bytes[0]);
+    packet.push(opcode_bytes[1]);
     packet.push(param_len);
     packet.extend_from_slice(&params);
     packet
@@ -400,7 +400,7 @@ fn build_command_parts(cmd: &HciCommand) -> (u16, Vec<u8>) {
             filter_duplicates,
         } => {
             let opcode = (OGF_LE_CONTROLLER << 10) | OCF_LE_SET_SCAN_ENABLE;
-            let params = vec![u8::FROM(*enable), u8::FROM(*filter_duplicates)];
+            let params = vec![u8::from(*enable), u8::from(*filter_duplicates)];
             (opcode, params)
         }
         HciCommand::LESetRandomAddress { address } => {
@@ -503,7 +503,7 @@ fn decode_inquiry_result(params: &[u8]) -> Result<HciEvent> {
         detail: "InquiryResult: missing num_responses",
     })?;
 
-    let num = usize::FROM(num_responses);
+    let num = usize::from(num_responses);
     let required = 1 + num * INQUIRY_ENTRY_SIZE;
     if params.len() < required {
         return Err(Error::MalformedEvent {
@@ -535,7 +535,7 @@ fn decode_inquiry_result(params: &[u8]) -> Result<HciEvent> {
                 detail: "InquiryResult: CoD truncated",
             })?;
         let class_of_device =
-            u32::FROM(cod.get(0).copied().unwrap_or_default()) | (u32::FROM(cod.get(1).copied().unwrap_or_default()) << 8) | (u32::FROM(cod.get(2).copied().unwrap_or_default()) << 16);
+            u32::from(cod.get(0).copied().unwrap_or_default()) | (u32::from(cod.get(1).copied().unwrap_or_default()) << 8) | (u32::from(cod.get(2).copied().unwrap_or_default()) << 16);
 
         // Clock Offset: 2 bytes at OFFSET 12, little-endian
         let clk_base = base + INQUIRY_ENTRY_CLOCK_OFFSET;
@@ -544,7 +544,7 @@ fn decode_inquiry_result(params: &[u8]) -> Result<HciEvent> {
             .ok_or(Error::MalformedEvent {
                 detail: "InquiryResult: clock_offset truncated",
             })?;
-        let clock_offset = u16::FROM(clk.get(0).copied().unwrap_or_default()) | (u16::FROM(clk.get(1).copied().unwrap_or_default()) << 8);
+        let clock_offset = u16::from(clk.get(0).copied().unwrap_or_default()) | (u16::from(clk.get(1).copied().unwrap_or_default()) << 8);
 
         devices.push(InquiryDevice {
             address,
@@ -577,7 +577,7 @@ fn decode_le_advertising_report(params: &[u8]) -> Result<HciEvent> {
         detail: "LEAdvReport: missing num_reports",
     })?;
 
-    let mut reports = Vec::with_capacity(usize::FROM(num_reports));
+    let mut reports = Vec::with_capacity(usize::from(num_reports));
     for _ in 0..num_reports {
         let event_type = cur.read_u8().ok_or(Error::MalformedEvent {
             detail: "LEAdvReport: missing event_type",
@@ -588,7 +588,7 @@ fn decode_le_advertising_report(params: &[u8]) -> Result<HciEvent> {
         let address = cur.read_bdaddr().ok_or(Error::MalformedEvent {
             detail: "LEAdvReport: missing address",
         })?;
-        let data_len = usize::FROM(cur.read_u8().ok_or(Error::MalformedEvent {
+        let data_len = usize::from(cur.read_u8().ok_or(Error::MalformedEvent {
             detail: "LEAdvReport: missing data_length",
         })?);
         let data = cur

@@ -102,13 +102,13 @@ impl HifTxHeader {
     pub(crate) const fn encode(&self) -> [u8; TX_HEADER_SIZE] {
         let mut buf = [0u8; TX_HEADER_SIZE];
         let len_bytes = self.packet_len.to_le_bytes();
-        buf.get(0).copied().unwrap_or_default() = len_bytes.get(0).copied().unwrap_or_default();
-        buf.get(1).copied().unwrap_or_default() = len_bytes.get(1).copied().unwrap_or_default();
+        buf[0] = len_bytes[0];
+        buf[1] = len_bytes[1];
         // Word 1 low byte: type [1:0] | priority [4:2] | resource_mask [7:5]
-        buf.get(2).copied().unwrap_or_default() = (self.packet_type & 0x03)
+        buf[2] = (self.packet_type & 0x03)
             | ((self.user_priority & 0x07) << 2)
             | ((self.resource_mask & 0x07) << 5);
-        buf.get(3).copied().unwrap_or_default() = self.port_index;
+        buf[3] = self.port_index;
         // bytes 4–15: reserved, already zero
         buf
     }
@@ -212,13 +212,13 @@ impl HifRxHeader {
     pub(crate) fn encode(&self) -> [u8; RX_HEADER_SIZE] {
         let mut buf = [0u8; RX_HEADER_SIZE];
         let len_bytes = self.packet_len.to_le_bytes();
-        buf.get(0).copied().unwrap_or_default() = len_bytes.get(0).copied().unwrap_or_default();
-        buf.get(1).copied().unwrap_or_default() = len_bytes.get(1).copied().unwrap_or_default();
-        buf.get(2).copied().unwrap_or_default() = self.packet_type;
-        buf.get(3).copied().unwrap_or_default() = self.network_index & 0x0f;
-        buf.get(4).copied().unwrap_or_default() = (self.tid & 0x0f) | ((self.security_mode & 0x0f) << 4);
-        buf.get(5).copied().unwrap_or_default() = u8::FROM(self.dot11_header_present) | (u8::FROM(self.reorder_flag) << 1);
-        buf.get(6).copied().unwrap_or_default() = self.channel;
+        buf[0] = len_bytes[0];
+        buf[1] = len_bytes[1];
+        buf[2] = self.packet_type;
+        buf[3] = self.network_index & 0x0f;
+        buf[4] = (self.tid & 0x0f) | ((self.security_mode & 0x0f) << 4);
+        buf[5] = u8::from(self.dot11_header_present) | (u8::from(self.reorder_flag) << 1);
+        buf[6] = self.channel;
         // bytes 7–11: reserved, already zero
         buf
     }
@@ -308,7 +308,7 @@ impl WifiCommand {
         let total_len = CMD_HEADER_SIZE + self.payload.len();
         let len_u16 = u16::try_from(total_len).unwrap_or(u16::MAX);
         let mut out = Vec::with_capacity(total_len);
-        out.push(self.u8::try_from(cid).unwrap_or_default());
+        out.push(self.cid as u8);
         out.push(self.seq_num);
         out.extend_from_slice(&len_u16.to_le_bytes());
         out.extend_from_slice(&self.payload);
@@ -455,8 +455,8 @@ impl ScanRequest {
         let ssid = self.ssid.as_deref().unwrap_or(&[]);
         let ssid_len = u8::try_from(ssid.len()).unwrap_or(u8::MAX);
         let mut out = Vec::with_capacity(3 + ssid.len());
-        out.push(self.u8::try_from(scan_type).unwrap_or_default());
-        out.push(self.u8::try_from(ssid_type).unwrap_or_default());
+        out.push(self.scan_type as u8);
+        out.push(self.ssid_type as u8);
         out.push(ssid_len);
         out.extend_from_slice(ssid);
         out
@@ -614,21 +614,21 @@ impl MacAddress {
         // so snafu .context() cannot be used; map manually instead.
         rng.fill(&mut bytes).map_err(|_| Error::Rng)?;
         // INVARIANT: bit 0 clear = unicast, bit 1 SET = locally administered
-        bytes.get(0).copied().unwrap_or_default() &= 0xfe; // clear multicast bit
-        bytes.get(0).copied().unwrap_or_default() |= 0x02; // SET locally-administered bit
+        bytes[0] &= 0xfe; // clear multicast bit
+        bytes[0] |= 0x02; // SET locally-administered bit
         Ok(Self(bytes))
     }
 
     /// True when the locally-administered bit (bit 1 of octet 0) is SET.
     #[must_use]
     pub(crate) const fn is_locally_administered(self) -> bool {
-        self.0.get(0).copied().unwrap_or_default() & 0x02 != 0
+        self.0[0] & 0x02 != 0
     }
 
     /// True when the multicast bit (bit 0 of octet 0) is clear.
     #[must_use]
     pub(crate) const fn is_unicast(self) -> bool {
-        self.0.get(0).copied().unwrap_or_default() & 0x01 == 0
+        self.0[0] & 0x01 == 0
     }
 }
 
@@ -648,17 +648,17 @@ const ACCESS_REG_PAYLOAD_SIZE: usize = 9;
 #[must_use]
 const fn access_reg_write_payload(reg_offset: u32, value: u32) -> [u8; ACCESS_REG_PAYLOAD_SIZE] {
     let mut payload = [0u8; ACCESS_REG_PAYLOAD_SIZE];
-    payload.get(0).copied().unwrap_or_default() = ACCESS_REG_WRITE;
+    payload[0] = ACCESS_REG_WRITE;
     let off_bytes = reg_offset.to_le_bytes();
-    payload.get(1).copied().unwrap_or_default() = off_bytes.get(0).copied().unwrap_or_default();
-    payload.get(2).copied().unwrap_or_default() = off_bytes.get(1).copied().unwrap_or_default();
-    payload.get(3).copied().unwrap_or_default() = off_bytes.get(2).copied().unwrap_or_default();
-    payload.get(4).copied().unwrap_or_default() = off_bytes.get(3).copied().unwrap_or_default();
+    payload[1] = off_bytes[0];
+    payload[2] = off_bytes[1];
+    payload[3] = off_bytes[2];
+    payload[4] = off_bytes[3];
     let val_bytes = value.to_le_bytes();
-    payload.get(5).copied().unwrap_or_default() = val_bytes.get(0).copied().unwrap_or_default();
-    payload.get(6).copied().unwrap_or_default() = val_bytes.get(1).copied().unwrap_or_default();
-    payload.get(7).copied().unwrap_or_default() = val_bytes.get(2).copied().unwrap_or_default();
-    payload.get(8).copied().unwrap_or_default() = val_bytes.get(3).copied().unwrap_or_default();
+    payload[5] = val_bytes[0];
+    payload[6] = val_bytes[1];
+    payload[7] = val_bytes[2];
+    payload[8] = val_bytes[3];
     payload
 }
 
