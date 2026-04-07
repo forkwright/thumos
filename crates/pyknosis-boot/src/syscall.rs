@@ -22,6 +22,7 @@
 //! - 80-89: Signal
 
 use crate::ipc;
+use crate::kconfig;
 use crate::process;
 use crate::uart::Uart;
 use core::fmt::Write;
@@ -30,6 +31,44 @@ use core::fmt::Write;
 /// WHY: two's complement -38, matching Linux ARM ENOSYS convention for
 /// toolchain compatibility with userspace built against Linux headers.
 pub const ENOSYS: u32 = 0u32.wrapping_sub(38);
+
+/// Error code returned when a user-supplied pointer is invalid.
+/// WHY: two's complement -14, matching Linux ARM EFAULT convention.
+/// Returned when a syscall argument points to kernel memory, device MMIO,
+/// unmapped regions, or when a buffer overflows the address space.
+pub const EFAULT: u32 = 0u32.wrapping_sub(14);
+
+/// Validate that a user-supplied buffer `[ptr, ptr+len)` lies entirely
+/// within user-accessible DRAM and does not overlap kernel-reserved memory.
+///
+/// # Memory layout (MT6739)
+///
+/// - `0x0000_0000 - 0x3FFF_FFFF`: device MMIO (boot ROM, peripherals, modem)
+/// - `0x4000_0000 - 0x4000_7FFF`: DRAM below kernel load (reserved)
+/// - `0x4000_8000 - 0x400F_FFFF`: kernel image + reserved (`KERNEL_LOAD..KERNEL_END`)
+/// - `0x4010_0000 - 0x7FFF_FFFF`: user-accessible DRAM
+/// - `0x8000_0000 - 0xFFFF_FFFF`: unmapped
+///
+/// Returns `true` if the entire buffer falls within user-accessible DRAM.
+/// Returns `false` for null, overflow, kernel-space, device, or unmapped addresses.
+pub fn validate_user_buffer(ptr: usize, len: usize) -> bool {
+    // Null pointer
+    if ptr == 0 {
+        return false;
+    }
+    // Zero-length buffer is vacuously valid (no memory accessed)
+    if len == 0 {
+        return true;
+    }
+    // Overflow check: ptr + len must not wrap
+    let Some(end) = ptr.checked_add(len) else {
+        return false;
+    };
+    // Entire range must be within user DRAM: [KERNEL_END, RAM_END)
+    // WHY: KERNEL_END is the first byte after kernel-reserved memory;
+    // RAM_END is one past the last byte of physical DRAM.
+    ptr >= kconfig::KERNEL_END && end <= kconfig::RAM_END
+}
 
 /// Total number of defined syscalls.
 pub const SYSCALL_COUNT: usize = 46;
@@ -341,11 +380,15 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             process::exit_with_status(i32::try_from(arg0).unwrap_or_default());
         }
         Syscall::Write => {
-            // SAFETY: we trust the userspace pointer for now.
-            // TODO(#0): Wave 4 adds proper address validation.
-            let ptr = arg0 as *const u8;
+            let ptr = usize::try_from(arg0).unwrap_or_default();
             let len = usize::try_from(arg1).unwrap_or_default();
-            let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+            if !validate_user_buffer(ptr, len) {
+                return EFAULT;
+            }
+            // SAFETY: validate_user_buffer confirmed [ptr, ptr+len) is within
+            // user-accessible DRAM, not null, not overflowing, and not in
+            // kernel-reserved or device memory.
+            let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
             let mut serial = Uart::new();
             for &byte in slice {
                 serial.putc(byte);
@@ -388,10 +431,16 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         Syscall::Send => {
             let to = u8::try_from(arg0).unwrap_or_default();
             let tag = arg1;
-            let ptr = arg2 as *const u8;
+            let ptr = usize::try_from(arg2).unwrap_or_default();
             let len = usize::try_from(arg3).unwrap_or_default();
-            let payload = if len > 0 && !ptr.is_null() {
-                unsafe { core::slice::from_raw_parts(ptr, len.min(ipc::MSG_MAX_SIZE)) }
+            let payload = if len > 0 && ptr != 0 {
+                let capped_len = len.min(ipc::MSG_MAX_SIZE);
+                if !validate_user_buffer(ptr, capped_len) {
+                    return EFAULT;
+                }
+                // SAFETY: validate_user_buffer confirmed [ptr, ptr+capped_len)
+                // is within user-accessible DRAM.
+                unsafe { core::slice::from_raw_parts(ptr as *const u8, capped_len) }
             } else {
                 &[]
             };
@@ -672,5 +721,158 @@ mod tests {
                 "{call:?} (number {n}) should be in signal range 80-89"
             );
         }
+    }
+
+    // ---- EFAULT constant ----
+
+    #[test]
+    fn efault_is_negative_14() {
+        // WHY: must match Linux ARM EFAULT for musl compatibility
+        assert_eq!(EFAULT, 0xFFFF_FFF2, "EFAULT must be two's complement -14");
+    }
+
+    // ---- User buffer validation ----
+
+    #[test]
+    fn validate_user_buffer_valid_pointer() {
+        // WHY: a pointer inside user DRAM [KERNEL_END, RAM_END) must pass.
+        // 0x5000_0000 is well within the 0x4010_0000..0x8000_0000 range.
+        assert!(
+            validate_user_buffer(0x5000_0000, 4096),
+            "pointer in user DRAM must be valid"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_entire_user_range() {
+        // WHY: the full user DRAM range must be valid.
+        let start = kconfig::KERNEL_END;
+        let len = kconfig::RAM_END - kconfig::KERNEL_END;
+        assert!(
+            validate_user_buffer(start, len),
+            "full user DRAM range must be valid"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_zero_length() {
+        // WHY: zero-length reads touch no memory, so any non-null address is ok.
+        assert!(
+            validate_user_buffer(0x5000_0000, 0),
+            "zero-length buffer must be valid"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_null_pointer() {
+        // WHY: null pointer dereference must be caught unconditionally.
+        assert!(
+            !validate_user_buffer(0, 100),
+            "null pointer must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_null_zero_length() {
+        // WHY: null is always invalid, even with zero length.
+        assert!(
+            !validate_user_buffer(0, 0),
+            "null pointer must fail even with zero length"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_kernel_space() {
+        // WHY: kernel-reserved memory (0x4000_8000..0x4010_0000) must be
+        // inaccessible to userspace syscalls to prevent privilege escalation.
+        assert!(
+            !validate_user_buffer(kconfig::KERNEL_LOAD, 4096),
+            "kernel load address must fail validation"
+        );
+        assert!(
+            !validate_user_buffer(kconfig::KERNEL_LOAD + 0x1000, 256),
+            "pointer within kernel image must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_device_mmio() {
+        // WHY: device MMIO regions (below RAM_START) must be blocked to
+        // prevent userspace from reading/writing hardware registers.
+        assert!(
+            !validate_user_buffer(0x1100_2000, 16),
+            "UART0 MMIO address must fail validation"
+        );
+        assert!(
+            !validate_user_buffer(0x0C00_0000, 4),
+            "GIC address must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_above_ram() {
+        // WHY: addresses above RAM_END (0x8000_0000) are unmapped and must
+        // be rejected.
+        assert!(
+            !validate_user_buffer(0x8000_0000, 1),
+            "address at RAM_END must fail validation"
+        );
+        assert!(
+            !validate_user_buffer(0xC000_0000, 4096),
+            "address well above RAM must fail validation"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_overflow() {
+        // WHY: ptr + len wrapping around the address space must be caught.
+        // usize::MAX with any nonzero len overflows.
+        assert!(
+            !validate_user_buffer(usize::MAX, 1),
+            "usize::MAX + 1 overflows and must fail"
+        );
+        assert!(
+            !validate_user_buffer(usize::MAX - 10, 100),
+            "near-max pointer with large len must fail"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_spans_into_kernel() {
+        // WHY: a buffer that starts before KERNEL_END must not pass even if
+        // it starts within the kernel reserved region.
+        assert!(
+            !validate_user_buffer(kconfig::KERNEL_END - 1, 2),
+            "buffer spanning into kernel region must fail"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_spans_past_ram_end() {
+        // WHY: a buffer that starts in valid user DRAM but extends past
+        // RAM_END must fail.
+        assert!(
+            !validate_user_buffer(kconfig::RAM_END - 10, 20),
+            "buffer extending past RAM_END must fail"
+        );
+    }
+
+    #[test]
+    fn validate_user_buffer_boundary_exact() {
+        // WHY: KERNEL_END is the first valid user address; a single byte
+        // there must pass. One byte before must fail.
+        assert!(
+            validate_user_buffer(kconfig::KERNEL_END, 1),
+            "first byte of user DRAM must be valid"
+        );
+        assert!(
+            !validate_user_buffer(kconfig::KERNEL_END - 1, 1),
+            "last byte of kernel region must fail"
+        );
+        // Last byte of DRAM
+        assert!(
+            validate_user_buffer(kconfig::RAM_END - 1, 1),
+            "last byte of DRAM must be valid"
+        );
     }
 }
