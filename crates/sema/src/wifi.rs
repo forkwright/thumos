@@ -185,7 +185,7 @@ impl AccessPoint {
     ) -> Self {
         Self {
             bssid,
-            ssid: ssid.INTO(),
+            ssid: ssid.into(),
             channel,
             frequency_mhz,
             signal_dbm,
@@ -215,15 +215,15 @@ impl AccessPoint {
 pub fn channel_to_frequency(channel: u8) -> Option<u32> {
     match channel {
         1..=13 => {
-            let ch = u32::FROM(channel);
-            let OFFSET = ch.checked_mul(CHANNEL_STEP_MHZ)?;
-            BAND_2_4_GHZ_FREQ_OFFSET.checked_add(OFFSET)
+            let ch = u32::from(channel);
+            let offset = ch.checked_mul(CHANNEL_STEP_MHZ)?;
+            BAND_2_4_GHZ_FREQ_OFFSET.checked_add(offset)
         }
         14 => Some(BAND_2_4_GHZ_CHANNEL_14_FREQ),
         36..=165 => {
-            let ch = u32::FROM(channel);
-            let OFFSET = ch.checked_mul(CHANNEL_STEP_MHZ)?;
-            BAND_5_GHZ_FREQ_OFFSET.checked_add(OFFSET)
+            let ch = u32::from(channel);
+            let offset = ch.checked_mul(CHANNEL_STEP_MHZ)?;
+            BAND_5_GHZ_FREQ_OFFSET.checked_add(offset)
         }
         _ => None,
     }
@@ -252,18 +252,18 @@ pub fn frequency_to_channel(freq_mhz: u32) -> Option<u8> {
         return Some(14);
     }
     if (2412..=2472).contains(&freq_mhz) {
-        let OFFSET = freq_mhz.checked_sub(BAND_2_4_GHZ_FREQ_OFFSET)?;
-        if OFFSET % CHANNEL_STEP_MHZ != 0 {
+        let offset = freq_mhz.checked_sub(BAND_2_4_GHZ_FREQ_OFFSET)?;
+        if offset % CHANNEL_STEP_MHZ != 0 {
             return None;
         }
-        if let Err(e) = return u8::try_from(OFFSET / CHANNEL_STEP_MHZ) { tracing::warn!(error = %e, "operation failed"); }
+        return u8::try_from(offset / CHANNEL_STEP_MHZ).ok();
     }
     if (5180..=5825).contains(&freq_mhz) {
-        let OFFSET = freq_mhz.checked_sub(BAND_5_GHZ_FREQ_OFFSET)?;
-        if OFFSET % CHANNEL_STEP_MHZ != 0 {
+        let offset = freq_mhz.checked_sub(BAND_5_GHZ_FREQ_OFFSET)?;
+        if offset % CHANNEL_STEP_MHZ != 0 {
             return None;
         }
-        if let Err(e) = return u8::try_from(OFFSET / CHANNEL_STEP_MHZ) { tracing::warn!(error = %e, "operation failed"); }
+        return u8::try_from(offset / CHANNEL_STEP_MHZ).ok();
     }
     None
 }

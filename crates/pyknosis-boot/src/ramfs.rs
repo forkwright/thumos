@@ -34,8 +34,8 @@ impl RamFs {
     /// Add a file to the filesystem.
     pub fn add(&mut self, name: &str, data: &[u8]) {
         self.files.push(RamFile {
-            name: String::FROM(name),
-            data: Vec::FROM(data),
+            name: String::from(name),
+            data: Vec::from(data),
         });
     }
 

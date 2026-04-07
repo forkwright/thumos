@@ -83,6 +83,33 @@ impl Context {
     }
 }
 
+/// Maximum number of tracked anonymous mappings per process.
+/// WHY: fixed-size array avoids heap allocation in the kernel's process table.
+/// 32 mappings is sufficient for early userspace (libc typically needs ~10).
+pub const MAX_MAPPINGS: usize = 32;
+
+/// A tracked virtual memory region created by mmap or brk.
+#[derive(Clone, Copy)]
+pub struct VmMapping {
+    /// Starting virtual address (page-aligned).
+    pub start: usize,
+    /// Number of 4 KB pages in this mapping.
+    pub pages: usize,
+    /// POSIX protection flags (PROT_READ | PROT_WRITE | PROT_EXEC).
+    pub prot: u32,
+}
+
+/// Default initial program break for new processes.
+/// WHY: 0x1000_0000 is above device MMIO (0x0-0x2FFF_FFFF) but below DRAM
+/// (0x4000_0000), providing a clean region for the user heap that won't
+/// conflict with kernel data structures or device mappings.
+pub const DEFAULT_HEAP_BREAK: usize = 0x1000_0000;
+
+/// Base address for mmap allocations, above the heap region.
+/// WHY: 0x2000_0000 provides 256 MB of VA space for mmap before hitting
+/// the modem region, keeping mmap and brk regions non-overlapping.
+pub const MMAP_BASE: usize = 0x2000_0000;
+
 /// Process control block.
 pub struct Process {
     pub pid: Pid,
@@ -99,6 +126,11 @@ pub struct Process {
     stack_base: usize,
     /// Number of pages allocated for the stack.
     stack_pages: usize,
+    /// Current program break (heap boundary), page-aligned.
+    /// Managed by the brk syscall.
+    pub heap_break: usize,
+    /// Tracked anonymous memory mappings (mmap regions).
+    pub mappings: [Option<VmMapping>; MAX_MAPPINGS],
 }
 
 /// Process table.
@@ -130,9 +162,11 @@ pub unsafe fn init() {
             page_table_phys: mmu::table_base(), // NOTE: kernel global L1
             stack_base: 0,                       // NOTE: uses the boot stack, not allocated
             stack_pages: 0,
+            heap_break: DEFAULT_HEAP_BREAK,
+            mappings: [None; MAX_MAPPINGS],
         };
         let procs = &mut *addr_of_mut!(PROCS);
-        procs.get(0).copied().unwrap_or_default() = Some(proc0);
+        procs[0] = Some(proc0);
         CURRENT = 0;
     }
 }
@@ -180,8 +214,8 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
             r9: 0,
             r10: 0,
             r11: 0,
-            sp: u32::try_from(stack_top).unwrap_or_default(),
-            lr: u32::try_from(entry_point).unwrap_or_default(),
+            sp: stack_top as u32,
+            lr: entry_point as u32,
             cpsr: 0x1F, // NOTE: system mode, IRQs enabled
         };
 
@@ -195,6 +229,8 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
             page_table_phys: new_pt,
             stack_base,
             stack_pages: STACK_PAGES,
+            heap_break: DEFAULT_HEAP_BREAK,
+            mappings: [None; MAX_MAPPINGS],
         };
 
         procs[slot] = Some(proc);
@@ -247,11 +283,11 @@ pub fn fork() -> Option<Pid> {
             }
         }
 
-        // Inherit parent context (child resumes FROM same saved state)
-        let parent_ctx = procs[usize::try_from(parent_pid).unwrap_or_default()]
-            .as_ref()
-            .map(|p| p.ctx)
-            .unwrap_or_else(Context::zero);
+        // Inherit parent context and memory layout (child resumes FROM same saved state)
+        let parent_ref = procs[usize::try_from(parent_pid).unwrap_or_default()].as_ref();
+        let parent_ctx = parent_ref.map(|p| p.ctx).unwrap_or_else(Context::zero);
+        let parent_break = parent_ref.map_or(DEFAULT_HEAP_BREAK, |p| p.heap_break);
+        let parent_mappings = parent_ref.map_or([None; MAX_MAPPINGS], |p| p.mappings);
 
         let child = Process {
             pid: child_pid,
@@ -262,6 +298,8 @@ pub fn fork() -> Option<Pid> {
             page_table_phys: child_pt,
             stack_base,
             stack_pages: STACK_PAGES,
+            heap_break: parent_break,
+            mappings: parent_mappings,
         };
 
         procs[slot] = Some(child);
@@ -493,6 +531,156 @@ unsafe fn restore_context(ctx: &Context) {
     let _ = ctx;
 }
 
+// --- Memory management accessors ---
+// WHY: syscall handlers need to read/modify the current process's heap break,
+// page table, and mappings. These functions centralize access to the process
+// table so syscall.rs doesn't need to manipulate PROCS directly.
+
+/// Get the current process's page table physical address.
+/// Returns 0 if the current process is not found (should not happen).
+pub fn current_page_table() -> usize {
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        procs[cur].as_ref().map_or(0, |p| p.page_table_phys)
+    }
+}
+
+/// Get the current process's heap break.
+pub fn current_heap_break() -> usize {
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        procs[cur].as_ref().map_or(DEFAULT_HEAP_BREAK, |p| p.heap_break)
+    }
+}
+
+/// Set the current process's heap break.
+pub fn set_heap_break(new_break: usize) {
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        if let Some(ref mut proc) = procs[cur] {
+            proc.heap_break = new_break;
+        }
+    }
+}
+
+/// Find a free mapping slot in the current process and insert a new mapping.
+/// Returns the index on success, None if all slots are full.
+pub fn add_mapping(mapping: VmMapping) -> Option<usize> {
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let proc = procs[cur].as_mut()?;
+        let slot = proc.mappings.iter().position(|m| m.is_none())?;
+        proc.mappings[slot] = Some(mapping);
+        Some(slot)
+    }
+}
+
+/// Remove a mapping that starts at the given address.
+/// Returns the removed mapping, or None if not found.
+pub fn remove_mapping(start_addr: usize) -> Option<VmMapping> {
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let proc = procs[cur].as_mut()?;
+        for slot in proc.mappings.iter_mut() {
+            if let Some(m) = slot {
+                if m.start == start_addr {
+                    return slot.take();
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Find a mapping that starts at the given address.
+/// Returns a copy of the mapping, or None if not found.
+pub fn find_mapping(start_addr: usize) -> Option<VmMapping> {
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let proc = procs[cur].as_ref()?;
+        for slot in &proc.mappings {
+            if let Some(m) = slot {
+                if m.start == start_addr {
+                    return Some(*m);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Update the protection flags on an existing mapping.
+/// Returns true if the mapping was found and updated.
+pub fn update_mapping_prot(start_addr: usize, new_prot: u32) -> bool {
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let Some(proc) = procs[cur].as_mut() else { return false };
+        for slot in proc.mappings.iter_mut() {
+            if let Some(m) = slot {
+                if m.start == start_addr {
+                    m.prot = new_prot;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+/// Get a snapshot of all active mappings for the current process.
+/// Used by mmap to find free virtual address regions.
+pub fn current_mappings() -> [Option<VmMapping>; MAX_MAPPINGS] {
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        procs[cur]
+            .as_ref()
+            .map_or([None; MAX_MAPPINGS], |p| p.mappings)
+    }
+}
+
+/// Reset all process subsystem state for testing.
+/// Creates process 0 (kernel) with a valid page table and resets the
+/// page allocator.
+///
+/// # Safety
+///
+/// Must only be called in test code. Invalidates all process state.
+#[cfg(test)]
+pub(crate) unsafe fn reset_for_test() {
+    unsafe {
+        let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+        for p in procs.iter_mut() {
+            *p = None;
+        }
+        CURRENT = 0;
+        mmu::reset_addr_space_pool();
+        mmu::reset_l2_pool();
+        page::init(0x4000_0000, 0x8000_0000, 0x4010_0000);
+
+        let pt = mmu::alloc_addr_space().unwrap_or_default();
+        procs[0] = Some(Process {
+            pid: 0,
+            state: State::Running,
+            ctx: Context::zero(),
+            parent: None,
+            exit_status: 0,
+            page_table_phys: pt,
+            stack_base: 0,
+            stack_pages: 0,
+            heap_break: DEFAULT_HEAP_BREAK,
+            mappings: [None; MAX_MAPPINGS],
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,7 +716,7 @@ mod tests {
             // Construct a minimal process 0
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -537,6 +725,8 @@ mod tests {
                 page_table_phys: pt,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 
@@ -552,7 +742,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -561,6 +751,8 @@ mod tests {
                 page_table_phys: pt,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 
@@ -578,7 +770,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -587,6 +779,8 @@ mod tests {
                 page_table_phys: pt,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 
@@ -603,7 +797,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -612,6 +806,8 @@ mod tests {
                 page_table_phys: pt,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 
@@ -635,7 +831,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -644,6 +840,8 @@ mod tests {
                 page_table_phys: pt,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 
@@ -659,7 +857,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -668,6 +866,8 @@ mod tests {
                 page_table_phys: pt,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 
@@ -690,7 +890,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -699,6 +899,8 @@ mod tests {
                 page_table_phys: pt,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 
@@ -727,7 +929,7 @@ mod tests {
 
             // Process 0: kinit supervisor
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -736,11 +938,13 @@ mod tests {
                 page_table_phys: pt0,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
 
             // Process 1: faulting process
             let pt1 = mmu::alloc_addr_space().unwrap();
-            procs.get(1).copied().unwrap_or_default() = Some(Process {
+            procs[1] = Some(Process {
                 pid: 1,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -749,6 +953,8 @@ mod tests {
                 page_table_phys: pt1,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 
@@ -767,7 +973,7 @@ mod tests {
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
 
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -776,9 +982,11 @@ mod tests {
                 page_table_phys: pt0,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             let pt1 = mmu::alloc_addr_space().unwrap();
-            procs.get(1).copied().unwrap_or_default() = Some(Process {
+            procs[1] = Some(Process {
                 pid: 1,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -787,6 +995,8 @@ mod tests {
                 page_table_phys: pt1,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 
@@ -806,7 +1016,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs.get(0).copied().unwrap_or_default() = Some(Process {
+            procs[0] = Some(Process {
                 pid: 0,
                 state: State::Running,
                 ctx: Context::zero(),
@@ -815,6 +1025,8 @@ mod tests {
                 page_table_phys: pt,
                 stack_base: 0,
                 stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
             });
             CURRENT = 0;
 

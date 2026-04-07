@@ -23,7 +23,7 @@ pub enum Error {
     #[snafu(display("modem not ready"))]
     NotReady,
 
-    #[snafu(display("PDU decode error at byte {OFFSET}: {message}"))]
+    #[snafu(display("PDU decode error at byte {offset}: {message}"))]
     PduDecode { offset: usize, message: String },
 
     #[snafu(display("invalid PDU hex: {message}"))]

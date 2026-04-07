@@ -115,7 +115,7 @@ impl IpHeader {
             return Err(ParseError::InvalidIhl { ihl });
         }
 
-        let header_len = usize::FROM(ihl) * 4;
+        let header_len = usize::from(ihl) * 4;
         if data.len() < header_len {
             return Err(ParseError::TooShort {
                 needed: header_len,
@@ -140,7 +140,7 @@ impl IpHeader {
 
     /// Return the header length in bytes (`ihl * 4`).
     pub fn header_len(&self) -> usize {
-        usize::FROM(self.ihl) * 4
+        usize::from(self.ihl) * 4
     }
 }
 
@@ -219,25 +219,25 @@ mod tests {
     fn make_tcp_packet() -> Vec<u8> {
         let mut pkt = vec![0u8; 40];
         // IP header
-        pkt.get(0).copied().unwrap_or_default() = 0x45; // version=4, IHL=5
-        pkt.get(2).copied().unwrap_or_default() = 0x00;
-        pkt.get(3).copied().unwrap_or_default() = 40; // total length
-        pkt.get(9).copied().unwrap_or_default() = PROTO_TCP;
-        pkt.get(12).copied().unwrap_or_default() = 10;
-        pkt.get(13).copied().unwrap_or_default() = 0;
-        pkt.get(14).copied().unwrap_or_default() = 0;
-        pkt.get(15).copied().unwrap_or_default() = 1; // src = 10.0.0.1
-        pkt.get(16).copied().unwrap_or_default() = 192;
-        pkt.get(17).copied().unwrap_or_default() = 168;
-        pkt.get(18).copied().unwrap_or_default() = 1;
-        pkt.get(19).copied().unwrap_or_default() = 1; // dst = 192.168.1.1
+        pkt[0] = 0x45; // version=4, IHL=5
+        pkt[2] = 0x00;
+        pkt[3] = 40; // total length
+        pkt[9] = PROTO_TCP;
+        pkt[12] = 10;
+        pkt[13] = 0;
+        pkt[14] = 0;
+        pkt[15] = 1; // src = 10.0.0.1
+        pkt[16] = 192;
+        pkt[17] = 168;
+        pkt[18] = 1;
+        pkt[19] = 1; // dst = 192.168.1.1
         // TCP header
-        pkt.get(20).copied().unwrap_or_default() = 0x30;
-        pkt.get(21).copied().unwrap_or_default() = 0x39; // src_port = 12345
-        pkt.get(22).copied().unwrap_or_default() = 0x00;
-        pkt.get(23).copied().unwrap_or_default() = 0x50; // dst_port = 80
-        pkt.get(32).copied().unwrap_or_default() = 0x50; // data OFFSET = 5 (20 bytes)
-        pkt.get(33).copied().unwrap_or_default() = 0x02; // SYN flag
+        pkt[20] = 0x30;
+        pkt[21] = 0x39; // src_port = 12345
+        pkt[22] = 0x00;
+        pkt[23] = 0x50; // dst_port = 80
+        pkt[32] = 0x50; // data OFFSET = 5 (20 bytes)
+        pkt[33] = 0x02; // SYN flag
         pkt
     }
 
@@ -246,25 +246,25 @@ mod tests {
     // UDP: src_port=54321, dst_port=53
     fn make_udp_packet() -> Vec<u8> {
         let mut pkt = vec![0u8; 28];
-        pkt.get(0).copied().unwrap_or_default() = 0x45;
-        pkt.get(2).copied().unwrap_or_default() = 0x00;
-        pkt.get(3).copied().unwrap_or_default() = 28;
-        pkt.get(9).copied().unwrap_or_default() = PROTO_UDP;
-        pkt.get(12).copied().unwrap_or_default() = 10;
-        pkt.get(13).copied().unwrap_or_default() = 0;
-        pkt.get(14).copied().unwrap_or_default() = 0;
-        pkt.get(15).copied().unwrap_or_default() = 1;
-        pkt.get(16).copied().unwrap_or_default() = 8;
-        pkt.get(17).copied().unwrap_or_default() = 8;
-        pkt.get(18).copied().unwrap_or_default() = 8;
-        pkt.get(19).copied().unwrap_or_default() = 8;
+        pkt[0] = 0x45;
+        pkt[2] = 0x00;
+        pkt[3] = 28;
+        pkt[9] = PROTO_UDP;
+        pkt[12] = 10;
+        pkt[13] = 0;
+        pkt[14] = 0;
+        pkt[15] = 1;
+        pkt[16] = 8;
+        pkt[17] = 8;
+        pkt[18] = 8;
+        pkt[19] = 8;
         // UDP header
-        pkt.get(20).copied().unwrap_or_default() = 0xD4;
-        pkt.get(21).copied().unwrap_or_default() = 0x31; // src_port = 54321
-        pkt.get(22).copied().unwrap_or_default() = 0x00;
-        pkt.get(23).copied().unwrap_or_default() = 0x35; // dst_port = 53
-        pkt.get(24).copied().unwrap_or_default() = 0x00;
-        pkt.get(25).copied().unwrap_or_default() = 8; // length = 8 (header only)
+        pkt[20] = 0xD4;
+        pkt[21] = 0x31; // src_port = 54321
+        pkt[22] = 0x00;
+        pkt[23] = 0x35; // dst_port = 53
+        pkt[24] = 0x00;
+        pkt[25] = 8; // length = 8 (header only)
         pkt
     }
 
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn ip_header_rejects_ipv6_version() {
         let mut pkt = make_tcp_packet();
-        pkt.get(0).copied().unwrap_or_default() = 0x65; // version=6
+        pkt[0] = 0x65; // version=6
         let err = IpHeader::parse(&pkt);
         assert!(
             matches!(err, Err(ParseError::InvalidVersion { version: 6 })),
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn ip_header_rejects_ihl_below_minimum() {
         let mut pkt = make_tcp_packet();
-        pkt.get(0).copied().unwrap_or_default() = 0x44; // version=4, IHL=4 (invalid)
+        pkt[0] = 0x44; // version=4, IHL=4 (invalid)
         let err = IpHeader::parse(&pkt);
         assert!(
             matches!(err, Err(ParseError::InvalidIhl { ihl: 4 })),

@@ -283,7 +283,7 @@ const DEVICE_DESCRIPTOR: [u8; 18] = [
     0x02,             // bDeviceClass = CDC
     0x00,             // bDeviceSubClass
     0x00,             // bDeviceProtocol
-    u8::try_from(EP0_MAX_PKT).unwrap_or_default(), // bMaxPacketSize0 = 64
+    EP0_MAX_PKT as u8, // bMaxPacketSize0 = 64
     // idVendor = 0x0525, little-endian
     (USB_VID & 0xFF) as u8,
     (USB_VID >> 8) as u8,
@@ -779,7 +779,7 @@ impl UsbController {
             // WHY: Timeout prevents infinite spin if the host disconnects mid-transfer.
             let ready = mmio::wait_bits_clear(
                 self.base + REG_TXCSR,
-                u32::FROM(TXCSR_TXPKTRDY),
+                u32::from(TXCSR_TXPKTRDY),
                 100_000,
             );
             if !ready {
@@ -787,7 +787,7 @@ impl UsbController {
             }
 
             // Clamp to one max-packet-size chunk.
-            let count = data.len().min(usize::FROM(EP1_MAX_PKT));
+            let count = data.len().min(usize::from(EP1_MAX_PKT));
             let fifo = self.base + REG_FIFO_BASE + 4; // EP1 FIFO = base + 0x124
 
             for &byte in &data[..count] {
@@ -996,8 +996,8 @@ impl UsbController {
                 }
                 USB_REQ_GET_STATUS => {
                     // Return 2 zero bytes (device: not self-powered, no remote wakeup).
-                    self.ep0_buf.get(0).copied().unwrap_or_default() = 0;
-                    self.ep0_buf.get(1).copied().unwrap_or_default() = 0;
+                    self.ep0_buf[0] = 0;
+                    self.ep0_buf[1] = 0;
                     self.ep0_buf_len = 2;
                     self.ep0_buf_pos = 0;
                     self.ep0_state = Ep0State::DataIn;
@@ -1078,7 +1078,7 @@ impl UsbController {
         };
 
         // Copy up to min(descriptor length, wLength, EP0_BUF_LEN).
-        let max = usize::FROM(w_length).min(src.len()).min(EP0_BUF_LEN);
+        let max = usize::from(w_length).min(src.len()).min(EP0_BUF_LEN);
         self.ep0_buf[..max].copy_from_slice(&src[..max]);
         self.ep0_buf_len = max;
         self.ep0_buf_pos = 0;
@@ -1096,7 +1096,7 @@ impl UsbController {
         // SAFETY: MMIO writes and FIFO writes.
         unsafe {
             let remaining = self.ep0_buf_len - self.ep0_buf_pos;
-            let chunk = remaining.min(usize::FROM(EP0_MAX_PKT));
+            let chunk = remaining.min(usize::from(EP0_MAX_PKT));
             let fifo = self.base + REG_FIFO_BASE; // EP0 FIFO at base + 0x120
 
             for i in 0..chunk {
@@ -1156,7 +1156,7 @@ impl UsbController {
             let fifo = self.base + REG_FIFO_BASE + 4; // EP1 FIFO
 
             // Drain the entire FIFO (up to EP1_MAX_PKT bytes).
-            for _ in 0..usize::FROM(EP1_MAX_PKT) {
+            for _ in 0..usize::from(EP1_MAX_PKT) {
                 // NOTE: We don't have a RxCount register in this simplified driver.
                 // We drain one full packet worth of bytes and rely on the ring
                 // buffer to absorb whatever arrives.
@@ -1320,7 +1320,7 @@ mod tests {
     fn config_descriptor_total_length() {
         assert_eq!(
             CONFIG_DESCRIPTOR.len(),
-            usize::FROM(CONFIG_DESC_TOTAL_LEN),
+            usize::from(CONFIG_DESC_TOTAL_LEN),
             "CONFIG_DESCRIPTOR length must match CONFIG_DESC_TOTAL_LEN"
         );
         let wlen = u16::from_le_bytes([CONFIG_DESCRIPTOR.get(2).copied().unwrap_or_default(), CONFIG_DESCRIPTOR.get(3).copied().unwrap_or_default()]);
@@ -1488,9 +1488,9 @@ mod tests {
     fn read_serial_partial() {
         let mut ctrl = UsbController::new();
         // Manually prime the ring buffer with 3 bytes.
-        ctrl.rx_buf.get(0).copied().unwrap_or_default() = b'A';
-        ctrl.rx_buf.get(1).copied().unwrap_or_default() = b'B';
-        ctrl.rx_buf.get(2).copied().unwrap_or_default() = b'C';
+        ctrl.rx_buf[0] = b'A';
+        ctrl.rx_buf[1] = b'B';
+        ctrl.rx_buf[2] = b'C';
         ctrl.rx_head = 3;
         ctrl.rx_tail = 0;
 
