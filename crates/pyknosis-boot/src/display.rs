@@ -5,12 +5,13 @@
 //! and provides framebuffer UPDATE via RDMA0 memory mode.
 //!
 //! Panel support is pluggable via the [`LcmControl`] and [`LcmBacklight`]
-//! traits. The [`Gc9306`] stub implements these for the AGM M7's GC9306
-//! panel controller  -  its init sequence is pending extraction FROM the BSP.
+//! traits. The [`Gc9306`] implements these for the AGM M7's GC9306
+//! panel controller using the init sequence from `docs/GC9306-INIT.md`.
 //!
 //! Register offsets FROM `docs/DRIVER-INTERFACES.md` §7.
 
 use crate::mmio;
+use crate::timer;
 
 // ---------------------------------------------------------------------------
 // Constants: base addresses
@@ -212,6 +213,15 @@ mod dsi {
     /// PHY LD0 (data lane 0) control.
     pub const PHY_LD0CON: usize = DSI0_BASE + 0x108;
 
+    /// Command queue size register (number of entries).
+    pub const CMDQ_SIZE: usize = DSI0_BASE + 0x060;
+    /// Command queue data register 0 (first slot in the 128-entry queue).
+    ///
+    /// Each slot is 4 bytes. Slot N is at `CMDQ_DATA + N * 4`.
+    pub const CMDQ_DATA: usize = DSI0_BASE + 0x200;
+    /// Rack (read-ack) register — write 1 to acknowledge completed command.
+    pub const RACK: usize = DSI0_BASE + 0x084;
+
     /// DSI_START bit.
     pub const START_BIT: u32 = 1;
     /// Video mode sync pulse.
@@ -222,6 +232,23 @@ mod dsi {
     pub const LC_HS_TX_EN: u32 = 1 << 0;
     /// Data lane 0 enable in PHY_LD0CON.
     pub const LD0_HS_TX_EN: u32 = 1 << 0;
+
+    // WHY: CMDQ word format for DCS short writes (the only type we use):
+    //   bits [7:0]   = config (0x00 = short write 0-param, 0x05 = short write 1-param,
+    //                          0x39 = long write / generic long)
+    //   bits [15:8]  = DCS command byte
+    //   bits [23:16] = first data byte (for 1-param short writes)
+    //   bits [31:24] = second data byte (unused for short writes, set to 0)
+    //
+    // For long writes (>1 data byte), the format packs the word count and
+    // subsequent data into additional CMDQ slots.
+
+    /// CMDQ config: DCS short write, no parameter (data type 0x05).
+    pub const CMDQ_SHORT_W0: u32 = 0x00;
+    /// CMDQ config: DCS short write, 1 parameter (data type 0x15).
+    pub const CMDQ_SHORT_W1: u32 = 0x05;
+    /// CMDQ config: DCS long write (data type 0x39).
+    pub const CMDQ_LONG_W: u32 = 0x39;
 }
 
 // ---------------------------------------------------------------------------
@@ -379,14 +406,150 @@ pub trait LcmDriver: LcmControl + LcmBacklight {}
 impl<T: LcmControl + LcmBacklight> LcmDriver for T {}
 
 // ---------------------------------------------------------------------------
-// GC9306 panel stub
+// DSI DCS command helpers
 // ---------------------------------------------------------------------------
 
-/// GC9306 DBI panel controller stub for the AGM M7.
+/// Maximum iterations to poll for DSI command completion.
+const DSI_POLL_TIMEOUT: u32 = 100_000;
+
+/// Busy-wait delay using the ARM generic timer.
 ///
-/// The GC9306 drives a 240×320 QVGA TFT via MIPI DSI. The actual init
-/// sequence (register writes to configure gamma, power, timing) is
-/// pending extraction FROM the BSP  -  see `docs/DRIVER-INTERFACES.md` §7.6.
+/// Spins on the counter until `ms` milliseconds have elapsed. This is
+/// appropriate for panel init delays where no interrupt-driven timer is
+/// available yet.
+fn delay_ms(ms: u32) {
+    let freq = timer::frequency() as u64;
+    if freq == 0 {
+        // No timer frequency available; fall back to a rough spin.
+        for _ in 0..ms.saturating_mul(10_000) {
+            core::hint::spin_loop();
+        }
+        return;
+    }
+    let target = timer::counter() + (freq * u64::from(ms)) / 1000;
+    while timer::counter() < target {
+        core::hint::spin_loop();
+    }
+}
+
+/// Wait for a DSI command to complete by polling the START register.
+///
+/// The DSI engine clears `START_BIT` when the command finishes.
+///
+/// # Safety
+///
+/// DSI0 registers must be mapped and accessible.
+unsafe fn dsi_wait_idle() {
+    unsafe {
+        mmio::wait_bits_clear(dsi::START, dsi::START_BIT, DSI_POLL_TIMEOUT);
+    }
+}
+
+/// Send a DCS short write with no parameters (e.g., Sleep Out, Display On).
+///
+/// # Safety
+///
+/// DSI0 must be configured with clock and data lanes active.
+unsafe fn dcs_write_cmd0(cmd: u8) {
+    unsafe {
+        dsi_wait_idle();
+        // Clear start bit before writing command queue
+        mmio::write32(dsi::START, 0);
+        // One CMDQ entry: short write, 0 params
+        mmio::write32(dsi::CMDQ_SIZE, 1);
+        mmio::write32(
+            dsi::CMDQ_DATA,
+            dsi::CMDQ_SHORT_W0 | (u32::from(cmd) << 8),
+        );
+        // Trigger DSI command
+        mmio::write32(dsi::START, dsi::START_BIT);
+        dsi_wait_idle();
+    }
+}
+
+/// Send a DCS short write with one parameter byte.
+///
+/// # Safety
+///
+/// DSI0 must be configured with clock and data lanes active.
+unsafe fn dcs_write_cmd1(cmd: u8, data: u8) {
+    unsafe {
+        dsi_wait_idle();
+        mmio::write32(dsi::START, 0);
+        mmio::write32(dsi::CMDQ_SIZE, 1);
+        mmio::write32(
+            dsi::CMDQ_DATA,
+            dsi::CMDQ_SHORT_W1 | (u32::from(cmd) << 8) | (u32::from(data) << 16),
+        );
+        mmio::write32(dsi::START, dsi::START_BIT);
+        dsi_wait_idle();
+    }
+}
+
+/// Send a DCS long write with multiple data bytes.
+///
+/// The `data` slice contains all bytes after the DCS command byte.
+/// The total payload is `1 (cmd) + data.len()` bytes, packed into CMDQ
+/// slots in little-endian order.
+///
+/// # Safety
+///
+/// DSI0 must be configured. `data.len()` must be <= 60 bytes
+/// (limited by the 16-entry × 4-byte CMDQ minus header overhead).
+unsafe fn dcs_write_long(cmd: u8, data: &[u8]) {
+    unsafe {
+        dsi_wait_idle();
+        mmio::write32(dsi::START, 0);
+
+        // Total payload length: cmd byte + data bytes
+        let payload_len = 1 + data.len();
+
+        // WHY: CMDQ slot 0 holds the long-write header:
+        //   bits [7:0]   = data type (0x39 = DCS long write)
+        //   bits [23:8]  = word count (total payload length)
+        let header = dsi::CMDQ_LONG_W | ((payload_len as u32) << 8);
+        mmio::write32(dsi::CMDQ_DATA, header);
+
+        // Pack payload bytes into subsequent CMDQ slots, 4 bytes per slot.
+        // First byte of payload is the DCS command itself.
+        let mut slot = 1usize;
+        let mut byte_idx = 0usize;
+        let mut word: u32 = u32::from(cmd);
+        byte_idx += 1;
+
+        for &b in data {
+            let shift = (byte_idx % 4) * 8;
+            word |= u32::from(b) << shift;
+            byte_idx += 1;
+            if byte_idx % 4 == 0 {
+                mmio::write32(dsi::CMDQ_DATA + slot * 4, word);
+                slot += 1;
+                word = 0;
+            }
+        }
+        // Flush any remaining partial word.
+        if byte_idx % 4 != 0 {
+            mmio::write32(dsi::CMDQ_DATA + slot * 4, word);
+            slot += 1;
+        }
+
+        // CMDQ_SIZE = number of 32-bit slots used.
+        mmio::write32(dsi::CMDQ_SIZE, slot as u32);
+        mmio::write32(dsi::START, dsi::START_BIT);
+        dsi_wait_idle();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GC9306 panel driver
+// ---------------------------------------------------------------------------
+
+/// GC9306 DBI panel controller for the AGM M7.
+///
+/// The GC9306 drives a 240x320 QVGA TFT via MIPI DSI. The init sequence
+/// configures power rails, gamma correction, pixel format (RGB565), and
+/// display orientation via DCS commands. See `docs/GC9306-INIT.md` for
+/// the full register sequence and provenance from four independent sources.
 pub struct Gc9306 {
     params: LcmParams,
 }
@@ -421,38 +584,102 @@ impl LcmControl for Gc9306 {
     }
 
     unsafe fn init(&self) {
-        // TODO(#TBD): extract GC9306 init sequence FROM BSP.
-        //
-        // The init sequence consists of ~50-100 DSI DCS write commands
-        // that configure the panel's internal registers (gamma curves,
-        // power supply voltages, pixel format, display orientation).
-        //
-        // Template (each line becomes a DSI write):
-        //   write_cmd(0xFE, 0x01);  // Enter page 1
-        //   write_cmd(0x24, 0xC0);  // REF_V_VGLO control
-        //   write_cmd(0x25, 0x53);  // REF_V_VGHO control
-        //   ...
-        //   write_cmd(0xFE, 0x00);  // Return to page 0
-        //   write_cmd(0x35, 0x00);  // Tearing effect on
-        //   write_cmd(0x11);        // Sleep out
-        //   delay_ms(120);
-        //   write_cmd(0x29);        // Display on
+        // GC9306 init sequence derived from four independent GPL/Apache
+        // driver sources. See docs/GC9306-INIT.md for provenance and
+        // per-source gamma differences.
+        unsafe {
+            // Inter register enable (GC-specific page unlock)
+            dcs_write_cmd0(0xFE);
+            dcs_write_cmd0(0xEF);
+
+            // Memory access control: MX=1, BGR=1 (direction 0 for AGM M7)
+            dcs_write_cmd1(0x36, 0x48);
+
+            // Pixel format: RGB565, 16-bit
+            dcs_write_cmd1(0x3A, 0x05);
+
+            // Power control registers
+            dcs_write_long(0xA4, &[0x44, 0x44]); // Power control 7
+            dcs_write_long(0xA5, &[0x42, 0x42]); // Power control 8
+            dcs_write_long(0xAA, &[0x88, 0x88]); // Power control (undocumented)
+            dcs_write_long(0xE8, &[0x11, 0x0B]); // Frame rate control
+            dcs_write_long(0xE3, &[0x01, 0x10]); // Source precharge control
+
+            // Internal registers
+            dcs_write_cmd1(0xFF, 0x61); // Internal register (undocumented)
+            dcs_write_cmd1(0xAC, 0x00); // LDO enable
+            dcs_write_cmd1(0xAD, 0x33); // VGLO voltage control
+            dcs_write_cmd1(0xAE, 0x2B); // Internal power (undocumented)
+            dcs_write_cmd1(0xAF, 0x55); // DIG_VREFAD_VRDD control
+
+            // VCOM offset voltages
+            dcs_write_long(0xA6, &[0x2A, 0x2A]); // VCOM offset 1
+            dcs_write_long(0xA7, &[0x2B, 0x2B]); // VCOM offset 2
+            dcs_write_long(0xA8, &[0x18, 0x18]); // VCOM offset 3
+            dcs_write_long(0xA9, &[0x2A, 0x2A]); // VCOM offset 4
+
+            // Column address set: 0-239
+            dcs_write_long(0x2A, &[0x00, 0x00, 0x00, 0xEF]);
+            // Row address set: 0-319
+            dcs_write_long(0x2B, &[0x00, 0x00, 0x01, 0x3F]);
+            // Memory write start
+            dcs_write_cmd0(0x2C);
+
+            // Gamma correction (LuatOS/Fibocom values; may need panel tuning)
+            dcs_write_long(0xF0, &[0x02, 0x00, 0x00, 0x1B, 0x1F, 0x0B]); // Positive gamma 1
+            dcs_write_long(0xF1, &[0x01, 0x03, 0x00, 0x28, 0x2B, 0x0E]); // Positive gamma 2
+            dcs_write_long(0xF2, &[0x0B, 0x08, 0x3B, 0x04, 0x03, 0x4C]); // Positive gamma 3
+            dcs_write_long(0xF3, &[0x0E, 0x07, 0x46, 0x04, 0x05, 0x51]); // Positive gamma 4
+            dcs_write_long(0xF4, &[0x08, 0x15, 0x15, 0x1F, 0x22, 0x0F]); // Negative gamma 1
+            dcs_write_long(0xF5, &[0x0B, 0x13, 0x11, 0x1F, 0x21, 0x0F]); // Negative gamma 2
+
+            // Sleep Out — wait 120 ms for internal voltage stabilization
+            dcs_write_cmd0(0x11);
+            delay_ms(120);
+
+            // Display On — wait 20 ms for display to become active
+            dcs_write_cmd0(0x29);
+            delay_ms(20);
+
+            // Memory write (ready for pixel data)
+            dcs_write_cmd0(0x2C);
+        }
     }
 
     unsafe fn suspend(&self) {
-        // TODO(#TBD): send MIPI DCS Sleep In (0x10) command via DSI.
+        // GC9306 sleep-in sequence from docs/GC9306-INIT.md.
+        // Inter register enable must precede power commands.
+        unsafe {
+            dcs_write_cmd0(0xFE); // Inter register enable 1
+            dcs_write_cmd0(0xEF); // Inter register enable 2
+            // Display Off first, then Sleep In per MIPI DCS spec
+            dcs_write_cmd0(0x28); // Display Off
+            delay_ms(120);
+            dcs_write_cmd0(0x10); // Sleep In (enter minimum power)
+        }
     }
 
     unsafe fn resume(&self) {
-        // TODO(#TBD): send MIPI DCS Sleep Out (0x11) + Display On (0x29).
+        // GC9306 sleep-out sequence from docs/GC9306-INIT.md.
+        unsafe {
+            dcs_write_cmd0(0xFE); // Inter register enable 1
+            dcs_write_cmd0(0xEF); // Inter register enable 2
+            // Sleep Out — wait 120 ms for voltage stabilization
+            dcs_write_cmd0(0x11);
+            delay_ms(120);
+            // Display On
+            dcs_write_cmd0(0x29);
+        }
     }
 }
 
 impl LcmBacklight for Gc9306 {
-    unsafe fn set_backlight(&self, _level: u8) {
-        // TODO(#TBD): implement backlight control.
-        // GC9306 supports DCS Write Display Brightness (0x51).
-        // Alternatively, the MT6739 may use a PWM pin for backlight.
+    unsafe fn set_backlight(&self, level: u8) {
+        // DCS Write Display Brightness (0x51): 0x00 = off, 0xFF = max.
+        // The GC9306 supports this command natively.
+        unsafe {
+            dcs_write_cmd1(0x51, level);
+        }
     }
 }
 
@@ -979,5 +1206,97 @@ mod tests {
     fn ovl_en_and_ck_on_bits() {
         let combined = ovl::EN_BIT | ovl::CK_ON_BIT;
         assert_eq!(combined, 0x101, "EN=bit0, CK_ON=bit8 → 0x101");
+    }
+
+    // -- DSI CMDQ register layout --
+
+    #[test]
+    fn dsi_cmdq_data_at_expected_offset() {
+        assert_eq!(
+            dsi::CMDQ_DATA,
+            DSI0_BASE + 0x200,
+            "CMDQ_DATA must be at DSI0 + 0x200"
+        );
+    }
+
+    #[test]
+    fn dsi_cmdq_size_at_expected_offset() {
+        assert_eq!(
+            dsi::CMDQ_SIZE,
+            DSI0_BASE + 0x060,
+            "CMDQ_SIZE must be at DSI0 + 0x060"
+        );
+    }
+
+    // -- GC9306 panel parameters --
+
+    #[test]
+    fn gc9306_default_is_rgb565() {
+        let panel = Gc9306::default();
+        assert_eq!(
+            panel.get_params().color_format,
+            ColorFormat::Rgb565,
+            "GC9306 defaults to RGB565"
+        );
+    }
+
+    #[test]
+    fn gc9306_default_is_sync_pulse_vdo() {
+        let panel = Gc9306::default();
+        assert_eq!(
+            panel.get_params().dsi_mode,
+            DsiMode::SyncPulseVdo,
+            "GC9306 uses sync pulse video mode"
+        );
+    }
+
+    #[test]
+    fn gc9306_dimensions_match_display_constants() {
+        let panel = Gc9306::new();
+        let params = panel.get_params();
+        assert_eq!(params.width, DISPLAY_WIDTH, "width matches DISPLAY_WIDTH");
+        assert_eq!(params.height, DISPLAY_HEIGHT, "height matches DISPLAY_HEIGHT");
+    }
+
+    #[test]
+    fn gc9306_framebuffer_size() {
+        let panel = Gc9306::new();
+        let params = panel.get_params();
+        let expected = u32::from(DISPLAY_WIDTH)
+            * u32::from(DISPLAY_HEIGHT)
+            * u32::from(BPP_RGB565);
+        assert_eq!(
+            params.framebuffer_size(),
+            expected,
+            "framebuffer = W * H * BPP"
+        );
+    }
+
+    // -- DSI CMDQ word encoding --
+
+    #[test]
+    fn cmdq_short_w0_encodes_cmd_byte() {
+        // Short write 0-param: config=0x00, cmd in bits[15:8]
+        let word = dsi::CMDQ_SHORT_W0 | (0x11_u32 << 8);
+        assert_eq!(word & 0xFF, 0x00, "config byte = short write 0-param");
+        assert_eq!((word >> 8) & 0xFF, 0x11, "cmd byte = Sleep Out");
+    }
+
+    #[test]
+    fn cmdq_short_w1_encodes_cmd_and_data() {
+        // Short write 1-param: config=0x05, cmd in [15:8], data in [23:16]
+        let word = dsi::CMDQ_SHORT_W1 | (0x36_u32 << 8) | (0x48_u32 << 16);
+        assert_eq!(word & 0xFF, 0x05, "config byte = short write 1-param");
+        assert_eq!((word >> 8) & 0xFF, 0x36, "cmd byte = MADCTL");
+        assert_eq!((word >> 16) & 0xFF, 0x48, "data byte = MX|BGR");
+    }
+
+    #[test]
+    fn cmdq_long_w_header_encodes_word_count() {
+        // Long write header: config=0x39, word count in [23:8]
+        let payload_len: u32 = 7; // 1 cmd + 6 data bytes
+        let header = dsi::CMDQ_LONG_W | (payload_len << 8);
+        assert_eq!(header & 0xFF, 0x39, "config byte = long write");
+        assert_eq!((header >> 8) & 0xFFFF, 7, "word count = 7");
     }
 }
