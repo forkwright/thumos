@@ -23,6 +23,7 @@ mod elf;
 mod emmc;
 #[cfg(not(test))]
 mod exceptions;
+mod fd;
 #[cfg(not(test))]
 mod gic;
 #[cfg(not(test))]

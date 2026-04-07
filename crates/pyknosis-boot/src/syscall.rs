@@ -21,6 +21,7 @@
 //! - 70-79: Time
 //! - 80-89: Signal
 
+use crate::fd;
 use crate::ipc;
 use crate::kconfig;
 use crate::process;
@@ -474,21 +475,27 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         | Syscall::Brk
         | Syscall::Mprotect => ENOSYS,
 
-        // ---- Filesystem (stubs) ----
+        // ---- Filesystem ----
+        // WHY: wired to ramfs via fd module. Read-only operations are
+        // implemented; write/directory ops remain ENOSYS (future phases).
 
-        Syscall::Open
-        | Syscall::Close
-        | Syscall::Read
-        | Syscall::Stat
-        | Syscall::Fstat
-        | Syscall::Lseek
-        | Syscall::Ioctl
+        Syscall::Open => fd::sys_open(arg0, arg1, arg2),
+        Syscall::Close => fd::sys_close(arg0),
+        Syscall::Read => fd::sys_read(arg0, arg1, arg2),
+        Syscall::Stat => fd::sys_stat(arg0, arg1, arg2),
+        Syscall::Fstat => fd::sys_fstat(arg0, arg1),
+        Syscall::Lseek => fd::sys_lseek(arg0, arg1, arg2),
+        Syscall::Dup => fd::sys_dup(arg0),
+        Syscall::Dup2 => fd::sys_dup2(arg0, arg1),
+        Syscall::Getcwd => fd::sys_getcwd(arg0, arg1),
+
+        // WHY ENOSYS: these require write support (mkdir, unlink),
+        // directory tracking (chdir), or device abstraction (ioctl, fcntl).
+        // Deferred to future phases.
+        Syscall::Ioctl
         | Syscall::Fcntl
-        | Syscall::Dup
-        | Syscall::Dup2
         | Syscall::Mkdir
         | Syscall::Unlink
-        | Syscall::Getcwd
         | Syscall::Chdir => ENOSYS,
 
         // ---- IPC (stubs) ----
