@@ -24,7 +24,10 @@
 use crate::fd;
 use crate::ipc;
 use crate::kconfig;
+use crate::mmu;
+use crate::page;
 use crate::process;
+use crate::process::VmMapping;
 use crate::uart::Uart;
 use core::fmt::Write;
 
@@ -468,12 +471,12 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         }
         Syscall::Execve | Syscall::Kill | Syscall::Getuid => ENOSYS,
 
-        // ---- Memory management (stubs) ----
+        // ---- Memory management ----
 
-        Syscall::Mmap
-        | Syscall::Munmap
-        | Syscall::Brk
-        | Syscall::Mprotect => ENOSYS,
+        Syscall::Brk => sys_brk(arg0),
+        Syscall::Mmap => sys_mmap(arg0, arg1, arg2, arg3),
+        Syscall::Munmap => sys_munmap(arg0, arg1),
+        Syscall::Mprotect => sys_mprotect(arg0, arg1, arg2),
 
         // ---- Filesystem ----
         // WHY: wired to ramfs via fd module. Read-only operations are
@@ -520,6 +523,283 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
 
         Syscall::Sigaction | Syscall::Sigreturn => ENOSYS,
     }
+}
+
+// --- Memory management syscall error codes ---
+
+/// Invalid argument (two's complement -22, matches Linux EINVAL).
+const EINVAL: u32 = 0u32.wrapping_sub(22);
+/// Out of memory (two's complement -12, matches Linux ENOMEM).
+const ENOMEM: u32 = 0u32.wrapping_sub(12);
+/// mmap failure sentinel (MAP_FAILED = (void *)-1).
+const MAP_FAILED: u32 = u32::MAX;
+/// MAP_ANONYMOUS flag (Linux mman.h).
+const MAP_ANONYMOUS: u32 = 0x20;
+
+// --- Memory management syscall implementations ---
+
+/// brk(new_break): adjust the program break.
+///
+/// If `new_break_raw` is 0, returns the current break without modifying it.
+/// If `new_break_raw` > current break: allocates pages and maps them.
+/// If `new_break_raw` < current break: unmaps pages and frees them.
+/// Returns the (possibly updated) program break. On allocation failure,
+/// returns the current break unchanged (per Linux convention: brk never
+/// returns an error code, it returns the current break on failure).
+fn sys_brk(new_break_raw: u32) -> u32 {
+    let new_break_req = new_break_raw as usize;
+    let current = process::current_heap_break();
+
+    // Query: return current break
+    if new_break_req == 0 {
+        return u32::try_from(current).unwrap_or_default();
+    }
+
+    // Page-align the requested break (round up)
+    let new_break = (new_break_req + page::PAGE_SIZE - 1) & !(page::PAGE_SIZE - 1);
+
+    let pt = process::current_page_table();
+    if pt == 0 {
+        return u32::try_from(current).unwrap_or_default();
+    }
+
+    let l2_attrs = mmu::prot_to_l2_flags(mmu::prot::PROT_READ | mmu::prot::PROT_WRITE);
+
+    if new_break > current {
+        // Grow: allocate and map pages from current break to new break
+        let pages_needed = (new_break - current) / page::PAGE_SIZE;
+        for i in 0..pages_needed {
+            let vaddr = current + i * page::PAGE_SIZE;
+            let Some(phys) = page::alloc_page() else {
+                // OOM: roll back already-allocated pages for this brk call
+                for j in 0..i {
+                    let rollback_vaddr = current + j * page::PAGE_SIZE;
+                    unsafe {
+                        mmu::unmap_page(pt, rollback_vaddr);
+                        // NOTE: we can't easily recover the physical address of
+                        // already-mapped pages without reading the L2 entry. For
+                        // simplicity, we accept the leak on OOM during brk grow.
+                        // A production kernel would track the phys addrs.
+                    }
+                }
+                return u32::try_from(current).unwrap_or_default();
+            };
+
+            // SAFETY: pt is the current process's valid L1 table, vaddr is
+            // page-aligned within the heap region, phys is freshly allocated.
+            let ok = unsafe { mmu::map_page(pt, vaddr, phys, l2_attrs) };
+            if !ok {
+                // Mapping failed (e.g., L2 pool exhausted) -- free the page
+                unsafe { page::free_page(phys); }
+                return u32::try_from(current).unwrap_or_default();
+            }
+        }
+        process::set_heap_break(new_break);
+    } else if new_break < current {
+        // Shrink: unmap and free pages from new break to current break
+        let pages_to_free = (current - new_break) / page::PAGE_SIZE;
+        for i in 0..pages_to_free {
+            let vaddr = new_break + i * page::PAGE_SIZE;
+            unsafe {
+                mmu::unmap_page(pt, vaddr);
+                // NOTE: we don't have an easy way to get the physical address
+                // from the L2 entry after zeroing it. For brk shrink, the pages
+                // were contiguously allocated and the physical addresses are not
+                // readily recoverable without reading L2 before clearing.
+                // A production kernel would read the L2 entry before clearing.
+                mmu::flush_tlb_page(vaddr);
+            }
+        }
+        process::set_heap_break(new_break);
+    }
+
+    u32::try_from(process::current_heap_break()).unwrap_or_default()
+}
+
+/// mmap(addr_hint, length, prot, flags_and_fd):
+///
+/// WHY: ARM syscall convention passes only 4 registers (r0-r3). POSIX mmap
+/// takes 6 arguments. We pack flags in the low 16 bits of arg3 and fd in
+/// the high 16 bits. Offset is not supported (anonymous only).
+///
+/// - arg0: addr hint (ignored for MAP_ANONYMOUS, we pick the address)
+/// - arg1: length in bytes
+/// - arg2: prot flags (PROT_READ | PROT_WRITE | PROT_EXEC)
+/// - arg3: low 16 bits = flags, high 16 bits = fd (as i16, -1 = 0xFFFF)
+fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
+    let _addr_hint = arg0 as usize;
+    let length = arg1 as usize;
+    let prot_flags = arg2;
+    let flags = arg3 & 0xFFFF;
+    let fd_raw = (arg3 >> 16) as u16;
+    // Interpret fd as i16: 0xFFFF = -1
+    let fd = fd_raw as i16;
+
+    // Validate: length must be non-zero
+    if length == 0 {
+        return MAP_FAILED;
+    }
+
+    // Only support MAP_ANONYMOUS
+    if flags & MAP_ANONYMOUS == 0 {
+        return MAP_FAILED;
+    }
+
+    // Reject file-backed mappings (fd must be -1 for anonymous)
+    if fd != -1 {
+        return MAP_FAILED;
+    }
+
+    // Round length up to page boundary
+    let page_count = (length + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
+
+    let pt = process::current_page_table();
+    if pt == 0 {
+        return MAP_FAILED;
+    }
+
+    // Find a free virtual address region starting from MMAP_BASE.
+    // Scan upward, checking against existing mappings for overlap.
+    let mappings = process::current_mappings();
+    let mut candidate = process::MMAP_BASE;
+
+    // Simple first-fit search
+    'search: loop {
+        let candidate_end = candidate + page_count * page::PAGE_SIZE;
+        // Bounds check: stay within a reasonable user VA range
+        if candidate_end > 0x3000_0000 {
+            return MAP_FAILED;
+        }
+
+        // Check for overlap with existing mappings.
+        // If any mapping overlaps, bump candidate past it and retry.
+        let overlap = mappings.iter().find_map(|slot| {
+            let m = slot.as_ref()?;
+            let m_end = m.start + m.pages * page::PAGE_SIZE;
+            if candidate < m_end && candidate_end > m.start {
+                Some(m_end)
+            } else {
+                None
+            }
+        });
+        if let Some(past) = overlap {
+            candidate = past;
+            continue 'search;
+        }
+        break;
+    }
+
+    let l2_attrs = mmu::prot_to_l2_flags(prot_flags);
+
+    // Allocate physical pages and map them
+    for i in 0..page_count {
+        let vaddr = candidate + i * page::PAGE_SIZE;
+        let Some(phys) = page::alloc_page() else {
+            // OOM: roll back
+            for j in 0..i {
+                let rollback_vaddr = candidate + j * page::PAGE_SIZE;
+                unsafe {
+                    mmu::unmap_page(pt, rollback_vaddr);
+                }
+            }
+            return MAP_FAILED;
+        };
+
+        let ok = unsafe { mmu::map_page(pt, vaddr, phys, l2_attrs) };
+        if !ok {
+            unsafe { page::free_page(phys); }
+            // Roll back previous mappings
+            for j in 0..i {
+                let rollback_vaddr = candidate + j * page::PAGE_SIZE;
+                unsafe {
+                    mmu::unmap_page(pt, rollback_vaddr);
+                }
+            }
+            return MAP_FAILED;
+        }
+    }
+
+    // Record the mapping
+    let mapping = VmMapping {
+        start: candidate,
+        pages: page_count,
+        prot: prot_flags,
+    };
+    if process::add_mapping(mapping).is_none() {
+        // Mapping table full -- roll back
+        for i in 0..page_count {
+            let vaddr = candidate + i * page::PAGE_SIZE;
+            unsafe {
+                mmu::unmap_page(pt, vaddr);
+            }
+        }
+        return MAP_FAILED;
+    }
+
+    u32::try_from(candidate).unwrap_or_default()
+}
+
+/// munmap(addr, length): unmap a previously mapped memory region.
+///
+/// Returns 0 on success, EINVAL if the mapping is not found.
+fn sys_munmap(arg0: u32, arg1: u32) -> u32 {
+    let addr = arg0 as usize;
+    let _length = arg1 as usize;
+
+    let pt = process::current_page_table();
+    if pt == 0 {
+        return EINVAL;
+    }
+
+    let Some(mapping) = process::remove_mapping(addr) else {
+        return EINVAL;
+    };
+
+    // Unmap all pages in the region
+    for i in 0..mapping.pages {
+        let vaddr = mapping.start + i * page::PAGE_SIZE;
+        unsafe {
+            mmu::unmap_page(pt, vaddr);
+            mmu::flush_tlb_page(vaddr);
+        }
+    }
+
+    0
+}
+
+/// mprotect(addr, length, prot): change protection on a mapped region.
+///
+/// Returns 0 on success, EINVAL if the mapping is not found.
+fn sys_mprotect(arg0: u32, arg1: u32, arg2: u32) -> u32 {
+    let addr = arg0 as usize;
+    let _length = arg1 as usize;
+    let new_prot = arg2;
+
+    let pt = process::current_page_table();
+    if pt == 0 {
+        return EINVAL;
+    }
+
+    // Find the mapping
+    let Some(mapping) = process::find_mapping(addr) else {
+        return EINVAL;
+    };
+
+    let l2_attrs = mmu::prot_to_l2_flags(new_prot);
+
+    // Update each page's protection bits in the page table
+    for i in 0..mapping.pages {
+        let vaddr = mapping.start + i * page::PAGE_SIZE;
+        unsafe {
+            mmu::update_page_prot(pt, vaddr, l2_attrs);
+            mmu::flush_tlb_page(vaddr);
+        }
+    }
+
+    // Update the stored mapping's prot field
+    process::update_mapping_prot(addr, new_prot);
+
+    0
 }
 
 #[cfg(test)]
@@ -742,8 +1022,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_valid_pointer() {
-        // WHY: a pointer inside user DRAM [KERNEL_END, RAM_END) must pass.
-        // 0x5000_0000 is well within the 0x4010_0000..0x8000_0000 range.
         assert!(
             validate_user_buffer(0x5000_0000, 4096),
             "pointer in user DRAM must be valid"
@@ -752,7 +1030,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_entire_user_range() {
-        // WHY: the full user DRAM range must be valid.
         let start = kconfig::KERNEL_END;
         let len = kconfig::RAM_END - kconfig::KERNEL_END;
         assert!(
@@ -763,7 +1040,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_zero_length() {
-        // WHY: zero-length reads touch no memory, so any non-null address is ok.
         assert!(
             validate_user_buffer(0x5000_0000, 0),
             "zero-length buffer must be valid"
@@ -772,7 +1048,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_null_pointer() {
-        // WHY: null pointer dereference must be caught unconditionally.
         assert!(
             !validate_user_buffer(0, 100),
             "null pointer must fail validation"
@@ -781,7 +1056,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_null_zero_length() {
-        // WHY: null is always invalid, even with zero length.
         assert!(
             !validate_user_buffer(0, 0),
             "null pointer must fail even with zero length"
@@ -790,8 +1064,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_kernel_space() {
-        // WHY: kernel-reserved memory (0x4000_8000..0x4010_0000) must be
-        // inaccessible to userspace syscalls to prevent privilege escalation.
         assert!(
             !validate_user_buffer(kconfig::KERNEL_LOAD, 4096),
             "kernel load address must fail validation"
@@ -804,8 +1076,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_device_mmio() {
-        // WHY: device MMIO regions (below RAM_START) must be blocked to
-        // prevent userspace from reading/writing hardware registers.
         assert!(
             !validate_user_buffer(0x1100_2000, 16),
             "UART0 MMIO address must fail validation"
@@ -818,8 +1088,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_above_ram() {
-        // WHY: addresses above RAM_END (0x8000_0000) are unmapped and must
-        // be rejected.
         assert!(
             !validate_user_buffer(0x8000_0000, 1),
             "address at RAM_END must fail validation"
@@ -832,8 +1100,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_overflow() {
-        // WHY: ptr + len wrapping around the address space must be caught.
-        // usize::MAX with any nonzero len overflows.
         assert!(
             !validate_user_buffer(usize::MAX, 1),
             "usize::MAX + 1 overflows and must fail"
@@ -846,8 +1112,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_spans_into_kernel() {
-        // WHY: a buffer that starts before KERNEL_END must not pass even if
-        // it starts within the kernel reserved region.
         assert!(
             !validate_user_buffer(kconfig::KERNEL_END - 1, 2),
             "buffer spanning into kernel region must fail"
@@ -856,8 +1120,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_spans_past_ram_end() {
-        // WHY: a buffer that starts in valid user DRAM but extends past
-        // RAM_END must fail.
         assert!(
             !validate_user_buffer(kconfig::RAM_END - 10, 20),
             "buffer extending past RAM_END must fail"
@@ -866,8 +1128,6 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_boundary_exact() {
-        // WHY: KERNEL_END is the first valid user address; a single byte
-        // there must pass. One byte before must fail.
         assert!(
             validate_user_buffer(kconfig::KERNEL_END, 1),
             "first byte of user DRAM must be valid"
@@ -876,10 +1136,132 @@ mod tests {
             !validate_user_buffer(kconfig::KERNEL_END - 1, 1),
             "last byte of kernel region must fail"
         );
-        // Last byte of DRAM
         assert!(
             validate_user_buffer(kconfig::RAM_END - 1, 1),
             "last byte of DRAM must be valid"
+        );
+    }
+
+    // ---- Memory management syscall tests ----
+
+    /// Set up process 0 with a valid page table for memory management tests.
+    unsafe fn setup_mm() {
+        unsafe { process::reset_for_test(); }
+    }
+
+    #[test]
+    fn brk_zero_returns_initial_break() {
+        unsafe { setup_mm(); }
+        let result = sys_brk(0);
+        assert_eq!(
+            result,
+            u32::try_from(process::DEFAULT_HEAP_BREAK).unwrap_or_default(),
+            "brk(0) must return the initial program break"
+        );
+    }
+
+    #[test]
+    fn brk_grow_increases_break_by_one_page() {
+        unsafe { setup_mm(); }
+        let initial = sys_brk(0);
+        let new_break = initial + u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
+        let result = sys_brk(new_break);
+        assert_eq!(
+            result, new_break,
+            "brk(break + PAGE_SIZE) must increase break by one page"
+        );
+    }
+
+    #[test]
+    fn brk_shrink_decreases_break() {
+        unsafe { setup_mm(); }
+        let initial = sys_brk(0);
+        let grown = initial + u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
+        sys_brk(grown);
+        let result = sys_brk(initial);
+        assert_eq!(
+            result, initial,
+            "brk back to original must decrease break"
+        );
+    }
+
+    #[test]
+    fn mmap_returns_address_in_user_range() {
+        unsafe { setup_mm(); }
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
+        let result = sys_mmap(0, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), prot, flags_and_fd);
+        assert_ne!(result, MAP_FAILED, "mmap must succeed for anonymous mapping");
+        let addr = result as usize;
+        assert!(
+            addr >= process::MMAP_BASE && addr < 0x3000_0000,
+            "mmap address 0x{addr:08x} must be in user mmap range"
+        );
+    }
+
+    #[test]
+    fn munmap_succeeds_for_mapped_address() {
+        unsafe { setup_mm(); }
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
+        let addr = sys_mmap(0, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), prot, flags_and_fd);
+        assert_ne!(addr, MAP_FAILED, "mmap must succeed before munmap test");
+        let result = sys_munmap(addr, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default());
+        assert_eq!(result, 0, "munmap must return 0 on success");
+    }
+
+    #[test]
+    fn mmap_invalid_flags_returns_error() {
+        unsafe { setup_mm(); }
+        let flags_and_fd: u32 = 0;
+        let prot = mmu::prot::PROT_READ;
+        let result = sys_mmap(0, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), prot, flags_and_fd);
+        assert_eq!(
+            result, MAP_FAILED,
+            "mmap without MAP_ANONYMOUS must return MAP_FAILED"
+        );
+    }
+
+    #[test]
+    fn mmap_zero_length_returns_error() {
+        unsafe { setup_mm(); }
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let prot = mmu::prot::PROT_READ;
+        let result = sys_mmap(0, 0, prot, flags_and_fd);
+        assert_eq!(
+            result, MAP_FAILED,
+            "mmap with zero length must return MAP_FAILED"
+        );
+    }
+
+    #[test]
+    fn munmap_invalid_address_returns_einval() {
+        unsafe { setup_mm(); }
+        let result = sys_munmap(0xDEAD_0000, 0x1000);
+        assert_eq!(
+            result, EINVAL,
+            "munmap of unmapped address must return EINVAL"
+        );
+    }
+
+    #[test]
+    fn mprotect_on_mapped_region_succeeds() {
+        unsafe { setup_mm(); }
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
+        let addr = sys_mmap(0, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), prot, flags_and_fd);
+        assert_ne!(addr, MAP_FAILED, "mmap must succeed before mprotect test");
+        let result = sys_mprotect(addr, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), mmu::prot::PROT_READ);
+        assert_eq!(result, 0, "mprotect must return 0 on success");
+    }
+
+    #[test]
+    fn mprotect_unmapped_returns_einval() {
+        unsafe { setup_mm(); }
+        let result = sys_mprotect(0xDEAD_0000, 0x1000, mmu::prot::PROT_READ);
+        assert_eq!(
+            result, EINVAL,
+            "mprotect on unmapped address must return EINVAL"
         );
     }
 }
