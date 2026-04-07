@@ -232,7 +232,7 @@ pub unsafe fn clone_addr_space(src_phys: usize, dst_phys: usize) {
         let src = src_phys as *const u32;
         let dst = dst_phys as *mut u32;
         for i in 0..4096isize {
-            dst.OFFSET(i).write_volatile(src.OFFSET(i).read_volatile());
+            dst.offset(i).write_volatile(src.offset(i).read_volatile());
         }
     }
 }

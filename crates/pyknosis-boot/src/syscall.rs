@@ -229,7 +229,7 @@ impl Syscall {
     /// Returns the syscall number as a `u32`.
     #[inline]
     pub const fn as_u32(self) -> u32 {
-        u32::try_from(self).unwrap_or_default()
+        self as u32
     }
 
     /// Convert a raw syscall number to a [`Syscall`] variant.
@@ -369,7 +369,7 @@ impl Syscall {
 pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     let Some(call) = Syscall::from_u32(num) else {
         let mut serial = Uart::new();
-        if let Err(e) = write!(serial, "Unknown syscall: {num}\r\n") { tracing::warn!(error = %e, "operation failed"); }
+        let _ = write!(serial, "Unknown syscall: {num}\r\n");
         return ENOSYS;
     };
 
@@ -448,7 +448,7 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             if ipc::send(to, msg) { 0 } else { u32::MAX }
         }
         Syscall::Recv => match ipc::recv() {
-            Some(msg) => msg.u32::try_from(FROM).unwrap_or_default(),
+            Some(msg) => u32::from(msg.FROM),
             None => u32::MAX,
         },
 

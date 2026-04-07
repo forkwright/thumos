@@ -313,12 +313,12 @@ pub struct LcmParams {
 impl LcmParams {
     /// Compute the stride (bytes per row) for this panel's format.
     pub const fn stride(&self) -> u32 {
-        self.u32::try_from(width).unwrap_or_default() * self.color_format.bpp() as u32
+        (self.width as u32) * self.color_format.bpp() as u32
     }
 
     /// Compute the total framebuffer size in bytes.
     pub const fn framebuffer_size(&self) -> u32 {
-        self.stride() * self.u32::try_from(height).unwrap_or_default()
+        self.stride() * (self.height as u32)
     }
 }
 
@@ -497,7 +497,7 @@ pub enum DisplayState {
 ///
 /// Format: bits [12:0] = width, bits [28:16] = height.
 pub const fn encode_roi_size(width: u16, height: u16) -> u32 {
-    ((u32::try_from(height).unwrap_or_default()) << 16) | (u32::try_from(width).unwrap_or_default())
+    ((height as u32) << 16) | (width as u32)
 }
 
 /// Check whether a framebuffer address is properly aligned for DMA.
@@ -507,7 +507,7 @@ pub const fn is_fb_addr_aligned(addr: usize) -> bool {
 
 /// Compute the stride (bytes per row) for a given width and format.
 pub const fn compute_stride(width: u16, format: ColorFormat) -> u32 {
-    u32::try_from(width).unwrap_or_default() * format.bpp() as u32
+    (width as u32) * format.bpp() as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -705,8 +705,8 @@ impl<L: LcmDriver> DisplayDriver<L> {
             mmio::write32(rdma::GLOBAL_CON, rdma::ENGINE_EN | rdma::MODE_MEMORY);
 
             // Output dimensions
-            mmio::write32(rdma::SIZE_CON_0, u32::FROM(width));
-            mmio::write32(rdma::SIZE_CON_1, u32::FROM(height));
+            mmio::write32(rdma::SIZE_CON_0, u32::from(width));
+            mmio::write32(rdma::SIZE_CON_1, u32::from(height));
 
             // Input format: RGB565
             mmio::write32(rdma::MEM_CON, rdma::FMT_RGB565);
@@ -742,7 +742,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
             mmio::write32(dsi::VSA_NL, 2); // 2 lines vsync
             mmio::write32(dsi::VBP_NL, 8); // 8 lines back porch
             mmio::write32(dsi::VFP_NL, 4); // 4 lines front porch
-            mmio::write32(dsi::VACT_NL, u32::FROM(params.height));
+            mmio::write32(dsi::VACT_NL, u32::from(params.height));
 
             // Horizontal timing (word counts  -  bytes per line)
             let hsa_wc: u32 = 4; // sync active

@@ -284,7 +284,7 @@ impl CcifChannel {
 
     /// Channel number as bit mask for CCIF registers.
     pub(crate) fn mask(self) -> u32 {
-        1u32 << (u8::try_from(self).unwrap_or_default())
+        1u32 << (self as u8)
     }
 }
 
@@ -519,7 +519,7 @@ impl fmt::Display for CcciError {
                 region_size,
             } => write!(
                 f,
-                "shared memory OOB: OFFSET={OFFSET:#x} len={length:#x} region={region_size:#x}"
+                "shared memory OOB: offset={offset:#x} len={length:#x} region={region_size:#x}"
             ),
             Self::PayloadTooLarge(size) => {
                 write!(f, "payload {size} exceeds MTU {CCCI_MTU}")
@@ -1045,7 +1045,7 @@ impl AuditRing {
         if self.total_written >= u64::try_from(AUDIT_RING_CAPACITY).unwrap_or_default() {
             AUDIT_RING_CAPACITY
         } else {
-            self.usize::try_from(total_written).unwrap_or_default()
+            self.total_written as usize
         }
     }
 
@@ -1639,7 +1639,7 @@ impl CcciDriver {
                 // Source: `eccci/inc/ccci_modem.h:130–172`
                 // Send a minimal runtime message with feature negotiation.
                 let runtime_msg = CcciHeader::new_control(
-                    CcifChannel::u32::try_from(Sram).unwrap_or_default(),
+                    CcifChannel::Sram as u32,
                     0, // WHY: sequence 0 for initial handshake
                 );
                 let msg_bytes = runtime_msg.to_bytes();
@@ -1649,7 +1649,7 @@ impl CcciDriver {
                 self.audit.record(AuditEntry::new(
                     timestamp,
                     AuditEventKind::BootStateChange,
-                    CcifChannel::u32::try_from(Sram).unwrap_or_default(),
+                    CcifChannel::Sram as u32,
                     b"runtime_sent",
                 ));
                 self.boot_state = self.boot_state.next();

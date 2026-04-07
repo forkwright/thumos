@@ -132,7 +132,7 @@ pub unsafe fn init() {
             stack_pages: 0,
         };
         let procs = &mut *addr_of_mut!(PROCS);
-        procs.get(0).copied().unwrap_or_default() = Some(proc0);
+        procs[0] = Some(proc0);
         CURRENT = 0;
     }
 }
@@ -180,8 +180,8 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
             r9: 0,
             r10: 0,
             r11: 0,
-            sp: u32::try_from(stack_top).unwrap_or_default(),
-            lr: u32::try_from(entry_point).unwrap_or_default(),
+            sp: stack_top as u32,
+            lr: entry_point as u32,
             cpsr: 0x1F, // NOTE: system mode, IRQs enabled
         };
 
