@@ -12,6 +12,7 @@
 use crate::ipc;
 use crate::mmu;
 use crate::page;
+use crate::signal::{Signal, SignalAction, SignalState};
 use core::ptr::addr_of_mut;
 
 /// Maximum number of processes.
@@ -31,6 +32,8 @@ pub enum State {
     Running,
     /// Blocked waiting for an event.
     Blocked,
+    /// Sleeping until wake_tick (set by nanosleep).
+    Sleeping,
     /// Terminated, awaiting cleanup.
     Dead,
 }
@@ -131,6 +134,16 @@ pub struct Process {
     pub heap_break: usize,
     /// Tracked anonymous memory mappings (mmap regions).
     pub mappings: [Option<VmMapping>; MAX_MAPPINGS],
+    /// Signal handlers and pending-signal bitmask for this process.
+    pub signal_state: SignalState,
+    /// User identity: 0 = root (kinit/kernel), 1+ = unprivileged userspace.
+    /// WHY: process 0 (kinit) is UID 0. Forked children inherit the parent's
+    /// UID. A future setuid syscall can lower (but not raise) this value.
+    pub uid: u32,
+    /// Tick count at which this process should wake from Sleeping state.
+    /// Only meaningful when state == Sleeping. Set by sys_nanosleep;
+    /// the scheduler transitions the process to Ready when ticks() >= wake_tick.
+    pub wake_tick: u64,
 }
 
 /// Process table.
@@ -167,6 +180,9 @@ pub unsafe fn init() {
             stack_pages: 0,
             heap_break: DEFAULT_HEAP_BREAK,
             mappings: [None; MAX_MAPPINGS],
+            signal_state: SignalState::new(),
+            uid: 0,
+            wake_tick: 0,
         };
         let procs = &mut *addr_of_mut!(PROCS);
         procs[0] = Some(proc0);
@@ -237,6 +253,9 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
             stack_pages: STACK_PAGES,
             heap_break: DEFAULT_HEAP_BREAK,
             mappings: [None; MAX_MAPPINGS],
+            signal_state: SignalState::new(),
+            uid: 1, // spawned userspace processes get UID 1+
+            wake_tick: 0,
         };
 
         procs[slot] = Some(proc);
@@ -297,6 +316,15 @@ pub fn fork() -> Option<Pid> {
         let parent_ctx = parent_ref.map(|p| p.ctx).unwrap_or_else(Context::zero);
         let parent_break = parent_ref.map_or(DEFAULT_HEAP_BREAK, |p| p.heap_break);
         let parent_mappings = parent_ref.map_or([None; MAX_MAPPINGS], |p| p.mappings);
+        // WHY: children inherit signal handlers from parent (POSIX fork semantics).
+        // Pending signals are NOT inherited — the child starts with a clean pending mask.
+        let parent_signal_handlers = parent_ref.map_or(SignalState::new(), |p| {
+            let mut s = p.signal_state;
+            s.pending = 0; // clear pending — child starts clean
+            s
+        });
+
+        let parent_uid = parent_ref.map_or(1, |p| p.uid);
 
         let child = Process {
             pid: child_pid,
@@ -309,6 +337,9 @@ pub fn fork() -> Option<Pid> {
             stack_pages: STACK_PAGES,
             heap_break: parent_break,
             mappings: parent_mappings,
+            signal_state: parent_signal_handlers,
+            uid: parent_uid,
+            wake_tick: 0,
         };
 
         procs[slot] = Some(child);
@@ -443,16 +474,33 @@ pub fn current_pid() -> Pid {
 
 /// Simple round-robin scheduler. Called FROM the timer tick handler.
 /// Returns the PID to switch to (may be the same as current).
+///
+/// Also wakes any Sleeping processes whose wake_tick has been reached,
+/// transitioning them to Ready so they can be scheduled next tick.
 pub fn schedule() -> Pid {
-    // SAFETY: current process PCB pointer is valid; set by the scheduler on
-    // context switch. Read-only scan of PROCS via addr_of!; no mutation here.
+    // SAFETY: called from the timer IRQ handler with interrupts disabled on
+    // a single-core ARMv7. PROCS is accessed exclusively via addr_of_mut!
+    // to avoid intermediate references to the static mut.
     unsafe {
         let cur = usize::try_from(CURRENT).unwrap_or_default();
-        // Round-robin: find next ready process after current
-        let procs = &*core::ptr::addr_of!(PROCS);
+        let procs = &mut *addr_of_mut!(PROCS);
+
+        // First pass: wake any sleeping processes whose timer has elapsed.
+        // WHY: we import exceptions::ticks() lazily here to avoid a circular
+        // dependency (exceptions imports process). We call it only during the
+        // scheduler, which runs after exceptions is fully initialized.
+        let now = crate::exceptions::ticks();
+        for slot in procs.iter_mut().flatten() {
+            if slot.state == State::Sleeping && now >= slot.wake_tick {
+                slot.state = State::Ready;
+            }
+        }
+
+        // Second pass: round-robin among Ready processes.
+        let procs_ro = &*core::ptr::addr_of!(PROCS);
         for offset in 1..MAX_PROCS {
             let idx = (cur + offset) % MAX_PROCS;
-            if let Some(ref proc) = procs[idx] {
+            if let Some(ref proc) = procs_ro[idx] {
                 if proc.state == State::Ready {
                     return proc.pid;
                 }
@@ -696,6 +744,202 @@ pub fn current_mappings() -> [Option<VmMapping>; MAX_MAPPINGS] {
     }
 }
 
+/// Get the current process's UID.
+/// Returns 0 (root) if the current process is not found (should not happen).
+pub fn current_uid() -> u32 {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Read-only access via addr_of!; no mutation occurs here.
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        procs[cur].as_ref().map_or(0, |p| p.uid)
+    }
+}
+
+/// Set the current process's wake_tick and transition it to Sleeping.
+///
+/// Called by sys_nanosleep after computing the target tick count.
+/// The scheduler will transition this process back to Ready when
+/// `exceptions::ticks() >= wake_tick`.
+pub fn set_wake_tick(wake_tick: u64) {
+    // SAFETY: called from syscall context (single-threaded; IRQs are disabled
+    // during SVC on ARMv7). addr_of_mut! avoids an intermediate reference to
+    // the static mut PROCS.
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        if let Some(ref mut proc) = procs[cur] {
+            proc.wake_tick = wake_tick;
+            proc.state = State::Sleeping;
+        }
+    }
+}
+
+/// Clear the Sleeping state after the process wakes, transitioning to Running.
+///
+/// Called by sys_nanosleep after the busy-wait loop confirms the wake tick
+/// has elapsed. Resets wake_tick to 0 and marks the process Running again.
+pub fn clear_wake_tick() {
+    // SAFETY: same as set_wake_tick — called from syscall context only.
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        if let Some(ref mut proc) = procs[cur] {
+            proc.wake_tick = 0;
+            proc.state = State::Running;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Signal accessors
+// ---------------------------------------------------------------------------
+
+/// Set the signal action for the current process.
+///
+/// # Safety
+///
+/// Must be called from syscall context (single-core, no preemption during SVC).
+pub unsafe fn set_signal_action(sig: Signal, action: SignalAction) {
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        if let Some(ref mut proc) = procs[cur] {
+            proc.signal_state.set_action(sig, action);
+        }
+    }
+}
+
+/// Get the signal action for the current process.
+///
+/// # Safety
+///
+/// Must be called from a context with exclusive access to the process table.
+pub unsafe fn get_signal_action(sig: Signal) -> SignalAction {
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        procs[cur]
+            .as_ref()
+            .map_or(SignalAction::Default, |p| p.signal_state.action(sig))
+    }
+}
+
+/// Deliver a signal to a specific process by PID.
+///
+/// Handler registered → mark pending (delivered before next user-mode return).
+/// Default action → apply immediately (Terminate or Ignore).
+/// SIGKILL → always terminates, regardless of any registered handler.
+///
+/// Returns 0 on success, ESRCH if PID not found or Dead.
+///
+/// # Safety
+///
+/// Must be called from syscall context (single-core).
+pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
+    const ESRCH: u32 = 0u32.wrapping_sub(3);
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let idx = usize::try_from(pid).unwrap_or(MAX_PROCS);
+        if idx >= MAX_PROCS {
+            return ESRCH;
+        }
+        let Some(ref mut proc) = procs[idx] else {
+            return ESRCH;
+        };
+        if proc.state == State::Dead {
+            return ESRCH;
+        }
+        // SIGKILL always terminates — handler cannot override.
+        if sig == Signal::Sigkill {
+            proc.state = State::Dead;
+            return 0;
+        }
+        match proc.signal_state.action(sig) {
+            SignalAction::Handler(_) => {
+                proc.signal_state.set_pending(sig);
+            }
+            SignalAction::Ignore => {}
+            SignalAction::Default => match sig.default_action() {
+                crate::signal::DefaultAction::Terminate => {
+                    proc.state = State::Dead;
+                }
+                crate::signal::DefaultAction::Ignore => {}
+            },
+        }
+        0
+    }
+}
+
+/// Clear the lowest-numbered pending signal for the current process.
+/// Called by sys_sigreturn after the handler returns.
+///
+/// # Safety
+///
+/// Must be called from syscall context.
+pub unsafe fn clear_any_pending() {
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        if let Some(ref mut proc) = procs[cur] {
+            if let Some(sig) = proc.signal_state.next_pending() {
+                proc.signal_state.clear_pending(sig);
+            }
+        }
+    }
+}
+
+/// Check for a pending signal that has a user-space handler.
+/// Returns `Some((sig, handler_addr))` for the first such signal.
+///
+/// Called from the exception return path before resuming user mode.
+pub fn check_pending_signal() -> Option<(Signal, u32)> {
+    // SAFETY: read-only access via addr_of!; no mutation occurs here.
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let proc = procs[cur].as_ref()?;
+        let sig = proc.signal_state.next_pending()?;
+        if let SignalAction::Handler(addr) = proc.signal_state.action(sig) {
+            Some((sig, addr))
+        } else {
+            None
+        }
+    }
+}
+
+/// Get the pending-signal bitmask for a PID (test helper).
+///
+/// # Safety
+///
+/// Must be called from a context with exclusive access.
+pub unsafe fn get_pending_mask(pid: Pid) -> u32 {
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let idx = usize::try_from(pid).unwrap_or(MAX_PROCS);
+        if idx >= MAX_PROCS {
+            return 0;
+        }
+        procs[idx].as_ref().map_or(0, |p| p.signal_state.pending)
+    }
+}
+
+/// Get the state of a process by PID (test helper).
+///
+/// # Safety
+///
+/// Must be called from a context with exclusive access.
+pub unsafe fn get_state(pid: Pid) -> Option<State> {
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let idx = usize::try_from(pid).unwrap_or(MAX_PROCS);
+        if idx >= MAX_PROCS {
+            return None;
+        }
+        procs[idx].as_ref().map(|p| p.state)
+    }
+}
+
 /// Reset all process subsystem state for testing.
 /// Creates process 0 (kernel) with a valid page table and resets the
 /// page allocator.
@@ -730,6 +974,9 @@ pub(crate) unsafe fn reset_for_test() {
             stack_pages: 0,
             heap_break: DEFAULT_HEAP_BREAK,
             mappings: [None; MAX_MAPPINGS],
+            signal_state: SignalState::new(),
+            uid: 0,
+            wake_tick: 0,
         });
     }
 }
@@ -782,6 +1029,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -810,6 +1060,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -840,6 +1093,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -871,6 +1127,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -907,6 +1166,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -935,6 +1197,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -970,6 +1235,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -1011,6 +1279,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
 
             // Process 1: faulting process
@@ -1026,6 +1297,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -1057,6 +1331,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             let pt1 = mmu::alloc_addr_space().unwrap();
             procs[1] = Some(Process {
@@ -1070,6 +1347,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -1102,6 +1382,9 @@ mod tests {
                 stack_pages: 0,
                 heap_break: DEFAULT_HEAP_BREAK,
                 mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
             });
             CURRENT = 0;
 
@@ -1120,4 +1403,261 @@ mod tests {
             mmu::free_addr_space(new_pt);
         }
     }
+
+    /// kinit (PID 0) must have UID 0 (root).
+    #[test]
+    fn getuid_returns_zero_for_init() {
+        // SAFETY: test-only; reset_all reinitialises global state.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+            });
+            CURRENT = 0;
+            assert_eq!(current_uid(), 0, "kinit (PID 0) must have UID 0");
+        }
+    }
+
+    /// set_wake_tick transitions the process to Sleeping with the correct tick.
+    #[test]
+    fn nanosleep_sets_wake_time() {
+        // SAFETY: test-only; reset_all reinitialises global state.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+            });
+            CURRENT = 0;
+
+            let target_tick: u64 = 12345;
+            set_wake_tick(target_tick);
+
+            let procs_ro = &*core::ptr::addr_of!(PROCS);
+            let p = procs_ro[0].as_ref().unwrap();
+            assert_eq!(p.state, State::Sleeping, "process must be Sleeping after set_wake_tick");
+            assert_eq!(p.wake_tick, target_tick, "wake_tick must match the requested value");
+        }
+    }
+
+    /// clear_wake_tick returns the process to Running state.
+    #[test]
+    fn clear_wake_tick_restores_running() {
+        // SAFETY: test-only; reset_all reinitialises global state.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+            });
+            CURRENT = 0;
+
+            set_wake_tick(9999);
+            clear_wake_tick();
+
+            let procs_ro = &*core::ptr::addr_of!(PROCS);
+            let p = procs_ro[0].as_ref().unwrap();
+            assert_eq!(p.state, State::Running, "process must return to Running after clear_wake_tick");
+            assert_eq!(p.wake_tick, 0, "wake_tick must be reset to 0");
+        }
+    }
+    // -----------------------------------------------------------------------
+    // Signal integration tests (REQ-08, REQ-14)
+    // These live in process.rs because crate::process is #[cfg(not(test))]
+    // gated in main.rs, making it unavailable to signal.rs tests.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sigaction_registers_handler() {
+        // SAFETY: test-only; reset_all reinitialises global state.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+            });
+            CURRENT = 0;
+
+            let handler_addr: u32 = 0x4020_0000;
+            let stored = get_signal_action(crate::signal::Signal::Sigusr1);
+            assert_eq!(stored, crate::signal::SignalAction::Default,
+                "initial action should be Default");
+
+            set_signal_action(
+                crate::signal::Signal::Sigusr1,
+                crate::signal::SignalAction::Handler(handler_addr),
+            );
+            let stored2 = get_signal_action(crate::signal::Signal::Sigusr1);
+            assert_eq!(stored2, crate::signal::SignalAction::Handler(handler_addr),
+                "handler should be stored in PCB");
+        }
+    }
+
+    #[test]
+    fn kill_sets_pending_bit() {
+        // SAFETY: test-only; reset_all reinitialises global state.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+            });
+            CURRENT = 0;
+
+            // Install a handler so kill marks it pending (not terminate).
+            let handler_addr: u32 = 0x4020_0000;
+            set_signal_action(
+                crate::signal::Signal::Sigusr1,
+                crate::signal::SignalAction::Handler(handler_addr),
+            );
+
+            let ret = deliver_signal_to(0, crate::signal::Signal::Sigusr1);
+            assert_eq!(ret, 0, "deliver_signal_to should succeed");
+
+            let pending = get_pending_mask(0);
+            let expected_bit = 1u32 << (crate::signal::Signal::Sigusr1 as u32);
+            assert_ne!(pending & expected_bit, 0,
+                "SIGUSR1 pending bit should be set after kill");
+        }
+    }
+
+    #[test]
+    fn default_action_terminates() {
+        // SAFETY: test-only; reset_all reinitialises global state.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+            });
+            CURRENT = 0;
+
+            // No handler for SIGTERM — default is Terminate.
+            let ret = deliver_signal_to(0, crate::signal::Signal::Sigterm);
+            assert_eq!(ret, 0, "deliver_signal_to should return 0");
+
+            let state = get_state(0);
+            assert_eq!(state, Some(State::Dead),
+                "process should be Dead after default SIGTERM");
+        }
+    }
+
+    #[test]
+    fn sigchld_default_ignored() {
+        // SAFETY: test-only; reset_all reinitialises global state.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+            });
+            CURRENT = 0;
+
+            // No handler for SIGCHLD — default is Ignore.
+            let ret = deliver_signal_to(0, crate::signal::Signal::Sigchld);
+            assert_eq!(ret, 0, "deliver_signal_to should return 0");
+
+            let state = get_state(0);
+            assert_eq!(state, Some(State::Running),
+                "process should still be Running after default SIGCHLD");
+
+            let pending = get_pending_mask(0);
+            let sigchld_bit = 1u32 << (crate::signal::Signal::Sigchld as u32);
+            assert_eq!(pending & sigchld_bit, 0,
+                "SIGCHLD should not be pending when default action is Ignore");
+        }
+    }
+
 }

@@ -14,10 +14,12 @@
 //! Offset 0x18: IRQ
 //! Offset 0x1C: FIQ
 
+use crate::csprng;
 use crate::gic;
 use crate::process;
 use crate::timer;
 use crate::uart::Uart;
+use crate::watchdog;
 use core::fmt::Write;
 
 /// Tick counter incremented by the timer IRQ handler.
@@ -128,6 +130,23 @@ pub extern "C" fn irq_handler_rust() {
         unsafe {
             TICK_COUNT += 1;
         }
+
+        // Collect entropy from timer counter LSBs for the CSPRNG.
+        // SAFETY: collect_timer_entropy() only accesses ENTROPY which is
+        // written exclusively from this IRQ handler. Non-reentrant on single-
+        // core ARMv7 with IRQs masked during handler execution.
+        unsafe {
+            csprng::collect_timer_entropy();
+        }
+
+        // Pet the watchdog to prevent hardware reset.
+        // SAFETY: watchdog::pet() writes to WDT_RESTART MMIO. Called from
+        // the timer IRQ handler at 100 Hz, well within the 5-second WDT
+        // timeout. Safe after watchdog::init() has been called in kinit.
+        unsafe {
+            watchdog::pet();
+        }
+
         // Reset timer for next tick
         timer::set_ms(TICK_MS);
 
@@ -140,6 +159,14 @@ pub extern "C" fn irq_handler_rust() {
                 process::switch_to(next);
             }
         }
+
+        // Check for pending signals on the current process.
+        // WHY: signals must be delivered before the next return to user mode.
+        // The timer IRQ is the primary exception return point. Full signal
+        // frame setup requires user-mode register state from the IRQ stack;
+        // that is wired through the SVC path once userspace is active.
+        let _ = process::check_pending_signal();
+
     }
 
     gic::end_of_interrupt(irq);
