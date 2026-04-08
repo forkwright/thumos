@@ -273,7 +273,7 @@ mod tests {
         let kck = [0x42u8; KCK_LEN];
         let data = b"some EAPOL payload";
         let mut wrong_mic = compute_mic(&kck, data);
-        wrong_mic.get(0).copied().unwrap_or_default() ^= 0xff; // flip a byte
+        wrong_mic[0] ^= 0xff; // flip a byte
         assert!(!verify_mic(&kck, data, &wrong_mic));
     }
 

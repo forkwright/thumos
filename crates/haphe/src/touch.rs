@@ -88,7 +88,7 @@ pub enum TouchError<E: core::fmt::Debug> {
 // ── Raw touch record ──────────────────────────────────────────────────────────
 
 /// A single parsed touch record read FROM the hardware registers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RawTouch {
     pub(crate) x: u16,
     pub(crate) y: u16,
@@ -218,7 +218,7 @@ impl TouchscreenDriver {
         let mut count_buf = [0u8; 1];
         bus.write_read(self.addr, REG_TOUCH_COUNT, &mut count_buf)
             .map_err(TouchError::I2c)?;
-        let count = count_buf.get(0).copied().unwrap_or_default();
+        let count = count_buf.first().copied().unwrap_or_default();
 
         if usize::from(count) > MAX_TOUCH_POINTS {
             return Err(TouchError::TooManyTouches { count });
@@ -287,6 +287,7 @@ impl TouchscreenDriver {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::collections::VecDeque;
     use std::vec;
@@ -480,7 +481,7 @@ mod tests {
         driver.poll(&mut bus, &mut q).unwrap_or_default();
 
         assert_eq!(q.len(), 1, "one touch down must emit exactly one event");
-        let event = q.pop().unwrap_or_default();
+        let event = q.pop().expect("queue must have one event after poll");
         assert!(
             matches!(
                 event,
@@ -526,7 +527,7 @@ mod tests {
             .poll(&mut bus, &mut q)
             .unwrap_or_default();
 
-        let event = q.pop().unwrap_or_default();
+        let event = q.pop().expect("queue must have one event after second poll");
         assert!(
             matches!(
                 event,
@@ -557,7 +558,7 @@ mod tests {
         bus.push_read(vec![0]);
         driver.poll(&mut bus, &mut q).unwrap_or_default();
 
-        let event = q.pop().unwrap_or_default();
+        let event = q.pop().expect("queue must have one Up event after finger lifted");
         assert!(
             matches!(
                 event,
@@ -594,8 +595,8 @@ mod tests {
 
         assert_eq!(q.len(), 2, "two simultaneous touches must emit two events");
 
-        let e1 = q.pop().unwrap_or_default();
-        let e2 = q.pop().unwrap_or_default();
+        let e1 = q.pop().expect("queue must have first of two Down events");
+        let e2 = q.pop().expect("queue must have second of two Down events");
         assert!(
             matches!(
                 &e1,
@@ -678,7 +679,7 @@ mod tests {
 
         // Events must arrive in register-read ORDER (id 0, 1, 2).
         for expected_id in 0u8..3 {
-            let event = q.pop().unwrap_or_default();
+            let event = q.pop().expect("queue must have event for each touch id");
             if let InputEvent::Touch { point, .. } = event {
                 assert_eq!(
                     point.tracking_id, expected_id,

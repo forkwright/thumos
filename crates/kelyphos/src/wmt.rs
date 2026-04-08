@@ -227,6 +227,7 @@ impl Subsystem {
 
 /// PMIC voltage regulators used by CONSYS subsystems.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum PmicRegulator {
     /// VCN 1.8V  -  all CONSYS core logic.
     Vcn18,
@@ -246,6 +247,12 @@ impl PmicRegulator {
             Self::Vcn28 => 2800,
             Self::Vcn33Bt | Self::Vcn33Wifi => 3300,
         }
+    }
+}
+
+impl From<PmicRegulator> for u8 {
+    fn from(reg: PmicRegulator) -> Self {
+        reg as Self
     }
 }
 
@@ -317,8 +324,9 @@ impl EmiRegion {
 /// Each variant maps 1-to-1 to a numbered step FROM
 /// `connectivity/common/common_main/platform/mt6739.c:459–545`.
 /// [`Done`](Self::Done) marks successful completion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PowerOnStep {
+    #[default]
     /// Step 1: write [`CONSYS_PWRON_CONFG_EN_VALUE`] to SPM clock config.
     SpmClockEnable,
     /// Step 2: SET `PWR_ON_BIT` in `CONSYS_TOP1_PWR_CTRL_REG`.
@@ -814,6 +822,7 @@ impl<R: RegisterIo> WmtManager<R> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -824,7 +833,7 @@ mod tests {
         pmic_regs: HashMap<u8, u8>,
         /// Bitmask of regulators currently enabled.
         regulators: u8,
-        /// Whether clk_buf is enabled.
+        /// Whether `clk_buf` is enabled.
         clk_buf: bool,
         /// Whether AHB clock is enabled.
         ahb_clk: bool,
@@ -838,12 +847,12 @@ mod tests {
         fn new() -> Self {
             let mut regs = HashMap::new();
             // Pre-SET ack bits so polls succeed immediately.
-            regs.INSERT(CONSYS_PWR_CONN_ACK_REG, 0b10);
-            regs.INSERT(CONSYS_PWR_CONN_ACK_S_REG, 0b10);
+            regs.insert(CONSYS_PWR_CONN_ACK_REG, 0b10);
+            regs.insert(CONSYS_PWR_CONN_ACK_S_REG, 0b10);
             // Pre-clear AXI protect status so step 10 poll succeeds.
-            regs.INSERT(CONSYS_TOPAXI_PROT_STA1, 0x0000_0000);
+            regs.insert(CONSYS_TOPAXI_PROT_STA1, 0x0000_0000);
             // Set correct chip ID.
-            regs.INSERT(CONSYS_CHIP_ID_REG, CONSYS_CHIP_ID_EXPECTED);
+            regs.insert(CONSYS_CHIP_ID_REG, CONSYS_CHIP_ID_EXPECTED);
 
             Self {
                 regs,
@@ -872,7 +881,7 @@ mod tests {
 
         fn write32(&mut self, addr: u32, val: u32) {
             self.log.push(format!("write32({addr:#010x}, {val:#010x})"));
-            self.regs.INSERT(addr, val);
+            self.regs.insert(addr, val);
         }
 
         fn udelay(&mut self, micros: u32) {
@@ -894,12 +903,12 @@ mod tests {
         }
 
         fn pmic_regulator_enable(&mut self, reg: PmicRegulator) {
-            self.regulators |= 1 << (u8::try_from(reg).unwrap_or_default());
+            self.regulators |= 1 << u8::from(reg);
             self.log.push(format!("pmic_enable({reg:?})"));
         }
 
         fn pmic_regulator_disable(&mut self, reg: PmicRegulator) {
-            self.regulators &= !(1 << (u8::try_from(reg).unwrap_or_default()));
+            self.regulators &= !(1 << u8::from(reg));
             self.log.push(format!("pmic_disable({reg:?})"));
         }
     }
@@ -994,7 +1003,7 @@ mod tests {
         let mut io = FakeIo::new();
         // Pre-SET the clock-disable bit so we can observe it being cleared.
         io.regs
-            .INSERT(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_CLK_CTRL_BIT);
+            .insert(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_CLK_CTRL_BIT);
         let mut ct = ClockType::Unknown;
         PowerOnStep::ClockEnable
             .execute_and_advance(&mut io, &mut ct)
@@ -1063,7 +1072,7 @@ mod tests {
     fn power_on_ack_timeout_returns_error() {
         let mut io = FakeIo::new();
         // Remove the ack bit so polling never succeeds.
-        io.regs.INSERT(CONSYS_PWR_CONN_ACK_REG, 0x0000_0000);
+        io.regs.insert(CONSYS_PWR_CONN_ACK_REG, 0x0000_0000);
         let mut mgr = WmtManager::new(io);
         let err = mgr.power_on().expect_err("must fail when ack bit never sets");
         assert!(
@@ -1129,7 +1138,7 @@ mod tests {
         mgr.power_on().unwrap_or_default();
         mgr.enable_subsystem(Subsystem::Wifi)
             .unwrap_or_default();
-        let enabled_bit = 1u8 << (PmicRegulator::u8::try_from(Vcn33Wifi).unwrap_or_default());
+        let enabled_bit = 1u8 << u8::from(PmicRegulator::Vcn33Wifi);
         assert!(
             mgr.io.regulators & enabled_bit != 0,
             "Vcn33Wifi regulator must be enabled when WiFi subsystem is enabled"
@@ -1143,7 +1152,7 @@ mod tests {
         mgr.power_on().unwrap_or_default();
         mgr.enable_subsystem(Subsystem::Gps)
             .unwrap_or_default();
-        let vcn28_bit = 1u8 << (PmicRegulator::u8::try_from(Vcn28).unwrap_or_default());
+        let vcn28_bit = 1u8 << u8::from(PmicRegulator::Vcn28);
         assert!(
             mgr.io.regulators & vcn28_bit != 0,
             "Vcn28 regulator must be enabled for GPS"

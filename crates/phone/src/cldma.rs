@@ -241,7 +241,7 @@ impl RxQueue {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "test assertions")]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::mem::offset_of;
 

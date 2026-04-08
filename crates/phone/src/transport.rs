@@ -40,7 +40,7 @@ pub trait ModemTransport {
 
 /// The full response to a single AT command: zero or more informational lines
 /// followed by a final result code.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommandResponse {
     /// Informational text lines that preceded the final result code.
     ///
@@ -176,7 +176,7 @@ impl<T: ModemTransport> AtSession<T> {
             }
             let n = self.transport.recv(&mut byte)?;
             ensure!(n > 0, NotReadySnafu);
-            self.rx_buf.push(byte.get(0).copied().unwrap_or_default());
+            self.rx_buf.push(byte.first().copied().unwrap_or_default());
         }
     }
 }
@@ -184,7 +184,7 @@ impl<T: ModemTransport> AtSession<T> {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "test assertions")]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::collections::VecDeque;
 
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(resp.result, Response::Ok, "result must be OK");
         assert_eq!(resp.info.len(), 1, "one info line expected");
         assert_eq!(
-            resp.info.first().unwrap_or_default(),
+            resp.info.first().map_or("", String::as_str),
             "+CSQ: 18,99",
             "info line must match modem output"
         );

@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn parse_gga_valid() {
         let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76";
-        let fix = parse_gga(sentence).unwrap_or_default();
+        let fix = parse_gga(sentence).expect("valid GGA sentence should parse");
         assert_eq!(fix.quality, FixQuality::Gps);
         assert_eq!(fix.satellites, 8);
         // 53 degrees 21.6802 minutes N = 53.36133... degrees
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn parse_rmc_valid() {
         let sentence = "$GPRMC,092750.000,A,5321.6802,N,00630.3372,W,0.02,31.66,280511,,,A*43";
-        let fix = parse_rmc(sentence).unwrap_or_default();
+        let fix = parse_rmc(sentence).expect("valid RMC sentence should parse");
         assert!(
             (fix.position.lat - 53.36134).abs() < 0.001,
             "lat should be ~53.361"
