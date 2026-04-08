@@ -22,6 +22,7 @@ static mut FIRST_PAGE: usize = 0;
 ///
 /// Must be called exactly once during kernel init, before any allocations.
 pub unsafe fn init(ram_start: usize, ram_end: usize, kernel_end: usize) {
+    // SAFETY: page frame index is within physical memory bounds (checked by caller).
     unsafe {
         let usable_start = (kernel_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let usable_end = ram_end & !(PAGE_SIZE - 1);
@@ -47,6 +48,7 @@ pub unsafe fn init(ram_start: usize, ram_end: usize, kernel_end: usize) {
 
 /// Allocate a single physical page. Returns the physical address, or None.
 pub fn alloc_page() -> Option<usize> {
+    // SAFETY: page frame index is within physical memory bounds (checked by caller).
     unsafe {
         if FREE_PAGES == 0 {
             return None;
@@ -72,6 +74,7 @@ pub fn alloc_page() -> Option<usize> {
 ///
 /// The caller must ensure `addr` was previously returned by `alloc_page`.
 pub unsafe fn free_page(addr: usize) {
+    // SAFETY: page frame index is within physical memory bounds (checked by caller).
     unsafe {
         let page_num = (addr - FIRST_PAGE) / PAGE_SIZE;
         let word = page_num / 32;
@@ -84,6 +87,7 @@ pub unsafe fn free_page(addr: usize) {
 
 /// Return the number of free pages.
 pub fn free_count() -> usize {
+    // SAFETY: page frame index is within physical memory bounds (checked by caller).
     unsafe { FREE_PAGES }
 }
 

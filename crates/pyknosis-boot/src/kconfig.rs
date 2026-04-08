@@ -66,19 +66,27 @@ pub fn parse_cmdline(cmdline: &str) {
             match key {
                 "panic" => {
                     if let Ok(v) = value.parse::<u32>() {
+                        // SAFETY: parse_cmdline is called once during early boot before
+                        // any concurrent access to these static mut config globals.
                         unsafe {
                             PANIC_TIMEOUT = v;
                         }
                     }
                 }
+                // SAFETY: parse_cmdline is called once during early boot before
+                // any concurrent access to these static mut config globals.
                 "verbose" => unsafe {
                     VERBOSE_BOOT = value != "0";
                 },
+                // SAFETY: parse_cmdline is called once during early boot before
+                // any concurrent access to these static mut config globals.
                 "console" => unsafe {
                     DEBUG_CONSOLE = value != "0";
                 },
                 "tick_ms" => {
                     if let Ok(v) = value.parse::<u32>() {
+                        // SAFETY: parse_cmdline is called once during early boot before
+                        // any concurrent access to these static mut config globals.
                         unsafe {
                             TICK_MS = v.max(1).min(100);
                         }
