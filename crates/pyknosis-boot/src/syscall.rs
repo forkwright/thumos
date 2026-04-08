@@ -23,11 +23,13 @@
 
 use crate::fd;
 use crate::ipc;
+use crate::signal;
 use crate::kconfig;
 use crate::mmu;
 use crate::page;
 use crate::process;
 use crate::process::VmMapping;
+use crate::time;
 use crate::uart::Uart;
 use core::fmt::Write;
 
@@ -477,7 +479,9 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
                 None => u32::MAX,
             }
         }
-        Syscall::Execve | Syscall::Kill | Syscall::Getuid => ENOSYS,
+        Syscall::Execve => ENOSYS,
+        Syscall::Kill => signal::sys_kill(arg0, arg1),
+        Syscall::Getuid => process::current_uid(),
 
         // ---- Memory management ----
 
@@ -523,13 +527,15 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         | Syscall::Sendto
         | Syscall::Recvfrom => ENOSYS,
 
-        // ---- Time (stubs) ----
+        // ---- Time ----
 
-        Syscall::ClockGettime | Syscall::Nanosleep => ENOSYS,
+        Syscall::ClockGettime => time::sys_clock_gettime(arg0, arg1),
+        Syscall::Nanosleep => time::sys_nanosleep(arg0),
 
-        // ---- Signal (stubs) ----
+        // ---- Signal ----
 
-        Syscall::Sigaction | Syscall::Sigreturn => ENOSYS,
+        Syscall::Sigaction => signal::sys_sigaction(arg0, arg1),
+        Syscall::Sigreturn => signal::sys_sigreturn(),
     }
 }
 

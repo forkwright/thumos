@@ -5,7 +5,7 @@
 //! Hubris model: each driver init is fault-isolated, logged, and skippable.
 //!
 //! Boot ORDER:
-//! MMU → page alloc → heap → GIC → process → exceptions/timer → devices →
+//! MMU → page alloc → heap → GIC → process → exceptions/timer → CSPRNG → devices →
 //! eMMC → display → USB serial → CCCI modem → GPIO keypad → power → userspace.
 
 extern crate alloc;
@@ -15,6 +15,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::ccci::CcciDriver;
 use crate::console::Console;
+use crate::csprng;
 use crate::device::{self, DeviceRegistry};
 use crate::display::{DisplayDriver, Gc9306};
 use crate::elf;
@@ -30,6 +31,7 @@ use crate::process;
 use crate::ramfs::RamFs;
 use crate::uart::Uart;
 use crate::usb::UsbController;
+use crate::watchdog;
 
 // ---------------------------------------------------------------------------
 // Global state  -  read by panic handler and other subsystems
@@ -289,8 +291,8 @@ pub unsafe fn run() -> ! {
     unsafe {
         heap::init();
     }
-    let (used, total) = heap::stats();
-    let _ = write!(serial, "       {} / {} bytes\r\n", used, total);
+    let (allocs, frees) = heap::stats();
+    let _ = write!(serial, "       slab: {} allocs, {} frees\r\n", allocs, frees);
     state.heap_ok = true;
 
     // -----------------------------------------------------------------------
@@ -330,6 +332,31 @@ pub unsafe fn run() -> ! {
         crate::timer::frequency()
     );
     state.timer_ok = true;
+
+    // -----------------------------------------------------------------------
+    // Step 5b: CSPRNG (ChaCha20, seeded from timer entropy)
+    // -----------------------------------------------------------------------
+    let _ = serial.write_str("[init] CSPRNG (ChaCha20)\r\n");
+    // SAFETY: called once after exceptions::init() (timer running, IRQs enabled).
+    // csprng::init() spins on WFI until sufficient timer-jitter entropy is
+    // accumulated (MIN_MIX_COUNT ISR samples ≈ 640 ms at 100 Hz), then seeds
+    // ChaCha20 and sets INITIALIZED. Must complete before any radio driver init.
+    unsafe {
+        csprng::init();
+    }
+    let _ = serial.write_str("       CSPRNG ready\r\n");
+
+    // -----------------------------------------------------------------------
+    // Step 5c: Hardware watchdog (WDT)
+    // -----------------------------------------------------------------------
+    let _ = serial.write_str("[init] Watchdog (WDT, 5s)\r\n");
+    // SAFETY: called once after MMU init (device MMIO is identity-mapped).
+    // Configures the MT6739 WDT with a 5-second timeout. The scheduler tick
+    // handler pets the watchdog on every timer interrupt (every 10 ms).
+    unsafe {
+        watchdog::init();
+    }
+    let _ = serial.write_str("       WDT armed (5s timeout)\r\n");
 
     // -----------------------------------------------------------------------
     // Step 6: Device registry

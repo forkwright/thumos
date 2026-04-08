@@ -14,6 +14,7 @@ use core::panic::PanicInfo;
 mod ccci;
 #[cfg(not(test))]
 mod console;
+mod csprng;
 #[cfg(not(test))]
 mod device;
 mod display;
@@ -42,13 +43,19 @@ mod power;
 #[cfg(not(test))]
 mod process;
 mod ramfs;
+mod signal;
+mod slab;
 #[cfg(not(test))]
 mod syscall;
+#[cfg(not(test))]
+mod time;
 #[cfg(not(test))]
 mod timer;
 #[cfg(not(test))]
 mod uart;
 mod usb;
+#[cfg(not(test))]
+mod watchdog;
 
 #[cfg(not(test))]
 #[global_allocator]
