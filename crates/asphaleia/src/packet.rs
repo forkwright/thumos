@@ -40,7 +40,13 @@ pub enum ParseError {
 
 /// Parsed IPv4 header fields.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "public API  -  consumed by downstream crates")]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "public API — version and total_length are unused in this crate but available to downstream consumers"
+    )
+)]
 pub struct IpHeader {
     /// IP version (always 4 for a successfully parsed header).
     pub version: u8,
@@ -58,7 +64,10 @@ pub struct IpHeader {
 
 /// Parsed TCP header fields.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "public API  -  consumed by downstream crates")]
+#[expect(
+    dead_code,
+    reason = "public API — seq and ack are unused in this crate but available to downstream consumers"
+)]
 pub struct TcpHeader {
     /// Source TCP port.
     pub src_port: u16,
@@ -74,7 +83,13 @@ pub struct TcpHeader {
 
 /// Parsed UDP header fields.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "public API  -  consumed by downstream crates")]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "public API — length is unused in this crate but available to downstream consumers"
+    )
+)]
 pub struct UdpHeader {
     /// Source UDP port.
     pub src_port: u16,
@@ -103,7 +118,7 @@ impl IpHeader {
             });
         }
 
-        let version_ihl = data.get(0).copied().unwrap_or_default();
+        let version_ihl = data.first().copied().unwrap_or_default();
         let version = version_ihl >> 4;
         let ihl = version_ihl & 0x0F;
 
@@ -161,7 +176,7 @@ impl TcpHeader {
             });
         }
 
-        let src_port = u16::from_be_bytes([data.get(0).copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
+        let src_port = u16::from_be_bytes([data.first().copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
         let dst_port = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]);
         let seq = u32::from_be_bytes([data.get(4).copied().unwrap_or_default(), data.get(5).copied().unwrap_or_default(), data.get(6).copied().unwrap_or_default(), data.get(7).copied().unwrap_or_default()]);
         let ack = u32::from_be_bytes([data.get(8).copied().unwrap_or_default(), data.get(9).copied().unwrap_or_default(), data.get(10).copied().unwrap_or_default(), data.get(11).copied().unwrap_or_default()]);
@@ -195,7 +210,7 @@ impl UdpHeader {
             });
         }
 
-        let src_port = u16::from_be_bytes([data.get(0).copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
+        let src_port = u16::from_be_bytes([data.first().copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
         let dst_port = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]);
         let length = u16::from_be_bytes([data.get(4).copied().unwrap_or_default(), data.get(5).copied().unwrap_or_default()]);
 

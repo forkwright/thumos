@@ -289,16 +289,18 @@ pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
         });
     }
 
-    let plen = payload.len() as u16;
+    // INVARIANT: payload.len() <= STP_MAX_PAYLOAD (0xFFF), checked above; fits in u16.
+    let plen = u16::try_from(payload.len()).unwrap_or_default();
+    let [plen_lo, plen_hi_raw] = plen.to_le_bytes();
     let seq4 = seq & 0x0F;
 
     // HDR0: function_type(4b) | seq[3:0](4b)
     // WHY: BT function type is 0, so upper nibble is 0x0; lower nibble is sequence.
     let hdr0 = (STP_FUNC_BT << 4) | seq4;
     // HDR1: ack_num(4b) = 0 | payload_len[11:8](4b)
-    let hdr1 = (plen >> 8) as u8 & 0x0F;
+    let hdr1 = plen_hi_raw & 0x0F;
     // HDR2: payload_len[7:0]
-    let hdr2 = (plen & 0xFF) as u8;
+    let hdr2 = plen_lo;
     // HDR3: checksum = XOR(HDR0, HDR1, HDR2)
     let hdr3 = hdr0 ^ hdr1 ^ hdr2;
 
@@ -340,7 +342,7 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
     let header_end = start + STP_HEADER_LEN;
     let header = data.get(start..header_end).ok_or(Error::RxUnderrun)?;
 
-    let hdr0 = header.get(0).copied().unwrap_or_default();
+    let hdr0 = header.first().copied().unwrap_or_default();
     let hdr1 = header.get(1).copied().unwrap_or_default();
     let hdr2 = header.get(2).copied().unwrap_or_default();
     let hdr3 = header.get(3).copied().unwrap_or_default();
@@ -437,7 +439,7 @@ pub fn build_le_set_random_address_cmd(addr: &BdAddr) -> Vec<u8> {
     pkt.push(a.get(3).copied().unwrap_or_default());
     pkt.push(a.get(2).copied().unwrap_or_default());
     pkt.push(a.get(1).copied().unwrap_or_default());
-    pkt.push(a.get(0).copied().unwrap_or_default());
+    pkt.push(a.first().copied().unwrap_or_default());
     pkt
 }
 
@@ -802,7 +804,7 @@ mod tests {
         let mut buf = [0u8; 64];
         stp_encode(0, payload, &mut buf)?;
         // Corrupt the checksum byte (HDR3 at OFFSET 5)
-        buf.get(5).copied().unwrap_or_default() ^= 0xFF;
+        buf[5] ^= 0xFF;
 
         let result = stp_decode(&buf[..7]);
         assert!(
@@ -917,7 +919,7 @@ mod tests {
         // Lower 6 bits of MSB and all other bytes should be FROM entropy
         assert_eq!(
             addr.as_bytes()[0] & !RANDOM_ADDR_MSB_MASK,
-            entropy.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
+            entropy.first().copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
             "lower bits of MSB byte must be preserved FROM entropy"
         );
         assert_eq!(
@@ -945,7 +947,7 @@ mod tests {
         let addr = generate_rpa(&entropy);
         assert_eq!(
             addr.as_bytes()[0] & !RANDOM_ADDR_MSB_MASK,
-            entropy.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
+            entropy.first().copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
             "lower bits of MSB byte must be preserved FROM entropy"
         );
         assert_eq!(
@@ -1030,7 +1032,7 @@ mod tests {
             10,
             "HCI_LE_Set_Random_Address packet must be 10 bytes"
         );
-        assert_eq!(pkt.get(0).copied().unwrap_or_default(), 0x01, "H4 type must be 0x01 (HCI command)");
+        assert_eq!(pkt.first().copied().unwrap_or_default(), 0x01, "H4 type must be 0x01 (HCI command)");
         // Address starts at OFFSET 4; HCI wants LSB first so 0xFF is first
         assert_eq!(
             pkt.get(4).copied().unwrap_or_default(), 0xFF,
