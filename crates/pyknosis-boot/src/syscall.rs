@@ -22,7 +22,9 @@
 //! - 80-89: Signal
 
 use crate::fd;
+use crate::futex;
 use crate::ipc;
+use crate::pipe;
 use crate::signal;
 use crate::kconfig;
 use crate::mmu;
@@ -479,7 +481,7 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
                 None => u32::MAX,
             }
         }
-        Syscall::Execve => ENOSYS,
+        Syscall::Execve => sys_execve(arg0, arg1, arg2),
         Syscall::Kill => signal::sys_kill(arg0, arg1),
         Syscall::Getuid => process::current_uid(),
 
@@ -495,8 +497,8 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         // implemented; write/directory ops remain ENOSYS (future phases).
 
         Syscall::Open => fd::sys_open(arg0, arg1, arg2),
-        Syscall::Close => fd::sys_close(arg0),
-        Syscall::Read => fd::sys_read(arg0, arg1, arg2),
+        Syscall::Close => sys_close_with_pipe(arg0),
+        Syscall::Read => sys_read_with_pipe(arg0, arg1, arg2),
         Syscall::Stat => fd::sys_stat(arg0, arg1, arg2),
         Syscall::Fstat => fd::sys_fstat(arg0, arg1),
         Syscall::Lseek => fd::sys_lseek(arg0, arg1, arg2),
@@ -513,9 +515,10 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         | Syscall::Unlink
         | Syscall::Chdir => ENOSYS,
 
-        // ---- IPC (stubs) ----
+        // ---- IPC ----
 
-        Syscall::Pipe | Syscall::Futex => ENOSYS,
+        Syscall::Pipe => pipe::sys_pipe(arg0),
+        Syscall::Futex => futex::sys_futex(arg0, arg1, arg2),
 
         // ---- Network (stubs) ----
 
@@ -537,6 +540,295 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         Syscall::Sigaction => signal::sys_sigaction(arg0, arg1),
         Syscall::Sigreturn => signal::sys_sigreturn(),
     }
+}
+
+// --- Process management syscall implementations (see sys_execve below) ---
+
+// --- Pipe-aware fd dispatch helpers ---
+// WHY: pipe file descriptors are stored in the same fd table as ramfs fds
+// but use the `flags` field to encode pipe identity. These wrappers check
+// the flags before delegating to the appropriate handler, keeping all pipe
+// logic in pipe.rs and the dispatch minimal.
+
+/// SYS_read: dispatch to pipe or ramfs based on fd kind.
+fn sys_read_with_pipe(fd: u32, buf_ptr: u32, count: u32) -> u32 {
+    let fd_idx = fd as usize;
+    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
+    // reference. Read-only here to inspect flags.
+    let flags = {
+        let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
+        match table.get(fd_idx) {
+            Some(e) => e.flags,
+            None => return fd::EBADF,
+        }
+    };
+
+    if pipe::is_pipe_fd(flags) {
+        let pipe_idx = pipe::pipe_idx_from_flags(flags);
+        pipe::sys_pipe_read(pipe_idx, buf_ptr, count)
+    } else {
+        fd::sys_read(fd, buf_ptr, count)
+    }
+}
+
+/// SYS_close: notify pipe subsystem when a pipe fd is closed.
+fn sys_close_with_pipe(fd: u32) -> u32 {
+    let fd_idx = fd as usize;
+    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
+    // reference. Read-only here to inspect flags before close.
+    let flags = {
+        let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
+        match table.get(fd_idx) {
+            Some(e) => e.flags,
+            None => return fd::EBADF,
+        }
+    };
+
+    // Close the fd entry first (removes it from the table).
+    let result = fd::sys_close(fd);
+
+    // If this was a pipe fd, notify the pipe subsystem.
+    if result == 0 && pipe::is_pipe_fd(flags) {
+        let pipe_idx = pipe::pipe_idx_from_flags(flags);
+        let is_write = pipe::is_write_end(flags);
+        pipe::on_pipe_fd_closed(pipe_idx, is_write);
+    }
+
+    result
+}
+
+// --- execve implementation ---
+
+/// No such file or directory (two's complement -2, matches Linux ENOENT).
+const ENOENT: u32 = 0u32.wrapping_sub(2);
+
+/// execve(path_ptr, argv_ptr, _envp_ptr): replace the current process image.
+///
+/// # Steps
+///
+/// 1. Validate and read the path string from user space.
+/// 2. Find the file in the global ramfs.
+/// 3. Parse and validate the ELF header (must be ARM32 LE).
+/// 4. Load ELF PT_LOAD segments (identity-mapped; elf::load writes to vaddr).
+/// 5. Allocate a new stack; push argc and argv onto it.
+/// 6. Reset all signal handlers to SIG_DFL (POSIX exec semantics).
+/// 7. Update the PCB: entry → lr, stack top → sp, reset heap break + mappings.
+///
+/// # On success
+///
+/// Returns 0 in r0. The exception return path resumes at the ELF entry point
+/// with sp pointing at argc on the new stack.
+///
+/// # Preserved across exec
+///
+/// - PID (same process, new image)
+/// - File descriptors (global FD_TABLE is not cleared; O_CLOEXEC is future work)
+///
+/// # envp
+///
+/// `_envp_ptr` is accepted but ignored; environment variables are not yet
+/// supported.
+fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
+    // --- Step 1: validate and read path ---
+
+    // Validate that path_ptr is in user DRAM (non-null, non-kernel).
+    // WHY validate 1 byte: catches null/kernel/device pointers before any read.
+    if !validate_user_buffer(path_ptr as usize, 1) {
+        return EFAULT;
+    }
+
+    // Read the null-terminated path string from user space.
+    // Cap at 256 bytes to bound the scan; longer paths are rejected.
+    const MAX_PATH: usize = 256;
+    let path_len = {
+        let mut len = 0usize;
+        let ptr = path_ptr as *const u8;
+        while len < MAX_PATH {
+            // SAFETY: ptr + len is in user DRAM (validate_user_buffer checked
+            // the base; the loop caps at MAX_PATH which is well within the
+            // ~1 GB user DRAM range, so no wrap occurs).
+            let byte = unsafe { ptr.add(len).read_volatile() };
+            if byte == 0 {
+                break;
+            }
+            len += 1;
+        }
+        if len == 0 || len == MAX_PATH {
+            return ENOENT; // empty path or unterminated within limit
+        }
+        len
+    };
+
+    // Construct path &str from the validated region.
+    // SAFETY: path_ptr is in user DRAM (validated above); path_len bytes
+    // were just scanned without trapping. The slice lifetime is local.
+    let path_bytes = unsafe {
+        core::slice::from_raw_parts(path_ptr as *const u8, path_len)
+    };
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => return ENOENT,
+    };
+
+    // --- Step 2: locate the file in ramfs ---
+    // SAFETY: fd::init_ramfs was called during kernel boot before any execve call.
+    let elf_data: &[u8] = match unsafe { fd::ramfs_find(path) } {
+        Some(d) => d,
+        None => return ENOENT,
+    };
+
+    // --- Step 3: parse and validate ELF ---
+    let loaded = match crate::elf::load(elf_data) {
+        Ok(l) => l,
+        Err(_) => return EINVAL,
+    };
+    let entry_point = loaded.entry;
+
+    // --- Step 4: allocate new stack ---
+    // WHY 4 pages (16 KB): matches spawn() stack size; sufficient for musl
+    // libc start-up (argc/argv + environ + aux vectors + initial stack frame).
+    const EXEC_STACK_PAGES: usize = 4;
+    let mut new_stack_base: usize = 0;
+    for i in 0..EXEC_STACK_PAGES {
+        match page::alloc_page() {
+            Some(phys) => {
+                if i == 0 {
+                    new_stack_base = phys;
+                }
+            }
+            None => {
+                // OOM: free already-allocated stack pages and abort.
+                for j in 0..i {
+                    // SAFETY: pages were returned by alloc_page() in this loop;
+                    // they have not been mapped or used yet.
+                    unsafe { page::free_page(new_stack_base + j * page::PAGE_SIZE); }
+                }
+                return ENOMEM;
+            }
+        }
+    }
+    let new_stack_top = new_stack_base + EXEC_STACK_PAGES * page::PAGE_SIZE;
+
+    // --- Step 5: build argc/argv on the new stack ---
+    // Stack layout written at sp (grows downward from new_stack_top):
+    //   sp+0        : argc      (u32)
+    //   sp+4        : argv[0]   (u32 user pointer into string area below)
+    //   ...
+    //   sp+4+argc*4 : NULL      (u32 argv[] terminator)
+    //   string area : null-terminated argv strings packed contiguously
+    //
+    // This layout matches the Linux/ARM AAPCS start-up convention consumed by
+    // musl libc's __start_main.
+
+    // Collect argv strings from user space (cap at 16 args, 128 bytes each).
+    const MAX_ARGS: usize = 16;
+    const MAX_ARG_LEN: usize = 128;
+    // WHY fixed-size arrays: avoids heap allocation in the execve path; size
+    // is bounded so the combined frame always fits in the 16 KB stack.
+    let mut arg_data: [[u8; MAX_ARG_LEN]; MAX_ARGS] = [[0u8; MAX_ARG_LEN]; MAX_ARGS];
+    let mut arg_lens: [usize; MAX_ARGS] = [0usize; MAX_ARGS];
+    let mut argc: usize = 0;
+
+    if argv_ptr != 0 {
+        let argv_base = argv_ptr as usize;
+        for i in 0..MAX_ARGS {
+            // Read the i-th argv[] entry (u32 user pointer to a string).
+            let entry_addr = argv_base + i * 4;
+            if !validate_user_buffer(entry_addr, 4) {
+                break;
+            }
+            // SAFETY: entry_addr is in user DRAM (validated above).
+            let str_ptr = unsafe {
+                core::ptr::read_unaligned(entry_addr as *const u32)
+            } as usize;
+            if str_ptr == 0 {
+                break; // null terminator of argv[]
+            }
+            if !validate_user_buffer(str_ptr, 1) {
+                break; // bad string pointer — stop collecting args
+            }
+            // Copy up to MAX_ARG_LEN-1 bytes of the string.
+            let mut slen = 0usize;
+            while slen < MAX_ARG_LEN - 1 {
+                // SAFETY: str_ptr is in user DRAM (validated above).
+                let byte = unsafe { (str_ptr as *const u8).add(slen).read_volatile() };
+                if byte == 0 {
+                    break;
+                }
+                arg_data[i][slen] = byte;
+                slen += 1;
+            }
+            arg_lens[i] = slen;
+            argc += 1;
+        }
+    }
+
+    // Compute and align the stack frame size.
+    let strings_size: usize = (0..argc).map(|i| arg_lens[i] + 1).sum::<usize>();
+    let pointers_size = (argc + 1) * 4; // argv[] + null terminator
+    let frame_size = 4 + pointers_size + strings_size;
+    // AAPCS requires 8-byte stack alignment at function call boundaries.
+    let frame_aligned = (frame_size + 7) & !7;
+
+    let sp = if frame_aligned <= EXEC_STACK_PAGES * page::PAGE_SIZE {
+        new_stack_top - frame_aligned
+    } else {
+        // Pathological argv (too many/long args): fall back to argc=0 frame.
+        argc = 0;
+        new_stack_top - 8
+    };
+
+    // Write argc onto the stack.
+    // SAFETY: sp is within [new_stack_base, new_stack_top); allocation
+    // succeeded above. Stack pages are identity-mapped (physical == virtual),
+    // so the write reaches the correct physical pages.
+    unsafe { (sp as *mut u32).write(argc as u32); }
+
+    // Write argv[] pointers and string data.
+    let argv_array_base = sp + 4;
+    let mut string_cursor = argv_array_base + (argc + 1) * 4;
+
+    for i in 0..argc {
+        // Write the pointer to this argument string.
+        // SAFETY: argv_array_base + i*4 is within the stack frame computed above.
+        unsafe {
+            ((argv_array_base + i * 4) as *mut u32).write(string_cursor as u32);
+        }
+        // Copy string bytes followed by a null terminator.
+        // SAFETY: string_cursor is within the stack frame; arg_data[i] is
+        // a kernel-local fixed array; arg_lens[i] < MAX_ARG_LEN.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                arg_data[i].as_ptr(),
+                string_cursor as *mut u8,
+                arg_lens[i],
+            );
+            ((string_cursor + arg_lens[i]) as *mut u8).write(0);
+        }
+        string_cursor += arg_lens[i] + 1;
+    }
+    // Write null terminator for argv[argc].
+    // SAFETY: argv_array_base + argc*4 is within the stack frame.
+    unsafe { ((argv_array_base + argc * 4) as *mut u32).write(0); }
+
+    // --- Step 6: reset signal handlers (POSIX exec semantics) ---
+    // WHY: POSIX requires exec to reset all signal dispositions to SIG_DFL and
+    // clear pending signals that were set via a registered handler. The new
+    // image must not inherit any userspace-installed signal handlers.
+    // SAFETY: called from syscall context (SVC mode, IRQs disabled, single-core).
+    unsafe { process::reset_signal_state(); }
+
+    // --- Step 7: update PCB ---
+    // exec_replace_context frees old stack pages, resets heap_break and the
+    // mmap mapping table, and updates ctx.lr/sp/cpsr for the exception return.
+    // SAFETY: new_stack_base and EXEC_STACK_PAGES identify the freshly
+    // allocated stack verified above. entry_point is the ELF e_entry field
+    // validated by elf::load.
+    unsafe {
+        process::exec_replace_context(entry_point, sp, new_stack_base, EXEC_STACK_PAGES);
+    }
+
+    0
 }
 
 // --- Memory management syscall error codes ---
@@ -1302,5 +1594,77 @@ mod tests {
             result, EINVAL,
             "mprotect on unmapped address must return EINVAL"
         );
+    }
+
+    // ---- execve validation ----
+
+    /// REQ-07: execve must return EFAULT for an invalid (null or kernel-space)
+    /// path pointer before attempting any filesystem lookup.
+    ///
+    /// WHY: validate_user_buffer is the first gate in sys_execve. Verifying it
+    /// returns EFAULT for out-of-range pointers confirms that the implementation
+    /// rejects bad pointers before touching any kernel data structures.
+    #[test]
+    fn execve_validates_path_pointer() {
+        // Null pointer must fail validation and produce EFAULT.
+        assert!(
+            !validate_user_buffer(0, 1),
+            "null pointer must fail validate_user_buffer"
+        );
+
+        // Kernel-space pointer must also fail (below KERNEL_END).
+        assert!(
+            !validate_user_buffer(kconfig::KERNEL_LOAD, 1),
+            "kernel-load address must fail validate_user_buffer"
+        );
+
+        // Device MMIO pointer must fail.
+        assert!(
+            !validate_user_buffer(0x1100_2000, 1),
+            "UART MMIO address must fail validate_user_buffer"
+        );
+
+        // A valid user-DRAM pointer must pass (sanity: the positive case).
+        assert!(
+            validate_user_buffer(kconfig::KERNEL_END + 0x1000, 1),
+            "pointer just above KERNEL_END must pass validate_user_buffer"
+        );
+
+        // EFAULT has the correct two's-complement encoding.
+        assert_eq!(EFAULT, 0xFFFF_FFF2u32, "EFAULT must be two's complement -14");
+    }
+
+    /// REQ-07: execve must return ENOENT when the path is not found in ramfs.
+    ///
+    /// WHY: after path validation, sys_execve calls fd::ramfs_find. This test
+    /// confirms that the lookup correctly returns None (→ ENOENT) for a path
+    /// that was never added to the filesystem.
+    #[test]
+    fn execve_returns_enoent_for_missing_file() {
+        // Populate a fresh ramfs with one known file.
+        let mut fs = crate::ramfs::RamFs::new();
+        fs.add("init", b"\x7FELF"); // minimal content; not a real ELF
+        // SAFETY: test-only; no concurrent access. The previous RAMFS state
+        // (if any) is replaced; this is acceptable in single-threaded tests.
+        unsafe { fd::init_ramfs(fs); }
+
+        // A file that was never added must not be found.
+        // SAFETY: init_ramfs was called above.
+        let result = unsafe { fd::ramfs_find("no_such_binary") };
+        assert!(
+            result.is_none(),
+            "ramfs_find must return None for a path not in the filesystem"
+        );
+
+        // The known file must be found (confirms init_ramfs succeeded).
+        // SAFETY: init_ramfs was called above.
+        let found = unsafe { fd::ramfs_find("init") };
+        assert!(
+            found.is_some(),
+            "ramfs_find must return Some for a file that was added"
+        );
+
+        // ENOENT has the correct two's-complement encoding.
+        assert_eq!(ENOENT, 0xFFFF_FFFEu32, "ENOENT must be two's complement -2");
     }
 }
