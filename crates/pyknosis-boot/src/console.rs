@@ -129,14 +129,14 @@ impl Console {
     fn cmd_mem(&mut self) {
         let free = page::free_count();
         let free_mb = page::free_bytes() / 1024 / 1024;
-        let (heap_used, heap_total) = crate::heap::stats();
+        let (heap_allocs, heap_frees) = crate::heap::stats();
         let _ = write!(self.serial, "pages: {} free ({} MB)\r\n", free, free_mb);
         let _ = write!(
             self.serial,
-            "heap: {} / {} bytes ({:.1}%)\r\n",
-            heap_used,
-            heap_total,
-            (heap_used as f64) / (heap_total as f64) * 100.0
+            "heap: {} allocs, {} frees, {} live\r\n",
+            heap_allocs,
+            heap_frees,
+            heap_allocs.saturating_sub(heap_frees),
         );
     }
 
