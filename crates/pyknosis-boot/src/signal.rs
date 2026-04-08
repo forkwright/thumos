@@ -266,6 +266,7 @@ pub fn sys_sigaction(signum: u32, handler_ptr: u32) -> u32 {
 /// Returns 0 on success, or an error code:
 /// - `EINVAL` — unrecognised signal number
 /// - `ESRCH` — target PID not found or not alive
+/// - `EPERM` — caller lacks `CAP_KILL` and target is a different process (REQ-09)
 #[cfg(not(test))]
 pub fn sys_kill(pid: u32, signum: u32) -> u32 {
     let Some(sig) = Signal::from_u32(signum) else {
@@ -276,6 +277,16 @@ pub fn sys_kill(pid: u32, signum: u32) -> u32 {
         Ok(p) => p,
         Err(_) => return ESRCH,
     };
+
+    // REQ-09: sending a signal to another process requires CAP_KILL.
+    // Self-signals (kill(getpid(), sig)) bypass the check — a process may
+    // always signal itself (matches Linux semantics and enables self-termination).
+    let current = crate::process::current_pid();
+    if pid8 != current {
+        if let Err(e) = crate::capability::check(crate::capability::Capabilities::KILL) {
+            return e;
+        }
+    }
 
     // SAFETY: deliver_signal_to accesses PROCS via addr_of_mut!.
     // Called from syscall context (single-core).
