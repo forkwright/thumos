@@ -84,7 +84,8 @@ impl KeyInfo {
     /// Key descriptor version (bits 0–2).
     #[must_use]
     pub const fn descriptor_version(self) -> u8 {
-        (self.0 & 0x0007) as u8
+        // WHY: masked to 3 bits (0x0007), result is always 0–7; fits u8 without truncation.
+        (self.0 & 0x0007).to_le_bytes()[0]
     }
 
     /// True if pairwise (unicast) key; false for GROUP/broadcast key.
@@ -96,7 +97,8 @@ impl KeyInfo {
     /// Key index for GROUP keys (bits 4–5).
     #[must_use]
     pub const fn key_index(self) -> u8 {
-        ((self.0 >> 4) & 0x03) as u8
+        // WHY: masked to 2 bits (0x03), result is always 0–3; fits u8 without truncation.
+        ((self.0 >> 4) & 0x03).to_le_bytes()[0]
     }
 
     /// True if supplicant shall install the key.
@@ -185,7 +187,7 @@ pub fn parse(data: &[u8]) -> Result<EapolFrame, Error> {
 
     let version = data.first().copied().unwrap_or_default();
     let packet_type = EapolType::from_byte(data.get(1).copied().unwrap_or_default())?;
-    let body_len = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]) as usize;
+    let body_len = usize::from(u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]));
     let total = EAPOL_HEADER_LEN + body_len;
 
     ensure!(
@@ -248,7 +250,7 @@ fn parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, Error> {
     let mut mic = [0u8; MIC_LEN];
     mic.copy_from_slice(body.get(77..93).unwrap_or_default());
 
-    let key_data_len = u16::from_be_bytes([body.get(93).copied().unwrap_or_default(), body.get(94).copied().unwrap_or_default()]) as usize;
+    let key_data_len = usize::from(u16::from_be_bytes([body.get(93).copied().unwrap_or_default(), body.get(94).copied().unwrap_or_default()]));
     let key_data_end = EAPOL_KEY_FIXED_LEN + key_data_len;
 
     ensure!(
@@ -328,27 +330,27 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_start_frame() -> Result<(), Error> {
+    fn parses_start_frame() -> Result<(), Error> {
         // version=2, type=Start(0x01), length=0
         let data = [0x02, 0x01, 0x00, 0x00];
         let frame = parse(&data)?;
-        assert_eq!(frame.version, 2);
-        assert_eq!(frame.packet_type, EapolType::Start);
-        assert!(frame.key_frame.is_none());
-        assert!(frame.raw_body.is_empty());
+        assert_eq!(frame.version, 2, "version byte must be 2");
+        assert_eq!(frame.packet_type, EapolType::Start, "packet type must be Start");
+        assert!(frame.key_frame.is_none(), "Start frame must have no key frame");
+        assert!(frame.raw_body.is_empty(), "Start frame body must be empty");
         Ok(())
     }
 
     #[test]
-    fn test_parse_logoff_frame() -> Result<(), Error> {
+    fn parses_logoff_frame() -> Result<(), Error> {
         let data = [0x01, 0x02, 0x00, 0x00];
         let frame = parse(&data)?;
-        assert_eq!(frame.packet_type, EapolType::Logoff);
+        assert_eq!(frame.packet_type, EapolType::Logoff, "packet type must be Logoff");
         Ok(())
     }
 
     #[test]
-    fn test_parse_key_frame_roundtrip() -> Result<(), Error> {
+    fn key_frame_roundtrips_through_encode_parse() -> Result<(), Error> {
         let kf = make_key_frame();
         let frame = EapolFrame {
             version: 2,
@@ -358,15 +360,15 @@ mod tests {
         };
         let encoded = encode(&frame);
         let parsed = parse(&encoded)?;
-        assert_eq!(parsed.version, 2);
-        assert_eq!(parsed.packet_type, EapolType::Key);
-        assert!(parsed.key_frame.is_some());
-        assert_eq!(parsed.key_frame, Some(kf));
+        assert_eq!(parsed.version, 2, "version must survive encode/parse roundtrip");
+        assert_eq!(parsed.packet_type, EapolType::Key, "packet type must survive encode/parse roundtrip");
+        assert!(parsed.key_frame.is_some(), "key frame must be present after roundtrip");
+        assert_eq!(parsed.key_frame, Some(kf), "key frame fields must be identical after roundtrip");
         Ok(())
     }
 
     #[test]
-    fn test_encode_decode_raw_body() -> Result<(), Error> {
+    fn raw_body_roundtrips_through_encode_parse() -> Result<(), Error> {
         let body = vec![0xde, 0xad, 0xbe, 0xef];
         let frame = EapolFrame {
             version: 1,
@@ -376,45 +378,54 @@ mod tests {
         };
         let encoded = encode(&frame);
         let decoded = parse(&encoded)?;
-        assert_eq!(decoded.raw_body, body);
+        assert_eq!(decoded.raw_body, body, "raw body must survive encode/parse roundtrip");
         Ok(())
     }
 
     #[test]
-    fn test_parse_too_short_header() {
+    fn rejects_header_shorter_than_four_bytes() {
         let data = [0x02, 0x01, 0x00]; // only 3 bytes
         let result = parse(&data);
-        assert!(matches!(result, Err(Error::TooShort { need: 4, have: 3 })));
+        assert!(
+            matches!(result, Err(Error::TooShort { need: 4, have: 3 })),
+            "must return TooShort when header is truncated"
+        );
     }
 
     #[test]
-    fn test_parse_too_short_body() {
+    fn rejects_body_shorter_than_declared_length() {
         // Claims 10-byte body but only has 2 extra bytes.
         let data = [0x02, 0x01, 0x00, 0x0a, 0xff, 0xff];
         let result = parse(&data);
-        assert!(matches!(result, Err(Error::TooShort { .. })));
+        assert!(
+            matches!(result, Err(Error::TooShort { .. })),
+            "must return TooShort when body is truncated"
+        );
     }
 
     #[test]
-    fn test_parse_invalid_type() {
+    fn rejects_unknown_packet_type_byte() {
         let data = [0x01, 0xff, 0x00, 0x00];
         let result = parse(&data);
-        assert!(matches!(result, Err(Error::UnknownType { value: 0xff })));
+        assert!(
+            matches!(result, Err(Error::UnknownType { value: 0xff })),
+            "must return UnknownType for unrecognised packet type byte"
+        );
     }
 
     #[test]
-    fn test_key_info_flags() {
+    fn key_info_flags_decode_correctly() {
         // 0x008a = pairwise(bit3) | ack(bit7) | key_descriptor_version=2
         let ki = KeyInfo(0x008a);
-        assert_eq!(ki.descriptor_version(), 2);
-        assert!(ki.pairwise());
-        assert!(ki.ack());
-        assert!(!ki.install());
-        assert!(!ki.mic());
+        assert_eq!(ki.descriptor_version(), 2, "descriptor version must be 2 for 0x008a");
+        assert!(ki.pairwise(), "pairwise bit must be set for 0x008a");
+        assert!(ki.ack(), "ack bit must be set for 0x008a");
+        assert!(!ki.install(), "install bit must be clear for 0x008a");
+        assert!(!ki.mic(), "MIC bit must be clear for 0x008a");
     }
 
     #[test]
-    fn test_key_frame_with_key_data() -> Result<(), Error> {
+    fn key_frame_with_key_data_roundtrips() -> Result<(), Error> {
         let key_data = vec![0x30, 0x14, 0x01, 0x00]; // start of RSNE IE
         let kf = EapolKeyFrame {
             key_data: key_data.clone(),
@@ -428,9 +439,9 @@ mod tests {
         };
         let encoded = encode(&frame);
         let parsed = parse(&encoded)?;
-        assert!(parsed.key_frame.is_some());
+        assert!(parsed.key_frame.is_some(), "key frame must be present after roundtrip");
         if let Some(pkf) = parsed.key_frame {
-            assert_eq!(pkf.key_data, key_data);
+            assert_eq!(pkf.key_data, key_data, "key data must survive encode/parse roundtrip");
         }
         Ok(())
     }

@@ -56,7 +56,7 @@ pub fn secure_random_fill(buf: &mut [u8]) -> Result<(), MemoryError> {
 /// use thumos_leipsanon::memory::SecureBuffer;
 ///
 /// let mut buf = SecureBuffer::<32>::new();
-/// buf.iter_mut().enumerate().for_each(|(i, b)| *b = i as u8);
+/// buf.iter_mut().enumerate().for_each(|(i, b)| *b = u8::try_from(i).unwrap_or(u8::MAX));
 /// // Contents are zeroed when buf is dropped.
 /// ```
 pub struct SecureBuffer<const N: usize> {
