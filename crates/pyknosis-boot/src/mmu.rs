@@ -266,6 +266,10 @@ pub unsafe fn update_page_prot(l1_phys: usize, virt_addr: usize, l2_attrs: u32) 
 /// reflects the new mapping.
 #[cfg(target_arch = "arm")]
 pub unsafe fn flush_tlb_page(virt_addr: usize) {
+    // SAFETY: CP15 system register access is a privileged operation. The register
+    // being modified is TLBIMVA (c8, c7, 1) which invalidates the TLB entry for
+    // the given virtual address. DSB/ISB barriers ensure visibility before the
+    // next memory access or instruction fetch.
     unsafe {
         core::arch::asm!(
             "mcr p15, 0, {addr}, c8, c7, 1", // TLBIMVA
@@ -326,10 +330,12 @@ fn map_section(virt_mb: usize, phys_mb: usize, mem_type: MemoryType) {
 /// Must be called once during early boot, with interrupts disabled,
 /// before any code that depends on virtual memory.
 pub unsafe fn init_and_enable() {
-    // Clear the table
-    let table = &mut *core::ptr::addr_of_mut!(L1);
+    // SAFETY: L1 is a static mut only accessed during early boot with interrupts
+    // disabled and no concurrent readers. addr_of_mut! avoids creating a reference
+    // to a static mut, which is UB.
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(L1) };
     for entry in table.entries.iter_mut() {
-        *entry = 0; // SAFETY: fault on access to unmapped regions
+        *entry = 0;
     }
 
     // Boot ROM / SRAM: 0x0000_0000 - 0x0FFF_FFFF (256 MB)
@@ -355,49 +361,81 @@ pub unsafe fn init_and_enable() {
 
     // Set TTBR0 to our page table
     let ttbr0 = core::ptr::addr_of!(L1) as u32;
-    // SAFETY: writing CP15 registers during MMU init
-    core::arch::asm!(
-        "mcr p15, 0, {ttbr}, c2, c0, 0",  // TTBR0
-        ttbr = in(reg) ttbr0 | 0x6B,       // NOTE: INNER/OUTER WB-WA cacheable, shareable
-    );
+    // SAFETY: CP15 system register access is a privileged operation. The register
+    // being modified is TTBR0 (c2, c0, 0) which controls the translation table base.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {ttbr}, c2, c0, 0",  // TTBR0
+            ttbr = in(reg) ttbr0 | 0x6B,       // NOTE: INNER/OUTER WB-WA cacheable, shareable
+        );
+    }
 
     // TTBCR: use TTBR0 for all addresses (N = 0)
-    core::arch::asm!(
-        "mcr p15, 0, {val}, c2, c0, 2",
-        val = in(reg) 0u32,
-    );
+    // SAFETY: CP15 system register access is a privileged operation. The register
+    // being modified is TTBCR (c2, c0, 2) which controls translation table base selection.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {val}, c2, c0, 2",
+            val = in(reg) 0u32,
+        );
+    }
 
     // DACR: domain 0 = client (check permissions)
-    core::arch::asm!(
-        "mcr p15, 0, {val}, c3, c0, 0",
-        val = in(reg) 1u32,  // NOTE: domain 0 = client access
-    );
+    // SAFETY: CP15 system register access is a privileged operation. The register
+    // being modified is DACR (c3, c0, 0) which controls domain access permissions.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {val}, c3, c0, 0",
+            val = in(reg) 1u32,  // NOTE: domain 0 = client access
+        );
+    }
 
     // Invalidate TLB
-    core::arch::asm!(
-        "mcr p15, 0, {zero}, c8, c7, 0",  // TLBIALL
-        zero = in(reg) 0u32,
-    );
+    // SAFETY: CP15 system register access is a privileged operation. The register
+    // being modified is TLBIALL (c8, c7, 0) which invalidates all TLB entries.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {zero}, c8, c7, 0",  // TLBIALL
+            zero = in(reg) 0u32,
+        );
+    }
 
     // Data synchronization barrier
-    core::arch::asm!("dsb sy");
+    // SAFETY: DSB is a privileged barrier instruction required to ensure all
+    // prior memory accesses and CP15 writes complete before the MMU is enabled.
+    unsafe {
+        core::arch::asm!("dsb sy");
+    }
 
     // Enable MMU (SCTLR bit 0) + caches (bit 2 = D-cache, bit 12 = I-cache)
     let mut sctlr: u32;
-    core::arch::asm!(
-        "mrc p15, 0, {val}, c1, c0, 0",
-        val = out(reg) sctlr,
-    );
+    // SAFETY: CP15 system register access is a privileged operation. The register
+    // being read is SCTLR (c1, c0, 0) which controls system features including the MMU.
+    unsafe {
+        core::arch::asm!(
+            "mrc p15, 0, {val}, c1, c0, 0",
+            val = out(reg) sctlr,
+        );
+    }
     sctlr |= 1 << 0; // M: MMU enable
     sctlr |= 1 << 2; // C: data cache enable
     sctlr |= 1 << 12; // I: instruction cache enable
-    core::arch::asm!(
-        "mcr p15, 0, {val}, c1, c0, 0",
-        val = in(reg) sctlr,
-    );
+    // SAFETY: CP15 system register access is a privileged operation. The register
+    // being modified is SCTLR (c1, c0, 0) which enables the MMU and caches.
+    // The page table has been populated and barriers issued before this write.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {val}, c1, c0, 0",
+            val = in(reg) sctlr,
+        );
+    }
 
     // Instruction synchronization barrier
-    core::arch::asm!("isb sy");
+    // SAFETY: ISB is a privileged barrier instruction required after enabling the MMU
+    // to flush the instruction pipeline and ensure subsequent fetches use virtual addresses.
+    unsafe {
+        core::arch::asm!("isb sy");
+    }
 }
 
 /// Return the physical address of the L1 page table.

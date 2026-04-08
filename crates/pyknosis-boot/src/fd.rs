@@ -82,6 +82,9 @@ impl FileDescriptor {
     /// The caller must ensure the underlying ramfs data has not been freed.
     /// In practice this is always true because the ramfs is never dropped.
     pub unsafe fn data(&self) -> &[u8] {
+        // SAFETY: data_ptr points to the ramfs backing store which is a
+        // 'static heap allocation that is never freed. data_len was set from
+        // the original slice length at construction time.
         unsafe { core::slice::from_raw_parts(self.data_ptr, self.data_len) }
     }
 
@@ -178,6 +181,9 @@ static mut RAMFS: Option<crate::ramfs::RamFs> = None;
 /// The provided `RamFs` is moved into the global and must not be accessed
 /// from the caller afterward.
 pub unsafe fn init_ramfs(fs: crate::ramfs::RamFs) {
+    // SAFETY: called once during kernel init before any filesystem syscalls.
+    // RAMFS is a static mut; addr_of_mut! avoids an intermediate reference.
+    // No concurrent access is possible because the scheduler has not started.
     unsafe {
         let ramfs = &mut *core::ptr::addr_of_mut!(RAMFS);
         *ramfs = Some(fs);
@@ -191,6 +197,11 @@ pub unsafe fn init_ramfs(fs: crate::ramfs::RamFs) {
 ///
 /// Caller must ensure `init_ramfs` has been called.
 pub unsafe fn ramfs_find(path: &str) -> Option<&'static [u8]> {
+    // SAFETY: init_ramfs has been called before any filesystem syscall.
+    // RAMFS is a static Option; addr_of! avoids an intermediate reference.
+    // The transmute to 'static is sound because the RamFs heap allocation
+    // (Vec<u8> per file) lives for the lifetime of the kernel — RAMFS is
+    // never dropped.
     unsafe {
         let ramfs = &*core::ptr::addr_of!(RAMFS);
         let fs = ramfs.as_ref()?;
@@ -224,18 +235,25 @@ pub fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
         return ENOENT;
     }
 
+    // SAFETY: path_ptr is a userspace pointer validated non-null above; len
+    // is the caller-supplied path length. Wave 4 will add proper bounds
+    // validation; for now we trust the pointer per the existing syscall pattern.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let path = match core::str::from_utf8(path_slice) {
         Ok(s) => s,
         Err(_) => return EINVAL,
     };
 
+    // SAFETY: init_ramfs has been called during kernel init.
     let data = match unsafe { ramfs_find(path) } {
         Some(d) => d,
         None => return ENOENT,
     };
 
     let fd = FileDescriptor::new(data, flags);
+    // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
+    // reference. Single-core kernel with cooperative scheduling ensures
+    // exclusive access during syscall handling.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
     match table.alloc(fd) {
         Some(n) => n as u32,
@@ -260,12 +278,16 @@ pub fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
         return EFAULT;
     }
 
+    // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
+    // reference. Single-core kernel with cooperative scheduling ensures
+    // exclusive access during syscall handling.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
     let entry = match table.get_mut(fd_idx) {
         Some(e) => e,
         None => return EBADF,
     };
 
+    // SAFETY: entry.data_ptr points to static ramfs data that is never freed.
     let data = unsafe { entry.data() };
     let remaining = data.len().saturating_sub(entry.offset);
     let to_read = count.min(remaining);
@@ -275,6 +297,8 @@ pub fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     }
 
     // TODO(#0): Wave 4 adds proper userspace address validation.
+    // SAFETY: buf_ptr is a userspace pointer validated non-null above; to_read
+    // bytes are within the file's remaining data. Wave 4 will add bounds check.
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, to_read) };
     dst.copy_from_slice(&data[entry.offset..entry.offset + to_read]);
     entry.offset += to_read;
@@ -291,6 +315,8 @@ pub fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 /// 0 on success, EBADF if fd is not open.
 pub fn sys_close(fd: u32) -> u32 {
     let fd_idx = fd as usize;
+    // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
+    // reference. Single-core kernel ensures exclusive access during syscall.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
     if table.close(fd_idx) {
         0
@@ -318,12 +344,15 @@ pub fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
         return EFAULT;
     }
 
+    // SAFETY: path_ptr is a userspace pointer validated non-null above; len
+    // is the caller-supplied path length.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let path = match core::str::from_utf8(path_slice) {
         Ok(s) => s,
         Err(_) => return EINVAL,
     };
 
+    // SAFETY: init_ramfs has been called during kernel init.
     let data = match unsafe { ramfs_find(path) } {
         Some(d) => d,
         None => return ENOENT,
@@ -335,6 +364,8 @@ pub fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
     };
 
     // TODO(#0): Wave 4 adds proper userspace address validation.
+    // SAFETY: stat_buf_ptr is a userspace pointer validated non-null above;
+    // StatBuf is repr(C) with no padding. Wave 4 will add bounds check.
     unsafe {
         let dst = stat_buf_ptr as *mut StatBuf;
         core::ptr::write(dst, stat);
@@ -358,6 +389,8 @@ pub fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
         return EFAULT;
     }
 
+    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
+    // reference. Read-only access; no mutation in this function.
     let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
     let entry = match table.get(fd_idx) {
         Some(e) => e,
@@ -369,6 +402,8 @@ pub fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
         file_type: S_IFREG,
     };
 
+    // SAFETY: stat_buf_ptr is a userspace pointer validated non-null above;
+    // StatBuf is repr(C) with no padding. Wave 4 will add bounds check.
     unsafe {
         let dst = stat_buf_ptr as *mut StatBuf;
         core::ptr::write(dst, stat);
@@ -389,6 +424,8 @@ pub fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
 pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
     let fd_idx = fd as usize;
 
+    // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
+    // reference. Single-core kernel ensures exclusive access during syscall.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
     let entry = match table.get_mut(fd_idx) {
         Some(e) => e,
@@ -428,6 +465,8 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
 /// New (lowest available) fd number on success, negative error code on failure.
 pub fn sys_dup(fd: u32) -> u32 {
     let fd_idx = fd as usize;
+    // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
+    // reference. Single-core kernel ensures exclusive access during syscall.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
 
     let entry = match table.get(fd_idx) {
@@ -457,6 +496,8 @@ pub fn sys_dup2(oldfd: u32, newfd: u32) -> u32 {
         return EBADF;
     }
 
+    // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
+    // reference. Single-core kernel ensures exclusive access during syscall.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
 
     let entry = match table.get(old_idx) {
@@ -501,6 +542,8 @@ pub fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
     }
 
     // TODO(#0): Wave 4 adds proper userspace address validation.
+    // SAFETY: buf_ptr is a userspace pointer validated non-null above; size >= 2
+    // ensures at least two writable bytes exist at dst. Wave 4 will add bounds check.
     unsafe {
         let dst = buf_ptr as *mut u8;
         core::ptr::write(dst, b'/');
@@ -561,6 +604,8 @@ mod tests {
         let fd = FileDescriptor::new(data, 0);
         assert_eq!(fd.size(), 11);
         assert_eq!(fd.offset, 0);
+        // SAFETY: data lives on the stack for the duration of this test; fd
+        // was constructed from it and has not outlived the binding.
         let read_data = unsafe { fd.data() };
         assert_eq!(read_data, b"hello world");
     }
@@ -602,6 +647,9 @@ mod tests {
         fs.add("empty.dat", b"");
         fs.add("binary.bin", &[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE]);
 
+        // SAFETY: test-only setup; RAMFS and FD_TABLE are static muts.
+        // addr_of_mut! avoids intermediate references. Single-threaded
+        // test execution ensures no concurrent access.
         unsafe {
             let ramfs = &mut *core::ptr::addr_of_mut!(RAMFS);
             *ramfs = Some(fs);
@@ -614,6 +662,7 @@ mod tests {
 
     #[test]
     fn open_existing_file() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -624,6 +673,7 @@ mod tests {
 
     #[test]
     fn open_nonexistent_file_returns_enoent() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -634,6 +684,7 @@ mod tests {
 
     #[test]
     fn read_file_contents() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -649,6 +700,7 @@ mod tests {
 
     #[test]
     fn read_at_eof_returns_zero() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -666,6 +718,7 @@ mod tests {
 
     #[test]
     fn close_then_read_returns_ebadf() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -680,6 +733,7 @@ mod tests {
 
     #[test]
     fn lseek_set_then_read() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -698,6 +752,7 @@ mod tests {
 
     #[test]
     fn lseek_end_positions_at_eof() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -715,6 +770,7 @@ mod tests {
 
     #[test]
     fn dup_creates_independent_fd() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -739,6 +795,7 @@ mod tests {
 
     #[test]
     fn dup2_replaces_target_fd() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -761,6 +818,7 @@ mod tests {
 
     #[test]
     fn stat_existing_file() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -781,6 +839,7 @@ mod tests {
 
     #[test]
     fn stat_nonexistent_returns_enoent() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -799,6 +858,7 @@ mod tests {
 
     #[test]
     fn fstat_open_fd() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }
@@ -818,6 +878,7 @@ mod tests {
 
     #[test]
     fn fstat_closed_fd_returns_ebadf() {
+        // SAFETY: test-only; setup_test_ramfs resets global state.
         unsafe {
             setup_test_ramfs();
         }

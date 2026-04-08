@@ -76,6 +76,7 @@ const MAX_IRQS: usize = 256;
 /// Must be called once during early boot with MMU enabled
 /// (the GIC registers must be mapped).
 pub unsafe fn init() {
+    // SAFETY: GIC distributor/CPU interface register at known MMIO address.
     unsafe {
         // Disable distributor during config
         mmio::write32(gicd::CTLR, 0);
@@ -126,6 +127,7 @@ pub unsafe fn init() {
 pub unsafe fn enable_irq(irq: u32) {
     let reg = (irq / 32) as usize;
     let bit = irq % 32;
+    // SAFETY: GIC distributor/CPU interface register at known MMIO address.
     unsafe {
         mmio::set_bits(gicd::isenabler(reg), 1 << bit);
     }
@@ -135,6 +137,7 @@ pub unsafe fn enable_irq(irq: u32) {
 pub fn disable_irq(irq: u32) {
     let reg = (irq / 32) as usize;
     let bit = irq % 32;
+    // SAFETY: GIC distributor/CPU interface register at known MMIO address.
     unsafe {
         mmio::write32(gicd::icenabler(reg), 1 << bit);
     }
@@ -143,11 +146,13 @@ pub fn disable_irq(irq: u32) {
 /// Acknowledge an interrupt (read IAR).
 /// Returns the interrupt ID (10 bits). ID 1023 = spurious.
 pub fn acknowledge() -> u32 {
+    // SAFETY: GIC distributor/CPU interface register at known MMIO address.
     unsafe { mmio::read32(gicc::IAR) & 0x3FF }
 }
 
 /// Signal end of interrupt handling.
 pub fn end_of_interrupt(irq: u32) {
+    // SAFETY: GIC distributor/CPU interface register at known MMIO address.
     unsafe {
         mmio::write32(gicc::EOIR, irq);
     }

@@ -791,6 +791,7 @@ impl UsbController {
             let fifo = self.base + REG_FIFO_BASE + 4; // EP1 FIFO = base + 0x124
 
             for &byte in &data[..count] {
+                // SAFETY: fifo is the EP1 TX FIFO at MUSB_BASE + 0x124, a valid 8-bit MMIO register within the MUSB address space at 0x1121_0000. Volatile semantics required for MMIO.
                 core::ptr::write_volatile(fifo as *mut u8, byte);
             }
 
@@ -1214,44 +1215,44 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// `OFFSET` must be a valid 8-bit MUSB register OFFSET.
+    /// `offset` must be a valid 8-bit MUSB register offset.
     #[inline(always)]
-    unsafe fn read8(&self, OFFSET: usize) -> u8 {
-        // SAFETY: caller verifies OFFSET.
-        unsafe { core::ptr::read_volatile((self.base + OFFSET) as *const u8) }
+    unsafe fn read8(&self, offset: usize) -> u8 {
+        // SAFETY: caller verifies offset is a valid 8-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
+        unsafe { core::ptr::read_volatile((self.base + offset) as *const u8) }
     }
 
     /// Write an 8-bit MUSB register.
     ///
     /// # Safety
     ///
-    /// `OFFSET` must be a valid 8-bit MUSB register OFFSET.
+    /// `offset` must be a valid 8-bit MUSB register offset.
     #[inline(always)]
-    unsafe fn write8(&self, OFFSET: usize, val: u8) {
-        // SAFETY: caller verifies OFFSET.
-        unsafe { core::ptr::write_volatile((self.base + OFFSET) as *mut u8, val) }
+    unsafe fn write8(&self, offset: usize, val: u8) {
+        // SAFETY: caller verifies offset is a valid 8-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
+        unsafe { core::ptr::write_volatile((self.base + offset) as *mut u8, val) }
     }
 
     /// Read a 16-bit MUSB register (little-endian).
     ///
     /// # Safety
     ///
-    /// `OFFSET` must be a valid 16-bit MUSB register, 2-byte aligned.
+    /// `offset` must be a valid 16-bit MUSB register, 2-byte aligned.
     #[inline(always)]
-    unsafe fn read16(&self, OFFSET: usize) -> u16 {
-        // SAFETY: caller verifies OFFSET and alignment.
-        unsafe { core::ptr::read_volatile((self.base + OFFSET) as *const u16) }
+    unsafe fn read16(&self, offset: usize) -> u16 {
+        // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
+        unsafe { core::ptr::read_volatile((self.base + offset) as *const u16) }
     }
 
     /// Write a 16-bit MUSB register (little-endian).
     ///
     /// # Safety
     ///
-    /// `OFFSET` must be a valid 16-bit MUSB register, 2-byte aligned.
+    /// `offset` must be a valid 16-bit MUSB register, 2-byte aligned.
     #[inline(always)]
-    unsafe fn write16(&self, OFFSET: usize, val: u16) {
-        // SAFETY: caller verifies OFFSET and alignment.
-        unsafe { core::ptr::write_volatile((self.base + OFFSET) as *mut u16, val) }
+    unsafe fn write16(&self, offset: usize, val: u16) {
+        // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
+        unsafe { core::ptr::write_volatile((self.base + offset) as *mut u16, val) }
     }
 }
 

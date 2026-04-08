@@ -6,12 +6,10 @@
 
 extern crate alloc;
 
-use crate::device::DeviceRegistry;
 use crate::exceptions;
 use crate::page;
 use crate::process;
 use crate::uart::Uart;
-use alloc::string::String;
 use core::fmt::Write;
 
 /// Maximum command line length.
@@ -159,6 +157,7 @@ impl Console {
     fn cmd_reboot(&mut self) {
         let _ = self.serial.write_str("rebooting...\r\n");
         // NOTE: ARM watchdog reset
+        // SAFETY: WDT_MODE and WDT_SWRST are MT6739 watchdog MMIO registers at known addresses.
         unsafe {
             // Write to the MT6739 watchdog to trigger a reset
             // WDT_MODE at 0x10007000, SET bit 0 (enable) + key 0x2200
@@ -169,6 +168,7 @@ impl Console {
             core::ptr::write_volatile(wdt_swrst, 0x1209);
         }
         loop {
+            // SAFETY: wfi is a safe wait-for-interrupt instruction accessible at EL1.
             unsafe {
                 core::arch::asm!("wfi");
             }

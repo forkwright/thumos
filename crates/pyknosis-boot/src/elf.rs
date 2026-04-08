@@ -98,7 +98,9 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
     }
 
     // Parse ELF header
-    // SAFETY: we checked the size above
+    // SAFETY: data.len() >= size_of::<Elf32Ehdr>() was verified above.
+    // read_unaligned is used because the ELF header is packed and the byte
+    // slice may not be aligned to Elf32Ehdr's natural alignment.
     let ehdr: Elf32Ehdr = unsafe { core::ptr::read_unaligned(data.as_ptr().cast()) };
 
     // Validate
@@ -128,6 +130,9 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
             return Err(ElfError::InvalidSegment);
         }
 
+        // SAFETY: offset + phentsize <= data.len() was verified above.
+        // read_unaligned is used because the program header is packed and
+        // the byte slice offset may not satisfy Elf32Phdr's alignment.
         let phdr: Elf32Phdr =
             unsafe { core::ptr::read_unaligned(data.as_ptr().add(offset).cast()) };
 
@@ -165,6 +170,9 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
                 } else {
                     0 // BSS: zero-filled
                 };
+                // SAFETY: dest (vaddr) is identity-mapped DRAM within the MMU's
+                // normal RAM region. byte_offset - page_start < PAGE_SIZE, so
+                // the write stays within the allocated page.
                 unsafe {
                     dest_ptr.add(byte_offset - page_start).write(val);
                 }
