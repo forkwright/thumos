@@ -289,16 +289,18 @@ pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
         });
     }
 
-    let plen = payload.len() as u16;
+    // INVARIANT: payload.len() <= STP_MAX_PAYLOAD (0xFFF), checked above; fits in u16.
+    let plen = u16::try_from(payload.len()).unwrap_or_default();
+    let [plen_lo, plen_hi_raw] = plen.to_le_bytes();
     let seq4 = seq & 0x0F;
 
     // HDR0: function_type(4b) | seq[3:0](4b)
     // WHY: BT function type is 0, so upper nibble is 0x0; lower nibble is sequence.
     let hdr0 = (STP_FUNC_BT << 4) | seq4;
     // HDR1: ack_num(4b) = 0 | payload_len[11:8](4b)
-    let hdr1 = (plen >> 8) as u8 & 0x0F;
+    let hdr1 = plen_hi_raw & 0x0F;
     // HDR2: payload_len[7:0]
-    let hdr2 = (plen & 0xFF) as u8;
+    let hdr2 = plen_lo;
     // HDR3: checksum = XOR(HDR0, HDR1, HDR2)
     let hdr3 = hdr0 ^ hdr1 ^ hdr2;
 

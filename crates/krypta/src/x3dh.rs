@@ -41,9 +41,12 @@ impl std::fmt::Debug for OwnedBundle {
 
 /// Derived shared secret (32 bytes). Not Clone intentionally.
 pub struct SharedSecret {
-    #[allow(
-        dead_code,
-        reason = "crate-internal API  -  used in tests and by future consumers"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "crate-internal API — raw is unused in lib but accessed in tests and available to future consumers"
+        )
     )]
     pub(crate) raw: [u8; 32],
 }

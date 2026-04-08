@@ -287,7 +287,12 @@ impl TouchscreenDriver {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test code: explicit panics, unwrap, and expect are acceptable in tests"
+)]
 mod tests {
     use std::collections::VecDeque;
     use std::vec;
@@ -333,11 +338,13 @@ mod tests {
 
     /// Build 6 raw bytes for a single touch point using the mtk-tpd layout.
     fn make_touch_bytes(x: u16, y: u16, pressure: u8, id: u8) -> Vec<u8> {
+        let [x_lo, x_hi] = x.to_le_bytes();
+        let [y_lo, y_hi] = y.to_le_bytes();
         vec![
-            ((x >> 8) & 0x0F) as u8,
-            (x & 0xFF) as u8,
-            ((y >> 8) & 0x0F) as u8,
-            (y & 0xFF) as u8,
+            x_hi & 0x0F, // X[11:8] in low nibble
+            x_lo,        // X[7:0]
+            y_hi & 0x0F, // Y[11:8] in low nibble
+            y_lo,        // Y[7:0]
             pressure,
             id,
         ]

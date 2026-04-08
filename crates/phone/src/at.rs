@@ -254,48 +254,47 @@ pub mod cmd {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn parse_ok() {
         let (remaining, resp) = parse_final_result("OK").unwrap_or_default();
-        assert_eq!(resp, Response::Ok);
+        assert_eq!(resp, Response::Ok, "parsing 'OK' must produce Response::Ok");
         assert!(remaining.is_empty(), "expected empty rest");
     }
 
     #[test]
     fn parse_cme_error() {
         let (_, resp) = parse_final_result("+CME ERROR: 10").unwrap_or_default();
-        assert_eq!(resp, Response::CmeError(10));
+        assert_eq!(resp, Response::CmeError(10), "CME error code 10 must be extracted");
     }
 
     #[test]
     fn parse_cms_error() {
         let (_, resp) = parse_final_result("+CMS ERROR: 321").unwrap_or_default();
-        assert_eq!(resp, Response::CmsError(321));
+        assert_eq!(resp, Response::CmsError(321), "CMS error code 321 must be extracted");
     }
 
     #[test]
     fn parse_csq_response() {
         let (_, (rssi, ber)) = parse_csq("+CSQ: 18,99").unwrap_or_default();
-        assert_eq!(rssi, 18);
-        assert_eq!(ber, 99);
+        assert_eq!(rssi, 18, "RSSI must be 18");
+        assert_eq!(ber, 99, "BER must be 99");
     }
 
     #[test]
     fn signal_strength_conversion() {
         let sig = SignalStrength::from(18u8);
-        assert_eq!(sig.dbm, -77);
-        assert_eq!(sig.bars, 2);
+        assert_eq!(sig.dbm, -77, "RSSI 18 must convert to -77 dBm per AT+CSQ formula");
+        assert_eq!(sig.bars, 2, "RSSI 18 (-77 dBm) must be 2 bars");
     }
 
     #[test]
     fn signal_strength_unknown() {
         let sig = SignalStrength::from(99u8);
-        assert_eq!(sig.dbm, -999);
-        assert_eq!(sig.bars, 0);
+        assert_eq!(sig.dbm, -999, "RSSI 99 must map to -999 dBm (unknown sentinel)");
+        assert_eq!(sig.bars, 0, "unknown signal strength must report 0 bars");
     }
 
     #[test]
@@ -307,7 +306,8 @@ mod tests {
                 stat: RegStatus::RegisteredHome,
                 lac: None,
                 ci: None,
-            }
+            },
+            "CREG stat=1 without LAC/CI must parse as RegisteredHome with no location"
         );
     }
 
@@ -320,14 +320,15 @@ mod tests {
                 stat: RegStatus::RegisteredHome,
                 lac: Some(0x1A2B),
                 ci: Some(0x0000_FFEE),
-            }
+            },
+            "CREG with LAC/CI must parse all three fields correctly"
         );
     }
 
     #[test]
     fn parse_ring_urc() {
         let (_, urc) = parse_ring("RING").unwrap_or_default();
-        assert_eq!(urc, Urc::Ring);
+        assert_eq!(urc, Urc::Ring, "RING must parse to Urc::Ring");
     }
 
     #[test]
@@ -338,17 +339,18 @@ mod tests {
             Urc::Cmti {
                 storage: "SM".to_owned(),
                 index: 3,
-            }
+            },
+            "CMTI URC must parse storage and index correctly"
         );
     }
 
     #[test]
     fn build_dial_command() {
-        assert_eq!(cmd::dial("+15551234567"), "ATD+15551234567;");
+        assert_eq!(cmd::dial("+15551234567"), "ATD+15551234567;", "dial command must be formatted as ATD<number>;");
     }
 
     #[test]
     fn build_sms_command() {
-        assert_eq!(cmd::cmgs("+15551234567"), "AT+CMGS=\"+15551234567\"");
+        assert_eq!(cmd::cmgs("+15551234567"), "AT+CMGS=\"+15551234567\"", "CMGS command must wrap number in quotes");
     }
 }

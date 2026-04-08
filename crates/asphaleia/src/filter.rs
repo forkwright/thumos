@@ -191,7 +191,7 @@ mod tests {
         ]);
         for label in domain.split('.') {
             let b = label.as_bytes();
-            msg.push(b.len() as u8);
+            msg.push(u8::try_from(b.len()).unwrap_or(u8::MAX));
             msg.extend_from_slice(b);
         }
         msg.push(0x00);

@@ -336,7 +336,8 @@ impl fmt::Debug for BdAddr {
 pub fn encode_command(cmd: &HciCommand) -> Vec<u8> {
     let (opcode, params) = build_command_parts(cmd);
     let opcode_bytes = opcode.to_le_bytes();
-    let param_len = params.len() as u8; // HCI params always fit in u8 (max 255 per spec)
+    // INVARIANT: HCI parameter total is bounded by spec at 255 bytes; always fits in u8.
+    let param_len = u8::try_from(params.len()).unwrap_or_default();
 
     let mut packet = Vec::with_capacity(4 + params.len());
     packet.push(H4_COMMAND_TYPE);
