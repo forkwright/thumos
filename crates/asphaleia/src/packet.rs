@@ -103,7 +103,7 @@ impl IpHeader {
             });
         }
 
-        let version_ihl = data.get(0).copied().unwrap_or_default();
+        let version_ihl = data.first().copied().unwrap_or_default();
         let version = version_ihl >> 4;
         let ihl = version_ihl & 0x0F;
 
@@ -161,7 +161,7 @@ impl TcpHeader {
             });
         }
 
-        let src_port = u16::from_be_bytes([data.get(0).copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
+        let src_port = u16::from_be_bytes([data.first().copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
         let dst_port = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]);
         let seq = u32::from_be_bytes([data.get(4).copied().unwrap_or_default(), data.get(5).copied().unwrap_or_default(), data.get(6).copied().unwrap_or_default(), data.get(7).copied().unwrap_or_default()]);
         let ack = u32::from_be_bytes([data.get(8).copied().unwrap_or_default(), data.get(9).copied().unwrap_or_default(), data.get(10).copied().unwrap_or_default(), data.get(11).copied().unwrap_or_default()]);
@@ -195,7 +195,7 @@ impl UdpHeader {
             });
         }
 
-        let src_port = u16::from_be_bytes([data.get(0).copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
+        let src_port = u16::from_be_bytes([data.first().copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
         let dst_port = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]);
         let length = u16::from_be_bytes([data.get(4).copied().unwrap_or_default(), data.get(5).copied().unwrap_or_default()]);
 

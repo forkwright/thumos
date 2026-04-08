@@ -12,9 +12,10 @@ use nom::combinator::{map, map_res, opt, value};
 use nom::sequence::{delimited, preceded};
 
 /// Raw AT response FROM the modem.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Response {
     /// Command succeeded.
+    #[default]
     Ok,
     /// Command failed with CME error code.
     CmeError(u32),
@@ -29,9 +30,10 @@ pub enum Response {
 }
 
 /// Unsolicited result codes FROM the modem.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Urc {
     /// Incoming call.
+    #[default]
     Ring,
     /// Caller ID: number and type.
     Clip { number: String, num_type: u8 },
@@ -92,7 +94,7 @@ impl From<u8> for SignalStrength {
         let dbm = if rssi == 99 {
             -999 // NOTE: unknown
         } else {
-            -113 + (i16::try_from(rssi).unwrap_or_default() * 2)
+            -113 + (i16::from(rssi) * 2)
         };
         let bars = match dbm {
             ..=-100 => 0,
@@ -252,7 +254,7 @@ pub mod cmd {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "test assertions")]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

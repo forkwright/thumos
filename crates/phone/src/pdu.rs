@@ -9,7 +9,7 @@ use crate::gsm7;
 // ── Address ──────────────────────────────────────────────────────────────────
 
 /// Address type indicator per 3GPP TS 24.008 § 10.5.4.7.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AddressType {
     /// Type-of-number = international (0x91). Number includes country code.
@@ -17,11 +17,12 @@ pub enum AddressType {
     /// Type-of-number = national (0x81).
     National,
     /// Any other type-of-address byte.
+    #[default]
     Unknown,
 }
 
 /// A phone number with its type indicator.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Address {
     /// Decimal digit string, including leading '+' for international numbers.
     pub number: String,
@@ -32,17 +33,18 @@ pub struct Address {
 // ── Data encoding ─────────────────────────────────────────────────────────────
 
 /// SMS data coding scheme (DCS) classification.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DataEncoding {
     /// DCS 0x00  -  GSM 7-bit default alphabet, uncompressed.
+    #[default]
     Gsm7Bit,
     /// DCS 0x08  -  UCS-2 (UTF-16 big-endian).
     Ucs2,
 }
 
 /// Decoded user data (text payload).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UserData {
     /// Which encoding was used to carry the text.
     pub encoding: DataEncoding,
@@ -53,7 +55,7 @@ pub struct UserData {
 // ── PDU message types ─────────────────────────────────────────────────────────
 
 /// A received SMS (SMS-DELIVER, MTI = 0b00).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SmsDeliver {
     /// Originating address.
     pub sender: Address,
@@ -171,7 +173,7 @@ fn decode_scts(scts: [u8; 7]) -> String {
     let hi = |b: u8| (b >> 4) & 0x0F;
     let pair = |b: u8| lo(b) * 10 + hi(b);
 
-    let year = 2000u32 + u32::from(pair(scts.get(0).copied().unwrap_or_default()));
+    let year = 2000u32 + u32::from(pair(scts.first().copied().unwrap_or_default()));
     let month = pair(scts.get(1).copied().unwrap_or_default());
     let day = pair(scts.get(2).copied().unwrap_or_default());
     let hour = pair(scts.get(3).copied().unwrap_or_default());
@@ -203,8 +205,8 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() / 2);
     for chunk in s.as_bytes().chunks(2) {
         // SAFETY: chunks(2) always gives exactly 2 bytes here; we checked even length.
-        let hi = hex_nibble(chunk.get(0).copied().unwrap_or_default()).ok_or_else(|| crate::error::Error::InvalidHex {
-            message: format!("invalid hex digit: 0x{:02X}", chunk.get(0).copied().unwrap_or_default()),
+        let hi = hex_nibble(chunk.first().copied().unwrap_or_default()).ok_or_else(|| crate::error::Error::InvalidHex {
+            message: format!("invalid hex digit: 0x{:02X}", chunk.first().copied().unwrap_or_default()),
         })?;
         let lo = hex_nibble(chunk.get(1).copied().unwrap_or_default()).ok_or_else(|| crate::error::Error::InvalidHex {
             message: format!("invalid hex digit: 0x{:02X}", chunk.get(1).copied().unwrap_or_default()),
@@ -407,7 +409,7 @@ fn decode_user_data(cur: &mut Cursor<'_>, udl: usize, encoding: DataEncoding) ->
             }
             let mut s = String::with_capacity(ud_bytes.len() / 2);
             for pair in ud_bytes.chunks_exact(2) {
-                let code_unit = u16::from_be_bytes([pair.get(0).copied().unwrap_or_default(), pair.get(1).copied().unwrap_or_default()]);
+                let code_unit = u16::from_be_bytes([pair.first().copied().unwrap_or_default(), pair.get(1).copied().unwrap_or_default()]);
                 // WHY: SMS UCS-2 is BMP-only; surrogate pairs are technically
                 // possible but rare and outside our current scope.
                 let ch =
@@ -434,7 +436,7 @@ fn encode_user_data_into(ud: &UserData, out: &mut Vec<u8>) -> Result<()> {
             // UDL = number of bytes.
             let mut utf16_bytes: Vec<u8> = Vec::with_capacity(ud.text.len() * 2);
             for c in ud.text.chars() {
-                let code = u32::try_from(c).unwrap_or_default();
+                let code = u32::from(c);
                 // NOTE: BMP characters fit in one u16.
                 let unit = u16::try_from(code).unwrap_or_default();
                 utf16_bytes.push((unit >> 8) as u8);
@@ -468,7 +470,7 @@ fn count_gsm7_septets(text: &str) -> Result<usize> {
                 .any(|(i, &tc)| tc == c && i != 0x1B);
             if !found {
                 return Err(crate::error::Error::Gsm7Encode {
-                    codepoint: u32::try_from(c).unwrap_or_default(),
+                    codepoint: u32::from(c),
                 });
             }
             count += 1;
@@ -480,7 +482,7 @@ fn count_gsm7_septets(text: &str) -> Result<usize> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "test assertions")]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -494,7 +496,7 @@ mod tests {
         };
         let encoded = encode_bcd_address(&addr);
         // encoded = [len_digits=10, type=0x91, bcd*5]
-        assert_eq!(encoded.get(0).copied().unwrap_or_default(), 10);
+        assert_eq!(encoded.first().copied().unwrap_or_default(), 10);
         assert_eq!(encoded.get(1).copied().unwrap_or_default(), 0x91);
         // Decode back: len_digits=10, type=0x91, bcd = encoded[2..]
         let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..]);
@@ -509,7 +511,7 @@ mod tests {
             type_of_address: AddressType::International,
         };
         let encoded = encode_bcd_address(&addr);
-        assert_eq!(encoded.get(0).copied().unwrap_or_default(), 11);
+        assert_eq!(encoded.first().copied().unwrap_or_default(), 11);
         let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..]);
         assert_eq!(decoded.number, "+12345678901");
     }
