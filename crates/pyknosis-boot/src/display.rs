@@ -440,6 +440,7 @@ fn delay_ms(ms: u32) {
 ///
 /// DSI0 registers must be mapped and accessible.
 unsafe fn dsi_wait_idle() {
+    // SAFETY: DSI0_START is a valid MMIO register at 0x1400_D000 within the DSI0 address space. Volatile access is required for hardware registers.
     unsafe {
         mmio::wait_bits_clear(dsi::START, dsi::START_BIT, DSI_POLL_TIMEOUT);
     }
@@ -451,6 +452,7 @@ unsafe fn dsi_wait_idle() {
 ///
 /// DSI0 must be configured with clock and data lanes active.
 unsafe fn dcs_write_cmd0(cmd: u8) {
+    // SAFETY: DSI0 registers (START, CMDQ_SIZE, CMDQ_DATA) are valid MMIO registers within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
     unsafe {
         dsi_wait_idle();
         // Clear start bit before writing command queue
@@ -473,6 +475,7 @@ unsafe fn dcs_write_cmd0(cmd: u8) {
 ///
 /// DSI0 must be configured with clock and data lanes active.
 unsafe fn dcs_write_cmd1(cmd: u8, data: u8) {
+    // SAFETY: DSI0 registers (START, CMDQ_SIZE, CMDQ_DATA) are valid MMIO registers within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
     unsafe {
         dsi_wait_idle();
         mmio::write32(dsi::START, 0);
@@ -497,6 +500,7 @@ unsafe fn dcs_write_cmd1(cmd: u8, data: u8) {
 /// DSI0 must be configured. `data.len()` must be <= 60 bytes
 /// (limited by the 16-entry × 4-byte CMDQ minus header overhead).
 unsafe fn dcs_write_long(cmd: u8, data: &[u8]) {
+    // SAFETY: DSI0 registers (START, CMDQ_SIZE, CMDQ_DATA) are valid MMIO registers within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
     unsafe {
         dsi_wait_idle();
         mmio::write32(dsi::START, 0);
@@ -587,6 +591,7 @@ impl LcmControl for Gc9306 {
         // GC9306 init sequence derived from four independent GPL/Apache
         // driver sources. See docs/GC9306-INIT.md for provenance and
         // per-source gamma differences.
+        // SAFETY: DSI0 is configured with clock and data lanes active per caller contract. All DCS commands are routed through dcs_write_* helpers which access valid DSI0 MMIO registers.
         unsafe {
             // Inter register enable (GC-specific page unlock)
             dcs_write_cmd0(0xFE);
@@ -649,6 +654,7 @@ impl LcmControl for Gc9306 {
     unsafe fn suspend(&self) {
         // GC9306 sleep-in sequence from docs/GC9306-INIT.md.
         // Inter register enable must precede power commands.
+        // SAFETY: DSI0 is active and panel is in normal operating state per caller contract. All DCS commands are routed through dcs_write_* helpers which access valid DSI0 MMIO registers.
         unsafe {
             dcs_write_cmd0(0xFE); // Inter register enable 1
             dcs_write_cmd0(0xEF); // Inter register enable 2
@@ -661,6 +667,7 @@ impl LcmControl for Gc9306 {
 
     unsafe fn resume(&self) {
         // GC9306 sleep-out sequence from docs/GC9306-INIT.md.
+        // SAFETY: DSI0 is active and panel is in suspended state per caller contract. All DCS commands are routed through dcs_write_* helpers which access valid DSI0 MMIO registers.
         unsafe {
             dcs_write_cmd0(0xFE); // Inter register enable 1
             dcs_write_cmd0(0xEF); // Inter register enable 2
@@ -677,6 +684,7 @@ impl LcmBacklight for Gc9306 {
     unsafe fn set_backlight(&self, level: u8) {
         // DCS Write Display Brightness (0x51): 0x00 = off, 0xFF = max.
         // The GC9306 supports this command natively.
+        // SAFETY: DSI0 is active and panel is not suspended per caller contract. dcs_write_cmd1 accesses valid DSI0 MMIO registers within the DSI0 address space at 0x1400_D000.
         unsafe {
             dcs_write_cmd1(0x51, level);
         }
@@ -790,11 +798,13 @@ impl<L: LcmDriver> DisplayDriver<L> {
         let stride = params.stride();
 
         // Step 1: enable MMSYS clocks
+        // SAFETY: MMSYS clock gate registers (CG_CLR0, CG_CLR1) are valid MMIO registers at 0x1400_0108 and 0x1400_0118 within the MMSYS address space. Called once during boot per caller contract.
         unsafe {
             self.enable_clocks();
         }
 
         // Step 2: release software resets
+        // SAFETY: MMSYS reset registers (SW0_RST_B, SW1_RST_B, LCM_RST_B) are valid MMIO registers within the MMSYS address space at 0x1400_0000. Volatile access is required for hardware registers.
         unsafe {
             self.release_resets();
         }
@@ -803,32 +813,38 @@ impl<L: LcmDriver> DisplayDriver<L> {
         // NOTE: already handled in release_resets()
 
         // Step 4–5: configure OVL
+        // SAFETY: OVL0 registers are valid MMIO registers within the OVL0 address space at 0x1400_7000. Volatile access is required for hardware registers.
         unsafe {
             self.configure_ovl(width, height);
         }
 
         // Step 6: configure RDMA0
+        // SAFETY: RDMA0 registers are valid MMIO registers within the RDMA0 address space at 0x1400_8000. fb_addr is a valid physical address per caller contract.
         unsafe {
             self.configure_rdma(fb_addr, width, height, stride);
         }
 
         // Step 7: configure DSI0
+        // SAFETY: DSI0 registers are valid MMIO registers within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
         unsafe {
             self.configure_dsi(&params);
         }
 
         // Step 8: send LCM init commands
+        // SAFETY: DSI0 is configured with clock and data lanes active after configure_dsi(). DCS commands access valid DSI0 MMIO registers.
         unsafe {
             self.lcm.init();
         }
         self.state = DisplayState::LcmInitialized;
 
         // Step 9: configure mutex
+        // SAFETY: display mutex registers are valid MMIO registers within the DISP_MUTEX address space at 0x1400_1000. Volatile access is required for hardware registers.
         unsafe {
             self.configure_mutex();
         }
 
         // Step 10: trigger first frame
+        // SAFETY: OVL0_TRIG is a valid MMIO register at 0x1400_7010 within the OVL0 address space. Volatile access is required for hardware registers.
         unsafe {
             mmio::write32(ovl::TRIG, ovl::SW_TRIG_BIT);
         }
@@ -852,6 +868,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
             is_fb_addr_aligned(addr),
             "framebuffer address must be 16-byte aligned for DMA"
         );
+        // SAFETY: RDMA0_MEM_START_ADDR and RDMA0_MEM_SRC_PITCH are valid MMIO registers within the RDMA0 address space at 0x1400_8000. addr is a valid physical address per caller contract. Volatile access is required for hardware registers.
         unsafe {
             mmio::write32(rdma::MEM_START_ADDR, u32::try_from(addr).unwrap_or_default());
             mmio::write32(rdma::MEM_SRC_PITCH, stride);
@@ -866,6 +883,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
     ///
     /// Pipeline must be active and panel must not be suspended.
     pub unsafe fn set_backlight(&self, level: u8) {
+        // SAFETY: Pipeline is active and panel is not suspended per caller contract. Delegates to LCM driver which accesses valid DSI0 MMIO registers.
         unsafe {
             self.lcm.set_backlight(level);
         }
@@ -875,6 +893,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
 
     /// Step 1: enable all display pipeline clocks via MMSYS CG clear registers.
     unsafe fn enable_clocks(&mut self) {
+        // SAFETY: MMSYS_CG_CLR0 (0x1400_0108) and MMSYS_CG_CLR1 (0x1400_0118) are valid MMIO registers within the MMSYS address space. Volatile access is required for hardware registers.
         unsafe {
             mmio::write32(mmsys::CG_CLR0, mmsys::CG0_DISP_ALL);
             mmio::write32(mmsys::CG_CLR1, mmsys::CG1_DISP_ALL);
@@ -884,6 +903,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
 
     /// Steps 2–3: release software resets and LCM reset.
     unsafe fn release_resets(&mut self) {
+        // SAFETY: MMSYS SW0_RST_B (0x1400_0140), SW1_RST_B (0x1400_0144), and LCM_RST_B (0x1400_0150) are valid MMIO registers within the MMSYS address space. Volatile access is required for hardware registers.
         unsafe {
             // Step 2: release module software resets (active low  -  write 1)
             mmio::write32(mmsys::SW0_RST_B, mmsys::SW0_RST_RELEASE);
@@ -897,6 +917,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
 
     /// Steps 4–5: configure OVL ROI size, background, and enable layer 0.
     unsafe fn configure_ovl(&mut self, width: u16, height: u16) {
+        // SAFETY: OVL0 registers (ROI_SIZE, ROI_BGCLR, L0_CON, SRC_CON, EN, INTEN) are valid MMIO registers within the OVL0 address space at 0x1400_7000. Volatile access is required for hardware registers.
         unsafe {
             // Step 4: SET ROI size
             mmio::write32(ovl::ROI_SIZE, encode_roi_size(width, height));
@@ -927,6 +948,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
         height: u16,
         stride: u32,
     ) {
+        // SAFETY: RDMA0 registers (GLOBAL_CON, SIZE_CON_0, SIZE_CON_1, MEM_CON, MEM_SRC_PITCH, MEM_START_ADDR) are valid MMIO registers within the RDMA0 address space at 0x1400_8000. fb_addr is a valid DMA-accessible physical address per caller contract. Volatile access is required for hardware registers.
         unsafe {
             // Memory mode: read FROM framebuffer address
             mmio::write32(rdma::GLOBAL_CON, rdma::ENGINE_EN | rdma::MODE_MEMORY);
@@ -949,6 +971,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
 
     /// Step 7: configure DSI0 clock/data lanes and timing.
     unsafe fn configure_dsi(&mut self, params: &LcmParams) {
+        // SAFETY: DSI0 registers (CON_CTRL, MODE_CTRL, TXRX_CTRL, VSA_NL, VBP_NL, VFP_NL, VACT_NL, HSA_WC, HBP_WC, HFP_WC, PHY_LCCON, PHY_LD0CON, START) are valid MMIO registers within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
         unsafe {
             // Reset DSI
             mmio::write32(dsi::CON_CTRL, 0);
@@ -991,6 +1014,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
 
     /// Step 9: configure display mutex for frame synchronization.
     unsafe fn configure_mutex(&mut self) {
+        // SAFETY: display mutex registers (MOD, SOF, EN) are valid MMIO registers within the DISP_MUTEX address space at 0x1400_1000. Volatile access is required for hardware registers.
         unsafe {
             // Module membership: OVL0 + RDMA0
             mmio::write32(disp_mutex::MOD, disp_mutex::MOD_OVL0_RDMA0);

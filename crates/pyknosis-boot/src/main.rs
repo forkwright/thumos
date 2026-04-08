@@ -80,6 +80,9 @@ core::arch::global_asm!(
 pub extern "C" fn kernel_main() -> ! {
     // WHY: delegate everything to kinit::run() which handles the full
     // boot sequence with fault isolation and driver integration.
+    // SAFETY: called exactly once from the boot stub (_start) on the boot
+    // processor, after the stack is set and BSS is zeroed. Interrupts are
+    // disabled at entry; kinit::run() enables them after GIC init.
     unsafe {
         kinit::run();
     }
@@ -94,8 +97,9 @@ pub extern "C" fn kernel_main() -> ! {
 fn panic(info: &PanicInfo) -> ! {
     // Attempt visual panic indicator on display (if available).
     if kinit::DISPLAY_AVAILABLE.load(core::sync::atomic::Ordering::Acquire) {
-        // SAFETY: display was initialized, FB_BASE is a valid framebuffer.
-        // Fill with solid red as a visual panic signal.
+        // SAFETY: DISPLAY_AVAILABLE is only set to true after display.init()
+        // succeeds, guaranteeing FB_BASE is a valid, mapped framebuffer of at
+        // least DISPLAY_WIDTH * DISPLAY_HEIGHT * 2 bytes (RGB565).
         unsafe {
             kinit::fill_framebuffer(
                 kconfig::FB_BASE,
@@ -117,6 +121,8 @@ fn panic(info: &PanicInfo) -> ! {
     }
 
     loop {
+        // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
+        // No memory is accessed; the CPU enters a low-power wait state until an event.
         unsafe {
             core::arch::asm!("wfe");
         }

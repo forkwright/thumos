@@ -199,7 +199,9 @@ pub(crate) unsafe fn fill_framebuffer(fb_addr: usize, width: u32, height: u32, c
     let total_pixels = (width * height) as usize;
     let ptr = fb_addr as *mut u16;
     for i in 0..total_pixels {
-        // SAFETY: caller guarantees fb_addr region is mapped and writable.
+        // SAFETY: caller guarantees fb_addr points to a mapped, writable
+        // framebuffer region of at least width * height * 2 bytes (RGB565).
+        // ptr.add(i) stays within that region because i < total_pixels.
         unsafe {
             core::ptr::write_volatile(ptr.add(i), color);
         }
@@ -215,6 +217,8 @@ pub(crate) unsafe fn fill_framebuffer(fb_addr: usize, width: u32, height: u32, c
 fn userspace_idle() -> ! {
     loop {
         // WHY: wfe sleeps until next interrupt, preventing busy-loop.
+        // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
+        // No memory is accessed; the CPU enters a low-power wait state until an event.
         unsafe {
             core::arch::asm!("wfe");
         }
@@ -253,6 +257,8 @@ pub unsafe fn run() -> ! {
     // Step 0: MMU + caches
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] MMU + caches\r\n");
+    // SAFETY: called once during early boot with interrupts disabled before
+    // any code that depends on virtual memory.
     unsafe {
         mmu::init_and_enable();
     }
@@ -262,6 +268,8 @@ pub unsafe fn run() -> ! {
     // Step 1: Page allocator
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Page allocator\r\n");
+    // SAFETY: called once after MMU init. RAM_START/RAM_END/KERNEL_END are valid
+    // physical addresses from kconfig for the MT6739 DRAM layout.
     unsafe {
         page::init(kconfig::RAM_START, kconfig::RAM_END, kconfig::KERNEL_END);
     }
@@ -276,6 +284,8 @@ pub unsafe fn run() -> ! {
     // Step 2: Kernel heap
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Kernel heap\r\n");
+    // SAFETY: called once after page allocator init. heap::init() claims a
+    // contiguous region from the page allocator for the kernel slab heap.
     unsafe {
         heap::init();
     }
@@ -287,6 +297,8 @@ pub unsafe fn run() -> ! {
     // Step 3: GIC
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] GIC\r\n");
+    // SAFETY: called once after heap init. gic::init() programs the GIC distributor
+    // and CPU interface MMIO registers at their known physical addresses.
     unsafe {
         gic::init();
     }
@@ -296,6 +308,8 @@ pub unsafe fn run() -> ! {
     // Step 4: Process subsystem
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Process subsystem\r\n");
+    // SAFETY: called once after GIC init. process::init() initializes the
+    // global process table and scheduler state before any processes are spawned.
     unsafe {
         process::init();
     }
@@ -304,6 +318,9 @@ pub unsafe fn run() -> ! {
     // Step 5: Exception handlers + timer
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Exceptions + timer\r\n");
+    // SAFETY: called once after GIC and process init. exceptions::init() installs
+    // the vector table and enables IRQ delivery; the GIC and process table must
+    // already be initialized before interrupts are unmasked.
     unsafe {
         exceptions::init();
     }
@@ -355,6 +372,8 @@ pub unsafe fn run() -> ! {
         let mut display = DisplayDriver::new(gc9306);
         // NOTE: FB_BASE FROM kconfig  -  SET by LK bootloader in stock firmware.
         // Phase 04+ allocates FROM page allocator instead.
+        // SAFETY: FB_BASE is a framebuffer physical address provided by the LK
+        // bootloader and identity-mapped as device memory in the MMU init.
         unsafe {
             display.init(kconfig::FB_BASE);
         }
@@ -383,6 +402,8 @@ pub unsafe fn run() -> ! {
     let _ = serial.write_str("[init] USB ACM serial\r\n");
     {
         let mut usb = UsbController::new();
+        // SAFETY: usb.init() programs the MUSB MMIO registers at their known
+        // physical address (0x1121_0000). Called once after heap and GIC init.
         unsafe {
             usb.init();
         }
@@ -430,6 +451,10 @@ pub unsafe fn run() -> ! {
         // NOTE: Full keypad driver is in crates/haphe. Here we enable the
         // KPD hardware so interrupt-driven scanning can start.
         let kpd_base = device::MT6739_KPD;
+        // SAFETY: KPD_EN and KPD_DEBOUNCE are device MMIO registers at known
+        // offsets from the MT6739_KPD base address (0x1001_0000), which is
+        // identity-mapped as device memory. Writing these registers enables the
+        // hardware keypad scanner with 16 ms debounce.
         unsafe {
             // Enable KPD module (bit 0 of KPD_EN).
             mmio::write32(kpd_base + device::KPD_EN, 1);
@@ -489,9 +514,13 @@ pub unsafe fn run() -> ! {
         match fs.find("/init") {
             Some(elf_data) => match elf::load(elf_data) {
                 Ok(loaded) => {
-                    if let Some(pid) = process::spawn(unsafe {
-                        core::mem::transmute::<usize, fn() -> !>(loaded.entry)
-                    }) {
+                    if let Some(pid) = process::spawn(
+                        // SAFETY: loaded.entry is the ELF entry point validated
+                        // by elf::load() to be within a loaded PT_LOAD segment.
+                        // The identity-mapped physical address is a callable
+                        // no-return function per the ELF ABI contract.
+                        unsafe { core::mem::transmute::<usize, fn() -> !>(loaded.entry) },
+                    ) {
                         let _ = write!(serial, "       /init spawned (PID {})\r\n", pid);
                         state.processes_spawned += 1;
                     } else {
@@ -519,9 +548,13 @@ pub unsafe fn run() -> ! {
         match fs.find("/shell") {
             Some(elf_data) => match elf::load(elf_data) {
                 Ok(loaded) => {
-                    if let Some(pid) = process::spawn(unsafe {
-                        core::mem::transmute::<usize, fn() -> !>(loaded.entry)
-                    }) {
+                    if let Some(pid) = process::spawn(
+                        // SAFETY: loaded.entry is the ELF entry point validated
+                        // by elf::load() to be within a loaded PT_LOAD segment.
+                        // The identity-mapped physical address is a callable
+                        // no-return function per the ELF ABI contract.
+                        unsafe { core::mem::transmute::<usize, fn() -> !>(loaded.entry) },
+                    ) {
                         let _ = write!(serial, "       /shell spawned (PID {})\r\n", pid);
                         state.processes_spawned += 1;
                     } else {
@@ -555,6 +588,8 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Debug console or idle
     // -----------------------------------------------------------------------
+    // SAFETY: DEBUG_CONSOLE is a compile-time or boot-time constant; reading it
+    // is safe here as it is never written after boot.
     if unsafe { kconfig::DEBUG_CONSOLE } {
         let _ = serial.write_str("[init] Starting debug console\r\n");
         let _ = serial
@@ -566,6 +601,8 @@ pub unsafe fn run() -> ! {
         // For now, we poll. This gets replaced when the UART driver has
         // proper RX interrupt support.
         loop {
+            // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
+            // No memory is accessed; the CPU enters a low-power wait state.
             unsafe {
                 core::arch::asm!("wfe");
             }
@@ -573,6 +610,8 @@ pub unsafe fn run() -> ! {
     } else {
         // No console  -  just idle
         loop {
+            // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
+            // No memory is accessed; the CPU enters a low-power wait state.
             unsafe {
                 core::arch::asm!("wfe");
             }

@@ -12,6 +12,7 @@ pub const TIMER_IRQ: u32 = 30;
 /// Read the counter frequency (CNTFRQ).
 pub fn frequency() -> u32 {
     let freq: u32;
+    // SAFETY: CNTP_TVAL/CNTP_CTL are system timer registers accessible at EL1.
     unsafe {
         core::arch::asm!(
             "mrc p15, 0, {}, c14, c0, 0", // CNTFRQ
@@ -25,6 +26,7 @@ pub fn frequency() -> u32 {
 pub fn counter() -> u64 {
     let lo: u32;
     let hi: u32;
+    // SAFETY: CNTP_TVAL/CNTP_CTL are system timer registers accessible at EL1.
     unsafe {
         core::arch::asm!(
             "mrrc p15, 0, {lo}, {hi}, c14", // CNTPCT
@@ -37,6 +39,7 @@ pub fn counter() -> u64 {
 
 /// Set the timer to fire after `ticks` counter increments.
 pub fn set_timer(ticks: u32) {
+    // SAFETY: CNTP_TVAL/CNTP_CTL are system timer registers accessible at EL1.
     unsafe {
         // Set countdown value
         core::arch::asm!(
@@ -53,6 +56,7 @@ pub fn set_timer(ticks: u32) {
 
 /// Disable the timer.
 pub fn disable() {
+    // SAFETY: CNTP_TVAL/CNTP_CTL are system timer registers accessible at EL1.
     unsafe {
         core::arch::asm!(
             "mcr p15, 0, {}, c14, c2, 1", // CNTP_CTL = 0
