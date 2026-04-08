@@ -341,6 +341,11 @@ impl StpTransport {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test code — panics and expect are intentional for assertion failures"
+)]
 mod tests {
     use super::*;
     use crate::stp::{FrameType, StpFrame};
@@ -481,8 +486,8 @@ mod tests {
 
         let mut t = StpTransport::new();
         let mut complete = None;
-        for i in 0..len {
-            if let Some(raw) = t.receive_byte(encoded[i]) {
+        for &byte in encoded.iter().take(len) {
+            if let Some(raw) = t.receive_byte(byte) {
                 complete = Some(raw.to_vec());
             }
         }
@@ -531,6 +536,7 @@ mod tests {
     #[test]
     fn subsystem_frame_type_values() {
         // Verify the FrameType discriminants used for STP subsystem routing.
+        // as u8 on repr(u8) enum in test code: discriminant always fits in u8, no truncation.
         assert_eq!(FrameType::Data as u8, 0, "Data frame type must be 0");
         assert_eq!(FrameType::Ack as u8, 2, "Ack frame type must be 2");
         assert_eq!(

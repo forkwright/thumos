@@ -184,27 +184,27 @@ mod tests {
     ];
 
     #[test]
-    fn test_pmk_ieee_test_vector() {
+    fn pmk_matches_ieee_test_vector() {
         let pmk = derive_pmk(b"password", b"IEEE");
         assert_eq!(pmk, IEEE_PMK, "PMK must match IEEE 802.11i Annex J vector");
     }
 
     #[test]
-    fn test_pmk_is_deterministic() {
+    fn pmk_derivation_is_deterministic() {
         let a = derive_pmk(b"secret", b"mynet");
         let b = derive_pmk(b"secret", b"mynet");
-        assert_eq!(a, b);
+        assert_eq!(a, b, "PMK must be identical for identical passphrase and SSID");
     }
 
     #[test]
-    fn test_pmk_differs_by_passphrase() {
+    fn pmk_differs_when_passphrase_differs() {
         let a = derive_pmk(b"passA", b"ssid");
         let b = derive_pmk(b"passB", b"ssid");
-        assert_ne!(a, b);
+        assert_ne!(a, b, "PMK must differ when passphrases differ");
     }
 
     #[test]
-    fn test_ptk_structure_lengths() {
+    fn ptk_fields_have_correct_lengths() {
         let pmk = [0u8; PMK_LEN];
         let anonce = [0xaau8; 32];
         let snonce = [0xbbu8; 32];
@@ -212,13 +212,13 @@ mod tests {
         let spa = [0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb];
         let ptk = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
         // Verify lengths via compile-time array sizes  -  just check fields exist.
-        assert_eq!(ptk.kck.len(), KCK_LEN);
-        assert_eq!(ptk.kek.len(), KEK_LEN);
-        assert_eq!(ptk.tk.len(), TK_LEN);
+        assert_eq!(ptk.kck.len(), KCK_LEN, "KCK must be KCK_LEN bytes");
+        assert_eq!(ptk.kek.len(), KEK_LEN, "KEK must be KEK_LEN bytes");
+        assert_eq!(ptk.tk.len(), TK_LEN, "TK must be TK_LEN bytes");
     }
 
     #[test]
-    fn test_ptk_is_deterministic() {
+    fn ptk_derivation_is_deterministic() {
         let pmk = IEEE_PMK;
         let anonce = [0x01u8; 32];
         let snonce = [0x02u8; 32];
@@ -226,11 +226,11 @@ mod tests {
         let spa = [0x00, 0x0e, 0x35, 0x58, 0x10, 0xd2];
         let ptk1 = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
         let ptk2 = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
-        assert_eq!(ptk1, ptk2);
+        assert_eq!(ptk1, ptk2, "PTK must be identical for identical inputs");
     }
 
     #[test]
-    fn test_ptk_mac_order_symmetry() {
+    fn ptk_is_identical_when_aa_and_spa_are_swapped() {
         // PRF input is ORDER-independent: swapping AA/SPA gives the same PTK.
         let pmk = IEEE_PMK;
         let anonce = [0x10u8; 32];
@@ -239,49 +239,49 @@ mod tests {
         let spa = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
         let ptk_ab = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
         let ptk_ba = derive_ptk(&pmk, &anonce, &snonce, &spa, &aa);
-        assert_eq!(ptk_ab, ptk_ba);
+        assert_eq!(ptk_ab, ptk_ba, "PTK must be identical regardless of AA/SPA order");
     }
 
     #[test]
-    fn test_mic_computation_deterministic() {
+    fn mic_computation_is_deterministic() {
         let kck = [0x37u8; KCK_LEN];
         let data = b"test EAPOL frame with MIC field zeroed";
         let mic1 = compute_mic(&kck, data);
         let mic2 = compute_mic(&kck, data);
-        assert_eq!(mic1, mic2);
+        assert_eq!(mic1, mic2, "MIC must be identical for identical inputs");
     }
 
     #[test]
-    fn test_verify_mic_valid() {
+    fn verify_mic_accepts_correct_mic() {
         let kck = [0x42u8; KCK_LEN];
         let data = b"EAPOL message 2 of 4-way handshake";
         let mic = compute_mic(&kck, data);
-        assert!(verify_mic(&kck, data, &mic));
+        assert!(verify_mic(&kck, data, &mic), "verify_mic must return true for a freshly computed MIC");
     }
 
     #[test]
-    fn test_verify_mic_wrong_data() {
+    fn verify_mic_rejects_tampered_data() {
         let kck = [0x42u8; KCK_LEN];
         let data = b"correct data";
         let mic = compute_mic(&kck, data);
         let tampered = b"tampered data";
-        assert!(!verify_mic(&kck, tampered, &mic));
+        assert!(!verify_mic(&kck, tampered, &mic), "verify_mic must return false when data does not match MIC");
     }
 
     #[test]
-    fn test_verify_mic_wrong_mic() {
+    fn verify_mic_rejects_corrupted_mic() {
         let kck = [0x42u8; KCK_LEN];
         let data = b"some EAPOL payload";
         let mut wrong_mic = compute_mic(&kck, data);
-        wrong_mic.get(0).copied().unwrap_or_default() ^= 0xff; // flip a byte
-        assert!(!verify_mic(&kck, data, &wrong_mic));
+        wrong_mic[0] ^= 0xff; // flip a byte
+        assert!(!verify_mic(&kck, data, &wrong_mic), "verify_mic must return false when MIC byte is flipped");
     }
 
     #[test]
-    fn test_mic_different_keys_differ() {
+    fn mic_differs_when_kck_differs() {
         let kck_a = [0xaau8; KCK_LEN];
         let kck_b = [0xbbu8; KCK_LEN];
         let data = b"shared data";
-        assert_ne!(compute_mic(&kck_a, data), compute_mic(&kck_b, data));
+        assert_ne!(compute_mic(&kck_a, data), compute_mic(&kck_b, data), "different KCKs must produce different MICs");
     }
 }

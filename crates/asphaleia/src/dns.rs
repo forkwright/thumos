@@ -188,7 +188,7 @@ mod tests {
         // QNAME
         for label in domain.split('.') {
             let bytes = label.as_bytes();
-            msg.push(bytes.len() as u8);
+            msg.push(u8::try_from(bytes.len()).unwrap_or(u8::MAX));
             msg.extend_from_slice(bytes);
         }
         msg.push(0x00); // Root label

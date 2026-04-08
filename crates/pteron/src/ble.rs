@@ -42,10 +42,11 @@ const IBEACON_TOTAL_LEN: usize = 25; // company_id(2) + type(1) + len(1) + UUID(
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 /// Known BLE AD type codes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AdType {
     /// Flags (AD type `0x01`).
+    #[default]
     Flags,
     /// Shortened local name (AD type `0x08`).
     ShortName,
@@ -62,7 +63,7 @@ pub enum AdType {
 }
 
 /// A single AD structure extracted from a BLE advertising payload.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct AdStructure {
     /// The AD type of this structure.
@@ -293,11 +294,11 @@ mod tests {
         let result = parse_ad_structures(&data);
         assert_eq!(result.len(), 1, "should parse exactly one AD structure");
         assert_eq!(
-            result.get(0).copied().unwrap_or_default().ad_type,
+            result.first().cloned().unwrap_or_default().ad_type,
             AdType::CompleteName,
             "AD type should be CompleteName (0x09)"
         );
-        assert_eq!(result.get(0).copied().unwrap_or_default().data, b"Test", "data should be the 4 name bytes");
+        assert_eq!(result.first().cloned().unwrap_or_default().data, b"Test", "data should be the 4 name bytes");
     }
 
     #[test]
@@ -308,12 +309,12 @@ mod tests {
         let result = parse_ad_structures(&data);
         assert_eq!(result.len(), 2, "should parse two AD structures");
         assert_eq!(
-            result.get(0).copied().unwrap_or_default().ad_type,
+            result.first().cloned().unwrap_or_default().ad_type,
             AdType::Flags,
             "first structure should be Flags"
         );
         assert_eq!(
-            result.get(1).copied().unwrap_or_default().ad_type,
+            result.get(1).cloned().unwrap_or_default().ad_type,
             AdType::TxPowerLevel,
             "second structure should be TxPowerLevel"
         );
@@ -354,12 +355,12 @@ mod tests {
             "unknown type should still produce one structure"
         );
         assert_eq!(
-            result.get(0).copied().unwrap_or_default().ad_type,
+            result.first().cloned().unwrap_or_default().ad_type,
             AdType::Unknown(0x42),
             "unknown type byte should be wrapped in AdType::Unknown"
         );
         assert_eq!(
-            result.get(0).copied().unwrap_or_default().data,
+            result.first().cloned().unwrap_or_default().data,
             &[0xAB, 0xCD],
             "data bytes should be preserved"
         );
@@ -376,7 +377,7 @@ mod tests {
             "should parse one manufacturer data structure"
         );
         assert_eq!(
-            result.get(0).copied().unwrap_or_default().ad_type,
+            result.first().cloned().unwrap_or_default().ad_type,
             AdType::ManufacturerData,
             "type 0xFF should map to ManufacturerData"
         );
@@ -418,7 +419,7 @@ mod tests {
         assert_eq!(beacon.major, 1, "major should be 1");
         assert_eq!(beacon.minor, 2, "minor should be 2");
         assert_eq!(beacon.tx_power, -59_i8, "tx_power should be -59 dBm");
-        assert_eq!(beacon.uuid.get(0).copied().unwrap_or_default(), 0x55, "first UUID byte should be 0x55");
+        assert_eq!(beacon.uuid.first().copied().unwrap_or_default(), 0x55, "first UUID byte should be 0x55");
     }
 
     #[test]
@@ -473,12 +474,12 @@ mod tests {
             "should parse two structures FROM the raw bytes"
         );
         assert_eq!(
-            ad.structures.get(0).copied().unwrap_or_default().ad_type,
+            ad.structures.first().cloned().unwrap_or_default().ad_type,
             AdType::CompleteName,
             "first structure should be CompleteName"
         );
         assert_eq!(
-            ad.structures.get(1).copied().unwrap_or_default().ad_type,
+            ad.structures.get(1).cloned().unwrap_or_default().ad_type,
             AdType::TxPowerLevel,
             "second structure should be TxPowerLevel"
         );
