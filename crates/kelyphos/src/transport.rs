@@ -341,6 +341,7 @@ impl StpTransport {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::stp::{FrameType, StpFrame};
@@ -481,8 +482,8 @@ mod tests {
 
         let mut t = StpTransport::new();
         let mut complete = None;
-        for i in 0..len {
-            if let Some(raw) = t.receive_byte(encoded[i]) {
+        for &byte in encoded.iter().take(len) {
+            if let Some(raw) = t.receive_byte(byte) {
                 complete = Some(raw.to_vec());
             }
         }

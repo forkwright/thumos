@@ -244,7 +244,7 @@ mod tests {
         let mut buf = [0u8; 128];
         let len = frame.encode(&mut buf);
         assert!(len > 0, "encode should produce bytes");
-        assert_eq!(buf.get(0).copied().unwrap_or_default(), SOF, "first byte should be SOF");
+        assert_eq!(buf.first().copied().unwrap_or_default(), SOF, "first byte should be SOF");
         assert_eq!(frame.payload_len, 5);
     }
 

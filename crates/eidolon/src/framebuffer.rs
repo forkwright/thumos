@@ -108,7 +108,7 @@ mod tests {
         fb.set_pixel(0, 0, Rgb565::WHITE);
         let bytes = fb.as_bytes();
         assert_eq!(
-            bytes.get(0).copied().unwrap_or_default(), 0xFF,
+            bytes.first().copied().unwrap_or_default(), 0xFF,
             "first byte of pixel (0,0) must be 0xFF for white"
         );
         assert_eq!(
@@ -176,7 +176,7 @@ mod tests {
         let [lo, hi] = Rgb565::RED.0.to_le_bytes();
         let bytes = fb.as_bytes();
         for chunk in bytes.chunks_exact(2) {
-            assert_eq!(chunk.get(0).copied().unwrap_or_default(), lo, "every pixel low byte must be red");
+            assert_eq!(chunk.first().copied().unwrap_or_default(), lo, "every pixel low byte must be red");
             assert_eq!(chunk.get(1).copied().unwrap_or_default(), hi, "every pixel high byte must be red");
         }
     }

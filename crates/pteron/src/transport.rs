@@ -340,7 +340,7 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
     let header_end = start + STP_HEADER_LEN;
     let header = data.get(start..header_end).ok_or(Error::RxUnderrun)?;
 
-    let hdr0 = header.get(0).copied().unwrap_or_default();
+    let hdr0 = header.first().copied().unwrap_or_default();
     let hdr1 = header.get(1).copied().unwrap_or_default();
     let hdr2 = header.get(2).copied().unwrap_or_default();
     let hdr3 = header.get(3).copied().unwrap_or_default();
@@ -437,7 +437,7 @@ pub fn build_le_set_random_address_cmd(addr: &BdAddr) -> Vec<u8> {
     pkt.push(a.get(3).copied().unwrap_or_default());
     pkt.push(a.get(2).copied().unwrap_or_default());
     pkt.push(a.get(1).copied().unwrap_or_default());
-    pkt.push(a.get(0).copied().unwrap_or_default());
+    pkt.push(a.first().copied().unwrap_or_default());
     pkt
 }
 
@@ -802,7 +802,7 @@ mod tests {
         let mut buf = [0u8; 64];
         stp_encode(0, payload, &mut buf)?;
         // Corrupt the checksum byte (HDR3 at OFFSET 5)
-        buf.get(5).copied().unwrap_or_default() ^= 0xFF;
+        buf[5] ^= 0xFF;
 
         let result = stp_decode(&buf[..7]);
         assert!(
@@ -917,7 +917,7 @@ mod tests {
         // Lower 6 bits of MSB and all other bytes should be FROM entropy
         assert_eq!(
             addr.as_bytes()[0] & !RANDOM_ADDR_MSB_MASK,
-            entropy.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
+            entropy.first().copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
             "lower bits of MSB byte must be preserved FROM entropy"
         );
         assert_eq!(
@@ -945,7 +945,7 @@ mod tests {
         let addr = generate_rpa(&entropy);
         assert_eq!(
             addr.as_bytes()[0] & !RANDOM_ADDR_MSB_MASK,
-            entropy.get(0).copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
+            entropy.first().copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
             "lower bits of MSB byte must be preserved FROM entropy"
         );
         assert_eq!(
@@ -1030,7 +1030,7 @@ mod tests {
             10,
             "HCI_LE_Set_Random_Address packet must be 10 bytes"
         );
-        assert_eq!(pkt.get(0).copied().unwrap_or_default(), 0x01, "H4 type must be 0x01 (HCI command)");
+        assert_eq!(pkt.first().copied().unwrap_or_default(), 0x01, "H4 type must be 0x01 (HCI command)");
         // Address starts at OFFSET 4; HCI wants LSB first so 0xFF is first
         assert_eq!(
             pkt.get(4).copied().unwrap_or_default(), 0xFF,
