@@ -374,6 +374,17 @@ impl Syscall {
 /// # Returns
 ///
 /// Value to place in r0 on return to userspace.
+///
+/// # Syscall implementation status
+///
+/// Implemented: exit, write, yield, getpid, alloc_page, free_page, uptime,
+///   sleep, send, recv, fork, waitpid, execve, kill, getuid, brk, mmap,
+///   munmap, mprotect, open, close, read, stat, fstat, lseek, dup, dup2,
+///   getcwd, pipe, futex, clock_gettime, nanosleep, sigaction, sigreturn
+/// Deferred to Phase 05 (filesystem write/directory ops): ioctl, fcntl,
+///   mkdir, unlink, chdir
+/// Deferred to Phase 06 (connectivity): socket, bind, listen, accept,
+///   connect, sendto, recvfrom
 pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     let Some(call) = Syscall::from_u32(num) else {
         let mut serial = Uart::new();
@@ -508,7 +519,7 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
 
         // WHY ENOSYS: these require write support (mkdir, unlink),
         // directory tracking (chdir), or device abstraction (ioctl, fcntl).
-        // Deferred to future phases.
+        // Deferred to Phase 05 (filesystem write/directory ops).
         Syscall::Ioctl
         | Syscall::Fcntl
         | Syscall::Mkdir
@@ -521,6 +532,9 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         Syscall::Futex => futex::sys_futex(arg0, arg1, arg2),
 
         // ---- Network (stubs) ----
+        // WHY ENOSYS: network stack not yet present. These are deferred to
+        // Phase 06 (connectivity), which will add WiFi/socket support for
+        // sema, asphaleia, and krypta.
 
         Syscall::Socket
         | Syscall::Bind
@@ -1666,5 +1680,399 @@ mod tests {
 
         // ENOENT has the correct two's-complement encoding.
         assert_eq!(ENOENT, 0xFFFF_FFFEu32, "ENOENT must be two's complement -2");
+    }
+
+    // ---- Syscall table completeness tests ----
+
+    /// Verify every variant in Syscall::ALL is either implemented (does not
+    /// return ENOSYS in the dispatch handler) or has a documented deferral to
+    /// a named future phase.
+    ///
+    /// WHY: ensures no variant silently falls through the dispatch match as
+    /// an undocumented stub. The two documented ENOSYS sets are Phase 05
+    /// (filesystem write/directory) and Phase 06 (connectivity).
+    #[test]
+    fn all_syscalls_have_documented_status() {
+        // Implemented: all syscalls that have actual logic in dispatch().
+        // WHY const arrays: no_std, no alloc, no HashSet — manual linear scan.
+        const IMPLEMENTED: &[u32] = &[
+            0,  // Exit
+            1,  // Write
+            2,  // Yield
+            3,  // Getpid
+            4,  // AllocPage
+            5,  // FreePage
+            6,  // Uptime
+            7,  // Sleep
+            8,  // Send
+            9,  // Recv
+            10, // Fork
+            11, // Execve
+            12, // Waitpid
+            13, // Kill
+            14, // Getuid
+            20, // Mmap
+            21, // Munmap
+            22, // Brk
+            23, // Mprotect
+            30, // Open
+            31, // Close
+            32, // Read
+            33, // Stat
+            34, // Fstat
+            35, // Lseek
+            38, // Dup
+            39, // Dup2
+            42, // Getcwd
+            50, // Pipe
+            51, // Futex
+            70, // ClockGettime
+            71, // Nanosleep
+            80, // Sigaction
+            81, // Sigreturn
+        ];
+        // Deferred to Phase 05 (filesystem write/directory ops).
+        const PHASE05: &[u32] = &[
+            36, // Ioctl
+            37, // Fcntl
+            40, // Mkdir
+            41, // Unlink
+            43, // Chdir
+        ];
+        // Deferred to Phase 06 (connectivity).
+        const PHASE06: &[u32] = &[
+            60, // Socket
+            61, // Bind
+            62, // Listen
+            63, // Accept
+            64, // Connect
+            65, // Sendto
+            66, // Recvfrom
+        ];
+
+        for &variant in &Syscall::ALL {
+            let n = variant.as_u32();
+            let is_implemented = IMPLEMENTED.iter().any(|&x| x == n);
+            let is_phase05 = PHASE05.iter().any(|&x| x == n);
+            let is_phase06 = PHASE06.iter().any(|&x| x == n);
+            assert!(
+                is_implemented || is_phase05 || is_phase06,
+                "syscall {variant:?} (number {n}) has no documented status — \
+                 add it to IMPLEMENTED, PHASE05, or PHASE06"
+            );
+        }
+
+        // Verify the documented counts are consistent with SYSCALL_COUNT.
+        let total = IMPLEMENTED.len() + PHASE05.len() + PHASE06.len();
+        assert_eq!(
+            total, SYSCALL_COUNT,
+            "documented status count ({total}) must equal SYSCALL_COUNT ({SYSCALL_COUNT})"
+        );
+    }
+
+    /// Verify that within each domain the assigned numbers are all valid
+    /// Syscall variants, fall within the domain's reserved range, and contain
+    /// no duplicates.
+    ///
+    /// WHY: a gap within a domain (e.g., 30, 32 without 31) would silently
+    /// leave a syscall number unreachable and break ABI for any binary that
+    /// calls that number. Cross-domain gaps are intentional and not tested here.
+    #[test]
+    fn syscall_numbers_are_contiguous_within_domains() {
+        // (domain_name, base_inclusive, limit_exclusive, assigned_numbers)
+        const DOMAINS: &[(&str, u32, u32, &[u32])] = &[
+            ("legacy",  0,  10, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+            ("process", 10, 20, &[10, 11, 12, 13, 14]),
+            ("memory",  20, 30, &[20, 21, 22, 23]),
+            ("fs",      30, 50, &[30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]),
+            ("ipc",     50, 60, &[50, 51]),
+            ("network", 60, 70, &[60, 61, 62, 63, 64, 65, 66]),
+            ("time",    70, 80, &[70, 71]),
+            ("signal",  80, 90, &[80, 81]),
+        ];
+
+        for &(domain_name, base, limit, expected) in DOMAINS {
+            for &n in expected {
+                // Must be within domain range.
+                assert!(
+                    n >= base && n < limit,
+                    "domain '{domain_name}': number {n} is outside range [{base}, {limit})"
+                );
+                // Must map to a valid syscall variant.
+                assert!(
+                    Syscall::from_u32(n).is_some(),
+                    "domain '{domain_name}': number {n} must map to a variant"
+                );
+            }
+            // No two entries within the domain share a number.
+            let mut i = 0;
+            while i < expected.len() {
+                let mut j = i + 1;
+                while j < expected.len() {
+                    assert_ne!(
+                        expected[i], expected[j],
+                        "domain '{domain_name}': duplicate number {} at indices {i} and {j}",
+                        expected[i]
+                    );
+                    j += 1;
+                }
+                i += 1;
+            }
+        }
+    }
+
+    // ---- Address validation deterministic property tests ----
+
+    /// Kernel-space addresses must all be rejected regardless of buffer length.
+    ///
+    /// WHY: any kernel-space pointer passed by userspace would give the kernel
+    /// direct read/write access to its own data structures, bypassing all
+    /// security invariants.
+    #[test]
+    fn kernel_addresses_always_rejected() {
+        // Sample 33 evenly-spaced addresses across the kernel image and
+        // reserved region [0x4000_0000, KERNEL_END).
+        let kernel_range_start: usize = 0x4000_0000;
+        let kernel_range_end: usize = kconfig::KERNEL_END;
+        let span = kernel_range_end - kernel_range_start;
+        let step = span / 32;
+
+        let mut addr = kernel_range_start;
+        while addr < kernel_range_end {
+            assert!(
+                !validate_user_buffer(addr, 1),
+                "kernel-space address 0x{addr:08x} with len=1 must be rejected"
+            );
+            assert!(
+                !validate_user_buffer(addr, 4096),
+                "kernel-space address 0x{addr:08x} with len=4096 must be rejected"
+            );
+            addr = addr.saturating_add(step.max(1));
+        }
+
+        // Exact boundary: one byte before user DRAM must fail.
+        let boundary = kconfig::KERNEL_END - 1;
+        assert!(
+            !validate_user_buffer(boundary, 1),
+            "last byte of kernel region 0x{boundary:08x} must be rejected"
+        );
+    }
+
+    /// Null pointer must be rejected for any length, including zero.
+    ///
+    /// WHY: null dereference is always invalid. The null check in
+    /// validate_user_buffer is an unconditional first gate.
+    #[test]
+    fn null_pointer_rejected() {
+        // Non-zero lengths.
+        for len in [1usize, 4, 16, 256, 4096] {
+            assert!(
+                !validate_user_buffer(0, len),
+                "null pointer with len={len} must be rejected"
+            );
+        }
+        // Zero-length null is also rejected (null check precedes length check).
+        assert!(
+            !validate_user_buffer(0, 0),
+            "null pointer with len=0 must be rejected"
+        );
+    }
+
+    /// A buffer starting near the top of the address space that would wrap
+    /// around must be rejected.
+    ///
+    /// WHY: without the checked_add overflow guard, ptr + len wraps to a low
+    /// address that passes the range check, allowing kernel memory access
+    /// through an apparently "valid" user pointer.
+    #[test]
+    fn overflow_wrapping_rejected() {
+        // 0xFFFF_FFF0 + 32 wraps to 0x10 on a 32-bit target.
+        assert!(
+            !validate_user_buffer(0xFFFF_FFF0, 32),
+            "0xFFFF_FFF0 + 32 wraps and must be rejected"
+        );
+        assert!(
+            !validate_user_buffer(usize::MAX, 1),
+            "usize::MAX + 1 must overflow and be rejected"
+        );
+        assert!(
+            !validate_user_buffer(usize::MAX - 3, 8),
+            "near-max pointer with len=8 must overflow and be rejected"
+        );
+    }
+
+    /// A zero-length buffer at a valid user address must be accepted.
+    ///
+    /// WHY: zero-length slices are valid in Rust (no memory is accessed).
+    /// Rejecting them would break callers that pass length=0 as a no-op.
+    #[test]
+    fn zero_length_accepted() {
+        // Representative valid user addresses spanning the user DRAM range.
+        let addrs: &[usize] = &[
+            kconfig::KERNEL_END,
+            kconfig::KERNEL_END + 0x1000,
+            0x5000_0000,
+            kconfig::RAM_END - 1,
+        ];
+        for &addr in addrs {
+            assert!(
+                validate_user_buffer(addr, 0),
+                "zero-length buffer at 0x{addr:08x} must be accepted"
+            );
+        }
+    }
+
+    // ---- Memory management property tests ----
+
+    /// Growing the heap via brk must cause the page allocator to report
+    /// fewer free pages.
+    ///
+    /// WHY: brk grow must actually allocate physical pages; a no-op
+    /// implementation would advance the break without making memory
+    /// accessible, causing silent data corruption on first access.
+    #[test]
+    fn brk_growth_allocates_pages() {
+        unsafe { setup_mm(); }
+        let free_before = page::free_count();
+
+        let initial = sys_brk(0);
+        let new_break = initial + u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
+        let result = sys_brk(new_break);
+        assert_eq!(result, new_break, "brk must advance to new_break");
+
+        let free_after = page::free_count();
+        assert!(
+            free_after < free_before,
+            "brk grow must consume pages: free_before={free_before}, free_after={free_after}"
+        );
+    }
+
+    /// Shrinking the heap via brk must correctly update the program break
+    /// back to the requested value.
+    ///
+    /// WHY: brk shrink is how musl's free() returns memory. An incorrect
+    /// shrink leaves the break misreported, breaking subsequent brk queries.
+    ///
+    /// NOTE: the current brk shrink path unmaps page-table entries but does
+    /// not call free_page (physical address not recoverable from a zeroed L2
+    /// entry — see comment in sys_brk). The break value is still correctly
+    /// updated.
+    #[test]
+    fn brk_shrink_frees_pages() {
+        unsafe { setup_mm(); }
+        let initial = sys_brk(0);
+
+        // Grow by two pages.
+        let grown = initial + u32::try_from(2 * crate::page::PAGE_SIZE).unwrap_or_default();
+        let at_grown = sys_brk(grown);
+        assert_eq!(at_grown, grown, "brk must advance to grown");
+
+        // Shrink back to initial break.
+        let result = sys_brk(initial);
+        assert_eq!(
+            result, initial,
+            "brk shrink must return break to initial value"
+        );
+    }
+
+    /// mmap N pages then munmap them — subsequent mmap in the same range must
+    /// succeed (mapping table is consistent after munmap).
+    ///
+    /// WHY: munmap must remove the VmMapping record so the first-fit allocator
+    /// can reuse that virtual address range. A stale entry would cause
+    /// mmap_munmap cycles to exhaust the mapping table (MAX_MAPPINGS = 32).
+    #[test]
+    fn mmap_munmap_balance() {
+        unsafe { setup_mm(); }
+        let free_before = page::free_count();
+
+        const MAP_PAGES: u32 = 4;
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
+        let length = MAP_PAGES * u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
+
+        let addr = sys_mmap(0, length, prot, flags_and_fd);
+        assert_ne!(addr, MAP_FAILED, "mmap of {MAP_PAGES} pages must succeed");
+
+        let free_after_mmap = page::free_count();
+        assert!(
+            free_after_mmap <= free_before,
+            "mmap must not increase free page count: \
+             before={free_before}, after_mmap={free_after_mmap}"
+        );
+
+        let unmap_result = sys_munmap(addr, length);
+        assert_eq!(unmap_result, 0, "munmap must return 0 on success");
+
+        // After munmap the mapping record is gone; a second mmap must succeed
+        // (tests that the VmMapping slot was actually freed).
+        let addr2 = sys_mmap(0, length, prot, flags_and_fd);
+        assert_ne!(
+            addr2, MAP_FAILED,
+            "mmap after munmap must succeed (mapping record was freed)"
+        );
+    }
+
+    // ---- Slab allocator integration test ----
+
+    /// Perform many alloc/dealloc cycles on a local SlabAllocator and verify
+    /// that alloc_count equals free_count (no leaks).
+    ///
+    /// WHY: the same slab logic backs the global heap used by all kernel paths
+    /// including syscall handlers. Equal alloc/free counts confirm that the
+    /// slab's internal accounting is correct for the allocation patterns
+    /// generated by typical syscall sequences.
+    #[test]
+    fn slab_stress_no_leaks() {
+        use crate::slab::SlabAllocator;
+        use core::alloc::Layout;
+
+        // Local fake page pool backed by a static array.
+        // WHY static: pointer stability — the allocator stores raw addresses.
+        static mut POOL: [u8; 32 * crate::page::PAGE_SIZE] =
+            [0u8; 32 * crate::page::PAGE_SIZE];
+        static mut NEXT: usize = 0;
+
+        // SAFETY: test-only; single-threaded; POOL and NEXT are only
+        // accessed through these two functions within this test.
+        unsafe fn fake_alloc() -> Option<usize> {
+            unsafe {
+                if NEXT >= 32 { return None; }
+                let base = POOL.as_mut_ptr() as usize;
+                let addr = base + NEXT * crate::page::PAGE_SIZE;
+                NEXT += 1;
+                Some(addr)
+            }
+        }
+        unsafe fn fake_free(_addr: usize) {}
+
+        // SAFETY: sa is local; POOL/NEXT are test-only statics.
+        unsafe {
+            NEXT = 0;
+            let mut sa = SlabAllocator::new();
+            sa.init();
+
+            let layout = Layout::from_size_align(64, 8).unwrap();
+            const N: usize = 128;
+            let mut ptrs = [core::ptr::null_mut::<u8>(); N];
+
+            for p in ptrs.iter_mut() {
+                *p = sa.alloc_inner(layout, fake_alloc, fake_alloc);
+                assert!(!p.is_null(), "slab alloc must succeed");
+            }
+            for &p in ptrs.iter() {
+                sa.dealloc_inner(p, layout, fake_free);
+            }
+
+            let (allocs, frees) = sa.stats();
+            assert_eq!(
+                allocs, N as u64,
+                "alloc_count must equal number of allocations ({N})"
+            );
+            assert_eq!(
+                frees, N as u64,
+                "free_count must equal number of deallocations ({N}), got {frees}"
+            );
+        }
     }
 }

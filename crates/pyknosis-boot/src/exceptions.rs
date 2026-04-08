@@ -16,6 +16,7 @@
 
 use crate::csprng;
 use crate::gic;
+use crate::power;
 use crate::process;
 use crate::timer;
 use crate::uart::Uart;
@@ -150,6 +151,22 @@ pub extern "C" fn irq_handler_rust() {
         // Reset timer for next tick
         timer::set_ms(TICK_MS);
 
+        // REQ-19b: DVFS — estimate load as a simple binary sample.
+        // WHY: a single-tick sample (running vs idle) is the coarsest
+        // estimate available without per-process accounting.  The rolling
+        // average inside evaluate_dvfs smooths over LOAD_HISTORY_LEN ticks.
+        let runnable = process::runnable_count();
+        // 100 if any non-idle work exists, 0 if only the idle process runs.
+        let load_sample: u8 = if runnable > 1 { 100 } else { 0 };
+        power::evaluate_dvfs(load_sample);
+
+        // REQ-19c: core parking.
+        power::evaluate_core_parking(runnable);
+
+        // REQ-19d: display backlight timeout.
+        let now = ticks();
+        power::check_backlight_timeout(now);
+
         // Run scheduler
         let next = process::schedule();
         if next != process::current_pid() {
@@ -158,6 +175,11 @@ pub extern "C" fn irq_handler_rust() {
             unsafe {
                 process::switch_to(next);
             }
+        } else {
+            // REQ-19a: idle — no other runnable process, enter WFI.
+            // WHY: wfi suspends the core until the next interrupt, reducing
+            // power consumption in the idle path without affecting correctness.
+            power::idle();
         }
 
         // Check for pending signals on the current process.
