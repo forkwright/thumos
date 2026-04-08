@@ -16,7 +16,6 @@
 
 use crate::gic;
 use crate::process;
-use crate::syscall;
 use crate::timer;
 use crate::uart::Uart;
 use core::fmt::Write;
@@ -33,7 +32,10 @@ const TICK_MS: u32 = 10;
 ///
 /// Must be called after GIC init and MMU enable.
 pub unsafe fn init() {
-    // Set VBAR (Vector Base Address Register) to our vector table
+    // SAFETY: vector table address is aligned to 32 bytes (enforced by .balign 32 in
+    // global_asm!) and contains valid exception handler entries. VBAR write is a
+    // privileged CP15 operation. cpsie i enables IRQ delivery after the vector table
+    // and GIC are fully configured.
     unsafe {
         core::arch::asm!(
             "mcr p15, 0, {}, c12, c0, 0", // VBAR
@@ -120,6 +122,9 @@ pub extern "C" fn irq_handler_rust() {
 
     if irq == timer::TIMER_IRQ {
         // Timer tick
+        // SAFETY: TICK_COUNT is only written from this IRQ handler, which
+        // is non-reentrant on a single-core ARMv7. The IRQ is disabled
+        // during handler execution so there is no concurrent write.
         unsafe {
             TICK_COUNT += 1;
         }
@@ -129,6 +134,8 @@ pub extern "C" fn irq_handler_rust() {
         // Run scheduler
         let next = process::schedule();
         if next != process::current_pid() {
+            // SAFETY: next is a valid PID returned by schedule(), which only
+            // returns PIDs for processes in the READY state.
             unsafe {
                 process::switch_to(next);
             }
@@ -144,6 +151,9 @@ pub extern "C" fn data_abort_handler_rust() {
     let mut serial = Uart::new();
     let dfar: u32;
     let dfsr: u32;
+    // SAFETY: CP15 system register access is a privileged operation. DFAR (c6, c0, 0)
+    // holds the faulting address and DFSR (c5, c0, 0) holds the fault status. Both
+    // are read-only in this context and are valid after a data abort exception.
     unsafe {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 0", out(reg) dfar); // DFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 0", out(reg) dfsr); // DFSR
@@ -159,6 +169,9 @@ pub extern "C" fn prefetch_abort_handler_rust() {
     let mut serial = Uart::new();
     let ifar: u32;
     let ifsr: u32;
+    // SAFETY: CP15 system register access is a privileged operation. IFAR (c6, c0, 2)
+    // holds the faulting instruction address and IFSR (c5, c0, 1) holds the fault
+    // status. Both are read-only in this context and are valid after a prefetch abort.
     unsafe {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 2", out(reg) ifar); // IFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 1", out(reg) ifsr); // IFSR

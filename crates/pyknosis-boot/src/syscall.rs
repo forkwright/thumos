@@ -403,6 +403,8 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             // NOTE: voluntary yield  -  reschedule immediately
             let next = process::schedule();
             if next != process::current_pid() {
+                // SAFETY: next is a valid PID returned by schedule(), which only
+                // returns PIDs for processes in the READY state.
                 unsafe {
                     process::switch_to(next);
                 }
@@ -415,6 +417,10 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             None => u32::MAX, // NOTE: error indicator
         },
         Syscall::FreePage => {
+            // SAFETY: arg0 is a physical page address previously returned by
+            // alloc_page (syscall 4). The caller is responsible for not
+            // double-freeing. No pointer validation is needed because
+            // free_page operates on physical addresses managed by the allocator.
             unsafe {
                 crate::page::free_page(usize::try_from(arg0).unwrap_or_default());
             }
@@ -426,6 +432,8 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             // A proper implementation would block the process and wake on tick.
             let target = crate::exceptions::uptime_ms() + u64::try_from(arg0).unwrap_or_default();
             while crate::exceptions::uptime_ms() < target {
+                // SAFETY: WFE is a hint instruction available in all ARM privilege
+                // levels. No memory is accessed; the CPU waits for the next event.
                 unsafe {
                     core::arch::asm!("wfe");
                 }
@@ -452,7 +460,7 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             if ipc::send(to, msg) { 0 } else { u32::MAX }
         }
         Syscall::Recv => match ipc::recv() {
-            Some(msg) => u32::from(msg.FROM),
+            Some(msg) => u32::from(msg.from),
             None => u32::MAX,
         },
 
@@ -574,6 +582,9 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                 // OOM: roll back already-allocated pages for this brk call
                 for j in 0..i {
                     let rollback_vaddr = current + j * page::PAGE_SIZE;
+                    // SAFETY: pt is the current process's valid L1 table and
+                    // rollback_vaddr is page-aligned within the heap region.
+                    // These pages were successfully mapped in earlier iterations.
                     unsafe {
                         mmu::unmap_page(pt, rollback_vaddr);
                         // NOTE: we can't easily recover the physical address of
@@ -590,6 +601,8 @@ fn sys_brk(new_break_raw: u32) -> u32 {
             let ok = unsafe { mmu::map_page(pt, vaddr, phys, l2_attrs) };
             if !ok {
                 // Mapping failed (e.g., L2 pool exhausted) -- free the page
+                // SAFETY: phys was just returned by alloc_page() and has not
+                // been mapped (map_page failed), so it is safe to free.
                 unsafe { page::free_page(phys); }
                 return u32::try_from(current).unwrap_or_default();
             }
@@ -600,6 +613,9 @@ fn sys_brk(new_break_raw: u32) -> u32 {
         let pages_to_free = (current - new_break) / page::PAGE_SIZE;
         for i in 0..pages_to_free {
             let vaddr = new_break + i * page::PAGE_SIZE;
+            // SAFETY: pt is the current process's valid L1 table and vaddr is
+            // page-aligned within the currently mapped heap region.
+            // flush_tlb_page invalidates the TLB entry after the L2 entry is zeroed.
             unsafe {
                 mmu::unmap_page(pt, vaddr);
                 // NOTE: we don't have an easy way to get the physical address
@@ -698,6 +714,9 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             // OOM: roll back
             for j in 0..i {
                 let rollback_vaddr = candidate + j * page::PAGE_SIZE;
+                // SAFETY: pt is the current process's valid L1 table and
+                // rollback_vaddr is page-aligned within the mmap candidate region.
+                // These pages were successfully mapped in earlier iterations.
                 unsafe {
                     mmu::unmap_page(pt, rollback_vaddr);
                 }
@@ -705,12 +724,18 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             return MAP_FAILED;
         };
 
+        // SAFETY: pt is the current process's valid L1 table, vaddr is
+        // page-aligned within the anonymous mmap region, phys is freshly allocated.
         let ok = unsafe { mmu::map_page(pt, vaddr, phys, l2_attrs) };
         if !ok {
+            // SAFETY: phys was just returned by alloc_page() and has not been
+            // mapped (map_page failed), so it is safe to free.
             unsafe { page::free_page(phys); }
             // Roll back previous mappings
             for j in 0..i {
                 let rollback_vaddr = candidate + j * page::PAGE_SIZE;
+                // SAFETY: pt is the current process's valid L1 table and
+                // rollback_vaddr was successfully mapped in earlier iterations.
                 unsafe {
                     mmu::unmap_page(pt, rollback_vaddr);
                 }
@@ -729,6 +754,8 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         // Mapping table full -- roll back
         for i in 0..page_count {
             let vaddr = candidate + i * page::PAGE_SIZE;
+            // SAFETY: pt is the current process's valid L1 table and vaddr
+            // is page-aligned within the region just successfully mapped.
             unsafe {
                 mmu::unmap_page(pt, vaddr);
             }
@@ -758,6 +785,9 @@ fn sys_munmap(arg0: u32, arg1: u32) -> u32 {
     // Unmap all pages in the region
     for i in 0..mapping.pages {
         let vaddr = mapping.start + i * page::PAGE_SIZE;
+        // SAFETY: pt is the current process's valid L1 table, vaddr is
+        // page-aligned within the mapping returned by remove_mapping().
+        // flush_tlb_page invalidates the TLB entry after the L2 entry is zeroed.
         unsafe {
             mmu::unmap_page(pt, vaddr);
             mmu::flush_tlb_page(vaddr);
@@ -790,6 +820,9 @@ fn sys_mprotect(arg0: u32, arg1: u32, arg2: u32) -> u32 {
     // Update each page's protection bits in the page table
     for i in 0..mapping.pages {
         let vaddr = mapping.start + i * page::PAGE_SIZE;
+        // SAFETY: pt is the current process's valid L1 table, vaddr is
+        // page-aligned within the mapping returned by find_mapping().
+        // flush_tlb_page invalidates the TLB entry after the protection bits change.
         unsafe {
             mmu::update_page_prot(pt, vaddr, l2_attrs);
             mmu::flush_tlb_page(vaddr);

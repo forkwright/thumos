@@ -152,6 +152,9 @@ const STACK_PAGES: usize = 4;
 ///
 /// Must be called once during kernel init.
 pub unsafe fn init() {
+    // SAFETY: called once during kernel init before any other process code runs.
+    // PROCS and CURRENT are static mut; no concurrent access is possible at
+    // this point because the scheduler has not started yet.
     unsafe {
         let proc0 = Process {
             pid: 0,
@@ -174,6 +177,9 @@ pub unsafe fn init() {
 /// Create a new process that starts executing at `entry_point`.
 /// Returns the PID, or None if the process table is full or OOM.
 pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. addr_of_mut! is used throughout to avoid creating
+    // references to static mut globals, satisfying Rust's aliasing rules.
     unsafe {
         // Find a free slot
         let procs = &mut *addr_of_mut!(PROCS);
@@ -244,6 +250,9 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
 /// NOTE: unlike POSIX fork(), both parent and child continue FROM the next
 /// scheduler tick. The child inherits the parent's saved context exactly.
 pub fn fork() -> Option<Pid> {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. addr_of_mut! avoids intermediate references to static mut.
+    // Page table manipulation is safe because mmu functions validate their inputs.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
 
@@ -310,6 +319,8 @@ pub fn fork() -> Option<Pid> {
 /// Non-blocking wait for a child exit status.
 /// Returns Some(status) if the child is Dead, None if still running or not a child.
 pub fn waitpid(child_pid: Pid) -> Option<i32> {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
         let child = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref()?;
@@ -350,12 +361,15 @@ pub fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
 
     let msg = ipc::Message::new(tag, &payload);
 
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Temporarily mutating CURRENT to deliver the fault message
+    // with the faulting PID as sender; CURRENT is restored before returning.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         if let Some(ref mut proc) = procs[usize::try_from(faulting_pid).unwrap_or_default()] {
             proc.state = State::Dead;
         }
-        // WHY: ipc::send stamps msg.FROM = current_pid(); temporarily SET CURRENT
+        // WHY: ipc::send stamps msg.from = current_pid(); temporarily set CURRENT
         // to faulting_pid so the message arrives with the correct sender identity.
         let saved = CURRENT;
         CURRENT = faulting_pid;
@@ -367,6 +381,9 @@ pub fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
 /// Perform exit teardown without the diverging `-> !` signature.
 /// Marks the process Dead, reclaims its page table, and frees stack pages.
 pub(crate) fn exit_cleanup(status: i32) {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Page table and stack pages are reclaimed only after
+    // marking the process Dead; mmu::free_addr_space validates its input.
     unsafe {
         let cur = usize::try_from(CURRENT).unwrap_or_default();
         let procs = &mut *addr_of_mut!(PROCS);
@@ -397,6 +414,9 @@ pub(crate) fn exit_cleanup(status: i32) {
 pub fn exit_with_status(status: i32) -> ! {
     exit_cleanup(status);
     #[cfg(target_arch = "arm")]
+    // SAFETY: process has been marked Dead and its resources freed by
+    // exit_cleanup. Switching to the kernel address space and spinning on
+    // wfi is safe; this path never returns.
     unsafe {
         mmu::switch_addr_space(mmu::table_base());
         loop {
@@ -416,18 +436,22 @@ pub fn exit() -> ! {
 
 /// Get the current process ID.
 pub fn current_pid() -> Pid {
+    // SAFETY: CURRENT is a static mut Pid written only by the scheduler and
+    // notify_fault. Read is atomic on ARM (single word); no torn read possible.
     unsafe { CURRENT }
 }
 
 /// Simple round-robin scheduler. Called FROM the timer tick handler.
 /// Returns the PID to switch to (may be the same as current).
 pub fn schedule() -> Pid {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Read-only scan of PROCS via addr_of!; no mutation here.
     unsafe {
         let cur = usize::try_from(CURRENT).unwrap_or_default();
         // Round-robin: find next ready process after current
         let procs = &*core::ptr::addr_of!(PROCS);
-        for OFFSET in 1..MAX_PROCS {
-            let idx = (cur + OFFSET) % MAX_PROCS;
+        for offset in 1..MAX_PROCS {
+            let idx = (cur + offset) % MAX_PROCS;
             if let Some(ref proc) = procs[idx] {
                 if proc.state == State::Ready {
                     return proc.pid;
@@ -447,6 +471,9 @@ pub fn schedule() -> Pid {
 /// Must be called FROM the timer IRQ handler (in IRQ mode with
 /// interrupts disabled).
 pub unsafe fn switch_to(next_pid: Pid) {
+    // SAFETY: register state was saved by the exception handler. Stack pointer
+    // is valid for the target process. Called from the timer IRQ handler with
+    // interrupts disabled; no concurrent access to PROCS or CURRENT.
     unsafe {
         let cur_pid = usize::try_from(CURRENT).unwrap_or_default();
         let next = usize::try_from(next_pid).unwrap_or_default();
@@ -481,6 +508,9 @@ pub unsafe fn switch_to(next_pid: Pid) {
 #[inline(always)]
 unsafe fn save_context(ctx: &mut Context) {
     #[cfg(target_arch = "arm")]
+    // SAFETY: register state was saved by the exception handler. ctx points to
+    // the current process's Context within PROCS, which is valid for the
+    // duration of the IRQ handler. Offsets match the #[repr(C)] Context layout.
     unsafe {
         core::arch::asm!(
             "str r4, [{ctx}, #0]",
@@ -508,6 +538,9 @@ unsafe fn save_context(ctx: &mut Context) {
 #[inline(always)]
 unsafe fn restore_context(ctx: &Context) {
     #[cfg(target_arch = "arm")]
+    // SAFETY: register state was saved by the exception handler. Stack pointer
+    // is valid for the target process. ctx points to the next process's Context
+    // within PROCS; address space has already been switched via TTBR0.
     unsafe {
         core::arch::asm!(
             "ldr r4, [{ctx}, #0]",
@@ -539,6 +572,8 @@ unsafe fn restore_context(ctx: &Context) {
 /// Get the current process's page table physical address.
 /// Returns 0 if the current process is not found (should not happen).
 pub fn current_page_table() -> usize {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
         let cur = usize::try_from(CURRENT).unwrap_or_default();
@@ -548,6 +583,8 @@ pub fn current_page_table() -> usize {
 
 /// Get the current process's heap break.
 pub fn current_heap_break() -> usize {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
         let cur = usize::try_from(CURRENT).unwrap_or_default();
@@ -557,6 +594,9 @@ pub fn current_heap_break() -> usize {
 
 /// Set the current process's heap break.
 pub fn set_heap_break(new_break: usize) {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Mutation via addr_of_mut! avoids an intermediate
+    // reference to the static mut; called from syscall context (single-core).
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::try_from(CURRENT).unwrap_or_default();
@@ -569,6 +609,8 @@ pub fn set_heap_break(new_break: usize) {
 /// Find a free mapping slot in the current process and insert a new mapping.
 /// Returns the index on success, None if all slots are full.
 pub fn add_mapping(mapping: VmMapping) -> Option<usize> {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Mutation via addr_of_mut!; called from syscall context.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::try_from(CURRENT).unwrap_or_default();
@@ -582,6 +624,8 @@ pub fn add_mapping(mapping: VmMapping) -> Option<usize> {
 /// Remove a mapping that starts at the given address.
 /// Returns the removed mapping, or None if not found.
 pub fn remove_mapping(start_addr: usize) -> Option<VmMapping> {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Mutation via addr_of_mut!; called from syscall context.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::try_from(CURRENT).unwrap_or_default();
@@ -600,6 +644,8 @@ pub fn remove_mapping(start_addr: usize) -> Option<VmMapping> {
 /// Find a mapping that starts at the given address.
 /// Returns a copy of the mapping, or None if not found.
 pub fn find_mapping(start_addr: usize) -> Option<VmMapping> {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
         let cur = usize::try_from(CURRENT).unwrap_or_default();
@@ -618,6 +664,8 @@ pub fn find_mapping(start_addr: usize) -> Option<VmMapping> {
 /// Update the protection flags on an existing mapping.
 /// Returns true if the mapping was found and updated.
 pub fn update_mapping_prot(start_addr: usize, new_prot: u32) -> bool {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Mutation via addr_of_mut!; called from syscall context.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::try_from(CURRENT).unwrap_or_default();
@@ -637,6 +685,8 @@ pub fn update_mapping_prot(start_addr: usize, new_prot: u32) -> bool {
 /// Get a snapshot of all active mappings for the current process.
 /// Used by mmap to find free virtual address regions.
 pub fn current_mappings() -> [Option<VmMapping>; MAX_MAPPINGS] {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
         let cur = usize::try_from(CURRENT).unwrap_or_default();
@@ -655,6 +705,9 @@ pub fn current_mappings() -> [Option<VmMapping>; MAX_MAPPINGS] {
 /// Must only be called in test code. Invalidates all process state.
 #[cfg(test)]
 pub(crate) unsafe fn reset_for_test() {
+    // SAFETY: must only be called in test code. Invalidates all process state
+    // by zeroing PROCS and reinitialising with a fresh page table. No
+    // concurrent access is possible in single-threaded test execution.
     unsafe {
         let procs = &mut *core::ptr::addr_of_mut!(PROCS);
         for p in procs.iter_mut() {
@@ -711,6 +764,8 @@ mod tests {
 
     #[test]
     fn fork_creates_new_process() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
             // Construct a minimal process 0
@@ -738,6 +793,8 @@ mod tests {
 
     #[test]
     fn fork_assigns_separate_page_tables() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
@@ -766,6 +823,8 @@ mod tests {
 
     #[test]
     fn fork_child_has_correct_parent() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
@@ -793,6 +852,10 @@ mod tests {
 
     #[test]
     fn address_space_independence() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
+        // Page table pointer writes are to isolated test allocations verified
+        // to be distinct L1 tables.
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
@@ -827,6 +890,8 @@ mod tests {
 
     #[test]
     fn waitpid_returns_none_while_running() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
@@ -853,6 +918,8 @@ mod tests {
 
     #[test]
     fn waitpid_returns_status_when_dead() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
@@ -886,6 +953,8 @@ mod tests {
 
     #[test]
     fn exit_cleanup_marks_dead_and_reclaims_pages() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
@@ -923,6 +992,8 @@ mod tests {
 
     #[test]
     fn notify_fault_marks_process_dead() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
@@ -968,6 +1039,8 @@ mod tests {
 
     #[test]
     fn notify_fault_sends_to_pid0() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
@@ -1012,6 +1085,8 @@ mod tests {
 
     #[test]
     fn page_table_teardown_on_exit() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);

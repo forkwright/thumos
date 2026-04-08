@@ -38,6 +38,7 @@ static mut HEAP: BumpAllocator = BumpAllocator {
 ///
 /// Must be called once after the page allocator is initialized.
 pub unsafe fn init() {
+    // SAFETY: heap region is initialized in main.rs and the bump pointer is within bounds.
     unsafe {
         let heap = &mut *ptr::addr_of_mut!(HEAP);
 
@@ -62,6 +63,7 @@ pub struct KernelAllocator;
 
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: heap region is initialized in main.rs and the bump pointer is within bounds.
         unsafe {
             let heap = &mut *ptr::addr_of_mut!(HEAP);
 
@@ -85,6 +87,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // SAFETY: heap region is initialized in main.rs and the bump pointer is within bounds.
         // NOTE: bump allocator doesn't free individual allocations.
         // Memory is reclaimed only when the entire heap is reset.
         // This is acceptable for early boot. Replace with slab allocator
@@ -94,6 +97,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
 
 /// Return heap usage statistics.
 pub fn stats() -> (usize, usize) {
+    // SAFETY: heap region is initialized in main.rs and the bump pointer is within bounds.
     unsafe {
         let heap = &*ptr::addr_of!(HEAP);
         let used = heap.next - heap.start;

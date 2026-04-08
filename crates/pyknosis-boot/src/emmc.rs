@@ -514,10 +514,10 @@ impl MsdcController {
         }
     }
 
-    /// Absolute register address FROM OFFSET.
+    /// Absolute register address from offset.
     #[inline(always)]
-    fn reg(&self, OFFSET: usize) -> usize {
-        self.base + OFFSET
+    fn reg(&self, offset: usize) -> usize {
+        self.base + offset
     }
 
     // -- Register access helpers --
@@ -527,8 +527,9 @@ impl MsdcController {
     /// # Safety
     ///
     /// Caller must ensure the controller base is valid and mapped.
-    unsafe fn read_reg(&self, OFFSET: usize) -> u32 {
-        unsafe { mmio::read32(self.reg(OFFSET)) }
+    unsafe fn read_reg(&self, offset: usize) -> u32 {
+        // SAFETY: MSDC0 is a valid MMIO register block at 0x1123_0000 within the MSDC address space. Volatile access is required for hardware registers.
+        unsafe { mmio::read32(self.reg(offset)) }
     }
 
     /// Write a controller register.
@@ -536,8 +537,9 @@ impl MsdcController {
     /// # Safety
     ///
     /// Caller must ensure the controller base is valid and mapped.
-    unsafe fn write_reg(&self, OFFSET: usize, val: u32) {
-        unsafe { mmio::write32(self.reg(OFFSET), val) }
+    unsafe fn write_reg(&self, offset: usize, val: u32) {
+        // SAFETY: MSDC0 is a valid MMIO register block at 0x1123_0000 within the MSDC address space. Volatile access is required for hardware registers.
+        unsafe { mmio::write32(self.reg(offset), val) }
     }
 
     // -- Initialization --
@@ -559,6 +561,7 @@ impl MsdcController {
     /// Returns [`MsdcError::CommandTimeout`] if any init command fails.
     pub(crate) unsafe fn init(&mut self) -> Result<(), MsdcError> {
         // STEP 1: Verify card presence via MSDC_PS
+        // SAFETY: MSDC_PS is a valid MMIO register at offset 0x08 within the MSDC0 address space. The controller base is valid and mapped per caller contract.
         let ps = unsafe { self.read_reg(REG_MSDC_PS) };
         // NOTE: eMMC is soldered, CD pin should always read present.
         // On MT6739 the CD bit may be tied low. Check anyway for robustness.
@@ -567,36 +570,45 @@ impl MsdcController {
         }
 
         // STEP 2: Flush FIFOs
+        // SAFETY: MSDC_FIFOCS is a valid MMIO register at offset 0x14 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_FIFOCS, FIFOCS_CLR) };
 
         // STEP 3: Configure clock  -  use divisor 0x10 for initial low speed
         // Clock mode 0 (PLL / (divisor + 1)), 8-bit bus width
         let cfg = (0x00 << CFG_CKMOD_SHIFT) | (0x10 << CFG_CKDIV_SHIFT) | CFG_BUSWIDTH_8;
+        // SAFETY: MSDC_CFG is a valid MMIO register at offset 0x00 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_CFG, cfg) };
 
         // STEP 4: Clear all pending interrupts
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_INT, 0xFFFF_FFFF) };
 
         // STEP 5: Enable relevant interrupts
         let inten = INT_CMDRDY | INT_CMDTMO | INT_XFER_COMPL | INT_DATTMO | INT_DATCRCERR;
+        // SAFETY: MSDC_INTEN is a valid MMIO register at offset 0x10 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_INTEN, inten) };
 
         // STEP 6: eMMC init sequence
         // CMD0: GO_IDLE_STATE (no response)
+        // SAFETY: controller is powered and register block is mapped per caller contract.
         unsafe { self.send_command(CMD0_GO_IDLE, 0, CMD_RSPTYP_NONE)? };
 
         // CMD1: SEND_OP_COND (R3 response, no CRC)
         // Argument: sector addressing (bit 30), voltage window 0xFF8000
+        // SAFETY: controller is powered and register block is mapped per caller contract.
         unsafe { self.send_command(CMD1_SEND_OP_COND, 0x40FF_8000, CMD_RSPTYP_R3)? };
 
         // CMD3: SET_RELATIVE_ADDR (R1 response)
         // Assign RCA = 1
+        // SAFETY: controller is powered and register block is mapped per caller contract.
         unsafe { self.send_command(CMD3_SET_RELATIVE_ADDR, 0x0001_0000, CMD_RSPTYP_R1)? };
 
         // CMD7: SELECT_CARD (R1 response)
+        // SAFETY: controller is powered and register block is mapped per caller contract.
         unsafe { self.send_command(CMD7_SELECT_CARD, 0x0001_0000, CMD_RSPTYP_R1)? };
 
         // CMD16: SET_BLOCKLEN to 512 bytes
+        // SAFETY: controller is powered and register block is mapped per caller contract.
         unsafe { self.send_command(CMD16_SET_BLOCKLEN, u32::try_from(SECTOR_SIZE).unwrap_or_default(), CMD_RSPTYP_R1)? };
 
         self.initialized = true;
@@ -617,18 +629,22 @@ impl MsdcController {
     /// become idle within the poll timeout.
     unsafe fn send_command(&self, opcode: u32, arg: u32, rsptyp: u32) -> Result<(), MsdcError> {
         // Wait for command engine to be idle
+        // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_CMDBUSY, POLL_TIMEOUT) } {
             return Err(MsdcError::CommandTimeout);
         }
 
         // Write argument first, then command register
         // INVARIANT: SDC_ARG must be written before SDC_CMD per §8.3
+        // SAFETY: SDC_ARG is a valid MMIO register at offset 0x38 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_SDC_ARG, arg) };
 
         let cmd = (opcode & CMD_OPCODE_MASK) | rsptyp;
+        // SAFETY: SDC_CMD is a valid MMIO register at offset 0x34 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_SDC_CMD, cmd) };
 
         // Wait for command to complete
+        // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_CMDBUSY, POLL_TIMEOUT) } {
             return Err(MsdcError::CommandTimeout);
         }
@@ -654,6 +670,7 @@ impl MsdcController {
         block_count: u32,
     ) -> Result<(), MsdcError> {
         // Wait for both command and data engines
+        // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe {
             mmio::wait_bits_clear(
                 self.reg(REG_SDC_STS),
@@ -665,16 +682,20 @@ impl MsdcController {
         }
 
         // Set block count
+        // SAFETY: SDC_BLK_NUM is a valid MMIO register at offset 0x50 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_SDC_BLK_NUM, block_count) };
 
         // Write argument
+        // SAFETY: SDC_ARG is a valid MMIO register at offset 0x38 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_SDC_ARG, arg) };
 
         // Build command word with data type
         let cmd = (opcode & CMD_OPCODE_MASK) | rsptyp | dtype;
+        // SAFETY: SDC_CMD is a valid MMIO register at offset 0x34 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_SDC_CMD, cmd) };
 
         // Wait for command phase to complete
+        // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_CMDBUSY, POLL_TIMEOUT) } {
             return Err(MsdcError::CommandTimeout);
         }
@@ -705,9 +726,11 @@ impl MsdcController {
         );
 
         // Flush FIFO before read
+        // SAFETY: MSDC_FIFOCS is a valid MMIO register at offset 0x14 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_FIFOCS, FIFOCS_CLR) };
 
         // CMD17: READ_SINGLE_BLOCK, argument = LBA (sector addressing)
+        // SAFETY: controller is initialized and register block is mapped per debug_assert and caller contract.
         unsafe {
             self.send_data_command(CMD17_READ_SINGLE, lba, CMD_RSPTYP_R1, CMD_DTYPE_READ, 1)?;
         }
@@ -716,21 +739,25 @@ impl MsdcController {
         let buf_ptr = buf.as_mut_ptr().cast::<u32>();
         for i in 0..WORDS_PER_SECTOR {
             // Poll until FIFO has data (check dat busy clears for completion)
+            // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
             if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_DATBUSY, POLL_TIMEOUT) } {
                 // NOTE: datbusy stays SET until the full block is transferred,
                 // so we read word-by-word and only check at the end
             }
+            // SAFETY: MSDC_RXDATA is a valid MMIO register at offset 0x1C within the MSDC0 address space. Volatile access is required for hardware registers.
             let word = unsafe { self.read_reg(REG_MSDC_RXDATA) };
             // SAFETY: buf_ptr is valid for WORDS_PER_SECTOR u32 writes, i < WORDS_PER_SECTOR
             unsafe { buf_ptr.add(i).write_volatile(word) };
         }
 
         // Wait for transfer complete
+        // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_DATBUSY, POLL_TIMEOUT) } {
             return Err(MsdcError::DataTimeout);
         }
 
         // Clear transfer-complete interrupt
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_INT, INT_XFER_COMPL) };
 
         Ok(())
@@ -757,9 +784,11 @@ impl MsdcController {
         );
 
         // Flush FIFO before write
+        // SAFETY: MSDC_FIFOCS is a valid MMIO register at offset 0x14 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_FIFOCS, FIFOCS_CLR) };
 
         // CMD24: WRITE_SINGLE_BLOCK, argument = LBA
+        // SAFETY: controller is initialized and register block is mapped per debug_assert and caller contract.
         unsafe {
             self.send_data_command(CMD24_WRITE_SINGLE, lba, CMD_RSPTYP_R1, CMD_DTYPE_WRITE, 1)?;
         }
@@ -769,15 +798,18 @@ impl MsdcController {
         for i in 0..WORDS_PER_SECTOR {
             // SAFETY: buf_ptr is valid for WORDS_PER_SECTOR u32 reads, i < WORDS_PER_SECTOR
             let word = unsafe { buf_ptr.add(i).read_volatile() };
+            // SAFETY: MSDC_TXDATA is a valid MMIO register at offset 0x18 within the MSDC0 address space. Volatile access is required for hardware registers.
             unsafe { self.write_reg(REG_MSDC_TXDATA, word) };
         }
 
         // Wait for transfer complete
+        // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_DATBUSY, POLL_TIMEOUT) } {
             return Err(MsdcError::DataTimeout);
         }
 
         // Clear transfer-complete interrupt
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_INT, INT_XFER_COMPL) };
 
         Ok(())
@@ -817,31 +849,38 @@ impl MsdcController {
         };
 
         // Set up data command
+        // SAFETY: controller is initialized and register block is mapped per debug_assert and caller contract.
         unsafe {
             self.send_data_command(opcode, lba, CMD_RSPTYP_R1, CMD_DTYPE_READ, block_count)?;
         }
 
         // Write GPD chain physical address to MSDC_DMA_SA
+        // SAFETY: MSDC_DMA_SA is a valid MMIO register at offset 0x90 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_DMA_SA, gpd_phys) };
 
         // Start DMA in descriptor mode
+        // SAFETY: MSDC_DMA_CTRL is a valid MMIO register at offset 0x98 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_DMA_CTRL, DMA_CTRL_START | DMA_CTRL_MODE_DESC) };
 
         // Poll MSDC_DMA_CFG for completion (active bit clears)
+        // SAFETY: MSDC_DMA_CFG is a valid MMIO register at offset 0x9C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe {
             mmio::wait_bits_clear(self.reg(REG_MSDC_DMA_CFG), DMA_CFG_STS_ACTIVE, POLL_TIMEOUT)
         } {
             // Stop DMA on timeout
+            // SAFETY: MSDC_DMA_CTRL is a valid MMIO register at offset 0x98 within the MSDC0 address space. Volatile access is required for hardware registers.
             unsafe { mmio::set_bits(self.reg(REG_MSDC_DMA_CTRL), DMA_CTRL_STOP) };
             return Err(MsdcError::DmaTimeout);
         }
 
         // Wait for data engine idle
+        // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_DATBUSY, POLL_TIMEOUT) } {
             return Err(MsdcError::DataTimeout);
         }
 
         // Clear completion interrupt
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_INT, INT_XFER_COMPL | INT_DXFER_DONE) };
 
         Ok(())
@@ -874,30 +913,37 @@ impl MsdcController {
         };
 
         // Set up data command
+        // SAFETY: controller is initialized and register block is mapped per debug_assert and caller contract.
         unsafe {
             self.send_data_command(opcode, lba, CMD_RSPTYP_R1, CMD_DTYPE_WRITE, block_count)?;
         }
 
         // Write GPD chain physical address
+        // SAFETY: MSDC_DMA_SA is a valid MMIO register at offset 0x90 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_DMA_SA, gpd_phys) };
 
         // Start DMA in descriptor mode
+        // SAFETY: MSDC_DMA_CTRL is a valid MMIO register at offset 0x98 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_DMA_CTRL, DMA_CTRL_START | DMA_CTRL_MODE_DESC) };
 
         // Poll for DMA completion
+        // SAFETY: MSDC_DMA_CFG is a valid MMIO register at offset 0x9C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe {
             mmio::wait_bits_clear(self.reg(REG_MSDC_DMA_CFG), DMA_CFG_STS_ACTIVE, POLL_TIMEOUT)
         } {
+            // SAFETY: MSDC_DMA_CTRL is a valid MMIO register at offset 0x98 within the MSDC0 address space. Volatile access is required for hardware registers.
             unsafe { mmio::set_bits(self.reg(REG_MSDC_DMA_CTRL), DMA_CTRL_STOP) };
             return Err(MsdcError::DmaTimeout);
         }
 
         // Wait for data engine idle
+        // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_DATBUSY, POLL_TIMEOUT) } {
             return Err(MsdcError::DataTimeout);
         }
 
         // Clear completion interrupt
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_INT, INT_XFER_COMPL | INT_DXFER_DONE) };
 
         Ok(())
@@ -909,6 +955,7 @@ impl MsdcController {
     ///
     /// Only valid after a successful command with a non-empty response type.
     pub(crate) unsafe fn read_response(&self) -> u32 {
+        // SAFETY: SDC_RESP0 is a valid MMIO register at offset 0x40 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.read_reg(REG_SDC_RESP0) }
     }
 
@@ -918,6 +965,7 @@ impl MsdcController {
     ///
     /// Only valid after a successful R2-type command.
     pub(crate) unsafe fn read_response_128(&self) -> [u32; 4] {
+        // SAFETY: SDC_RESP0–3 are valid MMIO registers at offsets 0x40–0x4C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe {
             [
                 self.read_reg(REG_SDC_RESP0),
@@ -934,6 +982,7 @@ impl MsdcController {
     ///
     /// The controller register block must be mapped.
     pub(crate) unsafe fn interrupt_status(&self) -> u32 {
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.read_reg(REG_MSDC_INT) }
     }
 
@@ -943,6 +992,7 @@ impl MsdcController {
     ///
     /// The controller register block must be mapped.
     pub(crate) unsafe fn clear_interrupts(&self, bits: u32) {
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_INT, bits) };
     }
 
@@ -952,6 +1002,7 @@ impl MsdcController {
     ///
     /// The controller register block must be mapped.
     pub(crate) unsafe fn enable_interrupts(&self, bits: u32) {
+        // SAFETY: MSDC_INTEN is a valid MMIO register at offset 0x10 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { mmio::set_bits(self.reg(REG_MSDC_INTEN), bits) };
     }
 
@@ -961,6 +1012,7 @@ impl MsdcController {
     ///
     /// The controller register block must be mapped.
     pub(crate) unsafe fn disable_interrupts(&self, bits: u32) {
+        // SAFETY: MSDC_INTEN is a valid MMIO register at offset 0x10 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { mmio::clear_bits(self.reg(REG_MSDC_INTEN), bits) };
     }
 

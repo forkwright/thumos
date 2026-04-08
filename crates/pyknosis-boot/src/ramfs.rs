@@ -66,20 +66,20 @@ impl RamFs {
     /// This is the format used by Linux initramfs.
     pub fn from_cpio(data: &[u8]) -> Self {
         let mut fs = Self::new();
-        let mut OFFSET = 0;
+        let mut offset = 0;
 
-        while OFFSET + 110 <= data.len() {
+        while offset + 110 <= data.len() {
             // CPIO newc header: "070701" magic + fields
-            if &data[OFFSET..OFFSET + 6] != b"070701" {
+            if &data[offset..offset + 6] != b"070701" {
                 break;
             }
 
             // Parse header fields (hex ASCII)
-            let namesize = parse_hex(&data[OFFSET + 94..OFFSET + 102]) as usize;
-            let filesize = parse_hex(&data[OFFSET + 54..OFFSET + 62]) as usize;
+            let namesize = parse_hex(&data[offset + 94..offset + 102]) as usize;
+            let filesize = parse_hex(&data[offset + 54..offset + 62]) as usize;
 
             // Name starts after 110-byte header
-            let name_start = OFFSET + 110;
+            let name_start = offset + 110;
             let name_end = name_start + namesize - 1; // NOTE: -1 for null terminator
 
             if name_end > data.len() {
@@ -107,7 +107,7 @@ impl RamFs {
             }
 
             // Next entry starts after data, aligned to 4 bytes
-            OFFSET = align4(data_end);
+            offset = align4(data_end);
         }
 
         fs

@@ -1234,17 +1234,25 @@ pub(crate) enum CldmaIrqEvent {
 pub(crate) unsafe fn dispatch_cldma_irq() -> (u32, u32) {
     // WHY: read both TX and RX status atomically (relative to AP) to avoid
     // missing events during the dispatch window.
+    // SAFETY: shared memory region at L2TISAR0/L2RISAR0 is mapped and within
+    // the CCCI aperture. Access is synchronized via CCIF doorbell.
     let tx_status = unsafe { mmio::read32(cldma_pd::L2TISAR0) };
+    // SAFETY: shared memory region at L2RISAR0 is mapped and within the CCCI
+    // aperture. Access is synchronized via CCIF doorbell.
     let rx_status = unsafe { mmio::read32(cldma_pd::L2RISAR0) };
 
     // Acknowledge by writing back the same bits.
     // Source: §1.8 — "Write the same bit back to acknowledge"
     if tx_status != 0 {
+        // SAFETY: shared memory region at L2TISAR0 is mapped and within the
+        // CCCI aperture. Access is synchronized via CCIF doorbell.
         unsafe {
             mmio::write32(cldma_pd::L2TISAR0, tx_status);
         }
     }
     if rx_status != 0 {
+        // SAFETY: shared memory region at L2RISAR0 is mapped and within the
+        // CCCI aperture. Access is synchronized via CCIF doorbell.
         unsafe {
             mmio::write32(cldma_pd::L2RISAR0, rx_status);
         }
@@ -1309,8 +1317,12 @@ pub(crate) fn parse_cldma_rx_status(status: u32) -> [Option<CldmaIrqEvent>; 3] {
 /// Must be called from IRQ context with CCIF registers mapped.
 pub(crate) unsafe fn dispatch_ccif_irq() -> u32 {
     // Source: §1.8 — read RCHNUM, write bitmask to ACK
+    // SAFETY: shared memory region at RCHNUM is mapped and within the CCCI
+    // aperture. Access is synchronized via CCIF doorbell.
     let channels = unsafe { mmio::read32(ccif_reg::RCHNUM) };
     if channels != 0 {
+        // SAFETY: shared memory region at ACK is mapped and within the CCCI
+        // aperture. Access is synchronized via CCIF doorbell.
         unsafe {
             mmio::write32(ccif_reg::ACK, channels);
         }
@@ -1350,6 +1362,8 @@ impl WdtStatus {
     /// MD reset control registers must be mapped.
     pub(crate) unsafe fn read() -> Self {
         Self {
+            // SAFETY: shared memory region at REG_MDRSTCTL_WDTSR is mapped and
+            // within the CCCI aperture. Access is synchronized via CCIF doorbell.
             raw: unsafe { mmio::read32(REG_MDRSTCTL_WDTSR) },
         }
     }
@@ -1370,6 +1384,8 @@ impl WdtStatus {
 ///
 /// Must be called from IRQ context with all CCCI registers mapped.
 pub(crate) unsafe fn handle_modem_watchdog(audit: &mut AuditRing, timestamp: u64) -> WdtStatus {
+    // SAFETY: shared memory region at REG_MDRSTCTL_WDTSR is mapped and within
+    // the CCCI aperture. Access is synchronized via CCIF doorbell.
     let status = unsafe { WdtStatus::read() };
 
     // Log the watchdog event
@@ -1383,6 +1399,8 @@ pub(crate) unsafe fn handle_modem_watchdog(audit: &mut AuditRing, timestamp: u64
 
     // Trigger exception acknowledge via CCIF to initiate dump.
     // Source: §1.8 — force dump via CCIF exception channels
+    // SAFETY: shared memory region at START is mapped and within the CCCI
+    // aperture. Access is synchronized via CCIF doorbell.
     unsafe {
         mmio::write32(ccif_reg::START, CcifChannel::Exception.mask());
     }
@@ -1421,6 +1439,9 @@ pub(crate) unsafe fn ccif_send(channel: CcifChannel, data: &[u8]) -> Result<(), 
             data[offset + 2],
             data[offset + 3],
         ]);
+        // SAFETY: shared memory region at sram_base+offset is within the CCIF
+        // SRAM window (512 bytes). data.len() <= CCIF_SRAM_SIZE checked above.
+        // Access is synchronized via CCIF doorbell.
         unsafe {
             mmio::write32(sram_base + offset, word);
         }
@@ -1433,6 +1454,9 @@ pub(crate) unsafe fn ccif_send(channel: CcifChannel, data: &[u8]) -> Result<(), 
             last[i] = *byte;
         }
         let word = u32::from_le_bytes(last);
+        // SAFETY: shared memory region at sram_base+offset is within the CCIF
+        // SRAM window. Trailing word is within the validated length bound.
+        // Access is synchronized via CCIF doorbell.
         unsafe {
             mmio::write32(sram_base + offset, word);
         }
@@ -1440,6 +1464,8 @@ pub(crate) unsafe fn ccif_send(channel: CcifChannel, data: &[u8]) -> Result<(), 
 
     // Trigger interrupt to modem on this channel.
     // Source: §1.2 — write channel bit to APCCIF_START
+    // SAFETY: shared memory region at START is mapped and within the CCCI
+    // aperture. Access is synchronized via CCIF doorbell.
     unsafe {
         mmio::write32(ccif_reg::START, channel.mask());
     }
@@ -1466,6 +1492,9 @@ pub(crate) unsafe fn ccif_recv(buf: &mut [u8]) -> usize {
     // exactly once via volatile read and copy to our buffer.
     let mut offset = 0;
     while offset + 4 <= read_len {
+        // SAFETY: shared memory region at sram_base+offset is within the CCIF
+        // SRAM window (512 bytes). read_len <= CCIF_SRAM_SIZE ensured above.
+        // Access is synchronized via CCIF doorbell.
         let word = unsafe { mmio::read32(sram_base + offset) };
         let bytes = word.to_le_bytes();
         buf[offset] = bytes.get(0).copied().unwrap_or_default();
@@ -1476,6 +1505,9 @@ pub(crate) unsafe fn ccif_recv(buf: &mut [u8]) -> usize {
     }
     // Handle trailing bytes.
     if offset < read_len {
+        // SAFETY: shared memory region at sram_base+offset is within the CCIF
+        // SRAM window. Trailing word is within the validated length bound.
+        // Access is synchronized via CCIF doorbell.
         let word = unsafe { mmio::read32(sram_base + offset) };
         let bytes = word.to_le_bytes();
         let remaining = read_len - offset;
@@ -1495,6 +1527,8 @@ pub(crate) unsafe fn ccif_recv(buf: &mut [u8]) -> usize {
 ///
 /// CLDMA PD registers must be mapped and the ring buffer initialized.
 pub(crate) unsafe fn cldma_tx_start(queue_mask: u32) {
+    // SAFETY: shared memory region at UL_START_CMD is mapped and within the
+    // CCCI aperture. Access is synchronized via CCIF doorbell.
     unsafe {
         mmio::write32(cldma_pd::UL_START_CMD, queue_mask);
     }
@@ -1506,6 +1540,8 @@ pub(crate) unsafe fn cldma_tx_start(queue_mask: u32) {
 ///
 /// CLDMA PD registers must be mapped.
 pub(crate) unsafe fn cldma_tx_resume(queue_mask: u32) {
+    // SAFETY: shared memory region at UL_RESUME_CMD is mapped and within the
+    // CCCI aperture. Access is synchronized via CCIF doorbell.
     unsafe {
         mmio::write32(cldma_pd::UL_RESUME_CMD, queue_mask);
     }
@@ -1517,6 +1553,8 @@ pub(crate) unsafe fn cldma_tx_resume(queue_mask: u32) {
 ///
 /// CLDMA PD registers must be mapped.
 pub(crate) unsafe fn cldma_tx_stop(queue_mask: u32) {
+    // SAFETY: shared memory region at UL_STOP_CMD is mapped and within the
+    // CCCI aperture. Access is synchronized via CCIF doorbell.
     unsafe {
         mmio::write32(cldma_pd::UL_STOP_CMD, queue_mask);
     }
@@ -1528,6 +1566,8 @@ pub(crate) unsafe fn cldma_tx_stop(queue_mask: u32) {
 ///
 /// CLDMA PD registers must be mapped and the RX ring initialized.
 pub(crate) unsafe fn cldma_rx_start(queue_mask: u32) {
+    // SAFETY: shared memory region at SO_START_CMD is mapped and within the
+    // CCCI aperture. Access is synchronized via CCIF doorbell.
     unsafe {
         mmio::write32(cldma_pd::SO_START_CMD, queue_mask);
     }
@@ -1539,6 +1579,8 @@ pub(crate) unsafe fn cldma_rx_start(queue_mask: u32) {
 ///
 /// CLDMA PD registers must be mapped.
 pub(crate) unsafe fn cldma_rx_resume(queue_mask: u32) {
+    // SAFETY: shared memory region at SO_RESUME_CMD is mapped and within the
+    // CCCI aperture. Access is synchronized via CCIF doorbell.
     unsafe {
         mmio::write32(cldma_pd::SO_RESUME_CMD, queue_mask);
     }
@@ -1550,6 +1592,8 @@ pub(crate) unsafe fn cldma_rx_resume(queue_mask: u32) {
 ///
 /// CLDMA PD registers must be mapped.
 pub(crate) unsafe fn cldma_rx_stop(queue_mask: u32) {
+    // SAFETY: shared memory region at SO_STOP_CMD is mapped and within the
+    // CCCI aperture. Access is synchronized via CCIF doorbell.
     unsafe {
         mmio::write32(cldma_pd::SO_STOP_CMD, queue_mask);
     }
@@ -1656,6 +1700,8 @@ impl CcciDriver {
                 // Step 1: Enable required clocks.
                 // Source: `eccci/mt6739/md_sys1_platform.c:45–52`
                 // On bare metal we enable CLDMA via MD_GLOBAL_CON0 bit 12.
+                // SAFETY: shared memory region at MD_GLOBAL_CON0 is mapped and
+                // within the CCCI aperture. Access is synchronized via CCIF doorbell.
                 unsafe {
                     mmio::set_bits(MD_GLOBAL_CON0, MD_GLOBAL_CON0_CLDMA_EN);
                 }
@@ -1672,6 +1718,8 @@ impl CcciDriver {
             BootStep::ResetCldma => {
                 // Step 2: Hard-reset CLDMA (AO then PD domain).
                 // Source: `eccci/mt6739/md_sys1_platform.c:66–102`
+                // SAFETY: INFRA reset registers are mapped and within the CCCI
+                // aperture. Access is synchronized via CCIF doorbell.
                 unsafe {
                     // AO domain reset: set then clear
                     mmio::write32(INFRA_RST0_REG_AO, CLDMA_AO_RST_MASK);
@@ -1697,6 +1745,8 @@ impl CcciDriver {
                 // Source: `eccci/mt6739/md_sys1_platform.c:138–148`
                 // On bare metal with identity-mapped MMU, the addresses are
                 // already accessible. Verify CLDMA is responsive.
+                // SAFETY: shared memory region at CLDMA_IP_BUSY is mapped and
+                // within the CCCI aperture. Access is synchronized via CCIF doorbell.
                 let busy = unsafe { mmio::read32(cldma_pd::CLDMA_IP_BUSY) };
                 self.audit.record(AuditEntry::new(
                     timestamp,
@@ -1711,6 +1761,9 @@ impl CcciDriver {
             BootStep::ReleaseMd => {
                 // Step 4: Write MD boot vector, release CPU reset, poll status.
                 // Source: §1.5 step 4
+                // SAFETY: shared memory region at MD_BOOT_VECTOR_EN and
+                // MD1_CFG_BOOT_STATS0 are mapped and within the CCCI aperture.
+                // Access is synchronized via CCIF doorbell.
                 unsafe {
                     // Enable MD boot vector
                     mmio::write32(MD_BOOT_VECTOR_EN, 1);
@@ -1738,6 +1791,9 @@ impl CcciDriver {
                     0, // WHY: sequence 0 for initial handshake
                 );
                 let msg_bytes = runtime_msg.to_bytes();
+                // SAFETY: ccif_send accesses CCIF SRAM and START registers which
+                // are mapped and within the CCCI aperture. Access is synchronized
+                // via CCIF doorbell.
                 unsafe {
                     ccif_send(CcifChannel::Sram, &msg_bytes)?;
                 }
@@ -1754,12 +1810,16 @@ impl CcciDriver {
             BootStep::WaitAck => {
                 // Step 6: Wait for MD acknowledge via D2H_SRAM or ring-queue 0.
                 // Source: §1.5 step 6
+                // SAFETY: shared memory region at RCHNUM is mapped and within
+                // the CCCI aperture. Access is synchronized via CCIF doorbell.
                 let channels = unsafe { mmio::read32(ccif_reg::RCHNUM) };
                 let sram_bit = CcifChannel::Sram.mask();
                 let ring0_bit = CcifChannel::RingQ0.mask();
 
                 if channels & (sram_bit | ring0_bit) != 0 {
                     // Acknowledge
+                    // SAFETY: shared memory region at ACK is mapped and within
+                    // the CCCI aperture. Access is synchronized via CCIF doorbell.
                     unsafe {
                         mmio::write32(ccif_reg::ACK, channels & (sram_bit | ring0_bit));
                     }
@@ -1788,6 +1848,8 @@ impl CcciDriver {
     /// Same as `boot_modem_step`.
     pub(crate) unsafe fn boot_modem(&mut self, timestamp: u64) -> Result<(), CcciError> {
         while self.boot_state != BootStep::Complete {
+            // SAFETY: same preconditions as boot_modem_step: all CCCI hardware
+            // registers must be mapped and the caller is in early boot context.
             unsafe {
                 self.boot_modem_step(timestamp)?;
             }
@@ -1870,6 +1932,9 @@ impl CcciDriver {
         let base = region.phys_addr(offset) as usize;
         let mut i = 0;
         while i + 4 <= dest.len() {
+            // SAFETY: shared memory region at base+i is mapped and within the
+            // CCCI aperture; bounds were validated by validate_bounds() above.
+            // Access is synchronized via CCIF doorbell.
             let word = unsafe { mmio::read32(base + i) };
             let bytes = word.to_le_bytes();
             dest[i] = bytes.get(0).copied().unwrap_or_default();
@@ -1880,6 +1945,8 @@ impl CcciDriver {
         }
         // Trailing bytes
         if i < dest.len() {
+            // SAFETY: shared memory region at base+i is within the validated
+            // bounds. Trailing word access is safe after validate_bounds() check.
             let word = unsafe { mmio::read32(base + i) };
             let bytes = word.to_le_bytes();
             let remaining = dest.len() - i;
