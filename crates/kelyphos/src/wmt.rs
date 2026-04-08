@@ -822,7 +822,10 @@ impl<R: RegisterIo> WmtManager<R> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic)]
+#[expect(
+    clippy::expect_used,
+    reason = "test code — expect_err on Results is intentional for verifying error conditions"
+)]
 mod tests {
     use super::*;
     use std::collections::HashMap;

@@ -174,35 +174,36 @@ mod tests {
     }
 
     #[test]
-    fn test_select_no_known_networks() {
+    fn selects_nothing_when_no_known_networks() {
         let scans = vec![make_scan(b"HomeNet", [0u8; 6], -60)];
         let config = NetworkConfig::new();
-        assert!(select_network(&scans, &config).is_none());
+        assert!(select_network(&scans, &config).is_none(), "must return None when config has no networks");
     }
 
     #[test]
-    fn test_select_no_matching_scan() {
+    fn selects_nothing_when_no_scan_matches_configured_network() {
         let scans = vec![make_scan(b"Neighbour", [0u8; 6], -55)];
         let mut config = NetworkConfig::new();
         config.add(make_network(b"HomeNet", 0));
-        assert!(select_network(&scans, &config).is_none());
+        assert!(select_network(&scans, &config).is_none(), "must return None when no scan result matches the configured SSID");
     }
 
     #[test]
-    fn test_select_single_match() {
+    fn selects_single_matching_network() {
         let scans = vec![make_scan(b"HomeNet", [0u8; 6], -70)];
         let mut config = NetworkConfig::new();
         config.add(make_network(b"HomeNet", 0));
         let result = select_network(&scans, &config);
-        assert!(result.is_some());
+        assert!(result.is_some(), "must return a network when SSID matches");
         assert_eq!(
             result.map(|n| n.ssid.as_slice()),
-            Some(b"HomeNet".as_slice())
+            Some(b"HomeNet".as_slice()),
+            "selected network SSID must match"
         );
     }
 
     #[test]
-    fn test_select_strongest_signal_when_equal_priority() {
+    fn selects_network_with_strongest_signal_when_priority_is_equal() {
         let bssid_a = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x01];
         let bssid_b = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02];
         let scans = vec![
@@ -213,13 +214,13 @@ mod tests {
         config.add(make_network(b"Corp", 5));
 
         let result = select_network(&scans, &config);
-        assert!(result.is_some());
+        assert!(result.is_some(), "must return a network when SSID matches");
         // Both scan entries match the same configured entry.
-        assert_eq!(result.map(|n| n.ssid.as_slice()), Some(b"Corp".as_slice()));
+        assert_eq!(result.map(|n| n.ssid.as_slice()), Some(b"Corp".as_slice()), "selected SSID must be Corp");
     }
 
     #[test]
-    fn test_select_higher_priority_wins_over_signal() {
+    fn selects_higher_priority_network_over_stronger_signal() {
         let scans = vec![
             make_scan(b"NetA", [0x01; 6], -40),
             make_scan(b"NetB", [0x02; 6], -80),
@@ -228,12 +229,12 @@ mod tests {
         config.add(make_network(b"NetA", 1)); // better signal, lower priority
         config.add(make_network(b"NetB", 10)); // weaker signal, higher priority
         let result = select_network(&scans, &config);
-        assert!(result.is_some());
-        assert_eq!(result.map(|n| n.ssid.as_slice()), Some(b"NetB".as_slice()));
+        assert!(result.is_some(), "must return a network when SSIDs match");
+        assert_eq!(result.map(|n| n.ssid.as_slice()), Some(b"NetB".as_slice()), "higher-priority network must win over stronger signal");
     }
 
     #[test]
-    fn test_select_bssid_filter_exact_match() {
+    fn selects_only_the_bssid_filtered_ap() {
         let target = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01];
         let other = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x02];
         let scans = vec![
@@ -249,12 +250,12 @@ mod tests {
             priority: 0,
         });
         let result = select_network(&scans, &config);
-        assert!(result.is_some());
-        assert_eq!(result.map(|n| n.bssid), Some(Some(target)));
+        assert!(result.is_some(), "must return a result when target BSSID is present");
+        assert_eq!(result.map(|n| n.bssid), Some(Some(target)), "selected BSSID must be the exact target");
     }
 
     #[test]
-    fn test_select_bssid_filter_no_match() {
+    fn selects_nothing_when_bssid_filter_has_no_match() {
         let wanted = [0xaa; 6];
         let present = [0xbb; 6];
         let scans = vec![make_scan(b"Net", present, -50)];
@@ -266,36 +267,36 @@ mod tests {
             security: SecurityType::Open,
             priority: 0,
         });
-        assert!(select_network(&scans, &config).is_none());
+        assert!(select_network(&scans, &config).is_none(), "must return None when BSSID filter does not match any scan result");
     }
 
     #[test]
-    fn test_connection_state_default_is_disconnected() {
+    fn connection_state_defaults_to_disconnected() {
         let state = ConnectionState::default();
-        assert_eq!(state, ConnectionState::Disconnected);
+        assert_eq!(state, ConnectionState::Disconnected, "default ConnectionState must be Disconnected");
     }
 
     #[test]
-    fn test_connection_state_variants_distinct() {
+    fn connection_state_variants_are_all_distinct() {
         use ConnectionState::*;
         let states = [Disconnected, Authenticating, Associated, Connected, Failed];
         for (i, s) in states.iter().enumerate() {
             for (j, t) in states.iter().enumerate() {
                 if i == j {
-                    assert_eq!(s, t);
+                    assert_eq!(s, t, "state {s:?} must equal itself");
                 } else {
-                    assert_ne!(s, t);
+                    assert_ne!(s, t, "state {s:?} must not equal {t:?}");
                 }
             }
         }
     }
 
     #[test]
-    fn test_network_config_add_and_count() {
+    fn network_config_tracks_added_networks() {
         let mut config = NetworkConfig::new();
-        assert!(config.networks.is_empty());
+        assert!(config.networks.is_empty(), "new config must have no networks");
         config.add(make_network(b"A", 0));
         config.add(make_network(b"B", 1));
-        assert_eq!(config.networks.len(), 2);
+        assert_eq!(config.networks.len(), 2, "config must contain exactly two networks after two adds");
     }
 }
