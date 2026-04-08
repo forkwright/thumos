@@ -124,12 +124,12 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
     // Process program headers
     for i in 0..phnum {
         let offset = phoff + i * phentsize;
-        if OFFSET + phentsize > data.len() {
+        if offset + phentsize > data.len() {
             return Err(ElfError::InvalidSegment);
         }
 
         let phdr: Elf32Phdr =
-            unsafe { core::ptr::read_unaligned(data.as_ptr().add(OFFSET).cast()) };
+            unsafe { core::ptr::read_unaligned(data.as_ptr().add(offset).cast()) };
 
         if phdr.p_type != PT_LOAD {
             continue;
