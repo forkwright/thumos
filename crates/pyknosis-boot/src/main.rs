@@ -12,6 +12,7 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 
 mod ccci;
+mod capability;
 #[cfg(not(test))]
 mod console;
 mod csprng;
@@ -25,6 +26,7 @@ mod emmc;
 #[cfg(not(test))]
 mod exceptions;
 mod fd;
+mod futex;
 #[cfg(not(test))]
 mod gic;
 #[cfg(not(test))]
@@ -39,6 +41,7 @@ mod mmio;
 #[cfg(not(test))]
 mod mmu;
 mod page;
+mod pipe;
 mod power;
 #[cfg(not(test))]
 mod process;

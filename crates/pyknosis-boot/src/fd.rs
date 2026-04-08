@@ -164,7 +164,7 @@ impl FdTable {
 /// one process uses filesystem syscalls at a time in the cooperative scheduler.
 ///
 /// TODO(#32): migrate to per-process fd tables when Process struct supports it.
-static mut FD_TABLE: FdTable = FdTable::new();
+pub(crate) static mut FD_TABLE: FdTable = FdTable::new();
 
 /// Global ramfs instance.
 ///
