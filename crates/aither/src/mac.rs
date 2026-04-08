@@ -53,7 +53,7 @@ pub(crate) const PKT_TYPE_CMD: u8 = 1;
 /// HIF TX header (`HIF_TX_HEADER_T`, 16 bytes).
 ///
 /// Source: `connectivity/wlan/gen2/include/nic/hif_tx.h`
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct HifTxHeader {
     /// Total TX packet byte length (bits [15:0] of word 0).
     pub(crate) packet_len: u16,
@@ -126,7 +126,7 @@ impl HifTxHeader {
                 have: buf.len(),
             }
         );
-        let packet_len = u16::from_le_bytes([buf.get(0).copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default()]);
+        let packet_len = u16::from_le_bytes([buf.first().copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default()]);
         let word1_lo = buf.get(2).copied().unwrap_or_default();
         let packet_type = word1_lo & 0x03;
         let user_priority = (word1_lo >> 2) & 0x07;
@@ -152,7 +152,7 @@ pub(crate) const RX_HEADER_SIZE: usize = 12;
 /// HIF RX header (`HIF_RX_HEADER_T`, 12 bytes).
 ///
 /// Source: `connectivity/wlan/gen2/include/nic/hif_rx.h`
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct HifRxHeader {
     /// RX packet byte length (bits [15:0] of word 0).
     pub(crate) packet_len: u16,
@@ -186,7 +186,7 @@ impl HifRxHeader {
                 have: buf.len(),
             }
         );
-        let packet_len = u16::from_le_bytes([buf.get(0).copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default()]);
+        let packet_len = u16::from_le_bytes([buf.first().copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default()]);
         let packet_type = buf.get(2).copied().unwrap_or_default();
         let network_index = buf.get(3).copied().unwrap_or_default() & 0x0f;
         let tid = buf.get(4).copied().unwrap_or_default() & 0x0f;
@@ -231,11 +231,12 @@ impl HifRxHeader {
 /// `WiFi` firmware command IDs.
 ///
 /// Source: `connectivity/wlan/gen2/include/nic_cmd_event.h`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 #[repr(u8)]
 pub(crate) enum CommandId {
     /// Query firmware chip info.
+    #[default]
     GetChipInfo = 0x01,
     /// Initiate a scan.
     ScanReq = 0x20,
@@ -247,14 +248,25 @@ pub(crate) enum CommandId {
     AccessReg = 0x60,
 }
 
+impl CommandId {
+    /// Return the on-wire u8 discriminant.
+    ///
+    /// WHY: `#[repr(u8)]` guarantees the discriminant fits u8; this avoids
+    /// a bare `as u8` cast while remaining const-stable.
+    pub(crate) const fn to_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 /// `WiFi` firmware event IDs.
 ///
 /// Source: `connectivity/wlan/gen2/include/nic_cmd_event.h`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 #[repr(u8)]
 pub(crate) enum EventId {
     /// Command result (pass/fail).
+    #[default]
     CmdResult = 0x01,
     /// Scan complete.
     ScanDone = 0x22,
@@ -268,7 +280,7 @@ pub(crate) enum EventId {
 pub(crate) const CMD_HEADER_SIZE: usize = 4;
 
 /// A `WiFi` firmware command (`WIFI_CMD_T`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WifiCommand {
     /// Command ID.
     pub(crate) cid: CommandId,
@@ -308,7 +320,7 @@ impl WifiCommand {
         let total_len = CMD_HEADER_SIZE + self.payload.len();
         let len_u16 = u16::try_from(total_len).unwrap_or(u16::MAX);
         let mut out = Vec::with_capacity(total_len);
-        out.push(self.cid as u8);
+        out.push(self.cid.to_u8());
         out.push(self.seq_num);
         out.extend_from_slice(&len_u16.to_le_bytes());
         out.extend_from_slice(&self.payload);
@@ -317,7 +329,7 @@ impl WifiCommand {
 }
 
 /// A `WiFi` firmware event (`WIFI_EVENT_T`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct WifiEvent {
     /// Event ID.
     pub(crate) eid: EventId,
@@ -354,9 +366,9 @@ impl WifiEvent {
                 have: buf.len(),
             }
         );
-        let eid = event_id_from_byte(buf.get(0).copied().unwrap_or_default())?;
+        let eid = event_id_from_byte(buf.first().copied().unwrap_or_default())?;
         let seq_num = buf.get(1).copied().unwrap_or_default();
-        let declared_len = u16::from_le_bytes([buf.get(2).copied().unwrap_or_default(), buf.get(3).copied().unwrap_or_default()]) as usize;
+        let declared_len = usize::from(u16::from_le_bytes([buf.get(2).copied().unwrap_or_default(), buf.get(3).copied().unwrap_or_default()]));
         ensure!(
             buf.len() >= declared_len,
             EventTooShortSnafu {
@@ -399,6 +411,16 @@ pub(crate) enum ScanType {
     Prohibited = 2,
 }
 
+impl ScanType {
+    /// Return the on-wire u8 discriminant.
+    ///
+    /// WHY: `#[repr(u8)]` guarantees the discriminant fits u8; this avoids
+    /// a bare `as u8` cast while remaining const-stable.
+    pub(crate) const fn to_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 /// Scan SSID type for `ucSSIDType` in `CMD_SCAN_REQ_T`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -407,6 +429,16 @@ pub(crate) enum SsidType {
     Wildcard = 0,
     /// Directed probe  -  include the specified SSID IE.
     Specified = 1,
+}
+
+impl SsidType {
+    /// Return the on-wire u8 discriminant.
+    ///
+    /// WHY: `#[repr(u8)]` guarantees the discriminant fits u8; this avoids
+    /// a bare `as u8` cast while remaining const-stable.
+    pub(crate) const fn to_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 /// A scan request ready to be encoded INTO `CMD_SCAN_REQ_T` payload.
@@ -455,8 +487,8 @@ impl ScanRequest {
         let ssid = self.ssid.as_deref().unwrap_or(&[]);
         let ssid_len = u8::try_from(ssid.len()).unwrap_or(u8::MAX);
         let mut out = Vec::with_capacity(3 + ssid.len());
-        out.push(self.scan_type as u8);
-        out.push(self.ssid_type as u8);
+        out.push(self.scan_type.to_u8());
+        out.push(self.ssid_type.to_u8());
         out.push(ssid_len);
         out.extend_from_slice(ssid);
         out
@@ -473,7 +505,7 @@ const SCAN_RESULT_MIN_SIZE: usize = 11;
 /// A parsed BSS scan result FROM the `EVENT_ID_SCAN_RESULT` event payload.
 ///
 /// Corresponds to `BSS_DESC_T` fields: BSSID, SSID, RSSI, channel, security.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct BssScanResult {
     /// BSSID (access point MAC address).
     pub(crate) bssid: [u8; 6],
@@ -507,16 +539,12 @@ impl BssScanResult {
         // SAFETY: ensure above guarantees buf.len() >= 11 > 6
         bssid.copy_from_slice(&buf[..6]);
         // WHY: raw RSSI byte FROM firmware is a signed 8-bit value in two's
-        // complement; cast_signed() is the safe Rust 1.87+ idiom.
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "RSSI is a signed 8-bit firmware value in two's complement"
-        )]
-        let rssi_dbm = buf.get(6).copied().unwrap_or_default() as i8;
+        // complement; cast_signed() is the Rust 1.87+ safe reinterpret idiom.
+        let rssi_dbm = buf.get(6).copied().unwrap_or_default().cast_signed();
         let channel = buf.get(7).copied().unwrap_or_default();
         let flags = buf.get(8).copied().unwrap_or_default();
         let has_rsn = flags & 0x01 != 0;
-        let ssid_len = buf.get(9).copied().unwrap_or_default() as usize;
+        let ssid_len = usize::from(buf.get(9).copied().unwrap_or_default());
         let ssid_end = 10 + ssid_len;
         ensure!(
             buf.len() >= ssid_end,
@@ -595,7 +623,7 @@ impl AssocState {
 // ---------------------------------------------------------------------------
 
 /// A 6-byte IEEE 802.11 MAC address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct MacAddress(pub(crate) [u8; 6]);
 
 impl MacAddress {
@@ -774,7 +802,7 @@ impl WiFiMacDriver {
         // high 2 bytes. We write the low word here via ACCESS_REG. Callers must
         // issue a follow-up ACCESS_REG write for the high 2 bytes (seq_num+1).
         let mac = self.current_mac.0;
-        let low32 = u32::from_le_bytes([mac.get(0).copied().unwrap_or_default(), mac.get(1).copied().unwrap_or_default(), mac.get(2).copied().unwrap_or_default(), mac.get(3).copied().unwrap_or_default()]);
+        let low32 = u32::from_le_bytes([mac.first().copied().unwrap_or_default(), mac.get(1).copied().unwrap_or_default(), mac.get(2).copied().unwrap_or_default(), mac.get(3).copied().unwrap_or_default()]);
         // NOTE: MCR_WASR (0x0020) is used as the representative MAC low register;
         // exact register is firmware-version-specific.
         let _ = self.hif_base;
@@ -844,6 +872,23 @@ impl WiFiMacDriver {
     }
 }
 
+impl Default for WiFiMacDriver {
+    /// Produces a zero-address driver instance.
+    ///
+    /// WHY: used only as the fallback value in `Result::unwrap_or_default`
+    /// inside tests. The all-zeros MAC is not valid for real connections but
+    /// is acceptable as an inert placeholder — the real path never reaches
+    /// this default in a working environment.
+    fn default() -> Self {
+        Self {
+            rng: SystemRandom::new(),
+            current_mac: MacAddress([0u8; 6]),
+            hif_base: 0,
+            assoc_state: AssocState::Idle,
+        }
+    }
+}
+
 /// Offset of the MAC low-word register used by `CMD_ID_ACCESS_REG` writes.
 ///
 /// NOTE: Matches `MCR_WASR` (WLAN async status register, 0x0020) which doubles
@@ -861,7 +906,7 @@ mod tests {
     // --- TX descriptor encoding/decoding ---
 
     #[test]
-    fn test_tx_header_data_encode_decode_roundtrip() {
+    fn tx_header_data_roundtrips_through_encode_decode() {
         let hdr = HifTxHeader::data(1500, 4, 2);
         let encoded = hdr.encode();
         assert_eq!(
@@ -886,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tx_header_command_encode_decode_roundtrip() {
+    fn tx_header_command_roundtrips_through_encode_decode() {
         let hdr = HifTxHeader::command(64);
         let encoded = hdr.encode();
         let decoded = HifTxHeader::decode(&encoded).unwrap_or_default();
@@ -898,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tx_header_decode_too_short() {
+    fn tx_header_decode_rejects_short_buffer() {
         let short = [0u8; 8];
         let result = HifTxHeader::decode(&short);
         assert!(
@@ -910,7 +955,7 @@ mod tests {
     // --- RX descriptor encoding/decoding ---
 
     #[test]
-    fn test_rx_header_encode_decode_roundtrip() {
+    fn rx_header_roundtrips_through_encode_decode() {
         let hdr = HifRxHeader {
             packet_len: 800,
             packet_type: 0,
@@ -941,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rx_header_decode_too_short() {
+    fn rx_header_decode_rejects_short_buffer() {
         let short = [0u8; 5];
         let result = HifRxHeader::decode(&short);
         assert!(
@@ -953,26 +998,26 @@ mod tests {
     // --- Command framing ---
 
     #[test]
-    fn test_command_encode_no_payload() {
+    fn command_encodes_header_only_when_no_payload() {
         let cmd = WifiCommand::new(CommandId::GetChipInfo, 1);
         let encoded = cmd.encode();
-        assert_eq!(encoded.get(0).copied().unwrap_or_default(), 0x01, "first byte must be command ID");
+        assert_eq!(encoded.first().copied().unwrap_or_default(), 0x01, "first byte must be command ID");
         assert_eq!(encoded.get(1).copied().unwrap_or_default(), 1, "second byte must be seq_num");
         let len = u16::from_le_bytes([encoded.get(2).copied().unwrap_or_default(), encoded.get(3).copied().unwrap_or_default()]);
         assert_eq!(
-            usize::try_from(len).unwrap_or_default(), CMD_HEADER_SIZE,
+            usize::from(len), CMD_HEADER_SIZE,
             "length must include header only"
         );
     }
 
     #[test]
-    fn test_command_encode_with_payload() {
+    fn command_appends_payload_bytes_after_header() {
         let payload = vec![0xaa, 0xbb, 0xcc];
         let cmd = WifiCommand::with_payload(CommandId::ScanReq, 7, payload.clone());
         let encoded = cmd.encode();
-        assert_eq!(encoded.get(0).copied().unwrap_or_default(), 0x20, "command ID must be ScanReq");
+        assert_eq!(encoded.first().copied().unwrap_or_default(), 0x20, "command ID must be ScanReq");
         assert_eq!(encoded.get(1).copied().unwrap_or_default(), 7, "seq_num must be 7");
-        let len = u16::from_le_bytes([encoded.get(2).copied().unwrap_or_default(), encoded.get(3).copied().unwrap_or_default()]) as usize;
+        let len = usize::from(u16::from_le_bytes([encoded.get(2).copied().unwrap_or_default(), encoded.get(3).copied().unwrap_or_default()]));
         assert_eq!(
             len,
             CMD_HEADER_SIZE + payload.len(),
@@ -988,19 +1033,15 @@ mod tests {
     // --- Scan result parsing ---
 
     #[test]
-    fn test_scan_result_decode_valid() {
+    fn scan_result_decodes_all_fields_correctly() {
         let bssid = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
         let ssid = b"TestNet";
         let mut buf = Vec::new();
         buf.extend_from_slice(&bssid);
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "test: literal -70i8 encoded as two's complement for wire format"
-        )]
-        buf.push((-70i8) as u8);
+        buf.push((-70_i8).to_ne_bytes()[0]); // -70 dBm in two's complement
         buf.push(11); // channel
         buf.push(0x01); // flags: has_rsn=1
-        buf.push(ssid.len() as u8);
+        buf.push(u8::try_from(ssid.len()).unwrap_or(u8::MAX));
         buf.extend_from_slice(ssid);
         let result = BssScanResult::decode(&buf).unwrap_or_default();
         assert_eq!(result.bssid, bssid, "BSSID must match");
@@ -1011,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_result_decode_too_short() {
+    fn scan_result_decode_rejects_short_buffer() {
         let buf = [0u8; 5];
         let result = BssScanResult::decode(&buf);
         assert!(
@@ -1023,7 +1064,7 @@ mod tests {
     // --- MAC randomization validity ---
 
     #[test]
-    fn test_mac_locally_administered_bit_set() {
+    fn generated_mac_always_has_locally_administered_bit_set() {
         let rng = SystemRandom::new();
         for _ in 0..20 {
             let mac = MacAddress::generate_random(&rng).unwrap_or_default();
@@ -1035,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mac_multicast_bit_clear() {
+    fn generated_mac_always_has_multicast_bit_clear() {
         let rng = SystemRandom::new();
         for _ in 0..20 {
             let mac = MacAddress::generate_random(&rng).unwrap_or_default();
@@ -1047,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mac_randomness_across_calls() {
+    fn generated_macs_are_independently_valid() {
         // NOTE: Probability of collision is 2^{-46}  -  negligible.
         let rng = SystemRandom::new();
         let mac_a = MacAddress::generate_random(&rng).unwrap_or_default();
@@ -1067,7 +1108,7 @@ mod tests {
     // --- Passive scan default ---
 
     #[test]
-    fn test_passive_scan_default() {
+    fn passive_scan_request_encodes_correctly() {
         let req = ScanRequest::passive();
         assert_eq!(
             req.scan_type,
@@ -1081,14 +1122,14 @@ mod tests {
         );
         let encoded = req.encode();
         assert_eq!(
-            encoded.get(0).copied().unwrap_or_default(),
-            ScanType::u8::try_from(Passive).unwrap_or_default(),
+            encoded.first().copied().unwrap_or_default(),
+            ScanType::Passive.to_u8(),
             "encoded scan_type must be passive (1)"
         );
     }
 
     #[test]
-    fn test_directed_active_scan() {
+    fn directed_active_scan_encodes_ssid_correctly() {
         let ssid = b"HiddenNet".to_vec();
         let req = ScanRequest::directed_active(ssid.clone());
         assert_eq!(
@@ -1103,12 +1144,12 @@ mod tests {
         );
         let encoded = req.encode();
         assert_eq!(
-            encoded.get(0).copied().unwrap_or_default(),
-            ScanType::u8::try_from(Active).unwrap_or_default(),
+            encoded.first().copied().unwrap_or_default(),
+            ScanType::Active.to_u8(),
             "encoded type must be active (0)"
         );
         assert_eq!(
-            encoded.get(2).copied().unwrap_or_default() as usize,
+            usize::from(encoded.get(2).copied().unwrap_or_default()),
             ssid.len(),
             "encoded ssid_len must match"
         );
@@ -1118,7 +1159,7 @@ mod tests {
     // --- Association state transitions ---
 
     #[test]
-    fn test_assoc_state_full_sequence() {
+    fn assoc_state_advances_through_full_sequence() {
         let expected = [
             AssocState::SendAuth1,
             AssocState::WaitAuth2,
@@ -1143,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assoc_state_is_associated_only_at_resource() {
+    fn only_resource_state_reports_as_associated() {
         let non_terminal = [
             AssocState::Idle,
             AssocState::SendAuth1,
@@ -1168,7 +1209,7 @@ mod tests {
     // --- WiFiMacDriver integration ---
 
     #[test]
-    fn test_driver_initial_mac_valid() {
+    fn driver_initial_mac_is_locally_administered_unicast() {
         let driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
         let mac = driver.mac_address();
         assert!(
@@ -1179,7 +1220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_driver_set_mac_address_produces_access_reg_command() {
+    fn set_mac_address_produces_access_reg_command() {
         let mut driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
         let cmd = driver
             .set_mac_address(3)
@@ -1196,13 +1237,13 @@ mod tests {
             "payload must be exactly {ACCESS_REG_PAYLOAD_SIZE} bytes"
         );
         assert_eq!(
-            cmd.payload.get(0).copied().unwrap_or_default(), ACCESS_REG_WRITE,
+            cmd.payload.first().copied().unwrap_or_default(), ACCESS_REG_WRITE,
             "operation byte must be write"
         );
     }
 
     #[test]
-    fn test_driver_assoc_state_machine_advances() {
+    fn driver_assoc_state_advances_and_resets_correctly() {
         let mut driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
         assert_eq!(driver.assoc_state(), AssocState::Idle, "must start Idle");
         driver.advance_assoc();
@@ -1220,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn test_driver_ptk_derivation_uses_randomized_mac() {
+    fn driver_ptk_derivation_binds_to_current_randomized_mac() {
         let driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
         let pmk = [0x11u8; PMK_LEN];
         let anonce = [0xaau8; 32];
@@ -1236,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_decode_cmd_result() {
+    fn event_decodes_cmd_result_correctly() {
         // eid=0x01, seq=5, length=4 (header only, little-endian)
         let buf = [0x01u8, 0x05, 0x04, 0x00];
         let evt = WifiEvent::decode(&buf).unwrap_or_default();
@@ -1249,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_decode_unknown_eid() {
+    fn event_decode_rejects_unknown_event_id() {
         let buf = [0xffu8, 0x01, 0x04, 0x00];
         let result = WifiEvent::decode(&buf);
         assert!(
@@ -1259,7 +1300,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_type_default_is_passive() {
+    fn scan_type_defaults_to_passive() {
         let default_type = ScanType::default();
         assert_eq!(
             default_type,

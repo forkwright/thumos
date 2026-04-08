@@ -16,7 +16,7 @@ pub const CHAR_HEIGHT: u32 = 16;
 
 const FONT_FIRST: u32 = 0x20; // space
 const FONT_LAST: u32 = 0x7E; // tilde
-const FONT_CHAR_COUNT: usize = (FONT_LAST - FONT_FIRST + 1) as usize; // 95
+const FONT_CHAR_COUNT: usize = (FONT_LAST - FONT_FIRST + 1) as usize; // 95: const context — TryFrom not yet const-stable
 
 /// Bitmap font data: 95 glyphs, 16 rows each, 8 pixels wide.
 ///
@@ -225,6 +225,7 @@ pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg:
     if !(FONT_FIRST..=FONT_LAST).contains(&code) {
         return;
     }
+    // code - FONT_FIRST is 0..=94, always fits in usize
     let glyph = &FONT_DATA[(code - FONT_FIRST) as usize];
     for (row, &byte) in glyph.iter().enumerate() {
         for col in 0u8..8 {
@@ -248,7 +249,7 @@ pub fn draw_str(fb: &mut Framebuffer, x: u32, y: u32, s: &str, fg: Rgb565, bg: R
 
 /// Return the pixel width of a string rendered with this font.
 pub fn str_pixel_width(s: &str) -> u32 {
-    s.chars().count() as u32 * CHAR_WIDTH
+    u32::try_from(s.chars().count()).unwrap_or(u32::MAX) * CHAR_WIDTH
 }
 
 #[cfg(test)]
@@ -304,6 +305,7 @@ mod tests {
         let mut fb = Framebuffer::new(240, 16);
         draw_str(&mut fb, 0, 0, "Hi", Rgb565::WHITE, Rgb565::BLACK);
         let bytes = fb.as_bytes();
+        // u32 → usize: framebuffer width fits on any supported platform
         let row_stride = fb.width() as usize * 2; // bytes per row
 
         // Scan columns 0-7 across all rows for 'H' pixels

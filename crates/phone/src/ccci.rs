@@ -34,10 +34,11 @@ pub const HEADER_SIZE: usize = 16;
 /// Maps directly to the kernel `CCCI_*_RX/TX` enum defined in
 /// `eccci/inc/ccci_core.h:46`. Each value equals the raw channel number
 /// placed in the header's `channel` field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum CcciChannel {
     /// Modem control handshake, AP-receive direction.
+    #[default]
     ControlRx,
     /// Modem control handshake, AP-transmit direction.
     ControlTx,
@@ -175,7 +176,7 @@ impl TryFrom<u32> for CcciChannel {
 /// message, not user data.
 ///
 /// Source: `eccci/inc/ccci_core.h:33`, `docs/DRIVER-INTERFACES.md §1.6`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CcciHeader {
     /// Channel-specific words. `data[0] == CCCI_MAGIC_NUM` signals a control
     /// message; for data channels `data[0]` carries the packet length.
@@ -224,7 +225,7 @@ impl CcciHeader {
                 ),
             }
         );
-        let data0 = u32::from_le_bytes([buf.get(0).copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default(), buf.get(2).copied().unwrap_or_default(), buf.get(3).copied().unwrap_or_default()]);
+        let data0 = u32::from_le_bytes([buf.first().copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default(), buf.get(2).copied().unwrap_or_default(), buf.get(3).copied().unwrap_or_default()]);
         let data1 = u32::from_le_bytes([buf.get(4).copied().unwrap_or_default(), buf.get(5).copied().unwrap_or_default(), buf.get(6).copied().unwrap_or_default(), buf.get(7).copied().unwrap_or_default()]);
         let channel = u32::from_le_bytes([buf.get(8).copied().unwrap_or_default(), buf.get(9).copied().unwrap_or_default(), buf.get(10).copied().unwrap_or_default(), buf.get(11).copied().unwrap_or_default()]);
         let reserved = u32::from_le_bytes([buf.get(12).copied().unwrap_or_default(), buf.get(13).copied().unwrap_or_default(), buf.get(14).copied().unwrap_or_default(), buf.get(15).copied().unwrap_or_default()]);
@@ -243,7 +244,7 @@ impl CcciHeader {
 }
 
 /// A complete CCCI message: 16-byte header plus variable-length payload.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CcciMessage {
     /// Parsed header.
     pub header: CcciHeader,
@@ -284,7 +285,6 @@ impl CcciMessage {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "test assertions")]
 mod tests {
     use super::*;
 
