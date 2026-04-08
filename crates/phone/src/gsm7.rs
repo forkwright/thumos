@@ -63,7 +63,10 @@ fn char_to_septet(c: char) -> Option<(bool, u8)> {
     // NOTE: 0x1B (ESC) is never returned for user characters.
     for (septet, &table_char) in GSM_TO_UNICODE.iter().enumerate() {
         if table_char == c && septet != 0x1B {
-            return Some((false, u8::try_from(septet).unwrap_or_default()));
+            // INVARIANT: septet is bounded by GSM_TO_UNICODE.len() (128), always fits in u8.
+            if let Ok(code) = u8::try_from(septet) {
+                return Some((false, code));
+            }
         }
     }
     None
@@ -77,7 +80,7 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
     // First pass: collect the septet sequence.
     let mut septets: Vec<u8> = Vec::with_capacity(text.len());
     for c in text.chars() {
-        let cp = u32::try_from(c).unwrap_or_default();
+        let cp = u32::from(c);
         let (is_ext, code) =
             char_to_septet(c).ok_or(crate::error::Error::Gsm7Encode { codepoint: cp })?;
         if is_ext {
@@ -98,13 +101,12 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
         let byte_index = bit_offset / 8;
         let bit_shift = bit_offset % 8;
         let val = u16::from(septet) << bit_shift;
-        // SAFETY: byte_index < byte_len by construction of byte_len.
-        result[byte_index] |= u8::try_from(val).unwrap_or_default();
-        let high = (val >> 8) as u8;
-        if high != 0
+        let [lo, hi] = val.to_le_bytes();
+        result[byte_index] |= lo;
+        if hi != 0
             && let Some(slot) = result.get_mut(byte_index + 1)
         {
-            *slot |= high;
+            *slot |= hi;
         }
     }
     Ok(result)
@@ -141,7 +143,7 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
         let b1 = u16::from(data.get(byte_index + 1).copied().unwrap_or(0));
 
         // NOTE: when bit_shift == 0, (8 - bit_shift) == 8; u16 << 8 is valid.
-        let septet = (((b0 >> bit_shift) | (b1 << (8 - bit_shift))) & 0x7F) as u8;
+        let septet = (((b0 >> bit_shift) | (b1 << (8 - bit_shift))) & 0x7F).to_le_bytes()[0];
         i += 1;
 
         if pending_ext {
@@ -175,7 +177,7 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "test assertions")]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

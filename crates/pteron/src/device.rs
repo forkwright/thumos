@@ -223,8 +223,11 @@ mod tests {
             1,
             "only the device last seen at epoch should be stale"
         );
+        let Some(stale_device) = stale.first() else {
+            unreachable!("stale vec is non-empty");
+        };
         assert_eq!(
-            stale.get(0).copied().unwrap_or_default().address.to_string(),
+            stale_device.address.to_string(),
             "AA:BB:CC:DD:EE:01",
             "the stale device should be the one with the ancient timestamp"
         );

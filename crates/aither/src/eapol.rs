@@ -183,7 +183,7 @@ pub fn parse(data: &[u8]) -> Result<EapolFrame, Error> {
         }
     );
 
-    let version = data.get(0).copied().unwrap_or_default();
+    let version = data.first().copied().unwrap_or_default();
     let packet_type = EapolType::from_byte(data.get(1).copied().unwrap_or_default())?;
     let body_len = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]) as usize;
     let total = EAPOL_HEADER_LEN + body_len;
@@ -226,7 +226,7 @@ fn parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, Error> {
     );
 
     // Safe: all offsets guaranteed by the ensure above.
-    let descriptor_type = body.get(0).copied().unwrap_or_default();
+    let descriptor_type = body.first().copied().unwrap_or_default();
     let key_info = KeyInfo(u16::from_be_bytes([body.get(1).copied().unwrap_or_default(), body.get(2).copied().unwrap_or_default()]));
     let key_length = u16::from_be_bytes([body.get(3).copied().unwrap_or_default(), body.get(4).copied().unwrap_or_default()]);
 

@@ -117,7 +117,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// `"AA:BB:CC:DD:EE:FF"` colon-separated notation.  When constructing
 /// FROM raw HCI packet bytes (which are transmitted LSB-first), reverse
 /// the byte array before calling [`BdAddr::from_bytes`].
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
 pub struct BdAddr([u8; BD_ADDR_LEN]);
 
 /// HCI command to send to the controller.
@@ -185,7 +185,7 @@ pub enum HciCommand {
 }
 
 /// A device discovered during a classic Bluetooth inquiry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct InquiryDevice {
     /// Bluetooth device address.
@@ -386,9 +386,9 @@ fn build_command_parts(cmd: &HciCommand) -> (u16, Vec<u8>) {
             let wv = scan_window.to_le_bytes();
             let params = vec![
                 *scan_type,
-                iv.get(0).copied().unwrap_or_default(),
+                iv.first().copied().unwrap_or_default(),
                 iv.get(1).copied().unwrap_or_default(),
-                wv.get(0).copied().unwrap_or_default(),
+                wv.first().copied().unwrap_or_default(),
                 wv.get(1).copied().unwrap_or_default(),
                 *own_address_type,
                 *filter_policy,
@@ -435,7 +435,7 @@ pub fn decode_event(data: &[u8]) -> Result<HciEvent> {
         });
     }
 
-    let h4_type = data.get(0).copied().unwrap_or_default();
+    let h4_type = data.first().copied().unwrap_or_default();
     if h4_type != H4_EVENT_TYPE {
         return Err(Error::UnexpectedPacketType {
             expected: H4_EVENT_TYPE,
@@ -524,7 +524,7 @@ fn decode_inquiry_result(params: &[u8]) -> Result<HciEvent> {
             addr_bytes.get(3).copied().unwrap_or_default(),
             addr_bytes.get(2).copied().unwrap_or_default(),
             addr_bytes.get(1).copied().unwrap_or_default(),
-            addr_bytes.get(0).copied().unwrap_or_default(),
+            addr_bytes.first().copied().unwrap_or_default(),
         ]);
 
         // Class of Device: 3 bytes at OFFSET 9, little-endian
@@ -535,7 +535,7 @@ fn decode_inquiry_result(params: &[u8]) -> Result<HciEvent> {
                 detail: "InquiryResult: CoD truncated",
             })?;
         let class_of_device =
-            u32::from(cod.get(0).copied().unwrap_or_default()) | (u32::from(cod.get(1).copied().unwrap_or_default()) << 8) | (u32::from(cod.get(2).copied().unwrap_or_default()) << 16);
+            u32::from(cod.first().copied().unwrap_or_default()) | (u32::from(cod.get(1).copied().unwrap_or_default()) << 8) | (u32::from(cod.get(2).copied().unwrap_or_default()) << 16);
 
         // Clock Offset: 2 bytes at OFFSET 12, little-endian
         let clk_base = base + INQUIRY_ENTRY_CLOCK_OFFSET;
@@ -544,7 +544,7 @@ fn decode_inquiry_result(params: &[u8]) -> Result<HciEvent> {
             .ok_or(Error::MalformedEvent {
                 detail: "InquiryResult: clock_offset truncated",
             })?;
-        let clock_offset = u16::from(clk.get(0).copied().unwrap_or_default()) | (u16::from(clk.get(1).copied().unwrap_or_default()) << 8);
+        let clock_offset = u16::from(clk.first().copied().unwrap_or_default()) | (u16::from(clk.get(1).copied().unwrap_or_default()) << 8);
 
         devices.push(InquiryDevice {
             address,
@@ -823,12 +823,12 @@ mod tests {
         };
         assert_eq!(devices.len(), 1, "should have exactly one inquiry device");
         assert_eq!(
-            devices.get(0).copied().unwrap_or_default().address.to_string(),
+            devices.first().cloned().unwrap_or_default().address.to_string(),
             "01:02:03:04:05:06",
             "address should be in display ORDER (MSB first)"
         );
         assert_eq!(
-            devices.get(0).copied().unwrap_or_default().class_of_device, 0x00_24_04_08,
+            devices.first().cloned().unwrap_or_default().class_of_device, 0x00_24_04_08,
             "CoD should be decoded FROM little-endian bytes"
         );
         Ok(())
