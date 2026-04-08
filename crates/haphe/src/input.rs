@@ -204,13 +204,15 @@ impl T9Input {
             return None;
         }
 
-        if self.len > 0 && self.keys[self.len - 1] == key as u8 {
+        // SAFETY: Key is #[repr(u8)], so the discriminant always fits in u8.
+        let key_discriminant = key as u8;
+        if self.len > 0 && self.keys[self.len - 1] == key_discriminant {
             // Same key pressed again  -  cycle through characters
             self.candidate = (self.candidate + 1) % chars.len();
         } else {
             // New key  -  commit previous and start new character
             if self.len < 32 {
-                self.keys[self.len] = key as u8;
+                self.keys[self.len] = key_discriminant;
                 self.len += 1;
             }
             self.candidate = 0;

@@ -35,6 +35,7 @@ impl Rgb565 {
 
     /// Convert 24-bit `RGB888` to `RGB565` by truncating the least significant bits.
     pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+        // u8 → u16: always a widening, never truncates. `From` is not yet const-stable.
         let r5 = (r >> RED_SHIFT_RIGHT) as u16;
         let g6 = (g >> GREEN_SHIFT_RIGHT) as u16;
         let b5 = (b >> BLUE_SHIFT_RIGHT) as u16;

@@ -127,6 +127,7 @@ mod tests {
         StatusBar::draw(&mut fb, 4, 100, "23:59");
         // Rows below STATUS_BAR_HEIGHT must remain black (all zeros).
         let bytes = fb.as_bytes();
+        // u32 → usize: framebuffer dimensions fit on any supported platform
         let row_bytes = fb.width() as usize * 2;
         let bar_end = STATUS_BAR_HEIGHT as usize * row_bytes;
         let below = &bytes[bar_end..];
@@ -141,6 +142,7 @@ mod tests {
         let mut fb = Framebuffer::new(240, 320);
         StatusBar::draw(&mut fb, 4, 100, "12:00");
         let bytes = fb.as_bytes();
+        // u32 → usize: framebuffer dimensions fit on any supported platform
         let row_bytes = fb.width() as usize * 2;
         let bar_area = &bytes[..STATUS_BAR_HEIGHT as usize * row_bytes];
         let any_set = bar_area.iter().any(|&b| b != 0);
