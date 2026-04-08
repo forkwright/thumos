@@ -47,6 +47,14 @@ impl From<u8> for FrameType {
     }
 }
 
+impl From<FrameType> for u8 {
+    fn from(ft: FrameType) -> Self {
+        // WHY: repr(u8) guarantees the discriminant fits in u8; as is the only
+        // way to extract it in a From impl and does not truncate.
+        ft as Self
+    }
+}
+
 /// STP frame header.
 #[derive(Debug, Clone, Copy)]
 pub struct StpHeader {
@@ -131,11 +139,14 @@ impl StpFrame {
         pos += 1;
 
         // Header (4 bytes)
-        let h0 = ((self.header.frame_type as u8) << 4)
+        let h0 = (u8::from(self.header.frame_type) << 4)
             | (if self.header.ack { 0x08 } else { 0 })
             | ((self.header.seq & 0x07) >> 1);
-        let h1 = ((self.header.seq & 0x01) << 7) | ((self.header.length >> 5) as u8 & 0x7F);
-        let h2 = ((self.header.length & 0x1F) << 3) as u8;
+        // WHY: length is 12 bits (0..=4095); shifting by 5 gives at most 7 bits — fits in u8.
+        let h1 = ((self.header.seq & 0x01) << 7)
+            | ((self.header.length >> 5).to_le_bytes()[0] & 0x7F);
+        // WHY: length & 0x1F is 5 bits; shifting left 3 gives at most 8 bits — fits in u8.
+        let h2 = ((self.header.length & 0x1F) << 3).to_le_bytes()[0];
         let h3 = self.header.checksum;
 
         buf[pos] = h0;
@@ -149,8 +160,9 @@ impl StpFrame {
         pos += self.payload_len;
 
         // CRC (big-endian)
-        buf[pos] = (self.crc >> 8) as u8;
-        buf[pos + 1] = (self.crc & 0xFF) as u8;
+        let crc_be = self.crc.to_be_bytes();
+        buf[pos] = crc_be[0];
+        buf[pos + 1] = crc_be[1];
         pos += 2;
 
         pos
@@ -165,10 +177,15 @@ impl Default for StpFrame {
 
 /// Compute header checksum (XOR of header bytes).
 const fn compute_header_checksum(hdr: StpHeader) -> u8 {
-    let h0 =
-        ((hdr.frame_type as u8) << 4) | (if hdr.ack { 0x08 } else { 0 }) | ((hdr.seq & 0x07) >> 1);
-    let h1 = ((hdr.seq & 0x01) << 7) | ((hdr.length >> 5) as u8 & 0x7F);
-    let h2 = ((hdr.length & 0x1F) << 3) as u8;
+    // WHY: repr(u8) cast is the only option in a const fn; From::from is not const-stable.
+    // FrameType is #[repr(u8)], so the discriminant always fits in u8 — no truncation risk.
+    let ft_byte = hdr.frame_type as u8;
+    let h0 = (ft_byte << 4) | (if hdr.ack { 0x08 } else { 0 }) | ((hdr.seq & 0x07) >> 1);
+    // WHY: length is 12 bits (0..=4095). >> 5 yields ≤7 bits; to_le_bytes()[0] is the
+    // safe byte-extraction idiom and is const-stable since Rust 1.52.
+    let h1 = ((hdr.seq & 0x01) << 7) | (hdr.length >> 5).to_le_bytes()[0] & 0x7F;
+    // WHY: length & 0x1F yields 5 bits; << 3 yields ≤8 bits — always fits in u8.
+    let h2 = ((hdr.length & 0x1F) << 3).to_le_bytes()[0];
     h0 ^ h1 ^ h2
 }
 
@@ -178,11 +195,14 @@ fn compute_crc(frame: &StpFrame) -> u16 {
 
     // CRC over header bytes (excluding checksum)
     let header_bytes = [
-        ((frame.header.frame_type as u8) << 4)
+        (u8::from(frame.header.frame_type) << 4)
             | (if frame.header.ack { 0x08 } else { 0 })
             | ((frame.header.seq & 0x07) >> 1),
-        ((frame.header.seq & 0x01) << 7) | ((frame.header.length >> 5) as u8 & 0x7F),
-        ((frame.header.length & 0x1F) << 3) as u8,
+        // WHY: length is 12 bits; >> 5 yields ≤7 bits; to_le_bytes()[0] extracts safely.
+        ((frame.header.seq & 0x01) << 7)
+            | (frame.header.length >> 5).to_le_bytes()[0] & 0x7F,
+        // WHY: length & 0x1F is 5 bits; << 3 yields ≤8 bits — to_le_bytes()[0] is safe.
+        ((frame.header.length & 0x1F) << 3).to_le_bytes()[0],
     ];
 
     for &byte in &header_bytes {
@@ -200,6 +220,8 @@ fn compute_crc(frame: &StpFrame) -> u16 {
 /// `CRC-16` CCITT UPDATE for one byte.
 const fn crc16_ccitt_byte(crc: u16, byte: u8) -> u16 {
     let mut crc = crc;
+    // WHY: u8 → u16 is infallible widening; u16::from is not const-stable, so as u16 is used.
+    // No truncation is possible — u8 always fits in u16.
     let data = byte as u16;
     crc = crc.rotate_right(8);
     crc ^= data;
@@ -231,11 +253,15 @@ mod tests {
 
     #[test]
     fn frame_type_conversion() {
-        assert_eq!(FrameType::from(0), FrameType::Data);
-        assert_eq!(FrameType::from(1), FrameType::Mgmt);
-        assert_eq!(FrameType::from(2), FrameType::Ack);
-        assert_eq!(FrameType::from(3), FrameType::FwDownload);
-        assert_eq!(FrameType::from(15), FrameType::Unknown);
+        assert_eq!(FrameType::from(0), FrameType::Data, "value 0 must map to Data");
+        assert_eq!(FrameType::from(1), FrameType::Mgmt, "value 1 must map to Mgmt");
+        assert_eq!(FrameType::from(2), FrameType::Ack, "value 2 must map to Ack");
+        assert_eq!(FrameType::from(3), FrameType::FwDownload, "value 3 must map to FwDownload");
+        assert_eq!(
+            FrameType::from(15),
+            FrameType::Unknown,
+            "value 15 must map to Unknown"
+        );
     }
 
     #[test]
@@ -245,22 +271,26 @@ mod tests {
         let len = frame.encode(&mut buf);
         assert!(len > 0, "encode should produce bytes");
         assert_eq!(buf.first().copied().unwrap_or_default(), SOF, "first byte should be SOF");
-        assert_eq!(frame.payload_len, 5);
+        assert_eq!(frame.payload_len, 5, "payload_len must equal the number of bytes supplied");
     }
 
     #[test]
     fn ack_frame() {
         let frame = StpFrame::ack(3);
-        assert!(frame.header.ack);
-        assert_eq!(frame.header.seq, 3);
-        assert_eq!(frame.payload_len, 0);
+        assert!(frame.header.ack, "ACK frame must have the ack flag set");
+        assert_eq!(frame.header.seq, 3, "ACK frame seq must match the argument");
+        assert_eq!(frame.payload_len, 0, "ACK frame must have zero payload");
     }
 
     #[test]
     fn header_checksum_deterministic() {
         let frame1 = StpFrame::data(1, b"test");
         let frame2 = StpFrame::data(1, b"test");
-        assert_eq!(frame1.header.checksum, frame2.header.checksum);
+        assert_eq!(
+            frame1.header.checksum,
+            frame2.header.checksum,
+            "identical frames must produce identical header checksums"
+        );
     }
 
     #[test]
@@ -268,44 +298,54 @@ mod tests {
         let frame1 = StpFrame::data(0, b"test");
         let frame2 = StpFrame::data(1, b"test");
         // Sequence number changes the header, so checksum differs
-        assert_ne!(frame1.header.checksum, frame2.header.checksum);
+        assert_ne!(
+            frame1.header.checksum,
+            frame2.header.checksum,
+            "different sequence numbers must produce different header checksums"
+        );
     }
 
     #[test]
     fn crc_deterministic() {
         let frame1 = StpFrame::data(0, b"payload");
         let frame2 = StpFrame::data(0, b"payload");
-        assert_eq!(frame1.crc, frame2.crc);
+        assert_eq!(frame1.crc, frame2.crc, "identical frames must produce identical CRCs");
     }
 
     #[test]
     fn different_payload_different_crc() {
         let frame1 = StpFrame::data(0, b"aaa");
         let frame2 = StpFrame::data(0, b"bbb");
-        assert_ne!(frame1.crc, frame2.crc);
+        assert_ne!(frame1.crc, frame2.crc, "different payloads must produce different CRCs");
     }
 
     #[test]
     fn empty_payload() {
         let frame = StpFrame::data(0, b"");
-        assert_eq!(frame.payload_len, 0);
-        assert_eq!(frame.header.length, 0);
+        assert_eq!(frame.payload_len, 0, "empty input must yield payload_len 0");
+        assert_eq!(frame.header.length, 0, "empty input must yield header.length 0");
     }
 
     #[test]
     fn max_payload() {
         let big = [0xAB; MAX_PAYLOAD];
         let frame = StpFrame::data(7, &big);
-        assert_eq!(frame.payload_len, MAX_PAYLOAD);
-        assert_eq!(frame.header.seq, 7);
+        assert_eq!(
+            frame.payload_len,
+            MAX_PAYLOAD,
+            "MAX_PAYLOAD bytes must fill payload_len exactly"
+        );
+        assert_eq!(frame.header.seq, 7, "seq must be preserved at max payload");
     }
 
     #[test]
     fn subsystem_values() {
-        assert_eq!(WmtSubsystem::Wifi as u8, 0);
-        assert_eq!(WmtSubsystem::Bt as u8, 1);
-        assert_eq!(WmtSubsystem::Gps as u8, 2);
-        assert_eq!(WmtSubsystem::Fm as u8, 3);
-        assert_eq!(WmtSubsystem::Wmt as u8, 4);
+        // as u8 on repr(u8) enums is the standard idiom for testing discriminants in test code;
+        // no truncation is possible since the repr guarantees the value fits in u8.
+        assert_eq!(WmtSubsystem::Wifi as u8, 0, "Wifi discriminant must be 0");
+        assert_eq!(WmtSubsystem::Bt as u8, 1, "Bt discriminant must be 1");
+        assert_eq!(WmtSubsystem::Gps as u8, 2, "Gps discriminant must be 2");
+        assert_eq!(WmtSubsystem::Fm as u8, 3, "Fm discriminant must be 3");
+        assert_eq!(WmtSubsystem::Wmt as u8, 4, "Wmt discriminant must be 4");
     }
 }

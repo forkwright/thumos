@@ -248,6 +248,16 @@ pub(crate) enum CommandId {
     AccessReg = 0x60,
 }
 
+impl CommandId {
+    /// Return the on-wire u8 discriminant.
+    ///
+    /// WHY: `#[repr(u8)]` guarantees the discriminant fits u8; this avoids
+    /// a bare `as u8` cast while remaining const-stable.
+    pub(crate) const fn to_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 /// `WiFi` firmware event IDs.
 ///
 /// Source: `connectivity/wlan/gen2/include/nic_cmd_event.h`
@@ -310,7 +320,7 @@ impl WifiCommand {
         let total_len = CMD_HEADER_SIZE + self.payload.len();
         let len_u16 = u16::try_from(total_len).unwrap_or(u16::MAX);
         let mut out = Vec::with_capacity(total_len);
-        out.push(self.cid as u8);
+        out.push(self.cid.to_u8());
         out.push(self.seq_num);
         out.extend_from_slice(&len_u16.to_le_bytes());
         out.extend_from_slice(&self.payload);
@@ -358,7 +368,7 @@ impl WifiEvent {
         );
         let eid = event_id_from_byte(buf.first().copied().unwrap_or_default())?;
         let seq_num = buf.get(1).copied().unwrap_or_default();
-        let declared_len = u16::from_le_bytes([buf.get(2).copied().unwrap_or_default(), buf.get(3).copied().unwrap_or_default()]) as usize;
+        let declared_len = usize::from(u16::from_le_bytes([buf.get(2).copied().unwrap_or_default(), buf.get(3).copied().unwrap_or_default()]));
         ensure!(
             buf.len() >= declared_len,
             EventTooShortSnafu {
@@ -401,6 +411,16 @@ pub(crate) enum ScanType {
     Prohibited = 2,
 }
 
+impl ScanType {
+    /// Return the on-wire u8 discriminant.
+    ///
+    /// WHY: `#[repr(u8)]` guarantees the discriminant fits u8; this avoids
+    /// a bare `as u8` cast while remaining const-stable.
+    pub(crate) const fn to_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 /// Scan SSID type for `ucSSIDType` in `CMD_SCAN_REQ_T`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -409,6 +429,16 @@ pub(crate) enum SsidType {
     Wildcard = 0,
     /// Directed probe  -  include the specified SSID IE.
     Specified = 1,
+}
+
+impl SsidType {
+    /// Return the on-wire u8 discriminant.
+    ///
+    /// WHY: `#[repr(u8)]` guarantees the discriminant fits u8; this avoids
+    /// a bare `as u8` cast while remaining const-stable.
+    pub(crate) const fn to_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 /// A scan request ready to be encoded INTO `CMD_SCAN_REQ_T` payload.
@@ -457,8 +487,8 @@ impl ScanRequest {
         let ssid = self.ssid.as_deref().unwrap_or(&[]);
         let ssid_len = u8::try_from(ssid.len()).unwrap_or(u8::MAX);
         let mut out = Vec::with_capacity(3 + ssid.len());
-        out.push(self.scan_type as u8);
-        out.push(self.ssid_type as u8);
+        out.push(self.scan_type.to_u8());
+        out.push(self.ssid_type.to_u8());
         out.push(ssid_len);
         out.extend_from_slice(ssid);
         out
@@ -509,16 +539,12 @@ impl BssScanResult {
         // SAFETY: ensure above guarantees buf.len() >= 11 > 6
         bssid.copy_from_slice(&buf[..6]);
         // WHY: raw RSSI byte FROM firmware is a signed 8-bit value in two's
-        // complement; cast_signed() is the safe Rust 1.87+ idiom.
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "RSSI is a signed 8-bit firmware value in two's complement"
-        )]
-        let rssi_dbm = buf.get(6).copied().unwrap_or_default() as i8;
+        // complement; cast_signed() is the Rust 1.87+ safe reinterpret idiom.
+        let rssi_dbm = buf.get(6).copied().unwrap_or_default().cast_signed();
         let channel = buf.get(7).copied().unwrap_or_default();
         let flags = buf.get(8).copied().unwrap_or_default();
         let has_rsn = flags & 0x01 != 0;
-        let ssid_len = buf.get(9).copied().unwrap_or_default() as usize;
+        let ssid_len = usize::from(buf.get(9).copied().unwrap_or_default());
         let ssid_end = 10 + ssid_len;
         ensure!(
             buf.len() >= ssid_end,
@@ -880,7 +906,7 @@ mod tests {
     // --- TX descriptor encoding/decoding ---
 
     #[test]
-    fn test_tx_header_data_encode_decode_roundtrip() {
+    fn tx_header_data_roundtrips_through_encode_decode() {
         let hdr = HifTxHeader::data(1500, 4, 2);
         let encoded = hdr.encode();
         assert_eq!(
@@ -905,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tx_header_command_encode_decode_roundtrip() {
+    fn tx_header_command_roundtrips_through_encode_decode() {
         let hdr = HifTxHeader::command(64);
         let encoded = hdr.encode();
         let decoded = HifTxHeader::decode(&encoded).unwrap_or_default();
@@ -917,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tx_header_decode_too_short() {
+    fn tx_header_decode_rejects_short_buffer() {
         let short = [0u8; 8];
         let result = HifTxHeader::decode(&short);
         assert!(
@@ -929,7 +955,7 @@ mod tests {
     // --- RX descriptor encoding/decoding ---
 
     #[test]
-    fn test_rx_header_encode_decode_roundtrip() {
+    fn rx_header_roundtrips_through_encode_decode() {
         let hdr = HifRxHeader {
             packet_len: 800,
             packet_type: 0,
@@ -960,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rx_header_decode_too_short() {
+    fn rx_header_decode_rejects_short_buffer() {
         let short = [0u8; 5];
         let result = HifRxHeader::decode(&short);
         assert!(
@@ -972,7 +998,7 @@ mod tests {
     // --- Command framing ---
 
     #[test]
-    fn test_command_encode_no_payload() {
+    fn command_encodes_header_only_when_no_payload() {
         let cmd = WifiCommand::new(CommandId::GetChipInfo, 1);
         let encoded = cmd.encode();
         assert_eq!(encoded.first().copied().unwrap_or_default(), 0x01, "first byte must be command ID");
@@ -985,13 +1011,13 @@ mod tests {
     }
 
     #[test]
-    fn test_command_encode_with_payload() {
+    fn command_appends_payload_bytes_after_header() {
         let payload = vec![0xaa, 0xbb, 0xcc];
         let cmd = WifiCommand::with_payload(CommandId::ScanReq, 7, payload.clone());
         let encoded = cmd.encode();
         assert_eq!(encoded.first().copied().unwrap_or_default(), 0x20, "command ID must be ScanReq");
         assert_eq!(encoded.get(1).copied().unwrap_or_default(), 7, "seq_num must be 7");
-        let len = u16::from_le_bytes([encoded.get(2).copied().unwrap_or_default(), encoded.get(3).copied().unwrap_or_default()]) as usize;
+        let len = usize::from(u16::from_le_bytes([encoded.get(2).copied().unwrap_or_default(), encoded.get(3).copied().unwrap_or_default()]));
         assert_eq!(
             len,
             CMD_HEADER_SIZE + payload.len(),
@@ -1007,7 +1033,7 @@ mod tests {
     // --- Scan result parsing ---
 
     #[test]
-    fn test_scan_result_decode_valid() {
+    fn scan_result_decodes_all_fields_correctly() {
         let bssid = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
         let ssid = b"TestNet";
         let mut buf = Vec::new();
@@ -1015,7 +1041,7 @@ mod tests {
         buf.push((-70_i8).to_ne_bytes()[0]); // -70 dBm in two's complement
         buf.push(11); // channel
         buf.push(0x01); // flags: has_rsn=1
-        buf.push(ssid.len() as u8);
+        buf.push(u8::try_from(ssid.len()).unwrap_or(u8::MAX));
         buf.extend_from_slice(ssid);
         let result = BssScanResult::decode(&buf).unwrap_or_default();
         assert_eq!(result.bssid, bssid, "BSSID must match");
@@ -1026,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_result_decode_too_short() {
+    fn scan_result_decode_rejects_short_buffer() {
         let buf = [0u8; 5];
         let result = BssScanResult::decode(&buf);
         assert!(
@@ -1038,7 +1064,7 @@ mod tests {
     // --- MAC randomization validity ---
 
     #[test]
-    fn test_mac_locally_administered_bit_set() {
+    fn generated_mac_always_has_locally_administered_bit_set() {
         let rng = SystemRandom::new();
         for _ in 0..20 {
             let mac = MacAddress::generate_random(&rng).unwrap_or_default();
@@ -1050,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mac_multicast_bit_clear() {
+    fn generated_mac_always_has_multicast_bit_clear() {
         let rng = SystemRandom::new();
         for _ in 0..20 {
             let mac = MacAddress::generate_random(&rng).unwrap_or_default();
@@ -1062,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mac_randomness_across_calls() {
+    fn generated_macs_are_independently_valid() {
         // NOTE: Probability of collision is 2^{-46}  -  negligible.
         let rng = SystemRandom::new();
         let mac_a = MacAddress::generate_random(&rng).unwrap_or_default();
@@ -1082,7 +1108,7 @@ mod tests {
     // --- Passive scan default ---
 
     #[test]
-    fn test_passive_scan_default() {
+    fn passive_scan_request_encodes_correctly() {
         let req = ScanRequest::passive();
         assert_eq!(
             req.scan_type,
@@ -1097,13 +1123,13 @@ mod tests {
         let encoded = req.encode();
         assert_eq!(
             encoded.first().copied().unwrap_or_default(),
-            ScanType::Passive as u8,
+            ScanType::Passive.to_u8(),
             "encoded scan_type must be passive (1)"
         );
     }
 
     #[test]
-    fn test_directed_active_scan() {
+    fn directed_active_scan_encodes_ssid_correctly() {
         let ssid = b"HiddenNet".to_vec();
         let req = ScanRequest::directed_active(ssid.clone());
         assert_eq!(
@@ -1119,11 +1145,11 @@ mod tests {
         let encoded = req.encode();
         assert_eq!(
             encoded.first().copied().unwrap_or_default(),
-            ScanType::Active as u8,
+            ScanType::Active.to_u8(),
             "encoded type must be active (0)"
         );
         assert_eq!(
-            encoded.get(2).copied().unwrap_or_default() as usize,
+            usize::from(encoded.get(2).copied().unwrap_or_default()),
             ssid.len(),
             "encoded ssid_len must match"
         );
@@ -1133,7 +1159,7 @@ mod tests {
     // --- Association state transitions ---
 
     #[test]
-    fn test_assoc_state_full_sequence() {
+    fn assoc_state_advances_through_full_sequence() {
         let expected = [
             AssocState::SendAuth1,
             AssocState::WaitAuth2,
@@ -1158,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assoc_state_is_associated_only_at_resource() {
+    fn only_resource_state_reports_as_associated() {
         let non_terminal = [
             AssocState::Idle,
             AssocState::SendAuth1,
@@ -1183,7 +1209,7 @@ mod tests {
     // --- WiFiMacDriver integration ---
 
     #[test]
-    fn test_driver_initial_mac_valid() {
+    fn driver_initial_mac_is_locally_administered_unicast() {
         let driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
         let mac = driver.mac_address();
         assert!(
@@ -1194,7 +1220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_driver_set_mac_address_produces_access_reg_command() {
+    fn set_mac_address_produces_access_reg_command() {
         let mut driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
         let cmd = driver
             .set_mac_address(3)
@@ -1217,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    fn test_driver_assoc_state_machine_advances() {
+    fn driver_assoc_state_advances_and_resets_correctly() {
         let mut driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
         assert_eq!(driver.assoc_state(), AssocState::Idle, "must start Idle");
         driver.advance_assoc();
@@ -1235,7 +1261,7 @@ mod tests {
     }
 
     #[test]
-    fn test_driver_ptk_derivation_uses_randomized_mac() {
+    fn driver_ptk_derivation_binds_to_current_randomized_mac() {
         let driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
         let pmk = [0x11u8; PMK_LEN];
         let anonce = [0xaau8; 32];
@@ -1251,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_decode_cmd_result() {
+    fn event_decodes_cmd_result_correctly() {
         // eid=0x01, seq=5, length=4 (header only, little-endian)
         let buf = [0x01u8, 0x05, 0x04, 0x00];
         let evt = WifiEvent::decode(&buf).unwrap_or_default();
@@ -1264,7 +1290,7 @@ mod tests {
     }
 
     #[test]
-    fn test_event_decode_unknown_eid() {
+    fn event_decode_rejects_unknown_event_id() {
         let buf = [0xffu8, 0x01, 0x04, 0x00];
         let result = WifiEvent::decode(&buf);
         assert!(
@@ -1274,7 +1300,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_type_default_is_passive() {
+    fn scan_type_defaults_to_passive() {
         let default_type = ScanType::default();
         assert_eq!(
             default_type,

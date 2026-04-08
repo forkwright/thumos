@@ -193,101 +193,136 @@ mod tests {
     use crate::position::FixQuality;
 
     #[test]
-    fn checksum_valid() {
+    fn validate_checksum_accepts_valid_sentence() {
         let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76";
-        validate_checksum(sentence).unwrap_or_default();
-    }
-
-    #[test]
-    fn checksum_invalid() {
-        let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*FF";
         assert!(
-            validate_checksum(sentence).is_err(),
-            "should reject bad checksum"
+            validate_checksum(sentence).is_ok(),
+            "valid GGA checksum must be accepted"
         );
     }
 
     #[test]
-    fn compute_checksum_gga() {
-        let body = "GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,";
-        assert_eq!(compute_checksum(body), 0x76);
+    fn validate_checksum_rejects_bad_checksum() {
+        let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*FF";
+        assert!(
+            validate_checksum(sentence).is_err(),
+            "corrupted checksum byte must be rejected"
+        );
     }
 
     #[test]
-    fn parse_gga_valid() {
+    fn compute_checksum_produces_correct_value_for_gga() {
+        let body = "GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,";
+        assert_eq!(
+            compute_checksum(body),
+            0x76,
+            "XOR checksum of known GGA body must be 0x76"
+        );
+    }
+
+    #[test]
+    fn parse_gga_extracts_position_quality_and_satellites() {
         let sentence = "$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76";
         let fix = parse_gga(sentence).expect("valid GGA sentence should parse");
-        assert_eq!(fix.quality, FixQuality::Gps);
-        assert_eq!(fix.satellites, 8);
+        assert_eq!(
+            fix.quality,
+            FixQuality::Gps,
+            "fix quality must be GPS for quality indicator 1"
+        );
+        assert_eq!(
+            fix.satellites, 8,
+            "satellite count must match GGA field 7"
+        );
         // 53 degrees 21.6802 minutes N = 53.36133... degrees
         assert!(
             (fix.position.lat - 53.36134).abs() < 0.001,
-            "lat should be ~53.361"
+            "latitude must parse to ~53.361 decimal degrees"
         );
         // 6 degrees 30.3372 minutes W = -6.50562 degrees
         assert!(
             (fix.position.lon - (-6.50562)).abs() < 0.001,
-            "lon should be ~-6.506"
+            "longitude must parse to ~-6.506 decimal degrees (West = negative)"
         );
         assert!(
             (fix.position.alt.unwrap_or_default() - 61.7).abs() < 0.1,
-            "alt should be ~61.7"
+            "altitude must parse to ~61.7 m"
         );
     }
 
     #[test]
-    fn parse_gga_no_fix() {
+    fn parse_gga_returns_error_when_no_fix() {
         let sentence = "$GPGGA,092750.000,,,,,,0,0,,,,,,,*47";
-        assert!(parse_gga(sentence).is_err(), "no fix should be error");
+        assert!(
+            parse_gga(sentence).is_err(),
+            "GGA with fix quality 0 must return an error"
+        );
     }
 
     #[test]
-    fn parse_rmc_valid() {
+    fn parse_rmc_extracts_position_speed_and_course() {
         let sentence = "$GPRMC,092750.000,A,5321.6802,N,00630.3372,W,0.02,31.66,280511,,,A*43";
         let fix = parse_rmc(sentence).expect("valid RMC sentence should parse");
         assert!(
             (fix.position.lat - 53.36134).abs() < 0.001,
-            "lat should be ~53.361"
+            "latitude must parse to ~53.361 decimal degrees"
         );
         assert!(
             (fix.speed_knots.unwrap_or_default() - 0.02).abs() < 0.01,
-            "speed should be ~0.02"
+            "speed must parse to ~0.02 knots"
         );
         assert!(
             (fix.course.unwrap_or_default() - 31.66).abs() < 0.01,
-            "course should be ~31.66"
+            "course must parse to ~31.66 degrees true"
         );
     }
 
     #[test]
-    fn parse_rmc_void() {
+    fn parse_rmc_returns_error_when_status_void() {
         let sentence = "$GPRMC,092750.000,V,,,,,,,280511,,,N*4C";
-        assert!(parse_rmc(sentence).is_err(), "void status should be error");
+        assert!(
+            parse_rmc(sentence).is_err(),
+            "RMC with status V (void) must return an error"
+        );
     }
 
     #[test]
-    fn parse_lat_north() {
+    fn parse_lat_field_converts_north_to_positive_decimal_degrees() {
         let lat = parse_lat_field("5321.6802", "N").unwrap_or_default();
-        assert!((lat - 53.36134).abs() < 0.001);
+        assert!(
+            (lat - 53.36134).abs() < 0.001,
+            "North latitude must convert to positive decimal degrees"
+        );
     }
 
     #[test]
-    fn parse_lat_south() {
+    fn parse_lat_field_converts_south_to_negative_decimal_degrees() {
         let lat = parse_lat_field("3348.5410", "S").unwrap_or_default();
-        assert!(lat < 0.0, "south latitude should be negative");
-        assert!((lat - (-33.80902)).abs() < 0.001);
+        assert!(lat < 0.0, "South hemisphere must produce negative latitude");
+        assert!(
+            (lat - (-33.80902)).abs() < 0.001,
+            "South latitude must convert correctly to negative decimal degrees"
+        );
     }
 
     #[test]
-    fn parse_lon_west() {
+    fn parse_lon_field_converts_west_to_negative_decimal_degrees() {
         let lon = parse_lon_field("00630.3372", "W").unwrap_or_default();
-        assert!(lon < 0.0, "west longitude should be negative");
+        assert!(
+            lon < 0.0,
+            "West hemisphere must produce negative longitude"
+        );
     }
 
     #[test]
-    fn parse_lon_east() {
+    fn parse_lon_field_converts_east_to_positive_decimal_degrees() {
         let lon = parse_lon_field("15145.3478", "E").unwrap_or_default();
-        assert!(lon > 0.0, "east longitude should be positive");
-        assert!((lon - 151.75580).abs() < 0.001);
+        assert!(
+            lon > 0.0,
+            "East hemisphere must produce positive longitude"
+        );
+        assert!(
+            (lon - 151.75580).abs() < 0.001,
+            "East longitude must convert correctly to decimal degrees"
+        );
     }
 }

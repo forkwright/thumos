@@ -40,7 +40,13 @@ pub enum ParseError {
 
 /// Parsed IPv4 header fields.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "public API  -  consumed by downstream crates")]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "public API — version and total_length are unused in this crate but available to downstream consumers"
+    )
+)]
 pub struct IpHeader {
     /// IP version (always 4 for a successfully parsed header).
     pub version: u8,
@@ -58,7 +64,10 @@ pub struct IpHeader {
 
 /// Parsed TCP header fields.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "public API  -  consumed by downstream crates")]
+#[expect(
+    dead_code,
+    reason = "public API — seq and ack are unused in this crate but available to downstream consumers"
+)]
 pub struct TcpHeader {
     /// Source TCP port.
     pub src_port: u16,
@@ -74,7 +83,13 @@ pub struct TcpHeader {
 
 /// Parsed UDP header fields.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "public API  -  consumed by downstream crates")]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "public API — length is unused in this crate but available to downstream consumers"
+    )
+)]
 pub struct UdpHeader {
     /// Source UDP port.
     pub src_port: u16,

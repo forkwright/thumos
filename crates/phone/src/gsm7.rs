@@ -177,7 +177,6 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -185,26 +184,26 @@ mod tests {
     fn encode_hello_matches_known_output() {
         // WHY: "Hello" is the canonical GSM-7 packing test vector.
         let encoded = encode("Hello").unwrap_or_default();
-        assert_eq!(encoded, &[0xC8, 0x32, 0x9B, 0xFD, 0x06]);
+        assert_eq!(encoded, &[0xC8, 0x32, 0x9B, 0xFD, 0x06], "'Hello' must pack to known 5-byte GSM-7 sequence");
     }
 
     #[test]
     fn decode_hello_round_trip() {
         let encoded = encode("Hello").unwrap_or_default();
         let decoded = decode(&encoded, 5).unwrap_or_default();
-        assert_eq!(decoded, "Hello");
+        assert_eq!(decoded, "Hello", "GSM-7 round-trip for 'Hello' must be lossless");
     }
 
     #[test]
     fn encode_empty_string() {
         let encoded = encode("").unwrap_or_default();
-        assert!(encoded.is_empty());
+        assert!(encoded.is_empty(), "encoding empty string must produce empty byte buffer");
     }
 
     #[test]
     fn decode_empty() {
         let decoded = decode(&[], 0).unwrap_or_default();
-        assert!(decoded.is_empty());
+        assert!(decoded.is_empty(), "decoding zero septets must produce empty string");
     }
 
     #[test]
@@ -212,10 +211,10 @@ mod tests {
         let text = "{}";
         let encoded = encode(text).unwrap_or_default();
         // Each brace is ESC + code = 2 septets; 4 septets total → ceil(4*7/8)=4 bytes.
-        assert_eq!(encoded.len(), 4);
+        assert_eq!(encoded.len(), 4, "two extension chars must pack to 4 bytes (4 septets)");
         // decode with num_chars=4 (4 septets consumed: ESC+{, ESC+}).
         let decoded = decode(&encoded, 4).unwrap_or_default();
-        assert_eq!(decoded, text);
+        assert_eq!(decoded, text, "braces must survive GSM-7 extension table round-trip");
     }
 
     #[test]
@@ -223,14 +222,14 @@ mod tests {
         let text = "[]";
         let encoded = encode(text).unwrap_or_default();
         let decoded = decode(&encoded, 4).unwrap_or_default();
-        assert_eq!(decoded, text);
+        assert_eq!(decoded, text, "brackets must survive GSM-7 extension table round-trip");
     }
 
     #[test]
     fn encode_at_symbol() {
         // WHY: '@' maps to GSM septet 0x00, the zero case is a common bug.
         let encoded = encode("@").unwrap_or_default();
-        assert_eq!(encoded, &[0x00]);
+        assert_eq!(encoded, &[0x00], "'@' must encode to septet 0x00 (common off-by-one bug site)");
     }
 
     #[test]
@@ -239,9 +238,9 @@ mod tests {
         let text = "€";
         let encoded = encode(text).unwrap_or_default();
         // ESC (0x1B) + 0x65, packed: 2 septets → ceil(14/8)=2 bytes.
-        assert_eq!(encoded.len(), 2);
+        assert_eq!(encoded.len(), 2, "'€' must encode to 2 bytes (ESC + code, 2 septets packed)");
         let decoded = decode(&encoded, 2).unwrap_or_default();
-        assert_eq!(decoded, text);
+        assert_eq!(decoded, text, "'€' must survive GSM-7 extension table round-trip");
     }
 
     #[test]
@@ -249,7 +248,7 @@ mod tests {
         // WHY: 160 septets is the single-segment SMS LIMIT; output must be exactly 140 bytes.
         let text: String = "a".repeat(160);
         let encoded = encode(&text).unwrap_or_default();
-        assert_eq!(encoded.len(), 140); // ceil(160*7/8) = 140
+        assert_eq!(encoded.len(), 140, "160 septets must pack to exactly 140 bytes: ceil(160*7/8)=140");
     }
 
     #[test]
