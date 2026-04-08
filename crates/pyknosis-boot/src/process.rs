@@ -144,6 +144,11 @@ pub struct Process {
     /// Only meaningful when state == Sleeping. Set by sys_nanosleep;
     /// the scheduler transitions the process to Ready when ticks() >= wake_tick.
     pub wake_tick: u64,
+    /// Capability bitfield: which sensitive kernel operations this process may
+    /// invoke. kinit (PID 0) holds ALL capabilities. Forked children inherit a
+    /// policy-defined subset (default: ALL minus MODEM and AUDIT).
+    /// See `capability::Capabilities` for bit definitions (REQ-09).
+    pub capabilities: u32,
 }
 
 /// Process table.
@@ -183,6 +188,8 @@ pub unsafe fn init() {
             signal_state: SignalState::new(),
             uid: 0,
             wake_tick: 0,
+            // kinit (PID 0) has all capabilities (REQ-09).
+            capabilities: crate::capability::Capabilities::ALL,
         };
         let procs = &mut *addr_of_mut!(PROCS);
         procs[0] = Some(proc0);
@@ -256,6 +263,8 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
             signal_state: SignalState::new(),
             uid: 1, // spawned userspace processes get UID 1+
             wake_tick: 0,
+            // Spawned processes receive the default fork policy (REQ-09).
+            capabilities: crate::capability::Capabilities::FORK_DEFAULT,
         };
 
         procs[slot] = Some(proc);
@@ -326,6 +335,13 @@ pub fn fork() -> Option<Pid> {
 
         let parent_uid = parent_ref.map_or(1, |p| p.uid);
 
+        // WHY: forked children receive a policy-defined capability subset of the
+        // parent. The default policy strips MODEM and AUDIT from the parent's set
+        // rather than blindly inheriting ALL, so that baseline userspace processes
+        // cannot access the baseband or audit log without an explicit grant (REQ-09).
+        let parent_caps = parent_ref.map_or(crate::capability::Capabilities::FORK_DEFAULT, |p| p.capabilities);
+        let child_caps = parent_caps & crate::capability::Capabilities::FORK_DEFAULT;
+
         let child = Process {
             pid: child_pid,
             state: State::Ready,
@@ -340,6 +356,7 @@ pub fn fork() -> Option<Pid> {
             signal_state: parent_signal_handlers,
             uid: parent_uid,
             wake_tick: 0,
+            capabilities: child_caps,
         };
 
         procs[slot] = Some(child);
@@ -756,6 +773,23 @@ pub fn current_uid() -> u32 {
     }
 }
 
+/// Get the current process's capability bitfield.
+///
+/// Returns `Capabilities::ALL` for PID 0 (kinit) and `Capabilities::FORK_DEFAULT`
+/// as a safe fallback if the current PCB is unexpectedly absent.
+/// Called by `capability::check` and `capability::has` (REQ-09).
+pub fn current_capabilities() -> u32 {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Read-only access via addr_of!; no mutation occurs here.
+    unsafe {
+        let procs = &*core::ptr::addr_of!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        procs[cur]
+            .as_ref()
+            .map_or(crate::capability::Capabilities::FORK_DEFAULT, |p| p.capabilities)
+    }
+}
+
 /// Set the current process's wake_tick and transition it to Sleeping.
 ///
 /// Called by sys_nanosleep after computing the target tick count.
@@ -871,6 +905,72 @@ pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
     }
 }
 
+/// Reset all signal handlers and the pending mask for the current process.
+///
+/// Called by sys_execve (POSIX: exec resets all signal dispositions to SIG_DFL
+/// and clears any pending signals that were set by a handler).
+///
+/// # Safety
+///
+/// Must be called from syscall context (single-core, no preemption during SVC).
+pub unsafe fn reset_signal_state() {
+    // SAFETY: addr_of_mut! avoids an intermediate reference to the static mut.
+    // Called from syscall context; no concurrent mutation of PROCS.
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        if let Some(ref mut proc) = procs[cur] {
+            proc.signal_state = SignalState::new();
+        }
+    }
+}
+
+/// Replace the current process's kernel context (entry point and stack pointer)
+/// for exec-style image replacement.
+///
+/// Sets `ctx.lr` to `entry_point` and `ctx.sp` to `stack_top`, ready for the
+/// next context switch or exception return to resume at the new entry point.
+///
+/// Also updates `stack_base`/`stack_pages` so that subsequent cleanup (exit,
+/// another exec) frees the correct pages.
+///
+/// # Safety
+///
+/// Must be called from syscall context after the new stack pages have been
+/// allocated and `entry_point` is the validated ELF entry address.
+pub unsafe fn exec_replace_context(entry_point: usize, stack_top: usize,
+    new_stack_base: usize, new_stack_pages: usize) {
+    // SAFETY: addr_of_mut! avoids an intermediate reference to the static mut.
+    // Called from execve syscall with interrupts disabled (SVC mode, ARMv7).
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        if let Some(ref mut proc) = procs[cur] {
+            // WHY cpsr 0x10 (User mode, IRQs enabled): execve transfers control
+            // to an unprivileged userspace binary. User mode (0x10) is the correct
+            // CPSR for the new image. Contrast with spawn() which uses 0x1F (System
+            // mode) for kernel-internal threads.
+            proc.ctx.lr = u32::try_from(entry_point).unwrap_or_default();
+            proc.ctx.sp = u32::try_from(stack_top).unwrap_or_default();
+            proc.ctx.cpsr = 0x10; // User mode, IRQs enabled
+            // Free the old stack (replaced by exec).
+            let old_base = proc.stack_base;
+            let old_pages = proc.stack_pages;
+            proc.stack_base = new_stack_base;
+            proc.stack_pages = new_stack_pages;
+            // WHY: free old pages AFTER updating PCB so that any fault during
+            // free does not leave the PCB pointing at freed memory.
+            for i in 0..old_pages {
+                page::free_page(old_base + i * page::PAGE_SIZE);
+            }
+            // Reset heap break to default for the new image.
+            proc.heap_break = DEFAULT_HEAP_BREAK;
+            // Clear all tracked mmap mappings — the new image has a fresh VA space.
+            proc.mappings = [None; MAX_MAPPINGS];
+        }
+    }
+}
+
 /// Clear the lowest-numbered pending signal for the current process.
 /// Called by sys_sigreturn after the handler returns.
 ///
@@ -940,6 +1040,30 @@ pub unsafe fn get_state(pid: Pid) -> Option<State> {
     }
 }
 
+/// Set the state of a process by PID.
+///
+/// Used by the futex subsystem to block (→ Blocked) and wake (→ Ready)
+/// processes without going through the full scheduler path.
+///
+/// # Safety
+///
+/// Must be called from a context with exclusive access to PROCS (single-core
+/// cooperative kernel: any syscall handler qualifies).
+pub unsafe fn set_state(pid: Pid, state: State) {
+    // SAFETY: caller holds exclusive access; addr_of_mut! avoids intermediate
+    // reference to the static mut.
+    unsafe {
+        let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+        let idx = usize::try_from(pid).unwrap_or(MAX_PROCS);
+        if idx >= MAX_PROCS {
+            return;
+        }
+        if let Some(ref mut p) = procs[idx] {
+            p.state = state;
+        }
+    }
+}
+
 /// Reset all process subsystem state for testing.
 /// Creates process 0 (kernel) with a valid page table and resets the
 /// page allocator.
@@ -977,6 +1101,7 @@ pub(crate) unsafe fn reset_for_test() {
             signal_state: SignalState::new(),
             uid: 0,
             wake_tick: 0,
+            capabilities: crate::capability::Capabilities::ALL,
         });
     }
 }
@@ -1032,6 +1157,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1063,6 +1189,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1096,6 +1223,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1130,6 +1258,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1169,6 +1298,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1200,6 +1330,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1238,6 +1369,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1282,6 +1414,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
 
             // Process 1: faulting process
@@ -1300,6 +1433,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1334,6 +1468,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             let pt1 = mmu::alloc_addr_space().unwrap();
             procs[1] = Some(Process {
@@ -1350,6 +1485,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1385,6 +1521,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1426,6 +1563,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
             assert_eq!(current_uid(), 0, "kinit (PID 0) must have UID 0");
@@ -1454,6 +1592,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1489,6 +1628,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1528,6 +1668,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1567,6 +1708,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1608,6 +1750,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
@@ -1642,6 +1785,7 @@ mod tests {
                 signal_state: SignalState::new(),
                 uid: 0,
                 wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
 
