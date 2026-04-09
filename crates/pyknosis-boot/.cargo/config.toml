@@ -2,7 +2,7 @@
 target = "armv7a-none-eabi"
 
 [target.armv7a-none-eabi]
-rustflags = ["-C", "link-arg=-T/home/ck/thumos/crates/pyknosis-boot/link.ld"]
+rustflags = ["-C", "link-arg=-T/home/ck/aletheia/repos/thumos/crates/pyknosis-boot/link.ld"]
 
 [profile.dev]
 panic = "abort"
