@@ -31,13 +31,13 @@ sema (radio tools) + aither (WiFi) + pteron (BT) + topos (GPS)
 phone (AT commands, CCCI transport, SMS PDU) + krypta (Signal protocol)
 kelyphos (WMT combo chip STP framing) + haphe (input routing)
 ──────────────────────────────────────────────
-pyknosis (custom Rust kernel: MMU, scheduler, IPC, syscalls)
+pyknosis (custom Rust kernel: MMU, slab allocator, scheduler, IPC, signals, 34 syscalls)
 MT6739 hardware (modem on separate core, firewalled at CCCI driver level)
 ```
 
 ## Status
 
-Phase 03 complete (2026-04-01). All 14 crates have code, 486 tests, ~31K LOC. Kernel boots with 46 syscalls, MMU, page allocator, slab heap, GIC interrupts, preemptive scheduler, IPC, ELF loader, and ramfs. Hardware drivers operational: eMMC (MSDC), display (DDP pipeline), WiFi MAC (randomization, passive scan), BT HCI (STP, LE Privacy), WMT power sequencing, CCCI modem containment, USB ACM, GPIO keypad, and touchscreen. Two isolated userspace processes proven with separate page tables.
+Phase 04 complete (2026-04-08). 14 crates, 486 workspace tests, ~39K LOC (19.3K kernel, 20K userspace). Kernel implements 34 syscalls including fork/exec/waitpid, mmap/brk/mprotect, pipe/futex IPC, POSIX signals (sigaction/kill/sigreturn), clock_gettime/nanosleep. Slab allocator (7 size classes), ChaCha20 CSPRNG (RFC 8439), capability-based access control, DVFS power management, watchdog timer. Hardware drivers: eMMC (MSDC), display (DDP + GC9306), WiFi MAC (randomization), BT HCI (LE Privacy), WMT, CCCI modem containment, USB ACM, GPIO keypad, touchscreen.
 
 ## Related
 
