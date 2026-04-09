@@ -1,5 +1,5 @@
 [package]
-name = "thumos-kelyphos"
+name = "kelyphos"
 description = "WMT connectivity manager: combo chip firmware loading"
 version.workspace = true
 edition.workspace = true

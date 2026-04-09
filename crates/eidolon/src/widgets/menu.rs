@@ -5,7 +5,7 @@
 //! the caller uses to dispatch work. Navigation is by Up/Down/Select; the
 //! Left key (or a back-button item) pops the navigation stack.
 
-use thumos_haphe::input::{Key, TouchPoint};
+use haphe::input::{Key, TouchPoint};
 
 use crate::color::Rgb565;
 use crate::font::{CHAR_HEIGHT, CHAR_WIDTH, draw_str};

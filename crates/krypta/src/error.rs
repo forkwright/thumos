@@ -1,4 +1,4 @@
-//! Error types for `thumos-krypta`.
+//! Error types for `krypta`.
 
 use snafu::Snafu;
 

@@ -14,7 +14,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Kernel (pyknosis-boot) | Phase 04 | MMU, slab allocator, GIC, timer, scheduler, 34 implemented syscalls, IPC (pipe, futex, signals), ELF loader (execve), ramfs, fd table, mmap/brk/mprotect, ChaCha20 CSPRNG, watchdog, capabilities, DVFS power management |
+| Kernel (thumos) | Phase 04 | MMU, slab allocator, GIC, timer, scheduler, 34 implemented syscalls, IPC (pipe, futex, signals), ELF loader (execve), ramfs, fd table, mmap/brk/mprotect, ChaCha20 CSPRNG, watchdog, capabilities, DVFS power management |
 | eMMC driver | Phase 03 | MSDC controller, PIO + DMA, GPD/BD descriptors |
 | Display driver | Phase 03 | DDP pipeline (OVL→RDMA→DSI→LCM), GC9306 init/sleep/wake/backlight |
 | CCCI modem driver | Phase 03 | CLDMA ring buffers, CCIF mailbox, identity containment, packet validation |
@@ -23,7 +23,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 | BT HCI (pteron) | Phase 03 | STP transport, LE Privacy address rotation, BLE scanning |
 | WMT (kelyphos) | Phase 03 | CONSYS power-on, STP transport, subsystem management |
 | Input (haphe) | Phase 03 | GPIO keypad, mtk-tpd touchscreen, T9 |
-| Telephony (phone) | Substantial | AT parser, CCCI/CLDMA framing, SMS PDU, GSM-7 codec |
+| Telephony (klesis) | Substantial | AT parser, CCCI/CLDMA framing, SMS PDU, GSM-7 codec |
 | UI (eidolon) | Substantial | Framebuffer 240x320, widgets, dialer, status bar |
 | Firewall (asphaleia) | Substantial | Packet filter, DNS blocklist, IPv4/TCP/UDP parsing |
 | Encrypted storage (stegnos) | Substantial | AES-256-XTS, LUKS key derivation, secure erase |
@@ -34,7 +34,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 ## Key constraints
 
-- 14 crates, ~39K LOC (19.3K kernel + 20K userspace), 486 workspace tests (all passing), zero clippy warnings.
+- 13 crates (12 workspace userspace + `thumos` kernel binary, excluded from workspace), ~39K LOC (19.3K kernel + 20K userspace), all workspace tests passing, zero clippy warnings.
 - 1 GB RAM: every megabyte matters. No unnecessary services.
 - 240x320 display: no standard Android UI. Custom framebuffer or TUI.
 - Keypad + touchscreen input. T9-style or menu navigation.
@@ -63,7 +63,7 @@ Thumos treats all hardware identifiers as sensitive. Every radio driver implemen
 
 ## Build
 
-Workspace compiles on host (`cargo check/test`). Kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` in `crates/pyknosis-boot/`. Boot image created with mkbootimg, flashed via mtkclient BROM exploit.
+Workspace compiles on host (`cargo check/test`). Kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` in `crates/thumos/` (the bare-metal kernel binary, excluded from the main workspace). Boot image created with mkbootimg, flashed via mtkclient BROM exploit.
 
 ## Standards
 

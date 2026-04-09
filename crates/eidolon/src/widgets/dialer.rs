@@ -4,7 +4,7 @@
 //! Call/End action buttons. Digit entry via [`Key`] events; backspace
 //! on the Left key; Call/End on the corresponding physical keys.
 
-use thumos_haphe::input::{Key, TouchPoint};
+use haphe::input::{Key, TouchPoint};
 
 use crate::color::Rgb565;
 use crate::font::{CHAR_HEIGHT, CHAR_WIDTH, draw_str};

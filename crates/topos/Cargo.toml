@@ -1,5 +1,5 @@
 [package]
-name = "thumos-topos"
+name = "topos"
 description = "GPS driver: NMEA parsing, position logging, geofencing"
 version.workspace = true
 edition.workspace = true

@@ -1,6 +1,6 @@
 [package]
-name = "thumos-phone"
-description = "Telephony daemon: AT commands, voice calls, SMS"
+name = "klesis"
+description = "Telephony: AT commands, voice calls, SMS (κλῆσις, a calling)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
