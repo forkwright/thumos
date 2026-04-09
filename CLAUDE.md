@@ -63,7 +63,7 @@ Thumos treats all hardware identifiers as sensitive. Every radio driver implemen
 
 ## Build
 
-Workspace compiles on host. Cross-compilation for `armv7-unknown-none-eabihf` (kernel) and `armv7-unknown-linux-musleabihf` (userspace) via Nix on Verda.
+Workspace compiles on host (`cargo check/test`). Kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` in `crates/pyknosis-boot/`. Boot image created with mkbootimg, flashed via mtkclient BROM exploit.
 
 ## Standards
 
