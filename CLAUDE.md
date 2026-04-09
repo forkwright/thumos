@@ -14,7 +14,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Kernel (pyknosis-boot) | Phase 03 | MMU, page allocator, heap, GIC, timer, scheduler, syscalls (~46), IPC, ELF loader, ramfs, fd table, mmap/brk/mprotect |
+| Kernel (pyknosis-boot) | Phase 04 | MMU, slab allocator, GIC, timer, scheduler, 34 implemented syscalls, IPC (pipe, futex, signals), ELF loader (execve), ramfs, fd table, mmap/brk/mprotect, ChaCha20 CSPRNG, watchdog, capabilities, DVFS power management |
 | eMMC driver | Phase 03 | MSDC controller, PIO + DMA, GPD/BD descriptors |
 | Display driver | Phase 03 | DDP pipeline (OVL→RDMA→DSI→LCM), GC9306 init/sleep/wake/backlight |
 | CCCI modem driver | Phase 03 | CLDMA ring buffers, CCIF mailbox, identity containment, packet validation |
@@ -34,7 +34,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 ## Key constraints
 
-- 14 crates, ~33K LOC, 486 workspace tests (all passing), zero clippy warnings.
+- 14 crates, ~39K LOC (19.3K kernel + 20K userspace), 486 workspace tests (all passing), zero clippy warnings.
 - 1 GB RAM: every megabyte matters. No unnecessary services.
 - 240x320 display: no standard Android UI. Custom framebuffer or TUI.
 - Keypad + touchscreen input. T9-style or menu navigation.
