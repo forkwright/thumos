@@ -6,20 +6,26 @@
 
 | File | Scope |
 |------|-------|
-| **This file** | Universal principles: philosophy, comments, naming, errors, concurrency, config, testing, git, security, logging, writing, code review |
+| **This file** | Universal principles: philosophy, comments, naming, errors, concurrency, config, git, security, logging, observability contracts, writing, code review (testing → TESTING.md) |
 | REPO-SETUP.md | New project checklist: required files, directories, CI, Cargo.toml template, deny.toml baseline, verification script |
+| ENVIRONMENT.md | Environment variables, configuration files, secrets handling, feature flags, path resolution |
 | PLANNING.md | Project planning: phase structure, ROADMAP/STATE/PLAN/SUMMARY formats, lifecycle, migration |
 | RELEASES.md | Versioning policy, CHANGELOG format, release-please config, binary distribution, target matrix |
-| ARCHITECTURE.md | Dependency direction, crate boundaries, modularity, encapsulation, API surface rules |
+| ARCHITECTURE.md | Dependency direction, crate boundaries, modularity, encapsulation, API surface rules, feature flag propagation |
 | API.md | HTTP API design, request/response patterns, error responses, pagination, versioning |
-| CI.md | Required CI checks, workflow templates, merge gates, test sharding |
-| TESTING.md | Test naming, property tests, fuzz targets, mock patterns, test data policy, snapshot tests |
+| DEPLOYMENT.md | **Sole authority** for deployment: gates, merge policy, release timing, rollback, health check requirements, fleet management |
+| CI.md | CI tooling: which checks run, how they're configured, target matrices, test sharding, workflow generation |
+| TESTING.md | **Sole authority** for testing: principles, strategy, organization, coverage, test data, fuzz, benchmarks, property tests |
 | SECURITY.md | Credential handling, input validation, dependency audit, sandboxing, secret types |
-| OPERATIONS.md | Deployment, health checks, monitoring, runbooks, backup, hot reload |
-| PERFORMANCE.md | Resource budgets, benchmarks, profiling, binary size, build optimization |
-| STORAGE.md | Database patterns, migrations, SQLite configuration, backup, schema versioning |
+| OPERATIONS.md | Service-specific: runbooks, monitoring, backup, incident response, DNS, service management, observability |
+| PERFORMANCE.md | Resource budgets, benchmarks, profiling, binary size, build optimization, algorithmic complexity, regression detection |
+| SYSTEMD.md | Service units, timers, security hardening, resource limits, journald logging |
+| PODMAN.md | Pod architecture, container naming, volume mounts (SELinux), health checks, auto-update, systemd integration, rootless vs rootful, image pinning |
+| NGINX.md | Reverse proxy configuration, SSL/TLS, rate limiting, load balancing, security headers |
+| STORAGE.md | Database patterns, migrations, connection management, index rebuild, data versioning, consistency guarantees |
+| RESTIC.md | Restic backup: repository setup, operations, retention, restore, automation |
 | WRITING.md | Prose style, banned words, FK grade targeting, structural anti-patterns |
-| RUST.md | Rust-specific: edition, lints, error handling (snafu), async (tokio), dependencies, crate layout |
+| RUST.md | Rust-specific: edition, lints, snafu error enums, async (tokio), dependencies, crate layout |
 | PYTHON.md | Python-specific: uv, typing, async patterns |
 | TYPESCRIPT.md | TypeScript-specific: strict mode, framework patterns |
 | SHELL.md | Shell-specific: set -euo pipefail, quoting, portability |
@@ -29,6 +35,7 @@
 | KOTLIN.md | Kotlin-specific: coroutines, sealed classes |
 | CSHARP.md | C#-specific: async/await, nullable references |
 | CPP.md | C++-specific: smart pointers, RAII |
+| PROTOBUF.md | Proto3 schema design, gRPC patterns, JSON mapping, pagination, type wrappers, Rust codegen |
 
 ---
 
@@ -54,6 +61,12 @@ This applies at every level:
 - **Test fixtures**: mock providers, setup helpers, sample data. Shared test utilities module.
 - **Config defaults**: define in one place (config struct Default impl), reference from there. Never hardcode the same default in two files.
 
+**Derive, don't maintain.** If a value can be computed from a source of truth, compute it — don't store a copy that drifts. Rule exclusion lists derive from training data success rates. Blast radius derives from cargo metadata. Routing decisions derive from per-provider success rates. Planning docs derive from git history and issue trackers. Command documentation derives from `--help`, not static markdown. Every piece of manually maintained state that duplicates a computable fact is a bug waiting to diverge. The test: if the source of truth changes, does this value update automatically? If not, it's maintained, not derived, and it will go stale.
+
+This extends "define once" from code to state: configuration, documentation, dispatch routing, quality thresholds, and operational metrics should all trace back to a single authoritative source. When you find yourself writing the same information in two places, one of them should be a derivation of the other. If both are manual, build the derivation first, then delete the manual copy.
+
+**No workarounds.** If something is broken, fix it properly or log it as blocked and move on. Never build a workaround that becomes the permanent path. Each workaround hides the broken thing from attention, becomes load-bearing as other things depend on it, compounds as new workarounds stack on old ones, and makes the eventual fix harder. Silent failures are workarounds in disguise. If you can't fix it now, file an issue AND log a loud warning (log.error, not log.debug). The standard is: it gets built to the best standard we can, or it waits until we can. No stepping stones that become permanent.
+
 **No shortcuts.** Build the right thing from the start. If the SDK is better than the CLI wrapper, build the SDK. If the architecture needs three crates, build three crates. Don't ship a "quick version" you know you'll replace: time spent on throwaway work is stolen from the real thing. MVPs are for validating markets, not for code you're certain about.
 
 **Best tool for the job.** Every decision: language, library, architecture, data structure: is made on merit. No defaults by inertia. No "we've always done it this way." If the current tool is wrong, replace it. If a better option exists and the migration cost is justified, migrate. Comfort with a tool is not a reason to use it; fitness for the problem is.
@@ -63,6 +76,14 @@ This applies at every level:
 **Format at the boundary.** Percentages as decimals (0.42), currency as numbers, dates as timestamps internally. Format when rendering for display, not in queries or transforms.
 
 **Idempotent by design.** Operations that may be retried, replayed, or delivered more than once must produce the same result regardless of repetition. Use idempotency keys for API mutations. Design event handlers to tolerate duplicate delivery. Message processing, webhook handlers, and state transitions are the primary risk areas. If replaying an operation would corrupt state, the operation is broken.
+
+**Observability as contract.** If you can't see what a system is doing, you can't trust it to run without you. Every module must emit structured signals (logs, metrics, events) sufficient to diagnose failures without attaching a debugger. These emissions are not optional instrumentation: they are part of the module's public contract, with the same standing as its type signatures and error variants. Removing or changing an emitted event is a breaking change. Failing to emit a promised signal is a bug.
+
+This means:
+- **Async operations carry tracing spans.** Every `async fn` that performs I/O, crosses a process boundary, or takes more than trivial time is instrumented with a span that records its inputs, duration, and outcome. Correlation IDs propagate across span boundaries.
+- **Structured logging, not println.** All log output uses the structured logging framework (`tracing` in Rust, `loguru` in Python). No `println!`, no `eprintln!`, no `dbg!` in production paths. Structured fields enable machine parsing; interpolated strings do not.
+- **Long-running services expose health endpoints.** Any process that runs continuously (servers, workers, schedulers, stewards) exposes a health check that reports readiness and dependency status. A service that cannot report its own health is not production-ready.
+- **Modules document their observability contract.** Each module's doc comment includes the events it emits, the metrics it records, and the conditions under which each fires. Downstream consumers (dashboards, Vector pipelines, alert rules) depend on this contract. See § Logging and observability for the contract format.
 
 ---
 
@@ -226,7 +247,7 @@ Blank line between "set up" and "act" and between "act" and "return." No blank l
 | Timestamped files | `YYYYMMDD_description.ext` | `20260313_export.csv` |
 
 - `snake_case` for directories. No hyphens, no camelCase, no spaces.
-- Max 2–3 nesting levels inside any project. Flat > nested.
+- Max 2-3 nesting levels inside any project. Flat > nested.
 - No version numbers in filenames: version in file headers or git tags.
 
 ### Project structure
@@ -301,6 +322,14 @@ Every error must:
 - Use the language's error type: `Result`, exceptions, `sealed class` error hierarchies
 - Invalid data cannot exist past the point of construction
 
+### Exhaustive error types
+
+No catch-all error variants. `Other(String)`, `Unknown`, or `Unexpected` are escape hatches that erode type safety. Every error variant must represent a specific, matchable failure mode. If a new failure is possible, add a variant. If you have 30+ variants, consider whether a structured diagnostic (single struct with severity + message + trace) scales better than an enum.
+
+### Error boundaries
+
+Errors are converted at module and crate boundaries, propagated within them. When an error crosses a boundary, wrap it with context: what the callee was trying to do, not just what went wrong. The boundary layer translates implementation errors into domain errors. Internal errors never leak through public API surfaces.
+
 ### Resource lifecycle
 
 Acquired resources must have a defined cleanup path. Use RAII (`Drop` in Rust), `defer` (Go), `with`/context managers (Python), `using` (C#), `use` (Kotlin). Never rely on garbage collection or finalizers for resource cleanup. Database connections, file handles, and sockets are released as soon as work completes.
@@ -349,6 +378,16 @@ This project is maintained by a single developer with AI agents. Every design de
 - **Inject inward, never fetch.** Configuration values are pushed from the outermost layer (main, entry point) and injected into inner modules. Inner code receives config. It never reads environment variables or config files directly.
 - **Fail on invalid config at startup.** Validate all configuration during initialization with clear error messages. Don't discover bad config at 3 AM when the code path first executes.
 - **Sensible defaults for everything.** A fresh deployment with zero config should start, serve health, and explain what's missing. Not crash with a stack trace.
+
+### Policy and mechanism separation
+
+Behavioral parameters (thresholds, weights, timing, capacity limits, scoring coefficients) are **policy**. They belong in configuration. Code implements **mechanism** — how things work, not when/how-much/how-fast they trigger. If an agent or operator might reasonably want to tune a value, it is not a compile-time constant.
+
+- **Convention over configuration.** Every parameter has a default matching current behavior. Config only contains deviations. Zero-config deployments work identically to today.
+- **Single source of truth for defaults.** Every default value is defined exactly once: in a config struct `Default` impl or in `koina/defaults.rs`. Never duplicated across crates. CLI `default_value` attributes and scaffold templates reference the central definition, not a string literal.
+- **Three-tier classification.** (1) `const` — mathematical/algorithmic invariants that never change (nonce length, hash digest size). (2) Deployment-tunable — `aletheia.toml` values the operator sets per installation. (3) Per-agent-tunable — values agents adjust within operator-set bounds.
+- **Hot vs cold.** Every deployment-tunable parameter is classified as hot-reloadable (SIGHUP applies immediately) or cold (requires restart). See `taxis::reload::RESTART_PREFIXES`. Cold parameters: port bindings, TLS certs, auth mode, storage paths. Everything else is hot.
+- **Cross-parameter validation.** `taxis::validate` enforces that parameter combinations are valid at config load, not discovered at runtime.
 
 ### Deployment
 
@@ -440,55 +479,7 @@ Before writing anything (doc, config, code), ask:
 
 ## Testing
 
-### Behavior over implementation
-
-Test what the code **does**, not how it does it. If a refactor breaks your tests but doesn't break behavior, your tests are wrong.
-
-- One logical assertion per test
-- Descriptive names: `returns_empty_when_session_has_no_turns`, not `test_add` or `it_works`
-- Same-directory test files (colocated with source, not in a separate tree)
-
-### Property-Based testing
-
-Use property tests for:
-- Serialization round-trips (`deserialize(serialize(x)) == x`)
-- Algebraic properties (commutativity, associativity, idempotency)
-- State machine invariants
-- Edge case discovery at scale
-
-Example tests document expected behavior. Property tests catch the unexpected.
-
-### What to test
-
-Focus testing effort on behavior with consequences:
-- Boundary conditions (empty, one, many, max, overflow)
-- Error paths (invalid input, unavailable service, timeout, permission denied)
-- State transitions (especially concurrent access to shared state)
-- Serialization round-trips (`deserialize(serialize(x)) == x`)
-- Idempotency (replaying the same operation produces the same result)
-- Security boundaries (authentication, authorization, input validation)
-
-### No coverage targets
-
-Coverage is a vanity metric. Test the behavior that matters. Untested code should be deliberately untested (generated, or unreachable), not accidentally missed.
-
-### Test data policy
-
-All test data must be synthetic. No real personal information in test fixtures, assertions, or examples.
-
-**Standard test identities:**
-- Users: `alice`, `bob`, `charlie`
-- Emails: `alice@example.com`, `bob@example.org` (RFC 2606 reserved domains only)
-- Phones: `+1-555-0100` through `+1-555-0199` (ITU reserved for fiction)
-- IPs: `192.0.2.x`, `198.51.100.x`, `203.0.113.x` (RFC 5737 documentation ranges)
-- IPv6: `2001:db8::/32` (RFC 3849 documentation range)
-- Domains: `example.com`, `example.org`, `example.net`, `*.test` (RFC 2606/6761 reserved)
-
-**Never use:** real names, emails, usernames, internal IPs/hostnames, personal facts, credentials, or API keys. Never copy production data into test environments.
-
-**Test data builders:** Use builder/factory patterns with sensible defaults. Each test overrides only the fields it cares about. When a field is added to the struct, only the builder default needs updating: not every test.
-
-**Determinism:** Any randomized test data must be seeded. The seed must be logged or persisted. Proptest regression files, hypothesis databases, and equivalent fixtures are checked into version control.
+See TESTING.md — sole authority for testing principles, strategy, organization, coverage, test data policy, and quality expectations.
 
 ---
 
@@ -675,6 +666,83 @@ Access control fails closed. If authorization state is unknown or ambiguous, den
 - Routine success on hot paths (every request succeeded, every query returned)
 - Full request/response bodies at info level (use debug)
 - Redundant messages (logging both the throw and the catch of the same error)
+
+### Observability contracts
+
+Each module documents its observability emissions in its module-level doc comment. This is a contract: downstream consumers (Vector pipelines, GreptimeDB dashboards, alert rules, test assertions) depend on these signals existing with these names and fields.
+
+**Contract format:**
+
+```rust
+//! # Observability
+//!
+//! ## Events
+//! | Event | Level | Fields | Condition |
+//! |-------|-------|--------|-----------|
+//! | `prompt.dispatched` | info | `prompt_id`, `provider`, `project` | Prompt sent to worker |
+//! | `prompt.completed` | info | `prompt_id`, `duration_ms`, `outcome` | Worker returns result |
+//! | `prompt.failed` | error | `prompt_id`, `error`, `retries` | All retries exhausted |
+//!
+//! ## Metrics
+//! | Metric | Type | Labels | Condition |
+//! |--------|------|--------|-----------|
+//! | `dispatch.queue_depth` | gauge | `project` | Per scheduling cycle |
+//! | `dispatch.latency_ms` | histogram | `provider`, `outcome` | Per prompt completion |
+//!
+//! ## Spans
+//! | Span | Fields | Wraps |
+//! |------|--------|-------|
+//! | `dispatch_prompt` | `prompt_id`, `provider` | Full dispatch lifecycle |
+//! | `run_gate` | `prompt_id`, `gate_name` | Single gate check |
+```
+
+**Rules:**
+
+- Events use `noun.verb` naming: `prompt.dispatched`, `gate.passed`, `worktree.created`.
+- Metrics use `namespace.snake_case` naming: `dispatch.queue_depth`, `gate.pass_rate`.
+- Every event listed in the contract must have a corresponding `tracing` call in the module's code. A contract entry without an emission is a failing lint check.
+- Every `tracing::info!` or `tracing::error!` call in a module should appear in that module's contract. An emission without a contract entry is undocumented behavior.
+- Changing event names, removing fields, or altering emission conditions is a breaking change. Add new events freely; modify or remove through deprecation.
+- Span names are stable identifiers. Renaming a span breaks any downstream query that references it.
+
+### Tracing instrumentation
+
+**Spans on async operations:**
+
+```rust
+#[tracing::instrument(skip(self), fields(prompt_id = %prompt.id, provider = %provider))]
+async fn dispatch_prompt(&self, prompt: &Prompt, provider: &str) -> Result<Outcome> {
+    // span auto-records duration and outcome
+}
+```
+
+**Structured event emission:**
+
+```rust
+// WHY: Structured fields enable Vector/GreptimeDB pipeline parsing.
+// Interpolated strings require regex extraction downstream.
+tracing::info!(
+    prompt_id = %prompt.id,
+    provider = %provider,
+    duration_ms = elapsed.as_millis(),
+    outcome = %outcome,
+    "prompt.completed"
+);
+```
+
+**Health endpoints for long-running services:**
+
+```rust
+async fn health_check(&self) -> HealthStatus {
+    HealthStatus {
+        ready: self.is_ready(),
+        dependencies: vec![
+            ("database", self.db.ping().await.is_ok()),
+            ("queue", self.queue.is_connected()),
+        ],
+    }
+}
+```
 
 ---
 

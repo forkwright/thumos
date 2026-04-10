@@ -1,6 +1,6 @@
 # QA
 
-> The audit playbook. Defines what a periodic audit and a full audit contain, how findings are captured, and how the process improves itself. Per-PR checks are handled by the dispatch pipeline and CI, not this document.
+> The audit playbook. Defines when audits run, what they contain, what "passing" looks like, how findings are tracked over time, and how the process improves itself. Per-PR checks are handled by the dispatch pipeline and CI, not this document.
 
 ---
 
@@ -31,6 +31,106 @@ The goal is perfection. Every audit asks: is this the best it can be? If not, fi
 **Test from the user's seat.** Deploy the system. Use it as an operator would. File every friction point.
 
 **Question your own completeness.** After every pass: what haven't I checked? What angle haven't I considered? The audit is done when you can't think of another question.
+
+---
+
+## Audit scheduling
+
+WHY: An audit that runs "when someone remembers" doesn't run. Fixed cadences convert intent into habit. Frequency scales with risk: high-churn repos accumulate violations faster.
+
+| Tier | Repos | Periodic | Full |
+|------|-------|----------|------|
+| Core | kanon, aletheia | Weekly | Monthly |
+| Supporting | harmonia, akroasis, thumos | Biweekly | Quarterly |
+| Standards-only | basanos/standards | On change | On change |
+
+**Periodic audits** cover violation baseline, privacy/secrets, and standards enforcement gaps (see [Periodic audit](#periodic-audit)). Run them at the cadence above. Skip only if zero commits since the last run — and log the skip.
+
+**Full audits** cover every phase. Schedule them at the cadence above. A full audit also runs after any major release (semver minor or major bump) or architectural change (new crate, crate split, dependency direction change).
+
+**On-change audits** for standards-only repos trigger when any `.md` file in the standards directory is modified. The audit verifies internal consistency (no contradictions between standards), link validity, and claim accuracy.
+
+**Batch execution.** Use `kanon audit --all` to run periodic audits across every repo in the fleet. Use `kanon audit --all --full` for full audits. If batch tooling does not yet exist, file on kanon to track it — do not silently run audits manually at scale.
+
+WHY: Manual execution across five repos is error-prone and creates inconsistent audit timestamps. Batch tooling ensures every repo is audited with the same standards version in the same pass.
+
+---
+
+## Baseline scores
+
+WHY: Without a defined target, audits produce findings but no verdict. Baselines separate "improving" from "acceptable" and create a gate that blocks regressions.
+
+Each audit summary record includes category scores (see [Training data output](#training-data-output)). These are the minimum thresholds:
+
+| Category | Minimum | Target | Gate? |
+|----------|---------|--------|-------|
+| Writing | B | A- | Yes |
+| Safety | B+ | A | Yes |
+| Architecture | B | A- | Yes |
+| Testing | B | B+ | No |
+| Security | B+ | A | Yes |
+| Operations | B- | B+ | No |
+
+**Gate** means a repo scoring below the minimum on a gated category blocks the next release. Non-gated categories are tracked and trended but do not block.
+
+**How scores map to grades.** Scores derive from the violation density (violations per 1K lines) and severity distribution within each category. The grading function lives in basanos and is the single source of truth. Do not hardcode grade thresholds in this document — reference the implementation.
+
+WHY: Hardcoded thresholds in prose diverge from the code that actually computes them. The table above defines policy (what the minimums are); the code defines mechanics (how a score becomes a grade).
+
+**Ratchet rule.** Once a repo reaches a score, the minimum for that repo ratchets to that score. Baselines only move up. If a repo achieves A- in Security, A- becomes its new minimum. Store per-repo baselines in `workflow/baselines/{repo}.toml`.
+
+WHY: Without a ratchet, repos oscillate. A team fixes violations to reach A-, then regresses to B+ next quarter. The ratchet converts every improvement into a permanent floor.
+
+**New repos.** A repo's first full audit establishes its initial baseline. No gating applies until the second audit. The first audit is measurement, not judgment.
+
+---
+
+## Quality metric tracking
+
+WHY: Point-in-time audits tell you where you are. Trends tell you whether you're getting better or worse. Without historical tracking, the same violations get rediscovered every cycle.
+
+### What to track
+
+| Metric | Source | Granularity |
+|--------|--------|-------------|
+| Total violation count | `kanon lint --summary` | Per repo, per audit |
+| Violation count by severity | Audit summary record | Per repo, per audit |
+| Violation count by standard | Audit JSONL findings | Per repo, per audit |
+| Category scores | Audit summary record | Per repo, per audit |
+| Delta from previous audit | Computed from consecutive summaries | Per repo, per audit |
+| Time to resolve (filed → closed) | GitHub issue timestamps | Per repo, rolling |
+| Standards coverage | Enforcement gap analysis | Per repo, per full audit |
+
+### Storage
+
+Audit JSONL files in `workflow/training/audits/` are the raw data. Per-repo baselines in `workflow/baselines/{repo}.toml` are the derived policy state. Both are committed to the kanon repo.
+
+WHY: Committing audit data to the repo makes trends visible in git history, reviewable in PRs, and available to any tool without external service dependencies.
+
+### Trend analysis
+
+After each audit, compare against the previous three audits for the same repo and tier:
+
+- **Violation delta.** Is the total count decreasing? If not, investigate. A flat or rising count means new violations are being introduced as fast as old ones are fixed.
+- **Category score movement.** Any category that dropped since the last audit gets a tracking issue explaining why and what will reverse it.
+- **Stale findings.** Any finding that appears in three consecutive audits without a corresponding open issue is a process failure. File it and flag the gap.
+- **Resolution velocity.** Track the median time from issue filed to issue closed for audit findings. If median exceeds 30 days, the audit is producing findings faster than the team resolves them — adjust audit scope or increase fix bandwidth.
+
+WHY: Measuring resolution velocity prevents the failure mode where audits produce an ever-growing backlog that everyone ignores. The audit must produce actionable work at a sustainable rate.
+
+### Reporting
+
+Each audit run appends to the repo's trend. `kanon audit-report --repo <name>` renders the trend as a table showing the last 6 audits with deltas. If this tooling does not yet exist, file on kanon — do not build ad-hoc scripts that become invisible workarounds.
+
+---
+
+## Prerequisites
+
+```bash
+cargo install cargo-fuzz cargo-outdated cargo-deny cargo-audit
+rustup toolchain install nightly  # for fuzz
+# gitleaks: https://github.com/gitleaks/gitleaks/releases
+```
 
 ---
 
@@ -91,11 +191,11 @@ Per-crate if all-features OOMs. Document which commands produce full coverage.
 #### 1.2 fuzz targets
 
 ```bash
-cargo fuzz list
-cargo fuzz run <target> -- -max_total_time=60
+rustup run nightly cargo fuzz list
+rustup run nightly cargo fuzz run <target> -- -max_total_time=60
 ```
 
-Each target 60 seconds. Crashes are bugs.
+Requires nightly toolchain. Each target 60 seconds. Crashes are bugs.
 
 #### 1.3 binary smoke test
 
@@ -110,6 +210,23 @@ cargo outdated
 
 Flag duplicates. Flag stale deps.
 
+#### 1.5 supply chain audit
+
+```bash
+cargo deny check
+cargo audit
+```
+
+cargo-deny checks advisories, license compliance, banned crates, and source verification. cargo-audit checks the RUSTSEC advisory database. Both are zero-config with a deny.toml.
+
+#### 1.6 shell script lint
+
+```bash
+shellcheck scripts/*.sh
+```
+
+Catches portability issues (GNU-only flags, quoting bugs) and POSIX compliance.
+
 ### Phase 2: writing and docs (LLM-assisted)
 
 #### 2.1 writing quality
@@ -123,6 +240,17 @@ Changed docs since last audit: do code references point to real files? Do number
 #### 2.3 cLAUDE.md freshness
 
 Does CLAUDE.md match the codebase? Paths correct? CLI subcommands current?
+
+#### 2.4 doc claims verification
+
+Cross-check documented claims against ground truth:
+
+- Version numbers in docs match `Cargo.toml` `version` field
+- Config field names in CONFIGURATION.md (or equivalent) match the config struct definition
+- CLI subcommands listed in CLAUDE.md match `--help` output (compare `kanon --help` tree against prose)
+- Internal doc links (`[text](path)`) resolve to existing files
+
+Flag every mismatch as a separate finding. Documentation that lies is worse than no documentation.
 
 ### Phase 3: code quality (LLM-assisted)
 
@@ -179,6 +307,17 @@ New HTTP endpoints validate at boundary? New tool inputs check allowed_roots? Ne
 #### 5.3 sandbox
 
 New `tokio::spawn` without `.instrument()`? New process spawning without ProcessGuard? New file ops bypassing FileSystem trait?
+
+#### 5.4 CSRF and auth default audit
+
+Compare security-relevant code defaults against documented defaults. Mismatches here are critical: if DEPLOYMENT.md says CSRF is "enabled by default" but the code initializes it disabled, operators configure based on the docs and ship with a silent security hole.
+
+Check:
+- Auth mode default (e.g., `AuthMode::None` vs. `AuthMode::Required`) matches documented default
+- CSRF protection enabled or disabled by default
+- Sandbox enforcement on or off by default
+- Credential file permissions (must be 0600 if written)
+- Token preview length (must not expose full token in logs or UI)
 
 ### Phase 6: operational readiness
 

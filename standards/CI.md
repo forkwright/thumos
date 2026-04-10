@@ -1,24 +1,27 @@
 # CI/CD
 
-> Standards for continuous integration, continuous delivery, and release processes.
+> Standards for CI tooling: which checks run, how they're configured, target matrices, test sharding, and workflow generation.
+>
+> See also: DEPLOYMENT.md (merge gates, merge policy, branch protection), RELEASES.md (versioning, release-please, binary distribution).
 
 ---
 
 ## Required checks
 
-Every PR must pass ALL of these before merge. No exceptions, no manual overrides.
+These checks run on every PR. Merge gate policy (which checks block merge) is defined in DEPLOYMENT.md.
 
-| Check | Purpose | Blocks merge |
-|-------|---------|-------------|
-| Format | Consistent style | Yes |
-| Lint (clippy/ruff/eslint) | Catch bugs and anti-patterns | Yes |
-| Type check | Catch type errors | Yes |
-| Unit tests | Catch regressions | Yes |
-| Integration tests | Catch cross-module regressions | Yes |
-| Security scan | Catch leaked credentials | Yes |
-| Dependency audit | Catch known CVEs | Advisory (non-blocking for transitive) |
-| Commit lint | Enforce conventional commits | Yes |
-| Size check | Catch accidental large files | Yes |
+| Check | Tool | Purpose |
+|-------|------|---------|
+| Format | rustfmt / ruff format / prettier | Consistent style |
+| Lint | clippy / ruff / eslint | Catch bugs and anti-patterns |
+| Type check | cargo check / mypy / tsc | Catch type errors |
+| Unit tests | nextest / pytest / vitest | Catch regressions |
+| Integration tests | nextest / pytest | Catch cross-module regressions |
+| Security scan | cargo deny / trivy | Catch leaked credentials |
+| Dependency audit | cargo deny / pip-audit | Catch known CVEs |
+| Vulnerability audit | cargo audit / osv-scanner | Catch known vulnerabilities (RustSec) |
+| Commit lint | commitlint | Enforce conventional commits |
+| Size check | git diff --stat | Catch accidental large files |
 
 ### Check order
 
@@ -28,6 +31,27 @@ Fast checks first. Fail fast, don't waste compute:
 3. Unit tests (minutes)
 4. Integration tests (minutes)
 5. Security + dependency (parallel with tests)
+
+### Vulnerability scanning
+
+`cargo audit` checks the RustSec Advisory Database for known vulnerabilities in dependencies. It runs on every PR and on a daily schedule against the default branch.
+
+WHY: Running only on PRs catches new introductions but misses newly-published CVEs against existing dependencies. The daily schedule closes that gap. `cargo-deny` overlaps on advisories but uses a different database and checks additional concerns (licenses, bans, sources). Run both.
+
+#### Severity-based CI behavior
+
+| CVSS severity | CI behavior | Rationale |
+|---------------|-------------|-----------|
+| Critical (>= 9.0) | Fail CI | Active exploitation likely; must block merge |
+| High (>= 7.0) | Fail CI | Significant risk; must block merge |
+| Medium (4.0 – 6.9) | Warn (non-blocking) | Track and remediate per SLA (see SECURITY.md § CVE response SLAs) |
+| Low (< 4.0) | Warn (non-blocking) | Track in issue, fix when convenient |
+
+To suppress a known advisory while a fix is pending, add it to the `cargo-deny` allow list in `deny.toml` with a justification and review-by date. `cargo audit` respects the same ignore list when invoked with `--ignore` flags derived from `deny.toml`.
+
+#### SBOM generation
+
+Every release pipeline must generate a CycloneDX SBOM and attach it as a release artifact. See SECURITY.md § Software Bill of Materials for format requirements and tooling.
 
 ---
 
@@ -57,37 +81,6 @@ Fast checks first. Fail fast, don't waste compute:
 - Miri (undefined behavior detection)
 - Fuzz targets (parser/serializer correctness)
 - Documentation build (`cargo doc` / `rustdoc`)
-
----
-
-## Release process
-
-### Versioning
-
-Single workspace version. Semantic versioning. Pre-1.0: anything can break. Post-1.0: breaking changes bump major.
-
-### Release checklist
-
-1. All CI checks pass on main
-2. CHANGELOG.md updated (unreleased -> version)
-3. Version bumped in workspace
-4. Tag pushed (triggers release workflow)
-5. Release workflow builds all targets
-6. Binaries uploaded to GitHub releases
-7. Checksums published alongside binaries
-
-### Rollback
-
-Every release preserves the previous binary. Rollback is: stop, swap binary, start, health check. Database rollback documented separately per migration.
-
----
-
-## Branch protection
-
-- Main branch: require PR, require CI pass, require 1 approval (or bot approval for automated PRs)
-- No force push to main
-- No merge commits (rebase or squash only)
-- Branch auto-delete after merge
 
 ---
 
