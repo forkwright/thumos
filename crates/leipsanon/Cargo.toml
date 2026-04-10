@@ -1,5 +1,5 @@
 [package]
-name = "thumos-leipsanon"
+name = "leipsanon"
 description = "Panic mode: selective wipe, anti-forensics, memory scrubbing"
 version.workspace = true
 edition.workspace = true

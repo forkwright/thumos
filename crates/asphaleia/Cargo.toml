@@ -1,5 +1,5 @@
 [package]
-name = "thumos-asphaleia"
+name = "asphaleia"
 description = "Security: firewall, DNS filtering, capability enforcement"
 version.workspace = true
 edition.workspace = true
