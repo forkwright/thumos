@@ -255,6 +255,387 @@ Use `#[diagnostic::on_unimplemented]` for domain-specific trait error messages. 
 
 ---
 
+## Validation constructors
+
+Implements STANDARDS.md § Parse, Don't Validate for Rust. Invalid data must not survive construction. Every domain type enforces its invariants at the boundary — deserialization, config loading, CLI parsing — so downstream code never checks validity again.
+
+### Newtype wrappers with `TryFrom`
+
+Newtypes that accept arbitrary input must validate through `TryFrom`, not `new`. A public `new` that accepts any `&str` defeats the point of the wrapper — callers can construct invalid instances.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct ProjectSlug(compact_str::CompactString);
+// WHY: TryFrom is the validation boundary. Once constructed, the slug is
+// known-valid. No runtime checks needed downstream.
+
+impl TryFrom<&str> for ProjectSlug {
+    type Error = ValidationError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        ensure!(
+            !value.is_empty(),
+            EmptyFieldSnafu { field: "project_slug" }
+        );
+        ensure!(
+            value.len() <= 64,
+            FieldTooLongSnafu { field: "project_slug", max: 64, actual: value.len() }
+        );
+        ensure!(
+            value.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+            InvalidFormatSnafu {
+                field: "project_slug",
+                expected: "lowercase ASCII with hyphens",
+                actual: value.to_string(),
+            }
+        );
+        Ok(Self(value.into()))
+    }
+}
+
+impl ProjectSlug {
+    /// Access the validated slug as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+```
+
+Do not implement `From<&str>` on types that require validation. `From` is infallible — it tells callers the conversion cannot fail, which is a lie when invariants exist. Use `TryFrom` exclusively.
+
+### Serde validation
+
+All public types that derive `Deserialize` and have invariants must validate on deserialize, not after. Derive-based `Deserialize` bypasses constructors — serde writes directly to struct fields, skipping any `TryFrom` or `new` logic. Every type with invariants must route deserialization through the validation path. A `#[derive(Deserialize)]` on a type with a `new()` or `try_new()` constructor is a bug: those constructors exist because the type has invariants, and serde bypasses them.
+
+```rust
+// WHY: #[serde(try_from)] delegates deserialization to TryFrom, so the
+// validation constructor is the single entry point for both code and data.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(try_from = "&str")]
+pub struct EmailAddress(compact_str::CompactString);
+
+impl TryFrom<&str> for EmailAddress {
+    type Error = ValidationError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        ensure!(
+            value.contains('@') && value.len() <= 254,
+            InvalidFormatSnafu {
+                field: "email",
+                expected: "valid email address",
+                actual: value.to_string(),
+            }
+        );
+        Ok(Self(value.into()))
+    }
+}
+
+impl<'de> Deserialize<'de> for EmailAddress {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(deserializer)?;
+        Self::try_from(s).map_err(serde::de::Error::custom)
+    }
+}
+```
+
+For struct fields that need validation but aren't newtypes, use `deserialize_with`:
+
+```rust
+#[derive(Debug, Deserialize)]
+pub struct RateLimitConfig {
+    #[serde(deserialize_with = "deserialize_positive_nonzero")]
+    pub requests_per_second: u32,
+
+    #[serde(deserialize_with = "deserialize_duration_secs")]
+    pub window: Duration,
+}
+
+// WHY: Serde happily deserializes 0 into u32. A rate limit of 0 is
+// nonsensical and would cause division-by-zero downstream. Catch it here.
+fn deserialize_positive_nonzero<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom(
+            "value must be greater than zero",
+        ));
+    }
+    Ok(value)
+}
+```
+
+Three patterns, in order of preference:
+1. **`#[serde(try_from = "T")]`** on the type — best for newtypes where `TryFrom` is already the constructor
+2. **Manual `Deserialize` impl** — when the intermediate representation differs from what `try_from` accepts
+3. **`#[serde(deserialize_with = "fn")]`** on the field — for validating fields within a larger struct
+
+Never rely on bare `#[derive(Deserialize)]` for types with invariants. If a struct has a "must be positive" or "must match pattern" field, the derive is wrong by default.
+
+#### `deny_unknown_fields` for config types
+
+Config types loaded from files, environment, or user input must reject unrecognized fields. A typo in a config key (`timout` instead of `timeout`) silently becomes a default value. `deny_unknown_fields` turns that into a hard error at load time.
+
+```rust
+// WHY: Config files are the #1 source of "it worked on my machine" bugs.
+// A misspelled key silently uses the default, which may be zero, empty, or
+// wrong. deny_unknown_fields catches typos at parse time.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetryConfig {
+    pub max_attempts: u32,
+    pub backoff_ms: u64,
+    pub jitter: bool,
+}
+```
+
+Apply `deny_unknown_fields` to all types that represent configuration, settings, or options loaded from external sources. Do not apply it to API request/response types or wire-format types where forward compatibility matters.
+
+#### Complex struct validation via `TryFrom`
+
+When a struct has cross-field invariants, deserialize into a raw intermediate type and validate during conversion. This keeps the validation logic in one place and prevents invalid state from ever existing.
+
+```rust
+// WHY: ScheduleConfig has a cross-field invariant: if retry is enabled,
+// retry_delay must be set. Bare derive would allow { retry: true, retry_delay: None }.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduleConfig {
+    pub cron: String,
+    pub retry: bool,
+    pub retry_delay: Duration,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawScheduleConfig {
+    cron: String,
+    retry: Option<bool>,
+    retry_delay_secs: Option<u64>,
+}
+
+impl TryFrom<RawScheduleConfig> for ScheduleConfig {
+    type Error = ValidationError;
+
+    fn try_from(raw: RawScheduleConfig) -> Result<Self, Self::Error> {
+        let retry = raw.retry.unwrap_or(false);
+        let retry_delay = match (retry, raw.retry_delay_secs) {
+            (true, None) => return Err(CrossFieldSnafu {
+                rule: "retry = true requires retry_delay_secs",
+            }.build()),
+            (true, Some(secs)) => Duration::from_secs(secs),
+            (false, _) => Duration::ZERO,
+        };
+        Ok(Self { cron: raw.cron, retry, retry_delay })
+    }
+}
+
+impl<'de> Deserialize<'de> for ScheduleConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawScheduleConfig::deserialize(deserializer)?;
+        Self::try_from(raw).map_err(serde::de::Error::custom)
+    }
+}
+```
+
+#### Exception: pure data transfer types
+
+Types that are pure data containers with no invariants — every combination of field values is valid — may use plain `#[derive(Deserialize)]`. These are typically:
+
+- Wire-format types mapping 1:1 to an external API response
+- Event payloads where all fields are informational
+- Intermediate representations used only as input to a validation step
+
+Mark these types explicitly so the intent is clear and the lint rule does not flag them:
+
+```rust
+// WHY: Pure data transfer type — no invariants. All field combinations are
+// valid. This struct maps directly to the GitHub API response shape.
+#[derive(Debug, Deserialize)]
+pub struct GitHubPullRequest {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub draft: bool,
+}
+```
+
+The key test: if the type has a `new()`, `try_new()`, or `build()` constructor, it has invariants and must not use bare `#[derive(Deserialize)]`. If every field combination is valid and there is no constructor, plain derive is correct.
+
+### Builder pattern for complex configs
+
+Use builders when construction requires multiple validated fields with cross-field constraints. A flat constructor with 5+ parameters is unreadable, and field order becomes a bug vector.
+
+```rust
+/// WHY: DispatchConfig has cross-field invariants (max_retries requires
+/// retry_delay, budget_limit must exceed single-request cost). A builder
+/// validates these at build() time, not scattered across call sites.
+#[derive(Debug, Clone)]
+pub struct DispatchConfig {
+    provider: ProviderKind,
+    model: ModelId,
+    max_retries: u32,
+    retry_delay: Duration,
+    budget_limit: BudgetLimit,
+}
+
+#[derive(Debug, Default)]
+pub struct DispatchConfigBuilder {
+    provider: Option<ProviderKind>,
+    model: Option<ModelId>,
+    max_retries: Option<u32>,
+    retry_delay: Option<Duration>,
+    budget_limit: Option<BudgetLimit>,
+}
+
+impl DispatchConfigBuilder {
+    #[must_use]
+    pub fn provider(mut self, provider: ProviderKind) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    #[must_use]
+    pub fn model(mut self, model: ModelId) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    #[must_use]
+    pub fn max_retries(mut self, n: u32, delay: Duration) -> Self {
+        // WHY: retries without a delay is a tight loop that burns budget.
+        // Requiring both together makes the invalid state unrepresentable.
+        self.max_retries = Some(n);
+        self.retry_delay = Some(delay);
+        self
+    }
+
+    #[must_use]
+    pub fn budget_limit(mut self, limit: BudgetLimit) -> Self {
+        self.budget_limit = Some(limit);
+        self
+    }
+
+    /// Consume the builder and produce a validated config.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValidationError` if required fields are missing or
+    /// cross-field invariants are violated.
+    pub fn build(self) -> Result<DispatchConfig, ValidationError> {
+        let provider = self.provider.context(MissingFieldSnafu { field: "provider" })?;
+        let model = self.model.context(MissingFieldSnafu { field: "model" })?;
+        let max_retries = self.max_retries.unwrap_or(0);
+        let retry_delay = self.retry_delay.unwrap_or(Duration::ZERO);
+        let budget_limit = self.budget_limit.context(MissingFieldSnafu { field: "budget_limit" })?;
+
+        // Cross-field validation
+        ensure!(
+            max_retries == 0 || retry_delay > Duration::ZERO,
+            CrossFieldSnafu {
+                rule: "max_retries > 0 requires retry_delay > 0",
+            }
+        );
+
+        Ok(DispatchConfig { provider, model, max_retries, retry_delay, budget_limit })
+    }
+}
+
+impl DispatchConfig {
+    #[must_use]
+    pub fn builder() -> DispatchConfigBuilder {
+        DispatchConfigBuilder::default()
+    }
+}
+```
+
+Rules for builders:
+- `#[must_use]` on every setter method and on `builder()`. A dropped builder is always a bug.
+- `build()` returns `Result`, never panics. Validation failures are expected, not exceptional.
+- Required fields are `Option` in the builder, validated at `build()` time. Not `Default::default()` with silent wrong values.
+- Cross-field invariants live in `build()`, not in individual setters. Setters validate single fields; `build()` validates relationships.
+- Implement `Deserialize` on the config type via the builder, so serde routes through the same validation.
+
+For simple configs (2-3 fields, no cross-field constraints), `TryFrom` on a raw deserialization struct is sufficient. Use builders when the construction logic justifies the ceremony.
+
+### Error types for validation failures
+
+Validation errors must be structured, not stringly-typed. Callers need to match on failure kinds programmatically — for user-facing messages, retry logic, or aggregating multiple failures.
+
+```rust
+// WHY: A single validation pass may produce multiple errors (e.g., a config
+// file with 3 bad fields). Collecting all of them lets the user fix
+// everything in one pass instead of playing whack-a-mole.
+#[derive(Debug, Snafu)]
+pub enum ValidationError {
+    #[snafu(display("field '{field}' is required"))]
+    MissingField {
+        field: &'static str,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    #[snafu(display("field '{field}' is empty"))]
+    EmptyField {
+        field: &'static str,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    #[snafu(display("field '{field}' exceeds maximum length {max} (got {actual})"))]
+    FieldTooLong {
+        field: &'static str,
+        max: usize,
+        actual: usize,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    #[snafu(display("field '{field}': expected {expected}, got '{actual}'"))]
+    InvalidFormat {
+        field: &'static str,
+        expected: &'static str,
+        actual: String,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    #[snafu(display("cross-field constraint violated: {rule}"))]
+    CrossField {
+        rule: &'static str,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    #[snafu(display("{count} validation errors"))]
+    Multiple {
+        count: usize,
+        errors: Vec<ValidationError>,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+}
+```
+
+Rules for validation errors:
+- One `ValidationError` enum per crate (or per domain boundary). Not per-type — validation errors share structure.
+- Every variant carries the field name. "Validation failed" with no context is useless.
+- Include expected vs. actual values in format errors. The user shouldn't have to guess what's wrong.
+- Support a `Multiple` variant for batch validation. Fail-fast is the default; batch collection is opt-in for user-facing boundaries (config loading, HTTP request parsing).
+- Implement `Display` with full context. The error message alone, without a stack trace, must be sufficient to diagnose the problem.
+- Follow the crate's snafu conventions: `#[snafu(implicit)] location` on every variant, `source` field only when wrapping another error.
+
+### What not to do
+
+- `String` as error type from validation: callers cannot match, test, or recover programmatically
+- `new()` that silently clamps or truncates invalid input: the caller doesn't know their input was altered
+- `Default` values substituted for missing required fields: masks configuration errors until production
+- `#[derive(Deserialize)]` on a type with invariants without `try_from` or `deserialize_with`: serde bypasses your constructor
+- `unwrap()` on `TryFrom` in deserialization: converts a recoverable validation failure into a panic
+- `validate()` method called after construction: the invalid state exists between `new()` and `validate()` — any code path that forgets to call `validate()` has a bug
+
+---
+
 ## Safety and correctness
 
 ### No silent truncation
@@ -642,12 +1023,13 @@ Never fight the borrow checker with `RefCell` or `unsafe` for graph structures. 
 
 ## Testing
 
-See STANDARDS.md § Testing and TESTING.md for universal test principles.
+See TESTING.md for all testing principles (naming, isolation, coverage, test data, property testing).
+
+Rust-specific framework choices and conventions:
 
 - `#[cfg(test)] mod tests` in the same file, `use super::*` at the top
 - `#[should_panic(expected = "message")]` for panic-testing (not bare `#[should_panic]`)
 - `#[tokio::test]` for async tests, `tokio::time::pause()` for deterministic time
-- Every `Serialize + Deserialize` type gets a roundtrip property test
 - `proptest` / `bolero` for property-based testing
 - `insta` for snapshot testing of serialization formats, error messages, and CLI output
 - `tracing-test` for asserting that errors are actually logged
@@ -684,7 +1066,8 @@ See STANDARDS.md § Testing and TESTING.md for universal test principles.
 - Each new dependency must justify itself. If it's 10 lines, write it.
 - Prefer std over external. `std::sync::Mutex` over `parking_lot::Mutex` unless benchmarks prove otherwise. `std::collections::HashMap` over `hashbrown` unless the hasher matters.
 - Gate heavy dependencies behind features. ML (candle), GUI (dioxus), optional integrations (pcre2) should not compile unless requested. A minimal `cargo build` pulls only what the core needs.
-- Count transitive dependencies. A crate that adds 3 direct deps may pull 80 transitive. Check with `cargo tree -d` before adding.
+- Count transitive dependencies before adding. Run `cargo tree -d` and report the transitive depth. A crate that adds 3 direct deps may pull 80 transitive. Flag if a new dependency increases the workspace's total transitive count by more than 20%. WHY: a single "convenient" crate can silently double compile times and attack surface.
+- When alternatives exist, prefer the crate with fewer transitive dependencies. A crate that does the same thing with 5 transitive deps is better than one with 50, even if the API is slightly less ergonomic.
 - Audit new deps: maintenance status, download count, last publish date, unsafe usage. Pre-1.0 crates with <1000 downloads/month are a supply chain risk.
 
 ### Feature flags
@@ -725,6 +1108,124 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 ```
+
+### Dependency footprint audit
+
+Supply chain weight compounds silently. A workspace that compiles 400 crates today compiles 600 next quarter unless someone actively resists. Auditing is not a one-time gate; it is a recurring discipline.
+
+#### Pre-addition checklist
+
+Before adding any new crate dependency:
+
+1. **Measure baseline:** `cargo tree --workspace --depth 999 --prefix none | sort -u | wc -l`
+2. **Add the dependency** and re-measure. If the transitive count increased by more than 20%, stop and evaluate alternatives.
+3. **Run `cargo tree -d`** to check for new duplicate crate versions introduced by the addition.
+4. **Compare alternatives:** If multiple crates solve the problem, prefer the one with fewer transitive dependencies. Run `cargo tree -i <crate>` for each candidate to see what it pulls.
+5. **Document the choice:** If the selected crate has a high transitive count, add a comment above the dependency line explaining why it was chosen over lighter alternatives.
+
+```bash
+# Full pre-addition workflow
+BEFORE=$(cargo tree --workspace --depth 999 --prefix none | sort -u | wc -l)
+# ... add the dependency ...
+AFTER=$(cargo tree --workspace --depth 999 --prefix none | sort -u | wc -l)
+INCREASE=$(( (AFTER - BEFORE) * 100 / BEFORE ))
+echo "Transitive count: $BEFORE -> $AFTER (+${INCREASE}%)"
+cargo tree -d  # check for new duplicates
+```
+
+#### Tools
+
+Run both `cargo-deny` and `cargo-audit` on every PR. They overlap but are not redundant.
+
+| Tool | Primary role | WHY both |
+|------|-------------|----------|
+| `cargo-deny` | Licenses, bans, duplicate versions, source restrictions | Policy enforcement: catches banned crates, license violations, and registry drift |
+| `cargo-audit` | RustSec advisory database lookup | Vulnerability focus: faster advisory DB updates, `cargo audit fix` can auto-patch lockfiles |
+
+```bash
+cargo deny check                 # full policy check (deny.toml)
+cargo audit                      # RustSec advisories against Cargo.lock
+cargo audit --deny warnings      # CI: treat warnings (unmaintained, unsound) as failures
+```
+
+`cargo-deny` catches what `cargo-audit` misses (licenses, bans, sources). `cargo-audit` catches what `cargo-deny` sometimes lags on (RustSec DB freshness, auto-fix suggestions). Running only one leaves a gap.
+
+#### Dependency size budgets
+
+Track two numbers per release: **crate count** and **binary size**.
+
+```bash
+# Total unique crates compiled (including transitive)
+cargo tree --workspace --depth 999 --prefix none | sort -u | wc -l
+
+# Duplicate crates (same crate, different versions)
+cargo tree -d
+
+# Binary size (release profile)
+ls -lh target/release/<binary>
+```
+
+**Budget rules:**
+
+- Set a crate count ceiling in CI. Start with the current count + 5% margin. WHY: without a ceiling, dependency creep is invisible until compile times double.
+- A PR that increases crate count by more than 5 must include justification in the PR description. WHY: small additions feel harmless individually; the budget forces a conversation.
+- Binary size increases above 10% without a corresponding feature addition are regressions (already in CI tools table above). Track per release in the changelog.
+- Duplicate crate versions (`cargo tree -d`) should trend toward zero. Each duplicate means two copies compiled and linked. Resolve by aligning version ranges or patching upstream.
+
+**Transitive depth thresholds per workspace member:**
+
+Check per-crate transitive counts with `cargo tree -p <crate> --prefix none | sort -u | wc -l`.
+
+| Crate type | Threshold | Action |
+|------------|-----------|--------|
+| Leaf library (no downstream dependents in workspace) | <50 transitive | Warning above threshold; investigate and justify or trim |
+| Internal library (depended on by other workspace crates) | <100 transitive | Each transitive dep is inherited by all downstream consumers; weight multiplies |
+| Application / binary crate | <200 transitive | Hard ceiling; increases above this require architectural review |
+
+WHY: A leaf crate with 80 transitive deps is a smell — it likely pulls a framework when it needs a utility. An application crate above 200 is accumulating the entire ecosystem. These thresholds are enforced by the `MANIFEST/dep-count` basanos rule on `Cargo.lock` (workspace-level total) and by manual `cargo tree -p` review per member at release time.
+
+#### Feature flag minimization
+
+Every dependency should be added with `default-features = false` and only the features actually used enabled explicitly. WHY: default feature sets pull transitive dependencies you never call. A single `features = ["full"]` can double the dependency tree.
+
+```toml
+# Wrong: pulls every optional feature tokio offers
+tokio = "1"
+
+# Right: only what this crate actually uses
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "signal"] }
+```
+
+Audit feature flags during dependency review:
+
+```bash
+# Show features enabled for a specific crate and why
+cargo tree -e features -i tokio
+
+# Show all features enabled across the workspace
+cargo tree -e features --workspace
+```
+
+When a dependency's default features include something heavy (TLS backends, compression, serialization formats), disable defaults and opt in. Document the choice in a comment above the dependency line. WHY: the next developer adding a feature flag needs to know what was deliberately excluded.
+
+#### Audit frequency
+
+| Trigger | Action |
+|---------|--------|
+| Every PR | `cargo deny check` + `cargo audit --deny warnings` in CI |
+| Weekly (automated) | `cargo audit` with updated advisory DB. WHY: new advisories land between PRs; a crate safe on Monday may have a CVE by Friday. |
+| Each new dependency | Full review: maintenance status, download count, last publish date, unsafe usage, transitive tree impact (already in Dependencies policy above) |
+| Quarterly (manual) | Full footprint review: crate count trend, binary size trend, duplicate versions, stale `[patch]` entries, feature flag audit. WHY: drift is only visible at longer timescales. |
+
+For the weekly check, use a scheduled CI job or cron:
+
+```bash
+cargo install cargo-audit --locked
+cargo audit fetch                # update advisory DB
+cargo audit --deny warnings      # fail on any known issue
+```
+
+The quarterly review is a manual pass. Check the crate count and binary size against the previous quarter. If either grew more than 10% without a proportional feature addition, investigate and trim. Remove unused dependencies (`cargo-udeps`), consolidate duplicates, and tighten feature flags.
 
 ---
 

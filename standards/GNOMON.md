@@ -168,6 +168,82 @@ A name fails as a gnomon when the name draws attention to itself rather than to 
 
 ---
 
+## Naming review gate
+
+Every new component name passes this checklist before architecture is finalized. Not post-hoc renaming — the name shapes the design. A name that ships without review becomes load-bearing before anyone evaluates whether it was right.
+
+**WHY a gate:** Names are the hardest thing to change. Once a name enters code, docs, conversation, and mental models, renaming costs more than the original design. Catching a bad name before merge costs minutes. Catching it after costs weeks of migration and confusion.
+
+### L1: Practical
+
+The name must function as a working identifier in code and conversation.
+
+| Check | Pass criteria |
+|-------|--------------|
+| **Pronounceable** | A native English speaker can say it aloud without hesitation. If reviewers stumble, the name fails. |
+| **Typeable** | Lowercase ASCII transliteration fits standard identifiers. No diacritics in code paths. Greek is for documentation and conceptual reference. |
+| **Grep-friendly** | The name returns relevant results and only relevant results. No collisions with common English words, standard library types, or existing crate/module names in the ecosystem. |
+| **No internal collisions** | `grep -r <name>` across all repos returns zero false positives from unrelated components. |
+| **Length** | 3-12 characters in code form. Shorter names must be more common roots (e.g., `nous`). Longer names must justify the syllables. |
+
+**WHY L1 first:** A name that fails L1 will be worked around. Developers will invent abbreviations, aliases, or avoid saying it. The workaround becomes the real name, and the official name becomes decoration.
+
+### L2: Structural
+
+The name must reflect the component's role and compose with its neighbors.
+
+| Check | Pass criteria |
+|-------|--------------|
+| **Role alignment** | The Greek source meaning maps to what the component *does* in the system, not what it *contains*. |
+| **Domain convention** | Follows the suffix system: -ia/-eia for platforms/qualities, -sis for processes, -on for tools/instruments, -ων/-μων for agents. Mismatched suffixes mislead. |
+| **Sibling coherence** | Names at the same architectural level share a register. A module named alongside `dianoia` and `noesis` should not suddenly be `DataProcessor`. |
+| **Parent-child fit** | If nested under a named parent, the child name makes sense as a part of that whole. Aletheia's children should relate to unconcealment. |
+
+**WHY L2:** Structural misalignment compounds silently. A name that contradicts its role trains every reader to distrust the naming system. Once distrust sets in, names stop carrying information and become arbitrary labels.
+
+### L3: Philosophical
+
+The Greek source meaning must align with the component's purpose. The metaphor must be coherent, not forced.
+
+| Check | Pass criteria |
+|-------|--------------|
+| **Source verification** | The Greek etymology is confirmed against LSJ (Liddell-Scott-Jones) or equivalent primary source. No folk etymologies, no second-hand glosses. |
+| **Meaning alignment** | The primary LSJ sense (not an obscure tertiary sense) maps to the component's essential nature. If you need the fifth definition to make it work, the name is wrong. |
+| **Metaphor integrity** | The conceptual mapping holds under examination. If someone who knows the Greek would object, the name fails. |
+| **Not forced** | The name was discovered, not justified. If the review discussion is mostly explaining why the Greek fits, it does not fit. |
+
+**WHY L3:** A name with a broken philosophical mapping is worse than an English name. It signals precision it does not deliver, which erodes trust in every other Greek name in the system.
+
+### L4: Topological
+
+The name must compose with the broader naming topology. No name exists in isolation.
+
+| Check | Pass criteria |
+|-------|--------------|
+| **Neighbor composition** | The name forms a coherent semantic field with its siblings. List the neighbors and read them together — do they tell a consistent story? |
+| **No semantic collision** | The name does not overlap in meaning with an existing name at any level. Two names that mean approximately the same thing force readers to guess at a distinction that may not exist. |
+| **Relationship encoding** | If the component has a meaningful relationship with another (dependency, opposition, containment), the names encode or at least permit that reading. |
+| **Future composition** | The name does not block obvious future additions. A name that claims too much semantic space forces awkward naming for later components. |
+
+**WHY L4:** The topology is the system's conceptual architecture made legible. A name that disrupts the topology doesn't just misname one thing — it degrades the information density of every other name.
+
+### Gate process
+
+1. **Proposer** writes the name, its Greek source, LSJ reference, and a one-line reading at each layer (L1-L4).
+2. **Reviewer** runs the checklist above. Any L1 failure is a hard block. L2-L4 failures require discussion and explicit resolution.
+3. **Topology audit.** Reviewer lists the five nearest neighbors (same parent, same level, direct dependencies) and evaluates composition. If the name creates dissonance, it does not merge.
+4. **Record the decision.** The PR description includes the name proposal, the checklist results, and any alternatives considered. This is the naming decision record. Future readers should not have to reconstruct *why* this name was chosen.
+
+**WHY record:** Names outlive the people who chose them. Without a decision record, the next person to question the name has no way to distinguish a carefully chosen name from an arbitrary one. They will either accept it uncritically or rename it without understanding the original reasoning. Both outcomes are bad.
+
+### Exceptions
+
+- **Internal-only identifiers** (private functions, local variables, test helpers) do not require the full gate. Standard code naming rules from STANDARDS.md apply.
+- **Established names** already in production are not retroactively gated. If a name is wrong but load-bearing, file an issue for planned migration rather than blocking current work.
+- **Prototype/spike work** may use placeholder names. The gate applies when the component is promoted to a permanent name. Placeholder names must be obviously temporary (e.g., `spike_foo`, `proto_bar`).
+
+---
+
 ## Sources
 
 - **Plato.** *Republic* (the divided line: dianoia and noesis), *Meno* (anamnesis), *Theaetetus* (knowledge and perception)
