@@ -262,11 +262,13 @@ pub struct MountTable {
 
 impl MountTable {
     /// Create an empty mount table.
-    pub fn new() -> Self {
-        // WHY Default::default(): MountEntry contains Box<dyn Filesystem>
+    pub const fn new() -> Self {
+        // WHY manual const array: MountEntry contains Box<dyn Filesystem>
         // which is not Copy, so we cannot use `[None; MAX_MOUNTS]` directly.
+        // Default::default() is not const, so we build the array manually.
+        const NONE: Option<MountEntry> = None;
         Self {
-            entries: Default::default(),
+            entries: [NONE; MAX_MOUNTS],
         }
     }
 
