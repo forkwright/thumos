@@ -398,22 +398,7 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         Syscall::Exit => {
             process::exit_with_status(i32::try_from(arg0).unwrap_or_default());
         }
-        Syscall::Write => {
-            let ptr = usize::try_from(arg0).unwrap_or_default();
-            let len = usize::try_from(arg1).unwrap_or_default();
-            if !validate_user_buffer(ptr, len) {
-                return EFAULT;
-            }
-            // SAFETY: validate_user_buffer confirmed [ptr, ptr+len) is within
-            // user-accessible DRAM, not null, not overflowing, and not in
-            // kernel-reserved or device memory.
-            let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
-            let mut serial = Uart::new();
-            for &byte in slice {
-                serial.putc(byte);
-            }
-            u32::try_from(len).unwrap_or_default()
-        }
+        Syscall::Write => sys_write_dispatch(arg0, arg1, arg2),
         Syscall::Yield => {
             // NOTE: voluntary yield  -  reschedule immediately
             let next = process::schedule();
@@ -504,8 +489,8 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         Syscall::Mprotect => sys_mprotect(arg0, arg1, arg2),
 
         // ---- Filesystem ----
-        // WHY: wired to ramfs via fd module. Read-only operations are
-        // implemented; write/directory ops remain ENOSYS (future phases).
+        // WHY: wired to VFS via fd module. All file operations go through
+        // the mount table and Filesystem trait dispatch.
 
         Syscall::Open => fd::sys_open(arg0, arg1, arg2),
         Syscall::Close => sys_close_with_pipe(arg0),
@@ -516,15 +501,14 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         Syscall::Dup => fd::sys_dup(arg0),
         Syscall::Dup2 => fd::sys_dup2(arg0, arg1),
         Syscall::Getcwd => fd::sys_getcwd(arg0, arg1),
+        Syscall::Mkdir => fd::sys_mkdir(arg0, arg1),
+        Syscall::Unlink => fd::sys_unlink(arg0, arg1),
+        Syscall::Chdir => fd::sys_chdir(arg0, arg1),
 
-        // WHY ENOSYS: these require write support (mkdir, unlink),
-        // directory tracking (chdir), or device abstraction (ioctl, fcntl).
-        // Deferred to Phase 05 (filesystem write/directory ops).
+        // WHY ENOSYS: ioctl and fcntl require device-specific control
+        // abstraction, deferred to a later phase.
         Syscall::Ioctl
-        | Syscall::Fcntl
-        | Syscall::Mkdir
-        | Syscall::Unlink
-        | Syscall::Chdir => ENOSYS,
+        | Syscall::Fcntl => ENOSYS,
 
         // ---- IPC ----
 
@@ -609,6 +593,48 @@ fn sys_close_with_pipe(fd: u32) -> u32 {
     }
 
     result
+}
+
+/// SYS_write: dispatch to pipe, UART (stdout), or VFS file based on fd kind.
+///
+/// - fd 1 (stdout): write to UART serial (legacy behavior).
+/// - Pipe fd: dispatch to pipe::sys_pipe_write.
+/// - VFS fd: dispatch to fd::sys_write for filesystem write.
+fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
+    // fd 1 is stdout — always goes to UART (legacy behavior).
+    if fd == 1 {
+        let ptr = usize::try_from(buf_ptr).unwrap_or_default();
+        let len = usize::try_from(count).unwrap_or_default();
+        if !validate_user_buffer(ptr, len) {
+            return EFAULT;
+        }
+        // SAFETY: validate_user_buffer confirmed [ptr, ptr+len) is within
+        // user-accessible DRAM.
+        let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
+        let mut serial = Uart::new();
+        for &byte in slice {
+            serial.putc(byte);
+        }
+        return u32::try_from(len).unwrap_or_default();
+    }
+
+    let fd_idx = fd as usize;
+    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
+    // reference. Read-only here to inspect flags.
+    let flags = {
+        let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
+        match table.get(fd_idx) {
+            Some(e) => e.flags,
+            None => return fd::EBADF,
+        }
+    };
+
+    if pipe::is_pipe_fd(flags) {
+        let pipe_idx = pipe::pipe_idx_from_flags(flags);
+        pipe::sys_pipe_write(pipe_idx, buf_ptr, count, process::current_pid())
+    } else {
+        fd::sys_write(fd, buf_ptr, count)
+    }
 }
 
 // --- execve implementation ---
