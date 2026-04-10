@@ -458,7 +458,7 @@ mod tests {
             if TEST_NEXT_PAGE >= TEST_PAGES {
                 return None;
             }
-            let base = TEST_POOL.as_mut_ptr() as usize;
+            let base = core::ptr::addr_of_mut!(TEST_POOL) as *mut u8 as usize;
             let addr = base + TEST_NEXT_PAGE * page::PAGE_SIZE;
             TEST_NEXT_PAGE += 1;
             Some(addr)
