@@ -320,6 +320,46 @@ mod msdc_wrapper {
 pub use msdc_wrapper::MsdcBlockDevice;
 
 // ---------------------------------------------------------------------------
+// Block-level I/O helpers
+// ---------------------------------------------------------------------------
+
+/// Read one 4 KiB logical block from a block device.
+///
+/// Reads [`SECTORS_PER_BLOCK`] sectors starting at the sector address
+/// corresponding to `block_num`.
+///
+/// # Errors
+///
+/// Returns [`BlockError`] if the underlying sector read fails or the
+/// block address is out of bounds.
+pub fn read_block(
+    dev: &dyn BlockDevice,
+    block_num: u64,
+    buf: &mut [u8; BLOCK_SIZE],
+) -> Result<(), BlockError> {
+    let lba = block_num * SECTORS_PER_BLOCK as u64;
+    dev.read_sectors(lba, SECTORS_PER_BLOCK as u32, buf)
+}
+
+/// Write one 4 KiB logical block to a block device.
+///
+/// Writes [`SECTORS_PER_BLOCK`] sectors starting at the sector address
+/// corresponding to `block_num`.
+///
+/// # Errors
+///
+/// Returns [`BlockError`] if the underlying sector write fails or the
+/// block address is out of bounds.
+pub fn write_block(
+    dev: &mut dyn BlockDevice,
+    block_num: u64,
+    buf: &[u8; BLOCK_SIZE],
+) -> Result<(), BlockError> {
+    let lba = block_num * SECTORS_PER_BLOCK as u64;
+    dev.write_sectors(lba, SECTORS_PER_BLOCK as u32, buf)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
