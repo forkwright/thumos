@@ -316,7 +316,6 @@ mod msdc_wrapper {
 }
 
 #[cfg(not(test))]
-#[expect(unused_imports, reason = "will be used by filesystem layer in Phase 05 Wave 2")]
 pub use msdc_wrapper::MsdcBlockDevice;
 
 // ---------------------------------------------------------------------------

@@ -72,26 +72,28 @@ pub(crate) enum BootStep {
     DeviceRegistry = 6,
     /// eMMC block device.
     Emmc = 7,
+    /// Filesystem (LFS on eMMC).
+    Filesystem = 8,
     /// Display pipeline (DDP).
-    Display = 8,
+    Display = 9,
     /// USB ACM serial console.
-    UsbSerial = 9,
+    UsbSerial = 10,
     /// CCCI modem link.
-    CcciModem = 10,
+    CcciModem = 11,
     /// GPIO keypad scanning.
-    GpioInput = 11,
+    GpioInput = 12,
     /// Power manager.
-    PowerManager = 12,
+    PowerManager = 13,
     /// Userspace processes spawned.
-    Userspace = 13,
+    Userspace = 14,
     /// Boot complete.
-    Complete = 14,
+    Complete = 15,
 }
 
 #[expect(dead_code, reason = "used by tests and future boot progress reporting")]
 impl BootStep {
     /// Total number of boot steps.
-    pub(crate) const COUNT: usize = 15;
+    pub(crate) const COUNT: usize = 16;
 
     /// Returns true if `self` depends on `other` (i.e., `other` must
     /// be attempted before `self`).
@@ -391,6 +393,63 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
+    // Step 7b: Filesystem
+    // -----------------------------------------------------------------------
+    let _ = serial.write_str("[init] Filesystem (LFS)\r\n");
+    if state.emmc_ok {
+        use crate::block::MsdcBlockDevice;
+        use crate::lfs;
+
+        // Compute device size in sectors from the partition constants.
+        let sector_count = kconfig::LFS_PARTITION_SIZE;
+
+        // Create a block device wrapping the eMMC controller at the LFS partition.
+        let mut blk_dev = MsdcBlockDevice::new(sector_count);
+
+        // SAFETY: eMMC controller was initialized successfully in Step 7.
+        // MsdcBlockDevice::init() is called once here; the controller is ready.
+        match unsafe { blk_dev.init() } {
+            Ok(()) => {
+                // Try to mount existing LFS.
+                let mount_result = lfs::mount(alloc::boxed::Box::new(blk_dev));
+                match mount_result {
+                    Ok(_fs) => {
+                        let _ = serial.write_str("       LFS mounted OK\r\n");
+                    }
+                    Err(_) => {
+                        let _ = serial.write_str("       LFS mount failed, formatting\r\n");
+                        // First boot: format and try again.
+                        let mut fmt_dev = MsdcBlockDevice::new(sector_count);
+                        if unsafe { fmt_dev.init() }.is_ok() {
+                            if lfs::format(&mut fmt_dev).is_ok() {
+                                let _ = serial.write_str("       LFS formatted OK\r\n");
+                            } else {
+                                let _ = serial.write_str("  WARN LFS format failed\r\n");
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = write!(serial, "  WARN Block device init failed: {:?}\r\n", e);
+            }
+        }
+
+        // Initialize the VFS mount table.
+        // SAFETY: called once during boot, before any filesystem syscalls.
+        unsafe {
+            crate::fd::init_vfs(None);
+        }
+    } else {
+        let _ = serial.write_str("       Skipped (no eMMC)\r\n");
+        // Initialize VFS with ramfs-only fallback.
+        // SAFETY: called once during boot, before any filesystem syscalls.
+        unsafe {
+            crate::fd::init_vfs(None);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Step 8: Display pipeline (DDP → GC9306)
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Display (GC9306 240x320)\r\n");
@@ -665,7 +724,7 @@ mod tests {
     fn boot_step_count_matches_variants() {
         assert_eq!(
             BootStep::COUNT,
-            15,
+            16,
             "BootStep::COUNT must match the number of variants"
         );
     }
@@ -713,7 +772,7 @@ mod tests {
     fn boot_step_complete_is_last() {
         assert_eq!(
             BootStep::Complete as u8,
-            14,
+            15,
             "Complete must be the highest-numbered step"
         );
     }
