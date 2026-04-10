@@ -494,10 +494,13 @@ mod tests {
         rng.seed(&key);
         // RFC 8439 §2.3.2 uses nonce = [0x00..0x0b] and counter = 1
         // Our seed() sets counter=0 and nonce from key tail; override here:
+        // RFC 8439 §2.3.2 uses counter = 1 and 96-bit nonce
+        // = 00 00 00 09 00 00 00 4a 00 00 00 00 (12 bytes, LE u32s).
+        // State layout per RFC 8439: [12] = counter, [13..15] = nonce.
         rng.state[12] = 1; // counter = 1
-        rng.state[13] = 0;
-        rng.state[14] = 0x09000000; // nonce word 0 (bytes 0x00,0x00,0x00,0x09)
-        rng.state[15] = 0x4a000000; // nonce word 1 (bytes 0x00,0x00,0x00,0x4a)
+        rng.state[13] = 0x0000_0009; // nonce word 0 (LE: bytes 09,00,00,00)
+        rng.state[14] = 0x0000_004a; // nonce word 1 (LE: bytes 4a,00,00,00)
+        rng.state[15] = 0;           // nonce word 2
 
         let mut block = [0u8; BLOCK_BYTES];
         rng.generate_block(&mut block);
