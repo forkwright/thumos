@@ -15,6 +15,10 @@ mod block;
 mod cache;
 mod ccci;
 mod capability;
+mod lfs;
+mod lfs_checkpoint;
+mod lfs_imap;
+mod lfs_segment;
 #[cfg(not(test))]
 mod console;
 mod csprng;
