@@ -1,7 +1,20 @@
 [workspace]
 resolver = "2"
-members = ["crates/aither", "crates/asphaleia", "crates/eidolon", "crates/haphe", "crates/kelyphos", "crates/krypta", "crates/leipsanon", "crates/phone", "crates/pteron", "crates/pyknosis", "crates/sema", "crates/stegnos", "crates/topos"]
-exclude = ["crates/pyknosis-boot"]
+members = [
+    "crates/aither",
+    "crates/asphaleia",
+    "crates/eidolon",
+    "crates/haphe",
+    "crates/kelyphos",
+    "crates/klesis",
+    "crates/krypta",
+    "crates/leipsanon",
+    "crates/pteron",
+    "crates/sema",
+    "crates/stegnos",
+    "crates/topos",
+]
+exclude = ["crates/thumos"]
 
 [workspace.package]
 version = "0.1.3"

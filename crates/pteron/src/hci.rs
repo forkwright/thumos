@@ -278,7 +278,7 @@ impl BdAddr {
     /// # Examples
     ///
     /// ```
-    /// use thumos_pteron::hci::BdAddr;
+    /// use pteron::hci::BdAddr;
     ///
     /// let addr = BdAddr::parse("AA:BB:CC:DD:EE:FF").unwrap();
     /// assert_eq!(addr.to_string(), "AA:BB:CC:DD:EE:FF");

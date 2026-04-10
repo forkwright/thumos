@@ -3,7 +3,7 @@
 //! All UI components implement [`Widget`] for rendering and optionally
 //! [`Focusable`] for interactive input handling.
 
-use thumos_haphe::input::{Key, TouchPoint};
+use haphe::input::{Key, TouchPoint};
 
 use crate::framebuffer::Framebuffer;
 
