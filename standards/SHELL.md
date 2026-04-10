@@ -4,7 +4,7 @@
 >
 > Target: Bash 5.x. For scripts, CI pipelines, and automation. Use `just` for task running.
 >
-> **Key decisions:** shellcheck, just (not Make), set -euo pipefail, bats testing, flock locking, mktemp temp files, strict quoting.
+> **Key decisions:** shellcheck (CI-gated), just (not Make), set -euo pipefail, bats testing, flock locking, mktemp temp files, strict quoting, arrays over string-splitting, signal traps for resource cleanup.
 
 ---
 
@@ -20,6 +20,48 @@
   shellcheck script.sh
   bats tests/
  ```
+
+### Shellcheck CI integration
+
+Every shell script in the repo is linted on every PR. No exceptions, no per-file opt-outs. WHY: a linter that doesn't run on every change is advisory, not a gate.
+
+```yaml
+# .github/workflows/shellcheck.yml
+name: shellcheck
+on:
+  pull_request:
+    paths: ["**/*.sh", "**/*.bash"]
+  push:
+    branches: [main]
+    paths: ["**/*.sh", "**/*.bash"]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: Lint all shell scripts
+        run: |
+          find . -name '*.sh' -o -name '*.bash' | xargs shellcheck --severity=warning --shell=bash
+```
+
+Configuration lives in `.shellcheckrc` at the repo root, not in per-file directives. WHY: scattered directives hide suppressions from review.
+
+```bash
+# .shellcheckrc
+shell=bash
+severity=warning
+# Only disable rules with a comment explaining WHY
+# disable=SC2059  # printf format strings are intentionally dynamic in log()
+```
+
+Rules for suppressions:
+
+- **Inline `# shellcheck disable=SCXXXX`**: allowed only when the suppression is local to a single line and the WHY comment is on the same line or the line above. Never blanket-disable at the top of a file.
+- **`.shellcheckrc` disable**: allowed only for project-wide rules that apply everywhere with a documented reason. Reviewers must approve additions.
+- **`--exclude` in CI**: never. If a rule fires, either fix the code or document the suppression in `.shellcheckrc`.
 
 ### just for task automation
 
@@ -192,6 +234,76 @@ Untrusted contexts: `body`, `title`, `head_ref`, `label`, `message`, `name`, `em
 
 ---
 
+## Signal handling
+
+Scripts that create resources (temp files, lock files, child processes, state files) must handle signals. WHY: `set -e` does not run cleanup on SIGTERM or SIGINT — only `trap` does. A script killed by `systemctl stop`, Ctrl-C, or a CI timeout that doesn't trap signals leaks resources.
+
+### Cleanup on exit and signals
+
+```bash
+cleanup() {
+    rm -rf -- "$tmpdir"
+    # Kill child processes if any were spawned
+    kill -- -$$ 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+```
+
+- **EXIT**: runs on normal exit, `exit N`, and `set -e` failures. This is your primary cleanup hook.
+- **INT**: Ctrl-C (SIGINT). Without this, interactive kills skip EXIT on some shells.
+- **TERM**: `kill`, `systemctl stop`, CI timeout. The default signal. Without this, graceful shutdown is impossible.
+- **Do not trap HUP** unless the script runs as a daemon. HUP means "reload config" for daemons and "terminal closed" for interactive scripts — conflating the two causes bugs.
+
+### Idempotent cleanup
+
+Cleanup functions must be idempotent. WHY: signals can arrive during cleanup itself, and EXIT runs after signal traps.
+
+```bash
+cleanup() {
+    # Guard: only run once
+    [[ "${_cleanup_done:-}" == "1" ]] && return
+    _cleanup_done=1
+
+    rm -rf -- "$tmpdir"
+}
+```
+
+### Propagating exit status through traps
+
+A trapped signal should re-raise to preserve the correct exit status for the parent. WHY: without re-raise, the parent sees exit 0 and believes the script succeeded.
+
+```bash
+trap 'cleanup; trap - INT; kill -INT $$' INT
+trap 'cleanup; trap - TERM; kill -TERM $$' TERM
+```
+
+This pattern: run cleanup, reset the trap to default, re-send the signal. The parent then sees the correct signal-killed exit status (128 + signal number).
+
+### Long-running scripts with child processes
+
+Scripts that spawn background work must forward signals to children. WHY: killing the parent does not automatically kill children — they become orphans.
+
+```bash
+child_pid=
+cleanup() {
+    if [[ -n "${child_pid:-}" ]]; then
+        kill -- "$child_pid" 2>/dev/null
+        wait "$child_pid" 2>/dev/null
+    fi
+    rm -rf -- "$tmpdir"
+}
+trap cleanup EXIT INT TERM
+
+long_running_command &
+child_pid=$!
+wait "$child_pid"
+child_pid=
+```
+
+Capture the PID, kill it in cleanup, `wait` to reap. Clear the PID after `wait` returns to make cleanup idempotent.
+
+---
+
 ## Style
 
 ### Functions
@@ -233,6 +345,76 @@ echo "${ref}"
 ```
 
 Note: macOS ships Bash 3.2 (GPLv2 licensing). If macOS compatibility is needed, either mandate `brew install bash` or avoid 5.x features.
+
+### Arrays
+
+Use arrays for lists of items. Never pack multiple values into a single string and split later. WHY: string-splitting breaks on whitespace, globs, and special characters. Arrays preserve element boundaries.
+
+**Indexed arrays** for ordered lists:
+
+```bash
+local -a files=()
+while IFS= read -r -d '' f; do
+    files+=("$f")
+done < <(find . -name '*.sh' -print0)
+
+# Iterate safely: quoted expansion preserves elements with spaces
+for f in "${files[@]}"; do
+    shellcheck "$f"
+done
+```
+
+- `"${array[@]}"` (quoted, `@`) expands each element as a separate word. This is the correct form for iteration and command arguments.
+- `"${array[*]}"` (quoted, `*`) joins all elements into a single string with the first character of IFS. Use only for display/logging, never for passing arguments.
+- `${array[@]}` (unquoted) subjects each element to word splitting and globbing. Never use this form.
+
+**Associative arrays** for key-value maps (Bash 4.0+):
+
+```bash
+declare -A service_ports=(
+    [adguard]=3000
+    [plex]=32400
+    [grafana]=3001
+)
+
+for name in "${!service_ports[@]}"; do
+    echo "${name} -> ${service_ports[$name]}"
+done
+```
+
+WHY associative arrays over parallel indexed arrays: parallel arrays (`names[0]`, `ports[0]`) drift when items are added or removed. Associative arrays bind key to value atomically.
+
+**Building command arguments:**
+
+```bash
+local -a curl_args=(
+    --silent
+    --fail
+    --max-time 30
+    --header "Authorization: Bearer ${token}"
+)
+
+if [[ "${verbose:-}" == "1" ]]; then
+    curl_args+=(--verbose)
+fi
+
+curl "${curl_args[@]}" "$url"
+```
+
+WHY: building commands with string concatenation breaks on arguments containing spaces, quotes, or glob characters. Arrays preserve argument boundaries exactly.
+
+**Array length and emptiness:**
+
+```bash
+# Length
+echo "${#files[@]} files found"
+
+# Emptiness check
+if (( ${#files[@]} == 0 )); then
+    echo "error: no files found" >&2
+    exit 1
+fi
+```
 
 ### No dead weight
 
@@ -280,3 +462,8 @@ TAP-compliant output works with CI runners. Use `bats-assert` and `bats-file` he
 10. **Missing `local` in functions**: variables leak to global scope
 11. **Manual temp file paths**: use `mktemp`, never `/tmp/myapp.$$`
 12. **`${{ }}` interpolation in GitHub Actions `run:`**: pass through `env:` instead
+13. **No signal traps**: scripts that create resources must `trap cleanup EXIT INT TERM`
+14. **String-packed lists instead of arrays**: `files="a b c"` breaks on spaces; use `files=(a b c)`
+15. **Unquoted `${array[@]}`**: always `"${array[@]}"` to preserve element boundaries
+16. **Per-file shellcheck disables**: suppressions go in `.shellcheckrc` or inline with WHY comments, never blanket-disabled at file top
+17. **`--exclude` in CI shellcheck invocation**: fix the code or document the suppression properly
