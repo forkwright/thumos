@@ -11,6 +11,7 @@
 //! Register offsets FROM `docs/DRIVER-INTERFACES.md` §7.
 
 use crate::mmio;
+#[cfg(not(test))]
 use crate::timer;
 
 // ---------------------------------------------------------------------------
@@ -417,6 +418,7 @@ const DSI_POLL_TIMEOUT: u32 = 100_000;
 /// Spins on the counter until `ms` milliseconds have elapsed. This is
 /// appropriate for panel init delays where no interrupt-driven timer is
 /// available yet.
+#[cfg(not(test))]
 fn delay_ms(ms: u32) {
     let freq = timer::frequency() as u64;
     if freq == 0 {
@@ -431,6 +433,10 @@ fn delay_ms(ms: u32) {
         core::hint::spin_loop();
     }
 }
+
+/// Test stub: no-op delay.
+#[cfg(test)]
+fn delay_ms(_ms: u32) {}
 
 /// Wait for a DSI command to complete by polling the START register.
 ///
