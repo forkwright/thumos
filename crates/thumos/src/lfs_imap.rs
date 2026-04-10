@@ -105,6 +105,13 @@ impl LfsImap {
         self.map.is_empty()
     }
 
+    /// Return an iterator over all `(inode_id, block_number)` pairs.
+    ///
+    /// Used by the compactor to scan which blocks are still live.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        self.map.iter().map(|(&id, &block)| (id, block))
+    }
+
     /// Serialize the imap to bytes.
     ///
     /// Format: `count: u32` followed by `count` entries of `(inode_id: u32,

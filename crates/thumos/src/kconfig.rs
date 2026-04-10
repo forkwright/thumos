@@ -52,6 +52,23 @@ pub const GICC_BASE: usize = 0x0C00_2000;
 /// Display framebuffer base (set by LK bootloader).
 pub const FB_BASE: usize = 0x77EE_0000;
 
+/// Start sector of the LFS partition on eMMC.
+/// WHY: the boot, recovery, system, vendor partitions occupy the first ~2.6 GB.
+/// LFS uses the userdata region starting at sector 0x50C000 (~2.6 GB offset).
+/// Value from GPT dump of the MT6739 eMMC (printgpt: userdata partition).
+pub const LFS_PARTITION_START: u64 = 0x50C000;
+
+/// Size of the LFS partition in sectors.
+/// WHY: ~3 GB of the 8 GB eMMC is available for user data.
+/// Rounded down from the actual userdata partition length (0x97BFDF sectors)
+/// to a clean segment-aligned boundary.
+pub const LFS_PARTITION_SIZE: u64 = 0x600000;
+
+/// Number of blocks in the block cache.
+/// WHY: 256 entries x 4 KiB = 1 MiB of cached data. Balances memory usage
+/// against hit rate for typical file access patterns.
+pub const BLOCK_CACHE_BLOCKS: usize = 256;
+
 /// Display width.
 pub const DISPLAY_WIDTH: u32 = 240;
 
