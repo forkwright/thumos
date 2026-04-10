@@ -32,6 +32,25 @@ pub const EINVAL: u32 = 0u32.wrapping_sub(22);
 pub const EFAULT: u32 = 0u32.wrapping_sub(14);
 /// Is a directory.
 pub const EISDIR: u32 = 0u32.wrapping_sub(21);
+/// Inappropriate ioctl for device.
+pub const ENOTTY: u32 = 0u32.wrapping_sub(25);
+
+// -- fcntl command constants --
+
+/// Duplicate fd to lowest available >= arg.
+pub const F_DUPFD: u32 = 0;
+/// Get file descriptor flags.
+pub const F_GETFL: u32 = 3;
+/// Set file descriptor flags.
+pub const F_SETFL: u32 = 4;
+
+// -- open flag constants --
+
+/// Append mode flag.
+pub const O_APPEND: u32 = 0x400;
+/// Mask for access mode bits (O_RDONLY | O_WRONLY | O_RDWR).
+/// WHY: these bits are immutable after open; F_SETFL must not modify them.
+pub const O_ACCMODE: u32 = 0o3;
 
 /// Seek whence constants (POSIX).
 pub const SEEK_SET: u32 = 0;
@@ -161,6 +180,24 @@ impl FdTable {
         }
         self.entries[index] = Some(fd);
         true
+    }
+
+    /// Allocate the lowest available file descriptor slot >= `min_fd`.
+    ///
+    /// Used by `F_DUPFD` to duplicate an fd to a slot at or above a
+    /// caller-specified minimum. Returns the fd number, or None if no
+    /// slot is available at or above `min_fd`.
+    pub fn alloc_from(&mut self, min_fd: usize, fd: FileDescriptor) -> Option<usize> {
+        if min_fd >= MAX_FDS {
+            return None;
+        }
+        for (i, slot) in self.entries[min_fd..].iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(fd);
+                return Some(min_fd + i);
+            }
+        }
+        None
     }
 
     /// Get a reference to a file descriptor by index.
@@ -838,6 +875,92 @@ pub fn sys_dup2(oldfd: u32, newfd: u32) -> u32 {
         newfd
     } else {
         EBADF
+    }
+}
+
+/// SYS_fcntl: file descriptor control.
+///
+/// Supports:
+/// - `F_GETFL` (3): return the fd's flags.
+/// - `F_SETFL` (4): set modifiable flags (only `O_APPEND`; access mode
+///   bits are immutable after open).
+/// - `F_DUPFD` (0): duplicate the fd to the lowest available slot >= `arg`.
+///
+/// # Arguments
+/// - `fd`: file descriptor number
+/// - `cmd`: fcntl command (F_DUPFD, F_GETFL, F_SETFL)
+/// - `arg`: command-specific argument
+///
+/// # Returns
+/// Command-dependent value on success, or negative error code.
+pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
+    let fd_idx = fd as usize;
+
+    match cmd {
+        F_GETFL => {
+            // SAFETY: FD_TABLE is a static mut; addr_of! avoids an
+            // intermediate reference. Single-core cooperative kernel.
+            let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
+            match table.get(fd_idx) {
+                Some(e) => e.flags,
+                None => EBADF,
+            }
+        }
+        F_SETFL => {
+            // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an
+            // intermediate reference.
+            let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+            match table.get_mut(fd_idx) {
+                Some(e) => {
+                    // Preserve immutable access-mode bits; merge only
+                    // modifiable bits (O_APPEND).
+                    let preserved = e.flags & O_ACCMODE;
+                    let modifiable = arg & O_APPEND;
+                    e.flags = preserved | modifiable;
+                    0
+                }
+                None => EBADF,
+            }
+        }
+        F_DUPFD => {
+            let min_fd = arg as usize;
+            // SAFETY: FD_TABLE is a static mut.
+            let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+            let entry = match table.get(fd_idx) {
+                Some(e) => *e,
+                None => return EBADF,
+            };
+            match table.alloc_from(min_fd, entry) {
+                Some(n) => n as u32,
+                None => EMFILE,
+            }
+        }
+        _ => EINVAL,
+    }
+}
+
+/// SYS_ioctl: device-specific control operations.
+///
+/// Currently returns `ENOTTY` for all file descriptors. This establishes
+/// the dispatch path for future device-specific ioctl support.
+///
+/// # Arguments
+/// - `fd`: file descriptor number
+/// - `_request`: ioctl request code (ignored)
+/// - `_arg`: request-specific argument (ignored)
+///
+/// # Returns
+/// `ENOTTY` (no device supports ioctl yet), or `EBADF` for invalid fds.
+pub fn sys_ioctl(fd: u32, _request: u32, _arg: u32) -> u32 {
+    let fd_idx = fd as usize;
+
+    // Validate fd exists before returning ENOTTY.
+    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
+    // reference.
+    let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
+    match table.get(fd_idx) {
+        Some(_) => ENOTTY,
+        None => EBADF,
     }
 }
 
@@ -1659,6 +1782,229 @@ mod tests {
         assert!(split_parent_name("/").is_none());
         assert!(split_parent_name("").is_none());
         assert!(split_parent_name("relative").is_none());
+    }
+
+    // -- fcntl tests --
+    // WHY no pointer-width gate: sys_fcntl takes u32 fd/cmd/arg — no
+    // pointers — so it works identically on 32-bit ARM and 64-bit host.
+
+    #[test]
+    fn fcntl_getfl_returns_flags() {
+        // SAFETY: test-only; setup_test_vfs resets global state.
+        unsafe { setup_test_vfs(); }
+
+        // Open a file via internal APIs (avoids pointer truncation).
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        let fd_num = table
+            .alloc(FileDescriptor::from_vfs(0, 1, O_APPEND))
+            .expect("alloc fd") as u32;
+
+        let result = sys_fcntl(fd_num, F_GETFL, 0);
+        assert_eq!(result, O_APPEND, "F_GETFL must return the fd's flags");
+    }
+
+    #[test]
+    fn fcntl_setfl_sets_append() {
+        unsafe { setup_test_vfs(); }
+
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        let fd_num = table
+            .alloc(FileDescriptor::from_vfs(0, 1, 0))
+            .expect("alloc fd") as u32;
+
+        // Set O_APPEND
+        let set_result = sys_fcntl(fd_num, F_SETFL, O_APPEND);
+        assert_eq!(set_result, 0, "F_SETFL should succeed");
+
+        // Verify via F_GETFL
+        let flags = sys_fcntl(fd_num, F_GETFL, 0);
+        assert_eq!(
+            flags & O_APPEND,
+            O_APPEND,
+            "O_APPEND must be set after F_SETFL"
+        );
+    }
+
+    #[test]
+    fn fcntl_setfl_preserves_accmode() {
+        unsafe { setup_test_vfs(); }
+
+        // Open with access mode bits set (O_RDWR = 2)
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        let fd_num = table
+            .alloc(FileDescriptor::from_vfs(0, 1, 2)) // O_RDWR
+            .expect("alloc fd") as u32;
+
+        // Set O_APPEND — access mode must be preserved
+        sys_fcntl(fd_num, F_SETFL, O_APPEND);
+        let flags = sys_fcntl(fd_num, F_GETFL, 0);
+        assert_eq!(
+            flags & O_ACCMODE,
+            2,
+            "access mode bits must be preserved by F_SETFL"
+        );
+        assert_eq!(
+            flags & O_APPEND,
+            O_APPEND,
+            "O_APPEND must be set"
+        );
+    }
+
+    #[test]
+    fn fcntl_dupfd_duplicates_above_arg() {
+        unsafe { setup_test_vfs(); }
+
+        // Allocate fd 0
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        let fd_num = table
+            .alloc(FileDescriptor::from_vfs(0, 1, 0))
+            .expect("alloc fd") as u32;
+        assert_eq!(fd_num, 0);
+
+        // F_DUPFD with arg=5 — new fd must be >= 5
+        let new_fd = sys_fcntl(fd_num, F_DUPFD, 5);
+        assert!(
+            new_fd >= 5 && new_fd < MAX_FDS as u32,
+            "F_DUPFD(5) returned {new_fd}, expected >= 5"
+        );
+
+        // Verify the new fd points to the same inode
+        let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
+        let orig = table.get(fd_num as usize).expect("original fd");
+        let duped = table.get(new_fd as usize).expect("duped fd");
+        assert_eq!(orig.inode_id, duped.inode_id, "duped fd must reference same inode");
+        assert_eq!(orig.mount_idx, duped.mount_idx, "duped fd must reference same mount");
+    }
+
+    #[test]
+    fn fcntl_dupfd_returns_emfile_when_full() {
+        unsafe { setup_test_vfs(); }
+
+        // Fill fd table
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        for _ in 0..MAX_FDS {
+            table.alloc(FileDescriptor::from_vfs(0, 1, 0));
+        }
+
+        // F_DUPFD should fail with EMFILE
+        let result = sys_fcntl(0, F_DUPFD, 0);
+        assert_eq!(result, EMFILE, "F_DUPFD on full table must return EMFILE");
+    }
+
+    #[test]
+    fn fcntl_invalid_cmd_returns_einval() {
+        unsafe { setup_test_vfs(); }
+
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        table.alloc(FileDescriptor::from_vfs(0, 1, 0));
+
+        let result = sys_fcntl(0, 99, 0);
+        assert_eq!(result, EINVAL, "unknown fcntl command must return EINVAL");
+    }
+
+    #[test]
+    fn fcntl_bad_fd_returns_ebadf() {
+        unsafe { setup_test_vfs(); }
+
+        assert_eq!(sys_fcntl(99, F_GETFL, 0), EBADF);
+        assert_eq!(sys_fcntl(99, F_SETFL, 0), EBADF);
+        assert_eq!(sys_fcntl(99, F_DUPFD, 0), EBADF);
+    }
+
+    // -- ioctl tests --
+
+    #[test]
+    fn ioctl_returns_enotty() {
+        unsafe { setup_test_vfs(); }
+
+        // Allocate a regular file fd
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        let fd_num = table
+            .alloc(FileDescriptor::from_vfs(0, 1, 0))
+            .expect("alloc fd") as u32;
+
+        let result = sys_ioctl(fd_num, 0, 0);
+        assert_eq!(result, ENOTTY, "ioctl on a file fd must return ENOTTY");
+    }
+
+    #[test]
+    fn ioctl_bad_fd_returns_ebadf() {
+        unsafe { setup_test_vfs(); }
+
+        let result = sys_ioctl(99, 0, 0);
+        assert_eq!(result, EBADF, "ioctl on invalid fd must return EBADF");
+    }
+
+    #[test]
+    fn ioctl_devfs_returns_enotty() {
+        unsafe { setup_test_vfs(); }
+
+        // Open a devfs file via internal APIs — devfs is mount index 1
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        let fd_num = table
+            .alloc(FileDescriptor::from_vfs(1, 0, 0))
+            .expect("alloc fd") as u32;
+
+        let result = sys_ioctl(fd_num, 0x5401, 0); // TCGETS
+        assert_eq!(result, ENOTTY, "ioctl on devfs fd must return ENOTTY");
+    }
+
+    // -- sys_write file dispatch test --
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn write_dispatches_to_vfs_for_file_fds() {
+        unsafe { setup_test_vfs(); }
+
+        // Create a file through VFS, open it, write through sys_write
+        let mt = unsafe { get_mount_table_mut() }.expect("mount table");
+        let fs = mt.get_mut(0).expect("root fs");
+        let file_id = fs
+            .create(0, "writable.txt", InodeType::RegularFile)
+            .expect("create");
+        drop(fs);
+
+        let path = b"/writable.txt";
+        let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert!(fd < MAX_FDS as u32, "open should succeed");
+
+        let data = b"test write data";
+        let written = sys_write(fd, data.as_ptr() as u32, data.len() as u32);
+        assert_eq!(written, data.len() as u32, "sys_write should write all bytes");
+
+        // Read back
+        let _ = sys_lseek(fd, 0, SEEK_SET);
+        let mut buf = [0u8; 32];
+        let read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
+        assert_eq!(read, data.len() as u32);
+        assert_eq!(&buf[..data.len()], data);
+    }
+
+    // -- alloc_from tests --
+
+    #[test]
+    fn alloc_from_returns_at_or_above_min() {
+        let mut table = FdTable::new();
+        // Fill fds 0-4
+        for _ in 0..5 {
+            table.alloc(FileDescriptor::from_vfs(0, 1, 0));
+        }
+        let fd = table.alloc_from(3, FileDescriptor::from_vfs(0, 2, 0));
+        assert_eq!(fd, Some(5), "alloc_from(3) with 0-4 taken should return 5");
+    }
+
+    #[test]
+    fn alloc_from_uses_exact_min_if_available() {
+        let mut table = FdTable::new();
+        let fd = table.alloc_from(10, FileDescriptor::from_vfs(0, 1, 0));
+        assert_eq!(fd, Some(10), "alloc_from(10) on empty table should return 10");
+    }
+
+    #[test]
+    fn alloc_from_max_fds_returns_none() {
+        let mut table = FdTable::new();
+        let fd = table.alloc_from(MAX_FDS, FileDescriptor::from_vfs(0, 1, 0));
+        assert_eq!(fd, None, "alloc_from(MAX_FDS) must return None");
     }
 
     #[test]
