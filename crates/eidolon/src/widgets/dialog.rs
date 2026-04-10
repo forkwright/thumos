@@ -4,7 +4,7 @@
 //! buttons (OK, Cancel, Yes, No) at the bottom. The caller queries
 //! [`Dialog::take_result`] to learn which button was activated.
 
-use thumos_haphe::input::{Key, TouchPoint};
+use haphe::input::{Key, TouchPoint};
 
 use crate::color::Rgb565;
 use crate::font::{CHAR_HEIGHT, CHAR_WIDTH, draw_str};

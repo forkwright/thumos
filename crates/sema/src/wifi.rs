@@ -99,7 +99,7 @@ impl Bssid {
     /// # Examples
     ///
     /// ```
-    /// use thumos_sema::wifi::Bssid;
+    /// use sema::wifi::Bssid;
     ///
     /// let bssid = Bssid::parse("AA:BB:CC:DD:EE:FF").unwrap();
     /// assert_eq!(bssid.to_string(), "AA:BB:CC:DD:EE:FF");
@@ -203,7 +203,7 @@ impl AccessPoint {
 /// # Examples
 ///
 /// ```
-/// use thumos_sema::wifi::channel_to_frequency;
+/// use sema::wifi::channel_to_frequency;
 ///
 /// assert_eq!(channel_to_frequency(1), Some(2412));
 /// assert_eq!(channel_to_frequency(6), Some(2437));
@@ -238,7 +238,7 @@ pub fn channel_to_frequency(channel: u8) -> Option<u32> {
 /// # Examples
 ///
 /// ```
-/// use thumos_sema::wifi::frequency_to_channel;
+/// use sema::wifi::frequency_to_channel;
 ///
 /// assert_eq!(frequency_to_channel(2412), Some(1));
 /// assert_eq!(frequency_to_channel(2437), Some(6));
@@ -273,7 +273,7 @@ pub fn frequency_to_channel(freq_mhz: u32) -> Option<u8> {
 /// # Examples
 ///
 /// ```
-/// use thumos_sema::wifi::{Band, channel_band};
+/// use sema::wifi::{Band, channel_band};
 ///
 /// assert_eq!(channel_band(6), Some(Band::Band2_4Ghz));
 /// assert_eq!(channel_band(36), Some(Band::Band5Ghz));

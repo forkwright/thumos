@@ -1,5 +1,5 @@
 [package]
-name = "thumos-stegnos"
+name = "stegnos"
 description = "Encrypted storage: dm-crypt, key management, TPM sealing"
 version.workspace = true
 edition.workspace = true

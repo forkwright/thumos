@@ -23,7 +23,7 @@ use crate::mmio;
 // ---------------------------------------------------------------------------
 
 /// MSDC0 base address on the MT6739.
-// NOTE: FROM device registry, `crates/pyknosis-boot/src/device.rs:127`
+// NOTE: FROM device registry, `crates/thumos/src/device.rs:127`
 const MSDC0_BASE: usize = 0x1123_0000;
 
 /// Sector size in bytes (eMMC standard).

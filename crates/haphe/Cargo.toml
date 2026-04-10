@@ -1,5 +1,5 @@
 [package]
-name = "thumos-haphe"
+name = "haphe"
 description = "Keypad input driver: GPIO matrix scan, key events"
 version.workspace = true
 edition.workspace = true

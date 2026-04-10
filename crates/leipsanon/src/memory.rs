@@ -53,7 +53,7 @@ pub fn secure_random_fill(buf: &mut [u8]) -> Result<(), MemoryError> {
 /// # Examples
 ///
 /// ```
-/// use thumos_leipsanon::memory::SecureBuffer;
+/// use leipsanon::memory::SecureBuffer;
 ///
 /// let mut buf = SecureBuffer::<32>::new();
 /// buf.iter_mut().enumerate().for_each(|(i, b)| *b = u8::try_from(i).unwrap_or(u8::MAX));

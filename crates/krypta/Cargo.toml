@@ -1,5 +1,5 @@
 [package]
-name = "thumos-krypta"
+name = "krypta"
 description = "Encrypted communication: Signal protocol, P2P messaging"
 version.workspace = true
 edition.workspace = true
