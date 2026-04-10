@@ -16,7 +16,7 @@ Plans are living documents. They change as work reveals reality. Stale plans are
 
 ## Directory structure
 
-Every project in `kanon/projects/{name}/` follows this structure:
+Every project in `projects/{name}/` follows this structure:
 
 ```
 projects/{name}/
@@ -24,15 +24,17 @@ projects/{name}/
 ├── vision.md           # Why the project exists, design principles, strategic moat
 ├── STATE.md            # Current position, locked decisions, active blockers
 ├── ROADMAP.md          # Phase index -- lean table of phases with goals and success criteria
-└── phases/
-    ├── 01-{name}/
-    │   ├── PLAN.md     # Full phase detail: scope, requirements, decisions, open questions
-    │   └── SUMMARY.md  # Post-completion: what shipped, what was learned, what changed
-    ├── 02-{name}/
-    │   ├── PLAN.md
-    │   └── SUMMARY.md
-    └── NN-{name}/      # Active phase -- has PLAN.md but no SUMMARY.md yet
-        └── PLAN.md
+├── phases/
+│   ├── 01-{name}/
+│   │   ├── PLAN.md     # Full phase detail: scope, requirements, decisions, open questions
+│   │   └── SUMMARY.md  # Post-completion: what shipped, what was learned, what changed
+│   ├── 02-{name}/
+│   │   ├── PLAN.md
+│   │   └── SUMMARY.md
+│   └── NN-{name}/      # Active phase -- has PLAN.md but no SUMMARY.md yet
+│       └── PLAN.md
+└── planning/
+    └── archive/        # Legacy docs (old roadmap.md, backlog.md, etc.)
 ```
 
 ### Required files

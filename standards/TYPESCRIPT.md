@@ -15,7 +15,7 @@
 - **State:** Redux Toolkit (`@reduxjs/toolkit` + `react-redux`)
 - **Testing:** Vitest + React Testing Library
 - **Bundler:** Vite
-- **Linter + Formatter:** Biome (preferred) or ESLint + typescript-eslint + Prettier
+- **Linter + Formatter:** Biome (see § Biome vs ESLint decision tree)
 - **Build/validate:**
   ```bash
   tsc --noEmit
@@ -38,6 +38,154 @@
   }
  ```
  `erasableSyntaxOnly` bans `enum`, `namespace`, and constructor parameter properties. This aligns with the type-stripping direction (Node `--experimental-strip-types`, Deno native TS). Use `as const` objects instead of enums.
+
+### Biome vs ESLint
+
+Default to Biome. Fall back to ESLint only when a required lint rule has no Biome equivalent.
+
+| Criterion | Biome | ESLint + typescript-eslint + Prettier |
+|-----------|-------|--------------------------------------|
+| Speed | 10-100x faster. Written in Rust. | Slow on large monorepos. |
+| Config surface | Single `biome.json`. Format + lint unified. | Three configs (`.eslintrc`, `.prettierrc`, tsconfig-eslint). |
+| Plugin ecosystem | Limited. No custom rule API yet. | Extensive: `eslint-plugin-jsx-a11y`, `eslint-plugin-react-hooks`, `eslint-plugin-import-x`. |
+| Type-aware rules | Partial. Growing. | Full via typescript-eslint with `parserOptions.project`. |
+
+**Decision tree:**
+
+1. Does the project need `eslint-plugin-jsx-a11y` or other plugin-only rules that Biome lacks? If yes, use ESLint.
+2. Is the project a monorepo where lint speed blocks CI? Biome's speed advantage matters most here.
+3. Otherwise, default to Biome. Fewer moving parts, faster feedback.
+
+WHY: Biome eliminates the Prettier-ESLint conflict surface (formatting fights, overlapping rules) and runs in a fraction of the time. The tradeoff is ecosystem breadth. When Biome covers what you need, the simplicity wins.
+
+When using ESLint, always pair with `typescript-eslint` flat config and `eslint-plugin-import-x` (maintained fork of `eslint-plugin-import`). Never use the deprecated `eslint-plugin-import`.
+
+---
+
+## Monorepo patterns
+
+### Package manager: pnpm
+
+pnpm workspaces for monorepos. WHY: strict dependency isolation (no phantom deps), disk-efficient via content-addressable store, workspace protocol for local packages.
+
+```yaml
+# pnpm-workspace.yaml
+packages:
+  - 'apps/*'
+  - 'packages/*'
+```
+
+### Workspace protocol
+
+Reference internal packages with `workspace:*`. pnpm resolves these to the local version at install time and replaces with the real version at publish time.
+
+```jsonc
+// apps/desktop/package.json
+{
+    "dependencies": {
+        "@project/ui": "workspace:*",
+        "@project/shared-types": "workspace:*"
+    }
+}
+```
+
+WHY: `workspace:*` makes internal dependencies explicit and prevents accidental resolution to a stale registry version. pnpm errors if the referenced package does not exist in the workspace.
+
+### Package structure
+
+```
+monorepo/
+├── pnpm-workspace.yaml
+├── biome.json              # workspace-root config, shared by all packages
+├── tsconfig.base.json      # shared compiler options, extended by each package
+├── apps/
+│   ├── desktop/            # Tauri app
+│   │   ├── package.json
+│   │   ├── tsconfig.json   # extends ../../tsconfig.base.json
+│   │   └── src/
+│   └── web/                # Web-only build
+│       ├── package.json
+│       ├── tsconfig.json
+│       └── src/
+└── packages/
+    ├── ui/                 # Shared React components
+    │   ├── package.json
+    │   └── src/
+    ├── shared-types/       # Types shared across apps (no runtime code)
+    │   ├── package.json
+    │   └── src/
+    └── api-client/         # Typed API/IPC wrappers
+        ├── package.json
+        └── src/
+```
+
+Rules:
+
+- **Shared config at root.** `tsconfig.base.json`, `biome.json`, and `.npmrc` live at the workspace root. Packages extend, never duplicate. WHY: config drift across packages causes inconsistent behavior that surfaces as CI-only failures.
+- **`packages/` for libraries, `apps/` for deployables.** Libraries export typed APIs. Apps import them. Libraries never import from apps.
+- **Types-only packages have zero runtime dependencies.** `shared-types` contains interfaces, branded types, and `as const` objects. No `lodash`, no `date-fns`, nothing that ships bytes.
+- **Each package has its own `package.json`.** Even types-only packages. pnpm needs it for resolution.
+
+### Shared tsconfig
+
+```jsonc
+// tsconfig.base.json (workspace root)
+{
+    "compilerOptions": {
+        "target": "ES2024",
+        "lib": ["ES2024", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "erasableSyntaxOnly": true,
+        "skipLibCheck": true,
+        "composite": true,
+        "declaration": true,
+        "declarationMap": true
+    }
+}
+
+// apps/desktop/tsconfig.json
+{
+    "extends": "../../tsconfig.base.json",
+    "compilerOptions": {
+        "outDir": "dist",
+        "rootDir": "src"
+    },
+    "include": ["src"],
+    "references": [
+        { "path": "../../packages/ui" },
+        { "path": "../../packages/shared-types" }
+    ]
+}
+```
+
+`composite: true` and `references` enable incremental builds via `tsc --build`. WHY: without project references, `tsc` type-checks the entire workspace on every change. With references, only changed packages and their dependents are rechecked.
+
+### Build ordering
+
+pnpm respects dependency topology. `pnpm run --filter ...apps/desktop build` builds dependencies first.
+
+```bash
+# Build a specific app and everything it depends on
+pnpm run --filter ...apps/desktop build
+
+# Type-check entire workspace
+pnpm run --recursive typecheck
+
+# Run tests only for packages changed since main
+pnpm run --filter "...[origin/main]" test
+```
+
+WHY: `--filter` with `...` prefix includes transitive dependencies. The `[origin/main]` syntax runs only changed packages, keeping CI fast as the monorepo grows.
+
+### Anti-patterns
+
+- **Hoisting everything to the root `node_modules`.** Use pnpm's strict mode (`.npmrc`: `shamefully-hoist=false`). Hoisting hides dependency errors that break in production.
+- **Circular dependencies between packages.** If `@project/ui` imports from `@project/api-client` and vice versa, extract the shared type into `@project/shared-types`.
+- **Different TypeScript versions across packages.** One `typescript` version in the root `package.json`. Packages inherit it.
+- **Running `tsc` without `--build` in a monorepo.** `tsc --noEmit` does not respect project references. Use `tsc --build --noEmit` or per-package type-check scripts.
 
 ---
 
@@ -472,6 +620,32 @@ function LegacyWidget() {
 }
 ```
 
+**When to use `"use no memo"`:**
+
+The compiler assumes React's Rules of Hooks and pure render functions. Opt out when the component intentionally violates these assumptions:
+
+| Scenario | Why opt out |
+|----------|-------------|
+| Component reads from a mutable external store without `useSyncExternalStore` | Compiler may cache a stale read. The component must re-render on every call to observe the mutation. |
+| Component relies on render-time side effects for measurement (e.g., `getBoundingClientRect` in render) | Compiler may skip the re-execution if inputs appear unchanged. |
+| Third-party library passes mutable refs as props and expects them to be read fresh each render | Compiler cannot track mutations to ref objects passed from outside. |
+| Gradual migration: component has not yet been audited for Rules of React compliance | Safer to exclude than to ship memoization bugs. Audit and remove `"use no memo"` as part of migration. |
+
+Do not use `"use no memo"` for:
+- Performance tuning (the compiler memoizes more granularly than you can manually)
+- Components that "seem to break" without investigation (diagnose the actual rule violation first)
+
+**What the compiler can and cannot infer:**
+
+| Can infer | Cannot infer |
+|-----------|-------------|
+| Memoization of JSX elements, hook return values, and intermediate variables | Side effects hidden behind opaque function calls (e.g., a function that mutates a closed-over variable) |
+| Dependency tracking for conditional branches (better than manual `useMemo` deps) | Mutations to objects shared across components via refs or module-level variables |
+| Callback stability for event handlers defined inline | Whether a third-party hook follows the Rules of Hooks internally |
+| Granular re-render skipping at the expression level, not just the component level | Effects of `eval()`, dynamic `import()`, or Proxy-based reactivity systems |
+
+WHY: the compiler operates on static analysis of the component's source code. It trusts that functions are pure and hooks follow the rules. When those assumptions hold, the compiler produces strictly better memoization than any manual approach. When they do not hold, `"use no memo"` is the correct escape hatch, not a performance knob.
+
 **Manual memoization rules:**
 
 - **With compiler:** Do not write `useMemo`, `useCallback`, `React.memo`. The compiler handles it. Manual memoization is dead code.
@@ -805,9 +979,136 @@ Tauri 2 uses capability-based permissions. Frontend code runs in a sandbox: back
 
 ---
 
+## Layered architecture
+
+### Layer model
+
+```
+Request → Handler → Service → Repository → Data Source
+                ↑           ↑            ↑
+             Validation   Business     Persistence
+             + DTO map    logic        abstraction
+```
+
+Each layer depends only on the layer below it. No skipping layers. No upward imports.
+
+WHY: layering isolates change. A database migration touches the repository layer. A new business rule touches the service layer. A UI redesign touches the handler layer. Without layering, a database change propagates through the entire codebase.
+
+### Layer responsibilities
+
+| Layer | Owns | Does NOT own |
+|-------|------|-------------|
+| **Handler** (component/route) | Input validation, DTO→domain mapping, error→UI mapping, loading/error states | Business rules, data fetching logic |
+| **Service** (hook/thunk) | Business rules, orchestration, domain validation | UI concerns, persistence details |
+| **Repository** (API client/IPC wrapper) | Data access, serialization, caching strategy | Business rules, UI concerns |
+
+### Validation placement
+
+Validate at each boundary for what that boundary owns:
+
+```typescript
+// Handler layer: validate shape and format
+function ImportPage() {
+    function handleSubmit(formData: FormData) {
+        const path = formData.get('path');
+        if (typeof path !== 'string' || path.trim() === '') {
+            return; // UI validation: shape
+        }
+        dispatch(importLibrary(path));
+    }
+    // ...
+}
+
+// Service layer: validate business rules
+export const importLibrary = createAsyncThunk(
+    'library/import',
+    async (path: string, { rejectWithValue }) => {
+        if (!path.endsWith('/') && !path.includes('.')) {
+            return rejectWithValue({ kind: 'invalid_path', path });
+        }
+        return invoke<ImportReport>('import_library', { path });
+    },
+);
+
+// Repository layer: validate wire format
+function parseAlbumResponse(raw: unknown): Album {
+    return AlbumSchema.parse(raw); // valibot/zod at the boundary
+}
+```
+
+WHY: handler validation prevents invalid data from reaching the service. Service validation enforces business invariants. Repository validation ensures wire data matches expected shapes. Each layer trusts its inputs only because the layer above validated them.
+
+### DTO flow
+
+Domain types live in the service/domain layer. Wire types (DTOs) live at boundaries. Map between them explicitly.
+
+```typescript
+// Wire type: matches backend serde output (snake_case)
+interface AlbumDto {
+    id: string;
+    title: string;
+    artist_name: string;
+    track_count: number;
+    duration_ms: number;
+}
+
+// Domain type: used throughout the frontend (camelCase)
+interface Album {
+    id: AlbumId;
+    title: string;
+    artistName: string;
+    trackCount: number;
+    durationMs: number;
+}
+
+// Map at the repository boundary
+function toAlbum(dto: AlbumDto): Album {
+    return {
+        id: createAlbumId(dto.id),
+        title: dto.title,
+        artistName: dto.artist_name,
+        trackCount: dto.track_count,
+        durationMs: dto.duration_ms,
+    };
+}
+```
+
+WHY: if the backend renames a field, exactly one mapping function changes. Without the boundary map, snake_case field names leak through every component and hook. Branded types (`AlbumId`) are constructed at this boundary, enforcing type safety from the earliest possible point.
+
+### File organization by layer
+
+```
+src/
+├── domain/             # Types, branded IDs, business constants
+│   ├── album.ts
+│   └── track.ts
+├── services/           # Thunks, business logic, orchestration
+│   ├── library-service.ts
+│   └── playback-service.ts
+├── repositories/       # IPC wrappers, API clients, schema validation
+│   ├── album-repository.ts
+│   └── track-repository.ts
+├── store/              # Redux slices, selectors, store config
+│   ├── store.ts
+│   ├── slices/
+│   └── hooks.ts
+├── components/         # React components (handler layer)
+│   ├── album-list.tsx
+│   └── track-item.tsx
+└── pages/              # Route-level components with Suspense boundaries
+    ├── library-page.tsx
+    └── settings-page.tsx
+```
+
+Components import from `services/` and `store/`. Services import from `repositories/` and `domain/`. Repositories import from `domain/` only. No reverse dependencies.
+
+---
+
 ## Testing
 
-See STANDARDS.md § Testing and TESTING.md for universal test principles.
+See TESTING.md for all testing principles (naming, isolation, coverage, test data, property testing).
+
+TypeScript-specific framework choices and patterns:
 
 ### Framework and configuration
 
@@ -835,26 +1136,9 @@ afterEach(() => {
 });
 ```
 
-### Test organization
-
-Colocated test files, same directory as source.
-
-```
-src/
-  components/
-    track-item.tsx
-    track-item.test.tsx
-  stores/
-    player-store.ts
-    player-store.test.ts
-  lib/
-    format-duration.ts
-    format-duration.test.ts
-```
-
 ### Component testing
 
-React Testing Library: test behavior, not implementation details.
+React Testing Library for component tests.
 
 ```typescript
 import { render, screen } from '@testing-library/react';
@@ -869,75 +1153,19 @@ it('calls onPlay when play button is clicked', async () => {
 
     expect(onPlay).toHaveBeenCalledWith(mockTrack.id);
 });
-
-it('displays track duration in mm:ss format', () => {
-    render(<TrackItem track={{ ...mockTrack, durationMs: 185000 }} />);
-    expect(screen.getByText('3:05')).toBeInTheDocument();
-});
 ```
 
 ### Mocking
 
-Mock at module boundaries. Prefer `vi.spyOn` (type-safe, scoped) over `vi.mock` (hoisted, file-wide).
-
-```typescript
-// Preferred: vi.spyOn for targeted mocking
-import * as api from '../api/tracks';
-
-it('loads albums from backend', async () => {
-    const spy = vi.spyOn(api, 'fetchAlbums').mockResolvedValue([mockAlbum]);
-    render(<AlbumList />);
-    await screen.findByText(mockAlbum.title);
-    expect(spy).toHaveBeenCalledOnce();
-});
-
-// vi.mock for module replacement (when spyOn won't work)
-// Use vi.hoisted to avoid hoisting pitfalls
-const mockInvoke = vi.hoisted(() => vi.fn());
-vi.mock('@tauri-apps/api/core', () => ({
-    invoke: mockInvoke,
-}));
-
-beforeEach(() => {
-    mockInvoke.mockReset();
-});
-
-it('loads albums via Tauri IPC', async () => {
-    mockInvoke.mockResolvedValue([mockAlbum]);
-    const albums = await listAlbums();
-    expect(mockInvoke).toHaveBeenCalledWith('list_albums');
-});
-```
+Prefer `vi.spyOn` (type-safe, scoped) over `vi.mock` (hoisted, file-wide). Use `vi.hoisted` when `vi.mock` is needed.
 
 ### Store testing
 
 Test Redux slices with a real store instance. No mocking the store.
 
-```typescript
-import { configureStore } from '@reduxjs/toolkit';
-import { queueReducer, enqueue } from './queue-slice';
-
-it('enqueues tracks in order', () => {
-    const store = configureStore({ reducer: { queue: queueReducer } });
-    store.dispatch(enqueue(trackA));
-    store.dispatch(enqueue(trackB));
-    expect(store.getState().queue.items).toEqual([trackA, trackB]);
-});
-```
-
 ### Resource cleanup with `using`
 
-`using` declarations (TS 5.2+) replace manual `afterEach` for test resources:
-
-```typescript
-it('queries the database', async () => {
-    await using db = await TestDb.create();
-    await db.seed(fixtures);
-    const result = await db.query('SELECT count(*) FROM tracks');
-    expect(result.count).toBe(5);
-    // db automatically cleaned up: no afterEach needed
-});
-```
+`using` declarations (TS 5.2+) replace manual `afterEach` for test resources.
 
 ### No snapshot tests
 
@@ -1008,6 +1236,87 @@ function App() {
 - Heavy computation belongs in Rust, not TypeScript: use commands for anything CPU-bound
 - Large data transfers: prefer streaming events over single large `invoke` payloads
 - Image handling: let Rust resize/thumbnail, send paths not blobs to the frontend
+
+### Core Web Vitals
+
+WHY: Core Web Vitals are Google's user-experience metrics. They measure what users actually feel: loading speed, interactivity, and visual stability. Poor scores degrade user experience and search ranking for web builds. Tauri desktop builds benefit from the same discipline since the rendering engine is a webview.
+
+#### Metrics and budgets
+
+| Metric | What it measures | Good | Poor | Budget |
+|--------|-----------------|------|------|--------|
+| **LCP** (Largest Contentful Paint) | When the main content finishes rendering | ≤ 2.5s | > 4.0s | ≤ 1.5s for app shells |
+| **INP** (Interaction to Next Paint) | Responsiveness to user input (replaces FID) | ≤ 200ms | > 500ms | ≤ 100ms for media controls |
+| **CLS** (Cumulative Layout Shift) | Visual stability during load and interaction | ≤ 0.1 | > 0.25 | ≤ 0.05 |
+| **FCP** (First Contentful Paint) | When the first content pixel renders | ≤ 1.8s | > 3.0s | ≤ 1.0s |
+| **TTFB** (Time to First Byte) | Server/backend response time | ≤ 800ms | > 1800ms | ≤ 200ms for local IPC |
+
+INP replaced First Input Delay (FID) in March 2024. INP measures all interactions across the page lifecycle, not just the first one. Optimize for INP.
+
+#### Measurement
+
+Use the `web-vitals` library in production to capture real user metrics. Do not rely solely on Lighthouse: lab scores miss real-world variance.
+
+```typescript
+import { onLCP, onINP, onCLS } from 'web-vitals';
+
+function reportMetric(metric: { name: string; value: number; id: string }) {
+    // Send to your analytics/observability pipeline
+    navigator.sendBeacon('/api/vitals', JSON.stringify(metric));
+}
+
+onLCP(reportMetric);
+onINP(reportMetric);
+onCLS(reportMetric);
+```
+
+For Tauri desktop builds, log vitals to the Rust backend via `invoke` instead of `sendBeacon`.
+
+#### Common LCP violations and fixes
+
+| Violation | Fix |
+|-----------|-----|
+| Render-blocking CSS/JS | Inline critical CSS. Defer non-critical scripts. |
+| Unoptimized hero images | Use `width`/`height` attributes (prevents layout shift). Serve modern formats (WebP/AVIF). Lazy-load below-the-fold images only. |
+| Client-side data fetch before render | Prefetch data in the route loader or start the fetch before rendering the component (see `use()` hook pattern). |
+| Large JavaScript bundles | Code-split at route boundaries. Audit with `npx vite-bundle-visualizer`. |
+
+#### Common CLS violations and fixes
+
+| Violation | Fix |
+|-----------|-----|
+| Images without dimensions | Always set `width` and `height` on `<img>` elements. Use CSS `aspect-ratio` for responsive images. |
+| Dynamically injected content | Reserve space with skeleton placeholders. Never insert content above the user's viewport. |
+| Web fonts causing FOUT/FOIT | Use `font-display: swap` with a matching fallback font. Use `size-adjust` on the fallback to minimize shift. |
+| Animations that trigger layout | Animate only `transform` and `opacity`. Never animate `width`, `height`, `top`, `left`, or `margin`. |
+
+#### Common INP violations and fixes
+
+| Violation | Fix |
+|-----------|-----|
+| Long-running event handlers | Move heavy work into `startTransition()`. Yield to the main thread with `scheduler.yield()` (or `setTimeout(0)` as fallback). |
+| Synchronous Redux dispatches blocking paint | Wrap non-urgent dispatches in `startTransition`. Keep urgent interactions (play/pause, seek) synchronous. |
+| Large component trees re-rendering on interaction | React Compiler handles this when enabled. Without compiler, profile with React DevTools and memoize the hot path. |
+
+#### Performance budgets in CI
+
+Track bundle size and vitals in CI. Fail the build if budgets are exceeded.
+
+```typescript
+// vite.config.ts — build size warning
+export default defineConfig({
+    build: {
+        rollupOptions: {
+            output: {
+                // Warn if any chunk exceeds 250KB gzipped
+                experimentalMinChunkSize: 1000,
+            },
+        },
+    },
+});
+```
+
+Use `bundlesize` or Vite's built-in `build.chunkSizeWarningLimit` as a gate. Track the main chunk, vendor chunk, and total JS payload independently.
 
 ---
 

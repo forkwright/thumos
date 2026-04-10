@@ -322,7 +322,7 @@ Never wait on a condition variable on the real-time audio thread. Audio thread p
 
 ### The real-Time contract
 
-The audio callback runs on a deadline-driven thread (typically 1–10ms budget). Violations cause audible glitches. Every function reachable from the audio callback must be bounded-time and non-blocking.
+The audio callback runs on a deadline-driven thread (typically 1-10ms budget). Violations cause audible glitches. Every function reachable from the audio callback must be bounded-time and non-blocking.
 
 **Forbidden in the audio callback:**
 - Heap allocation/deallocation (`new`, `delete`, `malloc`, `free`, `vector::push_back` that reallocates)
@@ -432,7 +432,7 @@ inline int16_t float_to_int16(float f) noexcept {
 
 Use deinterleaved (planar) buffers for processing: each channel contiguous for SIMD. Interleave/deinterleave at I/O boundaries.
 
-### SIMD
+### SIMD (audio-specific)
 
 Use `__restrict__` on all buffer pointer parameters to enable auto-vectorization:
 
@@ -446,7 +446,7 @@ void mix(float* __restrict__ dst, const float* __restrict__ src,
 
 Compiler flags: `-O2` minimum, `-march=native` for build machine, `-ffast-math` acceptable for audio (exact IEEE compliance less important than throughput). Use `-Rpass=loop-vectorize` (Clang) to verify vectorization.
 
-For explicit SIMD, use intrinsics with compile-time dispatch (`__SSE2__`, `__AVX__`, `__AVX512F__`). `std::experimental::simd` (Parallelism TS) is not yet standardized: track but don't adopt.
+See § SIMD intrinsics below for the full intrinsics guide (dispatch, alignment, portable wrappers).
 
 ### Thread priority
 
@@ -564,6 +564,511 @@ extern "C" FfiStatus ffi_do_work(int32_t input,
 
 ---
 
+## SIMD intrinsics
+
+### Strategy: auto-vectorization first, intrinsics when proven necessary
+
+Write scalar loops with `__restrict__` and let the compiler vectorize. Drop to explicit intrinsics only when the compiler's output is measured as insufficient. This ordering exists because intrinsics are architecture-specific, fragile across compiler versions, and opaque to the optimizer.
+
+```cpp
+// WHY: __restrict__ promises no aliasing, enabling the compiler to emit
+// SIMD without manual intrinsics. Verify with -Rpass=loop-vectorize.
+void apply_gain(float* __restrict__ out, const float* __restrict__ in,
+                float gain, int n) noexcept {
+    for (int i = 0; i < n; ++i)
+        out[i] = in[i] * gain;
+}
+```
+
+### Compile-time ISA dispatch
+
+Use preprocessor guards to select the widest available instruction set at compile time. Each ISA tier gets its own translation unit compiled with the appropriate `-m` flag. The dispatch header selects the right implementation.
+
+```cpp
+// simd_dispatch.hpp
+#if defined(__AVX512F__)
+    #include "dsp_avx512.hpp"
+#elif defined(__AVX2__)
+    #include "dsp_avx2.hpp"
+#elif defined(__SSE2__)
+    #include "dsp_sse2.hpp"
+#elif defined(__ARM_NEON)
+    #include "dsp_neon.hpp"
+#else
+    #include "dsp_scalar.hpp"
+#endif
+```
+
+```cmake
+# WHY: Each TU compiled with its own ISA flags so intrinsics resolve.
+# The dispatch header selects the right symbol at compile time.
+add_library(dsp_sse2 OBJECT src/dsp_sse2.cpp)
+target_compile_options(dsp_sse2 PRIVATE -msse2)
+
+add_library(dsp_avx2 OBJECT src/dsp_avx2.cpp)
+target_compile_options(dsp_avx2 PRIVATE -mavx2 -mfma)
+
+add_library(dsp_avx512 OBJECT src/dsp_avx512.cpp)
+target_compile_options(dsp_avx512 PRIVATE -mavx512f)
+```
+
+### Runtime CPU dispatch (CPUID)
+
+When a single binary must run on heterogeneous hardware (distributed builds, plugin hosts), use runtime dispatch via CPUID. Resolve once at startup, cache the function pointer.
+
+```cpp
+#include <cpuid.h>
+
+namespace simd {
+
+// WHY: Resolved once at init, then called via pointer for zero per-call overhead.
+using GainFn = void(*)(float* __restrict__, const float* __restrict__, float, int);
+
+GainFn resolve_apply_gain() noexcept {
+    unsigned int eax, ebx, ecx, edx;
+    __get_cpuid(1, &eax, &ebx, &ecx, &edx);
+
+    // WHY: Check AVX bit (ECX bit 28) + OSXSAVE (ECX bit 27) together.
+    // AVX present without OS support means SIGILL on first use.
+    if ((ecx & (1 << 28)) && (ecx & (1 << 27))) {
+        __get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
+        if (ebx & (1 << 5))  // AVX2
+            return apply_gain_avx2;
+    }
+    return apply_gain_sse2;
+}
+
+// WHY: Static init resolves dispatch once; every subsequent call is a direct pointer.
+static const GainFn apply_gain = resolve_apply_gain();
+
+} // namespace simd
+```
+
+GCC and Clang also support `__attribute__((target_clones("avx2", "sse2", "default")))` for automatic multi-versioning, but it adds a hidden indirect call per invocation and interacts poorly with LTO. Prefer explicit dispatch for hot paths.
+
+### Alignment
+
+SIMD loads and stores require aligned memory. Misaligned access is silently slow on x86 (up to 2x penalty) and a fault on some ARM cores.
+
+```cpp
+// WHY: alignas(32) guarantees AVX-aligned loads without runtime checks.
+// 64-byte alignment covers AVX-512 and cache-line alignment simultaneously.
+alignas(64) float buffer[1024];
+
+// Heap allocation: std::aligned_alloc (C++17)
+// WHY: operator new does not guarantee SIMD alignment beyond alignof(max_align_t),
+// which is typically 16 bytes — insufficient for AVX (32) or AVX-512 (64).
+auto* buf = static_cast<float*>(std::aligned_alloc(64, 1024 * sizeof(float)));
+// SAFETY: aligned_alloc requires size to be a multiple of alignment.
+// 1024 * 4 = 4096, which is a multiple of 64.
+```
+
+For containers, use `std::pmr` with a properly aligned buffer resource (see § Custom memory allocators) or wrap `std::aligned_alloc` in an allocator adaptor.
+
+### Portable intrinsic wrappers
+
+Wrap raw intrinsics behind a thin abstraction that normalizes across SSE/AVX/NEON. Keep the wrapper in a single header per operation (e.g., `simd_gain.hpp`). The wrapper is not an abstraction layer — it is a portability shim. It must compile to the same instructions as raw intrinsics.
+
+```cpp
+// WHY: Thin wrapper gives one call site per DSP operation, with the ISA
+// detail isolated to a single header. Changing ISA targets does not touch callers.
+namespace simd {
+
+#if defined(__AVX2__)
+inline void gain_block(float* __restrict__ out, const float* __restrict__ in,
+                       float g, int n) noexcept {
+    __m256 vgain = _mm256_set1_ps(g);
+    // WHY: Process 8 floats per iteration (256 bits / 32 bits).
+    int i = 0;
+    for (; i + 7 < n; i += 8) {
+        __m256 v = _mm256_load_ps(in + i);   // requires 32-byte alignment
+        _mm256_store_ps(out + i, _mm256_mul_ps(v, vgain));
+    }
+    // PERF: Scalar tail for non-multiple-of-8 lengths.
+    for (; i < n; ++i)
+        out[i] = in[i] * g;
+}
+#elif defined(__SSE2__)
+inline void gain_block(float* __restrict__ out, const float* __restrict__ in,
+                       float g, int n) noexcept {
+    __m128 vgain = _mm_set1_ps(g);
+    int i = 0;
+    for (; i + 3 < n; i += 4) {
+        __m128 v = _mm_load_ps(in + i);
+        _mm_store_ps(out + i, _mm_mul_ps(v, vgain));
+    }
+    for (; i < n; ++i)
+        out[i] = in[i] * g;
+}
+#elif defined(__ARM_NEON)
+inline void gain_block(float* __restrict__ out, const float* __restrict__ in,
+                       float g, int n) noexcept {
+    float32x4_t vgain = vdupq_n_f32(g);
+    int i = 0;
+    for (; i + 3 < n; i += 4) {
+        float32x4_t v = vld1q_f32(in + i);
+        vst1q_f32(out + i, vmulq_f32(v, vgain));
+    }
+    for (; i < n; ++i)
+        out[i] = in[i] * g;
+}
+#else
+inline void gain_block(float* __restrict__ out, const float* __restrict__ in,
+                       float g, int n) noexcept {
+    for (int i = 0; i < n; ++i)
+        out[i] = in[i] * g;
+}
+#endif
+
+} // namespace simd
+```
+
+### Verification
+
+Every SIMD path must be verified two ways:
+
+1. **Compiler output.** Use `-Rpass=loop-vectorize -Rpass-missed=loop-vectorize` (Clang) or `-fopt-info-vec-all` (GCC) to confirm the compiler vectorized auto-vectorizable loops and to catch regressions.
+2. **Benchmarks.** Measure the SIMD path against the scalar fallback on the target hardware. If the SIMD path is not measurably faster, delete it: it adds maintenance cost with no benefit.
+
+### SIMD rules
+
+1. **Alignment.** `alignas(32)` minimum for AVX, `alignas(64)` for AVX-512. All audio buffers aligned at allocation time.
+2. **Tail handling.** Every SIMD loop must handle input lengths that are not a multiple of the vector width. Scalar tail loop is correct and sufficient.
+3. **No `_mm_loadu_ps` in hot paths.** Unaligned loads are slower. Guarantee alignment at allocation time, then use aligned loads.
+4. **`-ffast-math` scope.** Apply only to DSP translation units, not globally. It breaks `NaN` propagation, `inf` comparisons, and IEEE compliance.
+5. **`std::experimental::simd`** (Parallelism TS v2) is not yet standardized. Track P1928, do not adopt until it lands in a shipping standard.
+
+---
+
+## Custom memory allocators
+
+### When to use a custom allocator
+
+The default allocator (`operator new` / `malloc`) is general-purpose: thread-safe, fragmentation-resistant, and predictable. It is the right choice for most code. Use a custom allocator only when profiling shows one of these problems:
+
+1. **Allocation frequency in hot paths.** Thousands of small allocations per frame (audio callback, render loop, network packet processing). The general allocator's per-call overhead dominates.
+2. **Fragmentation in long-running processes.** Variable-size allocations over hours/days fragment the heap, increasing RSS and cache misses.
+3. **Deterministic latency.** Real-time threads cannot tolerate the general allocator's worst-case lock contention or mmap syscalls.
+
+If none of these apply, do not introduce a custom allocator.
+
+### `std::pmr` (polymorphic memory resources)
+
+`std::pmr` is the standard allocator customization point since C++17. All custom allocation strategies should use `std::pmr::memory_resource` as the base.
+
+```cpp
+#include <memory_resource>
+#include <vector>
+
+// WHY: monotonic_buffer_resource never deallocates individual objects.
+// It resets the entire buffer at once, giving O(1) "deallocation" cost.
+// Ideal for per-frame scratch memory that is discarded as a batch.
+alignas(64) static char scratch_buf[64 * 1024];
+std::pmr::monotonic_buffer_resource scratch{scratch_buf, sizeof(scratch_buf)};
+
+void process_frame() {
+    scratch.release();  // reset to start of buffer: O(1), no destructors
+    std::pmr::vector<float> temp{&scratch};
+    temp.resize(512);   // no malloc: carved from scratch_buf
+    // ... use temp ...
+}   // temp destructor is a no-op: monotonic resource ignores deallocate()
+```
+
+### Arena allocator (monotonic)
+
+The primary pattern for real-time and high-throughput code. Allocates by bumping a pointer. Individual deallocations are no-ops. The entire arena resets at a defined boundary (frame, request, callback).
+
+```cpp
+// WHY: Arena reset per audio callback means zero per-object deallocation cost.
+// All scratch memory is reclaimed in one operation between callbacks.
+class FrameArena {
+public:
+    explicit FrameArena(std::span<char> backing)
+        : resource_(backing.data(), backing.size()) {}
+
+    std::pmr::memory_resource* resource() noexcept { return &resource_; }
+
+    // WHY: Called once between frames. Not thread-safe by design:
+    // the arena belongs to a single thread (the audio thread).
+    void reset() noexcept { resource_.release(); }
+
+private:
+    std::pmr::monotonic_buffer_resource resource_;
+};
+
+// Usage in audio callback:
+alignas(64) static char arena_storage[256 * 1024];
+static FrameArena frame_arena{arena_storage};
+
+void audio_callback(float** out, const float** in,
+                    int channels, int frames) noexcept {
+    frame_arena.reset();
+    std::pmr::vector<float> work_buf{frame_arena.resource()};
+    work_buf.resize(frames);  // no syscall, no lock
+    // ...
+}
+```
+
+### Pool allocator (fixed-size blocks)
+
+For allocating many objects of the same size (nodes, events, messages). Pre-allocates a slab of N blocks, returns them via a free list. O(1) alloc and free, zero fragmentation.
+
+```cpp
+// WHY: Pool avoids fragmentation for fixed-size objects and gives O(1)
+// alloc/free without locks when used from a single thread.
+template <typename T, size_t Capacity>
+class FixedPool {
+    static_assert(sizeof(T) >= sizeof(void*),
+        "Pool element must be at least pointer-sized for free-list linkage");
+
+public:
+    FixedPool() noexcept {
+        // WHY: Build the free list at construction. Each free slot stores
+        // a pointer to the next free slot, overlaid on the object storage.
+        for (size_t i = 0; i + 1 < Capacity; ++i)
+            *reinterpret_cast<void**>(&storage_[i * sizeof(T)]) =
+                &storage_[(i + 1) * sizeof(T)];
+        *reinterpret_cast<void**>(&storage_[(Capacity - 1) * sizeof(T)]) = nullptr;
+        free_head_ = &storage_[0];
+    }
+
+    void* allocate() noexcept {
+        if (!free_head_) return nullptr;
+        void* block = free_head_;
+        free_head_ = *static_cast<void**>(free_head_);
+        return block;
+    }
+
+    void deallocate(void* ptr) noexcept {
+        *static_cast<void**>(ptr) = free_head_;
+        free_head_ = ptr;
+    }
+
+private:
+    alignas(T) char storage_[sizeof(T) * Capacity];
+    void* free_head_ = nullptr;
+};
+```
+
+### Wrapping a custom allocator as `std::pmr::memory_resource`
+
+Any custom allocation strategy must integrate with `std::pmr` so that standard containers (`pmr::vector`, `pmr::string`, `pmr::unordered_map`) work transparently.
+
+```cpp
+// WHY: Inheriting from memory_resource lets standard pmr containers use
+// the pool without any container-side changes.
+template <typename T, size_t Capacity>
+class PoolResource : public std::pmr::memory_resource {
+    FixedPool<T, Capacity> pool_;
+
+protected:
+    void* do_allocate(size_t bytes, size_t alignment) override {
+        if (bytes > sizeof(T) || alignment > alignof(T))
+            throw std::bad_alloc{};
+        void* p = pool_.allocate();
+        if (!p) throw std::bad_alloc{};
+        return p;
+    }
+
+    void do_deallocate(void* p, size_t, size_t) noexcept override {
+        pool_.deallocate(p);
+    }
+
+    bool do_is_equal(const memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+};
+```
+
+### Allocator selection guide
+
+| Allocator | Pattern | Fragmentation | Thread safety | Use case |
+|-----------|---------|---------------|---------------|----------|
+| Default (`new`) | General | Managed | Thread-safe | Everything unless profiling says otherwise |
+| `monotonic_buffer_resource` | Bump pointer, batch reset | None (resets entire arena) | Single-thread | Per-frame scratch, request-scoped temp data |
+| `unsynchronized_pool_resource` | Free-list pools by size class | Low | Single-thread | Many variable-size allocs on one thread |
+| `synchronized_pool_resource` | Same with mutex | Low | Thread-safe | Multi-threaded pool (not real-time) |
+| Custom `FixedPool<T, N>` | Fixed-size free list | None | Single-thread | MIDI events, graph nodes, message queues |
+
+### Rules
+
+1. **Profile first.** Never introduce a custom allocator without measurements showing the default is the bottleneck.
+2. **`std::pmr` as the interface.** Custom allocators implement `std::pmr::memory_resource` so containers are not coupled to the allocator strategy.
+3. **Single-owner arenas.** Arenas belong to one thread. No shared arenas between threads: that reintroduces the synchronization cost you were trying to avoid.
+4. **Pre-allocate backing memory.** Arena and pool backing buffers are allocated (and `mlock`ed for audio) at init time, not in hot paths.
+5. **Reset, don't deallocate.** For batch-lifetime memory (per-frame, per-request), use `monotonic_buffer_resource::release()` instead of per-object deallocation.
+6. **Overflow policy is explicit.** Document what happens when the arena or pool is exhausted: throw, return null, fall back to upstream resource, or output silence (audio thread).
+
+---
+
+## Thread-local storage
+
+### When to use `thread_local`
+
+Thread-local storage (TLS) gives each thread its own instance of a variable, eliminating synchronization overhead. Use it when:
+
+1. **Per-thread caches or scratch buffers.** Avoids contention on a shared cache while keeping the data warm in the thread's L1/L2 cache.
+2. **Per-thread statistics and accumulators.** Aggregate at reporting time, not on every increment.
+3. **Last-error patterns for FFI.** Thread-local error state avoids passing error context through every call in a C API.
+
+Do not use TLS as a substitute for proper parameter passing. If a function needs data, take it as a parameter. TLS is for cross-cutting concerns where threading the value through every call site would be disproportionate.
+
+### Initialization and lifetime
+
+`thread_local` variables are initialized on first access in each thread (lazy init). Destruction occurs when the thread exits, in reverse order of construction.
+
+```cpp
+// WHY: Per-thread buffer avoids contention on a shared scratch buffer.
+// Each audio worker thread gets its own 64KB scratch space.
+thread_local alignas(64) char tls_scratch[64 * 1024];
+
+// WHY: Wrapping in a function avoids the static-initialization-order fiasco
+// across translation units. The thread_local is initialized on first call.
+std::pmr::monotonic_buffer_resource& thread_scratch_resource() {
+    thread_local std::pmr::monotonic_buffer_resource resource{
+        tls_scratch, sizeof(tls_scratch)
+    };
+    return resource;
+}
+```
+
+### Destructor ordering
+
+`thread_local` destructors run when the thread exits, but the order across translation units is unspecified. If one TLS object depends on another, place them in the same TU or use a function-local `thread_local` to control initialization order.
+
+```cpp
+// WHY: Logger depends on scratch buffer. Function-local thread_local
+// guarantees scratch is constructed before logger within each thread.
+struct ThreadContext {
+    std::pmr::monotonic_buffer_resource scratch{buf_, sizeof(buf_)};
+    ThreadLocalLogger logger{&scratch};
+
+private:
+    alignas(64) char buf_[32 * 1024];
+};
+
+ThreadContext& thread_ctx() {
+    // WHY: Single thread_local object controls destruction order.
+    // scratch outlives logger because members destruct in reverse declaration order.
+    thread_local ThreadContext ctx;
+    return ctx;
+}
+```
+
+### Last-error pattern for FFI
+
+Thread-local error state is the standard pattern for rich error messages across `extern "C"` boundaries where only an integer status code can be returned.
+
+```cpp
+// WHY: C APIs return int status codes but callers often need a human-readable
+// message. Thread-local storage avoids the need for caller-provided buffers
+// or global error state that races across threads.
+namespace {
+thread_local std::string tls_last_error;
+}
+
+extern "C" int32_t engine_process(Engine* e, const float* in,
+                                   float* out, size_t frames) noexcept {
+    try {
+        e->process(in, out, frames);
+        return 0;
+    } catch (const std::exception& ex) {
+        tls_last_error = ex.what();
+        return -1;
+    }
+}
+
+extern "C" const char* engine_last_error() noexcept {
+    // WHY: Returns pointer to thread_local string. Valid until the next
+    // call to any engine_* function on the same thread.
+    return tls_last_error.c_str();
+}
+```
+
+### Per-thread accumulators
+
+Accumulate statistics per-thread, then aggregate when needed. Eliminates atomic contention on every increment.
+
+```cpp
+struct ThreadStats {
+    uint64_t samples_processed = 0;
+    uint64_t xruns = 0;
+    uint64_t alloc_bytes = 0;
+};
+
+// WHY: No atomics needed — each thread writes only its own instance.
+thread_local ThreadStats tls_stats;
+
+// Called from worker thread hot path: zero synchronization cost
+void record_samples(uint64_t n) noexcept {
+    tls_stats.samples_processed += n;
+}
+
+// WHY: Aggregation reads all threads' stats, but only at reporting boundaries
+// (typically once per second). The brief lock contention here is acceptable
+// because it is outside the hot path.
+class StatsAggregator {
+public:
+    void register_thread() {
+        std::scoped_lock lock{mu_};
+        thread_stats_.push_back(&tls_stats);
+    }
+
+    ThreadStats aggregate() const {
+        std::scoped_lock lock{mu_};
+        ThreadStats total{};
+        for (const auto* ts : thread_stats_) {
+            total.samples_processed += ts->samples_processed;
+            total.xruns += ts->xruns;
+            total.alloc_bytes += ts->alloc_bytes;
+        }
+        return total;
+    }
+
+private:
+    mutable std::mutex mu_;
+    std::vector<ThreadStats*> thread_stats_;
+};
+```
+
+### TLS and thread pools
+
+`thread_local` destructors run when the thread exits, not when a task finishes. In thread pools (where threads are long-lived and recycled), this means:
+
+1. **State leaks between tasks.** A `thread_local` accumulator from task A is still present when task B runs on the same thread. Reset TLS state explicitly at task boundaries if isolation is required.
+2. **Destructors run late.** TLS resources are freed only when the pool thread is destroyed (typically at shutdown). For resources that should be freed earlier, use task-scoped RAII, not TLS.
+3. **Registration lifetime.** If you register TLS pointers in an aggregator (as above), deregister them when the thread exits or the aggregator will hold dangling pointers.
+
+```cpp
+// WHY: RAII guard ensures the thread deregisters from the aggregator
+// when the pool thread exits, preventing dangling pointer reads.
+struct ThreadRegistration {
+    explicit ThreadRegistration(StatsAggregator& agg) : agg_(agg) {
+        agg_.register_thread();
+    }
+    ~ThreadRegistration() { agg_.deregister_thread(); }
+
+    ThreadRegistration(const ThreadRegistration&) = delete;
+    ThreadRegistration& operator=(const ThreadRegistration&) = delete;
+
+private:
+    StatsAggregator& agg_;
+};
+
+// In thread pool worker init:
+thread_local ThreadRegistration reg{global_aggregator};
+```
+
+### Rules
+
+1. **No TLS on the real-time audio thread.** First access triggers lazy initialization, which may allocate. Pre-allocate all audio-thread state at init time and pass it explicitly.
+2. **Function-local `thread_local` over namespace-scope.** Avoids static-initialization-order issues and makes the initialization point explicit.
+3. **Reset at task boundaries in thread pools.** TLS state persists across tasks on the same thread. If tasks require isolation, reset explicitly.
+4. **Deregister on thread exit.** If TLS addresses are stored externally (aggregators, registries), use an RAII guard to deregister on destruction.
+5. **Do not use TLS to avoid parameter passing.** If a function needs data, take it as a parameter. TLS is for cross-cutting concerns (error state, statistics, scratch buffers) where threading the parameter would be disproportionate.
+
+---
+
 ## Memory safety
 
 ### `std::span` and bounds checking
@@ -599,11 +1104,12 @@ From `microsoft/GSL` (use selectively):
 
 ## Testing
 
-### Framework and structure
+See TESTING.md for all testing principles (naming, isolation, coverage, test data, property testing).
+
+C++-specific framework choices and tooling:
 
 - **Framework:** GoogleTest or Catch2
-- **Names:** `TEST(AudioProcessor, ReturnsEmptyWhenNoInput)`, not `Test1`
-- **Property tests:** `rapidcheck` for round-trip, algebraic, and invariant properties
+- **Property tests:** `rapidcheck`
 - **Fuzz targets:** libFuzzer for codec, parser, and deserialization code
 
 ### Sanitizer builds
