@@ -96,7 +96,7 @@ pub enum InodeType {
 }
 
 /// Metadata for a single inode, returned by `Filesystem::stat`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InodeStat {
     /// Inode number within the filesystem.
     pub inode_id: u32,
@@ -115,6 +115,7 @@ pub struct InodeStat {
 // ---------------------------------------------------------------------------
 
 /// A single entry in a directory listing.
+#[derive(Debug, PartialEq)]
 pub struct DirEntry {
     /// Entry name (filename component, not full path).
     pub name: String,

@@ -2075,8 +2075,8 @@ mod tests {
         assert_eq!(ring.free_count(), TX_RING_SIZE - 1, "one slot consumed");
         assert!(!ring.is_empty(), "ring is not empty after submit");
 
-        // Simulate hardware completion by clearing HWO
-        ring.descriptors.get(0).copied().unwrap_or_default().clear_hw_owned();
+        // Simulate hardware completion by clearing HWO on the actual descriptor
+        ring.descriptors[0].clear_hw_owned();
 
         let reclaimed = ring.reclaim();
         assert_eq!(reclaimed, 1, "should reclaim one descriptor");
@@ -2134,9 +2134,9 @@ mod tests {
         // All descriptors are hardware-owned, so poll should return None
         assert!(ring.poll_rx().is_none(), "no data ready before HW completes");
 
-        // Simulate hardware filling descriptor 0
-        ring.descriptors.get(0).copied().unwrap_or_default().clear_hw_owned();
-        ring.descriptors.get(0).copied().unwrap_or_default().recv_len = 256;
+        // Simulate hardware filling descriptor 0 — must mutate in-place, not a copy
+        ring.descriptors[0].clear_hw_owned();
+        ring.descriptors[0].recv_len = 256;
 
         let (idx, len) = ring.poll_rx().unwrap_or_default();
         assert_eq!(idx, 0, "first descriptor should be polled first");
