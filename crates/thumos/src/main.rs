@@ -18,6 +18,7 @@ mod capability;
 #[cfg(not(test))]
 mod console;
 mod csprng;
+mod devfs;
 #[cfg(not(test))]
 mod device;
 mod display;
@@ -59,6 +60,7 @@ mod timer;
 #[cfg(not(test))]
 mod uart;
 mod usb;
+mod vfs;
 #[cfg(not(test))]
 mod watchdog;
 
