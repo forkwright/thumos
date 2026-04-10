@@ -17,8 +17,10 @@ mod ccci;
 mod capability;
 mod lfs;
 mod lfs_checkpoint;
+mod lfs_compact;
 mod lfs_imap;
 mod lfs_segment;
+mod lfs_writer;
 #[cfg(not(test))]
 mod console;
 mod csprng;
