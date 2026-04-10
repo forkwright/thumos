@@ -1,6 +1,8 @@
 # Operations
 
-> Standards for deployment, monitoring, backup, incident response, and operational readiness. If it runs in production, these rules apply.
+> Standards for service-specific concerns: runbooks, monitoring, backup, incident response, and operational readiness. If it runs in production, these rules apply.
+>
+> See also: DEPLOYMENT.md (gates, merge policy, rollback, health check requirements), SYSTEMD.md (unit files), PODMAN.md (containers), SECURITY.md (firewall, browser policy), NGINX.md (reverse proxy).
 
 ---
 
@@ -28,10 +30,7 @@ A runbook is complete when an on-call engineer who has never seen the service ca
 
 ### Required health checks
 
-Every service exposes:
-- Liveness endpoint (is the process running?)
-- Readiness endpoint (can it handle requests?)
-- Dependency checks (are database, cache, external APIs reachable?)
+See DEPLOYMENT.md for health check endpoint requirements (liveness, readiness, dependency). This section covers monitoring-specific metrics and alerting thresholds.
 
 ### Required metrics
 
@@ -77,35 +76,6 @@ A backup you've never restored from is not a backup. Test restores on a schedule
 - Agent state (workspace files, memory)
 
 What NOT to back up: logs (ephemeral), build artifacts (reproducible), cache (rebuildable).
-
----
-
-## Deployment
-
-### Upgrade procedure
-
-1. Back up (verify backup integrity before proceeding)
-2. Stop service
-3. Replace binary (verify checksum)
-4. Start service
-5. Health check (automated, with timeout)
-6. Smoke test (one real request through the system)
-
-### Rollback
-
-Every deployment is rollback-safe. The rollback procedure is tested and documented.
-
-Requirements:
-- Previous binary preserved (not overwritten)
-- Database migrations are forward-only with documented rollback SQL
-- Rollback script tested against actual deployment
-
-### Zero-downtime (when applicable)
-
-For services requiring uptime:
-- Blue-green deployment OR rolling restart
-- Health check gates before traffic shift
-- Automatic rollback on health check failure
 
 ---
 
@@ -193,3 +163,109 @@ Every buffered channel has explicit capacity. When full:
 - **Drop**: excess events dropped, counter incremented
 
 No unbounded channels in production.
+
+---
+
+## DNS
+
+> Implementation details (AdGuard config, validation commands, bootstrap setup): `docs/deployment/DNS-SETUP.md`
+
+### Principles
+
+DNS is a single point of failure for the entire network. Treat it as critical infrastructure.
+
+| Principle | Requirement | WHY |
+|-----------|-------------|-----|
+| Redundancy | Minimum two upstream resolvers | Single upstream failure takes down all resolution |
+| Encryption | All upstream queries use DoH or DoT | Plaintext DNS leaks browsing data to ISP and intermediaries |
+| DNSSEC | Enabled on all resolvers that support it | Prevents cache poisoning and spoofed responses |
+| Internal resolution | All service hostnames resolve via DNS, not `/etc/hosts` | Hosts files don't propagate; DNS is the single source of truth |
+| VPN accessibility | Internal rewrites point to Tailscale IPs, not LAN IPs | Services must be reachable from any Tailscale-connected device |
+| Blocking mode | NXDOMAIN, not `0.0.0.0` or `127.0.0.1` | Prevents connection attempts and false positives from loopback services |
+
+### Architecture
+
+| Component | Role |
+|-----------|------|
+| DNS resolver (e.g., AdGuard Home) | Primary resolver for LAN and VPN clients |
+| Upstream resolvers | DoH to two independent providers for redundancy and privacy |
+| DHCP server | Points all LAN clients to the resolver |
+| VPN DNS | Global nameserver override for VPN clients |
+
+### Failure modes
+
+| Symptom | Likely cause | Resolution |
+|---------|-------------|------------|
+| All resolution fails | Resolver process down or port 53 conflict | Check service status and `ss -tlnp \| grep ':53'` |
+| Internal names fail, external works | DNS rewrites misconfigured or missing | Check resolver rewrite rules |
+| External fails, internal works | Upstream resolvers unreachable or DoH cert issue | Test upstream DoH endpoints directly |
+| Intermittent failures | systemd-resolved stub listener conflict | Disable `DNSStubListener` in `/etc/systemd/resolved.conf` |
+| Blocked domains still resolve | Stale or failed filter lists | Verify filter list fetch status; lists fail silently |
+| VPN clients can't resolve internal names | VPN DNS override not pointing to resolver | Check VPN nameserver configuration |
+
+### systemd-resolved conflict
+
+WHY: On Fedora (systemd 256+), `systemd-resolved` binds `127.0.0.54:53`, conflicting with the DNS resolver's wildcard bind. Set `DNSStubListener=no` in `/etc/systemd/resolved.conf`. This is a host-level concern -- containerized resolvers bind to the host network namespace via pod port mapping.
+
+### Validation
+
+After any DNS change, verify:
+1. Internal resolution: `dig @<resolver-ip> <internal-hostname>`
+2. External resolution: `dig @<resolver-ip> example.com`
+3. NXDOMAIN blocking: blocked domain returns NXDOMAIN
+4. No port conflict: single process on port 53
+
+---
+
+## Service management
+
+### Container lifecycle
+
+Containerized services managed by systemd follow this lifecycle:
+
+```
+create pod → create containers → start pod → health check → serve traffic
+```
+
+#### Pod architecture
+
+Group containers into pods when they need to share network namespace (e.g., reverse proxy + DNS in same pod share `127.0.0.1`). Standalone containers for services with no inter-container localhost dependencies.
+
+| Grouping | When |
+|----------|------|
+| Pod | Containers communicate over localhost (same network namespace) |
+| Standalone | No localhost dependency on other containers |
+
+#### Systemd unit naming
+
+Container services use the pattern `<name>-container.service`. Pod services create the pod first, then add containers.
+
+```bash
+# Check all container services
+sudo podman ps --format "table {{.Names}} {{.Status}}"
+
+# Restart a service
+sudo systemctl restart <name>-container
+
+# View logs
+sudo podman logs --tail 50 <container-name>
+```
+
+#### Auto-updates
+
+Use `podman-auto-update.timer` for image-based auto-updates on a schedule. Pin the schedule to low-traffic windows (e.g., Sunday 4 AM). All containers using `io.containers.autoupdate=registry` label receive updates automatically.
+
+#### Environment files
+
+Service credentials live in environment files, not in systemd units or container command lines.
+
+| Location | Permissions | Purpose |
+|----------|------------|---------|
+| `/etc/menos-*.env` | 0600 root:root | Service credentials read by systemd at start |
+| `~/menos-ops/secrets/` | 0600 user | Backup passwords, API keys for scripts |
+
+systemd reads `EnvironmentFile=` at service start. Credentials never appear in `podman inspect` or process listings.
+
+### Health checks and upgrades
+
+See DEPLOYMENT.md for container health check requirements and upgrade procedures (binary and container).

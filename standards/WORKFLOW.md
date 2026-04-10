@@ -123,7 +123,7 @@ The rendered output:
 
 ## Directive
 
-You are an engineer. Implement this task completely.
+Implement this task completely.
 Write the code, run the tests, fix any issues, commit, push, open a PR.
 Do not analyze or summarize the prompt. Execute it.
 
@@ -182,6 +182,26 @@ Note file and line. Do not fix. Do not investigate deeply. Move on.
 | Blast Radius | Scope boundary | Agent modifies unrelated files, creates merge conflicts |
 | Validation Gate | Pre-PR checks | Broken PRs waste CI and review cycles |
 | Observations | Knowledge capture | Findings from ephemeral sessions are permanently lost |
+
+#### Acceptance criteria specificity
+
+Every acceptance criterion must reference a specific file, function, or structural change observable in a PR diff. QA evaluates criteria by examining the diff — criteria that require runtime execution, CI results, or external state produce systematic false negatives and waste corrective prompt cycles.
+
+**Diff-visible criteria** (use these):
+
+| Instead of | Write |
+|-----------|-------|
+| "`cargo test -p X` passes" | "Test file `src/X/tests.rs` contains test function `test_Y` covering case Z" |
+| "All tests pass" | "Module `X` contains `#[cfg(test)] mod tests` with tests for A, B, and C" |
+| "`cargo clippy` clean" | "No `unwrap()` calls outside test modules; errors use `snafu::ResultExt`" |
+| "Closes #NNN" | "Function `X` in `path/to/file.rs` returns `Result<T, Error>` (fixes #NNN behavior)" |
+| "Issue #NNN requirements are satisfied" | "Struct `Config` has field `timeout: Duration`; `process()` respects it via `tokio::time::timeout`" |
+| "CI green" | "Validation gate commands listed in Validation Gate section produce no errors" |
+| "No regressions" | "Existing public API signatures in `src/lib.rs` are unchanged" |
+
+**Why this matters:** The QA evaluator examines the PR diff, not runtime output. A criterion like "`cargo test` passes" looks like a FAIL from the diff (no evidence of test execution results), even when the code is correct. The prompt validation pipeline rejects non-diff-visible criteria before dispatch.
+
+**Rule:** If a criterion requires executing a command or checking a system outside the PR diff to evaluate, it is not diff-visible. Rewrite it to describe the artifact that executing the command would verify.
 
 #### Framing rules
 
@@ -347,13 +367,13 @@ Runs after each dispatch group completes. The verdicts determine what happens ne
 5. Flag: changes outside declared blast radius, project-specific anti-patterns
 6. Aggregate: PASS (all criteria met), PARTIAL (some met), FAIL (critical criteria unmet)
 
-**Verdicts drive the dispatch loop:**
+**Verdicts drive the dispatch loop.** See DEPLOYMENT.md (deployment gates) for the verdict-to-action mapping and merge eligibility rules.
 
-| Verdict | Next group | Merge | Follow-up |
-|---------|-----------|-------|-----------|
-| PASS | Proceeds | Auto-merge eligible | None |
-| PARTIAL | Proceeds | Hold for architect | Corrective prompts auto-generated |
-| FAIL | Dependents blocked, independents continue | Hold | Diagnostic generated |
+| Verdict | Next group | Follow-up |
+|---------|-----------|-----------|
+| PASS | Proceeds | Merge policy evaluation (DEPLOYMENT.md) |
+| PARTIAL | Proceeds | Corrective prompts auto-generated |
+| FAIL | Dependents blocked, independents continue | Diagnostic generated |
 
 **Corrective prompt generation:** On PARTIAL or FAIL, the dispatcher generates a targeted fix prompt. Inputs: original prompt, failed criteria, the PR diff, and QA evidence. A standard-capability model writes a new prompt scoped to exactly the unmet criteria. This queues as a follow-up wave that runs before the next planned batch.
 
@@ -390,15 +410,7 @@ MAX_CONCURRENT=2         # parallel validation jobs
 - **Diff size cap:** If the fix exceeds 2x the original change scope, abort and flag for human review. This catches agents that "fix" a test failure by rewriting half the module
 - **Model tier:** Always standard capability. Fix agents do mechanical work, not design
 
-**Tiered auto-merge:**
-
-| Condition | Action |
-|-----------|--------|
-| QA PASS + CI green + single-module blast radius | Auto-merge |
-| QA PASS + CI green + multi-module blast radius | Merge, notify architect for observation triage |
-| QA PARTIAL or hold flag | Hold for architect |
-| Touches public API surface | Hold for architect |
-| R-type prompt (research, no PR) | Move prompt to done/ |
+**Tiered auto-merge:** See DEPLOYMENT.md (merge policy) for the full merge decision table. The CI manager evaluates each PR against the tiered policy after validation passes.
 
 #### Layer 3: observation triage (post-merge, automated)
 
@@ -505,7 +517,7 @@ The system can fail at every stage. Recognizing failure modes and their remediat
 
 *Signal:* Corrective prompts that produce identical diffs to the original. The "fix" changes nothing because nothing was broken.
 
-*Remediation:* Improve acceptance criteria specificity. "All tests pass" is not verifiable from a diff. "Test file X exists with test function Y that covers case Z" is. The QA evaluator can only assess what the diff shows. Criteria must be diff-visible.
+*Remediation:* The classifier now detects criteria requiring runtime execution or external state (e.g., "`cargo test` passes", "Closes #NNN") and auto-resolves them as NOT_VERIFIABLE instead of FAIL. The prompt validation pipeline rejects such criteria before dispatch. For remaining criteria, improve specificity: "Test file X exists with test function Y that covers case Z" is diff-visible. See the "Acceptance criteria specificity" section above for rewrite patterns.
 
 **Agent drift.** A worker session wanders from the task. It refactors adjacent code, adds features not in the prompt, or "improves" things outside the blast radius.
 
@@ -549,7 +561,7 @@ Not cost tracking. System health signals that indicate whether the pipeline itse
 |--------|---------|----------|--------|
 | **Corrective prompt rate** | <10% of prompts need correction | >20% | Planner is under-specifying. Review acceptance criteria quality |
 | **Stuck rate** | <5% of sessions | >15% | Prompts are too large. Decompose further, or increase max_turns |
-| **QA false positive rate** | <5% of FAIL verdicts are wrong | >15% | Acceptance criteria are not diff-visible. Rewrite to reference concrete artifacts |
+| **QA false positive rate** | <5% of FAIL verdicts are wrong | >15% | Acceptance criteria are not diff-visible. Run prompt validation to catch them pre-dispatch. See "Acceptance criteria specificity" |
 | **Fix agent success rate** | >80% of fix agents resolve the failure | <50% | Failures are too complex for mechanical fixes. Reduce MAX_FIX_AGENTS, let corrective prompts handle it |
 | **Prompt-to-merge cycle time** | Batch completes in one dispatch run | Frequent multi-wave corrections before merge | Prompt quality issue or dependency misordering in execution plan |
 | **Observation-to-issue rate** | >90% of observations become tracked items | <50% triage, overflow accumulating | Tighten severity threshold, switch to digest mode |
