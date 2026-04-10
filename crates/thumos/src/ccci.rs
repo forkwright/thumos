@@ -304,7 +304,7 @@ pub(crate) const CCCI_MAGIC: u32 = 0xFFFF_FFFF;
 /// Source: `eccci/inc/ccci_core.h` — `struct ccci_header`
 ///
 /// All fields are little-endian as the AP and MD are both ARM LE.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 #[repr(C)]
 pub(crate) struct CcciHeader {
     /// Channel-specific payload word 0. `CCCI_MAGIC` for control messages.
@@ -669,7 +669,7 @@ const RX_RING_SIZE: usize = 16;
 ///
 /// SAFETY: `repr(C)` ensures the hardware-expected layout. Fields are
 /// accessed by the CLDMA DMA engine directly.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 #[repr(C, align(8))]
 pub(crate) struct CldmaGpd {
     /// Flags: bit 0 = HWO (hardware owned), bit 1 = BDP (buffer descriptor present).
@@ -2416,7 +2416,7 @@ mod tests {
         assert_eq!(ring.count(), 1, "one entry after record");
         assert_eq!(ring.total_written(), 1, "total matches");
 
-        let entry = ring.get(0).unwrap_or_default();
+        let entry = ring.get(0).expect("entry should exist");
         assert_eq!(entry.timestamp, 100, "timestamp preserved");
         assert_eq!(entry.kind, AuditEventKind::ModemRx, "kind preserved");
         assert_eq!(entry.channel, 5, "channel preserved");
@@ -2451,7 +2451,7 @@ mod tests {
         );
 
         // Oldest available should be entry 10 (first 10 were overwritten)
-        let oldest = ring.get(0).unwrap_or_default();
+        let oldest = ring.get(0).expect("entry should exist");
         assert_eq!(
             oldest.timestamp, 10,
             "oldest available should be entry 10"
@@ -2464,7 +2464,7 @@ mod tests {
         let long_data = [0xAB; 128];
         ring.record(AuditEntry::new(1, AuditEventKind::ModemRx, 0, &long_data));
 
-        let entry = ring.get(0).unwrap_or_default();
+        let entry = ring.get(0).expect("entry should exist");
         assert_eq!(
             entry.payload_len, 128,
             "payload_len records original length"

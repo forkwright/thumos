@@ -11,6 +11,8 @@ extern crate alloc;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
+mod block;
+mod cache;
 mod ccci;
 mod capability;
 #[cfg(not(test))]
