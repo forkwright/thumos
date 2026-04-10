@@ -1,5 +1,5 @@
 [package]
-name = "thumos-pteron"
+name = "pteron"
 description = "Bluetooth HCI driver and BLE scanning"
 version.workspace = true
 edition.workspace = true

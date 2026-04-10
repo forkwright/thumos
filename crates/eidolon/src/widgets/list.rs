@@ -3,7 +3,7 @@
 //! [`TextList`] renders a bounded list of text items and tracks which item
 //! is selected. Navigation is via Up/Down keys or touch tap.
 
-use thumos_haphe::input::{Key, TouchPoint};
+use haphe::input::{Key, TouchPoint};
 
 use crate::color::Rgb565;
 use crate::font::{CHAR_HEIGHT, CHAR_WIDTH, draw_str};

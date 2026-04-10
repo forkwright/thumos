@@ -1,5 +1,5 @@
 [package]
-name = "thumos-aither"
+name = "aither"
 description = "WiFi driver and WPA2/3 supplicant"
 version.workspace = true
 edition.workspace = true

@@ -17,8 +17,8 @@ use crate::wifi::{AccessPoint, Bssid, Encryption};
 /// # Examples
 ///
 /// ```
-/// use thumos_sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use thumos_sema::wifi_analysis::detect_evil_twin;
+/// use sema::wifi::{AccessPoint, Bssid, Encryption};
+/// use sema::wifi_analysis::detect_evil_twin;
 /// use jiff::Timestamp;
 ///
 /// let ts = Timestamp::UNIX_EPOCH;
@@ -59,8 +59,8 @@ pub fn detect_evil_twin(aps: &[AccessPoint]) -> Vec<(&AccessPoint, &AccessPoint)
 /// # Examples
 ///
 /// ```
-/// use thumos_sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use thumos_sema::wifi_analysis::detect_rogue_ap;
+/// use sema::wifi::{AccessPoint, Bssid, Encryption};
+/// use sema::wifi_analysis::detect_rogue_ap;
 /// use jiff::Timestamp;
 ///
 /// let ts = Timestamp::UNIX_EPOCH;
@@ -87,8 +87,8 @@ pub fn detect_rogue_ap<'a>(aps: &'a [AccessPoint], known_bssids: &[Bssid]) -> Ve
 /// # Examples
 ///
 /// ```
-/// use thumos_sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use thumos_sema::wifi_analysis::channel_utilization;
+/// use sema::wifi::{AccessPoint, Bssid, Encryption};
+/// use sema::wifi_analysis::channel_utilization;
 /// use jiff::Timestamp;
 ///
 /// let ts = Timestamp::UNIX_EPOCH;
@@ -117,8 +117,8 @@ pub fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
 /// # Examples
 ///
 /// ```
-/// use thumos_sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use thumos_sema::wifi_analysis::signal_map;
+/// use sema::wifi::{AccessPoint, Bssid, Encryption};
+/// use sema::wifi_analysis::signal_map;
 /// use jiff::Timestamp;
 ///
 /// let ts = Timestamp::UNIX_EPOCH;
@@ -143,8 +143,8 @@ pub fn signal_map(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
 /// # Examples
 ///
 /// ```
-/// use thumos_sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use thumos_sema::wifi_analysis::open_networks;
+/// use sema::wifi::{AccessPoint, Bssid, Encryption};
+/// use sema::wifi_analysis::open_networks;
 /// use jiff::Timestamp;
 ///
 /// let ts = Timestamp::UNIX_EPOCH;
