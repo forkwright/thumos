@@ -379,10 +379,9 @@ impl Syscall {
 ///
 /// Implemented: exit, write, yield, getpid, alloc_page, free_page, uptime,
 ///   sleep, send, recv, fork, waitpid, execve, kill, getuid, brk, mmap,
-///   munmap, mprotect, open, close, read, stat, fstat, lseek, dup, dup2,
-///   getcwd, pipe, futex, clock_gettime, nanosleep, sigaction, sigreturn
-/// Deferred to Phase 05 (filesystem write/directory ops): ioctl, fcntl,
-///   mkdir, unlink, chdir
+///   munmap, mprotect, open, close, read, stat, fstat, lseek, ioctl, fcntl,
+///   dup, dup2, mkdir, unlink, getcwd, chdir, pipe, futex, clock_gettime,
+///   nanosleep, sigaction, sigreturn
 /// Deferred to Phase 06 (connectivity): socket, bind, listen, accept,
 ///   connect, sendto, recvfrom
 pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
@@ -505,10 +504,8 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         Syscall::Unlink => fd::sys_unlink(arg0, arg1),
         Syscall::Chdir => fd::sys_chdir(arg0, arg1),
 
-        // WHY ENOSYS: ioctl and fcntl require device-specific control
-        // abstraction, deferred to a later phase.
-        Syscall::Ioctl
-        | Syscall::Fcntl => ENOSYS,
+        Syscall::Ioctl => fd::sys_ioctl(arg0, arg1, arg2),
+        Syscall::Fcntl => fd::sys_fcntl(arg0, arg1, arg2),
 
         // ---- IPC ----
 
@@ -1715,8 +1712,8 @@ mod tests {
     /// a named future phase.
     ///
     /// WHY: ensures no variant silently falls through the dispatch match as
-    /// an undocumented stub. The two documented ENOSYS sets are Phase 05
-    /// (filesystem write/directory) and Phase 06 (connectivity).
+    /// an undocumented stub. Phase 05 (filesystem) is fully implemented.
+    /// The only remaining ENOSYS set is Phase 06 (connectivity).
     #[test]
     fn all_syscalls_have_documented_status() {
         // Implemented: all syscalls that have actual logic in dispatch().
@@ -1747,9 +1744,14 @@ mod tests {
             33, // Stat
             34, // Fstat
             35, // Lseek
+            36, // Ioctl
+            37, // Fcntl
             38, // Dup
             39, // Dup2
+            40, // Mkdir
+            41, // Unlink
             42, // Getcwd
+            43, // Chdir
             50, // Pipe
             51, // Futex
             70, // ClockGettime
@@ -1757,14 +1759,8 @@ mod tests {
             80, // Sigaction
             81, // Sigreturn
         ];
-        // Deferred to Phase 05 (filesystem write/directory ops).
-        const PHASE05: &[u32] = &[
-            36, // Ioctl
-            37, // Fcntl
-            40, // Mkdir
-            41, // Unlink
-            43, // Chdir
-        ];
+        // Phase 05 filesystem syscalls are fully implemented (Wave 6).
+        const PHASE05: &[u32] = &[];
         // Deferred to Phase 06 (connectivity).
         const PHASE06: &[u32] = &[
             60, // Socket
