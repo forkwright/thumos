@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! WMT (Wireless Management Task) connectivity manager for the MT6739 combo chip.
 //!
 //! Manages firmware loading, power control, and STP framing for the integrated

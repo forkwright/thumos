@@ -8,6 +8,7 @@ use crate::x3dh::{self, InitiatorMessage, OwnedBundle, PreKeyBundle};
 /// An encrypted message ready for transmission.
 #[derive(Debug, Clone)]
 pub struct EncryptedMessage {
+    /// The ratchet-encrypted ciphertext payload.
     pub inner: CiphertextMessage,
 }
 
