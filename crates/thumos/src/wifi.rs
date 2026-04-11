@@ -1,0 +1,1352 @@
+//! WiFi network interface and WPA supplicant for the MT6739 combo chip.
+//!
+//! Ports essential logic from the `aither` userspace crate into the kernel:
+//! - MAC randomization via the kernel CSPRNG (`csprng.rs`)
+//! - WPA2-Personal 4-way handshake state machine
+//! - EAPOL frame parsing and construction (IEEE 802.1X-2020)
+//! - WiFi hardware abstraction via `WifiHwOps` trait
+//!
+//! ## Hardware path
+//!
+//! The MT6739 WiFi hardware is accessed through the WMT combo chip:
+//! - `MT6739_CONSYS = 0x1800_0000` (combo-chip base)
+//! - `MT6739_WLAN  = 0x180F_0000` (WiFi MMIO region)
+//!
+//! Data path goes through WMT STP framing (kelyphos handles the transport).
+//! The `WifiHw` struct provides `#[cfg(not(test))]` MMIO access with a
+//! test-friendly abstraction via `WifiHwOps`.
+//!
+//! ## Integration plan
+//!
+//! Wave 2 creates the module and tests. Wave 3 wires DHCP, smoltcp
+//! `phy::Device`, and boot integration via `kinit.rs`.
+
+// WHY: hardware driver API not yet wired to upper layers (Wave 3 integration).
+#![expect(
+    dead_code,
+    reason = "WiFi driver API not yet wired to kinit (Wave 3)"
+)]
+
+extern crate alloc;
+use alloc::vec::Vec;
+
+use crate::csprng;
+
+// ---------------------------------------------------------------------------
+// MT6739 WiFi hardware constants
+// ---------------------------------------------------------------------------
+
+/// WMT combo-chip (CONSYS) MMIO base address.
+const MT6739_CONSYS: usize = 0x1800_0000;
+
+/// WiFi MMIO base address within the combo-chip region.
+const MT6739_WLAN: usize = 0x180F_0000;
+
+// ---------------------------------------------------------------------------
+// Error types
+// ---------------------------------------------------------------------------
+
+/// WiFi subsystem errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WifiError {
+    /// Hardware did not respond or returned an error status.
+    HardwareTimeout,
+    /// Association with the access point failed.
+    AssociationFailed,
+    /// WPA 4-way handshake failed (MIC mismatch, timeout, protocol error).
+    HandshakeFailed,
+    /// EAPOL frame is too short to contain required fields.
+    FrameTooShort {
+        /// Minimum bytes needed.
+        need: usize,
+        /// Actual bytes available.
+        have: usize,
+    },
+    /// Unrecognised EAPOL packet type byte.
+    UnknownEapolType {
+        /// The invalid type byte.
+        value: u8,
+    },
+    /// No scan results matched the configured network.
+    NetworkNotFound,
+    /// The WiFi hardware is not initialized.
+    NotInitialized,
+}
+
+// ---------------------------------------------------------------------------
+// WiFi state machine
+// ---------------------------------------------------------------------------
+
+/// WiFi connection lifecycle state machine.
+///
+/// Transitions are driven by external events: scan results, association
+/// responses, EAPOL frames, and timeouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum WifiState {
+    /// No association in progress.
+    #[default]
+    Disconnected,
+    /// Passive or active scan in progress.
+    Scanning,
+    /// 802.11 association exchange in progress.
+    Associating,
+    /// WPA 4-way handshake in progress.
+    Handshaking,
+    /// Fully connected: data path is encrypted and open.
+    Connected,
+    /// A fatal error occurred; inspect the attached error.
+    Error(WifiError),
+}
+
+// ---------------------------------------------------------------------------
+// Security types
+// ---------------------------------------------------------------------------
+
+/// WiFi security protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum WifiSecurity {
+    /// No encryption (open network).
+    #[default]
+    Open,
+    /// WPA2-Personal (PSK / CCMP).
+    Wpa2Personal,
+    /// WPA3-Personal (SAE).
+    Wpa3Sae,
+}
+
+// ---------------------------------------------------------------------------
+// Configuration types
+// ---------------------------------------------------------------------------
+
+/// Maximum SSID length in bytes (IEEE 802.11-2020).
+pub const MAX_SSID_LEN: usize = 32;
+
+/// Maximum passphrase length in bytes (WPA2-Personal: 8-63 ASCII).
+pub const MAX_PASSPHRASE_LEN: usize = 64;
+
+/// WiFi network configuration.
+///
+/// Stores SSID and passphrase in fixed-size arrays to avoid heap allocation
+/// in the connection hot path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WifiConfig {
+    /// Network SSID (raw bytes; may not be valid UTF-8).
+    pub ssid: [u8; MAX_SSID_LEN],
+    /// Number of valid bytes in `ssid`.
+    pub ssid_len: u8,
+    /// Pre-shared key or SAE password (raw bytes).
+    pub passphrase: [u8; MAX_PASSPHRASE_LEN],
+    /// Number of valid bytes in `passphrase`.
+    pub passphrase_len: u8,
+    /// Security protocol.
+    pub security: WifiSecurity,
+}
+
+impl WifiConfig {
+    /// Create a new WiFi configuration.
+    ///
+    /// Truncates SSID and passphrase to their respective maximum lengths
+    /// rather than returning an error.
+    #[must_use]
+    pub fn new(ssid: &[u8], passphrase: &[u8], security: WifiSecurity) -> Self {
+        let mut cfg = Self {
+            ssid: [0u8; MAX_SSID_LEN],
+            ssid_len: 0,
+            passphrase: [0u8; MAX_PASSPHRASE_LEN],
+            passphrase_len: 0,
+            security,
+        };
+        let slen = ssid.len().min(MAX_SSID_LEN);
+        cfg.ssid[..slen].copy_from_slice(&ssid[..slen]);
+        cfg.ssid_len = slen as u8;
+        let plen = passphrase.len().min(MAX_PASSPHRASE_LEN);
+        cfg.passphrase[..plen].copy_from_slice(&passphrase[..plen]);
+        cfg.passphrase_len = plen as u8;
+        cfg
+    }
+
+    /// Return the SSID as a byte slice.
+    #[must_use]
+    pub fn ssid(&self) -> &[u8] {
+        &self.ssid[..self.ssid_len as usize]
+    }
+
+    /// Return the passphrase as a byte slice.
+    #[must_use]
+    pub fn passphrase(&self) -> &[u8] {
+        &self.passphrase[..self.passphrase_len as usize]
+    }
+}
+
+/// A single scan result from the WiFi firmware.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanResult {
+    /// Advertised SSID (raw bytes from beacon/probe response).
+    pub ssid: [u8; MAX_SSID_LEN],
+    /// Number of valid bytes in `ssid`.
+    pub ssid_len: u8,
+    /// BSSID (access point MAC address).
+    pub bssid: [u8; 6],
+    /// Operating channel (2.4 GHz: 1-14, 5 GHz: 36-165).
+    pub channel: u8,
+    /// Received Signal Strength Indicator in dBm (typically -100 to 0).
+    pub rssi: i8,
+    /// Security capabilities advertised in the beacon.
+    pub security: WifiSecurity,
+}
+
+impl ScanResult {
+    /// Return the SSID as a byte slice.
+    #[must_use]
+    pub fn ssid(&self) -> &[u8] {
+        &self.ssid[..self.ssid_len as usize]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MAC randomization
+// ---------------------------------------------------------------------------
+
+/// Generate a random locally-administered unicast MAC address.
+///
+/// Per IEEE 802-2014 section 8.1:
+/// - Bit 0 of octet 0 = 0 (unicast / clear multicast bit)
+/// - Bit 1 of octet 0 = 1 (locally administered)
+///
+/// Uses the kernel CSPRNG (`csprng::kernel_random_bytes`).
+#[must_use]
+pub fn generate_random_mac() -> [u8; 6] {
+    let mut mac = [0u8; 6];
+    csprng::kernel_random_bytes(&mut mac);
+    // INVARIANT: bit 0 clear = unicast, bit 1 set = locally administered
+    mac[0] = (mac[0] | 0x02) & 0xFE;
+    mac
+}
+
+// ---------------------------------------------------------------------------
+// WPA2-Personal key derivation (stubbed)
+// ---------------------------------------------------------------------------
+
+/// PMK/PSK output length in bytes (IEEE 802.11-2020).
+pub const PMK_LEN: usize = 32;
+
+/// Key Confirmation Key length in bytes.
+pub const KCK_LEN: usize = 16;
+
+/// Key Encryption Key length in bytes.
+pub const KEK_LEN: usize = 16;
+
+/// Temporal Key length in bytes (WPA2-CCMP).
+pub const TK_LEN: usize = 16;
+
+/// Total PTK length: KCK + KEK + TK (WPA2-CCMP, 384 bits).
+pub const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
+
+/// MIC length in bytes.
+pub const MIC_LEN: usize = 16;
+
+/// Pairwise Transient Key components.
+///
+/// Derived from the PMK by PTK = PRF-384(PMK, "Pairwise key expansion", ...).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ptk {
+    /// Key Confirmation Key: used to compute and verify MIC.
+    pub kck: [u8; KCK_LEN],
+    /// Key Encryption Key: used to wrap the GTK with AES-KEYWRAP.
+    pub kek: [u8; KEK_LEN],
+    /// Temporal Key: used for data frame encryption (AES-CCMP).
+    pub tk: [u8; TK_LEN],
+}
+
+/// Derive the Pairwise Master Key from a passphrase and SSID.
+///
+/// Uses PBKDF2-HMAC-SHA1 with 4096 iterations and a 32-byte output as
+/// specified in IEEE 802.11-2020, section 12.4.4.3.1.
+///
+/// # Current status
+///
+/// **Stubbed**: returns zeroed PMK. Full PBKDF2-HMAC-SHA1 requires a SHA1
+/// implementation which is not yet available in the kernel. The actual crypto
+/// will be implemented when the kernel crypto subsystem is added.
+#[must_use]
+pub fn derive_pmk(_passphrase: &[u8], _ssid: &[u8]) -> [u8; PMK_LEN] {
+    // TODO(crypto): implement PBKDF2-HMAC-SHA1 (4096 iterations, 32-byte output)
+    // per IEEE 802.11-2020, section 12.4.4.3.1.
+    // Requires: HMAC-SHA1 primitive (not yet in kernel).
+    [0u8; PMK_LEN]
+}
+
+/// Derive the Pairwise Transient Key using PRF-384.
+///
+/// Implements IEEE 802.11-2020 section 12.7.1.2:
+/// ```text
+/// PTK = PRF-384(PMK, "Pairwise key expansion",
+///               min(AA,SPA) || max(AA,SPA) || min(ANonce,SNonce) || max(ANonce,SNonce))
+/// ```
+///
+/// # Current status
+///
+/// **Stubbed**: returns zeroed PTK. Requires HMAC-SHA1 for the PRF function.
+#[must_use]
+pub fn derive_ptk(
+    _pmk: &[u8; PMK_LEN],
+    _anonce: &[u8; 32],
+    _snonce: &[u8; 32],
+    _aa: &[u8; 6],
+    _spa: &[u8; 6],
+) -> Ptk {
+    // TODO(crypto): implement PRF-384 via HMAC-SHA1 counter construction
+    // per IEEE 802.11-2020, section 12.7.1.2.
+    Ptk {
+        kck: [0u8; KCK_LEN],
+        kek: [0u8; KEK_LEN],
+        tk: [0u8; TK_LEN],
+    }
+}
+
+/// Compute a 16-byte MIC using HMAC-SHA1 truncated to 128 bits.
+///
+/// Used to authenticate EAPOL-Key frames during the 4-way handshake
+/// (messages 2, 3, and 4).
+///
+/// # Current status
+///
+/// **Stubbed**: returns zeroed MIC. Requires HMAC-SHA1 primitive.
+#[must_use]
+pub fn compute_mic(_kck: &[u8; KCK_LEN], _data: &[u8]) -> [u8; MIC_LEN] {
+    // TODO(crypto): implement HMAC-SHA1 truncated to 128 bits.
+    [0u8; MIC_LEN]
+}
+
+// ---------------------------------------------------------------------------
+// EAPOL frame handling (IEEE 802.1X-2020)
+// ---------------------------------------------------------------------------
+
+/// Size of the EAPOL common header (version + type + length).
+const EAPOL_HEADER_LEN: usize = 4;
+
+/// Size of the fixed portion of an EAPOL-Key body (before variable key data).
+///
+/// Fields: descriptor_type(1) + key_info(2) + key_length(2) + replay_counter(8)
+/// + nonce(32) + iv(16) + rsc(8) + reserved(8) + mic(16) + key_data_length(2) = 95
+const EAPOL_KEY_FIXED_LEN: usize = 95;
+
+/// Nonce field length in bytes.
+pub const NONCE_LEN: usize = 32;
+
+/// IV field length in bytes.
+pub const IV_LEN: usize = 16;
+
+/// RSN key descriptor type (WPA2/WPA3).
+pub const DESCRIPTOR_TYPE_RSN: u8 = 0x02;
+
+/// EAPOL packet type discriminant (IEEE 802.1X-2020, table 11-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EapolType {
+    /// EAP authentication message.
+    EapPacket,
+    /// Supplicant requests authentication start.
+    Start,
+    /// Supplicant ends the authenticated session.
+    Logoff,
+    /// Key negotiation message (4-way handshake).
+    Key,
+}
+
+impl EapolType {
+    /// Parse from wire byte.
+    const fn from_byte(b: u8) -> Result<Self, WifiError> {
+        match b {
+            0x00 => Ok(Self::EapPacket),
+            0x01 => Ok(Self::Start),
+            0x02 => Ok(Self::Logoff),
+            0x03 => Ok(Self::Key),
+            v => Err(WifiError::UnknownEapolType { value: v }),
+        }
+    }
+
+    /// Encode to wire byte.
+    const fn to_byte(self) -> u8 {
+        match self {
+            Self::EapPacket => 0x00,
+            Self::Start => 0x01,
+            Self::Logoff => 0x02,
+            Self::Key => 0x03,
+        }
+    }
+}
+
+/// Packed key-information field (IEEE 802.11-2020, section 12.7.2, figure 12-33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeyInfo(pub u16);
+
+impl KeyInfo {
+    /// Key descriptor version (bits 0-2).
+    #[must_use]
+    pub const fn descriptor_version(self) -> u8 {
+        (self.0 & 0x0007) as u8
+    }
+
+    /// True if pairwise (unicast) key; false for group/broadcast key.
+    #[must_use]
+    pub const fn pairwise(self) -> bool {
+        self.0 & 0x0008 != 0
+    }
+
+    /// True if supplicant shall install the key.
+    #[must_use]
+    pub const fn install(self) -> bool {
+        self.0 & 0x0040 != 0
+    }
+
+    /// True if message requires an acknowledgement.
+    #[must_use]
+    pub const fn ack(self) -> bool {
+        self.0 & 0x0080 != 0
+    }
+
+    /// True if a MIC is present in this frame.
+    #[must_use]
+    pub const fn mic(self) -> bool {
+        self.0 & 0x0100 != 0
+    }
+
+    /// True if the RSNA has been established.
+    #[must_use]
+    pub const fn secure(self) -> bool {
+        self.0 & 0x0200 != 0
+    }
+
+    /// True if key data is encrypted (AES-KEYWRAP).
+    #[must_use]
+    pub const fn encrypted_key_data(self) -> bool {
+        self.0 & 0x1000 != 0
+    }
+}
+
+/// EAPOL-Key frame body (IEEE 802.11-2020, section 12.7.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EapolKeyFrame {
+    /// Key descriptor type (0x02 = RSN, 0xFE = WPA legacy).
+    pub descriptor_type: u8,
+    /// Key information flags.
+    pub key_info: KeyInfo,
+    /// Length of the pairwise temporal key in octets.
+    pub key_length: u16,
+    /// Strictly monotonic replay counter.
+    pub replay_counter: u64,
+    /// Authenticator or supplicant nonce (ANonce / SNonce).
+    pub nonce: [u8; NONCE_LEN],
+    /// Key IV (all-zero for CCMP; used by TKIP).
+    pub iv: [u8; IV_LEN],
+    /// RSC / GTK sequence counter.
+    pub rsc: u64,
+    /// Message Integrity Code (MIC field zeroed before MIC computation).
+    pub mic: [u8; MIC_LEN],
+    /// Optional key material (wrapped GTK or RSNE IE).
+    pub key_data: Vec<u8>,
+}
+
+/// Top-level EAPOL frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EapolFrame {
+    /// Protocol version (1 = 802.1X-2001, 2 = 802.1X-2004, 3 = 802.1X-2010).
+    pub version: u8,
+    /// Packet type discriminant.
+    pub packet_type: EapolType,
+    /// Key frame (present only when `packet_type == EapolType::Key`).
+    pub key_frame: Option<EapolKeyFrame>,
+    /// Raw body bytes (for EAP-Packet, Start, and Logoff).
+    pub raw_body: Vec<u8>,
+}
+
+/// Parse an EAPOL frame from a byte slice.
+///
+/// # Errors
+///
+/// Returns [`WifiError::FrameTooShort`] when the slice cannot satisfy the
+/// declared packet length, and [`WifiError::UnknownEapolType`] for
+/// unrecognised packet type bytes.
+pub fn eapol_parse(data: &[u8]) -> Result<EapolFrame, WifiError> {
+    if data.len() < EAPOL_HEADER_LEN {
+        return Err(WifiError::FrameTooShort {
+            need: EAPOL_HEADER_LEN,
+            have: data.len(),
+        });
+    }
+
+    let version = data[0];
+    let packet_type = EapolType::from_byte(data[1])?;
+    let body_len = u16::from_be_bytes([data[2], data[3]]) as usize;
+    let total = EAPOL_HEADER_LEN + body_len;
+
+    if data.len() < total {
+        return Err(WifiError::FrameTooShort {
+            need: total,
+            have: data.len(),
+        });
+    }
+
+    let body = &data[EAPOL_HEADER_LEN..total];
+
+    if packet_type == EapolType::Key {
+        let key_frame = eapol_parse_key_frame(body)?;
+        Ok(EapolFrame {
+            version,
+            packet_type,
+            key_frame: Some(key_frame),
+            raw_body: Vec::new(),
+        })
+    } else {
+        Ok(EapolFrame {
+            version,
+            packet_type,
+            key_frame: None,
+            raw_body: body.to_vec(),
+        })
+    }
+}
+
+/// Parse the body of an EAPOL-Key frame.
+fn eapol_parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, WifiError> {
+    if body.len() < EAPOL_KEY_FIXED_LEN {
+        return Err(WifiError::FrameTooShort {
+            need: EAPOL_KEY_FIXED_LEN,
+            have: body.len(),
+        });
+    }
+
+    let descriptor_type = body[0];
+    let key_info = KeyInfo(u16::from_be_bytes([body[1], body[2]]));
+    let key_length = u16::from_be_bytes([body[3], body[4]]);
+
+    let mut replay_buf = [0u8; 8];
+    replay_buf.copy_from_slice(&body[5..13]);
+    let replay_counter = u64::from_be_bytes(replay_buf);
+
+    let mut nonce = [0u8; NONCE_LEN];
+    nonce.copy_from_slice(&body[13..45]);
+
+    let mut iv = [0u8; IV_LEN];
+    iv.copy_from_slice(&body[45..61]);
+
+    let mut rsc_buf = [0u8; 8];
+    rsc_buf.copy_from_slice(&body[61..69]);
+    let rsc = u64::from_be_bytes(rsc_buf);
+    // body[69..77] is reserved; skip.
+
+    let mut mic = [0u8; MIC_LEN];
+    mic.copy_from_slice(&body[77..93]);
+
+    let key_data_len = u16::from_be_bytes([body[93], body[94]]) as usize;
+    let key_data_end = EAPOL_KEY_FIXED_LEN + key_data_len;
+
+    if body.len() < key_data_end {
+        return Err(WifiError::FrameTooShort {
+            need: key_data_end,
+            have: body.len(),
+        });
+    }
+
+    let key_data = body[EAPOL_KEY_FIXED_LEN..key_data_end].to_vec();
+
+    Ok(EapolKeyFrame {
+        descriptor_type,
+        key_info,
+        key_length,
+        replay_counter,
+        nonce,
+        iv,
+        rsc,
+        mic,
+        key_data,
+    })
+}
+
+/// Encode an EAPOL frame into a byte vector.
+#[must_use]
+pub fn eapol_encode(frame: &EapolFrame) -> Vec<u8> {
+    let body = frame
+        .key_frame
+        .as_ref()
+        .map_or_else(|| frame.raw_body.clone(), eapol_encode_key_frame);
+
+    // WHY: body length is capped at u16::MAX to match the 2-byte length field
+    // in the EAPOL header. Frames exceeding this are malformed; truncation is
+    // the least-bad option in a no_std context without Result overhead.
+    let body_len = if body.len() > u16::MAX as usize {
+        u16::MAX
+    } else {
+        body.len() as u16
+    };
+    let mut out = Vec::with_capacity(EAPOL_HEADER_LEN + body.len());
+    out.push(frame.version);
+    out.push(frame.packet_type.to_byte());
+    out.extend_from_slice(&body_len.to_be_bytes());
+    out.extend_from_slice(&body);
+    out
+}
+
+/// Encode an EAPOL-Key frame body.
+fn eapol_encode_key_frame(kf: &EapolKeyFrame) -> Vec<u8> {
+    // WHY: same u16::MAX cap as eapol_encode for the key_data_length field.
+    let key_data_len = if kf.key_data.len() > u16::MAX as usize {
+        u16::MAX
+    } else {
+        kf.key_data.len() as u16
+    };
+    let mut out = Vec::with_capacity(EAPOL_KEY_FIXED_LEN + kf.key_data.len());
+
+    out.push(kf.descriptor_type);
+    out.extend_from_slice(&kf.key_info.0.to_be_bytes());
+    out.extend_from_slice(&kf.key_length.to_be_bytes());
+    out.extend_from_slice(&kf.replay_counter.to_be_bytes());
+    out.extend_from_slice(&kf.nonce);
+    out.extend_from_slice(&kf.iv);
+    out.extend_from_slice(&kf.rsc.to_be_bytes());
+    out.extend_from_slice(&[0u8; 8]); // reserved
+    out.extend_from_slice(&kf.mic);
+    out.extend_from_slice(&key_data_len.to_be_bytes());
+    out.extend_from_slice(&kf.key_data);
+    out
+}
+
+// ---------------------------------------------------------------------------
+// WPA2 4-way handshake state machine
+// ---------------------------------------------------------------------------
+
+/// WPA2-Personal 4-way handshake progression.
+///
+/// State machine for the supplicant side of the IEEE 802.11-2020 4-way
+/// handshake (section 12.7.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum HandshakeState {
+    /// Waiting for Message 1 (ANonce from authenticator).
+    #[default]
+    AwaitMsg1,
+    /// Message 1 received; supplicant generated SNonce and derived PTK.
+    /// Waiting to send Message 2.
+    SendMsg2,
+    /// Message 2 sent; waiting for Message 3 (GTK + Install).
+    AwaitMsg3,
+    /// Message 3 received; waiting to send Message 4 (final ACK).
+    SendMsg4,
+    /// Handshake complete; keys installed.
+    Complete,
+    /// Handshake failed.
+    Failed,
+}
+
+/// WPA2-Personal 4-way handshake context.
+///
+/// Tracks handshake progression and stores transient cryptographic material
+/// (nonces, derived keys) for the duration of the handshake.
+#[derive(Debug, Clone)]
+pub struct WpaHandshake {
+    /// Current handshake state.
+    pub state: HandshakeState,
+    /// Authenticator nonce (received in Message 1).
+    pub anonce: [u8; NONCE_LEN],
+    /// Supplicant nonce (generated locally).
+    pub snonce: [u8; NONCE_LEN],
+    /// Derived Pairwise Transient Key (populated after Message 1 processing).
+    pub ptk: Option<Ptk>,
+    /// Replay counter from the most recent authenticator message.
+    pub replay_counter: u64,
+}
+
+impl WpaHandshake {
+    /// Create a new handshake context.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: HandshakeState::AwaitMsg1,
+            anonce: [0u8; NONCE_LEN],
+            snonce: [0u8; NONCE_LEN],
+            ptk: None,
+            replay_counter: 0,
+        }
+    }
+
+    /// Process an incoming EAPOL-Key frame (Message 1 or Message 3).
+    ///
+    /// Advances the handshake state machine. Returns the new state.
+    ///
+    /// # Arguments
+    ///
+    /// * `key_frame` - The received EAPOL-Key frame body.
+    /// * `pmk` - Pre-computed Pairwise Master Key.
+    /// * `own_mac` - Supplicant MAC address (locally-administered).
+    /// * `ap_mac` - Authenticator (AP) MAC address.
+    pub fn process_message(
+        &mut self,
+        key_frame: &EapolKeyFrame,
+        pmk: &[u8; PMK_LEN],
+        own_mac: &[u8; 6],
+        ap_mac: &[u8; 6],
+    ) -> HandshakeState {
+        match self.state {
+            HandshakeState::AwaitMsg1 => {
+                // Message 1: AP sends ANonce, ack=true, mic=false
+                if !key_frame.key_info.ack() || key_frame.key_info.mic() {
+                    self.state = HandshakeState::Failed;
+                    return self.state;
+                }
+                self.anonce = key_frame.nonce;
+                self.replay_counter = key_frame.replay_counter;
+
+                // Generate supplicant nonce
+                csprng::kernel_random_bytes(&mut self.snonce);
+
+                // Derive PTK
+                let ptk = derive_ptk(pmk, &self.anonce, &self.snonce, ap_mac, own_mac);
+                self.ptk = Some(ptk);
+
+                self.state = HandshakeState::SendMsg2;
+                self.state
+            }
+            HandshakeState::AwaitMsg3 => {
+                // Message 3: AP sends ANonce again, ack=true, mic=true, install=true
+                if !key_frame.key_info.ack()
+                    || !key_frame.key_info.mic()
+                    || !key_frame.key_info.install()
+                {
+                    self.state = HandshakeState::Failed;
+                    return self.state;
+                }
+
+                // Verify replay counter is monotonically increasing
+                if key_frame.replay_counter <= self.replay_counter {
+                    self.state = HandshakeState::Failed;
+                    return self.state;
+                }
+                self.replay_counter = key_frame.replay_counter;
+
+                // TODO(crypto): verify MIC using KCK from PTK
+                // let expected_mic = compute_mic(&ptk.kck, frame_with_zeroed_mic);
+
+                self.state = HandshakeState::SendMsg4;
+                self.state
+            }
+            _ => self.state,
+        }
+    }
+
+    /// Mark the handshake as complete after Message 4 has been sent.
+    pub fn complete(&mut self) {
+        if self.state == HandshakeState::SendMsg4 {
+            self.state = HandshakeState::Complete;
+        }
+    }
+
+    /// Build an EAPOL-Key response frame (Message 2 or Message 4).
+    ///
+    /// Returns `None` if the handshake is not in a state that requires sending.
+    #[must_use]
+    pub fn build_response(&self) -> Option<EapolFrame> {
+        match self.state {
+            HandshakeState::SendMsg2 => {
+                // Message 2: supplicant sends SNonce, mic=true, ack=false
+                // Key info: version=2 (AES), pairwise, MIC
+                let key_info = KeyInfo(0x010a); // version=2, pairwise, MIC
+                let kf = EapolKeyFrame {
+                    descriptor_type: DESCRIPTOR_TYPE_RSN,
+                    key_info,
+                    key_length: 0,
+                    replay_counter: self.replay_counter,
+                    nonce: self.snonce,
+                    iv: [0u8; IV_LEN],
+                    rsc: 0,
+                    mic: [0u8; MIC_LEN], // TODO(crypto): compute MIC with KCK
+                    key_data: Vec::new(),
+                };
+                Some(EapolFrame {
+                    version: 2,
+                    packet_type: EapolType::Key,
+                    key_frame: Some(kf),
+                    raw_body: Vec::new(),
+                })
+            }
+            HandshakeState::SendMsg4 => {
+                // Message 4: supplicant sends final ACK, mic=true, secure=true
+                let key_info = KeyInfo(0x030a); // version=2, pairwise, MIC, secure
+                let kf = EapolKeyFrame {
+                    descriptor_type: DESCRIPTOR_TYPE_RSN,
+                    key_info,
+                    key_length: 0,
+                    replay_counter: self.replay_counter,
+                    nonce: [0u8; NONCE_LEN],
+                    iv: [0u8; IV_LEN],
+                    rsc: 0,
+                    mic: [0u8; MIC_LEN], // TODO(crypto): compute MIC with KCK
+                    key_data: Vec::new(),
+                };
+                Some(EapolFrame {
+                    version: 2,
+                    packet_type: EapolType::Key,
+                    key_frame: Some(kf),
+                    raw_body: Vec::new(),
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+impl Default for WpaHandshake {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WiFi hardware abstraction
+// ---------------------------------------------------------------------------
+
+/// Hardware operations trait for WiFi driver abstraction.
+///
+/// Allows test-friendly mocking of MMIO access. The real implementation
+/// (`WifiHw`) uses `#[cfg(not(test))]` MMIO; tests provide a mock.
+pub trait WifiHwOps {
+    /// Transmit a frame to the WiFi hardware.
+    fn send_frame(&mut self, data: &[u8]) -> Result<(), WifiError>;
+
+    /// Receive a frame from the WiFi hardware, if one is available.
+    fn recv_frame(&mut self) -> Option<Vec<u8>>;
+
+    /// Initiate a passive scan.
+    fn scan_start(&mut self) -> Result<(), WifiError>;
+
+    /// Return the current scan results.
+    fn scan_results(&self) -> &[ScanResult];
+
+    /// Associate with an access point.
+    fn associate(&mut self, ssid: &[u8], bssid: &[u8; 6]) -> Result<(), WifiError>;
+}
+
+/// WiFi hardware driver for the MT6739 WMT combo chip.
+///
+/// Provides MMIO-based access to the WiFi hardware on the real target,
+/// and a mock-friendly scan result buffer for testing.
+pub struct WifiHw {
+    /// WLAN MMIO base address.
+    wlan_base: usize,
+    /// Combo-chip CONSYS base address.
+    consys_base: usize,
+    /// Buffered scan results from the most recent scan.
+    scan_buf: Vec<ScanResult>,
+}
+
+impl WifiHw {
+    /// Construct a new WiFi hardware driver.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            wlan_base: MT6739_WLAN,
+            consys_base: MT6739_CONSYS,
+            scan_buf: Vec::new(),
+        }
+    }
+}
+
+impl WifiHwOps for WifiHw {
+    fn send_frame(&mut self, _data: &[u8]) -> Result<(), WifiError> {
+        // TODO(hw): implement WMT STP frame TX via MMIO write to WLAN registers.
+        // The data path goes through the WMT combo-chip transport layer
+        // (kelyphos handles STP framing).
+        Err(WifiError::NotInitialized)
+    }
+
+    fn recv_frame(&mut self) -> Option<Vec<u8>> {
+        // TODO(hw): implement WMT STP frame RX via MMIO read from WLAN registers.
+        None
+    }
+
+    fn scan_start(&mut self) -> Result<(), WifiError> {
+        // TODO(hw): issue scan command via WMT STP to WiFi firmware.
+        // Uses passive scan by default (no MAC leakage).
+        Err(WifiError::NotInitialized)
+    }
+
+    fn scan_results(&self) -> &[ScanResult] {
+        &self.scan_buf
+    }
+
+    fn associate(&mut self, _ssid: &[u8], _bssid: &[u8; 6]) -> Result<(), WifiError> {
+        // TODO(hw): issue association request to WiFi firmware via WMT STP.
+        Err(WifiError::NotInitialized)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WiFi driver (combines state machine + hardware + WPA)
+// ---------------------------------------------------------------------------
+
+/// WiFi network driver combining state machine, hardware ops, and WPA handshake.
+///
+/// Orchestrates the full connection lifecycle: scan, associate, handshake,
+/// connected. Uses MAC randomization for each new connection attempt.
+pub struct WifiDriver<H: WifiHwOps> {
+    /// Current connection state.
+    state: WifiState,
+    /// Hardware abstraction.
+    hw: H,
+    /// Network configuration.
+    config: Option<WifiConfig>,
+    /// Current locally-administered MAC address.
+    mac: [u8; 6],
+    /// WPA handshake context (active during Handshaking state).
+    handshake: Option<WpaHandshake>,
+}
+
+impl<H: WifiHwOps> WifiDriver<H> {
+    /// Create a new WiFi driver with the given hardware backend.
+    ///
+    /// Generates an initial random MAC address.
+    #[must_use]
+    pub fn new(hw: H) -> Self {
+        Self {
+            state: WifiState::Disconnected,
+            hw,
+            config: None,
+            mac: generate_random_mac(),
+            handshake: None,
+        }
+    }
+
+    /// Return the current connection state.
+    #[must_use]
+    pub const fn state(&self) -> &WifiState {
+        &self.state
+    }
+
+    /// Return the current MAC address.
+    #[must_use]
+    pub const fn mac_address(&self) -> &[u8; 6] {
+        &self.mac
+    }
+
+    /// Set the network configuration for the next connection attempt.
+    pub fn configure(&mut self, config: WifiConfig) {
+        self.config = Some(config);
+    }
+
+    /// Initiate a scan. Transitions state from Disconnected to Scanning.
+    ///
+    /// Generates a fresh random MAC address for privacy.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WifiError` if the hardware scan cannot be started.
+    pub fn start_scan(&mut self) -> Result<(), WifiError> {
+        // Fresh MAC for each scan (privacy)
+        self.mac = generate_random_mac();
+        self.hw.scan_start()?;
+        self.state = WifiState::Scanning;
+        Ok(())
+    }
+
+    /// Return a reference to the hardware backend.
+    #[must_use]
+    pub const fn hw(&self) -> &H {
+        &self.hw
+    }
+
+    /// Return a mutable reference to the hardware backend.
+    pub fn hw_mut(&mut self) -> &mut H {
+        &mut self.hw
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test mock
+// ---------------------------------------------------------------------------
+
+/// Mock WiFi hardware for testing.
+///
+/// Records calls and returns pre-configured results without MMIO access.
+#[cfg(test)]
+pub struct MockWifiHw {
+    /// Pre-loaded scan results.
+    pub scan_results: Vec<ScanResult>,
+    /// Frames sent via `send_frame`.
+    pub sent_frames: Vec<Vec<u8>>,
+    /// Whether scan_start should succeed.
+    pub scan_ok: bool,
+    /// Whether associate should succeed.
+    pub associate_ok: bool,
+}
+
+#[cfg(test)]
+impl MockWifiHw {
+    fn new() -> Self {
+        Self {
+            scan_results: Vec::new(),
+            sent_frames: Vec::new(),
+            scan_ok: true,
+            associate_ok: true,
+        }
+    }
+}
+
+#[cfg(test)]
+impl WifiHwOps for MockWifiHw {
+    fn send_frame(&mut self, data: &[u8]) -> Result<(), WifiError> {
+        self.sent_frames.push(data.to_vec());
+        Ok(())
+    }
+
+    fn recv_frame(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn scan_start(&mut self) -> Result<(), WifiError> {
+        if self.scan_ok {
+            Ok(())
+        } else {
+            Err(WifiError::HardwareTimeout)
+        }
+    }
+
+    fn scan_results(&self) -> &[ScanResult] {
+        &self.scan_results
+    }
+
+    fn associate(&mut self, _ssid: &[u8], _bssid: &[u8; 6]) -> Result<(), WifiError> {
+        if self.associate_ok {
+            Ok(())
+        } else {
+            Err(WifiError::AssociationFailed)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    // Seed the kernel CSPRNG for deterministic test output.
+    fn setup_csprng() {
+        let key = [
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+            0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b,
+            0x2c, 0x2d, 0x2e, 0x2f,
+        ];
+        csprng::seed_for_test(&key, &[0u8; 8], 0);
+    }
+
+    // --- MAC randomization ---
+
+    #[test]
+    fn generate_random_mac_sets_local_bit() {
+        setup_csprng();
+        let mac = generate_random_mac();
+        assert!(
+            mac[0] & 0x02 != 0,
+            "locally-administered bit (bit 1 of octet 0) must be set"
+        );
+    }
+
+    #[test]
+    fn generate_random_mac_clears_multicast_bit() {
+        setup_csprng();
+        let mac = generate_random_mac();
+        assert!(
+            mac[0] & 0x01 == 0,
+            "multicast bit (bit 0 of octet 0) must be clear"
+        );
+    }
+
+    #[test]
+    fn generate_random_mac_produces_unique_addresses() {
+        setup_csprng();
+        let mac_a = generate_random_mac();
+        let mac_b = generate_random_mac();
+        // Both must be valid locally-administered unicast
+        assert!(mac_a[0] & 0x02 != 0, "mac_a must be locally administered");
+        assert!(mac_b[0] & 0x02 != 0, "mac_b must be locally administered");
+        assert!(mac_a[0] & 0x01 == 0, "mac_a must be unicast");
+        assert!(mac_b[0] & 0x01 == 0, "mac_b must be unicast");
+        // Collision is theoretically possible but negligibly unlikely with
+        // 46 bits of randomness from a seeded CSPRNG.
+        assert_ne!(
+            mac_a, mac_b,
+            "two consecutive MAC addresses must differ (CSPRNG seeded)"
+        );
+    }
+
+    // --- WiFi state machine ---
+
+    #[test]
+    fn wifi_state_starts_disconnected() {
+        setup_csprng();
+        let hw = MockWifiHw::new();
+        let driver = WifiDriver::new(hw);
+        assert_eq!(
+            *driver.state(),
+            WifiState::Disconnected,
+            "initial state must be Disconnected"
+        );
+    }
+
+    #[test]
+    fn wifi_state_transitions_to_scanning() {
+        setup_csprng();
+        let hw = MockWifiHw::new();
+        let mut driver = WifiDriver::new(hw);
+        let result = driver.start_scan();
+        assert!(result.is_ok(), "scan_start must succeed with mock hw");
+        assert_eq!(
+            *driver.state(),
+            WifiState::Scanning,
+            "state must be Scanning after successful scan_start"
+        );
+    }
+
+    // --- EAPOL frame parsing ---
+
+    #[test]
+    fn eapol_frame_parse_valid() {
+        // version=2, type=Start(0x01), length=0
+        let data = [0x02, 0x01, 0x00, 0x00];
+        let frame = eapol_parse(&data);
+        assert!(frame.is_ok(), "valid Start frame must parse successfully");
+        let frame = frame.ok();
+        assert!(frame.is_some(), "parsed frame must be Some");
+        let frame = frame.as_ref();
+        assert_eq!(frame.map(|f| f.version), Some(2), "version must be 2");
+        assert_eq!(
+            frame.map(|f| f.packet_type),
+            Some(EapolType::Start),
+            "packet type must be Start"
+        );
+        assert!(
+            frame.is_some_and(|f| f.key_frame.is_none()),
+            "Start frame must have no key frame"
+        );
+    }
+
+    #[test]
+    fn eapol_frame_parse_short_returns_error() {
+        // Only 3 bytes: too short for EAPOL header
+        let data = [0x02, 0x01, 0x00];
+        let result = eapol_parse(&data);
+        assert!(result.is_err(), "truncated frame must return error");
+        match result {
+            Err(WifiError::FrameTooShort { need, have }) => {
+                assert_eq!(need, EAPOL_HEADER_LEN, "need must be EAPOL_HEADER_LEN");
+                assert_eq!(have, 3, "have must be 3");
+            }
+            _ => panic!("must return FrameTooShort variant"),
+        }
+    }
+
+    // --- EAPOL key frame roundtrip ---
+
+    #[test]
+    fn eapol_key_frame_roundtrips() {
+        let kf = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x008a),
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: vec![0x01, 0x02, 0x03, 0x04],
+        };
+        let frame = EapolFrame {
+            version: 2,
+            packet_type: EapolType::Key,
+            key_frame: Some(kf.clone()),
+            raw_body: Vec::new(),
+        };
+        let encoded = eapol_encode(&frame);
+        let parsed = eapol_parse(&encoded);
+        assert!(parsed.is_ok(), "roundtrip must succeed");
+        let parsed = parsed.ok();
+        assert_eq!(
+            parsed.as_ref().and_then(|f| f.key_frame.as_ref()),
+            Some(&kf),
+            "key frame must survive encode/parse roundtrip"
+        );
+    }
+
+    // --- Scan result ---
+
+    #[test]
+    fn scan_result_tracks_ssid_and_bssid() {
+        let mut ssid = [0u8; MAX_SSID_LEN];
+        ssid[..7].copy_from_slice(b"HomeNet");
+        let bssid = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
+
+        let result = ScanResult {
+            ssid,
+            ssid_len: 7,
+            bssid,
+            channel: 6,
+            rssi: -55,
+            security: WifiSecurity::Wpa2Personal,
+        };
+
+        assert_eq!(result.ssid(), b"HomeNet", "SSID must match");
+        assert_eq!(result.bssid, bssid, "BSSID must match");
+        assert_eq!(result.channel, 6, "channel must be 6");
+        assert_eq!(result.rssi, -55, "RSSI must be -55");
+        assert_eq!(
+            result.security,
+            WifiSecurity::Wpa2Personal,
+            "security must be WPA2-Personal"
+        );
+    }
+
+    // --- WiFi config ---
+
+    #[test]
+    fn wifi_config_stores_credentials() {
+        let config = WifiConfig::new(b"MyNetwork", b"MyPassword123", WifiSecurity::Wpa2Personal);
+        assert_eq!(config.ssid(), b"MyNetwork", "SSID must match");
+        assert_eq!(config.passphrase(), b"MyPassword123", "passphrase must match");
+        assert_eq!(
+            config.security,
+            WifiSecurity::Wpa2Personal,
+            "security must be WPA2-Personal"
+        );
+    }
+
+    // --- WPA handshake state machine ---
+
+    #[test]
+    fn handshake_starts_awaiting_msg1() {
+        let hs = WpaHandshake::new();
+        assert_eq!(
+            hs.state,
+            HandshakeState::AwaitMsg1,
+            "initial handshake state must be AwaitMsg1"
+        );
+    }
+
+    #[test]
+    fn handshake_transitions_to_send_msg2_on_valid_msg1() {
+        setup_csprng();
+        let mut hs = WpaHandshake::new();
+        let pmk = [0u8; PMK_LEN];
+        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        // Simulate Message 1: ack=true, mic=false
+        let msg1 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x008a), // version=2, pairwise, ack
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+
+        let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
+        assert_eq!(
+            state,
+            HandshakeState::SendMsg2,
+            "must transition to SendMsg2 after valid Message 1"
+        );
+        assert!(hs.ptk.is_some(), "PTK must be derived after Message 1");
+    }
+
+    #[test]
+    fn handshake_rejects_msg1_with_mic_set() {
+        setup_csprng();
+        let mut hs = WpaHandshake::new();
+        let pmk = [0u8; PMK_LEN];
+        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        // Invalid Message 1: has MIC set (Message 1 must not have MIC)
+        let msg1 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x018a), // version=2, pairwise, ack, MIC (invalid)
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+
+        let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
+        assert_eq!(
+            state,
+            HandshakeState::Failed,
+            "must reject Message 1 that has MIC set"
+        );
+    }
+
+    #[test]
+    fn handshake_builds_msg2_response() {
+        setup_csprng();
+        let mut hs = WpaHandshake::new();
+        let pmk = [0u8; PMK_LEN];
+        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        let msg1 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x008a),
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+        hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
+
+        let response = hs.build_response();
+        assert!(response.is_some(), "must produce Message 2 response");
+        let response = response.as_ref();
+        assert_eq!(
+            response.map(|f| f.packet_type),
+            Some(EapolType::Key),
+            "response must be a Key frame"
+        );
+        // The response nonce must be the supplicant nonce (non-zero from CSPRNG)
+        let resp_kf = response.and_then(|f| f.key_frame.as_ref());
+        assert!(resp_kf.is_some(), "response must have key frame");
+        assert_eq!(
+            resp_kf.map(|kf| kf.nonce),
+            Some(hs.snonce),
+            "response nonce must be the supplicant nonce"
+        );
+    }
+
+    // --- Key info flags ---
+
+    #[test]
+    fn key_info_decodes_flags() {
+        // 0x008a = pairwise(bit3) | ack(bit7) | descriptor_version=2
+        let ki = KeyInfo(0x008a);
+        assert_eq!(ki.descriptor_version(), 2, "descriptor version must be 2");
+        assert!(ki.pairwise(), "pairwise bit must be set");
+        assert!(ki.ack(), "ack bit must be set");
+        assert!(!ki.install(), "install bit must be clear");
+        assert!(!ki.mic(), "MIC bit must be clear");
+    }
+}
