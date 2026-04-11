@@ -35,6 +35,10 @@ pub const MIC_LEN: usize = 16;
 /// Pairwise Transient Key components.
 ///
 /// Derived FROM the PMK by PTK = PRF-384(PMK, "Pairwise key expansion", …).
+///
+/// Implements [`Drop`] to zero key material, preventing it from persisting
+/// in memory after use. Uses `write_volatile` to prevent the compiler from
+/// optimizing away the zeroing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ptk {
     /// Key Confirmation Key: used to compute and verify MIC.
@@ -43,6 +47,28 @@ pub struct Ptk {
     pub kek: [u8; KEK_LEN],
     /// Temporal Key: used for data frame encryption (AES-CCMP).
     pub tk: [u8; TK_LEN],
+}
+
+impl Drop for Ptk {
+    // WHY: write_volatile is the only way to prevent the compiler from
+    // eliding zeroing as a dead store. This is a security requirement for
+    // key material cleanup. The unsafe blocks access only valid mutable
+    // references to initialized memory within the struct.
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        for byte in &mut self.kck {
+            // SAFETY: byte is a valid mutable reference to initialized memory.
+            unsafe { std::ptr::write_volatile(byte, 0); }
+        }
+        for byte in &mut self.kek {
+            // SAFETY: byte is a valid mutable reference to initialized memory.
+            unsafe { std::ptr::write_volatile(byte, 0); }
+        }
+        for byte in &mut self.tk {
+            // SAFETY: byte is a valid mutable reference to initialized memory.
+            unsafe { std::ptr::write_volatile(byte, 0); }
+        }
+    }
 }
 
 /// Derive the Pairwise Master Key FROM a passphrase and SSID.
@@ -139,10 +165,29 @@ pub fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
 
 /// Verify that `expected_mic` matches the MIC computed over `data` with `kck`.
 ///
+/// Uses constant-time comparison to prevent timing side-channel attacks.
 /// Returns `true` only when the MIC is correct.
 #[must_use]
 pub fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
-    compute_mic(kck, data) == *expected_mic
+    let computed = compute_mic(kck, data);
+    constant_time_eq(&computed, expected_mic)
+}
+
+/// Constant-time byte slice comparison.
+///
+/// Compares all bytes regardless of early differences, preventing timing
+/// side-channel attacks that could leak information about secret key material.
+/// Returns `true` only when both slices have equal length and identical content.
+#[must_use]
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// WPA2 PRF function  -  HMAC-SHA1 counter construction.

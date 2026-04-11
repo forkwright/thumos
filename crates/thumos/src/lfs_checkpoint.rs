@@ -188,7 +188,7 @@ pub fn write_checkpoint(
 /// - [`LfsError::BlockIo`] if the block read fails.
 /// - [`LfsError::Corrupt`] if the magic number does not match.
 pub fn read_checkpoint(
-    dev: &dyn BlockDevice,
+    dev: &mut dyn BlockDevice,
     cache: &mut BlockCache,
     slot_block: u64,
 ) -> Result<CheckpointHeader, LfsError> {
@@ -208,7 +208,7 @@ pub fn read_checkpoint(
 /// Returns [`LfsError::Corrupt`] if neither checkpoint slot is valid.
 /// Returns [`LfsError::BlockIo`] if block reads fail on both slots.
 pub fn pick_latest(
-    dev: &dyn BlockDevice,
+    dev: &mut dyn BlockDevice,
     cache: &mut BlockCache,
     slot_a_block: u64,
     slot_b_block: u64,
@@ -315,7 +315,7 @@ mod tests {
             .expect("write checkpoint");
 
         let mut cache2 = BlockCache::new();
-        let restored = read_checkpoint(&dev, &mut cache2, 1).expect("read checkpoint");
+        let restored = read_checkpoint(&mut dev, &mut cache2, 1).expect("read checkpoint");
 
         assert_eq!(restored.magic, CHECKPOINT_MAGIC);
         assert_eq!(restored.sequence, 42);
@@ -364,7 +364,7 @@ mod tests {
 
         let mut cache2 = BlockCache::new();
         let (latest, slot) =
-            pick_latest(&dev, &mut cache2, 1, 5).expect("pick latest");
+            pick_latest(&mut dev, &mut cache2, 1, 5).expect("pick latest");
 
         assert_eq!(latest.sequence, 20, "should pick higher sequence");
         assert_eq!(slot, 5, "should return slot B block");
@@ -396,7 +396,7 @@ mod tests {
 
         let mut cache2 = BlockCache::new();
         let (latest, slot) =
-            pick_latest(&dev, &mut cache2, 1, 100).expect("pick with corrupt B");
+            pick_latest(&mut dev, &mut cache2, 1, 100).expect("pick with corrupt B");
 
         assert_eq!(latest.sequence, 5);
         assert_eq!(slot, 1, "should pick the valid slot");
@@ -404,11 +404,11 @@ mod tests {
 
     #[test]
     fn pick_latest_returns_error_when_both_corrupt() {
-        let dev = test_device();
+        let mut dev = test_device();
         let mut cache = BlockCache::new();
 
         // Both slots are zeroed (invalid magic).
-        let result = pick_latest(&dev, &mut cache, 1, 5);
+        let result = pick_latest(&mut dev, &mut cache, 1, 5);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "expected Corrupt when both checkpoint slots are invalid"

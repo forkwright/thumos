@@ -214,7 +214,7 @@ impl LfsImap {
     /// - [`LfsError::BlockIo`] if any block read fails.
     /// - [`LfsError::Corrupt`] if the deserialized data is invalid.
     pub fn load_from_disk(
-        dev: &dyn BlockDevice,
+        dev: &mut dyn BlockDevice,
         cache: &mut BlockCache,
         start_block: u64,
         block_count: u32,
@@ -313,7 +313,7 @@ mod tests {
 
         // Create a fresh cache to prove we're reading from disk.
         let mut cache2 = BlockCache::new();
-        let restored = LfsImap::load_from_disk(&dev, &mut cache2, start_block, block_count)
+        let restored = LfsImap::load_from_disk(&mut dev, &mut cache2, start_block, block_count)
             .expect("load should succeed");
 
         assert_eq!(restored.len(), 50);
