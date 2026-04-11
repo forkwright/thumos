@@ -1,0 +1,5 @@
+# Workspace-wide clippy configuration.
+
+too-many-lines-threshold = 800
+too-many-arguments-threshold = 8
+type-complexity-threshold = 300
