@@ -11,25 +11,37 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Key {
-    /// Number keys
+    /// Digit 0 key.
     Num0 = 0,
+    /// Digit 1 key.
     Num1 = 1,
+    /// Digit 2 key.
     Num2 = 2,
+    /// Digit 3 key.
     Num3 = 3,
+    /// Digit 4 key.
     Num4 = 4,
+    /// Digit 5 key.
     Num5 = 5,
+    /// Digit 6 key.
     Num6 = 6,
+    /// Digit 7 key.
     Num7 = 7,
+    /// Digit 8 key.
     Num8 = 8,
+    /// Digit 9 key.
     Num9 = 9,
     /// Star (*)
     Star = 10,
     /// Hash (#)
     Hash = 11,
-    /// Navigation
+    /// D-pad up.
     Up = 12,
+    /// D-pad down.
     Down = 13,
+    /// D-pad left.
     Left = 14,
+    /// D-pad right.
     Right = 15,
     /// Center/OK/Select
     Select = 16,
@@ -84,10 +96,17 @@ pub struct TouchPoint {
 #[derive(Debug, Clone)]
 pub enum InputEvent {
     /// Keypad key event.
-    Key { key: Key, state: KeyState },
+    Key {
+        /// Which key was pressed.
+        key: Key,
+        /// Press, release, or held.
+        state: KeyState,
+    },
     /// Touchscreen event.
     Touch {
+        /// Touch action type.
         action: TouchAction,
+        /// Touch coordinates and pressure.
         point: TouchPoint,
     },
 }

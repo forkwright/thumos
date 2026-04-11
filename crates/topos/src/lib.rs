@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! GPS driver and position service for the MT6739 combo chip.
 //!
 //! `NMEA` sentence parsing, coordinate logging, geofence evaluation,

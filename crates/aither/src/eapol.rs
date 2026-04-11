@@ -34,11 +34,19 @@ pub const DESCRIPTOR_TYPE_WPA: u8 = 0xFE;
 pub enum Error {
     /// Buffer is too short to contain required fields.
     #[snafu(display("frame too short: need {need} bytes, have {have}"))]
-    TooShort { need: usize, have: usize },
+    TooShort {
+        /// Minimum required bytes.
+        need: usize,
+        /// Actual buffer length.
+        have: usize,
+    },
 
     /// Unrecognised EAPOL packet type byte.
     #[snafu(display("unknown EAPOL packet type: {value:#04x}"))]
-    UnknownType { value: u8 },
+    UnknownType {
+        /// The unrecognised type byte.
+        value: u8,
+    },
 }
 
 /// EAPOL packet type discriminant (IEEE 802.1X-2020, table 11-3).
