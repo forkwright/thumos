@@ -110,6 +110,7 @@ fn word_matches_prefix(word: &str, key_sequence: &[u8]) -> bool {
 
 /// Text input mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum T9Mode {
     /// T9 word prediction from dictionary.
     Predictive,
@@ -177,6 +178,7 @@ pub struct T9Input {
 
 impl T9Input {
     /// Create a new T9 input engine in Predictive mode.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             key_sequence: Vec::new(),

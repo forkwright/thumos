@@ -722,6 +722,13 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// The full sequence (Discover -> `GetCapabilities` -> `SetConfiguration` ->
     /// Open -> Start) is driven by calling `process_signaling()` after each
     /// response.
+    ///
+    /// # Errors
+    ///
+    /// - [`BtAudioError::InvalidState`] -- not in Disconnected state.
+    /// - [`BtAudioError::NoPeer`] -- no peer address configured.
+    /// - [`BtAudioError::HciError`] -- HCI send failed.
+    #[must_use]
     pub fn connect(&mut self) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Disconnected {
             return Err(BtAudioError::InvalidState);
@@ -750,6 +757,13 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// 3. After `SetConfiguration` response: send Open
     /// 4. After Open response: send Start
     /// 5. After Start response: transition to Streaming
+    ///
+    /// # Errors
+    ///
+    /// - [`BtAudioError::InvalidState`] -- not in Connecting state.
+    /// - [`BtAudioError::AvdtpError`] -- unknown or unexpected signal ID.
+    /// - [`BtAudioError::HciError`] -- HCI send failed.
+    #[must_use]
     pub fn advance_signaling(&mut self, signal: u8) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Connecting {
             return Err(BtAudioError::InvalidState);
@@ -803,6 +817,14 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// Send an SBC-encoded audio frame.
     ///
     /// Encodes the PCM data using the stub encoder and sends it via HCI.
+    ///
+    /// # Errors
+    ///
+    /// - [`BtAudioError::InvalidState`] -- not in Streaming state.
+    /// - [`BtAudioError::SbcError`] -- SBC encoding failed.
+    /// - [`BtAudioError::BufferTooSmall`] -- internal frame buffer too small.
+    /// - [`BtAudioError::HciError`] -- HCI send failed.
+    #[must_use]
     pub fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, BtAudioError> {
         if self.state != A2dpState::Streaming {
             return Err(BtAudioError::InvalidState);
@@ -821,6 +843,12 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// Suspend the active audio stream.
     ///
     /// Transitions from Streaming to Connected (stream is open but paused).
+    ///
+    /// # Errors
+    ///
+    /// - [`BtAudioError::InvalidState`] -- not in Streaming state.
+    /// - [`BtAudioError::HciError`] -- HCI send failed.
+    #[must_use]
     pub fn suspend(&mut self) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Streaming {
             return Err(BtAudioError::InvalidState);
@@ -837,6 +865,12 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// Resume a suspended audio stream.
     ///
     /// Transitions from Connected back to Streaming.
+    ///
+    /// # Errors
+    ///
+    /// - [`BtAudioError::InvalidState`] -- not in Connected state.
+    /// - [`BtAudioError::HciError`] -- HCI send failed.
+    #[must_use]
     pub fn resume(&mut self) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Connected {
             return Err(BtAudioError::InvalidState);
@@ -853,8 +887,12 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// Disconnect the A2DP session.
     ///
     /// Sends AVDTP Close (if connected/streaming) and cleans up state.
-    // WHY: returns Result for forward compatibility -- real HW cleanup can fail.
-    #[allow(clippy::unnecessary_wraps)]
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible but returns `Result` for API consistency.
+    #[must_use]
+    #[expect(clippy::unnecessary_wraps, reason = "returns Result for API consistency with other lifecycle methods")]
     pub fn disconnect(&mut self) -> Result<(), BtAudioError> {
         match self.state {
             A2dpState::Streaming => {
@@ -1228,5 +1266,37 @@ mod tests {
             encoded1[3], encoded2[3],
             "CRC must be deterministic for same input"
         );
+    }
+
+    // -- Phase 07 audit: error variant coverage --
+
+    #[test]
+    fn sbc_error_on_buffer_too_small() {
+        let mut encoder = StubSbcEncoder::default_a2dp();
+        let pcm = [0i16; 128];
+        let mut tiny_buf = [0u8; 2]; // way too small for any SBC frame
+        let result = encoder.encode(&pcm, &mut tiny_buf);
+        assert_eq!(
+            result,
+            Err(BtAudioError::BufferTooSmall),
+            "encoding into too-small buffer must return BufferTooSmall"
+        );
+    }
+
+    #[test]
+    fn codec_not_supported_error_display() {
+        // BtAudioError::CodecNotSupported is returned during AVDTP capability
+        // negotiation when the remote sink does not support SBC. This requires
+        // a real BT peer, so we verify the variant is constructable and displays.
+        let err = BtAudioError::CodecNotSupported;
+        let msg = alloc::format!("{err}");
+        assert_eq!(msg, "SBC codec not supported by peer");
+    }
+
+    #[test]
+    fn sbc_error_variant_display() {
+        let err = BtAudioError::SbcError;
+        let msg = alloc::format!("{err}");
+        assert_eq!(msg, "SBC encoding error");
     }
 }

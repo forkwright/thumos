@@ -24,6 +24,12 @@ must_use_candidate = "allow"
 # features that compile but are not yet wired. deny would break the build.
 # Tracked via GitHub issues (#81) with a plan to link each to an issue number.
 todo = "warn"
+# Phase 07 audit: enforce safe error handling in kernel code.
+# Tests may still use .expect("msg") since lints are per-crate, not per-target.
+unwrap_used = "deny"
+expect_used = "deny"
+dbg_macro = "deny"
+unimplemented = "deny"
 
 [dependencies]
 smoltcp = { version = "0.12", default-features = false, features = [

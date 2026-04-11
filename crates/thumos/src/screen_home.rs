@@ -151,7 +151,7 @@ impl Screen for HomeScreen {
 
         // Large centered time (2x scale).
         let time_buf = format_time(hour, minute);
-        draw_scaled_str_centered(fb, w, TIME_Y, &time_buf, color::WHITE, color::BLACK);
+        ui::draw_scaled_str_centered(fb, w, TIME_Y, &time_buf, color::WHITE, color::BLACK, TIME_SCALE);
 
         // ISO date.
         let date_buf = format_date(year, month, day);
@@ -349,67 +349,6 @@ impl FormatBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Scaled text rendering
-// ---------------------------------------------------------------------------
-
-/// Render a byte-slice string at 2x scale, horizontally centered.
-///
-/// Used for the large time display on the home screen.
-fn draw_scaled_str_centered(
-    fb: &mut [u16],
-    fb_width: u16,
-    y: u16,
-    text: &[u8],
-    fg: u16,
-    bg: u16,
-) {
-    let text_width = text.len() as u16 * SCALED_CHAR_WIDTH;
-    let x_start = fb_width.saturating_sub(text_width) / 2;
-
-    for (i, &byte) in text.iter().enumerate() {
-        let ch = byte as char;
-        let x = x_start.saturating_add(i as u16 * SCALED_CHAR_WIDTH);
-        draw_scaled_char(fb, fb_width, x, y, ch, fg, bg);
-    }
-}
-
-/// Render a single character at 2x scale.
-///
-/// Each font pixel becomes a 2x2 block. The scaled character is
-/// `CHAR_WIDTH*2` x `CHAR_HEIGHT*2` pixels (16x32).
-fn draw_scaled_char(
-    fb: &mut [u16],
-    fb_width: u16,
-    x: u16,
-    y: u16,
-    ch: char,
-    fg: u16,
-    bg: u16,
-) {
-    let code = u32::from(ch);
-    let first = 0x20_u32;
-    let last = 0x7E_u32;
-    if !(first..=last).contains(&code) {
-        return;
-    }
-    let glyph = &ui::FONT_DATA[(code - first) as usize];
-    for (row, &byte) in glyph.iter().enumerate() {
-        for col in 0u16..8 {
-            let bit = (byte >> (7 - col)) & 1;
-            let c = if bit != 0 { fg } else { bg };
-            // Scale: each pixel becomes a 2x2 block.
-            let px = x.saturating_add(col * TIME_SCALE);
-            let py = y.saturating_add(row as u16 * TIME_SCALE);
-            for dy in 0..TIME_SCALE {
-                for dx in 0..TIME_SCALE {
-                    ui::set_pixel(fb, fb_width, px + dx, py + dy, c);
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -585,7 +524,7 @@ mod tests {
     #[test]
     fn scaled_char_draws_without_panic() {
         let mut fb = [0u16; 240 * 50];
-        draw_scaled_char(&mut fb, 240, 0, 0, '1', color::WHITE, color::BLACK);
+        ui::draw_char_scaled(&mut fb, 240, 0, 0, '1', color::WHITE, color::BLACK, TIME_SCALE);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "scaled character must produce visible pixels");
     }
@@ -594,7 +533,7 @@ mod tests {
     fn scaled_str_centered_draws_without_panic() {
         let mut fb = [0u16; 240 * 50];
         let time = format_time(12, 34);
-        draw_scaled_str_centered(&mut fb, 240, 0, &time, color::WHITE, color::BLACK);
+        ui::draw_scaled_str_centered(&mut fb, 240, 0, &time, color::WHITE, color::BLACK, TIME_SCALE);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "scaled time string must produce visible pixels");
     }
