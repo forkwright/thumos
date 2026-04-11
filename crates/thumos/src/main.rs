@@ -61,10 +61,13 @@ mod power;
 #[cfg(not(test))]
 mod process;
 mod ramfs;
+mod screen_call;
+mod screen_dialer;
 mod screen_home;
 mod signal;
 mod sim;
 mod slab;
+mod sms;
 mod socket;
 mod status_bar;
 mod telephony;
