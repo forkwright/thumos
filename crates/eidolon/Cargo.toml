@@ -12,4 +12,4 @@ workspace = true
 [dependencies]
 embedded-graphics = { workspace = true }
 embedded-graphics-core = { workspace = true }
-haphe = { path = "../haphe" }
+haphe = { path = "../haphe", version = "0.1.3" }

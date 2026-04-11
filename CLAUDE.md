@@ -67,7 +67,7 @@ Workspace compiles on host (`cargo check/test`). Kernel cross-compiles for `armv
 
 ## Standards
 
-Follow kanon standards (`standards/STANDARDS.md`, `standards/RUST.md` for any Rust components, `standards/WRITING.md` for docs).
+Follow kanon standards (canonical source: `kanon/crates/basanos/standards/`). Key docs: `RUST.md`, `TESTING.md`, `SECURITY.md`, `ARCHITECTURE.md`, `WRITING.md`, `REPO-SETUP.md`.
 
 ## Naming
 
