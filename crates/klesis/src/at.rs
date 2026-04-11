@@ -36,17 +36,35 @@ pub enum Urc {
     #[default]
     Ring,
     /// Caller ID: number and type.
-    Clip { number: String, num_type: u8 },
+    Clip {
+        /// Caller phone number.
+        number: String,
+        /// Numbering plan type.
+        num_type: u8,
+    },
     /// Network registration status changed.
     Creg {
+        /// Registration status code.
         stat: RegStatus,
+        /// Location area code.
         lac: Option<u16>,
+        /// Cell ID.
         ci: Option<u32>,
     },
     /// Signal quality report.
-    Csq { rssi: u8, ber: u8 },
+    Csq {
+        /// Raw RSSI value (0-31, 99=unknown).
+        rssi: u8,
+        /// Bit error rate.
+        ber: u8,
+    },
     /// Incoming SMS notification.
-    Cmti { storage: String, index: u16 },
+    Cmti {
+        /// Storage location name.
+        storage: String,
+        /// Message index.
+        index: u16,
+    },
     /// SMS delivery report.
     Cds(String),
     /// Call ended.
@@ -60,11 +78,17 @@ pub enum Urc {
 /// Network registration status (3GPP TS 27.007 +CREG).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegStatus {
+    /// Not registered, not searching.
     NotRegistered,
+    /// Registered on home network.
     RegisteredHome,
+    /// Searching for network.
     Searching,
+    /// Registration denied.
     Denied,
+    /// Status unknown.
     Unknown,
+    /// Registered, roaming.
     RegisteredRoaming,
 }
 
@@ -84,8 +108,11 @@ impl From<u8> for RegStatus {
 /// Signal strength in dBm, converted FROM AT+CSQ RSSI value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalStrength {
+    /// Raw AT+CSQ RSSI value (0-31, 99=unknown).
     pub rssi_raw: u8,
+    /// Signal strength in dBm.
     pub dbm: i16,
+    /// Signal bar count (0-5).
     pub bars: u8,
 }
 

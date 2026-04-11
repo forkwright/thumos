@@ -24,13 +24,21 @@ const GREEN_SHIFT_LEFT: u16 = 5; // bits 10:5 in RGB565 word
 pub struct Rgb565(pub u16);
 
 impl Rgb565 {
+    /// Black (0x0000).
     pub const BLACK: Self = Self(0x0000);
+    /// White (0xFFFF).
     pub const WHITE: Self = Self(0xFFFF);
+    /// Red (0xF800).
     pub const RED: Self = Self(0xF800);
+    /// Green (0x07E0).
     pub const GREEN: Self = Self(0x07E0);
+    /// Blue (0x001F).
     pub const BLUE: Self = Self(0x001F);
+    /// Yellow (0xFFE0).
     pub const YELLOW: Self = Self(0xFFE0);
+    /// Cyan (0x07FF).
     pub const CYAN: Self = Self(0x07FF);
+    /// Magenta (0xF81F).
     pub const MAGENTA: Self = Self(0xF81F);
 
     /// Convert 24-bit `RGB888` to `RGB565` by truncating the least significant bits.
