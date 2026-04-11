@@ -49,6 +49,7 @@ mod kinit;
 mod mmio;
 #[cfg(not(test))]
 mod mmu;
+mod net;
 mod page;
 mod pipe;
 mod power;
