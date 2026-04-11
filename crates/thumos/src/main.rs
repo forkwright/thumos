@@ -61,15 +61,18 @@ mod power;
 #[cfg(not(test))]
 mod process;
 mod ramfs;
+mod screen_home;
 mod signal;
 mod slab;
 mod socket;
+mod status_bar;
 #[cfg(not(test))]
 mod syscall;
 #[cfg(not(test))]
 mod time;
 #[cfg(not(test))]
 mod timer;
+mod ui;
 #[cfg(not(test))]
 mod uart;
 mod usb;
