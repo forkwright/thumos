@@ -25,6 +25,8 @@ mod lfs_writer;
 mod console;
 mod csprng;
 mod devfs;
+mod dhcp;
+mod dns;
 #[cfg(not(test))]
 mod device;
 mod display;
