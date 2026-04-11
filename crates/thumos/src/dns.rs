@@ -762,10 +762,11 @@ mod tests {
         response.extend_from_slice(&[1, 2, 3, 4]);
 
         let result = resolver.process_response("test.com", &response, 0x0001);
-        assert!(result.is_ok());
+        let addr = result.expect("process_response must succeed for valid response");
         assert_eq!(
-            result.ok().unwrap(), // ok: test
-            IpAddress::Ipv4(Ipv4Address::new(1, 2, 3, 4))
+            addr,
+            IpAddress::Ipv4(Ipv4Address::new(1, 2, 3, 4)),
+            "resolved address must match the A record in the response"
         );
 
         // Should now be in cache.
@@ -773,6 +774,85 @@ mod tests {
             resolver.cache().len(),
             1,
             "processed response must be cached"
+        );
+    }
+
+    // -- DNS error path coverage --
+
+    // DnsError::Timeout requires a real network stack with poll loop — tested via integration only.
+    // DnsError::SocketError requires smoltcp socket allocation failure — tested via integration only.
+    // DnsError::SendError requires smoltcp UDP send failure — tested via integration only.
+
+    #[test]
+    fn parse_response_rejects_truncated_header() {
+        // Fewer than DNS_HEADER_SIZE bytes.
+        let data = [0u8; 6];
+        let result = parse_dns_response(&data, 0x0001);
+        assert_eq!(
+            result,
+            Err(DnsError::MalformedResponse),
+            "truncated header must return MalformedResponse"
+        );
+    }
+
+    #[test]
+    fn parse_response_rejects_non_response() {
+        // Valid-length header but QR bit not set (not a response).
+        let mut data = [0u8; DNS_HEADER_SIZE];
+        data[0] = 0x00;
+        data[1] = 0x01; // txid = 1
+        // flags: all zeros (QR=0).
+        let result = parse_dns_response(&data, 0x0001);
+        assert_eq!(
+            result,
+            Err(DnsError::MalformedResponse),
+            "packet without QR bit must return MalformedResponse"
+        );
+    }
+
+    #[test]
+    fn parse_response_returns_server_error_on_rcode() {
+        // QR=1 but RCODE=2 (server failure).
+        let mut data = [0u8; DNS_HEADER_SIZE];
+        data[0] = 0x00;
+        data[1] = 0x01; // txid = 1
+        data[2] = 0x80; // QR=1
+        data[3] = 0x02; // RCODE=2 (SERVFAIL)
+        let result = parse_dns_response(&data, 0x0001);
+        assert_eq!(
+            result,
+            Err(DnsError::ServerError),
+            "RCODE != 0 must return ServerError"
+        );
+    }
+
+    #[test]
+    fn parse_response_returns_no_records_when_ancount_zero() {
+        // Valid response header but ANCOUNT=0.
+        let mut data = [0u8; DNS_HEADER_SIZE];
+        data[0] = 0x00;
+        data[1] = 0x01; // txid = 1
+        data[2] = 0x81; // QR=1, RD=1
+        data[3] = 0x80; // RA=1, RCODE=0
+        // QDCOUNT=0, ANCOUNT=0
+        let result = parse_dns_response(&data, 0x0001);
+        assert_eq!(
+            result,
+            Err(DnsError::NoRecords),
+            "zero answer count must return NoRecords"
+        );
+    }
+
+    #[test]
+    fn build_query_rejects_label_too_long() {
+        // A single label longer than 63 bytes is invalid.
+        let long_label = "a".repeat(64);
+        let hostname = alloc::format!("{long_label}.com");
+        let result = build_dns_query(&hostname, 0x0001);
+        assert_eq!(
+            result,
+            Err(DnsError::InvalidName),
+            "label > 63 bytes must return InvalidName"
         );
     }
 }
