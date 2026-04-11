@@ -801,7 +801,7 @@ pub fn sys_recvfrom(
                         let src_ip = match meta.endpoint.addr {
                             IpAddress::Ipv4(v4) => v4,
                             // Only IPv4 supported in this phase.
-                            #[allow(unreachable_patterns)]
+                            #[expect(unreachable_patterns, reason = "future IPv6 support will add variants to IpAddress")]
                             _ => Ipv4Address::UNSPECIFIED,
                         };
                         let sa = SockaddrIn::new(meta.endpoint.port, src_ip);
