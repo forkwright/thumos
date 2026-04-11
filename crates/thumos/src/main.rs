@@ -11,6 +11,9 @@ extern crate alloc;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
+mod audio;
+mod audio_codec;
+mod audio_route;
 mod block;
 mod bluetooth;
 mod cache;
