@@ -36,6 +36,7 @@ pub const SECTORS_PER_BLOCK: usize = BLOCK_SIZE / SECTOR_SIZE;
 
 /// Errors that can occur during block device operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BlockError {
     /// A low-level I/O error occurred during the transfer.
     IoError,
@@ -116,6 +117,7 @@ impl MemBlockDevice {
     /// # Errors
     ///
     /// Returns [`BlockError::InvalidArgument`] if `sector_count` is zero.
+    #[must_use]
     pub fn new(sector_count: u64) -> Result<Self, BlockError> {
         if sector_count == 0 {
             return Err(BlockError::InvalidArgument);
@@ -223,7 +225,7 @@ mod msdc_wrapper {
         /// # Errors
         ///
         /// Returns [`BlockError::DeviceNotReady`] if hardware initialization fails.
-        #[allow(unsafe_code)]
+        #[expect(unsafe_code, reason = "MMIO register access requires raw pointer dereference")]
         pub unsafe fn init(&mut self) -> Result<(), BlockError> {
             // SAFETY: caller guarantees the MSDC register block is mapped, and
             // this is called exactly once after power-on per the function contract.
@@ -234,7 +236,7 @@ mod msdc_wrapper {
     }
 
     impl BlockDevice for MsdcBlockDevice {
-        #[allow(unsafe_code)]
+        #[expect(unsafe_code, reason = "MMIO register access requires raw pointer dereference")]
         fn read_sectors(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
             if !self.controller.is_initialized() {
                 return Err(BlockError::DeviceNotReady);
@@ -273,7 +275,7 @@ mod msdc_wrapper {
             Ok(())
         }
 
-        #[allow(unsafe_code)]
+        #[expect(unsafe_code, reason = "MMIO register access requires raw pointer dereference")]
         fn write_sectors(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
             if !self.controller.is_initialized() {
                 return Err(BlockError::DeviceNotReady);
@@ -331,6 +333,7 @@ pub use msdc_wrapper::MsdcBlockDevice;
 ///
 /// Returns [`BlockError`] if the underlying sector read fails or the
 /// block address is out of bounds.
+#[must_use]
 pub fn read_block(
     dev: &dyn BlockDevice,
     block_num: u64,
@@ -349,6 +352,7 @@ pub fn read_block(
 ///
 /// Returns [`BlockError`] if the underlying sector write fails or the
 /// block address is out of bounds.
+#[must_use]
 pub fn write_block(
     dev: &mut dyn BlockDevice,
     block_num: u64,

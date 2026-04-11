@@ -93,6 +93,17 @@ pub enum BtError {
     EncodingError,
 }
 
+impl core::fmt::Display for BtError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::HardwareTimeout => write!(f, "hardware timeout"),
+            Self::NotInitialized => write!(f, "BT not initialized"),
+            Self::InvalidState => write!(f, "invalid BT state"),
+            Self::EncodingError => write!(f, "HCI encoding error"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BT state machine
 // ---------------------------------------------------------------------------
@@ -114,6 +125,18 @@ pub enum BtState {
     Error(BtError),
 }
 
+impl core::fmt::Display for BtState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Off => write!(f, "off"),
+            Self::Initializing => write!(f, "initializing"),
+            Self::Ready => write!(f, "ready"),
+            Self::Scanning => write!(f, "scanning"),
+            Self::Error(e) => write!(f, "error: {e}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BLE device representation
 // ---------------------------------------------------------------------------
@@ -133,6 +156,18 @@ pub struct BleDevice {
     pub adv_data: [u8; MAX_ADV_DATA_LEN],
     /// Number of valid bytes in `adv_data`.
     pub adv_data_len: u8,
+}
+
+impl core::fmt::Display for BleDevice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} ({}dBm)",
+            self.address[0], self.address[1], self.address[2],
+            self.address[3], self.address[4], self.address[5],
+            self.rssi,
+        )
+    }
 }
 
 impl BleDevice {
@@ -404,6 +439,7 @@ impl<H: BtHwOps> BtAdapter<H> {
     /// Initialize the BT adapter: power on, HCI reset, set random address.
     ///
     /// Transitions from `Off` to `Ready` on success, or to `Error` on failure.
+    #[must_use]
     pub fn init(&mut self, current_tick_ms: u64) -> Result<(), BtError> {
         if self.state != BtState::Off {
             return Err(BtError::InvalidState);
@@ -440,6 +476,7 @@ impl<H: BtHwOps> BtAdapter<H> {
     /// Rotate the random address if the rotation interval has elapsed.
     ///
     /// Should be called periodically. Returns `true` if the address was rotated.
+    #[must_use]
     pub fn maybe_rotate_address(&mut self, current_tick_ms: u64) -> Result<bool, BtError> {
         if current_tick_ms.saturating_sub(self.address_set_at) < ADDRESS_ROTATION_MS {
             return Ok(false);
@@ -455,6 +492,7 @@ impl<H: BtHwOps> BtAdapter<H> {
     /// Start a BLE passive scan.
     ///
     /// Sets scan parameters (passive, random address, accept all) then enables scanning.
+    #[must_use]
     pub fn start_scan(&mut self) -> Result<(), BtError> {
         match self.state {
             BtState::Ready => {}
@@ -478,6 +516,7 @@ impl<H: BtHwOps> BtAdapter<H> {
     }
 
     /// Stop the BLE passive scan.
+    #[must_use]
     pub fn stop_scan(&mut self) -> Result<(), BtError> {
         if self.state != BtState::Scanning {
             return Err(BtError::InvalidState);

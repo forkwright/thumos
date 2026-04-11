@@ -21,6 +21,7 @@ use crate::cache::BlockCache;
 
 /// Errors specific to LFS operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LfsError {
     /// A low-level block I/O error occurred.
     BlockIo(BlockError),
@@ -32,6 +33,18 @@ pub enum LfsError {
     NoFreeSegments,
     /// An inode was not found in the imap.
     InodeNotFound,
+}
+
+impl core::fmt::Display for LfsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::BlockIo(e) => write!(f, "block I/O error: {e}"),
+            Self::Corrupt => write!(f, "filesystem data corrupt"),
+            Self::InvalidSuperblock => write!(f, "invalid superblock"),
+            Self::NoFreeSegments => write!(f, "no free segments"),
+            Self::InodeNotFound => write!(f, "inode not found"),
+        }
+    }
 }
 
 impl From<BlockError> for LfsError {
@@ -136,6 +149,7 @@ impl LfsImap {
     ///
     /// Returns [`LfsError::Corrupt`] if the buffer is too short or contains
     /// invalid data.
+    #[must_use]
     pub fn deserialize(buf: &[u8]) -> Result<Self, LfsError> {
         if buf.len() < IMAP_HEADER_SIZE {
             return Err(LfsError::Corrupt);

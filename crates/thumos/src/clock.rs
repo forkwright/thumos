@@ -59,6 +59,7 @@ const NTP_UNIX_OFFSET: u64 = 2_208_988_800;
 ///
 /// Variants are ordered by trust level (highest first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum ClockSource {
     /// GPS-derived time — atomic clocks on satellites.
     Gps,
@@ -70,6 +71,18 @@ pub enum ClockSource {
     Manual,
     /// No time source available.
     None,
+}
+
+impl core::fmt::Display for ClockSource {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Gps => write!(f, "GPS"),
+            Self::Ntp => write!(f, "NTP"),
+            Self::ModemRtc => write!(f, "modem RTC"),
+            Self::Manual => write!(f, "manual"),
+            Self::None => write!(f, "none"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
