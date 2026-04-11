@@ -393,10 +393,6 @@ impl PowerOnStep {
     /// Execute this step via `io` and return the next step, or an error.
     ///
     /// `clock_type` is an out-parameter updated during [`DetectClockType`](Self::DetectClockType).
-    #[expect(
-        clippy::too_many_lines,
-        reason = "17-step hardware sequence  -  each step is a numbered spec item; splitting adds indirection without clarity"
-    )]
     pub fn execute_and_advance<R: RegisterIo>(
         self,
         io: &mut R,

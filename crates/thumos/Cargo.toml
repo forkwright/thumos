@@ -6,6 +6,25 @@ edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/forkwright/thumos"
 
+# WHY: the kernel crate is excluded from the workspace (bare-metal target)
+# but must still enforce the same lint quality floor. These match the
+# workspace lints in the root Cargo.toml.
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+cast_lossless = "allow"
+cast_sign_loss = "allow"
+cast_possible_truncation = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+# WHY: bare-metal kernel uses todo!() as a legitimate marker for Phase 07+
+# features that compile but are not yet wired. deny would break the build.
+# Tracked via GitHub issues (#81) with a plan to link each to an issue number.
+todo = "warn"
+
 [dependencies]
 smoltcp = { version = "0.12", default-features = false, features = [
     "medium-ethernet",
