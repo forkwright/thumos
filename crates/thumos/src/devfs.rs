@@ -175,10 +175,6 @@ impl DevFs {
 
 impl Filesystem for DevFs {
     /// Returns 0, the root directory inode.
-    ///
-    /// # Errors
-    ///
-    /// This method is infallible.
     fn root_inode(&self) -> u32 {
         ROOT_INODE
     }
