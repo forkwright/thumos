@@ -509,6 +509,8 @@ pub enum ScreenId {
     Search,
     /// Calendar.
     Calendar,
+    /// Active/incoming voice call.
+    InCall,
 }
 
 /// What the active screen wants the UI manager to do after handling input.
