@@ -25,6 +25,7 @@ pub enum Error {
     /// The iteration count passed to key derivation was zero.
     #[snafu(display("iterations must be non-zero"))]
     ZeroIterations {
+        /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
     },
@@ -32,6 +33,7 @@ pub enum Error {
     /// The system random number generator failed.
     #[snafu(display("random number generation failed"))]
     RandomGeneration {
+        /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
     },
@@ -39,6 +41,7 @@ pub enum Error {
     /// AES-256-GCM key construction failed (invalid key length).
     #[snafu(display("invalid key material for AES-256-GCM"))]
     InvalidKey {
+        /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
     },
@@ -46,6 +49,7 @@ pub enum Error {
     /// Encryption of the master key failed.
     #[snafu(display("key sealing failed"))]
     KeySeal {
+        /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
     },
@@ -53,6 +57,7 @@ pub enum Error {
     /// Decryption failed — wrong passphrase or corrupted data.
     #[snafu(display("key unsealing failed: wrong passphrase or corrupted slot data"))]
     KeyUnseal {
+        /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
     },
@@ -60,6 +65,7 @@ pub enum Error {
     /// Decrypted plaintext has an unexpected length.
     #[snafu(display("decrypted key has unexpected length"))]
     BadPlaintextLength {
+        /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
     },

@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(missing_docs)]
 //! Input drivers for the AGM M7: GPIO keypad matrix scan, mtk-tpd touchscreen, event queue.
 
 // WHY: The test harness links std, but no_std crates must opt in
