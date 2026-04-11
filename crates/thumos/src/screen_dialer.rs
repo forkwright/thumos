@@ -188,7 +188,7 @@ impl Screen for DialerScreen {
         if self.digit_count > 0 {
             let (formatted, fmt_len) = format_number(&self.digits, self.digit_count);
             let display_str = core::str::from_utf8(&formatted[..fmt_len]).unwrap_or("");
-            draw_scaled_str_centered(fb, w, NUMBER_Y, display_str, color::WHITE, color::BLACK);
+            ui::draw_scaled_str_centered(fb, w, NUMBER_Y, display_str.as_bytes(), color::WHITE, color::BLACK, DIGIT_SCALE);
         } else {
             // Placeholder text.
             ui::draw_str_centered(
@@ -272,62 +272,6 @@ impl Screen for DialerScreen {
 
     fn title(&self) -> &'static str {
         "Phone"
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Scaled text rendering (matching screen_home.rs pattern)
-// ---------------------------------------------------------------------------
-
-/// Render a string at 2x scale, horizontally centered.
-fn draw_scaled_str_centered(
-    fb: &mut [u16],
-    fb_width: u16,
-    y: u16,
-    s: &str,
-    fg: u16,
-    bg: u16,
-) {
-    let text_width = (s.len() as u16) * SCALED_CHAR_WIDTH;
-    let x = fb_width.saturating_sub(text_width) / 2;
-
-    for (i, ch) in s.chars().enumerate() {
-        let cx = x.saturating_add((i as u16) * SCALED_CHAR_WIDTH);
-        draw_char_scaled(fb, fb_width, cx, y, ch, fg, bg, DIGIT_SCALE);
-    }
-}
-
-/// Render one character at a given scale factor.
-fn draw_char_scaled(
-    fb: &mut [u16],
-    fb_width: u16,
-    x: u16,
-    y: u16,
-    ch: char,
-    fg: u16,
-    bg: u16,
-    scale: u16,
-) {
-    let code = u32::from(ch);
-    let font_first = 0x20u32;
-    let font_last = 0x7Eu32;
-    if !(font_first..=font_last).contains(&code) {
-        return;
-    }
-    let glyph = &ui::FONT_DATA[(code - font_first) as usize];
-    for (row, &byte) in glyph.iter().enumerate() {
-        for col in 0u16..8 {
-            let bit = (byte >> (7 - col)) & 1;
-            let c = if bit != 0 { fg } else { bg };
-            // Draw a scale*scale block for each pixel.
-            for sy in 0..scale {
-                for sx in 0..scale {
-                    let px = x.saturating_add(col * scale + sx);
-                    let py = y.saturating_add((row as u16) * scale + sy);
-                    ui::set_pixel(fb, fb_width, px, py, c);
-                }
-            }
-        }
     }
 }
 

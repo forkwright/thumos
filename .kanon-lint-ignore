@@ -2,3 +2,5 @@
 # REPO-SETUP.md says to omit it, but release-please creates it automatically
 # and removing it would break the release workflow.
 RELEASES/changelog-present:CHANGELOG.md
+# DISCLAIMER.md is required by thumos's legal status (research/educational software).
+RELEASES/disclaimer-present:DISCLAIMER.md

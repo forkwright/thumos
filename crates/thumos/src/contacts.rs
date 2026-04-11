@@ -60,6 +60,7 @@ impl Contact {
     /// Create a new contact from name and number strings.
     ///
     /// Truncates if either exceeds the maximum length.
+    #[must_use]
     pub fn new(name: &str, number: &str) -> Self {
         let mut c = Self {
             name: [0u8; MAX_NAME_LEN],
@@ -80,13 +81,21 @@ impl Contact {
     }
 
     /// Return the name as a string slice.
+    #[must_use]
     pub fn name_str(&self) -> &str {
         core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("")
     }
 
     /// Return the number as a string slice.
+    #[must_use]
     pub fn number_str(&self) -> &str {
         core::str::from_utf8(&self.number[..self.number_len as usize]).unwrap_or("")
+    }
+}
+
+impl core::fmt::Display for Contact {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} ({})", self.name_str(), self.number_str())
     }
 }
 
@@ -115,6 +124,7 @@ pub struct ContactManager {
 
 impl ContactManager {
     /// Create a new empty contact manager.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             contacts: Vec::new(),

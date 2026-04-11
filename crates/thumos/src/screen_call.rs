@@ -49,6 +49,7 @@ const MAX_DISPLAY_NUMBER: usize = 20;
 
 /// Possible call phases for display purposes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CallPhase {
     /// Outgoing call being dialed.
     Dialing,
@@ -153,6 +154,7 @@ pub struct CallScreen {
 
 /// Action specific to the call screen, returned alongside `ScreenAction`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CallAction {
     /// No call-specific action.
     None,
