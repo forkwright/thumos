@@ -336,7 +336,7 @@ mod tests {
 
         // Read the block back and verify the inode data.
         let mut buf = [0u8; BLOCK_SIZE];
-        cache.read(&dev, block, &mut buf).expect("read back");
+        cache.read(&mut dev, block, &mut buf).expect("read back");
         let restored = DiskInode::read_from(&buf, 0).expect("parse inode");
         assert_eq!(restored.inode_type, INODE_TYPE_FILE);
         assert_eq!(restored.size, 100);
@@ -367,10 +367,10 @@ mod tests {
 
         // Verify data round-trips.
         let mut buf = [0u8; BLOCK_SIZE];
-        cache.read(&dev, block1, &mut buf).expect("read block 1");
+        cache.read(&mut dev, block1, &mut buf).expect("read block 1");
         assert!(buf.iter().all(|&b| b == 0xAA));
 
-        cache.read(&dev, block2, &mut buf).expect("read block 2");
+        cache.read(&mut dev, block2, &mut buf).expect("read block 2");
         assert!(buf.iter().all(|&b| b == 0xBB));
     }
 
@@ -407,7 +407,7 @@ mod tests {
         cache.flush(&mut dev).expect("flush");
         let header_block = seg_mgr.segment_start_block(initial_segment);
         let mut buf = [0u8; BLOCK_SIZE];
-        cache.read(&dev, header_block, &mut buf).expect("read header");
+        cache.read(&mut dev, header_block, &mut buf).expect("read header");
 
         // Verify the magic and block count in the header.
         let magic = u32::from_le_bytes(buf[0..4].try_into().expect("magic bytes"));
@@ -460,7 +460,7 @@ mod tests {
 
         // Read the checkpoint back.
         let mut cache2 = BlockCache::new();
-        let header = lfs_checkpoint::read_checkpoint(&dev, &mut cache2, 1)
+        let header = lfs_checkpoint::read_checkpoint(&mut dev, &mut cache2, 1)
             .expect("read checkpoint");
 
         assert_eq!(header.magic, CHECKPOINT_MAGIC);
@@ -469,7 +469,7 @@ mod tests {
 
         // Load the imap from the checkpoint and verify.
         let restored_imap = LfsImap::load_from_disk(
-            &dev,
+            &mut dev,
             &mut cache2,
             header.imap_block,
             header.imap_block_count,
@@ -485,7 +485,7 @@ mod tests {
         let mut buf = [0u8; BLOCK_SIZE];
         for i in 0..header.segment_bitmap_count {
             cache2
-                .read(&dev, header.segment_bitmap_block + u64::from(i), &mut buf)
+                .read(&mut dev, header.segment_bitmap_block + u64::from(i), &mut buf)
                 .expect("read seg bitmap");
             seg_data.extend_from_slice(&buf);
         }
