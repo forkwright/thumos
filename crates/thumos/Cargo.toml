@@ -7,6 +7,15 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/forkwright/thumos"
 
 [dependencies]
+smoltcp = { version = "0.12", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-tcp",
+    "socket-udp",
+    "socket-dns",
+    "socket-dhcpv4",
+    "alloc",
+] }
 
 [profile.release]
 opt-level = "s"

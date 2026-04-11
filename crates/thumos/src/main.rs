@@ -49,6 +49,7 @@ mod kinit;
 mod mmio;
 #[cfg(not(test))]
 mod mmu;
+mod net;
 mod page;
 mod pipe;
 mod power;
@@ -69,6 +70,7 @@ mod usb;
 mod vfs;
 #[cfg(not(test))]
 mod watchdog;
+mod wifi;
 
 #[cfg(not(test))]
 #[global_allocator]
