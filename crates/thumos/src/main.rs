@@ -37,6 +37,7 @@ mod emmc;
 #[cfg(not(test))]
 mod exceptions;
 mod fd;
+mod firewall;
 mod futex;
 #[cfg(not(test))]
 mod gic;
