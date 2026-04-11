@@ -251,7 +251,7 @@ pub fn sys_pipe(fds_ptr: u32) -> u32 {
     // Write the two fd numbers to userspace.
     // SAFETY: fds_ptr is validated non-null above. We write 8 bytes (two u32s).
     // Wave 4 will add proper bounds validation; this matches the existing syscall
-    // pattern in fd.rs (TODO #0).
+    // pattern in fd.rs (TODO(#84): plan gaps).
     unsafe {
         let fds = fds_ptr as *mut u32;
         core::ptr::write(fds, read_fd);
