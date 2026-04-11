@@ -402,15 +402,18 @@ mod tests {
     fn rtc_accepted_when_both_stale() {
         let mut clock = ClockManager::new();
 
-        // Set GPS at tick 0 and NTP at tick 1000.
+        // Set GPS at tick 0.
         clock.update_from_gps(gps_time_2026(), 0);
-        clock.update_from_ntp(1_000_000, 1_000);
 
-        // RTC at tick 100_000 — GPS stale (>60s) but NTP fresh (<300s).
-        let accepted = clock.update_from_rtc(1_700_000_000, 100_000);
+        // NTP at tick 61_000 — GPS is now stale (>60s), so NTP is accepted.
+        let ntp_ok = clock.update_from_ntp(1_000_000, 61_000);
+        assert!(ntp_ok, "NTP must be accepted when GPS is stale");
+
+        // RTC at tick 200_000 — GPS stale but NTP fresh (200_000 - 61_000 = 139s < 300s).
+        let accepted = clock.update_from_rtc(1_700_000_000, 200_000);
         assert!(!accepted, "RTC must be rejected when NTP is fresh");
 
-        // RTC at tick 400_000 — both GPS and NTP stale.
+        // RTC at tick 400_000 — both GPS and NTP stale (400_000 - 61_000 = 339s > 300s).
         let accepted = clock.update_from_rtc(1_700_000_000, 400_000);
         assert!(accepted, "RTC must be accepted when both GPS and NTP are stale");
         assert_eq!(clock.current_source(), ClockSource::ModemRtc);

@@ -818,7 +818,7 @@ mod tests {
 
     #[test]
     fn parse_gga_returns_error_on_no_fix() {
-        let sentence = b"$GPGGA,092750.000,,,,,,0,0,,,,,,,*47";
+        let sentence = b"$GPGGA,092750.000,,,,,,0,0,,,,,,,*6D";
         let result = parse_gga(sentence);
         assert_eq!(
             result,
