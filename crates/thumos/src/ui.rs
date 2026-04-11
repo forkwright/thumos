@@ -505,12 +505,32 @@ pub enum ScreenId {
     Contacts,
     /// Settings menu.
     Settings,
-    /// Search.
+    /// Function search ("everything launcher").
     Search,
     /// Calendar.
     Calendar,
     /// Active/incoming voice call.
     InCall,
+    /// Timer.
+    Timer,
+    /// Stopwatch.
+    Stopwatch,
+    /// Alarms.
+    Alarms,
+    /// FM Radio.
+    FmRadio,
+    /// WiFi settings (read-only display of wifi state).
+    WifiSettings,
+    /// Bluetooth settings (read-only display of BT state).
+    BtSettings,
+    /// Privacy settings.
+    Privacy,
+    /// Radio control panel (COVERT LOCK / STEALTH / RESTORE).
+    RadioControl,
+    /// About screen (device info, OS version).
+    About,
+    /// Battery status screen.
+    Battery,
 }
 
 /// What the active screen wants the UI manager to do after handling input.
