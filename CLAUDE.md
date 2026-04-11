@@ -10,11 +10,11 @@ Thumos is a custom Rust mobile OS targeting the AGM M7 (MT6739).
 
 ## Architecture
 
-Full Rust from kernel to UI. No C we author, no Linux in the final system. Monolithic kernel (pyknosis).
+Full Rust from kernel to UI. No C we author, no Linux in the final system. Monolithic kernel.
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Kernel (thumos) | Phase 05 | MMU, slab allocator, GIC, timer, scheduler, 34 syscalls, IPC (pipe, futex, signals), ELF loader, VFS (Filesystem trait, MountTable, path resolution), LFS (log-structured persistent filesystem with compaction), ramfs (hierarchical, writable), devfs, block cache (LRU, 1MB), 256-fd table, ChaCha20 CSPRNG, watchdog, capabilities, DVFS |
+| Kernel (thumos) | Phase 06 | MMU, slab allocator, GIC, timer, scheduler, 45 syscalls, IPC (pipe, futex, signals), ELF loader, VFS (Filesystem trait, MountTable, path resolution), LFS (log-structured persistent filesystem with compaction), ramfs (hierarchical, writable), devfs, block cache (LRU, 1MB), 256-fd table, ChaCha20 CSPRNG, watchdog, capabilities, DVFS, network stack (TCP/UDP sockets, DHCP, DNS resolver), firewall (packet filter, DNS blocklist), wall clock |
 | eMMC driver | Phase 03 | MSDC controller, PIO + DMA, GPD/BD descriptors |
 | Display driver | Phase 03 | DDP pipeline (OVL→RDMA→DSI→LCM), GC9306 init/sleep/wake/backlight |
 | CCCI modem driver | Phase 03 | CLDMA ring buffers, CCIF mailbox, identity containment, packet validation |
@@ -34,7 +34,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 ## Key constraints
 
-- 13 crates (12 workspace userspace + `thumos` kernel binary, excluded from workspace), ~48K LOC (27.7K kernel + 20K userspace), 308 host tests + 156 filesystem tests, zero clippy warnings. Phase 05 (filesystem) complete.
+- 13 crates (12 workspace userspace + `thumos` kernel binary, excluded from workspace), ~53K LOC (35K kernel + 18.4K userspace), 1,047 tests (572 kernel + 475 workspace, including 114 filesystem tests), zero clippy warnings. Phase 06 (networking) complete.
 - 1 GB RAM: every megabyte matters. No unnecessary services.
 - 240x320 display: no standard Android UI. Custom framebuffer or TUI.
 - Keypad + touchscreen input. T9-style or menu navigation.

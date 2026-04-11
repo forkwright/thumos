@@ -1,3 +1,10 @@
+# AGM M7 (MT6739) Android system properties dump (`adb shell getprop`).
+# Captured from stock Android 8.1 firmware. Used as reference for SoC
+# configuration, Dalvik tuning, radio interface names, and hardware
+# feature flags during thumos kernel and driver development.
+#
+# Not consumed by any build process.
+
 [Build.BRAND]: [MTK]
 [af.modem_1.epof]: [0]
 [af.music.outputid]: [3]

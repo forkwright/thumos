@@ -145,7 +145,7 @@ impl Console {
     }
 
     fn cmd_version(&mut self) {
-        let _ = self.serial.write_str("thumos/pyknosis v0.1.0\r\n");
+        let _ = self.serial.write_str("thumos v0.1.0\r\n");
         let _ = self.serial
             .write_str("Rust monolithic kernel for MT6739\r\n");
     }

@@ -1,4 +1,4 @@
-//! Thumos kernel: pyknosis
+//! Thumos kernel
 //!
 //! Bare-metal Rust kernel for the MT6739. ARM boot stub is inline
 //! assembly that sets up the stack and zeros BSS before jumping to
