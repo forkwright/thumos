@@ -46,6 +46,7 @@ mod fd;
 mod firewall;
 mod futex;
 mod gps;
+mod heorte;
 #[cfg(not(test))]
 mod gic;
 #[cfg(not(test))]
@@ -66,6 +67,8 @@ mod power;
 #[cfg(not(test))]
 mod process;
 mod ramfs;
+mod screen_alarm;
+mod screen_calendar;
 mod screen_call;
 mod screen_contacts;
 mod screen_dialer;
