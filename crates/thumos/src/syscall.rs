@@ -26,6 +26,7 @@ use crate::futex;
 use crate::ipc;
 use crate::pipe;
 use crate::signal;
+use crate::socket;
 use crate::kconfig;
 use crate::mmu;
 use crate::page;
@@ -380,10 +381,9 @@ impl Syscall {
 /// Implemented: exit, write, yield, getpid, alloc_page, free_page, uptime,
 ///   sleep, send, recv, fork, waitpid, execve, kill, getuid, brk, mmap,
 ///   munmap, mprotect, open, close, read, stat, fstat, lseek, ioctl, fcntl,
-///   dup, dup2, mkdir, unlink, getcwd, chdir, pipe, futex, clock_gettime,
-///   nanosleep, sigaction, sigreturn
-/// Deferred to Phase 06 (connectivity): socket, bind, listen, accept,
-///   connect, sendto, recvfrom
+///   dup, dup2, mkdir, unlink, getcwd, chdir, pipe, futex, socket, bind,
+///   connect, sendto, recvfrom, clock_gettime, nanosleep, sigaction, sigreturn
+/// Stub (returns EOPNOTSUPP): listen, accept
 pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     let Some(call) = Syscall::from_u32(num) else {
         let mut serial = Uart::new();
@@ -512,18 +512,18 @@ pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         Syscall::Pipe => pipe::sys_pipe(arg0),
         Syscall::Futex => futex::sys_futex(arg0, arg1, arg2),
 
-        // ---- Network (stubs) ----
-        // WHY ENOSYS: network stack not yet present. These are deferred to
-        // Phase 06 (connectivity), which will add WiFi/socket support for
-        // sema, asphaleia, and krypta.
+        // ---- Network ----
+        // WHY: BSD socket API backed by smoltcp via the socket module.
+        // Socket fds are identified by FD_KIND_SOCKET in the flags field,
+        // similar to the pipe fd pattern.
 
-        Syscall::Socket
-        | Syscall::Bind
-        | Syscall::Listen
-        | Syscall::Accept
-        | Syscall::Connect
-        | Syscall::Sendto
-        | Syscall::Recvfrom => ENOSYS,
+        Syscall::Socket => socket::sys_socket(arg0, arg1, arg2),
+        Syscall::Bind => socket::sys_bind(arg0, arg1, arg2),
+        Syscall::Listen => socket::sys_listen(arg0, arg1),
+        Syscall::Accept => socket::sys_accept(arg0, arg1, arg2),
+        Syscall::Connect => socket::sys_connect(arg0, arg1, arg2),
+        Syscall::Sendto => socket::sys_sendto(arg0, arg1, arg2, arg3, 0, 0),
+        Syscall::Recvfrom => socket::sys_recvfrom(arg0, arg1, arg2, arg3, 0, 0),
 
         // ---- Time ----
 
@@ -566,7 +566,7 @@ fn sys_read_with_pipe(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     }
 }
 
-/// SYS_close: notify pipe subsystem when a pipe fd is closed.
+/// SYS_close: notify pipe/socket subsystem when a special fd is closed.
 fn sys_close_with_pipe(fd: u32) -> u32 {
     let fd_idx = fd as usize;
     // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
@@ -582,11 +582,18 @@ fn sys_close_with_pipe(fd: u32) -> u32 {
     // Close the fd entry first (removes it from the table).
     let result = fd::sys_close(fd);
 
-    // If this was a pipe fd, notify the pipe subsystem.
-    if result == 0 && pipe::is_pipe_fd(flags) {
-        let pipe_idx = pipe::pipe_idx_from_flags(flags);
-        let is_write = pipe::is_write_end(flags);
-        pipe::on_pipe_fd_closed(pipe_idx, is_write);
+    if result == 0 {
+        // If this was a pipe fd, notify the pipe subsystem.
+        if pipe::is_pipe_fd(flags) {
+            let pipe_idx = pipe::pipe_idx_from_flags(flags);
+            let is_write = pipe::is_write_end(flags);
+            pipe::on_pipe_fd_closed(pipe_idx, is_write);
+        }
+
+        // If this was a socket fd, clean up the smoltcp socket.
+        if socket::is_socket_fd(flags) {
+            socket::on_socket_fd_closed(fd_idx);
+        }
     }
 
     result
