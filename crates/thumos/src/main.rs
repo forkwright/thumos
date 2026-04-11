@@ -12,9 +12,11 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 
 mod block;
+mod bluetooth;
 mod cache;
 mod ccci;
 mod capability;
+mod clock;
 mod lfs;
 mod lfs_checkpoint;
 mod lfs_compact;
@@ -38,6 +40,7 @@ mod emmc;
 mod exceptions;
 mod fd;
 mod futex;
+mod gps;
 #[cfg(not(test))]
 mod gic;
 #[cfg(not(test))]
