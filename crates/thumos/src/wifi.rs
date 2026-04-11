@@ -132,6 +132,7 @@ pub enum WifiSecurity {
     /// WPA2-Personal (PSK / CCMP).
     Wpa2Personal,
     /// WPA3-Personal (SAE).
+    /// TODO(#84): WPA3-SAE handshake -- enum variant defined but exchange not implemented
     Wpa3Sae,
 }
 
@@ -324,7 +325,7 @@ impl Drop for Ptk {
 /// will be implemented when the kernel crypto subsystem is added.
 #[must_use]
 pub fn derive_pmk(_passphrase: &[u8], _ssid: &[u8]) -> [u8; PMK_LEN] {
-    // TODO(crypto): implement PBKDF2-HMAC-SHA1 (4096 iterations, 32-byte output)
+    // TODO(#72): implement PBKDF2-HMAC-SHA1 (4096 iterations, 32-byte output)
     // per IEEE 802.11-2020, section 12.4.4.3.1.
     // Requires: HMAC-SHA1 primitive (not yet in kernel).
     [0u8; PMK_LEN]
@@ -349,7 +350,7 @@ pub fn derive_ptk(
     _aa: &[u8; 6],
     _spa: &[u8; 6],
 ) -> Ptk {
-    // TODO(crypto): implement PRF-384 via HMAC-SHA1 counter construction
+    // TODO(#72): implement PRF-384 via HMAC-SHA1 counter construction
     // per IEEE 802.11-2020, section 12.7.1.2.
     Ptk {
         kck: [0u8; KCK_LEN],
@@ -368,7 +369,7 @@ pub fn derive_ptk(
 /// **Stubbed**: returns zeroed MIC. Requires HMAC-SHA1 primitive.
 #[must_use]
 pub fn compute_mic(_kck: &[u8; KCK_LEN], _data: &[u8]) -> [u8; MIC_LEN] {
-    // TODO(crypto): implement HMAC-SHA1 truncated to 128 bits.
+    // TODO(#72): implement HMAC-SHA1 truncated to 128 bits.
     [0u8; MIC_LEN]
 }
 
@@ -813,7 +814,7 @@ impl WpaHandshake {
                 }
                 self.replay_counter = key_frame.replay_counter;
 
-                // TODO(crypto): verify MIC using KCK from PTK
+                // TODO(#72): verify MIC using KCK from PTK
                 // let expected_mic = compute_mic(&ptk.kck, frame_with_zeroed_mic);
 
                 self.state = HandshakeState::SendMsg4;
@@ -848,7 +849,7 @@ impl WpaHandshake {
                     nonce: self.snonce,
                     iv: [0u8; IV_LEN],
                     rsc: 0,
-                    mic: [0u8; MIC_LEN], // TODO(crypto): compute MIC with KCK
+                    mic: [0u8; MIC_LEN], // TODO(#72): compute MIC with KCK
                     key_data: Vec::new(),
                 };
                 Some(EapolFrame {
@@ -869,7 +870,7 @@ impl WpaHandshake {
                     nonce: [0u8; NONCE_LEN],
                     iv: [0u8; IV_LEN],
                     rsc: 0,
-                    mic: [0u8; MIC_LEN], // TODO(crypto): compute MIC with KCK
+                    mic: [0u8; MIC_LEN], // TODO(#72): compute MIC with KCK
                     key_data: Vec::new(),
                 };
                 Some(EapolFrame {
