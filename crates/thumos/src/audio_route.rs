@@ -45,6 +45,7 @@ use super::audio_codec::AudioError;
 /// Determines which physical output path carries the audio signal.
 /// The codec and amplifier configuration differ per route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AudioRoute {
     /// Front earpiece receiver — voice calls held to ear.
     Earpiece,
@@ -80,6 +81,7 @@ impl core::fmt::Display for AudioRoute {
 ///
 /// Each kind has a default priority and default output route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SessionKind {
     /// Duplex voice call (cellular or VoIP).
     VoiceCall,
@@ -609,6 +611,26 @@ mod tests {
         assert_eq!(
             alloc::format!("{}", SessionKind::Music),
             "music",
+        );
+    }
+
+    #[test]
+    fn route_unavailable_for_disconnected_bt() {
+        let mgr = RouteManager::new();
+        assert_eq!(
+            mgr.validate_route(AudioRoute::BluetoothA2dp),
+            Err(AudioError::RouteUnavailable),
+            "must return RouteUnavailable for disconnected BT"
+        );
+        assert_eq!(
+            mgr.validate_route(AudioRoute::UsbDac),
+            Err(AudioError::RouteUnavailable),
+            "must return RouteUnavailable for disconnected USB DAC"
+        );
+        assert_eq!(
+            mgr.validate_route(AudioRoute::Headset),
+            Err(AudioError::RouteUnavailable),
+            "must return RouteUnavailable for disconnected headset"
         );
     }
 }

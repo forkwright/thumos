@@ -418,6 +418,10 @@ impl<H: FmHwOps> FmRadio<H> {
     /// Power on the FM radio.
     ///
     /// Transitions from `Off` to `On`.
+    ///
+    /// # Errors
+    ///
+    /// - [`FmError::HardwareError`] -- hardware power-on failed.
     pub fn power_on(&mut self) -> Result<(), FmError> {
         if !matches!(self.state, FmState::Off) {
             return Ok(()); // Already on, idempotent.
@@ -430,6 +434,10 @@ impl<H: FmHwOps> FmRadio<H> {
     /// Power off the FM radio.
     ///
     /// Transitions to `Off` from any state.
+    ///
+    /// # Errors
+    ///
+    /// - [`FmError::HardwareError`] -- hardware power-off failed.
     pub fn power_off(&mut self) -> Result<(), FmError> {
         if matches!(self.state, FmState::Off) {
             return Ok(()); // Already off, idempotent.
@@ -442,6 +450,12 @@ impl<H: FmHwOps> FmRadio<H> {
     /// Tune to a specific frequency.
     ///
     /// Frequency must be in the FM band (87.5-108.0 MHz), specified in kHz.
+    ///
+    /// # Errors
+    ///
+    /// - [`FmError::NotPowered`] -- radio is off.
+    /// - [`FmError::FrequencyOutOfRange`] -- frequency outside 87.5-108.0 MHz.
+    /// - [`FmError::HardwareError`] -- hardware tune failed.
     pub fn tune(&mut self, freq_khz: u32) -> Result<(), FmError> {
         match self.state {
             FmState::Off => return Err(FmError::NotPowered),
@@ -464,6 +478,11 @@ impl<H: FmHwOps> FmRadio<H> {
     /// Seek upward for the next station.
     ///
     /// Wraps from the maximum frequency back to the minimum.
+    ///
+    /// # Errors
+    ///
+    /// - [`FmError::NotPowered`] -- radio is off.
+    /// - [`FmError::HardwareError`] -- hardware seek failed.
     pub fn seek_up(&mut self) -> Result<u32, FmError> {
         match self.state {
             FmState::Off => return Err(FmError::NotPowered),
@@ -503,6 +522,11 @@ impl<H: FmHwOps> FmRadio<H> {
     /// Seek downward for the next station.
     ///
     /// Wraps from the minimum frequency back to the maximum.
+    ///
+    /// # Errors
+    ///
+    /// - [`FmError::NotPowered`] -- radio is off.
+    /// - [`FmError::HardwareError`] -- hardware seek failed.
     pub fn seek_down(&mut self) -> Result<u32, FmError> {
         match self.state {
             FmState::Off => return Err(FmError::NotPowered),
@@ -539,6 +563,12 @@ impl<H: FmHwOps> FmRadio<H> {
     }
 
     /// Save the current frequency to a preset slot (0-5).
+    ///
+    /// # Errors
+    ///
+    /// - [`FmError::InvalidPreset`] -- slot index out of range.
+    /// - [`FmError::NotPowered`] -- radio is off.
+    /// - [`FmError::InvalidState`] -- not tuned to a frequency.
     pub fn save_preset(&mut self, index: usize) -> Result<(), FmError> {
         if index >= FM_PRESET_COUNT {
             return Err(FmError::InvalidPreset);
@@ -558,6 +588,12 @@ impl<H: FmHwOps> FmRadio<H> {
     }
 
     /// Recall a preset: tune to the frequency stored in the given slot.
+    ///
+    /// # Errors
+    ///
+    /// - [`FmError::InvalidPreset`] -- slot index out of range or not set.
+    /// - [`FmError::FrequencyOutOfRange`] -- stored frequency is invalid.
+    /// - [`FmError::NotPowered`] -- radio is off.
     pub fn recall_preset(&mut self, index: usize) -> Result<u32, FmError> {
         if index >= FM_PRESET_COUNT {
             return Err(FmError::InvalidPreset);

@@ -321,7 +321,7 @@ impl AlarmScreen {
         let w = SCREEN_WIDTH;
 
         // Large countdown display (centered, scaled text).
-        draw_scaled_str_centered(fb, w, BIG_DISPLAY_Y, &self.timer_display, color::WHITE, color::BLACK);
+        ui::draw_scaled_str_centered(fb, w, BIG_DISPLAY_Y, &self.timer_display, color::WHITE, color::BLACK, BIG_SCALE);
 
         // Status text.
         let status = if self.timer_expired {
@@ -353,10 +353,10 @@ impl AlarmScreen {
         let w = SCREEN_WIDTH;
 
         // Large elapsed display (centered, scaled text).
-        draw_scaled_str_centered(
+        ui::draw_scaled_str_centered(
             fb, w, BIG_DISPLAY_Y,
             &self.stopwatch_display,
-            color::WHITE, color::BLACK,
+            color::WHITE, color::BLACK, BIG_SCALE,
         );
 
         // Status.
@@ -510,62 +510,6 @@ impl AlarmScreen {
     /// Whether the stopwatch tab is active.
     pub fn is_stopwatch_tab(&self) -> bool {
         self.tab == Tab::Stopwatch
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Scaled text rendering (shared with home screen pattern)
-// ---------------------------------------------------------------------------
-
-/// Render a byte-slice string at 2x scale, horizontally centered.
-fn draw_scaled_str_centered(
-    fb: &mut [u16],
-    fb_width: u16,
-    y: u16,
-    text: &[u8],
-    fg: u16,
-    bg: u16,
-) {
-    let scaled_char_w = CHAR_WIDTH * BIG_SCALE;
-    let text_width = text.len() as u16 * scaled_char_w;
-    let x_start = fb_width.saturating_sub(text_width) / 2;
-
-    for (i, &byte) in text.iter().enumerate() {
-        let ch = byte as char;
-        let x = x_start.saturating_add(i as u16 * scaled_char_w);
-        draw_scaled_char(fb, fb_width, x, y, ch, fg, bg);
-    }
-}
-
-/// Render a single character at 2x scale.
-fn draw_scaled_char(
-    fb: &mut [u16],
-    fb_width: u16,
-    x: u16,
-    y: u16,
-    ch: char,
-    fg: u16,
-    bg: u16,
-) {
-    let code = u32::from(ch);
-    let first = 0x20_u32;
-    let last = 0x7E_u32;
-    if !(first..=last).contains(&code) {
-        return;
-    }
-    let glyph = &crate::ui::FONT_DATA[(code - first) as usize];
-    for (row, &byte) in glyph.iter().enumerate() {
-        for col in 0u16..8 {
-            let bit = (byte >> (7 - col)) & 1;
-            let c = if bit != 0 { fg } else { bg };
-            let px = x.saturating_add(col * BIG_SCALE);
-            let py = y.saturating_add(row as u16 * BIG_SCALE);
-            for dy in 0..BIG_SCALE {
-                for dx in 0..BIG_SCALE {
-                    ui::set_pixel(fb, fb_width, px + dx, py + dy, c);
-                }
-            }
-        }
     }
 }
 

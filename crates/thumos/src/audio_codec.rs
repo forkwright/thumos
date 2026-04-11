@@ -70,7 +70,7 @@ const AFE_UL_CON0: u16 = 0x200C;
 const AFE_DL_GAIN: u16 = 0x2010;
 
 /// ADC digital gain register offset.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "register constant reserved for future gain control")]
 const AFE_UL_GAIN: u16 = 0x2014;
 
 /// Decoder analog control 0: HPL/HPR (headphone left/right) amplifier.
@@ -1009,5 +1009,15 @@ mod tests {
             AudioRoute::UsbDac,
             "route must be UsbDac"
         );
+    }
+
+    #[test]
+    fn adc_not_enabled_error_display() {
+        // AdcNotEnabled is defined for the case where mic bias is requested
+        // without ADC being enabled first. The real Mt6357Codec checks this;
+        // here we verify the variant is constructable and has correct Display.
+        let err = AudioError::AdcNotEnabled;
+        let msg = alloc::format!("{err}");
+        assert_eq!(msg, "ADC not enabled", "AdcNotEnabled display must match");
     }
 }
