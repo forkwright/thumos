@@ -17,6 +17,7 @@ mod audio_route;
 mod battery;
 mod block;
 mod bluetooth;
+mod bt_audio;
 mod cache;
 mod ccci;
 mod capability;
@@ -44,6 +45,7 @@ mod emmc;
 mod exceptions;
 mod fd;
 mod firewall;
+mod fm_radio;
 mod futex;
 mod gps;
 #[cfg(not(test))]
@@ -56,6 +58,7 @@ mod ipc;
 mod kconfig;
 #[cfg(not(test))]
 mod kinit;
+mod mic_audit;
 mod mmio;
 #[cfg(not(test))]
 mod mmu;
@@ -69,6 +72,7 @@ mod ramfs;
 mod screen_call;
 mod screen_contacts;
 mod screen_dialer;
+mod screen_fm;
 mod screen_home;
 mod screen_messages;
 mod screen_radio;
