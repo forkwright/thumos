@@ -23,7 +23,11 @@
 //!     On single-core ARMv7 this is safe because the caller disables IRQs
 //!     implicitly through the critical-section contract of the kernel.
 //!
-//! ChaCha20 implemented per RFC 8439 §2.1–§2.3.
+//! ChaCha20 block cipher with 64-bit counter extension (Linux kernel convention).
+//! Core quarter-round arithmetic follows RFC 8439 §2.1. State layout differs:
+//! uses 64-bit counter (state[12-13]) + 64-bit nonce (state[14-15]) instead of
+//! RFC 8439's 32-bit counter + 96-bit nonce. The CSPRNG is seeded from hardware
+//! entropy, so the layout difference does not affect cryptographic strength.
 
 // ---------------------------------------------------------------------------
 // ChaCha20 constants
