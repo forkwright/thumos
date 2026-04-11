@@ -61,6 +61,11 @@ Thumos treats all hardware identifiers as sensitive. Every radio driver implemen
 | BLE advertisements | Non-resolvable private address (NRPA) by default |
 | RF fingerprint | Accepted risk on M7 hardware. Custom PCB future addresses this. |
 
+## TODO convention
+
+Format: `TODO(#issue): description` or `TODO(category): description`
+Categories: hw (hardware-dependent), crypto (needs crypto primitives), phase07/phase08 (deferred to future phase)
+
 ## Build
 
 Workspace compiles on host (`cargo check/test`). Kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` in `crates/thumos/` (the bare-metal kernel binary, excluded from the main workspace). Boot image created with mkbootimg, flashed via mtkclient BROM exploit.

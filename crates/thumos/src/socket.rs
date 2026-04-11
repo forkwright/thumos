@@ -288,6 +288,7 @@ unsafe fn alloc_ephemeral_port() -> Option<u16> {
 /// # Returns
 /// File descriptor number on success, negative errno on failure.
 pub fn sys_socket(domain: u32, sock_type: u32, _protocol: u32) -> u32 {
+    // TODO(#84): IPv6 (AF_INET6) -- only AF_INET supported
     if domain != AF_INET {
         return EAFNOSUPPORT;
     }
@@ -451,6 +452,8 @@ pub fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
 ///
 /// # Returns
 /// EOPNOTSUPP — full listen/accept is deferred to a future phase.
+///
+/// TODO(#84): listen/accept -- currently returns EOPNOTSUPP
 pub fn sys_listen(_fd: u32, _backlog: u32) -> u32 {
     EOPNOTSUPP
 }
@@ -459,6 +462,8 @@ pub fn sys_listen(_fd: u32, _backlog: u32) -> u32 {
 ///
 /// # Returns
 /// EOPNOTSUPP — full listen/accept is deferred to a future phase.
+///
+/// TODO(#84): listen/accept -- currently returns EOPNOTSUPP
 pub fn sys_accept(_fd: u32, _addr_ptr: u32, _addr_len_ptr: u32) -> u32 {
     EOPNOTSUPP
 }

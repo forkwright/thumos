@@ -88,6 +88,8 @@ pub struct StatBuf {
 /// For pipe file descriptors, the pipe identity is encoded in `flags`
 /// (see `pipe.rs` for the encoding). `mount_idx` and `inode_id` are
 /// unused for pipes.
+///
+/// TODO(#84): close-on-exec flag (O_CLOEXEC) -- not tracked in current FileDescriptor
 #[derive(Clone, Copy)]
 pub struct FileDescriptor {
     /// Index into the global MountTable identifying the filesystem.
@@ -234,6 +236,7 @@ impl FdTable {
 /// one process uses filesystem syscalls at a time in the cooperative scheduler.
 ///
 /// TODO(#32): migrate to per-process fd tables when Process struct supports it.
+/// TODO(#84): per-process fd tables -- current global table doesn't support concurrent processes
 pub(crate) static mut FD_TABLE: FdTable = FdTable::new();
 
 /// Global mount table for VFS dispatch.
