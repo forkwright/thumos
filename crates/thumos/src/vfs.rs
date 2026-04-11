@@ -27,6 +27,7 @@ use alloc::vec::Vec;
 /// Each variant corresponds to a POSIX error number. Use `to_errno()` to
 /// obtain the two's complement negation suitable for returning to userspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VfsError {
     /// Entry not found (ENOENT = 2).
     NotFound,
@@ -48,6 +49,23 @@ pub enum VfsError {
     PermissionDenied,
     /// Too many links (EMLINK = 31).
     TooManyLinks,
+}
+
+impl core::fmt::Display for VfsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "not found"),
+            Self::NotADirectory => write!(f, "not a directory"),
+            Self::IsADirectory => write!(f, "is a directory"),
+            Self::AlreadyExists => write!(f, "already exists"),
+            Self::NotEmpty => write!(f, "directory not empty"),
+            Self::InvalidPath => write!(f, "invalid path"),
+            Self::NoSpace => write!(f, "no space left on device"),
+            Self::IoError => write!(f, "I/O error"),
+            Self::PermissionDenied => write!(f, "permission denied"),
+            Self::TooManyLinks => write!(f, "too many links"),
+        }
+    }
 }
 
 impl VfsError {
@@ -78,6 +96,7 @@ impl VfsError {
 
 /// Type of a filesystem inode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InodeType {
     /// Regular file.
     RegularFile,
@@ -89,6 +108,18 @@ pub enum InodeType {
     BlockDevice,
     /// Symbolic link.
     Symlink,
+}
+
+impl core::fmt::Display for InodeType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::RegularFile => write!(f, "regular file"),
+            Self::Directory => write!(f, "directory"),
+            Self::CharDevice => write!(f, "char device"),
+            Self::BlockDevice => write!(f, "block device"),
+            Self::Symlink => write!(f, "symlink"),
+        }
+    }
 }
 
 /// Metadata for a single inode, returned by `Filesystem::stat`.
@@ -106,6 +137,12 @@ pub struct InodeStat {
     pub block_count: u32,
 }
 
+impl core::fmt::Display for InodeStat {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "inode {} ({}, {} bytes)", self.inode_id, self.inode_type, self.size)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Directory entry
 // ---------------------------------------------------------------------------
@@ -119,6 +156,12 @@ pub struct DirEntry {
     pub inode_id: u32,
     /// Type of the inode this entry refers to.
     pub inode_type: InodeType,
+}
+
+impl core::fmt::Display for DirEntry {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} (inode {}, {})", self.name, self.inode_id, self.inode_type)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +317,7 @@ impl MountTable {
     /// - `VfsError::InvalidPath` if the path does not start with `/`.
     /// - `VfsError::AlreadyExists` if the path is already mounted.
     /// - `VfsError::NoSpace` if all mount slots are occupied.
+    #[must_use]
     pub fn mount(&mut self, path: &str, fs: Box<dyn Filesystem>) -> Result<(), VfsError> {
         if !path.starts_with('/') {
             return Err(VfsError::InvalidPath);
@@ -407,6 +451,7 @@ impl Default for MountTable {
 /// - `VfsError::InvalidPath` if the path is empty or does not start with `/`.
 /// - `VfsError::NotFound` if any path component cannot be found.
 /// - `VfsError::NotADirectory` if a non-terminal component is not a directory.
+#[must_use]
 pub fn resolve_path(mounts: &MountTable, path: &str) -> Result<(usize, u32), VfsError> {
     if path.is_empty() || !path.starts_with('/') {
         return Err(VfsError::InvalidPath);

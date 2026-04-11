@@ -60,6 +60,7 @@ impl LfsWriter {
     /// # Errors
     ///
     /// Returns [`LfsError::NoFreeSegments`] if no segments are available.
+    #[must_use]
     pub fn new(seg_mgr: &mut LfsSegmentManager) -> Result<Self, LfsError> {
         let seg = seg_mgr.allocate().ok_or(LfsError::NoFreeSegments)?;
         Ok(Self {
