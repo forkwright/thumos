@@ -324,6 +324,50 @@ impl<D: Device> NetworkStack<D> {
     pub fn socket_count(&self) -> usize {
         self.socket_count
     }
+
+    /// Increment the manual socket count.
+    ///
+    /// Used by subsystems (DHCP, DNS) that add sockets directly to the
+    /// [`SocketSet`] via [`sockets_mut()`](Self::sockets_mut) instead of
+    /// going through [`add_tcp_socket`](Self::add_tcp_socket) or
+    /// [`add_udp_socket`](Self::add_udp_socket).
+    pub fn increment_socket_count(&mut self) {
+        self.socket_count += 1;
+    }
+
+    /// Poll the network stack and all registered services.
+    ///
+    /// Calls [`poll`](Self::poll) to drive socket I/O, then polls the
+    /// DHCP client (if provided) and ticks the DNS resolver (if provided).
+    /// Returns the DHCP event (if any) so callers can react to IP changes.
+    ///
+    /// This is the recommended single-call-site for periodic network
+    /// processing in the kernel's main loop or timer tick handler.
+    pub fn poll_services(
+        &mut self,
+        now: Instant,
+        dhcp: Option<&mut crate::dhcp::DhcpClient>,
+        dns: Option<&mut crate::dns::DnsResolver>,
+        elapsed_secs: u32,
+    ) -> crate::dhcp::DhcpEvent {
+        // Drive the smoltcp interface (ARP, IP, socket state machines).
+        self.poll(now);
+
+        // Poll DHCP for configuration events.
+        let dhcp_event = match dhcp {
+            Some(client) => client.poll(self),
+            None => crate::dhcp::DhcpEvent::None,
+        };
+
+        // Tick DNS cache TTLs.
+        if let Some(resolver) = dns {
+            if elapsed_secs > 0 {
+                resolver.tick(elapsed_secs);
+            }
+        }
+
+        dhcp_event
+    }
 }
 
 // ---------------------------------------------------------------------------
