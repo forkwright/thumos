@@ -97,6 +97,7 @@ const SURVEILLANCE_DOMAINS: &[&str] = &[
 
 /// Action to take on a packet after rule evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Action {
     /// Forward the packet.
     Allow,
@@ -108,6 +109,7 @@ pub enum Action {
 
 /// Traffic direction relative to the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Direction {
     /// Traffic arriving from an external interface.
     Inbound,
@@ -117,6 +119,7 @@ pub enum Direction {
 
 /// Layer-4 protocol selector for a [`FilterRule`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Protocol {
     /// Match TCP segments.
     Tcp,
@@ -124,6 +127,25 @@ pub enum Protocol {
     Udp,
     /// Match ICMP messages.
     Icmp,
+}
+
+impl core::fmt::Display for Action {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Allow => write!(f, "allow"),
+            Self::Deny => write!(f, "deny"),
+            Self::Log => write!(f, "log"),
+        }
+    }
+}
+
+impl core::fmt::Display for Direction {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Inbound => write!(f, "inbound"),
+            Self::Outbound => write!(f, "outbound"),
+        }
+    }
 }
 
 /// An IPv4 address represented as four octets.
@@ -153,6 +175,19 @@ pub struct FilterRule {
     pub action: Action,
 }
 
+impl core::fmt::Display for FilterRule {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} {}", self.direction, self.action)?;
+        if let Some(proto) = self.protocol {
+            write!(f, " {proto:?}")?;
+        }
+        if let Some(port) = self.dst_port {
+            write!(f, " port {port}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Packet statistics tracked by the firewall.
 #[derive(Debug, Clone, Default)]
 pub struct FirewallStats {
@@ -162,6 +197,16 @@ pub struct FirewallStats {
     pub packets_denied: u64,
     /// Total DNS queries blocked by the domain blocklist.
     pub dns_blocked: u64,
+}
+
+impl core::fmt::Display for FirewallStats {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "allowed={}, denied={}, dns_blocked={}",
+            self.packets_allowed, self.packets_denied, self.dns_blocked,
+        )
+    }
 }
 
 /// Packet filter combining an ordered rule set, a DNS domain blocklist,

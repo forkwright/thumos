@@ -66,6 +66,7 @@ const DEFAULT_MTU: usize = 1514;
 
 /// Errors returned by network stack operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NetError {
     /// Socket set is full; cannot add another socket.
     SocketSetFull,
@@ -73,6 +74,16 @@ pub enum NetError {
     InvalidHandle,
     /// Route table is full.
     RouteTableFull,
+}
+
+impl core::fmt::Display for NetError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::SocketSetFull => write!(f, "socket set full"),
+            Self::InvalidHandle => write!(f, "invalid socket handle"),
+            Self::RouteTableFull => write!(f, "route table full"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +238,7 @@ impl<D: Device> NetworkStack<D> {
     /// Set the default IPv4 gateway for the interface.
     ///
     /// Returns `Err(NetError::RouteTableFull)` if the route table is full.
+    #[must_use]
     pub fn set_default_gateway(&mut self, gateway: Ipv4Address) -> Result<(), NetError> {
         self.iface
             .routes_mut()
@@ -239,6 +251,7 @@ impl<D: Device> NetworkStack<D> {
     ///
     /// Returns `Err(NetError::SocketSetFull)` if [`MAX_SOCKETS`] has been
     /// reached.
+    #[must_use]
     pub fn add_tcp_socket(&mut self) -> Result<SocketHandle, NetError> {
         if self.socket_count >= MAX_SOCKETS {
             return Err(NetError::SocketSetFull);
@@ -255,6 +268,7 @@ impl<D: Device> NetworkStack<D> {
     ///
     /// Returns `Err(NetError::SocketSetFull)` if [`MAX_SOCKETS`] has been
     /// reached.
+    #[must_use]
     pub fn add_udp_socket(&mut self) -> Result<SocketHandle, NetError> {
         if self.socket_count >= MAX_SOCKETS {
             return Err(NetError::SocketSetFull);

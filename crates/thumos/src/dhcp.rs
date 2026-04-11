@@ -35,6 +35,7 @@ pub const DHCP_TIMEOUT_MS: u64 = 30_000;
 
 /// Events emitted by the DHCP client on each poll cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DhcpEvent {
     /// No state change since last poll.
     None,
@@ -56,6 +57,26 @@ pub struct DhcpConfig {
     pub dns_servers: Vec<Ipv4Address>,
 }
 
+impl core::fmt::Display for DhcpEvent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::None => write!(f, "no DHCP event"),
+            Self::Configured(config) => write!(f, "DHCP configured: {config}"),
+            Self::Deconfigured => write!(f, "DHCP deconfigured"),
+        }
+    }
+}
+
+impl core::fmt::Display for DhcpConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.address)?;
+        if let Some(gw) = self.gateway {
+            write!(f, " gw {gw}")?;
+        }
+        Ok(())
+    }
+}
+
 /// DHCP client that wraps a smoltcp DHCPv4 socket.
 ///
 /// Owns a socket handle into the [`NetworkStack`]'s socket set. On each
@@ -74,11 +95,21 @@ pub struct DhcpClient {
 
 /// Errors from DHCP client creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DhcpError {
     /// The socket set is full; cannot add the DHCPv4 socket.
     SocketSetFull,
     /// Failed to apply the gateway route.
     RouteTableFull,
+}
+
+impl core::fmt::Display for DhcpError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::SocketSetFull => write!(f, "socket set full"),
+            Self::RouteTableFull => write!(f, "route table full"),
+        }
+    }
 }
 
 impl From<NetError> for DhcpError {
@@ -100,6 +131,7 @@ impl DhcpClient {
     ///
     /// Returns `Err(DhcpError::SocketSetFull)` if the socket set has
     /// reached [`MAX_SOCKETS`].
+    #[must_use]
     pub fn new<D: Device>(stack: &mut NetworkStack<D>) -> Result<Self, DhcpError> {
         if stack.socket_count() >= MAX_SOCKETS {
             return Err(DhcpError::SocketSetFull);

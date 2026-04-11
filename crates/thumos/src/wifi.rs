@@ -74,6 +74,24 @@ pub enum WifiError {
     NotInitialized,
 }
 
+impl core::fmt::Display for WifiError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::HardwareTimeout => write!(f, "hardware timeout"),
+            Self::AssociationFailed => write!(f, "association failed"),
+            Self::HandshakeFailed => write!(f, "WPA handshake failed"),
+            Self::FrameTooShort { need, have } => {
+                write!(f, "frame too short: need {need} bytes, have {have}")
+            }
+            Self::UnknownEapolType { value } => {
+                write!(f, "unknown EAPOL type: 0x{value:02x}")
+            }
+            Self::NetworkNotFound => write!(f, "network not found"),
+            Self::NotInitialized => write!(f, "WiFi not initialized"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WiFi state machine
 // ---------------------------------------------------------------------------
@@ -538,6 +556,7 @@ pub struct EapolFrame {
 /// Returns [`WifiError::FrameTooShort`] when the slice cannot satisfy the
 /// declared packet length, and [`WifiError::UnknownEapolType`] for
 /// unrecognised packet type bytes.
+#[must_use]
 pub fn eapol_parse(data: &[u8]) -> Result<EapolFrame, WifiError> {
     if data.len() < EAPOL_HEADER_LEN {
         return Err(WifiError::FrameTooShort {
@@ -1025,6 +1044,7 @@ impl<H: WifiHwOps> WifiDriver<H> {
     /// # Errors
     ///
     /// Returns `WifiError` if the hardware scan cannot be started.
+    #[must_use]
     pub fn start_scan(&mut self) -> Result<(), WifiError> {
         // Fresh MAC for each scan (privacy)
         self.mac = generate_random_mac();

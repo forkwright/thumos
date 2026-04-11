@@ -379,6 +379,7 @@ pub struct Lfs {
 ///
 /// - [`LfsError::BlockIo`] if any block write fails.
 /// - [`LfsError::InvalidSuperblock`] if the device is too small.
+#[must_use]
 pub fn format(dev: &mut dyn BlockDevice) -> Result<(), LfsError> {
     let total_sectors = dev.sector_count();
     let total_blocks = total_sectors / SECTORS_PER_BLOCK as u64;
@@ -489,6 +490,7 @@ pub fn format(dev: &mut dyn BlockDevice) -> Result<(), LfsError> {
 /// - [`LfsError::InvalidSuperblock`] if the superblock magic/version is wrong.
 /// - [`LfsError::Corrupt`] if neither checkpoint is valid.
 /// - [`LfsError::BlockIo`] if any block read fails.
+#[must_use]
 pub fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
     let mut cache = BlockCache::new();
 

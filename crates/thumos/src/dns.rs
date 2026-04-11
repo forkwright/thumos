@@ -62,6 +62,7 @@ const DNS_HEADER_SIZE: usize = 12;
 
 /// Errors from DNS resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DnsError {
     /// The hostname is empty or otherwise invalid.
     InvalidName,
@@ -77,6 +78,20 @@ pub enum DnsError {
     SendError,
     /// The DNS response was malformed.
     MalformedResponse,
+}
+
+impl core::fmt::Display for DnsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidName => write!(f, "invalid hostname"),
+            Self::Timeout => write!(f, "DNS query timed out"),
+            Self::ServerError => write!(f, "DNS server error"),
+            Self::NoRecords => write!(f, "no DNS records found"),
+            Self::SocketError => write!(f, "DNS socket allocation failed"),
+            Self::SendError => write!(f, "DNS query send failed"),
+            Self::MalformedResponse => write!(f, "malformed DNS response"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +442,7 @@ impl DnsResolver {
     /// This is a non-blocking "start resolve" — the caller must poll the
     /// network stack and call [`poll_resolve`](Self::poll_resolve) to
     /// check for results, since bare-metal kernels cannot block on I/O.
+    #[must_use]
     pub fn resolve<D: Device>(
         &mut self,
         _stack: &mut NetworkStack<D>,
@@ -459,6 +475,7 @@ impl DnsResolver {
     /// Returns the wire-format bytes and the transaction ID. The caller
     /// is responsible for sending this via a UDP socket to the
     /// appropriate DNS server on port 53.
+    #[must_use]
     pub fn build_query(&mut self, hostname: &str) -> Result<(Vec<u8>, u16), DnsError> {
         let txid = self.next_txid;
         self.next_txid = self.next_txid.wrapping_add(1);
@@ -469,6 +486,7 @@ impl DnsResolver {
     /// Process a DNS response and cache the result.
     ///
     /// Returns the resolved address on success.
+    #[must_use]
     pub fn process_response(
         &mut self,
         hostname: &str,
