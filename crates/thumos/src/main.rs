@@ -70,6 +70,7 @@ mod usb;
 mod vfs;
 #[cfg(not(test))]
 mod watchdog;
+mod wifi;
 
 #[cfg(not(test))]
 #[global_allocator]
