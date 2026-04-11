@@ -10,6 +10,8 @@
 //! | 3     | `urandom` | CharDevice  | Write discards, read returns PRNG     |
 //! | 4     | `ttyMT0`  | CharDevice  | Stub: read/write return Ok(0)         |
 //! | 5     | `fb0`     | CharDevice  | Stub: read/write return Ok(0)         |
+//! | 6     | `bt0`     | CharDevice  | BT control (ioctl for scan)           |
+//! | 7     | `gps0`    | CharDevice  | GPS data (read returns position)      |
 //!
 //! No dynamic device registration. The devfs is read-only: `create`, `unlink`,
 //! and `truncate` always return `PermissionDenied`.
@@ -43,12 +45,16 @@ const URANDOM_INODE: u32 = 3;
 const TTYMT0_INODE: u32 = 4;
 /// `/dev/fb0` inode (framebuffer stub).
 const FB0_INODE: u32 = 5;
+/// `/dev/bt0` inode (Bluetooth control).
+const BT0_INODE: u32 = 6;
+/// `/dev/gps0` inode (GPS data).
+const GPS0_INODE: u32 = 7;
 
-/// Number of device inodes (root dir + 5 devices).
-const NUM_INODES: u32 = 6;
+/// Number of device inodes (root dir + 7 devices).
+const NUM_INODES: u32 = 8;
 
 /// Device name table, indexed by inode number (skipping inode 0 = root dir).
-const DEVICE_NAMES: [&str; 5] = ["null", "zero", "urandom", "ttyMT0", "fb0"];
+const DEVICE_NAMES: [&str; 7] = ["null", "zero", "urandom", "ttyMT0", "fb0", "bt0", "gps0"];
 
 // ---------------------------------------------------------------------------
 // xorshift64 PRNG
@@ -161,7 +167,7 @@ impl DevFs {
                 self.rng.fill_bytes(buf);
                 Ok(buf.len())
             }
-            TTYMT0_INODE | FB0_INODE => Ok(0),
+            TTYMT0_INODE | FB0_INODE | BT0_INODE | GPS0_INODE => Ok(0),
             _ => Err(VfsError::NotFound),
         }
     }
@@ -236,6 +242,8 @@ impl Filesystem for DevFs {
     ///   when mutable access is available.
     /// - `/dev/ttyMT0` (4): stub, returns `Ok(0)`.
     /// - `/dev/fb0` (5): stub, returns `Ok(0)`.
+    /// - `/dev/bt0` (6): stub, returns `Ok(0)`.
+    /// - `/dev/gps0` (7): stub, returns `Ok(0)`.
     ///
     /// # Errors
     ///
@@ -254,7 +262,7 @@ impl Filesystem for DevFs {
             }
             // urandom needs &mut self for PRNG; callers should use read_mut().
             URANDOM_INODE => Err(VfsError::IoError),
-            TTYMT0_INODE | FB0_INODE => Ok(0),
+            TTYMT0_INODE | FB0_INODE | BT0_INODE | GPS0_INODE => Ok(0),
             _ => Err(VfsError::NotFound),
         }
     }
@@ -266,6 +274,8 @@ impl Filesystem for DevFs {
     /// - `/dev/urandom` (3): discards data, returns `Ok(buf.len())`.
     /// - `/dev/ttyMT0` (4): stub, returns `Ok(0)`.
     /// - `/dev/fb0` (5): stub, returns `Ok(0)`.
+    /// - `/dev/bt0` (6): stub, returns `Ok(0)`.
+    /// - `/dev/gps0` (7): stub, returns `Ok(0)`.
     ///
     /// # Errors
     ///
@@ -275,7 +285,7 @@ impl Filesystem for DevFs {
         match inode_id {
             ROOT_INODE => Err(VfsError::IsADirectory),
             NULL_INODE | ZERO_INODE | URANDOM_INODE => Ok(buf.len()),
-            TTYMT0_INODE | FB0_INODE => Ok(0),
+            TTYMT0_INODE | FB0_INODE | BT0_INODE | GPS0_INODE => Ok(0),
             _ => Err(VfsError::NotFound),
         }
     }
@@ -406,6 +416,8 @@ mod tests {
         assert_eq!(devfs.lookup(0, "urandom"), Ok(URANDOM_INODE));
         assert_eq!(devfs.lookup(0, "ttyMT0"), Ok(TTYMT0_INODE));
         assert_eq!(devfs.lookup(0, "fb0"), Ok(FB0_INODE));
+        assert_eq!(devfs.lookup(0, "bt0"), Ok(BT0_INODE));
+        assert_eq!(devfs.lookup(0, "gps0"), Ok(GPS0_INODE));
     }
 
     #[test]
@@ -419,7 +431,7 @@ mod tests {
     fn readdir_lists_all_devices() {
         let devfs = DevFs::new(42);
         let entries = devfs.readdir(ROOT_INODE).expect("readdir on root");
-        assert_eq!(entries.len(), 5, "devfs root must have 5 device entries");
+        assert_eq!(entries.len(), 7, "devfs root must have 7 device entries");
 
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"null"), "must list null");
@@ -427,6 +439,8 @@ mod tests {
         assert!(names.contains(&"urandom"), "must list urandom");
         assert!(names.contains(&"ttyMT0"), "must list ttyMT0");
         assert!(names.contains(&"fb0"), "must list fb0");
+        assert!(names.contains(&"bt0"), "must list bt0");
+        assert!(names.contains(&"gps0"), "must list gps0");
 
         // All entries must be CharDevice type.
         assert!(
