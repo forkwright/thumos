@@ -19,7 +19,9 @@ pub enum Error {
     /// The provided key is not `XTS_KEY_LEN` (64) bytes.
     #[snafu(display("invalid XTS key length: expected {XTS_KEY_LEN} bytes, got {actual}"))]
     InvalidKeyLength {
+        /// Actual key length provided.
         actual: usize,
+        /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
     },
@@ -27,7 +29,9 @@ pub enum Error {
     /// The plaintext or ciphertext buffer is not exactly `BLOCK_SIZE` (4096) bytes.
     #[snafu(display("invalid block size: expected {BLOCK_SIZE} bytes, got {actual}"))]
     InvalidBlockSize {
+        /// Actual buffer size provided.
         actual: usize,
+        /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
     },
