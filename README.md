@@ -31,13 +31,13 @@ sema (radio tools) + aither (WiFi) + pteron (BT) + topos (GPS)
 klesis (AT commands, CCCI transport, SMS PDU) + krypta (Signal protocol)
 kelyphos (WMT combo chip STP framing) + haphe (input routing)
 ──────────────────────────────────────────────
-thumos kernel (MMU, slab allocator, scheduler, IPC, signals, 34 syscalls)
+thumos kernel (MMU, slab allocator, scheduler, IPC, signals, 45 syscalls)
 MT6739 hardware (modem on separate core, firewalled at CCCI driver level)
 ```
 
 ## Status
 
-Phase 04 complete (2026-04-08). 13 crates (12 userspace workspace members plus the `thumos` kernel binary, excluded from the main workspace for bare-metal builds), 486 workspace tests, ~39K LOC (19.3K kernel, 20K userspace). Kernel implements 34 syscalls including fork/exec/waitpid, mmap/brk/mprotect, pipe/futex IPC, POSIX signals (sigaction/kill/sigreturn), clock_gettime/nanosleep. Slab allocator (7 size classes), ChaCha20 CSPRNG (RFC 8439), capability-based access control, DVFS power management, watchdog timer. Hardware drivers: eMMC (MSDC), display (DDP + GC9306), WiFi MAC (randomization), BT HCI (LE Privacy), WMT, CCCI modem containment, USB ACM, GPIO keypad, touchscreen.
+Phase 06 complete (2026-04-09). 13 crates (12 userspace workspace members plus the `thumos` kernel binary, excluded from the main workspace for bare-metal builds), 1,047 tests (572 kernel + 475 workspace), ~53K LOC (35K kernel, 18.4K userspace). Kernel implements 45 syscalls including fork/exec/waitpid, mmap/brk/mprotect, pipe/futex IPC, POSIX signals (sigaction/kill/sigreturn), clock_gettime/nanosleep, network sockets (TCP/UDP/bind/listen/accept/connect/sendto/recvfrom). Slab allocator (7 size classes), ChaCha20 CSPRNG, capability-based access control, DVFS power management, watchdog timer, VFS with LFS/ramfs/devfs, firewall with DNS blocklist, DHCP client, DNS resolver. Hardware drivers: eMMC (MSDC), display (DDP + GC9306), WiFi MAC (randomization), BT HCI (LE Privacy), WMT, CCCI modem containment, USB ACM, GPIO keypad, touchscreen, GPS (NMEA), Bluetooth (STP/HCI).
 
 ## Related
 

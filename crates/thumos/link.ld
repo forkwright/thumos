@@ -1,4 +1,4 @@
-/* Linker script for thumos pyknosis on MT6739 */
+/* Linker script for thumos on MT6739 */
 /* Kernel loads at 0x40008000 (same as Linux on this platform) */
 
 ENTRY(_start)
