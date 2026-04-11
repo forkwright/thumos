@@ -792,4 +792,80 @@ mod tests {
         );
         let _ = original; // used for conceptual comparison
     }
+
+    // --- Error path coverage ---
+
+    #[test]
+    fn init_on_failed_hw_returns_timeout() {
+        let mut hw = MockBtHw::new();
+        hw.power_on_ok = false;
+        let mut adapter = BtAdapter::new(hw);
+        let result = adapter.init(0);
+        assert_eq!(
+            result,
+            Err(BtError::HardwareTimeout),
+            "init with failing hardware must return HardwareTimeout"
+        );
+        assert_eq!(
+            adapter.state(),
+            BtState::Error(BtError::HardwareTimeout),
+            "adapter must be in Error state after failed init"
+        );
+    }
+
+    #[test]
+    fn encode_oversized_name_returns_bounded() {
+        // BleDevice name field is fixed at MAX_NAME_LEN (32) bytes.
+        // Setting name_len beyond the array bounds would be unsafe, so we
+        // verify the name() accessor correctly bounds to name_len.
+        let mut dev = BleDevice::new([0x01; 6], -40);
+        // Fill the entire name buffer.
+        dev.name = [b'A'; MAX_NAME_LEN];
+        dev.name_len = MAX_NAME_LEN as u8;
+        assert_eq!(
+            dev.name().len(),
+            MAX_NAME_LEN,
+            "name length at maximum must return exactly MAX_NAME_LEN bytes"
+        );
+
+        // Verify that partial name_len correctly slices.
+        dev.name_len = 5;
+        assert_eq!(
+            dev.name(),
+            b"AAAAA",
+            "partial name_len must return only that many bytes"
+        );
+    }
+
+    #[test]
+    fn start_scan_in_off_state_returns_invalid_state() {
+        let hw = MockBtHw::new();
+        let mut adapter = BtAdapter::new(hw);
+        // Adapter is in Off state, scan requires Ready.
+        let result = adapter.start_scan();
+        assert_eq!(
+            result,
+            Err(BtError::InvalidState),
+            "start_scan in Off state must return InvalidState"
+        );
+    }
+
+    #[test]
+    fn init_send_command_failure_returns_timeout() {
+        let mut hw = MockBtHw::new();
+        // power_on succeeds but send_command fails (simulates HCI reset failure).
+        hw.send_ok = false;
+        let mut adapter = BtAdapter::new(hw);
+        let result = adapter.init(0);
+        assert_eq!(
+            result,
+            Err(BtError::HardwareTimeout),
+            "init must fail when HCI reset command fails"
+        );
+        assert_eq!(
+            adapter.state(),
+            BtState::Error(BtError::HardwareTimeout),
+            "adapter must be in Error state after HCI command failure"
+        );
+    }
 }

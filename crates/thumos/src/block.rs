@@ -456,4 +456,112 @@ mod tests {
             "should return InvalidArgument"
         );
     }
+
+    // -- FailingBlockDevice: test mock that returns IoError --
+
+    /// A block device mock that returns [`BlockError::IoError`] on reads/writes
+    /// to specific sectors, and [`BlockError::DeviceNotReady`] when not initialized.
+    struct FailingBlockDevice {
+        /// Whether the device has been "initialized".
+        ready: bool,
+        /// Sector that triggers an `IoError` (all others succeed like `MemBlockDevice`).
+        fail_sector: u64,
+        /// Total sector count.
+        sectors: u64,
+        /// Backing storage.
+        data: Vec<u8>,
+    }
+
+    impl FailingBlockDevice {
+        fn new(sector_count: u64, fail_sector: u64) -> Self {
+            let size = sector_count as usize * SECTOR_SIZE;
+            Self {
+                ready: false,
+                fail_sector,
+                sectors: sector_count,
+                data: vec![0u8; size],
+            }
+        }
+    }
+
+    impl BlockDevice for FailingBlockDevice {
+        fn read_sectors(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+            if !self.ready {
+                return Err(BlockError::DeviceNotReady);
+            }
+            // Check if any requested sector is the failing one.
+            for i in 0..u64::from(count) {
+                if lba + i == self.fail_sector {
+                    return Err(BlockError::IoError);
+                }
+            }
+            let end = lba.checked_add(u64::from(count)).ok_or(BlockError::OutOfBounds)?;
+            if end > self.sectors {
+                return Err(BlockError::OutOfBounds);
+            }
+            let expected = count as usize * SECTOR_SIZE;
+            if buf.len() != expected {
+                return Err(BlockError::InvalidArgument);
+            }
+            let start = lba as usize * SECTOR_SIZE;
+            buf.copy_from_slice(&self.data[start..start + expected]);
+            Ok(())
+        }
+
+        fn write_sectors(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
+            if !self.ready {
+                return Err(BlockError::DeviceNotReady);
+            }
+            for i in 0..u64::from(count) {
+                if lba + i == self.fail_sector {
+                    return Err(BlockError::IoError);
+                }
+            }
+            let end = lba.checked_add(u64::from(count)).ok_or(BlockError::OutOfBounds)?;
+            if end > self.sectors {
+                return Err(BlockError::OutOfBounds);
+            }
+            let expected = count as usize * SECTOR_SIZE;
+            if buf.len() != expected {
+                return Err(BlockError::InvalidArgument);
+            }
+            let start = lba as usize * SECTOR_SIZE;
+            self.data[start..start + expected].copy_from_slice(buf);
+            Ok(())
+        }
+
+        fn sector_count(&self) -> u64 {
+            self.sectors
+        }
+    }
+
+    #[test]
+    fn read_on_not_ready_device_returns_error() {
+        let dev = FailingBlockDevice::new(8, 99);
+        // Device is not ready (ready=false).
+        let mut buf = vec![0u8; SECTOR_SIZE];
+        let result = dev.read_sectors(0, 1, &mut buf);
+        assert_eq!(result, Err(BlockError::DeviceNotReady));
+    }
+
+    #[test]
+    fn io_error_propagates_on_failing_sector() {
+        let mut dev = FailingBlockDevice::new(8, 3);
+        dev.ready = true;
+
+        // Read from the failing sector.
+        let mut buf = vec![0u8; SECTOR_SIZE];
+        let result = dev.read_sectors(3, 1, &mut buf);
+        assert_eq!(result, Err(BlockError::IoError));
+
+        // Write to the failing sector.
+        let buf = vec![0xAA; SECTOR_SIZE];
+        let result = dev.write_sectors(3, 1, &buf);
+        assert_eq!(result, Err(BlockError::IoError));
+
+        // Non-failing sectors should still work.
+        let mut read_buf = vec![0u8; SECTOR_SIZE];
+        let result = dev.read_sectors(0, 1, &mut read_buf);
+        assert_eq!(result, Ok(()));
+    }
 }

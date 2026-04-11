@@ -997,4 +997,34 @@ mod tests {
             epoch
         );
     }
+
+    // --- Error path coverage ---
+
+    #[test]
+    fn init_on_failed_hw_returns_timeout() {
+        let mut hw = MockGpsHw::new();
+        hw.power_on_ok = false;
+        let mut receiver = GpsReceiver::new(hw);
+        let result = receiver.init();
+        assert_eq!(
+            result,
+            Err(GpsError::HardwareTimeout),
+            "init with failing hardware must return HardwareTimeout"
+        );
+    }
+
+    #[test]
+    fn process_in_wrong_state_returns_invalid_state() {
+        let hw = MockGpsHw::new();
+        let mut receiver = GpsReceiver::new(hw);
+        // Already in Off state, init again should work (first init).
+        receiver.init().expect("first init must succeed");
+        // Second init while in Searching state must return InvalidState.
+        let result = receiver.init();
+        assert_eq!(
+            result,
+            Err(GpsError::InvalidState),
+            "init while already initialized must return InvalidState"
+        );
+    }
 }
