@@ -89,16 +89,20 @@ pub(crate) enum BootStep {
     PowerManager = 13,
     /// Network configuration (DHCP + DNS resolver).
     Network = 14,
+    /// Bluetooth adapter initialization.
+    Bluetooth = 15,
+    /// GPS receiver initialization.
+    Gps = 16,
     /// Userspace processes spawned.
-    Userspace = 15,
+    Userspace = 17,
     /// Boot complete.
-    Complete = 16,
+    Complete = 18,
 }
 
 #[expect(dead_code, reason = "used by tests and future boot progress reporting")]
 impl BootStep {
     /// Total number of boot steps.
-    pub(crate) const COUNT: usize = 17;
+    pub(crate) const COUNT: usize = 19;
 
     /// Returns true if `self` depends on `other` (i.e., `other` must
     /// be attempted before `self`).
@@ -126,6 +130,8 @@ pub(crate) struct BootState {
     pub(crate) modem_ok: bool,
     pub(crate) input_ok: bool,
     pub(crate) network_ok: bool,
+    pub(crate) bluetooth_ok: bool,
+    pub(crate) gps_ok: bool,
     pub(crate) processes_spawned: u8,
 }
 
@@ -143,6 +149,8 @@ impl BootState {
             modem_ok: false,
             input_ok: false,
             network_ok: false,
+            bluetooth_ok: false,
+            gps_ok: false,
             processes_spawned: 0,
         }
     }
@@ -178,6 +186,12 @@ impl BootState {
             n += 1;
         }
         if self.network_ok {
+            n += 1;
+        }
+        if self.bluetooth_ok {
+            n += 1;
+        }
+        if self.gps_ok {
             n += 1;
         }
         n
@@ -649,6 +663,53 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
+    // Step 13b: Bluetooth adapter
+    // -----------------------------------------------------------------------
+    let _ = serial.write_str("[init] Bluetooth (BT HCI via WMT)\r\n");
+    {
+        let bt_hw = crate::bluetooth::BtHw::new();
+        let mut bt = crate::bluetooth::BtAdapter::new(bt_hw);
+        let bt_tick = crate::timer::elapsed_ms();
+        match bt.init(bt_tick) {
+            Ok(()) => {
+                let _ = serial.write_str("       BT adapter ready\r\n");
+                let addr = bt.random_address();
+                let _ = write!(
+                    serial,
+                    "       LE address: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}\r\n",
+                    addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]
+                );
+                devices.activate("bt0");
+                state.bluetooth_ok = true;
+            }
+            Err(e) => {
+                let _ = write!(serial, "  WARN BT init failed: {:?}\r\n", e);
+                let _ = serial.write_str("       Bluetooth disabled\r\n");
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 13c: GPS receiver
+    // -----------------------------------------------------------------------
+    let _ = serial.write_str("[init] GPS (via WMT)\r\n");
+    {
+        let gps_hw = crate::gps::GpsHw::new();
+        let mut gps = crate::gps::GpsReceiver::new(gps_hw);
+        match gps.init() {
+            Ok(()) => {
+                let _ = serial.write_str("       GPS receiver searching\r\n");
+                devices.activate("gps0");
+                state.gps_ok = true;
+            }
+            Err(e) => {
+                let _ = write!(serial, "  WARN GPS init failed: {:?}\r\n", e);
+                let _ = serial.write_str("       GPS disabled\r\n");
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Boot status summary
     // -----------------------------------------------------------------------
     let _ = serial.write_str("\r\n");
@@ -657,7 +718,7 @@ pub unsafe fn run() -> ! {
         "[init] Boot complete at {} ms\r\n",
         crate::timer::elapsed_ms()
     );
-    let _ = write!(serial, "       {} / 10 subsystems OK\r\n", state.ok_count());
+    let _ = write!(serial, "       {} / 12 subsystems OK\r\n", state.ok_count());
     if !state.display_ok {
         let _ = serial
             .write_str("       NOTE: display unavailable, USB serial only\r\n");
