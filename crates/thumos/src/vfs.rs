@@ -55,10 +55,6 @@ impl VfsError {
     ///
     /// Returns the value that would be placed in r0 for a failed syscall on
     /// ARM Linux (e.g., `ENOENT` -> `0u32.wrapping_sub(2)` = `0xFFFF_FFFE`).
-    ///
-    /// # Errors
-    ///
-    /// This method is infallible.
     pub const fn to_errno(self) -> u32 {
         let raw = match self {
             Self::NotFound => 2,
@@ -138,10 +134,6 @@ pub struct DirEntry {
 /// filesystem instances.
 pub trait Filesystem {
     /// Return the inode ID of the filesystem root directory.
-    ///
-    /// # Errors
-    ///
-    /// This method is infallible; it always returns a valid root inode ID.
     fn root_inode(&self) -> u32;
 
     /// Retrieve metadata for an inode.

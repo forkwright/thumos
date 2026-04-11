@@ -1,0 +1,4 @@
+# release-please auto-generates CHANGELOG.md from conventional commits.
+# REPO-SETUP.md says to omit it, but release-please creates it automatically
+# and removing it would break the release workflow.
+RELEASES/changelog-present:CHANGELOG.md
