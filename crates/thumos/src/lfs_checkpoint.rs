@@ -90,6 +90,7 @@ impl CheckpointHeader {
     /// # Errors
     ///
     /// Returns [`LfsError::Corrupt`] if the magic number does not match.
+    #[must_use]
     pub fn from_block(buf: &[u8; BLOCK_SIZE]) -> Result<Self, LfsError> {
         if buf.len() < HEADER_SERIALIZED_SIZE {
             return Err(LfsError::Corrupt);

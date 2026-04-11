@@ -67,6 +67,19 @@ pub enum GpsError {
     InvalidState,
 }
 
+impl core::fmt::Display for GpsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::HardwareTimeout => write!(f, "hardware timeout"),
+            Self::NotInitialized => write!(f, "GPS not initialized"),
+            Self::NoFix => write!(f, "no GPS fix"),
+            Self::ParseError => write!(f, "NMEA parse error"),
+            Self::ChecksumMismatch => write!(f, "NMEA checksum mismatch"),
+            Self::InvalidState => write!(f, "invalid GPS state"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GPS state machine
 // ---------------------------------------------------------------------------
@@ -84,6 +97,17 @@ pub enum GpsState {
     FixAcquired,
     /// A fatal error occurred.
     Error(GpsError),
+}
+
+impl core::fmt::Display for GpsState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Off => write!(f, "off"),
+            Self::Searching => write!(f, "searching"),
+            Self::FixAcquired => write!(f, "fix acquired"),
+            Self::Error(e) => write!(f, "error: {e}"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +132,17 @@ pub struct GpsPosition {
     pub satellite_count: u8,
 }
 
+impl core::fmt::Display for GpsPosition {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Display as degrees with 6 decimal places (microdegree precision).
+        let lat_deg = self.latitude / 1_000_000;
+        let lat_frac = (self.latitude % 1_000_000).unsigned_abs();
+        let lon_deg = self.longitude / 1_000_000;
+        let lon_frac = (self.longitude % 1_000_000).unsigned_abs();
+        write!(f, "{lat_deg}.{lat_frac:06}, {lon_deg}.{lon_frac:06}")
+    }
+}
+
 /// UTC date and time extracted from RMC sentences.
 ///
 /// Used by the clock module to synchronize the system clock from GPS.
@@ -125,6 +160,17 @@ pub struct GpsTime {
     pub minute: u8,
     /// Second (0-59).
     pub second: u8,
+}
+
+impl core::fmt::Display for GpsTime {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            self.year, self.month, self.day,
+            self.hour, self.minute, self.second,
+        )
+    }
 }
 
 impl GpsTime {
@@ -359,6 +405,7 @@ fn parse_altitude_mm(bytes: &[u8]) -> Option<i32> {
 /// Returns `GpsError::ChecksumMismatch` if the checksum is invalid.
 /// Returns `GpsError::NoFix` if fix quality is 0.
 /// Returns `GpsError::ParseError` if the sentence cannot be parsed.
+#[must_use]
 pub fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
     validate_checksum(sentence)?;
 
@@ -411,6 +458,7 @@ pub fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
 /// Returns `GpsError::ChecksumMismatch` if the checksum is invalid.
 /// Returns `GpsError::NoFix` if status is 'V' (void).
 /// Returns `GpsError::ParseError` if the sentence cannot be parsed.
+#[must_use]
 pub fn parse_rmc(sentence: &[u8]) -> Result<(GpsPosition, GpsTime), GpsError> {
     validate_checksum(sentence)?;
 
@@ -655,6 +703,7 @@ impl<H: GpsHwOps> GpsReceiver<H> {
     }
 
     /// Initialize the GPS receiver: power on and begin searching.
+    #[must_use]
     pub fn init(&mut self) -> Result<(), GpsError> {
         if self.state != GpsState::Off {
             return Err(GpsError::InvalidState);
@@ -712,6 +761,7 @@ impl<H: GpsHwOps> GpsReceiver<H> {
     }
 
     /// Shut down the GPS receiver.
+    #[must_use]
     pub fn shutdown(&mut self) -> Result<(), GpsError> {
         self.hw.power_off()?;
         self.state = GpsState::Off;
