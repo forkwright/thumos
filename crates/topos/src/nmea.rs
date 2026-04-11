@@ -325,4 +325,29 @@ mod tests {
             "East longitude must convert correctly to decimal degrees"
         );
     }
+
+    // -- Proptest: fuzz the NMEA parser to verify no panics on arbitrary input --
+
+    mod proptest_fuzz {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn parse_gga_never_panics(data in "\\PC{0,200}") {
+                // Arbitrary strings must never cause a panic — only Ok or Err.
+                let _ = parse_gga(&data);
+            }
+
+            #[test]
+            fn parse_rmc_never_panics(data in "\\PC{0,200}") {
+                let _ = parse_rmc(&data);
+            }
+
+            #[test]
+            fn validate_checksum_never_panics(data in "\\PC{0,200}") {
+                let _ = validate_checksum(&data);
+            }
+        }
+    }
 }

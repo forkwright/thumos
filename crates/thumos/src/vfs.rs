@@ -824,10 +824,10 @@ mod tests {
     fn resolve_path_returns_root_inode_for_slash() {
         let mut mt = MountTable::new();
         mt.mount("/", Box::new(TestFs)).expect("mount");
-        let result = resolve_path(&mt, "/");
-        assert!(result.is_ok());
-        let (_, inode) = result.expect("already checked");
-        assert_eq!(inode, 0, "/ should resolve to root inode");
+        let (mount_idx, inode) = resolve_path(&mt, "/")
+            .expect("resolving / must succeed when root is mounted");
+        assert_eq!(mount_idx, 0, "/ must resolve to mount index 0");
+        assert_eq!(inode, 0, "/ must resolve to root inode 0");
     }
 
     #[test]

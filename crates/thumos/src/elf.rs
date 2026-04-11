@@ -7,6 +7,7 @@
 //! The loader allocates pages for each segment, copies the data,
 //! and returns the entry point address for process creation.
 
+#[cfg(not(test))]
 use crate::page;
 
 /// ELF magic: 0x7F 'E' 'L' 'F'
@@ -59,6 +60,7 @@ struct Elf32Phdr {
 }
 
 /// Result of loading an ELF binary.
+#[cfg(not(test))]
 pub struct LoadedElf {
     /// Entry point address.
     pub entry: usize,
@@ -67,7 +69,7 @@ pub struct LoadedElf {
 }
 
 /// Error FROM ELF loading.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ElfError {
     /// Not a valid ELF file.
     BadMagic,
@@ -83,16 +85,16 @@ pub enum ElfError {
     InvalidSegment,
 }
 
-/// Load an ELF binary FROM a byte slice INTO memory.
+/// Validate an ELF binary header and iterate its program headers.
 ///
-/// Allocates pages for each PT_LOAD segment, copies data, zeros BSS.
-/// Returns the entry point for process creation.
+/// Performs all header validation (magic, class, endianness, machine type)
+/// and verifies that each program header is within `data` bounds.
+/// Returns the entry point, program header metadata, and validated segment
+/// descriptors for each PT_LOAD segment.
 ///
-/// # Safety
-///
-/// The loaded code will execute with kernel privileges until we implement
-/// user/kernel memory separation (Wave 4+).
-pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
+/// This function is pure (no page allocation or memory writes) and is
+/// therefore safe to call in test builds.
+fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
     if data.len() < core::mem::size_of::<Elf32Ehdr>() {
         return Err(ElfError::BadMagic);
     }
@@ -121,7 +123,11 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
     let phoff = ehdr.e_phoff as usize;
     let phnum = ehdr.e_phnum as usize;
     let phentsize = ehdr.e_phentsize as usize;
-    let mut pages_used = 0;
+
+    let mut segments = ValidatedElf {
+        segments: [(0, 0, 0, 0); 16],
+        count: 0,
+    };
 
     // Process program headers
     for i in 0..phnum {
@@ -148,6 +154,41 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
         if file_offset + filesz > data.len() {
             return Err(ElfError::InvalidSegment);
         }
+
+        if segments.count < 16 {
+            segments.segments[segments.count] = (vaddr, memsz, filesz, file_offset);
+            segments.count += 1;
+        }
+    }
+
+    Ok((entry, segments))
+}
+
+/// Validated ELF segment descriptors (output of header validation).
+#[derive(Debug)]
+struct ValidatedElf {
+    /// `(vaddr, memsz, filesz, file_offset)` for each PT_LOAD segment.
+    segments: [(usize, usize, usize, usize); 16],
+    /// Number of valid entries in `segments`.
+    count: usize,
+}
+
+/// Load an ELF binary FROM a byte slice INTO memory.
+///
+/// Allocates pages for each PT_LOAD segment, copies data, zeros BSS.
+/// Returns the entry point for process creation.
+///
+/// # Safety
+///
+/// The loaded code will execute with kernel privileges until we implement
+/// user/kernel memory separation (Wave 4+).
+#[cfg(not(test))]
+pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
+    let (entry, validated) = validate(data)?;
+    let mut pages_used = 0;
+
+    for idx in 0..validated.count {
+        let (vaddr, memsz, filesz, file_offset) = validated.segments[idx];
 
         // Allocate pages for this segment
         let num_pages = (memsz + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
@@ -186,4 +227,118 @@ pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
     }
 
     Ok(LoadedElf { entry, pages_used })
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Size of an ELF32 header in bytes.
+    const ELF32_EHDR_SIZE: usize = 52;
+    /// Size of an ELF32 program header in bytes.
+    const ELF32_PHDR_SIZE: usize = 32;
+
+    /// Build a minimal valid ELF32 LE ARM header (52 bytes).
+    ///
+    /// Returns a byte array with all validation-critical fields set correctly:
+    /// magic, class=32, data=LE, machine=ARM. `e_phnum` is set to 0 so
+    /// no segments are loaded (avoids page allocation in tests).
+    fn make_valid_ehdr() -> [u8; ELF32_EHDR_SIZE] {
+        let mut h = [0u8; ELF32_EHDR_SIZE];
+        // e_ident[0..4]: magic
+        h[0] = 0x7F;
+        h[1] = b'E';
+        h[2] = b'L';
+        h[3] = b'F';
+        // e_ident[4]: class = ELFCLASS32
+        h[4] = 1;
+        // e_ident[5]: data = ELFDATA2LSB
+        h[5] = 1;
+        // e_ident[6]: version = EV_CURRENT
+        h[6] = 1;
+        // e_type (offset 16): ET_EXEC = 2 (LE)
+        h[16] = 2;
+        h[17] = 0;
+        // e_machine (offset 18): EM_ARM = 40 (LE)
+        h[18] = 40;
+        h[19] = 0;
+        // e_version (offset 20): EV_CURRENT = 1
+        h[20] = 1;
+        // e_entry (offset 24): 0x8000 (typical ARM entry)
+        h[24] = 0x00;
+        h[25] = 0x80;
+        h[26] = 0x00;
+        h[27] = 0x00;
+        // e_phoff (offset 28): 52 (right after ehdr)
+        h[28] = ELF32_EHDR_SIZE as u8;
+        // e_ehsize (offset 40): 52
+        h[40] = ELF32_EHDR_SIZE as u8;
+        // e_phentsize (offset 42): 32
+        h[42] = ELF32_PHDR_SIZE as u8;
+        // e_phnum (offset 44): 0 (no segments to load)
+        h[44] = 0;
+        h
+    }
+
+    #[test]
+    fn parse_rejects_bad_magic() {
+        let data = [0x00; ELF32_EHDR_SIZE];
+        assert_eq!(validate(&data).unwrap_err(), ElfError::BadMagic);
+    }
+
+    #[test]
+    fn parse_rejects_too_short_data() {
+        // Data shorter than the ELF header must return BadMagic.
+        let data = [0x7F, b'E', b'L', b'F'];
+        assert_eq!(validate(&data).unwrap_err(), ElfError::BadMagic);
+    }
+
+    #[test]
+    fn parse_rejects_non_32bit() {
+        let mut h = make_valid_ehdr();
+        // Set class to ELFCLASS64 (2) instead of ELFCLASS32 (1).
+        h[4] = 2;
+        assert_eq!(validate(&h).unwrap_err(), ElfError::Not32Bit);
+    }
+
+    #[test]
+    fn parse_rejects_non_little_endian() {
+        let mut h = make_valid_ehdr();
+        // Set data to ELFDATA2MSB (2) instead of ELFDATA2LSB (1).
+        h[5] = 2;
+        assert_eq!(validate(&h).unwrap_err(), ElfError::NotLittleEndian);
+    }
+
+    #[test]
+    fn parse_rejects_non_arm() {
+        let mut h = make_valid_ehdr();
+        // Set machine to EM_386 (3) instead of EM_ARM (40).
+        h[18] = 3;
+        h[19] = 0;
+        assert_eq!(validate(&h).unwrap_err(), ElfError::NotArm);
+    }
+
+    #[test]
+    fn parse_rejects_invalid_segment() {
+        let mut h = make_valid_ehdr();
+        // Set phnum=1 so the loader tries to read a program header,
+        // but the data is only ehdr-sized — the phdr offset is out of bounds.
+        h[44] = 1;
+        assert_eq!(validate(&h).unwrap_err(), ElfError::InvalidSegment);
+    }
+
+    #[test]
+    fn parse_accepts_valid_elf() {
+        // A valid ELF header with phnum=0 should parse successfully
+        // without triggering any page allocation (no PT_LOAD segments).
+        let h = make_valid_ehdr();
+        let (entry, validated) = validate(&h)
+            .expect("valid ELF header with no segments must parse");
+        assert_eq!(entry, 0x8000, "entry point must match e_entry");
+        assert_eq!(validated.count, 0, "no PT_LOAD segments expected");
+    }
 }

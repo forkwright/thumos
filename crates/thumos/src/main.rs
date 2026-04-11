@@ -32,7 +32,6 @@ mod dns;
 #[cfg(not(test))]
 mod device;
 mod display;
-#[cfg(not(test))]
 mod elf;
 #[cfg(not(test))]
 mod emmc;

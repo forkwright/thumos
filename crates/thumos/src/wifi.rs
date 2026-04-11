@@ -1449,4 +1449,35 @@ mod tests {
         assert!(!ki.install(), "install bit must be clear");
         assert!(!ki.mic(), "MIC bit must be clear");
     }
+
+    // --- Error path coverage ---
+
+    #[test]
+    fn scan_when_not_initialized_returns_error() {
+        setup_csprng();
+        let mut hw = MockWifiHw::new();
+        // Make scan_start fail (simulates hardware not initialized).
+        hw.scan_ok = false;
+        let mut driver = WifiDriver::new(hw);
+        let result = driver.start_scan();
+        assert_eq!(
+            result,
+            Err(WifiError::HardwareTimeout),
+            "scan on non-initialized hardware must return HardwareTimeout"
+        );
+    }
+
+    #[test]
+    fn associate_nonexistent_network_returns_error() {
+        setup_csprng();
+        let mut hw = MockWifiHw::new();
+        // Make associate fail.
+        hw.associate_ok = false;
+        let result = hw.associate(b"NoSuchNetwork", &[0xFF; 6]);
+        assert_eq!(
+            result,
+            Err(WifiError::AssociationFailed),
+            "associating with nonexistent network must return AssociationFailed"
+        );
+    }
 }
