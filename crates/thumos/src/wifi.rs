@@ -181,6 +181,16 @@ impl WifiConfig {
     }
 }
 
+impl Drop for WifiConfig {
+    fn drop(&mut self) {
+        // Zero passphrase material on drop.
+        for byte in &mut self.passphrase {
+            // SAFETY: byte is a valid mutable reference to initialized memory.
+            unsafe { core::ptr::write_volatile(byte, 0); }
+        }
+    }
+}
+
 /// A single scan result from the WiFi firmware.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanResult {
@@ -251,6 +261,10 @@ pub const MIC_LEN: usize = 16;
 /// Pairwise Transient Key components.
 ///
 /// Derived from the PMK by PTK = PRF-384(PMK, "Pairwise key expansion", ...).
+///
+/// Implements [`Drop`] to zero key material, preventing it from persisting
+/// in memory after the handshake completes. Uses `write_volatile` to prevent
+/// the compiler from optimizing away the zeroing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ptk {
     /// Key Confirmation Key: used to compute and verify MIC.
@@ -259,6 +273,25 @@ pub struct Ptk {
     pub kek: [u8; KEK_LEN],
     /// Temporal Key: used for data frame encryption (AES-CCMP).
     pub tk: [u8; TK_LEN],
+}
+
+impl Drop for Ptk {
+    fn drop(&mut self) {
+        // WHY: write_volatile prevents the compiler from eliding the zeroing
+        // as a dead store, ensuring key material is actually cleared from memory.
+        for byte in &mut self.kck {
+            // SAFETY: byte is a valid mutable reference to initialized memory.
+            unsafe { core::ptr::write_volatile(byte, 0); }
+        }
+        for byte in &mut self.kek {
+            // SAFETY: byte is a valid mutable reference to initialized memory.
+            unsafe { core::ptr::write_volatile(byte, 0); }
+        }
+        for byte in &mut self.tk {
+            // SAFETY: byte is a valid mutable reference to initialized memory.
+            unsafe { core::ptr::write_volatile(byte, 0); }
+        }
+    }
 }
 
 /// Derive the Pairwise Master Key from a passphrase and SSID.
@@ -319,6 +352,38 @@ pub fn derive_ptk(
 pub fn compute_mic(_kck: &[u8; KCK_LEN], _data: &[u8]) -> [u8; MIC_LEN] {
     // TODO(crypto): implement HMAC-SHA1 truncated to 128 bits.
     [0u8; MIC_LEN]
+}
+
+/// Verify that `expected_mic` matches the MIC computed over `data` with `kck`.
+///
+/// Uses constant-time comparison to prevent timing side-channel attacks.
+/// Returns `true` only when the MIC is correct.
+///
+/// # Current status
+///
+/// **Stubbed**: relies on the stubbed `compute_mic`. Will produce correct
+/// results once the kernel crypto subsystem provides HMAC-SHA1.
+#[must_use]
+pub fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
+    let computed = compute_mic(kck, data);
+    constant_time_eq(&computed, expected_mic)
+}
+
+/// Constant-time byte slice comparison.
+///
+/// Compares all bytes regardless of early differences, preventing timing
+/// side-channel attacks that could leak information about secret key material.
+/// Returns `true` only when both slices have equal length and identical content.
+#[must_use]
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -797,6 +862,21 @@ impl WpaHandshake {
             }
             _ => None,
         }
+    }
+}
+
+impl Drop for WpaHandshake {
+    fn drop(&mut self) {
+        // Zero nonces — they contribute to key derivation and are sensitive.
+        for byte in &mut self.anonce {
+            // SAFETY: byte is a valid mutable reference to initialized memory.
+            unsafe { core::ptr::write_volatile(byte, 0); }
+        }
+        for byte in &mut self.snonce {
+            // SAFETY: byte is a valid mutable reference to initialized memory.
+            unsafe { core::ptr::write_volatile(byte, 0); }
+        }
+        // The PTK is zeroed by its own Drop impl when this Option is dropped.
     }
 }
 
