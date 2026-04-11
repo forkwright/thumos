@@ -81,6 +81,12 @@ pub struct BatteryInfo {
     pub temperature_c: i8,
 }
 
+impl core::fmt::Display for BatteryInfo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}% {}mV", self.percentage, self.voltage_mv)
+    }
+}
+
 impl Default for BatteryInfo {
     fn default() -> Self {
         Self {
@@ -182,6 +188,7 @@ pub struct BatteryMonitor {
 
 impl BatteryMonitor {
     /// Create a new battery monitor with default (unknown) state.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             info: BatteryInfo::default(),
@@ -190,6 +197,7 @@ impl BatteryMonitor {
     }
 
     /// Return the most recent battery info snapshot.
+    #[must_use]
     pub fn info(&self) -> &BatteryInfo {
         &self.info
     }
@@ -218,12 +226,14 @@ impl BatteryMonitor {
     ///
     /// Returns `true` if at least [`POLL_INTERVAL_SECS`] seconds have
     /// passed since the last poll.
+    #[must_use]
     pub fn should_poll(&self, current_tick: u64) -> bool {
         let elapsed_ms = current_tick.saturating_sub(self.last_poll_tick);
         elapsed_ms >= POLL_INTERVAL_SECS * 1000
     }
 
     /// Return the tick of the last poll.
+    #[must_use]
     pub fn last_poll_tick(&self) -> u64 {
         self.last_poll_tick
     }

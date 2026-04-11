@@ -20,12 +20,12 @@
 //! ## Integration
 //!
 //! Used by the telephony subsystem during modem initialization and
-//! periodic signal polling. Boot integration deferred to Wave 3.
+//! periodic signal polling. Boot integration deferred to Phase 07 kinit wiring.
 
-// WHY: SIM management API not yet wired to upper layers (Wave 3 integration).
+// WHY: SIM management API not yet wired to upper layers (kinit integration pending).
 #![expect(
     dead_code,
-    reason = "SIM management API not yet wired to kinit (Wave 3)"
+    reason = "SIM management API not yet wired to kinit"
 )]
 
 extern crate alloc;

@@ -181,7 +181,7 @@ impl FmScreen {
         for (i, ch) in freq_str.chars().enumerate() {
             let cx = start_x + (i as u16) * CHAR_WIDTH * 2;
             // Draw 2x scaled: render each pixel of the glyph as a 2x2 block.
-            draw_char_scaled(fb, w, cx, FREQ_Y, ch, color::WHITE, color::BLACK, 2);
+            ui::draw_char_scaled(fb, w, cx, FREQ_Y, ch, color::WHITE, color::BLACK, 2);
         }
     }
 
@@ -265,37 +265,6 @@ impl FmScreen {
                     color::BLACK,
                 );
             }
-        }
-    }
-}
-
-/// Draw a character at 2x (or Nx) scale.
-///
-/// Renders each pixel of the glyph as an `NxN` block for large text display.
-fn draw_char_scaled(
-    fb: &mut [u16],
-    fb_width: u16,
-    x: u16,
-    y: u16,
-    ch: char,
-    fg: u16,
-    bg: u16,
-    scale: u16,
-) {
-    let code = u32::from(ch);
-    if !(0x20..=0x7E).contains(&code) {
-        return;
-    }
-    let glyph = &ui::FONT_DATA[(code - 0x20) as usize];
-    for (row, &byte) in glyph.iter().enumerate() {
-        for col in 0u16..8 {
-            let bit = (byte >> (7 - col)) & 1;
-            let c = if bit != 0 { fg } else { bg };
-            // Draw a scale x scale block for each pixel.
-            let px = x.saturating_add(col.saturating_mul(scale));
-            let py = y.saturating_add((row as u16).saturating_mul(scale));
-            let h = CONTENT_HEIGHT;
-            ui::fill_rect(fb, fb_width, h, px, py, scale, scale, c);
         }
     }
 }

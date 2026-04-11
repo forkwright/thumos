@@ -61,6 +61,7 @@ use super::audio_route::{AudioRoute, SessionKind};
 /// Implements `Ord` for direct comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum SessionPriority {
     /// FM radio, ambient audio — preempted by everything.
     Low = 0,
@@ -209,6 +210,11 @@ impl<C: AudioCodecOps> AudioManager<C> {
     /// - Higher priority preempts lower priority (pauses them).
     /// - Same priority: most recent session wins (pauses earlier ones).
     /// - When the preempting session closes, preempted sessions resume.
+    /// # Errors
+    ///
+    /// - [`AudioError::PowerError`] -- codec power-on failed.
+    /// - [`AudioError::RouteError`] -- output route configuration failed.
+    /// - [`AudioError::AdcNotEnabled`] -- mic ADC enable failed for voice call.
     pub fn open_session(
         &mut self,
         kind: SessionKind,
@@ -269,6 +275,11 @@ impl<C: AudioCodecOps> AudioManager<C> {
     ///    next-highest-priority session (most recently opened at that level).
     /// 3. If no voice call sessions remain, power down mic.
     /// 4. If no sessions remain (refcount -> 0), power down codec.
+    ///
+    /// # Errors
+    ///
+    /// - [`AudioError::SessionNotFound`] -- no session with the given ID.
+    /// - [`AudioError::PowerError`] -- codec power-off failed.
     pub fn close_session(&mut self, id: u32) -> Result<(), AudioError> {
         let pos = self
             .sessions
@@ -303,6 +314,11 @@ impl<C: AudioCodecOps> AudioManager<C> {
     }
 
     /// Change the output route for an active session.
+    ///
+    /// # Errors
+    ///
+    /// - [`AudioError::SessionNotFound`] -- no session with the given ID.
+    /// - [`AudioError::RouteError`] -- output route configuration failed.
     pub fn set_route(&mut self, id: u32, route: AudioRoute) -> Result<(), AudioError> {
         let session = self
             .sessions
@@ -324,6 +340,10 @@ impl<C: AudioCodecOps> AudioManager<C> {
     /// Set the output volume (0-15).
     ///
     /// Applies immediately if the codec is powered.
+    ///
+    /// # Errors
+    ///
+    /// - [`AudioError::VolumeError`] -- codec volume write failed.
     pub fn set_volume(&mut self, level: u8) -> Result<(), AudioError> {
         self.volume = level.min(15);
         if self.codec_powered {
