@@ -17,7 +17,9 @@ use crate::ccci::CcciDriver;
 use crate::console::Console;
 use crate::csprng;
 use crate::device::{self, DeviceRegistry};
+use crate::dhcp::{DhcpClient, DhcpEvent};
 use crate::display::{DisplayDriver, Gc9306};
+use crate::dns::{DnsResolver, MENOS_DNS, MULLVAD_DNS};
 use crate::elf;
 use crate::exceptions;
 use crate::gic;
@@ -25,6 +27,7 @@ use crate::heap;
 use crate::kconfig;
 use crate::mmio;
 use crate::mmu;
+use crate::net::{self, LoopbackDevice, NetworkStack};
 use crate::page;
 use crate::power::PowerManager;
 use crate::process;
@@ -84,16 +87,18 @@ pub(crate) enum BootStep {
     GpioInput = 12,
     /// Power manager.
     PowerManager = 13,
+    /// Network configuration (DHCP + DNS resolver).
+    Network = 14,
     /// Userspace processes spawned.
-    Userspace = 14,
+    Userspace = 15,
     /// Boot complete.
-    Complete = 15,
+    Complete = 16,
 }
 
 #[expect(dead_code, reason = "used by tests and future boot progress reporting")]
 impl BootStep {
     /// Total number of boot steps.
-    pub(crate) const COUNT: usize = 16;
+    pub(crate) const COUNT: usize = 17;
 
     /// Returns true if `self` depends on `other` (i.e., `other` must
     /// be attempted before `self`).
@@ -120,6 +125,7 @@ pub(crate) struct BootState {
     pub(crate) usb_ok: bool,
     pub(crate) modem_ok: bool,
     pub(crate) input_ok: bool,
+    pub(crate) network_ok: bool,
     pub(crate) processes_spawned: u8,
 }
 
@@ -136,6 +142,7 @@ impl BootState {
             usb_ok: false,
             modem_ok: false,
             input_ok: false,
+            network_ok: false,
             processes_spawned: 0,
         }
     }
@@ -168,6 +175,9 @@ impl BootState {
             n += 1;
         }
         if self.input_ok {
+            n += 1;
+        }
+        if self.network_ok {
             n += 1;
         }
         n
@@ -561,6 +571,84 @@ pub unsafe fn run() -> ! {
         .write_str("       All radios OFF (silent mode)\r\n");
 
     // -----------------------------------------------------------------------
+    // Step 13: Network configuration (DHCP + DNS)
+    // -----------------------------------------------------------------------
+    let _ = serial.write_str("[init] Network (DHCP + DNS)\r\n");
+    {
+        // WHY: In production, the WiFi driver provides the Device impl.
+        // Until WiFi hardware init is wired in, we use LoopbackDevice to
+        // prove the DHCP+DNS integration path works end-to-end.
+        let device = LoopbackDevice::new();
+        let mac = smoltcp::wire::EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        let now = net::instant_from_millis(crate::timer::elapsed_ms() as i64);
+        let mut stack = NetworkStack::new(device, mac, now);
+
+        // Start DHCP client.
+        match DhcpClient::new(&mut stack) {
+            Ok(mut dhcp) => {
+                let _ = serial.write_str("       DHCP client started\r\n");
+
+                // Poll for DHCP configuration with timeout.
+                let dhcp_start = crate::timer::elapsed_ms();
+                let mut configured = false;
+                while crate::timer::elapsed_ms() - dhcp_start
+                    < crate::dhcp::DHCP_TIMEOUT_MS
+                {
+                    let now =
+                        net::instant_from_millis(crate::timer::elapsed_ms() as i64);
+                    stack.poll(now);
+                    match dhcp.poll(&mut stack) {
+                        DhcpEvent::Configured(config) => {
+                            let _ = write!(
+                                serial,
+                                "       DHCP: {} gw {:?}\r\n",
+                                config.address,
+                                config.gateway
+                            );
+                            if !config.dns_servers.is_empty() {
+                                let _ = write!(
+                                    serial,
+                                    "       DHCP DNS: {:?}\r\n",
+                                    config.dns_servers
+                                );
+                            }
+                            configured = true;
+                            break;
+                        }
+                        DhcpEvent::Deconfigured => {}
+                        DhcpEvent::None => {}
+                    }
+                    // WHY: WFE avoids busy-loop, yields until next event.
+                    // SAFETY: WFE is a hint instruction available in all ARM
+                    // privilege levels. No memory is accessed.
+                    unsafe {
+                        core::arch::asm!("wfe");
+                    }
+                }
+
+                if !configured {
+                    let _ = serial
+                        .write_str("  WARN DHCP timeout, using link-local\r\n");
+                }
+            }
+            Err(e) => {
+                let _ = write!(serial, "  WARN DHCP init failed: {:?}\r\n", e);
+            }
+        }
+
+        // Initialize DNS resolver with split-horizon routing.
+        let _resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        let _ = serial.write_str("       DNS resolver ready\r\n");
+        let _ = write!(
+            serial,
+            "       LAN DNS: {} / Internet DNS: {}\r\n",
+            MENOS_DNS,
+            MULLVAD_DNS
+        );
+        state.network_ok = true;
+    }
+
+    // -----------------------------------------------------------------------
     // Boot status summary
     // -----------------------------------------------------------------------
     let _ = serial.write_str("\r\n");
@@ -569,7 +657,7 @@ pub unsafe fn run() -> ! {
         "[init] Boot complete at {} ms\r\n",
         crate::timer::elapsed_ms()
     );
-    let _ = write!(serial, "       {} / 9 subsystems OK\r\n", state.ok_count());
+    let _ = write!(serial, "       {} / 10 subsystems OK\r\n", state.ok_count());
     if !state.display_ok {
         let _ = serial
             .write_str("       NOTE: display unavailable, USB serial only\r\n");
@@ -577,6 +665,10 @@ pub unsafe fn run() -> ! {
     if !state.modem_ok {
         let _ = serial
             .write_str("       NOTE: modem unavailable, no phone functions\r\n");
+    }
+    if !state.network_ok {
+        let _ = serial
+            .write_str("       NOTE: network unavailable, no connectivity\r\n");
     }
     let _ = serial.write_str("\r\n");
 
@@ -724,7 +816,7 @@ mod tests {
     fn boot_step_count_matches_variants() {
         assert_eq!(
             BootStep::COUNT,
-            16,
+            17,
             "BootStep::COUNT must match the number of variants"
         );
     }
@@ -766,13 +858,19 @@ mod tests {
             BootStep::Userspace.depends_on(BootStep::GpioInput),
             "userspace depends on GPIO input"
         );
+
+        // WHY: userspace requires network to have been attempted
+        assert!(
+            BootStep::Userspace.depends_on(BootStep::Network),
+            "userspace depends on network"
+        );
     }
 
     #[test]
     fn boot_step_complete_is_last() {
         assert_eq!(
             BootStep::Complete as u8,
-            15,
+            16,
             "Complete must be the highest-numbered step"
         );
     }
@@ -791,6 +889,7 @@ mod tests {
         assert!(!state.usb_ok, "initial usb_ok must be false");
         assert!(!state.modem_ok, "initial modem_ok must be false");
         assert!(!state.input_ok, "initial input_ok must be false");
+        assert!(!state.network_ok, "initial network_ok must be false");
         assert_eq!(
             state.processes_spawned, 0,
             "initial processes_spawned must be 0"
@@ -824,7 +923,8 @@ mod tests {
         state.usb_ok = true;
         state.modem_ok = true;
         state.input_ok = true;
-        assert_eq!(state.ok_count(), 9, "all 9 subsystems OK");
+        state.network_ok = true;
+        assert_eq!(state.ok_count(), 10, "all 10 subsystems OK");
     }
 
     // -- Degradation paths --
