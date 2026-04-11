@@ -351,7 +351,7 @@ mod tests {
 
         // Verify the data is intact.
         let mut buf = [0u8; BLOCK_SIZE];
-        cache.read(&dev, block_after, &mut buf).expect("read relocated");
+        cache.read(&mut dev, block_after, &mut buf).expect("read relocated");
         let restored = DiskInode::read_from(&buf, 0).expect("parse");
         assert_eq!(restored.size, 42);
         assert_eq!(restored.inode_type, INODE_TYPE_FILE);

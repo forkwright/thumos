@@ -489,17 +489,17 @@ pub fn format(dev: &mut dyn BlockDevice) -> Result<(), LfsError> {
 /// - [`LfsError::InvalidSuperblock`] if the superblock magic/version is wrong.
 /// - [`LfsError::Corrupt`] if neither checkpoint is valid.
 /// - [`LfsError::BlockIo`] if any block read fails.
-pub fn mount(dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
+pub fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
     let mut cache = BlockCache::new();
 
     // Read superblock.
     let mut sb_buf = [0u8; BLOCK_SIZE];
-    cache.read(dev.as_ref(), SUPERBLOCK_BLOCK, &mut sb_buf)?;
+    cache.read(dev.as_mut(), SUPERBLOCK_BLOCK, &mut sb_buf)?;
     let superblock = LfsSuperblock::from_block(&sb_buf)?;
 
     // Pick the latest checkpoint.
     let (checkpoint, _slot_block) = lfs_checkpoint::pick_latest(
-        dev.as_ref(),
+        dev.as_mut(),
         &mut cache,
         superblock.checkpoint_block_a,
         superblock.checkpoint_block_b,
@@ -507,7 +507,7 @@ pub fn mount(dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
 
     // Load imap from checkpoint.
     let imap = LfsImap::load_from_disk(
-        dev.as_ref(),
+        dev.as_mut(),
         &mut cache,
         checkpoint.imap_block,
         checkpoint.imap_block_count,
@@ -518,7 +518,7 @@ pub fn mount(dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
     let mut block_buf = [0u8; BLOCK_SIZE];
     for i in 0..checkpoint.segment_bitmap_count {
         cache.read(
-            dev.as_ref(),
+            dev.as_mut(),
             checkpoint.segment_bitmap_block + u64::from(i),
             &mut block_buf,
         )?;
@@ -561,10 +561,10 @@ impl Lfs {
             .ok_or(VfsError::NotFound)?;
 
         let mut buf = [0u8; BLOCK_SIZE];
-        let dev = self.dev.borrow();
+        let mut dev = self.dev.borrow_mut();
         let mut cache = self.cache.borrow_mut();
         cache
-            .read(dev.as_ref(), block_num, &mut buf)
+            .read(dev.as_mut(), block_num, &mut buf)
             .map_err(|_| VfsError::IoError)?;
 
         // Each block can hold multiple inodes. For format(), we write
@@ -675,10 +675,10 @@ impl Lfs {
             }
 
             let mut buf = [0u8; BLOCK_SIZE];
-            let dev = self.dev.borrow();
+            let mut dev = self.dev.borrow_mut();
             let mut cache = self.cache.borrow_mut();
             cache
-                .read(dev.as_ref(), block_num, &mut buf)
+                .read(dev.as_mut(), block_num, &mut buf)
                 .map_err(|_| VfsError::IoError)?;
 
             let entries = Self::parse_dir_entries(&buf);
@@ -881,10 +881,10 @@ impl Filesystem for Lfs {
 
             let mut block_buf = [0u8; BLOCK_SIZE];
             {
-                let dev = self.dev.borrow();
+                let mut dev = self.dev.borrow_mut();
                 let mut cache = self.cache.borrow_mut();
                 cache
-                    .read(dev.as_ref(), block_num, &mut block_buf)
+                    .read(dev.as_mut(), block_num, &mut block_buf)
                     .map_err(|_| VfsError::IoError)?;
             }
 
@@ -944,7 +944,7 @@ impl Filesystem for Lfs {
                 let existing_block = inode.direct[block_index];
                 if existing_block != 0 {
                     cache
-                        .read(dev.as_ref(), existing_block, &mut block_buf)
+                        .read(dev.as_mut(), existing_block, &mut block_buf)
                         .map_err(|_| VfsError::IoError)?;
                 }
             }
@@ -1137,7 +1137,7 @@ impl Filesystem for Lfs {
             let block_num = self.imap.get(target_id).ok_or(VfsError::NotFound)?;
             let mut buf = [0u8; BLOCK_SIZE];
             cache
-                .read(dev.as_ref(), block_num, &mut buf)
+                .read(dev.as_mut(), block_num, &mut buf)
                 .map_err(|_| VfsError::IoError)?;
             DiskInode::read_from(&buf, 0).map_err(|_| VfsError::IoError)?
         };
