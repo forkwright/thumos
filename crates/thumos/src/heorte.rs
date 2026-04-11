@@ -75,6 +75,7 @@ impl CalendarEvent {
     /// Create a new calendar event.
     ///
     /// `title_bytes` is truncated to [`MAX_TITLE_LEN`] if longer.
+    #[must_use]
     pub fn new(id: u32, title_bytes: &[u8], start_epoch: u64, duration_min: u16, all_day: bool) -> Self {
         let mut title = [0u8; MAX_TITLE_LEN];
         let len = title_bytes.len().min(MAX_TITLE_LEN);
@@ -107,6 +108,12 @@ impl CalendarEvent {
     /// Extract the day (as days since Unix epoch) for grouping.
     pub fn day_index(&self) -> u32 {
         (self.start_epoch / SECS_PER_DAY) as u32
+    }
+}
+
+impl core::fmt::Display for CalendarEvent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.title_str())
     }
 }
 
@@ -162,6 +169,7 @@ impl Alarm {
     /// Create a new alarm.
     ///
     /// `label_bytes` is truncated to [`MAX_LABEL_LEN`] if longer.
+    #[must_use]
     pub fn new(
         id: u32,
         hour: u8,
@@ -185,6 +193,7 @@ impl Alarm {
     }
 
     /// Return the label as a `&str`, or an empty string if not valid UTF-8.
+    #[must_use]
     pub fn label_str(&self) -> &str {
         core::str::from_utf8(&self.label[..self.label_len as usize]).unwrap_or("")
     }
@@ -218,6 +227,7 @@ impl Alarm {
     }
 
     /// Human-readable repeat description.
+    #[must_use]
     pub fn repeat_label(&self) -> &'static str {
         match self.repeat_days {
             0 => "Once",
@@ -225,6 +235,12 @@ impl Alarm {
             d if d == day_mask::WEEKDAYS => "Weekdays",
             _ => "Custom",
         }
+    }
+}
+
+impl core::fmt::Display for Alarm {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:02}:{:02} {}", self.hour, self.minute, self.label_str())
     }
 }
 
@@ -259,6 +275,7 @@ pub struct Timer {
 
 impl Timer {
     /// Create a new timer with zero duration.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             duration_secs: 0,
@@ -341,6 +358,14 @@ impl Timer {
     }
 }
 
+impl core::fmt::Display for Timer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let buf = self.format_remaining();
+        let s = core::str::from_utf8(&buf).unwrap_or("??:??");
+        write!(f, "{s}")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stopwatch
 // ---------------------------------------------------------------------------
@@ -364,6 +389,7 @@ pub struct Stopwatch {
 
 impl Stopwatch {
     /// Create a new stopwatch in the stopped state.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             elapsed_ms: 0,
@@ -444,6 +470,14 @@ impl Stopwatch {
     }
 }
 
+impl core::fmt::Display for Stopwatch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let ms = self.elapsed_ms;
+        let secs = ms / 1000;
+        write!(f, "{:02}:{:02}", secs / 60, secs % 60)
+    }
+}
+
 /// Format milliseconds as `HH:MM:SS.mmm`.
 fn format_elapsed_ms(ms: u64) -> [u8; 12] {
     let total_secs = ms / 1000;
@@ -514,6 +548,7 @@ pub struct HeorteManager {
 
 impl HeorteManager {
     /// Create a new empty heorte manager.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             events: Vec::new(),
@@ -755,6 +790,7 @@ pub fn day_label(event_epoch: u64, current_epoch: u64) -> DayLabel {
 
 /// Day label for agenda grouping.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum DayLabel {
     /// Same day as reference epoch.
     Today,
@@ -762,6 +798,12 @@ pub enum DayLabel {
     Tomorrow,
     /// Formatted date for other days.
     Date([u8; 10]),
+}
+
+impl core::fmt::Display for DayLabel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 impl DayLabel {

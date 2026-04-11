@@ -24,7 +24,7 @@
 //! - [`GpsState::FixAcquired`] -> "GPS"
 
 // WHY: status bar created in Phase 07 Wave 1, not yet called from kinit.
-#![allow(dead_code)]
+#![expect(dead_code, reason = "Status bar created in Phase 07 Wave 1, kinit wiring pending")]
 
 use crate::ui::{
     self, color,
@@ -75,8 +75,7 @@ pub struct StatusBarState {
     pub bt_active: bool,
     /// Whether GPS has a fix (maps from `GpsState::FixAcquired`).
     pub gps_fix: bool,
-    /// Battery percentage (0-100). Placeholder until Wave 5 adds the
-    /// battery driver.
+    /// Battery percentage (0-100). Populated from `battery::BatteryMonitor`.
     pub battery_pct: u8,
     /// Mode indicator character ("D" for Daily, "S" for Sentinel, "P" for Panic).
     pub mode_char: char,

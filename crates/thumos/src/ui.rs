@@ -415,6 +415,66 @@ pub fn str_pixel_width(s: &str) -> u16 {
 }
 
 // ---------------------------------------------------------------------------
+// Scaled text rendering (shared by screen_home, screen_dialer, screen_fm,
+// screen_alarm)
+// ---------------------------------------------------------------------------
+
+/// Render one character at a given scale factor.
+///
+/// Each font pixel becomes a `scale x scale` block. Used for large text
+/// displays (clock, dialer digits, FM frequency, timer).
+pub fn draw_char_scaled(
+    fb: &mut [u16],
+    fb_width: u16,
+    x: u16,
+    y: u16,
+    ch: char,
+    fg: u16,
+    bg: u16,
+    scale: u16,
+) {
+    let code = u32::from(ch);
+    if !(FONT_FIRST..=FONT_LAST).contains(&code) {
+        return;
+    }
+    let glyph = &FONT_DATA[(code - FONT_FIRST) as usize];
+    for (row, &byte) in glyph.iter().enumerate() {
+        for col in 0u16..8 {
+            let bit = (byte >> (7 - col)) & 1;
+            let c = if bit != 0 { fg } else { bg };
+            for sy in 0..scale {
+                for sx in 0..scale {
+                    let px = x.saturating_add(col * scale + sx);
+                    let py = y.saturating_add((row as u16) * scale + sy);
+                    set_pixel(fb, fb_width, px, py, c);
+                }
+            }
+        }
+    }
+}
+
+/// Render a byte-slice string at a given scale, horizontally centered.
+pub fn draw_scaled_str_centered(
+    fb: &mut [u16],
+    fb_width: u16,
+    y: u16,
+    text: &[u8],
+    fg: u16,
+    bg: u16,
+    scale: u16,
+) {
+    let scaled_char_w = CHAR_WIDTH * scale;
+    let text_width = text.len() as u16 * scaled_char_w;
+    let x_start = fb_width.saturating_sub(text_width) / 2;
+
+    for (i, &byte) in text.iter().enumerate() {
+        let ch = byte as char;
+        let x = x_start.saturating_add(i as u16 * scaled_char_w);
+        draw_char_scaled(fb, fb_width, x, y, ch, fg, bg, scale);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Input event types (kernel-side, mirroring haphe::input::Key)
 // ---------------------------------------------------------------------------
 
@@ -659,7 +719,7 @@ impl UiManager {
     ///
     /// WHY `&self`: the manager will use `self.active_screen` to select the
     /// screen impl once screen ownership is added (Phase 07 Wave 3+).
-    #[allow(clippy::unused_self)]
+    #[expect(clippy::unused_self, reason = "Screen trait requires &self for future state access")]
     pub fn render<F>(&self, screen: &dyn Screen, status_bar_fn: F, fb: &mut [u16])
     where
         F: FnOnce(&mut [u16]),

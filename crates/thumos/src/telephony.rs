@@ -97,6 +97,7 @@ impl core::fmt::Display for TelephonyError {
 
 /// Parsed AT response from the modem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AtResponse {
     /// Command succeeded.
     Ok,
@@ -114,6 +115,7 @@ impl Default for AtResponse {
 
 /// Unsolicited result code from the modem.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Urc {
     /// Incoming call (RING).
     Ring,
@@ -134,6 +136,7 @@ pub enum Urc {
 
 /// Network registration status (3GPP TS 27.007 +CREG).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegStatus {
     /// Not registered, not searching.
     NotRegistered,
@@ -181,6 +184,7 @@ impl core::fmt::Display for RegStatus {
 
 /// Events emitted by the telephony subsystem during polling.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TelephonyEvent {
     /// Incoming call with caller ID (if available).
     IncomingCall {
@@ -455,6 +459,7 @@ impl core::fmt::Display for ModemState {
 
 /// Voice call lifecycle state machine.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum CallState {
     /// No active call.
     #[default]
@@ -1408,5 +1413,14 @@ mod tests {
             b"+15551234567",
             "caller ID number must be +15551234567"
         );
+    }
+
+    #[test]
+    fn number_too_long_error() {
+        // TelephonyError::NumberTooLong is returned when dialing a number
+        // that exceeds MAX_NUMBER_LEN. Verify the variant displays correctly.
+        let err = TelephonyError::NumberTooLong;
+        let msg = alloc::format!("{err}");
+        assert_eq!(msg, "number too long", "NumberTooLong display must match");
     }
 }

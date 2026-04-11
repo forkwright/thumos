@@ -14,7 +14,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Kernel (thumos) | Phase 06 | MMU, slab allocator, GIC, timer, scheduler, 45 syscalls, IPC (pipe, futex, signals), ELF loader, VFS (Filesystem trait, MountTable, path resolution), LFS (log-structured persistent filesystem with compaction), ramfs (hierarchical, writable), devfs, block cache (LRU, 1MB), 256-fd table, ChaCha20 CSPRNG, watchdog, capabilities, DVFS, network stack (TCP/UDP sockets, DHCP, DNS resolver), firewall (packet filter, DNS blocklist), wall clock |
+| Kernel (thumos) | Phase 07 complete | MMU, slab allocator, GIC, timer, scheduler, 45 syscalls, IPC (pipe, futex, signals), ELF loader, VFS (Filesystem trait, MountTable, path resolution), LFS (log-structured persistent filesystem with compaction), ramfs (hierarchical, writable), devfs, block cache (LRU, 1MB), 256-fd table, ChaCha20 CSPRNG, watchdog, capabilities, DVFS, network stack (TCP/UDP sockets, DHCP, DNS resolver), firewall (packet filter, DNS blocklist), wall clock, UI framework (3-zone 240x320), telephony (AT modem, voice calls, SMS), audio session manager (MT6357 codec, priority preemption), battery monitor, T9 input, contacts, FM radio, BT A2DP, calendar/alarm/timer/stopwatch (heorte), mic audit log, 77 kernel modules |
 | eMMC driver | Phase 03 | MSDC controller, PIO + DMA, GPD/BD descriptors |
 | Display driver | Phase 03 | DDP pipeline (OVL→RDMA→DSI→LCM), GC9306 init/sleep/wake/backlight |
 | CCCI modem driver | Phase 03 | CLDMA ring buffers, CCIF mailbox, identity containment, packet validation |
@@ -34,7 +34,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 ## Key constraints
 
-- 13 crates (12 workspace userspace + `thumos` kernel binary, excluded from workspace), ~53K LOC (35K kernel + 18.4K userspace), 1,047 tests (572 kernel + 475 workspace, including 114 filesystem tests), zero clippy warnings. Phase 06 (networking) complete.
+- 13 crates (12 workspace userspace + `thumos` kernel binary, excluded from workspace), ~74K LOC (55K kernel + 20K userspace), 1,653 tests (1,175 kernel + 478 workspace), zero clippy warnings. Phase 07 (phone UX) complete.
 - 1 GB RAM: every megabyte matters. No unnecessary services.
 - 240x320 display: no standard Android UI. Custom framebuffer or TUI.
 - Keypad + touchscreen input. T9-style or menu navigation.

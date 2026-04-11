@@ -10,8 +10,8 @@
 //! The GSM 7-bit default alphabet (3GPP TS 23.038 section 6.2.1) maps 128 septets
 //! to Unicode code points. Extension-table characters (accessed via ESC prefix
 //! 0x1B) consume two septets. The codec handles the full base table plus
-//! 10 extension characters including `@` (septet 0x00, common bug site)
-//! and `euro` (ESC + 0x65).
+//! 10 extension characters including `euro` (ESC + 0x65). Note: `@` is
+//! in the base table at septet 0x00 (common bug site), not the extension table.
 //!
 //! ## PDU format
 //!
@@ -168,6 +168,11 @@ fn char_to_septet(c: char) -> Option<(bool, u8)> {
 ///
 /// Returns the packed byte buffer. Extension characters consume two septets
 /// each (ESC prefix + code).
+///
+/// # Errors
+///
+/// - [`SmsError::Gsm7Encode`] -- a character has no GSM-7 representation.
+#[must_use]
 pub fn encode_gsm7(text: &str) -> Result<Vec<u8>, SmsError> {
     // First pass: collect the septet sequence.
     let mut septets: Vec<u8> = Vec::with_capacity(text.len());
@@ -207,6 +212,11 @@ pub fn encode_gsm7(text: &str) -> Result<Vec<u8>, SmsError> {
 ///
 /// Extension characters (ESC + code) consume two septets but produce
 /// one output character.
+///
+/// # Errors
+///
+/// - [`SmsError::PduDecode`] -- packed data is truncated or contains invalid septets.
+#[must_use]
 pub fn decode_gsm7(data: &[u8], num_septets: usize) -> Result<String, SmsError> {
     if num_septets == 0 {
         return Ok(String::new());
@@ -505,6 +515,15 @@ impl SmsManager {
     ///
     /// Encodes the text as GSM-7 PDU and sends via `AT+CMGS`. The modem
     /// must be in PDU mode (`AT+CMGF=0`) before calling this.
+    ///
+    /// # Errors
+    ///
+    /// - [`SmsError::Gsm7Encode`] -- message contains a non-GSM-7 character.
+    /// - [`SmsError::MessageTooLong`] -- text exceeds 160 GSM-7 septets.
+    /// - [`SmsError::NumberTooLong`] -- phone number exceeds E.164 limit.
+    /// - [`SmsError::ModemError`] -- modem returned ERROR.
+    /// - [`SmsError::CmeError`] -- modem returned CME error.
+    /// - [`SmsError::TransportError`] -- transport layer send/receive failed.
     pub fn send<T: ModemTransport>(
         transport: &mut T,
         number: &str,
@@ -578,6 +597,11 @@ impl SmsManager {
     ///
     /// `pdu_data` is the raw hex bytes of the PDU (not hex-encoded string,
     /// but the actual PDU bytes after hex decoding by the caller).
+    ///
+    /// # Errors
+    ///
+    /// - [`SmsError::PduDecode`] -- PDU is truncated or malformed.
+    #[must_use]
     pub fn handle_incoming(pdu_data: &[u8]) -> Result<SmsMessage, SmsError> {
         let mut cur = PduCursor::new(pdu_data);
 
@@ -954,5 +978,17 @@ mod tests {
         // Must not panic.
         manager.delete(999);
         assert!(manager.inbox().is_empty());
+    }
+
+    #[test]
+    fn number_too_long_in_bcd_encode() {
+        // E.164 limit is 20 digits; a 21-digit number must fail.
+        let long_number = "+123456789012345678901"; // 21 digits
+        let result = encode_bcd_address(long_number);
+        assert_eq!(
+            result,
+            Err(SmsError::NumberTooLong),
+            "encoding >20-digit number must return NumberTooLong"
+        );
     }
 }

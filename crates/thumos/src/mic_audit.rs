@@ -514,4 +514,15 @@ mod tests {
         assert_eq!(log.recent(5).len(), 0);
         assert_eq!(log.active_sessions().len(), 0);
     }
+
+    #[test]
+    fn log_full_error_variant() {
+        // MicAuditError::LogFull is a defensive variant -- the current
+        // implementation evicts oldest entries rather than returning LogFull.
+        // This test verifies the variant is constructable and displays correctly.
+        let err = MicAuditError::LogFull;
+        let msg = alloc::format!("{err}");
+        assert_eq!(msg, "audit log full", "LogFull display must match");
+        assert_eq!(err, MicAuditError::LogFull, "LogFull must be Eq");
+    }
 }
