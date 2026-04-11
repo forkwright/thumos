@@ -62,8 +62,10 @@ mod power;
 mod process;
 mod ramfs;
 mod signal;
+mod sim;
 mod slab;
 mod socket;
+mod telephony;
 #[cfg(not(test))]
 mod syscall;
 #[cfg(not(test))]
