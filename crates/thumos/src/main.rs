@@ -60,6 +60,7 @@ mod process;
 mod ramfs;
 mod signal;
 mod slab;
+mod socket;
 #[cfg(not(test))]
 mod syscall;
 #[cfg(not(test))]
