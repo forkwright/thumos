@@ -56,6 +56,9 @@ mod gps;
 mod gsm7;
 mod harmostes;
 mod heorte;
+// WHY: not test-gated because matrix_crypto types will be used by harmostes
+// at runtime for E2E message encryption/decryption.
+mod matrix_crypto;
 mod heorte_alarm;
 mod heorte_timer;
 mod http_client;
