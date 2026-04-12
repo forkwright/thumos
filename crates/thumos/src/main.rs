@@ -97,6 +97,8 @@ mod screen_messages;
 mod screen_radio;
 mod screen_search;
 mod screen_settings;
+#[expect(dead_code, reason = "Phase 08 Wave 6: wired in Wave 8 via kinit")]
+mod secure_boot;
 #[expect(dead_code, reason = "Phase 08 Wave 1: used by encryption + key_manager")]
 mod security;
 #[expect(dead_code, reason = "Phase 08 Wave 2: wired in Wave 8 via kinit")]
