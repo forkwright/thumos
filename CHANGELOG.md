@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4](https://github.com/forkwright/thumos/compare/v0.1.3...v0.1.4) (2026-04-12)
+
+
+### Features
+
+* **kernel:** add Briar and Meshtastic transport stubs (Phase 09 Wave 7) ([cfa4a96](https://github.com/forkwright/thumos/commit/cfa4a9634ea364620dd311d4829fc02bf7350d27))
+* **kernel:** add CCCI traffic logger, modem baseline, and firewall (Phase 10 Waves 2+3) ([9aadc52](https://github.com/forkwright/thumos/commit/9aadc52fa24a0760c7178ce67213bcb5f9562bc2))
+* **kernel:** add IMSI catcher scoring, Silent SMS detection, 2G refusal (Phase 10 Wave 1) ([8750b2a](https://github.com/forkwright/thumos/commit/8750b2a02064ddec697a7f9949bfe1bb577f45aa))
+* **kernel:** add Matrix CS API client with sync and rooms (Phase 09 Wave 2) ([797ed0a](https://github.com/forkwright/thumos/commit/797ed0a84854a709f73e96069e833f824265605f))
+* **kernel:** add Matrix E2E encryption with Olm/Megolm (Phase 09 Wave 3) ([c9bdcef](https://github.com/forkwright/thumos/commit/c9bdcef8c8bedd98e25324160ede1ce7a406c1ce))
+* **kernel:** add nous integration and capability map (Phase 09 Wave 8) ([9581b8b](https://github.com/forkwright/thumos/commit/9581b8b4249e0031440c6d245aac2604e00503e5))
+* **kernel:** add threat monitor screen (Phase 10 Wave 5 - partial) ([e91b9de](https://github.com/forkwright/thumos/commit/e91b9de5878bc20c46e99f325a5042f26de412f2))
+* **kernel:** add threat monitor screen and Phase 10 integration (Phase 10 Wave 5) ([a5e2dae](https://github.com/forkwright/thumos/commit/a5e2daed43a2b59346173386883b747caca849d9))
+* **kernel:** add USB provisioning for Matrix credentials (Phase 09 Wave 4) ([d14e0ef](https://github.com/forkwright/thumos/commit/d14e0ef90be76e75c76df16a523329b7495e6f09))
+* **kernel:** add voice-to-text and action proposals (Phase 09 Wave 6) ([9aa8c17](https://github.com/forkwright/thumos/commit/9aa8c17259dcd798fbb7d15b9f27e83188bb1e2a))
+* **kernel:** integrate Matrix into unified inbox with transport indicators (Phase 09 Wave 5) ([b7461f9](https://github.com/forkwright/thumos/commit/b7461f934662b8269e2e59c7c1afcaec0cbbf149))
+* **kernel:** Phase 04 Wave 1 — slab allocator, CSPRNG, time, signals, watchdog ([b2c8ec8](https://github.com/forkwright/thumos/commit/b2c8ec8cf2603d66170c7f170f094db865524dca))
+* **kernel:** Phase 04 Wave 2 — execve, pipe, futex, capabilities ([4a54695](https://github.com/forkwright/thumos/commit/4a54695557fb5e522f4ba4206f7b4916a658dd3b))
+* **kernel:** Phase 04 Wave 3 — power management, syscall cleanup, tests ([f692b6b](https://github.com/forkwright/thumos/commit/f692b6ba8f36b0d5f8cb8958f18608f9cebbe24a))
+* **kernel:** Phase 05 Wave 5 — LFS write path, compaction, boot integration ([c91cfe3](https://github.com/forkwright/thumos/commit/c91cfe3de54fdb74eca1ae1e7172c6b3a3c8770d))
+* **kernel:** Phase 05 Wave 6 — fcntl, ioctl, syscall completion ([4edc910](https://github.com/forkwright/thumos/commit/4edc9106e6f5d96916e403edc80ce3e295002a45))
+* **kernel:** Phase 05 Waves 1+2 — BlockDevice, cache, VFS, devfs ([6263a84](https://github.com/forkwright/thumos/commit/6263a841651b54253931be83bfe0c7454671f8f8))
+* **kernel:** Phase 05 Waves 3+4 — VFS ramfs, fd table, LFS read path ([65fed61](https://github.com/forkwright/thumos/commit/65fed6173502f8bc4ec5ec0fb41539dc06aa1758))
+* **kernel:** Phase 06 Wave 3 — DHCP client + DNS resolver ([4f98c09](https://github.com/forkwright/thumos/commit/4f98c09db5cf8fc3c31ae62006c3385b0558a31c))
+* **kernel:** Phase 06 Wave 4 — network socket syscalls ([4a73cda](https://github.com/forkwright/thumos/commit/4a73cda0570d6cf3b99f60d71563693f8e25e80d))
+* **kernel:** Phase 06 Waves 1+2 — smoltcp network stack + WiFi adapter ([81d804d](https://github.com/forkwright/thumos/commit/81d804d337906a80f3116e890483d6950ee62f42))
+* **kernel:** Phase 06 Waves 5+6 — BT, GPS, clock, firewall ([bdc0eee](https://github.com/forkwright/thumos/commit/bdc0eee4e50d2dc7af12152471bb6ce98f0e8759))
+* **kernel:** Phase 07 Wave 3 — SMS, phone dialer, call screens ([4c76f39](https://github.com/forkwright/thumos/commit/4c76f39057e551ff2ca9726d3742255eb18456f2))
+* **kernel:** Phase 07 Wave 4 — audio session manager + codec driver ([dcf0dd3](https://github.com/forkwright/thumos/commit/dcf0dd31b027bcc450a1da5edadf532d411d63ed))
+* **kernel:** Phase 07 Waves 1+2 — UI framework + telephony ([ffe819e](https://github.com/forkwright/thumos/commit/ffe819e5ee1fc5d592c7a52535ce57e3e64cea38))
+* **kernel:** Phase 07 Waves 5+6 — battery, T9, contacts, messages, search, settings ([517d835](https://github.com/forkwright/thumos/commit/517d835b5edac1526914900cf3fecac089d2a4d9))
+* **kernel:** Phase 07 Waves 7+8 — calendar, BT audio, FM radio, mic audit ([09f5f8c](https://github.com/forkwright/thumos/commit/09f5f8c2ef48e71a0dcde85a3ef0b52133b6a28b))
+* **kernel:** Phase 08 Wave 1 — encryption layer + key hierarchy ([67657f0](https://github.com/forkwright/thumos/commit/67657f0aaf2832404906ecfe348d22a64e557dd3))
+* **kernel:** Phase 08 Wave 8 — security integration and boot wiring ([0a0fe61](https://github.com/forkwright/thumos/commit/0a0fe61589a208ccd53637f73818083a2fc41a6d))
+* **kernel:** Phase 08 Waves 2+3 — security modes + lock screen ([300cea9](https://github.com/forkwright/thumos/commit/300cea92ef13f65f7f807eb6cb00ba85bec4379c))
+* **kernel:** Phase 08 Waves 4+5 — BFU timer, panic wipe, audit log ([ef44ff9](https://github.com/forkwright/thumos/commit/ef44ff91f62ef8acf6510861aa93df9083321b16))
+* **kernel:** Phase 08 Waves 6+7 — measured boot, privacy dashboard, DNS-over-TLS ([ba13fb8](https://github.com/forkwright/thumos/commit/ba13fb8e233e64f7bcf6fef2a794ea0701b9b4b5))
+* **kernel:** Phase 09 Wave 1 — HTTP client + JSON primitives ([d5d5bb0](https://github.com/forkwright/thumos/commit/d5d5bb04fd15bbd3f082a567fbb724bd002fd7e5))
+
+
+### Bug Fixes
+
+* **docs:** audit batch 3 — dead refs, doc accuracy, misleading sections ([3256283](https://github.com/forkwright/thumos/commit/32562836eef6991fbe3b79ef8ea8aaabaa8eb519))
+* **kernel:** audit batch 2 — cache eviction, IPC routing, WPA timing, key zeroize ([0616a8c](https://github.com/forkwright/thumos/commit/0616a8c078a230443bb3146ee4ba7303e32a1fbe))
+* **kernel:** audit batch 4 — Display, must_use, non_exhaustive compliance ([070cc07](https://github.com/forkwright/thumos/commit/070cc0765bf91cf0c6ff84b26605359490b5013b))
+* **kernel:** audit batch 6 — ELF tests, error path coverage, proptest ([2e96d33](https://github.com/forkwright/thumos/commit/2e96d331ef34731e239b5e5256d488aca1bedb23))
+* **kernel:** audit batch 7 — TODO format, plan gap refs, cleanup ([fea1e6d](https://github.com/forkwright/thumos/commit/fea1e6d75787f964de6763f1dee52d4f04f81556))
+* **kernel:** audit-2 — Phase 07 type system, tests, docs, lints, DRY ([016bda1](https://github.com/forkwright/thumos/commit/016bda1d6e314d000ede47b73b00a773b6ff662a))
+* **kernel:** correct OFFSET case-corruption in ELF loader ([7079e30](https://github.com/forkwright/thumos/commit/7079e3042f6820328aa81ee25313b1ef6bd34f99))
+* **kernel:** fix 3 pre-existing test failures in ccci, csprng, vfs ([91277cd](https://github.com/forkwright/thumos/commit/91277cd5be1ebb27fdff360fe6b70ee029071bf9))
+* **kernel:** unsafe audit — SAFETY comments, 2024 edition compliance, case fixes ([f61f1e3](https://github.com/forkwright/thumos/commit/f61f1e3a4a5e48e183ddc74604a9e5683ce38d48))
+* Phase 04 kernel issues + resolve all compilation errors ([#34](https://github.com/forkwright/thumos/issues/34)) ([c93be52](https://github.com/forkwright/thumos/commit/c93be5265d078c14bac810cfb7dd6711a1c134a9))
+* **repo:** audit batch 1 — lint quality floor + repo infrastructure ([8482905](https://github.com/forkwright/thumos/commit/84829056013483c6bbc834cd65cac816ec8c3f2e))
+* **repo:** audit batch 5 — ARCHITECTURE.md, deny(missing_docs), CI gates ([dc32ac0](https://github.com/forkwright/thumos/commit/dc32ac0a7c78f8b35d729c5560ea5ed852132bd1))
+* resolve all test compilation errors and clippy warnings ([8593e07](https://github.com/forkwright/thumos/commit/8593e07f74e2fbb9c72a3a9ab86a10a0c37da8a0))
+* resolve all test compilation errors and clippy warnings across workspace ([e4dd99f](https://github.com/forkwright/thumos/commit/e4dd99f429c69a1f367efed070bf0feec54d0aa6))
+
 ## [0.1.3](https://github.com/forkwright/thumos/compare/v0.1.2...v0.1.3) (2026-04-04)
 
 
