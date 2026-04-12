@@ -1,14 +1,17 @@
-//! Message inbox screen for the thumos kernel UI.
+//! Unified message inbox screen for the thumos kernel UI.
 //!
-//! Implements the [`Screen`] trait to display SMS messages in three views:
+//! Implements the [`Screen`] trait to display messages from multiple
+//! transports (SMS, Matrix, Briar, Meshtastic, bridged services) in
+//! three views:
 //!
-//! - **Inbox list**: scrollable list of messages showing sender, body preview
-//!   (first 30 characters), and timestamp. Unread messages are indicated with
-//!   a `*` prefix marker.
-//! - **Full message view**: shows sender, date, and the full body text with
-//!   word wrapping at the screen width.
-//! - **Compose view**: two-field compose screen with a recipient number
-//!   field and a message body field using T9 input.
+//! - **Inbox list**: scrollable list of messages showing a transport badge,
+//!   sender, body preview (first 30 characters), and timestamp. Unread
+//!   messages are indicated with a `*` prefix marker.
+//! - **Full message view**: shows sender, date, transport, and the full
+//!   body text with word wrapping at the screen width.
+//! - **Compose view**: two-field compose screen with a recipient field
+//!   and a message body field using T9 input. Press `*` to cycle the
+//!   active transport.
 //!
 //! ## Navigation
 //!
@@ -18,11 +21,18 @@
 //! | Message   | REPLY   | BACK   | N/A                  |
 //! | Compose   | SEND    | BACK   | N/A                  |
 //!
+//! ## Transport badges
+//!
+//! Each inbox entry is prefixed with a short badge identifying the
+//! transport: `S` (SMS), `M` (Matrix), `B` (Briar), `L` (LoRa/
+//! Meshtastic), `W` (bridged WhatsApp), `Sl` (bridged Slack),
+//! `T` (bridged Telegram).
+//!
 //! ## Data source
 //!
-//! The screen does not own the SMS inbox. Instead, it receives a snapshot
-//! of message metadata via [`MessageEntry`] to avoid lifetime issues with
-//! kernel globals.
+//! The screen does not own the message inbox. Instead, it receives a
+//! snapshot of message metadata via [`MessageEntry`] to avoid lifetime
+//! issues with kernel globals.
 
 // WHY: messages screen created in Phase 07 Wave 5, kinit wiring pending.
 #![expect(
@@ -38,6 +48,91 @@ use crate::ui::{
     self, color, Key, Screen, ScreenAction, ScreenId,
     CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
 };
+
+// ---------------------------------------------------------------------------
+// Message transport
+// ---------------------------------------------------------------------------
+
+/// Transport layer that delivered (or will deliver) a message.
+///
+/// Used to display transport badges in the inbox and to select the
+/// outbound transport in compose mode. Marked `#[non_exhaustive]` so
+/// future transports (e.g., Signal, RCS) can be added without breaking
+/// downstream matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+#[non_exhaustive]
+pub enum MessageTransport {
+    /// Traditional SMS via the cellular modem.
+    Sms,
+    /// Matrix (native or via homeserver).
+    Matrix,
+    /// Briar peer-to-peer messaging.
+    Briar,
+    /// Meshtastic LoRa mesh.
+    Meshtastic,
+    /// WhatsApp bridged through Matrix.
+    BridgedWhatsApp,
+    /// Slack bridged through Matrix.
+    BridgedSlack,
+    /// Telegram bridged through Matrix.
+    BridgedTelegram,
+}
+
+impl MessageTransport {
+    /// Short badge string rendered in the inbox list.
+    ///
+    /// Returns a 1-2 character label suitable for a fixed-width font.
+    #[must_use]
+    pub const fn badge(self) -> &'static str {
+        match self {
+            Self::Sms => "S",
+            Self::Matrix => "M",
+            Self::Briar => "B",
+            Self::Meshtastic => "L",
+            Self::BridgedWhatsApp => "W",
+            Self::BridgedSlack => "Sl",
+            Self::BridgedTelegram => "T",
+        }
+    }
+
+    /// Cycle to the next transport in compose mode.
+    ///
+    /// Cycles through: Sms -> Matrix -> Briar -> Meshtastic ->
+    /// BridgedWhatsApp -> BridgedSlack -> BridgedTelegram -> Sms.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Sms => Self::Matrix,
+            Self::Matrix => Self::Briar,
+            Self::Briar => Self::Meshtastic,
+            Self::Meshtastic => Self::BridgedWhatsApp,
+            Self::BridgedWhatsApp => Self::BridgedSlack,
+            Self::BridgedSlack => Self::BridgedTelegram,
+            Self::BridgedTelegram => Self::Sms,
+        }
+    }
+
+    /// Human-readable display name for the transport.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Sms => "SMS",
+            Self::Matrix => "Matrix",
+            Self::Briar => "Briar",
+            Self::Meshtastic => "Meshtastic",
+            Self::BridgedWhatsApp => "WhatsApp",
+            Self::BridgedSlack => "Slack",
+            Self::BridgedTelegram => "Telegram",
+        }
+    }
+}
+
+impl core::fmt::Display for MessageTransport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.display_name())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,12 +163,13 @@ const MAX_RECIPIENT_LEN: usize = 20;
 // Message entry (inbox snapshot)
 // ---------------------------------------------------------------------------
 
-/// A snapshot of one SMS message for display purposes.
+/// A snapshot of one message for display purposes.
 ///
-/// Kept separate from `sms::SmsMessage` to avoid coupling the screen
-/// to the SMS module's internal storage format.
+/// Kept separate from `sms::SmsMessage` and `harmostes::MatrixMessage`
+/// to avoid coupling the screen to any transport's internal storage
+/// format. Populated from whichever transport delivered the message.
 pub struct MessageEntry {
-    /// Sender name (from contacts) or phone number.
+    /// Sender name (from contacts), phone number, or Matrix user ID.
     pub sender: String,
     /// Full message body text.
     pub body: String,
@@ -81,6 +177,37 @@ pub struct MessageEntry {
     pub timestamp: u64,
     /// Whether the message has been read.
     pub read: bool,
+    /// Transport that delivered this message.
+    pub transport: MessageTransport,
+}
+
+impl MessageEntry {
+    /// Create a new entry from a Matrix [`IncomingMessage`][crate::harmostes::IncomingMessage].
+    ///
+    /// Converts the millisecond Matrix timestamp to seconds and marks
+    /// the message as unread.
+    #[must_use]
+    pub fn from_matrix(sender: String, body: String, timestamp_ms: u64) -> Self {
+        Self {
+            sender,
+            body,
+            timestamp: timestamp_ms / 1000,
+            read: false,
+            transport: MessageTransport::Matrix,
+        }
+    }
+
+    /// Create a new entry from an SMS message.
+    #[must_use]
+    pub fn from_sms(sender: String, body: String, timestamp: u64, read: bool) -> Self {
+        Self {
+            sender,
+            body,
+            timestamp,
+            read,
+            transport: MessageTransport::Sms,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +261,8 @@ pub struct MessagesScreen {
     compose_body: String,
     /// Compose: which field is active.
     compose_field: ComposeField,
+    /// Compose: active transport for outbound message.
+    compose_transport: MessageTransport,
 }
 
 impl MessagesScreen {
@@ -149,6 +278,7 @@ impl MessagesScreen {
             compose_to_len: 0,
             compose_body: String::new(),
             compose_field: ComposeField::To,
+            compose_transport: MessageTransport::Sms,
         }
     }
 
@@ -211,6 +341,17 @@ impl MessagesScreen {
         self.compose_to_len = 0;
         self.compose_body.clear();
         self.compose_field = ComposeField::To;
+        self.compose_transport = MessageTransport::Sms;
+    }
+
+    /// Return the active compose transport.
+    pub fn compose_transport(&self) -> MessageTransport {
+        self.compose_transport
+    }
+
+    /// Set the compose transport (e.g., from a contact's default).
+    pub fn set_compose_transport(&mut self, transport: MessageTransport) {
+        self.compose_transport = transport;
     }
 
     /// Enter compose mode.
@@ -331,12 +472,18 @@ impl MessagesScreen {
 
             let msg = &self.messages[msg_idx];
 
-            // Unread marker + sender.
+            // Transport badge + unread marker + sender.
+            let badge = msg.transport.badge();
             let marker = if msg.read { " " } else { "*" };
-            let sender_display = truncate_str(&msg.sender, 25);
-            let line1 = format_entry_line1(marker, &sender_display);
+            let sender_display = truncate_str(&msg.sender, 22);
+            let line1 = format_entry_line1_with_badge(badge, marker, &sender_display);
+            let badge_color = transport_badge_color(msg.transport);
             let sender_color = if msg.read { color::WHITE } else { color::YELLOW };
-            ui::draw_str(fb, w, 4, y + 2, &line1, sender_color, color::BLACK);
+            // Draw badge in its own color, then the rest.
+            let badge_width = badge.len() as u16 * CHAR_WIDTH;
+            ui::draw_str(fb, w, 4, y + 2, badge, badge_color, color::BLACK);
+            let rest = &line1[badge.len()..];
+            ui::draw_str(fb, w, 4 + badge_width, y + 2, rest, sender_color, color::BLACK);
 
             // Body preview (first PREVIEW_LEN chars).
             let preview = truncate_str(&msg.body, PREVIEW_LEN);
@@ -356,20 +503,36 @@ impl MessagesScreen {
             return;
         };
 
+        // Transport badge.
+        let badge = msg.transport.badge();
+        let badge_color = transport_badge_color(msg.transport);
+        ui::draw_str(fb, w, 4, TITLE_Y, badge, badge_color, color::BLACK);
+
         // Sender.
-        ui::draw_str(fb, w, 4, TITLE_Y, "From:", color::DARK_GREY, color::BLACK);
-        let sender_display = truncate_str(&msg.sender, 26);
+        let from_x = 4 + (badge.len() as u16 + 1) * CHAR_WIDTH;
+        ui::draw_str(fb, w, from_x, TITLE_Y, "From:", color::DARK_GREY, color::BLACK);
+        let sender_display = truncate_str(&msg.sender, 22);
         ui::draw_str(
-            fb, w, 4 + 6 * CHAR_WIDTH, TITLE_Y,
+            fb, w, from_x + 6 * CHAR_WIDTH, TITLE_Y,
             &sender_display, color::WHITE, color::BLACK,
         );
 
-        // Timestamp (simple format).
+        // Timestamp and transport name.
         if msg.timestamp > 0 {
             let time_str = format_timestamp(msg.timestamp);
             ui::draw_str(
                 fb, w, 4, TITLE_Y + CHAR_HEIGHT + 2,
                 &time_str, color::DARK_GREY, color::BLACK,
+            );
+            let via_x = 4 + (time_str.len() as u16 + 1) * CHAR_WIDTH;
+            ui::draw_str(
+                fb, w, via_x, TITLE_Y + CHAR_HEIGHT + 2,
+                msg.transport.display_name(), color::DARK_GREY, color::BLACK,
+            );
+        } else {
+            ui::draw_str(
+                fb, w, 4, TITLE_Y + CHAR_HEIGHT + 2,
+                msg.transport.display_name(), color::DARK_GREY, color::BLACK,
             );
         }
 
@@ -390,6 +553,17 @@ impl MessagesScreen {
 
     fn draw_compose(&self, fb: &mut [u16]) {
         let w = SCREEN_WIDTH;
+
+        // Transport indicator (top-right area).
+        let transport_badge = self.compose_transport.badge();
+        let transport_name = self.compose_transport.display_name();
+        let badge_color = transport_badge_color(self.compose_transport);
+        let transport_label = format_transport_label(transport_badge, transport_name);
+        let label_width = transport_label.len() as u16 * CHAR_WIDTH;
+        ui::draw_str(
+            fb, w, w.saturating_sub(label_width + 4), TITLE_Y,
+            &transport_label, badge_color, color::BLACK,
+        );
 
         // "To:" field.
         let to_label_color = if self.compose_field == ComposeField::To {
@@ -484,7 +658,7 @@ impl MessagesScreen {
                 ScreenAction::None
             }
             Key::Lsk => {
-                // Reply: open compose with sender pre-filled.
+                // Reply: open compose with sender and transport pre-filled.
                 self.reset_compose();
                 if let Some(msg) = self.messages.get(self.selected) {
                     let sender_bytes = msg.sender.as_bytes();
@@ -492,6 +666,7 @@ impl MessagesScreen {
                     self.compose_to[..copy_len].copy_from_slice(&sender_bytes[..copy_len]);
                     self.compose_to_len = copy_len;
                     self.compose_field = ComposeField::Body;
+                    self.compose_transport = msg.transport;
                 }
                 self.view = MessageView::Compose;
                 ScreenAction::None
@@ -514,6 +689,11 @@ impl MessagesScreen {
                     ComposeField::To => ComposeField::Body,
                     ComposeField::Body => ComposeField::To,
                 };
+                ScreenAction::None
+            }
+            Key::Star => {
+                // Cycle transport: Sms -> Matrix -> Briar -> ... -> Sms.
+                self.compose_transport = self.compose_transport.next();
                 ScreenAction::None
             }
             Key::Lsk => {
@@ -549,6 +729,9 @@ impl MessagesScreen {
 // ---------------------------------------------------------------------------
 
 /// Map a key to its digit character.
+///
+/// `Key::Star` is intentionally excluded — it is intercepted in compose
+/// mode to cycle the transport selector.
 fn key_to_digit_char(key: Key) -> Option<char> {
     match key {
         Key::Num0 => Some('0'),
@@ -561,7 +744,6 @@ fn key_to_digit_char(key: Key) -> Option<char> {
         Key::Num7 => Some('7'),
         Key::Num8 => Some('8'),
         Key::Num9 => Some('9'),
-        Key::Star => Some('*'),
         Key::Hash => Some('#'),
         _ => None,
     }
@@ -592,6 +774,41 @@ fn format_entry_line1(marker: &str, sender: &str) -> String {
     line.push(' ');
     line.push_str(sender);
     line
+}
+
+/// Format an inbox entry's first line with transport badge: "[badge][marker] sender".
+fn format_entry_line1_with_badge(badge: &str, marker: &str, sender: &str) -> String {
+    let mut line = String::with_capacity(badge.len() + marker.len() + sender.len() + 1);
+    line.push_str(badge);
+    line.push_str(marker);
+    line.push(' ');
+    line.push_str(sender);
+    line
+}
+
+/// Return a badge color for the given transport.
+///
+/// Gives each transport family a distinct color so users can identify
+/// the source at a glance in the inbox list.
+fn transport_badge_color(transport: MessageTransport) -> u16 {
+    match transport {
+        MessageTransport::Sms => color::GREEN,
+        MessageTransport::Matrix => color::from_rgb(0, 180, 200),  // teal
+        MessageTransport::Briar => color::from_rgb(200, 120, 0),   // amber
+        MessageTransport::Meshtastic => color::from_rgb(130, 130, 200), // lavender
+        MessageTransport::BridgedWhatsApp => color::from_rgb(0, 200, 80), // WhatsApp green
+        MessageTransport::BridgedSlack => color::from_rgb(200, 80, 200),  // purple
+        MessageTransport::BridgedTelegram => color::from_rgb(60, 160, 230), // Telegram blue
+    }
+}
+
+/// Format a transport label for the compose view: "badge name".
+fn format_transport_label(badge: &str, name: &str) -> String {
+    let mut s = String::with_capacity(badge.len() + 1 + name.len());
+    s.push_str(badge);
+    s.push(' ');
+    s.push_str(name);
+    s
 }
 
 /// Simple word-wrap for a text string.
@@ -697,18 +914,21 @@ mod tests {
                 body: String::from("Hello, how are you doing today?"),
                 timestamp: 1_775_924_600,
                 read: false,
+                transport: MessageTransport::Sms,
             },
             MessageEntry {
                 sender: String::from("Alice"),
                 body: String::from("Meeting at 3pm"),
                 timestamp: 1_775_920_000,
                 read: true,
+                transport: MessageTransport::Matrix,
             },
             MessageEntry {
                 sender: String::from("Bob"),
                 body: String::from("Got it, thanks!"),
                 timestamp: 1_775_918_000,
                 read: true,
+                transport: MessageTransport::Sms,
             },
         ]
     }
@@ -883,5 +1103,224 @@ mod tests {
         screen.enter_compose();
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
+    }
+
+    // --- Wave 5: transport integration tests ---
+
+    #[test]
+    fn transport_badge_renders_correctly() {
+        assert_eq!(MessageTransport::Sms.badge(), "S");
+        assert_eq!(MessageTransport::Matrix.badge(), "M");
+        assert_eq!(MessageTransport::Briar.badge(), "B");
+        assert_eq!(MessageTransport::Meshtastic.badge(), "L");
+        assert_eq!(MessageTransport::BridgedWhatsApp.badge(), "W");
+        assert_eq!(MessageTransport::BridgedSlack.badge(), "Sl");
+        assert_eq!(MessageTransport::BridgedTelegram.badge(), "T");
+    }
+
+    #[test]
+    fn transport_display_names_correct() {
+        assert_eq!(MessageTransport::Sms.display_name(), "SMS");
+        assert_eq!(MessageTransport::Matrix.display_name(), "Matrix");
+        assert_eq!(MessageTransport::BridgedWhatsApp.display_name(), "WhatsApp");
+    }
+
+    #[test]
+    fn transport_display_trait() {
+        let t = MessageTransport::Matrix;
+        let s = alloc::format!("{t}");
+        assert_eq!(s, "Matrix");
+    }
+
+    #[test]
+    fn compose_star_cycles_transports() {
+        let mut screen = MessagesScreen::new();
+        screen.enter_compose();
+
+        // Default is Sms.
+        assert_eq!(screen.compose_transport(), MessageTransport::Sms);
+
+        // First * press -> Matrix.
+        screen.on_key(Key::Star);
+        assert_eq!(screen.compose_transport(), MessageTransport::Matrix);
+
+        // Second * press -> Briar.
+        screen.on_key(Key::Star);
+        assert_eq!(screen.compose_transport(), MessageTransport::Briar);
+
+        // Third -> Meshtastic.
+        screen.on_key(Key::Star);
+        assert_eq!(screen.compose_transport(), MessageTransport::Meshtastic);
+
+        // Fourth -> BridgedWhatsApp.
+        screen.on_key(Key::Star);
+        assert_eq!(screen.compose_transport(), MessageTransport::BridgedWhatsApp);
+
+        // Fifth -> BridgedSlack.
+        screen.on_key(Key::Star);
+        assert_eq!(screen.compose_transport(), MessageTransport::BridgedSlack);
+
+        // Sixth -> BridgedTelegram.
+        screen.on_key(Key::Star);
+        assert_eq!(screen.compose_transport(), MessageTransport::BridgedTelegram);
+
+        // Seventh -> wraps to Sms.
+        screen.on_key(Key::Star);
+        assert_eq!(screen.compose_transport(), MessageTransport::Sms);
+    }
+
+    #[test]
+    fn matrix_message_appears_in_inbox() {
+        let mut screen = MessagesScreen::new();
+        let matrix_msg = MessageEntry::from_matrix(
+            String::from("@alice:example.com"),
+            String::from("Hello from Matrix!"),
+            1_775_924_600_000, // milliseconds
+        );
+        screen.set_messages(alloc::vec![matrix_msg]);
+
+        assert_eq!(screen.message_count(), 1);
+        assert_eq!(screen.messages[0].transport, MessageTransport::Matrix);
+        assert_eq!(screen.messages[0].sender, "@alice:example.com");
+        assert_eq!(screen.messages[0].body, "Hello from Matrix!");
+        // Timestamp converted from ms to seconds.
+        assert_eq!(screen.messages[0].timestamp, 1_775_924_600);
+        assert!(!screen.messages[0].read, "Matrix messages start unread");
+    }
+
+    #[test]
+    fn sms_message_factory_method() {
+        let sms = MessageEntry::from_sms(
+            String::from("+15551234567"),
+            String::from("Test SMS"),
+            1_775_924_600,
+            false,
+        );
+        assert_eq!(sms.transport, MessageTransport::Sms);
+        assert_eq!(sms.sender, "+15551234567");
+        assert!(!sms.read);
+    }
+
+    #[test]
+    fn mixed_transport_inbox_renders() {
+        let mut screen = MessagesScreen::new();
+        let entries = alloc::vec![
+            MessageEntry::from_sms(
+                String::from("+15551234567"),
+                String::from("SMS message"),
+                1_775_924_600,
+                false,
+            ),
+            MessageEntry::from_matrix(
+                String::from("@bob:matrix.org"),
+                String::from("Matrix message"),
+                1_775_924_700_000,
+            ),
+            MessageEntry {
+                sender: String::from("Briar peer"),
+                body: String::from("Briar message"),
+                timestamp: 1_775_924_800,
+                read: true,
+                transport: MessageTransport::Briar,
+            },
+        ];
+        screen.set_messages(entries);
+
+        let mut fb = [0u16; CONTENT_PIXELS];
+        screen.draw(&mut fb);
+
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "mixed-transport inbox must render visible pixels");
+    }
+
+    #[test]
+    fn reply_preserves_transport() {
+        let mut screen = MessagesScreen::new();
+        let entries = alloc::vec![
+            MessageEntry::from_matrix(
+                String::from("@alice:example.com"),
+                String::from("Matrix msg"),
+                1_775_924_600_000,
+            ),
+        ];
+        screen.set_messages(entries);
+
+        // Open the message.
+        screen.on_key(Key::Ok);
+        assert_eq!(screen.view, MessageView::Detail);
+
+        // Reply.
+        screen.on_key(Key::Lsk);
+        assert_eq!(screen.view, MessageView::Compose);
+        assert_eq!(
+            screen.compose_transport(),
+            MessageTransport::Matrix,
+            "reply must inherit the original message's transport"
+        );
+    }
+
+    #[test]
+    fn compose_transport_resets_on_cancel() {
+        let mut screen = MessagesScreen::new();
+        screen.enter_compose();
+        screen.on_key(Key::Star); // -> Matrix
+        assert_eq!(screen.compose_transport(), MessageTransport::Matrix);
+
+        // Cancel (RSK/BACK).
+        screen.on_key(Key::Rsk);
+        assert_eq!(screen.view, MessageView::Inbox);
+
+        // Re-enter compose -- transport must be reset to default.
+        screen.enter_compose();
+        assert_eq!(
+            screen.compose_transport(),
+            MessageTransport::Sms,
+            "transport must reset to Sms when compose is re-entered"
+        );
+    }
+
+    #[test]
+    fn transport_badge_in_entry_line() {
+        let line = format_entry_line1_with_badge("M", "*", "@alice");
+        assert_eq!(line, "M* @alice");
+    }
+
+    #[test]
+    fn transport_label_format() {
+        let label = format_transport_label("M", "Matrix");
+        assert_eq!(label, "M Matrix");
+    }
+
+    #[test]
+    fn set_compose_transport_works() {
+        let mut screen = MessagesScreen::new();
+        screen.enter_compose();
+        screen.set_compose_transport(MessageTransport::BridgedTelegram);
+        assert_eq!(screen.compose_transport(), MessageTransport::BridgedTelegram);
+    }
+
+    #[test]
+    fn transport_next_full_cycle() {
+        let start = MessageTransport::Sms;
+        let mut current = start;
+        // Cycle through all 7 variants and back.
+        for _ in 0..7 {
+            current = current.next();
+        }
+        assert_eq!(
+            current, start,
+            "cycling next() 7 times must return to start"
+        );
+    }
+
+    #[test]
+    fn compose_with_transport_renders() {
+        let mut screen = MessagesScreen::new();
+        screen.enter_compose();
+        screen.on_key(Key::Star); // -> Matrix
+        let mut fb = [0u16; CONTENT_PIXELS];
+        screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "compose with Matrix transport must render");
     }
 }
