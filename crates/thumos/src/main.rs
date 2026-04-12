@@ -19,6 +19,7 @@ mod battery;
 mod bfu_timer;
 mod block;
 mod bluetooth;
+mod briar;
 mod bt_audio;
 mod avdtp;
 mod cache;
@@ -60,6 +61,7 @@ mod heorte;
 // WHY: not test-gated because matrix_crypto types will be used by harmostes
 // at runtime for E2E message encryption/decryption.
 mod matrix_crypto;
+mod meshtastic;
 mod heorte_alarm;
 mod heorte_timer;
 mod http_client;
