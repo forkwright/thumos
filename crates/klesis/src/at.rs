@@ -278,6 +278,15 @@ pub mod cmd {
     pub const CFUN_OFF: &str = "AT+CFUN=0";
     /// Power on radio (full functionality).
     pub const CFUN_ON: &str = "AT+CFUN=1";
+    /// Restrict network selection to LTE only (refuse 2G/3G).
+    ///
+    /// `AT+COPS=0,,,7` sets automatic operator selection with access technology
+    /// restricted to E-UTRAN (LTE). This prevents the modem from registering on
+    /// GSM or UMTS networks, blocking downgrade attacks used by IMSI catchers.
+    ///
+    /// 3GPP TS 27.007 § 7.3: the fourth parameter is the access technology:
+    /// 0=GSM, 2=UTRAN, 7=E-UTRAN (LTE).
+    pub const COPS_LTE_ONLY: &str = "AT+COPS=0,,,7";
 }
 
 #[cfg(test)]

@@ -65,6 +65,11 @@ pub enum CellEvent {
     HandoverTo(CellTower),
     /// Tower was reported in a neighbour list but is not (yet) the serving cell.
     NeighborSeen(CellTower),
+    /// The air-interface cipher algorithm changed (from modem cipher mode indication).
+    CipherChange {
+        /// The cipher algorithm now in use.
+        algorithm: CipherAlgorithm,
+    },
 }
 
 /// An alert raised by [`detect_imsi_catcher`].
@@ -90,6 +95,238 @@ pub enum ImsiCatcherAlert {
         /// New serving cell.
         current: CellTower,
     },
+    /// A5/1 or A5/2 cipher downgrade detected on the air interface.
+    CipherDowngrade {
+        /// The cipher algorithm that was negotiated.
+        algorithm: CipherAlgorithm,
+    },
+    /// Rapid cell reselection: the device has been forced to reselect cells
+    /// more than [`RAPID_RESELECTION_THRESHOLD`] times within the observation window.
+    RapidReselection {
+        /// Number of reselections observed.
+        count: u32,
+    },
+}
+
+impl core::fmt::Display for ImsiCatcherAlert {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::TechnologyDowngrade { from, to } => {
+                write!(f, "technology downgrade: {from} → {to}")
+            }
+            Self::UnusuallyStrongNewTower { tower } => {
+                write!(f, "unusually strong new tower: {tower}")
+            }
+            Self::SuddenTowerChange { previous, current } => {
+                write!(f, "sudden tower change: {previous} → {current}")
+            }
+            Self::CipherDowngrade { algorithm } => {
+                write!(f, "cipher downgrade to {algorithm}")
+            }
+            Self::RapidReselection { count } => {
+                write!(f, "rapid cell reselection ({count} changes)")
+            }
+        }
+    }
+}
+
+// ── Cipher algorithms ────────────────────────────────────────────────────────
+
+/// GSM cipher algorithm identifier (3GPP TS 43.020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum CipherAlgorithm {
+    /// A5/0: no encryption.
+    A5_0,
+    /// A5/1: weak stream cipher, broken since 2009.
+    A5_1,
+    /// A5/2: export-grade cipher, trivially broken.
+    A5_2,
+    /// A5/3: KASUMI-based, acceptable.
+    A5_3,
+    /// A5/4: 128-bit KASUMI variant, acceptable.
+    A5_4,
+}
+
+impl core::fmt::Display for CipherAlgorithm {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::A5_0 => f.write_str("A5/0 (no encryption)"),
+            Self::A5_1 => f.write_str("A5/1"),
+            Self::A5_2 => f.write_str("A5/2"),
+            Self::A5_3 => f.write_str("A5/3"),
+            Self::A5_4 => f.write_str("A5/4"),
+        }
+    }
+}
+
+// ── Threat scoring ──────────────────────────────────────────────────────────
+
+/// Weight assigned to A5/1 or A5/2 cipher downgrade detection.
+const WEIGHT_CIPHER_DOWNGRADE: u32 = 40;
+
+/// Weight assigned to unusual LAC/CID changes (sudden tower change).
+const WEIGHT_UNUSUAL_LAC_CID: u32 = 30;
+
+/// Weight assigned to abnormal signal power from an unknown tower.
+const WEIGHT_ABNORMAL_SIGNAL: u32 = 20;
+
+/// Weight assigned to rapid cell reselection.
+const WEIGHT_RAPID_RESELECTION: u32 = 10;
+
+/// Threshold for the number of cell reselections within the observation window
+/// that constitutes "rapid reselection".
+const RAPID_RESELECTION_THRESHOLD: u32 = 3;
+
+/// Threat level derived from the cumulative [`ThreatScore`].
+///
+/// Thresholds: `<30` Low, `30–59` Medium, `60–79` High, `≥80` Critical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[must_use]
+#[non_exhaustive]
+pub enum ThreatLevel {
+    /// Score below 30. Normal operating conditions.
+    Low,
+    /// Score 30–59. Suspicious activity detected.
+    Medium,
+    /// Score 60–79. Likely IMSI catcher or active attack.
+    High,
+    /// Score 80+. Multiple strong indicators of an active attack.
+    Critical,
+}
+
+impl core::fmt::Display for ThreatLevel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Low => f.write_str("LOW"),
+            Self::Medium => f.write_str("MEDIUM"),
+            Self::High => f.write_str("HIGH"),
+            Self::Critical => f.write_str("CRITICAL"),
+        }
+    }
+}
+
+/// A contributing factor to the overall [`ThreatScore`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreatFactor {
+    /// Short identifier for this factor (e.g. `cipher_downgrade`).
+    pub name: &'static str,
+    /// Numeric weight this factor contributes to the total score.
+    pub weight: u32,
+    /// Human-readable description of what was detected.
+    pub description: String,
+}
+
+impl core::fmt::Display for ThreatFactor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} (weight {}): {}", self.name, self.weight, self.description)
+    }
+}
+
+/// Weighted threat score combining all IMSI catcher detection signals.
+///
+/// Produced by [`score_threat`] from a set of [`ImsiCatcherAlert`]s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub struct ThreatScore {
+    /// Cumulative numeric score.
+    pub total: u32,
+    /// Threat level derived from `total`.
+    pub level: ThreatLevel,
+    /// Individual contributing factors.
+    pub factors: Vec<ThreatFactor>,
+}
+
+impl core::fmt::Display for ThreatScore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "threat score {}: {} ({} factor{})",
+            self.total,
+            self.level,
+            self.factors.len(),
+            if self.factors.len() == 1 { "" } else { "s" },
+        )
+    }
+}
+
+/// Derive a [`ThreatLevel`] from a numeric score.
+const fn level_from_score(score: u32) -> ThreatLevel {
+    match score {
+        0..30 => ThreatLevel::Low,
+        30..60 => ThreatLevel::Medium,
+        60..80 => ThreatLevel::High,
+        _ => ThreatLevel::Critical,
+    }
+}
+
+/// Compute a weighted [`ThreatScore`] from a set of IMSI catcher alerts.
+///
+/// Each alert type maps to a fixed weight:
+///
+/// | Alert | Weight |
+/// |---|---|
+/// | A5/1 or A5/2 cipher downgrade | 40 |
+/// | Unusual LAC/CID (sudden tower change) | 30 |
+/// | Abnormal signal power (strong new tower) | 20 |
+/// | Rapid cell reselection | 10 |
+/// | Technology downgrade | 40 (same as cipher) |
+///
+/// Duplicate factor types are counted once each (a second sudden tower change
+/// adds another 30 to the total).
+pub fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
+    let mut total: u32 = 0;
+    let mut factors = Vec::new();
+
+    for alert in alerts {
+        let (name, weight, description) = match alert {
+            ImsiCatcherAlert::TechnologyDowngrade { from, to } => (
+                "tech_downgrade",
+                WEIGHT_CIPHER_DOWNGRADE,
+                format!("technology downgrade: {from} → {to}"),
+            ),
+            ImsiCatcherAlert::CipherDowngrade { algorithm } => (
+                "cipher_downgrade",
+                WEIGHT_CIPHER_DOWNGRADE,
+                format!("weak cipher negotiated: {algorithm}"),
+            ),
+            ImsiCatcherAlert::SuddenTowerChange { previous, current } => (
+                "unusual_lac_cid",
+                WEIGHT_UNUSUAL_LAC_CID,
+                format!(
+                    "handover to unannounced tower: LAC {} CID {} → LAC {} CID {}",
+                    previous.lac, previous.cid, current.lac, current.cid
+                ),
+            ),
+            ImsiCatcherAlert::UnusuallyStrongNewTower { tower } => (
+                "abnormal_signal",
+                WEIGHT_ABNORMAL_SIGNAL,
+                format!(
+                    "unknown tower at {} dBm (CID {})",
+                    tower.signal_dbm, tower.cid
+                ),
+            ),
+            ImsiCatcherAlert::RapidReselection { count } => (
+                "rapid_reselection",
+                WEIGHT_RAPID_RESELECTION,
+                format!("{count} cell reselections in observation window"),
+            ),
+        };
+
+        total = total.saturating_add(weight);
+        factors.push(ThreatFactor {
+            name,
+            weight,
+            description,
+        });
+    }
+
+    let level = level_from_score(total);
+    ThreatScore {
+        total,
+        level,
+        factors,
+    }
 }
 
 impl CellTower {
@@ -153,7 +390,7 @@ const fn is_technology_downgrade(from: &CellTechnology, to: &CellTechnology) -> 
 
 /// Analyse a sequence of cell events for IMSI catcher signatures.
 ///
-/// Three patterns are detected:
+/// Five patterns are detected:
 ///
 /// - **Technology downgrade**: any `Connected` or `HandoverTo` event that transitions
 ///   the device to a lower-capability radio technology.
@@ -161,6 +398,9 @@ const fn is_technology_downgrade(from: &CellTechnology, to: &CellTechnology) -> 
 ///   has never been seen before and its signal exceeds [`UNUSUALLY_STRONG_SIGNAL_DBM`].
 /// - **Sudden tower change**: a `HandoverTo` event to a tower that was never previously
 ///   announced via `NeighborSeen`, suggesting an abnormal handover.
+/// - **Cipher downgrade**: a `CipherChange` event indicating A5/0, A5/1, or A5/2.
+/// - **Rapid reselection**: more than [`RAPID_RESELECTION_THRESHOLD`] serving cell
+///   changes across `Connected` and `HandoverTo` events.
 ///
 /// Events are processed in order; `NeighborSeen` events accumulate a set of known
 /// neighbours used to evaluate subsequent handovers.
@@ -170,6 +410,7 @@ pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
     let mut seen_tower_ids: HashSet<(u16, u16, u32, u32)> = HashSet::new();
     let mut known_neighbor_ids: HashSet<(u16, u16, u32, u32)> = HashSet::new();
     let mut prev_serving: Option<&CellTower> = None;
+    let mut reselection_count: u32 = 0;
 
     for event in events {
         match event {
@@ -196,6 +437,14 @@ pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
                         from: prev.technology.clone(),
                         to: tower.technology.clone(),
                     });
+                }
+
+                // Track reselection: a new serving cell counts as a reselection
+                // if we had a previous serving cell and the tower changed.
+                if let Some(prev) = prev_serving
+                    && prev.id() != tower.id()
+                {
+                    reselection_count = reselection_count.saturating_add(1);
                 }
 
                 seen_tower_ids.insert(tower.id());
@@ -232,12 +481,34 @@ pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
                     });
                 }
 
+                // Handover always counts as a reselection.
+                reselection_count = reselection_count.saturating_add(1);
+
                 seen_tower_ids.insert(tower.id());
                 prev_serving = Some(tower);
             }
 
+            CellEvent::CipherChange { algorithm } => {
+                // A5/0, A5/1, and A5/2 are all considered downgrades.
+                if matches!(
+                    algorithm,
+                    CipherAlgorithm::A5_0 | CipherAlgorithm::A5_1 | CipherAlgorithm::A5_2
+                ) {
+                    alerts.push(ImsiCatcherAlert::CipherDowngrade {
+                        algorithm: *algorithm,
+                    });
+                }
+            }
+
             CellEvent::Disconnected(_) => {}
         }
+    }
+
+    // Check for rapid reselection after processing all events.
+    if reselection_count > RAPID_RESELECTION_THRESHOLD {
+        alerts.push(ImsiCatcherAlert::RapidReselection {
+            count: reselection_count,
+        });
     }
 
     alerts
@@ -256,6 +527,8 @@ mod tests {
     fn tower(cid: u32, signal_dbm: i32, technology: CellTechnology) -> CellTower {
         CellTower::new(234, 30, 1234, cid, signal_dbm, technology, ts())
     }
+
+    // ── Existing detection tests ─────────────────────────────────────────────
 
     #[test]
     fn imsi_catcher_detects_lte_to_gsm_downgrade() {
@@ -371,6 +644,420 @@ mod tests {
         assert!(
             alerts.is_empty(),
             "normal LTE handover sequence should produce no alerts"
+        );
+    }
+
+    // ── Cipher downgrade detection ──────────────────────────────────────────
+
+    #[test]
+    fn cipher_downgrade_a5_1_detected() {
+        let events = [
+            CellEvent::Connected(tower(1, -70, CellTechnology::Gsm)),
+            CellEvent::CipherChange {
+                algorithm: CipherAlgorithm::A5_1,
+            },
+        ];
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            alerts.iter().any(|a| matches!(
+                a,
+                ImsiCatcherAlert::CipherDowngrade {
+                    algorithm: CipherAlgorithm::A5_1,
+                }
+            )),
+            "A5/1 cipher must trigger CipherDowngrade alert"
+        );
+    }
+
+    #[test]
+    fn cipher_downgrade_a5_2_detected() {
+        let events = [CellEvent::CipherChange {
+            algorithm: CipherAlgorithm::A5_2,
+        }];
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            alerts.iter().any(|a| matches!(
+                a,
+                ImsiCatcherAlert::CipherDowngrade {
+                    algorithm: CipherAlgorithm::A5_2,
+                }
+            )),
+            "A5/2 cipher must trigger CipherDowngrade alert"
+        );
+    }
+
+    #[test]
+    fn cipher_a5_0_no_encryption_detected() {
+        let events = [CellEvent::CipherChange {
+            algorithm: CipherAlgorithm::A5_0,
+        }];
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            alerts.iter().any(|a| matches!(
+                a,
+                ImsiCatcherAlert::CipherDowngrade {
+                    algorithm: CipherAlgorithm::A5_0,
+                }
+            )),
+            "A5/0 (no encryption) must trigger CipherDowngrade alert"
+        );
+    }
+
+    #[test]
+    fn cipher_a5_3_no_alert() {
+        let events = [CellEvent::CipherChange {
+            algorithm: CipherAlgorithm::A5_3,
+        }];
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            alerts.is_empty(),
+            "A5/3 cipher must not trigger any alert"
+        );
+    }
+
+    // ── Rapid reselection detection ─────────────────────────────────────────
+
+    #[test]
+    fn rapid_reselection_below_threshold_no_alert() {
+        // 3 reselections = at threshold, should NOT trigger (> threshold required).
+        let events = [
+            CellEvent::Connected(tower(1, -70, CellTechnology::Lte)),
+            CellEvent::HandoverTo(tower(2, -72, CellTechnology::Lte)),
+            CellEvent::HandoverTo(tower(3, -71, CellTechnology::Lte)),
+            CellEvent::HandoverTo(tower(4, -73, CellTechnology::Lte)),
+        ];
+        // Pre-announce towers as neighbours to avoid SuddenTowerChange noise.
+        let mut full_events = vec![
+            CellEvent::NeighborSeen(tower(2, -80, CellTechnology::Lte)),
+            CellEvent::NeighborSeen(tower(3, -80, CellTechnology::Lte)),
+            CellEvent::NeighborSeen(tower(4, -80, CellTechnology::Lte)),
+        ];
+        full_events.extend_from_slice(&events);
+        let alerts = detect_imsi_catcher(&full_events);
+        assert!(
+            !alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { .. })),
+            "3 reselections (at threshold) must not trigger RapidReselection"
+        );
+    }
+
+    #[test]
+    fn rapid_reselection_above_threshold_triggers_alert() {
+        // 4 handovers = 4 reselections, above threshold of 3.
+        let mut events: Vec<CellEvent> = Vec::new();
+        // Pre-announce neighbours.
+        for cid in 1..=5 {
+            events.push(CellEvent::NeighborSeen(tower(
+                cid,
+                -80,
+                CellTechnology::Lte,
+            )));
+        }
+        events.push(CellEvent::Connected(tower(1, -70, CellTechnology::Lte)));
+        events.push(CellEvent::HandoverTo(tower(2, -72, CellTechnology::Lte)));
+        events.push(CellEvent::HandoverTo(tower(3, -71, CellTechnology::Lte)));
+        events.push(CellEvent::HandoverTo(tower(4, -73, CellTechnology::Lte)));
+        events.push(CellEvent::HandoverTo(tower(5, -74, CellTechnology::Lte)));
+
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            alerts.iter().any(|a| matches!(
+                a,
+                ImsiCatcherAlert::RapidReselection { count: 4 }
+            )),
+            "4 reselections must trigger RapidReselection with count=4"
+        );
+    }
+
+    // ── Weighted threat scoring ─────────────────────────────────────────────
+
+    #[test]
+    fn score_threat_no_alerts_is_low() {
+        let score = score_threat(&[]);
+        assert_eq!(score.total, 0, "no alerts must produce score 0");
+        assert_eq!(score.level, ThreatLevel::Low, "score 0 must be Low");
+        assert!(score.factors.is_empty(), "no alerts must produce no factors");
+    }
+
+    #[test]
+    fn score_threat_cipher_downgrade_is_medium() {
+        let alerts = [ImsiCatcherAlert::CipherDowngrade {
+            algorithm: CipherAlgorithm::A5_1,
+        }];
+        let score = score_threat(&alerts);
+        assert_eq!(score.total, 40, "cipher downgrade weight must be 40");
+        assert_eq!(
+            score.level,
+            ThreatLevel::Medium,
+            "score 40 must be Medium"
+        );
+        assert_eq!(score.factors.len(), 1, "one alert must produce one factor");
+        assert_eq!(
+            score.factors[0].name, "cipher_downgrade",
+            "factor name must be cipher_downgrade"
+        );
+    }
+
+    #[test]
+    fn score_threat_strong_tower_is_low() {
+        let alerts = [ImsiCatcherAlert::UnusuallyStrongNewTower {
+            tower: tower(99, -30, CellTechnology::Gsm),
+        }];
+        let score = score_threat(&alerts);
+        assert_eq!(score.total, 20, "strong tower weight must be 20");
+        assert_eq!(score.level, ThreatLevel::Low, "score 20 must be Low");
+    }
+
+    #[test]
+    fn score_threat_sudden_tower_is_medium() {
+        let alerts = [ImsiCatcherAlert::SuddenTowerChange {
+            previous: tower(1, -70, CellTechnology::Lte),
+            current: tower(99, -65, CellTechnology::Lte),
+        }];
+        let score = score_threat(&alerts);
+        assert_eq!(score.total, 30, "sudden tower change weight must be 30");
+        assert_eq!(
+            score.level,
+            ThreatLevel::Medium,
+            "score 30 must be Medium"
+        );
+    }
+
+    #[test]
+    fn score_threat_rapid_reselection_is_low() {
+        let alerts = [ImsiCatcherAlert::RapidReselection { count: 5 }];
+        let score = score_threat(&alerts);
+        assert_eq!(score.total, 10, "rapid reselection weight must be 10");
+        assert_eq!(score.level, ThreatLevel::Low, "score 10 must be Low");
+    }
+
+    #[test]
+    fn score_threat_combined_high() {
+        // Cipher downgrade (40) + sudden tower (30) = 70 → High.
+        let alerts = [
+            ImsiCatcherAlert::CipherDowngrade {
+                algorithm: CipherAlgorithm::A5_1,
+            },
+            ImsiCatcherAlert::SuddenTowerChange {
+                previous: tower(1, -70, CellTechnology::Lte),
+                current: tower(99, -65, CellTechnology::Lte),
+            },
+        ];
+        let score = score_threat(&alerts);
+        assert_eq!(score.total, 70, "cipher(40) + sudden(30) must equal 70");
+        assert_eq!(score.level, ThreatLevel::High, "score 70 must be High");
+        assert_eq!(
+            score.factors.len(),
+            2,
+            "two alerts must produce two factors"
+        );
+    }
+
+    #[test]
+    fn score_threat_combined_critical() {
+        // Cipher downgrade (40) + sudden tower (30) + strong tower (20) = 90 → Critical.
+        let alerts = [
+            ImsiCatcherAlert::CipherDowngrade {
+                algorithm: CipherAlgorithm::A5_2,
+            },
+            ImsiCatcherAlert::SuddenTowerChange {
+                previous: tower(1, -70, CellTechnology::Lte),
+                current: tower(99, -65, CellTechnology::Lte),
+            },
+            ImsiCatcherAlert::UnusuallyStrongNewTower {
+                tower: tower(99, -30, CellTechnology::Gsm),
+            },
+        ];
+        let score = score_threat(&alerts);
+        assert_eq!(
+            score.total, 90,
+            "cipher(40) + sudden(30) + strong(20) must equal 90"
+        );
+        assert_eq!(
+            score.level,
+            ThreatLevel::Critical,
+            "score 90 must be Critical"
+        );
+    }
+
+    #[test]
+    fn score_threat_boundary_values() {
+        // Verify exact boundary thresholds.
+        assert_eq!(
+            level_from_score(0),
+            ThreatLevel::Low,
+            "score 0 must be Low"
+        );
+        assert_eq!(
+            level_from_score(29),
+            ThreatLevel::Low,
+            "score 29 must be Low"
+        );
+        assert_eq!(
+            level_from_score(30),
+            ThreatLevel::Medium,
+            "score 30 must be Medium"
+        );
+        assert_eq!(
+            level_from_score(59),
+            ThreatLevel::Medium,
+            "score 59 must be Medium"
+        );
+        assert_eq!(
+            level_from_score(60),
+            ThreatLevel::High,
+            "score 60 must be High"
+        );
+        assert_eq!(
+            level_from_score(79),
+            ThreatLevel::High,
+            "score 79 must be High"
+        );
+        assert_eq!(
+            level_from_score(80),
+            ThreatLevel::Critical,
+            "score 80 must be Critical"
+        );
+        assert_eq!(
+            level_from_score(u32::MAX),
+            ThreatLevel::Critical,
+            "max score must be Critical"
+        );
+    }
+
+    #[test]
+    fn score_threat_tech_downgrade_weight() {
+        let alerts = [ImsiCatcherAlert::TechnologyDowngrade {
+            from: CellTechnology::Lte,
+            to: CellTechnology::Gsm,
+        }];
+        let score = score_threat(&alerts);
+        assert_eq!(
+            score.total, 40,
+            "technology downgrade weight must be 40"
+        );
+        assert_eq!(
+            score.factors[0].name, "tech_downgrade",
+            "factor name must be tech_downgrade"
+        );
+    }
+
+    // ── Display impls ────────────────────────────────────────────────────────
+
+    #[test]
+    fn threat_level_display() {
+        assert_eq!(format!("{}", ThreatLevel::Low), "LOW");
+        assert_eq!(format!("{}", ThreatLevel::Medium), "MEDIUM");
+        assert_eq!(format!("{}", ThreatLevel::High), "HIGH");
+        assert_eq!(format!("{}", ThreatLevel::Critical), "CRITICAL");
+    }
+
+    #[test]
+    fn threat_score_display() {
+        let score = ThreatScore {
+            total: 70,
+            level: ThreatLevel::High,
+            factors: vec![
+                ThreatFactor {
+                    name: "test_a",
+                    weight: 40,
+                    description: "first".to_owned(),
+                },
+                ThreatFactor {
+                    name: "test_b",
+                    weight: 30,
+                    description: "second".to_owned(),
+                },
+            ],
+        };
+        let display = format!("{score}");
+        assert!(
+            display.contains("70"),
+            "display must contain total score"
+        );
+        assert!(
+            display.contains("HIGH"),
+            "display must contain threat level"
+        );
+        assert!(
+            display.contains("2 factors"),
+            "display must contain factor count"
+        );
+    }
+
+    #[test]
+    fn cipher_algorithm_display() {
+        assert_eq!(format!("{}", CipherAlgorithm::A5_0), "A5/0 (no encryption)");
+        assert_eq!(format!("{}", CipherAlgorithm::A5_1), "A5/1");
+        assert_eq!(format!("{}", CipherAlgorithm::A5_2), "A5/2");
+        assert_eq!(format!("{}", CipherAlgorithm::A5_3), "A5/3");
+        assert_eq!(format!("{}", CipherAlgorithm::A5_4), "A5/4");
+    }
+
+    #[test]
+    fn imsi_catcher_alert_display() {
+        let alert = ImsiCatcherAlert::CipherDowngrade {
+            algorithm: CipherAlgorithm::A5_1,
+        };
+        let display = format!("{alert}");
+        assert!(
+            display.contains("A5/1"),
+            "CipherDowngrade display must mention the algorithm"
+        );
+
+        let alert = ImsiCatcherAlert::RapidReselection { count: 7 };
+        let display = format!("{alert}");
+        assert!(
+            display.contains("7"),
+            "RapidReselection display must mention the count"
+        );
+    }
+
+    // ── End-to-end: detect + score ──────────────────────────────────────────
+
+    #[test]
+    fn detect_and_score_combined_attack_scenario() {
+        // Simulate: LTE connection, cipher downgrade to A5/1, then rapid
+        // handovers to unannounced towers with strong signals.
+        let events = vec![
+            CellEvent::Connected(tower(1, -70, CellTechnology::Lte)),
+            CellEvent::CipherChange {
+                algorithm: CipherAlgorithm::A5_1,
+            },
+            CellEvent::HandoverTo(tower(10, -30, CellTechnology::Gsm)),
+            CellEvent::HandoverTo(tower(11, -28, CellTechnology::Gsm)),
+            CellEvent::HandoverTo(tower(12, -25, CellTechnology::Gsm)),
+            CellEvent::HandoverTo(tower(13, -27, CellTechnology::Gsm)),
+        ];
+
+        let alerts = detect_imsi_catcher(&events);
+        let score = score_threat(&alerts);
+
+        // Expected alerts: cipher downgrade, tech downgrade, 4x sudden tower,
+        // 4x strong tower, rapid reselection, plus tech downgrade on subsequent
+        // GSM handovers (only first is a downgrade from LTE).
+        assert_eq!(
+            score.level,
+            ThreatLevel::Critical,
+            "full attack scenario must produce Critical threat level"
+        );
+        assert!(
+            score.total >= 80,
+            "full attack scenario score must be >= 80, got {}",
+            score.total
+        );
+        assert!(
+            alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::CipherDowngrade { .. })),
+            "must detect cipher downgrade"
+        );
+        assert!(
+            alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { .. })),
+            "must detect rapid reselection"
         );
     }
 }
