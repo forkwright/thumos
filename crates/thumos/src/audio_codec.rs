@@ -624,7 +624,7 @@ pub struct MockCodec {
     /// Whether mic bias is enabled.
     pub mic_bias: bool,
     /// Ordered log of operations performed.
-    pub operations: Vec<String>,
+    pub operations: alloc::vec::Vec<alloc::string::String>,
     /// If set, `power_on` returns this error.
     pub fail_power_on: Option<AudioError>,
 }
@@ -640,7 +640,7 @@ impl MockCodec {
             vol: 0,
             route: AudioRoute::Speaker,
             mic_bias: false,
-            operations: Vec::new(),
+            operations: alloc::vec::Vec::new(),
             fail_power_on: None,
         }
     }
@@ -650,11 +650,11 @@ impl MockCodec {
 impl AudioCodecOps for MockCodec {
     fn power_on(&mut self) -> Result<(), AudioError> {
         if let Some(err) = self.fail_power_on {
-            self.operations.push(String::from("power_on:FAIL"));
+            self.operations.push(alloc::string::String::from("power_on:FAIL"));
             return Err(err);
         }
         self.powered = true;
-        self.operations.push(String::from("power_on"));
+        self.operations.push(alloc::string::String::from("power_on"));
         Ok(())
     }
 
@@ -664,7 +664,7 @@ impl AudioCodecOps for MockCodec {
         self.adc_enabled = false;
         self.mic_bias = false;
         self.vol = 0;
-        self.operations.push(String::from("power_off"));
+        self.operations.push(alloc::string::String::from("power_off"));
         Ok(())
     }
 
@@ -673,7 +673,7 @@ impl AudioCodecOps for MockCodec {
             return Err(AudioError::CodecNotPowered);
         }
         self.dac_enabled = true;
-        self.operations.push(String::from("enable_dac"));
+        self.operations.push(alloc::string::String::from("enable_dac"));
         Ok(())
     }
 
@@ -682,19 +682,19 @@ impl AudioCodecOps for MockCodec {
             return Err(AudioError::CodecNotPowered);
         }
         self.adc_enabled = true;
-        self.operations.push(String::from("enable_adc"));
+        self.operations.push(alloc::string::String::from("enable_adc"));
         Ok(())
     }
 
     fn disable_dac(&mut self) -> Result<(), AudioError> {
         self.dac_enabled = false;
-        self.operations.push(String::from("disable_dac"));
+        self.operations.push(alloc::string::String::from("disable_dac"));
         Ok(())
     }
 
     fn disable_adc(&mut self) -> Result<(), AudioError> {
         self.adc_enabled = false;
-        self.operations.push(String::from("disable_adc"));
+        self.operations.push(alloc::string::String::from("disable_adc"));
         Ok(())
     }
 
@@ -727,13 +727,13 @@ impl AudioCodecOps for MockCodec {
             return Err(AudioError::CodecNotPowered);
         }
         self.mic_bias = true;
-        self.operations.push(String::from("enable_mic_bias"));
+        self.operations.push(alloc::string::String::from("enable_mic_bias"));
         Ok(())
     }
 
     fn disable_mic_bias(&mut self) -> Result<(), AudioError> {
         self.mic_bias = false;
-        self.operations.push(String::from("disable_mic_bias"));
+        self.operations.push(alloc::string::String::from("disable_mic_bias"));
         Ok(())
     }
 
