@@ -22,8 +22,9 @@ extern crate alloc;
 
 use core::fmt;
 
+use crate::audit::{AuditEventType, AuditLog};
 use crate::key_manager::KeyManager;
-use crate::security::{self, SHA256_DIGEST_LEN};
+use crate::security::{self, KEY_SIZE, SHA256_DIGEST_LEN};
 use crate::ui::{
     self, color, Key, Screen, ScreenAction, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
 };
@@ -736,6 +737,54 @@ impl fmt::Display for LockScreen {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Log an authentication event to the audit log.
+///
+/// Called after [`LockScreen::submit_passphrase`] or
+/// [`LockScreen::submit_pin`] to record the outcome. The caller
+/// provides the audit log, HMAC key, and current timestamp.
+///
+/// Events logged:
+/// - [`UnlockResult::WrongPassphrase`] / [`UnlockResult::WrongPin`] -> `AuthFail`
+/// - [`UnlockResult::DuressDetected`] -> `DuressAttempt`
+pub fn log_auth_event(
+    result: UnlockResult,
+    audit_log: &mut AuditLog,
+    audit_key: &[u8; KEY_SIZE],
+    timestamp: u64,
+) {
+    match result {
+        UnlockResult::WrongPassphrase => {
+            let _ = audit_log.log_event(
+                AuditEventType::AuthFail,
+                0,
+                b"wrong passphrase",
+                timestamp,
+                audit_key,
+            );
+        }
+        UnlockResult::WrongPin => {
+            let _ = audit_log.log_event(
+                AuditEventType::AuthFail,
+                0,
+                b"wrong PIN",
+                timestamp,
+                audit_key,
+            );
+        }
+        UnlockResult::DuressDetected => {
+            let _ = audit_log.log_event(
+                AuditEventType::DuressAttempt,
+                0,
+                b"duress PIN entered",
+                timestamp,
+                audit_key,
+            );
+        }
+        // Success, Throttled, and WipeTrigger are not audit-logged here.
+        _ => {}
+    }
+}
 
 /// Format an attempt count into a byte buffer as "Attempts: N".
 ///
