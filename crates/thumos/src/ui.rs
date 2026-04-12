@@ -593,6 +593,8 @@ pub enum ScreenId {
     Battery,
     /// Nous chat screen (AI entity conversation).
     Nous,
+    /// Threat monitor (centralized radio intelligence dashboard).
+    ThreatMonitor,
 }
 
 /// What the active screen wants the UI manager to do after handling input.
@@ -607,6 +609,8 @@ pub enum ScreenAction {
     Back,
     /// Exit the UI (return to kernel idle).
     Exit,
+    /// Trigger modem PMIC power cut (emergency kill).
+    KillModem,
 }
 
 /// Screen trait -- each screen implements this.
@@ -708,6 +712,11 @@ impl UiManager {
                 false
             }
             ScreenAction::Exit => true,
+            // WHY: KillModem is a hardware action dispatched by the kernel
+            // event loop, not a navigation action. The UI manager signals
+            // it upward by returning true (same as Exit) so the caller can
+            // execute the PMIC power cut in privileged context.
+            ScreenAction::KillModem => true,
         }
     }
 

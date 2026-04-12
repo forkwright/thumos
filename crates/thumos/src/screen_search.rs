@@ -119,6 +119,7 @@ const FUNCTIONS: &[FunctionEntry] = &[
     FunctionEntry { name: "Radio Control", screen_id: ScreenId::RadioControl },
     FunctionEntry { name: "About", screen_id: ScreenId::About },
     FunctionEntry { name: "Battery", screen_id: ScreenId::Battery },
+    FunctionEntry { name: "Threat Monitor", screen_id: ScreenId::ThreatMonitor },
 ];
 
 // ---------------------------------------------------------------------------
