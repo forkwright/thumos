@@ -367,6 +367,7 @@ pub enum Radio {
 
 /// Power state of a radio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PowerState {
     /// Powered on and active.
     On,
@@ -374,6 +375,8 @@ pub enum PowerState {
     Off,
     /// Hardware kill switch active (software cannot override).
     HardwareKilled,
+    /// Power cut via PMIC LDO disable (hardware kill, requires reboot).
+    PmicKilled,
 }
 
 /// System power mode.
@@ -429,12 +432,14 @@ impl PowerManager {
     }
 
     /// Set the power state of a radio.
-    /// Returns false if hardware kill switch prevents the change.
+    /// Returns false if hardware kill switch or PMIC kill prevents the change.
     pub fn set_state(&mut self, radio: Radio, state: PowerState) -> bool {
         if radio == Radio::All {
             let mut all_ok = true;
             for (_, s) in &mut self.states {
-                if *s == PowerState::HardwareKilled && state == PowerState::On {
+                if (*s == PowerState::HardwareKilled || *s == PowerState::PmicKilled)
+                    && state == PowerState::On
+                {
                     all_ok = false;
                 } else {
                     *s = state;
@@ -445,8 +450,10 @@ impl PowerManager {
 
         for (r, s) in &mut self.states {
             if *r == radio {
-                // INVARIANT: hardware kill switch cannot be overridden by software
-                if *s == PowerState::HardwareKilled && state == PowerState::On {
+                // INVARIANT: hardware/PMIC kill cannot be overridden by software
+                if (*s == PowerState::HardwareKilled || *s == PowerState::PmicKilled)
+                    && state == PowerState::On
+                {
                     return false;
                 }
                 *s = state;
@@ -502,6 +509,35 @@ impl PowerManager {
                 }
             }
         }
+    }
+
+    /// Execute a modem PMIC power cut.
+    ///
+    /// Sets the cellular radio to [`PowerState::PmicKilled`] and triggers
+    /// the hardware power cut via PMIC VMODEM LDO disable.  After this call
+    /// the modem is physically unpowered and cannot be restarted without a
+    /// full system reboot.
+    ///
+    /// # Safety
+    ///
+    /// PMIC registers must be mapped.  Caller must be in privileged context.
+    pub unsafe fn modem_power_cut(&mut self) {
+        for (r, s) in &mut self.states {
+            if *r == Radio::Cellular {
+                *s = PowerState::PmicKilled;
+            }
+        }
+        // SAFETY: caller guarantees PMIC registers are mapped.
+        unsafe {
+            crate::ccci_logger::modem_power_cut();
+        }
+    }
+
+    /// Whether the modem has been PMIC-killed.
+    pub fn is_modem_pmic_killed(&self) -> bool {
+        self.states
+            .iter()
+            .any(|(r, s)| *r == Radio::Cellular && *s == PowerState::PmicKilled)
     }
 
     /// Count radios currently on.
@@ -832,5 +868,58 @@ mod tests {
             "Daily must enable Bluetooth");
         assert_eq!(pm.state(Radio::Gps), PowerState::On,
             "Daily must enable GPS");
+    }
+
+    // -----------------------------------------------------------------------
+    // PmicKilled tests (Phase 10 Wave 3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pmic_killed_prevents_software_on() {
+        let mut pm = PowerManager::new();
+        // Simulate PMIC kill on cellular.
+        for (r, s) in &mut pm.states {
+            if *r == Radio::Cellular {
+                *s = PowerState::PmicKilled;
+            }
+        }
+        assert_eq!(pm.state(Radio::Cellular), PowerState::PmicKilled);
+        let result = pm.set_state(Radio::Cellular, PowerState::On);
+        assert!(!result, "cannot override PMIC kill via software");
+        assert_eq!(pm.state(Radio::Cellular), PowerState::PmicKilled);
+    }
+
+    #[test]
+    fn is_modem_pmic_killed_false_initially() {
+        let pm = PowerManager::new();
+        assert!(!pm.is_modem_pmic_killed(), "modem not PMIC-killed initially");
+    }
+
+    #[test]
+    fn is_modem_pmic_killed_after_kill() {
+        let mut pm = PowerManager::new();
+        for (r, s) in &mut pm.states {
+            if *r == Radio::Cellular {
+                *s = PowerState::PmicKilled;
+            }
+        }
+        assert!(pm.is_modem_pmic_killed(), "modem must be PMIC-killed");
+    }
+
+    #[test]
+    fn pmic_killed_all_prevents_individual_on() {
+        let mut pm = PowerManager::new();
+        pm.apply_mode(PowerMode::Full);
+        // PMIC kill on cellular only.
+        for (r, s) in &mut pm.states {
+            if *r == Radio::Cellular {
+                *s = PowerState::PmicKilled;
+            }
+        }
+        // Attempt to turn all on.
+        let result = pm.set_state(Radio::All, PowerState::On);
+        assert!(!result, "cannot set_state All On when one is PmicKilled");
+        assert_eq!(pm.state(Radio::Cellular), PowerState::PmicKilled,
+            "PMIC-killed radio must stay killed");
     }
 }

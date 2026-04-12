@@ -677,6 +677,91 @@ const fn mode_name(mode: SecurityMode) -> &'static str {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Threat response integration (Phase 10 Wave 3)
+// ---------------------------------------------------------------------------
+
+/// Threat response action taken by the security mode system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+#[non_exhaustive]
+pub enum ThreatResponse {
+    /// Firewall switched to restricted (Sentinel) whitelist.
+    FirewallRestricted,
+    /// Modem power cut via PMIC.
+    ModemPowerCut,
+    /// No action needed (threat below threshold).
+    None,
+}
+
+impl fmt::Display for ThreatResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FirewallRestricted => write!(f, "firewall restricted"),
+            Self::ModemPowerCut => write!(f, "modem power cut"),
+            Self::None => write!(f, "none"),
+        }
+    }
+}
+
+/// Evaluate a threat score and apply the appropriate response.
+///
+/// - Score >= `critical_threshold`: trigger modem power cut.
+/// - Sentinel mode active: restrict firewall to Sentinel whitelist.
+/// - Below threshold: no action.
+///
+/// Returns the action taken for audit logging.
+pub fn evaluate_threat(
+    mode: SecurityMode,
+    threat_score: u32,
+    critical_threshold: u32,
+    firewall: &mut crate::ccci_logger::CcciFirewall,
+    power_manager: &mut PowerManager,
+) -> ThreatResponse {
+    use crate::ccci_logger::FirewallMode;
+
+    // Critical threat score: modem power cut.
+    if threat_score >= critical_threshold {
+        firewall.apply_mode(FirewallMode::Panic);
+        // SAFETY: PMIC registers must be mapped. This is only called from
+        // kernel context where PMIC is accessible.
+        unsafe {
+            power_manager.modem_power_cut();
+        }
+        return ThreatResponse::ModemPowerCut;
+    }
+
+    // Sentinel mode: restrict firewall.
+    if mode == SecurityMode::Sentinel {
+        firewall.apply_mode(FirewallMode::Sentinel);
+        return ThreatResponse::FirewallRestricted;
+    }
+
+    ThreatResponse::None
+}
+
+/// Apply firewall mode matching the current security mode.
+///
+/// Called during mode transitions to sync the CCCI firewall with the
+/// security mode state machine.
+pub fn sync_firewall_mode(
+    mode: SecurityMode,
+    firewall: &mut crate::ccci_logger::CcciFirewall,
+) {
+    use crate::ccci_logger::FirewallMode;
+
+    let fw_mode = match mode {
+        SecurityMode::Daily => FirewallMode::Daily,
+        SecurityMode::Sentinel => FirewallMode::Sentinel,
+        SecurityMode::Panic => FirewallMode::Panic,
+    };
+    firewall.apply_mode(fw_mode);
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 /// Constant-time byte array comparison to prevent timing side-channels
 /// on PIN verification.
 fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
@@ -1126,5 +1211,103 @@ mod tests {
         let c = [0xBBu8; 32];
         assert!(constant_time_eq(&a, &b));
         assert!(!constant_time_eq(&a, &c));
+    }
+
+    // -----------------------------------------------------------------------
+    // Threat response tests (Phase 10 Wave 3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn evaluate_threat_critical_triggers_power_cut() {
+        use crate::ccci_logger::{CcciFirewall, FirewallMode};
+
+        let mut fw = CcciFirewall::new(FirewallMode::Daily);
+        let mut pm = PowerManager::new();
+        pm.apply_mode(crate::power::PowerMode::Full);
+
+        let response = evaluate_threat(
+            SecurityMode::Daily,
+            100, // score
+            80,  // threshold
+            &mut fw,
+            &mut pm,
+        );
+
+        assert_eq!(response, ThreatResponse::ModemPowerCut,
+            "critical score must trigger modem power cut");
+        assert_eq!(fw.mode(), FirewallMode::Panic,
+            "firewall must switch to Panic on critical");
+        assert!(pm.is_modem_pmic_killed(),
+            "modem must be PMIC-killed");
+    }
+
+    #[test]
+    fn evaluate_threat_sentinel_restricts_firewall() {
+        use crate::ccci_logger::{CcciFirewall, FirewallMode};
+
+        let mut fw = CcciFirewall::new(FirewallMode::Daily);
+        let mut pm = PowerManager::new();
+
+        let response = evaluate_threat(
+            SecurityMode::Sentinel,
+            10, // score below threshold
+            80,
+            &mut fw,
+            &mut pm,
+        );
+
+        assert_eq!(response, ThreatResponse::FirewallRestricted,
+            "Sentinel mode must restrict firewall");
+        assert_eq!(fw.mode(), FirewallMode::Sentinel,
+            "firewall must switch to Sentinel");
+    }
+
+    #[test]
+    fn evaluate_threat_daily_below_threshold_no_action() {
+        use crate::ccci_logger::{CcciFirewall, FirewallMode};
+
+        let mut fw = CcciFirewall::new(FirewallMode::Daily);
+        let mut pm = PowerManager::new();
+
+        let response = evaluate_threat(
+            SecurityMode::Daily,
+            10,
+            80,
+            &mut fw,
+            &mut pm,
+        );
+
+        assert_eq!(response, ThreatResponse::None,
+            "below threshold in Daily must take no action");
+        assert_eq!(fw.mode(), FirewallMode::Daily,
+            "firewall must remain in Daily mode");
+    }
+
+    #[test]
+    fn sync_firewall_mode_matches_security_mode() {
+        use crate::ccci_logger::{CcciFirewall, FirewallMode};
+
+        let mut fw = CcciFirewall::new(FirewallMode::Daily);
+
+        sync_firewall_mode(SecurityMode::Sentinel, &mut fw);
+        assert_eq!(fw.mode(), FirewallMode::Sentinel);
+
+        sync_firewall_mode(SecurityMode::Panic, &mut fw);
+        assert_eq!(fw.mode(), FirewallMode::Panic);
+
+        sync_firewall_mode(SecurityMode::Daily, &mut fw);
+        assert_eq!(fw.mode(), FirewallMode::Daily);
+    }
+
+    #[test]
+    fn threat_response_display() {
+        let cut = alloc::format!("{}", ThreatResponse::ModemPowerCut);
+        assert!(cut.contains("power cut"));
+
+        let restrict = alloc::format!("{}", ThreatResponse::FirewallRestricted);
+        assert!(restrict.contains("restricted"));
+
+        let none = alloc::format!("{}", ThreatResponse::None);
+        assert!(none.contains("none"));
     }
 }
