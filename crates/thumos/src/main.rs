@@ -54,6 +54,7 @@ mod fm_radio;
 mod futex;
 mod gps;
 mod gsm7;
+mod harmostes;
 mod heorte;
 mod heorte_alarm;
 mod heorte_timer;
