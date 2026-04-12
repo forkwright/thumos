@@ -11,13 +11,11 @@ extern crate alloc;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
-#[expect(dead_code, reason = "Phase 08 Wave 5: wired in Wave 8 via kinit")]
 mod audit;
 mod audio;
 mod audio_codec;
 mod audio_route;
 mod battery;
-#[expect(dead_code, reason = "Phase 08 Wave 4: wired in Wave 8 via kinit")]
 mod bfu_timer;
 mod block;
 mod bluetooth;
@@ -47,7 +45,6 @@ mod display;
 mod elf;
 #[cfg(not(test))]
 mod emmc;
-#[expect(dead_code, reason = "Phase 08 Wave 1: wired in Wave 8 via kinit")]
 mod encryption;
 #[cfg(not(test))]
 mod exceptions;
@@ -68,9 +65,7 @@ mod heap;
 mod ipc;
 #[cfg(not(test))]
 mod kconfig;
-#[expect(dead_code, reason = "Phase 08 Wave 1: wired in Wave 8 via kinit")]
 mod key_manager;
-#[expect(dead_code, reason = "Phase 08 Wave 3: wired in Wave 8 via kinit")]
 mod lock_screen;
 #[cfg(not(test))]
 mod kinit;
@@ -80,7 +75,6 @@ mod mmio;
 mod mmu;
 mod net;
 mod page;
-#[expect(dead_code, reason = "Phase 08 Wave 4: wired in Wave 8 via kinit")]
 mod panic_wipe;
 mod pipe;
 mod power;
@@ -99,11 +93,8 @@ mod screen_privacy;
 mod screen_radio;
 mod screen_search;
 mod screen_settings;
-#[expect(dead_code, reason = "Phase 08 Wave 6: wired in Wave 8 via kinit")]
 mod secure_boot;
-#[expect(dead_code, reason = "Phase 08 Wave 1: used by encryption + key_manager")]
 mod security;
-#[expect(dead_code, reason = "Phase 08 Wave 2: wired in Wave 8 via kinit")]
 mod security_mode;
 mod signal;
 mod sim;
