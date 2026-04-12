@@ -83,6 +83,7 @@ mod pipe;
 mod power;
 #[cfg(not(test))]
 mod process;
+mod provision;
 mod ramfs;
 mod screen_alarm;
 mod screen_calendar;
