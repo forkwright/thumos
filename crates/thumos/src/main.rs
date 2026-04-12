@@ -11,6 +11,8 @@ extern crate alloc;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
+#[expect(dead_code, reason = "Phase 08 Wave 5: wired in Wave 8 via kinit")]
+mod audit;
 mod audio;
 mod audio_codec;
 mod audio_route;
