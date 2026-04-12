@@ -18,6 +18,7 @@ mod battery;
 mod block;
 mod bluetooth;
 mod bt_audio;
+mod avdtp;
 mod cache;
 mod ccci;
 mod capability;
@@ -48,7 +49,10 @@ mod firewall;
 mod fm_radio;
 mod futex;
 mod gps;
+mod gsm7;
 mod heorte;
+mod heorte_alarm;
+mod heorte_timer;
 #[cfg(not(test))]
 mod gic;
 #[cfg(not(test))]
@@ -84,11 +88,15 @@ mod screen_settings;
 mod signal;
 mod sim;
 mod slab;
+mod sbc;
 mod sms;
 mod socket;
 mod status_bar;
 mod t9;
 mod telephony;
+#[cfg(test)]
+mod telephony_mock;
+mod telephony_parser;
 #[cfg(not(test))]
 mod syscall;
 #[cfg(not(test))]
