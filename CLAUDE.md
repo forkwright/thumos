@@ -14,7 +14,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Kernel (thumos) | Phase 08 complete | MMU, slab allocator, GIC, timer, scheduler, 45 syscalls, IPC (pipe, futex, signals), ELF loader, VFS (Filesystem trait, MountTable, path resolution), LFS (log-structured persistent filesystem with compaction), ramfs (hierarchical, writable), devfs, block cache (LRU, 1MB), 256-fd table, ChaCha20 CSPRNG, watchdog, capabilities, DVFS, network stack (TCP/UDP sockets, DHCP, DNS resolver), firewall (packet filter, DNS blocklist), wall clock, UI framework (3-zone 240x320), telephony (AT modem, voice calls, SMS), audio session manager (MT6357 codec, priority preemption), battery monitor, T9 input, contacts, FM radio, BT A2DP, calendar/alarm/timer/stopwatch (heorte), mic audit log, measured boot (Ed25519), encrypted block device (AES-XTS), key hierarchy (PBKDF2+HKDF), lock screen (passphrase/PIN/duress), security modes (Daily/Sentinel/Panic), HMAC-chain audit log, BFU timer, panic wipe, privacy dashboard, DNS-over-TLS, 95 kernel modules |
+| Kernel (thumos) | Phase 09 complete | MMU, slab allocator, GIC, timer, scheduler, 45 syscalls, IPC (pipe, futex, signals), ELF loader, VFS (Filesystem trait, MountTable, path resolution), LFS (log-structured persistent filesystem with compaction), ramfs (hierarchical, writable), devfs, block cache (LRU, 1MB), 256-fd table, ChaCha20 CSPRNG, watchdog, capabilities, DVFS, network stack (TCP/UDP sockets, DHCP, DNS resolver), firewall (packet filter, DNS blocklist), wall clock, UI framework (3-zone 240x320), telephony (AT modem, voice calls, SMS), audio session manager (MT6357 codec, priority preemption), battery monitor, T9 input, contacts, FM radio, BT A2DP, calendar/alarm/timer/stopwatch (heorte), mic audit log, measured boot (Ed25519), encrypted block device (AES-XTS), key hierarchy (PBKDF2+HKDF), lock screen (passphrase/PIN/duress), security modes (Daily/Sentinel/Panic), HMAC-chain audit log, BFU timer, panic wipe, privacy dashboard, DNS-over-TLS, HTTP client, JSON parser, Matrix CS API (sync/rooms/send), Matrix E2E (Olm/Megolm), USB provisioning, unified inbox (SMS+Matrix+Briar+Meshtastic), voice-to-text (ekphrasis), action proposals, Briar P2P messaging, Meshtastic LoRa mesh, nous AI entity management (capability presets, chat screen), 103 kernel modules |
 | eMMC driver | Phase 03 | MSDC controller, PIO + DMA, GPD/BD descriptors |
 | Display driver | Phase 03 | DDP pipeline (OVL→RDMA→DSI→LCM), GC9306 init/sleep/wake/backlight |
 | CCCI modem driver | Phase 03 | CLDMA ring buffers, CCIF mailbox, identity containment, packet validation |
@@ -34,7 +34,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 ## Key constraints
 
-- 13 crates (12 workspace userspace + `thumos` kernel binary, excluded from workspace), ~86K LOC (66K kernel + 20K userspace), 1,864 tests (1,386 kernel + 478 workspace), zero clippy warnings. Phase 08 (security) complete.
+- 13 crates (12 workspace userspace + `thumos` kernel binary, excluded from workspace), ~97K LOC (77K kernel + 20K userspace), 1,914 tests (1,425 kernel + 489 workspace), zero clippy warnings. Phase 09 (Matrix + secure messaging) complete.
 - 1 GB RAM: every megabyte matters. No unnecessary services.
 - 240x320 display: no standard Android UI. Custom framebuffer or TUI.
 - Keypad + touchscreen input. T9-style or menu navigation.
