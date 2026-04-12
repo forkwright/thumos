@@ -42,6 +42,8 @@ mod display;
 mod elf;
 #[cfg(not(test))]
 mod emmc;
+#[expect(dead_code, reason = "Phase 08 Wave 1: wired in Wave 8 via kinit")]
+mod encryption;
 #[cfg(not(test))]
 mod exceptions;
 mod fd;
@@ -61,6 +63,8 @@ mod heap;
 mod ipc;
 #[cfg(not(test))]
 mod kconfig;
+#[expect(dead_code, reason = "Phase 08 Wave 1: wired in Wave 8 via kinit")]
+mod key_manager;
 #[cfg(not(test))]
 mod kinit;
 mod mic_audit;
@@ -85,6 +89,8 @@ mod screen_messages;
 mod screen_radio;
 mod screen_search;
 mod screen_settings;
+#[expect(dead_code, reason = "Phase 08 Wave 1: used by encryption + key_manager")]
+mod security;
 mod signal;
 mod sim;
 mod slab;
