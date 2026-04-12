@@ -95,6 +95,10 @@ pub enum AuditEventType {
     ModeChange,
     /// Duress PIN entry detected.
     DuressAttempt,
+    /// Modem traffic anomaly detected by CCCI baseline comparison.
+    ModemAnomaly,
+    /// Modem traffic event logged by CCCI firewall.
+    ModemTraffic,
 }
 
 impl fmt::Display for AuditEventType {
@@ -109,6 +113,8 @@ impl fmt::Display for AuditEventType {
             Self::BootVerify => write!(f, "BOOT_VERIFY"),
             Self::ModeChange => write!(f, "MODE_CHANGE"),
             Self::DuressAttempt => write!(f, "DURESS_ATTEMPT"),
+            Self::ModemAnomaly => write!(f, "MODEM_ANOMALY"),
+            Self::ModemTraffic => write!(f, "MODEM_TRAFFIC"),
         }
     }
 }
@@ -220,6 +226,8 @@ const fn event_type_discriminant(event: AuditEventType) -> u8 {
         AuditEventType::BootVerify => 6,
         AuditEventType::ModeChange => 7,
         AuditEventType::DuressAttempt => 8,
+        AuditEventType::ModemAnomaly => 9,
+        AuditEventType::ModemTraffic => 10,
     }
 }
 
@@ -679,6 +687,8 @@ mod tests {
             AuditEventType::BootVerify,
             AuditEventType::ModeChange,
             AuditEventType::DuressAttempt,
+            AuditEventType::ModemAnomaly,
+            AuditEventType::ModemTraffic,
         ];
 
         for (i, &et) in event_types.iter().enumerate() {

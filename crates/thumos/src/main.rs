@@ -24,6 +24,7 @@ mod bt_audio;
 mod avdtp;
 mod cache;
 mod ccci;
+mod ccci_logger;
 mod capability;
 mod clock;
 mod contacts;
