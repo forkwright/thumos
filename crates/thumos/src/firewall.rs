@@ -31,6 +31,9 @@
 
 extern crate alloc;
 
+use crate::audit::{AuditEventType, AuditLog};
+use crate::security::KEY_SIZE;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -377,6 +380,34 @@ impl Firewall {
             Action::Deny => self.stats.packets_denied += 1,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Audit integration
+// ---------------------------------------------------------------------------
+
+/// Log a firewall packet deny event to the audit log.
+///
+/// Called when [`Firewall::evaluate_rx`] or [`Firewall::evaluate_tx`]
+/// denies a packet. The `direction` indicates whether the packet was
+/// inbound or outbound.
+pub fn log_packet_deny(
+    direction: Direction,
+    audit_log: &mut AuditLog,
+    audit_key: &[u8; KEY_SIZE],
+    timestamp: u64,
+) {
+    let detail = match direction {
+        Direction::Inbound => b"inbound packet denied" as &[u8],
+        Direction::Outbound => b"outbound packet denied",
+    };
+    let _ = audit_log.log_event(
+        AuditEventType::PacketDeny,
+        0,
+        detail,
+        timestamp,
+        audit_key,
+    );
 }
 
 // ---------------------------------------------------------------------------
