@@ -591,6 +591,8 @@ pub enum ScreenId {
     About,
     /// Battery status screen.
     Battery,
+    /// Nous chat screen (AI entity conversation).
+    Nous,
 }
 
 /// What the active screen wants the UI manager to do after handling input.
