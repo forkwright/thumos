@@ -41,6 +41,7 @@ mod dns;
 mod dns_tls;
 #[cfg(not(test))]
 mod device;
+mod ekphrasis;
 mod display;
 mod elf;
 #[cfg(not(test))]
