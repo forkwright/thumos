@@ -414,6 +414,8 @@ pub struct Telephony<T: ModemTransport> {
     registered: bool,
     /// Registration status detail.
     reg_status: RegStatus,
+    /// Whether LTE-only mode is active (2G/3G refused via `AT+COPS=0,,,7`).
+    lte_only: bool,
     /// Hardware transport.
     transport: T,
     /// Last signal poll tick (ms).
@@ -436,6 +438,7 @@ impl<T: ModemTransport> Telephony<T> {
             operator_len: 0,
             registered: false,
             reg_status: RegStatus::NotRegistered,
+            lte_only: false,
             transport,
             last_signal_poll: 0,
             init_step: 0,
@@ -485,14 +488,15 @@ impl<T: ModemTransport> Telephony<T> {
     /// Initialize the modem.
     ///
     /// Runs the full AT initialization sequence:
-    /// 1. `AT`          — verify modem responds
-    /// 2. `ATE0`        — disable echo
-    /// 3. `AT+CFUN=1`   — full functionality
-    /// 4. `AT+CPIN?`    — check SIM PIN status
-    /// 5. `AT+COPS?`    — check network registration / operator
-    /// 6. `AT+CREG=1`   — enable network registration URCs
-    /// 7. `AT+CLIP=1`   — enable caller ID
-    /// 8. `AT+CSQ`      — initial signal strength query
+    /// 1. `AT`              — verify modem responds
+    /// 2. `ATE0`            — disable echo
+    /// 3. `AT+CFUN=1`       — full functionality
+    /// 4. `AT+CPIN?`        — check SIM PIN status
+    /// 5. `AT+COPS=0,,,7`   — restrict to LTE only (refuse 2G/3G)
+    /// 6. `AT+COPS?`        — check network registration / operator
+    /// 7. `AT+CREG=1`       — enable network registration URCs
+    /// 8. `AT+CLIP=1`       — enable caller ID
+    /// 9. `AT+CSQ`          — initial signal strength query
     ///
     /// Returns `Ok(())` on success, or an error describing which step failed.
     pub fn initialize(&mut self) -> Result<(), TelephonyError> {
@@ -556,7 +560,16 @@ impl<T: ModemTransport> Telephony<T> {
         }
         self.init_step = 4;
 
-        // Step 5: Query operator name.
+        // Step 5: Refuse 2G/3G — restrict to LTE only.
+        // WHY: 2G (GSM) networks use weak A5/1 or A5/2 encryption that is
+        // trivially broken by IMSI catchers. By refusing to register on
+        // anything below LTE, we eliminate the primary downgrade attack vector.
+        // Non-fatal: if the modem rejects this (e.g. no LTE coverage), we
+        // log but continue — better to have degraded service than no service.
+        self.refuse_2g();
+        self.init_step = 5;
+
+        // Step 6: Query operator name.
         let cops_result = send_with_info(&mut self.transport, "AT+COPS?", 5000);
         if let Ok((AtResponse::Ok, ref info_line, info_len)) = cops_result {
             if info_len > 0 {
@@ -566,23 +579,48 @@ impl<T: ModemTransport> Telephony<T> {
                 }
             }
         }
-        self.init_step = 5;
-
-        // Step 6: Enable network registration URCs.
-        let _ = send_simple(&mut self.transport, "AT+CREG=1", 2000);
         self.init_step = 6;
 
-        // Step 7: Enable caller ID.
-        let _ = send_simple(&mut self.transport, "AT+CLIP=1", 2000);
+        // Step 7: Enable network registration URCs.
+        let _ = send_simple(&mut self.transport, "AT+CREG=1", 2000);
         self.init_step = 7;
 
-        // Step 8: Initial signal strength query.
-        self.update_signal_strength()?;
+        // Step 8: Enable caller ID.
+        let _ = send_simple(&mut self.transport, "AT+CLIP=1", 2000);
         self.init_step = 8;
+
+        // Step 9: Initial signal strength query.
+        self.update_signal_strength()?;
+        self.init_step = 9;
 
         self.modem_state = ModemState::Registered;
         self.registered = true;
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // 2G refusal
+    // -----------------------------------------------------------------------
+
+    /// Send `AT+COPS=0,,,7` to restrict the modem to LTE-only mode.
+    ///
+    /// This prevents the modem from registering on GSM (2G) or UMTS (3G)
+    /// networks, blocking the primary downgrade attack vector used by IMSI
+    /// catchers. The command sets automatic operator selection with access
+    /// technology restricted to E-UTRAN (LTE).
+    ///
+    /// Non-fatal: if the modem rejects this command (e.g. the SIM or network
+    /// does not support LTE), the error is recorded but initialization
+    /// continues. Some connectivity is better than none.
+    pub fn refuse_2g(&mut self) {
+        let result = send_simple(&mut self.transport, "AT+COPS=0,,,7", 10_000);
+        self.lte_only = matches!(result, Ok(AtResponse::Ok));
+    }
+
+    /// Return whether LTE-only mode is active (2G/3G refused).
+    #[must_use]
+    pub fn is_lte_only(&self) -> bool {
+        self.lte_only
     }
 
     // -----------------------------------------------------------------------
@@ -879,13 +917,15 @@ mod tests {
         mock.queue_ok();
         // Step 4: AT+CPIN? -> +CPIN: READY + OK
         mock.queue_info_ok(b"+CPIN: READY");
-        // Step 5: AT+COPS? -> +COPS: 0,0,"T-Mobile" + OK
+        // Step 5: AT+COPS=0,,,7 -> OK (LTE only / refuse 2G)
+        mock.queue_ok();
+        // Step 6: AT+COPS? -> +COPS: 0,0,"T-Mobile" + OK
         mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\"");
-        // Step 6: AT+CREG=1 -> OK
+        // Step 7: AT+CREG=1 -> OK
         mock.queue_ok();
-        // Step 7: AT+CLIP=1 -> OK
+        // Step 8: AT+CLIP=1 -> OK
         mock.queue_ok();
-        // Step 8: AT+CSQ -> +CSQ: 18,99 + OK
+        // Step 9: AT+CSQ -> +CSQ: 18,99 + OK
         mock.queue_info_ok(b"+CSQ: 18,99");
         mock
     }
@@ -914,15 +954,16 @@ mod tests {
         assert!(result.is_ok(), "initialization must succeed with valid mock");
 
         let commands = &tel.transport.sent_commands;
-        assert_eq!(commands.len(), 8, "init must send exactly 8 AT commands");
+        assert_eq!(commands.len(), 9, "init must send exactly 9 AT commands");
         assert_eq!(commands[0], b"AT", "step 1: AT");
         assert_eq!(commands[1], b"ATE0", "step 2: ATE0");
         assert_eq!(commands[2], b"AT+CFUN=1", "step 3: AT+CFUN=1");
         assert_eq!(commands[3], b"AT+CPIN?", "step 4: AT+CPIN?");
-        assert_eq!(commands[4], b"AT+COPS?", "step 5: AT+COPS?");
-        assert_eq!(commands[5], b"AT+CREG=1", "step 6: AT+CREG=1");
-        assert_eq!(commands[6], b"AT+CLIP=1", "step 7: AT+CLIP=1");
-        assert_eq!(commands[7], b"AT+CSQ", "step 8: AT+CSQ");
+        assert_eq!(commands[4], b"AT+COPS=0,,,7", "step 5: AT+COPS=0,,,7 (LTE only)");
+        assert_eq!(commands[5], b"AT+COPS?", "step 6: AT+COPS?");
+        assert_eq!(commands[6], b"AT+CREG=1", "step 7: AT+CREG=1");
+        assert_eq!(commands[7], b"AT+CLIP=1", "step 8: AT+CLIP=1");
+        assert_eq!(commands[8], b"AT+CSQ", "step 9: AT+CSQ");
 
         assert_eq!(
             tel.modem_state(),
@@ -1060,5 +1101,112 @@ mod tests {
         let err = TelephonyError::NumberTooLong;
         let msg = alloc::format!("{err}");
         assert_eq!(msg, "number too long", "NumberTooLong display must match");
+    }
+
+    // ── 2G refusal tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn init_sends_lte_only_command() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+
+        // Step 5 must be the LTE-only command.
+        assert_eq!(
+            tel.transport.sent_commands[4],
+            b"AT+COPS=0,,,7",
+            "step 5 must send AT+COPS=0,,,7 (LTE only)"
+        );
+        assert!(
+            tel.is_lte_only(),
+            "LTE-only mode must be active after successful init"
+        );
+    }
+
+    #[test]
+    fn refuse_2g_sets_lte_only_flag() {
+        let mut mock = MockModemTransport::new();
+        // Queue OK for refuse_2g.
+        mock.queue_ok();
+        let mut tel = Telephony::new(mock);
+        // Manually call refuse_2g outside init.
+        tel.refuse_2g();
+        assert!(
+            tel.is_lte_only(),
+            "refuse_2g must set lte_only=true on OK response"
+        );
+        assert_eq!(
+            tel.transport.sent_commands.last().map(|c| c.as_slice()),
+            Some(b"AT+COPS=0,,,7" as &[u8]),
+            "refuse_2g must send AT+COPS=0,,,7"
+        );
+    }
+
+    #[test]
+    fn refuse_2g_non_fatal_on_error() {
+        let mut mock = MockModemTransport::new();
+        // Queue ERROR for refuse_2g (modem rejects LTE-only).
+        mock.queue_response(b"ERROR");
+        let mut tel = Telephony::new(mock);
+        tel.refuse_2g();
+        assert!(
+            !tel.is_lte_only(),
+            "refuse_2g must set lte_only=false on ERROR response"
+        );
+    }
+
+    #[test]
+    fn refuse_2g_command_is_correct_at_string() {
+        // Verify the exact AT command string matches the 3GPP TS 27.007 spec.
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok();
+        let mut tel = Telephony::new(mock);
+        tel.refuse_2g();
+        let cmd = &tel.transport.sent_commands[0];
+        assert_eq!(
+            cmd,
+            b"AT+COPS=0,,,7",
+            "command must be AT+COPS=0,,,7 per 3GPP TS 27.007 section 7.3"
+        );
+    }
+
+    #[test]
+    fn init_continues_if_lte_only_rejected() {
+        // If the modem rejects AT+COPS=0,,,7, init must still complete.
+        let mut mock = MockModemTransport::new();
+        // Step 1: AT -> OK
+        mock.queue_ok();
+        // Step 2: ATE0 -> OK
+        mock.queue_ok();
+        // Step 3: AT+CFUN=1 -> OK
+        mock.queue_ok();
+        // Step 4: AT+CPIN? -> +CPIN: READY + OK
+        mock.queue_info_ok(b"+CPIN: READY");
+        // Step 5: AT+COPS=0,,,7 -> ERROR (rejected)
+        mock.queue_response(b"ERROR");
+        // Step 6: AT+COPS? -> +COPS: 0,0,"T-Mobile" + OK
+        mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\"");
+        // Step 7: AT+CREG=1 -> OK
+        mock.queue_ok();
+        // Step 8: AT+CLIP=1 -> OK
+        mock.queue_ok();
+        // Step 9: AT+CSQ -> +CSQ: 18,99 + OK
+        mock.queue_info_ok(b"+CSQ: 18,99");
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert!(
+            result.is_ok(),
+            "init must succeed even if LTE-only command is rejected"
+        );
+        assert!(
+            !tel.is_lte_only(),
+            "lte_only must be false when the modem rejected the command"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Registered,
+            "modem must reach Registered state despite LTE-only rejection"
+        );
     }
 }
