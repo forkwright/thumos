@@ -32,9 +32,10 @@ extern crate alloc;
 
 use core::fmt;
 
+use crate::audit::{AuditEventType, AuditLog};
 use crate::key_manager::KeyManager;
 use crate::power::{PowerManager, PowerState, Radio};
-use crate::security::SleepTier;
+use crate::security::{SleepTier, KEY_SIZE};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -590,6 +591,85 @@ impl fmt::Display for ModeManager {
             self.covert_lock,
             self.status_badge(),
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Audit integration
+// ---------------------------------------------------------------------------
+
+/// Log a mode transition event to the audit log.
+///
+/// Records the transition as a `ModeChange` event with the mode names.
+pub fn log_mode_change(
+    from: SecurityMode,
+    to: SecurityMode,
+    audit_log: &mut AuditLog,
+    audit_key: &[u8; KEY_SIZE],
+    timestamp: u64,
+) {
+    // Format "Daily->Sentinel" etc. into a fixed buffer.
+    let mut detail = [0u8; 32];
+    let from_str = mode_name(from);
+    let to_str = mode_name(to);
+    let arrow = b"->";
+    let mut offset = 0;
+    for &b in from_str.as_bytes() {
+        if offset < detail.len() {
+            detail[offset] = b;
+            offset += 1;
+        }
+    }
+    for &b in arrow {
+        if offset < detail.len() {
+            detail[offset] = b;
+            offset += 1;
+        }
+    }
+    for &b in to_str.as_bytes() {
+        if offset < detail.len() {
+            detail[offset] = b;
+            offset += 1;
+        }
+    }
+    let _ = audit_log.log_event(
+        AuditEventType::ModeChange,
+        0,
+        &detail[..offset],
+        timestamp,
+        audit_key,
+    );
+}
+
+/// Log a panic trigger event to the audit log.
+///
+/// Records the activation method as a `PanicTrigger` event.
+pub fn log_panic_trigger(
+    activation: PanicActivation,
+    audit_log: &mut AuditLog,
+    audit_key: &[u8; KEY_SIZE],
+    timestamp: u64,
+) {
+    let detail = match activation {
+        PanicActivation::KeyCombo => b"key combo" as &[u8],
+        PanicActivation::PttTripleClick => b"PTT triple-click",
+        PanicActivation::DuressPin => b"duress PIN",
+    };
+    let _ = audit_log.log_event(
+        AuditEventType::PanicTrigger,
+        0,
+        detail,
+        timestamp,
+        audit_key,
+    );
+}
+
+/// Return the string name of a security mode for audit detail fields.
+const fn mode_name(mode: SecurityMode) -> &'static str {
+    match mode {
+        SecurityMode::Daily => "Daily",
+        SecurityMode::Sentinel => "Sentinel",
+        SecurityMode::Panic => "Panic",
     }
 }
 
