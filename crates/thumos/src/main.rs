@@ -40,6 +40,7 @@ mod csprng;
 mod devfs;
 mod dhcp;
 mod dns;
+mod dns_tls;
 #[cfg(not(test))]
 mod device;
 mod display;
@@ -94,6 +95,7 @@ mod screen_dialer;
 mod screen_fm;
 mod screen_home;
 mod screen_messages;
+mod screen_privacy;
 mod screen_radio;
 mod screen_search;
 mod screen_settings;
