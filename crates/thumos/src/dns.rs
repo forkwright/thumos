@@ -406,6 +406,12 @@ fn skip_dns_name(data: &[u8], mut offset: usize) -> Result<usize, DnsError> {
 /// DNS resolver with split-horizon routing and LRU caching.
 ///
 /// See the [module-level documentation](self) for routing policy details.
+///
+/// When `use_dot` is enabled, non-LAN queries are routed through
+/// DNS-over-TLS (port 853) instead of plain UDP (port 53). LAN queries
+/// (`*.lan`) always use plain UDP to the local AdGuard instance regardless
+/// of the DoT setting. See [`dns_tls`](crate::dns_tls) for the DoT
+/// framing layer.
 pub struct DnsResolver {
     /// Local DNS cache.
     cache: DnsCache,
@@ -415,6 +421,13 @@ pub struct DnsResolver {
     internet_dns: Ipv4Address,
     /// Transaction ID counter for DNS queries.
     next_txid: u16,
+    /// Whether to use DNS-over-TLS for non-LAN queries.
+    ///
+    /// When true, the resolver signals that queries for non-LAN hostnames
+    /// should be dispatched via a `dns_tls::DotClient` instead of plain UDP.
+    /// The actual DoT transport is managed externally; this flag controls
+    /// routing decisions only.
+    use_dot: bool,
 }
 
 impl DnsResolver {
@@ -430,7 +443,30 @@ impl DnsResolver {
             menos_dns,
             internet_dns,
             next_txid: 1,
+            use_dot: false,
         }
+    }
+
+    /// Enable or disable DNS-over-TLS for non-LAN queries.
+    ///
+    /// When enabled, the resolver signals that non-LAN queries should be
+    /// dispatched via `dns_tls::DotClient` instead of plain UDP. LAN
+    /// queries (`*.lan`) always use plain UDP regardless of this setting.
+    pub fn set_use_dot(&mut self, enabled: bool) {
+        self.use_dot = enabled;
+    }
+
+    /// Return whether DNS-over-TLS is enabled for non-LAN queries.
+    pub fn use_dot(&self) -> bool {
+        self.use_dot
+    }
+
+    /// Check whether a given hostname should use DNS-over-TLS.
+    ///
+    /// Returns `true` if DoT is enabled and the hostname is not a LAN
+    /// hostname. LAN queries always bypass DoT.
+    pub fn should_use_dot(&self, hostname: &str) -> bool {
+        self.use_dot && !is_lan_hostname(hostname)
     }
 
     /// Resolve a hostname to an IP address.
@@ -853,6 +889,53 @@ mod tests {
             result,
             Err(DnsError::InvalidName),
             "label > 63 bytes must return InvalidName"
+        );
+    }
+
+    // -- DoT integration tests --
+
+    #[test]
+    fn use_dot_defaults_to_false() {
+        let resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        assert!(
+            !resolver.use_dot(),
+            "DoT must be disabled by default"
+        );
+    }
+
+    #[test]
+    fn set_use_dot_enables_dot() {
+        let mut resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        resolver.set_use_dot(true);
+        assert!(resolver.use_dot(), "DoT must be enabled after set_use_dot(true)");
+    }
+
+    #[test]
+    fn should_use_dot_for_internet_hostname() {
+        let mut resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        resolver.set_use_dot(true);
+        assert!(
+            resolver.should_use_dot("example.com"),
+            "internet hostnames must use DoT when enabled"
+        );
+    }
+
+    #[test]
+    fn should_not_use_dot_for_lan_hostname() {
+        let mut resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        resolver.set_use_dot(true);
+        assert!(
+            !resolver.should_use_dot("homepage.lan"),
+            "LAN hostnames must bypass DoT even when enabled"
+        );
+    }
+
+    #[test]
+    fn should_not_use_dot_when_disabled() {
+        let resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        assert!(
+            !resolver.should_use_dot("example.com"),
+            "must not use DoT when disabled"
         );
     }
 }

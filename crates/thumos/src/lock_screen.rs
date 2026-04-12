@@ -876,7 +876,7 @@ mod tests {
             for &byte in b"999999" {
                 screen.push_pin_digit(byte);
             }
-            let result = screen.submit_pin(100 + u64::from(i) * 100);
+            let result = screen.submit_pin(100 + (i as u64) * 100);
             assert_ne!(
                 result,
                 UnlockResult::WipeTrigger,
@@ -903,7 +903,7 @@ mod tests {
             for &byte in b"wrong passphrase" {
                 screen.push_passphrase_byte(byte);
             }
-            let result = screen.submit_passphrase(1000 + u64::from(i) * 10000);
+            let result = screen.submit_passphrase(1000 + (i as u64) * 10000);
 
             if i < 9 {
                 assert_ne!(
@@ -994,7 +994,7 @@ mod tests {
             for &byte in b"wrong" {
                 screen.push_passphrase_byte(byte);
             }
-            screen.submit_passphrase(100 + u64::from(i) * 100);
+            screen.submit_passphrase(100 + (i as u64) * 100);
         }
 
         // 4th attempt should now have a 5-second throttle.
