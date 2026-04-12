@@ -519,6 +519,32 @@ impl Default for PowerManager {
     }
 }
 
+/// Apply a security mode's radio policy to a power manager.
+///
+/// Maps boolean enable/disable flags from a [`ModePolicy`] to
+/// [`PowerState::On`] / [`PowerState::Off`] and calls
+/// [`PowerManager::set_state`] for each radio.  FM is always turned
+/// off in security mode transitions (not a security-relevant radio).
+///
+/// Used by the boot sequence (Wave 8) and by [`ModeManager`] on mode
+/// transitions to enforce radio policy without coupling security_mode
+/// directly to PowerManager internals.
+pub fn apply_mode_policy(
+    policy: &crate::security_mode::ModePolicy,
+    pm: &mut PowerManager,
+) {
+    let to_state = |enabled: bool| -> PowerState {
+        if enabled { PowerState::On } else { PowerState::Off }
+    };
+
+    pm.set_state(Radio::Cellular, to_state(policy.cellular_enabled));
+    pm.set_state(Radio::Wifi, to_state(policy.wifi_enabled));
+    pm.set_state(Radio::Bluetooth, to_state(policy.bluetooth_enabled));
+    pm.set_state(Radio::Gps, to_state(policy.gps_enabled));
+    // FM is always off during security mode transitions.
+    pm.set_state(Radio::Fm, PowerState::Off);
+}
+
 // ---------------------------------------------------------------------------
 // Testable governor logic (no MMIO side-effects)
 // ---------------------------------------------------------------------------
@@ -739,5 +765,72 @@ mod tests {
         assert_eq!(pm.state(Radio::Bluetooth), PowerState::On);
         assert_eq!(pm.state(Radio::Cellular), PowerState::Off);
         assert_eq!(pm.state(Radio::Gps), PowerState::Off);
+    }
+
+    // -----------------------------------------------------------------------
+    // apply_mode_policy tests (Phase 08 Wave 8)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mode_policy_applies_radio_state_sentinel() {
+        use crate::security::SleepTier;
+        use crate::security_mode::ModePolicy;
+
+        let mut pm = PowerManager::new();
+        pm.apply_mode(PowerMode::Full);
+
+        // Sentinel policy: cellular/wifi/bt off, GPS on.
+        let sentinel_policy = ModePolicy {
+            cellular_enabled: false,
+            wifi_enabled: false,
+            bluetooth_enabled: false,
+            gps_enabled: true,
+            mesh_enabled: true,
+            sleep_tier: SleepTier::Long,
+            scan_interval_ms: 10_000,
+        };
+
+        apply_mode_policy(&sentinel_policy, &mut pm);
+
+        assert_eq!(pm.state(Radio::Cellular), PowerState::Off,
+            "Sentinel must disable cellular");
+        assert_eq!(pm.state(Radio::Wifi), PowerState::Off,
+            "Sentinel must disable WiFi");
+        assert_eq!(pm.state(Radio::Bluetooth), PowerState::Off,
+            "Sentinel must disable Bluetooth");
+        assert_eq!(pm.state(Radio::Gps), PowerState::On,
+            "Sentinel must keep GPS on");
+        assert_eq!(pm.state(Radio::Fm), PowerState::Off,
+            "FM must always be off in security modes");
+    }
+
+    #[test]
+    fn mode_policy_applies_radio_state_daily() {
+        use crate::security::SleepTier;
+        use crate::security_mode::ModePolicy;
+
+        let mut pm = PowerManager::new();
+
+        // Daily policy: all radios on.
+        let daily_policy = ModePolicy {
+            cellular_enabled: true,
+            wifi_enabled: true,
+            bluetooth_enabled: true,
+            gps_enabled: true,
+            mesh_enabled: true,
+            sleep_tier: SleepTier::Short,
+            scan_interval_ms: 60_000,
+        };
+
+        apply_mode_policy(&daily_policy, &mut pm);
+
+        assert_eq!(pm.state(Radio::Cellular), PowerState::On,
+            "Daily must enable cellular");
+        assert_eq!(pm.state(Radio::Wifi), PowerState::On,
+            "Daily must enable WiFi");
+        assert_eq!(pm.state(Radio::Bluetooth), PowerState::On,
+            "Daily must enable Bluetooth");
+        assert_eq!(pm.state(Radio::Gps), PowerState::On,
+            "Daily must enable GPS");
     }
 }
