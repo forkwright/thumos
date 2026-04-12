@@ -79,6 +79,13 @@ pub struct StatusBarState {
     pub battery_pct: u8,
     /// Mode indicator character ("D" for Daily, "S" for Sentinel, "P" for Panic).
     pub mode_char: char,
+    /// Mode badge label from `ModeManager::status_badge`.
+    ///
+    /// When set, rendered in the center instead of the single `mode_char`.
+    /// Values: `"DAILY"`, `"SENTL"`, `"COVRT"`, `"PANIC"`.
+    pub mode_badge: Option<&'static str>,
+    /// Mode badge color (RGB565). Defaults to white if `None`.
+    pub mode_badge_color: Option<u16>,
 }
 
 impl Default for StatusBarState {
@@ -90,6 +97,8 @@ impl Default for StatusBarState {
             gps_fix: false,
             battery_pct: 0,
             mode_char: 'D',
+            mode_badge: None,
+            mode_badge_color: None,
         }
     }
 }
@@ -149,9 +158,17 @@ impl KernelStatusBar {
         }
 
         // --- Center: mode indicator ---
-        let mode_str: [u8; 1] = [state.mode_char as u8];
-        let mode_label = core::str::from_utf8(&mode_str).unwrap_or("D");
-        ui::draw_str_centered(fb, w, 0, w, text_y, mode_label, color::WHITE, color::BLACK);
+        // WHY: prefer the expanded badge (e.g. "SENTL", "COVRT") from the
+        // security mode manager when available; fall back to the single
+        // mode_char for backward compatibility.
+        if let Some(badge) = state.mode_badge {
+            let badge_color = state.mode_badge_color.unwrap_or(color::WHITE);
+            ui::draw_str_centered(fb, w, 0, w, text_y, badge, badge_color, color::BLACK);
+        } else {
+            let mode_str: [u8; 1] = [state.mode_char as u8];
+            let mode_label = core::str::from_utf8(&mode_str).unwrap_or("D");
+            ui::draw_str_centered(fb, w, 0, w, text_y, mode_label, color::WHITE, color::BLACK);
+        }
 
         // --- Right side: battery ---
         let batt_text = battery_text(state.battery_pct);
@@ -209,6 +226,7 @@ mod tests {
             gps_fix: true,
             battery_pct: 85,
             mode_char: 'D',
+            ..StatusBarState::default()
         };
         KernelStatusBar::draw(&mut fb, &state);
         let any_set = fb.iter().any(|&px| px != 0);
@@ -243,6 +261,7 @@ mod tests {
             gps_fix: true,
             battery_pct: 100,
             mode_char: 'S',
+            ..StatusBarState::default()
         };
         KernelStatusBar::draw(&mut fb[..STATUS_PIXELS], &state);
 
@@ -282,6 +301,32 @@ mod tests {
         assert_eq!(NetworkService::Edge.label(), "2G");
         assert_eq!(NetworkService::ThreeG.label(), "3G");
         assert_eq!(NetworkService::Lte.label(), "LTE");
+    }
+
+    #[test]
+    fn draw_mode_badge_renders() {
+        let mut fb = [0u16; STATUS_PIXELS];
+        let state = StatusBarState {
+            mode_badge: Some("SENTL"),
+            mode_badge_color: Some(color::YELLOW),
+            ..StatusBarState::default()
+        };
+        KernelStatusBar::draw(&mut fb, &state);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "status bar with mode badge must render pixels");
+    }
+
+    #[test]
+    fn draw_panic_badge_renders() {
+        let mut fb = [0u16; STATUS_PIXELS];
+        let state = StatusBarState {
+            mode_badge: Some("PANIC"),
+            mode_badge_color: Some(color::RED),
+            ..StatusBarState::default()
+        };
+        KernelStatusBar::draw(&mut fb, &state);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "status bar with PANIC badge must render pixels");
     }
 
     #[test]
