@@ -57,10 +57,12 @@ mod gsm7;
 mod heorte;
 mod heorte_alarm;
 mod heorte_timer;
+mod http_client;
 #[cfg(not(test))]
 mod gic;
 #[cfg(not(test))]
 mod heap;
+mod json_mini;
 #[cfg(not(test))]
 mod ipc;
 #[cfg(not(test))]
