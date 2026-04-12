@@ -556,7 +556,7 @@ mod tests {
     fn main_menu_lists_categories() {
         let screen = SettingsMenuScreen::new();
         // Verify all expected categories are present.
-        let labels: Vec<&str> = MENU_ITEMS.iter().map(|item| item.label).collect();
+        let labels: alloc::vec::Vec<&str> = MENU_ITEMS.iter().map(|item| item.label).collect();
         assert!(labels.contains(&"WiFi"), "must include WiFi");
         assert!(labels.contains(&"Bluetooth"), "must include Bluetooth");
         assert!(labels.contains(&"Display"), "must include Display");

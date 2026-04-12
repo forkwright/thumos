@@ -40,6 +40,7 @@ mod csprng;
 mod devfs;
 mod dhcp;
 mod dns;
+mod dns_tls;
 #[cfg(not(test))]
 mod device;
 mod display;
@@ -94,9 +95,12 @@ mod screen_dialer;
 mod screen_fm;
 mod screen_home;
 mod screen_messages;
+mod screen_privacy;
 mod screen_radio;
 mod screen_search;
 mod screen_settings;
+#[expect(dead_code, reason = "Phase 08 Wave 6: wired in Wave 8 via kinit")]
+mod secure_boot;
 #[expect(dead_code, reason = "Phase 08 Wave 1: used by encryption + key_manager")]
 mod security;
 #[expect(dead_code, reason = "Phase 08 Wave 2: wired in Wave 8 via kinit")]
