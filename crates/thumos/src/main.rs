@@ -81,6 +81,7 @@ mod mmio;
 #[cfg(not(test))]
 mod mmu;
 mod net;
+mod nous;
 mod page;
 mod panic_wipe;
 mod pipe;
@@ -97,6 +98,7 @@ mod screen_dialer;
 mod screen_fm;
 mod screen_home;
 mod screen_messages;
+mod screen_nous;
 mod screen_privacy;
 mod screen_radio;
 mod screen_search;
