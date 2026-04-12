@@ -65,6 +65,8 @@ mod ipc;
 mod kconfig;
 #[expect(dead_code, reason = "Phase 08 Wave 1: wired in Wave 8 via kinit")]
 mod key_manager;
+#[expect(dead_code, reason = "Phase 08 Wave 3: wired in Wave 8 via kinit")]
+mod lock_screen;
 #[cfg(not(test))]
 mod kinit;
 mod mic_audit;
