@@ -86,6 +86,11 @@ pub struct StatusBarState {
     pub mode_badge: Option<&'static str>,
     /// Mode badge color (RGB565). Defaults to white if `None`.
     pub mode_badge_color: Option<u16>,
+    /// Whether the threat level is High or Critical.
+    ///
+    /// When `true`, a red "!" indicator is drawn between the mode badge
+    /// and battery percentage to alert the user to active threats.
+    pub threat_high: bool,
 }
 
 impl Default for StatusBarState {
@@ -99,6 +104,7 @@ impl Default for StatusBarState {
             mode_char: 'D',
             mode_badge: None,
             mode_badge_color: None,
+            threat_high: false,
         }
     }
 }
@@ -170,11 +176,17 @@ impl KernelStatusBar {
             ui::draw_str_centered(fb, w, 0, w, text_y, mode_label, color::WHITE, color::BLACK);
         }
 
-        // --- Right side: battery ---
+        // --- Right side: threat indicator + battery ---
         let batt_text = battery_text(state.battery_pct);
         let batt_width = ui::str_pixel_width(batt_text);
         let batt_x = w.saturating_sub(batt_width).saturating_sub(2);
         ui::draw_str(fb, w, batt_x, text_y, batt_text, color::WHITE, color::BLACK);
+
+        // Threat indicator: red "!" when threat level is High or Critical.
+        if state.threat_high {
+            let threat_x = batt_x.saturating_sub(CHAR_WIDTH + 2);
+            ui::draw_char(fb, w, threat_x, text_y, '!', color::RED, color::BLACK);
+        }
     }
 }
 
@@ -341,5 +353,43 @@ mod tests {
             );
             seen[m as usize] = true;
         }
+    }
+
+    #[test]
+    fn draw_threat_indicator_renders() {
+        let mut fb = [0u16; STATUS_PIXELS];
+        let state = StatusBarState {
+            threat_high: true,
+            battery_pct: 50,
+            ..StatusBarState::default()
+        };
+        KernelStatusBar::draw(&mut fb, &state);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "status bar with threat indicator must render pixels");
+    }
+
+    #[test]
+    fn draw_no_threat_indicator_when_low() {
+        let mut fb_low = [0u16; STATUS_PIXELS];
+        let state_low = StatusBarState {
+            threat_high: false,
+            battery_pct: 50,
+            ..StatusBarState::default()
+        };
+        KernelStatusBar::draw(&mut fb_low, &state_low);
+
+        let mut fb_high = [0u16; STATUS_PIXELS];
+        let state_high = StatusBarState {
+            threat_high: true,
+            battery_pct: 50,
+            ..StatusBarState::default()
+        };
+        KernelStatusBar::draw(&mut fb_high, &state_high);
+
+        // The framebuffers must differ when threat_high changes.
+        assert!(
+            fb_low != fb_high,
+            "threat indicator must produce different pixels"
+        );
     }
 }

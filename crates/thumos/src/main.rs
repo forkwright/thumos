@@ -106,6 +106,7 @@ mod screen_privacy;
 mod screen_radio;
 mod screen_search;
 mod screen_settings;
+mod screen_threat;
 mod secure_boot;
 mod security;
 mod security_mode;
