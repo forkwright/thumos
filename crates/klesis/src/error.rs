@@ -67,6 +67,28 @@ pub enum Error {
         /// Unicode codepoint that cannot be encoded.
         codepoint: u32,
     },
+
+    /// Silent SMS (Type 0) detected: PID indicates the message should not be
+    /// displayed or stored. This is a surveillance technique used by IMSI
+    /// catchers and law enforcement to silently ping a device.
+    #[snafu(display("silent SMS detected (PID=0x{pid:02X})"))]
+    SilentSmsAlert {
+        /// The Protocol Identifier byte that triggered the alert.
+        pid: u8,
+    },
+
+    /// WAP Push / OMA-CP message rejected. UDH destination port indicates
+    /// an over-the-air provisioning or WAP Push message, which can be used
+    /// for remote SIM toolkit attacks.
+    #[snafu(display(
+        "WAP Push rejected: UDH destination port {destination_port} (source port {source_port})"
+    ))]
+    WapPushRejected {
+        /// UDH destination port number.
+        destination_port: u16,
+        /// UDH source port number.
+        source_port: u16,
+    },
 }
 
 /// Result type for telephony operations.
