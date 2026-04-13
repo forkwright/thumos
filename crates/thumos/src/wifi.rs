@@ -31,6 +31,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::csprng;
+use crate::security::{hmac_sha1, pbkdf2_hmac_sha1, prf_384, SHA1_DIGEST_LEN};
 
 // ---------------------------------------------------------------------------
 // MT6739 WiFi hardware constants
@@ -317,18 +318,12 @@ impl Drop for Ptk {
 ///
 /// Uses PBKDF2-HMAC-SHA1 with 4096 iterations and a 32-byte output as
 /// specified in IEEE 802.11-2020, section 12.4.4.3.1.
-///
-/// # Current status
-///
-/// **Stubbed**: returns zeroed PMK. Full PBKDF2-HMAC-SHA1 requires a SHA1
-/// implementation which is not yet available in the kernel. The actual crypto
-/// will be implemented when the kernel crypto subsystem is added.
 #[must_use]
-pub fn derive_pmk(_passphrase: &[u8], _ssid: &[u8]) -> [u8; PMK_LEN] {
-    // TODO(#72): implement PBKDF2-HMAC-SHA1 (4096 iterations, 32-byte output)
-    // per IEEE 802.11-2020, section 12.4.4.3.1.
-    // Requires: HMAC-SHA1 primitive (not yet in kernel).
-    [0u8; PMK_LEN]
+pub fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
+    let mut pmk = [0u8; PMK_LEN];
+    // Infallible: 4096 > 0.
+    let _ = pbkdf2_hmac_sha1(passphrase, ssid, 4096, &mut pmk);
+    pmk
 }
 
 /// Derive the Pairwise Transient Key using PRF-384.
@@ -338,50 +333,60 @@ pub fn derive_pmk(_passphrase: &[u8], _ssid: &[u8]) -> [u8; PMK_LEN] {
 /// PTK = PRF-384(PMK, "Pairwise key expansion",
 ///               min(AA,SPA) || max(AA,SPA) || min(ANonce,SNonce) || max(ANonce,SNonce))
 /// ```
-///
-/// # Current status
-///
-/// **Stubbed**: returns zeroed PTK. Requires HMAC-SHA1 for the PRF function.
 #[must_use]
 pub fn derive_ptk(
-    _pmk: &[u8; PMK_LEN],
-    _anonce: &[u8; 32],
-    _snonce: &[u8; 32],
-    _aa: &[u8; 6],
-    _spa: &[u8; 6],
+    pmk: &[u8; PMK_LEN],
+    anonce: &[u8; 32],
+    snonce: &[u8; 32],
+    aa: &[u8; 6],
+    spa: &[u8; 6],
 ) -> Ptk {
-    // TODO(#72): implement PRF-384 via HMAC-SHA1 counter construction
-    // per IEEE 802.11-2020, section 12.7.1.2.
-    Ptk {
-        kck: [0u8; KCK_LEN],
-        kek: [0u8; KEK_LEN],
-        tk: [0u8; TK_LEN],
+    // Build concatenated data: min(AA,SPA) || max(AA,SPA) ||
+    //                          min(ANonce,SNonce) || max(ANonce,SNonce)
+    let mut data = [0u8; 76];
+    if aa <= spa {
+        data[0..6].copy_from_slice(aa);
+        data[6..12].copy_from_slice(spa);
+    } else {
+        data[0..6].copy_from_slice(spa);
+        data[6..12].copy_from_slice(aa);
     }
+    if anonce <= snonce {
+        data[12..44].copy_from_slice(anonce);
+        data[44..76].copy_from_slice(snonce);
+    } else {
+        data[12..44].copy_from_slice(snonce);
+        data[44..76].copy_from_slice(anonce);
+    }
+
+    let ptk_bytes = prf_384(pmk, b"Pairwise key expansion", &data);
+
+    let mut kck = [0u8; KCK_LEN];
+    let mut kek = [0u8; KEK_LEN];
+    let mut tk = [0u8; TK_LEN];
+    kck.copy_from_slice(&ptk_bytes[0..16]);
+    kek.copy_from_slice(&ptk_bytes[16..32]);
+    tk.copy_from_slice(&ptk_bytes[32..48]);
+
+    Ptk { kck, kek, tk }
 }
 
 /// Compute a 16-byte MIC using HMAC-SHA1 truncated to 128 bits.
 ///
 /// Used to authenticate EAPOL-Key frames during the 4-way handshake
 /// (messages 2, 3, and 4).
-///
-/// # Current status
-///
-/// **Stubbed**: returns zeroed MIC. Requires HMAC-SHA1 primitive.
 #[must_use]
-pub fn compute_mic(_kck: &[u8; KCK_LEN], _data: &[u8]) -> [u8; MIC_LEN] {
-    // TODO(#72): implement HMAC-SHA1 truncated to 128 bits.
-    [0u8; MIC_LEN]
+pub fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
+    let full = hmac_sha1(kck, data);
+    let mut mic = [0u8; MIC_LEN];
+    mic.copy_from_slice(&full[..MIC_LEN]);
+    mic
 }
 
 /// Verify that `expected_mic` matches the MIC computed over `data` with `kck`.
 ///
 /// Uses constant-time comparison to prevent timing side-channel attacks.
 /// Returns `true` only when the MIC is correct.
-///
-/// # Current status
-///
-/// **Stubbed**: relies on the stubbed `compute_mic`. Will produce correct
-/// results once the kernel crypto subsystem provides HMAC-SHA1.
 #[must_use]
 pub fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
     let computed = compute_mic(kck, data);
@@ -814,8 +819,22 @@ impl WpaHandshake {
                 }
                 self.replay_counter = key_frame.replay_counter;
 
-                // TODO(#72): verify MIC using KCK from PTK
-                // let expected_mic = compute_mic(&ptk.kck, frame_with_zeroed_mic);
+                // Verify MIC using KCK from PTK (IEEE 802.11-2020 section 12.7.6.4).
+                if let Some(ref ptk) = self.ptk {
+                    let mut zeroed_kf = key_frame.clone();
+                    zeroed_kf.mic = [0u8; MIC_LEN];
+                    let zeroed_frame = EapolFrame {
+                        version: 2,
+                        packet_type: EapolType::Key,
+                        key_frame: Some(zeroed_kf),
+                        raw_body: Vec::new(),
+                    };
+                    let encoded = eapol_encode(&zeroed_frame);
+                    if !verify_mic(&ptk.kck, &encoded, &key_frame.mic) {
+                        self.state = HandshakeState::Failed;
+                        return self.state;
+                    }
+                }
 
                 self.state = HandshakeState::SendMsg4;
                 self.state
@@ -841,7 +860,7 @@ impl WpaHandshake {
                 // Message 2: supplicant sends SNonce, mic=true, ack=false
                 // Key info: version=2 (AES), pairwise, MIC
                 let key_info = KeyInfo(0x010a); // version=2, pairwise, MIC
-                let kf = EapolKeyFrame {
+                let mut kf = EapolKeyFrame {
                     descriptor_type: DESCRIPTOR_TYPE_RSN,
                     key_info,
                     key_length: 0,
@@ -849,9 +868,19 @@ impl WpaHandshake {
                     nonce: self.snonce,
                     iv: [0u8; IV_LEN],
                     rsc: 0,
-                    mic: [0u8; MIC_LEN], // TODO(#72): compute MIC with KCK
+                    mic: [0u8; MIC_LEN],
                     key_data: Vec::new(),
                 };
+                // Compute MIC over the frame with zeroed MIC field.
+                if let Some(ref ptk) = self.ptk {
+                    let frame_for_mic = EapolFrame {
+                        version: 2,
+                        packet_type: EapolType::Key,
+                        key_frame: Some(kf.clone()),
+                        raw_body: Vec::new(),
+                    };
+                    kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
+                }
                 Some(EapolFrame {
                     version: 2,
                     packet_type: EapolType::Key,
@@ -862,7 +891,7 @@ impl WpaHandshake {
             HandshakeState::SendMsg4 => {
                 // Message 4: supplicant sends final ACK, mic=true, secure=true
                 let key_info = KeyInfo(0x030a); // version=2, pairwise, MIC, secure
-                let kf = EapolKeyFrame {
+                let mut kf = EapolKeyFrame {
                     descriptor_type: DESCRIPTOR_TYPE_RSN,
                     key_info,
                     key_length: 0,
@@ -870,9 +899,19 @@ impl WpaHandshake {
                     nonce: [0u8; NONCE_LEN],
                     iv: [0u8; IV_LEN],
                     rsc: 0,
-                    mic: [0u8; MIC_LEN], // TODO(#72): compute MIC with KCK
+                    mic: [0u8; MIC_LEN],
                     key_data: Vec::new(),
                 };
+                // Compute MIC over the frame with zeroed MIC field.
+                if let Some(ref ptk) = self.ptk {
+                    let frame_for_mic = EapolFrame {
+                        version: 2,
+                        packet_type: EapolType::Key,
+                        key_frame: Some(kf.clone()),
+                        raw_body: Vec::new(),
+                    };
+                    kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
+                }
                 Some(EapolFrame {
                     version: 2,
                     packet_type: EapolType::Key,
@@ -1480,5 +1519,65 @@ mod tests {
             Err(WifiError::AssociationFailed),
             "associating with nonexistent network must return AssociationFailed"
         );
+    }
+
+    // -- WPA2 crypto tests --
+
+    #[test]
+    fn derive_pmk_ieee_annex_j3() {
+        // IEEE 802.11-2020 Annex J.3: passphrase="password", SSID="IEEE"
+        let pmk = derive_pmk(b"password", b"IEEE");
+        let expected = [
+            0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef,
+            0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a, 0x5f, 0x90,
+            0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2,
+            0x3a, 0xed, 0x76, 0x2e, 0x97, 0x10, 0xa1, 0x2e,
+        ];
+        assert_eq!(pmk, expected, "PMK must match IEEE 802.11-2020 Annex J.3");
+    }
+
+    #[test]
+    fn derive_pmk_differs_by_ssid() {
+        let pmk1 = derive_pmk(b"password", b"Network1");
+        let pmk2 = derive_pmk(b"password", b"Network2");
+        assert_ne!(pmk1, pmk2, "different SSIDs must produce different PMKs");
+    }
+
+    #[test]
+    fn derive_ptk_produces_nonzero_keys() {
+        let pmk = derive_pmk(b"password", b"TestSSID");
+        let anonce = [0xAAu8; 32];
+        let snonce = [0xBBu8; 32];
+        let aa = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        let spa = [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
+        let ptk = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
+        assert_ne!(ptk.kck, [0u8; KCK_LEN], "KCK must not be zero");
+        assert_ne!(ptk.kek, [0u8; KEK_LEN], "KEK must not be zero");
+        assert_ne!(ptk.tk, [0u8; TK_LEN], "TK must not be zero");
+    }
+
+    #[test]
+    fn compute_mic_is_16_bytes_nonzero() {
+        let kck = [0xCCu8; KCK_LEN];
+        let data = b"test eapol frame data";
+        let mic = compute_mic(&kck, data);
+        assert_ne!(mic, [0u8; MIC_LEN], "MIC must not be zero");
+    }
+
+    #[test]
+    fn verify_mic_accepts_correct_mic() {
+        let kck = [0xCCu8; KCK_LEN];
+        let data = b"test eapol frame data";
+        let mic = compute_mic(&kck, data);
+        assert!(verify_mic(&kck, data, &mic), "correct MIC must verify");
+    }
+
+    #[test]
+    fn verify_mic_rejects_wrong_mic() {
+        let kck = [0xCCu8; KCK_LEN];
+        let data = b"test eapol frame data";
+        let mut bad_mic = compute_mic(&kck, data);
+        bad_mic[0] ^= 0xFF; // flip one byte
+        assert!(!verify_mic(&kck, data, &bad_mic), "wrong MIC must not verify");
     }
 }
