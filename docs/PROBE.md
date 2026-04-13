@@ -15,7 +15,7 @@ Read-only ADB probe of the actual device. No modifications made.
 | Build type | user (not userdebug) |
 | Kernel | `Linux 4.4.95+ #1 SMP PREEMPT Tue Mar 22 19:42:21 CST 2022` |
 | Compiler | Linaro GCC 6.3-2017.05 |
-| Serial | M7H2345001620 |
+| Serial | REDACTED000000 |
 | ODM | tydtech (visible in `ro.fota.oem: tydtech6739_8.1`) |
 
 Note: ODM is TYD Technology, not Droi as previously reported. Build paths reference `Q12_1` as the internal device codename.
@@ -89,7 +89,7 @@ Stock Android 8.1 uses ~412 MB with screen on, idle. 502 MB "available" includes
 
 ### microSD (adoptable storage)
 
-128 GB microSD present, formatted as adoptable storage (dm-1, encrypted). Mounted at `/mnt/expand/25b6de5f-2e86-4058-a705-3d468fb250ac`.
+128 GB microSD present, formatted as adoptable storage (dm-1, encrypted). Mounted at `/mnt/expand/00000000-0000-0000-0000-000000000000`.
 
 ### Filesystem usage
 
@@ -116,13 +116,13 @@ Stock Android 8.1 uses ~412 MB with screen on, idle. 502 MB "available" includes
 
 - Interface: `wlan0` at `180f0000.wifi` (platform device)
 - P2P: `p2p0` (WiFi Direct capable)
-- Connected: `Hifi-Wifi 5G` at 5745 MHz, 135 Mbps, RSSI -56 dBm
-- MAC: `0c:52:03:1d:9f:06`
+- Connected: `ExampleSSID` at 5745 MHz, 135 Mbps, RSSI -56 dBm
+- MAC: `00:00:00:00:00:00`
 - Country: US
 
 ### Bluetooth
 
-- Address: `0C:52:03:1D:9F:05`
+- Address: `00:00:00:00:00:01`
 - Name: AGM M7
 - State: OFF
 

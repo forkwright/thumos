@@ -1,9 +1,9 @@
 //! DNS resolver with caching and split-horizon routing.
 //!
-//! Queries for `*.lan` hostnames are routed to the menos AdGuard
-//! instance (Tailscale IP `100.74.109.2`), which resolves internal
-//! LAN services. All other queries go to Mullvad DNS (`194.242.2.2`)
-//! for privacy. ISP DNS is never used.
+//! Queries for `*.lan` hostnames are routed to a local AdGuard DNS
+//! instance, which resolves internal LAN services. All other queries
+//! go to Mullvad DNS (`194.242.2.2`) for privacy. ISP DNS is never
+//! used.
 //!
 //! The resolver maintains an LRU cache of up to [`MAX_CACHE_ENTRIES`]
 //! entries. TTLs are decremented by [`DnsResolver::tick`] and expired
@@ -41,8 +41,11 @@ const DEFAULT_TTL_SECS: u32 = 300;
 /// DNS query/response port.
 const DNS_PORT: u16 = 53;
 
-/// Default menos AdGuard DNS address (Tailscale IP).
-pub const MENOS_DNS: Ipv4Address = Ipv4Address::new(100, 74, 109, 2);
+/// Default LAN DNS address for split-horizon routing.
+///
+/// Set to the operator's AdGuard/Pi-hole instance. This default is a
+/// placeholder; real deployments configure via `DnsResolver::new()`.
+pub const LAN_DNS: Ipv4Address = Ipv4Address::new(198, 51, 100, 1);
 
 /// Default Mullvad DNS address (privacy-respecting, no logging).
 pub const MULLVAD_DNS: Ipv4Address = Ipv4Address::new(194, 242, 2, 2);
@@ -215,15 +218,15 @@ impl DnsCache {
 
 /// Determine which DNS server to use for a given hostname.
 ///
-/// Queries for `*.lan` hostnames are routed to the menos AdGuard
+/// Queries for `*.lan` hostnames are routed to the LAN DNS
 /// instance. All other queries go to the privacy-respecting Mullvad DNS.
 pub fn select_dns_server(
     hostname: &str,
-    menos_dns: Ipv4Address,
+    lan_dns: Ipv4Address,
     internet_dns: Ipv4Address,
 ) -> Ipv4Address {
     if is_lan_hostname(hostname) {
-        menos_dns
+        lan_dns
     } else {
         internet_dns
     }
@@ -415,8 +418,8 @@ fn skip_dns_name(data: &[u8], mut offset: usize) -> Result<usize, DnsError> {
 pub struct DnsResolver {
     /// Local DNS cache.
     cache: DnsCache,
-    /// DNS server for `*.lan` queries (menos AdGuard via Tailscale).
-    menos_dns: Ipv4Address,
+    /// DNS server for `*.lan` queries (LAN DNS via Tailscale).
+    lan_dns: Ipv4Address,
     /// DNS server for all other queries (Mullvad, privacy-respecting).
     internet_dns: Ipv4Address,
     /// Transaction ID counter for DNS queries.
@@ -435,12 +438,12 @@ impl DnsResolver {
     ///
     /// # Arguments
     ///
-    /// * `menos_dns` — DNS server for `*.lan` queries (e.g., `100.74.109.2`).
+    /// * `lan_dns` — DNS server for `*.lan` queries (e.g., `198.51.100.1`).
     /// * `internet_dns` — DNS server for all other queries (e.g., `194.242.2.2`).
-    pub fn new(menos_dns: Ipv4Address, internet_dns: Ipv4Address) -> Self {
+    pub fn new(lan_dns: Ipv4Address, internet_dns: Ipv4Address) -> Self {
         Self {
             cache: DnsCache::new(),
-            menos_dns,
+            lan_dns,
             internet_dns,
             next_txid: 1,
             use_dot: false,
@@ -503,7 +506,7 @@ impl DnsResolver {
 
     /// Determine which DNS server should handle a query for `hostname`.
     pub fn server_for(&self, hostname: &str) -> Ipv4Address {
-        select_dns_server(hostname, self.menos_dns, self.internet_dns)
+        select_dns_server(hostname, self.lan_dns, self.internet_dns)
     }
 
     /// Build a DNS query packet for `hostname`.
@@ -642,34 +645,34 @@ mod tests {
     // -- Split-horizon routing tests --
 
     #[test]
-    fn split_horizon_routes_lan_to_menos() {
-        let server = select_dns_server("homepage.lan", MENOS_DNS, MULLVAD_DNS);
+    fn split_horizon_routes_lan_to_local_dns() {
+        let server = select_dns_server("homepage.lan", LAN_DNS, MULLVAD_DNS);
         assert_eq!(
-            server, MENOS_DNS,
-            "*.lan queries must route to menos AdGuard"
+            server, LAN_DNS,
+            "*.lan queries must route to LAN DNS"
         );
 
         // Also test bare "lan" and mixed case.
-        let server = select_dns_server("something.LAN", MENOS_DNS, MULLVAD_DNS);
-        assert_eq!(server, MENOS_DNS, "case-insensitive .lan detection");
+        let server = select_dns_server("something.LAN", LAN_DNS, MULLVAD_DNS);
+        assert_eq!(server, LAN_DNS, "case-insensitive .lan detection");
 
-        let server = select_dns_server("sub.domain.lan", MENOS_DNS, MULLVAD_DNS);
-        assert_eq!(server, MENOS_DNS, "nested subdomains under .lan");
+        let server = select_dns_server("sub.domain.lan", LAN_DNS, MULLVAD_DNS);
+        assert_eq!(server, LAN_DNS, "nested subdomains under .lan");
     }
 
     #[test]
     fn split_horizon_routes_internet_to_mullvad() {
-        let server = select_dns_server("example.com", MENOS_DNS, MULLVAD_DNS);
+        let server = select_dns_server("example.com", LAN_DNS, MULLVAD_DNS);
         assert_eq!(
             server, MULLVAD_DNS,
             "non-.lan queries must route to Mullvad"
         );
 
-        let server = select_dns_server("rust-lang.org", MENOS_DNS, MULLVAD_DNS);
+        let server = select_dns_server("rust-lang.org", LAN_DNS, MULLVAD_DNS);
         assert_eq!(server, MULLVAD_DNS, "org TLD routes to Mullvad");
 
         // "lanyard.com" should NOT match .lan.
-        let server = select_dns_server("lanyard.com", MENOS_DNS, MULLVAD_DNS);
+        let server = select_dns_server("lanyard.com", LAN_DNS, MULLVAD_DNS);
         assert_eq!(
             server, MULLVAD_DNS,
             "lanyard.com must not match .lan suffix"
@@ -774,7 +777,7 @@ mod tests {
 
     #[test]
     fn resolver_caches_processed_response() {
-        let mut resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        let mut resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
 
         // Build a minimal A response.
         let mut response = Vec::new();
@@ -896,7 +899,7 @@ mod tests {
 
     #[test]
     fn use_dot_defaults_to_false() {
-        let resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        let resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
         assert!(
             !resolver.use_dot(),
             "DoT must be disabled by default"
@@ -905,14 +908,14 @@ mod tests {
 
     #[test]
     fn set_use_dot_enables_dot() {
-        let mut resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        let mut resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
         resolver.set_use_dot(true);
         assert!(resolver.use_dot(), "DoT must be enabled after set_use_dot(true)");
     }
 
     #[test]
     fn should_use_dot_for_internet_hostname() {
-        let mut resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        let mut resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
         resolver.set_use_dot(true);
         assert!(
             resolver.should_use_dot("example.com"),
@@ -922,7 +925,7 @@ mod tests {
 
     #[test]
     fn should_not_use_dot_for_lan_hostname() {
-        let mut resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        let mut resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
         resolver.set_use_dot(true);
         assert!(
             !resolver.should_use_dot("homepage.lan"),
@@ -932,7 +935,7 @@ mod tests {
 
     #[test]
     fn should_not_use_dot_when_disabled() {
-        let resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        let resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
         assert!(
             !resolver.should_use_dot("example.com"),
             "must not use DoT when disabled"
