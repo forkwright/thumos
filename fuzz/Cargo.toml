@@ -1,0 +1,50 @@
+[package]
+name = "thumos-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+# WHY: cargo-fuzz requires nightly; this crate is never published.
+
+[package.metadata]
+# WHY: required marker so `cargo fuzz list` recognises this as a fuzz project.
+cargo-fuzz = true
+
+# WHY: the fuzz crate is a standalone project outside the main workspace.
+# cargo-fuzz requires this declaration so Cargo doesn't try to merge it into
+# the parent workspace (which uses stable; fuzz targets need nightly).
+[workspace]
+
+[[bin]]
+name = "fuzz_eapol"
+path = "fuzz_targets/fuzz_eapol.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_gsm7"
+path = "fuzz_targets/fuzz_gsm7.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dns"
+path = "fuzz_targets/fuzz_dns.rs"
+test = false
+doc = false
+bench = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+aither = { path = "../crates/aither" }
+klesis = { path = "../crates/klesis" }
+asphaleia = { path = "../crates/asphaleia" }
+
+[profile.release]
+# WHY: sanitiser instrumentation and coverage tracking require debug info.
+debug = true
+
+[profile.dev]
+# WHY: consistent with workspace dev profile used by cargo check.
+opt-level = 1
