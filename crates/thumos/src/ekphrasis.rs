@@ -500,7 +500,7 @@ impl fmt::Display for AudioCaptureConfig {
 pub struct Ekphrasis {
     /// Current state of the voice-to-text pipeline.
     state: EkphrasisState,
-    /// Aletheia STT endpoint hostname (e.g., "menos.lan" or Tailscale IP).
+    /// Aletheia STT endpoint hostname (e.g., "stt.example.lan" or Tailscale IP).
     aletheia_host: String,
     /// Aletheia STT endpoint port.
     aletheia_port: u16,
@@ -1366,7 +1366,7 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_idle_to_recording() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
 
         assert_eq!(*ek.state(), EkphrasisState::Idle);
@@ -1380,7 +1380,7 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_recording_to_streaming() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
         let _ = ek.start_recording();
 
@@ -1392,7 +1392,7 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_cannot_record_when_unreachable() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         // Not reachable by default.
         assert!(!ek.is_available());
 
@@ -1402,7 +1402,7 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_cannot_record_when_already_recording() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
         let _ = ek.start_recording();
 
@@ -1419,14 +1419,14 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_cannot_stream_from_idle() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         let result = ek.begin_streaming();
         assert!(result.is_err());
     }
 
     #[test]
     fn state_stop_from_recording() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
         let _ = ek.start_recording();
 
@@ -1438,14 +1438,14 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_stop_from_idle_fails() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         let result = ek.stop_recording();
         assert!(result.is_err());
     }
 
     #[test]
     fn state_feed_audio_while_recording() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
         let _ = ek.start_recording();
 
@@ -1455,14 +1455,14 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_feed_audio_while_idle_fails() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         let result = ek.feed_audio(&[0x01]);
         assert!(result.is_err());
     }
 
     #[test]
     fn state_take_audio_frame() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
         let _ = ek.start_recording();
         let _ = ek.begin_streaming();
@@ -1481,7 +1481,7 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_transcription_flow() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
         let _ = ek.start_recording();
         let _ = ek.begin_streaming();
@@ -1509,7 +1509,7 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_server_close_frame() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
         let _ = ek.start_recording();
         let _ = ek.begin_streaming();
@@ -1522,7 +1522,7 @@ Let me know if you need anything else."#;
 
     #[test]
     fn state_reset_clears_everything() {
-        let mut ek = Ekphrasis::new("menos.lan", 8080);
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
         let _ = ek.start_recording();
         let _ = ek.feed_audio(&[0xFF; 100]);
@@ -1553,19 +1553,19 @@ Let me know if you need anything else."#;
 
     #[test]
     fn ekphrasis_display() {
-        let ek = Ekphrasis::new("menos.lan", 8080);
+        let ek = Ekphrasis::new("stt.example.lan", 8080);
         let display = alloc::format!("{ek}");
-        assert!(display.contains("menos.lan"));
+        assert!(display.contains("stt.example.lan"));
         assert!(display.contains("8080"));
         assert!(display.contains("idle"));
     }
 
     #[test]
     fn ekphrasis_ws_upgrade_request() {
-        let ek = Ekphrasis::new("menos.lan", 8080);
+        let ek = Ekphrasis::new("stt.example.lan", 8080);
         let req = ek.ws_upgrade_request("dGVzdC1rZXk=");
 
-        assert_eq!(req.host, "menos.lan");
+        assert_eq!(req.host, "stt.example.lan");
         assert_eq!(req.path, "/stt/stream");
         assert!(req
             .headers
