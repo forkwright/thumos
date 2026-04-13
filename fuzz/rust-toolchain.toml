@@ -1,0 +1,5 @@
+[toolchain]
+# WHY: cargo-fuzz uses libfuzzer instrumentation APIs that are only available on
+# nightly. This file pins the fuzz crate to nightly independently of the rest of
+# the workspace, which stays on stable.
+channel = "nightly"
