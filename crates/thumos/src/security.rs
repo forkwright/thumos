@@ -1,15 +1,17 @@
 //! Security constants, types, and cryptographic primitives.
 //!
 //! Shared definitions used across the encryption and key management
-//! subsystems. Includes inline implementations of SHA-256, HMAC-SHA256,
-//! PBKDF2-HMAC-SHA256, and HKDF-SHA256 for the bare-metal kernel
-//! (no `std` or `ring` dependency).
+//! subsystems. Includes inline implementations of SHA-256, SHA-1,
+//! HMAC-SHA256, HMAC-SHA1, PBKDF2, PRF-384, and HKDF-SHA256 for
+//! the bare-metal kernel (no `std` or `ring` dependency).
 //!
 //! All cryptographic implementations follow their respective RFCs:
 //! - SHA-256: FIPS 180-4 / RFC 6234
+//! - SHA-1: FIPS 180-4 (required by WPA2; collision resistance broken — do not use for new designs)
 //! - HMAC: RFC 2104
 //! - PBKDF2: RFC 8018 (PKCS#5 v2.1)
 //! - HKDF: RFC 5869
+//! - PRF-384: IEEE 802.11-2020 section 12.7.1.2
 
 use core::fmt;
 
@@ -388,6 +390,329 @@ pub fn pbkdf2_sha256(
 }
 
 // ---------------------------------------------------------------------------
+// SHA-1 — FIPS 180-4
+// ---------------------------------------------------------------------------
+//
+// SHA-1 has broken collision resistance (SHAttered, 2017). This implementation
+// exists solely to satisfy IEEE 802.11-2020's WPA2 requirement for
+// PBKDF2-HMAC-SHA1 PMK derivation. Do not use SHA-1 for new designs.
+
+/// SHA-1 digest length in bytes.
+pub const SHA1_DIGEST_LEN: usize = 20;
+
+/// SHA-1 block size in bytes.
+const SHA1_BLOCK_SIZE: usize = 64;
+
+/// SHA-1 initial hash values (FIPS 180-4 section 5.3.1).
+const SHA1_H: [u32; 5] = [
+    0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476, 0xc3d2_e1f0,
+];
+
+/// SHA-1 round constants (FIPS 180-4 section 4.2.1).
+const SHA1_K: [u32; 4] = [
+    0x5a82_7999, // rounds  0-19
+    0x6ed9_eba1, // rounds 20-39
+    0x8f1b_bcdc, // rounds 40-59
+    0xca62_c1d6, // rounds 60-79
+];
+
+/// Incremental SHA-1 hasher.
+///
+/// # Security note
+///
+/// SHA-1 has broken collision resistance. Use only for WPA2 compliance
+/// (IEEE 802.11-2020). Prefer [`Sha256`] for all other purposes.
+pub struct Sha1 {
+    state: [u32; 5],
+    buffer: [u8; SHA1_BLOCK_SIZE],
+    buf_len: usize,
+    total_len: u64,
+}
+
+impl Sha1 {
+    /// Create a new SHA-1 hasher.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            state: SHA1_H,
+            buffer: [0u8; SHA1_BLOCK_SIZE],
+            buf_len: 0,
+            total_len: 0,
+        }
+    }
+
+    /// Feed data into the hasher.
+    pub fn update(&mut self, data: &[u8]) {
+        let mut offset = 0;
+        self.total_len += data.len() as u64;
+
+        // Fill leftover buffer first.
+        if self.buf_len > 0 {
+            let space = SHA1_BLOCK_SIZE - self.buf_len;
+            let to_copy = data.len().min(space);
+            self.buffer[self.buf_len..self.buf_len + to_copy]
+                .copy_from_slice(&data[..to_copy]);
+            self.buf_len += to_copy;
+            offset += to_copy;
+
+            if self.buf_len == SHA1_BLOCK_SIZE {
+                let block = self.buffer;
+                sha1_compress(&mut self.state, &block);
+                self.buf_len = 0;
+            }
+        }
+
+        // Process full blocks directly.
+        while offset + SHA1_BLOCK_SIZE <= data.len() {
+            let mut block = [0u8; SHA1_BLOCK_SIZE];
+            block.copy_from_slice(&data[offset..offset + SHA1_BLOCK_SIZE]);
+            sha1_compress(&mut self.state, &block);
+            offset += SHA1_BLOCK_SIZE;
+        }
+
+        // Buffer remaining bytes.
+        let remaining = data.len() - offset;
+        if remaining > 0 {
+            self.buffer[..remaining].copy_from_slice(&data[offset..]);
+            self.buf_len = remaining;
+        }
+    }
+
+    /// Finalize and return the 20-byte digest. Consumes the hasher.
+    #[must_use]
+    pub fn finalize(mut self) -> [u8; SHA1_DIGEST_LEN] {
+        let bit_len = self.total_len * 8;
+
+        // Append 0x80.
+        self.buffer[self.buf_len] = 0x80;
+        self.buf_len += 1;
+
+        // Pad and compress if no room for 8-byte length.
+        if self.buf_len > 56 {
+            for i in self.buf_len..SHA1_BLOCK_SIZE {
+                self.buffer[i] = 0;
+            }
+            let block = self.buffer;
+            sha1_compress(&mut self.state, &block);
+            self.buf_len = 0;
+            self.buffer = [0u8; SHA1_BLOCK_SIZE];
+        }
+
+        // Zero-pad to byte 56.
+        for i in self.buf_len..56 {
+            self.buffer[i] = 0;
+        }
+
+        // Append 64-bit big-endian bit length.
+        self.buffer[56..64].copy_from_slice(&bit_len.to_be_bytes());
+
+        let block = self.buffer;
+        sha1_compress(&mut self.state, &block);
+
+        let mut digest = [0u8; SHA1_DIGEST_LEN];
+        for (i, word) in self.state.iter().enumerate() {
+            let bytes = word.to_be_bytes();
+            digest[i * 4..i * 4 + 4].copy_from_slice(&bytes);
+        }
+        digest
+    }
+}
+
+/// One-shot SHA-1 hash.
+///
+/// # Security note
+///
+/// SHA-1 has broken collision resistance. Use only for WPA2 compliance.
+#[must_use]
+pub fn sha1(data: &[u8]) -> [u8; SHA1_DIGEST_LEN] {
+    let mut hasher = Sha1::new();
+    hasher.update(data);
+    hasher.finalize()
+}
+
+/// SHA-1 compression function (FIPS 180-4 section 6.1.2).
+fn sha1_compress(state: &mut [u32; 5], block: &[u8; SHA1_BLOCK_SIZE]) {
+    // Parse block into 16 big-endian u32 words.
+    let mut w = [0u32; 80];
+    for i in 0..16 {
+        w[i] = u32::from_be_bytes([
+            block[i * 4],
+            block[i * 4 + 1],
+            block[i * 4 + 2],
+            block[i * 4 + 3],
+        ]);
+    }
+
+    // Message schedule expansion (rounds 16-79).
+    for i in 16..80 {
+        w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+    }
+
+    let [mut wa, mut wb, mut wc, mut wd, mut we] = *state;
+
+    for i in 0..80 {
+        let (f, k) = match i {
+            0..=19 => ((wb & wc) | ((!wb) & wd), SHA1_K[0]),
+            20..=39 => (wb ^ wc ^ wd, SHA1_K[1]),
+            40..=59 => ((wb & wc) | (wb & wd) | (wc & wd), SHA1_K[2]),
+            _ => (wb ^ wc ^ wd, SHA1_K[3]),
+        };
+
+        let temp = wa
+            .rotate_left(5)
+            .wrapping_add(f)
+            .wrapping_add(we)
+            .wrapping_add(k)
+            .wrapping_add(w[i]);
+
+        we = wd;
+        wd = wc;
+        wc = wb.rotate_left(30);
+        wb = wa;
+        wa = temp;
+    }
+
+    state[0] = state[0].wrapping_add(wa);
+    state[1] = state[1].wrapping_add(wb);
+    state[2] = state[2].wrapping_add(wc);
+    state[3] = state[3].wrapping_add(wd);
+    state[4] = state[4].wrapping_add(we);
+}
+
+// ---------------------------------------------------------------------------
+// HMAC-SHA1 — RFC 2104
+// ---------------------------------------------------------------------------
+
+/// Compute HMAC-SHA1(key, message).
+///
+/// Handles key normalization: keys longer than 64 bytes are hashed,
+/// keys shorter are zero-padded.
+///
+/// # Security note
+///
+/// Uses SHA-1 internally. Exists solely for WPA2 compliance.
+#[must_use]
+pub fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; SHA1_DIGEST_LEN] {
+    let mut k_prime = [0u8; SHA1_BLOCK_SIZE];
+    if key.len() > SHA1_BLOCK_SIZE {
+        let hashed = sha1(key);
+        k_prime[..SHA1_DIGEST_LEN].copy_from_slice(&hashed);
+    } else {
+        k_prime[..key.len()].copy_from_slice(key);
+    }
+
+    let mut i_key_pad = [0u8; SHA1_BLOCK_SIZE];
+    let mut o_key_pad = [0u8; SHA1_BLOCK_SIZE];
+    for (i, byte) in k_prime.iter().enumerate() {
+        i_key_pad[i] = byte ^ 0x36;
+        o_key_pad[i] = byte ^ 0x5c;
+    }
+
+    let mut inner = Sha1::new();
+    inner.update(&i_key_pad);
+    inner.update(message);
+    let inner_hash = inner.finalize();
+
+    let mut outer = Sha1::new();
+    outer.update(&o_key_pad);
+    outer.update(&inner_hash);
+    outer.finalize()
+}
+
+// ---------------------------------------------------------------------------
+// PBKDF2-HMAC-SHA1 — RFC 8018
+// ---------------------------------------------------------------------------
+
+/// Derive a 32-byte key using PBKDF2-HMAC-SHA1.
+///
+/// Uses 2 PBKDF2 blocks (`ceil(32 / 20) = 2`) since SHA-1 produces
+/// 20-byte digests. Intended exclusively for WPA2-Personal PMK derivation
+/// per IEEE 802.11-2020 section 12.4.4.3.1.
+///
+/// # Errors
+///
+/// Returns [`SecurityError::ZeroIterations`] if `iterations` is zero.
+pub fn pbkdf2_hmac_sha1(
+    passphrase: &[u8],
+    salt: &[u8],
+    iterations: u32,
+    output: &mut [u8; 32],
+) -> Result<(), SecurityError> {
+    if iterations == 0 {
+        return Err(SecurityError::ZeroIterations);
+    }
+
+    let salt_len = salt.len().min(32);
+
+    for block_idx in 1u32..=2u32 {
+        // U_1 = HMAC-SHA1(passphrase, salt || INT_32_BE(block_idx))
+        let mut salt_block = [0u8; 36]; // 32 salt + 4 index
+        salt_block[..salt_len].copy_from_slice(&salt[..salt_len]);
+        salt_block[salt_len..salt_len + 4]
+            .copy_from_slice(&block_idx.to_be_bytes());
+
+        let mut u = hmac_sha1(passphrase, &salt_block[..salt_len + 4]);
+        let mut t = u;
+
+        // U_2 .. U_c
+        for _ in 1..iterations {
+            u = hmac_sha1(passphrase, &u);
+            for (r, b) in t.iter_mut().zip(u.iter()) {
+                *r ^= b;
+            }
+        }
+
+        // Copy into output (block 2 is truncated to 12 bytes).
+        let start = (block_idx as usize - 1) * SHA1_DIGEST_LEN;
+        let end = (start + SHA1_DIGEST_LEN).min(32);
+        output[start..end].copy_from_slice(&t[..end - start]);
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// PRF-384 — IEEE 802.11-2020 section 12.7.1.2
+// ---------------------------------------------------------------------------
+
+/// IEEE 802.11 PRF with 384-bit (48-byte) output.
+///
+/// ```text
+/// R = ""
+/// for i in 0..=2:
+///     R = R || HMAC-SHA1(key, label || 0x00 || data || i)
+/// return first 48 bytes of R
+/// ```
+///
+/// Used to derive the Pairwise Transient Key (PTK) from the PMK.
+#[must_use]
+pub fn prf_384(key: &[u8], label: &[u8], data: &[u8]) -> [u8; 48] {
+    // Stack buffer for label || 0x00 || data || counter.
+    // WPA2: label = "Pairwise key expansion" (22), data = 76, total = 100.
+    let mut msg = [0u8; 128];
+    let msg_len = label.len() + 1 + data.len() + 1;
+
+    msg[..label.len()].copy_from_slice(label);
+    msg[label.len()] = 0x00;
+    msg[label.len() + 1..label.len() + 1 + data.len()]
+        .copy_from_slice(data);
+
+    let counter_offset = label.len() + 1 + data.len();
+    let mut result = [0u8; 48];
+
+    // 3 iterations: ceil(48 / 20) = 3, producing 60 bytes, truncated to 48.
+    for i in 0u8..3 {
+        msg[counter_offset] = i;
+        let h = hmac_sha1(key, &msg[..msg_len]);
+        let start = (i as usize) * SHA1_DIGEST_LEN;
+        let end = (start + SHA1_DIGEST_LEN).min(48);
+        result[start..end].copy_from_slice(&h[..end - start]);
+    }
+
+    result
+}
+
+// ---------------------------------------------------------------------------
 // HKDF-SHA256 — RFC 5869
 // ---------------------------------------------------------------------------
 
@@ -631,6 +956,149 @@ mod tests {
             .expect("pbkdf2 failed");
         // The result should be non-zero and deterministic.
         assert_ne!(out, [0u8; KEY_SIZE], "PBKDF2 output must not be all zeros");
+    }
+
+    // -- SHA-1 tests (FIPS 180-4 known-answer vectors) --
+
+    #[test]
+    fn sha1_empty_string() {
+        let digest = sha1(b"");
+        let expected = [
+            0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55,
+            0xbf, 0xef, 0x95, 0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09,
+        ];
+        assert_eq!(digest, expected, "SHA-1 of empty string (FIPS 180-4)");
+    }
+
+    #[test]
+    fn sha1_abc() {
+        let digest = sha1(b"abc");
+        let expected = [
+            0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
+            0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d,
+        ];
+        assert_eq!(digest, expected, "SHA-1 of 'abc' (FIPS 180-4)");
+    }
+
+    #[test]
+    fn sha1_two_block_message() {
+        // FIPS 180-4 example: "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+        let input = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+        let digest = sha1(input);
+        let expected = [
+            0x84, 0x98, 0x3e, 0x44, 0x1c, 0x3b, 0xd2, 0x6e, 0xba, 0xae,
+            0x4a, 0xa1, 0xf9, 0x51, 0x29, 0xe5, 0xe5, 0x46, 0x70, 0xf1,
+        ];
+        assert_eq!(digest, expected, "SHA-1 two-block message (FIPS 180-4)");
+    }
+
+    #[test]
+    fn sha1_incremental_matches_oneshot() {
+        let msg = b"the quick brown fox jumps over the lazy dog";
+        let oneshot = sha1(msg);
+
+        let mut hasher = Sha1::new();
+        hasher.update(&msg[..10]);
+        hasher.update(&msg[10..25]);
+        hasher.update(&msg[25..]);
+        let incremental = hasher.finalize();
+
+        assert_eq!(oneshot, incremental, "incremental SHA-1 must match one-shot");
+    }
+
+    // -- HMAC-SHA1 tests (RFC 2202 test vectors) --
+
+    #[test]
+    fn hmac_sha1_rfc2202_test_case_1() {
+        let key = [0x0bu8; 20];
+        let data = b"Hi There";
+        let mac = hmac_sha1(&key, data);
+        let expected = [
+            0xb6, 0x17, 0x31, 0x86, 0x55, 0x05, 0x72, 0x64, 0xe2, 0x8b,
+            0xc0, 0xb6, 0xfb, 0x37, 0x8c, 0x8e, 0xf1, 0x46, 0xbe, 0x00,
+        ];
+        assert_eq!(mac, expected, "HMAC-SHA1 RFC 2202 test case 1");
+    }
+
+    #[test]
+    fn hmac_sha1_rfc2202_test_case_2() {
+        let key = b"Jefe";
+        let data = b"what do ya want for nothing?";
+        let mac = hmac_sha1(key, data);
+        let expected = [
+            0xef, 0xfc, 0xdf, 0x6a, 0xe5, 0xeb, 0x2f, 0xa2, 0xd2, 0x74,
+            0x16, 0xd5, 0xf1, 0x84, 0xdf, 0x9c, 0x25, 0x9a, 0x7c, 0x79,
+        ];
+        assert_eq!(mac, expected, "HMAC-SHA1 RFC 2202 test case 2");
+    }
+
+    // -- PBKDF2-HMAC-SHA1 tests (RFC 6070 test vectors) --
+
+    #[test]
+    fn pbkdf2_hmac_sha1_zero_iterations_fails() {
+        let mut out = [0u8; 32];
+        let result = pbkdf2_hmac_sha1(b"pass", b"salt", 0, &mut out);
+        assert_eq!(result, Err(SecurityError::ZeroIterations));
+    }
+
+    #[test]
+    fn pbkdf2_hmac_sha1_rfc6070_c1() {
+        // RFC 6070 Test 1: P="password", S="salt", c=1, dkLen=20
+        let mut out = [0u8; 32];
+        pbkdf2_hmac_sha1(b"password", b"salt", 1, &mut out)
+            .expect("pbkdf2 failed");
+        let expected_20 = [
+            0x0c, 0x60, 0xc8, 0x0f, 0x96, 0x1f, 0x0e, 0x71, 0xf3, 0xa9,
+            0xb5, 0x24, 0xaf, 0x60, 0x12, 0x06, 0x2f, 0xe0, 0x37, 0xa6,
+        ];
+        assert_eq!(&out[..20], &expected_20, "PBKDF2-SHA1 RFC 6070 c=1 first 20 bytes");
+    }
+
+    #[test]
+    fn pbkdf2_hmac_sha1_rfc6070_c4096() {
+        // RFC 6070 Test 2: P="password", S="salt", c=4096, dkLen=20
+        let mut out = [0u8; 32];
+        pbkdf2_hmac_sha1(b"password", b"salt", 4096, &mut out)
+            .expect("pbkdf2 failed");
+        let expected_20 = [
+            0x4b, 0x00, 0x79, 0x01, 0xb7, 0x65, 0x48, 0x9a, 0xbe, 0xad,
+            0x49, 0xd9, 0x26, 0xf7, 0x21, 0xd0, 0x65, 0xa4, 0x29, 0xc1,
+        ];
+        assert_eq!(&out[..20], &expected_20, "PBKDF2-SHA1 RFC 6070 c=4096 first 20 bytes");
+    }
+
+    #[test]
+    fn pbkdf2_hmac_sha1_two_block_output_nonzero() {
+        // 32-byte output uses 2 PBKDF2 blocks (ceil(32/20)=2).
+        // Second block bytes [20..32] must be non-zero and deterministic.
+        let mut out1 = [0u8; 32];
+        let mut out2 = [0u8; 32];
+        pbkdf2_hmac_sha1(b"password", b"salt", 1, &mut out1)
+            .expect("pbkdf2 failed");
+        pbkdf2_hmac_sha1(b"password", b"salt", 1, &mut out2)
+            .expect("pbkdf2 failed");
+        assert_eq!(out1, out2, "same inputs must produce same output");
+        assert_ne!(&out1[20..], &[0u8; 12], "second PBKDF2 block must not be zero");
+    }
+
+    // -- PRF-384 tests --
+
+    #[test]
+    fn prf_384_output_is_48_bytes_nonzero() {
+        let key = [0xAAu8; 32];
+        let label = b"test label";
+        let data = [0xBBu8; 32];
+        let result = prf_384(&key, label, &data);
+        assert_ne!(result, [0u8; 48], "PRF-384 must not produce all zeros");
+    }
+
+    #[test]
+    fn prf_384_different_labels_differ() {
+        let key = [0xAAu8; 32];
+        let data = [0xBBu8; 32];
+        let r1 = prf_384(&key, b"label one", &data);
+        let r2 = prf_384(&key, b"label two", &data);
+        assert_ne!(r1, r2, "different labels must produce different PRF output");
     }
 
     // -- HKDF tests (RFC 5869 test vectors) --
