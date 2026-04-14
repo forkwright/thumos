@@ -793,13 +793,13 @@ mod tests {
     /// Helper: create a KeyManager with loaded keys for testing.
     fn test_key_manager_with_keys() -> KeyManager {
         let mut km = KeyManager::new();
-        let master = {
+        let primary = {
             let mut key_bytes = [0u8; 32];
             crate::security::pbkdf2_sha256(b"test", b"salt", 1, &mut key_bytes)
                 .expect("pbkdf2 failed");
             crate::key_manager::SecureKey::new(key_bytes)
         };
-        km.derive_partition_keys(&master)
+        km.derive_partition_keys(&primary)
             .expect("derive_partition_keys failed");
         km
     }

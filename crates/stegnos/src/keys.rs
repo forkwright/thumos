@@ -1,4 +1,4 @@
-//! Key management: PBKDF2 key derivation, AES-256-GCM master key seal/unseal.
+//! Key management: PBKDF2 key derivation, AES-256-GCM primary key seal/unseal.
 
 use std::num::NonZeroU32;
 
@@ -46,7 +46,7 @@ pub enum Error {
         location: snafu::Location,
     },
 
-    /// Encryption of the master key failed.
+    /// Encryption of the primary key failed.
     #[snafu(display("key sealing failed"))]
     KeySeal {
         /// Source location.
@@ -85,7 +85,7 @@ pub struct DerivedKey {
     pub iterations: u32,
 }
 
-/// Encryption algorithm used to seal a master key in a [`KeySlot`].
+/// Encryption algorithm used to seal a primary key in a [`KeySlot`].
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Algorithm {
@@ -93,7 +93,7 @@ pub enum Algorithm {
     Aes256Gcm,
 }
 
-/// An encrypted master key plus metadata needed to unseal it.
+/// An encrypted primary key plus metadata needed to unseal it.
 #[derive(Debug, Clone)]
 pub struct KeySlot {
     /// PBKDF2 salt (randomly generated at seal time).
@@ -102,11 +102,11 @@ pub struct KeySlot {
     pub iterations: u32,
     /// AES-GCM nonce (randomly generated at seal time).
     pub nonce: [u8; NONCE_LEN],
-    /// Encryption algorithm used to protect the master key.
+    /// Encryption algorithm used to protect the primary key.
     pub algorithm: Algorithm,
     /// When this slot was created.
     pub created: Timestamp,
-    /// Encrypted master key (ciphertext || GCM tag), 48 bytes total.
+    /// Encrypted primary key (ciphertext || GCM tag), 48 bytes total.
     pub ciphertext: [u8; SEALED_KEY_LEN],
 }
 
@@ -140,7 +140,7 @@ fn random_bytes<const N: usize>(rng: &SystemRandom) -> Result<[u8; N]> {
     Ok(buf)
 }
 
-/// Seal `master_key` with a key derived from `passphrase` using AES-256-GCM.
+/// Seal `primary_key` with a key derived from `passphrase` using AES-256-GCM.
 ///
 /// Generates a random salt and nonce. The resulting [`KeySlot`] contains everything
 /// needed to unseal the key later.
@@ -148,7 +148,7 @@ fn random_bytes<const N: usize>(rng: &SystemRandom) -> Result<[u8; N]> {
 /// # Errors
 ///
 /// Returns an error if random generation fails, key construction fails, or encryption fails.
-pub fn seal_key(master_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlot> {
+pub fn seal_key(primary_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlot> {
     let rng = SystemRandom::new();
 
     let salt = random_bytes::<SALT_LEN>(&rng)?;
@@ -161,7 +161,7 @@ pub fn seal_key(master_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlot
     let sealing_key = LessSafeKey::new(unbound);
     let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
-    let mut buf = master_key.to_vec();
+    let mut buf = primary_key.to_vec();
     sealing_key
         .seal_in_place_append_tag(nonce, aead::Aad::empty(), &mut buf)
         .map_err(|_| KeySealSnafu.build())?;
@@ -179,10 +179,10 @@ pub fn seal_key(master_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlot
     })
 }
 
-/// Unseal a master key from `slot` using `passphrase`.
+/// Unseal a primary key from `slot` using `passphrase`.
 ///
 /// Re-derives the wrapping key from the passphrase and stored salt, then
-/// decrypts and authenticates the master key via AES-256-GCM.
+/// decrypts and authenticates the primary key via AES-256-GCM.
 ///
 /// # Errors
 ///
@@ -205,9 +205,9 @@ pub fn unseal_key(slot: &KeySlot, passphrase: &[u8]) -> Result<[u8; KEY_LEN]> {
     let slice = plaintext
         .get(..KEY_LEN)
         .ok_or_else(|| BadPlaintextLengthSnafu.build())?;
-    let mut master_key = [0u8; KEY_LEN];
-    master_key.copy_from_slice(slice);
-    Ok(master_key)
+    let mut primary_key = [0u8; KEY_LEN];
+    primary_key.copy_from_slice(slice);
+    Ok(primary_key)
 }
 
 #[cfg(test)]
@@ -253,21 +253,21 @@ mod tests {
 
     #[test]
     fn seal_unseal_round_trip() -> Result<()> {
-        let master_key = [0xABu8; KEY_LEN];
+        let primary_key = [0xABu8; KEY_LEN];
         let passphrase = b"test passphrase";
-        let slot = seal_key(&master_key, passphrase)?;
+        let slot = seal_key(&primary_key, passphrase)?;
         let recovered = unseal_key(&slot, passphrase)?;
         assert_eq!(
-            master_key, recovered,
-            "unseal must return the original master key"
+            primary_key, recovered,
+            "unseal must return the original primary key"
         );
         Ok(())
     }
 
     #[test]
     fn wrong_passphrase_fails_unseal() -> Result<()> {
-        let master_key = [0xCDu8; KEY_LEN];
-        let slot = seal_key(&master_key, b"correct passphrase")?;
+        let primary_key = [0xCDu8; KEY_LEN];
+        let slot = seal_key(&primary_key, b"correct passphrase")?;
         let result = unseal_key(&slot, b"wrong passphrase");
         assert!(
             result.is_err(),
