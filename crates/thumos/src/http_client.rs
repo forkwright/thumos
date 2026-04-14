@@ -549,7 +549,7 @@ fn parse_status_line(header_block: &[u8]) -> Result<(u16, usize), HttpError> {
     let code_bytes = &line[code_start..code_start + 3];
     let status = parse_u16_from_ascii(code_bytes).ok_or(HttpError::InvalidStatusCode)?;
 
-    // Sanity check: HTTP status codes are 100-599.
+    // Validation check: HTTP status codes are 100-599.
     if !(100..=599).contains(&status) {
         return Err(HttpError::InvalidStatusCode);
     }
