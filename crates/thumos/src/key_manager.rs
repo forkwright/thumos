@@ -1,11 +1,11 @@
 //! Key hierarchy management for the thumos kernel.
 //!
 //! Manages the cryptographic key lifecycle:
-//! 1. Passphrase -> master key (via PBKDF2-HMAC-SHA256)
-//! 2. Master key -> per-purpose sub-keys (via HKDF-SHA256)
+//! 1. Passphrase -> primary key (via PBKDF2-HMAC-SHA256)
+//! 2. Primary key -> per-purpose sub-keys (via HKDF-SHA256)
 //! 3. Secure zeroization on sleep/panic
 //!
-//! The master key is zeroized immediately after deriving sub-keys.
+//! The primary key is zeroized immediately after deriving sub-keys.
 //! Sub-keys are zeroized on long-sleep or panic transitions.
 //!
 //! Key hierarchy labels (HKDF info strings):
@@ -104,7 +104,7 @@ impl<const N: usize> fmt::Display for SecureKey<N> {
 // KeySet
 // ---------------------------------------------------------------------------
 
-/// The set of per-purpose keys derived from a master key.
+/// The set of per-purpose keys derived from a primary key.
 #[expect(clippy::struct_field_names, reason = "key suffix is domain terminology, not redundant with struct name")]
 pub struct KeySet {
     /// Partition encryption key (AES-256-XTS, 64 bytes).
@@ -140,12 +140,12 @@ impl fmt::Display for KeySet {
 
 /// Manages the kernel key hierarchy and sleep-tier lifecycle.
 ///
-/// Holds derived partition keys and tracks whether the master key has been
-/// used to derive them. The master key itself is never stored — it is
+/// Holds derived partition keys and tracks whether the primary key has been
+/// used to derive them. The primary key itself is never stored — it is
 /// zeroized immediately after deriving sub-keys.
 pub struct KeyManager {
-    /// Whether keys have been derived from a master key.
-    master_key_derived: bool,
+    /// Whether keys have been derived from a primary key.
+    primary_key_derived: bool,
     /// Partition encryption key (XTS, 64 bytes).
     data_key: Option<SecureKey<XTS_KEY_SIZE>>,
     /// Audit log HMAC key.
@@ -163,7 +163,7 @@ impl KeyManager {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            master_key_derived: false,
+            primary_key_derived: false,
             data_key: None,
             audit_key: None,
             csprng_key: None,
@@ -172,9 +172,9 @@ impl KeyManager {
         }
     }
 
-    /// Derive a master key from a passphrase using PBKDF2-HMAC-SHA256.
+    /// Derive a primary key from a passphrase using PBKDF2-HMAC-SHA256.
     ///
-    /// Returns the 32-byte master key. The caller should immediately pass
+    /// Returns the 32-byte primary key. The caller should immediately pass
     /// it to [`KeyManager::derive_partition_keys`] and then drop it (the
     /// `SecureKey` wrapper will zeroize on drop).
     ///
@@ -191,7 +191,7 @@ impl KeyManager {
         Ok(SecureKey::new(key_bytes))
     }
 
-    /// Derive per-purpose partition keys from a master key via HKDF-SHA256.
+    /// Derive per-purpose partition keys from a primary key via HKDF-SHA256.
     ///
     /// Derives four sub-keys with distinct labels:
     /// - `data_key` (64 bytes, XTS): partition encryption
@@ -200,17 +200,17 @@ impl KeyManager {
     /// - `session_key` (32 bytes): ephemeral session operations
     ///
     /// Stores the keys internally and marks the manager as initialized.
-    /// The master key should be dropped (zeroized) after this call.
+    /// The primary key should be dropped (zeroized) after this call.
     ///
     /// # Errors
     ///
     /// Returns [`SecurityError`] if HKDF derivation fails.
     pub fn derive_partition_keys(
         &mut self,
-        master: &SecureKey<KEY_SIZE>,
+        primary: &SecureKey<KEY_SIZE>,
     ) -> Result<(), SecurityError> {
-        // Derive each sub-key via HKDF with the master key as IKM.
-        let ikm = master.as_bytes();
+        // Derive each sub-key via HKDF with the primary key as IKM.
+        let ikm = primary.as_bytes();
 
         let mut data_bytes = [0u8; XTS_KEY_SIZE];
         security::hkdf_sha256(ikm, &[], LABEL_DATA, &mut data_bytes)?;
@@ -228,7 +228,7 @@ impl KeyManager {
         self.audit_key = Some(SecureKey::new(audit_bytes));
         self.csprng_key = Some(SecureKey::new(csprng_bytes));
         self.session_key = Some(SecureKey::new(session_bytes));
-        self.master_key_derived = true;
+        self.primary_key_derived = true;
         self.sleep_tier = SleepTier::Short;
 
         Ok(())
@@ -243,14 +243,14 @@ impl KeyManager {
         self.audit_key = None;
         self.csprng_key = None;
         self.session_key = None;
-        self.master_key_derived = false;
+        self.primary_key_derived = false;
         self.sleep_tier = SleepTier::Long;
     }
 
     /// Check whether partition keys are currently loaded.
     #[must_use]
     pub fn has_keys(&self) -> bool {
-        self.master_key_derived
+        self.primary_key_derived
             && self.data_key.is_some()
             && self.audit_key.is_some()
             && self.csprng_key.is_some()
@@ -304,7 +304,7 @@ impl fmt::Debug for KeyManager {
         // accidental leakage in debug output. finish_non_exhaustive signals
         // that fields exist but are not shown.
         f.debug_struct("KeyManager")
-            .field("master_key_derived", &self.master_key_derived)
+            .field("primary_key_derived", &self.primary_key_derived)
             .field("has_keys", &self.has_keys())
             .field("sleep_tier", &self.sleep_tier)
             .finish_non_exhaustive()
@@ -331,7 +331,7 @@ mod tests {
     use super::*;
 
     // Use a low iteration count for test speed.
-    fn derive_test_master(passphrase: &[u8]) -> SecureKey<KEY_SIZE> {
+    fn derive_test_primary(passphrase: &[u8]) -> SecureKey<KEY_SIZE> {
         let mut key_bytes = [0u8; KEY_SIZE];
         security::pbkdf2_sha256(passphrase, PBKDF2_SALT, 1, &mut key_bytes)
             .expect("pbkdf2 derivation failed in test");
@@ -340,19 +340,19 @@ mod tests {
 
     #[test]
     fn derive_from_passphrase_is_deterministic() {
-        let key1 = derive_test_master(b"test passphrase");
-        let key2 = derive_test_master(b"test passphrase");
+        let key1 = derive_test_primary(b"test passphrase");
+        let key2 = derive_test_primary(b"test passphrase");
         assert_eq!(
             key1.as_bytes(),
             key2.as_bytes(),
-            "same passphrase must produce the same master key"
+            "same passphrase must produce the same primary key"
         );
     }
 
     #[test]
     fn different_passphrases_produce_different_keys() {
-        let key1 = derive_test_master(b"passphrase alpha");
-        let key2 = derive_test_master(b"passphrase bravo");
+        let key1 = derive_test_primary(b"passphrase alpha");
+        let key2 = derive_test_primary(b"passphrase bravo");
         assert_ne!(
             key1.as_bytes(),
             key2.as_bytes(),
@@ -362,9 +362,9 @@ mod tests {
 
     #[test]
     fn derive_partition_keys_produces_distinct_keys() {
-        let master = derive_test_master(b"partition key test");
+        let primary = derive_test_primary(b"partition key test");
         let mut km = KeyManager::new();
-        km.derive_partition_keys(&master)
+        km.derive_partition_keys(&primary)
             .expect("derive_partition_keys failed");
 
         assert!(km.has_keys(), "keys must be loaded after derivation");
@@ -398,9 +398,9 @@ mod tests {
 
     #[test]
     fn zeroize_all_clears_keys() {
-        let master = derive_test_master(b"zeroize test");
+        let primary = derive_test_primary(b"zeroize test");
         let mut km = KeyManager::new();
-        km.derive_partition_keys(&master)
+        km.derive_partition_keys(&primary)
             .expect("derive_partition_keys failed");
 
         assert!(km.has_keys());
@@ -427,9 +427,9 @@ mod tests {
 
     #[test]
     fn long_sleep_zeroizes_keys() {
-        let master = derive_test_master(b"sleep tier test");
+        let primary = derive_test_primary(b"sleep tier test");
         let mut km = KeyManager::new();
-        km.derive_partition_keys(&master)
+        km.derive_partition_keys(&primary)
             .expect("derive_partition_keys failed");
 
         assert!(km.has_keys());
@@ -458,27 +458,27 @@ mod tests {
 
     #[test]
     fn derive_partition_keys_deterministic() {
-        let master = derive_test_master(b"deterministic test");
+        let primary = derive_test_primary(b"deterministic test");
 
         let mut km1 = KeyManager::new();
-        km1.derive_partition_keys(&master)
+        km1.derive_partition_keys(&primary)
             .expect("derive_partition_keys failed");
 
-        // Re-derive with same master key.
-        let master2 = derive_test_master(b"deterministic test");
+        // Re-derive with same primary key.
+        let primary2 = derive_test_primary(b"deterministic test");
         let mut km2 = KeyManager::new();
-        km2.derive_partition_keys(&master2)
+        km2.derive_partition_keys(&primary2)
             .expect("derive_partition_keys failed");
 
         assert_eq!(
             km1.data_key().expect("data key missing").as_bytes(),
             km2.data_key().expect("data key missing").as_bytes(),
-            "same master key must produce same data key"
+            "same primary key must produce same data key"
         );
         assert_eq!(
             km1.audit_key().expect("audit key missing").as_bytes(),
             km2.audit_key().expect("audit key missing").as_bytes(),
-            "same master key must produce same audit key"
+            "same primary key must produce same audit key"
         );
     }
 }
