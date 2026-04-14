@@ -1133,7 +1133,7 @@ mod tests {
         tel.refuse_2g();
         assert!(
             tel.is_lte_only(),
-            "refuse_2g must set lte_only=true on OK response"
+            "refuse_2g must SET lte_only=true on OK response"
         );
         assert_eq!(
             tel.transport.sent_commands.last().map(|c| c.as_slice()),
@@ -1151,7 +1151,7 @@ mod tests {
         tel.refuse_2g();
         assert!(
             !tel.is_lte_only(),
-            "refuse_2g must set lte_only=false on ERROR response"
+            "refuse_2g must SET lte_only=false on ERROR response"
         );
     }
 
