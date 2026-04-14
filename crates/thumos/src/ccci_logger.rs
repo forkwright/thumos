@@ -17,14 +17,14 @@
 //!    unexpected active channels, rate spikes > 3x, out-of-range data0 values.
 //!    Emits [`CcciAnomaly`] events for the audit log.
 //!
-//! 4. **[`CcciFirewall`]** -- channel whitelist with default-deny policy.
-//!    Mode-dependent whitelists (Daily / Sentinel / Panic).  Dropped packets
+//! 4. **[`CcciFirewall`]** -- channel allowlist with default-deny policy.
+//!    Mode-dependent allowlists (Daily / Sentinel / Panic).  Dropped packets
 //!    are audit-logged.
 //!
 //! ## Security
 //!
 //! All structures are fixed-size, no_std, no heap allocation.  The firewall
-//! evaluates *before* packet dispatch -- non-whitelisted channels never reach
+//! evaluates *before* packet dispatch -- non-allowlisted channels never reach
 //! higher layers.
 
 use core::fmt;
@@ -51,8 +51,8 @@ const BASELINE_WINDOW_MS: u64 = 60_000;
 /// Anomaly rate spike threshold: flag if live rate exceeds 3x baseline max.
 const RATE_SPIKE_FACTOR: u32 = 3;
 
-/// Maximum channels in the firewall whitelist.
-const MAX_WHITELIST: usize = 16;
+/// Maximum channels in the firewall allowlist.
+const MAX_ALLOWLIST: usize = 16;
 
 // ---------------------------------------------------------------------------
 // PacketDirection
@@ -575,7 +575,7 @@ pub fn detect_anomalies(
 // FirewallMode
 // ---------------------------------------------------------------------------
 
-/// Firewall operating mode, determining which channels are whitelisted.
+/// Firewall operating mode, determining which channels are allowlisted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 #[non_exhaustive]
@@ -584,7 +584,7 @@ pub enum FirewallMode {
     Daily,
     /// Heightened security: Control, System channels only.
     Sentinel,
-    /// Emergency: all channels blocked (empty whitelist).
+    /// Emergency: all channels blocked (empty allowlist).
     Panic,
 }
 
@@ -607,9 +607,9 @@ impl fmt::Display for FirewallMode {
 #[must_use]
 #[non_exhaustive]
 pub enum FirewallVerdict {
-    /// Packet is allowed (channel is whitelisted).
+    /// Packet is allowed (channel is allowlisted).
     Allow,
-    /// Packet is dropped (channel is not whitelisted).
+    /// Packet is dropped (channel is not allowlisted).
     Drop,
 }
 
@@ -626,22 +626,22 @@ impl fmt::Display for FirewallVerdict {
 // CcciFirewall
 // ---------------------------------------------------------------------------
 
-/// Channel whitelist firewall for the CCCI link.
+/// Channel allowlist firewall for the CCCI link.
 ///
-/// Default policy: deny.  Only channels explicitly added to the whitelist
-/// are allowed through.  The whitelist is populated based on the current
+/// Default policy: deny.  Only channels explicitly added to the allowlist
+/// are allowed through.  The allowlist is populated based on the current
 /// [`FirewallMode`].
 ///
-/// SECURITY: Evaluates before packet dispatch.  Non-whitelisted packets
+/// SECURITY: Evaluates before packet dispatch.  Non-allowlisted packets
 /// are dropped and audit-logged.
 #[must_use]
 pub struct CcciFirewall {
     /// Current firewall mode.
     mode: FirewallMode,
-    /// Whitelisted channel numbers.
-    whitelist: [u32; MAX_WHITELIST],
-    /// Number of channels in the whitelist.
-    whitelist_len: usize,
+    /// Allowlisted channel numbers.
+    allowlist: [u32; MAX_ALLOWLIST],
+    /// Number of channels in the allowlist.
+    allowlist_len: usize,
     /// Total packets dropped by the firewall.
     drop_count: u64,
     /// Total packets allowed through.
@@ -653,8 +653,8 @@ impl CcciFirewall {
     pub fn new(mode: FirewallMode) -> Self {
         let mut fw = Self {
             mode,
-            whitelist: [0; MAX_WHITELIST],
-            whitelist_len: 0,
+            allowlist: [0; MAX_ALLOWLIST],
+            allowlist_len: 0,
             drop_count: 0,
             allow_count: 0,
         };
@@ -662,10 +662,10 @@ impl CcciFirewall {
         fw
     }
 
-    /// Apply a firewall mode, replacing the whitelist.
+    /// Apply a firewall mode, replacing the allowlist.
     pub fn apply_mode(&mut self, mode: FirewallMode) {
         self.mode = mode;
-        self.whitelist_len = 0;
+        self.allowlist_len = 0;
 
         match mode {
             FirewallMode::Daily => {
@@ -681,9 +681,9 @@ impl CcciFirewall {
                     CcciChannel::Ccmni1Rx as u32,
                 ];
                 for &ch in channels {
-                    if self.whitelist_len < MAX_WHITELIST {
-                        self.whitelist[self.whitelist_len] = ch;
-                        self.whitelist_len += 1;
+                    if self.allowlist_len < MAX_ALLOWLIST {
+                        self.allowlist[self.allowlist_len] = ch;
+                        self.allowlist_len += 1;
                     }
                 }
             }
@@ -696,25 +696,25 @@ impl CcciFirewall {
                     CcciChannel::SystemRx as u32,
                 ];
                 for &ch in channels {
-                    if self.whitelist_len < MAX_WHITELIST {
-                        self.whitelist[self.whitelist_len] = ch;
-                        self.whitelist_len += 1;
+                    if self.allowlist_len < MAX_ALLOWLIST {
+                        self.allowlist[self.allowlist_len] = ch;
+                        self.allowlist_len += 1;
                     }
                 }
             }
             FirewallMode::Panic => {
-                // Empty whitelist: all channels blocked.
+                // Empty allowlist: all channels blocked.
             }
         }
     }
 
-    /// Evaluate a packet against the firewall whitelist.
+    /// Evaluate a packet against the firewall allowlist.
     ///
-    /// Returns [`FirewallVerdict::Allow`] if the channel is whitelisted,
+    /// Returns [`FirewallVerdict::Allow`] if the channel is allowlisted,
     /// [`FirewallVerdict::Drop`] otherwise.
     pub fn evaluate(&mut self, channel: u32) -> FirewallVerdict {
-        for i in 0..self.whitelist_len {
-            if self.whitelist[i] == channel {
+        for i in 0..self.allowlist_len {
+            if self.allowlist[i] == channel {
                 self.allow_count += 1;
                 return FirewallVerdict::Allow;
             }
@@ -723,10 +723,10 @@ impl CcciFirewall {
         FirewallVerdict::Drop
     }
 
-    /// Whether a channel is in the whitelist (non-mutating check).
+    /// Whether a channel is in the allowlist (non-mutating check).
     #[must_use]
-    pub fn is_whitelisted(&self, channel: u32) -> bool {
-        self.whitelist[..self.whitelist_len].contains(&channel)
+    pub fn is_allowlisted(&self, channel: u32) -> bool {
+        self.allowlist[..self.allowlist_len].contains(&channel)
     }
 
     /// Current firewall mode.
@@ -747,10 +747,10 @@ impl CcciFirewall {
         self.allow_count
     }
 
-    /// Number of channels in the whitelist.
+    /// Number of channels in the allowlist.
     #[must_use]
-    pub fn whitelist_len(&self) -> usize {
-        self.whitelist_len
+    pub fn allowlist_len(&self) -> usize {
+        self.allowlist_len
     }
 }
 
@@ -758,7 +758,7 @@ impl fmt::Debug for CcciFirewall {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CcciFirewall")
             .field("mode", &self.mode)
-            .field("whitelist_len", &self.whitelist_len)
+            .field("allowlist_len", &self.allowlist_len)
             .field("drop_count", &self.drop_count)
             .field("allow_count", &self.allow_count)
             .finish_non_exhaustive()
@@ -769,8 +769,8 @@ impl fmt::Display for CcciFirewall {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "CcciFirewall(mode={}, whitelist={}, dropped={}, allowed={})",
-            self.mode, self.whitelist_len, self.drop_count, self.allow_count,
+            "CcciFirewall(mode={}, allowlist={}, dropped={}, allowed={})",
+            self.mode, self.allowlist_len, self.drop_count, self.allow_count,
         )
     }
 }
@@ -1220,63 +1220,63 @@ mod tests {
     // -- CcciFirewall tests --
 
     #[test]
-    fn firewall_daily_whitelist() {
+    fn firewall_daily_allowlist() {
         let fw = CcciFirewall::new(FirewallMode::Daily);
         assert_eq!(fw.mode(), FirewallMode::Daily);
-        assert_eq!(fw.whitelist_len(), 8, "Daily: 4 channel pairs = 8");
+        assert_eq!(fw.allowlist_len(), 8, "Daily: 4 channel pairs = 8");
 
         // Control, System, Uart1, Ccmni1 channels allowed.
-        assert!(fw.is_whitelisted(CcciChannel::ControlTx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::ControlRx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::SystemTx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::SystemRx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::Uart1Tx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::Uart1Rx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::Ccmni1Tx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::Ccmni1Rx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::ControlTx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::ControlRx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::SystemTx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::SystemRx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::Uart1Tx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::Uart1Rx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::Ccmni1Tx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::Ccmni1Rx as u32));
 
-        // Other channels not whitelisted.
-        assert!(!fw.is_whitelisted(CcciChannel::FsTx as u32));
-        assert!(!fw.is_whitelisted(CcciChannel::MdLogRx as u32));
+        // Other channels not allowlisted.
+        assert!(!fw.is_allowlisted(CcciChannel::FsTx as u32));
+        assert!(!fw.is_allowlisted(CcciChannel::MdLogRx as u32));
     }
 
     #[test]
-    fn firewall_sentinel_whitelist() {
+    fn firewall_sentinel_allowlist() {
         let fw = CcciFirewall::new(FirewallMode::Sentinel);
         assert_eq!(fw.mode(), FirewallMode::Sentinel);
-        assert_eq!(fw.whitelist_len(), 4, "Sentinel: 2 channel pairs = 4");
+        assert_eq!(fw.allowlist_len(), 4, "Sentinel: 2 channel pairs = 4");
 
-        assert!(fw.is_whitelisted(CcciChannel::ControlTx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::ControlRx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::SystemTx as u32));
-        assert!(fw.is_whitelisted(CcciChannel::SystemRx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::ControlTx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::ControlRx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::SystemTx as u32));
+        assert!(fw.is_allowlisted(CcciChannel::SystemRx as u32));
 
         // Uart1, Ccmni1 blocked in Sentinel.
-        assert!(!fw.is_whitelisted(CcciChannel::Uart1Tx as u32));
-        assert!(!fw.is_whitelisted(CcciChannel::Ccmni1Tx as u32));
+        assert!(!fw.is_allowlisted(CcciChannel::Uart1Tx as u32));
+        assert!(!fw.is_allowlisted(CcciChannel::Ccmni1Tx as u32));
     }
 
     #[test]
     fn firewall_panic_blocks_all() {
         let fw = CcciFirewall::new(FirewallMode::Panic);
         assert_eq!(fw.mode(), FirewallMode::Panic);
-        assert_eq!(fw.whitelist_len(), 0, "Panic: empty whitelist");
+        assert_eq!(fw.allowlist_len(), 0, "Panic: empty allowlist");
 
         for ch in 0..22u32 {
-            assert!(!fw.is_whitelisted(ch), "ch {ch} must be blocked in Panic");
+            assert!(!fw.is_allowlisted(ch), "ch {ch} must be blocked in Panic");
         }
     }
 
     #[test]
-    fn firewall_drops_non_whitelisted() {
+    fn firewall_drops_non_allowlisted() {
         let mut fw = CcciFirewall::new(FirewallMode::Sentinel);
 
-        // Whitelisted channel: allowed.
+        // Allowlisted channel: allowed.
         let verdict = fw.evaluate(CcciChannel::ControlTx as u32);
         assert_eq!(verdict, FirewallVerdict::Allow);
         assert_eq!(fw.allow_count(), 1);
 
-        // Non-whitelisted channel: dropped.
+        // Non-allowlisted channel: dropped.
         let verdict = fw.evaluate(CcciChannel::Uart1Tx as u32);
         assert_eq!(verdict, FirewallVerdict::Drop);
         assert_eq!(fw.drop_count(), 1);
@@ -1285,15 +1285,15 @@ mod tests {
     #[test]
     fn firewall_mode_transition() {
         let mut fw = CcciFirewall::new(FirewallMode::Daily);
-        assert_eq!(fw.whitelist_len(), 8);
+        assert_eq!(fw.allowlist_len(), 8);
 
         fw.apply_mode(FirewallMode::Sentinel);
         assert_eq!(fw.mode(), FirewallMode::Sentinel);
-        assert_eq!(fw.whitelist_len(), 4);
+        assert_eq!(fw.allowlist_len(), 4);
 
         fw.apply_mode(FirewallMode::Panic);
         assert_eq!(fw.mode(), FirewallMode::Panic);
-        assert_eq!(fw.whitelist_len(), 0);
+        assert_eq!(fw.allowlist_len(), 0);
     }
 
     #[test]

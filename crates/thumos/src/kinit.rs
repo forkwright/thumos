@@ -573,7 +573,7 @@ pub unsafe fn run() -> ! {
     if state.display_ok && state.input_ok {
         // WHY: passphrase must be entered before any encrypted data is
         // accessed.  The lock screen renders on the display and accepts
-        // keypad input.  On success, the master key is derived and
+        // keypad input.  On success, the primary key is derived and
         // partition sub-keys are produced.
         //
         // NOTE: In production, this blocks until the user enters the
