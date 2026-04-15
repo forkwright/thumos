@@ -279,7 +279,7 @@ mod tests {
 
     /// Helper: create a device large enough for cache testing.
     /// 2048 sectors = 256 logical blocks (matches cache size exactly).
-    fn test_device() -> MemBlockDevice {
+    fn block_device_for_cache() -> MemBlockDevice {
         MemBlockDevice::new(2048).expect("failed to create test device")
     }
 
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn read_fills_cache_on_miss() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_cache();
         let mut cache = BlockCache::new();
         let mut buf = [0u8; BLOCK_SIZE];
 
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn read_hits_cache_on_second_access() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_cache();
         let mut cache = BlockCache::new();
         let mut buf = [0u8; BLOCK_SIZE];
 
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn write_marks_entry_dirty() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_cache();
         let mut cache = BlockCache::new();
         let data = pattern_block(0xAB);
 
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn flush_writes_dirty_entries_to_device() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_cache();
         let mut cache = BlockCache::new();
         let data = pattern_block(0xCD);
 
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn invalidate_clears_all_entries() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_cache();
         let mut cache = BlockCache::new();
 
         // Fill some entries.
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn cache_handles_block_zero() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_cache();
         let mut cache = BlockCache::new();
 
         // Write to block 0.
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn sync_is_alias_for_flush() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_cache();
         let mut cache = BlockCache::new();
         let data = pattern_block(0xEE);
 
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn write_then_read_returns_cached_data() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_cache();
         let mut cache = BlockCache::new();
         let data = pattern_block(0x77);
 

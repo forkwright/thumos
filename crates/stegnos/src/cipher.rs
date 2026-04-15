@@ -136,7 +136,7 @@ fn make_xts(key: &[u8; XTS_KEY_LEN]) -> Result<Xts128<Aes256>> {
 mod tests {
     use super::*;
 
-    fn test_key() -> [u8; XTS_KEY_LEN] {
+    fn sample_xts_key() -> [u8; XTS_KEY_LEN] {
         let mut key = [0u8; XTS_KEY_LEN];
         for (i, b) in key.iter_mut().enumerate() {
             *b = u8::try_from(i % 256).unwrap_or(0);
@@ -144,7 +144,7 @@ mod tests {
         key
     }
 
-    fn test_plaintext() -> [u8; BLOCK_SIZE] {
+    fn sample_plaintext() -> [u8; BLOCK_SIZE] {
         let mut buf = [0u8; BLOCK_SIZE];
         for (i, b) in buf.iter_mut().enumerate() {
             *b = u8::try_from(i % 256).unwrap_or(0);
@@ -154,8 +154,8 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_round_trip() -> super::Result<()> {
-        let key = test_key();
-        let plaintext = test_plaintext();
+        let key = sample_xts_key();
+        let plaintext = sample_plaintext();
         let mut ciphertext = [0u8; BLOCK_SIZE];
         let mut recovered = [0u8; BLOCK_SIZE];
 
@@ -171,8 +171,8 @@ mod tests {
 
     #[test]
     fn different_block_numbers_produce_different_ciphertext() -> super::Result<()> {
-        let key = test_key();
-        let plaintext = test_plaintext();
+        let key = sample_xts_key();
+        let plaintext = sample_plaintext();
         let mut ct0 = [0u8; BLOCK_SIZE];
         let mut ct1 = [0u8; BLOCK_SIZE];
 
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn ciphertext_differs_from_plaintext() -> super::Result<()> {
-        let key = test_key();
+        let key = sample_xts_key();
         let plaintext = [0x42u8; BLOCK_SIZE];
         let mut ciphertext = [0u8; BLOCK_SIZE];
 

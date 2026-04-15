@@ -295,7 +295,7 @@ mod tests {
     use crate::block::MemBlockDevice;
 
     /// Create a test XTS key (64 bytes) with a simple pattern.
-    fn test_key() -> [u8; XTS_KEY_SIZE] {
+    fn sample_xts_key() -> [u8; XTS_KEY_SIZE] {
         let mut key = [0u8; XTS_KEY_SIZE];
         for (i, b) in key.iter_mut().enumerate() {
             *b = (i & 0xFF) as u8;
@@ -304,7 +304,7 @@ mod tests {
     }
 
     /// Create a second test key that differs from the first.
-    fn test_key_2() -> [u8; XTS_KEY_SIZE] {
+    fn alternate_sample_xts_key() -> [u8; XTS_KEY_SIZE] {
         let mut key = [0u8; XTS_KEY_SIZE];
         for (i, b) in key.iter_mut().enumerate() {
             *b = ((i + 0x80) & 0xFF) as u8;
@@ -313,7 +313,7 @@ mod tests {
     }
 
     /// Create a test plaintext pattern (4 KiB = 8 sectors).
-    fn test_plaintext() -> [u8; BLOCK_SIZE] {
+    fn sample_plaintext() -> [u8; BLOCK_SIZE] {
         let mut buf = [0u8; BLOCK_SIZE];
         for (i, b) in buf.iter_mut().enumerate() {
             *b = (i & 0xFF) as u8;
@@ -327,8 +327,8 @@ mod tests {
     #[test]
     fn encrypted_write_then_read_round_trips() {
         let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
-        let key = test_key();
-        let plaintext = test_plaintext();
+        let key = sample_xts_key();
+        let plaintext = sample_plaintext();
 
         // Write plaintext through the encrypted layer.
         {
@@ -354,8 +354,8 @@ mod tests {
     #[test]
     fn encrypted_data_differs_from_plaintext() {
         let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
-        let key = test_key();
-        let plaintext = test_plaintext();
+        let key = sample_xts_key();
+        let plaintext = sample_plaintext();
 
         // Write plaintext through the encrypted layer.
         {
@@ -377,12 +377,12 @@ mod tests {
 
     #[test]
     fn different_keys_produce_different_ciphertext() {
-        let plaintext = test_plaintext();
+        let plaintext = sample_plaintext();
 
         // Encrypt with key 1.
         let mut dev1 = MemBlockDevice::new(TEST_SECTORS).expect("create device");
         {
-            let mut enc = EncryptedBlockDevice::new(&mut dev1, test_key());
+            let mut enc = EncryptedBlockDevice::new(&mut dev1, sample_xts_key());
             enc.write_sectors(0, SECTORS_PER_BLOCK as u32, &plaintext)
                 .expect("write key1");
         }
@@ -393,7 +393,7 @@ mod tests {
         // Encrypt with key 2.
         let mut dev2 = MemBlockDevice::new(TEST_SECTORS).expect("create device");
         {
-            let mut enc = EncryptedBlockDevice::new(&mut dev2, test_key_2());
+            let mut enc = EncryptedBlockDevice::new(&mut dev2, alternate_sample_xts_key());
             enc.write_sectors(0, SECTORS_PER_BLOCK as u32, &plaintext)
                 .expect("write key2");
         }
@@ -411,7 +411,7 @@ mod tests {
     fn sector_alignment_handled_correctly() {
         // Write a partial block (less than 8 sectors) and verify round-trip.
         let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
-        let key = test_key();
+        let key = sample_xts_key();
 
         // Write 2 sectors starting at LBA 0.
         let write_data = vec![0xABu8; 2 * SECTOR_SIZE];
@@ -439,7 +439,7 @@ mod tests {
     fn multi_block_write_read() {
         // Write two full blocks and verify each decrypts correctly.
         let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
-        let key = test_key();
+        let key = sample_xts_key();
 
         let mut data = vec![0u8; 2 * BLOCK_SIZE];
         for (i, b) in data.iter_mut().enumerate() {
@@ -466,7 +466,7 @@ mod tests {
     fn cross_block_boundary_write() {
         // Write sectors that span a block boundary (sectors 6-9 cross block 0/1).
         let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
-        let key = test_key();
+        let key = sample_xts_key();
 
         let write_data = vec![0xCDu8; 4 * SECTOR_SIZE];
         {
@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn out_of_bounds_returns_error() {
         let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
-        let key = test_key();
+        let key = sample_xts_key();
 
         let enc = EncryptedBlockDevice::new(&mut dev, key);
         let mut buf = vec![0u8; SECTOR_SIZE];
@@ -503,7 +503,7 @@ mod tests {
     fn sector_count_rounds_to_block_boundary() {
         // 13 sectors -> 8 usable sectors (1 full block)
         let mut dev = MemBlockDevice::new(13).expect("create device");
-        let key = test_key();
+        let key = sample_xts_key();
         let enc = EncryptedBlockDevice::new(&mut dev, key);
         assert_eq!(
             enc.sector_count(),
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn zero_count_succeeds() {
         let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
-        let key = test_key();
+        let key = sample_xts_key();
         let enc = EncryptedBlockDevice::new(&mut dev, key);
         let mut buf = vec![];
         enc.read_sectors(0, 0, &mut buf)
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn encrypted_block_device_display() {
         let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
-        let key = test_key();
+        let key = sample_xts_key();
         let enc = EncryptedBlockDevice::new(&mut dev, key);
         let s = alloc::format!("{enc}");
         assert!(
