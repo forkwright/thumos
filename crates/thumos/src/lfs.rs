@@ -1410,13 +1410,13 @@ mod tests {
     use crate::vfs::Filesystem;
 
     /// Create an 8 MB test device (16384 sectors = 2048 blocks = 8 segments).
-    fn test_device() -> MemBlockDevice {
+    fn block_device_for_lfs() -> MemBlockDevice {
         MemBlockDevice::new(16384).expect("create 8 MB test device")
     }
 
     #[test]
     fn format_creates_valid_superblock() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format should succeed");
 
         // Read superblock back directly.
@@ -1437,7 +1437,7 @@ mod tests {
 
     #[test]
     fn mount_reads_formatted_filesystem() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let fs = mount(Box::new(dev)).expect("mount should succeed");
@@ -1453,7 +1453,7 @@ mod tests {
 
     #[test]
     fn read_empty_root_returns_no_entries() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let fs = mount(Box::new(dev)).expect("mount");
@@ -1468,7 +1468,7 @@ mod tests {
 
     #[test]
     fn format_then_mount_round_trips() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let fs = mount(Box::new(dev)).expect("mount");
@@ -1483,7 +1483,7 @@ mod tests {
 
     #[test]
     fn stat_nonexistent_inode_returns_not_found() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let fs = mount(Box::new(dev)).expect("mount");
@@ -1493,7 +1493,7 @@ mod tests {
 
     #[test]
     fn lookup_in_empty_root_returns_not_found() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let fs = mount(Box::new(dev)).expect("mount");
@@ -1503,7 +1503,7 @@ mod tests {
 
     #[test]
     fn create_file_then_read_back() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let mut fs = mount(Box::new(dev)).expect("mount");
@@ -1533,7 +1533,7 @@ mod tests {
 
     #[test]
     fn write_file_data_persists_across_unmount_remount() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         // Write phase.
@@ -1557,7 +1557,7 @@ mod tests {
         drop(boxed_dev);
 
         // Alternative: verify within the same mount that read returns correct data.
-        let mut dev2 = test_device();
+        let mut dev2 = block_device_for_lfs();
         format(&mut dev2).expect("format 2");
 
         let mut fs2 = mount(Box::new(dev2)).expect("mount 2");
@@ -1578,7 +1578,7 @@ mod tests {
 
     #[test]
     fn mkdir_creates_directory_on_disk() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let mut fs = mount(Box::new(dev)).expect("mount");
@@ -1601,7 +1601,7 @@ mod tests {
 
     #[test]
     fn unlink_marks_blocks_as_garbage() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let mut fs = mount(Box::new(dev)).expect("mount");
@@ -1626,7 +1626,7 @@ mod tests {
 
     #[test]
     fn truncate_shrinks_file() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let mut fs = mount(Box::new(dev)).expect("mount");
@@ -1653,7 +1653,7 @@ mod tests {
 
     #[test]
     fn sync_writes_checkpoint() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
         let mut fs = mount(Box::new(dev)).expect("mount");
@@ -1679,7 +1679,7 @@ mod tests {
 
     #[test]
     fn read_block_and_write_block_round_trip() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_lfs();
         let buf = [0xAB_u8; BLOCK_SIZE];
         block::write_block(&mut dev, 5, &buf).expect("write_block");
 

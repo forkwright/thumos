@@ -332,7 +332,7 @@ mod tests {
     use super::*;
 
     /// Helper: create a `KeyManager` with loaded keys for testing.
-    fn test_key_manager_with_keys() -> KeyManager {
+    fn key_manager_with_derived_keys() -> KeyManager {
         let mut km = KeyManager::new();
         let primary = {
             let mut key_bytes = [0u8; 32];
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn daily_timer_fires_at_threshold() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Daily);
 
         // Tick to one before threshold — should not fire.
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn sentinel_timer_fires_at_threshold() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Sentinel);
 
         for _ in 0..SENTINEL_THRESHOLD_TICKS.saturating_sub(1) {
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn panic_timer_fires_immediately() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Panic);
 
         assert!(km.has_keys(), "keys must be loaded before panic tick");
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn reset_clears_timer() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Panic);
 
         // Fire the timer.
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn pause_stops_counting() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Daily);
 
         // Tick a few times.
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn mode_change_to_shorter_fires_on_next_tick() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Daily);
 
         // Advance past Sentinel threshold but under Daily threshold.
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn fired_timer_keeps_returning_reboot() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Panic);
 
         let action = timer.tick(&mut km);
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn remaining_ms_decreases() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Daily);
 
         let initial = timer.remaining_ms();
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn remaining_ms_zero_after_expiry() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Panic);
         timer.tick(&mut km);
         assert_eq!(timer.remaining_ms(), 0);
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn expiry_forces_long_sleep_tier() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         assert_eq!(km.sleep_tier(), SleepTier::Short);
 
         let mut timer = BfuTimer::new(SecurityMode::Panic);

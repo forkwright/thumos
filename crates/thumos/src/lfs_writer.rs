@@ -303,7 +303,7 @@ mod tests {
     use crate::lfs::{DiskInode, INODE_TYPE_FILE};
 
     /// Create an 8 MB test device (16384 sectors = 2048 blocks = 8 segments of 256).
-    fn test_device() -> MemBlockDevice {
+    fn block_device_for_writer() -> MemBlockDevice {
         MemBlockDevice::new(16384).expect("create 8 MB test device")
     }
 
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn write_inode_updates_imap() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_writer();
         let mut cache = BlockCache::new();
         let mut imap = LfsImap::new();
         let mut seg_mgr = LfsSegmentManager::new(8, 256);
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn write_data_block_advances_position() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_writer();
         let mut cache = BlockCache::new();
         let mut seg_mgr = LfsSegmentManager::new(8, 256);
         seg_mgr.mark_used(0);
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn seal_segment_writes_header() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_writer();
         let mut cache = BlockCache::new();
         let mut seg_mgr = LfsSegmentManager::new(8, 256);
         seg_mgr.mark_used(0);
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn checkpoint_round_trips() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_writer();
         let mut cache = BlockCache::new();
         let mut imap = LfsImap::new();
         let mut seg_mgr = LfsSegmentManager::new(8, 256);
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn write_multiple_blocks_fills_segment() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_writer();
         let mut cache = BlockCache::new();
         let mut seg_mgr = LfsSegmentManager::new(8, 4); // small segments: 4 blocks each
         seg_mgr.mark_used(0);

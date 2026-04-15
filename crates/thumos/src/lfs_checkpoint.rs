@@ -289,13 +289,13 @@ mod tests {
     use alloc::vec;
 
     /// Create an 8 MB test device (16384 sectors = 2048 blocks).
-    fn test_device() -> MemBlockDevice {
+    fn block_device_for_checkpoint() -> MemBlockDevice {
         MemBlockDevice::new(16384).expect("create test device")
     }
 
     #[test]
     fn write_and_read_checkpoint_round_trips() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_checkpoint();
         let mut cache = BlockCache::new();
 
         let header = CheckpointHeader {
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn pick_latest_returns_higher_sequence() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_checkpoint();
         let mut cache = BlockCache::new();
 
         let header_a = CheckpointHeader {
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn pick_latest_handles_one_corrupt_slot() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_checkpoint();
         let mut cache = BlockCache::new();
 
         let header = CheckpointHeader {
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn pick_latest_returns_error_when_both_corrupt() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_checkpoint();
         let mut cache = BlockCache::new();
 
         // Both slots are zeroed (invalid magic).
