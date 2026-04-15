@@ -781,17 +781,17 @@ mod tests {
     use super::*;
 
     /// Helper: compute SHA-256 hash of a test PIN.
-    fn test_pin_hash(pin: &[u8]) -> [u8; 32] {
+    fn sha256_hash_of_pin(pin: &[u8]) -> [u8; 32] {
         crate::security::sha256(pin)
     }
 
     /// Helper: create a ModeManager with a known test PIN.
-    fn test_manager() -> ModeManager {
-        ModeManager::new(test_pin_hash(b"123456"))
+    fn mode_manager_with_test_pin() -> ModeManager {
+        ModeManager::new(sha256_hash_of_pin(b"123456"))
     }
 
     /// Helper: create a KeyManager with loaded keys for testing.
-    fn test_key_manager_with_keys() -> KeyManager {
+    fn key_manager_with_derived_keys() -> KeyManager {
         let mut km = KeyManager::new();
         let primary = {
             let mut key_bytes = [0u8; 32];
@@ -810,7 +810,7 @@ mod tests {
 
     #[test]
     fn mode_starts_daily() {
-        let mm = test_manager();
+        let mm = mode_manager_with_test_pin();
         assert_eq!(mm.mode(), SecurityMode::Daily);
         assert!(!mm.covert_lock());
         assert!(mm.last_panic_event().is_none());
@@ -822,8 +822,8 @@ mod tests {
 
     #[test]
     fn transition_daily_to_sentinel() {
-        let mut mm = test_manager();
-        let mut km = test_key_manager_with_keys();
+        let mut mm = mode_manager_with_test_pin();
+        let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
         pm.apply_mode(crate::power::PowerMode::Full);
 
@@ -846,8 +846,8 @@ mod tests {
 
     #[test]
     fn transition_sentinel_to_daily_requires_pin() {
-        let mut mm = test_manager();
-        let mut km = test_key_manager_with_keys();
+        let mut mm = mode_manager_with_test_pin();
+        let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
         mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
@@ -871,8 +871,8 @@ mod tests {
 
     #[test]
     fn panic_triggers_key_zeroize() {
-        let mut mm = test_manager();
-        let mut km = test_key_manager_with_keys();
+        let mut mm = mode_manager_with_test_pin();
+        let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
         pm.apply_mode(crate::power::PowerMode::Full);
 
@@ -899,8 +899,8 @@ mod tests {
 
     #[test]
     fn panic_abort_within_window() {
-        let mut mm = test_manager();
-        let mut km = test_key_manager_with_keys();
+        let mut mm = mode_manager_with_test_pin();
+        let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
         // Start in Daily, activate panic at tick 1000.
@@ -922,8 +922,8 @@ mod tests {
 
     #[test]
     fn panic_abort_after_window_fails() {
-        let mut mm = test_manager();
-        let mut km = test_key_manager_with_keys();
+        let mut mm = mode_manager_with_test_pin();
+        let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
         mm.activate_panic(1000, PanicActivation::DuressPin, &mut km, &mut pm)
@@ -941,7 +941,7 @@ mod tests {
 
     #[test]
     fn covert_lock_toggles_rf() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut pm = PowerManager::new();
         pm.apply_mode(crate::power::PowerMode::Full);
 
@@ -1012,7 +1012,7 @@ mod tests {
 
     #[test]
     fn effective_policy_covert_lock_overrides_daily() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut pm = PowerManager::new();
         mm.toggle_covert_lock(&mut pm);
 
@@ -1031,13 +1031,13 @@ mod tests {
 
     #[test]
     fn status_badge_daily() {
-        let mm = test_manager();
+        let mm = mode_manager_with_test_pin();
         assert_eq!(mm.status_badge(), "DAILY");
     }
 
     #[test]
     fn status_badge_sentinel() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
         mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
@@ -1046,7 +1046,7 @@ mod tests {
 
     #[test]
     fn status_badge_panic() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
         mm.activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
@@ -1056,7 +1056,7 @@ mod tests {
 
     #[test]
     fn status_badge_covert_overrides_daily() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut pm = PowerManager::new();
         mm.toggle_covert_lock(&mut pm);
         assert_eq!(mm.status_badge(), "COVRT");
@@ -1064,7 +1064,7 @@ mod tests {
 
     #[test]
     fn status_badge_covert_does_not_override_panic() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
 
@@ -1083,7 +1083,7 @@ mod tests {
 
     #[test]
     fn mode_char_maps_correctly() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         assert_eq!(mm.mode_char(), 'D');
 
         let mut km = KeyManager::new();
@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn double_sentinel_entry_fails() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
 
@@ -1113,7 +1113,7 @@ mod tests {
 
     #[test]
     fn sentinel_from_panic_fails() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
 
@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn exit_sentinel_from_daily_fails() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut pm = PowerManager::new();
 
         let result = mm.exit_sentinel(b"123456", &mut pm);
@@ -1135,7 +1135,7 @@ mod tests {
 
     #[test]
     fn double_panic_fails() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
 
@@ -1148,7 +1148,7 @@ mod tests {
 
     #[test]
     fn abort_from_non_panic_fails() {
-        let mut mm = test_manager();
+        let mut mm = mode_manager_with_test_pin();
         let mut pm = PowerManager::new();
 
         let result = mm.abort_panic(0, &mut pm);
@@ -1157,8 +1157,8 @@ mod tests {
 
     #[test]
     fn panic_abort_restores_sentinel_if_panic_from_sentinel() {
-        let mut mm = test_manager();
-        let mut km = test_key_manager_with_keys();
+        let mut mm = mode_manager_with_test_pin();
+        let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
         mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
@@ -1178,7 +1178,7 @@ mod tests {
 
     #[test]
     fn display_impls_produce_output() {
-        let mm = test_manager();
+        let mm = mode_manager_with_test_pin();
         let s = alloc::format!("{mm}");
         assert!(s.contains("Daily"), "Display must show mode");
         assert!(s.contains("covert=false"), "Display must show covert state");

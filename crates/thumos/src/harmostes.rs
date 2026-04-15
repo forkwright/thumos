@@ -1241,7 +1241,7 @@ mod tests {
         }
     }
 
-    fn test_client() -> MatrixClient {
+    fn matrix_client_with_test_credentials() -> MatrixClient {
         MatrixClient::new(
             "matrix.example.com",
             "@cody:matrix.example.com",
@@ -1252,7 +1252,7 @@ mod tests {
 
     #[test]
     fn new_client_has_empty_rooms() {
-        let client = test_client();
+        let client = matrix_client_with_test_credentials();
         assert!(client.rooms().is_empty());
         assert!(client.outbox().is_empty());
         assert!(client.sync_token().is_none());
@@ -1263,7 +1263,7 @@ mod tests {
 
     #[test]
     fn sync_response_adds_messages() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
         let room_id = "!test:matrix.example.com";
 
         let sync_json = build_sync_response(
@@ -1294,7 +1294,7 @@ mod tests {
 
     #[test]
     fn send_message_builds_correct_request() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
         let room_id = "!room:matrix.example.com";
 
         let result = client.build_send_request(room_id, "test message");
@@ -1332,7 +1332,7 @@ mod tests {
 
     #[test]
     fn outbox_queues_when_offline() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
 
         client.queue_message("!room1:example.com", "msg1");
         client.queue_message("!room2:example.com", "msg2");
@@ -1349,7 +1349,7 @@ mod tests {
 
     #[test]
     fn flush_outbox_attempts_all() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
 
         client.queue_message("!room1:example.com", "msg1");
         client.queue_message("!room2:example.com", "msg2");
@@ -1374,7 +1374,7 @@ mod tests {
 
     #[test]
     fn should_sync_respects_interval() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
 
         // Default active mode: always sync.
         assert!(client.should_sync(0));
@@ -1408,7 +1408,7 @@ mod tests {
 
     #[test]
     fn room_messages_returns_correct_room() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
 
         let room1 = "!room1:example.com";
         let room2 = "!room2:example.com";
@@ -1506,7 +1506,7 @@ mod tests {
 
     #[test]
     fn join_room_builds_correct_request() {
-        let client = test_client();
+        let client = matrix_client_with_test_credentials();
         let room_id = "!target:matrix.example.com";
 
         let req = client.build_join_request(room_id);
@@ -1525,7 +1525,7 @@ mod tests {
 
     #[test]
     fn join_room_adds_to_room_list() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
         let room_id = "!newroom:example.com";
 
         assert!(client.rooms().is_empty());
@@ -1545,7 +1545,7 @@ mod tests {
 
     #[test]
     fn server_error_parsed_correctly() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
 
         let error_body = r#"{"errcode":"M_FORBIDDEN","error":"You are not allowed"}"#;
         let response = mock_response(403, error_body);
@@ -1572,7 +1572,7 @@ mod tests {
 
     #[test]
     fn sync_disabled_in_sentinel_mode() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
         client.update_sync_cadence(SecurityMode::Sentinel, false);
 
         let result = client.build_sync_request();
@@ -1582,7 +1582,7 @@ mod tests {
 
     #[test]
     fn process_send_response_extracts_event_id() {
-        let client = test_client();
+        let client = matrix_client_with_test_credentials();
 
         let response = mock_response(200, r#"{"event_id":"$sent123"}"#);
         let result = client.process_send_response(&response);
@@ -1611,7 +1611,7 @@ mod tests {
 
     #[test]
     fn update_sync_cadence_modes() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
 
         // Daily + screen on → continuous.
         client.update_sync_cadence(SecurityMode::Daily, true);
@@ -1632,7 +1632,7 @@ mod tests {
 
     #[test]
     fn encrypted_event_shows_placeholder() {
-        let mut client = test_client();
+        let mut client = matrix_client_with_test_credentials();
         let room_id = "!enc:example.com";
 
         // Build a sync response with an encrypted event.

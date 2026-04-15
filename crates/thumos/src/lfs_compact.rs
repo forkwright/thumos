@@ -253,7 +253,7 @@ mod tests {
 
     /// Create a 2 MB test device (4096 sectors = 512 blocks).
     /// With segment size 8, this gives 64 segments.
-    fn test_device() -> MemBlockDevice {
+    fn block_device_for_compact() -> MemBlockDevice {
         MemBlockDevice::new(4096).expect("create 2 MB test device")
     }
 
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn compact_reclaims_garbage_segment() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_compact();
         let mut cache = BlockCache::new();
         let mut imap = LfsImap::new();
         // 64 segments of 8 blocks each.
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn compact_preserves_live_data() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_compact();
         let mut cache = BlockCache::new();
         let mut imap = LfsImap::new();
         let mut seg_mgr = LfsSegmentManager::new(64, 8);
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn compact_updates_imap_for_moved_blocks() {
-        let mut dev = test_device();
+        let mut dev = block_device_for_compact();
         let mut cache = BlockCache::new();
         let mut imap = LfsImap::new();
         let mut seg_mgr = LfsSegmentManager::new(64, 8);

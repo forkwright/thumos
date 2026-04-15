@@ -404,7 +404,7 @@ mod tests {
     use super::*;
 
     /// Create a test bundle with deterministic data.
-    fn test_bundle() -> ProvisionBundle {
+    fn provision_bundle_with_cross_signing() -> ProvisionBundle {
         ProvisionBundle {
             user_id: String::from("@cody:matrix.example.com"),
             device_id: String::from("THMSTESTDEV01"),
@@ -417,7 +417,7 @@ mod tests {
     }
 
     /// Create a test bundle without cross-signing key.
-    fn test_bundle_no_cross_signing() -> ProvisionBundle {
+    fn provision_bundle_without_cross_signing() -> ProvisionBundle {
         ProvisionBundle {
             user_id: String::from("@test:example.org"),
             device_id: String::from("DEVNOCSIGN"),
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn bundle_round_trip() {
-        let bundle = test_bundle();
+        let bundle = provision_bundle_with_cross_signing();
         let wire = encode_bundle(&bundle).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
@@ -446,13 +446,13 @@ mod tests {
 
         let result = prov.finalize();
         assert!(result.is_ok());
-        let decoded = result.unwrap_or_else(|_| test_bundle());
+        let decoded = result.unwrap_or_else(|_| provision_bundle_with_cross_signing());
         assert_eq!(decoded, bundle);
     }
 
     #[test]
     fn bundle_round_trip_no_cross_signing() {
-        let bundle = test_bundle_no_cross_signing();
+        let bundle = provision_bundle_without_cross_signing();
         let wire = encode_bundle(&bundle).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
@@ -461,7 +461,7 @@ mod tests {
         prov.receive_chunk(wire);
         assert!(prov.is_complete());
 
-        let decoded = prov.finalize().unwrap_or_else(|_| test_bundle());
+        let decoded = prov.finalize().unwrap_or_else(|_| provision_bundle_with_cross_signing());
         assert_eq!(decoded, bundle);
     }
 
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn invalid_magic_rejected() {
-        let mut wire = encode_bundle(&test_bundle())
+        let mut wire = encode_bundle(&provision_bundle_with_cross_signing())
             .unwrap_or_else(|_| Vec::new());
         assert!(!wire.is_empty());
         // Corrupt magic.
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn checksum_mismatch_rejected() {
-        let mut wire = encode_bundle(&test_bundle())
+        let mut wire = encode_bundle(&provision_bundle_with_cross_signing())
             .unwrap_or_else(|_| Vec::new());
         assert!(!wire.is_empty());
         // Corrupt last byte of checksum.
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn corrupted_payload_fails_checksum() {
-        let mut wire = encode_bundle(&test_bundle())
+        let mut wire = encode_bundle(&provision_bundle_with_cross_signing())
             .unwrap_or_else(|_| Vec::new());
         assert!(!wire.is_empty());
         // Corrupt a byte in the payload region.
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn truncated_data_stays_receiving() {
-        let wire = encode_bundle(&test_bundle()).ok();
+        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
         // Send only half the data.
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn multi_chunk_accumulation() {
-        let wire = encode_bundle(&test_bundle()).ok();
+        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
 
@@ -616,13 +616,13 @@ mod tests {
         }
 
         assert!(prov.is_complete());
-        let decoded = prov.finalize().unwrap_or_else(|_| test_bundle_no_cross_signing());
-        assert_eq!(decoded, test_bundle());
+        let decoded = prov.finalize().unwrap_or_else(|_| provision_bundle_without_cross_signing());
+        assert_eq!(decoded, provision_bundle_with_cross_signing());
     }
 
     #[test]
     fn byte_at_a_time_accumulation() {
-        let wire = encode_bundle(&test_bundle()).ok();
+        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
 
@@ -634,8 +634,8 @@ mod tests {
         }
 
         assert!(prov.is_complete());
-        let decoded = prov.finalize().unwrap_or_else(|_| test_bundle_no_cross_signing());
-        assert_eq!(decoded, test_bundle());
+        let decoded = prov.finalize().unwrap_or_else(|_| provision_bundle_without_cross_signing());
+        assert_eq!(decoded, provision_bundle_with_cross_signing());
     }
 
     // -----------------------------------------------------------------------
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn complete_state_ignores_further_data() {
-        let wire = encode_bundle(&test_bundle()).ok();
+        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
 
@@ -688,7 +688,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let wire = encode_bundle(&test_bundle()).ok();
+        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
 
@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(*prov.state(), ProvisionState::Waiting);
 
         // Now send valid data.
-        let wire = encode_bundle(&test_bundle()).ok();
+        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
         prov.receive_chunk(wire);
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn display_provision_bundle() {
-        let bundle = test_bundle();
+        let bundle = provision_bundle_with_cross_signing();
         let s = alloc::format!("{bundle}");
         assert!(s.contains("@cody:matrix.example.com"));
         assert!(s.contains("matrix.example.com"));
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn encode_bundle_produces_correct_structure() {
-        let bundle = test_bundle();
+        let bundle = provision_bundle_with_cross_signing();
         let wire = encode_bundle(&bundle).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().unwrap();
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn encoded_payload_deserializes_independently() {
-        let bundle = test_bundle();
+        let bundle = provision_bundle_with_cross_signing();
         let wire = encode_bundle(&bundle).ok();
         assert!(wire.is_some());
         let wire = wire.as_ref().unwrap();
@@ -793,6 +793,6 @@ mod tests {
 
         let decoded: Result<ProvisionBundle, _> = postcard::from_bytes(payload);
         assert!(decoded.is_ok());
-        assert_eq!(decoded.unwrap_or_else(|_| test_bundle_no_cross_signing()), bundle);
+        assert_eq!(decoded.unwrap_or_else(|_| provision_bundle_without_cross_signing()), bundle);
     }
 }
