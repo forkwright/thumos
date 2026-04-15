@@ -854,15 +854,15 @@ mod tests {
     #[test]
     fn event_type_display() {
         assert_eq!(
-            alloc::format!("{}", AuditEventType::AuthFail),
+            AuditEventType::AuthFail.to_string(),
             "AUTH_FAIL"
         );
         assert_eq!(
-            alloc::format!("{}", AuditEventType::PanicTrigger),
+            AuditEventType::PanicTrigger.to_string(),
             "PANIC_TRIGGER"
         );
         assert_eq!(
-            alloc::format!("{}", AuditEventType::DuressAttempt),
+            AuditEventType::DuressAttempt.to_string(),
             "DURESS_ATTEMPT"
         );
     }
@@ -875,7 +875,7 @@ mod tests {
         let (older, newer) = log.recent(1);
         let entries: alloc::vec::Vec<&AuditEntry> =
             older.iter().chain(newer.iter()).collect();
-        let display = alloc::format!("{}", entries[0]);
+        let display = entries[0].to_string();
         assert!(display.contains("42000"), "display must contain timestamp");
         assert!(display.contains("MODE_CHANGE"), "display must contain event type");
         assert!(display.contains("Daily->Sentinel"), "display must contain detail");
@@ -891,13 +891,13 @@ mod tests {
 
     #[test]
     fn audit_error_display() {
-        let no_key = alloc::format!("{}", AuditError::NoKey);
+        let no_key = AuditError::NoKey.to_string();
         assert!(no_key.contains("not available"), "NoKey display: {no_key}");
 
-        let tampered = alloc::format!("{}", AuditError::ChainTampered);
+        let tampered = AuditError::ChainTampered.to_string();
         assert!(tampered.contains("tampering"), "ChainTampered display: {tampered}");
 
-        let empty = alloc::format!("{}", AuditError::Empty);
+        let empty = AuditError::Empty.to_string();
         assert!(empty.contains("empty"), "Empty display: {empty}");
     }
 

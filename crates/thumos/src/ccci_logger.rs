@@ -1323,8 +1323,8 @@ mod tests {
 
     #[test]
     fn packet_direction_display() {
-        assert_eq!(alloc::format!("{}", PacketDirection::Tx), "TX");
-        assert_eq!(alloc::format!("{}", PacketDirection::Rx), "RX");
+        assert_eq!(PacketDirection::Tx.to_string(), "TX");
+        assert_eq!(PacketDirection::Rx.to_string(), "RX");
     }
 
     // -- CcciLogEntry Display --
@@ -1350,15 +1350,15 @@ mod tests {
     #[test]
     fn anomaly_kind_display() {
         assert!(
-            alloc::format!("{}", AnomalyKind::UnexpectedChannel)
+            AnomalyKind::UnexpectedChannel.to_string()
                 .contains("unexpected"),
         );
         assert!(
-            alloc::format!("{}", AnomalyKind::RateSpike)
+            AnomalyKind::RateSpike.to_string()
                 .contains("spike"),
         );
         assert!(
-            alloc::format!("{}", AnomalyKind::Data0OutOfRange)
+            AnomalyKind::Data0OutOfRange.to_string()
                 .contains("range"),
         );
     }
@@ -1383,17 +1383,17 @@ mod tests {
 
     #[test]
     fn firewall_verdict_display() {
-        assert_eq!(alloc::format!("{}", FirewallVerdict::Allow), "ALLOW");
-        assert_eq!(alloc::format!("{}", FirewallVerdict::Drop), "DROP");
+        assert_eq!(FirewallVerdict::Allow.to_string(), "ALLOW");
+        assert_eq!(FirewallVerdict::Drop.to_string(), "DROP");
     }
 
     // -- FirewallMode Display --
 
     #[test]
     fn firewall_mode_display() {
-        assert_eq!(alloc::format!("{}", FirewallMode::Daily), "Daily");
-        assert_eq!(alloc::format!("{}", FirewallMode::Sentinel), "Sentinel");
-        assert_eq!(alloc::format!("{}", FirewallMode::Panic), "Panic");
+        assert_eq!(FirewallMode::Daily.to_string(), "Daily");
+        assert_eq!(FirewallMode::Sentinel.to_string(), "Sentinel");
+        assert_eq!(FirewallMode::Panic.to_string(), "Panic");
     }
 
     // -- ChannelStats Display --

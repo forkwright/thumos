@@ -827,11 +827,11 @@ mod tests {
     #[test]
     fn preset_display() {
         assert_eq!(
-            alloc::format!("{}", CapabilityPreset::Advisor),
+            CapabilityPreset::Advisor.to_string(),
             "ADVISOR"
         );
         assert_eq!(
-            alloc::format!("{}", CapabilityPreset::Autonomous),
+            CapabilityPreset::Autonomous.to_string(),
             "AUTONOMOUS"
         );
     }

@@ -1465,13 +1465,13 @@ mod tests {
     /// Test Display impl for SecureBootError.
     #[test]
     fn error_display() {
-        let msg = alloc::format!("{}", SecureBootError::ImageTooShort);
+        let msg = SecureBootError::ImageTooShort.to_string();
         assert!(msg.contains("too short"), "ImageTooShort display must mention 'too short'");
 
-        let msg = alloc::format!("{}", SecureBootError::InvalidSignature);
+        let msg = SecureBootError::InvalidSignature.to_string();
         assert!(msg.contains("verification failed"), "InvalidSignature display");
 
-        let msg = alloc::format!("{}", SecureBootError::WrongPublicKey);
+        let msg = SecureBootError::WrongPublicKey.to_string();
         assert!(msg.contains("does not match"), "WrongPublicKey display");
     }
 

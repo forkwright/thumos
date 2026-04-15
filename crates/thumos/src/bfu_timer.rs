@@ -584,10 +584,10 @@ mod tests {
         assert!(s.contains("running"), "Display must show state");
         assert!(s.contains("elapsed=0ms"), "Display must show elapsed time");
 
-        let action_s = alloc::format!("{}", BfuAction::Reboot);
+        let action_s = BfuAction::Reboot.to_string();
         assert!(action_s.contains("reboot"), "BfuAction Display must describe action");
 
-        let state_s = alloc::format!("{}", BfuTimerState::Expired);
+        let state_s = BfuTimerState::Expired.to_string();
         assert_eq!(state_s, "expired");
     }
 

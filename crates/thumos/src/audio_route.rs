@@ -585,19 +585,19 @@ mod tests {
     #[test]
     fn audio_route_display() {
         assert_eq!(
-            alloc::format!("{}", AudioRoute::Earpiece),
+            AudioRoute::Earpiece.to_string(),
             "earpiece",
         );
         assert_eq!(
-            alloc::format!("{}", AudioRoute::Speaker),
+            AudioRoute::Speaker.to_string(),
             "speaker",
         );
         assert_eq!(
-            alloc::format!("{}", AudioRoute::BluetoothA2dp),
+            AudioRoute::BluetoothA2dp.to_string(),
             "bluetooth",
         );
         assert_eq!(
-            alloc::format!("{}", AudioRoute::UsbDac),
+            AudioRoute::UsbDac.to_string(),
             "USB DAC",
         );
     }
@@ -605,11 +605,11 @@ mod tests {
     #[test]
     fn session_kind_display() {
         assert_eq!(
-            alloc::format!("{}", SessionKind::VoiceCall),
+            SessionKind::VoiceCall.to_string(),
             "voice call",
         );
         assert_eq!(
-            alloc::format!("{}", SessionKind::Music),
+            SessionKind::Music.to_string(),
             "music",
         );
     }

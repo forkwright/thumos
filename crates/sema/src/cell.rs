@@ -947,10 +947,10 @@ mod tests {
 
     #[test]
     fn threat_level_display() {
-        assert_eq!(format!("{}", ThreatLevel::Low), "LOW");
-        assert_eq!(format!("{}", ThreatLevel::Medium), "MEDIUM");
-        assert_eq!(format!("{}", ThreatLevel::High), "HIGH");
-        assert_eq!(format!("{}", ThreatLevel::Critical), "CRITICAL");
+        assert_eq!(ThreatLevel::Low.to_string(), "LOW");
+        assert_eq!(ThreatLevel::Medium.to_string(), "MEDIUM");
+        assert_eq!(ThreatLevel::High.to_string(), "HIGH");
+        assert_eq!(ThreatLevel::Critical.to_string(), "CRITICAL");
     }
 
     #[test]
@@ -988,11 +988,11 @@ mod tests {
 
     #[test]
     fn cipher_algorithm_display() {
-        assert_eq!(format!("{}", CipherAlgorithm::A5_0), "A5/0 (no encryption)");
-        assert_eq!(format!("{}", CipherAlgorithm::A5_1), "A5/1");
-        assert_eq!(format!("{}", CipherAlgorithm::A5_2), "A5/2");
-        assert_eq!(format!("{}", CipherAlgorithm::A5_3), "A5/3");
-        assert_eq!(format!("{}", CipherAlgorithm::A5_4), "A5/4");
+        assert_eq!(CipherAlgorithm::A5_0.to_string(), "A5/0 (no encryption)");
+        assert_eq!(CipherAlgorithm::A5_1.to_string(), "A5/1");
+        assert_eq!(CipherAlgorithm::A5_2.to_string(), "A5/2");
+        assert_eq!(CipherAlgorithm::A5_3.to_string(), "A5/3");
+        assert_eq!(CipherAlgorithm::A5_4.to_string(), "A5/4");
     }
 
     #[test]

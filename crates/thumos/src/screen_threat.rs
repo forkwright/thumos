@@ -625,14 +625,14 @@ mod tests {
     fn alert_type_display() {
         use alloc::format;
 
-        assert_eq!(format!("{}", ThreatAlertType::ImsiCatcher), "IMSI_CATCHER");
-        assert_eq!(format!("{}", ThreatAlertType::BleTracker), "BLE_TRACKER");
-        assert_eq!(format!("{}", ThreatAlertType::DeauthAttack), "DEAUTH_ATTACK");
-        assert_eq!(format!("{}", ThreatAlertType::CcciAnomaly), "CCCI_ANOMALY");
-        assert_eq!(format!("{}", ThreatAlertType::GeofenceBreach), "GEOFENCE_BREACH");
-        assert_eq!(format!("{}", ThreatAlertType::SilentSms), "SILENT_SMS");
-        assert_eq!(format!("{}", ThreatAlertType::WapPushRejected), "WAP_PUSH_REJECTED");
-        assert_eq!(format!("{}", ThreatAlertType::ModemAnomaly), "MODEM_ANOMALY");
+        assert_eq!(ThreatAlertType::ImsiCatcher.to_string(), "IMSI_CATCHER");
+        assert_eq!(ThreatAlertType::BleTracker.to_string(), "BLE_TRACKER");
+        assert_eq!(ThreatAlertType::DeauthAttack.to_string(), "DEAUTH_ATTACK");
+        assert_eq!(ThreatAlertType::CcciAnomaly.to_string(), "CCCI_ANOMALY");
+        assert_eq!(ThreatAlertType::GeofenceBreach.to_string(), "GEOFENCE_BREACH");
+        assert_eq!(ThreatAlertType::SilentSms.to_string(), "SILENT_SMS");
+        assert_eq!(ThreatAlertType::WapPushRejected.to_string(), "WAP_PUSH_REJECTED");
+        assert_eq!(ThreatAlertType::ModemAnomaly.to_string(), "MODEM_ANOMALY");
     }
 
     #[test]
@@ -660,19 +660,19 @@ mod tests {
     fn threat_level_display() {
         use alloc::format;
 
-        assert_eq!(format!("{}", ThreatLevel::Low), "LOW");
-        assert_eq!(format!("{}", ThreatLevel::Medium), "MEDIUM");
-        assert_eq!(format!("{}", ThreatLevel::High), "HIGH");
-        assert_eq!(format!("{}", ThreatLevel::Critical), "CRITICAL");
+        assert_eq!(ThreatLevel::Low.to_string(), "LOW");
+        assert_eq!(ThreatLevel::Medium.to_string(), "MEDIUM");
+        assert_eq!(ThreatLevel::High.to_string(), "HIGH");
+        assert_eq!(ThreatLevel::Critical.to_string(), "CRITICAL");
     }
 
     #[test]
     fn firewall_mode_display() {
         use alloc::format;
 
-        assert_eq!(format!("{}", FirewallMode::Open), "OPEN");
-        assert_eq!(format!("{}", FirewallMode::Restricted), "RESTRICTED");
-        assert_eq!(format!("{}", FirewallMode::Blocked), "BLOCKED");
+        assert_eq!(FirewallMode::Open.to_string(), "OPEN");
+        assert_eq!(FirewallMode::Restricted.to_string(), "RESTRICTED");
+        assert_eq!(FirewallMode::Blocked.to_string(), "BLOCKED");
     }
 
     #[test]

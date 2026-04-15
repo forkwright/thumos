@@ -570,7 +570,7 @@ mod tests {
         assert!(plan_s.contains("6 targets"), "WipePlan Display must show count");
         assert!(plan_s.contains("keys"), "WipePlan Display must list keys");
 
-        let target_s = alloc::format!("{}", WipeTarget::CallHistory);
+        let target_s = WipeTarget::CallHistory.to_string();
         assert_eq!(target_s, "call history");
 
         let beacon = DistressBeacon {
