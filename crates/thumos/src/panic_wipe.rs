@@ -399,7 +399,7 @@ mod tests {
     use crate::security::SleepTier;
 
     /// Helper: create a `KeyManager` with loaded keys for testing.
-    fn test_key_manager_with_keys() -> KeyManager {
+    fn key_manager_with_derived_keys() -> KeyManager {
         let mut km = KeyManager::new();
         let primary = {
             let mut key_bytes = [0u8; 32];
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn execute_wipe_zeroizes_keys() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         assert!(km.has_keys(), "keys must be loaded before wipe");
 
         let result = execute_panic_wipe(&mut km, 1000, true);
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn execute_wipe_dry_run_no_failures() {
-        let mut km = test_key_manager_with_keys();
+        let mut km = key_manager_with_derived_keys();
         let result = execute_panic_wipe(&mut km, 500, true);
         assert_eq!(result.targets_failed, 0, "dry-run must have zero failures");
         assert!(result.memory_scrubbed, "dry-run must report memory as scrubbed");
