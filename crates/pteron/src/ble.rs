@@ -298,7 +298,11 @@ mod tests {
             AdType::CompleteName,
             "AD type should be CompleteName (0x09)"
         );
-        assert_eq!(result.first().cloned().unwrap_or_default().data, b"Test", "data should be the 4 name bytes");
+        assert_eq!(
+            result.first().cloned().unwrap_or_default().data,
+            b"Test",
+            "data should be the 4 name bytes"
+        );
     }
 
     #[test]
@@ -419,7 +423,11 @@ mod tests {
         assert_eq!(beacon.major, 1, "major should be 1");
         assert_eq!(beacon.minor, 2, "minor should be 2");
         assert_eq!(beacon.tx_power, -59_i8, "tx_power should be -59 dBm");
-        assert_eq!(beacon.uuid.first().copied().unwrap_or_default(), 0x55, "first UUID byte should be 0x55");
+        assert_eq!(
+            beacon.uuid.first().copied().unwrap_or_default(),
+            0x55,
+            "first UUID byte should be 0x55"
+        );
     }
 
     #[test]

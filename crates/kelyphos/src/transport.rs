@@ -11,7 +11,7 @@
 
 use snafu::Snafu;
 
-use crate::stp::{StpFrame, MAX_PAYLOAD};
+use crate::stp::{MAX_PAYLOAD, StpFrame};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -42,9 +42,7 @@ pub enum TransportError {
     WindowFull,
 
     /// Frame retry count exceeded [`RETRY_LIMIT`]; link is dead.
-    #[snafu(display(
-        "frame seq={seq} exceeded retry LIMIT ({RETRY_LIMIT}); link declared dead"
-    ))]
+    #[snafu(display("frame seq={seq} exceeded retry LIMIT ({RETRY_LIMIT}); link declared dead"))]
     RetryLimitExceeded {
         /// Sequence number of the frame that exceeded the retry LIMIT.
         seq: u8,
@@ -162,8 +160,7 @@ impl RxParser {
                     // header[2] bits [7:3] = length bits [4:0]
                     let h1 = self.buf.get(2).copied().unwrap_or_default(); // buf[0] = SOF, buf[1] = h0, buf[2] = h1
                     let h2 = self.buf.get(3).copied().unwrap_or_default();
-                    let len =
-                        (u16::from(h1 & 0x7F) << 5) | (u16::from(h2 >> 3));
+                    let len = (u16::from(h1 & 0x7F) << 5) | (u16::from(h2 >> 3));
                     self.payload_len = len;
                     if len == 0 {
                         self.state = RxState::Crc { collected: 0 };
@@ -253,9 +250,7 @@ impl StpTransport {
         // WHY: Option<TxEntry> is not Copy because TxEntry has a large array,
         // so we cannot use array repeat syntax [None; N]. Build manually.
         Self {
-            tx_window: [
-                None, None, None, None, None, None, None,
-            ],
+            tx_window: [None, None, None, None, None, None, None],
             tx_seq: 0,
             rx_parser: RxParser::new(),
         }
@@ -364,7 +359,10 @@ mod tests {
             1,
             "window must contain exactly 1 frame after one enqueue"
         );
-        assert!(slot < WINDOW_SIZE, "returned slot index must be within window bounds");
+        assert!(
+            slot < WINDOW_SIZE,
+            "returned slot index must be within window bounds"
+        );
     }
 
     #[test]
@@ -445,9 +443,8 @@ mod tests {
         t.enqueue(&frame).unwrap_or_default();
         // Drive retry count to the LIMIT.
         for i in 0..RETRY_LIMIT {
-            t.retransmit(2).unwrap_or_else(|_| {
-                panic!("retransmit {i} must succeed before LIMIT")
-            });
+            t.retransmit(2)
+                .unwrap_or_else(|_| panic!("retransmit {i} must succeed before LIMIT"));
         }
         let err = t
             .retransmit(2)
@@ -462,19 +459,13 @@ mod tests {
     fn stp_frame_round_trips_through_tx_entry() {
         let frame = make_frame(5, b"round-trip");
         let entry = TxEntry::from_frame(&frame);
-        assert!(
-            entry.len > 0,
-            "encoded TxEntry must have non-zero length"
-        );
+        assert!(entry.len > 0, "encoded TxEntry must have non-zero length");
         assert_eq!(
             entry.as_bytes()[0],
             0x80,
             "first byte of encoded entry must be STP SOF (0x80)"
         );
-        assert_eq!(
-            entry.seq, 5,
-            "TxEntry seq must match the frame seq"
-        );
+        assert_eq!(entry.seq, 5, "TxEntry seq must match the frame seq");
         assert_eq!(entry.retries, 0, "TxEntry retries must start at 0");
     }
 

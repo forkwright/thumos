@@ -105,7 +105,10 @@ pub(crate) fn extract_query_domain(data: &[u8]) -> Option<String> {
     }
 
     // QDCOUNT must be at least 1.
-    let qdcount = u16::from_be_bytes([data.get(4).copied().unwrap_or_default(), data.get(5).copied().unwrap_or_default()]);
+    let qdcount = u16::from_be_bytes([
+        data.get(4).copied().unwrap_or_default(),
+        data.get(5).copied().unwrap_or_default(),
+    ]);
     if qdcount == 0 {
         return None;
     }

@@ -303,13 +303,21 @@ mod tests {
     #[test]
     fn parse_cme_error() {
         let (_, resp) = parse_final_result("+CME ERROR: 10").unwrap_or_default();
-        assert_eq!(resp, Response::CmeError(10), "CME error code 10 must be extracted");
+        assert_eq!(
+            resp,
+            Response::CmeError(10),
+            "CME error code 10 must be extracted"
+        );
     }
 
     #[test]
     fn parse_cms_error() {
         let (_, resp) = parse_final_result("+CMS ERROR: 321").unwrap_or_default();
-        assert_eq!(resp, Response::CmsError(321), "CMS error code 321 must be extracted");
+        assert_eq!(
+            resp,
+            Response::CmsError(321),
+            "CMS error code 321 must be extracted"
+        );
     }
 
     #[test]
@@ -322,14 +330,20 @@ mod tests {
     #[test]
     fn signal_strength_conversion() {
         let sig = SignalStrength::from(18u8);
-        assert_eq!(sig.dbm, -77, "RSSI 18 must convert to -77 dBm per AT+CSQ formula");
+        assert_eq!(
+            sig.dbm, -77,
+            "RSSI 18 must convert to -77 dBm per AT+CSQ formula"
+        );
         assert_eq!(sig.bars, 2, "RSSI 18 (-77 dBm) must be 2 bars");
     }
 
     #[test]
     fn signal_strength_unknown() {
         let sig = SignalStrength::from(99u8);
-        assert_eq!(sig.dbm, -999, "RSSI 99 must map to -999 dBm (unknown sentinel)");
+        assert_eq!(
+            sig.dbm, -999,
+            "RSSI 99 must map to -999 dBm (unknown sentinel)"
+        );
         assert_eq!(sig.bars, 0, "unknown signal strength must report 0 bars");
     }
 
@@ -382,11 +396,19 @@ mod tests {
 
     #[test]
     fn build_dial_command() {
-        assert_eq!(cmd::dial("+15551234567"), "ATD+15551234567;", "dial command must be formatted as ATD<number>;");
+        assert_eq!(
+            cmd::dial("+15551234567"),
+            "ATD+15551234567;",
+            "dial command must be formatted as ATD<number>;"
+        );
     }
 
     #[test]
     fn build_sms_command() {
-        assert_eq!(cmd::cmgs("+15551234567"), "AT+CMGS=\"+15551234567\"", "CMGS command must wrap number in quotes");
+        assert_eq!(
+            cmd::cmgs("+15551234567"),
+            "AT+CMGS=\"+15551234567\"",
+            "CMGS command must wrap number in quotes"
+        );
     }
 }

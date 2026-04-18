@@ -297,13 +297,10 @@ mod tests {
             data_len: 20,
             ..Gpd::default()
         };
-        q.enqueue(gpd)
-            .unwrap_or_default();
+        q.enqueue(gpd).unwrap_or_default();
         assert_eq!(q.len(), 1, "queue length must be 1 after one enqueue");
 
-        let out = q
-            .dequeue()
-            .unwrap_or_default();
+        let out = q.dequeue().unwrap_or_default();
         assert_eq!(out, gpd, "dequeued descriptor must equal enqueued one");
         assert!(q.is_empty(), "queue must be empty after dequeue");
     }
@@ -329,9 +326,7 @@ mod tests {
             q.enqueue(gpd).unwrap_or_default();
         }
         for expected_seq in 0u16..3 {
-            let gpd = q
-                .dequeue()
-                .unwrap_or_default();
+            let gpd = q.dequeue().unwrap_or_default();
             assert_eq!(
                 gpd.seq_num, expected_seq,
                 "RX queue must preserve FIFO ORDER (expected seq {expected_seq})"
