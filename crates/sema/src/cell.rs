@@ -1009,7 +1009,7 @@ mod tests {
         let alert = ImsiCatcherAlert::RapidReselection { count: 7 };
         let display = format!("{alert}");
         assert!(
-            display.contains("7"),
+            display.contains('7'),
             "RapidReselection display must mention the count"
         );
     }
