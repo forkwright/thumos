@@ -161,7 +161,7 @@ mod tests {
             PanicTrigger::Timer(Duration::from_secs(30)),
             WipeLevel::UserData,
         );
-        let result = cfg.check_trigger(&TriggerInput::Elapsed(Duration::from_secs(60)));
+        let result = cfg.check_trigger(&TriggerInput::Elapsed(Duration::from_mins(1)));
         assert_eq!(
             result,
             Some(WipeLevel::UserData),
