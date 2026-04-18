@@ -166,9 +166,7 @@ pub enum WmtError {
     },
 
     /// Chip ID register returned an unexpected value after CPU reset release.
-    #[snafu(display(
-        "CONSYS chip ID mismatch: expected {expected:#010x}, got {got:#010x}"
-    ))]
+    #[snafu(display("CONSYS chip ID mismatch: expected {expected:#010x}, got {got:#010x}"))]
     ChipIdMismatch {
         /// Expected chip ID.
         expected: u32,
@@ -587,13 +585,19 @@ pub trait RegisterIo {
 pub struct MmioRegisterIo;
 
 impl RegisterIo for MmioRegisterIo {
-    #[expect(unsafe_code, reason = "MMIO requires volatile read FROM physical address")]
+    #[expect(
+        unsafe_code,
+        reason = "MMIO requires volatile read FROM physical address"
+    )]
     fn read32(&mut self, addr: u32) -> u32 {
         // SAFETY: addr is a known-valid CONSYS MMIO register mapped by the kernel.
         unsafe { core::ptr::read_volatile(addr as *const u32) }
     }
 
-    #[expect(unsafe_code, reason = "MMIO requires volatile write to physical address")]
+    #[expect(
+        unsafe_code,
+        reason = "MMIO requires volatile write to physical address"
+    )]
     fn write32(&mut self, addr: u32, val: u32) {
         // SAFETY: addr is a known-valid CONSYS MMIO register mapped by the kernel.
         unsafe { core::ptr::write_volatile(addr as *mut u32, val) }
@@ -709,21 +713,27 @@ impl<R: RegisterIo> WmtManager<R> {
         );
 
         // Re-enable AXI bus protect to isolate CONSYS FROM system bus.
-        self.io.set_bits32(CONSYS_TOPAXI_PROT_EN, CONSYS_TOPAXI_PROT_BITS);
+        self.io
+            .set_bits32(CONSYS_TOPAXI_PROT_EN, CONSYS_TOPAXI_PROT_BITS);
 
         // Gate AHB clock and clock buffer.
         self.io.clk_buf_ctrl(false);
 
         // Assert isolation.
-        self.io.set_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_ISO_S_BIT);
+        self.io
+            .set_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_ISO_S_BIT);
 
         // Clear SW reset bit.
-        self.io.clear_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_RST_BIT);
+        self.io
+            .clear_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_RST_BIT);
 
         // Disable clock, shadow, and main power.
-        self.io.set_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_CLK_CTRL_BIT);
-        self.io.clear_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_ON_S_BIT);
-        self.io.clear_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_ON_BIT);
+        self.io
+            .set_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_CLK_CTRL_BIT);
+        self.io
+            .clear_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_ON_S_BIT);
+        self.io
+            .clear_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_ON_BIT);
 
         // Disable core regulator last.
         self.io.pmic_regulator_disable(PmicRegulator::Vcn18);
@@ -916,14 +926,16 @@ mod tests {
 
     #[test]
     fn register_constants_spm_base() {
-        assert_eq!(SPM_BASE, 0xF000_6000, "SPM_BASE must match MT6739 datasheet");
+        assert_eq!(
+            SPM_BASE, 0xF000_6000,
+            "SPM_BASE must match MT6739 datasheet"
+        );
     }
 
     #[test]
     fn register_constants_top1_pwr_ctrl() {
         assert_eq!(
-            CONSYS_TOP1_PWR_CTRL_REG,
-            0xF000_632C,
+            CONSYS_TOP1_PWR_CTRL_REG, 0xF000_632C,
             "CONSYS_TOP1_PWR_CTRL_REG = SPM_BASE + 0x32C"
         );
     }
@@ -931,8 +943,7 @@ mod tests {
     #[test]
     fn register_constants_conn_mcu_chip_id() {
         assert_eq!(
-            CONSYS_CHIP_ID_REG,
-            0xF807_0008,
+            CONSYS_CHIP_ID_REG, 0xF807_0008,
             "CONSYS_CHIP_ID_REG = CONN_MCU_CONFIG_BASE + 0x008"
         );
     }
@@ -940,13 +951,11 @@ mod tests {
     #[test]
     fn register_constants_topaxi_prot() {
         assert_eq!(
-            CONSYS_TOPAXI_PROT_EN,
-            0xF000_1220,
+            CONSYS_TOPAXI_PROT_EN, 0xF000_1220,
             "CONSYS_TOPAXI_PROT_EN = TOPCKGEN_BASE + 0x1220"
         );
         assert_eq!(
-            CONSYS_TOPAXI_PROT_STA1,
-            0xF000_1228,
+            CONSYS_TOPAXI_PROT_STA1, 0xF000_1228,
             "CONSYS_TOPAXI_PROT_STA1 = TOPCKGEN_BASE + 0x1228"
         );
     }
@@ -1073,7 +1082,9 @@ mod tests {
         // Remove the ack bit so polling never succeeds.
         io.regs.insert(CONSYS_PWR_CONN_ACK_REG, 0x0000_0000);
         let mut mgr = WmtManager::new(io);
-        let err = mgr.power_on().expect_err("must fail when ack bit never sets");
+        let err = mgr
+            .power_on()
+            .expect_err("must fail when ack bit never sets");
         assert!(
             matches!(err, WmtError::PowerAckTimeout { step: 3 }),
             "error must be PowerAckTimeout at step 3, got {err:?}"
@@ -1122,8 +1133,7 @@ mod tests {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
         mgr.power_on().unwrap_or_default();
-        mgr.enable_subsystem(Subsystem::Bt)
-            .unwrap_or_default();
+        mgr.enable_subsystem(Subsystem::Bt).unwrap_or_default();
         assert!(
             mgr.subsystem_enabled(Subsystem::Bt),
             "BT must be enabled after enable_subsystem(Bt)"
@@ -1135,8 +1145,7 @@ mod tests {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
         mgr.power_on().unwrap_or_default();
-        mgr.enable_subsystem(Subsystem::Wifi)
-            .unwrap_or_default();
+        mgr.enable_subsystem(Subsystem::Wifi).unwrap_or_default();
         let enabled_bit = 1u8 << u8::from(PmicRegulator::Vcn33Wifi);
         assert!(
             mgr.io.regulators & enabled_bit != 0,
@@ -1149,8 +1158,7 @@ mod tests {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
         mgr.power_on().unwrap_or_default();
-        mgr.enable_subsystem(Subsystem::Gps)
-            .unwrap_or_default();
+        mgr.enable_subsystem(Subsystem::Gps).unwrap_or_default();
         let vcn28_bit = 1u8 << u8::from(PmicRegulator::Vcn28);
         assert!(
             mgr.io.regulators & vcn28_bit != 0,
@@ -1163,10 +1171,8 @@ mod tests {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
         mgr.power_on().unwrap_or_default();
-        mgr.enable_subsystem(Subsystem::Bt)
-            .unwrap_or_default();
-        mgr.disable_subsystem(Subsystem::Bt)
-            .unwrap_or_default();
+        mgr.enable_subsystem(Subsystem::Bt).unwrap_or_default();
+        mgr.disable_subsystem(Subsystem::Bt).unwrap_or_default();
         assert!(
             !mgr.subsystem_enabled(Subsystem::Bt),
             "BT must not be enabled after disable_subsystem(Bt)"
@@ -1198,8 +1204,7 @@ mod tests {
         let io = FakeIo::new();
         let mut mgr = WmtManager::new(io);
         mgr.power_on().unwrap_or_default();
-        mgr.enable_subsystem(Subsystem::Gps)
-            .unwrap_or_default();
+        mgr.enable_subsystem(Subsystem::Gps).unwrap_or_default();
         let err = mgr
             .enable_subsystem(Subsystem::Gps)
             .expect_err("second enable must fail with SubsystemStateConflict");

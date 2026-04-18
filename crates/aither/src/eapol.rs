@@ -195,7 +195,10 @@ pub fn parse(data: &[u8]) -> Result<EapolFrame, Error> {
 
     let version = data.first().copied().unwrap_or_default();
     let packet_type = EapolType::from_byte(data.get(1).copied().unwrap_or_default())?;
-    let body_len = usize::from(u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]));
+    let body_len = usize::from(u16::from_be_bytes([
+        data.get(2).copied().unwrap_or_default(),
+        data.get(3).copied().unwrap_or_default(),
+    ]));
     let total = EAPOL_HEADER_LEN + body_len;
 
     ensure!(
@@ -237,8 +240,14 @@ fn parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, Error> {
 
     // Safe: all offsets guaranteed by the ensure above.
     let descriptor_type = body.first().copied().unwrap_or_default();
-    let key_info = KeyInfo(u16::from_be_bytes([body.get(1).copied().unwrap_or_default(), body.get(2).copied().unwrap_or_default()]));
-    let key_length = u16::from_be_bytes([body.get(3).copied().unwrap_or_default(), body.get(4).copied().unwrap_or_default()]);
+    let key_info = KeyInfo(u16::from_be_bytes([
+        body.get(1).copied().unwrap_or_default(),
+        body.get(2).copied().unwrap_or_default(),
+    ]));
+    let key_length = u16::from_be_bytes([
+        body.get(3).copied().unwrap_or_default(),
+        body.get(4).copied().unwrap_or_default(),
+    ]);
 
     let mut replay_buf = [0u8; 8];
     replay_buf.copy_from_slice(body.get(5..13).unwrap_or_default());
@@ -258,7 +267,10 @@ fn parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, Error> {
     let mut mic = [0u8; MIC_LEN];
     mic.copy_from_slice(body.get(77..93).unwrap_or_default());
 
-    let key_data_len = usize::from(u16::from_be_bytes([body.get(93).copied().unwrap_or_default(), body.get(94).copied().unwrap_or_default()]));
+    let key_data_len = usize::from(u16::from_be_bytes([
+        body.get(93).copied().unwrap_or_default(),
+        body.get(94).copied().unwrap_or_default(),
+    ]));
     let key_data_end = EAPOL_KEY_FIXED_LEN + key_data_len;
 
     ensure!(
@@ -343,8 +355,15 @@ mod tests {
         let data = [0x02, 0x01, 0x00, 0x00];
         let frame = parse(&data)?;
         assert_eq!(frame.version, 2, "version byte must be 2");
-        assert_eq!(frame.packet_type, EapolType::Start, "packet type must be Start");
-        assert!(frame.key_frame.is_none(), "Start frame must have no key frame");
+        assert_eq!(
+            frame.packet_type,
+            EapolType::Start,
+            "packet type must be Start"
+        );
+        assert!(
+            frame.key_frame.is_none(),
+            "Start frame must have no key frame"
+        );
         assert!(frame.raw_body.is_empty(), "Start frame body must be empty");
         Ok(())
     }
@@ -353,7 +372,11 @@ mod tests {
     fn parses_logoff_frame() -> Result<(), Error> {
         let data = [0x01, 0x02, 0x00, 0x00];
         let frame = parse(&data)?;
-        assert_eq!(frame.packet_type, EapolType::Logoff, "packet type must be Logoff");
+        assert_eq!(
+            frame.packet_type,
+            EapolType::Logoff,
+            "packet type must be Logoff"
+        );
         Ok(())
     }
 
@@ -368,10 +391,24 @@ mod tests {
         };
         let encoded = encode(&frame);
         let parsed = parse(&encoded)?;
-        assert_eq!(parsed.version, 2, "version must survive encode/parse roundtrip");
-        assert_eq!(parsed.packet_type, EapolType::Key, "packet type must survive encode/parse roundtrip");
-        assert!(parsed.key_frame.is_some(), "key frame must be present after roundtrip");
-        assert_eq!(parsed.key_frame, Some(kf), "key frame fields must be identical after roundtrip");
+        assert_eq!(
+            parsed.version, 2,
+            "version must survive encode/parse roundtrip"
+        );
+        assert_eq!(
+            parsed.packet_type,
+            EapolType::Key,
+            "packet type must survive encode/parse roundtrip"
+        );
+        assert!(
+            parsed.key_frame.is_some(),
+            "key frame must be present after roundtrip"
+        );
+        assert_eq!(
+            parsed.key_frame,
+            Some(kf),
+            "key frame fields must be identical after roundtrip"
+        );
         Ok(())
     }
 
@@ -386,7 +423,10 @@ mod tests {
         };
         let encoded = encode(&frame);
         let decoded = parse(&encoded)?;
-        assert_eq!(decoded.raw_body, body, "raw body must survive encode/parse roundtrip");
+        assert_eq!(
+            decoded.raw_body, body,
+            "raw body must survive encode/parse roundtrip"
+        );
         Ok(())
     }
 
@@ -425,7 +465,11 @@ mod tests {
     fn key_info_flags_decode_correctly() {
         // 0x008a = pairwise(bit3) | ack(bit7) | key_descriptor_version=2
         let ki = KeyInfo(0x008a);
-        assert_eq!(ki.descriptor_version(), 2, "descriptor version must be 2 for 0x008a");
+        assert_eq!(
+            ki.descriptor_version(),
+            2,
+            "descriptor version must be 2 for 0x008a"
+        );
         assert!(ki.pairwise(), "pairwise bit must be set for 0x008a");
         assert!(ki.ack(), "ack bit must be set for 0x008a");
         assert!(!ki.install(), "install bit must be clear for 0x008a");
@@ -447,9 +491,15 @@ mod tests {
         };
         let encoded = encode(&frame);
         let parsed = parse(&encoded)?;
-        assert!(parsed.key_frame.is_some(), "key frame must be present after roundtrip");
+        assert!(
+            parsed.key_frame.is_some(),
+            "key frame must be present after roundtrip"
+        );
         if let Some(pkf) = parsed.key_frame {
-            assert_eq!(pkf.key_data, key_data, "key data must survive encode/parse roundtrip");
+            assert_eq!(
+                pkf.key_data, key_data,
+                "key data must survive encode/parse roundtrip"
+            );
         }
         Ok(())
     }

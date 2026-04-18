@@ -240,9 +240,7 @@ mod tests {
         // AT+CSQ returns an info line then OK.
         let transport = MockTransport::with_response(b"+CSQ: 18,99\r\nOK\r\n");
         let mut session = AtSession::new(transport);
-        let resp = session
-            .send_command("AT+CSQ")
-            .unwrap_or_default();
+        let resp = session.send_command("AT+CSQ").unwrap_or_default();
         assert_eq!(resp.result, Response::Ok, "result must be OK");
         assert_eq!(resp.info.len(), 1, "one info line expected");
         assert_eq!(
@@ -256,9 +254,7 @@ mod tests {
     fn at_session_cme_error_response() {
         let transport = MockTransport::with_response(b"+CME ERROR: 10\r\n");
         let mut session = AtSession::new(transport);
-        let resp = session
-            .send_command("AT+CPIN?")
-            .unwrap_or_default();
+        let resp = session.send_command("AT+CPIN?").unwrap_or_default();
         assert_eq!(
             resp.result,
             Response::CmeError(10),
@@ -271,8 +267,7 @@ mod tests {
         let transport = MockTransport::with_response(b"OK\r\n");
         let mut session = AtSession::new(transport);
         session.send_command("AT+CSQ").unwrap_or_default();
-        let sent = String::from_utf8(session.transport.outbound.clone())
-            .unwrap_or_default();
+        let sent = String::from_utf8(session.transport.outbound.clone()).unwrap_or_default();
         assert!(
             sent.ends_with("\r\n"),
             "command must be terminated with CR LF, got: {sent:?}"
@@ -308,9 +303,7 @@ mod tests {
         // Modem may emit blank lines between response sections.
         let transport = MockTransport::with_response(b"\r\n\r\n+CSQ: 7,0\r\nOK\r\n");
         let mut session = AtSession::new(transport);
-        let resp = session
-            .send_command("AT+CSQ")
-            .unwrap_or_default();
+        let resp = session.send_command("AT+CSQ").unwrap_or_default();
         assert_eq!(resp.result, Response::Ok, "result must be OK");
         assert_eq!(
             resp.info.len(),

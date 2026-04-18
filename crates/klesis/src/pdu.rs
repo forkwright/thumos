@@ -206,11 +206,21 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() / 2);
     for chunk in s.as_bytes().chunks(2) {
         // SAFETY: chunks(2) always gives exactly 2 bytes here; we checked even length.
-        let hi = hex_nibble(chunk.first().copied().unwrap_or_default()).ok_or_else(|| crate::error::Error::InvalidHex {
-            message: format!("invalid hex digit: 0x{:02X}", chunk.first().copied().unwrap_or_default()),
+        let hi = hex_nibble(chunk.first().copied().unwrap_or_default()).ok_or_else(|| {
+            crate::error::Error::InvalidHex {
+                message: format!(
+                    "invalid hex digit: 0x{:02X}",
+                    chunk.first().copied().unwrap_or_default()
+                ),
+            }
         })?;
-        let lo = hex_nibble(chunk.get(1).copied().unwrap_or_default()).ok_or_else(|| crate::error::Error::InvalidHex {
-            message: format!("invalid hex digit: 0x{:02X}", chunk.get(1).copied().unwrap_or_default()),
+        let lo = hex_nibble(chunk.get(1).copied().unwrap_or_default()).ok_or_else(|| {
+            crate::error::Error::InvalidHex {
+                message: format!(
+                    "invalid hex digit: 0x{:02X}",
+                    chunk.get(1).copied().unwrap_or_default()
+                ),
+            }
         })?;
         out.push((hi << 4) | lo);
     }
@@ -544,7 +554,10 @@ fn decode_user_data(cur: &mut Cursor<'_>, udl: usize, encoding: DataEncoding) ->
             }
             let mut s = String::with_capacity(ud_bytes.len() / 2);
             for pair in ud_bytes.chunks_exact(2) {
-                let code_unit = u16::from_be_bytes([pair.first().copied().unwrap_or_default(), pair.get(1).copied().unwrap_or_default()]);
+                let code_unit = u16::from_be_bytes([
+                    pair.first().copied().unwrap_or_default(),
+                    pair.get(1).copied().unwrap_or_default(),
+                ]);
                 // WHY: SMS UCS-2 is BMP-only; surrogate pairs are technically
                 // possible but rare and outside our current scope.
                 let ch =
@@ -638,12 +651,27 @@ mod tests {
         };
         let encoded = encode_bcd_address(&addr);
         // encoded = [len_digits=10, type=0x91, bcd*5]
-        assert_eq!(encoded.first().copied().unwrap_or_default(), 10, "first byte must be digit count (10)");
-        assert_eq!(encoded.get(1).copied().unwrap_or_default(), 0x91, "second byte must be type-of-address 0x91 (international)");
+        assert_eq!(
+            encoded.first().copied().unwrap_or_default(),
+            10,
+            "first byte must be digit count (10)"
+        );
+        assert_eq!(
+            encoded.get(1).copied().unwrap_or_default(),
+            0x91,
+            "second byte must be type-of-address 0x91 (international)"
+        );
         // Decode back: len_digits=10, type=0x91, bcd = encoded[2..]
         let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..]);
-        assert_eq!(decoded.number, "+1234567890", "decoded number must match original");
-        assert_eq!(decoded.type_of_address, AddressType::International, "decoded type must be International");
+        assert_eq!(
+            decoded.number, "+1234567890",
+            "decoded number must match original"
+        );
+        assert_eq!(
+            decoded.type_of_address,
+            AddressType::International,
+            "decoded type must be International"
+        );
     }
 
     #[test]
@@ -653,9 +681,16 @@ mod tests {
             type_of_address: AddressType::International,
         };
         let encoded = encode_bcd_address(&addr);
-        assert_eq!(encoded.first().copied().unwrap_or_default(), 11, "first byte must be digit count (11)");
+        assert_eq!(
+            encoded.first().copied().unwrap_or_default(),
+            11,
+            "first byte must be digit count (11)"
+        );
         let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..]);
-        assert_eq!(decoded.number, "+12345678901", "decoded number must match 11-digit original including trailing filler nibble");
+        assert_eq!(
+            decoded.number, "+12345678901",
+            "decoded number must match 11-digit original including trailing filler nibble"
+        );
     }
 
     // ── Known PDU decode (SMS-DELIVER, GSM-7) ─────────────────────────────────
@@ -676,14 +711,24 @@ mod tests {
         //   C8 32 9B FD 06  -  UD: "Hello" packed
         let pdu = "00000A9121436587090000321051210300000 5C8329BFD06".replace(' ', "");
         let sms = decode_deliver(&pdu).unwrap_or_default();
-        assert_eq!(sms.sender.number, "+1234567890", "sender number must decode to +1234567890");
-        assert_eq!(sms.sender.type_of_address, AddressType::International, "sender type must be International");
+        assert_eq!(
+            sms.sender.number, "+1234567890",
+            "sender number must decode to +1234567890"
+        );
+        assert_eq!(
+            sms.sender.type_of_address,
+            AddressType::International,
+            "sender type must be International"
+        );
         assert!(
             sms.timestamp.contains("2023-01-15"),
             "timestamp must contain date 2023-01-15, got: {}",
             sms.timestamp
         );
-        assert_eq!(sms.user_data.text, "Hello", "GSM-7 packed bytes must decode to 'Hello'");
+        assert_eq!(
+            sms.user_data.text, "Hello",
+            "GSM-7 packed bytes must decode to 'Hello'"
+        );
     }
 
     // ── SMS-SUBMIT encode/decode ───────────────────────────────────────────────
@@ -707,7 +752,11 @@ mod tests {
         // First byte is SMSC len 0x00.
         assert_eq!(raw.first(), Some(&0x00), "SMSC length prefix must be 0x00");
         // Second byte: MTI=01.
-        assert_eq!(raw.get(1).map(|b| b & 0x03), Some(0x01), "MTI bits must be 0x01 (SMS-SUBMIT)");
+        assert_eq!(
+            raw.get(1).map(|b| b & 0x03),
+            Some(0x01),
+            "MTI bits must be 0x01 (SMS-SUBMIT)"
+        );
     }
 
     #[test]
@@ -728,7 +777,11 @@ mod tests {
         let raw = hex_decode(&hex).unwrap_or_default();
 
         // With VPF=10, first octet should be 0x11.
-        assert_eq!(raw.get(1), Some(&0x11), "first octet must be 0x11 (MTI=01 with VPF=10 relative VP)");
+        assert_eq!(
+            raw.get(1),
+            Some(&0x11),
+            "first octet must be 0x11 (MTI=01 with VPF=10 relative VP)"
+        );
         // VP byte should be present after DA.
         // DA length = 12 digits → 8 bytes ([len, type, 6×bcd]) → OFFSET for VP = 1+1+1+8+1+1 = 13? Let's just verify non-empty.
         assert!(!hex.is_empty(), "encoded PDU hex must be non-empty");
@@ -743,8 +796,15 @@ mod tests {
         //   DCS=0x08 (UCS-2), UDL=4 bytes, UD=0x0048 0x0069 → "Hi"
         let pdu = "00000A91214365870900083210512103000004004800 69".replace(' ', "");
         let sms = decode_deliver(&pdu).unwrap_or_default();
-        assert_eq!(sms.user_data.encoding, DataEncoding::Ucs2, "DCS=0x08 must be decoded as UCS-2");
-        assert_eq!(sms.user_data.text, "Hi", "UCS-2 bytes 0x0048 0x0069 must decode to 'Hi'");
+        assert_eq!(
+            sms.user_data.encoding,
+            DataEncoding::Ucs2,
+            "DCS=0x08 must be decoded as UCS-2"
+        );
+        assert_eq!(
+            sms.user_data.text, "Hi",
+            "UCS-2 bytes 0x0048 0x0069 must decode to 'Hi'"
+        );
     }
 
     // ── Edge cases ────────────────────────────────────────────────────────────
@@ -767,7 +827,11 @@ mod tests {
         // UDL byte should be 0x00.
         // Find UDL: after SMSC(1) + first_octet(1) + MR(1) + DA + PID(1) + DCS(1)
         // DA for "+1": len=1, type=1, bcd=1 → 3 bytes → total before UDL = 1+1+1+3+1+1 = 8
-        assert_eq!(raw.get(8), Some(&0x00), "UDL must be 0x00 for an empty message");
+        assert_eq!(
+            raw.get(8),
+            Some(&0x00),
+            "UDL must be 0x00 for an empty message"
+        );
     }
 
     #[test]
@@ -788,7 +852,11 @@ mod tests {
         let hex = encode_submit(&msg).unwrap_or_default();
         let raw = hex_decode(&hex).unwrap_or_default();
         // UDL for 70 UCS-2 chars = 140 bytes.
-        assert_eq!(raw.get(8), Some(&140), "UDL must be 140 bytes for 70 UCS-2 characters");
+        assert_eq!(
+            raw.get(8),
+            Some(&140),
+            "UDL must be 140 bytes for 70 UCS-2 characters"
+        );
     }
 
     // ── Invalid input ─────────────────────────────────────────────────────────
@@ -799,19 +867,28 @@ mod tests {
         // Construct minimal PDU: SMSC=00, first_octet=01 (MTI=1).
         let pdu = "00010A9121436587090000321051210300000 5C8329BFD06".replace(' ', "");
         let result = decode_deliver(&pdu);
-        assert!(result.is_err(), "SMS-SUBMIT PDU must be rejected by decode_deliver (expects MTI=0)");
+        assert!(
+            result.is_err(),
+            "SMS-SUBMIT PDU must be rejected by decode_deliver (expects MTI=0)"
+        );
     }
 
     #[test]
     fn hex_decode_odd_length_returns_error() {
         let result = hex_decode("ABC");
-        assert!(result.is_err(), "odd-length hex string must return an error");
+        assert!(
+            result.is_err(),
+            "odd-length hex string must return an error"
+        );
     }
 
     #[test]
     fn hex_decode_invalid_char_returns_error() {
         let result = hex_decode("GG");
-        assert!(result.is_err(), "non-hex character 'G' must return an error");
+        assert!(
+            result.is_err(),
+            "non-hex character 'G' must return an error"
+        );
     }
 
     // ── Silent SMS detection ─────────────────────────────────────────────────
@@ -846,7 +923,10 @@ mod tests {
         // PID=0x41: replace short message type 1 (SIM toolkit attack vector).
         let pdu = "00000A914321658709410032105121030000 05C8329BFD06".replace(' ', "");
         let result = decode_deliver(&pdu);
-        assert!(result.is_err(), "PID=0x41 must be rejected as silent SMS variant");
+        assert!(
+            result.is_err(),
+            "PID=0x41 must be rejected as silent SMS variant"
+        );
         match result.unwrap_err() {
             crate::error::Error::SilentSmsAlert { pid } => {
                 assert_eq!(pid, 0x41, "PID in error must be 0x41");
@@ -860,7 +940,10 @@ mod tests {
         // PID=0x47: replace short message type 7 (upper bound of SIM toolkit range).
         let pdu = "00000A914321658709470032105121030000 05C8329BFD06".replace(' ', "");
         let result = decode_deliver(&pdu);
-        assert!(result.is_err(), "PID=0x47 must be rejected as silent SMS variant");
+        assert!(
+            result.is_err(),
+            "PID=0x47 must be rejected as silent SMS variant"
+        );
     }
 
     #[test]
@@ -868,7 +951,10 @@ mod tests {
         // PID=0x00 (normal SMS) must not trigger the silent SMS check.
         let pdu = "00000A914321658709000032105121030000 05C8329BFD06".replace(' ', "");
         let result = decode_deliver(&pdu);
-        assert!(result.is_ok(), "PID=0x00 must not be rejected, got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "PID=0x00 must not be rejected, got: {result:?}"
+        );
     }
 
     #[test]
@@ -913,10 +999,7 @@ mod tests {
                 destination_port,
                 source_port,
             } => {
-                assert_eq!(
-                    destination_port, 2948,
-                    "destination port must be 2948"
-                );
+                assert_eq!(destination_port, 2948, "destination port must be 2948");
                 assert_eq!(source_port, 0x23F0, "source port must be 0x23F0");
             }
             other => panic!("expected WapPushRejected, got: {other}"),
@@ -927,18 +1010,14 @@ mod tests {
     fn decode_deliver_wap_push_port_49999() {
         // Same structure as above but with destination port 49999 (0xC34F).
         //   UDH: 06 05 04 C3 4F 23 F0
-        let pdu = "00400A91432165870900083210512103000009060504C34F23F00041"
-            .replace(' ', "");
+        let pdu = "00400A91432165870900083210512103000009060504C34F23F00041".replace(' ', "");
         let result = decode_deliver(&pdu);
         assert!(result.is_err(), "WAP Push to port 49999 must be rejected");
         match result.unwrap_err() {
             crate::error::Error::WapPushRejected {
                 destination_port, ..
             } => {
-                assert_eq!(
-                    destination_port, 49999,
-                    "destination port must be 49999"
-                );
+                assert_eq!(destination_port, 49999, "destination port must be 49999");
             }
             other => panic!("expected WapPushRejected, got: {other}"),
         }
@@ -988,10 +1067,7 @@ mod tests {
         // Normal PDU without UDHI bit — should pass regardless of UD content.
         let pdu = "00000A914321658709000032105121030000 05C8329BFD06".replace(' ', "");
         let result = decode_deliver(&pdu);
-        assert!(
-            result.is_ok(),
-            "normal PDU without UDHI must pass"
-        );
+        assert!(result.is_ok(), "normal PDU without UDHI must pass");
     }
 
     // ── UDH parsing unit tests ───────────────────────────────────────────────

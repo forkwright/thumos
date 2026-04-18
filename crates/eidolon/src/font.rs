@@ -231,7 +231,11 @@ pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg:
         for col in 0u8..8 {
             let bit = (byte >> (7 - col)) & 1;
             let color = if bit != 0 { fg } else { bg };
-            fb.set_pixel(x + u32::from(col), y + u32::try_from(row).unwrap_or_default(), color);
+            fb.set_pixel(
+                x + u32::from(col),
+                y + u32::try_from(row).unwrap_or_default(),
+                color,
+            );
         }
     }
 }

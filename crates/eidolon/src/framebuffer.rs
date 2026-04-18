@@ -21,7 +21,9 @@ pub struct Framebuffer {
 impl Framebuffer {
     /// Allocate a new framebuffer filled with black.
     pub fn new(width: u32, height: u32) -> Self {
-        let size = usize::try_from(width).unwrap_or_default() * usize::try_from(height).unwrap_or_default() * BYTES_PER_PIXEL;
+        let size = usize::try_from(width).unwrap_or_default()
+            * usize::try_from(height).unwrap_or_default()
+            * BYTES_PER_PIXEL;
         Self {
             buf: vec![0u8; size],
             width,
@@ -34,7 +36,10 @@ impl Framebuffer {
         if x >= self.width || y >= self.height {
             return;
         }
-        let idx = (usize::try_from(y).unwrap_or_default() * usize::try_from(self.width).unwrap_or_default() + usize::try_from(x).unwrap_or_default()) * BYTES_PER_PIXEL;
+        let idx = (usize::try_from(y).unwrap_or_default()
+            * usize::try_from(self.width).unwrap_or_default()
+            + usize::try_from(x).unwrap_or_default())
+            * BYTES_PER_PIXEL;
         let [lo, hi] = color.0.to_le_bytes();
         self.buf[idx] = lo;
         self.buf[idx + 1] = hi;
@@ -47,7 +52,10 @@ impl Framebuffer {
         let x_end = x.saturating_add(w).min(self.width);
         for row in y..y_end {
             for col in x..x_end {
-                let idx = (usize::try_from(row).unwrap_or_default() * usize::try_from(self.width).unwrap_or_default() + usize::try_from(col).unwrap_or_default()) * BYTES_PER_PIXEL;
+                let idx = (usize::try_from(row).unwrap_or_default()
+                    * usize::try_from(self.width).unwrap_or_default()
+                    + usize::try_from(col).unwrap_or_default())
+                    * BYTES_PER_PIXEL;
                 self.buf[idx] = lo;
                 self.buf[idx + 1] = hi;
             }
@@ -108,11 +116,13 @@ mod tests {
         fb.set_pixel(0, 0, Rgb565::WHITE);
         let bytes = fb.as_bytes();
         assert_eq!(
-            bytes.first().copied().unwrap_or_default(), 0xFF,
+            bytes.first().copied().unwrap_or_default(),
+            0xFF,
             "first byte of pixel (0,0) must be 0xFF for white"
         );
         assert_eq!(
-            bytes.get(1).copied().unwrap_or_default(), 0xFF,
+            bytes.get(1).copied().unwrap_or_default(),
+            0xFF,
             "second byte of pixel (0,0) must be 0xFF for white"
         );
     }
@@ -176,8 +186,16 @@ mod tests {
         let [lo, hi] = Rgb565::RED.0.to_le_bytes();
         let bytes = fb.as_bytes();
         for chunk in bytes.chunks_exact(2) {
-            assert_eq!(chunk.first().copied().unwrap_or_default(), lo, "every pixel low byte must be red");
-            assert_eq!(chunk.get(1).copied().unwrap_or_default(), hi, "every pixel high byte must be red");
+            assert_eq!(
+                chunk.first().copied().unwrap_or_default(),
+                lo,
+                "every pixel low byte must be red"
+            );
+            assert_eq!(
+                chunk.get(1).copied().unwrap_or_default(),
+                hi,
+                "every pixel high byte must be red"
+            );
         }
     }
 

@@ -177,7 +177,10 @@ mod tests {
     fn selects_nothing_when_no_known_networks() {
         let scans = vec![make_scan(b"HomeNet", [0u8; 6], -60)];
         let config = NetworkConfig::new();
-        assert!(select_network(&scans, &config).is_none(), "must return None when config has no networks");
+        assert!(
+            select_network(&scans, &config).is_none(),
+            "must return None when config has no networks"
+        );
     }
 
     #[test]
@@ -185,7 +188,10 @@ mod tests {
         let scans = vec![make_scan(b"Neighbour", [0u8; 6], -55)];
         let mut config = NetworkConfig::new();
         config.add(make_network(b"HomeNet", 0));
-        assert!(select_network(&scans, &config).is_none(), "must return None when no scan result matches the configured SSID");
+        assert!(
+            select_network(&scans, &config).is_none(),
+            "must return None when no scan result matches the configured SSID"
+        );
     }
 
     #[test]
@@ -216,7 +222,11 @@ mod tests {
         let result = select_network(&scans, &config);
         assert!(result.is_some(), "must return a network when SSID matches");
         // Both scan entries match the same configured entry.
-        assert_eq!(result.map(|n| n.ssid.as_slice()), Some(b"Corp".as_slice()), "selected SSID must be Corp");
+        assert_eq!(
+            result.map(|n| n.ssid.as_slice()),
+            Some(b"Corp".as_slice()),
+            "selected SSID must be Corp"
+        );
     }
 
     #[test]
@@ -230,7 +240,11 @@ mod tests {
         config.add(make_network(b"NetB", 10)); // weaker signal, higher priority
         let result = select_network(&scans, &config);
         assert!(result.is_some(), "must return a network when SSIDs match");
-        assert_eq!(result.map(|n| n.ssid.as_slice()), Some(b"NetB".as_slice()), "higher-priority network must win over stronger signal");
+        assert_eq!(
+            result.map(|n| n.ssid.as_slice()),
+            Some(b"NetB".as_slice()),
+            "higher-priority network must win over stronger signal"
+        );
     }
 
     #[test]
@@ -250,8 +264,15 @@ mod tests {
             priority: 0,
         });
         let result = select_network(&scans, &config);
-        assert!(result.is_some(), "must return a result when target BSSID is present");
-        assert_eq!(result.map(|n| n.bssid), Some(Some(target)), "selected BSSID must be the exact target");
+        assert!(
+            result.is_some(),
+            "must return a result when target BSSID is present"
+        );
+        assert_eq!(
+            result.map(|n| n.bssid),
+            Some(Some(target)),
+            "selected BSSID must be the exact target"
+        );
     }
 
     #[test]
@@ -267,13 +288,20 @@ mod tests {
             security: SecurityType::Open,
             priority: 0,
         });
-        assert!(select_network(&scans, &config).is_none(), "must return None when BSSID filter does not match any scan result");
+        assert!(
+            select_network(&scans, &config).is_none(),
+            "must return None when BSSID filter does not match any scan result"
+        );
     }
 
     #[test]
     fn connection_state_defaults_to_disconnected() {
         let state = ConnectionState::default();
-        assert_eq!(state, ConnectionState::Disconnected, "default ConnectionState must be Disconnected");
+        assert_eq!(
+            state,
+            ConnectionState::Disconnected,
+            "default ConnectionState must be Disconnected"
+        );
     }
 
     #[test]
@@ -294,9 +322,16 @@ mod tests {
     #[test]
     fn network_config_tracks_added_networks() {
         let mut config = NetworkConfig::new();
-        assert!(config.networks.is_empty(), "new config must have no networks");
+        assert!(
+            config.networks.is_empty(),
+            "new config must have no networks"
+        );
         config.add(make_network(b"A", 0));
         config.add(make_network(b"B", 1));
-        assert_eq!(config.networks.len(), 2, "config must contain exactly two networks after two adds");
+        assert_eq!(
+            config.networks.len(),
+            2,
+            "config must contain exactly two networks after two adds"
+        );
     }
 }

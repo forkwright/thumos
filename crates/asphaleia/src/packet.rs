@@ -138,10 +138,23 @@ impl IpHeader {
             });
         }
 
-        let total_length = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]);
+        let total_length = u16::from_be_bytes([
+            data.get(2).copied().unwrap_or_default(),
+            data.get(3).copied().unwrap_or_default(),
+        ]);
         let protocol = data.get(9).copied().unwrap_or_default();
-        let src_addr = Ipv4Addr::new(data.get(12).copied().unwrap_or_default(), data.get(13).copied().unwrap_or_default(), data.get(14).copied().unwrap_or_default(), data.get(15).copied().unwrap_or_default());
-        let dst_addr = Ipv4Addr::new(data.get(16).copied().unwrap_or_default(), data.get(17).copied().unwrap_or_default(), data.get(18).copied().unwrap_or_default(), data.get(19).copied().unwrap_or_default());
+        let src_addr = Ipv4Addr::new(
+            data.get(12).copied().unwrap_or_default(),
+            data.get(13).copied().unwrap_or_default(),
+            data.get(14).copied().unwrap_or_default(),
+            data.get(15).copied().unwrap_or_default(),
+        );
+        let dst_addr = Ipv4Addr::new(
+            data.get(16).copied().unwrap_or_default(),
+            data.get(17).copied().unwrap_or_default(),
+            data.get(18).copied().unwrap_or_default(),
+            data.get(19).copied().unwrap_or_default(),
+        );
 
         Ok(Self {
             version,
@@ -176,10 +189,26 @@ impl TcpHeader {
             });
         }
 
-        let src_port = u16::from_be_bytes([data.first().copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
-        let dst_port = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]);
-        let seq = u32::from_be_bytes([data.get(4).copied().unwrap_or_default(), data.get(5).copied().unwrap_or_default(), data.get(6).copied().unwrap_or_default(), data.get(7).copied().unwrap_or_default()]);
-        let ack = u32::from_be_bytes([data.get(8).copied().unwrap_or_default(), data.get(9).copied().unwrap_or_default(), data.get(10).copied().unwrap_or_default(), data.get(11).copied().unwrap_or_default()]);
+        let src_port = u16::from_be_bytes([
+            data.first().copied().unwrap_or_default(),
+            data.get(1).copied().unwrap_or_default(),
+        ]);
+        let dst_port = u16::from_be_bytes([
+            data.get(2).copied().unwrap_or_default(),
+            data.get(3).copied().unwrap_or_default(),
+        ]);
+        let seq = u32::from_be_bytes([
+            data.get(4).copied().unwrap_or_default(),
+            data.get(5).copied().unwrap_or_default(),
+            data.get(6).copied().unwrap_or_default(),
+            data.get(7).copied().unwrap_or_default(),
+        ]);
+        let ack = u32::from_be_bytes([
+            data.get(8).copied().unwrap_or_default(),
+            data.get(9).copied().unwrap_or_default(),
+            data.get(10).copied().unwrap_or_default(),
+            data.get(11).copied().unwrap_or_default(),
+        ]);
         // Byte 12 is data OFFSET; byte 13 is the flags byte.
         let flags = data.get(13).copied().unwrap_or_default();
 
@@ -210,9 +239,18 @@ impl UdpHeader {
             });
         }
 
-        let src_port = u16::from_be_bytes([data.first().copied().unwrap_or_default(), data.get(1).copied().unwrap_or_default()]);
-        let dst_port = u16::from_be_bytes([data.get(2).copied().unwrap_or_default(), data.get(3).copied().unwrap_or_default()]);
-        let length = u16::from_be_bytes([data.get(4).copied().unwrap_or_default(), data.get(5).copied().unwrap_or_default()]);
+        let src_port = u16::from_be_bytes([
+            data.first().copied().unwrap_or_default(),
+            data.get(1).copied().unwrap_or_default(),
+        ]);
+        let dst_port = u16::from_be_bytes([
+            data.get(2).copied().unwrap_or_default(),
+            data.get(3).copied().unwrap_or_default(),
+        ]);
+        let length = u16::from_be_bytes([
+            data.get(4).copied().unwrap_or_default(),
+            data.get(5).copied().unwrap_or_default(),
+        ]);
 
         Ok(Self {
             src_port,

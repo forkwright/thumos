@@ -219,7 +219,11 @@ pub struct ThreatFactor {
 
 impl core::fmt::Display for ThreatFactor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{} (weight {}): {}", self.name, self.weight, self.description)
+        write!(
+            f,
+            "{} (weight {}): {}",
+            self.name, self.weight, self.description
+        )
     }
 }
 
@@ -709,10 +713,7 @@ mod tests {
             algorithm: CipherAlgorithm::A5_3,
         }];
         let alerts = detect_imsi_catcher(&events);
-        assert!(
-            alerts.is_empty(),
-            "A5/3 cipher must not trigger any alert"
-        );
+        assert!(alerts.is_empty(), "A5/3 cipher must not trigger any alert");
     }
 
     // ── Rapid reselection detection ─────────────────────────────────────────
@@ -762,10 +763,9 @@ mod tests {
 
         let alerts = detect_imsi_catcher(&events);
         assert!(
-            alerts.iter().any(|a| matches!(
-                a,
-                ImsiCatcherAlert::RapidReselection { count: 4 }
-            )),
+            alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { count: 4 })),
             "4 reselections must trigger RapidReselection with count=4"
         );
     }
@@ -777,7 +777,10 @@ mod tests {
         let score = score_threat(&[]);
         assert_eq!(score.total, 0, "no alerts must produce score 0");
         assert_eq!(score.level, ThreatLevel::Low, "score 0 must be Low");
-        assert!(score.factors.is_empty(), "no alerts must produce no factors");
+        assert!(
+            score.factors.is_empty(),
+            "no alerts must produce no factors"
+        );
     }
 
     #[test]
@@ -787,11 +790,7 @@ mod tests {
         }];
         let score = score_threat(&alerts);
         assert_eq!(score.total, 40, "cipher downgrade weight must be 40");
-        assert_eq!(
-            score.level,
-            ThreatLevel::Medium,
-            "score 40 must be Medium"
-        );
+        assert_eq!(score.level, ThreatLevel::Medium, "score 40 must be Medium");
         assert_eq!(score.factors.len(), 1, "one alert must produce one factor");
         assert_eq!(
             score.factors[0].name, "cipher_downgrade",
@@ -817,11 +816,7 @@ mod tests {
         }];
         let score = score_threat(&alerts);
         assert_eq!(score.total, 30, "sudden tower change weight must be 30");
-        assert_eq!(
-            score.level,
-            ThreatLevel::Medium,
-            "score 30 must be Medium"
-        );
+        assert_eq!(score.level, ThreatLevel::Medium, "score 30 must be Medium");
     }
 
     #[test]
@@ -884,11 +879,7 @@ mod tests {
     #[test]
     fn score_threat_boundary_values() {
         // Verify exact boundary thresholds.
-        assert_eq!(
-            level_from_score(0),
-            ThreatLevel::Low,
-            "score 0 must be Low"
-        );
+        assert_eq!(level_from_score(0), ThreatLevel::Low, "score 0 must be Low");
         assert_eq!(
             level_from_score(29),
             ThreatLevel::Low,
@@ -933,10 +924,7 @@ mod tests {
             to: CellTechnology::Gsm,
         }];
         let score = score_threat(&alerts);
-        assert_eq!(
-            score.total, 40,
-            "technology downgrade weight must be 40"
-        );
+        assert_eq!(score.total, 40, "technology downgrade weight must be 40");
         assert_eq!(
             score.factors[0].name, "tech_downgrade",
             "factor name must be tech_downgrade"
@@ -972,10 +960,7 @@ mod tests {
             ],
         };
         let display = format!("{score}");
-        assert!(
-            display.contains("70"),
-            "display must contain total score"
-        );
+        assert!(display.contains("70"), "display must contain total score");
         assert!(
             display.contains("HIGH"),
             "display must contain threat level"

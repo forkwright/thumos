@@ -225,10 +225,30 @@ impl CcciHeader {
                 ),
             }
         );
-        let data0 = u32::from_le_bytes([buf.first().copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default(), buf.get(2).copied().unwrap_or_default(), buf.get(3).copied().unwrap_or_default()]);
-        let data1 = u32::from_le_bytes([buf.get(4).copied().unwrap_or_default(), buf.get(5).copied().unwrap_or_default(), buf.get(6).copied().unwrap_or_default(), buf.get(7).copied().unwrap_or_default()]);
-        let channel = u32::from_le_bytes([buf.get(8).copied().unwrap_or_default(), buf.get(9).copied().unwrap_or_default(), buf.get(10).copied().unwrap_or_default(), buf.get(11).copied().unwrap_or_default()]);
-        let reserved = u32::from_le_bytes([buf.get(12).copied().unwrap_or_default(), buf.get(13).copied().unwrap_or_default(), buf.get(14).copied().unwrap_or_default(), buf.get(15).copied().unwrap_or_default()]);
+        let data0 = u32::from_le_bytes([
+            buf.first().copied().unwrap_or_default(),
+            buf.get(1).copied().unwrap_or_default(),
+            buf.get(2).copied().unwrap_or_default(),
+            buf.get(3).copied().unwrap_or_default(),
+        ]);
+        let data1 = u32::from_le_bytes([
+            buf.get(4).copied().unwrap_or_default(),
+            buf.get(5).copied().unwrap_or_default(),
+            buf.get(6).copied().unwrap_or_default(),
+            buf.get(7).copied().unwrap_or_default(),
+        ]);
+        let channel = u32::from_le_bytes([
+            buf.get(8).copied().unwrap_or_default(),
+            buf.get(9).copied().unwrap_or_default(),
+            buf.get(10).copied().unwrap_or_default(),
+            buf.get(11).copied().unwrap_or_default(),
+        ]);
+        let reserved = u32::from_le_bytes([
+            buf.get(12).copied().unwrap_or_default(),
+            buf.get(13).copied().unwrap_or_default(),
+            buf.get(14).copied().unwrap_or_default(),
+            buf.get(15).copied().unwrap_or_default(),
+        ]);
         Ok(Self {
             data: [data0, data1],
             channel,

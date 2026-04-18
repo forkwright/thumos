@@ -17,7 +17,7 @@ use crate::input::{InputEvent, InputQueue, TouchAction, TouchPoint};
 
 /// I2C address for the mtk-tpd touch controller.
 ///
-/// NOTE: 0x38 is the mtk-tpd default. Unconfirmed for the AGM M7  - 
+/// NOTE: 0x38 is the mtk-tpd default. Unconfirmed for the AGM M7  -
 /// verify with `i2cdetect` on the stock Android kernel.
 pub const TPD_I2C_ADDR: u8 = 0x38;
 
@@ -522,19 +522,17 @@ mod tests {
         // First poll: Down.
         bus.push_read(vec![1]);
         bus.push_read(make_touch_bytes(50, 50, 128, 0));
-        driver
-            .poll(&mut bus, &mut q)
-            .unwrap_or_default();
+        driver.poll(&mut bus, &mut q).unwrap_or_default();
         q.pop(); // consume Down
 
         // Second poll with same tracking_id: Move.
         bus.push_read(vec![1]);
         bus.push_read(make_touch_bytes(60, 70, 128, 0));
-        driver
-            .poll(&mut bus, &mut q)
-            .unwrap_or_default();
+        driver.poll(&mut bus, &mut q).unwrap_or_default();
 
-        let event = q.pop().expect("queue must have one event after second poll");
+        let event = q
+            .pop()
+            .expect("queue must have one event after second poll");
         assert!(
             matches!(
                 event,
@@ -556,16 +554,16 @@ mod tests {
         // First poll: Down.
         bus.push_read(vec![1]);
         bus.push_read(make_touch_bytes(100, 200, 150, 1));
-        driver
-            .poll(&mut bus, &mut q)
-            .unwrap_or_default();
+        driver.poll(&mut bus, &mut q).unwrap_or_default();
         q.pop(); // consume Down
 
         // Second poll: finger lifted (count = 0).
         bus.push_read(vec![0]);
         driver.poll(&mut bus, &mut q).unwrap_or_default();
 
-        let event = q.pop().expect("queue must have one Up event after finger lifted");
+        let event = q
+            .pop()
+            .expect("queue must have one Up event after finger lifted");
         assert!(
             matches!(
                 event,
@@ -596,9 +594,7 @@ mod tests {
         data.extend(make_touch_bytes(200, 300, 80, 1));
         bus.push_read(data);
 
-        driver
-            .poll(&mut bus, &mut q)
-            .unwrap_or_default();
+        driver.poll(&mut bus, &mut q).unwrap_or_default();
 
         assert_eq!(q.len(), 2, "two simultaneous touches must emit two events");
 
@@ -633,9 +629,7 @@ mod tests {
         let mut q = InputQueue::new();
 
         bus.push_read(vec![0]);
-        driver
-            .poll(&mut bus, &mut q)
-            .unwrap_or_default();
+        driver.poll(&mut bus, &mut q).unwrap_or_default();
 
         assert!(
             q.is_empty(),
@@ -654,9 +648,7 @@ mod tests {
         bus.push_read(vec![1]);
         bus.push_read(bad);
 
-        driver
-            .poll(&mut bus, &mut q)
-            .unwrap_or_default();
+        driver.poll(&mut bus, &mut q).unwrap_or_default();
         assert!(
             q.is_empty(),
             "out-of-range coordinates must be silently dropped"
@@ -675,9 +667,7 @@ mod tests {
         data.extend(make_touch_bytes(200, 200, 70, 2));
         bus.push_read(data);
 
-        driver
-            .poll(&mut bus, &mut q)
-            .unwrap_or_default();
+        driver.poll(&mut bus, &mut q).unwrap_or_default();
         assert_eq!(
             q.len(),
             3,

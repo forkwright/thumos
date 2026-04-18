@@ -58,15 +58,21 @@ impl Drop for Ptk {
     fn drop(&mut self) {
         for byte in &mut self.kck {
             // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe { std::ptr::write_volatile(byte, 0); }
+            unsafe {
+                std::ptr::write_volatile(byte, 0);
+            }
         }
         for byte in &mut self.kek {
             // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe { std::ptr::write_volatile(byte, 0); }
+            unsafe {
+                std::ptr::write_volatile(byte, 0);
+            }
         }
         for byte in &mut self.tk {
             // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe { std::ptr::write_volatile(byte, 0); }
+            unsafe {
+                std::ptr::write_volatile(byte, 0);
+            }
         }
     }
 }
@@ -238,7 +244,10 @@ mod tests {
     fn pmk_derivation_is_deterministic() {
         let a = derive_pmk(b"secret", b"mynet");
         let b = derive_pmk(b"secret", b"mynet");
-        assert_eq!(a, b, "PMK must be identical for identical passphrase and SSID");
+        assert_eq!(
+            a, b,
+            "PMK must be identical for identical passphrase and SSID"
+        );
     }
 
     #[test]
@@ -284,7 +293,10 @@ mod tests {
         let spa = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
         let ptk_ab = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
         let ptk_ba = derive_ptk(&pmk, &anonce, &snonce, &spa, &aa);
-        assert_eq!(ptk_ab, ptk_ba, "PTK must be identical regardless of AA/SPA order");
+        assert_eq!(
+            ptk_ab, ptk_ba,
+            "PTK must be identical regardless of AA/SPA order"
+        );
     }
 
     #[test]
@@ -301,7 +313,10 @@ mod tests {
         let kck = [0x42u8; KCK_LEN];
         let data = b"EAPOL message 2 of 4-way handshake";
         let mic = compute_mic(&kck, data);
-        assert!(verify_mic(&kck, data, &mic), "verify_mic must return true for a freshly computed MIC");
+        assert!(
+            verify_mic(&kck, data, &mic),
+            "verify_mic must return true for a freshly computed MIC"
+        );
     }
 
     #[test]
@@ -310,7 +325,10 @@ mod tests {
         let data = b"correct data";
         let mic = compute_mic(&kck, data);
         let tampered = b"tampered data";
-        assert!(!verify_mic(&kck, tampered, &mic), "verify_mic must return false when data does not match MIC");
+        assert!(
+            !verify_mic(&kck, tampered, &mic),
+            "verify_mic must return false when data does not match MIC"
+        );
     }
 
     #[test]
@@ -319,7 +337,10 @@ mod tests {
         let data = b"some EAPOL payload";
         let mut wrong_mic = compute_mic(&kck, data);
         wrong_mic[0] ^= 0xff; // flip a byte
-        assert!(!verify_mic(&kck, data, &wrong_mic), "verify_mic must return false when MIC byte is flipped");
+        assert!(
+            !verify_mic(&kck, data, &wrong_mic),
+            "verify_mic must return false when MIC byte is flipped"
+        );
     }
 
     #[test]
@@ -327,6 +348,10 @@ mod tests {
         let kck_a = [0xaau8; KCK_LEN];
         let kck_b = [0xbbu8; KCK_LEN];
         let data = b"shared data";
-        assert_ne!(compute_mic(&kck_a, data), compute_mic(&kck_b, data), "different KCKs must produce different MICs");
+        assert_ne!(
+            compute_mic(&kck_a, data),
+            compute_mic(&kck_b, data),
+            "different KCKs must produce different MICs"
+        );
     }
 }
