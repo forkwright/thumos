@@ -1032,14 +1032,20 @@ mod tests {
             10,
             "HCI_LE_Set_Random_Address packet must be 10 bytes"
         );
-        assert_eq!(pkt.first().copied().unwrap_or_default(), 0x01, "H4 type must be 0x01 (HCI command)");
+        assert_eq!(
+            pkt.first().copied().unwrap_or_default(),
+            0x01,
+            "H4 type must be 0x01 (HCI command)"
+        );
         // Address starts at OFFSET 4; HCI wants LSB first so 0xFF is first
         assert_eq!(
-            pkt.get(4).copied().unwrap_or_default(), 0xFF,
+            pkt.get(4).copied().unwrap_or_default(),
+            0xFF,
             "first address byte in HCI packet must be the LSB (0xFF)"
         );
         assert_eq!(
-            pkt.get(9).copied().unwrap_or_default(), 0xAA,
+            pkt.get(9).copied().unwrap_or_default(),
+            0xAA,
             "last address byte in HCI packet must be the MSB (0xAA)"
         );
     }

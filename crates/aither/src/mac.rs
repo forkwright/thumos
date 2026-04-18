@@ -126,7 +126,10 @@ impl HifTxHeader {
                 have: buf.len(),
             }
         );
-        let packet_len = u16::from_le_bytes([buf.first().copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default()]);
+        let packet_len = u16::from_le_bytes([
+            buf.first().copied().unwrap_or_default(),
+            buf.get(1).copied().unwrap_or_default(),
+        ]);
         let word1_lo = buf.get(2).copied().unwrap_or_default();
         let packet_type = word1_lo & 0x03;
         let user_priority = (word1_lo >> 2) & 0x07;
@@ -186,7 +189,10 @@ impl HifRxHeader {
                 have: buf.len(),
             }
         );
-        let packet_len = u16::from_le_bytes([buf.first().copied().unwrap_or_default(), buf.get(1).copied().unwrap_or_default()]);
+        let packet_len = u16::from_le_bytes([
+            buf.first().copied().unwrap_or_default(),
+            buf.get(1).copied().unwrap_or_default(),
+        ]);
         let packet_type = buf.get(2).copied().unwrap_or_default();
         let network_index = buf.get(3).copied().unwrap_or_default() & 0x0f;
         let tid = buf.get(4).copied().unwrap_or_default() & 0x0f;
@@ -368,7 +374,10 @@ impl WifiEvent {
         );
         let eid = event_id_from_byte(buf.first().copied().unwrap_or_default())?;
         let seq_num = buf.get(1).copied().unwrap_or_default();
-        let declared_len = usize::from(u16::from_le_bytes([buf.get(2).copied().unwrap_or_default(), buf.get(3).copied().unwrap_or_default()]));
+        let declared_len = usize::from(u16::from_le_bytes([
+            buf.get(2).copied().unwrap_or_default(),
+            buf.get(3).copied().unwrap_or_default(),
+        ]));
         ensure!(
             buf.len() >= declared_len,
             EventTooShortSnafu {
@@ -802,7 +811,12 @@ impl WiFiMacDriver {
         // high 2 bytes. We write the low word here via ACCESS_REG. Callers must
         // issue a follow-up ACCESS_REG write for the high 2 bytes (seq_num+1).
         let mac = self.current_mac.0;
-        let low32 = u32::from_le_bytes([mac.first().copied().unwrap_or_default(), mac.get(1).copied().unwrap_or_default(), mac.get(2).copied().unwrap_or_default(), mac.get(3).copied().unwrap_or_default()]);
+        let low32 = u32::from_le_bytes([
+            mac.first().copied().unwrap_or_default(),
+            mac.get(1).copied().unwrap_or_default(),
+            mac.get(2).copied().unwrap_or_default(),
+            mac.get(3).copied().unwrap_or_default(),
+        ]);
         // NOTE: MCR_WASR (0x0020) is used as the representative MAC low register;
         // exact register is firmware-version-specific.
         let _ = self.hif_base;
@@ -1001,11 +1015,23 @@ mod tests {
     fn command_encodes_header_only_when_no_payload() {
         let cmd = WifiCommand::new(CommandId::GetChipInfo, 1);
         let encoded = cmd.encode();
-        assert_eq!(encoded.first().copied().unwrap_or_default(), 0x01, "first byte must be command ID");
-        assert_eq!(encoded.get(1).copied().unwrap_or_default(), 1, "second byte must be seq_num");
-        let len = u16::from_le_bytes([encoded.get(2).copied().unwrap_or_default(), encoded.get(3).copied().unwrap_or_default()]);
         assert_eq!(
-            usize::from(len), CMD_HEADER_SIZE,
+            encoded.first().copied().unwrap_or_default(),
+            0x01,
+            "first byte must be command ID"
+        );
+        assert_eq!(
+            encoded.get(1).copied().unwrap_or_default(),
+            1,
+            "second byte must be seq_num"
+        );
+        let len = u16::from_le_bytes([
+            encoded.get(2).copied().unwrap_or_default(),
+            encoded.get(3).copied().unwrap_or_default(),
+        ]);
+        assert_eq!(
+            usize::from(len),
+            CMD_HEADER_SIZE,
             "length must include header only"
         );
     }
@@ -1015,9 +1041,20 @@ mod tests {
         let payload = vec![0xaa, 0xbb, 0xcc];
         let cmd = WifiCommand::with_payload(CommandId::ScanReq, 7, payload.clone());
         let encoded = cmd.encode();
-        assert_eq!(encoded.first().copied().unwrap_or_default(), 0x20, "command ID must be ScanReq");
-        assert_eq!(encoded.get(1).copied().unwrap_or_default(), 7, "seq_num must be 7");
-        let len = usize::from(u16::from_le_bytes([encoded.get(2).copied().unwrap_or_default(), encoded.get(3).copied().unwrap_or_default()]));
+        assert_eq!(
+            encoded.first().copied().unwrap_or_default(),
+            0x20,
+            "command ID must be ScanReq"
+        );
+        assert_eq!(
+            encoded.get(1).copied().unwrap_or_default(),
+            7,
+            "seq_num must be 7"
+        );
+        let len = usize::from(u16::from_le_bytes([
+            encoded.get(2).copied().unwrap_or_default(),
+            encoded.get(3).copied().unwrap_or_default(),
+        ]));
         assert_eq!(
             len,
             CMD_HEADER_SIZE + payload.len(),
@@ -1171,9 +1208,7 @@ mod tests {
         ];
         let mut state = AssocState::Idle;
         for &expected_next in &expected {
-            let next = state
-                .advance()
-                .unwrap_or_default();
+            let next = state.advance().unwrap_or_default();
             assert_eq!(next, expected_next, "state must advance in spec ORDER");
             state = next;
         }
@@ -1222,9 +1257,7 @@ mod tests {
     #[test]
     fn set_mac_address_produces_access_reg_command() {
         let mut driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
-        let cmd = driver
-            .set_mac_address(3)
-            .unwrap_or_default();
+        let cmd = driver.set_mac_address(3).unwrap_or_default();
         assert_eq!(
             cmd.cid,
             CommandId::AccessReg,
@@ -1237,7 +1270,8 @@ mod tests {
             "payload must be exactly {ACCESS_REG_PAYLOAD_SIZE} bytes"
         );
         assert_eq!(
-            cmd.payload.first().copied().unwrap_or_default(), ACCESS_REG_WRITE,
+            cmd.payload.first().copied().unwrap_or_default(),
+            ACCESS_REG_WRITE,
             "operation byte must be write"
         );
     }

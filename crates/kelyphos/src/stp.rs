@@ -143,8 +143,8 @@ impl StpFrame {
             | (if self.header.ack { 0x08 } else { 0 })
             | ((self.header.seq & 0x07) >> 1);
         // WHY: length is 12 bits (0..=4095); shifting by 5 gives at most 7 bits — fits in u8.
-        let h1 = ((self.header.seq & 0x01) << 7)
-            | ((self.header.length >> 5).to_le_bytes()[0] & 0x7F);
+        let h1 =
+            ((self.header.seq & 0x01) << 7) | ((self.header.length >> 5).to_le_bytes()[0] & 0x7F);
         // WHY: length & 0x1F is 5 bits; shifting left 3 gives at most 8 bits — fits in u8.
         let h2 = ((self.header.length & 0x1F) << 3).to_le_bytes()[0];
         let h3 = self.header.checksum;
@@ -199,8 +199,7 @@ fn compute_crc(frame: &StpFrame) -> u16 {
             | (if frame.header.ack { 0x08 } else { 0 })
             | ((frame.header.seq & 0x07) >> 1),
         // WHY: length is 12 bits; >> 5 yields ≤7 bits; to_le_bytes()[0] extracts safely.
-        ((frame.header.seq & 0x01) << 7)
-            | (frame.header.length >> 5).to_le_bytes()[0] & 0x7F,
+        ((frame.header.seq & 0x01) << 7) | (frame.header.length >> 5).to_le_bytes()[0] & 0x7F,
         // WHY: length & 0x1F is 5 bits; << 3 yields ≤8 bits — to_le_bytes()[0] is safe.
         ((frame.header.length & 0x1F) << 3).to_le_bytes()[0],
     ];
@@ -253,10 +252,26 @@ mod tests {
 
     #[test]
     fn frame_type_conversion() {
-        assert_eq!(FrameType::from(0), FrameType::Data, "value 0 must map to Data");
-        assert_eq!(FrameType::from(1), FrameType::Mgmt, "value 1 must map to Mgmt");
-        assert_eq!(FrameType::from(2), FrameType::Ack, "value 2 must map to Ack");
-        assert_eq!(FrameType::from(3), FrameType::FwDownload, "value 3 must map to FwDownload");
+        assert_eq!(
+            FrameType::from(0),
+            FrameType::Data,
+            "value 0 must map to Data"
+        );
+        assert_eq!(
+            FrameType::from(1),
+            FrameType::Mgmt,
+            "value 1 must map to Mgmt"
+        );
+        assert_eq!(
+            FrameType::from(2),
+            FrameType::Ack,
+            "value 2 must map to Ack"
+        );
+        assert_eq!(
+            FrameType::from(3),
+            FrameType::FwDownload,
+            "value 3 must map to FwDownload"
+        );
         assert_eq!(
             FrameType::from(15),
             FrameType::Unknown,
@@ -270,8 +285,15 @@ mod tests {
         let mut buf = [0u8; 128];
         let len = frame.encode(&mut buf);
         assert!(len > 0, "encode should produce bytes");
-        assert_eq!(buf.first().copied().unwrap_or_default(), SOF, "first byte should be SOF");
-        assert_eq!(frame.payload_len, 5, "payload_len must equal the number of bytes supplied");
+        assert_eq!(
+            buf.first().copied().unwrap_or_default(),
+            SOF,
+            "first byte should be SOF"
+        );
+        assert_eq!(
+            frame.payload_len, 5,
+            "payload_len must equal the number of bytes supplied"
+        );
     }
 
     #[test]
@@ -287,8 +309,7 @@ mod tests {
         let frame1 = StpFrame::data(1, b"test");
         let frame2 = StpFrame::data(1, b"test");
         assert_eq!(
-            frame1.header.checksum,
-            frame2.header.checksum,
+            frame1.header.checksum, frame2.header.checksum,
             "identical frames must produce identical header checksums"
         );
     }
@@ -299,8 +320,7 @@ mod tests {
         let frame2 = StpFrame::data(1, b"test");
         // Sequence number changes the header, so checksum differs
         assert_ne!(
-            frame1.header.checksum,
-            frame2.header.checksum,
+            frame1.header.checksum, frame2.header.checksum,
             "different sequence numbers must produce different header checksums"
         );
     }
@@ -309,21 +329,30 @@ mod tests {
     fn crc_deterministic() {
         let frame1 = StpFrame::data(0, b"payload");
         let frame2 = StpFrame::data(0, b"payload");
-        assert_eq!(frame1.crc, frame2.crc, "identical frames must produce identical CRCs");
+        assert_eq!(
+            frame1.crc, frame2.crc,
+            "identical frames must produce identical CRCs"
+        );
     }
 
     #[test]
     fn different_payload_different_crc() {
         let frame1 = StpFrame::data(0, b"aaa");
         let frame2 = StpFrame::data(0, b"bbb");
-        assert_ne!(frame1.crc, frame2.crc, "different payloads must produce different CRCs");
+        assert_ne!(
+            frame1.crc, frame2.crc,
+            "different payloads must produce different CRCs"
+        );
     }
 
     #[test]
     fn empty_payload() {
         let frame = StpFrame::data(0, b"");
         assert_eq!(frame.payload_len, 0, "empty input must yield payload_len 0");
-        assert_eq!(frame.header.length, 0, "empty input must yield header.length 0");
+        assert_eq!(
+            frame.header.length, 0,
+            "empty input must yield header.length 0"
+        );
     }
 
     #[test]
@@ -331,8 +360,7 @@ mod tests {
         let big = [0xAB; MAX_PAYLOAD];
         let frame = StpFrame::data(7, &big);
         assert_eq!(
-            frame.payload_len,
-            MAX_PAYLOAD,
+            frame.payload_len, MAX_PAYLOAD,
             "MAX_PAYLOAD bytes must fill payload_len exactly"
         );
         assert_eq!(frame.header.seq, 7, "seq must be preserved at max payload");

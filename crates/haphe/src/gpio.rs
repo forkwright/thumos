@@ -28,19 +28,31 @@ const GPIO_BASE: usize = 0x1000_5000;
 const GPIO_DIR_BASE: usize = 0x000;
 
 /// GPIO data-out register base OFFSET.
-#[cfg_attr(test, expect(dead_code, reason = "used only in hardware (non-test) build"))]
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "used only in hardware (non-test) build")
+)]
 const GPIO_DOUT_BASE: usize = 0x100;
 
 /// GPIO data-in register base OFFSET (always reads current pin level).
-#[cfg_attr(test, expect(dead_code, reason = "used only in hardware (non-test) build"))]
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "used only in hardware (non-test) build")
+)]
 const GPIO_DIN_BASE: usize = 0x200;
 
 /// GPIO pull-enable register base OFFSET.
-#[cfg_attr(test, expect(dead_code, reason = "used only in hardware (non-test) build"))]
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "used only in hardware (non-test) build")
+)]
 const GPIO_PULLEN_BASE: usize = 0x300;
 
 /// GPIO pull-SELECT register base OFFSET (0 = pull-down, 1 = pull-up).
-#[cfg_attr(test, expect(dead_code, reason = "used only in hardware (non-test) build"))]
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "used only in hardware (non-test) build")
+)]
 const GPIO_PULLSEL_BASE: usize = 0x400;
 
 // ── Key matrix geometry ────────────────────────────────────────────────────────
@@ -59,7 +71,10 @@ pub(crate) const KEY_COUNT: usize = ROW_COUNT * COL_COUNT;
 /// NOTE: These are placeholder VALUES. Exact assignments require
 /// hardware probing against the AGM M7 schematic. Rows are driven
 /// low during scanning.
-#[cfg_attr(test, expect(dead_code, reason = "used only in hardware (non-test) build"))]
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "used only in hardware (non-test) build")
+)]
 pub(crate) const ROW_PINS: [u8; ROW_COUNT] = [40, 41, 42, 43];
 
 /// Column GPIO pin numbers.
@@ -67,7 +82,10 @@ pub(crate) const ROW_PINS: [u8; ROW_COUNT] = [40, 41, 42, 43];
 /// NOTE: Placeholder VALUES  -  verify against AGM M7 schematic.
 /// Columns are inputs with pull-up; a driven row pulls a pressed
 /// key's column low.
-#[cfg_attr(test, expect(dead_code, reason = "used only in hardware (non-test) build"))]
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "used only in hardware (non-test) build")
+)]
 pub(crate) const COL_PINS: [u8; COL_COUNT] = [44, 45, 46];
 
 /// Key lookup table indexed by `[row][col]`.
@@ -308,7 +326,8 @@ impl GpioKeypad {
             }
 
             // All column pins are in the same 32-pin bank (pins 44-46).
-            let (din_addr, _) = gpio_reg(GPIO_DIN_BASE, COL_PINS.first().copied().unwrap_or_default());
+            let (din_addr, _) =
+                gpio_reg(GPIO_DIN_BASE, COL_PINS.first().copied().unwrap_or_default());
             let din_word = hw::mmio_read(din_addr);
             for (col_idx, &col_pin) in COL_PINS.iter().enumerate() {
                 let col_bit = u32::from(col_pin % 32);

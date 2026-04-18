@@ -71,17 +71,33 @@ pub fn parse_gga(sentence: &str) -> error::Result<Fix> {
     // fields[8] = HDOP
     // fields[9] = altitude, fields[10] = M
 
-    let quality_val: u8 = fields.get(6).copied().unwrap_or_default().parse().unwrap_or(0);
+    let quality_val: u8 = fields
+        .get(6)
+        .copied()
+        .unwrap_or_default()
+        .parse()
+        .unwrap_or(0);
     let quality = FixQuality::from(quality_val);
 
     if quality == FixQuality::NoFix || fields.get(2).copied().unwrap_or_default().is_empty() {
         return Err(Error::NoFix);
     }
 
-    let lat = parse_lat_field(fields.get(2).copied().unwrap_or_default(), fields.get(3).copied().unwrap_or_default())?;
-    let lon = parse_lon_field(fields.get(4).copied().unwrap_or_default(), fields.get(5).copied().unwrap_or_default())?;
+    let lat = parse_lat_field(
+        fields.get(2).copied().unwrap_or_default(),
+        fields.get(3).copied().unwrap_or_default(),
+    )?;
+    let lon = parse_lon_field(
+        fields.get(4).copied().unwrap_or_default(),
+        fields.get(5).copied().unwrap_or_default(),
+    )?;
     let alt = fields.get(9).and_then(|s| s.parse::<f64>().ok());
-    let satellites: u8 = fields.get(7).copied().unwrap_or_default().parse().unwrap_or(0);
+    let satellites: u8 = fields
+        .get(7)
+        .copied()
+        .unwrap_or_default()
+        .parse()
+        .unwrap_or(0);
     let hdop = fields.get(8).and_then(|s| s.parse::<f64>().ok());
 
     Ok(Fix {
@@ -127,8 +143,14 @@ pub fn parse_rmc(sentence: &str) -> error::Result<Fix> {
         return Err(Error::NoFix);
     }
 
-    let lat = parse_lat_field(fields.get(3).copied().unwrap_or_default(), fields.get(4).copied().unwrap_or_default())?;
-    let lon = parse_lon_field(fields.get(5).copied().unwrap_or_default(), fields.get(6).copied().unwrap_or_default())?;
+    let lat = parse_lat_field(
+        fields.get(3).copied().unwrap_or_default(),
+        fields.get(4).copied().unwrap_or_default(),
+    )?;
+    let lon = parse_lon_field(
+        fields.get(5).copied().unwrap_or_default(),
+        fields.get(6).copied().unwrap_or_default(),
+    )?;
     let speed_knots = fields.get(7).and_then(|s| s.parse::<f64>().ok());
     let course = fields.get(8).and_then(|s| s.parse::<f64>().ok());
 
@@ -229,10 +251,7 @@ mod tests {
             FixQuality::Gps,
             "fix quality must be GPS for quality indicator 1"
         );
-        assert_eq!(
-            fix.satellites, 8,
-            "satellite count must match GGA field 7"
-        );
+        assert_eq!(fix.satellites, 8, "satellite count must match GGA field 7");
         // 53 degrees 21.6802 minutes N = 53.36133... degrees
         assert!(
             (fix.position.lat - 53.36134).abs() < 0.001,
@@ -307,19 +326,13 @@ mod tests {
     #[test]
     fn parse_lon_field_converts_west_to_negative_decimal_degrees() {
         let lon = parse_lon_field("00630.3372", "W").unwrap_or_default();
-        assert!(
-            lon < 0.0,
-            "West hemisphere must produce negative longitude"
-        );
+        assert!(lon < 0.0, "West hemisphere must produce negative longitude");
     }
 
     #[test]
     fn parse_lon_field_converts_east_to_positive_decimal_degrees() {
         let lon = parse_lon_field("15145.3478", "E").unwrap_or_default();
-        assert!(
-            lon > 0.0,
-            "East hemisphere must produce positive longitude"
-        );
+        assert!(lon > 0.0, "East hemisphere must produce positive longitude");
         assert!(
             (lon - 151.75580).abs() < 0.001,
             "East longitude must convert correctly to decimal degrees"
