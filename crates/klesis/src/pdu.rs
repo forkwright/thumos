@@ -619,6 +619,12 @@ fn count_gsm7_septets(text: &str) -> Result<usize> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test code: explicit unwrap_err/expect/panic are intentional for asserting test outcomes"
+)]
 mod tests {
     use super::*;
 
