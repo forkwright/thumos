@@ -131,7 +131,7 @@ pub fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
 #[must_use]
 pub fn signal_map(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
     let mut sorted: Vec<&AccessPoint> = aps.iter().collect();
-    sorted.sort_by(|a, b| b.signal_dbm.cmp(&a.signal_dbm));
+    sorted.sort_by_key(|ap| core::cmp::Reverse(ap.signal_dbm));
     sorted
 }
 
