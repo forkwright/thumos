@@ -40,14 +40,19 @@ impl Framebuffer {
             * usize::try_from(self.width).unwrap_or_default()
             + usize::try_from(x).unwrap_or_default())
             * BYTES_PER_PIXEL;
-        let [lo, hi] = color.0.to_le_bytes();
-        self.buf[idx] = lo;
-        self.buf[idx + 1] = hi;
+        let bytes = color.0.to_le_bytes();
+        if let Some(slot) = self
+            .buf
+            .get_mut(idx..idx + BYTES_PER_PIXEL)
+            .and_then(|s| <&mut [u8; BYTES_PER_PIXEL]>::try_from(s).ok())
+        {
+            *slot = bytes;
+        }
     }
 
     /// Fill a rectangular region with `color`. Clips to the framebuffer boundary.
     pub fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: Rgb565) {
-        let [lo, hi] = color.0.to_le_bytes();
+        let bytes = color.0.to_le_bytes();
         let y_end = y.saturating_add(h).min(self.height);
         let x_end = x.saturating_add(w).min(self.width);
         for row in y..y_end {
@@ -56,8 +61,13 @@ impl Framebuffer {
                     * usize::try_from(self.width).unwrap_or_default()
                     + usize::try_from(col).unwrap_or_default())
                     * BYTES_PER_PIXEL;
-                self.buf[idx] = lo;
-                self.buf[idx + 1] = hi;
+                if let Some(slot) = self
+                    .buf
+                    .get_mut(idx..idx + BYTES_PER_PIXEL)
+                    .and_then(|s| <&mut [u8; BYTES_PER_PIXEL]>::try_from(s).ok())
+                {
+                    *slot = bytes;
+                }
             }
         }
     }
@@ -66,8 +76,9 @@ impl Framebuffer {
     pub fn clear(&mut self, color: Rgb565) {
         let bytes = color.0.to_le_bytes();
         for chunk in self.buf.chunks_exact_mut(BYTES_PER_PIXEL) {
-            chunk[0] = bytes[0];
-            chunk[1] = bytes[1];
+            if let Ok(slot) = <&mut [u8; BYTES_PER_PIXEL]>::try_from(chunk) {
+                *slot = bytes;
+            }
         }
     }
 

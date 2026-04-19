@@ -48,7 +48,6 @@ RUST/indexing-slicing:crates/klesis/src/pdu.rs
 RUST/indexing-slicing:crates/klesis/src/ccci.rs
 RUST/indexing-slicing:crates/klesis/src/gsm7.rs
 RUST/indexing-slicing:crates/klesis/src/transport.rs
-RUST/indexing-slicing:crates/eidolon/src/framebuffer.rs
 RUST/indexing-slicing:crates/haphe/src/gpio.rs
 RUST/indexing-slicing:crates/haphe/src/input.rs
 RUST/indexing-slicing:crates/haphe/src/touch.rs
