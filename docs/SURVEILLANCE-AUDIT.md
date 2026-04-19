@@ -4,7 +4,7 @@ Audit date: 2026-03-18. Read-only ADB inspection of unmodified device.
 
 ## Summary
 
-The stock firmware contains at least 3 distinct surveillance/telemetry systems from different actors. The device as shipped is compromised at the system level, with privileged packages that have irrevocable access to SMS, call logs, location, contacts, camera, microphone, and storage. The user cannot disable these without root access.
+The stock firmware contains at least 3 distinct surveillance/telemetry systems from different actors. As shipped, the device is compromised at the system level, with privileged packages that have irrevocable access to SMS, call logs, location, contacts, camera, microphone, and storage. Without root access the user cannot disable these.
 
 ## Threat 1: Adups FOTA (Chinese OTA framework)
 

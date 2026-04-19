@@ -1,4 +1,4 @@
-# Surveillance attribution: who is responsible for what
+# Surveillance attribution: threat owners by package
 
 Based on APK decompilation and permission analysis of the AGM M7 stock firmware.
 
@@ -31,22 +31,22 @@ APK decompilation reveals this is far worse than just an OTA update client. The 
 
 - **Firebase Cloud Messaging** (`com.google.firebase.messaging.FirebaseMessagingService`) for push-triggered data collection
 - **Firebase Analytics** / Google App Measurement (`com.google.android.gms.measurement.*`) for telemetry
-- **Google Ads SDK** (`com.google.android.gms.ads.*`) including DoubleClick, AdMob, and native ad rendering
+- **Google Ads framework** (`com.google.android.gms.ads.*`) including DoubleClick, AdMob, and native ad rendering
 - **Firebase Instance ID** for device fingerprinting
-- 13 services, 4 receivers, 2 content providers
+- 13 services, 4 receivers, 2 data providers
 
 Hardcoded domains include: `app-measurement.com`, `googleads.g.doubleclick.net`, `ad.doubleclick.net`, `googlesyndication.com`, `googleadservices.com`, `imasdk.googleapis.com`, `google.com/iid`, `pagead2.googlesyndication.com`
 
-This means: a Chinese OTA framework embeds Google's full advertising and analytics stack. Your "OTA updater" is also an ad platform and telemetry beacon. Adups sends data to their servers in China. Google Analytics/Firebase sends data to Google in the US. Both run on every boot via `BOOT_COMPLETED` receiver.
+This means: a Chinese OTA framework embeds Google's full advertising and analytics framework. Your "OTA updater" is also an ad platform and telemetry beacon. Adups sends data to their servers in China. Google Analytics/Firebase sends data to Google in the US. Both run on every boot via `BOOT_COMPLETED` receiver.
 
-The `sysoper` companion package has `RecoveryService` and `SysService`  -  these can flash firmware and trigger recovery mode. Combined with Firebase Cloud Messaging push, this allows remote code execution: push a message to the device, download a payload, flash it via recovery. This is a remote exploitation chain built into the firmware.
+The `sysoper` companion package has `RecoveryService` and `SysService`  -  these can flash firmware and trigger recovery mode. Combined with Firebase Cloud Messaging push, this allows remote code execution: push a message to the device, download a binary, flash it via recovery. This is a remote exploitation chain built into the firmware.
 
 **TYD Technology Co., Ltd.** (天意德科技)
 Packages: `com.tyd.customkey`, `com.tydtech.clean`, `freeme` framework, `com.freeme.provider.badge`, `com.freeme.factory`
 
 TYD is the actual ODM (original design manufacturer) behind the AGM M7. AGM is a brand; TYD builds the hardware and software. The `freeme` framework runs at the Android framework level with full system privileges. TYD's `customkey` app handles the physical SOS/function key mapping.
 
-The TYD/Freeme packages themselves appear relatively benign (no network services, no hardcoded URLs), but the Freeme framework running at system level means TYD has the ability to inject behavior into any Android component.
+The TYD/Freeme packages appear benign (no network services, no hardcoded URLs), but the Freeme framework running at system level means TYD can inject behavior into any Android component.
 
 **ByteDance** (字节跳动)
 Package: `com.zhiliaoapp.musically` (TikTok)

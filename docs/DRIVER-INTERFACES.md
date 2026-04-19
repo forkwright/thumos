@@ -1,7 +1,7 @@
 # Driver Interface Specification  -  MT6739 Hardware Subsystems
 
-This document is the hardware interface specification for the eight core driver
-subsystems on the AGM M7 (MediaTek MT6739). It is derived entirely from BSP
+The MT6739 ships with eight core driver subsystems; this page specifies each
+one's hardware interface on the AGM M7. Content is derived entirely from BSP
 kernel source at `kernel-wiite/drivers/misc/mediatek/` and
 `kernel-wiite/drivers/mmc/host/`. Every claim cites a source file and line.
 
@@ -106,7 +106,7 @@ These live at `cldma_ap_pdn_base` (populated from DT at probe time).
 
 Source: `eccci/mt6739/cldma_reg.h:69–133`
 
-#### L2 Interrupt Bitmasks
+#### L2 interrupt bitmasks
 
 | Mask | Value | Meaning |
 |---|---|---|
@@ -637,7 +637,7 @@ Source: `connectivity/bt/stp_chrdev_bt.c:94–131`
 
 ### 4.5 Firmware Loading
 
-BT firmware is loaded by WMT core (not by the BT character driver). The WMT
+The WMT core (not the BT character driver) loads BT firmware. The WMT
 `wmt_ic_soc.c` handles patch loading via the `wmt_lib` patch infrastructure.
 Patch file suffix is determined by IC family (`wmt_ic.h`).
 
@@ -949,10 +949,10 @@ Source: `lcm/inc/lcm_drv.h`
 
 ### 7.6 AGM M7 Panel
 
-The actual panel used in the AGM M7 is not yet identified from the BSP (the
-BSP includes 40+ sample LCM drivers). Identification requires reading the
-`lcm_id` pins or running `mt65xx_lcm_list.c:lcm_probe()` with the actual
-hardware. Once identified, the panel's `.init()` function contains the
+Identifying the shipped panel requires reading the `lcm_id` pins or running
+`mt65xx_lcm_list.c:lcm_probe()` against the actual hardware, since the BSP
+includes 40+ sample LCM drivers and does not mark which one corresponds to
+the M7. Once identified, the panel's `.init()` function contains the
 register-write sequence.
 
 ---

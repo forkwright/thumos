@@ -516,7 +516,10 @@ impl Fe {
     }
 
     /// Multiplication (mod p) using schoolbook with u128 intermediates.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "inlined schoolbook multiplication — splitting would obscure the modular reduction"
+    )]
     fn mul(self, rhs: Self) -> Self {
         let a = self.0;
         let b = rhs.0;
@@ -742,7 +745,7 @@ impl GePoint {
     ///
     /// Algorithm from "Twisted Edwards Curves Revisited" (HWCD08),
     /// using the unified addition formula for extended coordinates.
-    #[allow(clippy::many_single_char_names)]
+    #[expect(clippy::many_single_char_names, reason = "standard Ed25519 curve variable names from published algorithm")]
     fn add(self, rhs: Self) -> Self {
         let a = self.y.sub(self.x).mul(rhs.y.sub(rhs.x));
         let b = self.y.add(self.x).mul(rhs.y.add(rhs.x));
@@ -769,7 +772,7 @@ impl GePoint {
     /// G = D + B
     /// F = G - C
     /// H = D - B
-    #[allow(clippy::many_single_char_names)]
+    #[expect(clippy::many_single_char_names, reason = "standard Ed25519 curve variable names from published algorithm")]
     fn double(self) -> Self {
         let a = self.x.square();          // A = X^2
         let b = self.y.square();          // B = Y^2
@@ -811,7 +814,7 @@ impl GePoint {
     /// high bit of the last byte encoding the sign of x.
     ///
     /// Returns `None` if the encoding is not a valid curve point.
-    #[allow(clippy::many_single_char_names)]
+    #[expect(clippy::many_single_char_names, reason = "standard Ed25519 curve variable names from published algorithm")]
     fn decompress(bytes: &[u8; 32]) -> Option<Self> {
         // Extract the sign bit (high bit of last byte).
         let x_sign = (bytes[31] >> 7) & 1;
