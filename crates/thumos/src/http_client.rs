@@ -176,7 +176,7 @@ impl HttpRequest {
     /// Headers and body start empty. Use the builder methods or set
     /// fields directly to add them.
     #[must_use]
-    pub fn new(method: HttpMethod, host: String, path: String) -> Self {
+    pub(crate) fn new(method: HttpMethod, host: String, path: String) -> Self {
         Self {
             method,
             path,
@@ -187,12 +187,12 @@ impl HttpRequest {
     }
 
     /// Add a header to the request.
-    pub fn add_header(&mut self, name: String, value: String) {
+    pub(crate) fn add_header(&mut self, name: String, value: String) {
         self.headers.push((name, value));
     }
 
     /// Set the request body.
-    pub fn set_body(&mut self, body: Vec<u8>) {
+    pub(crate) fn set_body(&mut self, body: Vec<u8>) {
         self.body = Some(body);
     }
 
@@ -212,7 +212,7 @@ impl HttpRequest {
     /// Returns [`HttpError::EmptyHost`] if `self.host` is empty, or
     /// [`HttpError::EmptyPath`] if `self.path` is empty.
     #[must_use]
-    pub fn build_raw(&self) -> Result<Vec<u8>, HttpError> {
+    pub(crate) fn build_raw(&self) -> Result<Vec<u8>, HttpError> {
         if self.host.is_empty() {
             return Err(HttpError::EmptyHost);
         }
@@ -321,7 +321,7 @@ impl HttpResponse {
     ///   valid number.
     /// - [`HttpError::BodyTooLarge`] — body exceeds [`MAX_BODY_SIZE`].
     #[must_use]
-    pub fn parse(data: &[u8]) -> Result<Self, HttpError> {
+    pub(crate) fn parse(data: &[u8]) -> Result<Self, HttpError> {
         // Find the end of the header block: \r\n\r\n.
         let header_end = find_header_end(data).ok_or(HttpError::Incomplete)?;
 
@@ -374,7 +374,7 @@ impl HttpResponse {
     ///
     /// Returns `None` if no matching header exists.
     #[must_use]
-    pub fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
@@ -383,20 +383,20 @@ impl HttpResponse {
 
     /// Return the Content-Length value, if present and valid.
     #[must_use]
-    pub fn content_length(&self) -> Option<usize> {
+    pub(crate) fn content_length(&self) -> Option<usize> {
         self.header("content-length")
             .and_then(|v| v.trim().parse::<usize>().ok())
     }
 
     /// Return true if the response indicates success (2xx status).
     #[must_use]
-    pub fn is_success(&self) -> bool {
+    pub(crate) fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }
 
     /// Return the body as a UTF-8 string, if valid.
     #[must_use]
-    pub fn body_as_str(&self) -> Option<&str> {
+    pub(crate) fn body_as_str(&self) -> Option<&str> {
         core::str::from_utf8(&self.body).ok()
     }
 
@@ -405,7 +405,7 @@ impl HttpResponse {
     /// Useful for the caller to know how many bytes to drain from
     /// the receive buffer after a successful parse.
     #[must_use]
-    pub fn total_bytes(&self) -> usize {
+    pub(crate) fn total_bytes(&self) -> usize {
         // We need to recompute: header block + \r\n\r\n + body.
         // This is approximate — the caller should track the original
         // data length passed to parse(). Provided for convenience.
@@ -430,7 +430,7 @@ impl fmt::Display for HttpResponse {
 /// The caller can add Authorization or other headers before
 /// calling [`HttpRequest::build_raw`].
 #[must_use]
-pub fn get(host: &str, path: &str) -> HttpRequest {
+pub(crate) fn get(host: &str, path: &str) -> HttpRequest {
     HttpRequest::new(
         HttpMethod::Get,
         String::from(host),
@@ -442,7 +442,7 @@ pub fn get(host: &str, path: &str) -> HttpRequest {
 ///
 /// Sets `Content-Type: application/json` automatically.
 #[must_use]
-pub fn post_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
+pub(crate) fn post_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
     let mut req = HttpRequest::new(
         HttpMethod::Post,
         String::from(host),
@@ -461,7 +461,7 @@ pub fn post_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
 /// Sets `Content-Type: application/json` automatically.
 /// Matrix uses PUT for sending room events (m.room.message).
 #[must_use]
-pub fn put_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
+pub(crate) fn put_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
     let mut req = HttpRequest::new(
         HttpMethod::Put,
         String::from(host),
@@ -479,7 +479,7 @@ pub fn put_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
 ///
 /// No body. Used for Matrix room leave, etc.
 #[must_use]
-pub fn delete(host: &str, path: &str) -> HttpRequest {
+pub(crate) fn delete(host: &str, path: &str) -> HttpRequest {
     HttpRequest::new(
         HttpMethod::Delete,
         String::from(host),
@@ -491,7 +491,7 @@ pub fn delete(host: &str, path: &str) -> HttpRequest {
 ///
 /// Convenience for Matrix CS API calls that require an access token.
 /// Modifies `req` in-place and returns it for chaining.
-pub fn with_auth(req: &mut HttpRequest, token: &str) {
+pub(crate) fn with_auth(req: &mut HttpRequest, token: &str) {
     let mut value = String::from("Bearer ");
     value.push_str(token);
     req.add_header(String::from("Authorization"), value);

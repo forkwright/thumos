@@ -69,7 +69,7 @@ pub enum WipeTarget {
 impl WipeTarget {
     /// Numeric priority (1 = highest / first).
     #[must_use]
-    pub const fn priority(self) -> u8 {
+    pub(crate) const fn priority(self) -> u8 {
         match self {
             Self::Keys => 1,
             Self::Contacts => 2,
@@ -85,7 +85,7 @@ impl WipeTarget {
     /// These paths match the leipsanon target layout and the thumos LFS
     /// directory structure.
     #[must_use]
-    pub const fn path(self) -> &'static str {
+    pub(crate) const fn path(self) -> &'static str {
         match self {
             Self::Keys => "/data/keys",
             Self::Contacts => "/data/contacts",
@@ -129,19 +129,19 @@ pub struct WipePlan {
 
 impl WipePlan {
     /// Targets in priority order.
-    pub fn targets(&self) -> &[WipeTarget] {
+    pub(crate) fn targets(&self) -> &[WipeTarget] {
         &self.targets[..self.count]
     }
 
     /// Number of targets.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.count
     }
 
     /// Whether the plan is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.count == 0
     }
 }
@@ -228,7 +228,7 @@ impl fmt::Display for WipeResult {
 /// The plan covers all six target categories per REQ-10, ordered from
 /// highest priority (keys, which render all encrypted data unrecoverable)
 /// to lowest (Bluetooth pairings).
-pub fn build_panic_plan() -> WipePlan {
+pub(crate) fn build_panic_plan() -> WipePlan {
     WipePlan {
         targets: [
             WipeTarget::Keys,
@@ -255,7 +255,7 @@ pub fn build_panic_plan() -> WipePlan {
 /// performed. In dry-run mode, the plan is traversed but no writes occur.
 ///
 /// Returns a [`WipeResult`] summarizing the operation.
-pub fn execute_panic_wipe(
+pub(crate) fn execute_panic_wipe(
     key_manager: &mut KeyManager,
     triggered_at: u64,
     dry_run: bool,
@@ -316,7 +316,7 @@ pub fn execute_panic_wipe(
 ///
 /// Returns `true` if the scrub completed, `false` if it was a no-op
 /// (e.g., no free pages to scrub).
-pub fn scrub_user_pages() -> bool {
+pub(crate) fn scrub_user_pages() -> bool {
     let free = page::free_count();
     if free == 0 {
         return false;

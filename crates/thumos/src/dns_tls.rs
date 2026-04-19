@@ -49,7 +49,7 @@ use smoltcp::wire::Ipv4Address;
 // ---------------------------------------------------------------------------
 
 /// Standard DNS-over-TLS port (RFC 7858).
-pub const DOT_PORT: u16 = 853;
+pub(crate) const DOT_PORT: u16 = 853;
 
 /// Maximum DNS message size for DoT framing (RFC 7858 section 3.3).
 /// TCP/TLS DNS messages can be up to 65535 bytes, but practical queries
@@ -66,7 +66,7 @@ const MAX_FRAME_SIZE: usize = DOT_FRAME_HEADER_SIZE + MAX_DNS_MESSAGE_SIZE;
 const SPKI_HASH_LEN: usize = 32;
 
 /// Quad9 DNS server address (primary DoT target).
-pub const QUAD9_DNS: Ipv4Address = Ipv4Address::new(9, 9, 9, 9);
+pub(crate) const QUAD9_DNS: Ipv4Address = Ipv4Address::new(9, 9, 9, 9);
 
 /// DNS record type A (IPv4 address).
 const DNS_TYPE_A: u16 = 1;
@@ -139,7 +139,7 @@ impl core::fmt::Display for DotError {
 /// Implementors provide the actual TLS handshake and data transfer.
 /// The kernel can plug in `rustls`, a hardware TLS accelerator, or a
 /// mock for testing.
-pub trait TlsTransport {
+pub(crate) trait TlsTransport {
     /// Send data over the TLS connection.
     ///
     /// Returns `Ok(())` on success, or `Err(DotError::SendFailed)` if
@@ -162,7 +162,7 @@ pub trait TlsTransport {
 /// Returns the framed message or `DotError::MessageTooLarge` if the
 /// DNS message exceeds `MAX_DNS_MESSAGE_SIZE`.
 #[must_use]
-pub fn frame_dns_message(dns_message: &[u8]) -> Result<Vec<u8>, DotError> {
+pub(crate) fn frame_dns_message(dns_message: &[u8]) -> Result<Vec<u8>, DotError> {
     if dns_message.len() > MAX_DNS_MESSAGE_SIZE {
         return Err(DotError::MessageTooLarge);
     }
@@ -178,7 +178,7 @@ pub fn frame_dns_message(dns_message: &[u8]) -> Result<Vec<u8>, DotError> {
 ///
 /// Reads the first 2 bytes as a big-endian u16 length value.
 #[must_use]
-pub fn parse_frame_length(header: &[u8; 2]) -> u16 {
+pub(crate) fn parse_frame_length(header: &[u8; 2]) -> u16 {
     u16::from_be_bytes(*header)
 }
 
@@ -187,7 +187,7 @@ pub fn parse_frame_length(header: &[u8; 2]) -> u16 {
 /// Reads the 2-byte length prefix, then reads the DNS message body.
 /// Returns the DNS message payload (without the length prefix).
 #[must_use]
-pub fn read_dot_frame<T: TlsTransport>(transport: &mut T) -> Result<Vec<u8>, DotError> {
+pub(crate) fn read_dot_frame<T: TlsTransport>(transport: &mut T) -> Result<Vec<u8>, DotError> {
     // Read the 2-byte length prefix.
     let mut header = [0u8; DOT_FRAME_HEADER_SIZE];
     let n = transport.recv(&mut header)?;
@@ -222,7 +222,7 @@ pub fn read_dot_frame<T: TlsTransport>(transport: &mut T) -> Result<Vec<u8>, Dot
 /// Returns the wire-format query bytes and the transaction ID.
 /// The query has flags RD=1 (recursion desired), QDCOUNT=1.
 #[must_use]
-pub fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DotError> {
+pub(crate) fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DotError> {
     if hostname.is_empty() {
         return Err(DotError::InvalidName);
     }
@@ -259,7 +259,7 @@ pub fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DotError> {
 ///
 /// Like `build_dns_query` but accepts a custom record type value.
 #[must_use]
-pub fn build_dns_query_typed(
+pub(crate) fn build_dns_query_typed(
     hostname: &str,
     txid: u16,
     record_type: u16,
@@ -307,7 +307,7 @@ pub fn build_dns_query_typed(
 /// SPKI extraction from the X.509 certificate is the responsibility
 /// of the TLS library; this function only compares the final hash.
 #[must_use]
-pub fn verify_pin(received_spki: &[u8; SPKI_HASH_LEN], pinned: &[u8; SPKI_HASH_LEN]) -> bool {
+pub(crate) fn verify_pin(received_spki: &[u8; SPKI_HASH_LEN], pinned: &[u8; SPKI_HASH_LEN]) -> bool {
     // Constant-time comparison to prevent timing side-channels.
     let mut diff: u8 = 0;
     for i in 0..SPKI_HASH_LEN {
@@ -325,7 +325,7 @@ pub fn verify_pin(received_spki: &[u8; SPKI_HASH_LEN], pinned: &[u8; SPKI_HASH_L
 /// Wraps a [`TlsTransport`] to send DNS queries framed per RFC 7858
 /// and verify the server's SPKI hash against a pinned value.
 #[non_exhaustive]
-pub struct DotClient<T: TlsTransport> {
+pub(crate) struct DotClient<T: TlsTransport> {
     /// Underlying TLS transport.
     transport: T,
     /// DNS server address.
@@ -342,7 +342,7 @@ impl<T: TlsTransport> DotClient<T> {
     /// The `pinned_spki_hash` is the SHA-256 digest of the server's
     /// Subject Public Key Info, used for certificate pinning during
     /// the TLS handshake.
-    pub fn new(
+    pub(crate) fn new(
         transport: T,
         server_addr: Ipv4Address,
         pinned_spki_hash: [u8; SPKI_HASH_LEN],
@@ -356,12 +356,12 @@ impl<T: TlsTransport> DotClient<T> {
     }
 
     /// Return the configured server address.
-    pub fn server_addr(&self) -> Ipv4Address {
+    pub(crate) fn server_addr(&self) -> Ipv4Address {
         self.server_addr
     }
 
     /// Return the pinned SPKI hash.
-    pub fn pinned_spki_hash(&self) -> &[u8; SPKI_HASH_LEN] {
+    pub(crate) fn pinned_spki_hash(&self) -> &[u8; SPKI_HASH_LEN] {
         &self.pinned_spki_hash
     }
 
@@ -370,7 +370,7 @@ impl<T: TlsTransport> DotClient<T> {
     /// Returns `Ok(())` if the hashes match, or
     /// `Err(DotError::PinMismatch)` if they differ.
     #[must_use]
-    pub fn verify_server_pin(
+    pub(crate) fn verify_server_pin(
         &self,
         received_spki: &[u8; SPKI_HASH_LEN],
     ) -> Result<(), DotError> {
@@ -387,7 +387,7 @@ impl<T: TlsTransport> DotClient<T> {
     /// the TLS transport, reads the response frame, and returns the
     /// raw DNS response message.
     #[must_use]
-    pub fn query(&mut self, name: &str, record_type: u16) -> Result<Vec<u8>, DotError> {
+    pub(crate) fn query(&mut self, name: &str, record_type: u16) -> Result<Vec<u8>, DotError> {
         // Build the DNS query.
         let txid = self.next_txid;
         self.next_txid = self.next_txid.wrapping_add(1);
@@ -424,14 +424,14 @@ impl<T: TlsTransport> DotClient<T> {
     ///
     /// The caller is responsible for building and parsing the DNS message.
     #[must_use]
-    pub fn send_raw(&mut self, dns_message: &[u8]) -> Result<Vec<u8>, DotError> {
+    pub(crate) fn send_raw(&mut self, dns_message: &[u8]) -> Result<Vec<u8>, DotError> {
         let frame = frame_dns_message(dns_message)?;
         self.transport.send(&frame)?;
         read_dot_frame(&mut self.transport)
     }
 
     /// Return a mutable reference to the underlying transport.
-    pub fn transport_mut(&mut self) -> &mut T {
+    pub(crate) fn transport_mut(&mut self) -> &mut T {
         &mut self.transport
     }
 }
@@ -458,7 +458,7 @@ pub struct DotConfig {
 
 impl DotConfig {
     /// Create a new DoT configuration.
-    pub fn new(
+    pub(crate) fn new(
         server_addr: Ipv4Address,
         pinned_spki_hash: [u8; SPKI_HASH_LEN],
     ) -> Self {
@@ -470,7 +470,7 @@ impl DotConfig {
     }
 
     /// Create a disabled DoT configuration.
-    pub fn disabled() -> Self {
+    pub(crate) fn disabled() -> Self {
         Self {
             enabled: false,
             server_addr: QUAD9_DNS,

@@ -136,7 +136,7 @@ enum AddField {
 /// Holds a reference to the contact manager via a snapshot of sorted
 /// indices and contact data. The caller must call [`update_contacts`]
 /// before each render to refresh the display.
-pub struct ContactsScreen {
+pub(crate) struct ContactsScreen {
     /// Sorted indices into the contact manager.
     sorted_indices: Vec<usize>,
     /// Contact names for display (parallel to sorted_indices).
@@ -165,7 +165,7 @@ pub struct ContactsScreen {
 
 impl ContactsScreen {
     /// Create a new contacts screen.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             sorted_indices: Vec::new(),
             display_names: Vec::new(),
@@ -185,7 +185,7 @@ impl ContactsScreen {
     /// Update the displayed contacts from the contact manager.
     ///
     /// Must be called before each render to reflect add/delete changes.
-    pub fn update_contacts(&mut self, manager: &ContactManager) {
+    pub(crate) fn update_contacts(&mut self, manager: &ContactManager) {
         self.sorted_indices = manager.sorted_indices();
         self.display_names.clear();
         self.display_numbers.clear();
@@ -204,17 +204,17 @@ impl ContactsScreen {
     }
 
     /// Return the number of contacts displayed.
-    pub fn contact_count(&self) -> usize {
+    pub(crate) fn contact_count(&self) -> usize {
         self.sorted_indices.len()
     }
 
     /// Return the currently selected list index.
-    pub fn selected_index(&self) -> usize {
+    pub(crate) fn selected_index(&self) -> usize {
         self.selected
     }
 
     /// Return the original contact manager index for the selected entry.
-    pub fn selected_manager_index(&self) -> Option<usize> {
+    pub(crate) fn selected_manager_index(&self) -> Option<usize> {
         self.sorted_indices.get(self.selected).copied()
     }
 

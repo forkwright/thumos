@@ -11,7 +11,7 @@ use crate::telephony::{ModemTransport, TelephonyError, MAX_LINE_LEN};
 /// Mock modem transport for unit testing.
 ///
 /// Records sent commands and replays pre-configured responses.
-pub struct MockModemTransport {
+pub(crate) struct MockModemTransport {
     /// AT commands sent via `send_at`.
     pub sent_commands: Vec<Vec<u8>>,
     /// Response lines to return from `recv_line`, in FIFO order.
@@ -24,7 +24,7 @@ pub struct MockModemTransport {
 
 impl MockModemTransport {
     /// Create a new mock transport with all operations succeeding.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             sent_commands: Vec::new(),
             response_lines: Vec::new(),
@@ -34,22 +34,22 @@ impl MockModemTransport {
     }
 
     /// Queue a response line to be returned by `recv_line`.
-    pub fn queue_response(&mut self, line: &[u8]) {
+    pub(crate) fn queue_response(&mut self, line: &[u8]) {
         self.response_lines.push(line.to_vec());
     }
 
     /// Queue a URC line to be returned by `poll_urc_line`.
-    pub fn queue_urc(&mut self, line: &[u8]) {
+    pub(crate) fn queue_urc(&mut self, line: &[u8]) {
         self.urc_lines.push(line.to_vec());
     }
 
     /// Queue a simple "OK" response.
-    pub fn queue_ok(&mut self) {
+    pub(crate) fn queue_ok(&mut self) {
         self.queue_response(b"OK");
     }
 
     /// Queue an info line followed by "OK".
-    pub fn queue_info_ok(&mut self, info: &[u8]) {
+    pub(crate) fn queue_info_ok(&mut self, info: &[u8]) {
         self.queue_response(info);
         self.queue_response(b"OK");
     }

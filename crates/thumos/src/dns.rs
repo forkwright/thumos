@@ -32,7 +32,7 @@ use crate::net::NetworkStack;
 // ---------------------------------------------------------------------------
 
 /// Maximum number of entries in the DNS cache.
-pub const MAX_CACHE_ENTRIES: usize = 64;
+pub(crate) const MAX_CACHE_ENTRIES: usize = 64;
 
 /// Default TTL (seconds) for cache entries when the DNS response does
 /// not include a TTL or the response is synthesized.
@@ -45,10 +45,10 @@ const DNS_PORT: u16 = 53;
 ///
 /// Set to the operator's AdGuard/Pi-hole instance. This default is a
 /// placeholder; real deployments configure via `DnsResolver::new()`.
-pub const LAN_DNS: Ipv4Address = Ipv4Address::new(198, 51, 100, 1);
+pub(crate) const LAN_DNS: Ipv4Address = Ipv4Address::new(198, 51, 100, 1);
 
 /// Default Mullvad DNS address (privacy-respecting, no logging).
-pub const MULLVAD_DNS: Ipv4Address = Ipv4Address::new(194, 242, 2, 2);
+pub(crate) const MULLVAD_DNS: Ipv4Address = Ipv4Address::new(194, 242, 2, 2);
 
 /// DNS record type A (IPv4 address).
 const DNS_TYPE_A: u16 = 1;
@@ -118,7 +118,7 @@ struct DnsCacheEntry {
 ///
 /// When full, the least-recently-used entry is evicted to make room for
 /// new insertions.
-pub struct DnsCache {
+pub(crate) struct DnsCache {
     entries: Vec<DnsCacheEntry>,
     /// Monotonic counter incremented on every lookup; drives LRU ordering.
     tick_counter: u64,
@@ -126,7 +126,7 @@ pub struct DnsCache {
 
 impl DnsCache {
     /// Create an empty DNS cache.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: Vec::new(),
             tick_counter: 0,
@@ -137,7 +137,7 @@ impl DnsCache {
     ///
     /// Returns the cached IP address if found and not expired. Updates
     /// the LRU timestamp on hit.
-    pub fn lookup(&mut self, name: &str) -> Option<IpAddress> {
+    pub(crate) fn lookup(&mut self, name: &str) -> Option<IpAddress> {
         self.tick_counter += 1;
         let tick = self.tick_counter;
         for entry in &mut self.entries {
@@ -153,7 +153,7 @@ impl DnsCache {
     ///
     /// If the name already exists, updates the address and TTL. If the
     /// cache is at capacity, evicts the least-recently-used entry.
-    pub fn insert(&mut self, name: &str, address: IpAddress, ttl: u32) {
+    pub(crate) fn insert(&mut self, name: &str, address: IpAddress, ttl: u32) {
         self.tick_counter += 1;
         let tick = self.tick_counter;
 
@@ -189,7 +189,7 @@ impl DnsCache {
     }
 
     /// Decrement TTLs by `elapsed_secs` and remove expired entries.
-    pub fn tick(&mut self, elapsed_secs: u32) {
+    pub(crate) fn tick(&mut self, elapsed_secs: u32) {
         for entry in &mut self.entries {
             entry.ttl_remaining = entry.ttl_remaining.saturating_sub(elapsed_secs);
         }
@@ -197,17 +197,17 @@ impl DnsCache {
     }
 
     /// Remove all entries from the cache.
-    pub fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) {
         self.entries.clear();
     }
 
     /// Return the number of entries currently in the cache.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Return true if the cache contains no entries.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }
@@ -220,7 +220,7 @@ impl DnsCache {
 ///
 /// Queries for `*.lan` hostnames are routed to the LAN DNS
 /// instance. All other queries go to the privacy-respecting Mullvad DNS.
-pub fn select_dns_server(
+pub(crate) fn select_dns_server(
     hostname: &str,
     lan_dns: Ipv4Address,
     internet_dns: Ipv4Address,
@@ -415,7 +415,7 @@ fn skip_dns_name(data: &[u8], mut offset: usize) -> Result<usize, DnsError> {
 /// (`*.lan`) always use plain UDP to the local AdGuard instance regardless
 /// of the DoT setting. See [`dns_tls`](crate::dns_tls) for the DoT
 /// framing layer.
-pub struct DnsResolver {
+pub(crate) struct DnsResolver {
     /// Local DNS cache.
     cache: DnsCache,
     /// DNS server for `*.lan` queries (LAN DNS via Tailscale).
@@ -440,7 +440,7 @@ impl DnsResolver {
     ///
     /// * `lan_dns` — DNS server for `*.lan` queries (e.g., `198.51.100.1`).
     /// * `internet_dns` — DNS server for all other queries (e.g., `194.242.2.2`).
-    pub fn new(lan_dns: Ipv4Address, internet_dns: Ipv4Address) -> Self {
+    pub(crate) fn new(lan_dns: Ipv4Address, internet_dns: Ipv4Address) -> Self {
         Self {
             cache: DnsCache::new(),
             lan_dns,
@@ -455,12 +455,12 @@ impl DnsResolver {
     /// When enabled, the resolver signals that non-LAN queries should be
     /// dispatched via `dns_tls::DotClient` instead of plain UDP. LAN
     /// queries (`*.lan`) always use plain UDP regardless of this setting.
-    pub fn set_use_dot(&mut self, enabled: bool) {
+    pub(crate) fn set_use_dot(&mut self, enabled: bool) {
         self.use_dot = enabled;
     }
 
     /// Return whether DNS-over-TLS is enabled for non-LAN queries.
-    pub fn use_dot(&self) -> bool {
+    pub(crate) fn use_dot(&self) -> bool {
         self.use_dot
     }
 
@@ -468,7 +468,7 @@ impl DnsResolver {
     ///
     /// Returns `true` if DoT is enabled and the hostname is not a LAN
     /// hostname. LAN queries always bypass DoT.
-    pub fn should_use_dot(&self, hostname: &str) -> bool {
+    pub(crate) fn should_use_dot(&self, hostname: &str) -> bool {
         self.use_dot && !is_lan_hostname(hostname)
     }
 
@@ -482,7 +482,7 @@ impl DnsResolver {
     /// network stack and call [`poll_resolve`](Self::poll_resolve) to
     /// check for results, since bare-metal kernels cannot block on I/O.
     #[must_use]
-    pub fn resolve<D: Device>(
+    pub(crate) fn resolve<D: Device>(
         &mut self,
         _stack: &mut NetworkStack<D>,
         hostname: &str,
@@ -505,7 +505,7 @@ impl DnsResolver {
     }
 
     /// Determine which DNS server should handle a query for `hostname`.
-    pub fn server_for(&self, hostname: &str) -> Ipv4Address {
+    pub(crate) fn server_for(&self, hostname: &str) -> Ipv4Address {
         select_dns_server(hostname, self.lan_dns, self.internet_dns)
     }
 
@@ -515,7 +515,7 @@ impl DnsResolver {
     /// is responsible for sending this via a UDP socket to the
     /// appropriate DNS server on port 53.
     #[must_use]
-    pub fn build_query(&mut self, hostname: &str) -> Result<(Vec<u8>, u16), DnsError> {
+    pub(crate) fn build_query(&mut self, hostname: &str) -> Result<(Vec<u8>, u16), DnsError> {
         let txid = self.next_txid;
         self.next_txid = self.next_txid.wrapping_add(1);
         let packet = build_dns_query(hostname, txid)?;
@@ -526,7 +526,7 @@ impl DnsResolver {
     ///
     /// Returns the resolved address on success.
     #[must_use]
-    pub fn process_response(
+    pub(crate) fn process_response(
         &mut self,
         hostname: &str,
         data: &[u8],
@@ -543,22 +543,22 @@ impl DnsResolver {
     ///
     /// Should be called once per second (or at whatever interval the
     /// kernel timer provides).
-    pub fn tick(&mut self, elapsed_secs: u32) {
+    pub(crate) fn tick(&mut self, elapsed_secs: u32) {
         self.cache.tick(elapsed_secs);
     }
 
     /// Clear the entire DNS cache.
-    pub fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) {
         self.cache.flush();
     }
 
     /// Return a reference to the cache for diagnostics.
-    pub fn cache(&self) -> &DnsCache {
+    pub(crate) fn cache(&self) -> &DnsCache {
         &self.cache
     }
 
     /// Return a mutable reference to the cache.
-    pub fn cache_mut(&mut self) -> &mut DnsCache {
+    pub(crate) fn cache_mut(&mut self) -> &mut DnsCache {
         &mut self.cache
     }
 }

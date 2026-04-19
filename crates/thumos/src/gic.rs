@@ -18,31 +18,31 @@ mod gicd {
     use super::GICD_BASE;
 
     /// Distributor control.
-    pub const CTLR: usize = GICD_BASE;
+    pub(crate) const CTLR: usize = GICD_BASE;
     /// Interrupt controller type.
-    pub const TYPER: usize = GICD_BASE + 0x004;
+    pub(crate) const TYPER: usize = GICD_BASE + 0x004;
     /// Interrupt SET-enable (32 IRQs per register).
-    pub const fn isenabler(n: usize) -> usize {
+    pub(crate) const fn isenabler(n: usize) -> usize {
         GICD_BASE + 0x100 + n * 4
     }
     /// Interrupt clear-enable.
-    pub const fn icenabler(n: usize) -> usize {
+    pub(crate) const fn icenabler(n: usize) -> usize {
         GICD_BASE + 0x180 + n * 4
     }
     /// Interrupt clear-pending.
-    pub const fn icpendr(n: usize) -> usize {
+    pub(crate) const fn icpendr(n: usize) -> usize {
         GICD_BASE + 0x280 + n * 4
     }
     /// Interrupt priority (4 IRQs per register, 8 bits each).
-    pub const fn ipriorityr(n: usize) -> usize {
+    pub(crate) const fn ipriorityr(n: usize) -> usize {
         GICD_BASE + 0x400 + n * 4
     }
     /// Interrupt processor target (4 IRQs per register, 8 bits each).
-    pub const fn itargetsr(n: usize) -> usize {
+    pub(crate) const fn itargetsr(n: usize) -> usize {
         GICD_BASE + 0x800 + n * 4
     }
     /// Interrupt configuration (16 IRQs per register, 2 bits each).
-    pub const fn icfgr(n: usize) -> usize {
+    pub(crate) const fn icfgr(n: usize) -> usize {
         GICD_BASE + 0xC00 + n * 4
     }
 }
@@ -52,13 +52,13 @@ mod gicc {
     use super::GICC_BASE;
 
     /// CPU interface control.
-    pub const CTLR: usize = GICC_BASE;
+    pub(crate) const CTLR: usize = GICC_BASE;
     /// Interrupt priority mask.
-    pub const PMR: usize = GICC_BASE + 0x004;
+    pub(crate) const PMR: usize = GICC_BASE + 0x004;
     /// Interrupt acknowledge.
-    pub const IAR: usize = GICC_BASE + 0x00C;
+    pub(crate) const IAR: usize = GICC_BASE + 0x00C;
     /// End of interrupt.
-    pub const EOIR: usize = GICC_BASE + 0x010;
+    pub(crate) const EOIR: usize = GICC_BASE + 0x010;
 }
 
 use crate::mmio;
@@ -134,7 +134,7 @@ pub unsafe fn enable_irq(irq: u32) {
 }
 
 /// Disable a specific IRQ number.
-pub fn disable_irq(irq: u32) {
+pub(crate) fn disable_irq(irq: u32) {
     let reg = (irq / 32) as usize;
     let bit = irq % 32;
     // SAFETY: GIC distributor/CPU interface register at known MMIO address.
@@ -145,13 +145,13 @@ pub fn disable_irq(irq: u32) {
 
 /// Acknowledge an interrupt (read IAR).
 /// Returns the interrupt ID (10 bits). ID 1023 = spurious.
-pub fn acknowledge() -> u32 {
+pub(crate) fn acknowledge() -> u32 {
     // SAFETY: GIC distributor/CPU interface register at known MMIO address.
     unsafe { mmio::read32(gicc::IAR) & 0x3FF }
 }
 
 /// Signal end of interrupt handling.
-pub fn end_of_interrupt(irq: u32) {
+pub(crate) fn end_of_interrupt(irq: u32) {
     // SAFETY: GIC distributor/CPU interface register at known MMIO address.
     unsafe {
         mmio::write32(gicc::EOIR, irq);
@@ -159,4 +159,4 @@ pub fn end_of_interrupt(irq: u32) {
 }
 
 /// Spurious interrupt ID.
-pub const SPURIOUS: u32 = 1023;
+pub(crate) const SPURIOUS: u32 = 1023;

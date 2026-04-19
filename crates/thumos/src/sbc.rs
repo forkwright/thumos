@@ -113,7 +113,7 @@ impl SbcFrameHeader {
     /// 44100 Hz, 16 blocks, joint stereo, 8 subbands, loudness allocation,
     /// bitpool 53.
     #[must_use]
-    pub const fn default_a2dp() -> Self {
+    pub(crate) const fn default_a2dp() -> Self {
         Self {
             sampling_freq: SBC_FREQ_44100,
             blocks: SBC_BLOCKS_16,
@@ -126,7 +126,7 @@ impl SbcFrameHeader {
 
     /// Create a mono SBC frame header for low-bandwidth use.
     #[must_use]
-    pub const fn mono(sample_rate: u32) -> Self {
+    pub(crate) const fn mono(sample_rate: u32) -> Self {
         let freq = if sample_rate == 48000 {
             SBC_FREQ_48000
         } else {
@@ -146,7 +146,7 @@ impl SbcFrameHeader {
     ///
     /// Returns `[syncword, config_byte, bitpool, crc]`.
     #[must_use]
-    pub fn encode(&self) -> [u8; SBC_HEADER_SIZE] {
+    pub(crate) fn encode(&self) -> [u8; SBC_HEADER_SIZE] {
         let config = (self.sampling_freq << 6)
             | (self.blocks << 4)
             | (self.channel_mode << 2)
@@ -161,7 +161,7 @@ impl SbcFrameHeader {
     /// Per the SBC specification, frame length depends on channel mode,
     /// subbands, blocks, and bitpool.
     #[must_use]
-    pub const fn frame_length(&self) -> usize {
+    pub(crate) const fn frame_length(&self) -> usize {
         let nrof_subbands: usize = if self.subbands == SBC_SUBBANDS_8 { 8 } else { 4 };
         let nrof_blocks: usize = match self.blocks {
             0 => 4,
@@ -194,7 +194,7 @@ impl SbcFrameHeader {
 
     /// Validate that the header parameters are within spec bounds.
     #[must_use]
-    pub const fn is_valid(&self) -> bool {
+    pub(crate) const fn is_valid(&self) -> bool {
         self.sampling_freq <= 3
             && self.blocks <= 3
             && self.channel_mode <= 3
@@ -231,7 +231,7 @@ pub(crate) fn sbc_crc8(config: u8, bitpool: u8) -> u8 {
 /// SBC encoder trait for audio encoding.
 ///
 /// Implementations take PCM audio samples and produce SBC-encoded frames.
-pub trait SbcEncoder {
+pub(crate) trait SbcEncoder {
     /// Encode PCM samples into an SBC frame.
     ///
     /// `pcm` contains interleaved 16-bit PCM samples (L,R,L,R... for stereo).
@@ -259,7 +259,7 @@ pub trait SbcEncoder {
 /// 2. Scale factor calculation
 /// 3. Bit allocation (loudness or SNR method)
 /// 4. Quantization and bitstream packing
-pub struct StubSbcEncoder {
+pub(crate) struct StubSbcEncoder {
     /// Frame header configuration.
     header: SbcFrameHeader,
 }
@@ -267,19 +267,19 @@ pub struct StubSbcEncoder {
 impl StubSbcEncoder {
     /// Create a new stub encoder with the given header configuration.
     #[must_use]
-    pub const fn new(header: SbcFrameHeader) -> Self {
+    pub(crate) const fn new(header: SbcFrameHeader) -> Self {
         Self { header }
     }
 
     /// Create a stub encoder with default A2DP high-quality settings.
     #[must_use]
-    pub const fn default_a2dp() -> Self {
+    pub(crate) const fn default_a2dp() -> Self {
         Self::new(SbcFrameHeader::default_a2dp())
     }
 
     /// Return the configured frame header.
     #[must_use]
-    pub const fn header(&self) -> &SbcFrameHeader {
+    pub(crate) const fn header(&self) -> &SbcFrameHeader {
         &self.header
     }
 }

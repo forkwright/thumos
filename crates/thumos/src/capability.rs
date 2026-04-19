@@ -34,19 +34,19 @@ pub struct Capabilities(pub u32);
 
 impl Capabilities {
     /// Access CCCI, AT commands (baseband interface).
-    pub const MODEM: u32 = 1 << 0;
+    pub(crate) const MODEM: u32 = 1 << 0;
     /// Raw socket creation.
-    pub const RAW_NET: u32 = 1 << 1;
+    pub(crate) const RAW_NET: u32 = 1 << 1;
     /// Send signals to other processes (kill syscall).
-    pub const KILL: u32 = 1 << 2;
+    pub(crate) const KILL: u32 = 1 << 2;
     /// Access kernel CSPRNG and key material.
-    pub const CRYPTO: u32 = 1 << 3;
+    pub(crate) const CRYPTO: u32 = 1 << 3;
     /// WiFi / BT / GPS radio control.
-    pub const RADIO: u32 = 1 << 4;
+    pub(crate) const RADIO: u32 = 1 << 4;
     /// Read audit log.
-    pub const AUDIT: u32 = 1 << 5;
+    pub(crate) const AUDIT: u32 = 1 << 5;
     /// All capabilities granted (kinit / PID 0).
-    pub const ALL: u32 = 0x3F;
+    pub(crate) const ALL: u32 = 0x3F;
 
     /// Default capability set for forked children.
     ///
@@ -54,23 +54,23 @@ impl Capabilities {
     /// no legitimate need to speak AT commands to the baseband or read the
     /// audit log. All other capabilities remain available; the policy can be
     /// tightened per-process by kinit before exec.
-    pub const FORK_DEFAULT: u32 = Self::ALL & !(Self::MODEM | Self::AUDIT);
+    pub(crate) const FORK_DEFAULT: u32 = Self::ALL & !(Self::MODEM | Self::AUDIT);
 
     /// Construct a capability set from a raw bitfield.
     #[inline]
-    pub const fn new(bits: u32) -> Self {
+    pub(crate) const fn new(bits: u32) -> Self {
         Self(bits)
     }
 
     /// Return the raw bitfield.
     #[inline]
-    pub const fn bits(self) -> u32 {
+    pub(crate) const fn bits(self) -> u32 {
         self.0
     }
 
     /// Return true if all bits in `cap` are set.
     #[inline]
-    pub const fn contains(self, cap: u32) -> bool {
+    pub(crate) const fn contains(self, cap: u32) -> bool {
         (self.0 & cap) == cap
     }
 }
@@ -82,7 +82,7 @@ impl Capabilities {
 // ---------------------------------------------------------------------------
 
 /// Operation not permitted (two's complement -1, matches Linux EPERM).
-pub const EPERM: u32 = 0u32.wrapping_sub(1);
+pub(crate) const EPERM: u32 = 0u32.wrapping_sub(1);
 
 // ---------------------------------------------------------------------------
 // Kernel-mode capability check helpers
@@ -105,7 +105,7 @@ pub const EPERM: u32 = 0u32.wrapping_sub(1);
 /// capability::check(Capabilities::KILL)?;
 /// ```
 #[cfg(not(test))]
-pub fn check(required: u32) -> Result<(), u32> {
+pub(crate) fn check(required: u32) -> Result<(), u32> {
     let caps = crate::process::current_capabilities();
     if (caps & required) == required {
         Ok(())
@@ -129,7 +129,7 @@ pub fn check(required: u32) -> Result<(), u32> {
 /// Convenience wrapper around `check` for code that wants a boolean result
 /// rather than a `Result`.
 #[cfg(not(test))]
-pub fn has(cap: u32) -> bool {
+pub(crate) fn has(cap: u32) -> bool {
     let caps = crate::process::current_capabilities();
     (caps & cap) == cap
 }

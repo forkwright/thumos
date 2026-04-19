@@ -66,7 +66,7 @@ impl NetworkService {
 ///
 /// Updated each render cycle from kernel globals. Separates the status bar
 /// rendering from direct coupling to radio module internals.
-pub struct StatusBarState {
+pub(crate) struct StatusBarState {
     /// Cellular network service level.
     pub network: NetworkService,
     /// Whether `WiFi` is connected (maps from `WifiState::Connected`).
@@ -114,13 +114,13 @@ impl Default for StatusBarState {
 /// Renders into the top `STATUS_BAR_HEIGHT` (20px) rows of the framebuffer.
 /// The framebuffer slice passed to `draw()` is `SCREEN_WIDTH * STATUS_BAR_HEIGHT`
 /// pixels of `u16` RGB565.
-pub struct KernelStatusBar;
+pub(crate) struct KernelStatusBar;
 
 impl KernelStatusBar {
     /// Draw the status bar with the given state.
     ///
     /// `fb` must be at least `SCREEN_WIDTH * STATUS_BAR_HEIGHT` pixels.
-    pub fn draw(fb: &mut [u16], state: &StatusBarState) {
+    pub(crate) fn draw(fb: &mut [u16], state: &StatusBarState) {
         let w = SCREEN_WIDTH;
         let h = STATUS_BAR_HEIGHT;
 

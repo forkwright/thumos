@@ -42,10 +42,10 @@ use core::fmt;
 // ---------------------------------------------------------------------------
 
 /// Ed25519 public key size in bytes.
-pub const PUBLIC_KEY_LEN: usize = 32;
+pub(crate) const PUBLIC_KEY_LEN: usize = 32;
 
 /// Ed25519 signature size in bytes.
-pub const SIGNATURE_LEN: usize = 64;
+pub(crate) const SIGNATURE_LEN: usize = 64;
 
 /// Minimum image size: at least 1 byte of payload + 64-byte signature.
 const MIN_IMAGE_SIZE: usize = SIGNATURE_LEN + 1;
@@ -1083,7 +1083,7 @@ fn scalar_reduce_wide(hash: &[u8; 64]) -> [u8; 32] {
 /// - [`SecureBootError::InvalidSignature`] if the Ed25519 signature
 ///   does not verify against the payload.
 #[must_use = "verification result must be checked"]
-pub fn verify_kernel_signature(
+pub(crate) fn verify_kernel_signature(
     image: &[u8],
     signature: &[u8; SIGNATURE_LEN],
 ) -> Result<(), SecureBootError> {
@@ -1109,7 +1109,7 @@ pub fn verify_kernel_signature(
 ///   match the embedded boot key (when `require_boot_key` is true).
 /// - [`SecureBootError::InvalidSignature`] if verification fails.
 #[must_use = "verification result must be checked"]
-pub fn verify_kernel_signature_with_key(
+pub(crate) fn verify_kernel_signature_with_key(
     image: &[u8],
     signature: &[u8; SIGNATURE_LEN],
     public_key: &[u8; PUBLIC_KEY_LEN],
@@ -1139,7 +1139,7 @@ pub fn verify_kernel_signature_with_key(
 ///
 /// Returns [`SecureBootError::ImageTooShort`] if the image is shorter
 /// than [`MIN_IMAGE_SIZE`] (65 bytes).
-pub fn split_image(image: &[u8]) -> Result<(&[u8], [u8; SIGNATURE_LEN]), SecureBootError> {
+pub(crate) fn split_image(image: &[u8]) -> Result<(&[u8], [u8; SIGNATURE_LEN]), SecureBootError> {
     if image.len() < MIN_IMAGE_SIZE {
         return Err(SecureBootError::ImageTooShort);
     }
@@ -1160,7 +1160,7 @@ pub fn split_image(image: &[u8]) -> Result<(&[u8], [u8; SIGNATURE_LEN]), SecureB
 /// - [`SecureBootError::ImageTooShort`] if the image is too short.
 /// - [`SecureBootError::InvalidSignature`] if verification fails.
 #[must_use = "verification result must be checked"]
-pub fn verify_combined_image(image: &[u8]) -> Result<(), SecureBootError> {
+pub(crate) fn verify_combined_image(image: &[u8]) -> Result<(), SecureBootError> {
     let (payload, sig) = split_image(image)?;
     verify_kernel_signature(payload, &sig)
 }

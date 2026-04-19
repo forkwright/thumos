@@ -102,7 +102,7 @@ const LOAD_HISTORY_LEN: usize = 4;
 ///
 /// One global instance is accessed from the timer IRQ handler only
 /// (single-core ARMv7, IRQs disabled during the handler).  No lock needed.
-pub struct CpuGovernor {
+pub(crate) struct CpuGovernor {
     /// Current CPU frequency operating point.
     current_freq: CpuFreq,
     /// Active core bitmask.  Bit 0 = core 0 (always on), bits 1-3 = secondary.
@@ -122,7 +122,7 @@ pub struct CpuGovernor {
 impl CpuGovernor {
     /// Create a new governor starting at full performance, all cores active,
     /// backlight on.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             current_freq: CpuFreq::Mhz1500,
             cores_active: 0b0000_1111,     // cores 0-3 active
@@ -135,17 +135,17 @@ impl CpuGovernor {
     }
 
     /// Current CPU frequency.
-    pub fn current_freq(&self) -> CpuFreq {
+    pub(crate) fn current_freq(&self) -> CpuFreq {
         self.current_freq
     }
 
     /// Current active-core bitmask.
-    pub fn cores_active(&self) -> u8 {
+    pub(crate) fn cores_active(&self) -> u8 {
         self.cores_active
     }
 
     /// Whether the display backlight is on.
-    pub fn backlight_on(&self) -> bool {
+    pub(crate) fn backlight_on(&self) -> bool {
         self.backlight_on
     }
 }
@@ -172,7 +172,7 @@ static mut GOVERNOR: CpuGovernor = CpuGovernor::new();
 /// No memory is accessed; the CPU enters a low-power wait state until
 /// an interrupt fires.
 #[inline(always)]
-pub fn idle() {
+pub(crate) fn idle() {
     #[cfg(target_arch = "arm")]
     // SAFETY: wfi is a harmless hint — the core resumes at the next interrupt.
     unsafe {
@@ -194,7 +194,7 @@ pub fn idle() {
 /// # Safety
 ///
 /// Called from the timer IRQ handler (interrupts disabled, single-core).
-pub fn evaluate_dvfs(load_percent: u8) {
+pub(crate) fn evaluate_dvfs(load_percent: u8) {
     // SAFETY: GOVERNOR is only accessed from the timer IRQ handler.
     let gov = unsafe { &mut *core::ptr::addr_of_mut!(GOVERNOR) };
     let prev_freq = gov.current_freq;
@@ -224,7 +224,7 @@ pub fn evaluate_dvfs(load_percent: u8) {
 /// # Safety
 ///
 /// Called from the timer IRQ handler (interrupts disabled, single-core).
-pub fn evaluate_core_parking(runnable_count: usize) {
+pub(crate) fn evaluate_core_parking(runnable_count: usize) {
     // SAFETY: GOVERNOR is only accessed from the timer IRQ handler.
     let gov = unsafe { &mut *core::ptr::addr_of_mut!(GOVERNOR) };
     let prev_mask = gov.cores_active;
@@ -252,7 +252,7 @@ pub fn evaluate_core_parking(runnable_count: usize) {
 /// # Safety
 ///
 /// Called from an IRQ handler (interrupts disabled, single-core).
-pub fn notify_input(current_tick: u64) {
+pub(crate) fn notify_input(current_tick: u64) {
     // SAFETY: GOVERNOR is only accessed from IRQ context.
     let gov = unsafe { &mut *core::ptr::addr_of_mut!(GOVERNOR) };
     let woke = gov.apply_notify_input(current_tick);
@@ -273,7 +273,7 @@ pub fn notify_input(current_tick: u64) {
 /// # Safety
 ///
 /// Called from the timer IRQ handler (interrupts disabled, single-core).
-pub fn check_backlight_timeout(current_tick: u64) {
+pub(crate) fn check_backlight_timeout(current_tick: u64) {
     // SAFETY: GOVERNOR is only accessed from the timer IRQ handler.
     let gov = unsafe { &mut *core::ptr::addr_of_mut!(GOVERNOR) };
     let turned_off = gov.apply_backlight_timeout(current_tick);
@@ -393,14 +393,14 @@ pub enum PowerMode {
 }
 
 /// Power manager state.
-pub struct PowerManager {
+pub(crate) struct PowerManager {
     states: [(Radio, PowerState); 5],
     mode: PowerMode,
 }
 
 impl PowerManager {
     /// Create a new power manager with all radios off.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             states: [
                 (Radio::Cellular, PowerState::Off),
@@ -414,7 +414,7 @@ impl PowerManager {
     }
 
     /// Get the power state of a radio.
-    pub fn state(&self, radio: Radio) -> PowerState {
+    pub(crate) fn state(&self, radio: Radio) -> PowerState {
         if radio == Radio::All {
             // All is "on" only if every radio is on
             if self.states.iter().all(|(_, s)| *s == PowerState::On) {
@@ -433,7 +433,7 @@ impl PowerManager {
 
     /// Set the power state of a radio.
     /// Returns false if hardware kill switch or PMIC kill prevents the change.
-    pub fn set_state(&mut self, radio: Radio, state: PowerState) -> bool {
+    pub(crate) fn set_state(&mut self, radio: Radio, state: PowerState) -> bool {
         if radio == Radio::All {
             let mut all_ok = true;
             for (_, s) in &mut self.states {
@@ -464,7 +464,7 @@ impl PowerManager {
     }
 
     /// Apply a power mode preset.
-    pub fn apply_mode(&mut self, mode: PowerMode) {
+    pub(crate) fn apply_mode(&mut self, mode: PowerMode) {
         match mode {
             PowerMode::Full => {
                 self.set_state(Radio::All, PowerState::On);
@@ -491,13 +491,13 @@ impl PowerManager {
     }
 
     /// Get the current power mode.
-    pub fn mode(&self) -> PowerMode {
+    pub(crate) fn mode(&self) -> PowerMode {
         self.mode
     }
 
     /// Simulate hardware kill switch activation for a radio.
     /// Once killed by hardware, only hardware can re-enable.
-    pub fn hardware_kill(&mut self, radio: Radio) {
+    pub(crate) fn hardware_kill(&mut self, radio: Radio) {
         if radio == Radio::All {
             for (_, s) in &mut self.states {
                 *s = PowerState::HardwareKilled;
@@ -534,14 +534,14 @@ impl PowerManager {
     }
 
     /// Whether the modem has been PMIC-killed.
-    pub fn is_modem_pmic_killed(&self) -> bool {
+    pub(crate) fn is_modem_pmic_killed(&self) -> bool {
         self.states
             .iter()
             .any(|(r, s)| *r == Radio::Cellular && *s == PowerState::PmicKilled)
     }
 
     /// Count radios currently on.
-    pub fn active_count(&self) -> usize {
+    pub(crate) fn active_count(&self) -> usize {
         self.states
             .iter()
             .filter(|(_, s)| *s == PowerState::On)
@@ -565,7 +565,7 @@ impl Default for PowerManager {
 /// Used by the boot sequence (Wave 8) and by [`ModeManager`] on mode
 /// transitions to enforce radio policy without coupling security_mode
 /// directly to PowerManager internals.
-pub fn apply_mode_policy(
+pub(crate) fn apply_mode_policy(
     policy: &crate::security_mode::ModePolicy,
     pm: &mut PowerManager,
 ) {
@@ -589,7 +589,7 @@ impl CpuGovernor {
     /// Apply DVFS logic and return the new frequency without touching hardware.
     ///
     /// Used by unit tests and as the pure core called by `evaluate_dvfs`.
-    pub fn apply_dvfs(&mut self, load_percent: u8) -> CpuFreq {
+    pub(crate) fn apply_dvfs(&mut self, load_percent: u8) -> CpuFreq {
         self.load_history[self.load_idx] = load_percent;
         self.load_idx = (self.load_idx + 1) % LOAD_HISTORY_LEN;
 
@@ -605,7 +605,7 @@ impl CpuGovernor {
     }
 
     /// Apply core-parking logic and return the new bitmask without touching hardware.
-    pub fn apply_core_parking(&mut self, runnable_count: usize) -> u8 {
+    pub(crate) fn apply_core_parking(&mut self, runnable_count: usize) -> u8 {
         let new_mask: u8 = if runnable_count <= 1 {
             0b0000_0001
         } else {
@@ -617,7 +617,7 @@ impl CpuGovernor {
 
     /// Apply backlight timeout logic.  Returns `true` if the backlight just
     /// turned off.
-    pub fn apply_backlight_timeout(&mut self, current_tick: u64) -> bool {
+    pub(crate) fn apply_backlight_timeout(&mut self, current_tick: u64) -> bool {
         if self.backlight_on
             && current_tick.saturating_sub(self.last_input_tick) > self.backlight_timeout_ticks
         {
@@ -628,7 +628,7 @@ impl CpuGovernor {
     }
 
     /// Record input and return `true` if the display was woken.
-    pub fn apply_notify_input(&mut self, current_tick: u64) -> bool {
+    pub(crate) fn apply_notify_input(&mut self, current_tick: u64) -> bool {
         self.last_input_tick = current_tick;
         if !self.backlight_on {
             self.backlight_on = true;

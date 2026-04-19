@@ -19,7 +19,7 @@ use core::ptr::addr_of_mut;
 const MAX_PROCS: usize = 16;
 
 /// Process ID type.
-pub type Pid = u8;
+pub(crate) type Pid = u8;
 
 /// Process state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +89,7 @@ impl Context {
 /// Maximum number of tracked anonymous mappings per process.
 /// WHY: fixed-size array avoids heap allocation in the kernel's process table.
 /// 32 mappings is sufficient for early userspace (libc typically needs ~10).
-pub const MAX_MAPPINGS: usize = 32;
+pub(crate) const MAX_MAPPINGS: usize = 32;
 
 /// A tracked virtual memory region created by mmap or brk.
 #[derive(Clone, Copy)]
@@ -106,15 +106,15 @@ pub struct VmMapping {
 /// WHY: 0x1000_0000 is above device MMIO (0x0-0x2FFF_FFFF) but below DRAM
 /// (0x4000_0000), providing a clean region for the user heap that won't
 /// conflict with kernel data structures or device mappings.
-pub const DEFAULT_HEAP_BREAK: usize = 0x1000_0000;
+pub(crate) const DEFAULT_HEAP_BREAK: usize = 0x1000_0000;
 
 /// Base address for mmap allocations, above the heap region.
 /// WHY: 0x2000_0000 provides 256 MB of VA space for mmap before hitting
 /// the modem region, keeping mmap and brk regions non-overlapping.
-pub const MMAP_BASE: usize = 0x2000_0000;
+pub(crate) const MMAP_BASE: usize = 0x2000_0000;
 
 /// Process control block.
-pub struct Process {
+pub(crate) struct Process {
     pub pid: Pid,
     pub state: State,
     pub ctx: Context,
@@ -199,7 +199,7 @@ pub unsafe fn init() {
 
 /// Create a new process that starts executing at `entry_point`.
 /// Returns the PID, or None if the process table is full or OOM.
-pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
+pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. addr_of_mut! is used throughout to avoid creating
     // references to static mut globals, satisfying Rust's aliasing rules.
@@ -277,7 +277,7 @@ pub fn spawn(entry_point: fn() -> !) -> Option<Pid> {
 ///
 /// NOTE: unlike POSIX fork(), both parent and child continue FROM the next
 /// scheduler tick. The child inherits the parent's saved context exactly.
-pub fn fork() -> Option<Pid> {
+pub(crate) fn fork() -> Option<Pid> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. addr_of_mut! avoids intermediate references to static mut.
     // Page table manipulation is safe because mmu functions validate their inputs.
@@ -366,7 +366,7 @@ pub fn fork() -> Option<Pid> {
 
 /// Non-blocking wait for a child exit status.
 /// Returns Some(status) if the child is Dead, None if still running or not a child.
-pub fn waitpid(child_pid: Pid) -> Option<i32> {
+pub(crate) fn waitpid(child_pid: Pid) -> Option<i32> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
@@ -388,7 +388,7 @@ pub fn waitpid(child_pid: Pid) -> Option<i32> {
 /// Marks the faulting process Dead and delivers a fault message to PID 0's inbox.
 ///
 /// Payload layout (9 bytes): [pid:1, fault_addr:4 LE, fault_status:4 LE]
-pub fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
+pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
     let (tag, fault_addr, fault_status) = match kind {
         FaultKind::DataAbort { fault_addr, fault_status } => (1u32, fault_addr, fault_status),
         FaultKind::PrefetchAbort { fault_addr, fault_status } => (2u32, fault_addr, fault_status),
@@ -459,7 +459,7 @@ pub(crate) fn exit_cleanup(status: i32) {
 
 /// Exit the current process with a given status code.
 /// Tears down the address space and stack, then halts this process.
-pub fn exit_with_status(status: i32) -> ! {
+pub(crate) fn exit_with_status(status: i32) -> ! {
     exit_cleanup(status);
     #[cfg(target_arch = "arm")]
     // SAFETY: process has been marked Dead and its resources freed by
@@ -478,12 +478,12 @@ pub fn exit_with_status(status: i32) -> ! {
 
 /// Mark the current process as dead and yield to the scheduler.
 /// Thin wrapper over exit_with_status for the zero-status case.
-pub fn exit() -> ! {
+pub(crate) fn exit() -> ! {
     exit_with_status(0)
 }
 
 /// Get the current process ID.
-pub fn current_pid() -> Pid {
+pub(crate) fn current_pid() -> Pid {
     // SAFETY: CURRENT is a static mut Pid written only by the scheduler and
     // notify_fault. Read is atomic on ARM (single word); no torn read possible.
     unsafe { CURRENT }
@@ -494,7 +494,7 @@ pub fn current_pid() -> Pid {
 /// Used by the power governor to decide how many cores to keep active.
 /// Called from the timer IRQ handler with interrupts disabled — safe to
 /// read PROCS without a lock on single-core ARMv7.
-pub fn runnable_count() -> usize {
+pub(crate) fn runnable_count() -> usize {
     // SAFETY: called from timer IRQ handler (single-core, IRQs disabled).
     // addr_of! avoids an intermediate reference to the static mut.
     unsafe {
@@ -510,7 +510,7 @@ pub fn runnable_count() -> usize {
 ///
 /// Also wakes any Sleeping processes whose wake_tick has been reached,
 /// transitioning them to Ready so they can be scheduled next tick.
-pub fn schedule() -> Pid {
+pub(crate) fn schedule() -> Pid {
     // SAFETY: called from the timer IRQ handler with interrupts disabled on
     // a single-core ARMv7. PROCS is accessed exclusively via addr_of_mut!
     // to avoid intermediate references to the static mut.
@@ -652,7 +652,7 @@ unsafe fn restore_context(ctx: &Context) {
 
 /// Get the current process's page table physical address.
 /// Returns 0 if the current process is not found (should not happen).
-pub fn current_page_table() -> usize {
+pub(crate) fn current_page_table() -> usize {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
@@ -663,7 +663,7 @@ pub fn current_page_table() -> usize {
 }
 
 /// Get the current process's heap break.
-pub fn current_heap_break() -> usize {
+pub(crate) fn current_heap_break() -> usize {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
@@ -674,7 +674,7 @@ pub fn current_heap_break() -> usize {
 }
 
 /// Set the current process's heap break.
-pub fn set_heap_break(new_break: usize) {
+pub(crate) fn set_heap_break(new_break: usize) {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Mutation via addr_of_mut! avoids an intermediate
     // reference to the static mut; called from syscall context (single-core).
@@ -689,7 +689,7 @@ pub fn set_heap_break(new_break: usize) {
 
 /// Find a free mapping slot in the current process and insert a new mapping.
 /// Returns the index on success, None if all slots are full.
-pub fn add_mapping(mapping: VmMapping) -> Option<usize> {
+pub(crate) fn add_mapping(mapping: VmMapping) -> Option<usize> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Mutation via addr_of_mut!; called from syscall context.
     unsafe {
@@ -704,7 +704,7 @@ pub fn add_mapping(mapping: VmMapping) -> Option<usize> {
 
 /// Remove a mapping that starts at the given address.
 /// Returns the removed mapping, or None if not found.
-pub fn remove_mapping(start_addr: usize) -> Option<VmMapping> {
+pub(crate) fn remove_mapping(start_addr: usize) -> Option<VmMapping> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Mutation via addr_of_mut!; called from syscall context.
     unsafe {
@@ -724,7 +724,7 @@ pub fn remove_mapping(start_addr: usize) -> Option<VmMapping> {
 
 /// Find a mapping that starts at the given address.
 /// Returns a copy of the mapping, or None if not found.
-pub fn find_mapping(start_addr: usize) -> Option<VmMapping> {
+pub(crate) fn find_mapping(start_addr: usize) -> Option<VmMapping> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
@@ -744,7 +744,7 @@ pub fn find_mapping(start_addr: usize) -> Option<VmMapping> {
 
 /// Update the protection flags on an existing mapping.
 /// Returns true if the mapping was found and updated.
-pub fn update_mapping_prot(start_addr: usize, new_prot: u32) -> bool {
+pub(crate) fn update_mapping_prot(start_addr: usize, new_prot: u32) -> bool {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Mutation via addr_of_mut!; called from syscall context.
     unsafe {
@@ -765,7 +765,7 @@ pub fn update_mapping_prot(start_addr: usize, new_prot: u32) -> bool {
 
 /// Get a snapshot of all active mappings for the current process.
 /// Used by mmap to find free virtual address regions.
-pub fn current_mappings() -> [Option<VmMapping>; MAX_MAPPINGS] {
+pub(crate) fn current_mappings() -> [Option<VmMapping>; MAX_MAPPINGS] {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
@@ -779,7 +779,7 @@ pub fn current_mappings() -> [Option<VmMapping>; MAX_MAPPINGS] {
 
 /// Get the current process's UID.
 /// Returns 0 (root) if the current process is not found (should not happen).
-pub fn current_uid() -> u32 {
+pub(crate) fn current_uid() -> u32 {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
@@ -794,7 +794,7 @@ pub fn current_uid() -> u32 {
 /// Returns `Capabilities::ALL` for PID 0 (kinit) and `Capabilities::FORK_DEFAULT`
 /// as a safe fallback if the current PCB is unexpectedly absent.
 /// Called by `capability::check` and `capability::has` (REQ-09).
-pub fn current_capabilities() -> u32 {
+pub(crate) fn current_capabilities() -> u32 {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
@@ -811,7 +811,7 @@ pub fn current_capabilities() -> u32 {
 /// Called by sys_nanosleep after computing the target tick count.
 /// The scheduler will transition this process back to Ready when
 /// `exceptions::ticks() >= wake_tick`.
-pub fn set_wake_tick(wake_tick: u64) {
+pub(crate) fn set_wake_tick(wake_tick: u64) {
     // SAFETY: called from syscall context (single-threaded; IRQs are disabled
     // during SVC on ARMv7). addr_of_mut! avoids an intermediate reference to
     // the static mut PROCS.
@@ -829,7 +829,7 @@ pub fn set_wake_tick(wake_tick: u64) {
 ///
 /// Called by sys_nanosleep after the busy-wait loop confirms the wake tick
 /// has elapsed. Resets wake_tick to 0 and marks the process Running again.
-pub fn clear_wake_tick() {
+pub(crate) fn clear_wake_tick() {
     // SAFETY: same as set_wake_tick — called from syscall context only.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
@@ -1009,7 +1009,7 @@ pub unsafe fn clear_any_pending() {
 /// Returns `Some((sig, handler_addr))` for the first such signal.
 ///
 /// Called from the exception return path before resuming user mode.
-pub fn check_pending_signal() -> Option<(Signal, u32)> {
+pub(crate) fn check_pending_signal() -> Option<(Signal, u32)> {
     // SAFETY: read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);

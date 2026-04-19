@@ -24,22 +24,22 @@
 //! before the slots are reclaimed. Each slot is freed immediately on wakeup.
 
 /// EAGAIN — value mismatch (two's complement -11, Linux ARM convention).
-pub const EAGAIN: u32 = 0u32.wrapping_sub(11);
+pub(crate) const EAGAIN: u32 = 0u32.wrapping_sub(11);
 
 /// EINVAL — unknown op (two's complement -22, Linux ARM convention).
-pub const EINVAL: u32 = 0u32.wrapping_sub(22);
+pub(crate) const EINVAL: u32 = 0u32.wrapping_sub(22);
 
 /// FUTEX_WAIT operation code.
-pub const FUTEX_WAIT: u32 = 0;
+pub(crate) const FUTEX_WAIT: u32 = 0;
 
 /// FUTEX_WAKE operation code.
-pub const FUTEX_WAKE: u32 = 1;
+pub(crate) const FUTEX_WAKE: u32 = 1;
 
 /// Maximum number of simultaneously sleeping futex waiters.
 const MAX_FUTEX_WAITERS: usize = 32;
 
 /// A single futex waiter record.
-pub struct FutexWaiter {
+pub(crate) struct FutexWaiter {
     /// The address being waited on.
     pub addr: u32,
     /// PID of the waiting process.
@@ -66,7 +66,7 @@ static mut FUTEX_WAITERS: [Option<FutexWaiter>; MAX_FUTEX_WAITERS] = {
 /// is therefore testable on the host. The register-and-block path is gated
 /// `#[cfg(not(test))]` because `crate::process` is not compiled under test
 /// (it requires ARM-specific code and the full kernel environment).
-pub fn sys_futex_wait(addr: u32, val: u32) -> u32 {
+pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
     if addr == 0 {
         return EINVAL;
     }

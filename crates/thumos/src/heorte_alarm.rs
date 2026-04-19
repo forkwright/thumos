@@ -19,25 +19,25 @@ const MAX_LABEL_LEN: usize = 32;
 // ---------------------------------------------------------------------------
 
 /// Day-of-week bitmask constants for alarm repeat scheduling.
-pub mod day_mask {
+pub(crate) mod day_mask {
     /// Sunday (bit 0).
-    pub const SUN: u8 = 1 << 0;
+    pub(crate) const SUN: u8 = 1 << 0;
     /// Monday (bit 1).
-    pub const MON: u8 = 1 << 1;
+    pub(crate) const MON: u8 = 1 << 1;
     /// Tuesday (bit 2).
-    pub const TUE: u8 = 1 << 2;
+    pub(crate) const TUE: u8 = 1 << 2;
     /// Wednesday (bit 3).
-    pub const WED: u8 = 1 << 3;
+    pub(crate) const WED: u8 = 1 << 3;
     /// Thursday (bit 4).
-    pub const THU: u8 = 1 << 4;
+    pub(crate) const THU: u8 = 1 << 4;
     /// Friday (bit 5).
-    pub const FRI: u8 = 1 << 5;
+    pub(crate) const FRI: u8 = 1 << 5;
     /// Saturday (bit 6).
-    pub const SAT: u8 = 1 << 6;
+    pub(crate) const SAT: u8 = 1 << 6;
     /// All weekdays (Mon-Fri).
-    pub const WEEKDAYS: u8 = MON | TUE | WED | THU | FRI;
+    pub(crate) const WEEKDAYS: u8 = MON | TUE | WED | THU | FRI;
     /// Every day.
-    pub const DAILY: u8 = SUN | MON | TUE | WED | THU | FRI | SAT;
+    pub(crate) const DAILY: u8 = SUN | MON | TUE | WED | THU | FRI | SAT;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ impl Alarm {
     ///
     /// `label_bytes` is truncated to [`MAX_LABEL_LEN`] if longer.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         id: u32,
         hour: u8,
         minute: u8,
@@ -95,7 +95,7 @@ impl Alarm {
 
     /// Return the label as a `&str`, or an empty string if not valid UTF-8.
     #[must_use]
-    pub fn label_str(&self) -> &str {
+    pub(crate) fn label_str(&self) -> &str {
         core::str::from_utf8(&self.label[..self.label_len as usize]).unwrap_or("")
     }
 
@@ -104,7 +104,7 @@ impl Alarm {
     /// Returns `true` if the alarm is enabled and the current time-of-day
     /// matches the alarm's hour:minute. If `repeat_days` is non-zero,
     /// also checks whether the current day-of-week is in the bitmask.
-    pub fn should_fire(&self, current_epoch: u64) -> bool {
+    pub(crate) fn should_fire(&self, current_epoch: u64) -> bool {
         if !self.enabled {
             return false;
         }
@@ -129,7 +129,7 @@ impl Alarm {
 
     /// Human-readable repeat description.
     #[must_use]
-    pub fn repeat_label(&self) -> &'static str {
+    pub(crate) fn repeat_label(&self) -> &'static str {
         match self.repeat_days {
             0 => "Once",
             d if d == day_mask::DAILY => "Daily",

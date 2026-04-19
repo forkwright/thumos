@@ -33,7 +33,7 @@ use crate::security::{SecurityError, XTS_KEY_SIZE};
 ///
 /// The key is 64 bytes: two concatenated AES-256 keys (key1 || key2).
 /// `key1` is used for the block cipher, `key2` for the tweak cipher.
-pub struct EncryptedBlockDevice<'a> {
+pub(crate) struct EncryptedBlockDevice<'a> {
     /// The underlying (raw) block device.
     inner: &'a mut dyn BlockDevice,
     /// XTS key: two AES-256 keys concatenated (64 bytes).
@@ -44,7 +44,7 @@ impl<'a> EncryptedBlockDevice<'a> {
     /// Create a new encrypted block device wrapping `inner` with the given key.
     ///
     /// The key must be 64 bytes (two AES-256 keys for XTS mode).
-    pub fn new(inner: &'a mut dyn BlockDevice, key: [u8; XTS_KEY_SIZE]) -> Self {
+    pub(crate) fn new(inner: &'a mut dyn BlockDevice, key: [u8; XTS_KEY_SIZE]) -> Self {
         Self { inner, key }
     }
 

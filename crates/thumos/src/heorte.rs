@@ -79,7 +79,7 @@ impl CalendarEvent {
     ///
     /// `title_bytes` is truncated to [`MAX_TITLE_LEN`] if longer.
     #[must_use]
-    pub fn new(id: u32, title_bytes: &[u8], start_epoch: u64, duration_min: u16, all_day: bool) -> Self {
+    pub(crate) fn new(id: u32, title_bytes: &[u8], start_epoch: u64, duration_min: u16, all_day: bool) -> Self {
         let mut title = [0u8; MAX_TITLE_LEN];
         let len = title_bytes.len().min(MAX_TITLE_LEN);
         title[..len].copy_from_slice(&title_bytes[..len]);
@@ -94,22 +94,22 @@ impl CalendarEvent {
     }
 
     /// Return the title as a `&str`, or an empty string if not valid UTF-8.
-    pub fn title_str(&self) -> &str {
+    pub(crate) fn title_str(&self) -> &str {
         core::str::from_utf8(&self.title[..self.title_len as usize]).unwrap_or("")
     }
 
     /// End epoch (start + duration). Returns `start_epoch` if duration is 0.
-    pub fn end_epoch(&self) -> u64 {
+    pub(crate) fn end_epoch(&self) -> u64 {
         self.start_epoch + u64::from(self.duration_min) * SECS_PER_MIN
     }
 
     /// Whether this event is active (happening now) at the given epoch.
-    pub fn is_active(&self, current_epoch: u64) -> bool {
+    pub(crate) fn is_active(&self, current_epoch: u64) -> bool {
         current_epoch >= self.start_epoch && current_epoch < self.end_epoch()
     }
 
     /// Extract the day (as days since Unix epoch) for grouping.
-    pub fn day_index(&self) -> u32 {
+    pub(crate) fn day_index(&self) -> u32 {
         (self.start_epoch / SECS_PER_DAY) as u32
     }
 }
@@ -129,7 +129,7 @@ impl core::fmt::Display for CalendarEvent {
 /// Owns all heorte state and provides a unified API for the UI screens.
 /// Event and alarm IDs are auto-incremented and never reused within a
 /// session (persistence across reboots is handled by the storage layer).
-pub struct HeorteManager {
+pub(crate) struct HeorteManager {
     /// Calendar events, sorted by `start_epoch`.
     events: Vec<CalendarEvent>,
     /// Alarm definitions.
@@ -147,7 +147,7 @@ pub struct HeorteManager {
 impl HeorteManager {
     /// Create a new empty heorte manager.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             events: Vec::new(),
             alarms: Vec::new(),
@@ -161,7 +161,7 @@ impl HeorteManager {
     // -- Calendar events --
 
     /// Add a calendar event. Returns the assigned event ID.
-    pub fn add_event(
+    pub(crate) fn add_event(
         &mut self,
         title: &[u8],
         start_epoch: u64,
@@ -177,19 +177,19 @@ impl HeorteManager {
     }
 
     /// Remove an event by ID. Returns `true` if found and removed.
-    pub fn remove_event(&mut self, id: u32) -> bool {
+    pub(crate) fn remove_event(&mut self, id: u32) -> bool {
         let before = self.events.len();
         self.events.retain(|e| e.id != id);
         self.events.len() < before
     }
 
     /// List all events, sorted by start time.
-    pub fn events(&self) -> &[CalendarEvent] {
+    pub(crate) fn events(&self) -> &[CalendarEvent] {
         &self.events
     }
 
     /// List events occurring on or after the given epoch, sorted by start time.
-    pub fn upcoming_events(&self, from_epoch: u64) -> Vec<&CalendarEvent> {
+    pub(crate) fn upcoming_events(&self, from_epoch: u64) -> Vec<&CalendarEvent> {
         self.events
             .iter()
             .filter(|e| e.end_epoch() > from_epoch || e.start_epoch >= from_epoch)
@@ -197,7 +197,7 @@ impl HeorteManager {
     }
 
     /// Find an event by ID.
-    pub fn find_event(&self, id: u32) -> Option<&CalendarEvent> {
+    pub(crate) fn find_event(&self, id: u32) -> Option<&CalendarEvent> {
         self.events.iter().find(|e| e.id == id)
     }
 
@@ -209,7 +209,7 @@ impl HeorteManager {
     // -- Alarms --
 
     /// Add an alarm. Returns the assigned alarm ID.
-    pub fn add_alarm(
+    pub(crate) fn add_alarm(
         &mut self,
         hour: u8,
         minute: u8,
@@ -225,7 +225,7 @@ impl HeorteManager {
     }
 
     /// Remove an alarm by ID. Returns `true` if found and removed.
-    pub fn remove_alarm(&mut self, id: u32) -> bool {
+    pub(crate) fn remove_alarm(&mut self, id: u32) -> bool {
         let before = self.alarms.len();
         self.alarms.retain(|a| a.id != id);
         self.alarms.len() < before
@@ -233,7 +233,7 @@ impl HeorteManager {
 
     /// Toggle an alarm's enabled state by ID. Returns the new state, or
     /// `None` if the alarm was not found.
-    pub fn toggle_alarm(&mut self, id: u32) -> Option<bool> {
+    pub(crate) fn toggle_alarm(&mut self, id: u32) -> Option<bool> {
         for alarm in &mut self.alarms {
             if alarm.id == id {
                 alarm.enabled = !alarm.enabled;
@@ -244,7 +244,7 @@ impl HeorteManager {
     }
 
     /// List all alarms.
-    pub fn alarms(&self) -> &[Alarm] {
+    pub(crate) fn alarms(&self) -> &[Alarm] {
         &self.alarms
     }
 
@@ -252,7 +252,7 @@ impl HeorteManager {
     ///
     /// Returns a list of alarm IDs that match. One-shot alarms (`repeat_days` == 0)
     /// are auto-disabled after firing.
-    pub fn check_alarms(&mut self, current_epoch: u64) -> Vec<u32> {
+    pub(crate) fn check_alarms(&mut self, current_epoch: u64) -> Vec<u32> {
         let mut firing = Vec::new();
         for alarm in &mut self.alarms {
             if alarm.should_fire(current_epoch) {
@@ -269,24 +269,24 @@ impl HeorteManager {
     // -- Timer --
 
     /// Mutable access to the timer.
-    pub fn timer_mut(&mut self) -> &mut Timer {
+    pub(crate) fn timer_mut(&mut self) -> &mut Timer {
         &mut self.timer
     }
 
     /// Immutable access to the timer.
-    pub fn timer(&self) -> &Timer {
+    pub(crate) fn timer(&self) -> &Timer {
         &self.timer
     }
 
     // -- Stopwatch --
 
     /// Mutable access to the stopwatch.
-    pub fn stopwatch_mut(&mut self) -> &mut Stopwatch {
+    pub(crate) fn stopwatch_mut(&mut self) -> &mut Stopwatch {
         &mut self.stopwatch
     }
 
     /// Immutable access to the stopwatch.
-    pub fn stopwatch(&self) -> &Stopwatch {
+    pub(crate) fn stopwatch(&self) -> &Stopwatch {
         &self.stopwatch
     }
 }
@@ -298,7 +298,7 @@ impl HeorteManager {
 /// Decompose Unix epoch seconds into `(hour, minute, year, month, day)`.
 ///
 /// Uses a simplified algorithm sufficient for display purposes.
-pub fn decompose_epoch(epoch: u64) -> (u8, u8, u16, u8, u8) {
+pub(crate) fn decompose_epoch(epoch: u64) -> (u8, u8, u16, u8, u8) {
     if epoch == 0 {
         return (0, 0, 0, 0, 0);
     }
@@ -343,7 +343,7 @@ const fn is_leap_year(year: u16) -> bool {
 }
 
 /// Format date as "YYYY-MM-DD" into a fixed buffer.
-pub fn format_date(year: u16, month: u8, day: u8) -> [u8; 10] {
+pub(crate) fn format_date(year: u16, month: u8, day: u8) -> [u8; 10] {
     [
         b'0' + (year / 1000) as u8,
         b'0' + ((year / 100) % 10) as u8,
@@ -359,7 +359,7 @@ pub fn format_date(year: u16, month: u8, day: u8) -> [u8; 10] {
 }
 
 /// Format time as "HH:MM" into a fixed buffer.
-pub fn format_time_hhmm(hour: u8, minute: u8) -> [u8; 5] {
+pub(crate) fn format_time_hhmm(hour: u8, minute: u8) -> [u8; 5] {
     [
         b'0' + hour / 10,
         b'0' + hour % 10,
@@ -372,7 +372,7 @@ pub fn format_time_hhmm(hour: u8, minute: u8) -> [u8; 5] {
 /// Compute a day label relative to a reference epoch.
 ///
 /// Returns "TODAY", "TOMORROW", or "YYYY-MM-DD" for other days.
-pub fn day_label(event_epoch: u64, current_epoch: u64) -> DayLabel {
+pub(crate) fn day_label(event_epoch: u64, current_epoch: u64) -> DayLabel {
     let event_day = event_epoch / SECS_PER_DAY;
     let current_day = current_epoch / SECS_PER_DAY;
 
@@ -406,7 +406,7 @@ impl core::fmt::Display for DayLabel {
 
 impl DayLabel {
     /// Return a displayable string.
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         match self {
             Self::Today => "TODAY",
             Self::Tomorrow => "TOMORROW",

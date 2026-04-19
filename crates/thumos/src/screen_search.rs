@@ -180,7 +180,7 @@ const fn to_ascii_lower(b: u8) -> u8 {
 /// Function search screen.
 ///
 /// Maintains the filter input buffer, filtered results, and cursor position.
-pub struct SearchScreen {
+pub(crate) struct SearchScreen {
     /// Filter input buffer (ASCII letters from T9 mapping).
     filter: [u8; MAX_FILTER_LEN],
     /// Number of valid bytes in `filter`.
@@ -197,7 +197,7 @@ pub struct SearchScreen {
 
 impl SearchScreen {
     /// Create a new search screen with empty filter (shows all entries).
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut screen = Self {
             filter: [0u8; MAX_FILTER_LEN],
             filter_len: 0,

@@ -40,7 +40,7 @@ pub struct Timer {
 impl Timer {
     /// Create a new timer with zero duration.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             duration_secs: 0,
             remaining_secs: 0,
@@ -50,7 +50,7 @@ impl Timer {
     }
 
     /// Set the timer duration and reset state.
-    pub fn set_duration(&mut self, secs: u32) {
+    pub(crate) fn set_duration(&mut self, secs: u32) {
         self.duration_secs = secs;
         self.remaining_secs = secs;
         self.running = false;
@@ -58,7 +58,7 @@ impl Timer {
     }
 
     /// Start or resume the countdown from the current tick.
-    pub fn start(&mut self, current_tick: u64) {
+    pub(crate) fn start(&mut self, current_tick: u64) {
         if !self.running && self.remaining_secs > 0 {
             self.running = true;
             self.started_tick = current_tick;
@@ -66,7 +66,7 @@ impl Timer {
     }
 
     /// Pause the countdown, preserving remaining time.
-    pub fn pause(&mut self, current_tick: u64) {
+    pub(crate) fn pause(&mut self, current_tick: u64) {
         if self.running {
             self.update(current_tick);
             self.running = false;
@@ -74,7 +74,7 @@ impl Timer {
     }
 
     /// Reset the timer to its original duration.
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.remaining_secs = self.duration_secs;
         self.running = false;
         self.started_tick = 0;
@@ -84,7 +84,7 @@ impl Timer {
     ///
     /// Called each render cycle (or on query) to recompute remaining time.
     /// Returns `true` if the timer has expired (reached zero).
-    pub fn update(&mut self, current_tick: u64) -> bool {
+    pub(crate) fn update(&mut self, current_tick: u64) -> bool {
         if !self.running {
             return self.remaining_secs == 0 && self.duration_secs > 0;
         }
@@ -104,12 +104,12 @@ impl Timer {
     }
 
     /// Whether the timer has expired.
-    pub fn expired(&self) -> bool {
+    pub(crate) fn expired(&self) -> bool {
         self.duration_secs > 0 && self.remaining_secs == 0 && !self.running
     }
 
     /// Format remaining time as `MM:SS`.
-    pub fn format_remaining(&self) -> [u8; 5] {
+    pub(crate) fn format_remaining(&self) -> [u8; 5] {
         let m = (self.remaining_secs / 60).min(99);
         let s = self.remaining_secs % 60;
         [
@@ -154,7 +154,7 @@ pub struct Stopwatch {
 impl Stopwatch {
     /// Create a new stopwatch in the stopped state.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             elapsed_ms: 0,
             running: false,
@@ -164,7 +164,7 @@ impl Stopwatch {
     }
 
     /// Start or resume the stopwatch.
-    pub fn start(&mut self, current_tick: u64) {
+    pub(crate) fn start(&mut self, current_tick: u64) {
         if !self.running {
             self.running = true;
             self.started_tick = current_tick;
@@ -172,7 +172,7 @@ impl Stopwatch {
     }
 
     /// Stop the stopwatch, preserving elapsed time.
-    pub fn stop(&mut self, current_tick: u64) {
+    pub(crate) fn stop(&mut self, current_tick: u64) {
         if self.running {
             self.elapsed_ms += current_tick.saturating_sub(self.started_tick);
             self.running = false;
@@ -180,7 +180,7 @@ impl Stopwatch {
     }
 
     /// Reset the stopwatch to zero.
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.elapsed_ms = 0;
         self.running = false;
         self.started_tick = 0;
@@ -191,7 +191,7 @@ impl Stopwatch {
     ///
     /// Stores the cumulative elapsed time as a lap marker. If the lap
     /// list exceeds [`MAX_LAPS`], the oldest lap is removed.
-    pub fn lap(&mut self, current_tick: u64) {
+    pub(crate) fn lap(&mut self, current_tick: u64) {
         if !self.running {
             return;
         }
@@ -204,7 +204,7 @@ impl Stopwatch {
     }
 
     /// Get the current total elapsed time in milliseconds.
-    pub fn current_elapsed(&self, current_tick: u64) -> u64 {
+    pub(crate) fn current_elapsed(&self, current_tick: u64) -> u64 {
         if self.running {
             self.elapsed_ms + current_tick.saturating_sub(self.started_tick)
         } else {
@@ -215,7 +215,7 @@ impl Stopwatch {
     /// Get per-lap duration (delta between consecutive laps) in milliseconds.
     ///
     /// Returns an iterator of `(lap_number, duration_ms)` pairs, 1-indexed.
-    pub fn lap_durations(&self) -> Vec<(usize, u64)> {
+    pub(crate) fn lap_durations(&self) -> Vec<(usize, u64)> {
         let mut result = Vec::with_capacity(self.laps.len());
         let mut prev = 0u64;
         for (i, &cumulative) in self.laps.iter().enumerate() {
@@ -229,7 +229,7 @@ impl Stopwatch {
     ///
     /// Returns a 12-byte buffer. Caller should convert to `&str` via
     /// `core::str::from_utf8`.
-    pub fn format_elapsed(&self, current_tick: u64) -> [u8; 12] {
+    pub(crate) fn format_elapsed(&self, current_tick: u64) -> [u8; 12] {
         format_elapsed_ms(self.current_elapsed(current_tick))
     }
 }

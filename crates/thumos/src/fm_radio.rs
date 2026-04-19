@@ -181,7 +181,7 @@ impl core::fmt::Display for FmState {
 /// Hardware operations trait for FM radio abstraction.
 ///
 /// Allows test-friendly mocking of the MT6739 FM radio hardware.
-pub trait FmHwOps {
+pub(crate) trait FmHwOps {
     /// Power on the FM receiver subsystem within the combo chip.
     fn power_on(&mut self) -> Result<(), FmError>;
 
@@ -211,7 +211,7 @@ pub trait FmHwOps {
 
 /// Real FM hardware access via WMT STP on the MT6739 combo chip.
 #[cfg(not(test))]
-pub struct FmHw {
+pub(crate) struct FmHw {
     /// WMT combo-chip MMIO base address.
     consys_base: usize,
     /// Current tuned frequency in kHz (for seek operations).
@@ -222,7 +222,7 @@ pub struct FmHw {
 impl FmHw {
     /// Create a new FM hardware handle.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             consys_base: MT6739_CONSYS,
             current_freq: FM_DEFAULT_FREQ_KHZ,

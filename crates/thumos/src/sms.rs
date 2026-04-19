@@ -280,7 +280,7 @@ impl<'a> PduCursor<'a> {
 // ---------------------------------------------------------------------------
 
 /// An SMS message stored in the inbox.
-pub struct SmsMessage {
+pub(crate) struct SmsMessage {
     /// Sender phone number as ASCII bytes.
     pub sender: [u8; MAX_SENDER_LEN],
     /// Number of valid bytes in `sender`.
@@ -298,7 +298,7 @@ pub struct SmsMessage {
 // ---------------------------------------------------------------------------
 
 /// SMS manager: inbox storage and send/receive operations.
-pub struct SmsManager {
+pub(crate) struct SmsManager {
     /// Inbox of received messages, newest last.
     inbox: Vec<SmsMessage>,
 }
@@ -306,7 +306,7 @@ pub struct SmsManager {
 impl SmsManager {
     /// Create a new SMS manager with an empty inbox.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inbox: Vec::new(),
         }
@@ -325,7 +325,7 @@ impl SmsManager {
     /// - [`SmsError::ModemError`] -- modem returned ERROR.
     /// - [`SmsError::CmeError`] -- modem returned CME error.
     /// - [`SmsError::TransportError`] -- transport layer send/receive failed.
-    pub fn send<T: ModemTransport>(
+    pub(crate) fn send<T: ModemTransport>(
         transport: &mut T,
         number: &str,
         text: &str,
@@ -403,7 +403,7 @@ impl SmsManager {
     ///
     /// - [`SmsError::PduDecode`] -- PDU is truncated or malformed.
     #[must_use]
-    pub fn handle_incoming(pdu_data: &[u8]) -> Result<SmsMessage, SmsError> {
+    pub(crate) fn handle_incoming(pdu_data: &[u8]) -> Result<SmsMessage, SmsError> {
         let mut cur = PduCursor::new(pdu_data);
 
         // SMSC prefix: length byte + SMSC bytes (skip).
@@ -461,14 +461,14 @@ impl SmsManager {
 
     /// Return the inbox as a slice.
     #[must_use]
-    pub fn inbox(&self) -> &[SmsMessage] {
+    pub(crate) fn inbox(&self) -> &[SmsMessage] {
         &self.inbox
     }
 
     /// Mark a message as read by index.
     ///
     /// No-op if the index is out of bounds.
-    pub fn mark_read(&mut self, index: usize) {
+    pub(crate) fn mark_read(&mut self, index: usize) {
         if let Some(msg) = self.inbox.get_mut(index) {
             msg.read = true;
         }
@@ -477,14 +477,14 @@ impl SmsManager {
     /// Delete a message by index.
     ///
     /// No-op if the index is out of bounds.
-    pub fn delete(&mut self, index: usize) {
+    pub(crate) fn delete(&mut self, index: usize) {
         if index < self.inbox.len() {
             self.inbox.remove(index);
         }
     }
 
     /// Add a message to the inbox (used by `handle_incoming`).
-    pub fn receive(&mut self, msg: SmsMessage) {
+    pub(crate) fn receive(&mut self, msg: SmsMessage) {
         self.inbox.push(msg);
     }
 }

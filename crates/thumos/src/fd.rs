@@ -17,54 +17,54 @@ use alloc::boxed::Box;
 use crate::vfs::{self, InodeType, MountTable, VfsError};
 
 /// Maximum number of open file descriptors per process.
-pub const MAX_FDS: usize = 256;
+pub(crate) const MAX_FDS: usize = 256;
 
 /// Error codes matching Linux ARM conventions (two's complement negation).
 /// WHY: toolchain compatibility with userspace built against Linux headers.
-pub const EBADF: u32 = 0u32.wrapping_sub(9);
+pub(crate) const EBADF: u32 = 0u32.wrapping_sub(9);
 /// No such file or directory.
-pub const ENOENT: u32 = 0u32.wrapping_sub(2);
+pub(crate) const ENOENT: u32 = 0u32.wrapping_sub(2);
 /// Too many open files.
-pub const EMFILE: u32 = 0u32.wrapping_sub(24);
+pub(crate) const EMFILE: u32 = 0u32.wrapping_sub(24);
 /// Invalid argument.
-pub const EINVAL: u32 = 0u32.wrapping_sub(22);
+pub(crate) const EINVAL: u32 = 0u32.wrapping_sub(22);
 /// Bad address.
-pub const EFAULT: u32 = 0u32.wrapping_sub(14);
+pub(crate) const EFAULT: u32 = 0u32.wrapping_sub(14);
 /// Is a directory.
-pub const EISDIR: u32 = 0u32.wrapping_sub(21);
+pub(crate) const EISDIR: u32 = 0u32.wrapping_sub(21);
 /// Inappropriate ioctl for device.
-pub const ENOTTY: u32 = 0u32.wrapping_sub(25);
+pub(crate) const ENOTTY: u32 = 0u32.wrapping_sub(25);
 
 // -- fcntl command constants --
 
 /// Duplicate fd to lowest available >= arg.
-pub const F_DUPFD: u32 = 0;
+pub(crate) const F_DUPFD: u32 = 0;
 /// Get file descriptor flags.
-pub const F_GETFL: u32 = 3;
+pub(crate) const F_GETFL: u32 = 3;
 /// Set file descriptor flags.
-pub const F_SETFL: u32 = 4;
+pub(crate) const F_SETFL: u32 = 4;
 
 // -- open flag constants --
 
 /// Append mode flag.
-pub const O_APPEND: u32 = 0x400;
+pub(crate) const O_APPEND: u32 = 0x400;
 /// Mask for access mode bits (O_RDONLY | O_WRONLY | O_RDWR).
 /// WHY: these bits are immutable after open; F_SETFL must not modify them.
-pub const O_ACCMODE: u32 = 0o3;
+pub(crate) const O_ACCMODE: u32 = 0o3;
 
 /// Seek whence constants (POSIX).
-pub const SEEK_SET: u32 = 0;
+pub(crate) const SEEK_SET: u32 = 0;
 /// Seek from current position.
-pub const SEEK_CUR: u32 = 1;
+pub(crate) const SEEK_CUR: u32 = 1;
 /// Seek from end of file.
-pub const SEEK_END: u32 = 2;
+pub(crate) const SEEK_END: u32 = 2;
 
 /// File type constants for StatBuf.
-pub const S_IFREG: u32 = 0o100000;
+pub(crate) const S_IFREG: u32 = 0o100000;
 /// Directory file type.
-pub const S_IFDIR: u32 = 0o040000;
+pub(crate) const S_IFDIR: u32 = 0o040000;
 /// Character device file type.
-pub const S_IFCHR: u32 = 0o020000;
+pub(crate) const S_IFCHR: u32 = 0o020000;
 
 /// Stat buffer written to userspace.
 ///
@@ -104,7 +104,7 @@ pub struct FileDescriptor {
 
 impl FileDescriptor {
     /// Create a new file descriptor for a VFS file.
-    pub fn from_vfs(mount_idx: u8, inode_id: u32, flags: u32) -> Self {
+    pub(crate) fn from_vfs(mount_idx: u8, inode_id: u32, flags: u32) -> Self {
         Self {
             mount_idx,
             inode_id,
@@ -117,7 +117,7 @@ impl FileDescriptor {
     ///
     /// Pipe file descriptors do not reference VFS inodes; the pipe
     /// identity is encoded entirely in `flags`.
-    pub fn new(_data: &[u8], flags: u32) -> Self {
+    pub(crate) fn new(_data: &[u8], flags: u32) -> Self {
         Self {
             mount_idx: 0,
             inode_id: 0,
@@ -130,7 +130,7 @@ impl FileDescriptor {
     ///
     /// For pipe fds this returns 0, which is correct (pipes have no
     /// seekable size).
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         // SAFETY: MOUNT_TABLE is a static mut; single-core cooperative
         // kernel ensures exclusive access during syscall handling.
         let mt_opt = unsafe { &*core::ptr::addr_of!(MOUNT_TABLE) };
@@ -149,13 +149,13 @@ impl FileDescriptor {
 }
 
 /// Per-process file descriptor table.
-pub struct FdTable {
+pub(crate) struct FdTable {
     entries: [Option<FileDescriptor>; MAX_FDS],
 }
 
 impl FdTable {
     /// Create an empty fd table.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         const NONE: Option<FileDescriptor> = None;
         Self {
             entries: [NONE; MAX_FDS],
@@ -164,7 +164,7 @@ impl FdTable {
 
     /// Allocate the lowest available file descriptor slot.
     /// Returns the fd number, or None if the table is full.
-    pub fn alloc(&mut self, fd: FileDescriptor) -> Option<usize> {
+    pub(crate) fn alloc(&mut self, fd: FileDescriptor) -> Option<usize> {
         for (i, slot) in self.entries.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(fd);
@@ -176,7 +176,7 @@ impl FdTable {
 
     /// Allocate a specific fd slot, closing any existing entry.
     /// Returns true on success, false if the slot index is out of range.
-    pub fn alloc_at(&mut self, index: usize, fd: FileDescriptor) -> bool {
+    pub(crate) fn alloc_at(&mut self, index: usize, fd: FileDescriptor) -> bool {
         if index >= MAX_FDS {
             return false;
         }
@@ -189,7 +189,7 @@ impl FdTable {
     /// Used by `F_DUPFD` to duplicate an fd to a slot at or above a
     /// caller-specified minimum. Returns the fd number, or None if no
     /// slot is available at or above `min_fd`.
-    pub fn alloc_from(&mut self, min_fd: usize, fd: FileDescriptor) -> Option<usize> {
+    pub(crate) fn alloc_from(&mut self, min_fd: usize, fd: FileDescriptor) -> Option<usize> {
         if min_fd >= MAX_FDS {
             return None;
         }
@@ -203,7 +203,7 @@ impl FdTable {
     }
 
     /// Get a reference to a file descriptor by index.
-    pub fn get(&self, index: usize) -> Option<&FileDescriptor> {
+    pub(crate) fn get(&self, index: usize) -> Option<&FileDescriptor> {
         if index >= MAX_FDS {
             return None;
         }
@@ -211,7 +211,7 @@ impl FdTable {
     }
 
     /// Get a mutable reference to a file descriptor by index.
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut FileDescriptor> {
+    pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut FileDescriptor> {
         if index >= MAX_FDS {
             return None;
         }
@@ -219,7 +219,7 @@ impl FdTable {
     }
 
     /// Close a file descriptor. Returns true if it was open.
-    pub fn close(&mut self, index: usize) -> bool {
+    pub(crate) fn close(&mut self, index: usize) -> bool {
         if index >= MAX_FDS {
             return false;
         }
@@ -453,7 +453,7 @@ pub unsafe fn ramfs_find(path: &str) -> Option<&'static [u8]> {
 ///
 /// # Returns
 /// File descriptor number on success, or negative error code.
-pub fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
+pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
     let len = path_len as usize;
 
     if path_ptr == 0 || len == 0 {
@@ -501,7 +501,7 @@ pub fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
 ///
 /// # Returns
 /// Number of bytes read (0 at EOF), or negative error code.
-pub fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
+pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
     let count = count as usize;
 
@@ -558,7 +558,7 @@ pub fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 ///
 /// # Returns
 /// Number of bytes written, or negative error code.
-pub fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
+pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
     let count = count as usize;
 
@@ -612,7 +612,7 @@ pub fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 ///
 /// # Returns
 /// 0 on success, EBADF if fd is not open.
-pub fn sys_close(fd: u32) -> u32 {
+pub(crate) fn sys_close(fd: u32) -> u32 {
     let fd_idx = fd as usize;
     // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
     // reference. Single-core kernel ensures exclusive access during syscall.
@@ -633,7 +633,7 @@ pub fn sys_close(fd: u32) -> u32 {
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
-pub fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
+pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
     let len = path_len as usize;
 
     if path_ptr == 0 || len == 0 {
@@ -699,7 +699,7 @@ pub fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
-pub fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
+pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
     let fd_idx = fd as usize;
 
     if stat_buf_ptr == 0 {
@@ -789,7 +789,7 @@ pub fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
 ///
 /// # Returns
 /// New file offset on success, negative error code on failure.
-pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
+pub(crate) fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
     let fd_idx = fd as usize;
 
     // SAFETY: FD_TABLE is a static mut.
@@ -828,7 +828,7 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
 ///
 /// # Returns
 /// New (lowest available) fd number on success, negative error code on failure.
-pub fn sys_dup(fd: u32) -> u32 {
+pub(crate) fn sys_dup(fd: u32) -> u32 {
     let fd_idx = fd as usize;
     // SAFETY: FD_TABLE is a static mut.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
@@ -852,7 +852,7 @@ pub fn sys_dup(fd: u32) -> u32 {
 ///
 /// # Returns
 /// `newfd` on success, negative error code on failure.
-pub fn sys_dup2(oldfd: u32, newfd: u32) -> u32 {
+pub(crate) fn sys_dup2(oldfd: u32, newfd: u32) -> u32 {
     let old_idx = oldfd as usize;
     let new_idx = newfd as usize;
 
@@ -896,7 +896,7 @@ pub fn sys_dup2(oldfd: u32, newfd: u32) -> u32 {
 ///
 /// # Returns
 /// Command-dependent value on success, or negative error code.
-pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
+pub(crate) fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
     let fd_idx = fd as usize;
 
     match cmd {
@@ -954,7 +954,7 @@ pub fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
 ///
 /// # Returns
 /// `ENOTTY` (no device supports ioctl yet), or `EBADF` for invalid fds.
-pub fn sys_ioctl(fd: u32, _request: u32, _arg: u32) -> u32 {
+pub(crate) fn sys_ioctl(fd: u32, _request: u32, _arg: u32) -> u32 {
     let fd_idx = fd as usize;
 
     // Validate fd exists before returning ENOTTY.
@@ -975,7 +975,7 @@ pub fn sys_ioctl(fd: u32, _request: u32, _arg: u32) -> u32 {
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
-pub fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
+pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
@@ -1010,7 +1010,7 @@ pub fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
-pub fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
+pub(crate) fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
     let len = path_len as usize;
 
     if path_ptr == 0 || len == 0 {
@@ -1031,7 +1031,7 @@ pub fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
 ///
 /// Splits the path into parent and final component, resolves the parent
 /// directory, then creates the directory entry.
-pub fn vfs_mkdir(path: &str) -> u32 {
+pub(crate) fn vfs_mkdir(path: &str) -> u32 {
     let (parent_path, name) = match split_parent_name(path) {
         Some(r) => r,
         None => return EINVAL,
@@ -1067,7 +1067,7 @@ pub fn vfs_mkdir(path: &str) -> u32 {
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
-pub fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
+pub(crate) fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
     let len = path_len as usize;
 
     if path_ptr == 0 || len == 0 {
@@ -1085,7 +1085,7 @@ pub fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
 }
 
 /// Remove a file or directory via VFS path resolution.
-pub fn vfs_unlink(path: &str) -> u32 {
+pub(crate) fn vfs_unlink(path: &str) -> u32 {
     let (parent_path, name) = match split_parent_name(path) {
         Some(r) => r,
         None => return EINVAL,
@@ -1121,7 +1121,7 @@ pub fn vfs_unlink(path: &str) -> u32 {
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
-pub fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
+pub(crate) fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
     let len = path_len as usize;
 
     if path_ptr == 0 || len == 0 {
@@ -1141,7 +1141,7 @@ pub fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
 /// Change the current working directory via VFS path resolution.
 ///
 /// Verifies the path resolves to a directory, then updates the global CWD.
-pub fn vfs_chdir(path: &str) -> u32 {
+pub(crate) fn vfs_chdir(path: &str) -> u32 {
     // SAFETY: init_vfs has been called during kernel init.
     let mt = match unsafe { get_mount_table() } {
         Some(t) => t,

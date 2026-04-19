@@ -77,7 +77,7 @@ const PRESET_COUNT: usize = 6;
 ///
 /// Holds a snapshot of the FM radio state for display purposes.
 /// The actual hardware control is done through the `FmRadio` controller.
-pub struct FmScreen {
+pub(crate) struct FmScreen {
     /// Current FM state.
     pub fm_state: FmState,
     /// Current frequency in kHz (if tuned).
@@ -97,7 +97,7 @@ pub struct FmScreen {
 impl FmScreen {
     /// Create a new FM screen in the Off state.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             fm_state: FmState::Off,
             frequency_khz: 88_000,
@@ -110,7 +110,7 @@ impl FmScreen {
     }
 
     /// Update the screen state from an FM radio controller snapshot.
-    pub fn update_from_state(
+    pub(crate) fn update_from_state(
         &mut self,
         state: FmState,
         rssi: i8,

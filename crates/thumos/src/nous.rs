@@ -114,7 +114,7 @@ impl CapabilityPreset {
     ///
     /// `Off` and `Observer` cannot propose; all others can.
     #[must_use]
-    pub const fn can_propose(self) -> bool {
+    pub(crate) const fn can_propose(self) -> bool {
         matches!(
             self,
             Self::Assistant | Self::Advisor | Self::Agent | Self::Autonomous
@@ -126,7 +126,7 @@ impl CapabilityPreset {
     /// Only `Advisor`, `Agent`, and `Autonomous` can auto-execute.
     /// `Assistant` always requires confirmation.
     #[must_use]
-    pub const fn can_auto_execute(self) -> bool {
+    pub(crate) const fn can_auto_execute(self) -> bool {
         matches!(self, Self::Advisor | Self::Agent | Self::Autonomous)
     }
 
@@ -135,7 +135,7 @@ impl CapabilityPreset {
     /// Only `Agent` and `Autonomous` can auto-execute high-risk actions
     /// (calls, messages, radio toggles).
     #[must_use]
-    pub const fn can_auto_execute_high_risk(self) -> bool {
+    pub(crate) const fn can_auto_execute_high_risk(self) -> bool {
         matches!(self, Self::Agent | Self::Autonomous)
     }
 
@@ -143,14 +143,14 @@ impl CapabilityPreset {
     ///
     /// Only `Autonomous` can execute destructive actions.
     #[must_use]
-    pub const fn can_execute_destructive(self) -> bool {
+    pub(crate) const fn can_execute_destructive(self) -> bool {
         matches!(self, Self::Autonomous)
     }
 
     /// Return the next preset in the hierarchy (wraps around).
     ///
     /// Used for cycling through presets in the settings UI.
-    pub const fn next(self) -> Self {
+    pub(crate) const fn next(self) -> Self {
         match self {
             Self::Off => Self::Observer,
             Self::Observer => Self::Assistant,
@@ -162,7 +162,7 @@ impl CapabilityPreset {
     }
 
     /// Return the previous preset in the hierarchy (wraps around).
-    pub const fn prev(self) -> Self {
+    pub(crate) const fn prev(self) -> Self {
         match self {
             Self::Off => Self::Autonomous,
             Self::Observer => Self::Off,
@@ -175,7 +175,7 @@ impl CapabilityPreset {
 
     /// Human-readable label for the preset.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Off => "OFF",
             Self::Observer => "OBSERVER",
@@ -188,7 +188,7 @@ impl CapabilityPreset {
 
     /// Short description of what this preset allows.
     #[must_use]
-    pub const fn description(self) -> &'static str {
+    pub(crate) const fn description(self) -> &'static str {
         match self {
             Self::Off => "No interaction",
             Self::Observer => "Read-only, no actions",
@@ -201,7 +201,7 @@ impl CapabilityPreset {
 
     /// Numeric trust level (0-5) for comparison and serialization.
     #[must_use]
-    pub const fn level(self) -> u8 {
+    pub(crate) const fn level(self) -> u8 {
         self as u8
     }
 
@@ -209,7 +209,7 @@ impl CapabilityPreset {
     ///
     /// Returns `None` for values outside 0-5.
     #[must_use]
-    pub const fn from_level(level: u8) -> Option<Self> {
+    pub(crate) const fn from_level(level: u8) -> Option<Self> {
         match level {
             0 => Some(Self::Off),
             1 => Some(Self::Observer),
@@ -316,7 +316,7 @@ impl NousEntity {
     /// # Errors
     ///
     /// Returns [`NousError::NameTooLong`] if `name` exceeds [`MAX_NAME_LEN`].
-    pub fn new(
+    pub(crate) fn new(
         name: &str,
         matrix_id: String,
         preset: CapabilityPreset,
@@ -341,7 +341,7 @@ impl NousEntity {
 
     /// Return the entity name as a string slice.
     #[must_use]
-    pub fn name_str(&self) -> &str {
+    pub(crate) fn name_str(&self) -> &str {
         // SAFETY: name is always written from a valid &str in new().
         // name_len is set from the source string's byte length and
         // never modified afterward, so the slice is always valid UTF-8.
@@ -350,19 +350,19 @@ impl NousEntity {
 
     /// Whether this entity can propose actions at its current preset.
     #[must_use]
-    pub const fn can_propose(&self) -> bool {
+    pub(crate) const fn can_propose(&self) -> bool {
         self.capability_preset.can_propose()
     }
 
     /// Whether this entity can auto-execute low-risk actions.
     #[must_use]
-    pub const fn can_auto_execute(&self) -> bool {
+    pub(crate) const fn can_auto_execute(&self) -> bool {
         self.capability_preset.can_auto_execute()
     }
 
     /// Return the short display label for this entity's capability level.
     #[must_use]
-    pub const fn capability_label(&self) -> &'static str {
+    pub(crate) const fn capability_label(&self) -> &'static str {
         self.capability_preset.label()
     }
 }
@@ -394,7 +394,7 @@ impl Eq for NousEntity {}
 // ---------------------------------------------------------------------------
 
 /// Create the default Syn entity (primary general-purpose assistant).
-pub fn default_syn() -> NousEntity {
+pub(crate) fn default_syn() -> NousEntity {
     // Syn is always valid — name is 3 bytes, well under MAX_NAME_LEN.
     NousEntity::new(
         "Syn",
@@ -415,7 +415,7 @@ pub fn default_syn() -> NousEntity {
 }
 
 /// Create the default Phrouros entity (security/field operations).
-pub fn default_phrouros() -> NousEntity {
+pub(crate) fn default_phrouros() -> NousEntity {
     NousEntity::new(
         "Phrouros",
         String::from("@phrouros:thumos.lan"),
@@ -434,7 +434,7 @@ pub fn default_phrouros() -> NousEntity {
 }
 
 /// Create the default Paideia entity (learning/research).
-pub fn default_paideia() -> NousEntity {
+pub(crate) fn default_paideia() -> NousEntity {
     NousEntity::new(
         "Paideia",
         String::from("@paideia:thumos.lan"),
@@ -461,7 +461,7 @@ pub fn default_paideia() -> NousEntity {
 /// The manager pre-populates with the three default entities (Syn,
 /// Phrouros, Paideia) and allows adding custom entities up to
 /// [`MAX_ENTITIES`].
-pub struct NousManager {
+pub(crate) struct NousManager {
     /// Registered nous entities.
     entities: Vec<NousEntity>,
     /// Index of the currently active entity.
@@ -473,7 +473,7 @@ impl NousManager {
     ///
     /// Syn is the default active entity (index 0).
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let entities = alloc::vec![
             default_syn(),
             default_phrouros(),
@@ -489,7 +489,7 @@ impl NousManager {
     ///
     /// Useful for testing or when defaults are not wanted.
     #[must_use]
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             entities: Vec::new(),
             active_entity: 0,
@@ -500,26 +500,26 @@ impl NousManager {
     ///
     /// Returns `None` if no entities are registered.
     #[must_use]
-    pub fn active(&self) -> Option<&NousEntity> {
+    pub(crate) fn active(&self) -> Option<&NousEntity> {
         self.entities.get(self.active_entity)
     }
 
     /// Return a mutable reference to the currently active entity.
     ///
     /// Returns `None` if no entities are registered.
-    pub fn active_mut(&mut self) -> Option<&mut NousEntity> {
+    pub(crate) fn active_mut(&mut self) -> Option<&mut NousEntity> {
         self.entities.get_mut(self.active_entity)
     }
 
     /// Return the index of the currently active entity.
     #[must_use]
-    pub fn active_index(&self) -> usize {
+    pub(crate) fn active_index(&self) -> usize {
         self.active_entity
     }
 
     /// Return the number of registered entities.
     #[must_use]
-    pub fn entity_count(&self) -> usize {
+    pub(crate) fn entity_count(&self) -> usize {
         self.entities.len()
     }
 
@@ -527,12 +527,12 @@ impl NousManager {
     ///
     /// Returns `None` if the index is out of bounds.
     #[must_use]
-    pub fn entity(&self, index: usize) -> Option<&NousEntity> {
+    pub(crate) fn entity(&self, index: usize) -> Option<&NousEntity> {
         self.entities.get(index)
     }
 
     /// Return a slice of all registered entities.
-    pub fn entities(&self) -> &[NousEntity] {
+    pub(crate) fn entities(&self) -> &[NousEntity] {
         &self.entities
     }
 
@@ -541,7 +541,7 @@ impl NousManager {
     /// # Errors
     ///
     /// Returns [`NousError::InvalidIndex`] if the index is out of bounds.
-    pub fn switch(&mut self, index: usize) -> Result<(), NousError> {
+    pub(crate) fn switch(&mut self, index: usize) -> Result<(), NousError> {
         if index >= self.entities.len() {
             return Err(NousError::InvalidIndex {
                 index,
@@ -555,7 +555,7 @@ impl NousManager {
     /// Cycle to the next entity (wraps around).
     ///
     /// Does nothing if no entities are registered.
-    pub fn cycle_next(&mut self) {
+    pub(crate) fn cycle_next(&mut self) {
         if !self.entities.is_empty() {
             self.active_entity = (self.active_entity + 1) % self.entities.len();
         }
@@ -567,7 +567,7 @@ impl NousManager {
     ///
     /// - [`NousError::TooManyEntities`] if the entity list is full.
     /// - [`NousError::DuplicateName`] if an entity with the same name exists.
-    pub fn add_entity(&mut self, entity: NousEntity) -> Result<(), NousError> {
+    pub(crate) fn add_entity(&mut self, entity: NousEntity) -> Result<(), NousError> {
         if self.entities.len() >= MAX_ENTITIES {
             return Err(NousError::TooManyEntities);
         }
@@ -592,7 +592,7 @@ impl NousManager {
     /// # Errors
     ///
     /// Returns [`NousError::InvalidIndex`] if the index is out of bounds.
-    pub fn remove_entity(&mut self, index: usize) -> Result<NousEntity, NousError> {
+    pub(crate) fn remove_entity(&mut self, index: usize) -> Result<NousEntity, NousError> {
         if index >= self.entities.len() {
             return Err(NousError::InvalidIndex {
                 index,
@@ -619,7 +619,7 @@ impl NousManager {
     /// # Errors
     ///
     /// Returns [`NousError::InvalidIndex`] if the index is out of bounds.
-    pub fn set_preset(
+    pub(crate) fn set_preset(
         &mut self,
         index: usize,
         preset: CapabilityPreset,
@@ -640,7 +640,7 @@ impl NousManager {
     ///
     /// Returns the index and a reference to the entity, or `None`.
     #[must_use]
-    pub fn find_by_name(&self, name: &str) -> Option<(usize, &NousEntity)> {
+    pub(crate) fn find_by_name(&self, name: &str) -> Option<(usize, &NousEntity)> {
         self.entities
             .iter()
             .enumerate()
@@ -651,7 +651,7 @@ impl NousManager {
     ///
     /// Returns the index and a reference to the entity, or `None`.
     #[must_use]
-    pub fn find_by_matrix_id(&self, matrix_id: &str) -> Option<(usize, &NousEntity)> {
+    pub(crate) fn find_by_matrix_id(&self, matrix_id: &str) -> Option<(usize, &NousEntity)> {
         self.entities
             .iter()
             .enumerate()
@@ -662,7 +662,7 @@ impl NousManager {
     ///
     /// Returns `false` if no entities are registered.
     #[must_use]
-    pub fn active_can_propose(&self) -> bool {
+    pub(crate) fn active_can_propose(&self) -> bool {
         self.active()
             .is_some_and(|e| e.capability_preset.can_propose())
     }
@@ -671,7 +671,7 @@ impl NousManager {
     ///
     /// Returns `false` if no entities are registered.
     #[must_use]
-    pub fn active_can_auto_execute(&self) -> bool {
+    pub(crate) fn active_can_auto_execute(&self) -> bool {
         self.active()
             .is_some_and(|e| e.capability_preset.can_auto_execute())
     }

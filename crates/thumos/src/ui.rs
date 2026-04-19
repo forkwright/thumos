@@ -32,35 +32,35 @@ use alloc::vec::Vec;
 // ---------------------------------------------------------------------------
 
 /// Display width in pixels (AGM M7 QVGA).
-pub const SCREEN_WIDTH: u16 = 240;
+pub(crate) const SCREEN_WIDTH: u16 = 240;
 
 /// Display height in pixels (AGM M7 QVGA).
-pub const SCREEN_HEIGHT: u16 = 320;
+pub(crate) const SCREEN_HEIGHT: u16 = 320;
 
 /// Status bar height in pixels. Fits one font row (16px) plus 4px padding.
-pub const STATUS_BAR_HEIGHT: u16 = 20;
+pub(crate) const STATUS_BAR_HEIGHT: u16 = 20;
 
 /// Softkey bar height in pixels. Fits one font row (16px) plus 14px padding.
-pub const SOFTKEY_BAR_HEIGHT: u16 = 30;
+pub(crate) const SOFTKEY_BAR_HEIGHT: u16 = 30;
 
 /// Content area height, derived from total minus status bar and softkey bar.
-pub const CONTENT_HEIGHT: u16 = SCREEN_HEIGHT - STATUS_BAR_HEIGHT - SOFTKEY_BAR_HEIGHT;
+pub(crate) const CONTENT_HEIGHT: u16 = SCREEN_HEIGHT - STATUS_BAR_HEIGHT - SOFTKEY_BAR_HEIGHT;
 
 /// Y-offset where the content area begins.
-pub const CONTENT_Y: u16 = STATUS_BAR_HEIGHT;
+pub(crate) const CONTENT_Y: u16 = STATUS_BAR_HEIGHT;
 
 /// Content framebuffer size in pixels (width * content height).
-pub const CONTENT_PIXELS: usize = SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize;
+pub(crate) const CONTENT_PIXELS: usize = SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize;
 
 // ---------------------------------------------------------------------------
 // Font constants (matching eidolon 8x16 bitmap font)
 // ---------------------------------------------------------------------------
 
 /// Width of each character cell in pixels.
-pub const CHAR_WIDTH: u16 = 8;
+pub(crate) const CHAR_WIDTH: u16 = 8;
 
 /// Height of each character cell in pixels.
-pub const CHAR_HEIGHT: u16 = 16;
+pub(crate) const CHAR_HEIGHT: u16 = 16;
 
 /// First printable ASCII code in the font table (space).
 const FONT_FIRST: u32 = 0x20;
@@ -279,24 +279,24 @@ pub(crate) static FONT_DATA: [[u8; 16]; FONT_CHAR_COUNT] = [
 ///
 /// Matches `crates/eidolon/src/color.rs` constants. Using raw `u16` values
 /// avoids depending on the eidolon crate (which requires `std`).
-pub mod color {
+pub(crate) mod color {
     /// Black (0x0000).
-    pub const BLACK: u16 = 0x0000;
+    pub(crate) const BLACK: u16 = 0x0000;
     /// White (0xFFFF).
-    pub const WHITE: u16 = 0xFFFF;
+    pub(crate) const WHITE: u16 = 0xFFFF;
     /// Red (0xF800).
-    pub const RED: u16 = 0xF800;
+    pub(crate) const RED: u16 = 0xF800;
     /// Green (0x07E0).
-    pub const GREEN: u16 = 0x07E0;
+    pub(crate) const GREEN: u16 = 0x07E0;
     /// Blue (0x001F).
-    pub const BLUE: u16 = 0x001F;
+    pub(crate) const BLUE: u16 = 0x001F;
     /// Yellow (0xFFE0).
-    pub const YELLOW: u16 = 0xFFE0;
+    pub(crate) const YELLOW: u16 = 0xFFE0;
     /// Dark grey for dimmed indicators.
-    pub const DARK_GREY: u16 = 0x4208;
+    pub(crate) const DARK_GREY: u16 = 0x4208;
 
     /// Convert 24-bit RGB888 to RGB565 by truncating least significant bits.
-    pub const fn from_rgb(r: u8, g: u8, b: u8) -> u16 {
+    pub(crate) const fn from_rgb(r: u8, g: u8, b: u8) -> u16 {
         let r5 = (r >> 3) as u16;
         let g6 = (g >> 2) as u16;
         let b5 = (b >> 3) as u16;
@@ -311,7 +311,7 @@ pub mod color {
 /// Set a single pixel in a flat `u16` framebuffer.
 ///
 /// Out-of-bounds coordinates are silently ignored.
-pub fn set_pixel(fb: &mut [u16], fb_width: u16, x: u16, y: u16, color: u16) {
+pub(crate) fn set_pixel(fb: &mut [u16], fb_width: u16, x: u16, y: u16, color: u16) {
     let idx = y as usize * fb_width as usize + x as usize;
     if let Some(px) = fb.get_mut(idx) {
         *px = color;
@@ -322,7 +322,7 @@ pub fn set_pixel(fb: &mut [u16], fb_width: u16, x: u16, y: u16, color: u16) {
 ///
 /// Clips to the framebuffer bounds. `fb_width` and `fb_height` define the
 /// logical dimensions; `fb.len()` must equal `fb_width * fb_height`.
-pub fn fill_rect(
+pub(crate) fn fill_rect(
     fb: &mut [u16],
     fb_width: u16,
     fb_height: u16,
@@ -347,7 +347,7 @@ pub fn fill_rect(
 /// Render one character at pixel position `(x, y)` into a `u16` framebuffer.
 ///
 /// Characters outside the printable ASCII range are silently skipped.
-pub fn draw_char(
+pub(crate) fn draw_char(
     fb: &mut [u16],
     fb_width: u16,
     x: u16,
@@ -377,7 +377,7 @@ pub fn draw_char(
 ///
 /// Characters are placed left-to-right with no wrapping. Out-of-bounds
 /// pixels are clipped by [`set_pixel`].
-pub fn draw_str(
+pub(crate) fn draw_str(
     fb: &mut [u16],
     fb_width: u16,
     x: u16,
@@ -394,7 +394,7 @@ pub fn draw_str(
 
 /// Render a string horizontally centered in a region of width `region_width`,
 /// starting at `region_x`.
-pub fn draw_str_centered(
+pub(crate) fn draw_str_centered(
     fb: &mut [u16],
     fb_width: u16,
     region_x: u16,
@@ -410,7 +410,7 @@ pub fn draw_str_centered(
 }
 
 /// Return the pixel width of a string rendered with this font.
-pub fn str_pixel_width(s: &str) -> u16 {
+pub(crate) fn str_pixel_width(s: &str) -> u16 {
     (s.len() as u16).saturating_mul(CHAR_WIDTH)
 }
 
@@ -423,7 +423,7 @@ pub fn str_pixel_width(s: &str) -> u16 {
 ///
 /// Each font pixel becomes a `scale x scale` block. Used for large text
 /// displays (clock, dialer digits, FM frequency, timer).
-pub fn draw_char_scaled(
+pub(crate) fn draw_char_scaled(
     fb: &mut [u16],
     fb_width: u16,
     x: u16,
@@ -454,7 +454,7 @@ pub fn draw_char_scaled(
 }
 
 /// Render a byte-slice string at a given scale, horizontally centered.
-pub fn draw_scaled_str_centered(
+pub(crate) fn draw_scaled_str_centered(
     fb: &mut [u16],
     fb_width: u16,
     y: u16,
@@ -617,7 +617,7 @@ pub enum ScreenAction {
 ///
 /// Screens render into a content-area framebuffer (`SCREEN_WIDTH * CONTENT_HEIGHT`
 /// pixels of `u16` RGB565) and handle keypad input.
-pub trait Screen {
+pub(crate) trait Screen {
     /// Draw the screen content into the content-area framebuffer.
     ///
     /// `fb` is `SCREEN_WIDTH * CONTENT_HEIGHT` pixels (64,800 u16 values).
@@ -651,7 +651,7 @@ const MAX_HISTORY: usize = 16;
 /// which [`ScreenId`] is active and maintains a back-navigation stack. The
 /// caller is responsible for dispatching to the correct [`Screen`] impl
 /// based on `active_screen()`.
-pub struct UiManager {
+pub(crate) struct UiManager {
     /// Currently active screen.
     active_screen: ScreenId,
     /// Navigation history for back navigation.
@@ -660,7 +660,7 @@ pub struct UiManager {
 
 impl UiManager {
     /// Create a new UI manager, starting at the Home screen.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             active_screen: ScreenId::Home,
             history: Vec::with_capacity(MAX_HISTORY),
@@ -668,13 +668,13 @@ impl UiManager {
     }
 
     /// Return the currently active screen identifier.
-    pub fn active_screen(&self) -> ScreenId {
+    pub(crate) fn active_screen(&self) -> ScreenId {
         self.active_screen
     }
 
     /// Navigate to a new screen, pushing the current screen onto the
     /// back-navigation stack.
-    pub fn navigate(&mut self, screen: ScreenId) {
+    pub(crate) fn navigate(&mut self, screen: ScreenId) {
         // Cap the history to prevent unbounded growth.
         if self.history.len() < MAX_HISTORY {
             self.history.push(self.active_screen);
@@ -685,14 +685,14 @@ impl UiManager {
     /// Go back to the previous screen (pop the navigation stack).
     ///
     /// If the stack is empty, stays on the current screen.
-    pub fn back(&mut self) {
+    pub(crate) fn back(&mut self) {
         if let Some(prev) = self.history.pop() {
             self.active_screen = prev;
         }
     }
 
     /// Return the depth of the navigation history.
-    pub fn history_len(&self) -> usize {
+    pub(crate) fn history_len(&self) -> usize {
         self.history.len()
     }
 
@@ -700,7 +700,7 @@ impl UiManager {
     ///
     /// Applies the navigation action (navigate, back, or exit).
     /// Returns `true` if the UI should exit (e.g., from `ScreenAction::Exit`).
-    pub fn apply_action(&mut self, action: ScreenAction) -> bool {
+    pub(crate) fn apply_action(&mut self, action: ScreenAction) -> bool {
         match action {
             ScreenAction::None => false,
             ScreenAction::Navigate(id) => {
@@ -731,7 +731,7 @@ impl UiManager {
     /// WHY `&self`: the manager will use `self.active_screen` to select the
     /// screen impl once screen ownership is added (Phase 07 Wave 3+).
     #[expect(clippy::unused_self, reason = "Screen trait requires &self for future state access")]
-    pub fn render<F>(&self, screen: &dyn Screen, status_bar_fn: F, fb: &mut [u16])
+    pub(crate) fn render<F>(&self, screen: &dyn Screen, status_bar_fn: F, fb: &mut [u16])
     where
         F: FnOnce(&mut [u16]),
     {

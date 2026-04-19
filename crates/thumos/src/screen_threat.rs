@@ -264,7 +264,7 @@ pub struct ThreatAlert {
 ///
 /// Maintains a ring buffer of recent alerts sorted by timestamp (newest
 /// first for display) and tracks the overall threat posture.
-pub struct ThreatMonitor {
+pub(crate) struct ThreatMonitor {
     /// Recent alerts, newest first.
     alerts: Vec<ThreatAlert>,
     /// Current composite threat score (0-100).
@@ -285,7 +285,7 @@ pub struct ThreatMonitor {
 
 impl ThreatMonitor {
     /// Create a new threat monitor with no alerts and default state.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             alerts: Vec::new(),
             current_score: 0,
@@ -300,7 +300,7 @@ impl ThreatMonitor {
 
     /// Add a new alert, maintaining newest-first order and the
     /// `MAX_ALERTS` capacity limit.
-    pub fn push_alert(&mut self, alert: ThreatAlert) {
+    pub(crate) fn push_alert(&mut self, alert: ThreatAlert) {
         // Insert at position determined by timestamp (newest first).
         let pos = self.alerts
             .iter()
@@ -315,7 +315,7 @@ impl ThreatMonitor {
     }
 
     /// Update the composite threat score and level.
-    pub fn set_score(&mut self, score: u32) {
+    pub(crate) fn set_score(&mut self, score: u32) {
         self.current_score = score.min(100);
         self.current_level = match self.current_score {
             0..=25 => ThreatLevel::Low,
@@ -326,24 +326,24 @@ impl ThreatMonitor {
     }
 
     /// Update modem status fields.
-    pub fn set_modem_status(&mut self, channels: u8, mode: FirewallMode, power: bool) {
+    pub(crate) fn set_modem_status(&mut self, channels: u8, mode: FirewallMode, power: bool) {
         self.modem_channels = channels;
         self.firewall_mode = mode;
         self.modem_power = power;
     }
 
     /// Get the current threat level.
-    pub fn threat_level(&self) -> ThreatLevel {
+    pub(crate) fn threat_level(&self) -> ThreatLevel {
         self.current_level
     }
 
     /// Get the current threat score.
-    pub fn threat_score(&self) -> u32 {
+    pub(crate) fn threat_score(&self) -> u32 {
         self.current_score
     }
 
     /// Number of alerts currently stored.
-    pub fn alert_count(&self) -> usize {
+    pub(crate) fn alert_count(&self) -> usize {
         self.alerts.len()
     }
 

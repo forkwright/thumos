@@ -23,25 +23,25 @@ use crate::fd::{FdTable, EMFILE};
 use crate::signal::Signal;
 
 /// Maximum number of simultaneously open pipes.
-pub const MAX_PIPES: usize = 8;
+pub(crate) const MAX_PIPES: usize = 8;
 
 /// Pipe buffer size: one 4 KB page.
-pub const PIPE_BUF_SIZE: usize = 4096;
+pub(crate) const PIPE_BUF_SIZE: usize = 4096;
 
 /// EAGAIN — operation would block (two's complement -11, Linux ARM convention).
-pub const EAGAIN: u32 = 0u32.wrapping_sub(11);
+pub(crate) const EAGAIN: u32 = 0u32.wrapping_sub(11);
 
 /// EPIPE — broken pipe (two's complement -32, Linux ARM convention).
-pub const EPIPE: u32 = 0u32.wrapping_sub(32);
+pub(crate) const EPIPE: u32 = 0u32.wrapping_sub(32);
 
 /// EBADF — bad file descriptor (two's complement -9, Linux ARM convention).
-pub const EBADF: u32 = crate::fd::EBADF;
+pub(crate) const EBADF: u32 = crate::fd::EBADF;
 
 /// EFAULT — bad address (two's complement -14, Linux ARM convention).
-pub const EFAULT: u32 = crate::fd::EFAULT;
+pub(crate) const EFAULT: u32 = crate::fd::EFAULT;
 
 /// A pipe's internal ring buffer.
-pub struct PipeBuffer {
+pub(crate) struct PipeBuffer {
     data: [u8; PIPE_BUF_SIZE],
     /// Index of the next byte to read.
     read_pos: usize,
@@ -68,7 +68,7 @@ impl PipeBuffer {
     }
 
     /// Write bytes into the buffer. Returns the number of bytes written, or 0 if full.
-    pub fn write(&mut self, src: &[u8]) -> usize {
+    pub(crate) fn write(&mut self, src: &[u8]) -> usize {
         let space = PIPE_BUF_SIZE - self.count;
         if space == 0 {
             return 0;
@@ -83,7 +83,7 @@ impl PipeBuffer {
     }
 
     /// Read bytes from the buffer. Returns the number of bytes read.
-    pub fn read(&mut self, dst: &mut [u8]) -> usize {
+    pub(crate) fn read(&mut self, dst: &mut [u8]) -> usize {
         if self.count == 0 {
             return 0;
         }
@@ -97,12 +97,12 @@ impl PipeBuffer {
     }
 
     /// Bytes currently available to read.
-    pub fn available(&self) -> usize {
+    pub(crate) fn available(&self) -> usize {
         self.count
     }
 
     /// Whether the buffer is full.
-    pub fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         self.count == PIPE_BUF_SIZE
     }
 }
@@ -169,30 +169,30 @@ fn maybe_free_pipe(pipe_idx: usize) {
 // would require touching every existing syscall). The kernel's cooperative
 // single-core model means no race between flag read and pipe access.
 
-pub const FD_KIND_MASK: u32 = 0x00FF;
-pub const FD_KIND_PIPE: u32 = 0x0001;
-pub const FD_END_MASK: u32 = 0x0100;
-pub const FD_END_READ: u32 = 0x0000;
-pub const FD_END_WRITE: u32 = 0x0100;
-pub const FD_PIPE_IDX_SHIFT: u32 = 9;
+pub(crate) const FD_KIND_MASK: u32 = 0x00FF;
+pub(crate) const FD_KIND_PIPE: u32 = 0x0001;
+pub(crate) const FD_END_MASK: u32 = 0x0100;
+pub(crate) const FD_END_READ: u32 = 0x0000;
+pub(crate) const FD_END_WRITE: u32 = 0x0100;
+pub(crate) const FD_PIPE_IDX_SHIFT: u32 = 9;
 
 /// Encode a pipe fd flags word.
-pub fn pipe_flags(pipe_idx: usize, end: u32) -> u32 {
+pub(crate) fn pipe_flags(pipe_idx: usize, end: u32) -> u32 {
     FD_KIND_PIPE | end | ((pipe_idx as u32) << FD_PIPE_IDX_SHIFT)
 }
 
 /// Extract the pipe index from an fd flags word.
-pub fn pipe_idx_from_flags(flags: u32) -> usize {
+pub(crate) fn pipe_idx_from_flags(flags: u32) -> usize {
     ((flags >> FD_PIPE_IDX_SHIFT) & 0x7F) as usize
 }
 
 /// Return true if the fd flags word identifies a pipe fd.
-pub fn is_pipe_fd(flags: u32) -> bool {
+pub(crate) fn is_pipe_fd(flags: u32) -> bool {
     (flags & FD_KIND_MASK) == FD_KIND_PIPE
 }
 
 /// Return true if the fd flags word identifies the write end.
-pub fn is_write_end(flags: u32) -> bool {
+pub(crate) fn is_write_end(flags: u32) -> bool {
     (flags & FD_END_MASK) == FD_END_WRITE
 }
 
@@ -208,7 +208,7 @@ pub fn is_write_end(flags: u32) -> bool {
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
-pub fn sys_pipe(fds_ptr: u32) -> u32 {
+pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     if fds_ptr == 0 {
         return EFAULT;
     }
@@ -280,7 +280,7 @@ fn alloc_pipe_fd(table: &mut FdTable, pipe_idx: usize, end: u32) -> Option<usize
 ///
 /// # Returns
 /// Bytes read on success, 0 on EOF, negative error code on failure.
-pub fn sys_pipe_read(pipe_idx: usize, buf_ptr: u32, count: u32) -> u32 {
+pub(crate) fn sys_pipe_read(pipe_idx: usize, buf_ptr: u32, count: u32) -> u32 {
     let count = count as usize;
     if buf_ptr == 0 {
         return EFAULT;
@@ -314,7 +314,7 @@ pub fn sys_pipe_read(pipe_idx: usize, buf_ptr: u32, count: u32) -> u32 {
 ///
 /// # Returns
 /// Bytes written on success, negative error code on failure.
-pub fn sys_pipe_write(pipe_idx: usize, buf_ptr: u32, count: u32, writer_pid: u8) -> u32 {
+pub(crate) fn sys_pipe_write(pipe_idx: usize, buf_ptr: u32, count: u32, writer_pid: u8) -> u32 {
     let count = count as usize;
     if buf_ptr == 0 {
         return EFAULT;

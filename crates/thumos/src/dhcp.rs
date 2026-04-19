@@ -27,7 +27,7 @@ use crate::net::{NetError, NetworkStack, MAX_SOCKETS};
 // ---------------------------------------------------------------------------
 
 /// Maximum time (ms) to wait for DHCP configuration before giving up.
-pub const DHCP_TIMEOUT_MS: u64 = 30_000;
+pub(crate) const DHCP_TIMEOUT_MS: u64 = 30_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -82,7 +82,7 @@ impl core::fmt::Display for DhcpConfig {
 /// Owns a socket handle into the [`NetworkStack`]'s socket set. On each
 /// [`poll`](Self::poll) call, it checks for DHCP events and applies the
 /// resulting configuration (IP address, gateway) to the network interface.
-pub struct DhcpClient {
+pub(crate) struct DhcpClient {
     /// Handle to the smoltcp DHCPv4 socket in the network stack's socket set.
     socket_handle: SocketHandle,
     /// Whether the interface currently has a DHCP-provided configuration.
@@ -132,7 +132,7 @@ impl DhcpClient {
     /// Returns `Err(DhcpError::SocketSetFull)` if the socket set has
     /// reached [`MAX_SOCKETS`].
     #[must_use]
-    pub fn new<D: Device>(stack: &mut NetworkStack<D>) -> Result<Self, DhcpError> {
+    pub(crate) fn new<D: Device>(stack: &mut NetworkStack<D>) -> Result<Self, DhcpError> {
         if stack.socket_count() >= MAX_SOCKETS {
             return Err(DhcpError::SocketSetFull);
         }
@@ -152,7 +152,7 @@ impl DhcpClient {
     /// Must be called after every `NetworkStack::poll()`. When a
     /// `DhcpEvent::Configured` is returned, the IP address and gateway
     /// have already been applied to the network interface.
-    pub fn poll<D: Device>(&mut self, stack: &mut NetworkStack<D>) -> DhcpEvent {
+    pub(crate) fn poll<D: Device>(&mut self, stack: &mut NetworkStack<D>) -> DhcpEvent {
         // WHY: Extract all data from the DHCP config *before* calling any
         // methods on `stack`, to avoid overlapping mutable borrows. The
         // smoltcp `Config<'a>` borrows from the socket, which borrows
@@ -202,12 +202,12 @@ impl DhcpClient {
     }
 
     /// Whether the interface currently has a DHCP-provided configuration.
-    pub fn is_configured(&self) -> bool {
+    pub(crate) fn is_configured(&self) -> bool {
         self.configured
     }
 
     /// Return the socket handle for testing or diagnostics.
-    pub fn socket_handle(&self) -> SocketHandle {
+    pub(crate) fn socket_handle(&self) -> SocketHandle {
         self.socket_handle
     }
 }

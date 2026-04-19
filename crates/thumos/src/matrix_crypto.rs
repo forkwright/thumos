@@ -232,7 +232,7 @@ impl fmt::Display for MegolmSession {
 /// one-time key pool. Provides methods for the Matrix key upload/query
 /// API and message encrypt/decrypt operations.
 #[non_exhaustive]
-pub struct MatrixCrypto {
+pub(crate) struct MatrixCrypto {
     /// This device's identity keys.
     device_keys: DeviceKeys,
     /// Active 1:1 Olm sessions.
@@ -253,7 +253,7 @@ impl MatrixCrypto {
     /// The device keys are generated from the kernel CSPRNG. The caller must
     /// ensure `csprng::init()` has been called before constructing this.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             device_keys: generate_device_keys(),
             olm_sessions: Vec::new(),
@@ -265,31 +265,31 @@ impl MatrixCrypto {
 
     /// Return a reference to this device's identity keys.
     #[must_use]
-    pub fn device_keys(&self) -> &DeviceKeys {
+    pub(crate) fn device_keys(&self) -> &DeviceKeys {
         &self.device_keys
     }
 
     /// Return the current one-time key pool.
     #[must_use]
-    pub fn one_time_keys(&self) -> &[[u8; KEY_SIZE]] {
+    pub(crate) fn one_time_keys(&self) -> &[[u8; KEY_SIZE]] {
         &self.one_time_keys
     }
 
     /// Return the outbound Megolm sessions.
     #[must_use]
-    pub fn megolm_outbound(&self) -> &[MegolmSession] {
+    pub(crate) fn megolm_outbound(&self) -> &[MegolmSession] {
         &self.megolm_outbound
     }
 
     /// Return the inbound Megolm sessions.
     #[must_use]
-    pub fn megolm_inbound(&self) -> &[MegolmSession] {
+    pub(crate) fn megolm_inbound(&self) -> &[MegolmSession] {
         &self.megolm_inbound
     }
 
     /// Return the active Olm sessions.
     #[must_use]
-    pub fn olm_sessions(&self) -> &[OlmSession] {
+    pub(crate) fn olm_sessions(&self) -> &[OlmSession] {
         &self.olm_sessions
     }
 
@@ -305,7 +305,7 @@ impl MatrixCrypto {
     /// maximum batch size.
     /// Returns [`CryptoError::KeyCapacityReached`] if the pool would exceed
     /// its maximum size.
-    pub fn generate_one_time_keys(&mut self, count: u32) -> Result<Vec<[u8; KEY_SIZE]>, CryptoError> {
+    pub(crate) fn generate_one_time_keys(&mut self, count: u32) -> Result<Vec<[u8; KEY_SIZE]>, CryptoError> {
         let count_usize = count as usize;
         if count_usize > MAX_GENERATED_KEYS {
             return Err(CryptoError::KeyCountTooLarge);
@@ -333,7 +333,7 @@ impl MatrixCrypto {
     /// Returns a tuple of (device keys JSON, one-time keys JSON) suitable
     /// for inclusion in the upload request body.
     #[must_use]
-    pub fn build_key_upload_request(&self) -> (String, String) {
+    pub(crate) fn build_key_upload_request(&self) -> (String, String) {
         // Device keys JSON.
         let device_keys_json = build_device_keys_json(&self.device_keys);
 
@@ -347,7 +347,7 @@ impl MatrixCrypto {
     ///
     /// Requests device keys for the given user IDs.
     #[must_use]
-    pub fn build_key_query_request(user_ids: &[&str]) -> String {
+    pub(crate) fn build_key_query_request(user_ids: &[&str]) -> String {
         let mut w = JsonWriter::new();
         w.object_start();
         w.key("device_keys");
@@ -371,7 +371,7 @@ impl MatrixCrypto {
     ///
     /// Returns [`CryptoError::InvalidKeyResponse`] if the JSON structure
     /// is not valid or is missing expected fields.
-    pub fn process_key_query_response(json: &str) -> Result<Vec<DeviceKeys>, CryptoError> {
+    pub(crate) fn process_key_query_response(json: &str) -> Result<Vec<DeviceKeys>, CryptoError> {
         let root = JsonParser::parse(json.as_bytes())
             .map_err(|_| CryptoError::InvalidKeyResponse)?;
 
@@ -447,7 +447,7 @@ impl MatrixCrypto {
     ///
     /// Returns [`CryptoError::SessionCapacityReached`] if the outbound
     /// session list is at capacity and no existing session was replaced.
-    pub fn create_outbound_megolm(
+    pub(crate) fn create_outbound_megolm(
         &mut self,
         room_id: &str,
     ) -> Result<&MegolmSession, CryptoError> {
@@ -491,7 +491,7 @@ impl MatrixCrypto {
     ///
     /// Returns [`CryptoError::SessionCapacityReached`] if the inbound
     /// session list is at capacity.
-    pub fn add_inbound_megolm(&mut self, session: MegolmSession) -> Result<(), CryptoError> {
+    pub(crate) fn add_inbound_megolm(&mut self, session: MegolmSession) -> Result<(), CryptoError> {
         if self.megolm_inbound.len() >= MAX_MEGOLM_INBOUND {
             return Err(CryptoError::SessionCapacityReached);
         }
@@ -501,7 +501,7 @@ impl MatrixCrypto {
 
     /// Find an inbound Megolm session by session ID.
     #[must_use]
-    pub fn find_inbound_megolm(&self, session_id: &[u8; KEY_SIZE]) -> Option<&MegolmSession> {
+    pub(crate) fn find_inbound_megolm(&self, session_id: &[u8; KEY_SIZE]) -> Option<&MegolmSession> {
         self.megolm_inbound
             .iter()
             .find(|s| &s.session_id == session_id)
@@ -509,7 +509,7 @@ impl MatrixCrypto {
 
     /// Find an outbound Megolm session by room ID.
     #[must_use]
-    pub fn find_outbound_megolm(&self, room_id: &str) -> Option<&MegolmSession> {
+    pub(crate) fn find_outbound_megolm(&self, room_id: &str) -> Option<&MegolmSession> {
         self.megolm_outbound.iter().find(|s| s.room_id == room_id)
     }
 }
@@ -694,7 +694,7 @@ fn aes256_cbc_decrypt(key: &[u8; KEY_SIZE], data: &[u8]) -> Result<Vec<u8>, Cryp
 ///
 /// Returns [`CryptoError::EmptyPlaintext`] if `plaintext` is empty.
 /// Returns [`CryptoError::KeyDerivationFailed`] if HKDF fails.
-pub fn encrypt_megolm(
+pub(crate) fn encrypt_megolm(
     session: &mut MegolmSession,
     plaintext: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
@@ -725,7 +725,7 @@ pub fn encrypt_megolm(
 /// Returns [`CryptoError::CiphertextTooShort`], [`CryptoError::InvalidCiphertextLength`],
 /// or [`CryptoError::InvalidPadding`] on decryption failures.
 /// Returns [`CryptoError::KeyDerivationFailed`] if HKDF fails.
-pub fn decrypt_megolm(
+pub(crate) fn decrypt_megolm(
     session: &MegolmSession,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
@@ -750,7 +750,7 @@ pub fn decrypt_megolm(
 ///
 /// Returns decryption errors from [`aes256_cbc_decrypt`] or
 /// [`CryptoError::KeyDerivationFailed`] from HKDF.
-pub fn decrypt_megolm_at_index(
+pub(crate) fn decrypt_megolm_at_index(
     session: &MegolmSession,
     ciphertext: &[u8],
     message_index: u32,

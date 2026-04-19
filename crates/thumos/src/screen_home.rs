@@ -96,7 +96,7 @@ impl OperatingMode {
 /// Updated each render cycle from kernel globals. The home screen does not
 /// own the clock or telephony state; it receives a snapshot to avoid
 /// lifetime issues with kernel statics.
-pub struct HomeScreenState {
+pub(crate) struct HomeScreenState {
     /// Wall clock time as Unix epoch seconds (0 = no time source).
     pub epoch_secs: u64,
     /// Carrier name (empty = no SIM / no service).
@@ -119,21 +119,21 @@ impl Default for HomeScreenState {
 }
 
 /// Home screen implementation.
-pub struct HomeScreen {
+pub(crate) struct HomeScreen {
     /// Current state snapshot, updated before each render.
     pub state: HomeScreenState,
 }
 
 impl HomeScreen {
     /// Create a new home screen with default state.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: HomeScreenState::default(),
         }
     }
 
     /// Update the state snapshot. Called each render cycle.
-    pub fn update_state(&mut self, state: HomeScreenState) {
+    pub(crate) fn update_state(&mut self, state: HomeScreenState) {
         self.state = state;
     }
 }

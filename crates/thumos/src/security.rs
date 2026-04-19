@@ -21,25 +21,25 @@ use core::fmt;
 
 /// PBKDF2 iteration count (NIST SP 800-132 recommends >= 1000; 100K is a
 /// practical minimum for passphrase-derived keys). Matches stegnos.
-pub const PBKDF2_ITERATIONS: u32 = 100_000;
+pub(crate) const PBKDF2_ITERATIONS: u32 = 100_000;
 
 /// Symmetric key size in bytes (AES-256).
-pub const KEY_SIZE: usize = 32;
+pub(crate) const KEY_SIZE: usize = 32;
 
 /// XTS key size in bytes (two AES-256 keys).
-pub const XTS_KEY_SIZE: usize = 64;
+pub(crate) const XTS_KEY_SIZE: usize = 64;
 
 /// Filesystem block size in bytes.
-pub const BLOCK_SIZE: usize = 4096;
+pub(crate) const BLOCK_SIZE: usize = 4096;
 
 /// Sector size in bytes (eMMC standard).
-pub const SECTOR_SIZE: usize = 512;
+pub(crate) const SECTOR_SIZE: usize = 512;
 
 /// Number of 512-byte sectors per 4 KiB block.
-pub const SECTORS_PER_BLOCK: usize = BLOCK_SIZE / SECTOR_SIZE;
+pub(crate) const SECTORS_PER_BLOCK: usize = BLOCK_SIZE / SECTOR_SIZE;
 
 /// SHA-256 digest length in bytes.
-pub const SHA256_DIGEST_LEN: usize = 32;
+pub(crate) const SHA256_DIGEST_LEN: usize = 32;
 
 /// SHA-256 block size in bytes.
 const SHA256_BLOCK_SIZE: usize = 64;
@@ -136,7 +136,7 @@ const K256: [u32; 64] = [
 ///
 /// Processes data in 64-byte blocks. Call [`Sha256::update`] with arbitrary
 /// slices, then [`Sha256::finalize`] to get the 32-byte digest.
-pub struct Sha256 {
+pub(crate) struct Sha256 {
     state: [u32; 8],
     buffer: [u8; SHA256_BLOCK_SIZE],
     buf_len: usize,
@@ -146,7 +146,7 @@ pub struct Sha256 {
 impl Sha256 {
     /// Create a new SHA-256 hasher.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             state: SHA256_H,
             buffer: [0u8; SHA256_BLOCK_SIZE],
@@ -156,7 +156,7 @@ impl Sha256 {
     }
 
     /// Feed data into the hasher.
-    pub fn update(&mut self, data: &[u8]) {
+    pub(crate) fn update(&mut self, data: &[u8]) {
         let mut offset = 0;
         self.total_len += data.len() as u64;
 
@@ -194,7 +194,7 @@ impl Sha256 {
 
     /// Finalize and return the 32-byte digest. Consumes the hasher.
     #[must_use]
-    pub fn finalize(mut self) -> [u8; SHA256_DIGEST_LEN] {
+    pub(crate) fn finalize(mut self) -> [u8; SHA256_DIGEST_LEN] {
         // Padding: append 0x80, then zeros, then 64-bit big-endian bit length.
         let bit_len = self.total_len * 8;
 
@@ -237,7 +237,7 @@ impl Sha256 {
 
 /// One-shot SHA-256 hash.
 #[must_use]
-pub fn sha256(data: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
+pub(crate) fn sha256(data: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hasher.finalize()
@@ -313,7 +313,7 @@ fn sha256_compress(state: &mut [u32; 8], block: &[u8; SHA256_BLOCK_SIZE]) {
 /// Handles key normalization: keys longer than 64 bytes are hashed,
 /// keys shorter are zero-padded.
 #[must_use]
-pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
+pub(crate) fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
     // Key normalization.
     let mut k_prime = [0u8; SHA256_BLOCK_SIZE];
     if key.len() > SHA256_BLOCK_SIZE {
@@ -357,7 +357,7 @@ pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
 /// # Errors
 ///
 /// Returns [`SecurityError::ZeroIterations`] if `iterations` is zero.
-pub fn pbkdf2_sha256(
+pub(crate) fn pbkdf2_sha256(
     passphrase: &[u8],
     salt: &[u8],
     iterations: u32,
@@ -398,7 +398,7 @@ pub fn pbkdf2_sha256(
 // PBKDF2-HMAC-SHA1 PMK derivation. Do not use SHA-1 for new designs.
 
 /// SHA-1 digest length in bytes.
-pub const SHA1_DIGEST_LEN: usize = 20;
+pub(crate) const SHA1_DIGEST_LEN: usize = 20;
 
 /// SHA-1 block size in bytes.
 const SHA1_BLOCK_SIZE: usize = 64;
@@ -422,7 +422,7 @@ const SHA1_K: [u32; 4] = [
 ///
 /// SHA-1 has broken collision resistance. Use only for WPA2 compliance
 /// (IEEE 802.11-2020). Prefer [`Sha256`] for all other purposes.
-pub struct Sha1 {
+pub(crate) struct Sha1 {
     state: [u32; 5],
     buffer: [u8; SHA1_BLOCK_SIZE],
     buf_len: usize,
@@ -432,7 +432,7 @@ pub struct Sha1 {
 impl Sha1 {
     /// Create a new SHA-1 hasher.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             state: SHA1_H,
             buffer: [0u8; SHA1_BLOCK_SIZE],
@@ -442,7 +442,7 @@ impl Sha1 {
     }
 
     /// Feed data into the hasher.
-    pub fn update(&mut self, data: &[u8]) {
+    pub(crate) fn update(&mut self, data: &[u8]) {
         let mut offset = 0;
         self.total_len += data.len() as u64;
 
@@ -480,7 +480,7 @@ impl Sha1 {
 
     /// Finalize and return the 20-byte digest. Consumes the hasher.
     #[must_use]
-    pub fn finalize(mut self) -> [u8; SHA1_DIGEST_LEN] {
+    pub(crate) fn finalize(mut self) -> [u8; SHA1_DIGEST_LEN] {
         let bit_len = self.total_len * 8;
 
         // Append 0x80.
@@ -524,7 +524,7 @@ impl Sha1 {
 ///
 /// SHA-1 has broken collision resistance. Use only for WPA2 compliance.
 #[must_use]
-pub fn sha1(data: &[u8]) -> [u8; SHA1_DIGEST_LEN] {
+pub(crate) fn sha1(data: &[u8]) -> [u8; SHA1_DIGEST_LEN] {
     let mut hasher = Sha1::new();
     hasher.update(data);
     hasher.finalize()
@@ -592,7 +592,7 @@ fn sha1_compress(state: &mut [u32; 5], block: &[u8; SHA1_BLOCK_SIZE]) {
 ///
 /// Uses SHA-1 internally. Exists solely for WPA2 compliance.
 #[must_use]
-pub fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; SHA1_DIGEST_LEN] {
+pub(crate) fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; SHA1_DIGEST_LEN] {
     let mut k_prime = [0u8; SHA1_BLOCK_SIZE];
     if key.len() > SHA1_BLOCK_SIZE {
         let hashed = sha1(key);
@@ -632,7 +632,7 @@ pub fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; SHA1_DIGEST_LEN] {
 /// # Errors
 ///
 /// Returns [`SecurityError::ZeroIterations`] if `iterations` is zero.
-pub fn pbkdf2_hmac_sha1(
+pub(crate) fn pbkdf2_hmac_sha1(
     passphrase: &[u8],
     salt: &[u8],
     iterations: u32,
@@ -686,7 +686,7 @@ pub fn pbkdf2_hmac_sha1(
 ///
 /// Used to derive the Pairwise Transient Key (PTK) from the PMK.
 #[must_use]
-pub fn prf_384(key: &[u8], label: &[u8], data: &[u8]) -> [u8; 48] {
+pub(crate) fn prf_384(key: &[u8], label: &[u8], data: &[u8]) -> [u8; 48] {
     // Stack buffer for label || 0x00 || data || counter.
     // WPA2: label = "Pairwise key expansion" (22), data = 76, total = 100.
     let mut msg = [0u8; 128];
@@ -718,7 +718,7 @@ pub fn prf_384(key: &[u8], label: &[u8], data: &[u8]) -> [u8; 48] {
 
 /// HKDF-Extract: PRK = HMAC-SHA256(salt, IKM).
 #[must_use]
-pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
+pub(crate) fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
     let actual_salt = if salt.is_empty() {
         &[0u8; SHA256_DIGEST_LEN] as &[u8]
     } else {
@@ -735,7 +735,7 @@ pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
 /// # Errors
 ///
 /// Returns [`SecurityError::HkdfOutputTooLong`] if `okm.len() > 255 * 32`.
-pub fn hkdf_expand(
+pub(crate) fn hkdf_expand(
     prk: &[u8; SHA256_DIGEST_LEN],
     info: &[u8],
     okm: &mut [u8],
@@ -797,7 +797,7 @@ pub fn hkdf_expand(
 /// # Errors
 ///
 /// Returns [`SecurityError::HkdfOutputTooLong`] if `okm.len() > 255 * 32`.
-pub fn hkdf_sha256(
+pub(crate) fn hkdf_sha256(
     ikm: &[u8],
     salt: &[u8],
     info: &[u8],

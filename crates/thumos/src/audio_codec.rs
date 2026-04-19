@@ -186,7 +186,7 @@ impl core::fmt::Display for AudioError {
 ///
 /// Provides a uniform interface for the MT6357 PMIC codec, allowing
 /// real hardware access in production and mock verification in tests.
-pub trait AudioCodecOps {
+pub(crate) trait AudioCodecOps {
     /// Power on the audio codec: enable LDO, wait for stabilization,
     /// enable top-level power.
     fn power_on(&mut self) -> Result<(), AudioError>;
@@ -259,7 +259,7 @@ pub trait AudioCodecOps {
 /// Manages LDO power gating, DAC/ADC enable, amplifier routing,
 /// volume control, and mic bias.
 #[cfg(not(test))]
-pub struct Mt6357Codec {
+pub(crate) struct Mt6357Codec {
     /// Whether the codec is powered on (LDO active).
     powered: bool,
     /// Whether the DAC is enabled.
@@ -281,7 +281,7 @@ impl Mt6357Codec {
     /// The codec starts unpowered; call `power_on()` before any other
     /// operation.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             powered: false,
             dac_enabled: false,
