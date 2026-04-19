@@ -3,6 +3,12 @@ target = "armv7a-none-eabi"
 
 [target.armv7a-none-eabi]
 rustflags = ["-C", "link-arg=-Tlink.ld"]
+# WHY: `cargo run` and `cargo test` for the bare-metal kernel target dispatch
+# each built binary through the QEMU runner so kernel code can be exercised
+# in an emulated ARM environment. The runner translates QEMU's semihosting
+# exit code back to the caller, letting `cargo test` treat a QEMU run as a
+# pass/fail test. See scripts/README.md and issue #117.
+runner = "../../scripts/qemu-runner.sh"
 
 [profile.dev]
 panic = "abort"
