@@ -1313,7 +1313,7 @@ mod tests {
 
     // -- VFS-backed syscall tests --
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1330,7 +1330,7 @@ mod tests {
         assert_eq!(fd, 0, "first open should return fd 0");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1347,7 +1347,7 @@ mod tests {
         assert_eq!(result, ENOENT);
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1369,7 +1369,7 @@ mod tests {
         assert_eq!(&buf[..14], b"Hello, thumos!");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1392,7 +1392,7 @@ mod tests {
         assert_eq!(bytes_read, 0, "read at EOF must return 0");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1413,7 +1413,7 @@ mod tests {
         assert_eq!(result, EBADF, "read after close must return EBADF");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1438,7 +1438,7 @@ mod tests {
         assert_eq!(&buf[..7], b"thumos!");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1461,7 +1461,7 @@ mod tests {
         assert_eq!(bytes_read, 0, "read at EOF (via SEEK_END) must return 0");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1491,7 +1491,7 @@ mod tests {
         assert_eq!(&buf2, b"Hello");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1519,7 +1519,7 @@ mod tests {
         assert_eq!(&buf, b"Hello");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1546,7 +1546,7 @@ mod tests {
         assert_eq!(stat.file_type, S_IFREG);
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1571,7 +1571,7 @@ mod tests {
         assert_eq!(result, ENOENT);
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1611,7 +1611,7 @@ mod tests {
         assert_eq!(result, EBADF);
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1632,7 +1632,7 @@ mod tests {
 
     // -- New VFS-specific tests --
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1665,7 +1665,7 @@ mod tests {
         assert_eq!(&buf[..12], b"written data");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1682,7 +1682,7 @@ mod tests {
         assert!(fd < MAX_FDS as u32, "opening /dev/null should succeed");
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1712,7 +1712,7 @@ mod tests {
         assert_eq!(stat.file_type, S_IFDIR);
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1740,7 +1740,7 @@ mod tests {
         assert_eq!(fd2, ENOENT);
     }
 
-    // FIXME: gated on 32-bit pointer width — this test uses
+    // TODO(#129): gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
