@@ -8,6 +8,10 @@ on:
 permissions:
   pull-requests: write
 
+concurrency:
+  group: pr-hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   size-check:
     runs-on: ubuntu-latest
@@ -15,6 +19,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Check PR size
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
