@@ -1,0 +1,108 @@
+# Technology decisions — compressed from ../CLAUDE.md and workspace Cargo.toml
+# Canonical source: ../CLAUDE.md, ../README.md, Cargo.toml
+
+[[decision]]
+area = "language"
+choice = "Rust (edition 2024, MSRV 1.85)"
+replaces = "C + Java/Kotlin (stock Android)"
+why = "Memory safety without GC, zero-cost abstractions, single toolchain from kernel to UI. No C authored by the project — the attack surface of the AGM M7 stock firmware is unauditable and unpatchable."
+
+[[decision]]
+area = "kernel-architecture"
+choice = "Monolithic Rust kernel, bare-metal"
+replaces = "Linux 4.4 BSP, microkernel options (seL4, Redox)"
+why = "Linux 4.4 is end-of-life and cannot be trusted on a surveillance target. Microkernel IPC overhead is prohibitive on a 1.5 GHz Cortex-A53 with 1 GB RAM. Monolithic keeps every security-critical path (syscall, VFS, network, crypto) in one audit boundary."
+
+[[decision]]
+area = "linux-dependency"
+choice = "No Linux in the final system"
+why = "Every BSP blob is a trust liability. Thumos reimplements the stack end-to-end; vendor blobs are isolated to the modem (MD6293, separate core, firewalled at the CCCI driver) and the WMT/WiFi/BT/GPS firmware loaded into CONSYS SRAM."
+
+[[decision]]
+area = "target"
+choice = "armv7a-none-eabi (32-bit)"
+why = "MT6739 is 64-bit capable but the stock firmware is 32-bit and the bootloader expects a 32-bit image. Building 32-bit avoids a dual-boot kernel."
+
+[[decision]]
+area = "allocator"
+choice = "Custom slab allocator (7 size classes)"
+replaces = "Generic bump or buddy allocator"
+why = "Kernel needs deterministic fragmentation behavior on 1 GB RAM. Slab sizes tuned to kernel object distribution (syscall arguments, VFS nodes, network buffers)."
+
+[[decision]]
+area = "filesystem"
+choice = "LFS (log-structured, own impl) + ramfs + devfs"
+replaces = "ext4, F2FS"
+why = "LFS is wear-friendly on eMMC and recovers from power loss without fsck. Pure Rust, no C filesystem dependency."
+
+[[decision]]
+area = "crypto"
+choice = "RustCrypto (AES-GCM, AES-XTS, ChaCha20Poly1305, HMAC, SHA-2) + ring where transitively required"
+replaces = "openssl, BoringSSL, stock Android crypto"
+why = "Pure Rust audit boundary. AES-256-XTS for storage, ChaCha20 CSPRNG for kernel randomness, PBKDF2+HKDF key hierarchy, Ed25519 for measured boot."
+
+[[decision]]
+area = "networking"
+choice = "smoltcp (no_std TCP/UDP) + own DHCP / DNS resolver"
+replaces = "Linux netstack"
+why = "smoltcp is pure Rust, no_std, no heap required for the hot path. Own DHCP/DNS resolver means no dependency on a distro libc."
+
+[[decision]]
+area = "tls"
+choice = "rustls (DNS-over-TLS, HTTPS)"
+replaces = "openssl-sys, BoringSSL"
+why = "Pure Rust, no C++ compiler required. Matches the no-C-authored policy and simplifies cross-compilation."
+
+[[decision]]
+area = "messaging-e2e"
+choice = "Own Signal protocol (krypta) + Olm/Megolm (Matrix) + Briar P2P + Meshtastic LoRa"
+why = "Multiple transports so a single-provider compromise cannot silence the user. Meshtastic LoRa survives infrastructure outages."
+
+[[decision]]
+area = "identity-protection"
+choice = "Driver-layer randomization (WiFi MAC per connection, BT LE Privacy 15-min rotation, passive scanning by default, CCCI IMEI filter)"
+replaces = "Userspace MAC spoofing"
+why = "Userspace-level spoofing is bypassable by compromised components. Enforcement at register level is the only reliable mitigation. RF fingerprint remains an accepted risk on M7 hardware; custom PCB addresses it in a future phase."
+
+[[decision]]
+area = "errors"
+choice = "snafu with .context() and Location tracking"
+replaces = "thiserror, anyhow"
+why = "Location-based stack traces work in no_std and bare-metal contexts. Matches aletheia/kanon conventions."
+
+[[decision]]
+area = "serialization"
+choice = "postcard + serde"
+replaces = "bincode, JSON in the hot path"
+why = "postcard is no_std-friendly, compact, and stable across Rust versions. JSON only at HTTP boundaries."
+
+[[decision]]
+area = "ids-time-strings"
+choice = "ulid for time-sorted IDs, jiff for time, compact_str for small strings"
+why = "Matches aletheia conventions. jiff has no C dependency; chrono pulls in libc assumptions."
+
+[[decision]]
+area = "parsing"
+choice = "nom (combinator, no_std)"
+why = "Used for AT commands (klesis), NMEA (topos), PDU codecs. Pure Rust, no allocator required for most parsers."
+
+[[decision]]
+area = "display-graphics"
+choice = "embedded-graphics + own DDP driver + GC9306 LCM init"
+replaces = "Android SurfaceFlinger, Wayland, X11"
+why = "240x320 QVGA does not need a compositor. Direct framebuffer + widget system in eidolon is the smallest correct solution."
+
+[[decision]]
+area = "async-runtime"
+choice = "Tokio for userspace daemons; kernel is synchronous with cooperative yields"
+why = "Tokio is battle-tested for userspace. Kernel async adds scheduler complexity with no measurable win on 4 cores."
+
+[[decision]]
+area = "panic-policy"
+choice = "panic / unwrap / expect = deny at workspace level; warn on unsafe (not deny)"
+why = "Panics in a kernel path brick the device. Unsafe must be allowed for MMIO, page tables, interrupt handlers, crypto — deny would break compilation. Each unsafe block requires a // SAFETY: comment."
+
+[[decision]]
+area = "naming"
+choice = "Greek names for persistent crate identities, English for code"
+why = "Matches gnomon convention across forkwright repos (kanon, aletheia, harmonia, etc.). Greek names encode purpose: thumos (fighting spirit), aither (WiFi ether), pteron (BT wing), krypta (hidden), stegnos (sealed), asphaleia (security), leipsanon (remains / panic relic), eidolon (image), haphe (touch), klesis (summons / call), topos (place), sema (sign)."
