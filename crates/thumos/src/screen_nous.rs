@@ -1090,15 +1090,15 @@ mod tests {
 
     #[test]
     fn message_origin_display() {
-        assert_eq!(alloc::format!("{}", MessageOrigin::User), "You");
-        assert_eq!(alloc::format!("{}", MessageOrigin::Nous), "Nous");
+        assert_eq!(MessageOrigin::User.to_string(), "You");
+        assert_eq!(MessageOrigin::Nous.to_string(), "Nous");
     }
 
     #[test]
     fn proposal_state_display() {
-        assert_eq!(alloc::format!("{}", ProposalState::Pending), "pending");
-        assert_eq!(alloc::format!("{}", ProposalState::Confirmed), "confirmed");
-        assert_eq!(alloc::format!("{}", ProposalState::Cancelled), "cancelled");
+        assert_eq!(ProposalState::Pending.to_string(), "pending");
+        assert_eq!(ProposalState::Confirmed.to_string(), "confirmed");
+        assert_eq!(ProposalState::Cancelled.to_string(), "cancelled");
     }
 
     #[test]

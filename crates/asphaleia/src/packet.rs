@@ -24,6 +24,7 @@ pub const PROTO_UDP: u8 = 17;
 
 /// Errors that can occur when parsing network packet headers.
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum ParseError {
     /// The buffer is shorter than the minimum required for this header.
     #[snafu(display("packet too short: need {needed} bytes, got {got}"))]

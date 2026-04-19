@@ -10,6 +10,7 @@
 /// Physical key codes for the AGM M7 21-key keypad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum Key {
     /// Digit 0 key.
     Num0 = 0,
@@ -59,6 +60,7 @@ pub enum Key {
 
 /// Key state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KeyState {
     /// Key pressed down.
     Pressed,
@@ -70,6 +72,7 @@ pub enum KeyState {
 
 /// Touch event type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TouchAction {
     /// Finger touched the screen.
     Down,
@@ -94,6 +97,7 @@ pub struct TouchPoint {
 
 /// Unified input event.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum InputEvent {
     /// Keypad key event.
     Key {

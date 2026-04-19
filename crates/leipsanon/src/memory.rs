@@ -13,6 +13,7 @@ use zeroize::Zeroize as _;
 
 /// Errors FROM secure memory operations.
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum MemoryError {
     /// The system random number generator failed to produce bytes.
     #[snafu(display("failed to generate random bytes"))]

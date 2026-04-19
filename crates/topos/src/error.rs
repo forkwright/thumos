@@ -4,6 +4,7 @@ use snafu::Snafu;
 
 /// Errors from GPS operations.
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum Error {
     /// NMEA sentence failed checksum validation.
     #[snafu(display("NMEA checksum mismatch: expected {expected:02X}, got {actual:02X}"))]
