@@ -997,19 +997,19 @@ impl WifiHw {
 
 impl WifiHwOps for WifiHw {
     fn send_frame(&mut self, _data: &[u8]) -> Result<(), WifiError> {
-        // TODO(hw): implement WMT STP frame TX via MMIO write to WLAN registers.
+        // TODO(#129): implement WMT STP frame TX via MMIO write to WLAN registers.
         // The data path goes through the WMT combo-chip transport layer
         // (kelyphos handles STP framing).
         Err(WifiError::NotInitialized)
     }
 
     fn recv_frame(&mut self) -> Option<Vec<u8>> {
-        // TODO(hw): implement WMT STP frame RX via MMIO read from WLAN registers.
+        // TODO(#129): implement WMT STP frame RX via MMIO read from WLAN registers.
         None
     }
 
     fn scan_start(&mut self) -> Result<(), WifiError> {
-        // TODO(hw): issue scan command via WMT STP to WiFi firmware.
+        // TODO(#129): issue scan command via WMT STP to WiFi firmware.
         // Uses passive scan by default (no MAC leakage).
         Err(WifiError::NotInitialized)
     }
@@ -1019,7 +1019,7 @@ impl WifiHwOps for WifiHw {
     }
 
     fn associate(&mut self, _ssid: &[u8], _bssid: &[u8; 6]) -> Result<(), WifiError> {
-        // TODO(hw): issue association request to WiFi firmware via WMT STP.
+        // TODO(#129): issue association request to WiFi firmware via WMT STP.
         Err(WifiError::NotInitialized)
     }
 }

@@ -50,13 +50,27 @@ must_use_candidate = "allow"
 
 [workspace.dependencies]
 # Syscalls (no libc)
-rustix = { version = "1", features = ["fs", "net", "process", "mm", "event", "time"] }
+rustix = { version = "1", features = [
+    "fs",
+    "net",
+    "process",
+    "mm",
+    "event",
+    "time",
+] }
 
 # Crypto
 ring = "0.17"
 
 # Networking
-smoltcp = { version = "0.12", default-features = false, features = ["medium-ethernet", "proto-ipv4", "proto-ipv6", "socket-tcp", "socket-udp", "socket-dns"] }
+smoltcp = { version = "0.12", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "proto-ipv6",
+    "socket-tcp",
+    "socket-udp",
+    "socket-dns",
+] }
 
 # Parsing
 nom = "8"
@@ -82,7 +96,15 @@ jiff = "0.2"
 compact_str = "0.8"
 
 # Async (for userspace daemons)
-tokio = { version = "1", features = ["rt", "io-util", "net", "time", "sync", "signal", "macros"] }
+tokio = { version = "1", features = [
+    "rt",
+    "io-util",
+    "net",
+    "time",
+    "sync",
+    "signal",
+    "macros",
+] }
 
 # CLI (for tools)
 clap = { version = "4", features = ["derive"] }
