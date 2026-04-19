@@ -22,7 +22,7 @@ use crate::lfs_imap::LfsError;
 // ---------------------------------------------------------------------------
 
 /// Magic number for checkpoint headers: "CKPT" in ASCII.
-pub const CHECKPOINT_MAGIC: u32 = 0x434B_5054;
+pub(crate) const CHECKPOINT_MAGIC: u32 = 0x434B_5054;
 
 // ---------------------------------------------------------------------------
 // CheckpointHeader
@@ -69,7 +69,7 @@ impl CheckpointHeader {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn to_block(&self) -> [u8; BLOCK_SIZE] {
+    pub(crate) fn to_block(&self) -> [u8; BLOCK_SIZE] {
         let mut buf = [0u8; BLOCK_SIZE];
         let mut offset = 0;
 
@@ -91,7 +91,7 @@ impl CheckpointHeader {
     ///
     /// Returns [`LfsError::Corrupt`] if the magic number does not match.
     #[must_use]
-    pub fn from_block(buf: &[u8; BLOCK_SIZE]) -> Result<Self, LfsError> {
+    pub(crate) fn from_block(buf: &[u8; BLOCK_SIZE]) -> Result<Self, LfsError> {
         if buf.len() < HEADER_SERIALIZED_SIZE {
             return Err(LfsError::Corrupt);
         }
@@ -136,7 +136,7 @@ impl CheckpointHeader {
 /// # Errors
 ///
 /// Returns [`LfsError::BlockIo`] if any block write fails.
-pub fn write_checkpoint(
+pub(crate) fn write_checkpoint(
     dev: &mut dyn BlockDevice,
     cache: &mut BlockCache,
     slot_block: u64,
@@ -188,7 +188,7 @@ pub fn write_checkpoint(
 ///
 /// - [`LfsError::BlockIo`] if the block read fails.
 /// - [`LfsError::Corrupt`] if the magic number does not match.
-pub fn read_checkpoint(
+pub(crate) fn read_checkpoint(
     dev: &mut dyn BlockDevice,
     cache: &mut BlockCache,
     slot_block: u64,
@@ -208,7 +208,7 @@ pub fn read_checkpoint(
 ///
 /// Returns [`LfsError::Corrupt`] if neither checkpoint slot is valid.
 /// Returns [`LfsError::BlockIo`] if block reads fail on both slots.
-pub fn pick_latest(
+pub(crate) fn pick_latest(
     dev: &mut dyn BlockDevice,
     cache: &mut BlockCache,
     slot_a_block: u64,

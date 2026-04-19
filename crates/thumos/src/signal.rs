@@ -32,24 +32,24 @@
 //! (matches Linux 2.6 OABI signal delivery).
 
 /// Number of u32 registers saved in the signal frame (r0-r12, sp, lr, pc, cpsr).
-pub const SIGNAL_FRAME_REGS: usize = 17;
+pub(crate) const SIGNAL_FRAME_REGS: usize = 17;
 
 /// Total signal frame size in bytes: 17 regs × 4 + signum × 4 + trampoline × 8.
-pub const SIGNAL_FRAME_SIZE: usize = SIGNAL_FRAME_REGS * 4 + 4 + 8;
+pub(crate) const SIGNAL_FRAME_SIZE: usize = SIGNAL_FRAME_REGS * 4 + 4 + 8;
 
 /// Offset of `signum` field within the signal frame (bytes from frame base).
-pub const SIGNAL_FRAME_SIGNUM_OFFSET: usize = SIGNAL_FRAME_REGS * 4;
+pub(crate) const SIGNAL_FRAME_SIGNUM_OFFSET: usize = SIGNAL_FRAME_REGS * 4;
 
 /// Offset of the trampoline code within the signal frame.
-pub const SIGNAL_FRAME_TRAMPOLINE_OFFSET: usize = SIGNAL_FRAME_SIGNUM_OFFSET + 4;
+pub(crate) const SIGNAL_FRAME_TRAMPOLINE_OFFSET: usize = SIGNAL_FRAME_SIGNUM_OFFSET + 4;
 
 /// ARM `mov r7, #81` — loads the Sigreturn syscall number into r7.
 /// Encoding: E3A07051 (MOV r7, #0x51 where 0x51 = 81).
-pub const TRAMPOLINE_MOV_R7_SIGRETURN: u32 = 0xE3A0_7051;
+pub(crate) const TRAMPOLINE_MOV_R7_SIGRETURN: u32 = 0xE3A0_7051;
 
 /// ARM `svc #0` — triggers the supervisor call using r7 as syscall number.
 /// Encoding: EF000000.
-pub const TRAMPOLINE_SVC_0: u32 = 0xEF00_0000;
+pub(crate) const TRAMPOLINE_SVC_0: u32 = 0xEF00_0000;
 
 /// Recognized signal numbers.
 ///
@@ -70,7 +70,7 @@ pub enum Signal {
 impl Signal {
     /// Convert a raw signal number to a `Signal` variant.
     /// Returns `None` for unrecognised numbers.
-    pub const fn from_u32(n: u32) -> Option<Self> {
+    pub(crate) const fn from_u32(n: u32) -> Option<Self> {
         match n {
             9 => Some(Self::Sigkill),
             10 => Some(Self::Sigusr1),
@@ -86,7 +86,7 @@ impl Signal {
     ///
     /// WHY: POSIX specifies default actions; kernels must apply them when no
     /// handler is registered and the signal is not ignored.
-    pub const fn default_action(self) -> DefaultAction {
+    pub(crate) const fn default_action(self) -> DefaultAction {
         match self {
             Self::Sigkill | Self::Sigterm | Self::Sigusr1
             | Self::Sigusr2 | Self::Sigpipe => DefaultAction::Terminate,
@@ -98,7 +98,7 @@ impl Signal {
     ///
     /// WHY: POSIX requires SIGKILL to always terminate; no handler or SIG_IGN
     /// can override it. Rejecting sigaction for SIGKILL here enforces that rule.
-    pub const fn can_catch(self) -> bool {
+    pub(crate) const fn can_catch(self) -> bool {
         !matches!(self, Self::Sigkill)
     }
 }
@@ -130,10 +130,10 @@ pub enum SignalAction {
 
 impl SignalAction {
     /// Sentinel value userspace passes in handler_ptr to mean SIG_IGN.
-    pub const SIG_IGN: u32 = 1;
+    pub(crate) const SIG_IGN: u32 = 1;
 
     /// Sentinel value userspace passes in handler_ptr to mean SIG_DFL.
-    pub const SIG_DFL: u32 = 0;
+    pub(crate) const SIG_DFL: u32 = 0;
 }
 
 /// Per-process signal state embedded in the process control block.
@@ -156,7 +156,7 @@ impl SignalState {
     /// WHY `const`: `Process` is stored in a static array initialised at
     /// compile time (`const NONE: Option<Process> = None`). Every field of
     /// `Process` must therefore be `const`-constructible.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             handlers: [SignalAction::Default; 18],
             pending: 0,
@@ -165,18 +165,18 @@ impl SignalState {
 
     /// Mark signal `sig` as pending.
     #[inline]
-    pub fn set_pending(&mut self, sig: Signal) {
+    pub(crate) fn set_pending(&mut self, sig: Signal) {
         self.pending |= 1 << (sig as u32);
     }
 
     /// Clear the pending bit for signal `sig`.
     #[inline]
-    pub fn clear_pending(&mut self, sig: Signal) {
+    pub(crate) fn clear_pending(&mut self, sig: Signal) {
         self.pending &= !(1 << (sig as u32));
     }
 
     /// Return the lowest-numbered pending signal, or `None` if none are pending.
-    pub fn next_pending(&self) -> Option<Signal> {
+    pub(crate) fn next_pending(&self) -> Option<Signal> {
         for n in 0u32..18 {
             if self.pending & (1 << n) != 0 {
                 if let Some(sig) = Signal::from_u32(n) {
@@ -190,13 +190,13 @@ impl SignalState {
 
     /// Get the registered action for `sig`.
     #[inline]
-    pub fn action(&self, sig: Signal) -> SignalAction {
+    pub(crate) fn action(&self, sig: Signal) -> SignalAction {
         self.handlers[sig as usize]
     }
 
     /// Set the action for `sig`.
     #[inline]
-    pub fn set_action(&mut self, sig: Signal, action: SignalAction) {
+    pub(crate) fn set_action(&mut self, sig: Signal, action: SignalAction) {
         self.handlers[sig as usize] = action;
     }
 }
@@ -228,7 +228,7 @@ const EPERM: u32 = 0u32.wrapping_sub(1);
 /// - `EINVAL` — unrecognised signal number
 /// - `EPERM` — attempt to catch or ignore SIGKILL
 #[cfg(not(test))]
-pub fn sys_sigaction(signum: u32, handler_ptr: u32) -> u32 {
+pub(crate) fn sys_sigaction(signum: u32, handler_ptr: u32) -> u32 {
     let Some(sig) = Signal::from_u32(signum) else {
         return EINVAL;
     };
@@ -268,7 +268,7 @@ pub fn sys_sigaction(signum: u32, handler_ptr: u32) -> u32 {
 /// - `ESRCH` — target PID not found or not alive
 /// - `EPERM` — caller lacks `CAP_KILL` and target is a different process (REQ-09)
 #[cfg(not(test))]
-pub fn sys_kill(pid: u32, signum: u32) -> u32 {
+pub(crate) fn sys_kill(pid: u32, signum: u32) -> u32 {
     let Some(sig) = Signal::from_u32(signum) else {
         return EINVAL;
     };
@@ -308,7 +308,7 @@ pub fn sys_kill(pid: u32, signum: u32) -> u32 {
 /// Returns 0 (the value is placed in r0, but the handler will overwrite
 /// it from the restored frame before returning to user mode).
 #[cfg(not(test))]
-pub fn sys_sigreturn() -> u32 {
+pub(crate) fn sys_sigreturn() -> u32 {
     // SAFETY: clear_current_pending accesses PROCS via addr_of_mut!.
     unsafe { crate::process::clear_any_pending(); }
     0

@@ -105,7 +105,7 @@ fn char_to_septet(c: char) -> Option<(bool, u8)> {
 ///
 /// - [`SmsError::Gsm7Encode`] -- a character has no GSM-7 representation.
 #[must_use]
-pub fn encode_gsm7(text: &str) -> Result<Vec<u8>, SmsError> {
+pub(crate) fn encode_gsm7(text: &str) -> Result<Vec<u8>, SmsError> {
     // First pass: collect the septet sequence.
     let mut septets: Vec<u8> = Vec::with_capacity(text.len());
     for c in text.chars() {
@@ -149,7 +149,7 @@ pub fn encode_gsm7(text: &str) -> Result<Vec<u8>, SmsError> {
 ///
 /// - [`SmsError::PduDecode`] -- packed data is truncated or contains invalid septets.
 #[must_use]
-pub fn decode_gsm7(data: &[u8], num_septets: usize) -> Result<String, SmsError> {
+pub(crate) fn decode_gsm7(data: &[u8], num_septets: usize) -> Result<String, SmsError> {
     if num_septets == 0 {
         return Ok(String::new());
     }

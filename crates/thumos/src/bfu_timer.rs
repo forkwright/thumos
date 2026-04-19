@@ -118,7 +118,7 @@ impl fmt::Display for BfuTimerState {
 /// The timer is mode-aware: the threshold changes when the security mode
 /// changes. Call [`BfuTimer::tick`] from the kernel main loop at 10 ms
 /// intervals.
-pub struct BfuTimer {
+pub(crate) struct BfuTimer {
     /// Ticks elapsed since last unlock (or last reset).
     elapsed_ticks: u64,
     /// Current threshold in ticks (derived from security mode).
@@ -137,7 +137,7 @@ impl BfuTimer {
     /// The timer starts in [`BfuTimerState::Running`] with zero elapsed
     /// ticks.
     #[must_use]
-    pub const fn new(mode: SecurityMode) -> Self {
+    pub(crate) const fn new(mode: SecurityMode) -> Self {
         Self {
             elapsed_ticks: 0,
             threshold_ticks: threshold_for_mode(mode),
@@ -155,7 +155,7 @@ impl BfuTimer {
     ///
     /// Once fired, subsequent ticks return [`BfuAction::Reboot`] until
     /// the timer is reset.
-    pub fn tick(&mut self, key_manager: &mut KeyManager) -> BfuAction {
+    pub(crate) fn tick(&mut self, key_manager: &mut KeyManager) -> BfuAction {
         if self.fired {
             return BfuAction::Reboot;
         }
@@ -177,21 +177,21 @@ impl BfuTimer {
     ///
     /// Clears elapsed ticks, resets state to [`BfuTimerState::Running`],
     /// and clears the fired flag.
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.elapsed_ticks = 0;
         self.state = BfuTimerState::Running;
         self.fired = false;
     }
 
     /// Pause the timer. Ticks will not be counted while paused.
-    pub fn pause(&mut self) {
+    pub(crate) fn pause(&mut self) {
         if self.state == BfuTimerState::Running {
             self.state = BfuTimerState::Paused;
         }
     }
 
     /// Resume the timer from a paused state.
-    pub fn resume(&mut self) {
+    pub(crate) fn resume(&mut self) {
         if self.state == BfuTimerState::Paused {
             self.state = BfuTimerState::Running;
         }
@@ -201,42 +201,42 @@ impl BfuTimer {
     ///
     /// If the new mode has a shorter threshold than the current elapsed
     /// time, the timer fires immediately on the next tick.
-    pub fn set_mode(&mut self, mode: SecurityMode) {
+    pub(crate) fn set_mode(&mut self, mode: SecurityMode) {
         self.mode = mode;
         self.threshold_ticks = threshold_for_mode(mode);
     }
 
     /// Current timer state.
-    pub fn state(&self) -> BfuTimerState {
+    pub(crate) fn state(&self) -> BfuTimerState {
         self.state
     }
 
     /// Elapsed ticks since last reset.
     #[must_use]
-    pub fn elapsed_ticks(&self) -> u64 {
+    pub(crate) fn elapsed_ticks(&self) -> u64 {
         self.elapsed_ticks
     }
 
     /// Current threshold in ticks.
     #[must_use]
-    pub fn threshold_ticks(&self) -> u64 {
+    pub(crate) fn threshold_ticks(&self) -> u64 {
         self.threshold_ticks
     }
 
     /// Current security mode.
-    pub fn mode(&self) -> SecurityMode {
+    pub(crate) fn mode(&self) -> SecurityMode {
         self.mode
     }
 
     /// Whether the timer has fired.
     #[must_use]
-    pub fn has_fired(&self) -> bool {
+    pub(crate) fn has_fired(&self) -> bool {
         self.fired
     }
 
     /// Elapsed time in milliseconds.
     #[must_use]
-    pub fn elapsed_ms(&self) -> u64 {
+    pub(crate) fn elapsed_ms(&self) -> u64 {
         self.elapsed_ticks.saturating_mul(TICK_PERIOD_MS)
     }
 
@@ -244,7 +244,7 @@ impl BfuTimer {
     ///
     /// Returns 0 if the timer has expired or the threshold is 0.
     #[must_use]
-    pub fn remaining_ms(&self) -> u64 {
+    pub(crate) fn remaining_ms(&self) -> u64 {
         if self.fired || self.elapsed_ticks >= self.threshold_ticks {
             return 0;
         }
@@ -255,7 +255,7 @@ impl BfuTimer {
 
     /// Threshold in milliseconds for the current mode.
     #[must_use]
-    pub fn threshold_ms(&self) -> u64 {
+    pub(crate) fn threshold_ms(&self) -> u64 {
         self.threshold_ticks.saturating_mul(TICK_PERIOD_MS)
     }
 

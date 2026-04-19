@@ -51,26 +51,26 @@ const PBKDF2_SALT: &[u8] = b"thumos-pbkdf2-salt-v1";
 ///
 /// Uses `write_volatile` to prevent the compiler from eliding the
 /// zeroization as a dead store.
-pub struct SecureKey<const N: usize>([u8; N]);
+pub(crate) struct SecureKey<const N: usize>([u8; N]);
 
 impl<const N: usize> SecureKey<N> {
     /// Create a new `SecureKey` from raw bytes.
-    pub fn new(bytes: [u8; N]) -> Self {
+    pub(crate) fn new(bytes: [u8; N]) -> Self {
         Self(bytes)
     }
 
     /// Borrow the key bytes.
-    pub fn as_bytes(&self) -> &[u8; N] {
+    pub(crate) fn as_bytes(&self) -> &[u8; N] {
         &self.0
     }
 
     /// Check whether the key is all zeros (zeroized or never set).
-    pub fn is_zero(&self) -> bool {
+    pub(crate) fn is_zero(&self) -> bool {
         self.0.iter().all(|&b| b == 0)
     }
 
     /// Explicitly zeroize the key material.
-    pub fn zeroize(&mut self) {
+    pub(crate) fn zeroize(&mut self) {
         for byte in &mut self.0 {
             // SAFETY: write_volatile prevents dead-store elimination.
             // The pointer is valid because it points into our own array.
@@ -106,7 +106,7 @@ impl<const N: usize> fmt::Display for SecureKey<N> {
 
 /// The set of per-purpose keys derived from a primary key.
 #[expect(clippy::struct_field_names, reason = "key suffix is domain terminology, not redundant with struct name")]
-pub struct KeySet {
+pub(crate) struct KeySet {
     /// Partition encryption key (AES-256-XTS, 64 bytes).
     pub data_key: SecureKey<XTS_KEY_SIZE>,
     /// Audit log HMAC key.
@@ -143,7 +143,7 @@ impl fmt::Display for KeySet {
 /// Holds derived partition keys and tracks whether the primary key has been
 /// used to derive them. The primary key itself is never stored — it is
 /// zeroized immediately after deriving sub-keys.
-pub struct KeyManager {
+pub(crate) struct KeyManager {
     /// Whether keys have been derived from a primary key.
     primary_key_derived: bool,
     /// Partition encryption key (XTS, 64 bytes).
@@ -161,7 +161,7 @@ pub struct KeyManager {
 impl KeyManager {
     /// Create a new `KeyManager` with no keys loaded.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             primary_key_derived: false,
             data_key: None,
@@ -183,7 +183,7 @@ impl KeyManager {
     /// # Errors
     ///
     /// Returns [`SecurityError`] if key derivation fails.
-    pub fn derive_from_passphrase(
+    pub(crate) fn derive_from_passphrase(
         passphrase: &[u8],
     ) -> Result<SecureKey<KEY_SIZE>, SecurityError> {
         let mut key_bytes = [0u8; KEY_SIZE];
@@ -205,7 +205,7 @@ impl KeyManager {
     /// # Errors
     ///
     /// Returns [`SecurityError`] if HKDF derivation fails.
-    pub fn derive_partition_keys(
+    pub(crate) fn derive_partition_keys(
         &mut self,
         primary: &SecureKey<KEY_SIZE>,
     ) -> Result<(), SecurityError> {
@@ -238,7 +238,7 @@ impl KeyManager {
     ///
     /// After this call, a full passphrase re-entry is required to
     /// re-derive keys.
-    pub fn zeroize_all(&mut self) {
+    pub(crate) fn zeroize_all(&mut self) {
         self.data_key = None;
         self.audit_key = None;
         self.csprng_key = None;
@@ -249,7 +249,7 @@ impl KeyManager {
 
     /// Check whether partition keys are currently loaded.
     #[must_use]
-    pub fn has_keys(&self) -> bool {
+    pub(crate) fn has_keys(&self) -> bool {
         self.primary_key_derived
             && self.data_key.is_some()
             && self.audit_key.is_some()
@@ -258,33 +258,33 @@ impl KeyManager {
     }
 
     /// Borrow the data (partition encryption) key, if loaded.
-    pub fn data_key(&self) -> Option<&SecureKey<XTS_KEY_SIZE>> {
+    pub(crate) fn data_key(&self) -> Option<&SecureKey<XTS_KEY_SIZE>> {
         self.data_key.as_ref()
     }
 
     /// Borrow the audit log HMAC key, if loaded.
-    pub fn audit_key(&self) -> Option<&SecureKey<KEY_SIZE>> {
+    pub(crate) fn audit_key(&self) -> Option<&SecureKey<KEY_SIZE>> {
         self.audit_key.as_ref()
     }
 
     /// Borrow the CSPRNG seed key, if loaded.
-    pub fn csprng_key(&self) -> Option<&SecureKey<KEY_SIZE>> {
+    pub(crate) fn csprng_key(&self) -> Option<&SecureKey<KEY_SIZE>> {
         self.csprng_key.as_ref()
     }
 
     /// Borrow the session key, if loaded.
-    pub fn session_key(&self) -> Option<&SecureKey<KEY_SIZE>> {
+    pub(crate) fn session_key(&self) -> Option<&SecureKey<KEY_SIZE>> {
         self.session_key.as_ref()
     }
 
     /// Current sleep tier.
     #[must_use]
-    pub fn sleep_tier(&self) -> SleepTier {
+    pub(crate) fn sleep_tier(&self) -> SleepTier {
         self.sleep_tier
     }
 
     /// Set the sleep tier. If transitioning to `Long`, zeroizes all keys.
-    pub fn set_sleep_tier(&mut self, tier: SleepTier) {
+    pub(crate) fn set_sleep_tier(&mut self, tier: SleepTier) {
         if tier == SleepTier::Long {
             self.zeroize_all();
         }

@@ -54,43 +54,43 @@ mod mmsys {
     use super::MMSYS_CONFIG_BASE;
 
     /// Clock gate status 0.
-    pub const CG_CON0: usize = MMSYS_CONFIG_BASE + 0x100;
+    pub(crate) const CG_CON0: usize = MMSYS_CONFIG_BASE + 0x100;
     /// Clock gate SET 0 (write 1 = disable clock).
-    pub const CG_SET0: usize = MMSYS_CONFIG_BASE + 0x104;
+    pub(crate) const CG_SET0: usize = MMSYS_CONFIG_BASE + 0x104;
     /// Clock gate clear 0 (write 1 = enable clock).
-    pub const CG_CLR0: usize = MMSYS_CONFIG_BASE + 0x108;
+    pub(crate) const CG_CLR0: usize = MMSYS_CONFIG_BASE + 0x108;
     /// Clock gate status 1.
-    pub const CG_CON1: usize = MMSYS_CONFIG_BASE + 0x110;
+    pub(crate) const CG_CON1: usize = MMSYS_CONFIG_BASE + 0x110;
     /// Clock gate SET 1 (write 1 = disable clock).
-    pub const CG_SET1: usize = MMSYS_CONFIG_BASE + 0x114;
+    pub(crate) const CG_SET1: usize = MMSYS_CONFIG_BASE + 0x114;
     /// Clock gate clear 1 (write 1 = enable clock).
-    pub const CG_CLR1: usize = MMSYS_CONFIG_BASE + 0x118;
+    pub(crate) const CG_CLR1: usize = MMSYS_CONFIG_BASE + 0x118;
     /// Software reset 0 (active low  -  write 1 to release).
-    pub const SW0_RST_B: usize = MMSYS_CONFIG_BASE + 0x140;
+    pub(crate) const SW0_RST_B: usize = MMSYS_CONFIG_BASE + 0x140;
     /// Software reset 1 (active low  -  write 1 to release).
-    pub const SW1_RST_B: usize = MMSYS_CONFIG_BASE + 0x144;
+    pub(crate) const SW1_RST_B: usize = MMSYS_CONFIG_BASE + 0x144;
     /// LCM reset control (active low  -  write 1 to release).
-    pub const LCM_RST_B: usize = MMSYS_CONFIG_BASE + 0x150;
+    pub(crate) const LCM_RST_B: usize = MMSYS_CONFIG_BASE + 0x150;
 
     // WHY: clock gate bits for display pipeline modules in CG_CLR0/CG_CLR1.
     // These enable the clocks for each module when written to the CLR register.
 
     /// Bit mask: all display pipeline clocks in CG0.
     /// OVL0(bit 0) | RDMA0(bit 3) | COLOR0(bit 5) | DSI0(bit 24).
-    pub const CG0_DISP_ALL: u32 = (1 << 0) | (1 << 3) | (1 << 5) | (1 << 24);
+    pub(crate) const CG0_DISP_ALL: u32 = (1 << 0) | (1 << 3) | (1 << 5) | (1 << 24);
 
     /// Bit mask: display pipeline clocks in CG1.
     /// DSI0_DIGITAL(bit 0) | DSI0_ENGINE(bit 1).
-    pub const CG1_DISP_ALL: u32 = (1 << 0) | (1 << 1);
+    pub(crate) const CG1_DISP_ALL: u32 = (1 << 0) | (1 << 1);
 
     /// Full release mask for SW0_RST_B.
-    pub const SW0_RST_RELEASE: u32 = 0xFFFF_FFFF;
+    pub(crate) const SW0_RST_RELEASE: u32 = 0xFFFF_FFFF;
 
     /// Full release mask for SW1_RST_B.
-    pub const SW1_RST_RELEASE: u32 = 0xFFFF_FFFF;
+    pub(crate) const SW1_RST_RELEASE: u32 = 0xFFFF_FFFF;
 
     /// LCM reset release (bit 0).
-    pub const LCM_RST_RELEASE: u32 = 1;
+    pub(crate) const LCM_RST_RELEASE: u32 = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,45 +102,45 @@ mod ovl {
     use super::OVL0_BASE;
 
     /// Status; bit 0 = running.
-    pub const STA: usize = OVL0_BASE;
+    pub(crate) const STA: usize = OVL0_BASE;
     /// Interrupt enable.
-    pub const INTEN: usize = OVL0_BASE + 0x004;
+    pub(crate) const INTEN: usize = OVL0_BASE + 0x004;
     /// Interrupt status.
-    pub const INTSTA: usize = OVL0_BASE + 0x008;
+    pub(crate) const INTSTA: usize = OVL0_BASE + 0x008;
     /// Enable; bit 0 = OVL_EN, bit 8 = CK_ON.
-    pub const EN: usize = OVL0_BASE + 0x00C;
+    pub(crate) const EN: usize = OVL0_BASE + 0x00C;
     /// Trigger; bit 0 = SW_TRIG.
-    pub const TRIG: usize = OVL0_BASE + 0x010;
+    pub(crate) const TRIG: usize = OVL0_BASE + 0x010;
     /// Reset.
-    pub const RST: usize = OVL0_BASE + 0x014;
+    pub(crate) const RST: usize = OVL0_BASE + 0x014;
     /// Region of interest size; bits [12:0] = W, bits [28:16] = H.
-    pub const ROI_SIZE: usize = OVL0_BASE + 0x020;
+    pub(crate) const ROI_SIZE: usize = OVL0_BASE + 0x020;
     /// Datapath config.
-    pub const DATAPATH_CON: usize = OVL0_BASE + 0x024;
+    pub(crate) const DATAPATH_CON: usize = OVL0_BASE + 0x024;
     /// Background colour RGBA.
-    pub const ROI_BGCLR: usize = OVL0_BASE + 0x028;
+    pub(crate) const ROI_BGCLR: usize = OVL0_BASE + 0x028;
     /// Source enable; bits 0–3 = layer 0–3 enable.
-    pub const SRC_CON: usize = OVL0_BASE + 0x02C;
+    pub(crate) const SRC_CON: usize = OVL0_BASE + 0x02C;
     /// Layer 0 control (alpha, flip, format).
-    pub const L0_CON: usize = OVL0_BASE + 0x030;
+    pub(crate) const L0_CON: usize = OVL0_BASE + 0x030;
 
     /// OVL_EN bit.
-    pub const EN_BIT: u32 = 1 << 0;
+    pub(crate) const EN_BIT: u32 = 1 << 0;
     /// CK_ON bit (force clock on).
-    pub const CK_ON_BIT: u32 = 1 << 8;
+    pub(crate) const CK_ON_BIT: u32 = 1 << 8;
     /// SW_TRIG bit.
-    pub const SW_TRIG_BIT: u32 = 1 << 0;
+    pub(crate) const SW_TRIG_BIT: u32 = 1 << 0;
     /// Layer 0 enable bit in SRC_CON.
-    pub const LAYER0_EN: u32 = 1 << 0;
+    pub(crate) const LAYER0_EN: u32 = 1 << 0;
 
     /// Frame complete interrupt enable.
-    pub const FME_CPL_INTEN: u32 = 1 << 1;
+    pub(crate) const FME_CPL_INTEN: u32 = 1 << 1;
 
     // WHY: L0_CON format field  -  bits [15:12] SELECT pixel format.
     // 0b0000 = RGB565, 0b0010 = RGB888, 0b0011 = ARGB8888.
 
     /// RGB565 format in layer control register bits [15:12].
-    pub const FMT_RGB565: u32 = 0b0000 << 12;
+    pub(crate) const FMT_RGB565: u32 = 0b0000 << 12;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,25 +152,25 @@ mod rdma {
     use super::RDMA0_BASE;
 
     /// Global control; bit 0 = ENGINE_EN, bit 1 = MODE_SEL (1=memory).
-    pub const GLOBAL_CON: usize = RDMA0_BASE;
+    pub(crate) const GLOBAL_CON: usize = RDMA0_BASE;
     /// Output frame width.
-    pub const SIZE_CON_0: usize = RDMA0_BASE + 0x014;
+    pub(crate) const SIZE_CON_0: usize = RDMA0_BASE + 0x014;
     /// Output frame height.
-    pub const SIZE_CON_1: usize = RDMA0_BASE + 0x018;
+    pub(crate) const SIZE_CON_1: usize = RDMA0_BASE + 0x018;
     /// Memory mode control (format selection).
-    pub const MEM_CON: usize = RDMA0_BASE + 0x024;
+    pub(crate) const MEM_CON: usize = RDMA0_BASE + 0x024;
     /// Memory source pitch (stride in bytes).
-    pub const MEM_SRC_PITCH: usize = RDMA0_BASE + 0x02C;
+    pub(crate) const MEM_SRC_PITCH: usize = RDMA0_BASE + 0x02C;
     /// Framebuffer start address (physical).
-    pub const MEM_START_ADDR: usize = RDMA0_BASE + 0x0F0;
+    pub(crate) const MEM_START_ADDR: usize = RDMA0_BASE + 0x0F0;
 
     /// ENGINE_EN bit.
-    pub const ENGINE_EN: u32 = 1 << 0;
+    pub(crate) const ENGINE_EN: u32 = 1 << 0;
     /// MODE_SEL bit (1 = memory mode).
-    pub const MODE_MEMORY: u32 = 1 << 1;
+    pub(crate) const MODE_MEMORY: u32 = 1 << 1;
 
     /// RGB565 input format in MEM_CON.
-    pub const FMT_RGB565: u32 = 0;
+    pub(crate) const FMT_RGB565: u32 = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,57 +182,57 @@ mod dsi {
     use super::DSI0_BASE;
 
     /// DSI start control.
-    pub const START: usize = DSI0_BASE;
+    pub(crate) const START: usize = DSI0_BASE;
     /// Interrupt enable.
-    pub const INTEN: usize = DSI0_BASE + 0x008;
+    pub(crate) const INTEN: usize = DSI0_BASE + 0x008;
     /// Interrupt status.
-    pub const INTSTA: usize = DSI0_BASE + 0x00C;
+    pub(crate) const INTSTA: usize = DSI0_BASE + 0x00C;
     /// Connection control.
-    pub const CON_CTRL: usize = DSI0_BASE + 0x010;
+    pub(crate) const CON_CTRL: usize = DSI0_BASE + 0x010;
     /// Mode control (CMD vs VDO).
-    pub const MODE_CTRL: usize = DSI0_BASE + 0x014;
+    pub(crate) const MODE_CTRL: usize = DSI0_BASE + 0x014;
     /// TX/RX control (lane count).
-    pub const TXRX_CTRL: usize = DSI0_BASE + 0x018;
+    pub(crate) const TXRX_CTRL: usize = DSI0_BASE + 0x018;
     /// Packet size control.
-    pub const PSCTRL: usize = DSI0_BASE + 0x01C;
+    pub(crate) const PSCTRL: usize = DSI0_BASE + 0x01C;
     /// Vertical sync active lines.
-    pub const VSA_NL: usize = DSI0_BASE + 0x020;
+    pub(crate) const VSA_NL: usize = DSI0_BASE + 0x020;
     /// Vertical back porch lines.
-    pub const VBP_NL: usize = DSI0_BASE + 0x024;
+    pub(crate) const VBP_NL: usize = DSI0_BASE + 0x024;
     /// Vertical front porch lines.
-    pub const VFP_NL: usize = DSI0_BASE + 0x028;
+    pub(crate) const VFP_NL: usize = DSI0_BASE + 0x028;
     /// Vertical active lines.
-    pub const VACT_NL: usize = DSI0_BASE + 0x02C;
+    pub(crate) const VACT_NL: usize = DSI0_BASE + 0x02C;
     /// Horizontal sync active word count.
-    pub const HSA_WC: usize = DSI0_BASE + 0x050;
+    pub(crate) const HSA_WC: usize = DSI0_BASE + 0x050;
     /// Horizontal back porch word count.
-    pub const HBP_WC: usize = DSI0_BASE + 0x054;
+    pub(crate) const HBP_WC: usize = DSI0_BASE + 0x054;
     /// Horizontal front porch word count.
-    pub const HFP_WC: usize = DSI0_BASE + 0x058;
+    pub(crate) const HFP_WC: usize = DSI0_BASE + 0x058;
     /// PHY LC (clock lane) control.
-    pub const PHY_LCCON: usize = DSI0_BASE + 0x104;
+    pub(crate) const PHY_LCCON: usize = DSI0_BASE + 0x104;
     /// PHY LD0 (data lane 0) control.
-    pub const PHY_LD0CON: usize = DSI0_BASE + 0x108;
+    pub(crate) const PHY_LD0CON: usize = DSI0_BASE + 0x108;
 
     /// Command queue size register (number of entries).
-    pub const CMDQ_SIZE: usize = DSI0_BASE + 0x060;
+    pub(crate) const CMDQ_SIZE: usize = DSI0_BASE + 0x060;
     /// Command queue data register 0 (first slot in the 128-entry queue).
     ///
     /// Each slot is 4 bytes. Slot N is at `CMDQ_DATA + N * 4`.
-    pub const CMDQ_DATA: usize = DSI0_BASE + 0x200;
+    pub(crate) const CMDQ_DATA: usize = DSI0_BASE + 0x200;
     /// Rack (read-ack) register — write 1 to acknowledge completed command.
-    pub const RACK: usize = DSI0_BASE + 0x084;
+    pub(crate) const RACK: usize = DSI0_BASE + 0x084;
 
     /// DSI_START bit.
-    pub const START_BIT: u32 = 1;
+    pub(crate) const START_BIT: u32 = 1;
     /// Video mode sync pulse.
-    pub const MODE_SYNC_PULSE: u32 = 1;
+    pub(crate) const MODE_SYNC_PULSE: u32 = 1;
     /// 1 data lane in TXRX_CTRL bits [3:2].
-    pub const LANE_1: u32 = 0b00 << 2;
+    pub(crate) const LANE_1: u32 = 0b00 << 2;
     /// Clock lane enable in PHY_LCCON.
-    pub const LC_HS_TX_EN: u32 = 1 << 0;
+    pub(crate) const LC_HS_TX_EN: u32 = 1 << 0;
     /// Data lane 0 enable in PHY_LD0CON.
-    pub const LD0_HS_TX_EN: u32 = 1 << 0;
+    pub(crate) const LD0_HS_TX_EN: u32 = 1 << 0;
 
     // WHY: CMDQ word format for DCS short writes (the only type we use):
     //   bits [7:0]   = config (0x00 = short write 0-param, 0x05 = short write 1-param,
@@ -245,11 +245,11 @@ mod dsi {
     // subsequent data into additional CMDQ slots.
 
     /// CMDQ config: DCS short write, no parameter (data type 0x05).
-    pub const CMDQ_SHORT_W0: u32 = 0x00;
+    pub(crate) const CMDQ_SHORT_W0: u32 = 0x00;
     /// CMDQ config: DCS short write, 1 parameter (data type 0x15).
-    pub const CMDQ_SHORT_W1: u32 = 0x05;
+    pub(crate) const CMDQ_SHORT_W1: u32 = 0x05;
     /// CMDQ config: DCS long write (data type 0x39).
-    pub const CMDQ_LONG_W: u32 = 0x39;
+    pub(crate) const CMDQ_LONG_W: u32 = 0x39;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,18 +261,18 @@ mod disp_mutex {
     use super::DISP_MUTEX_BASE;
 
     /// Mutex 0 enable.
-    pub const EN: usize = DISP_MUTEX_BASE + 0x020;
+    pub(crate) const EN: usize = DISP_MUTEX_BASE + 0x020;
     /// Mutex 0 module membership.
-    pub const MOD: usize = DISP_MUTEX_BASE + 0x02C;
+    pub(crate) const MOD: usize = DISP_MUTEX_BASE + 0x02C;
     /// Mutex 0 SOF source.
-    pub const SOF: usize = DISP_MUTEX_BASE + 0x030;
+    pub(crate) const SOF: usize = DISP_MUTEX_BASE + 0x030;
 
     /// Mutex enable bit.
-    pub const EN_BIT: u32 = 1;
+    pub(crate) const EN_BIT: u32 = 1;
     /// Module membership: OVL0(bit 0) | RDMA0(bit 3).
-    pub const MOD_OVL0_RDMA0: u32 = (1 << 0) | (1 << 3);
+    pub(crate) const MOD_OVL0_RDMA0: u32 = (1 << 0) | (1 << 3);
     /// SOF source: single mode (SW trigger, no external vsync).
-    pub const SOF_SINGLE: u32 = 0;
+    pub(crate) const SOF_SINGLE: u32 = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +297,7 @@ pub enum ColorFormat {
 
 impl ColorFormat {
     /// Bytes per pixel for this format.
-    pub const fn bpp(self) -> u16 {
+    pub(crate) const fn bpp(self) -> u16 {
         match self {
             Self::Rgb565 => 2,
             Self::Rgb888 => 3,
@@ -340,12 +340,12 @@ pub struct LcmParams {
 
 impl LcmParams {
     /// Compute the stride (bytes per row) for this panel's format.
-    pub const fn stride(&self) -> u32 {
+    pub(crate) const fn stride(&self) -> u32 {
         (self.width as u32) * self.color_format.bpp() as u32
     }
 
     /// Compute the total framebuffer size in bytes.
-    pub const fn framebuffer_size(&self) -> u32 {
+    pub(crate) const fn framebuffer_size(&self) -> u32 {
         self.stride() * (self.height as u32)
     }
 }
@@ -355,7 +355,7 @@ impl LcmParams {
 /// Split FROM [`LcmBacklight`] following Tock OS HIL patterns: not all
 /// panels support software backlight control, and init/power is a
 /// distinct concern FROM brightness adjustment.
-pub trait LcmControl {
+pub(crate) trait LcmControl {
     /// Return the panel's static parameters.
     fn get_params(&self) -> &LcmParams;
 
@@ -386,7 +386,7 @@ pub trait LcmControl {
 /// Separated FROM [`LcmControl`] because backlight hardware varies:
 /// some panels use PWM, others use DSI DCS commands, some have no
 /// software control at all.
-pub trait LcmBacklight {
+pub(crate) trait LcmBacklight {
     /// Set backlight brightness level (0 = off, 255 = maximum).
     ///
     /// # Safety
@@ -400,7 +400,7 @@ pub trait LcmBacklight {
 /// Implementors provide both panel control and backlight management.
 /// The [`DisplayDriver`] requires this trait bound for full pipeline
 /// operation.
-pub trait LcmDriver: LcmControl + LcmBacklight {}
+pub(crate) trait LcmDriver: LcmControl + LcmBacklight {}
 
 // WHY: blanket impl lets any type implementing both sub-traits
 // automatically satisfy LcmDriver without boilerplate.

@@ -85,7 +85,7 @@ impl CallPhase {
 /// Snapshot of call state for rendering.
 ///
 /// Updated each render cycle from the telephony subsystem.
-pub struct CallScreenState {
+pub(crate) struct CallScreenState {
     /// Current call phase.
     pub phase: CallPhase,
     /// Caller/callee phone number (ASCII bytes).
@@ -124,7 +124,7 @@ impl Default for CallScreenState {
 /// Format a call duration in seconds as "MM:SS".
 ///
 /// Returns a fixed-size buffer and valid length (always 5 for "MM:SS").
-pub fn format_duration(total_seconds: u64) -> ([u8; 8], usize) {
+pub(crate) fn format_duration(total_seconds: u64) -> ([u8; 8], usize) {
     let minutes = (total_seconds / 60) % 100; // cap at 99 min display
     let seconds = total_seconds % 60;
 
@@ -147,7 +147,7 @@ pub fn format_duration(total_seconds: u64) -> ([u8; 8], usize) {
 /// Input handling varies by call phase:
 /// - Incoming: LSK answers, RSK/End declines
 /// - Active/Dialing/Ringing: End hangs up
-pub struct CallScreen {
+pub(crate) struct CallScreen {
     /// Current state snapshot, updated before each render.
     pub state: CallScreenState,
 }
@@ -170,14 +170,14 @@ pub enum CallAction {
 
 impl CallScreen {
     /// Create a new call screen with default state.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: CallScreenState::default(),
         }
     }
 
     /// Update the state snapshot. Called each render cycle.
-    pub fn update_state(&mut self, state: CallScreenState) {
+    pub(crate) fn update_state(&mut self, state: CallScreenState) {
         self.state = state;
     }
 
@@ -202,7 +202,7 @@ impl CallScreen {
     ///
     /// The caller should inspect the returned `CallAction` to perform
     /// telephony operations (answer, hangup, mute, speaker).
-    pub fn handle_key(&mut self, key: Key) -> CallAction {
+    pub(crate) fn handle_key(&mut self, key: Key) -> CallAction {
         match self.state.phase {
             CallPhase::Incoming => match key {
                 Key::Lsk | Key::Call => CallAction::Answer,

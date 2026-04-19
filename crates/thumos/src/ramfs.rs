@@ -43,7 +43,7 @@ struct RamInode {
 ///
 /// Inode 0 is always the root directory. New inodes are allocated by
 /// appending to the `inodes` vector.
-pub struct RamFs {
+pub(crate) struct RamFs {
     /// All inodes in the filesystem. Index == inode id.
     inodes: Vec<RamInode>,
     /// Next inode id to allocate (always == inodes.len()).
@@ -52,7 +52,7 @@ pub struct RamFs {
 
 impl RamFs {
     /// Create an empty filesystem with a root directory at inode 0.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let root = RamInode {
             inode_type: InodeType::Directory,
             data: Vec::new(),
@@ -70,7 +70,7 @@ impl RamFs {
     /// Creates a regular file with the given name and data as a direct
     /// child of the root directory. If a file with the same name already
     /// exists at the root, it is replaced.
-    pub fn add(&mut self, name: &str, data: &[u8]) {
+    pub(crate) fn add(&mut self, name: &str, data: &[u8]) {
         // Check if a file with this name already exists at root
         let root_children = &self.inodes[0].children;
         for &(ref child_name, child_id) in root_children {
@@ -101,7 +101,7 @@ impl RamFs {
     ///
     /// Walks the inode tree from root, resolving path components separated
     /// by `/`. Returns the file data if found.
-    pub fn find(&self, name: &str) -> Option<&[u8]> {
+    pub(crate) fn find(&self, name: &str) -> Option<&[u8]> {
         // Strip leading slash if present
         let path = name.strip_prefix('/').unwrap_or(name);
 
@@ -149,7 +149,7 @@ impl RamFs {
     }
 
     /// List all file names (backward-compatibility, root level only).
-    pub fn list(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn list(&self) -> impl Iterator<Item = &str> {
         self.inodes[0]
             .children
             .iter()
@@ -157,7 +157,7 @@ impl RamFs {
     }
 
     /// Number of files at root level (backward-compatibility).
-    pub fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.inodes[0]
             .children
             .iter()
@@ -170,7 +170,7 @@ impl RamFs {
     }
 
     /// Total bytes used by all files in the filesystem.
-    pub fn total_size(&self) -> usize {
+    pub(crate) fn total_size(&self) -> usize {
         self.inodes
             .iter()
             .filter(|i| i.inode_type == InodeType::RegularFile)
@@ -183,7 +183,7 @@ impl RamFs {
     /// This is the format used by Linux initramfs. The parser creates
     /// intermediate directories as needed and inserts files into the
     /// correct directory inodes.
-    pub fn from_cpio(data: &[u8]) -> Self {
+    pub(crate) fn from_cpio(data: &[u8]) -> Self {
         let mut fs = Self::new();
         let mut offset = 0;
 

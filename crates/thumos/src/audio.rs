@@ -78,7 +78,7 @@ pub enum SessionPriority {
 impl SessionPriority {
     /// Map a session kind to its default priority.
     #[must_use]
-    pub const fn from_kind(kind: SessionKind) -> Self {
+    pub(crate) const fn from_kind(kind: SessionKind) -> Self {
         match kind {
             SessionKind::VoiceCall => Self::Call,
             SessionKind::Ringtone => Self::High,
@@ -161,7 +161,7 @@ const DEFAULT_VOLUME: u8 = 8;
 ///
 /// Generic over the codec implementation (`C: AudioCodecOps`) for
 /// testability.
-pub struct AudioManager<C: AudioCodecOps> {
+pub(crate) struct AudioManager<C: AudioCodecOps> {
     /// All sessions (active and preempted).
     sessions: Vec<AudioSession>,
     /// Next session ID to allocate.
@@ -183,7 +183,7 @@ impl<C: AudioCodecOps> AudioManager<C> {
     ///
     /// The manager starts with no sessions, codec powered off.
     #[must_use]
-    pub fn new(codec: C) -> Self {
+    pub(crate) fn new(codec: C) -> Self {
         Self {
             sessions: Vec::new(),
             next_id: 1,
@@ -215,7 +215,7 @@ impl<C: AudioCodecOps> AudioManager<C> {
     /// - [`AudioError::PowerError`] -- codec power-on failed.
     /// - [`AudioError::RouteError`] -- output route configuration failed.
     /// - [`AudioError::AdcNotEnabled`] -- mic ADC enable failed for voice call.
-    pub fn open_session(
+    pub(crate) fn open_session(
         &mut self,
         kind: SessionKind,
         route: AudioRoute,
@@ -280,7 +280,7 @@ impl<C: AudioCodecOps> AudioManager<C> {
     ///
     /// - [`AudioError::SessionNotFound`] -- no session with the given ID.
     /// - [`AudioError::PowerError`] -- codec power-off failed.
-    pub fn close_session(&mut self, id: u32) -> Result<(), AudioError> {
+    pub(crate) fn close_session(&mut self, id: u32) -> Result<(), AudioError> {
         let pos = self
             .sessions
             .iter()
@@ -319,7 +319,7 @@ impl<C: AudioCodecOps> AudioManager<C> {
     ///
     /// - [`AudioError::SessionNotFound`] -- no session with the given ID.
     /// - [`AudioError::RouteError`] -- output route configuration failed.
-    pub fn set_route(&mut self, id: u32, route: AudioRoute) -> Result<(), AudioError> {
+    pub(crate) fn set_route(&mut self, id: u32, route: AudioRoute) -> Result<(), AudioError> {
         let session = self
             .sessions
             .iter_mut()
@@ -344,7 +344,7 @@ impl<C: AudioCodecOps> AudioManager<C> {
     /// # Errors
     ///
     /// - [`AudioError::VolumeError`] -- codec volume write failed.
-    pub fn set_volume(&mut self, level: u8) -> Result<(), AudioError> {
+    pub(crate) fn set_volume(&mut self, level: u8) -> Result<(), AudioError> {
         self.volume = level.min(15);
         if self.codec_powered {
             self.codec.set_volume(self.volume)?;
@@ -354,42 +354,42 @@ impl<C: AudioCodecOps> AudioManager<C> {
 
     /// Return a slice of all sessions (active and preempted).
     #[must_use]
-    pub fn active_sessions(&self) -> &[AudioSession] {
+    pub(crate) fn active_sessions(&self) -> &[AudioSession] {
         &self.sessions
     }
 
     /// Return the number of sessions (refcount).
     #[must_use]
-    pub fn session_count(&self) -> usize {
+    pub(crate) fn session_count(&self) -> usize {
         self.sessions.len()
     }
 
     /// Return whether the codec is currently powered on.
     #[must_use]
-    pub fn is_codec_powered(&self) -> bool {
+    pub(crate) fn is_codec_powered(&self) -> bool {
         self.codec_powered
     }
 
     /// Return whether the mic (ADC + bias) is currently powered on.
     #[must_use]
-    pub fn is_mic_powered(&self) -> bool {
+    pub(crate) fn is_mic_powered(&self) -> bool {
         self.mic_powered
     }
 
     /// Return the current active output route.
     #[must_use]
-    pub fn active_route(&self) -> AudioRoute {
+    pub(crate) fn active_route(&self) -> AudioRoute {
         self.active_route
     }
 
     /// Return a reference to the underlying codec.
     #[must_use]
-    pub fn codec(&self) -> &C {
+    pub(crate) fn codec(&self) -> &C {
         &self.codec
     }
 
     /// Return a mutable reference to the underlying codec.
-    pub fn codec_mut(&mut self) -> &mut C {
+    pub(crate) fn codec_mut(&mut self) -> &mut C {
         &mut self.codec
     }
 

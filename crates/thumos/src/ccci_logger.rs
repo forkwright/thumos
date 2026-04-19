@@ -127,7 +127,7 @@ impl fmt::Display for CcciLogEntry {
 /// Capacity: [`LOG_CAPACITY`] entries (fits within 4 KB).  Oldest entries
 /// are silently overwritten when full.
 #[must_use]
-pub struct CcciLogger {
+pub(crate) struct CcciLogger {
     /// Ring buffer storage.
     entries: [CcciLogEntry; LOG_CAPACITY],
     /// Next write index.
@@ -138,7 +138,7 @@ pub struct CcciLogger {
 
 impl CcciLogger {
     /// Create a new, empty logger.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         const EMPTY: CcciLogEntry = CcciLogEntry {
             timestamp: 0,
             channel: 0,
@@ -155,7 +155,7 @@ impl CcciLogger {
     }
 
     /// Record a packet header.
-    pub fn record(&mut self, entry: CcciLogEntry) {
+    pub(crate) fn record(&mut self, entry: CcciLogEntry) {
         self.entries[self.head] = entry;
         self.head = (self.head + 1) % LOG_CAPACITY;
         if self.count < LOG_CAPACITY {
@@ -165,13 +165,13 @@ impl CcciLogger {
 
     /// Number of live entries.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.count
     }
 
     /// Whether the logger is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.count == 0
     }
 
@@ -180,7 +180,7 @@ impl CcciLogger {
     /// Returns a pair of slices `(older, newer)` due to the ring buffer
     /// potentially wrapping.
     #[must_use]
-    pub fn entries(&self) -> (&[CcciLogEntry], &[CcciLogEntry]) {
+    pub(crate) fn entries(&self) -> (&[CcciLogEntry], &[CcciLogEntry]) {
         if self.count == 0 {
             return (&[], &[]);
         }
@@ -195,7 +195,7 @@ impl CcciLogger {
 
     /// Get an entry by chronological index (0 = oldest live entry).
     #[must_use]
-    pub fn get(&self, index: usize) -> Option<&CcciLogEntry> {
+    pub(crate) fn get(&self, index: usize) -> Option<&CcciLogEntry> {
         if index >= self.count {
             return None;
         }
@@ -211,7 +211,7 @@ impl CcciLogger {
     ///
     /// Scans live entries where `timestamp >= since`.
     #[must_use]
-    pub fn channel_count_since(&self, channel: u32, since: u64) -> u32 {
+    pub(crate) fn channel_count_since(&self, channel: u32, since: u64) -> u32 {
         let mut count = 0u32;
         let (older, newer) = self.entries();
         for entry in older.iter().chain(newer.iter()) {
@@ -323,7 +323,7 @@ pub struct ModemBaseline {
 
 impl ModemBaseline {
     /// Create an empty baseline with no active channels.
-    pub const fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self {
             channels: [ChannelStats::inactive(); CHANNEL_COUNT],
             window_start: 0,
@@ -354,7 +354,7 @@ impl fmt::Display for ModemBaseline {
 /// * `log` -- the CCCI traffic logger with recorded entries
 /// * `window_end_ms` -- the end timestamp of the 60s baseline window
 #[must_use]
-pub fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBaseline {
+pub(crate) fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBaseline {
     let window_start = window_end_ms.saturating_sub(BASELINE_WINDOW_MS);
 
     let mut baseline = ModemBaseline {
@@ -493,7 +493,7 @@ const MAX_ANOMALIES: usize = 16;
 ///
 /// Returns an array of up to [`MAX_ANOMALIES`] anomalies and the count.
 #[must_use]
-pub fn detect_anomalies(
+pub(crate) fn detect_anomalies(
     log: &CcciLogger,
     baseline: &ModemBaseline,
     now: u64,
@@ -635,7 +635,7 @@ impl fmt::Display for FirewallVerdict {
 /// SECURITY: Evaluates before packet dispatch.  Non-allowlisted packets
 /// are dropped and audit-logged.
 #[must_use]
-pub struct CcciFirewall {
+pub(crate) struct CcciFirewall {
     /// Current firewall mode.
     mode: FirewallMode,
     /// Allowlisted channel numbers.
@@ -650,7 +650,7 @@ pub struct CcciFirewall {
 
 impl CcciFirewall {
     /// Create a new firewall in the given mode.
-    pub fn new(mode: FirewallMode) -> Self {
+    pub(crate) fn new(mode: FirewallMode) -> Self {
         let mut fw = Self {
             mode,
             allowlist: [0; MAX_ALLOWLIST],
@@ -663,7 +663,7 @@ impl CcciFirewall {
     }
 
     /// Apply a firewall mode, replacing the allowlist.
-    pub fn apply_mode(&mut self, mode: FirewallMode) {
+    pub(crate) fn apply_mode(&mut self, mode: FirewallMode) {
         self.mode = mode;
         self.allowlist_len = 0;
 
@@ -712,7 +712,7 @@ impl CcciFirewall {
     ///
     /// Returns [`FirewallVerdict::Allow`] if the channel is allowlisted,
     /// [`FirewallVerdict::Drop`] otherwise.
-    pub fn evaluate(&mut self, channel: u32) -> FirewallVerdict {
+    pub(crate) fn evaluate(&mut self, channel: u32) -> FirewallVerdict {
         for i in 0..self.allowlist_len {
             if self.allowlist[i] == channel {
                 self.allow_count += 1;
@@ -725,31 +725,31 @@ impl CcciFirewall {
 
     /// Whether a channel is in the allowlist (non-mutating check).
     #[must_use]
-    pub fn is_allowlisted(&self, channel: u32) -> bool {
+    pub(crate) fn is_allowlisted(&self, channel: u32) -> bool {
         self.allowlist[..self.allowlist_len].contains(&channel)
     }
 
     /// Current firewall mode.
     #[must_use]
-    pub fn mode(&self) -> FirewallMode {
+    pub(crate) fn mode(&self) -> FirewallMode {
         self.mode
     }
 
     /// Total packets dropped.
     #[must_use]
-    pub fn drop_count(&self) -> u64 {
+    pub(crate) fn drop_count(&self) -> u64 {
         self.drop_count
     }
 
     /// Total packets allowed.
     #[must_use]
-    pub fn allow_count(&self) -> u64 {
+    pub(crate) fn allow_count(&self) -> u64 {
         self.allow_count
     }
 
     /// Number of channels in the allowlist.
     #[must_use]
-    pub fn allowlist_len(&self) -> usize {
+    pub(crate) fn allowlist_len(&self) -> usize {
         self.allowlist_len
     }
 }

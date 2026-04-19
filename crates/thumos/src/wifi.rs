@@ -142,10 +142,10 @@ pub enum WifiSecurity {
 // ---------------------------------------------------------------------------
 
 /// Maximum SSID length in bytes (IEEE 802.11-2020).
-pub const MAX_SSID_LEN: usize = 32;
+pub(crate) const MAX_SSID_LEN: usize = 32;
 
 /// Maximum passphrase length in bytes (WPA2-Personal: 8-63 ASCII).
-pub const MAX_PASSPHRASE_LEN: usize = 64;
+pub(crate) const MAX_PASSPHRASE_LEN: usize = 64;
 
 /// WiFi network configuration.
 ///
@@ -171,7 +171,7 @@ impl WifiConfig {
     /// Truncates SSID and passphrase to their respective maximum lengths
     /// rather than returning an error.
     #[must_use]
-    pub fn new(ssid: &[u8], passphrase: &[u8], security: WifiSecurity) -> Self {
+    pub(crate) fn new(ssid: &[u8], passphrase: &[u8], security: WifiSecurity) -> Self {
         let mut cfg = Self {
             ssid: [0u8; MAX_SSID_LEN],
             ssid_len: 0,
@@ -190,13 +190,13 @@ impl WifiConfig {
 
     /// Return the SSID as a byte slice.
     #[must_use]
-    pub fn ssid(&self) -> &[u8] {
+    pub(crate) fn ssid(&self) -> &[u8] {
         &self.ssid[..self.ssid_len as usize]
     }
 
     /// Return the passphrase as a byte slice.
     #[must_use]
-    pub fn passphrase(&self) -> &[u8] {
+    pub(crate) fn passphrase(&self) -> &[u8] {
         &self.passphrase[..self.passphrase_len as usize]
     }
 }
@@ -231,7 +231,7 @@ pub struct ScanResult {
 impl ScanResult {
     /// Return the SSID as a byte slice.
     #[must_use]
-    pub fn ssid(&self) -> &[u8] {
+    pub(crate) fn ssid(&self) -> &[u8] {
         &self.ssid[..self.ssid_len as usize]
     }
 }
@@ -248,7 +248,7 @@ impl ScanResult {
 ///
 /// Uses the kernel CSPRNG (`csprng::kernel_random_bytes`).
 #[must_use]
-pub fn generate_random_mac() -> [u8; 6] {
+pub(crate) fn generate_random_mac() -> [u8; 6] {
     let mut mac = [0u8; 6];
     csprng::kernel_random_bytes(&mut mac);
     // INVARIANT: bit 0 clear = unicast, bit 1 set = locally administered
@@ -261,22 +261,22 @@ pub fn generate_random_mac() -> [u8; 6] {
 // ---------------------------------------------------------------------------
 
 /// PMK/PSK output length in bytes (IEEE 802.11-2020).
-pub const PMK_LEN: usize = 32;
+pub(crate) const PMK_LEN: usize = 32;
 
 /// Key Confirmation Key length in bytes.
-pub const KCK_LEN: usize = 16;
+pub(crate) const KCK_LEN: usize = 16;
 
 /// Key Encryption Key length in bytes.
-pub const KEK_LEN: usize = 16;
+pub(crate) const KEK_LEN: usize = 16;
 
 /// Temporal Key length in bytes (WPA2-CCMP).
-pub const TK_LEN: usize = 16;
+pub(crate) const TK_LEN: usize = 16;
 
 /// Total PTK length: KCK + KEK + TK (WPA2-CCMP, 384 bits).
-pub const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
+pub(crate) const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
 
 /// MIC length in bytes.
-pub const MIC_LEN: usize = 16;
+pub(crate) const MIC_LEN: usize = 16;
 
 /// Pairwise Transient Key components.
 ///
@@ -319,7 +319,7 @@ impl Drop for Ptk {
 /// Uses PBKDF2-HMAC-SHA1 with 4096 iterations and a 32-byte output as
 /// specified in IEEE 802.11-2020, section 12.4.4.3.1.
 #[must_use]
-pub fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
+pub(crate) fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
     let mut pmk = [0u8; PMK_LEN];
     // Infallible: 4096 > 0.
     let _ = pbkdf2_hmac_sha1(passphrase, ssid, 4096, &mut pmk);
@@ -334,7 +334,7 @@ pub fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
 ///               min(AA,SPA) || max(AA,SPA) || min(ANonce,SNonce) || max(ANonce,SNonce))
 /// ```
 #[must_use]
-pub fn derive_ptk(
+pub(crate) fn derive_ptk(
     pmk: &[u8; PMK_LEN],
     anonce: &[u8; 32],
     snonce: &[u8; 32],
@@ -376,7 +376,7 @@ pub fn derive_ptk(
 /// Used to authenticate EAPOL-Key frames during the 4-way handshake
 /// (messages 2, 3, and 4).
 #[must_use]
-pub fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
+pub(crate) fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
     let full = hmac_sha1(kck, data);
     let mut mic = [0u8; MIC_LEN];
     mic.copy_from_slice(&full[..MIC_LEN]);
@@ -388,7 +388,7 @@ pub fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
 /// Uses constant-time comparison to prevent timing side-channel attacks.
 /// Returns `true` only when the MIC is correct.
 #[must_use]
-pub fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
+pub(crate) fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
     let computed = compute_mic(kck, data);
     constant_time_eq(&computed, expected_mic)
 }
@@ -424,13 +424,13 @@ const EAPOL_HEADER_LEN: usize = 4;
 const EAPOL_KEY_FIXED_LEN: usize = 95;
 
 /// Nonce field length in bytes.
-pub const NONCE_LEN: usize = 32;
+pub(crate) const NONCE_LEN: usize = 32;
 
 /// IV field length in bytes.
-pub const IV_LEN: usize = 16;
+pub(crate) const IV_LEN: usize = 16;
 
 /// RSN key descriptor type (WPA2/WPA3).
-pub const DESCRIPTOR_TYPE_RSN: u8 = 0x02;
+pub(crate) const DESCRIPTOR_TYPE_RSN: u8 = 0x02;
 
 /// EAPOL packet type discriminant (IEEE 802.1X-2020, table 11-3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -476,43 +476,43 @@ pub struct KeyInfo(pub u16);
 impl KeyInfo {
     /// Key descriptor version (bits 0-2).
     #[must_use]
-    pub const fn descriptor_version(self) -> u8 {
+    pub(crate) const fn descriptor_version(self) -> u8 {
         (self.0 & 0x0007) as u8
     }
 
     /// True if pairwise (unicast) key; false for group/broadcast key.
     #[must_use]
-    pub const fn pairwise(self) -> bool {
+    pub(crate) const fn pairwise(self) -> bool {
         self.0 & 0x0008 != 0
     }
 
     /// True if supplicant shall install the key.
     #[must_use]
-    pub const fn install(self) -> bool {
+    pub(crate) const fn install(self) -> bool {
         self.0 & 0x0040 != 0
     }
 
     /// True if message requires an acknowledgement.
     #[must_use]
-    pub const fn ack(self) -> bool {
+    pub(crate) const fn ack(self) -> bool {
         self.0 & 0x0080 != 0
     }
 
     /// True if a MIC is present in this frame.
     #[must_use]
-    pub const fn mic(self) -> bool {
+    pub(crate) const fn mic(self) -> bool {
         self.0 & 0x0100 != 0
     }
 
     /// True if the RSNA has been established.
     #[must_use]
-    pub const fn secure(self) -> bool {
+    pub(crate) const fn secure(self) -> bool {
         self.0 & 0x0200 != 0
     }
 
     /// True if key data is encrypted (AES-KEYWRAP).
     #[must_use]
-    pub const fn encrypted_key_data(self) -> bool {
+    pub(crate) const fn encrypted_key_data(self) -> bool {
         self.0 & 0x1000 != 0
     }
 }
@@ -563,7 +563,7 @@ pub struct EapolFrame {
 /// declared packet length, and [`WifiError::UnknownEapolType`] for
 /// unrecognised packet type bytes.
 #[must_use]
-pub fn eapol_parse(data: &[u8]) -> Result<EapolFrame, WifiError> {
+pub(crate) fn eapol_parse(data: &[u8]) -> Result<EapolFrame, WifiError> {
     if data.len() < EAPOL_HEADER_LEN {
         return Err(WifiError::FrameTooShort {
             need: EAPOL_HEADER_LEN,
@@ -661,7 +661,7 @@ fn eapol_parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, WifiError> {
 
 /// Encode an EAPOL frame into a byte vector.
 #[must_use]
-pub fn eapol_encode(frame: &EapolFrame) -> Vec<u8> {
+pub(crate) fn eapol_encode(frame: &EapolFrame) -> Vec<u8> {
     let body = frame
         .key_frame
         .as_ref()
@@ -755,7 +755,7 @@ pub struct WpaHandshake {
 impl WpaHandshake {
     /// Create a new handshake context.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: HandshakeState::AwaitMsg1,
             anonce: [0u8; NONCE_LEN],
@@ -775,7 +775,7 @@ impl WpaHandshake {
     /// * `pmk` - Pre-computed Pairwise Master Key.
     /// * `own_mac` - Supplicant MAC address (locally-administered).
     /// * `ap_mac` - Authenticator (AP) MAC address.
-    pub fn process_message(
+    pub(crate) fn process_message(
         &mut self,
         key_frame: &EapolKeyFrame,
         pmk: &[u8; PMK_LEN],
@@ -844,7 +844,7 @@ impl WpaHandshake {
     }
 
     /// Mark the handshake as complete after Message 4 has been sent.
-    pub fn complete(&mut self) {
+    pub(crate) fn complete(&mut self) {
         if self.state == HandshakeState::SendMsg4 {
             self.state = HandshakeState::Complete;
         }
@@ -854,7 +854,7 @@ impl WpaHandshake {
     ///
     /// Returns `None` if the handshake is not in a state that requires sending.
     #[must_use]
-    pub fn build_response(&self) -> Option<EapolFrame> {
+    pub(crate) fn build_response(&self) -> Option<EapolFrame> {
         match self.state {
             HandshakeState::SendMsg2 => {
                 // Message 2: supplicant sends SNonce, mic=true, ack=false
@@ -953,7 +953,7 @@ impl Default for WpaHandshake {
 ///
 /// Allows test-friendly mocking of MMIO access. The real implementation
 /// (`WifiHw`) uses `#[cfg(not(test))]` MMIO; tests provide a mock.
-pub trait WifiHwOps {
+pub(crate) trait WifiHwOps {
     /// Transmit a frame to the WiFi hardware.
     fn send_frame(&mut self, data: &[u8]) -> Result<(), WifiError>;
 
@@ -974,7 +974,7 @@ pub trait WifiHwOps {
 ///
 /// Provides MMIO-based access to the WiFi hardware on the real target,
 /// and a mock-friendly scan result buffer for testing.
-pub struct WifiHw {
+pub(crate) struct WifiHw {
     /// WLAN MMIO base address.
     wlan_base: usize,
     /// Combo-chip CONSYS base address.
@@ -986,7 +986,7 @@ pub struct WifiHw {
 impl WifiHw {
     /// Construct a new WiFi hardware driver.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             wlan_base: MT6739_WLAN,
             consys_base: MT6739_CONSYS,
@@ -1032,7 +1032,7 @@ impl WifiHwOps for WifiHw {
 ///
 /// Orchestrates the full connection lifecycle: scan, associate, handshake,
 /// connected. Uses MAC randomization for each new connection attempt.
-pub struct WifiDriver<H: WifiHwOps> {
+pub(crate) struct WifiDriver<H: WifiHwOps> {
     /// Current connection state.
     state: WifiState,
     /// Hardware abstraction.
@@ -1050,7 +1050,7 @@ impl<H: WifiHwOps> WifiDriver<H> {
     ///
     /// Generates an initial random MAC address.
     #[must_use]
-    pub fn new(hw: H) -> Self {
+    pub(crate) fn new(hw: H) -> Self {
         Self {
             state: WifiState::Disconnected,
             hw,
@@ -1062,18 +1062,18 @@ impl<H: WifiHwOps> WifiDriver<H> {
 
     /// Return the current connection state.
     #[must_use]
-    pub const fn state(&self) -> &WifiState {
+    pub(crate) const fn state(&self) -> &WifiState {
         &self.state
     }
 
     /// Return the current MAC address.
     #[must_use]
-    pub const fn mac_address(&self) -> &[u8; 6] {
+    pub(crate) const fn mac_address(&self) -> &[u8; 6] {
         &self.mac
     }
 
     /// Set the network configuration for the next connection attempt.
-    pub fn configure(&mut self, config: WifiConfig) {
+    pub(crate) fn configure(&mut self, config: WifiConfig) {
         self.config = Some(config);
     }
 
@@ -1085,7 +1085,7 @@ impl<H: WifiHwOps> WifiDriver<H> {
     ///
     /// Returns `WifiError` if the hardware scan cannot be started.
     #[must_use]
-    pub fn start_scan(&mut self) -> Result<(), WifiError> {
+    pub(crate) fn start_scan(&mut self) -> Result<(), WifiError> {
         // Fresh MAC for each scan (privacy)
         self.mac = generate_random_mac();
         self.hw.scan_start()?;
@@ -1095,12 +1095,12 @@ impl<H: WifiHwOps> WifiDriver<H> {
 
     /// Return a reference to the hardware backend.
     #[must_use]
-    pub const fn hw(&self) -> &H {
+    pub(crate) const fn hw(&self) -> &H {
         &self.hw
     }
 
     /// Return a mutable reference to the hardware backend.
-    pub fn hw_mut(&mut self) -> &mut H {
+    pub(crate) fn hw_mut(&mut self) -> &mut H {
         &mut self.hw
     }
 }

@@ -124,7 +124,7 @@ fn format_number(digits: &[u8], len: usize) -> ([u8; 24], usize) {
 /// key handling. The caller is responsible for wiring the
 /// `ScreenAction::Navigate(ScreenId::InCall)` result to the telephony
 /// subsystem's `dial()` method.
-pub struct DialerScreen {
+pub(crate) struct DialerScreen {
     /// Entered digit sequence (no formatting separators).
     digits: [u8; MAX_DIGITS],
     /// Number of valid digits in the buffer.
@@ -133,7 +133,7 @@ pub struct DialerScreen {
 
 impl DialerScreen {
     /// Create a new dialer screen with an empty number buffer.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             digits: [0u8; MAX_DIGITS],
             digit_count: 0,
@@ -142,13 +142,13 @@ impl DialerScreen {
 
     /// Return the current digit string as a byte slice.
     #[must_use]
-    pub fn digits(&self) -> &[u8] {
+    pub(crate) fn digits(&self) -> &[u8] {
         &self.digits[..self.digit_count]
     }
 
     /// Return the number of entered digits.
     #[must_use]
-    pub fn digit_count(&self) -> usize {
+    pub(crate) fn digit_count(&self) -> usize {
         self.digit_count
     }
 

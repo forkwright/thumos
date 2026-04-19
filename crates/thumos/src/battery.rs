@@ -62,7 +62,7 @@ const VOLTAGE_TABLE: &[LookupEntry] = &[
 ///
 /// The battery state changes slowly; 60 seconds is sufficient for
 /// UI updates while keeping CPU usage minimal.
-pub const POLL_INTERVAL_SECS: u64 = 60;
+pub(crate) const POLL_INTERVAL_SECS: u64 = 60;
 
 // ---------------------------------------------------------------------------
 // Battery info
@@ -106,7 +106,7 @@ impl Default for BatteryInfo {
 ///
 /// Implementors provide platform-specific register reads for the fuel
 /// gauge IC (e.g., MAX17048, BQ27441) or ADC-based voltage measurement.
-pub trait BatteryHwOps {
+pub(crate) trait BatteryHwOps {
     /// Read the battery terminal voltage in millivolts.
     fn read_voltage(&self) -> u16;
 
@@ -131,7 +131,7 @@ pub trait BatteryHwOps {
 ///
 /// Uses piecewise linear interpolation over [`VOLTAGE_TABLE`]. Voltages
 /// above 4200 mV clamp to 100%; below 3000 mV clamp to 0%.
-pub fn voltage_to_percentage(voltage_mv: u16) -> u8 {
+pub(crate) fn voltage_to_percentage(voltage_mv: u16) -> u8 {
     // Above the highest entry: full charge.
     if voltage_mv >= VOLTAGE_TABLE[0].voltage_mv {
         return VOLTAGE_TABLE[0].percentage;
@@ -179,7 +179,7 @@ pub fn voltage_to_percentage(voltage_mv: u16) -> u8 {
 ///
 /// The caller is responsible for invoking [`poll`](Self::poll) at
 /// appropriate intervals (see [`POLL_INTERVAL_SECS`]).
-pub struct BatteryMonitor {
+pub(crate) struct BatteryMonitor {
     /// Most recent battery state snapshot.
     info: BatteryInfo,
     /// Kernel tick (milliseconds) of the last successful poll.
@@ -189,7 +189,7 @@ pub struct BatteryMonitor {
 impl BatteryMonitor {
     /// Create a new battery monitor with default (unknown) state.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             info: BatteryInfo::default(),
             last_poll_tick: 0,
@@ -198,7 +198,7 @@ impl BatteryMonitor {
 
     /// Return the most recent battery info snapshot.
     #[must_use]
-    pub fn info(&self) -> &BatteryInfo {
+    pub(crate) fn info(&self) -> &BatteryInfo {
         &self.info
     }
 
@@ -206,7 +206,7 @@ impl BatteryMonitor {
     ///
     /// Reads voltage, current, temperature, and charging state from
     /// the provided hardware ops, then updates the internal snapshot.
-    pub fn poll<H: BatteryHwOps>(&mut self, hw: &H, current_tick: u64) {
+    pub(crate) fn poll<H: BatteryHwOps>(&mut self, hw: &H, current_tick: u64) {
         let voltage_mv = hw.read_voltage();
         let _current_ma = hw.read_current();
         let temperature_c = hw.read_temperature();
@@ -227,14 +227,14 @@ impl BatteryMonitor {
     /// Returns `true` if at least [`POLL_INTERVAL_SECS`] seconds have
     /// passed since the last poll.
     #[must_use]
-    pub fn should_poll(&self, current_tick: u64) -> bool {
+    pub(crate) fn should_poll(&self, current_tick: u64) -> bool {
         let elapsed_ms = current_tick.saturating_sub(self.last_poll_tick);
         elapsed_ms >= POLL_INTERVAL_SECS * 1000
     }
 
     /// Return the tick of the last poll.
     #[must_use]
-    pub fn last_poll_tick(&self) -> u64 {
+    pub(crate) fn last_poll_tick(&self) -> u64 {
         self.last_poll_tick
     }
 }

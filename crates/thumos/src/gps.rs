@@ -179,7 +179,7 @@ impl GpsTime {
     /// Uses a simplified calculation (no leap second correction).
     /// Accurate enough for clock hierarchy purposes.
     #[must_use]
-    pub fn to_epoch_secs(self) -> u64 {
+    pub(crate) fn to_epoch_secs(self) -> u64 {
         // Days from Unix epoch (1970-01-01) to the given date.
         // Simplified: 365.25 days/year average, 30.44 days/month average.
         let years_since_epoch = self.year.saturating_sub(1970) as u64;
@@ -406,7 +406,7 @@ fn parse_altitude_mm(bytes: &[u8]) -> Option<i32> {
 /// Returns `GpsError::NoFix` if fix quality is 0.
 /// Returns `GpsError::ParseError` if the sentence cannot be parsed.
 #[must_use]
-pub fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
+pub(crate) fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
     validate_checksum(sentence)?;
 
     // Extract body between $ and *.
@@ -459,7 +459,7 @@ pub fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
 /// Returns `GpsError::NoFix` if status is 'V' (void).
 /// Returns `GpsError::ParseError` if the sentence cannot be parsed.
 #[must_use]
-pub fn parse_rmc(sentence: &[u8]) -> Result<(GpsPosition, GpsTime), GpsError> {
+pub(crate) fn parse_rmc(sentence: &[u8]) -> Result<(GpsPosition, GpsTime), GpsError> {
     validate_checksum(sentence)?;
 
     let start = sentence.iter().position(|&b| b == b'$')
@@ -533,7 +533,7 @@ fn parse_time_date(time_field: &[u8], date_field: &[u8]) -> Result<GpsTime, GpsE
 // ---------------------------------------------------------------------------
 
 /// Accumulates incoming bytes until a complete NMEA sentence (`\r\n`) is found.
-pub struct SentenceBuffer {
+pub(crate) struct SentenceBuffer {
     /// Internal byte buffer.
     buf: Vec<u8>,
 }
@@ -541,14 +541,14 @@ pub struct SentenceBuffer {
 impl SentenceBuffer {
     /// Create a new empty sentence buffer.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             buf: Vec::with_capacity(SENTENCE_BUF_CAPACITY),
         }
     }
 
     /// Feed bytes into the buffer.
-    pub fn feed(&mut self, data: &[u8]) {
+    pub(crate) fn feed(&mut self, data: &[u8]) {
         self.buf.extend_from_slice(data);
         // Prevent unbounded growth.
         if self.buf.len() > SENTENCE_BUF_CAPACITY {
@@ -563,7 +563,7 @@ impl SentenceBuffer {
     /// A sentence starts with `$` and ends with `\r\n`.
     /// Returns the sentence bytes (including `$` and checksum) and removes
     /// them from the buffer.
-    pub fn take_sentence(&mut self) -> Option<Vec<u8>> {
+    pub(crate) fn take_sentence(&mut self) -> Option<Vec<u8>> {
         // Find \r\n.
         let crlf_pos = self.buf.windows(2).position(|w| w == b"\r\n")?;
 
@@ -581,13 +581,13 @@ impl SentenceBuffer {
 
     /// Return the current buffer length.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.buf.len()
     }
 
     /// Return true if the buffer is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 }
@@ -599,7 +599,7 @@ impl SentenceBuffer {
 /// Hardware operations trait for GPS driver abstraction.
 ///
 /// Allows test-friendly mocking of WMT STP transport access.
-pub trait GpsHwOps {
+pub(crate) trait GpsHwOps {
     /// Read raw bytes from the GPS data path.
     fn read_data(&mut self, buf: &mut [u8]) -> usize;
 
@@ -616,7 +616,7 @@ pub trait GpsHwOps {
 
 /// Real GPS hardware access via WMT STP on the MT6739 combo chip.
 #[cfg(not(test))]
-pub struct GpsHw {
+pub(crate) struct GpsHw {
     /// WMT combo-chip MMIO base address.
     consys_base: usize,
 }
@@ -625,7 +625,7 @@ pub struct GpsHw {
 impl GpsHw {
     /// Create a new GPS hardware handle.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             consys_base: MT6739_CONSYS,
         }
@@ -658,7 +658,7 @@ impl GpsHwOps for GpsHw {
 ///
 /// Accumulates NMEA data, parses sentences, and maintains the current
 /// position and time fix.
-pub struct GpsReceiver<H: GpsHwOps> {
+pub(crate) struct GpsReceiver<H: GpsHwOps> {
     /// Current receiver state.
     state: GpsState,
     /// Hardware abstraction.
@@ -674,7 +674,7 @@ pub struct GpsReceiver<H: GpsHwOps> {
 impl<H: GpsHwOps> GpsReceiver<H> {
     /// Create a new GPS receiver with the given hardware backend.
     #[must_use]
-    pub fn new(hw: H) -> Self {
+    pub(crate) fn new(hw: H) -> Self {
         Self {
             state: GpsState::Off,
             hw,
@@ -686,25 +686,25 @@ impl<H: GpsHwOps> GpsReceiver<H> {
 
     /// Return the current receiver state.
     #[must_use]
-    pub fn state(&self) -> GpsState {
+    pub(crate) fn state(&self) -> GpsState {
         self.state
     }
 
     /// Return the most recent position fix, if available.
     #[must_use]
-    pub fn position(&self) -> Option<&GpsPosition> {
+    pub(crate) fn position(&self) -> Option<&GpsPosition> {
         self.last_position.as_ref()
     }
 
     /// Return the most recent GPS time, if available.
     #[must_use]
-    pub fn time(&self) -> Option<&GpsTime> {
+    pub(crate) fn time(&self) -> Option<&GpsTime> {
         self.last_time.as_ref()
     }
 
     /// Initialize the GPS receiver: power on and begin searching.
     #[must_use]
-    pub fn init(&mut self) -> Result<(), GpsError> {
+    pub(crate) fn init(&mut self) -> Result<(), GpsError> {
         if self.state != GpsState::Off {
             return Err(GpsError::InvalidState);
         }
@@ -718,7 +718,7 @@ impl<H: GpsHwOps> GpsReceiver<H> {
     ///
     /// Should be called periodically. Updates the position and time
     /// fields when valid sentences are received.
-    pub fn poll(&mut self) {
+    pub(crate) fn poll(&mut self) {
         if self.state != GpsState::Searching && self.state != GpsState::FixAcquired {
             return;
         }
@@ -762,7 +762,7 @@ impl<H: GpsHwOps> GpsReceiver<H> {
 
     /// Shut down the GPS receiver.
     #[must_use]
-    pub fn shutdown(&mut self) -> Result<(), GpsError> {
+    pub(crate) fn shutdown(&mut self) -> Result<(), GpsError> {
         self.hw.power_off()?;
         self.state = GpsState::Off;
         Ok(())

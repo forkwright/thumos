@@ -116,7 +116,7 @@ impl Xorshift64 {
 ///
 /// Implements the `Filesystem` trait with a fixed set of character devices.
 /// The filesystem is read-only: mutation operations return `PermissionDenied`.
-pub struct DevFs {
+pub(crate) struct DevFs {
     /// PRNG state for `/dev/urandom`.
     rng: Xorshift64,
 }
@@ -127,7 +127,7 @@ impl DevFs {
     /// The `seed` parameter initializes the xorshift64 PRNG used by
     /// `/dev/urandom`. Pass a timer-derived value for real boots or a
     /// fixed value for deterministic testing.
-    pub fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self {
             rng: Xorshift64::new(seed),
         }
@@ -148,7 +148,7 @@ impl DevFs {
     ///
     /// - `VfsError::IsADirectory` if `inode_id` is the root directory (0).
     /// - `VfsError::NotFound` if `inode_id` is out of range.
-    pub fn read_mut(
+    pub(crate) fn read_mut(
         &mut self,
         inode_id: u32,
         _offset: u64,

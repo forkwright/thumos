@@ -470,7 +470,7 @@ pub struct SetupPacket {
 impl SetupPacket {
     /// Parse a SETUP packet FROM 8 raw bytes (little-endian).
     #[must_use]
-    pub fn from_bytes(b: &[u8; 8]) -> Self {
+    pub(crate) fn from_bytes(b: &[u8; 8]) -> Self {
         Self {
             bm_request_type: b.get(0).copied().unwrap_or_default(),
             b_request: b.get(1).copied().unwrap_or_default(),
@@ -482,19 +482,19 @@ impl SetupPacket {
 
     /// True if the data stage transfers host → device (bit 7 = 0).
     #[must_use]
-    pub fn is_host_to_device(&self) -> bool {
+    pub(crate) fn is_host_to_device(&self) -> bool {
         self.bm_request_type & 0x80 == 0
     }
 
     /// True if this is a standard request (bits 6:5 = 00).
     #[must_use]
-    pub fn is_standard(&self) -> bool {
+    pub(crate) fn is_standard(&self) -> bool {
         self.bm_request_type & 0x60 == 0x00
     }
 
     /// True if this is a class-specific request (bits 6:5 = 01).
     #[must_use]
-    pub fn is_class(&self) -> bool {
+    pub(crate) fn is_class(&self) -> bool {
         self.bm_request_type & 0x60 == 0x20
     }
 }
@@ -519,7 +519,7 @@ pub struct LineCoding {
 impl LineCoding {
     /// Default 115200 8N1 line coding.
     #[must_use]
-    pub const fn default_115200() -> Self {
+    pub(crate) const fn default_115200() -> Self {
         Self {
             dw_dte_rate: 115_200,
             b_char_format: 0,
@@ -530,14 +530,14 @@ impl LineCoding {
 
     /// Serialize to 7 bytes for GET_LINE_CODING response.
     #[must_use]
-    pub fn to_bytes(self) -> [u8; 7] {
+    pub(crate) fn to_bytes(self) -> [u8; 7] {
         let r = self.dw_dte_rate.to_le_bytes();
         [r.get(0).copied().unwrap_or_default(), r.get(1).copied().unwrap_or_default(), r.get(2).copied().unwrap_or_default(), r.get(3).copied().unwrap_or_default(), self.b_char_format, self.b_parity_type, self.b_data_bits]
     }
 
     /// Parse FROM 7 bytes received in SET_LINE_CODING.
     #[must_use]
-    pub fn from_bytes(b: &[u8; 7]) -> Self {
+    pub(crate) fn from_bytes(b: &[u8; 7]) -> Self {
         Self {
             dw_dte_rate: u32::from_le_bytes([b.get(0).copied().unwrap_or_default(), b.get(1).copied().unwrap_or_default(), b.get(2).copied().unwrap_or_default(), b.get(3).copied().unwrap_or_default()]),
             b_char_format: b.get(4).copied().unwrap_or_default(),
@@ -568,43 +568,43 @@ pub struct UsbIrqStatus {
 impl UsbIrqStatus {
     /// True if a USB bus reset was signalled.
     #[must_use]
-    pub fn has_reset(self) -> bool {
+    pub(crate) fn has_reset(self) -> bool {
         self.intrusb & INTRUSB_RESET != 0
     }
 
     /// True if a USB suspend was signalled.
     #[must_use]
-    pub fn has_suspend(self) -> bool {
+    pub(crate) fn has_suspend(self) -> bool {
         self.intrusb & INTRUSB_SUSPEND != 0
     }
 
     /// True if a USB resume was signalled.
     #[must_use]
-    pub fn has_resume(self) -> bool {
+    pub(crate) fn has_resume(self) -> bool {
         self.intrusb & INTRUSB_RESUME != 0
     }
 
     /// True if EP0 has a pending event.
     #[must_use]
-    pub fn has_ep0(self) -> bool {
+    pub(crate) fn has_ep0(self) -> bool {
         self.intrtx & INTRTX_EP0 != 0
     }
 
     /// True if EP1 TX (bulk IN) has a pending event.
     #[must_use]
-    pub fn has_ep1_tx(self) -> bool {
+    pub(crate) fn has_ep1_tx(self) -> bool {
         self.intrtx & INTRTX_EP1 != 0
     }
 
     /// True if EP1 RX (bulk OUT) has a pending event.
     #[must_use]
-    pub fn has_ep1_rx(self) -> bool {
+    pub(crate) fn has_ep1_rx(self) -> bool {
         self.intrrx & INTRRX_EP1 != 0
     }
 
     /// True if any event is pending (used to skip handling when spurious).
     #[must_use]
-    pub fn is_empty(self) -> bool {
+    pub(crate) fn is_empty(self) -> bool {
         self.intrusb == 0 && self.intrtx == 0 && self.intrrx == 0
     }
 }
@@ -616,7 +616,7 @@ impl UsbIrqStatus {
 /// MUSB OTG controller driver for the MT6739, operating in device mode.
 ///
 /// Manages enumeration via EP0, ACM class requests, and bulk serial I/O on EP1.
-pub struct UsbController {
+pub(crate) struct UsbController {
     /// MUSB register base address.
     base: usize,
     /// EP0 state machine.
@@ -647,7 +647,7 @@ impl UsbController {
     /// Call [`init`] before any other method.
     ///
     /// [`init`]: UsbController::init
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             base: MUSB_BASE,
             ep0_state: Ep0State::Idle,
@@ -807,7 +807,7 @@ impl UsbController {
     ///
     /// Returns the number of bytes copied. Returns 0 if the ring buffer is
     /// empty. Does not block.
-    pub fn read_serial(&mut self, buf: &mut [u8]) -> usize {
+    pub(crate) fn read_serial(&mut self, buf: &mut [u8]) -> usize {
         let mut count = 0;
         while count < buf.len() {
             if self.rx_head == self.rx_tail {

@@ -143,7 +143,7 @@ impl core::fmt::Display for SignalInfo {
 /// Handles SIM status queries, signal strength monitoring, and periodic
 /// polling. Designed to work alongside the `Telephony` subsystem, sharing
 /// the same `ModemTransport`.
-pub struct SimManager {
+pub(crate) struct SimManager {
     /// Current SIM information.
     sim_info: SimInfo,
     /// Current signal quality.
@@ -157,7 +157,7 @@ pub struct SimManager {
 impl SimManager {
     /// Create a new SIM manager.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             sim_info: SimInfo::default(),
             signal_info: SignalInfo::default(),
@@ -168,19 +168,19 @@ impl SimManager {
 
     /// Return the current SIM information.
     #[must_use]
-    pub fn sim_info(&self) -> &SimInfo {
+    pub(crate) fn sim_info(&self) -> &SimInfo {
         &self.sim_info
     }
 
     /// Return the current signal quality.
     #[must_use]
-    pub fn signal_info(&self) -> &SignalInfo {
+    pub(crate) fn signal_info(&self) -> &SignalInfo {
         &self.signal_info
     }
 
     /// Return whether a PIN is required.
     #[must_use]
-    pub fn pin_required(&self) -> bool {
+    pub(crate) fn pin_required(&self) -> bool {
         self.sim_info.pin_required
     }
 
@@ -194,7 +194,7 @@ impl SimManager {
     /// - `+CPIN: READY` -> no PIN required
     /// - `+CPIN: SIM PIN` -> PIN required
     /// - Other responses -> treated as PIN required (not ready)
-    pub fn check_pin<T: ModemTransport>(
+    pub(crate) fn check_pin<T: ModemTransport>(
         &mut self,
         transport: &mut T,
     ) -> Result<bool, TelephonyError> {
@@ -224,7 +224,7 @@ impl SimManager {
     /// Query the SIM ICCID via `AT+ICCID` (or `AT+CCID` on some modems).
     ///
     /// The ICCID is a 19-20 digit identifier printed on the SIM card.
-    pub fn query_iccid<T: ModemTransport>(
+    pub(crate) fn query_iccid<T: ModemTransport>(
         &mut self,
         transport: &mut T,
     ) -> Result<(), TelephonyError> {
@@ -257,7 +257,7 @@ impl SimManager {
     /// Query signal strength via `AT+CSQ`.
     ///
     /// Updates the internal `signal_info` with the response.
-    pub fn query_signal<T: ModemTransport>(
+    pub(crate) fn query_signal<T: ModemTransport>(
         &mut self,
         transport: &mut T,
     ) -> Result<&SignalInfo, TelephonyError> {
@@ -286,7 +286,7 @@ impl SimManager {
     /// Poll signal strength if the polling interval has elapsed.
     ///
     /// Returns the updated signal info if a poll was performed.
-    pub fn poll_signal<T: ModemTransport>(
+    pub(crate) fn poll_signal<T: ModemTransport>(
         &mut self,
         transport: &mut T,
         current_tick: u64,
@@ -308,7 +308,7 @@ impl SimManager {
     /// Query the operator name via `AT+COPS?`.
     ///
     /// Returns the operator name as a byte slice (within the provided buffer).
-    pub fn query_operator<T: ModemTransport>(
+    pub(crate) fn query_operator<T: ModemTransport>(
         transport: &mut T,
         name_buf: &mut [u8; 32],
     ) -> Result<u8, TelephonyError> {

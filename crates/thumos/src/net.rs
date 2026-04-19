@@ -37,25 +37,25 @@ use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address, Ipv4C
 // ---------------------------------------------------------------------------
 
 /// Maximum number of concurrent sockets in the stack.
-pub const MAX_SOCKETS: usize = 32;
+pub(crate) const MAX_SOCKETS: usize = 32;
 
 /// TCP receive buffer size in bytes.
-pub const TCP_RX_BUF_SIZE: usize = 4096;
+pub(crate) const TCP_RX_BUF_SIZE: usize = 4096;
 
 /// TCP transmit buffer size in bytes.
-pub const TCP_TX_BUF_SIZE: usize = 4096;
+pub(crate) const TCP_TX_BUF_SIZE: usize = 4096;
 
 /// UDP receive buffer metadata slot count (max queued datagrams).
-pub const UDP_RX_META_SLOTS: usize = 8;
+pub(crate) const UDP_RX_META_SLOTS: usize = 8;
 
 /// UDP receive buffer payload size in bytes.
-pub const UDP_RX_BUF_SIZE: usize = 4096;
+pub(crate) const UDP_RX_BUF_SIZE: usize = 4096;
 
 /// UDP transmit buffer metadata slot count (max queued datagrams).
-pub const UDP_TX_META_SLOTS: usize = 8;
+pub(crate) const UDP_TX_META_SLOTS: usize = 8;
 
 /// UDP transmit buffer payload size in bytes.
-pub const UDP_TX_BUF_SIZE: usize = 4096;
+pub(crate) const UDP_TX_BUF_SIZE: usize = 4096;
 
 /// Default Ethernet MTU (standard 1514-byte frame: 14-byte header + 1500 payload).
 const DEFAULT_MTU: usize = 1514;
@@ -95,27 +95,27 @@ impl core::fmt::Display for NetError {
 /// Every frame transmitted through this device is enqueued and returned on
 /// the next [`Device::receive`] call, in FIFO order. The device uses the
 /// Ethernet medium so that the full ARP / IP path is exercised.
-pub struct LoopbackDevice {
+pub(crate) struct LoopbackDevice {
     /// FIFO queue of frames awaiting reception.
     queue: VecDeque<Vec<u8>>,
 }
 
 impl LoopbackDevice {
     /// Create a new loopback device with an empty packet queue.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             queue: VecDeque::new(),
         }
     }
 
     /// Return the number of frames currently queued for reception.
-    pub fn queued_frames(&self) -> usize {
+    pub(crate) fn queued_frames(&self) -> usize {
         self.queue.len()
     }
 }
 
 /// Receive token for [`LoopbackDevice`].
-pub struct LoopbackRxToken {
+pub(crate) struct LoopbackRxToken {
     buffer: Vec<u8>,
 }
 
@@ -129,7 +129,7 @@ impl phy::RxToken for LoopbackRxToken {
 }
 
 /// Transmit token for [`LoopbackDevice`].
-pub struct LoopbackTxToken<'a> {
+pub(crate) struct LoopbackTxToken<'a> {
     queue: &'a mut VecDeque<Vec<u8>>,
 }
 
@@ -184,7 +184,7 @@ impl Device for LoopbackDevice {
 /// for socket creation, removal, and polling. The stack is generic over the
 /// underlying device — use [`LoopbackDevice`] for tests and the WiFi driver
 /// for production.
-pub struct NetworkStack<D: Device> {
+pub(crate) struct NetworkStack<D: Device> {
     /// The smoltcp network interface (handles ARP, IP routing, etc.).
     iface: Interface,
     /// Set of active sockets managed by the stack.
@@ -203,7 +203,7 @@ impl<D: Device> NetworkStack<D> {
     /// hardware address. No IP addresses or routes are configured; call
     /// [`set_ipv4_addr`](Self::set_ipv4_addr) and
     /// [`set_default_gateway`](Self::set_default_gateway) after creation.
-    pub fn new(mut device: D, mac: EthernetAddress, now: Instant) -> Self {
+    pub(crate) fn new(mut device: D, mac: EthernetAddress, now: Instant) -> Self {
         let config = Config::new(HardwareAddress::Ethernet(mac));
         let iface = Interface::new(config, &mut device, now);
 
@@ -224,7 +224,7 @@ impl<D: Device> NetworkStack<D> {
     /// Configure the interface's IPv4 address and subnet mask.
     ///
     /// Replaces any previously configured addresses.
-    pub fn set_ipv4_addr(&mut self, addr: Ipv4Address, prefix_len: u8) {
+    pub(crate) fn set_ipv4_addr(&mut self, addr: Ipv4Address, prefix_len: u8) {
         self.iface.update_ip_addrs(|addrs| {
             addrs.clear();
             // WHY push can't fail: IFACE_MAX_ADDR_COUNT (8) > 1, and we just
@@ -239,7 +239,7 @@ impl<D: Device> NetworkStack<D> {
     ///
     /// Returns `Err(NetError::RouteTableFull)` if the route table is full.
     #[must_use]
-    pub fn set_default_gateway(&mut self, gateway: Ipv4Address) -> Result<(), NetError> {
+    pub(crate) fn set_default_gateway(&mut self, gateway: Ipv4Address) -> Result<(), NetError> {
         self.iface
             .routes_mut()
             .add_default_ipv4_route(gateway)
@@ -252,7 +252,7 @@ impl<D: Device> NetworkStack<D> {
     /// Returns `Err(NetError::SocketSetFull)` if [`MAX_SOCKETS`] has been
     /// reached.
     #[must_use]
-    pub fn add_tcp_socket(&mut self) -> Result<SocketHandle, NetError> {
+    pub(crate) fn add_tcp_socket(&mut self) -> Result<SocketHandle, NetError> {
         if self.socket_count >= MAX_SOCKETS {
             return Err(NetError::SocketSetFull);
         }
@@ -269,7 +269,7 @@ impl<D: Device> NetworkStack<D> {
     /// Returns `Err(NetError::SocketSetFull)` if [`MAX_SOCKETS`] has been
     /// reached.
     #[must_use]
-    pub fn add_udp_socket(&mut self) -> Result<SocketHandle, NetError> {
+    pub(crate) fn add_udp_socket(&mut self) -> Result<SocketHandle, NetError> {
         if self.socket_count >= MAX_SOCKETS {
             return Err(NetError::SocketSetFull);
         }
@@ -290,7 +290,7 @@ impl<D: Device> NetworkStack<D> {
     ///
     /// The socket is dropped and its resources freed. The handle becomes
     /// invalid after this call.
-    pub fn remove_socket(&mut self, handle: SocketHandle) {
+    pub(crate) fn remove_socket(&mut self, handle: SocketHandle) {
         self.sockets.remove(handle);
         self.socket_count = self.socket_count.saturating_sub(1);
     }
@@ -299,43 +299,43 @@ impl<D: Device> NetworkStack<D> {
     ///
     /// `now` is the current monotonic timestamp. Returns `true` if any socket
     /// state may have changed (callers should re-check their sockets).
-    pub fn poll(&mut self, now: Instant) -> bool {
+    pub(crate) fn poll(&mut self, now: Instant) -> bool {
         let result = self.iface.poll(now, &mut self.device, &mut self.sockets);
         result == smoltcp::iface::PollResult::SocketStateChanged
     }
 
     /// Borrow the socket set immutably (e.g., to inspect socket state).
-    pub fn sockets(&self) -> &SocketSet<'static> {
+    pub(crate) fn sockets(&self) -> &SocketSet<'static> {
         &self.sockets
     }
 
     /// Borrow the socket set mutably (e.g., to read/write socket data).
-    pub fn sockets_mut(&mut self) -> &mut SocketSet<'static> {
+    pub(crate) fn sockets_mut(&mut self) -> &mut SocketSet<'static> {
         &mut self.sockets
     }
 
     /// Borrow the interface immutably.
-    pub fn iface(&self) -> &Interface {
+    pub(crate) fn iface(&self) -> &Interface {
         &self.iface
     }
 
     /// Borrow the interface mutably.
-    pub fn iface_mut(&mut self) -> &mut Interface {
+    pub(crate) fn iface_mut(&mut self) -> &mut Interface {
         &mut self.iface
     }
 
     /// Borrow the underlying device immutably.
-    pub fn device(&self) -> &D {
+    pub(crate) fn device(&self) -> &D {
         &self.device
     }
 
     /// Borrow the underlying device mutably.
-    pub fn device_mut(&mut self) -> &mut D {
+    pub(crate) fn device_mut(&mut self) -> &mut D {
         &mut self.device
     }
 
     /// Return the number of sockets currently in the set.
-    pub fn socket_count(&self) -> usize {
+    pub(crate) fn socket_count(&self) -> usize {
         self.socket_count
     }
 
@@ -345,7 +345,7 @@ impl<D: Device> NetworkStack<D> {
     /// [`SocketSet`] via [`sockets_mut()`](Self::sockets_mut) instead of
     /// going through [`add_tcp_socket`](Self::add_tcp_socket) or
     /// [`add_udp_socket`](Self::add_udp_socket).
-    pub fn increment_socket_count(&mut self) {
+    pub(crate) fn increment_socket_count(&mut self) {
         self.socket_count += 1;
     }
 
@@ -357,7 +357,7 @@ impl<D: Device> NetworkStack<D> {
     ///
     /// This is the recommended single-call-site for periodic network
     /// processing in the kernel's main loop or timer tick handler.
-    pub fn poll_services(
+    pub(crate) fn poll_services(
         &mut self,
         now: Instant,
         dhcp: Option<&mut crate::dhcp::DhcpClient>,
@@ -393,7 +393,7 @@ impl<D: Device> NetworkStack<D> {
 /// This is the bridge between the kernel's timer tick count and smoltcp's
 /// time representation. The kernel timer runs at 100 Hz (10 ms/tick), so
 /// callers should multiply their tick count by 10 to get milliseconds.
-pub fn instant_from_millis(millis: i64) -> Instant {
+pub(crate) fn instant_from_millis(millis: i64) -> Instant {
     Instant::from_millis(millis)
 }
 

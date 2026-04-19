@@ -84,7 +84,7 @@ impl MessageTransport {
     ///
     /// Returns a 1-2 character label suitable for a fixed-width font.
     #[must_use]
-    pub const fn badge(self) -> &'static str {
+    pub(crate) const fn badge(self) -> &'static str {
         match self {
             Self::Sms => "S",
             Self::Matrix => "M",
@@ -101,7 +101,7 @@ impl MessageTransport {
     /// Cycles through: Sms -> Matrix -> Briar -> Meshtastic ->
     /// BridgedWhatsApp -> BridgedSlack -> BridgedTelegram -> Sms.
     #[must_use]
-    pub const fn next(self) -> Self {
+    pub(crate) const fn next(self) -> Self {
         match self {
             Self::Sms => Self::Matrix,
             Self::Matrix => Self::Briar,
@@ -115,7 +115,7 @@ impl MessageTransport {
 
     /// Human-readable display name for the transport.
     #[must_use]
-    pub const fn display_name(self) -> &'static str {
+    pub(crate) const fn display_name(self) -> &'static str {
         match self {
             Self::Sms => "SMS",
             Self::Matrix => "Matrix",
@@ -168,7 +168,7 @@ const MAX_RECIPIENT_LEN: usize = 20;
 /// Kept separate from `sms::SmsMessage` and `harmostes::MatrixMessage`
 /// to avoid coupling the screen to any transport's internal storage
 /// format. Populated from whichever transport delivered the message.
-pub struct MessageEntry {
+pub(crate) struct MessageEntry {
     /// Sender name (from contacts), phone number, or Matrix user ID.
     pub sender: String,
     /// Full message body text.
@@ -187,7 +187,7 @@ impl MessageEntry {
     /// Converts the millisecond Matrix timestamp to seconds and marks
     /// the message as unread.
     #[must_use]
-    pub fn from_matrix(sender: String, body: String, timestamp_ms: u64) -> Self {
+    pub(crate) fn from_matrix(sender: String, body: String, timestamp_ms: u64) -> Self {
         Self {
             sender,
             body,
@@ -199,7 +199,7 @@ impl MessageEntry {
 
     /// Create a new entry from an SMS message.
     #[must_use]
-    pub fn from_sms(sender: String, body: String, timestamp: u64, read: bool) -> Self {
+    pub(crate) fn from_sms(sender: String, body: String, timestamp: u64, read: bool) -> Self {
         Self {
             sender,
             body,
@@ -242,7 +242,7 @@ enum ComposeField {
 ///
 /// Manages inbox list, message detail, and compose views. The caller
 /// must update the message list via [`set_messages`] before each render.
-pub struct MessagesScreen {
+pub(crate) struct MessagesScreen {
     /// Message entries for display.
     messages: Vec<MessageEntry>,
     /// Currently selected message index in the inbox list.
@@ -267,7 +267,7 @@ pub struct MessagesScreen {
 
 impl MessagesScreen {
     /// Create a new messages screen with an empty inbox.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             messages: Vec::new(),
             selected: 0,
@@ -283,7 +283,7 @@ impl MessagesScreen {
     }
 
     /// Replace the message list with a new snapshot.
-    pub fn set_messages(&mut self, messages: Vec<MessageEntry>) {
+    pub(crate) fn set_messages(&mut self, messages: Vec<MessageEntry>) {
         self.messages = messages;
         // Clamp selection if the list shrank.
         if self.selected >= self.messages.len() && !self.messages.is_empty() {
@@ -292,17 +292,17 @@ impl MessagesScreen {
     }
 
     /// Return the number of messages.
-    pub fn message_count(&self) -> usize {
+    pub(crate) fn message_count(&self) -> usize {
         self.messages.len()
     }
 
     /// Return the currently selected message index.
-    pub fn selected_index(&self) -> usize {
+    pub(crate) fn selected_index(&self) -> usize {
         self.selected
     }
 
     /// Return the current view.
-    pub fn current_view(&self) -> MessageView {
+    pub(crate) fn current_view(&self) -> MessageView {
         self.view
     }
 
@@ -345,12 +345,12 @@ impl MessagesScreen {
     }
 
     /// Return the active compose transport.
-    pub fn compose_transport(&self) -> MessageTransport {
+    pub(crate) fn compose_transport(&self) -> MessageTransport {
         self.compose_transport
     }
 
     /// Set the compose transport (e.g., from a contact's default).
-    pub fn set_compose_transport(&mut self, transport: MessageTransport) {
+    pub(crate) fn set_compose_transport(&mut self, transport: MessageTransport) {
         self.compose_transport = transport;
     }
 

@@ -259,7 +259,7 @@ impl fmt::Display for PanicActivation {
 /// Manages transitions between [`SecurityMode`] variants, enforces
 /// transition rules (PIN for Sentinel exit, abort window for Panic),
 /// and tracks Covert Lock state independently.
-pub struct ModeManager {
+pub(crate) struct ModeManager {
     /// Current security mode.
     mode: SecurityMode,
     /// Covert Lock: independent RF-kill (all radios except mesh).
@@ -283,7 +283,7 @@ impl ModeManager {
     /// `pin_hash` is the SHA-256 hash of the user's PIN for Sentinel
     /// exit verification.
     #[must_use]
-    pub const fn new(pin_hash: [u8; 32]) -> Self {
+    pub(crate) const fn new(pin_hash: [u8; 32]) -> Self {
         Self {
             mode: SecurityMode::Daily,
             covert_lock: false,
@@ -295,19 +295,19 @@ impl ModeManager {
     }
 
     /// Current security mode.
-    pub fn mode(&self) -> SecurityMode {
+    pub(crate) fn mode(&self) -> SecurityMode {
         self.mode
     }
 
     /// Whether Covert Lock is active.
     #[must_use]
-    pub fn covert_lock(&self) -> bool {
+    pub(crate) fn covert_lock(&self) -> bool {
         self.covert_lock
     }
 
     /// The last emitted panic event, if any.
     #[must_use]
-    pub fn last_panic_event(&self) -> Option<PanicEvent> {
+    pub(crate) fn last_panic_event(&self) -> Option<PanicEvent> {
         self.last_panic_event
     }
 
@@ -323,7 +323,7 @@ impl ModeManager {
     ///
     /// Returns [`ModeTransitionError::AlreadyInMode`] if already in Sentinel.
     /// Returns [`ModeTransitionError::PanicIsTerminal`] if in Panic.
-    pub fn enter_sentinel(
+    pub(crate) fn enter_sentinel(
         &mut self,
         key_manager: &mut KeyManager,
         power_manager: &mut PowerManager,
@@ -352,7 +352,7 @@ impl ModeManager {
     /// Returns [`ModeTransitionError::PinMismatch`] if the PIN is wrong.
     /// Returns [`ModeTransitionError::PanicIsTerminal`] if in Panic.
     /// Returns [`ModeTransitionError::AlreadyInMode`] if already in Daily.
-    pub fn exit_sentinel(
+    pub(crate) fn exit_sentinel(
         &mut self,
         pin: &[u8],
         power_manager: &mut PowerManager,
@@ -388,7 +388,7 @@ impl ModeManager {
     /// # Errors
     ///
     /// Returns [`ModeTransitionError::AlreadyInMode`] if already in Panic.
-    pub fn activate_panic(
+    pub(crate) fn activate_panic(
         &mut self,
         current_tick: u64,
         _activation: PanicActivation,
@@ -428,7 +428,7 @@ impl ModeManager {
     /// Returns [`ModeTransitionError::AbortWindowExpired`] if the abort
     /// window has closed.
     /// Returns [`ModeTransitionError::AlreadyInMode`] if not in Panic.
-    pub fn abort_panic(
+    pub(crate) fn abort_panic(
         &mut self,
         current_tick: u64,
         power_manager: &mut PowerManager,
@@ -460,13 +460,13 @@ impl ModeManager {
     ///
     /// When activating: kills cellular, `WiFi`, BT, GPS. Mesh stays on.
     /// When deactivating: restores radio state per current mode policy.
-    pub fn toggle_covert_lock(&mut self, power_manager: &mut PowerManager) {
+    pub(crate) fn toggle_covert_lock(&mut self, power_manager: &mut PowerManager) {
         self.covert_lock = !self.covert_lock;
         self.apply_radio_policy(power_manager);
     }
 
     /// Set Covert Lock to a specific state.
-    pub fn set_covert_lock(&mut self, active: bool, power_manager: &mut PowerManager) {
+    pub(crate) fn set_covert_lock(&mut self, active: bool, power_manager: &mut PowerManager) {
         if self.covert_lock != active {
             self.covert_lock = active;
             self.apply_radio_policy(power_manager);
@@ -478,7 +478,7 @@ impl ModeManager {
     // -----------------------------------------------------------------------
 
     /// Return the effective policy, accounting for both mode and Covert Lock.
-    pub fn effective_policy(&self) -> ModePolicy {
+    pub(crate) fn effective_policy(&self) -> ModePolicy {
         let mut policy = base_policy(self.mode);
 
         // Covert Lock overrides: kill all RF except mesh.
@@ -521,7 +521,7 @@ impl ModeManager {
     /// - Panic: `"PANIC"`
     /// - Any + Covert Lock: `"COVRT"`
     #[must_use]
-    pub fn status_badge(&self) -> &'static str {
+    pub(crate) fn status_badge(&self) -> &'static str {
         if self.covert_lock && self.mode != SecurityMode::Panic {
             return "COVRT";
         }
@@ -539,7 +539,7 @@ impl ModeManager {
     /// - Covert Lock: red (0xF800)
     /// - Panic: red (0xF800)
     #[must_use]
-    pub fn status_badge_color(&self) -> u16 {
+    pub(crate) fn status_badge_color(&self) -> u16 {
         use crate::ui::color;
 
         if self.covert_lock && self.mode != SecurityMode::Panic {
@@ -556,7 +556,7 @@ impl ModeManager {
     ///
     /// Used by `StatusBarState::mode_char` for backward compatibility.
     #[must_use]
-    pub fn mode_char(&self) -> char {
+    pub(crate) fn mode_char(&self) -> char {
         match self.mode {
             SecurityMode::Daily => 'D',
             SecurityMode::Sentinel => 'S',
@@ -601,7 +601,7 @@ impl fmt::Display for ModeManager {
 /// Log a mode transition event to the audit log.
 ///
 /// Records the transition as a `ModeChange` event with the mode names.
-pub fn log_mode_change(
+pub(crate) fn log_mode_change(
     from: SecurityMode,
     to: SecurityMode,
     audit_log: &mut AuditLog,
@@ -644,7 +644,7 @@ pub fn log_mode_change(
 /// Log a panic trigger event to the audit log.
 ///
 /// Records the activation method as a `PanicTrigger` event.
-pub fn log_panic_trigger(
+pub(crate) fn log_panic_trigger(
     activation: PanicActivation,
     audit_log: &mut AuditLog,
     audit_key: &[u8; KEY_SIZE],
@@ -711,7 +711,7 @@ impl fmt::Display for ThreatResponse {
 /// - Below threshold: no action.
 ///
 /// Returns the action taken for audit logging.
-pub fn evaluate_threat(
+pub(crate) fn evaluate_threat(
     mode: SecurityMode,
     threat_score: u32,
     critical_threshold: u32,
@@ -744,7 +744,7 @@ pub fn evaluate_threat(
 ///
 /// Called during mode transitions to sync the CCCI firewall with the
 /// security mode state machine.
-pub fn sync_firewall_mode(
+pub(crate) fn sync_firewall_mode(
     mode: SecurityMode,
     firewall: &mut crate::ccci_logger::CcciFirewall,
 ) {

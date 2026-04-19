@@ -22,7 +22,7 @@ use crate::lfs_imap::LfsError;
 /// Each segment is a contiguous run of [`Self::segment_size`] blocks.
 /// The manager maintains a bitmap of segment usage and tracks the
 /// number of free segments for quick capacity checks.
-pub struct LfsSegmentManager {
+pub(crate) struct LfsSegmentManager {
     /// Segment usage bitmap. `true` means the segment is in use.
     bitmap: Vec<bool>,
     /// Total number of segments in the filesystem.
@@ -42,7 +42,7 @@ impl LfsSegmentManager {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn new(segment_count: u32, segment_size: u32) -> Self {
+    pub(crate) fn new(segment_count: u32, segment_size: u32) -> Self {
         let mut bitmap = vec![false; segment_count as usize];
 
         // Segment 0 is always reserved for the superblock.
@@ -72,7 +72,7 @@ impl LfsSegmentManager {
     /// # Errors
     ///
     /// This method is infallible; returns `None` when full.
-    pub fn allocate(&mut self) -> Option<u32> {
+    pub(crate) fn allocate(&mut self) -> Option<u32> {
         for i in 0..self.bitmap.len() {
             if !self.bitmap[i] {
                 self.bitmap[i] = true;
@@ -89,7 +89,7 @@ impl LfsSegmentManager {
     ///
     /// This method is infallible. Freeing an already-free segment or an
     /// out-of-range index is a no-op.
-    pub fn free(&mut self, segment_idx: u32) {
+    pub(crate) fn free(&mut self, segment_idx: u32) {
         let idx = segment_idx as usize;
         if idx < self.bitmap.len() && self.bitmap[idx] {
             self.bitmap[idx] = false;
@@ -104,7 +104,7 @@ impl LfsSegmentManager {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn is_free(&self, segment_idx: u32) -> bool {
+    pub(crate) fn is_free(&self, segment_idx: u32) -> bool {
         let idx = segment_idx as usize;
         if idx < self.bitmap.len() {
             !self.bitmap[idx]
@@ -118,7 +118,7 @@ impl LfsSegmentManager {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn free_count(&self) -> u32 {
+    pub(crate) fn free_count(&self) -> u32 {
         self.free_count
     }
 
@@ -127,7 +127,7 @@ impl LfsSegmentManager {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn segment_count(&self) -> u32 {
+    pub(crate) fn segment_count(&self) -> u32 {
         self.segment_count
     }
 
@@ -136,7 +136,7 @@ impl LfsSegmentManager {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn segment_size(&self) -> u32 {
+    pub(crate) fn segment_size(&self) -> u32 {
         self.segment_size
     }
 
@@ -145,7 +145,7 @@ impl LfsSegmentManager {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn segment_start_block(&self, segment_idx: u32) -> u64 {
+    pub(crate) fn segment_start_block(&self, segment_idx: u32) -> u64 {
         u64::from(segment_idx) * u64::from(self.segment_size)
     }
 
@@ -154,7 +154,7 @@ impl LfsSegmentManager {
     /// # Errors
     ///
     /// This method is infallible. Marking an already-used segment is a no-op.
-    pub fn mark_used(&mut self, segment_idx: u32) {
+    pub(crate) fn mark_used(&mut self, segment_idx: u32) {
         let idx = segment_idx as usize;
         if idx < self.bitmap.len() && !self.bitmap[idx] {
             self.bitmap[idx] = true;
@@ -172,7 +172,7 @@ impl LfsSegmentManager {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn serialize(&self) -> Vec<u8> {
+    pub(crate) fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&self.segment_count.to_le_bytes());
         buf.extend_from_slice(&self.segment_size.to_le_bytes());
@@ -202,7 +202,7 @@ impl LfsSegmentManager {
     ///
     /// Returns [`LfsError::Corrupt`] if the data is too short or the stored
     /// geometry does not match the expected values.
-    pub fn deserialize(
+    pub(crate) fn deserialize(
         data: &[u8],
         segment_count: u32,
         segment_size: u32,

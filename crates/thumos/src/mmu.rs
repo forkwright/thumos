@@ -17,7 +17,7 @@
 /// L1 page table: 4096 entries x 4 bytes = 16 KB.
 /// Must be 16 KB aligned.
 #[repr(C, align(16384))]
-pub struct L1Table {
+pub(crate) struct L1Table {
     entries: [u32; 4096],
 }
 
@@ -27,19 +27,19 @@ static mut L1: L1Table = L1Table { entries: [0; 4096] };
 /// Section descriptor flags (1 MB mapping).
 mod flags {
     /// This is a section descriptor (bits [1:0] = 0b10).
-    pub const SECTION: u32 = 0b10;
+    pub(crate) const SECTION: u32 = 0b10;
     /// Access permission: full access (AP = 0b11, bits [11:10]).
-    pub const AP_FULL: u32 = 0b11 << 10;
+    pub(crate) const AP_FULL: u32 = 0b11 << 10;
     /// Shareable (bit 16).
-    pub const SHAREABLE: u32 = 1 << 16;
+    pub(crate) const SHAREABLE: u32 = 1 << 16;
     /// Normal memory, OUTER/INNER write-back write-allocate.
     /// TEX[2:0] = 0b001, C = 1, B = 1 (bits [14:12], [3], [2]).
-    pub const NORMAL_WB_WA: u32 = (0b001 << 12) | (1 << 3) | (1 << 2);
+    pub(crate) const NORMAL_WB_WA: u32 = (0b001 << 12) | (1 << 3) | (1 << 2);
     /// Device memory, strongly ordered.
     /// TEX[2:0] = 0b000, C = 0, B = 1 (for device/shared).
-    pub const DEVICE: u32 = (1 << 2);
+    pub(crate) const DEVICE: u32 = (1 << 2);
     /// Execute never (XN, bit 4).
-    pub const XN: u32 = 1 << 4;
+    pub(crate) const XN: u32 = 1 << 4;
 }
 
 /// L2 (small page) descriptor flags (4 KB mapping).
@@ -48,28 +48,28 @@ mod flags {
 /// mmap/brk need page-level (4 KB) granularity. ARMv7 short-descriptor format
 /// uses L2 page tables (256 entries x 4 bytes = 1 KB) pointed to by L1 "page
 /// table" descriptors.
-pub mod page_flags {
+pub(crate) mod page_flags {
     /// L1 descriptor type: coarse page table pointer (bits [1:0] = 0b01).
-    pub const L1_PAGE_TABLE: u32 = 0b01;
+    pub(crate) const L1_PAGE_TABLE: u32 = 0b01;
     /// L2 small page descriptor (bits [1:0] = 0b10, XN in bit 0 = 0).
-    pub const SMALL_PAGE: u32 = 0b10;
+    pub(crate) const SMALL_PAGE: u32 = 0b10;
     /// AP[1:0] = 0b11 (bits [5:4]): full access (PL1 + PL0 read/write).
-    pub const AP_FULL: u32 = 0b11 << 4;
+    pub(crate) const AP_FULL: u32 = 0b11 << 4;
     /// AP[1:0] = 0b10 (bits [5:4]): read-only (PL0 read, PL1 read/write).
-    pub const AP_READ_ONLY: u32 = 0b10 << 4;
+    pub(crate) const AP_READ_ONLY: u32 = 0b10 << 4;
     /// AP[1:0] = 0b01 (bits [5:4]): PL1-only (no PL0 access).
-    pub const AP_KERNEL_ONLY: u32 = 0b01 << 4;
+    pub(crate) const AP_KERNEL_ONLY: u32 = 0b01 << 4;
     /// Execute-never for small pages (XN, bit 0).
-    pub const XN: u32 = 1;
+    pub(crate) const XN: u32 = 1;
     /// Shareable (bit 10).
-    pub const SHAREABLE: u32 = 1 << 10;
+    pub(crate) const SHAREABLE: u32 = 1 << 10;
     /// Normal memory for small pages: TEX[2:0]=0b001 (bits [8:6]), C=1 (bit 3), B=1 (bit 2).
-    pub const NORMAL_WB_WA: u32 = (0b001 << 6) | (1 << 3) | (1 << 2);
+    pub(crate) const NORMAL_WB_WA: u32 = (0b001 << 6) | (1 << 3) | (1 << 2);
 }
 
 /// L2 page table: 256 entries x 4 bytes = 1 KB, must be 1 KB aligned.
 #[repr(C, align(1024))]
-pub struct L2Table {
+pub(crate) struct L2Table {
     pub entries: [u32; 256],
 }
 
@@ -86,7 +86,7 @@ static mut L2_TABLES: [L2Table; L2_POOL_SIZE] = {
 static mut L2_ALLOC: u64 = 0;
 
 /// Allocate an L2 page table from the pool. Returns its physical address.
-pub fn alloc_l2_table() -> Option<usize> {
+pub(crate) fn alloc_l2_table() -> Option<usize> {
     unsafe {
         let alloc = core::ptr::addr_of_mut!(L2_ALLOC);
         let mask = core::ptr::read_volatile(alloc);
@@ -120,20 +120,20 @@ pub unsafe fn free_l2_table(phys_addr: usize) {
 }
 
 /// POSIX protection flag constants (from mman.h).
-pub mod prot {
+pub(crate) mod prot {
     /// Page can be read.
-    pub const PROT_READ: u32 = 0x1;
+    pub(crate) const PROT_READ: u32 = 0x1;
     /// Page can be written.
-    pub const PROT_WRITE: u32 = 0x2;
+    pub(crate) const PROT_WRITE: u32 = 0x2;
     /// Page can be executed.
-    pub const PROT_EXEC: u32 = 0x4;
+    pub(crate) const PROT_EXEC: u32 = 0x4;
 }
 
 /// Translate POSIX prot flags to ARMv7 L2 small page descriptor attributes.
 ///
 /// WHY: userspace passes POSIX prot flags (PROT_READ|PROT_WRITE|PROT_EXEC),
 /// but the ARM MMU uses AP bits and XN to control access and execution.
-pub fn prot_to_l2_flags(prot_flags: u32) -> u32 {
+pub(crate) fn prot_to_l2_flags(prot_flags: u32) -> u32 {
     let mut attrs = page_flags::SMALL_PAGE | page_flags::SHAREABLE | page_flags::NORMAL_WB_WA;
 
     // Access permissions

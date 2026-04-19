@@ -153,7 +153,7 @@ pub struct ChatMessage {
 impl ChatMessage {
     /// Create a new user message.
     #[must_use]
-    pub fn from_user(body: String, timestamp: u64) -> Self {
+    pub(crate) fn from_user(body: String, timestamp: u64) -> Self {
         Self {
             origin: MessageOrigin::User,
             sender: String::from("You"),
@@ -165,7 +165,7 @@ impl ChatMessage {
 
     /// Create a new nous entity message, parsing any action proposal.
     #[must_use]
-    pub fn from_nous(sender: &str, body: String, timestamp: u64) -> Self {
+    pub(crate) fn from_nous(sender: &str, body: String, timestamp: u64) -> Self {
         let proposal = ekphrasis::parse_action_proposal(&body)
             .and_then(Result::ok);
         Self {
@@ -235,7 +235,7 @@ impl core::fmt::Display for ProposalState {
 /// action proposal cards inline. The user can type messages via
 /// numeric keys (T9-style input delegated to the caller) and send
 /// with the OK key.
-pub struct NousChatScreen {
+pub(crate) struct NousChatScreen {
     /// Conversation messages.
     messages: Vec<ChatMessage>,
     /// Scroll offset (number of lines scrolled from bottom).
@@ -255,7 +255,7 @@ pub struct NousChatScreen {
 impl NousChatScreen {
     /// Create a new nous chat screen.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             messages: Vec::new(),
             scroll_offset: 0,
@@ -268,7 +268,7 @@ impl NousChatScreen {
     }
 
     /// Update the cached entity info from a nous manager.
-    pub fn sync_from_manager(&mut self, manager: &NousManager) {
+    pub(crate) fn sync_from_manager(&mut self, manager: &NousManager) {
         if let Some(entity) = manager.active() {
             self.active_entity_name = String::from(entity.name_str());
             self.active_preset_label = entity.capability_label();
@@ -279,7 +279,7 @@ impl NousChatScreen {
     ///
     /// If the message is from a nous entity and contains an action
     /// proposal, it becomes the pending proposal.
-    pub fn push_message(&mut self, msg: ChatMessage) {
+    pub(crate) fn push_message(&mut self, msg: ChatMessage) {
         let has_proposal = msg.proposal.is_some();
         let _msg_idx = self.messages.len();
 
@@ -312,64 +312,64 @@ impl NousChatScreen {
 
     /// Return the number of messages in the conversation.
     #[must_use]
-    pub fn message_count(&self) -> usize {
+    pub(crate) fn message_count(&self) -> usize {
         self.messages.len()
     }
 
     /// Return the current pending proposal state, if any.
     #[must_use]
-    pub fn pending_proposal(&self) -> Option<ProposalState> {
+    pub(crate) fn pending_proposal(&self) -> Option<ProposalState> {
         self.pending_proposal
     }
 
     /// Return the pending proposal action, if one exists.
     #[must_use]
-    pub fn pending_action(&self) -> Option<&ActionProposal> {
+    pub(crate) fn pending_action(&self) -> Option<&ActionProposal> {
         self.pending_proposal_msg_idx
             .and_then(|idx| self.messages.get(idx))
             .and_then(|msg| msg.proposal.as_ref())
     }
 
     /// Confirm the pending action proposal.
-    pub fn confirm_proposal(&mut self) {
+    pub(crate) fn confirm_proposal(&mut self) {
         if self.pending_proposal == Some(ProposalState::Pending) {
             self.pending_proposal = Some(ProposalState::Confirmed);
         }
     }
 
     /// Cancel the pending action proposal.
-    pub fn cancel_proposal(&mut self) {
+    pub(crate) fn cancel_proposal(&mut self) {
         if self.pending_proposal == Some(ProposalState::Pending) {
             self.pending_proposal = Some(ProposalState::Cancelled);
         }
     }
 
     /// Clear the pending proposal after it has been handled.
-    pub fn clear_proposal(&mut self) {
+    pub(crate) fn clear_proposal(&mut self) {
         self.pending_proposal = None;
         self.pending_proposal_msg_idx = None;
     }
 
     /// Return a reference to the input buffer.
     #[must_use]
-    pub fn input_buffer(&self) -> &str {
+    pub(crate) fn input_buffer(&self) -> &str {
         &self.input_buffer
     }
 
     /// Append a character to the input buffer.
-    pub fn input_push(&mut self, ch: char) {
+    pub(crate) fn input_push(&mut self, ch: char) {
         if self.input_buffer.len() < MAX_MSG_LEN {
             self.input_buffer.push(ch);
         }
     }
 
     /// Remove the last character from the input buffer.
-    pub fn input_backspace(&mut self) {
+    pub(crate) fn input_backspace(&mut self) {
         self.input_buffer.pop();
     }
 
     /// Take the current input buffer contents, clearing it.
-    pub fn take_input(&mut self) -> String {
+    pub(crate) fn take_input(&mut self) -> String {
         core::mem::take(&mut self.input_buffer)
     }
 

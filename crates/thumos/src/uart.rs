@@ -26,19 +26,19 @@ const LSR: usize = 0x14;
 const LSR_THRE: u32 = 1 << 5;
 
 /// UART driver for MT6739.
-pub struct Uart {
+pub(crate) struct Uart {
     base: usize,
 }
 
 impl Uart {
     /// Create a UART driver for the debug console.
     /// LK has already configured baud rate and pin mux.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { base: UART0_BASE }
     }
 
     /// Write a single byte, waiting for the TX buffer to be ready.
-    pub fn putc(&self, byte: u8) {
+    pub(crate) fn putc(&self, byte: u8) {
         // SAFETY: MMIO register access at known physical address.
         // The UART is already initialized by the bootloader.
         unsafe {
@@ -55,7 +55,7 @@ impl Uart {
     }
 
     /// Write a string to the UART.
-    pub fn write_str_raw(&self, s: &str) {
+    pub(crate) fn write_str_raw(&self, s: &str) {
         for byte in s.bytes() {
             self.putc(byte);
         }

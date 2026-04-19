@@ -166,7 +166,7 @@ impl BriarContact {
     ///
     /// Returns [`BriarError::NameTooLong`] if `name` exceeds
     /// [`MAX_CONTACT_NAME_LEN`] bytes.
-    pub fn new(id: [u8; CONTACT_ID_LEN], name: &[u8]) -> Result<Self, BriarError> {
+    pub(crate) fn new(id: [u8; CONTACT_ID_LEN], name: &[u8]) -> Result<Self, BriarError> {
         if name.len() > MAX_CONTACT_NAME_LEN {
             return Err(BriarError::NameTooLong);
         }
@@ -181,7 +181,7 @@ impl BriarContact {
 
     /// Return the contact name as a byte slice.
     #[must_use]
-    pub fn name(&self) -> &[u8] {
+    pub(crate) fn name(&self) -> &[u8] {
         &self.name[..self.name_len as usize]
     }
 }
@@ -234,7 +234,7 @@ impl BriarMessage {
     ///
     /// Returns [`BriarError::MessageTooLong`] if `body` exceeds
     /// [`MAX_MESSAGE_BODY_LEN`] bytes.
-    pub fn new(
+    pub(crate) fn new(
         sender_id: [u8; CONTACT_ID_LEN],
         body: String,
         timestamp: u64,
@@ -285,7 +285,7 @@ impl fmt::Display for BriarMessage {
 /// 2. `send_message()` encrypts and routes via BTP
 /// 3. A poll loop calls `receive_messages()` to drain the inbound buffer
 /// 4. Received messages are pushed into the unified inbox
-pub struct BriarTransport {
+pub(crate) struct BriarTransport {
     /// Current transport state.
     state: BriarState,
     /// Known contacts (exchanged out-of-band).
@@ -297,7 +297,7 @@ pub struct BriarTransport {
 impl BriarTransport {
     /// Create a new Briar transport in the [`BriarState::Offline`] state.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: BriarState::Offline,
             contacts: Vec::new(),
@@ -307,31 +307,31 @@ impl BriarTransport {
 
     /// Return the current transport state.
     #[must_use]
-    pub fn state(&self) -> BriarState {
+    pub(crate) fn state(&self) -> BriarState {
         self.state
     }
 
     /// Return the current contact list.
     #[must_use]
-    pub fn contacts(&self) -> &[BriarContact] {
+    pub(crate) fn contacts(&self) -> &[BriarContact] {
         &self.contacts
     }
 
     /// Return the current inbox contents.
     #[must_use]
-    pub fn inbox(&self) -> &[BriarMessage] {
+    pub(crate) fn inbox(&self) -> &[BriarMessage] {
         &self.inbox
     }
 
     /// Return the number of contacts.
     #[must_use]
-    pub fn contact_count(&self) -> usize {
+    pub(crate) fn contact_count(&self) -> usize {
         self.contacts.len()
     }
 
     /// Return the number of buffered messages.
     #[must_use]
-    pub fn inbox_count(&self) -> usize {
+    pub(crate) fn inbox_count(&self) -> usize {
         self.inbox.len()
     }
 
@@ -344,7 +344,7 @@ impl BriarTransport {
     ///
     /// - [`BriarError::ContactCapacityReached`] if the list is full
     /// - [`BriarError::DuplicateContact`] if the ID already exists
-    pub fn add_contact(&mut self, contact: BriarContact) -> Result<(), BriarError> {
+    pub(crate) fn add_contact(&mut self, contact: BriarContact) -> Result<(), BriarError> {
         if self.contacts.len() >= MAX_CONTACTS {
             return Err(BriarError::ContactCapacityReached);
         }
@@ -358,7 +358,7 @@ impl BriarTransport {
     /// Remove a contact by ID.
     ///
     /// Returns the removed contact, or [`BriarError::ContactNotFound`].
-    pub fn remove_contact(
+    pub(crate) fn remove_contact(
         &mut self,
         id: &[u8; CONTACT_ID_LEN],
     ) -> Result<BriarContact, BriarError> {
@@ -372,7 +372,7 @@ impl BriarTransport {
 
     /// Look up a contact by ID.
     #[must_use]
-    pub fn find_contact(&self, id: &[u8; CONTACT_ID_LEN]) -> Option<&BriarContact> {
+    pub(crate) fn find_contact(&self, id: &[u8; CONTACT_ID_LEN]) -> Option<&BriarContact> {
         self.contacts.iter().find(|c| &c.id == id)
     }
 
@@ -387,7 +387,7 @@ impl BriarTransport {
     /// - [`BriarError::TransportNotReady`] (always, in stub)
     /// - [`BriarError::ContactNotFound`] if `dest_id` is not in contacts
     /// - [`BriarError::MessageTooLong`] if `body` exceeds the limit
-    pub fn send_message(
+    pub(crate) fn send_message(
         &self,
         dest_id: &[u8; CONTACT_ID_LEN],
         body: &str,
@@ -412,7 +412,7 @@ impl BriarTransport {
     /// When BTP is implemented, this will drain messages received since
     /// the last call.
     #[must_use]
-    pub fn receive_messages(&self) -> &[BriarMessage] {
+    pub(crate) fn receive_messages(&self) -> &[BriarMessage] {
         // WHY: no BTP transport to receive from. The inbox buffer will
         // be populated by the BTP receive loop in a future phase.
         &self.inbox
@@ -426,7 +426,7 @@ impl BriarTransport {
     /// # Errors
     ///
     /// - [`BriarError::ContactNotFound`] if the sender is not in contacts
-    pub fn push_inbox(&mut self, message: BriarMessage) -> Result<(), BriarError> {
+    pub(crate) fn push_inbox(&mut self, message: BriarMessage) -> Result<(), BriarError> {
         if !self.contacts.iter().any(|c| c.id == message.sender_id) {
             return Err(BriarError::ContactNotFound);
         }
@@ -439,7 +439,7 @@ impl BriarTransport {
     }
 
     /// Clear all buffered inbox messages.
-    pub fn clear_inbox(&mut self) {
+    pub(crate) fn clear_inbox(&mut self) {
         self.inbox.clear();
     }
 }

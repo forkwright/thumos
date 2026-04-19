@@ -22,13 +22,13 @@ use core::fmt;
 // ---------------------------------------------------------------------------
 
 /// Sector size in bytes (eMMC / SD standard).
-pub const SECTOR_SIZE: usize = 512;
+pub(crate) const SECTOR_SIZE: usize = 512;
 
 /// Logical block size in bytes (filesystem granularity).
-pub const BLOCK_SIZE: usize = 4096;
+pub(crate) const BLOCK_SIZE: usize = 4096;
 
 /// Number of 512-byte sectors per 4 KiB logical block.
-pub const SECTORS_PER_BLOCK: usize = BLOCK_SIZE / SECTOR_SIZE;
+pub(crate) const SECTORS_PER_BLOCK: usize = BLOCK_SIZE / SECTOR_SIZE;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -67,7 +67,7 @@ impl fmt::Display for BlockError {
 ///
 /// All implementations operate at [`SECTOR_SIZE`]-byte granularity. The `buf`
 /// slice must be exactly `count * sector_size()` bytes.
-pub trait BlockDevice {
+pub(crate) trait BlockDevice {
     /// Read `count` contiguous sectors starting at logical block address `lba`.
     ///
     /// # Errors
@@ -118,7 +118,7 @@ impl MemBlockDevice {
     ///
     /// Returns [`BlockError::InvalidArgument`] if `sector_count` is zero.
     #[must_use]
-    pub fn new(sector_count: u64) -> Result<Self, BlockError> {
+    pub(crate) fn new(sector_count: u64) -> Result<Self, BlockError> {
         if sector_count == 0 {
             return Err(BlockError::InvalidArgument);
         }
@@ -196,7 +196,7 @@ mod msdc_wrapper {
     /// The controller must be initialized via [`MsdcBlockDevice::init`] before
     /// any I/O. Sector count is fixed at construction (read from CSD or
     /// hard-coded for the known eMMC part).
-    pub struct MsdcBlockDevice {
+    pub(crate) struct MsdcBlockDevice {
         /// The underlying MSDC controller.
         controller: MsdcController,
         /// Total sector count of the eMMC device.
@@ -208,7 +208,7 @@ mod msdc_wrapper {
         ///
         /// The controller is NOT initialized — call [`MsdcBlockDevice::init`]
         /// before issuing any I/O.
-        pub fn new(sector_count: u64) -> Self {
+        pub(crate) fn new(sector_count: u64) -> Self {
             Self {
                 controller: MsdcController::new(),
                 sector_count,
@@ -318,7 +318,7 @@ mod msdc_wrapper {
 }
 
 #[cfg(not(test))]
-pub use msdc_wrapper::MsdcBlockDevice;
+pub(crate) use msdc_wrapper::MsdcBlockDevice;
 
 // ---------------------------------------------------------------------------
 // Block-level I/O helpers
@@ -334,7 +334,7 @@ pub use msdc_wrapper::MsdcBlockDevice;
 /// Returns [`BlockError`] if the underlying sector read fails or the
 /// block address is out of bounds.
 #[must_use]
-pub fn read_block(
+pub(crate) fn read_block(
     dev: &dyn BlockDevice,
     block_num: u64,
     buf: &mut [u8; BLOCK_SIZE],
@@ -353,7 +353,7 @@ pub fn read_block(
 /// Returns [`BlockError`] if the underlying sector write fails or the
 /// block address is out of bounds.
 #[must_use]
-pub fn write_block(
+pub(crate) fn write_block(
     dev: &mut dyn BlockDevice,
     block_num: u64,
     buf: &[u8; BLOCK_SIZE],

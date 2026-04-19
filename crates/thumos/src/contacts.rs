@@ -77,7 +77,7 @@ impl Contact {
     /// Truncates if either exceeds the maximum length. The Matrix ID
     /// is left empty and default transport is SMS.
     #[must_use]
-    pub fn new(name: &str, number: &str) -> Self {
+    pub(crate) fn new(name: &str, number: &str) -> Self {
         let mut c = Self {
             name: [0u8; MAX_NAME_LEN],
             name_len: 0,
@@ -103,7 +103,7 @@ impl Contact {
     ///
     /// Sets the default transport to Matrix when a Matrix ID is provided.
     #[must_use]
-    pub fn with_matrix_id(name: &str, number: &str, matrix_id: &str) -> Self {
+    pub(crate) fn with_matrix_id(name: &str, number: &str, matrix_id: &str) -> Self {
         let mut c = Self::new(name, number);
         let mid_bytes = matrix_id.as_bytes();
         let mid_copy_len = mid_bytes.len().min(MAX_MATRIX_ID_LEN);
@@ -117,25 +117,25 @@ impl Contact {
 
     /// Return the name as a string slice.
     #[must_use]
-    pub fn name_str(&self) -> &str {
+    pub(crate) fn name_str(&self) -> &str {
         core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("")
     }
 
     /// Return the number as a string slice.
     #[must_use]
-    pub fn number_str(&self) -> &str {
+    pub(crate) fn number_str(&self) -> &str {
         core::str::from_utf8(&self.number[..self.number_len as usize]).unwrap_or("")
     }
 
     /// Return the Matrix user ID as a string slice, or empty if not set.
     #[must_use]
-    pub fn matrix_id_str(&self) -> &str {
+    pub(crate) fn matrix_id_str(&self) -> &str {
         core::str::from_utf8(&self.matrix_id[..self.matrix_id_len as usize]).unwrap_or("")
     }
 
     /// Return whether this contact has a Matrix ID.
     #[must_use]
-    pub fn has_matrix_id(&self) -> bool {
+    pub(crate) fn has_matrix_id(&self) -> bool {
         self.matrix_id_len > 0
     }
 }
@@ -178,7 +178,7 @@ impl core::fmt::Debug for Contact {
 /// Stores contacts in a `Vec` and provides add/delete/search operations.
 /// No persistence -- contacts are lost on reboot until filesystem
 /// integration is added.
-pub struct ContactManager {
+pub(crate) struct ContactManager {
     /// All stored contacts.
     contacts: Vec<Contact>,
 }
@@ -186,7 +186,7 @@ pub struct ContactManager {
 impl ContactManager {
     /// Create a new empty contact manager.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             contacts: Vec::new(),
         }
@@ -195,14 +195,14 @@ impl ContactManager {
     /// Add a contact with the given name and number.
     ///
     /// The contact is appended to the end of the list.
-    pub fn add(&mut self, name: &str, number: &str) {
+    pub(crate) fn add(&mut self, name: &str, number: &str) {
         self.contacts.push(Contact::new(name, number));
     }
 
     /// Delete a contact by index.
     ///
     /// Out-of-bounds indices are silently ignored.
-    pub fn delete(&mut self, index: usize) {
+    pub(crate) fn delete(&mut self, index: usize) {
         if index < self.contacts.len() {
             self.contacts.remove(index);
         }
@@ -212,7 +212,7 @@ impl ContactManager {
     ///
     /// Returns indices of all contacts whose name starts with the given
     /// prefix. An empty prefix returns all contact indices.
-    pub fn search(&self, prefix: &str) -> Vec<usize> {
+    pub(crate) fn search(&self, prefix: &str) -> Vec<usize> {
         if prefix.is_empty() {
             return (0..self.contacts.len()).collect();
         }
@@ -237,24 +237,24 @@ impl ContactManager {
     }
 
     /// Get a contact by index.
-    pub fn get(&self, index: usize) -> Option<&Contact> {
+    pub(crate) fn get(&self, index: usize) -> Option<&Contact> {
         self.contacts.get(index)
     }
 
     /// Return a slice of all contacts.
-    pub fn all(&self) -> &[Contact] {
+    pub(crate) fn all(&self) -> &[Contact] {
         &self.contacts
     }
 
     /// Return the number of stored contacts.
-    pub fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.contacts.len()
     }
 
     /// Return contacts sorted alphabetically by name (case-insensitive).
     ///
     /// Returns a vector of indices into the contact list, sorted by name.
-    pub fn sorted_indices(&self) -> Vec<usize> {
+    pub(crate) fn sorted_indices(&self) -> Vec<usize> {
         let mut indices: Vec<usize> = (0..self.contacts.len()).collect();
         indices.sort_by(|&a, &b| {
             let name_a = self.contacts[a].name_str().to_ascii_lowercase();
@@ -268,7 +268,7 @@ impl ContactManager {
     ///
     /// Returns the index of the first contact with a matching number,
     /// or `None` if no match is found.
-    pub fn find_by_number(&self, number: &str) -> Option<usize> {
+    pub(crate) fn find_by_number(&self, number: &str) -> Option<usize> {
         self.contacts
             .iter()
             .position(|c| c.number_str() == number)
@@ -278,7 +278,7 @@ impl ContactManager {
     ///
     /// Returns the index of the first contact with a matching Matrix ID,
     /// or `None` if no match is found.
-    pub fn find_by_matrix_id(&self, matrix_id: &str) -> Option<usize> {
+    pub(crate) fn find_by_matrix_id(&self, matrix_id: &str) -> Option<usize> {
         self.contacts
             .iter()
             .position(|c| c.has_matrix_id() && c.matrix_id_str() == matrix_id)
@@ -287,7 +287,7 @@ impl ContactManager {
     /// Add a contact with name, phone number, and Matrix ID.
     ///
     /// The contact is appended to the end of the list.
-    pub fn add_with_matrix_id(&mut self, name: &str, number: &str, matrix_id: &str) {
+    pub(crate) fn add_with_matrix_id(&mut self, name: &str, number: &str, matrix_id: &str) {
         self.contacts
             .push(Contact::with_matrix_id(name, number, matrix_id));
     }

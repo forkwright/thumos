@@ -122,7 +122,7 @@ pub enum T9Mode {
 
 impl T9Mode {
     /// Cycle to the next mode.
-    pub const fn next(self) -> Self {
+    pub(crate) const fn next(self) -> Self {
         match self {
             Self::Predictive => Self::MultiTap,
             Self::MultiTap => Self::Numeric,
@@ -131,7 +131,7 @@ impl T9Mode {
     }
 
     /// Display label for the current mode.
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Predictive => "T9",
             Self::MultiTap => "ABC",
@@ -161,7 +161,7 @@ struct MultiTapState {
 /// Accumulates key presses, searches the dictionary for matching words,
 /// and allows cycling through candidates. The committed text is built
 /// up as words are accepted.
-pub struct T9Input {
+pub(crate) struct T9Input {
     /// Pressed key digits (2-9) for the current word.
     key_sequence: Vec<u8>,
     /// Current candidate list for the key sequence.
@@ -179,7 +179,7 @@ pub struct T9Input {
 impl T9Input {
     /// Create a new T9 input engine in Predictive mode.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             key_sequence: Vec::new(),
             candidates: Vec::new(),
@@ -191,7 +191,7 @@ impl T9Input {
     }
 
     /// Return the current input mode.
-    pub fn mode(&self) -> T9Mode {
+    pub(crate) fn mode(&self) -> T9Mode {
         self.mode
     }
 
@@ -200,7 +200,7 @@ impl T9Input {
     /// In Predictive mode, refreshes the candidate list.
     /// In Multi-tap mode, cycles through letters for the pressed key.
     /// In Numeric mode, appends the digit character.
-    pub fn press_key(&mut self, digit: u8) {
+    pub(crate) fn press_key(&mut self, digit: u8) {
         match self.mode {
             T9Mode::Predictive => {
                 if digit_to_group(digit).is_some() {
@@ -267,7 +267,7 @@ impl T9Input {
     /// Cycle to the next candidate word.
     ///
     /// Wraps around to the first candidate after the last.
-    pub fn next_candidate(&mut self) {
+    pub(crate) fn next_candidate(&mut self) {
         if !self.candidates.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.candidates.len();
         }
@@ -277,7 +277,7 @@ impl T9Input {
     ///
     /// Returns the accepted text segment. Resets the key sequence for
     /// the next word.
-    pub fn accept(&mut self) -> String {
+    pub(crate) fn accept(&mut self) -> String {
         let word = match self.mode {
             T9Mode::Predictive => {
                 if let Some(&candidate) = self.candidates.get(self.selected_index) {
@@ -308,7 +308,7 @@ impl T9Input {
     }
 
     /// Remove the last key from the sequence (backspace).
-    pub fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         match self.mode {
             T9Mode::Predictive => {
                 self.key_sequence.pop();
@@ -330,7 +330,7 @@ impl T9Input {
     }
 
     /// Toggle to the next input mode.
-    pub fn toggle_mode(&mut self) {
+    pub(crate) fn toggle_mode(&mut self) {
         // Commit any pending multi-tap letter before switching modes.
         if self.mode == T9Mode::MultiTap {
             self.commit_multi_tap_letter();
@@ -348,7 +348,7 @@ impl T9Input {
     /// In Multi-tap mode, returns the letters entered so far plus the
     /// current cycling letter.
     /// In Numeric mode, returns the digit string.
-    pub fn current_text(&self) -> String {
+    pub(crate) fn current_text(&self) -> String {
         match self.mode {
             T9Mode::Predictive => {
                 if let Some(&candidate) = self.candidates.get(self.selected_index) {
@@ -376,22 +376,22 @@ impl T9Input {
     }
 
     /// Return the full committed text.
-    pub fn committed_text(&self) -> &str {
+    pub(crate) fn committed_text(&self) -> &str {
         &self.committed
     }
 
     /// Return the number of keys in the current sequence.
-    pub fn key_count(&self) -> usize {
+    pub(crate) fn key_count(&self) -> usize {
         self.key_sequence.len()
     }
 
     /// Return the number of candidates.
-    pub fn candidate_count(&self) -> usize {
+    pub(crate) fn candidate_count(&self) -> usize {
         self.candidates.len()
     }
 
     /// Clear all state (committed text, key sequence, candidates).
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.committed.clear();
         self.key_sequence.clear();
         self.candidates.clear();

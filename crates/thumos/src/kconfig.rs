@@ -5,79 +5,79 @@
 //! via syscall. All parameters have defaults suitable for the MT6739.
 
 /// Scheduler tick interval in milliseconds.
-pub static mut TICK_MS: u32 = 10;
+pub(crate) static mut TICK_MS: u32 = 10;
 
 /// Maximum number of processes.
-pub static mut MAX_PROCESSES: usize = 16;
+pub(crate) static mut MAX_PROCESSES: usize = 16;
 
 /// Kernel heap size in pages (4 KB each).
-pub static mut HEAP_PAGES: usize = 256;
+pub(crate) static mut HEAP_PAGES: usize = 256;
 
 /// UART baud rate (set by bootloader, informational only).
-pub static mut UART_BAUD: u32 = 921_600;
+pub(crate) static mut UART_BAUD: u32 = 921_600;
 
 /// Whether to print boot messages to UART.
-pub static mut VERBOSE_BOOT: bool = true;
+pub(crate) static mut VERBOSE_BOOT: bool = true;
 
 /// Enable kernel debug console on UART.
-pub static mut DEBUG_CONSOLE: bool = true;
+pub(crate) static mut DEBUG_CONSOLE: bool = true;
 
 /// Panic behavior: 0 = halt, N = reboot after N seconds.
-pub static mut PANIC_TIMEOUT: u32 = 0;
+pub(crate) static mut PANIC_TIMEOUT: u32 = 0;
 
 /// RAM start address.
-pub const RAM_START: usize = 0x4000_0000;
+pub(crate) const RAM_START: usize = 0x4000_0000;
 
 /// RAM end address (1 GB).
-pub const RAM_END: usize = 0x8000_0000;
+pub(crate) const RAM_END: usize = 0x8000_0000;
 
 /// Kernel load address.
-pub const KERNEL_LOAD: usize = 0x4000_8000;
+pub(crate) const KERNEL_LOAD: usize = 0x4000_8000;
 
 /// Kernel reserved size (1 MB).
-pub const KERNEL_RESERVED: usize = 0x10_0000;
+pub(crate) const KERNEL_RESERVED: usize = 0x10_0000;
 
 /// Kernel end address (load + reserved).
-pub const KERNEL_END: usize = KERNEL_LOAD + KERNEL_RESERVED;
+pub(crate) const KERNEL_END: usize = KERNEL_LOAD + KERNEL_RESERVED;
 
 /// UART0 base address.
-pub const UART0_BASE: usize = 0x1100_2000;
+pub(crate) const UART0_BASE: usize = 0x1100_2000;
 
 /// GIC distributor base address.
-pub const GICD_BASE: usize = 0x0C00_0000;
+pub(crate) const GICD_BASE: usize = 0x0C00_0000;
 
 /// GIC CPU interface base address.
-pub const GICC_BASE: usize = 0x0C00_2000;
+pub(crate) const GICC_BASE: usize = 0x0C00_2000;
 
 /// Display framebuffer base (set by LK bootloader).
-pub const FB_BASE: usize = 0x77EE_0000;
+pub(crate) const FB_BASE: usize = 0x77EE_0000;
 
 /// Start sector of the LFS partition on eMMC.
 /// WHY: the boot, recovery, system, vendor partitions occupy the first ~2.6 GB.
 /// LFS uses the userdata region starting at sector 0x50C000 (~2.6 GB offset).
 /// Value from GPT dump of the MT6739 eMMC (printgpt: userdata partition).
-pub const LFS_PARTITION_START: u64 = 0x50C000;
+pub(crate) const LFS_PARTITION_START: u64 = 0x50C000;
 
 /// Size of the LFS partition in sectors.
 /// WHY: ~3 GB of the 8 GB eMMC is available for user data.
 /// Rounded down from the actual userdata partition length (0x97BFDF sectors)
 /// to a clean segment-aligned boundary.
-pub const LFS_PARTITION_SIZE: u64 = 0x600000;
+pub(crate) const LFS_PARTITION_SIZE: u64 = 0x600000;
 
 /// Number of blocks in the block cache.
 /// WHY: 256 entries x 4 KiB = 1 MiB of cached data. Balances memory usage
 /// against hit rate for typical file access patterns.
-pub const BLOCK_CACHE_BLOCKS: usize = 256;
+pub(crate) const BLOCK_CACHE_BLOCKS: usize = 256;
 
 /// Display width.
-pub const DISPLAY_WIDTH: u32 = 240;
+pub(crate) const DISPLAY_WIDTH: u32 = 240;
 
 /// Display height.
-pub const DISPLAY_HEIGHT: u32 = 320;
+pub(crate) const DISPLAY_HEIGHT: u32 = 320;
 
 /// Parse a boot command line parameter.
 /// Format: "key=value" pairs separated by spaces.
-pub fn parse_cmdline(cmdline: &str) {
+pub(crate) fn parse_cmdline(cmdline: &str) {
     for param in cmdline.split_whitespace() {
         if let Some((key, value)) = param.split_once('=') {
             match key {

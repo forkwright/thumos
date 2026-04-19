@@ -118,7 +118,7 @@ impl core::fmt::Display for SessionKind {
 ///
 /// Tracks connected output devices and determines the correct route for
 /// each session kind based on priority rules and user preferences.
-pub struct RouteManager {
+pub(crate) struct RouteManager {
     /// Currently connected/available output devices.
     connected_outputs: Vec<AudioRoute>,
     /// Preferred route for voice calls (default: earpiece).
@@ -134,7 +134,7 @@ impl RouteManager {
     ///
     /// The earpiece and speaker are always connected (built-in).
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut connected = Vec::with_capacity(4);
         // Built-in outputs are always available.
         connected.push(AudioRoute::Earpiece);
@@ -156,7 +156,7 @@ impl RouteManager {
     /// - Music: speaker (or BT/USB DAC if connected)
     /// - FM radio: speaker
     #[must_use]
-    pub fn default_route_for(&self, kind: SessionKind) -> AudioRoute {
+    pub(crate) fn default_route_for(&self, kind: SessionKind) -> AudioRoute {
         match kind {
             SessionKind::VoiceCall => {
                 if self.speakerphone_active {
@@ -189,7 +189,7 @@ impl RouteManager {
     ///
     /// Returns the new route that should be applied to the active call.
     #[must_use]
-    pub fn toggle_speakerphone(&mut self) -> AudioRoute {
+    pub(crate) fn toggle_speakerphone(&mut self) -> AudioRoute {
         self.speakerphone_active = !self.speakerphone_active;
         if self.speakerphone_active {
             AudioRoute::Speaker
@@ -200,19 +200,19 @@ impl RouteManager {
 
     /// Check whether a specific output route is currently available.
     #[must_use]
-    pub fn is_output_available(&self, route: AudioRoute) -> bool {
+    pub(crate) fn is_output_available(&self, route: AudioRoute) -> bool {
         self.connected_outputs.iter().any(|r| *r == route)
     }
 
     /// Return a slice of all currently connected outputs.
     #[must_use]
-    pub fn connected_outputs(&self) -> &[AudioRoute] {
+    pub(crate) fn connected_outputs(&self) -> &[AudioRoute] {
         &self.connected_outputs
     }
 
     /// Return whether speakerphone is currently active.
     #[must_use]
-    pub fn is_speakerphone_active(&self) -> bool {
+    pub(crate) fn is_speakerphone_active(&self) -> bool {
         self.speakerphone_active
     }
 
@@ -223,7 +223,7 @@ impl RouteManager {
     /// Notify that a Bluetooth audio device has connected.
     ///
     /// Adds `BluetoothA2dp` to the available outputs if not already present.
-    pub fn notify_bt_connected(&mut self) {
+    pub(crate) fn notify_bt_connected(&mut self) {
         if !self.is_output_available(AudioRoute::BluetoothA2dp) {
             self.connected_outputs.push(AudioRoute::BluetoothA2dp);
         }
@@ -232,7 +232,7 @@ impl RouteManager {
     /// Notify that a Bluetooth audio device has disconnected.
     ///
     /// Removes `BluetoothA2dp` from the available outputs.
-    pub fn notify_bt_disconnected(&mut self) {
+    pub(crate) fn notify_bt_disconnected(&mut self) {
         self.connected_outputs
             .retain(|r| *r != AudioRoute::BluetoothA2dp);
     }
@@ -240,7 +240,7 @@ impl RouteManager {
     /// Notify that a wired headset has connected (via USB-C adapter).
     ///
     /// Adds `Headset` to the available outputs if not already present.
-    pub fn notify_headset_connected(&mut self) {
+    pub(crate) fn notify_headset_connected(&mut self) {
         if !self.is_output_available(AudioRoute::Headset) {
             self.connected_outputs.push(AudioRoute::Headset);
         }
@@ -249,7 +249,7 @@ impl RouteManager {
     /// Notify that a wired headset has disconnected.
     ///
     /// Removes `Headset` from the available outputs.
-    pub fn notify_headset_disconnected(&mut self) {
+    pub(crate) fn notify_headset_disconnected(&mut self) {
         self.connected_outputs
             .retain(|r| *r != AudioRoute::Headset);
     }
@@ -257,7 +257,7 @@ impl RouteManager {
     /// Notify that a USB DAC has connected.
     ///
     /// Adds `UsbDac` to the available outputs if not already present.
-    pub fn notify_usb_dac_connected(&mut self) {
+    pub(crate) fn notify_usb_dac_connected(&mut self) {
         if !self.is_output_available(AudioRoute::UsbDac) {
             self.connected_outputs.push(AudioRoute::UsbDac);
         }
@@ -266,19 +266,19 @@ impl RouteManager {
     /// Notify that a USB DAC has disconnected.
     ///
     /// Removes `UsbDac` from the available outputs.
-    pub fn notify_usb_dac_disconnected(&mut self) {
+    pub(crate) fn notify_usb_dac_disconnected(&mut self) {
         self.connected_outputs
             .retain(|r| *r != AudioRoute::UsbDac);
     }
 
     /// Set the preferred call route (for when a BT headset is the
     /// default call device, for example).
-    pub fn set_preferred_call_route(&mut self, route: AudioRoute) {
+    pub(crate) fn set_preferred_call_route(&mut self, route: AudioRoute) {
         self.preferred_call_route = route;
     }
 
     /// Set the preferred media route.
-    pub fn set_preferred_media_route(&mut self, route: AudioRoute) {
+    pub(crate) fn set_preferred_media_route(&mut self, route: AudioRoute) {
         self.preferred_media_route = route;
     }
 
@@ -287,7 +287,7 @@ impl RouteManager {
     ///
     /// Falls back to speaker for media, earpiece for calls.
     #[must_use]
-    pub fn fallback_route(&self, kind: SessionKind) -> AudioRoute {
+    pub(crate) fn fallback_route(&self, kind: SessionKind) -> AudioRoute {
         match kind {
             SessionKind::VoiceCall => AudioRoute::Earpiece,
             _ => AudioRoute::Speaker,
@@ -298,7 +298,7 @@ impl RouteManager {
     ///
     /// Returns `Ok(())` if the route is connected, or
     /// `Err(AudioError::RouteUnavailable)` otherwise.
-    pub fn validate_route(&self, route: AudioRoute) -> Result<(), AudioError> {
+    pub(crate) fn validate_route(&self, route: AudioRoute) -> Result<(), AudioError> {
         if self.is_output_available(route) {
             Ok(())
         } else {
