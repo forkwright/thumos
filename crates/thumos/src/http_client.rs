@@ -34,9 +34,10 @@
 
 extern crate alloc;
 
+use core::fmt;
+
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -690,8 +691,9 @@ fn write_usize_to_buf(buf: &mut Vec<u8>, mut n: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::string::ToString;
+    
+    use super::*;
 
     // -- HttpMethod Display --
 

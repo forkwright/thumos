@@ -39,9 +39,10 @@
 
 extern crate alloc;
 
+use core::fmt;
+
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -529,8 +530,9 @@ impl fmt::Display for MeshtasticTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::string::ToString;
+    
+    use super::*;
 
     // --- State tests ---
 

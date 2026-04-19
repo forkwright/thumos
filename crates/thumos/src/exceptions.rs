@@ -14,6 +14,8 @@
 //! Offset 0x18: IRQ
 //! Offset 0x1C: FIQ
 
+use core::fmt::Write;
+
 use crate::csprng;
 use crate::gic;
 use crate::power;
@@ -21,7 +23,6 @@ use crate::process;
 use crate::timer;
 use crate::uart::Uart;
 use crate::watchdog;
-use core::fmt::Write;
 
 /// Tick counter incremented by the timer IRQ handler.
 static mut TICK_COUNT: u64 = 0;

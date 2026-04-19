@@ -1174,8 +1174,9 @@ impl WifiHwOps for MockWifiHw {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+    
+    use super::*;
 
     // Seed the kernel CSPRNG for deterministic test output.
     fn setup_csprng() {

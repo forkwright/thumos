@@ -6,11 +6,12 @@
 
 extern crate alloc;
 
+use core::fmt::Write;
+
 use crate::exceptions;
 use crate::page;
 use crate::process;
 use crate::uart::Uart;
-use core::fmt::Write;
 
 /// Maximum command line length.
 const MAX_CMD_LEN: usize = 128;

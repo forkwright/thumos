@@ -342,8 +342,9 @@ mod tests {
     // -- Proptest: fuzz the NMEA parser to verify no panics on arbitrary input --
 
     mod proptest_fuzz {
-        use super::*;
         use proptest::prelude::*;
+
+        use super::*;
 
         proptest! {
             #[test]

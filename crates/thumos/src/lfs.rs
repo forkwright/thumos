@@ -31,11 +31,11 @@
 //! ```
 
 extern crate alloc;
+use core::cell::RefCell;
+
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-
-use core::cell::RefCell;
 
 use crate::block::{BlockDevice, BLOCK_SIZE, SECTORS_PER_BLOCK};
 use crate::cache::BlockCache;

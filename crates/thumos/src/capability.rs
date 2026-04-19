@@ -112,8 +112,9 @@ pub(crate) fn check(required: u32) -> Result<(), u32> {
     } else {
         // Log denial to UART.  A future phase will also append to the audit
         // ring buffer when CAP_AUDIT is available to the supervisor.
-        use crate::uart::Uart;
         use core::fmt::Write;
+        
+        use crate::uart::Uart;
         let pid = crate::process::current_pid();
         let mut serial = Uart::new();
         let _ = write!(

@@ -218,10 +218,11 @@ impl DhcpClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::net::LoopbackDevice;
     use smoltcp::time::Instant;
     use smoltcp::wire::EthernetAddress;
+    
+    use super::*;
+    use crate::net::LoopbackDevice;
 
     /// Helper: build a `NetworkStack<LoopbackDevice>` with a stock config.
     fn make_stack() -> NetworkStack<LoopbackDevice> {

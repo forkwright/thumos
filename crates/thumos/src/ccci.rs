@@ -13,8 +13,9 @@
 //! defense against modem-initiated attacks. All shared memory is treated as
 //! untrusted input — data is copied out before processing to prevent TOCTOU.
 
-use crate::mmio;
 use core::fmt;
+
+use crate::mmio;
 
 // ---------------------------------------------------------------------------
 // CLDMA register constants
@@ -1963,9 +1964,10 @@ impl CcciDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::format;
     use alloc::vec::Vec;
+    
+    use super::*;
 
     // -- Message header encode/decode --
 

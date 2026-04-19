@@ -13,9 +13,10 @@
 //! sector operations.
 
 extern crate alloc;
+use core::fmt;
+
 use alloc::vec;
 use alloc::vec::Vec;
-use core::fmt;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -368,8 +369,9 @@ pub(crate) fn write_block(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
+    use super::*;
 
     #[test]
     fn create_mem_device_with_correct_size() {

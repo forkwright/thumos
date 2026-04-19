@@ -290,8 +290,9 @@ impl From<SecurityError> for BlockError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+    
+    use super::*;
     use crate::block::MemBlockDevice;
 
     /// Create a test XTS key (64 bytes) with a simple pattern.

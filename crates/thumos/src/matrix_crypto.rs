@@ -31,10 +31,11 @@
 
 extern crate alloc;
 
+use core::fmt;
+
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::fmt;
 
 use aes::Aes256;
 use aes::cipher::{BlockEncrypt, BlockDecrypt, KeyInit};
