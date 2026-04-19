@@ -22,6 +22,7 @@ const MIN_MSG_ROWS: u32 = 2;
 
 /// A button available in a [`Dialog`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DialogButton {
     /// Confirm action.
     Ok,

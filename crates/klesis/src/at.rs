@@ -13,6 +13,7 @@ use nom::sequence::{delimited, preceded};
 
 /// Raw AT response FROM the modem.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Response {
     /// Command succeeded.
     #[default]
@@ -31,6 +32,7 @@ pub enum Response {
 
 /// Unsolicited result codes FROM the modem.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Urc {
     /// Incoming call.
     #[default]
@@ -77,6 +79,7 @@ pub enum Urc {
 
 /// Network registration status (3GPP TS 27.007 +CREG).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RegStatus {
     /// Not registered, not searching.
     NotRegistered,

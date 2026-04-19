@@ -157,6 +157,7 @@ const POLL_TIMEOUT_ITERS: u32 = 1_000;
 
 /// Errors produced by WMT power and subsystem operations.
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum WmtError {
     /// CONSYS power-on ack register did not become ready within the poll LIMIT.
     #[snafu(display("CONSYS power-on ack timed out at step {step}"))]
@@ -200,6 +201,7 @@ pub enum WmtError {
 
 /// Radio subsystems managed by WMT over the CONSYS combo chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Subsystem {
     /// Bluetooth.
     Bt,
@@ -226,6 +228,7 @@ impl Subsystem {
 /// PMIC voltage regulators used by CONSYS subsystems.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum PmicRegulator {
     /// VCN 1.8V  -  all CONSYS core logic.
     Vcn18,
@@ -256,6 +259,7 @@ impl From<PmicRegulator> for u8 {
 
 /// Co-clock type detected during step 12 of the power-on sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ClockType {
     /// CO-TSX: crystal shared with AP (`DCXO_CW16` bit 6 SET).
     CoTsx,
@@ -267,6 +271,7 @@ pub enum ClockType {
 
 /// Overall CONSYS block power state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PowerState {
     /// CONSYS is powered off.
     Off,
@@ -323,6 +328,7 @@ impl EmiRegion {
 /// `connectivity/common/common_main/platform/mt6739.c:459–545`.
 /// [`Done`](Self::Done) marks successful completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum PowerOnStep {
     #[default]
     /// Step 1: write [`CONSYS_PWRON_CONFG_EN_VALUE`] to SPM clock config.

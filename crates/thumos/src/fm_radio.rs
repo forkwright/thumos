@@ -976,10 +976,10 @@ mod tests {
 
     #[test]
     fn fm_state_display() {
-        assert_eq!(alloc::format!("{}", FmState::Off), "off");
-        assert_eq!(alloc::format!("{}", FmState::On), "on");
+        assert_eq!(FmState::Off.to_string(), "off");
+        assert_eq!(FmState::On.to_string(), "on");
         assert_eq!(
-            alloc::format!("{}", FmState::Tuned { frequency_khz: 98_500 }),
+            FmState::Tuned { frequency_khz: 98_500 }.to_string(),
             "tuned to 98.5 MHz"
         );
     }

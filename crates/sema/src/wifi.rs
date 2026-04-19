@@ -56,6 +56,7 @@ pub enum Encryption {
 
 /// The RF frequency band a channel belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Band {
     /// 2.4 GHz band (channels 1–14).
     Band2_4Ghz,

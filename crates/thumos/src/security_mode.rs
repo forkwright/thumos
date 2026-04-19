@@ -1183,20 +1183,20 @@ mod tests {
         assert!(s.contains("Daily"), "Display must show mode");
         assert!(s.contains("covert=false"), "Display must show covert state");
 
-        let mode_s = alloc::format!("{}", SecurityMode::Sentinel);
+        let mode_s = SecurityMode::Sentinel.to_string();
         assert_eq!(mode_s, "Sentinel");
 
-        let policy_s = alloc::format!("{}", base_policy(SecurityMode::Daily));
+        let policy_s = base_policy(SecurityMode::Daily.to_string());
         assert!(policy_s.contains("cell=true"));
 
         let event = PanicEvent { triggered_at: 42, keys_zeroized: true };
         let event_s = alloc::format!("{event}");
         assert!(event_s.contains("42"));
 
-        let err_s = alloc::format!("{}", ModeTransitionError::PinRequired);
+        let err_s = ModeTransitionError::PinRequired.to_string();
         assert!(err_s.contains("PIN"));
 
-        let act_s = alloc::format!("{}", PanicActivation::KeyCombo);
+        let act_s = PanicActivation::KeyCombo.to_string();
         assert!(act_s.contains("key combo"));
     }
 
@@ -1301,13 +1301,13 @@ mod tests {
 
     #[test]
     fn threat_response_display() {
-        let cut = alloc::format!("{}", ThreatResponse::ModemPowerCut);
+        let cut = ThreatResponse::ModemPowerCut.to_string();
         assert!(cut.contains("power cut"));
 
-        let restrict = alloc::format!("{}", ThreatResponse::FirewallRestricted);
+        let restrict = ThreatResponse::FirewallRestricted.to_string();
         assert!(restrict.contains("restricted"));
 
-        let none = alloc::format!("{}", ThreatResponse::None);
+        let none = ThreatResponse::None.to_string();
         assert!(none.contains("none"));
     }
 }

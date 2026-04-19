@@ -21,6 +21,7 @@ const DEFAULT_ITERATIONS: u32 = 100_000;
 
 /// Errors from key management operations.
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum Error {
     /// The iteration count passed to key derivation was zero.
     #[snafu(display("iterations must be non-zero"))]

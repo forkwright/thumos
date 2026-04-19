@@ -15,6 +15,7 @@ const KEY_HALF_LEN: usize = XTS_KEY_LEN / 2;
 
 /// Errors FROM block cipher operations.
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum Error {
     /// The provided key is not `XTS_KEY_LEN` (64) bytes.
     #[snafu(display("invalid XTS key length: expected {XTS_KEY_LEN} bytes, got {actual}"))]

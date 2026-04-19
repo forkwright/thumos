@@ -8,6 +8,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Crypto subsystem errors.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
+#[non_exhaustive]
 pub enum Error {
     /// Key generation failed.
     #[snafu(display("key generation failed"))]

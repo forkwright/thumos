@@ -1173,11 +1173,11 @@ mod tests {
     #[test]
     fn sleep_tier_display() {
         assert_eq!(
-            alloc::format!("{}", SleepTier::Short),
+            SleepTier::Short.to_string(),
             "Short (PIN unlock)"
         );
         assert_eq!(
-            alloc::format!("{}", SleepTier::Long),
+            SleepTier::Long.to_string(),
             "Long (passphrase required)"
         );
     }

@@ -9,6 +9,7 @@ use std::net::Ipv4Addr;
 
 /// Traffic direction relative to the protected system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Direction {
     /// Traffic arriving from an external interface (e.g. the modem).
     In,
@@ -18,6 +19,7 @@ pub enum Direction {
 
 /// Layer-4 protocol selector for a [`Rule`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Protocol {
     /// Match TCP packets only.
     Tcp,
@@ -31,6 +33,7 @@ pub enum Protocol {
 
 /// Action taken when a rule matches a packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Action {
     /// Forward the packet without logging.
     Allow,
@@ -56,6 +59,7 @@ pub struct AddressMatch {
 
 /// Port selector for a [`Rule`].
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum PortMatch {
     /// Match any port number.
     Any,
