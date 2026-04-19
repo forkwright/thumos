@@ -10,14 +10,13 @@ use ring::{
 };
 use snafu::Snafu;
 
+use crate::config::Config;
+
 const SALT_LEN: usize = 32;
 const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const SEALED_KEY_LEN: usize = KEY_LEN + TAG_LEN;
-
-/// Default PBKDF2 iterations (NIST SP 800-132 recommends ≥ 1000; 100k is a practical minimum).
-const DEFAULT_ITERATIONS: u32 = 100_000;
 
 /// Errors from key management operations.
 #[derive(Debug, Snafu)]
@@ -141,7 +140,8 @@ fn random_bytes<const N: usize>(rng: &SystemRandom) -> Result<[u8; N]> {
     Ok(buf)
 }
 
-/// Seal `primary_key` with a key derived from `passphrase` using AES-256-GCM.
+/// Seal `primary_key` with a key derived from `passphrase` using AES-256-GCM,
+/// using the default [`Config`].
 ///
 /// Generates a random salt and nonce. The resulting [`KeySlot`] contains everything
 /// needed to unseal the key later.
@@ -150,12 +150,27 @@ fn random_bytes<const N: usize>(rng: &SystemRandom) -> Result<[u8; N]> {
 ///
 /// Returns an error if random generation fails, key construction fails, or encryption fails.
 pub fn seal_key(primary_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlot> {
+    seal_key_with_config(primary_key, passphrase, &Config::default())
+}
+
+/// Seal `primary_key` with a key derived from `passphrase` using AES-256-GCM,
+/// honouring the supplied [`Config`].
+///
+/// # Errors
+///
+/// Returns an error if random generation fails, key construction fails, or encryption fails.
+pub fn seal_key_with_config(
+    primary_key: &[u8; KEY_LEN],
+    passphrase: &[u8],
+    config: &Config,
+) -> Result<KeySlot> {
     let rng = SystemRandom::new();
 
     let salt = random_bytes::<SALT_LEN>(&rng)?;
     let nonce_bytes = random_bytes::<NONCE_LEN>(&rng)?;
 
-    let derived = derive_key(passphrase, &salt, DEFAULT_ITERATIONS)?;
+    let iterations = config.pbkdf2_iterations();
+    let derived = derive_key(passphrase, &salt, iterations)?;
 
     let unbound =
         UnboundKey::new(&AES_256_GCM, &derived.key).map_err(|_| InvalidKeySnafu.build())?;
@@ -172,7 +187,7 @@ pub fn seal_key(primary_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlo
 
     Ok(KeySlot {
         salt,
-        iterations: DEFAULT_ITERATIONS,
+        iterations,
         nonce: nonce_bytes,
         algorithm: Algorithm::Aes256Gcm,
         created: Timestamp::now(),
@@ -273,6 +288,37 @@ mod tests {
         assert!(
             result.is_err(),
             "unseal with wrong passphrase must return an error"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn non_default_iterations_round_trip() -> Result<()> {
+        // WHY: prove Config actually flows through to the stored slot metadata
+        // and is used on the unseal path. A Config change must observably
+        // alter the iteration count recorded in the KeySlot.
+        let primary_key = [0xEFu8; KEY_LEN];
+        let config = Config {
+            pbkdf2_iterations: 50_000,
+        };
+        let slot = seal_key_with_config(&primary_key, b"pass", &config)?;
+        assert_eq!(
+            slot.iterations, 50_000,
+            "non-default config must change the recorded iteration count"
+        );
+        let recovered = unseal_key(&slot, b"pass")?;
+        assert_eq!(primary_key, recovered, "unseal must reverse seal");
+        Ok(())
+    }
+
+    #[test]
+    fn default_seal_key_uses_config_default() -> Result<()> {
+        let primary_key = [0x11u8; KEY_LEN];
+        let slot = seal_key(&primary_key, b"pass")?;
+        assert_eq!(
+            slot.iterations,
+            crate::config::DEFAULT_PBKDF2_ITERATIONS,
+            "seal_key must use Config::default().pbkdf2_iterations",
         );
         Ok(())
     }

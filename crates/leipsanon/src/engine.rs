@@ -10,12 +10,18 @@ use std::time::{Duration, Instant};
 
 use snafu::Snafu;
 
+use crate::config::{Config, DEFAULT_CHUNK_SIZE};
 use crate::memory::{MemoryError, secure_random_fill};
 use crate::targets::{WipeAction, WipeMethod};
 
 // ----- Constants ------------------------------------------------------------
 
-const CHUNK_SIZE: usize = 4096;
+/// Default overwrite-chunk size in bytes.
+///
+/// Preserved as a `pub const` alias of
+/// [`crate::config::DEFAULT_CHUNK_SIZE`] for backward compatibility. The
+/// runtime-tunable entry point is [`Config::chunk_size`].
+pub const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
 
 // ----- Errors ---------------------------------------------------------------
 
@@ -52,22 +58,38 @@ pub struct WipeResult {
 /// Executes wipe plans produced by [`crate::targets::plan`].
 pub struct WipeEngine {
     dry_run: bool,
+    chunk_size: usize,
 }
 
 // ----- Impls: inherent ------------------------------------------------------
 
 impl WipeEngine {
-    /// Create an engine. Set `dry_run = true` for testing: actions are logged
-    /// but no I/O is performed.
+    /// Create an engine with the default [`Config`]. Set `dry_run = true` for
+    /// testing: actions are logged but no I/O is performed.
     #[must_use]
-    pub const fn new(dry_run: bool) -> Self {
-        Self { dry_run }
+    pub fn new(dry_run: bool) -> Self {
+        Self::new_with_config(dry_run, &Config::default())
+    }
+
+    /// Create an engine using an explicit [`Config`].
+    #[must_use]
+    pub fn new_with_config(dry_run: bool, config: &Config) -> Self {
+        Self {
+            dry_run,
+            chunk_size: config.chunk_size(),
+        }
     }
 
     /// Whether this engine runs in dry-run mode.
     #[must_use]
     pub const fn is_dry_run(&self) -> bool {
         self.dry_run
+    }
+
+    /// Overwrite-chunk size this engine was constructed with.
+    #[must_use]
+    pub const fn chunk_size(&self) -> usize {
+        self.chunk_size
     }
 
     /// Execute `plan`, returning a [`WipeResult`] with completion statistics.
@@ -94,7 +116,7 @@ impl WipeEngine {
                 );
                 completed = completed.saturating_add(1);
             } else {
-                match wipe_path(&action.path, action.method) {
+                match wipe_path(&action.path, action.method, self.chunk_size) {
                     Ok(bytes) => {
                         log::info!("wiped {} bytes FROM {}", bytes, action.path.display());
                         completed = completed.saturating_add(1);
@@ -120,7 +142,7 @@ impl WipeEngine {
 // ----- Free functions -------------------------------------------------------
 
 /// Wipe `path` using `method`. Returns bytes written. Missing paths return 0.
-fn wipe_path(path: &Path, method: WipeMethod) -> Result<u64, WipeError> {
+fn wipe_path(path: &Path, method: WipeMethod, chunk_size: usize) -> Result<u64, WipeError> {
     let path_str = path.display().to_string();
 
     let file = match std::fs::OpenOptions::new().write(true).open(path) {
@@ -145,7 +167,7 @@ fn wipe_path(path: &Path, method: WipeMethod) -> Result<u64, WipeError> {
         })?
         .len();
 
-    wipe_file(file, len, method, &path_str)
+    wipe_file(file, len, method, &path_str, chunk_size)
 }
 
 /// Overwrite `file` (of known `len`) using `method`, then sync.
@@ -154,6 +176,7 @@ fn wipe_file(
     len: u64,
     method: WipeMethod,
     path: &str,
+    chunk_size: usize,
 ) -> Result<u64, WipeError> {
     file.seek(SeekFrom::Start(0))
         .map_err(|e| WipeError::Write {
@@ -162,11 +185,13 @@ fn wipe_file(
         })?;
 
     let mut written: u64 = 0;
-    let mut chunk = [0u8; CHUNK_SIZE];
+    // WHY: heap allocation rather than stack array — chunk_size is now
+    // runtime-configurable (see crate::config::Config).
+    let mut chunk = vec![0u8; chunk_size];
 
     while written < len {
         let remaining = len.saturating_sub(written);
-        let chunk_len = (usize::try_from(remaining).unwrap_or_default()).min(CHUNK_SIZE);
+        let chunk_len = (usize::try_from(remaining).unwrap_or_default()).min(chunk_size);
         let buf = &mut chunk[..chunk_len];
 
         match method {
@@ -271,6 +296,35 @@ mod tests {
         assert!(
             !WipeEngine::new(false).is_dry_run(),
             "dry_run=false must be reflected"
+        );
+    }
+
+    #[test]
+    fn default_engine_uses_default_chunk_size() {
+        let engine = WipeEngine::new(true);
+        assert_eq!(
+            engine.chunk_size(),
+            CHUNK_SIZE,
+            "default engine must use DEFAULT_CHUNK_SIZE"
+        );
+    }
+
+    #[test]
+    fn custom_config_changes_chunk_size() {
+        // WHY: prove Config.chunk_size flows through to the engine and alters
+        // observable state. 8 KiB is accepted; 64 is clamped to the default.
+        let engine = WipeEngine::new_with_config(true, &Config { chunk_size: 8192 });
+        assert_eq!(
+            engine.chunk_size(),
+            8192,
+            "engine must report the configured chunk size"
+        );
+
+        let clamped = WipeEngine::new_with_config(true, &Config { chunk_size: 64 });
+        assert_eq!(
+            clamped.chunk_size(),
+            CHUNK_SIZE,
+            "too-small chunk_size must clamp to the default"
         );
     }
 }

@@ -17,6 +17,7 @@
 
 use snafu::Snafu;
 
+use crate::config::Config;
 use crate::hci::{BdAddr, HciCommand, HciEvent, decode_event, encode_command};
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -39,11 +40,15 @@ pub const RING_BUF_SIZE: usize = 2048;
 /// Maximum HCI payload in a single STP frame (12-bit length field).
 const STP_MAX_PAYLOAD: usize = 0xFFF;
 
-/// Address rotation interval: 15 minutes in seconds, matching BLE spec recommendation.
+/// Default address-rotation interval: 15 minutes in seconds, matching BLE spec
+/// recommendation.
+///
+/// Kept as a `pub const` for backward compatibility with external callers; the
+/// runtime-tunable entry point is [`Config::rotation_interval_secs`].
 ///
 /// WHY: persistent random addresses allow tracking within a session; rotating at
 /// 15-minute boundaries limits the correlation window to spec-recommended duration.
-pub const ROTATION_INTERVAL_SECS: u64 = 15 * 60;
+pub const ROTATION_INTERVAL_SECS: u64 = crate::config::DEFAULT_ROTATION_INTERVAL_SECS;
 
 /// `Own_Address_Type` value for random address (BLE spec Table 7.2).
 ///
@@ -469,11 +474,30 @@ pub struct BtHciTransport {
     /// NOTE: In a real system this would be driven by a hardware timer callback.
     /// Here it is a counter incremented by the caller via [`tick_seconds`].
     secs_since_rotation: u64,
+
+    /// Address-rotation interval in seconds, resolved from [`Config`] at
+    /// construction time.
+    ///
+    /// WHY: stored per-instance so different transports (Daily vs. Sentinel
+    /// mode) can use different rotation cadences without a global mutable.
+    rotation_interval_secs: u64,
 }
 
 impl BtHciTransport {
-    /// Create a new transport with empty buffers and normal reset state.
-    pub const fn new() -> Self {
+    /// Create a new transport with empty buffers, normal reset state, and the
+    /// default [`Config`] rotation cadence.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::new_with_config(&Config::default())
+    }
+
+    /// Create a new transport with an explicit [`Config`].
+    ///
+    /// The only currently-tunable knob is
+    /// [`Config::rotation_interval_secs`], which controls how often
+    /// [`tick_seconds`] signals that a new random address should be installed.
+    #[must_use]
+    pub fn new_with_config(config: &Config) -> Self {
         Self {
             rx: RingBuffer::new(),
             tx: RingBuffer::new(),
@@ -481,6 +505,7 @@ impl BtHciTransport {
             rstflag: RstFlag::Normal,
             current_random_addr: None,
             secs_since_rotation: 0,
+            rotation_interval_secs: config.rotation_interval_secs(),
         }
     }
 
@@ -655,17 +680,23 @@ impl BtHciTransport {
     /// Advance the rotation timer by `secs` seconds.
     ///
     /// Returns `true` when the rotation interval has elapsed and a new address
-    /// should be generated and installed via [`set_random_address`].
+    /// should be generated and installed via [`set_random_address`]. The
+    /// rotation interval was captured at construction time from [`Config`].
     ///
     /// WHY: the caller drives time in this bare-metal driver; the transport
     /// signals when rotation is due rather than managing entropy itself.
     pub const fn tick_seconds(&mut self, secs: u64) -> bool {
         self.secs_since_rotation = self.secs_since_rotation.saturating_add(secs);
-        if self.secs_since_rotation >= ROTATION_INTERVAL_SECS {
+        if self.secs_since_rotation >= self.rotation_interval_secs {
             self.secs_since_rotation = 0;
             return true;
         }
         false
+    }
+
+    /// Return the rotation interval this transport was constructed with.
+    pub const fn rotation_interval_secs(&self) -> u64 {
+        self.rotation_interval_secs
     }
 
     /// Return the number of seconds elapsed since the last address rotation.
@@ -991,6 +1022,45 @@ mod tests {
         assert!(
             !result,
             "rotation counter must reset to 0 after triggering; second early tick must not rotate"
+        );
+    }
+
+    #[test]
+    fn custom_config_changes_rotation_interval() {
+        // WHY: prove Config.rotation_interval_secs flows through to tick_seconds.
+        // A Sentinel-mode transport using 60-second rotation must trigger at
+        // 60 s where a default (900 s) transport would not.
+        let config = Config {
+            rotation_interval_secs: 60,
+        };
+        let mut transport = BtHciTransport::new_with_config(&config);
+        assert_eq!(
+            transport.rotation_interval_secs(),
+            60,
+            "transport must report the configured interval"
+        );
+
+        let triggered = transport.tick_seconds(60);
+        assert!(
+            triggered,
+            "rotation must trigger at the configured 60-second interval"
+        );
+
+        // A default-configured transport ticked by the same amount must NOT fire.
+        let mut default_transport = BtHciTransport::new();
+        assert!(
+            !default_transport.tick_seconds(60),
+            "default 15-minute transport must not rotate after only 60 s"
+        );
+    }
+
+    #[test]
+    fn default_config_matches_historical_const() {
+        let transport = BtHciTransport::new();
+        assert_eq!(
+            transport.rotation_interval_secs(),
+            ROTATION_INTERVAL_SECS,
+            "default transport must honour the historical 15-minute interval"
         );
     }
 

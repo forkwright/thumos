@@ -11,18 +11,32 @@
 
 use snafu::Snafu;
 
+use crate::config::{Config, DEFAULT_RETRY_LIMIT, DEFAULT_TX_TIMEOUT_MS};
 use crate::stp::{MAX_PAYLOAD, StpFrame};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Maximum in-flight unacknowledged TX frames (`MTKSTP_WINSIZE`).
+///
+/// Remains `const` — this is a protocol invariant fixed by the STP spec and
+/// is used as the size of the sliding-window array. Changing it at runtime
+/// would require reallocating the window.
 pub const WINDOW_SIZE: usize = 7;
 
-/// TX timeout in milliseconds before a frame is assumed lost and retransmitted.
-pub const TX_TIMEOUT_MS: u32 = 180;
+/// Default TX timeout in milliseconds before a frame is assumed lost and
+/// retransmitted.
+///
+/// Preserved as a `pub const` alias of [`DEFAULT_TX_TIMEOUT_MS`] for backward
+/// compatibility. The runtime-tunable entry point is
+/// [`Config::tx_timeout_ms`].
+pub const TX_TIMEOUT_MS: u32 = DEFAULT_TX_TIMEOUT_MS;
 
-/// Maximum retransmissions per frame before the link is declared dead.
-pub const RETRY_LIMIT: u8 = 10;
+/// Default maximum retransmissions per frame before the link is declared dead.
+///
+/// Preserved as a `pub const` alias of [`DEFAULT_RETRY_LIMIT`] for backward
+/// compatibility. The runtime-tunable entry point is
+/// [`Config::retry_limit`].
+pub const RETRY_LIMIT: u8 = DEFAULT_RETRY_LIMIT;
 
 /// Maximum encoded STP frame size: SOF(1) + header(4) + payload + CRC(2).
 pub const TX_FRAME_MAX_ENCODED: usize = 1 + 4 + MAX_PAYLOAD + 2;
@@ -42,11 +56,15 @@ pub enum TransportError {
     ))]
     WindowFull,
 
-    /// Frame retry count exceeded [`RETRY_LIMIT`]; link is dead.
-    #[snafu(display("frame seq={seq} exceeded retry LIMIT ({RETRY_LIMIT}); link declared dead"))]
+    /// Frame retry count exceeded the configured [`Config::retry_limit`];
+    /// link is dead.
+    #[snafu(display("frame seq={seq} exceeded retry LIMIT ({limit}); link declared dead"))]
     RetryLimitExceeded {
         /// Sequence number of the frame that exceeded the retry LIMIT.
         seq: u8,
+        /// The retry limit that was exceeded (as configured at transport
+        /// construction).
+        limit: u8,
     },
 
     /// Acknowledgement sequence number is outside the current window.
@@ -233,6 +251,14 @@ pub struct StpTransport {
     tx_seq: u8,
     /// RX byte-stream parser.
     rx_parser: RxParser,
+    /// Retry budget in effect for this transport, captured from [`Config`].
+    retry_limit: u8,
+    /// TX timeout in milliseconds for this transport, captured from [`Config`].
+    ///
+    /// WHY: stored for caller-visible timing policy — the transport itself
+    /// does not drive time, but exposes [`tx_timeout_ms`](Self::tx_timeout_ms)
+    /// so the retransmit scheduler picks up the configured value.
+    tx_timeout_ms: u32,
 }
 
 impl Default for StpTransport {
@@ -242,19 +268,44 @@ impl Default for StpTransport {
 }
 
 impl StpTransport {
-    /// Create a new transport in the idle state.
+    /// Create a new transport in the idle state using [`Config::default`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self::new_with_config(&Config::default())
+    }
+
+    /// Create a new transport with an explicit [`Config`].
+    ///
+    /// The retry budget and TX-timeout values are captured from `config` at
+    /// construction time and propagated through [`retransmit`](Self::retransmit)
+    /// and [`tx_timeout_ms`](Self::tx_timeout_ms).
     #[expect(
         clippy::large_stack_arrays,
         reason = "no_std kernel context  -  heap allocation is unavailable; 7-slot window is the spec-mandated size"
     )]
-    pub const fn new() -> Self {
+    #[must_use]
+    pub fn new_with_config(config: &Config) -> Self {
         // WHY: Option<TxEntry> is not Copy because TxEntry has a large array,
         // so we cannot use array repeat syntax [None; N]. Build manually.
         Self {
             tx_window: [None, None, None, None, None, None, None],
             tx_seq: 0,
             rx_parser: RxParser::new(),
+            retry_limit: config.retry_limit(),
+            tx_timeout_ms: config.tx_timeout_ms(),
         }
+    }
+
+    /// Retry limit this transport was constructed with.
+    #[must_use]
+    pub const fn retry_limit(&self) -> u8 {
+        self.retry_limit
+    }
+
+    /// TX timeout in milliseconds this transport was constructed with.
+    #[must_use]
+    pub const fn tx_timeout_ms(&self) -> u32 {
+        self.tx_timeout_ms
     }
 
     /// Enqueue `frame` in the TX sliding window.
@@ -293,16 +344,19 @@ impl StpTransport {
     /// Mark the frame with sequence number `seq` for retransmission.
     ///
     /// Increments its retry counter. Returns [`TransportError::RetryLimitExceeded`]
-    /// when the counter reaches [`RETRY_LIMIT`], or [`TransportError::StaleAck`]
-    /// if `seq` is not in the window.
+    /// when the counter reaches the configured [`Config::retry_limit`], or
+    /// [`TransportError::StaleAck`] if `seq` is not in the window.
     #[must_use = "retransmit failure must be handled"]
     pub fn retransmit(&mut self, seq: u8) -> Result<&[u8], TransportError> {
         for slot in &mut self.tx_window {
             if let Some(entry) = slot
                 && entry.seq == seq
             {
-                if entry.retries >= RETRY_LIMIT {
-                    return Err(TransportError::RetryLimitExceeded { seq });
+                if entry.retries >= self.retry_limit {
+                    return Err(TransportError::RetryLimitExceeded {
+                        seq,
+                        limit: self.retry_limit,
+                    });
                 }
                 entry.retries += 1;
                 return Ok(entry.as_bytes());
@@ -451,9 +505,44 @@ mod tests {
             .retransmit(2)
             .expect_err("retransmit past RETRY_LIMIT must return RetryLimitExceeded");
         assert!(
-            matches!(err, TransportError::RetryLimitExceeded { seq: 2 }),
-            "error must be RetryLimitExceeded(seq=2), got {err:?}"
+            matches!(
+                err,
+                TransportError::RetryLimitExceeded {
+                    seq: 2,
+                    limit: RETRY_LIMIT
+                }
+            ),
+            "error must be RetryLimitExceeded(seq=2, limit=RETRY_LIMIT), got {err:?}"
         );
+    }
+
+    #[test]
+    fn custom_config_changes_retry_budget() {
+        // WHY: prove Config.retry_limit flows through to retransmit. A 2-retry
+        // budget must reject on the 3rd call where default (10) would accept.
+        let cfg = Config {
+            retry_limit: 2,
+            ..Config::default()
+        };
+        let mut t = StpTransport::new_with_config(&cfg);
+        let frame = make_frame(7, b"tight");
+        t.enqueue(&frame).unwrap_or_default();
+        t.retransmit(7).expect("retry 1 within budget");
+        t.retransmit(7).expect("retry 2 within budget");
+        let err = t
+            .retransmit(7)
+            .expect_err("retry 3 must exceed the 2-retry budget");
+        assert!(
+            matches!(err, TransportError::RetryLimitExceeded { seq: 7, limit: 2 }),
+            "error must report the configured limit of 2, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn default_tx_timeout_matches_historical_const() {
+        let t = StpTransport::new();
+        assert_eq!(t.tx_timeout_ms(), TX_TIMEOUT_MS);
+        assert_eq!(t.retry_limit(), RETRY_LIMIT);
     }
 
     #[test]
