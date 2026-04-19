@@ -19,10 +19,10 @@ The authors and contributors make no representations about the suitability of th
 You are solely responsible for:
 
 - **Legal compliance** in your jurisdiction. Laws regarding radio frequency use, encryption, surveillance, signal interception, modem control, and secure communications vary by country, state, and locality. It is your responsibility to understand and comply with applicable laws.
-- **Radio transmission licensing**. Transmission on certain frequencies requires licensing (amateur radio, GMRS, commercial bands, etc.) in most jurisdictions. This software does not verify, enforce, or track licensing. You are responsible for operating only on frequencies you are authorized to use.
-- **Privacy laws**. Detection, interception, or analysis of communications (cellular, WiFi, Bluetooth, etc.) may be regulated or prohibited by law in your jurisdiction. You are responsible for using this software only in ways consistent with applicable privacy and wiretapping laws.
-- **Export control**. Cryptographic software and dual-use technology may be subject to export controls under the Export Administration Regulations (EAR) or similar regimes in your jurisdiction. You are responsible for compliance when redistributing or using this software across national borders.
-- **Hardware modification**. Flashing custom firmware to mobile devices, modifying modem software, or altering hardware may void warranties, violate device manufacturer terms, or damage your device. You are responsible for any consequences of such modification.
+- **Radio transmission licensing**. Transmission on certain frequencies requires licensing (amateur radio, GMRS, commercial bands, etc.) in most jurisdictions. This software does not verify, enforce, or track licensing. You must operate only on frequencies you are authorized to use.
+- **Privacy laws**. Detection, interception, or analysis of communications (cellular, WiFi, Bluetooth, etc.) may be regulated or prohibited by law in your jurisdiction. You must use this software only in ways consistent with applicable privacy and wiretapping laws.
+- **Export control**. Cryptographic software and dual-use technology may be subject to export controls under the Export Administration Regulations (EAR) or similar regimes in your jurisdiction. You must comply when redistributing or using this software across national borders.
+- **Hardware modification**. Flashing custom firmware to mobile devices, modifying modem software, or altering hardware may void warranties, violate device manufacturer terms, or damage your device. You accept any consequences of such modification.
 
 ---
 
@@ -30,7 +30,7 @@ You are solely responsible for:
 
 This software includes capabilities that can be used for legitimate security research, defensive operations, personal privacy, and counter-surveillance, but could theoretically be misused. The authors do not endorse, encourage, or authorize any unlawful use.
 
-Specifically, this software provides capabilities including:
+This software provides capabilities including:
 
 - Custom firmware for mobile phone hardware
 - Radio frequency communication control
@@ -47,7 +47,7 @@ These capabilities are provided for research, education, operational security, a
 
 The authors have not authorized, endorsed, or otherwise approved any specific use of this software by any specific individual or organization. Possession of this software does not constitute authorization to perform any particular action with it. Possession of this software does not establish any relationship, agency, or partnership between the user and the authors.
 
-If you use this software to perform actions requiring authorization (for example, security testing of systems you do not own, access to networks you are not permitted to access, or modification of devices you do not own), you are responsible for obtaining such authorization independently. The authors do not grant, imply, or facilitate such authorization.
+If you use this software to perform actions requiring authorization (for example, security testing of systems you do not own, access to networks you are not permitted to access, or modification of devices you do not own), you must obtain such authorization independently. The authors do not grant, imply, or enable such authorization.
 
 ---
 
@@ -67,7 +67,7 @@ This limitation applies even if the authors have been advised of the possibility
 
 ## Governing principle
 
-This software is a tool. Tools do not act; people do. The authors provide the tool for legitimate purposes including personal sovereignty, security research, and education. You, the user, are responsible for what you do with it.
+This software is a tool. Tools do not act; people do. The authors provide the tool for legitimate purposes including personal sovereignty, security research, and education. You, the user, own what you do with it.
 
 If you are not prepared to accept responsibility for your use of this software, do not use it.
 

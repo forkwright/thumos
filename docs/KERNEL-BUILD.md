@@ -20,7 +20,7 @@ MT6739 Linux 4.4 BSP kernel for AGM M7, compiled from `kernel-wiite/` (cateajans
 
 ### Why W1-01 didn't boot visibly
 
-The W1-01 LCM driver (`hct_ili9881p`) is a 1080p DSI panel driver. The AGM M7 uses a
+The W1-01 LCM driver (`hct_ili9881p`) is a 1080p DSI panel driver. Our target AGM M7 uses a
 240×320 DBI parallel-interface panel driven by GC9306. The wrong driver left the display
 controller unconfigured; the kernel booted but nothing was visible and there was no console.
 
@@ -280,7 +280,7 @@ KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/performance/fpsgo/fstb
 KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/mmp
 ```
 
-**Note:** `videox/` and `dispsys/` are intentionally NOT added globally. Adding them caused `videox/debug.h` to shadow `gen2/include/debug.h` for the WiFi driver, breaking the `DBGLOG`/`ASSERT` macros. These paths are added per-driver instead (see below).
+**Note:** `videox/` and `dispsys/` are intentionally NOT added globally. Adding them caused `videox/debug.h` to shadow `gen2/include/debug.h` for the WiFi driver, breaking the `DBGLOG`/`ASSERT` macros. These paths are added per-driver instead (see the gen2 Makefile change below).
 
 ### drivers/misc/mediatek/connectivity/wlan/gen2/Makefile  -  absolute include paths
 

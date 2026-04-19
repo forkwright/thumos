@@ -18,8 +18,8 @@ while writing Rust drivers that target the same hardware.
 ## Contents
 
 - `drivers/hct_include/hct_project_all_config.h` -- GPIO and feature configuration
-  bindings for the AGM M7 board variant. Currently a stub header (feature bindings
-  absent; kernel boots without LCM probing).
+  bindings for the AGM M7 board variant. As of this commit, the header is a stub
+  (feature bindings absent; kernel boots without LCM probing).
 
 ## License
 

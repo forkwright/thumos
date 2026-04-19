@@ -431,7 +431,10 @@ impl MeshtasticTransport {
     /// - [`MeshError::MessageTooLong`] if `body` exceeds the limit
     // WHY: &self is the correct signature for when the serial protocol is
     // wired (will access self.state, self.channel, etc.). Stub doesn't use it.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "&self is the correct signature for when the serial protocol is wired"
+    )]
     pub(crate) fn send_message(&self, dest_node: u32, body: &str) -> Result<(), MeshError> {
         if body.len() > MAX_MESSAGE_BODY_LEN {
             return Err(MeshError::MessageTooLong);

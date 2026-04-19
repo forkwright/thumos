@@ -678,7 +678,10 @@ impl Screen for NousChatScreen {
         }
     }
 
-    #[allow(clippy::match_same_arms)] // WHY: LSK semantically distinct — caller dispatches entity switch.
+    #[expect(
+        clippy::match_same_arms,
+        reason = "LSK semantically distinct — caller dispatches entity switch"
+    )]
     fn on_key(&mut self, key: Key) -> ScreenAction {
         match key {
             // LSK: switch nous entity — returns None because the caller

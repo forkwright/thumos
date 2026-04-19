@@ -1,6 +1,6 @@
 # Hardware reference: AGM M7
 
-## SoC: MediaTek MT6739
+## `SoC`: Mediatek MT6739
 
 - CPU: 4x ARM Cortex-A53 @ 1.5 GHz (28nm)
 - GPU: PowerVR GE8100 @ 570 MHz
