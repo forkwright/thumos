@@ -29,3 +29,60 @@ RUST/pub-visibility:crates/pteron/**
 RUST/pub-visibility:crates/sema/**
 RUST/pub-visibility:crates/stegnos/**
 RUST/pub-visibility:crates/topos/**
+
+# =============================================================================
+# Parser/encoder direct indexing in fixed-size buffers
+# =============================================================================
+#
+# WHY(#130): Indexing into local stack-allocated fixed-size arrays with literal
+# indices, or into slices after an explicit `ensure!` bound check. The lint
+# cannot prove the check precedes the access, but each call site is demonstrably
+# safe. Tracked for eventual rewrite via destructuring / to_le_bytes / get_mut.
+RUST/indexing-slicing:crates/aither/src/mac.rs
+RUST/indexing-slicing:crates/aither/src/eapol.rs
+RUST/indexing-slicing:crates/pteron/src/transport.rs
+RUST/indexing-slicing:crates/pteron/src/hci.rs
+RUST/indexing-slicing:crates/kelyphos/src/stp.rs
+RUST/indexing-slicing:crates/kelyphos/src/transport.rs
+RUST/indexing-slicing:crates/klesis/src/pdu.rs
+RUST/indexing-slicing:crates/klesis/src/ccci.rs
+RUST/indexing-slicing:crates/klesis/src/gsm7.rs
+RUST/indexing-slicing:crates/klesis/src/transport.rs
+RUST/indexing-slicing:crates/eidolon/src/framebuffer.rs
+RUST/indexing-slicing:crates/haphe/src/gpio.rs
+RUST/indexing-slicing:crates/haphe/src/input.rs
+RUST/indexing-slicing:crates/haphe/src/touch.rs
+RUST/indexing-slicing:crates/krypta/src/x3dh.rs
+RUST/indexing-slicing:crates/leipsanon/src/memory.rs
+RUST/indexing-slicing:crates/leipsanon/src/trigger.rs
+RUST/indexing-slicing:crates/stegnos/src/cipher.rs
+RUST/indexing-slicing:crates/stegnos/src/erase.rs
+
+# =============================================================================
+# String/byte slice indexing and enum-as-cast in parsers
+# =============================================================================
+#
+# WHY(#130): `&buf[..N]` and `&payload[pos..pos+len]` slicing after explicit
+# length checks; `enum as u8` for enum→wire discriminant conversions where the
+# discriminant values are 0..N; bit-shift `as u16` conversions whose domain is
+# proven by the source type's bit width. Same tracking issue as indexing-slicing.
+RUST/string-slice:crates/aither/src/mac.rs
+RUST/string-slice:crates/aither/src/wpa.rs
+RUST/string-slice:crates/haphe/src/touch.rs
+RUST/string-slice:crates/kelyphos/src/stp.rs
+RUST/string-slice:crates/kelyphos/src/transport.rs
+RUST/string-slice:crates/klesis/src/ccci.rs
+RUST/string-slice:crates/klesis/src/pdu.rs
+RUST/string-slice:crates/krypta/src/ratchet.rs
+RUST/string-slice:crates/krypta/src/x3dh.rs
+RUST/string-slice:crates/leipsanon/src/engine.rs
+RUST/string-slice:crates/pteron/src/transport.rs
+RUST/string-slice:crates/stegnos/src/cipher.rs
+RUST/string-slice:crates/topos/src/nmea.rs
+
+RUST/as-cast:crates/aither/src/mac.rs
+RUST/as-cast:crates/eidolon/src/color.rs
+RUST/as-cast:crates/eidolon/src/font.rs
+RUST/as-cast:crates/haphe/src/gpio.rs
+RUST/as-cast:crates/haphe/src/input.rs
+RUST/as-cast:crates/kelyphos/src/stp.rs
