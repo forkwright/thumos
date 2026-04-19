@@ -26,9 +26,12 @@ const EM_ARM: u16 = 40;
 const PT_LOAD: u32 = 1;
 
 /// ELF32 header.
+///
+/// Mirrors the ELF32 specification layout; splitting would break #[repr(C,
+/// packed)] binary compatibility.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-struct Elf32Ehdr {
+struct Elf32Ehdr { // kanon:ignore RUST/struct-too-many-fields -- ELF32 spec layout; see doc comment
     e_ident: [u8; 16],
     e_type: u16,
     e_machine: u16,

@@ -86,3 +86,75 @@ RUST/as-cast:crates/eidolon/src/font.rs
 RUST/as-cast:crates/haphe/src/gpio.rs
 RUST/as-cast:crates/haphe/src/input.rs
 RUST/as-cast:crates/kelyphos/src/stp.rs
+
+# =============================================================================
+# Files exceeding 800-line limit — split tracked in #131
+# =============================================================================
+#
+# WHY(#131): 48 files exceed the 800-line ceiling. Each file is a cohesive
+# kernel subsystem; splitting 48 at once risks regressions in a bare-metal
+# kernel that cannot be tested in CI. Per-file splits tracked in issue #131.
+RUST/file-too-long:crates/thumos/**
+RUST/file-too-long:crates/aither/src/mac.rs
+RUST/file-too-long:crates/kelyphos/src/wmt.rs
+RUST/file-too-long:crates/klesis/src/pdu.rs
+RUST/file-too-long:crates/pteron/src/hci.rs
+RUST/file-too-long:crates/pteron/src/transport.rs
+RUST/file-too-long:crates/sema/src/cell.rs
+
+# =============================================================================
+# Library crate lib.rs test-presence false positives
+# =============================================================================
+#
+# WHY: Every workspace library crate uses lib.rs solely for module declarations
+# and re-exports. Every submodule contains #[cfg(test)] blocks with unit tests
+# (verified via `grep -r "#\[test\]" crates/*/src`). The TESTING/no-tests rule
+# only scans lib.rs for a test module; the heuristic misses the real tests.
+TESTING/no-tests:crates/aither/src/lib.rs
+TESTING/no-tests:crates/asphaleia/src/lib.rs
+TESTING/no-tests:crates/eidolon/src/lib.rs
+TESTING/no-tests:crates/haphe/src/lib.rs
+TESTING/no-tests:crates/kelyphos/src/lib.rs
+TESTING/no-tests:crates/klesis/src/lib.rs
+TESTING/no-tests:crates/krypta/src/lib.rs
+TESTING/no-tests:crates/leipsanon/src/lib.rs
+TESTING/no-tests:crates/pteron/src/lib.rs
+TESTING/no-tests:crates/sema/src/lib.rs
+TESTING/no-tests:crates/stegnos/src/lib.rs
+TESTING/no-tests:crates/topos/src/lib.rs
+
+# =============================================================================
+# fuzz/ — standalone cargo-fuzz crate
+# =============================================================================
+#
+# WHY: cargo-fuzz requires a separate [workspace] declaration; the fuzz crate
+# cannot inherit workspace.package, license, or rust-version fields because it
+# is outside the main workspace (nightly-only, never published).
+MANIFEST/no-workspace-package:fuzz/Cargo.toml
+MANIFEST/no-license:fuzz/Cargo.toml
+MANIFEST/no-msrv:fuzz/Cargo.toml
+MANIFEST/no-deny-toml:fuzz/Cargo.toml
+MANIFEST/no-rustfmt:fuzz/Cargo.toml
+
+# =============================================================================
+# crates/thumos/ — bare-metal kernel binary, excluded from workspace
+# =============================================================================
+#
+# WHY: thumos is the bare-metal kernel binary (target_os = "none"). It is
+# excluded from the workspace so cargo doesn't apply std-target assumptions,
+# which means it cannot inherit workspace.package fields. The version is
+# maintained independently in this Cargo.toml.
+RELEASES/independent-crate-version:crates/thumos/Cargo.toml
+
+# WHY: thumos main.rs contains the ARM boot stub (`core::arch::global_asm!`),
+# the panic handler, and 106 kernel module declarations. Moving logic into a
+# library crate isn't meaningful here — the modules ARE the kernel, and the
+# boot stub + panic handler must live in the bin target with `no_main`.
+ARCHITECTURE/thick-binary:crates/thumos/src/main.rs
+
+# WHY: kelyphos::wmt defines `RegisterIo` alongside `MmioRegisterIo`, its only
+# production impl. The consumer (thumos kernel) is outside the workspace so
+# moving the trait into it isn't possible; the other potential consumer is
+# the test mock (also in kelyphos). Revisit once thumos gains path deps
+# (#126) — until then the colocation is deliberate.
+ARCHITECTURE/trait-impl-colocation:crates/kelyphos/src/wmt.rs

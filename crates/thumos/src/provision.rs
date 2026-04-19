@@ -246,7 +246,7 @@ impl Provisioner {
         // Don't accept data in terminal states.
         match &self.state {
             ProvisionState::Complete | ProvisionState::Error(_) => return &self.state,
-            _ => {}
+            _ => {} // WHY: non-terminal states (Waiting/Receiving) continue processing below
         }
 
         // Transition from Waiting to Receiving on first data.

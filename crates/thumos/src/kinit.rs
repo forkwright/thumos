@@ -129,7 +129,8 @@ impl BootStep {
 /// The panic handler and degradation logic read this to decide what
 /// output paths are available.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BootState {
+pub(crate) struct BootState { // kanon:ignore RUST/struct-too-many-fields -- one bool per boot subsystem; grouping would obscure the per-subsystem degradation model
+
     pub(crate) mmu_ok: bool,
     pub(crate) heap_ok: bool,
     pub(crate) gic_ok: bool,

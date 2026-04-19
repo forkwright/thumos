@@ -257,14 +257,14 @@ pub fn frequency_to_channel(freq_mhz: u32) -> Option<u8> {
         if offset % CHANNEL_STEP_MHZ != 0 {
             return None;
         }
-        return u8::try_from(offset / CHANNEL_STEP_MHZ).ok();
+        return u8::try_from(offset / CHANNEL_STEP_MHZ).ok(); // kanon:ignore RUST/silent-error-ok -- channels 1..=13 always fit in u8; try_from failure is structurally unreachable given the range guard above
     }
     if (5180..=5825).contains(&freq_mhz) {
         let offset = freq_mhz.checked_sub(BAND_5_GHZ_FREQ_OFFSET)?;
         if offset % CHANNEL_STEP_MHZ != 0 {
             return None;
         }
-        return u8::try_from(offset / CHANNEL_STEP_MHZ).ok();
+        return u8::try_from(offset / CHANNEL_STEP_MHZ).ok(); // kanon:ignore RUST/silent-error-ok -- channels 36..=165 always fit in u8; try_from failure is structurally unreachable given the range guard above
     }
     None
 }
