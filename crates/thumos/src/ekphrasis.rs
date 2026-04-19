@@ -1643,9 +1643,9 @@ Let me know if you need anything else."#;
 
     #[test]
     fn ws_opcode_display() {
-        assert_eq!(alloc::format!("{}", WsOpcode::Text), "text");
-        assert_eq!(alloc::format!("{}", WsOpcode::Binary), "binary");
-        assert_eq!(alloc::format!("{}", WsOpcode::Close), "close");
+        assert_eq!(WsOpcode::Text.to_string(), "text");
+        assert_eq!(WsOpcode::Binary.to_string(), "binary");
+        assert_eq!(WsOpcode::Close.to_string(), "close");
     }
 
     #[test]

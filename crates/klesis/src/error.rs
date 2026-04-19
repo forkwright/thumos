@@ -5,6 +5,7 @@ use snafu::Snafu;
 /// Telephony subsystem errors.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
+#[non_exhaustive]
 pub enum Error {
     /// AT command timed out.
     #[snafu(display("AT command timed out after {timeout_ms}ms"))]

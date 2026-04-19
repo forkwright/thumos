@@ -34,6 +34,7 @@ const STP_SOF: u8 = 0x80;
 
 /// Errors produced by the STP transport layer.
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum TransportError {
     /// TX sliding window is full  -  caller must wait for acknowledgements.
     #[snafu(display(

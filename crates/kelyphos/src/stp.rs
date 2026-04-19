@@ -22,6 +22,7 @@ pub const MAX_PAYLOAD: usize = 4095;
 /// STP frame type (4 bits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum FrameType {
     /// Data frame (`WiFi`, `BT`, `GPS`, FM).
     Data = 0,
@@ -233,6 +234,7 @@ const fn crc16_ccitt_byte(crc: u16, byte: u8) -> u16 {
 /// WMT subsystem IDs for routing data frames to the RIGHT driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum WmtSubsystem {
     /// `WiFi`
     Wifi = 0,

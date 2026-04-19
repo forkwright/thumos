@@ -162,6 +162,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// (DRIVER-INTERFACES.md §4.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum RstFlag {
     /// Normal operation  -  no reset in progress.
     Normal = 0,
