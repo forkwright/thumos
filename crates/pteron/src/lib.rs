@@ -7,6 +7,7 @@
 //! [`transport`] module manages address rotation at 15-minute intervals.
 
 pub mod ble;
+pub mod config;
 pub mod device;
 pub mod hci;
 pub mod transport;

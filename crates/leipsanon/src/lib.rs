@@ -11,6 +11,7 @@
 //! 4. Configure panic triggers via [`trigger::TriggerConfig`] and evaluate
 //!    incoming events with [`trigger::TriggerConfig::check_trigger`].
 
+pub mod config;
 pub mod engine;
 pub mod memory;
 pub mod targets;
