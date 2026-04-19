@@ -27,9 +27,7 @@ fuzz_target!(|data: &[u8]| {
     // If we parsed successfully, encoding and re-parsing must succeed and
     // produce the identical frame. Any deviation is a bug.
     let encoded = eapol::encode(&frame);
-    let reparsed = eapol::parse(&encoded).expect(
-        "re-parsing an encoded EAPOL frame must succeed: encode produced an invalid frame",
-    );
+    let reparsed = eapol::parse(&encoded).expect("re-parse EAPOL round-trip must succeed"); // kanon:ignore RUST/expect -- fuzz targets must panic on invariant violations so libFuzzer reports the bug; round-trip is guaranteed by construction
     assert_eq!(
         frame, reparsed,
         "EAPOL round-trip must be lossless: parse → encode → parse must yield identical frames",

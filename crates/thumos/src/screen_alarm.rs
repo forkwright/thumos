@@ -123,7 +123,7 @@ struct AlarmEntry {
 // ---------------------------------------------------------------------------
 
 /// Combined alarm/timer/stopwatch screen.
-pub(crate) struct AlarmScreen {
+pub(crate) struct AlarmScreen { // kanon:ignore RUST/struct-too-many-fields -- three sub-modes (alarm/timer/stopwatch) share one screen; splitting would require three parallel screens + a dispatcher
     /// Active tab.
     tab: Tab,
     /// Alarm entries snapshot.

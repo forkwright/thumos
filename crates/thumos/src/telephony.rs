@@ -395,7 +395,7 @@ fn send_with_info<T: ModemTransport>(
 // ---------------------------------------------------------------------------
 
 /// Telephony subsystem: manages modem state and voice calls.
-pub struct Telephony<T: ModemTransport> {
+pub struct Telephony<T: ModemTransport> { // kanon:ignore RUST/struct-too-many-fields -- cohesive modem state: radio + signal + registration + call + operator fields track one hardware subsystem
     /// Current modem state.
     modem_state: ModemState,
     /// Current voice call state.

@@ -70,7 +70,7 @@ impl Console {
                     self.serial.putc(byte); // Echo
                 }
             }
-            _ => {}
+            _ => {} // WHY: silently drop other control bytes (buffer-full fallthrough handled above)
         }
     }
 
