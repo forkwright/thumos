@@ -115,7 +115,7 @@ pub(crate) const DEFAULT_HEAP_BREAK: usize = 0x1000_0000;
 pub(crate) const MMAP_BASE: usize = 0x2000_0000;
 
 /// Process control block.
-pub(crate) struct Process {
+pub(crate) struct Process { // kanon:ignore RUST/struct-too-many-fields -- standard Unix PCB fields; each models a distinct process resource
     pub pid: Pid,
     pub state: State,
     pub ctx: Context,

@@ -188,7 +188,7 @@ pub(crate) const fn throttle_delay(attempts: u32) -> u32 {
 ///
 /// Manages input buffers, attempt counting, throttling, and duress detection.
 /// The screen renders a dot-masked input field and handles numpad/OK/End keys.
-pub(crate) struct LockScreen {
+pub(crate) struct LockScreen { // kanon:ignore RUST/struct-too-many-fields -- cohesive auth state machine; splitting would scatter throttle/attempt/duress tracking across types
     /// Current authentication mode.
     mode: LockMode,
     /// PIN input buffer (digit bytes, e.g., b'0'..b'9').

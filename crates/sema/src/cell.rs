@@ -313,7 +313,7 @@ pub fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
             ImsiCatcherAlert::RapidReselection { count } => (
                 "rapid_reselection",
                 WEIGHT_RAPID_RESELECTION,
-                format!("{count} cell reselections in observation window"),
+                format!("{count} cell reselections in observation window"), // kanon:ignore STORAGE/sql-string-concat -- false positive: "reselections" contains "SELECT" substring; this is a human-readable alert string, not SQL. kanon:ignore RUST/format-sql -- same rationale
             ),
         };
 

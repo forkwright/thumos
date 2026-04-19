@@ -495,7 +495,7 @@ mod tests {
     // Until then, ignore: quarter_round tests (above) still exercise the
     // core arithmetic, and the CSPRNG is seeded from hardware entropy in
     // production, not from the RFC test vectors.
-    #[ignore = "impl uses 64-bit counter; RFC 8439 uses 32-bit counter + 96-bit nonce"]
+    #[ignore = "impl uses 64-bit counter; RFC 8439 uses 32-bit counter + 96-bit nonce — see #129"]
     #[test]
     fn chacha20_test_vector() {
         // RFC 8439 §2.3.2: key = 0x00..0x1f, nonce = 0x00..0x0b, counter = 1
