@@ -273,9 +273,10 @@ impl Default for BlockCache {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+    
     use super::*;
     use crate::block::MemBlockDevice;
-    use alloc::vec;
 
     /// Helper: create a device large enough for cache testing.
     /// 2048 sectors = 256 logical blocks (matches cache size exactly).

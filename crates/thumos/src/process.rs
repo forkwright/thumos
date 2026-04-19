@@ -9,11 +9,12 @@
 //! sp, lr, and cpsr. Registers r0-r3, r12, lr, pc, cpsr are saved
 //! by the exception entry/exit code.
 
+use core::ptr::addr_of_mut;
+
 use crate::ipc;
 use crate::mmu;
 use crate::page;
 use crate::signal::{Signal, SignalAction, SignalState};
-use core::ptr::addr_of_mut;
 
 /// Maximum number of processes.
 const MAX_PROCS: usize = 16;

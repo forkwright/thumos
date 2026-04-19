@@ -569,8 +569,9 @@ impl DnsResolver {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+    
+    use super::*;
 
     // -- Cache tests --
 

@@ -54,9 +54,10 @@
 
 extern crate alloc;
 
+use core::fmt;
+
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt;
 
 // ---------------------------------------------------------------------------
 // Constants

@@ -20,10 +20,11 @@
 //! - The page allocator must be initialized before `SlabAllocator::init()`.
 //! - `init()` must be called exactly once before any `alloc`/`dealloc`.
 
-use crate::page;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
+
+use crate::page;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -435,8 +436,9 @@ unsafe impl GlobalAlloc for KernelAllocator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::alloc::Layout;
+    
+    use super::*;
 
     // -----------------------------------------------------------------------
     // Fake page allocator for tests

@@ -38,9 +38,10 @@
 
 extern crate alloc;
 
+use core::fmt;
+
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt;
 
 use crate::http_client::{self, HttpRequest, HttpResponse, HttpError};
 use crate::json_mini::{JsonParser, JsonWriter, JsonValue, JsonError};
@@ -1172,8 +1173,9 @@ fn push_u32(s: &mut String, val: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::string::ToString;
+    
+    use super::*;
 
     /// Helper: build a minimal sync response JSON string.
     fn build_sync_response(
