@@ -1,0 +1,135 @@
+# Crate architecture — compressed from ../ARCHITECTURE.md
+# Canonical source: ../ARCHITECTURE.md
+#
+# Thumos is a monolithic Rust kernel (bare-metal, excluded from workspace)
+# plus 12 userspace workspace crates. Higher layers depend on lower; never
+# the reverse. The kernel depends on nothing in the workspace.
+
+[[crate]]
+name = "thumos"
+layer = "kernel"
+workspace_member = false
+target = "armv7a-none-eabi"
+path = "crates/thumos/"
+purpose = "Bare-metal ARM kernel: MMU, slab allocator, scheduler, 45 syscalls, IPC (pipe/futex/signals), ELF loader, VFS (LFS/ramfs/devfs), block cache, network stack (TCP/UDP/DHCP/DNS), firewall, encrypted block device, telephony, audio session, UI framework, 107 modules"
+depends = []
+
+[[crate]]
+name = "haphe"
+layer = "input"
+workspace_member = true
+path = "crates/haphe/"
+purpose = "GPIO keypad matrix scan, mtk-tpd touchscreen driver, T9 input routing, event queue (no_std)"
+depends = []
+
+[[crate]]
+name = "asphaleia"
+layer = "security"
+workspace_member = true
+path = "crates/asphaleia/"
+purpose = "Packet filter firewall, DNS blocklist, capability enforcement, IPv4/TCP/UDP parsing"
+depends = []
+
+[[crate]]
+name = "stegnos"
+layer = "security"
+workspace_member = true
+path = "crates/stegnos/"
+purpose = "Encrypted storage: AES-256-XTS block cipher, LUKS key derivation, secure erase"
+depends = []
+
+[[crate]]
+name = "leipsanon"
+layer = "security"
+workspace_member = true
+path = "crates/leipsanon/"
+purpose = "Panic mode: priority-ordered wipe, trigger system, memory scrubbing"
+depends = []
+
+[[crate]]
+name = "aither"
+layer = "radio"
+workspace_member = true
+path = "crates/aither/"
+purpose = "WiFi MAC driver (gen2 HIF), MAC randomization per connection, passive scanning, WPA2/WPA3 supplicant, EAPOL handshake"
+depends = []
+
+[[crate]]
+name = "pteron"
+layer = "radio"
+workspace_member = true
+path = "crates/pteron/"
+purpose = "Bluetooth HCI over STP, BLE scanning, LE Privacy address rotation (15-min interval), NRPA default"
+depends = []
+
+[[crate]]
+name = "kelyphos"
+layer = "radio"
+workspace_member = true
+path = "crates/kelyphos/"
+purpose = "WMT combo chip manager (CONSYS): firmware loading, STP framing, subsystem power control"
+depends = []
+
+[[crate]]
+name = "topos"
+layer = "radio"
+workspace_member = true
+path = "crates/topos/"
+purpose = "GPS NMEA parser, multi-constellation (GPS/GLONASS/BeiDou), geofencing, position logging"
+depends = []
+
+[[crate]]
+name = "klesis"
+layer = "telephony"
+workspace_member = true
+path = "crates/klesis/"
+purpose = "AT command parser, CCCI/CLDMA framing, SMS PDU codec, GSM-7 encoding"
+depends = []
+
+[[crate]]
+name = "krypta"
+layer = "crypto"
+workspace_member = true
+path = "crates/krypta/"
+purpose = "Signal protocol: X3DH key exchange, double ratchet, session management"
+depends = []
+
+[[crate]]
+name = "sema"
+layer = "radio_tools"
+workspace_member = true
+path = "crates/sema/"
+purpose = "Radio analysis: WiFi/BT/cell scanning, IMSI catcher detection/scoring, rogue AP detection, Silent SMS detection, 2G refusal"
+depends = []
+
+[[crate]]
+name = "eidolon"
+layer = "ui"
+workspace_member = true
+path = "crates/eidolon/"
+purpose = "Framebuffer UI: 240x320 rendering, widget system, 3-zone layout, dialer, status bar, T9 input rendering"
+depends = ["haphe"]
+
+# Dependency direction:
+#
+#   eidolon (UI) -> haphe (input)
+#
+# All other workspace crates are independent of each other. External
+# dependencies (ring, nom, smoltcp, snafu, embedded-graphics) flow downward.
+# The kernel (thumos) depends on nothing in the workspace.
+
+[layers]
+order = ["kernel", "input", "security", "radio", "telephony", "crypto", "radio_tools", "ui"]
+rule = "Higher layers may depend on lower. Lower layers never import from higher."
+
+[build]
+workspace_cmd = "cargo check --workspace"
+kernel_cmd = "cd crates/thumos && cargo build --release"
+kernel_target = "armv7a-none-eabi"
+boot_image = "mkbootimg (see docs/KERNEL-BUILD.md)"
+flash = "mtkclient BROM exploit"
+
+[extension_points]
+new_kernel_subsystem = "Add module in crates/thumos/src/. Kernel is monolithic; subsystems are modules, not crates."
+new_userspace_crate = "Add crate in crates/<greek-name>/, register in workspace Cargo.toml members. Follow Greek naming (docs/gnomon.md)."
+new_driver_protocol = "Workspace crate (like aither, pteron). If the driver touches MMIO registers, put it in the kernel instead."
