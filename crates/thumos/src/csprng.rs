@@ -485,7 +485,7 @@ mod tests {
 
     // --- RFC 8439 §2.3.2 ChaCha20 Block Test Vector ---
 
-    // FIXME: structural mismatch between impl and RFC 8439.
+    // TODO(#129): structural mismatch between impl and RFC 8439.
     // The impl uses state[13] as counter-high (64-bit counter) and
     // state[14..15] as a 2-word nonce. RFC 8439 §2.3.2 uses state[12]
     // as a 32-bit counter and state[13..15] as a 3-word (96-bit) nonce.

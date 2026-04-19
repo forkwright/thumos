@@ -384,7 +384,7 @@ fn emit_distress_beacon(triggered_at: u64, keys_zeroized: bool) -> DistressBeaco
 /// (success) since the kernel LFS is not yet wired for runtime I/O
 /// from this module.
 fn wipe_target_path(_path: &str) -> bool {
-    // TODO(Wave 8): wire to lfs::overwrite_path() when filesystem
+    // TODO(#129): wire to lfs::overwrite_path() when filesystem
     // runtime I/O is available from the security subsystem.
     true
 }

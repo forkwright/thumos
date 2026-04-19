@@ -233,35 +233,35 @@ impl FmHw {
 #[cfg(not(test))]
 impl FmHwOps for FmHw {
     fn power_on(&mut self) -> Result<(), FmError> {
-        // TODO(hw): send WMT power-on command for FM subsystem.
+        // TODO(#129): send WMT power-on command for FM subsystem.
         // Enable FM clock and analog front-end via PMIC.
         Ok(())
     }
 
     fn power_off(&mut self) -> Result<(), FmError> {
-        // TODO(hw): send WMT power-off command for FM subsystem.
+        // TODO(#129): send WMT power-off command for FM subsystem.
         Ok(())
     }
 
     fn tune(&mut self, freq_khz: u32) -> Result<(), FmError> {
-        // TODO(hw): write frequency to FM_CHANNEL_SET register.
+        // TODO(#129): write frequency to FM_CHANNEL_SET register.
         // Convert kHz to channel number and program the PLL.
         self.current_freq = freq_khz;
         Ok(())
     }
 
     fn seek_up(&mut self) -> Result<u32, FmError> {
-        // TODO(hw): program FM_SEEK_CTRL for upward seek, poll for completion.
+        // TODO(#129): program FM_SEEK_CTRL for upward seek, poll for completion.
         Err(FmError::NoStationFound)
     }
 
     fn seek_down(&mut self) -> Result<u32, FmError> {
-        // TODO(hw): program FM_SEEK_CTRL for downward seek, poll for completion.
+        // TODO(#129): program FM_SEEK_CTRL for downward seek, poll for completion.
         Err(FmError::NoStationFound)
     }
 
     fn get_rssi(&self) -> i8 {
-        // TODO(hw): read FM_RSSI_REG.
+        // TODO(#129): read FM_RSSI_REG.
         -100 // No signal
     }
 }
