@@ -16,10 +16,7 @@ use std::collections::HashSet;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-/// Signal strength threshold above which a previously-unseen tower is considered
-/// suspiciously strong. IMSI catchers are often deployed close to the target and
-/// deliberately transmit at high power.
-const UNUSUALLY_STRONG_SIGNAL_DBM: i32 = -50;
+use crate::config::Config;
 
 /// Radio access technology generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +98,8 @@ pub enum ImsiCatcherAlert {
         algorithm: CipherAlgorithm,
     },
     /// Rapid cell reselection: the device has been forced to reselect cells
-    /// more than [`RAPID_RESELECTION_THRESHOLD`] times within the observation window.
+    /// more than [`Config::rapid_reselection_threshold`] times within the
+    /// observation window.
     RapidReselection {
         /// Number of reselections observed.
         count: u32,
@@ -161,22 +159,6 @@ impl core::fmt::Display for CipherAlgorithm {
 }
 
 // ── Threat scoring ──────────────────────────────────────────────────────────
-
-/// Weight assigned to A5/1 or A5/2 cipher downgrade detection.
-const WEIGHT_CIPHER_DOWNGRADE: u32 = 40;
-
-/// Weight assigned to unusual LAC/CID changes (sudden tower change).
-const WEIGHT_UNUSUAL_LAC_CID: u32 = 30;
-
-/// Weight assigned to abnormal signal power from an unknown tower.
-const WEIGHT_ABNORMAL_SIGNAL: u32 = 20;
-
-/// Weight assigned to rapid cell reselection.
-const WEIGHT_RAPID_RESELECTION: u32 = 10;
-
-/// Threshold for the number of cell reselections within the observation window
-/// that constitutes "rapid reselection".
-const RAPID_RESELECTION_THRESHOLD: u32 = 3;
 
 /// Threat level derived from the cumulative [`ThreatScore`].
 ///
@@ -264,39 +246,43 @@ const fn level_from_score(score: u32) -> ThreatLevel {
     }
 }
 
-/// Compute a weighted [`ThreatScore`] from a set of IMSI catcher alerts.
+/// Compute a weighted [`ThreatScore`] using [`Config::default`] weights.
 ///
-/// Each alert type maps to a fixed weight:
-///
-/// | Alert | Weight |
-/// |---|---|
-/// | A5/1 or A5/2 cipher downgrade | 40 |
-/// | Unusual LAC/CID (sudden tower change) | 30 |
-/// | Abnormal signal power (strong new tower) | 20 |
-/// | Rapid cell reselection | 10 |
-/// | Technology downgrade | 40 (same as cipher) |
-///
-/// Duplicate factor types are counted once each (a second sudden tower change
-/// adds another 30 to the total).
+/// Each alert type maps to a weight defined by the active [`Config`]; see
+/// [`score_threat_with_config`] for the configurable form.
 pub fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
+    score_threat_with_config(alerts, &Config::default())
+}
+
+/// Compute a weighted [`ThreatScore`] using explicit [`Config`] weights.
+///
+/// Supplying a non-default `config` observably changes the per-alert weights
+/// in the result and can move the overall [`ThreatLevel`] boundary. This is
+/// the primary entry point for agents tuning detection policy.
+pub fn score_threat_with_config(alerts: &[ImsiCatcherAlert], config: &Config) -> ThreatScore {
     let mut total: u32 = 0;
     let mut factors = Vec::new();
+
+    let w_cipher = config.weight_cipher_downgrade();
+    let w_lac_cid = config.weight_unusual_lac_cid();
+    let w_abnormal = config.weight_abnormal_signal();
+    let w_rapid = config.weight_rapid_reselection();
 
     for alert in alerts {
         let (name, weight, description) = match alert {
             ImsiCatcherAlert::TechnologyDowngrade { from, to } => (
                 "tech_downgrade",
-                WEIGHT_CIPHER_DOWNGRADE,
+                w_cipher,
                 format!("technology downgrade: {from} → {to}"),
             ),
             ImsiCatcherAlert::CipherDowngrade { algorithm } => (
                 "cipher_downgrade",
-                WEIGHT_CIPHER_DOWNGRADE,
+                w_cipher,
                 format!("weak cipher negotiated: {algorithm}"),
             ),
             ImsiCatcherAlert::SuddenTowerChange { previous, current } => (
                 "unusual_lac_cid",
-                WEIGHT_UNUSUAL_LAC_CID,
+                w_lac_cid,
                 format!(
                     "handover to unannounced tower: LAC {} CID {} → LAC {} CID {}",
                     previous.lac, previous.cid, current.lac, current.cid
@@ -304,7 +290,7 @@ pub fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
             ),
             ImsiCatcherAlert::UnusuallyStrongNewTower { tower } => (
                 "abnormal_signal",
-                WEIGHT_ABNORMAL_SIGNAL,
+                w_abnormal,
                 format!(
                     "unknown tower at {} dBm (CID {})",
                     tower.signal_dbm, tower.cid
@@ -312,7 +298,7 @@ pub fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
             ),
             ImsiCatcherAlert::RapidReselection { count } => (
                 "rapid_reselection",
-                WEIGHT_RAPID_RESELECTION,
+                w_rapid,
                 format!("{count} cell reselections in observation window"), // kanon:ignore STORAGE/sql-string-concat -- false positive: "reselections" contains "SELECT" substring; this is a human-readable alert string, not SQL. kanon:ignore RUST/format-sql -- same rationale
             ),
         };
@@ -392,24 +378,41 @@ const fn is_technology_downgrade(from: &CellTechnology, to: &CellTechnology) -> 
     )
 }
 
-/// Analyse a sequence of cell events for IMSI catcher signatures.
+/// Analyse a sequence of cell events for IMSI catcher signatures using the
+/// default [`Config`].
+///
+/// See [`detect_imsi_catcher_with_config`] for the configurable form.
+#[must_use]
+pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
+    detect_imsi_catcher_with_config(events, &Config::default())
+}
+
+/// Analyse a sequence of cell events for IMSI catcher signatures using
+/// explicit [`Config`] thresholds.
 ///
 /// Five patterns are detected:
 ///
 /// - **Technology downgrade**: any `Connected` or `HandoverTo` event that transitions
 ///   the device to a lower-capability radio technology.
 /// - **Unusually strong new tower**: a `Connected` or `HandoverTo` event where the tower
-///   has never been seen before and its signal exceeds [`UNUSUALLY_STRONG_SIGNAL_DBM`].
+///   has never been seen before and its signal exceeds
+///   [`Config::unusually_strong_signal_dbm`].
 /// - **Sudden tower change**: a `HandoverTo` event to a tower that was never previously
 ///   announced via `NeighborSeen`, suggesting an abnormal handover.
 /// - **Cipher downgrade**: a `CipherChange` event indicating A5/0, A5/1, or A5/2.
-/// - **Rapid reselection**: more than [`RAPID_RESELECTION_THRESHOLD`] serving cell
-///   changes across `Connected` and `HandoverTo` events.
+/// - **Rapid reselection**: more than [`Config::rapid_reselection_threshold`]
+///   serving cell changes across `Connected` and `HandoverTo` events.
 ///
 /// Events are processed in order; `NeighborSeen` events accumulate a set of known
 /// neighbours used to evaluate subsequent handovers.
 #[must_use]
-pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
+pub fn detect_imsi_catcher_with_config(
+    events: &[CellEvent],
+    config: &Config,
+) -> Vec<ImsiCatcherAlert> {
+    let strong_signal_dbm = config.unusually_strong_signal_dbm();
+    let rapid_threshold = config.rapid_reselection_threshold();
+
     let mut alerts = Vec::new();
     let mut seen_tower_ids: HashSet<(u16, u16, u32, u32)> = HashSet::new();
     let mut known_neighbor_ids: HashSet<(u16, u16, u32, u32)> = HashSet::new();
@@ -425,9 +428,7 @@ pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
 
             CellEvent::Connected(tower) => {
                 // Unusually strong new tower.
-                if !seen_tower_ids.contains(&tower.id())
-                    && tower.signal_dbm > UNUSUALLY_STRONG_SIGNAL_DBM
-                {
+                if !seen_tower_ids.contains(&tower.id()) && tower.signal_dbm > strong_signal_dbm {
                     alerts.push(ImsiCatcherAlert::UnusuallyStrongNewTower {
                         tower: tower.clone(),
                     });
@@ -477,9 +478,7 @@ pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
                 }
 
                 // Unusually strong new tower.
-                if !seen_tower_ids.contains(&tower.id())
-                    && tower.signal_dbm > UNUSUALLY_STRONG_SIGNAL_DBM
-                {
+                if !seen_tower_ids.contains(&tower.id()) && tower.signal_dbm > strong_signal_dbm {
                     alerts.push(ImsiCatcherAlert::UnusuallyStrongNewTower {
                         tower: tower.clone(),
                     });
@@ -509,7 +508,7 @@ pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
     }
 
     // Check for rapid reselection after processing all events.
-    if reselection_count > RAPID_RESELECTION_THRESHOLD {
+    if reselection_count > rapid_threshold {
         alerts.push(ImsiCatcherAlert::RapidReselection {
             count: reselection_count,
         });
@@ -1000,6 +999,64 @@ mod tests {
     }
 
     // ── End-to-end: detect + score ──────────────────────────────────────────
+
+    // ── Config-driven behaviour ─────────────────────────────────────────────
+
+    #[test]
+    fn strict_dbm_threshold_flags_tower_default_would_accept() {
+        // WHY: prove Config.unusually_strong_signal_dbm flows through to detection.
+        // A tower at -65 dBm is accepted by the default (-50) threshold but
+        // should trigger under a stricter (-80) profile an agent might choose
+        // while operating in Sentinel mode.
+        let events = [CellEvent::Connected(tower(1, -65, CellTechnology::Lte))];
+
+        let defaults = detect_imsi_catcher(&events);
+        assert!(
+            !defaults
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::UnusuallyStrongNewTower { .. })),
+            "default -50 dBm threshold must not flag a -65 dBm tower"
+        );
+
+        let strict = detect_imsi_catcher_with_config(
+            &events,
+            &Config {
+                unusually_strong_signal_dbm: -80,
+                ..Config::default()
+            },
+        );
+        assert!(
+            strict
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::UnusuallyStrongNewTower { .. })),
+            "stricter -80 dBm threshold must flag a -65 dBm tower"
+        );
+    }
+
+    #[test]
+    fn custom_weight_changes_threat_total() {
+        // WHY: prove Config.weight_* flows through to score_threat. Doubling the
+        // cipher-downgrade weight must double the score contribution.
+        let alerts = [ImsiCatcherAlert::CipherDowngrade {
+            algorithm: CipherAlgorithm::A5_1,
+        }];
+        let doubled = score_threat_with_config(
+            &alerts,
+            &Config {
+                weight_cipher_downgrade: 80,
+                ..Config::default()
+            },
+        );
+        assert_eq!(
+            doubled.total, 80,
+            "doubled cipher-downgrade weight must produce total 80"
+        );
+        assert_eq!(
+            doubled.level,
+            ThreatLevel::Critical,
+            "score 80 must be Critical"
+        );
+    }
 
     #[test]
     fn detect_and_score_combined_attack_scenario() {
