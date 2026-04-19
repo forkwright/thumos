@@ -344,7 +344,7 @@ impl SegmentHeader {
 /// `lookup`, `read`, `readdir`), but the block cache requires `&mut self`
 /// for every access (even reads, to update LRU state). `RefCell` provides
 /// runtime borrow checking for this single-threaded bare-metal kernel.
-pub struct Lfs {
+pub(crate) struct Lfs {
     /// The underlying block device.
     dev: RefCell<Box<dyn BlockDevice>>,
     /// Block cache for 4 KiB logical blocks.
@@ -380,7 +380,7 @@ pub struct Lfs {
 /// - [`LfsError::BlockIo`] if any block write fails.
 /// - [`LfsError::InvalidSuperblock`] if the device is too small.
 #[must_use]
-pub fn format(dev: &mut dyn BlockDevice) -> Result<(), LfsError> {
+pub(crate) fn format(dev: &mut dyn BlockDevice) -> Result<(), LfsError> {
     let total_sectors = dev.sector_count();
     let total_blocks = total_sectors / SECTORS_PER_BLOCK as u64;
 
@@ -491,7 +491,7 @@ pub fn format(dev: &mut dyn BlockDevice) -> Result<(), LfsError> {
 /// - [`LfsError::Corrupt`] if neither checkpoint is valid.
 /// - [`LfsError::BlockIo`] if any block read fails.
 #[must_use]
-pub fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
+pub(crate) fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
     let mut cache = BlockCache::new();
 
     // Read superblock.

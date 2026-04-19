@@ -68,14 +68,14 @@ const IMAP_HEADER_SIZE: usize = 4;
 ///
 /// The map is backed by a `BTreeMap` for deterministic iteration order,
 /// which simplifies serialization and testing.
-pub struct LfsImap {
+pub(crate) struct LfsImap {
     /// Inode ID to block number mapping.
     map: BTreeMap<u32, u64>,
 }
 
 impl LfsImap {
     /// Create an empty inode map.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             map: BTreeMap::new(),
         }
@@ -86,7 +86,7 @@ impl LfsImap {
     /// # Errors
     ///
     /// This method is infallible; returns `None` if the inode is not mapped.
-    pub fn get(&self, inode_id: u32) -> Option<u64> {
+    pub(crate) fn get(&self, inode_id: u32) -> Option<u64> {
         self.map.get(&inode_id).copied()
     }
 
@@ -95,7 +95,7 @@ impl LfsImap {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn insert(&mut self, inode_id: u32, block: u64) {
+    pub(crate) fn insert(&mut self, inode_id: u32, block: u64) {
         self.map.insert(inode_id, block);
     }
 
@@ -104,24 +104,24 @@ impl LfsImap {
     /// # Errors
     ///
     /// This method is infallible. Removing a non-existent inode is a no-op.
-    pub fn remove(&mut self, inode_id: u32) {
+    pub(crate) fn remove(&mut self, inode_id: u32) {
         self.map.remove(&inode_id);
     }
 
     /// Return the number of inode mappings.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.map.len()
     }
 
     /// Return whether the imap is empty.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
     /// Return an iterator over all `(inode_id, block_number)` pairs.
     ///
     /// Used by the compactor to scan which blocks are still live.
-    pub fn iter(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
         self.map.iter().map(|(&id, &block)| (id, block))
     }
 
@@ -133,7 +133,7 @@ impl LfsImap {
     /// # Errors
     ///
     /// This method is infallible.
-    pub fn serialize(&self, buf: &mut Vec<u8>) {
+    pub(crate) fn serialize(&self, buf: &mut Vec<u8>) {
         let count = self.map.len() as u32;
         buf.extend_from_slice(&count.to_le_bytes());
 
@@ -150,7 +150,7 @@ impl LfsImap {
     /// Returns [`LfsError::Corrupt`] if the buffer is too short or contains
     /// invalid data.
     #[must_use]
-    pub fn deserialize(buf: &[u8]) -> Result<Self, LfsError> {
+    pub(crate) fn deserialize(buf: &[u8]) -> Result<Self, LfsError> {
         if buf.len() < IMAP_HEADER_SIZE {
             return Err(LfsError::Corrupt);
         }
@@ -195,7 +195,7 @@ impl LfsImap {
     /// # Errors
     ///
     /// Returns [`LfsError::BlockIo`] if any block write fails.
-    pub fn save_to_disk(
+    pub(crate) fn save_to_disk(
         &self,
         dev: &mut dyn BlockDevice,
         cache: &mut BlockCache,
@@ -227,7 +227,7 @@ impl LfsImap {
     ///
     /// - [`LfsError::BlockIo`] if any block read fails.
     /// - [`LfsError::Corrupt`] if the deserialized data is invalid.
-    pub fn load_from_disk(
+    pub(crate) fn load_from_disk(
         dev: &mut dyn BlockDevice,
         cache: &mut BlockCache,
         start_block: u64,

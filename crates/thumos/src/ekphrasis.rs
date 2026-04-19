@@ -223,7 +223,7 @@ pub struct WsFrame {
 impl WsFrame {
     /// Create a new frame with the given opcode and payload.
     #[must_use]
-    pub fn new(opcode: WsOpcode, payload: Vec<u8>) -> Self {
+    pub(crate) fn new(opcode: WsOpcode, payload: Vec<u8>) -> Self {
         Self { opcode, payload }
     }
 }
@@ -249,7 +249,7 @@ impl fmt::Display for WsFrame {
 /// - [`EkphrasisError::InvalidFrame`] if the opcode is unknown.
 /// - [`EkphrasisError::PayloadTooLarge`] if the payload exceeds the limit.
 #[must_use]
-pub fn parse_ws_frame(data: &[u8]) -> Result<(WsFrame, usize), EkphrasisError> {
+pub(crate) fn parse_ws_frame(data: &[u8]) -> Result<(WsFrame, usize), EkphrasisError> {
     // Minimum frame size: 2 bytes (FIN+opcode, MASK+payload-len).
     if data.len() < 2 {
         return Err(EkphrasisError::Incomplete);
@@ -321,7 +321,7 @@ pub fn parse_ws_frame(data: &[u8]) -> Result<(WsFrame, usize), EkphrasisError> {
 ///
 /// Returns the complete frame bytes ready to send over the wire.
 #[must_use]
-pub fn build_ws_frame(opcode: WsOpcode, payload: &[u8], mask_key: [u8; 4]) -> Vec<u8> {
+pub(crate) fn build_ws_frame(opcode: WsOpcode, payload: &[u8], mask_key: [u8; 4]) -> Vec<u8> {
     let payload_len = payload.len();
 
     // Calculate frame size: 2 (header) + extended length + 4 (mask) + payload.
@@ -373,7 +373,7 @@ pub fn build_ws_frame(opcode: WsOpcode, payload: &[u8], mask_key: [u8; 4]) -> Ve
 /// Returns an [`HttpRequest`] that can be serialized with `build_raw()`
 /// and sent over a TCP socket.
 #[must_use]
-pub fn build_ws_upgrade(host: &str, path: &str, ws_key: &str) -> HttpRequest {
+pub(crate) fn build_ws_upgrade(host: &str, path: &str, ws_key: &str) -> HttpRequest {
     let mut req = HttpRequest::new(
         HttpMethod::Get,
         String::from(host),
@@ -461,7 +461,7 @@ pub struct AudioCaptureConfig {
 impl AudioCaptureConfig {
     /// Configuration for STT audio capture (16 kHz, mono, 16-bit PCM).
     #[must_use]
-    pub const fn stt_default() -> Self {
+    pub(crate) const fn stt_default() -> Self {
         Self {
             sample_rate_hz: AUDIO_SAMPLE_RATE_HZ,
             channels: AUDIO_CHANNELS,
@@ -497,7 +497,7 @@ impl fmt::Display for AudioCaptureConfig {
 /// - Network: builds HTTP upgrade + WebSocket frames for the caller to
 ///   send via smoltcp TCP sockets
 /// - UI: provides partial/final text for the active text field
-pub struct Ekphrasis {
+pub(crate) struct Ekphrasis {
     /// Current state of the voice-to-text pipeline.
     state: EkphrasisState,
     /// Aletheia STT endpoint hostname (e.g., "stt.example.lan" or Tailscale IP).
@@ -521,7 +521,7 @@ impl Ekphrasis {
     ///
     /// Starts in [`EkphrasisState::Idle`] with empty transcription buffers.
     #[must_use]
-    pub fn new(host: &str, port: u16) -> Self {
+    pub(crate) fn new(host: &str, port: u16) -> Self {
         Self {
             state: EkphrasisState::Idle,
             aletheia_host: String::from(host),
@@ -547,7 +547,7 @@ impl Ekphrasis {
     /// Returns [`EkphrasisError::InvalidState`] if not in `Idle` state.
     /// Returns [`EkphrasisError::EndpointUnreachable`] if the endpoint
     /// has not been marked reachable.
-    pub fn start_recording(&mut self) -> Result<(), EkphrasisError> {
+    pub(crate) fn start_recording(&mut self) -> Result<(), EkphrasisError> {
         if !self.endpoint_reachable {
             return Err(EkphrasisError::EndpointUnreachable);
         }
@@ -575,7 +575,7 @@ impl Ekphrasis {
     /// # Errors
     ///
     /// Returns [`EkphrasisError::InvalidState`] if not in `Recording` state.
-    pub fn begin_streaming(&mut self) -> Result<(), EkphrasisError> {
+    pub(crate) fn begin_streaming(&mut self) -> Result<(), EkphrasisError> {
         match &self.state {
             EkphrasisState::Recording => {
                 self.state = EkphrasisState::Streaming;
@@ -598,7 +598,7 @@ impl Ekphrasis {
     ///
     /// Returns [`EkphrasisError::InvalidState`] if not in `Recording`
     /// or `Streaming` state.
-    pub fn feed_audio(&mut self, data: &[u8]) -> Result<(), EkphrasisError> {
+    pub(crate) fn feed_audio(&mut self, data: &[u8]) -> Result<(), EkphrasisError> {
         match &self.state {
             EkphrasisState::Recording | EkphrasisState::Streaming => {
                 self.audio_buffer.extend_from_slice(data);
@@ -618,7 +618,7 @@ impl Ekphrasis {
     ///
     /// The `mask_key` should be a 4-byte random value from the CSPRNG.
     #[must_use]
-    pub fn take_audio_frame(&mut self, mask_key: [u8; 4]) -> Option<Vec<u8>> {
+    pub(crate) fn take_audio_frame(&mut self, mask_key: [u8; 4]) -> Option<Vec<u8>> {
         if self.audio_buffer.is_empty() {
             return None;
         }
@@ -637,7 +637,7 @@ impl Ekphrasis {
     ///
     /// Returns an error if the frame contains invalid JSON or if the
     /// transcription text exceeds the length limit.
-    pub fn handle_server_frame(&mut self, frame: &WsFrame) -> Result<(), EkphrasisError> {
+    pub(crate) fn handle_server_frame(&mut self, frame: &WsFrame) -> Result<(), EkphrasisError> {
         match frame.opcode {
             WsOpcode::Text => {
                 // Parse the text payload as a transcription response.
@@ -710,7 +710,7 @@ impl Ekphrasis {
     ///
     /// Returns [`EkphrasisError::InvalidState`] if not in a recording,
     /// streaming, or transcribing state.
-    pub fn stop_recording(&mut self) -> Result<String, EkphrasisError> {
+    pub(crate) fn stop_recording(&mut self) -> Result<String, EkphrasisError> {
         match &self.state {
             EkphrasisState::Recording
             | EkphrasisState::Streaming
@@ -736,19 +736,19 @@ impl Ekphrasis {
 
     /// Return the current partial transcription text.
     #[must_use]
-    pub fn partial_text(&self) -> &str {
+    pub(crate) fn partial_text(&self) -> &str {
         &self.partial_text
     }
 
     /// Return the completed final transcription text.
     #[must_use]
-    pub fn final_text(&self) -> &str {
+    pub(crate) fn final_text(&self) -> &str {
         &self.final_text
     }
 
     /// Return true if a recording is currently in progress.
     #[must_use]
-    pub fn is_recording(&self) -> bool {
+    pub(crate) fn is_recording(&self) -> bool {
         matches!(
             self.state,
             EkphrasisState::Recording
@@ -763,7 +763,7 @@ impl Ekphrasis {
     /// responsible for probing the endpoint (e.g., TCP connect attempt)
     /// and calling [`Self::set_endpoint_reachable`] to update.
     #[must_use]
-    pub fn is_available(&self) -> bool {
+    pub(crate) fn is_available(&self) -> bool {
         self.endpoint_reachable
     }
 
@@ -771,31 +771,31 @@ impl Ekphrasis {
     ///
     /// Called by the network layer after probing the aletheia STT
     /// endpoint (TCP connect or health check).
-    pub fn set_endpoint_reachable(&mut self, reachable: bool) {
+    pub(crate) fn set_endpoint_reachable(&mut self, reachable: bool) {
         self.endpoint_reachable = reachable;
     }
 
     /// Return a reference to the current state.
     #[must_use]
-    pub fn state(&self) -> &EkphrasisState {
+    pub(crate) fn state(&self) -> &EkphrasisState {
         &self.state
     }
 
     /// Return the aletheia host.
     #[must_use]
-    pub fn host(&self) -> &str {
+    pub(crate) fn host(&self) -> &str {
         &self.aletheia_host
     }
 
     /// Return the aletheia port.
     #[must_use]
-    pub fn port(&self) -> u16 {
+    pub(crate) fn port(&self) -> u16 {
         self.aletheia_port
     }
 
     /// Return the audio capture configuration.
     #[must_use]
-    pub fn capture_config(&self) -> AudioCaptureConfig {
+    pub(crate) fn capture_config(&self) -> AudioCaptureConfig {
         self.capture_config
     }
 
@@ -803,7 +803,7 @@ impl Ekphrasis {
     ///
     /// The `ws_key` should be a base64-encoded 16-byte random value.
     #[must_use]
-    pub fn ws_upgrade_request(&self, ws_key: &str) -> HttpRequest {
+    pub(crate) fn ws_upgrade_request(&self, ws_key: &str) -> HttpRequest {
         build_ws_upgrade(&self.aletheia_host, STT_WS_PATH, ws_key)
     }
 
@@ -811,7 +811,7 @@ impl Ekphrasis {
     ///
     /// The `mask_key` should be a 4-byte random value from the CSPRNG.
     #[must_use]
-    pub fn build_close_frame(mask_key: [u8; 4]) -> Vec<u8> {
+    pub(crate) fn build_close_frame(mask_key: [u8; 4]) -> Vec<u8> {
         // Close frame with empty payload (normal closure, no status code).
         build_ws_frame(WsOpcode::Close, &[], mask_key)
     }
@@ -819,7 +819,7 @@ impl Ekphrasis {
     /// Reset the state machine to idle, clearing all buffers.
     ///
     /// Used for error recovery when the state machine gets stuck.
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.state = EkphrasisState::Idle;
         self.partial_text.clear();
         self.final_text.clear();
@@ -877,7 +877,7 @@ pub struct ActionProposal {
 impl ActionProposal {
     /// Create a new action proposal.
     #[must_use]
-    pub fn new(action: String, params: Vec<(String, String)>, description: String) -> Self {
+    pub(crate) fn new(action: String, params: Vec<(String, String)>, description: String) -> Self {
         Self {
             action,
             params,
@@ -887,7 +887,7 @@ impl ActionProposal {
 
     /// Look up a parameter value by key.
     #[must_use]
-    pub fn param(&self, key: &str) -> Option<&str> {
+    pub(crate) fn param(&self, key: &str) -> Option<&str> {
         self.params
             .iter()
             .find(|(k, _)| k == key)
@@ -909,32 +909,32 @@ impl fmt::Display for ActionProposal {
 ///
 /// The parser accepts any action string, but these constants define the
 /// vocabulary thumos recognizes for dispatch.
-pub mod action_types {
+pub(crate) mod action_types {
     /// Open the dialer with a contact/number pre-populated.
-    pub const OPEN_DIALER: &str = "open_dialer";
+    pub(crate) const OPEN_DIALER: &str = "open_dialer";
     /// Draft an SMS with recipient and body.
-    pub const DRAFT_SMS: &str = "draft_sms";
+    pub(crate) const DRAFT_SMS: &str = "draft_sms";
     /// Draft a Matrix message with recipient and body.
-    pub const DRAFT_MATRIX_MESSAGE: &str = "draft_matrix_message";
+    pub(crate) const DRAFT_MATRIX_MESSAGE: &str = "draft_matrix_message";
     /// Start a timer with a duration.
-    pub const START_TIMER: &str = "start_timer";
+    pub(crate) const START_TIMER: &str = "start_timer";
     /// Set an alarm with time and label.
-    pub const SET_ALARM: &str = "set_alarm";
+    pub(crate) const SET_ALARM: &str = "set_alarm";
     /// Add a calendar event.
-    pub const ADD_CALENDAR_EVENT: &str = "add_calendar_event";
+    pub(crate) const ADD_CALENDAR_EVENT: &str = "add_calendar_event";
     /// Toggle security mode (Sentinel, Covert, etc.).
-    pub const TOGGLE_MODE: &str = "toggle_mode";
+    pub(crate) const TOGGLE_MODE: &str = "toggle_mode";
     /// Toggle a specific radio (WiFi, cellular, Bluetooth).
-    pub const TOGGLE_RADIO: &str = "toggle_radio";
+    pub(crate) const TOGGLE_RADIO: &str = "toggle_radio";
     /// Navigate to a thumos function/screen.
-    pub const OPEN_FEATURE: &str = "open_feature";
+    pub(crate) const OPEN_FEATURE: &str = "open_feature";
     /// Initiate a security scan (Phase 10).
-    pub const SCAN_START: &str = "scan_start";
+    pub(crate) const SCAN_START: &str = "scan_start";
     /// Add the current WiFi network to safe networks.
-    pub const ADD_SAFE_NETWORK: &str = "add_safe_network";
+    pub(crate) const ADD_SAFE_NETWORK: &str = "add_safe_network";
 
     /// All known action type strings, for validation.
-    pub const ALL: &[&str] = &[
+    pub(crate) const ALL: &[&str] = &[
         OPEN_DIALER,
         DRAFT_SMS,
         DRAFT_MATRIX_MESSAGE,
@@ -949,7 +949,7 @@ pub mod action_types {
     ];
 
     /// Check whether an action string is a known type.
-    pub fn is_known(action: &str) -> bool {
+    pub(crate) fn is_known(action: &str) -> bool {
         ALL.contains(&action)
     }
 }
@@ -986,7 +986,7 @@ const FENCE_END_ALT: &str = "\n~~~";
 /// ```
 /// ```
 #[must_use]
-pub fn parse_action_proposal(message_body: &str) -> Option<Result<ActionProposal, EkphrasisError>> {
+pub(crate) fn parse_action_proposal(message_body: &str) -> Option<Result<ActionProposal, EkphrasisError>> {
     // Try both fence styles.
     let (json_str, _) = find_fenced_block(message_body)?;
 

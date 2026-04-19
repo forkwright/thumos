@@ -94,7 +94,7 @@ impl core::fmt::Display for ClockSource {
 /// Selects the most trustworthy available source and tracks staleness.
 /// The monotonic kernel tick counter is used to determine when sources
 /// become stale.
-pub struct ClockManager {
+pub(crate) struct ClockManager {
     /// Current active time source.
     current_source: ClockSource,
     /// Kernel tick (ms) of the last time update.
@@ -119,7 +119,7 @@ pub struct ClockManager {
 impl ClockManager {
     /// Create a new clock manager with no time sources.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             current_source: ClockSource::None,
             last_update: 0,
@@ -135,13 +135,13 @@ impl ClockManager {
 
     /// Return the current active clock source.
     #[must_use]
-    pub fn current_source(&self) -> ClockSource {
+    pub(crate) fn current_source(&self) -> ClockSource {
         self.current_source
     }
 
     /// Return the kernel tick (ms) of the last time update.
     #[must_use]
-    pub fn last_update(&self) -> u64 {
+    pub(crate) fn last_update(&self) -> u64 {
         self.last_update
     }
 
@@ -149,7 +149,7 @@ impl ClockManager {
     ///
     /// GPS is the highest-trust source. Always accepted regardless of
     /// other sources.
-    pub fn update_from_gps(&mut self, time: GpsTime, current_tick_ms: u64) {
+    pub(crate) fn update_from_gps(&mut self, time: GpsTime, current_tick_ms: u64) {
         self.gps_time = Some(time);
         self.gps_update_tick = current_tick_ms;
         self.current_source = ClockSource::Gps;
@@ -162,7 +162,7 @@ impl ClockManager {
     /// last GPS update) or if no GPS time has ever been received.
     ///
     /// Returns `true` if the update was accepted.
-    pub fn update_from_ntp(&mut self, offset: i64, current_tick_ms: u64) -> bool {
+    pub(crate) fn update_from_ntp(&mut self, offset: i64, current_tick_ms: u64) -> bool {
         if self.gps_is_fresh(current_tick_ms) {
             return false;
         }
@@ -180,7 +180,7 @@ impl ClockManager {
     /// GPS and NTP are stale.
     ///
     /// Returns `true` if the update was accepted.
-    pub fn update_from_rtc(&mut self, epoch: u64, current_tick_ms: u64) -> bool {
+    pub(crate) fn update_from_rtc(&mut self, epoch: u64, current_tick_ms: u64) -> bool {
         if self.gps_is_fresh(current_tick_ms) || self.ntp_is_fresh(current_tick_ms) {
             return false;
         }
@@ -196,7 +196,7 @@ impl ClockManager {
     ///
     /// Manual time is accepted unconditionally but ranked lowest in the
     /// trust hierarchy. A subsequent GPS or NTP update will override it.
-    pub fn set_manual(&mut self, epoch: u64, current_tick_ms: u64) {
+    pub(crate) fn set_manual(&mut self, epoch: u64, current_tick_ms: u64) {
         self.manual_epoch = Some(epoch);
         // Only set source to Manual if nothing better is active.
         if self.current_source == ClockSource::None {
@@ -209,7 +209,7 @@ impl ClockManager {
     ///
     /// Should be called periodically. Demotes the current source if it
     /// has become stale, falling back to the next-best available source.
-    pub fn evaluate(&mut self, current_tick_ms: u64) {
+    pub(crate) fn evaluate(&mut self, current_tick_ms: u64) {
         if self.gps_is_fresh(current_tick_ms) {
             self.current_source = ClockSource::Gps;
         } else if self.ntp_is_fresh(current_tick_ms) {
@@ -229,7 +229,7 @@ impl ClockManager {
     /// Falls back through the hierarchy: GPS > NTP > RTC > Manual.
     /// Returns 0 if no time source is available.
     #[must_use]
-    pub fn get_wall_clock(&self, current_tick_ms: u64) -> u64 {
+    pub(crate) fn get_wall_clock(&self, current_tick_ms: u64) -> u64 {
         // Try sources in trust order.
         if let Some(ref gps_time) = self.gps_time && self.gps_is_fresh(current_tick_ms) {
             let base_epoch = gps_time.to_epoch_secs();
@@ -279,7 +279,7 @@ impl ClockManager {
 /// Sets LI=0 (no warning), VN=4 (NTPv4), Mode=3 (client).
 /// All timestamp fields are zeroed; the server will fill in its transmit time.
 #[must_use]
-pub fn build_ntp_request() -> [u8; NTP_PACKET_SIZE] {
+pub(crate) fn build_ntp_request() -> [u8; NTP_PACKET_SIZE] {
     let mut packet = [0u8; NTP_PACKET_SIZE];
     // Byte 0: LI=0, VN=4, Mode=3 → 0b00_100_011 = 0x23
     packet[0] = NTP_LI_VN_MODE;
@@ -295,7 +295,7 @@ pub fn build_ntp_request() -> [u8; NTP_PACKET_SIZE] {
 /// Returns the transmit timestamp as Unix epoch seconds, or `None`
 /// if the packet is too short or the timestamp is zero.
 #[must_use]
-pub fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
+pub(crate) fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
     if packet.len() < NTP_PACKET_SIZE {
         return None;
     }
@@ -328,7 +328,7 @@ pub fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
 /// would use the four-timestamp algorithm (T1, T2, T3, T4) with RTT
 /// correction.
 #[must_use]
-pub fn calculate_ntp_offset(
+pub(crate) fn calculate_ntp_offset(
     local_send_secs: u64,
     server_transmit_epoch: u64,
 ) -> i64 {
@@ -347,13 +347,13 @@ pub struct NtpServer {
 impl NtpServer {
     /// Create an NTP server endpoint.
     #[must_use]
-    pub const fn new(ip: [u8; 4], port: u16) -> Self {
+    pub(crate) const fn new(ip: [u8; 4], port: u16) -> Self {
         Self { ip, port }
     }
 }
 
 /// Default NTP server: pool.ntp.org primary (time.google.com: 216.239.35.0).
-pub const DEFAULT_NTP_SERVER: NtpServer = NtpServer::new([216, 239, 35, 0], NTP_PORT);
+pub(crate) const DEFAULT_NTP_SERVER: NtpServer = NtpServer::new([216, 239, 35, 0], NTP_PORT);
 
 // ---------------------------------------------------------------------------
 // Tests

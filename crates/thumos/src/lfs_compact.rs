@@ -33,7 +33,7 @@ use crate::lfs_writer::{LfsWriter, COMPACT_THRESHOLD_PERCENT};
 /// Check whether compaction should be triggered based on free segment count.
 ///
 /// Returns `true` if the percentage of free segments is below the threshold.
-pub fn needs_compaction(seg_mgr: &LfsSegmentManager) -> bool {
+pub(crate) fn needs_compaction(seg_mgr: &LfsSegmentManager) -> bool {
     let total = seg_mgr.segment_count();
     if total == 0 {
         return false;
@@ -65,7 +65,7 @@ pub fn needs_compaction(seg_mgr: &LfsSegmentManager) -> bool {
 /// - [`LfsError::NoFreeSegments`] if no candidate segments exist or the
 ///   writer cannot allocate a new segment.
 /// - [`LfsError::BlockIo`] if any block read or write fails.
-pub fn compact_one_segment(
+pub(crate) fn compact_one_segment(
     dev: &mut dyn BlockDevice,
     cache: &mut BlockCache,
     writer: &mut LfsWriter,

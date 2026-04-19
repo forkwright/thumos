@@ -214,7 +214,7 @@ impl core::fmt::Display for FirewallStats {
 
 /// Packet filter combining an ordered rule set, a DNS domain blocklist,
 /// direction-specific default policies, and per-action statistics.
-pub struct Firewall {
+pub(crate) struct Firewall {
     /// Ordered list of filter rules. First match wins.
     rules: Vec<FilterRule>,
     /// Domain suffixes to block in DNS queries.
@@ -242,7 +242,7 @@ struct PacketInfo {
 impl Firewall {
     /// Create a firewall with default policies: deny all inbound, allow all
     /// outbound. No rules or DNS blocklist entries are configured.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             rules: Vec::new(),
             dns_blocklist: Vec::new(),
@@ -256,7 +256,7 @@ impl Firewall {
     ///
     /// Rules are evaluated in order and the first match wins, so prepending
     /// gives the new rule highest priority.
-    pub fn add_rule(&mut self, rule: FilterRule) {
+    pub(crate) fn add_rule(&mut self, rule: FilterRule) {
         self.rules.insert(0, rule);
     }
 
@@ -264,7 +264,7 @@ impl Firewall {
     ///
     /// Any DNS query whose queried domain equals or is a subdomain of
     /// `suffix` will be denied. Matching is case-insensitive.
-    pub fn add_dns_block(&mut self, suffix: &str) {
+    pub(crate) fn add_dns_block(&mut self, suffix: &str) {
         self.dns_blocklist.push(suffix.to_ascii_lowercase());
     }
 
@@ -274,7 +274,7 @@ impl Firewall {
     /// queries, then evaluates rules in order. If no rule matches, the
     /// default inbound policy (deny) applies. Parse failures are denied
     /// (fail-closed).
-    pub fn evaluate_rx(&mut self, packet: &[u8]) -> Action {
+    pub(crate) fn evaluate_rx(&mut self, packet: &[u8]) -> Action {
         let action = self.classify(packet, Direction::Inbound);
         self.record(action);
         action
@@ -285,7 +285,7 @@ impl Firewall {
     /// DNS queries to blocked domains are denied before rule evaluation.
     /// If no rule matches, the default outbound policy (allow) applies.
     /// Parse failures are denied (fail-closed).
-    pub fn evaluate_tx(&mut self, packet: &[u8]) -> Action {
+    pub(crate) fn evaluate_tx(&mut self, packet: &[u8]) -> Action {
         let action = self.classify(packet, Direction::Outbound);
         self.record(action);
         action
@@ -296,7 +296,7 @@ impl Firewall {
     /// A hostname is blocked if it equals a blocklist entry or is a
     /// subdomain of one (e.g., `"sub.doubleclick.net"` matches
     /// `"doubleclick.net"`). Matching is case-insensitive.
-    pub fn is_dns_blocked(&self, hostname: &str) -> bool {
+    pub(crate) fn is_dns_blocked(&self, hostname: &str) -> bool {
         let lower = hostname.to_ascii_lowercase();
         self.dns_blocklist
             .iter()
@@ -304,14 +304,14 @@ impl Firewall {
     }
 
     /// Return a reference to the firewall statistics.
-    pub fn stats(&self) -> &FirewallStats {
+    pub(crate) fn stats(&self) -> &FirewallStats {
         &self.stats
     }
 
     /// Populate the DNS blocklist with the default surveillance domains.
     ///
     /// Appends [`SURVEILLANCE_DOMAINS`] to any existing blocklist entries.
-    pub fn load_default_blocklist(&mut self) {
+    pub(crate) fn load_default_blocklist(&mut self) {
         for domain in SURVEILLANCE_DOMAINS {
             self.add_dns_block(domain);
         }
@@ -391,7 +391,7 @@ impl Firewall {
 /// Called when [`Firewall::evaluate_rx`] or [`Firewall::evaluate_tx`]
 /// denies a packet. The `direction` indicates whether the packet was
 /// inbound or outbound.
-pub fn log_packet_deny(
+pub(crate) fn log_packet_deny(
     direction: Direction,
     audit_log: &mut AuditLog,
     audit_key: &[u8; KEY_SIZE],

@@ -68,7 +68,7 @@ pub struct RadioState {
 
 impl RadioState {
     /// All radios on (normal operation).
-    pub const ALL_ON: Self = Self {
+    pub(crate) const ALL_ON: Self = Self {
         cellular: true,
         wifi: true,
         bluetooth: true,
@@ -76,7 +76,7 @@ impl RadioState {
     };
 
     /// All radios off (RF silence / COVERT LOCK).
-    pub const ALL_OFF: Self = Self {
+    pub(crate) const ALL_OFF: Self = Self {
         cellular: false,
         wifi: false,
         bluetooth: false,
@@ -84,7 +84,7 @@ impl RadioState {
     };
 
     /// Stealth mode: cellular + GPS off, WiFi + BT on.
-    pub const STEALTH: Self = Self {
+    pub(crate) const STEALTH: Self = Self {
         cellular: false,
         wifi: true,
         bluetooth: true,
@@ -123,7 +123,7 @@ const PRESETS: [RadioPreset; PRESET_COUNT] = [
 // ---------------------------------------------------------------------------
 
 /// Radio control panel screen.
-pub struct RadioControlScreen {
+pub(crate) struct RadioControlScreen {
     /// Current radio state (desired, not necessarily applied).
     pub state: RadioState,
     /// Currently highlighted preset index for display.
@@ -132,7 +132,7 @@ pub struct RadioControlScreen {
 
 impl RadioControlScreen {
     /// Create a new radio control screen with all radios on.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: RadioState::default(),
             active_preset: None,

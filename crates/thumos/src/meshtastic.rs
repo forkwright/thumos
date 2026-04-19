@@ -176,7 +176,7 @@ pub struct MeshNode {
 impl MeshNode {
     /// Create a new node entry.
     #[must_use]
-    pub const fn new(node_id: u32) -> Self {
+    pub(crate) const fn new(node_id: u32) -> Self {
         Self {
             node_id,
             short_name: [0u8; 4],
@@ -188,12 +188,12 @@ impl MeshNode {
 
     /// Return the short name as a byte slice.
     #[must_use]
-    pub fn short_name(&self) -> &[u8] {
+    pub(crate) fn short_name(&self) -> &[u8] {
         &self.short_name[..self.short_name_len as usize]
     }
 
     /// Set the short name from a byte slice (truncated to 4 bytes).
-    pub fn set_short_name(&mut self, name: &[u8]) {
+    pub(crate) fn set_short_name(&mut self, name: &[u8]) {
         let len = name.len().min(4);
         self.short_name[..len].copy_from_slice(&name[..len]);
         self.short_name_len = len as u8;
@@ -253,7 +253,7 @@ impl MeshMessage {
     /// - [`MeshError::MessageTooLong`] if `body` exceeds the limit
     /// - [`MeshError::InvalidHopCount`] if `hop_count` exceeds maximum
     /// - [`MeshError::InvalidNodeId`] if `from_node` is zero
-    pub fn new(
+    pub(crate) fn new(
         from_node: u32,
         to_node: u32,
         body: String,
@@ -282,7 +282,7 @@ impl MeshMessage {
 
     /// Whether this message was a broadcast to all nodes on the channel.
     #[must_use]
-    pub const fn is_broadcast(&self) -> bool {
+    pub(crate) const fn is_broadcast(&self) -> bool {
         self.to_node == BROADCAST_NODE_ID
     }
 }
@@ -321,7 +321,7 @@ impl fmt::Display for MeshMessage {
 /// 2. `send_message()` encodes and transmits via SLIP-framed serial
 /// 3. `poll_messages()` drains the inbound buffer
 /// 4. Received messages feed into the unified inbox
-pub struct MeshtasticTransport {
+pub(crate) struct MeshtasticTransport {
     /// Current transport state.
     state: MeshState,
     /// Our node ID (set during connect).
@@ -338,7 +338,7 @@ impl MeshtasticTransport {
     /// Create a new Meshtastic transport in the
     /// [`MeshState::Disconnected`] state.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: MeshState::Disconnected,
             node_id: 0,
@@ -350,37 +350,37 @@ impl MeshtasticTransport {
 
     /// Return the current transport state.
     #[must_use]
-    pub fn state(&self) -> MeshState {
+    pub(crate) fn state(&self) -> MeshState {
         self.state
     }
 
     /// Return our node ID (zero if not connected).
     #[must_use]
-    pub fn node_id(&self) -> u32 {
+    pub(crate) fn node_id(&self) -> u32 {
         self.node_id
     }
 
     /// Return the active `LoRa` channel index.
     #[must_use]
-    pub fn channel(&self) -> u8 {
+    pub(crate) fn channel(&self) -> u8 {
         self.channel
     }
 
     /// Return the current inbox contents.
     #[must_use]
-    pub fn inbox(&self) -> &[MeshMessage] {
+    pub(crate) fn inbox(&self) -> &[MeshMessage] {
         &self.inbox
     }
 
     /// Return the number of buffered messages.
     #[must_use]
-    pub fn inbox_count(&self) -> usize {
+    pub(crate) fn inbox_count(&self) -> usize {
         self.inbox.len()
     }
 
     /// Return the list of known mesh nodes.
     #[must_use]
-    pub fn known_nodes(&self) -> &[MeshNode] {
+    pub(crate) fn known_nodes(&self) -> &[MeshNode] {
         &self.known_nodes
     }
 
@@ -393,7 +393,7 @@ impl MeshtasticTransport {
     /// # Errors
     ///
     /// - [`MeshError::InvalidNodeId`] if `node_id` is zero
-    pub fn connect(&mut self, node_id: u32) -> Result<(), MeshError> {
+    pub(crate) fn connect(&mut self, node_id: u32) -> Result<(), MeshError> {
         if node_id == 0 {
             return Err(MeshError::InvalidNodeId);
         }
@@ -411,7 +411,7 @@ impl MeshtasticTransport {
     }
 
     /// Set the active `LoRa` channel.
-    pub fn set_channel(&mut self, channel: u8) {
+    pub(crate) fn set_channel(&mut self, channel: u8) {
         self.channel = channel;
     }
 
@@ -431,7 +431,7 @@ impl MeshtasticTransport {
     // WHY: &self is the correct signature for when the serial protocol is
     // wired (will access self.state, self.channel, etc.). Stub doesn't use it.
     #[allow(clippy::unused_self)]
-    pub fn send_message(&self, dest_node: u32, body: &str) -> Result<(), MeshError> {
+    pub(crate) fn send_message(&self, dest_node: u32, body: &str) -> Result<(), MeshError> {
         if body.len() > MAX_MESSAGE_BODY_LEN {
             return Err(MeshError::MessageTooLong);
         }
@@ -448,7 +448,7 @@ impl MeshtasticTransport {
     /// When the serial protocol is wired, this will drain messages
     /// received from the paired Meshtastic device since the last call.
     #[must_use]
-    pub fn poll_messages(&self) -> &[MeshMessage] {
+    pub(crate) fn poll_messages(&self) -> &[MeshMessage] {
         // WHY: no serial transport to receive from. The inbox buffer
         // will be populated by the serial receive loop in a future phase.
         &self.inbox
@@ -458,7 +458,7 @@ impl MeshtasticTransport {
     ///
     /// Used internally by the serial receive loop (future) and for
     /// testing. Drops the oldest message if the buffer is full.
-    pub fn push_inbox(&mut self, message: MeshMessage) {
+    pub(crate) fn push_inbox(&mut self, message: MeshMessage) {
         if self.inbox.len() >= MAX_INBOX_MESSAGES {
             // Drop oldest message to make room.
             self.inbox.remove(0);
@@ -467,7 +467,7 @@ impl MeshtasticTransport {
     }
 
     /// Clear all buffered inbox messages.
-    pub fn clear_inbox(&mut self) {
+    pub(crate) fn clear_inbox(&mut self) {
         self.inbox.clear();
     }
 
@@ -475,7 +475,7 @@ impl MeshtasticTransport {
     ///
     /// If the node ID already exists, updates the entry. Otherwise
     /// adds a new entry (up to [`MAX_KNOWN_NODES`], oldest evicted).
-    pub fn update_node(&mut self, node: MeshNode) {
+    pub(crate) fn update_node(&mut self, node: MeshNode) {
         // Update existing entry if present.
         for existing in &mut self.known_nodes {
             if existing.node_id == node.node_id {
@@ -504,7 +504,7 @@ impl MeshtasticTransport {
 
     /// Look up a known node by ID.
     #[must_use]
-    pub fn find_node(&self, node_id: u32) -> Option<&MeshNode> {
+    pub(crate) fn find_node(&self, node_id: u32) -> Option<&MeshNode> {
         self.known_nodes.iter().find(|n| n.node_id == node_id)
     }
 }

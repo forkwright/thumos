@@ -215,7 +215,7 @@ pub(crate) fn rssi_to_dbm(rssi: u8) -> i16 {
 /// - >= -100 dBm -> 2 bars (fair)
 /// - >= -110 dBm -> 1 bar  (poor)
 /// - <  -110 dBm -> 0 bars (no signal)
-pub fn dbm_to_bars(dbm: i16) -> u8 {
+pub(crate) fn dbm_to_bars(dbm: i16) -> u8 {
     if dbm >= -70 {
         4
     } else if dbm >= -85 {

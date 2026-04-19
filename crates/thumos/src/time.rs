@@ -41,10 +41,10 @@ use crate::timer;
 // ---------------------------------------------------------------------------
 
 /// POSIX clock ID for wall-clock time (may jump or be adjusted).
-pub const CLOCK_REALTIME: u32 = 0;
+pub(crate) const CLOCK_REALTIME: u32 = 0;
 
 /// POSIX clock ID for monotonic time (never jumps, counts from boot).
-pub const CLOCK_MONOTONIC: u32 = 1;
+pub(crate) const CLOCK_MONOTONIC: u32 = 1;
 
 /// EINVAL: invalid argument (two's complement -22, matching Linux ARM).
 const EINVAL: u32 = 0u32.wrapping_sub(22);
@@ -61,7 +61,7 @@ const NANOS_PER_SEC: u64 = 1_000_000_000;
 ///
 /// Calculation: days from 1970-01-01 to 2025-01-01:
 ///   55 years × 365.25 days ≈ 20088 days → 20088 × 86400 = 1_735_603_200 s
-pub static mut REALTIME_OFFSET_SECS: u64 = 1_735_603_200;
+pub(crate) static mut REALTIME_OFFSET_SECS: u64 = 1_735_603_200;
 
 // ---------------------------------------------------------------------------
 // Epoch offset update
@@ -131,7 +131,7 @@ fn counter_to_timespec(count: u64, freq: u64) -> (u32, u32) {
 ///
 /// 0 on success, EFAULT if `ts_ptr` is invalid, EINVAL for unknown `clock_id`.
 #[cfg(not(test))]
-pub fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
+pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
     // Validate the user pointer: timespec is 8 bytes (two u32 fields).
     let ptr = ts_ptr as usize;
     if !validate_user_buffer(ptr, 8) {
@@ -189,7 +189,7 @@ pub fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
 ///
 /// 0 on success (sleep elapsed), EFAULT if `ts_ptr` is invalid.
 #[cfg(not(test))]
-pub fn sys_nanosleep(ts_ptr: u32) -> u32 {
+pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     let ptr = ts_ptr as usize;
     if !validate_user_buffer(ptr, 8) {
         return EFAULT;

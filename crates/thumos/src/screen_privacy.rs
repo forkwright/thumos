@@ -103,7 +103,7 @@ impl core::fmt::Display for DataCategory {
 }
 
 /// Canonical category names in display order.
-pub const CATEGORIES: &[&str] = &[
+pub(crate) const CATEGORIES: &[&str] = &[
     "Audit log",
     "Messages",
     "Contacts",
@@ -384,7 +384,7 @@ impl PurgeConfirmState {
 /// Displays a scrollable list of data categories with size, retention,
 /// and purge controls. Implements the `Screen` trait for integration
 /// with the thumos UI framework.
-pub struct PrivacyScreen {
+pub(crate) struct PrivacyScreen {
     /// Data categories with current state.
     categories: [DataCategory; CATEGORY_COUNT],
     /// Currently selected category index.
@@ -404,7 +404,7 @@ impl PrivacyScreen {
     ///
     /// In production, category sizes would be populated from `lfs.rs`
     /// inode metadata on screen entry.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let categories = default_categories();
         let total_bytes = categories.iter().map(|c| c.size_bytes).sum();
         Self {
@@ -418,7 +418,7 @@ impl PrivacyScreen {
     }
 
     /// Update a category's size (called when refreshing from filesystem).
-    pub fn update_size(&mut self, index: usize, size_bytes: u64) {
+    pub(crate) fn update_size(&mut self, index: usize, size_bytes: u64) {
         if let Some(cat) = self.categories.get_mut(index) {
             cat.size_bytes = size_bytes;
             self.recalc_total();
@@ -426,24 +426,24 @@ impl PrivacyScreen {
     }
 
     /// Update a category's retention period.
-    pub fn update_retention(&mut self, index: usize, days: u16) {
+    pub(crate) fn update_retention(&mut self, index: usize, days: u16) {
         if let Some(cat) = self.categories.get_mut(index) {
             cat.retention_days = days;
         }
     }
 
     /// Return the category at the given index.
-    pub fn category(&self, index: usize) -> Option<&DataCategory> {
+    pub(crate) fn category(&self, index: usize) -> Option<&DataCategory> {
         self.categories.get(index)
     }
 
     /// Return the total storage usage across all categories.
-    pub fn total_bytes(&self) -> u64 {
+    pub(crate) fn total_bytes(&self) -> u64 {
         self.total_bytes
     }
 
     /// Return the number of purgeable categories.
-    pub fn purgeable_count(&self) -> usize {
+    pub(crate) fn purgeable_count(&self) -> usize {
         self.categories.iter().filter(|c| c.purgeable).count()
     }
 

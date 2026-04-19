@@ -88,7 +88,7 @@ enum AgendaRow {
 // ---------------------------------------------------------------------------
 
 /// Agenda-view calendar screen.
-pub struct CalendarScreen {
+pub(crate) struct CalendarScreen {
     /// Pre-built row list from the most recent event snapshot.
     rows: Vec<AgendaRow>,
     /// Currently highlighted row index.
@@ -101,7 +101,7 @@ pub struct CalendarScreen {
 
 impl CalendarScreen {
     /// Create a new calendar screen with no events.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             rows: Vec::new(),
             cursor: 0,
@@ -114,7 +114,7 @@ impl CalendarScreen {
     ///
     /// Rebuilds the agenda row list. Called each render cycle or when
     /// the event list changes.
-    pub fn update(&mut self, manager: &HeorteManager, current_epoch: u64) {
+    pub(crate) fn update(&mut self, manager: &HeorteManager, current_epoch: u64) {
         self.current_epoch = current_epoch;
         self.rows.clear();
 

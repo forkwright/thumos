@@ -39,13 +39,13 @@ use core::fmt::Write;
 /// Error code returned for unimplemented syscalls.
 /// WHY: two's complement -38, matching Linux ARM ENOSYS convention for
 /// toolchain compatibility with userspace built against Linux headers.
-pub const ENOSYS: u32 = 0u32.wrapping_sub(38);
+pub(crate) const ENOSYS: u32 = 0u32.wrapping_sub(38);
 
 /// Error code returned when a user-supplied pointer is invalid.
 /// WHY: two's complement -14, matching Linux ARM EFAULT convention.
 /// Returned when a syscall argument points to kernel memory, device MMIO,
 /// unmapped regions, or when a buffer overflows the address space.
-pub const EFAULT: u32 = 0u32.wrapping_sub(14);
+pub(crate) const EFAULT: u32 = 0u32.wrapping_sub(14);
 
 /// Validate that a user-supplied buffer `[ptr, ptr+len)` lies entirely
 /// within user-accessible DRAM and does not overlap kernel-reserved memory.
@@ -60,7 +60,7 @@ pub const EFAULT: u32 = 0u32.wrapping_sub(14);
 ///
 /// Returns `true` if the entire buffer falls within user-accessible DRAM.
 /// Returns `false` for null, overflow, kernel-space, device, or unmapped addresses.
-pub fn validate_user_buffer(ptr: usize, len: usize) -> bool {
+pub(crate) fn validate_user_buffer(ptr: usize, len: usize) -> bool {
     // Null pointer
     if ptr == 0 {
         return false;
@@ -80,7 +80,7 @@ pub fn validate_user_buffer(ptr: usize, len: usize) -> bool {
 }
 
 /// Total number of defined syscalls.
-pub const SYSCALL_COUNT: usize = 46;
+pub(crate) const SYSCALL_COUNT: usize = 46;
 
 /// Syscall numbers grouped by kernel domain.
 ///
@@ -237,14 +237,14 @@ pub enum Syscall {
 impl Syscall {
     /// Returns the syscall number as a `u32`.
     #[inline]
-    pub const fn as_u32(self) -> u32 {
+    pub(crate) const fn as_u32(self) -> u32 {
         self as u32
     }
 
     /// Convert a raw syscall number to a [`Syscall`] variant.
     ///
     /// Returns `None` for numbers that do not correspond to a defined syscall.
-    pub const fn from_u32(n: u32) -> Option<Self> {
+    pub(crate) const fn from_u32(n: u32) -> Option<Self> {
         match n {
             // Legacy
             0 => Some(Self::Exit),
@@ -307,7 +307,7 @@ impl Syscall {
     /// All defined syscall variants in declaration ORDER.
     /// WHY: enables exhaustive iteration for tests and introspection
     /// without relying on external derive macros in no_std.
-    pub const ALL: [Self; SYSCALL_COUNT] = [
+    pub(crate) const ALL: [Self; SYSCALL_COUNT] = [
         // Legacy
         Self::Exit,
         Self::Write,
@@ -384,7 +384,7 @@ impl Syscall {
 ///   dup, dup2, mkdir, unlink, getcwd, chdir, pipe, futex, socket, bind,
 ///   connect, sendto, recvfrom, clock_gettime, nanosleep, sigaction, sigreturn
 /// Stub (returns EOPNOTSUPP): listen, accept
-pub fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
+pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     let Some(call) = Syscall::from_u32(num) else {
         let mut serial = Uart::new();
         let _ = write!(serial, "Unknown syscall: {num}\r\n");

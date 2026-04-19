@@ -16,7 +16,7 @@ use core::fmt::Write;
 const MAX_CMD_LEN: usize = 128;
 
 /// Kernel debug console.
-pub struct Console {
+pub(crate) struct Console {
     serial: Uart,
     line_buf: [u8; MAX_CMD_LEN],
     line_len: usize,
@@ -24,7 +24,7 @@ pub struct Console {
 
 impl Console {
     /// Create a new console on the default UART.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             serial: Uart::new(),
             line_buf: [0; MAX_CMD_LEN],
@@ -33,12 +33,12 @@ impl Console {
     }
 
     /// Print the prompt.
-    pub fn prompt(&mut self) {
+    pub(crate) fn prompt(&mut self) {
         let _ = self.serial.write_str("thumos> ");
     }
 
     /// Process a received byte (FROM UART RX interrupt or polling).
-    pub fn receive_byte(&mut self, byte: u8) {
+    pub(crate) fn receive_byte(&mut self, byte: u8) {
         match byte {
             // Enter
             b'\r' | b'\n' => {

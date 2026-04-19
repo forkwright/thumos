@@ -384,7 +384,7 @@ pub unsafe fn init() {
 /// Return `(total_allocs, total_frees)` for all size classes and large allocs.
 ///
 /// Equal values indicate no outstanding allocations (no leaks).
-pub fn stats() -> (u64, u64) {
+pub(crate) fn stats() -> (u64, u64) {
     // SAFETY: reading through the lock is safe; stats() only reads counters.
     let _g = LOCK.lock();
     // SAFETY: SLAB is only mutated under LOCK.
@@ -396,7 +396,7 @@ pub fn stats() -> (u64, u64) {
 // ---------------------------------------------------------------------------
 
 /// The kernel's global slab allocator, exposed as `#[global_allocator]`.
-pub struct KernelAllocator;
+pub(crate) struct KernelAllocator;
 
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {

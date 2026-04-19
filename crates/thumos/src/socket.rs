@@ -35,41 +35,41 @@ use crate::net::{LoopbackDevice, NetworkStack};
 // ---------------------------------------------------------------------------
 
 /// Address family: IPv4.
-pub const AF_INET: u32 = 2;
+pub(crate) const AF_INET: u32 = 2;
 
 /// Socket type: stream (TCP).
-pub const SOCK_STREAM: u32 = 1;
+pub(crate) const SOCK_STREAM: u32 = 1;
 
 /// Socket type: datagram (UDP).
-pub const SOCK_DGRAM: u32 = 2;
+pub(crate) const SOCK_DGRAM: u32 = 2;
 
 /// Address family not supported.
-pub const EAFNOSUPPORT: u32 = 0u32.wrapping_sub(97);
+pub(crate) const EAFNOSUPPORT: u32 = 0u32.wrapping_sub(97);
 
 /// Protocol wrong type for socket.
-pub const EPROTOTYPE: u32 = 0u32.wrapping_sub(91);
+pub(crate) const EPROTOTYPE: u32 = 0u32.wrapping_sub(91);
 
 /// Transport endpoint is not connected.
-pub const ENOTCONN: u32 = 0u32.wrapping_sub(107);
+pub(crate) const ENOTCONN: u32 = 0u32.wrapping_sub(107);
 
 /// Connection refused.
-pub const ECONNREFUSED: u32 = 0u32.wrapping_sub(111);
+pub(crate) const ECONNREFUSED: u32 = 0u32.wrapping_sub(111);
 
 /// Operation not supported.
-pub const EOPNOTSUPP: u32 = 0u32.wrapping_sub(95);
+pub(crate) const EOPNOTSUPP: u32 = 0u32.wrapping_sub(95);
 
 /// Address already in use.
-pub const EADDRINUSE: u32 = 0u32.wrapping_sub(98);
+pub(crate) const EADDRINUSE: u32 = 0u32.wrapping_sub(98);
 
 // -- fd kind encoding (same bit-field scheme as pipe.rs) --
 
 /// FD kind mask: low 8 bits of flags identify the fd type.
 /// WHY: matches pipe.rs FD_KIND_MASK (0x00FF). A plain VFS fd has
 /// kind 0; pipe is 1; socket is 2.
-pub const FD_KIND_MASK: u32 = 0x00FF;
+pub(crate) const FD_KIND_MASK: u32 = 0x00FF;
 
 /// FD kind value for socket file descriptors.
-pub const FD_KIND_SOCKET: u32 = 0x0002;
+pub(crate) const FD_KIND_SOCKET: u32 = 0x0002;
 
 // ---------------------------------------------------------------------------
 // Socket metadata
@@ -122,18 +122,18 @@ pub struct SockaddrIn {
 
 impl SockaddrIn {
     /// Parse the port from network byte order to host byte order.
-    pub fn port(&self) -> u16 {
+    pub(crate) fn port(&self) -> u16 {
         u16::from_be(self.sin_port)
     }
 
     /// Parse the IPv4 address from network byte order.
-    pub fn ipv4_addr(&self) -> Ipv4Address {
+    pub(crate) fn ipv4_addr(&self) -> Ipv4Address {
         let octets = self.sin_addr.to_be_bytes();
         Ipv4Address::new(octets[0], octets[1], octets[2], octets[3])
     }
 
     /// Create a SockaddrIn from host-order values.
-    pub fn new(port: u16, addr: Ipv4Address) -> Self {
+    pub(crate) fn new(port: u16, addr: Ipv4Address) -> Self {
         let o = addr.octets();
         let sin_addr = u32::from_be_bytes([o[0], o[1], o[2], o[3]]);
         Self {
@@ -221,7 +221,7 @@ unsafe fn get_socket_table() -> &'static mut [Option<SocketInfo>; MAX_FDS] {
 }
 
 /// Return true if the fd flags word identifies a socket fd.
-pub fn is_socket_fd(flags: u32) -> bool {
+pub(crate) fn is_socket_fd(flags: u32) -> bool {
     (flags & FD_KIND_MASK) == FD_KIND_SOCKET
 }
 
@@ -287,7 +287,7 @@ unsafe fn alloc_ephemeral_port() -> Option<u16> {
 ///
 /// # Returns
 /// File descriptor number on success, negative errno on failure.
-pub fn sys_socket(domain: u32, sock_type: u32, _protocol: u32) -> u32 {
+pub(crate) fn sys_socket(domain: u32, sock_type: u32, _protocol: u32) -> u32 {
     // TODO(#84): IPv6 (AF_INET6) -- only AF_INET supported
     if domain != AF_INET {
         return EAFNOSUPPORT;
@@ -354,7 +354,7 @@ pub fn sys_socket(domain: u32, sock_type: u32, _protocol: u32) -> u32 {
 ///
 /// # Returns
 /// 0 on success, negative errno on failure.
-pub fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
+pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     let fd_idx = fd as usize;
     if fd_idx >= MAX_FDS {
         return fd::EBADF;
@@ -454,7 +454,7 @@ pub fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
 /// EOPNOTSUPP — full listen/accept is deferred to a future phase.
 ///
 /// TODO(#84): listen/accept -- currently returns EOPNOTSUPP
-pub fn sys_listen(_fd: u32, _backlog: u32) -> u32 {
+pub(crate) fn sys_listen(_fd: u32, _backlog: u32) -> u32 {
     EOPNOTSUPP
 }
 
@@ -464,7 +464,7 @@ pub fn sys_listen(_fd: u32, _backlog: u32) -> u32 {
 /// EOPNOTSUPP — full listen/accept is deferred to a future phase.
 ///
 /// TODO(#84): listen/accept -- currently returns EOPNOTSUPP
-pub fn sys_accept(_fd: u32, _addr_ptr: u32, _addr_len_ptr: u32) -> u32 {
+pub(crate) fn sys_accept(_fd: u32, _addr_ptr: u32, _addr_len_ptr: u32) -> u32 {
     EOPNOTSUPP
 }
 
@@ -480,7 +480,7 @@ pub fn sys_accept(_fd: u32, _addr_ptr: u32, _addr_len_ptr: u32) -> u32 {
 ///
 /// # Returns
 /// 0 on success, negative errno on failure.
-pub fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
+pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     let fd_idx = fd as usize;
     if fd_idx >= MAX_FDS {
         return fd::EBADF;
@@ -611,7 +611,7 @@ pub fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
 ///
 /// # Returns
 /// Number of bytes sent on success, negative errno on failure.
-pub fn sys_sendto(
+pub(crate) fn sys_sendto(
     fd: u32,
     buf_ptr: u32,
     len: u32,
@@ -733,7 +733,7 @@ pub fn sys_sendto(
 /// # Returns
 /// Number of bytes received on success, 0 for EOF/disconnect, negative errno
 /// on failure.
-pub fn sys_recvfrom(
+pub(crate) fn sys_recvfrom(
     fd: u32,
     buf_ptr: u32,
     len: u32,
@@ -832,7 +832,7 @@ pub fn sys_recvfrom(
 /// Called from the close dispatch in syscall.rs when a socket fd is being
 /// closed. The fd entry itself is already removed by fd::sys_close; this
 /// function handles the network-side cleanup.
-pub fn on_socket_fd_closed(fd_idx: usize) {
+pub(crate) fn on_socket_fd_closed(fd_idx: usize) {
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
     let info = match sock_table[fd_idx].take() {

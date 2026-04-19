@@ -22,12 +22,12 @@ pub unsafe fn init() {
 }
 
 /// Re-export the slab allocator as `KernelAllocator` for `#[global_allocator]`.
-pub use slab::KernelAllocator;
+pub(crate) use slab::KernelAllocator;
 
 /// Return `(total_allocs, total_frees)` for leak detection.
 ///
 /// Replaces the old `(used_bytes, total_bytes)` tuple; callers that only check
 /// for leaks can compare the two values for equality.
-pub fn stats() -> (u64, u64) {
+pub(crate) fn stats() -> (u64, u64) {
     slab::stats()
 }

@@ -173,7 +173,7 @@ impl core::fmt::Display for BleDevice {
 impl BleDevice {
     /// Create a new device entry with the given address and RSSI.
     #[must_use]
-    pub const fn new(address: [u8; 6], rssi: i8) -> Self {
+    pub(crate) const fn new(address: [u8; 6], rssi: i8) -> Self {
         Self {
             address,
             rssi,
@@ -186,13 +186,13 @@ impl BleDevice {
 
     /// Return the device name as a byte slice.
     #[must_use]
-    pub fn name(&self) -> &[u8] {
+    pub(crate) fn name(&self) -> &[u8] {
         &self.name[..self.name_len as usize]
     }
 
     /// Return the advertisement data as a byte slice.
     #[must_use]
-    pub fn adv_data(&self) -> &[u8] {
+    pub(crate) fn adv_data(&self) -> &[u8] {
         &self.adv_data[..self.adv_data_len as usize]
     }
 }
@@ -210,7 +210,7 @@ const fn hci_opcode(ogf: u16, ocf: u16) -> u16 {
 ///
 /// Format: `[0x01, opcode_lo, opcode_hi, 0x00]`
 #[must_use]
-pub fn hci_reset() -> [u8; 4] {
+pub(crate) fn hci_reset() -> [u8; 4] {
     let opcode = hci_opcode(OGF_CONTROLLER_BASEBAND, OCF_RESET);
     let ob = opcode.to_le_bytes();
     [H4_COMMAND_TYPE, ob[0], ob[1], 0x00]
@@ -222,7 +222,7 @@ pub fn hci_reset() -> [u8; 4] {
 ///
 /// Format: `[0x01, opcode_lo, opcode_hi, 0x06, addr[5], addr[4], ..., addr[0]]`
 #[must_use]
-pub fn hci_set_random_address(address: &[u8; 6]) -> [u8; 10] {
+pub(crate) fn hci_set_random_address(address: &[u8; 6]) -> [u8; 10] {
     let opcode = hci_opcode(OGF_LE_CONTROLLER, OCF_LE_SET_RANDOM_ADDRESS);
     let ob = opcode.to_le_bytes();
     // WHY: HCI spec transmits BD_ADDR LSB-first; our address is stored
@@ -248,7 +248,7 @@ pub fn hci_set_random_address(address: &[u8; 6]) -> [u8; 10] {
 /// Format: `[0x01, opcode_lo, opcode_hi, 0x07, scan_type, interval_lo, interval_hi,
 ///           window_lo, window_hi, own_addr_type, filter_policy]`
 #[must_use]
-pub fn hci_le_set_scan_params() -> [u8; 11] {
+pub(crate) fn hci_le_set_scan_params() -> [u8; 11] {
     let opcode = hci_opcode(OGF_LE_CONTROLLER, OCF_LE_SET_SCAN_PARAMETERS);
     let ob = opcode.to_le_bytes();
     let interval: u16 = 0x0010; // 10 ms in 0.625 ms units
@@ -272,7 +272,7 @@ pub fn hci_le_set_scan_params() -> [u8; 11] {
 ///
 /// Format: `[0x01, opcode_lo, opcode_hi, 0x02, enable, filter_duplicates]`
 #[must_use]
-pub fn hci_le_scan_enable(enable: bool, filter_duplicates: bool) -> [u8; 6] {
+pub(crate) fn hci_le_scan_enable(enable: bool, filter_duplicates: bool) -> [u8; 6] {
     let opcode = hci_opcode(OGF_LE_CONTROLLER, OCF_LE_SET_SCAN_ENABLE);
     let ob = opcode.to_le_bytes();
     [
@@ -298,7 +298,7 @@ pub fn hci_le_scan_enable(enable: bool, filter_duplicates: bool) -> [u8; 6] {
 ///
 /// Uses the kernel CSPRNG for randomness.
 #[must_use]
-pub fn generate_random_address() -> [u8; 6] {
+pub(crate) fn generate_random_address() -> [u8; 6] {
     let mut addr = [0u8; 6];
     csprng::kernel_random_bytes(&mut addr);
     // INVARIANT: clear bits 47:46 (top two bits of byte 0) to mark as
@@ -322,7 +322,7 @@ pub fn generate_random_address() -> [u8; 6] {
 ///
 /// Allows test-friendly mocking of WMT STP transport access. The real
 /// implementation uses MMIO through the combo chip; tests provide a mock.
-pub trait BtHwOps {
+pub(crate) trait BtHwOps {
     /// Send an HCI command via WMT STP transport.
     fn send_command(&mut self, data: &[u8]) -> Result<(), BtError>;
 
@@ -342,7 +342,7 @@ pub trait BtHwOps {
 
 /// Real BT hardware access via WMT STP on the MT6739 combo chip.
 #[cfg(not(test))]
-pub struct BtHw {
+pub(crate) struct BtHw {
     /// WMT combo-chip MMIO base address.
     consys_base: usize,
 }
@@ -351,7 +351,7 @@ pub struct BtHw {
 impl BtHw {
     /// Create a new BT hardware handle.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             consys_base: MT6739_CONSYS,
         }
@@ -390,7 +390,7 @@ impl BtHwOps for BtHw {
 ///
 /// Manages the BT lifecycle: init, random address rotation, passive scan,
 /// and device tracking. Uses non-resolvable private addresses for LE privacy.
-pub struct BtAdapter<H: BtHwOps> {
+pub(crate) struct BtAdapter<H: BtHwOps> {
     /// Current adapter state.
     state: BtState,
     /// Hardware abstraction.
@@ -408,7 +408,7 @@ impl<H: BtHwOps> BtAdapter<H> {
     ///
     /// Generates an initial random address for LE privacy.
     #[must_use]
-    pub fn new(hw: H) -> Self {
+    pub(crate) fn new(hw: H) -> Self {
         Self {
             state: BtState::Off,
             hw,
@@ -420,19 +420,19 @@ impl<H: BtHwOps> BtAdapter<H> {
 
     /// Return the current adapter state.
     #[must_use]
-    pub fn state(&self) -> BtState {
+    pub(crate) fn state(&self) -> BtState {
         self.state
     }
 
     /// Return the current scan results.
     #[must_use]
-    pub fn scan_results(&self) -> &[BleDevice] {
+    pub(crate) fn scan_results(&self) -> &[BleDevice] {
         &self.scan_results
     }
 
     /// Return the current random address.
     #[must_use]
-    pub fn random_address(&self) -> &[u8; 6] {
+    pub(crate) fn random_address(&self) -> &[u8; 6] {
         &self.random_address
     }
 
@@ -440,7 +440,7 @@ impl<H: BtHwOps> BtAdapter<H> {
     ///
     /// Transitions from `Off` to `Ready` on success, or to `Error` on failure.
     #[must_use]
-    pub fn init(&mut self, current_tick_ms: u64) -> Result<(), BtError> {
+    pub(crate) fn init(&mut self, current_tick_ms: u64) -> Result<(), BtError> {
         if self.state != BtState::Off {
             return Err(BtError::InvalidState);
         }
@@ -477,7 +477,7 @@ impl<H: BtHwOps> BtAdapter<H> {
     ///
     /// Should be called periodically. Returns `true` if the address was rotated.
     #[must_use]
-    pub fn maybe_rotate_address(&mut self, current_tick_ms: u64) -> Result<bool, BtError> {
+    pub(crate) fn maybe_rotate_address(&mut self, current_tick_ms: u64) -> Result<bool, BtError> {
         if current_tick_ms.saturating_sub(self.address_set_at) < ADDRESS_ROTATION_MS {
             return Ok(false);
         }
@@ -493,7 +493,7 @@ impl<H: BtHwOps> BtAdapter<H> {
     ///
     /// Sets scan parameters (passive, random address, accept all) then enables scanning.
     #[must_use]
-    pub fn start_scan(&mut self) -> Result<(), BtError> {
+    pub(crate) fn start_scan(&mut self) -> Result<(), BtError> {
         match self.state {
             BtState::Ready => {}
             BtState::Scanning => return Ok(()), // already scanning
@@ -517,7 +517,7 @@ impl<H: BtHwOps> BtAdapter<H> {
 
     /// Stop the BLE passive scan.
     #[must_use]
-    pub fn stop_scan(&mut self) -> Result<(), BtError> {
+    pub(crate) fn stop_scan(&mut self) -> Result<(), BtError> {
         if self.state != BtState::Scanning {
             return Err(BtError::InvalidState);
         }
@@ -533,7 +533,7 @@ impl<H: BtHwOps> BtAdapter<H> {
     ///
     /// Deduplicates by address: if the address is already present, updates
     /// RSSI and advertisement data. Caps at `MAX_SCAN_RESULTS` entries.
-    pub fn add_scan_result(&mut self, device: BleDevice) {
+    pub(crate) fn add_scan_result(&mut self, device: BleDevice) {
         // Deduplicate by address.
         for existing in &mut self.scan_results {
             if existing.address == device.address {

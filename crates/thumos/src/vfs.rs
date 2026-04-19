@@ -73,7 +73,7 @@ impl VfsError {
     ///
     /// Returns the value that would be placed in r0 for a failed syscall on
     /// ARM Linux (e.g., `ENOENT` -> `0u32.wrapping_sub(2)` = `0xFFFF_FFFE`).
-    pub const fn to_errno(self) -> u32 {
+    pub(crate) const fn to_errno(self) -> u32 {
         let raw = match self {
             Self::NotFound => 2,
             Self::NotADirectory => 20,
@@ -175,7 +175,7 @@ impl core::fmt::Display for DirEntry {
 ///
 /// All inode IDs are filesystem-local; the mount table maps paths to
 /// filesystem instances.
-pub trait Filesystem {
+pub(crate) trait Filesystem {
     /// Return the inode ID of the filesystem root directory.
     fn root_inode(&self) -> u32;
 
@@ -290,14 +290,14 @@ struct MountEntry {
 ///
 /// Stores up to `MAX_MOUNTS` mount entries. Path resolution uses
 /// longest-prefix matching to find the correct filesystem for a given path.
-pub struct MountTable {
+pub(crate) struct MountTable {
     /// Fixed-size array of optional mount entries.
     entries: [Option<MountEntry>; MAX_MOUNTS],
 }
 
 impl MountTable {
     /// Create an empty mount table.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         // WHY manual const array: MountEntry contains Box<dyn Filesystem>
         // which is not Copy, so we cannot use `[None; MAX_MOUNTS]` directly.
         // Default::default() is not const, so we build the array manually.
@@ -318,7 +318,7 @@ impl MountTable {
     /// - `VfsError::AlreadyExists` if the path is already mounted.
     /// - `VfsError::NoSpace` if all mount slots are occupied.
     #[must_use]
-    pub fn mount(&mut self, path: &str, fs: Box<dyn Filesystem>) -> Result<(), VfsError> {
+    pub(crate) fn mount(&mut self, path: &str, fs: Box<dyn Filesystem>) -> Result<(), VfsError> {
         if !path.starts_with('/') {
             return Err(VfsError::InvalidPath);
         }
@@ -352,7 +352,7 @@ impl MountTable {
     /// mount. For the root mount `/`, the full path is returned as remaining.
     ///
     /// Returns `None` if no mount matches (should not happen if `/` is mounted).
-    pub fn lookup<'a>(&self, path: &'a str) -> Option<(usize, &'a str)> {
+    pub(crate) fn lookup<'a>(&self, path: &'a str) -> Option<(usize, &'a str)> {
         let mut best_idx = None;
         let mut best_len = 0;
 
@@ -406,7 +406,7 @@ impl MountTable {
     /// # Errors
     ///
     /// Returns `None` if `idx` is out of range or the slot is empty.
-    pub fn get(&self, idx: usize) -> Option<&dyn Filesystem> {
+    pub(crate) fn get(&self, idx: usize) -> Option<&dyn Filesystem> {
         if idx >= MAX_MOUNTS {
             return None;
         }
@@ -418,7 +418,7 @@ impl MountTable {
     /// # Errors
     ///
     /// Returns `None` if `idx` is out of range or the slot is empty.
-    pub fn get_mut(&mut self, idx: usize) -> Option<&mut dyn Filesystem> {
+    pub(crate) fn get_mut(&mut self, idx: usize) -> Option<&mut dyn Filesystem> {
         if idx >= MAX_MOUNTS {
             return None;
         }
@@ -452,7 +452,7 @@ impl Default for MountTable {
 /// - `VfsError::NotFound` if any path component cannot be found.
 /// - `VfsError::NotADirectory` if a non-terminal component is not a directory.
 #[must_use]
-pub fn resolve_path(mounts: &MountTable, path: &str) -> Result<(usize, u32), VfsError> {
+pub(crate) fn resolve_path(mounts: &MountTable, path: &str) -> Result<(usize, u32), VfsError> {
     if path.is_empty() || !path.starts_with('/') {
         return Err(VfsError::InvalidPath);
     }

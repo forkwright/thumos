@@ -12,7 +12,7 @@ extern crate alloc;
 use crate::process::{self, Pid};
 
 /// Maximum message payload size in bytes.
-pub const MSG_MAX_SIZE: usize = 256;
+pub(crate) const MSG_MAX_SIZE: usize = 256;
 
 /// Number of messages per inbox.
 const INBOX_SIZE: usize = 16;
@@ -32,7 +32,7 @@ pub struct Message {
 
 impl Message {
     /// Create a new message with the given tag and data.
-    pub fn new(tag: u32, payload: &[u8]) -> Self {
+    pub(crate) fn new(tag: u32, payload: &[u8]) -> Self {
         let mut msg = Self {
             from: 0,
             tag,
@@ -44,13 +44,13 @@ impl Message {
     }
 
     /// Get the payload as a byte slice.
-    pub fn payload(&self) -> &[u8] {
+    pub(crate) fn payload(&self) -> &[u8] {
         &self.data[..self.len]
     }
 }
 
 /// Per-process message inbox (ring buffer).
-pub struct Inbox {
+pub(crate) struct Inbox {
     messages: [Option<Message>; INBOX_SIZE],
     head: usize,
     tail: usize,
@@ -59,7 +59,7 @@ pub struct Inbox {
 
 impl Inbox {
     /// Create an empty inbox.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         const NONE: Option<Message> = None;
         Self {
             messages: [NONE; INBOX_SIZE],
@@ -70,7 +70,7 @@ impl Inbox {
     }
 
     /// Push a message INTO the inbox. Returns false if full.
-    pub fn push(&mut self, msg: Message) -> bool {
+    pub(crate) fn push(&mut self, msg: Message) -> bool {
         if self.count >= INBOX_SIZE {
             return false;
         }
@@ -81,7 +81,7 @@ impl Inbox {
     }
 
     /// Pop a message FROM the inbox. Returns None if empty.
-    pub fn pop(&mut self) -> Option<Message> {
+    pub(crate) fn pop(&mut self) -> Option<Message> {
         if self.count == 0 {
             return None;
         }
@@ -92,12 +92,12 @@ impl Inbox {
     }
 
     /// Check if the inbox is empty.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// Check if the inbox is full.
-    pub fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         self.count >= INBOX_SIZE
     }
 }
@@ -106,7 +106,7 @@ impl Inbox {
 const MAX_INBOX_PROCS: usize = 16;
 
 /// Error code for "no such process" (ESRCH equivalent for ARM Linux).
-pub const ESRCH: i32 = -3;
+pub(crate) const ESRCH: i32 = -3;
 
 /// Process inboxes. Indexed by PID.
 static mut INBOXES: [Inbox; MAX_INBOX_PROCS] = {
@@ -128,7 +128,7 @@ fn validate_pid(pid: Pid) -> Result<usize, i32> {
 
 /// Send a message to a process. Non-blocking: returns false if inbox full
 /// or the target PID is invalid.
-pub fn send(to: Pid, mut msg: Message) -> bool {
+pub(crate) fn send(to: Pid, mut msg: Message) -> bool {
     let idx = match validate_pid(to) {
         Ok(i) => i,
         Err(_) => return false,
@@ -145,7 +145,7 @@ pub fn send(to: Pid, mut msg: Message) -> bool {
 
 /// Receive a message FROM our inbox. Non-blocking: returns None if empty
 /// or current PID is invalid.
-pub fn recv() -> Option<Message> {
+pub(crate) fn recv() -> Option<Message> {
     let pid = process::current_pid();
     let idx = validate_pid(pid).ok()?;
     // SAFETY: INBOXES is a static array indexed by PID. addr_of_mut! avoids
@@ -158,7 +158,7 @@ pub fn recv() -> Option<Message> {
 }
 
 /// Check if our inbox has messages. Returns false if the current PID is invalid.
-pub fn has_messages() -> bool {
+pub(crate) fn has_messages() -> bool {
     let pid = process::current_pid();
     let idx = match validate_pid(pid) {
         Ok(i) => i,

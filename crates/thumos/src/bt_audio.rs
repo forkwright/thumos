@@ -141,7 +141,7 @@ impl core::fmt::Display for A2dpState {
 /// audio to a Bluetooth sink (headphones, speaker).
 ///
 /// Generic over the BT hardware backend (`H: BtHwOps`) for testability.
-pub struct A2dpProfile<H: BtHwOps> {
+pub(crate) struct A2dpProfile<H: BtHwOps> {
     /// Current A2DP state.
     state: A2dpState,
     /// Bluetooth device address of the peer sink.
@@ -167,7 +167,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     ///
     /// Default: 44100 Hz, stereo, SBC high-quality.
     #[must_use]
-    pub fn new(hw: H) -> Self {
+    pub(crate) fn new(hw: H) -> Self {
         Self {
             state: A2dpState::Disconnected,
             peer_addr: None,
@@ -183,30 +183,30 @@ impl<H: BtHwOps> A2dpProfile<H> {
 
     /// Return the current A2DP state.
     #[must_use]
-    pub fn state(&self) -> A2dpState {
+    pub(crate) fn state(&self) -> A2dpState {
         self.state
     }
 
     /// Return the peer device address, if set.
     #[must_use]
-    pub fn peer_addr(&self) -> Option<&[u8; 6]> {
+    pub(crate) fn peer_addr(&self) -> Option<&[u8; 6]> {
         self.peer_addr.as_ref()
     }
 
     /// Return the configured sample rate.
     #[must_use]
-    pub fn sample_rate(&self) -> u32 {
+    pub(crate) fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
 
     /// Return the configured channel count.
     #[must_use]
-    pub fn channels(&self) -> u8 {
+    pub(crate) fn channels(&self) -> u8 {
         self.channels
     }
 
     /// Set the peer device address for A2DP connection.
-    pub fn set_peer(&mut self, addr: [u8; 6]) {
+    pub(crate) fn set_peer(&mut self, addr: [u8; 6]) {
         self.peer_addr = Some(addr);
     }
 
@@ -214,7 +214,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     ///
     /// Must be called before `connect()`. Only 44100 and 48000 Hz are
     /// supported; other values default to 44100.
-    pub fn configure(&mut self, sample_rate: u32, channels: u8) {
+    pub(crate) fn configure(&mut self, sample_rate: u32, channels: u8) {
         self.sample_rate = if sample_rate == 48000 { 48000 } else { 44100 };
         self.channels = if channels >= 2 { 2 } else { 1 };
 
@@ -247,7 +247,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::NoPeer`] -- no peer address configured.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
     #[must_use]
-    pub fn connect(&mut self) -> Result<(), BtAudioError> {
+    pub(crate) fn connect(&mut self) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Disconnected {
             return Err(BtAudioError::InvalidState);
         }
@@ -282,7 +282,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::AvdtpError`] -- unknown or unexpected signal ID.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
     #[must_use]
-    pub fn advance_signaling(&mut self, signal: u8) -> Result<(), BtAudioError> {
+    pub(crate) fn advance_signaling(&mut self, signal: u8) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Connecting {
             return Err(BtAudioError::InvalidState);
         }
@@ -343,7 +343,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::BufferTooSmall`] -- internal frame buffer too small.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
     #[must_use]
-    pub fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, BtAudioError> {
+    pub(crate) fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, BtAudioError> {
         if self.state != A2dpState::Streaming {
             return Err(BtAudioError::InvalidState);
         }
@@ -367,7 +367,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::InvalidState`] -- not in Streaming state.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
     #[must_use]
-    pub fn suspend(&mut self) -> Result<(), BtAudioError> {
+    pub(crate) fn suspend(&mut self) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Streaming {
             return Err(BtAudioError::InvalidState);
         }
@@ -389,7 +389,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::InvalidState`] -- not in Connected state.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
     #[must_use]
-    pub fn resume(&mut self) -> Result<(), BtAudioError> {
+    pub(crate) fn resume(&mut self) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Connected {
             return Err(BtAudioError::InvalidState);
         }
@@ -411,7 +411,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// Currently infallible but returns `Result` for API consistency.
     #[must_use]
     #[expect(clippy::unnecessary_wraps, reason = "returns Result for API consistency with other lifecycle methods")]
-    pub fn disconnect(&mut self) -> Result<(), BtAudioError> {
+    pub(crate) fn disconnect(&mut self) -> Result<(), BtAudioError> {
         match self.state {
             A2dpState::Streaming => {
                 // Suspend first, then close.
@@ -440,7 +440,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     }
 
     /// Set the remote stream endpoint ID (normally discovered via AVDTP).
-    pub fn set_remote_seid(&mut self, seid: u8) {
+    pub(crate) fn set_remote_seid(&mut self, seid: u8) {
         self.remote_seid = seid;
     }
 

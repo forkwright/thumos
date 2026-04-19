@@ -169,7 +169,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// - 9: 1 hour (3600s)
 /// - 10+: wipe trigger (`u32::MAX` sentinel)
 #[must_use]
-pub const fn throttle_delay(attempts: u32) -> u32 {
+pub(crate) const fn throttle_delay(attempts: u32) -> u32 {
     match attempts {
         0..=2 => 0,
         3..=4 => 5,
@@ -188,7 +188,7 @@ pub const fn throttle_delay(attempts: u32) -> u32 {
 ///
 /// Manages input buffers, attempt counting, throttling, and duress detection.
 /// The screen renders a dot-masked input field and handles numpad/OK/End keys.
-pub struct LockScreen {
+pub(crate) struct LockScreen {
     /// Current authentication mode.
     mode: LockMode,
     /// PIN input buffer (digit bytes, e.g., b'0'..b'9').
@@ -226,7 +226,7 @@ impl LockScreen {
     /// These would be provisioned during device setup and persisted in
     /// secure storage.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         pin_hash: [u8; SHA256_DIGEST_LEN],
         duress_pin_hash: [u8; SHA256_DIGEST_LEN],
         passphrase_hash: [u8; SHA256_DIGEST_LEN],

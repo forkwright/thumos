@@ -110,13 +110,13 @@ pub struct MicAuditEntry {
 impl MicAuditEntry {
     /// Return the caller identifier as a byte slice.
     #[must_use]
-    pub fn caller(&self) -> &[u8] {
+    pub(crate) fn caller(&self) -> &[u8] {
         &self.caller[..self.caller_len as usize]
     }
 
     /// Return whether this session is still active (mic is on).
     #[must_use]
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.end_tick == 0
     }
 
@@ -124,7 +124,7 @@ impl MicAuditEntry {
     ///
     /// Returns `None` if the session is still active.
     #[must_use]
-    pub fn duration_ms(&self) -> Option<u64> {
+    pub(crate) fn duration_ms(&self) -> Option<u64> {
         if self.is_active() {
             None
         } else {
@@ -166,7 +166,7 @@ impl core::fmt::Display for MicAuditEntry {
 ///
 /// Maintains an ordered list of mic activation entries.  When the log
 /// reaches `MAX_ENTRIES`, the oldest entry is evicted.
-pub struct MicAuditLog {
+pub(crate) struct MicAuditLog {
     /// Audit entries, ordered by `start_tick` (oldest first).
     entries: Vec<MicAuditEntry>,
     /// Next entry ID to allocate.
@@ -176,7 +176,7 @@ pub struct MicAuditLog {
 impl MicAuditLog {
     /// Create a new, empty audit log.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: Vec::with_capacity(64),
             next_id: 1,
@@ -187,7 +187,7 @@ impl MicAuditLog {
     ///
     /// Returns the entry ID, which must be passed to `log_end()` when
     /// the session concludes.
-    pub fn log_start(
+    pub(crate) fn log_start(
         &mut self,
         kind: SessionKind,
         caller: &[u8],
@@ -221,7 +221,7 @@ impl MicAuditLog {
     /// Log the end of a mic session.
     ///
     /// Records the end tick for the entry with the given ID.
-    pub fn log_end(&mut self, entry_id: u32, tick_ms: u64) -> Result<(), MicAuditError> {
+    pub(crate) fn log_end(&mut self, entry_id: u32, tick_ms: u64) -> Result<(), MicAuditError> {
         let entry = self
             .entries
             .iter_mut()
@@ -238,7 +238,7 @@ impl MicAuditLog {
 
     /// Return all audit entries (oldest first).
     #[must_use]
-    pub fn entries(&self) -> &[MicAuditEntry] {
+    pub(crate) fn entries(&self) -> &[MicAuditEntry] {
         &self.entries
     }
 
@@ -246,7 +246,7 @@ impl MicAuditLog {
     ///
     /// Returns at most `n` entries from the end of the log.
     #[must_use]
-    pub fn recent(&self, n: usize) -> &[MicAuditEntry] {
+    pub(crate) fn recent(&self, n: usize) -> &[MicAuditEntry] {
         let len = self.entries.len();
         if n >= len {
             &self.entries
@@ -257,30 +257,30 @@ impl MicAuditLog {
 
     /// Return the total number of entries in the log.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Return whether the log is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Return any currently active (mic-on) entries.
     #[must_use]
-    pub fn active_sessions(&self) -> Vec<&MicAuditEntry> {
+    pub(crate) fn active_sessions(&self) -> Vec<&MicAuditEntry> {
         self.entries.iter().filter(|e| e.is_active()).collect()
     }
 
     /// Check whether any mic session is currently active.
     #[must_use]
-    pub fn is_mic_active(&self) -> bool {
+    pub(crate) fn is_mic_active(&self) -> bool {
         self.entries.iter().any(MicAuditEntry::is_active)
     }
 
     /// Clear all entries from the log.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.entries.clear();
     }
 }

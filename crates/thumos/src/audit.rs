@@ -60,7 +60,7 @@ const BUFFER_SIZE: usize = 64 * 1024;
 const MAX_ENTRIES: usize = BUFFER_SIZE / core::mem::size_of::<AuditEntry>();
 
 /// Size of the fixed-length detail field in each audit entry.
-pub const DETAIL_LEN: usize = 64;
+pub(crate) const DETAIL_LEN: usize = 64;
 
 /// Initial HMAC value for the first entry in the chain (all zeros).
 ///
@@ -148,7 +148,7 @@ pub struct AuditEntry {
 impl AuditEntry {
     /// Return the detail field as a byte slice (only valid bytes).
     #[must_use]
-    pub fn detail(&self) -> &[u8] {
+    pub(crate) fn detail(&self) -> &[u8] {
         &self.detail[..self.detail_len as usize]
     }
 
@@ -272,7 +272,7 @@ impl fmt::Display for AuditError {
 /// index tracks the next write position, and `count` tracks how many
 /// entries are live (up to `MAX_ENTRIES`).
 #[must_use]
-pub struct AuditLog {
+pub(crate) struct AuditLog {
     /// Ring buffer of audit entries.
     entries: [AuditEntry; MAX_ENTRIES],
     /// Index of the next write position in the ring.
@@ -286,7 +286,7 @@ pub struct AuditLog {
 impl AuditLog {
     /// Create a new, empty audit log.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: core::array::from_fn(|_| AuditEntry {
                 timestamp: 0,
@@ -318,7 +318,7 @@ impl AuditLog {
     /// # Errors
     ///
     /// Returns [`AuditError::NoKey`] if `hmac_key` is empty (all zeros).
-    pub fn log_event(
+    pub(crate) fn log_event(
         &mut self,
         event_type: AuditEventType,
         pid: u32,
@@ -383,7 +383,7 @@ impl AuditLog {
     /// - [`AuditError::Empty`] if the log has no entries.
     /// - [`AuditError::NoKey`] if `hmac_key` is all zeros.
     /// - [`AuditError::ChainTampered`] if any entry's HMAC does not match.
-    pub fn verify_chain(
+    pub(crate) fn verify_chain(
         &self,
         hmac_key: &[u8; KEY_SIZE],
     ) -> Result<(), AuditError> {
@@ -438,7 +438,7 @@ impl AuditLog {
     ///
     /// To iterate in order: process `older` first, then `newer`.
     #[must_use]
-    pub fn recent(&self, n: usize) -> (&[AuditEntry], &[AuditEntry]) {
+    pub(crate) fn recent(&self, n: usize) -> (&[AuditEntry], &[AuditEntry]) {
         if self.count == 0 || n == 0 {
             return (&[], &[]);
         }
@@ -470,19 +470,19 @@ impl AuditLog {
 
     /// Return the number of live entries in the log.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.count
     }
 
     /// Return whether the log is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// Return whether the ring buffer has wrapped (oldest entries overwritten).
     #[must_use]
-    pub fn has_wrapped(&self) -> bool {
+    pub(crate) fn has_wrapped(&self) -> bool {
         self.count == MAX_ENTRIES
     }
 }

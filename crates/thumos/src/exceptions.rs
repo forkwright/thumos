@@ -57,12 +57,12 @@ pub unsafe fn init() {
 }
 
 /// Get the current tick count.
-pub fn ticks() -> u64 {
+pub(crate) fn ticks() -> u64 {
     unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TICK_COUNT)) }
 }
 
 /// Get uptime in milliseconds FROM tick count.
-pub fn uptime_ms() -> u64 {
+pub(crate) fn uptime_ms() -> u64 {
     ticks() * u64::try_from(TICK_MS).unwrap_or_default()
 }
 

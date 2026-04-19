@@ -194,7 +194,7 @@ impl fmt::Display for ProvisionBundle {
 /// }
 /// ```
 #[non_exhaustive]
-pub struct Provisioner {
+pub(crate) struct Provisioner {
     /// Current state machine state.
     state: ProvisionState,
     /// Accumulated receive buffer.
@@ -208,7 +208,7 @@ pub struct Provisioner {
 impl Provisioner {
     /// Create a new provisioner in the [`ProvisionState::Waiting`] state.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: ProvisionState::Waiting,
             buffer: Vec::new(),
@@ -219,19 +219,19 @@ impl Provisioner {
 
     /// Current provisioning state.
     #[must_use]
-    pub fn state(&self) -> &ProvisionState {
+    pub(crate) fn state(&self) -> &ProvisionState {
         &self.state
     }
 
     /// Whether provisioning completed successfully.
     #[must_use]
-    pub fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         self.state == ProvisionState::Complete
     }
 
     /// Reference to the provisioned bundle, if available.
     #[must_use]
-    pub fn bundle(&self) -> Option<&ProvisionBundle> {
+    pub(crate) fn bundle(&self) -> Option<&ProvisionBundle> {
         self.bundle.as_ref()
     }
 
@@ -241,7 +241,7 @@ impl Provisioner {
     /// feeding data until the state is [`ProvisionState::Complete`] or
     /// [`ProvisionState::Error`].
     #[must_use]
-    pub fn receive_chunk(&mut self, data: &[u8]) -> &ProvisionState {
+    pub(crate) fn receive_chunk(&mut self, data: &[u8]) -> &ProvisionState {
         // Don't accept data in terminal states.
         match &self.state {
             ProvisionState::Complete | ProvisionState::Error(_) => return &self.state,
@@ -306,7 +306,7 @@ impl Provisioner {
     /// Returns the bundle if provisioning completed successfully. If the
     /// provisioner is not in the [`ProvisionState::Complete`] state, returns
     /// the appropriate error.
-    pub fn finalize(&mut self) -> Result<ProvisionBundle, ProvisionError> {
+    pub(crate) fn finalize(&mut self) -> Result<ProvisionBundle, ProvisionError> {
         match &self.state {
             ProvisionState::Complete => {
                 self.bundle.clone().ok_or(ProvisionError::Incomplete)
@@ -344,7 +344,7 @@ impl Provisioner {
     ///
     /// Clears all accumulated data and returns to the
     /// [`ProvisionState::Waiting`] state.
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.state = ProvisionState::Waiting;
         self.buffer.clear();
         self.payload_len = None;
@@ -371,7 +371,7 @@ impl fmt::Display for Provisioner {
 ///
 /// Returns the complete byte sequence: magic + length + postcard payload +
 /// SHA-256 checksum. Used by the menos-side provisioning tool and in tests.
-pub fn encode_bundle(bundle: &ProvisionBundle) -> Result<Vec<u8>, ProvisionError> {
+pub(crate) fn encode_bundle(bundle: &ProvisionBundle) -> Result<Vec<u8>, ProvisionError> {
     let payload = postcard::to_allocvec(bundle).map_err(|_| ProvisionError::DeserializeError)?;
 
     if payload.len() > MAX_PAYLOAD_SIZE {

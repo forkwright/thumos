@@ -6,7 +6,7 @@
 use core::ptr::addr_of_mut;
 
 /// Page size: 4 KB (ARM standard).
-pub const PAGE_SIZE: usize = 4096;
+pub(crate) const PAGE_SIZE: usize = 4096;
 
 /// Maximum physical pages for 1 GB RAM.
 const MAX_PAGES: usize = 1024 * 1024 * 1024 / PAGE_SIZE;
@@ -47,7 +47,7 @@ pub unsafe fn init(ram_start: usize, ram_end: usize, kernel_end: usize) {
 }
 
 /// Allocate a single physical page. Returns the physical address, or None.
-pub fn alloc_page() -> Option<usize> {
+pub(crate) fn alloc_page() -> Option<usize> {
     // SAFETY: page frame index is within physical memory bounds (checked by caller).
     unsafe {
         if FREE_PAGES == 0 {
@@ -86,12 +86,12 @@ pub unsafe fn free_page(addr: usize) {
 }
 
 /// Return the number of free pages.
-pub fn free_count() -> usize {
+pub(crate) fn free_count() -> usize {
     // SAFETY: page frame index is within physical memory bounds (checked by caller).
     unsafe { FREE_PAGES }
 }
 
 /// Return free memory in bytes.
-pub fn free_bytes() -> usize {
+pub(crate) fn free_bytes() -> usize {
     free_count() * PAGE_SIZE
 }

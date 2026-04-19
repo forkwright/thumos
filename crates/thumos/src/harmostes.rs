@@ -327,7 +327,7 @@ impl fmt::Display for PendingMessage {
 /// are encrypted with Megolm when a session exists for the room. Inbound
 /// `m.room.encrypted` events are decrypted when an inbound session is available.
 #[non_exhaustive]
-pub struct MatrixClient {
+pub(crate) struct MatrixClient {
     /// Homeserver hostname (e.g., `matrix.example.com`).
     homeserver: String,
     /// Authenticated user ID (e.g., `@cody:matrix.example.com`).
@@ -358,7 +358,7 @@ impl MatrixClient {
     /// The client starts with no rooms, no sync token, and the default
     /// active-mode sync interval (continuous long-poll).
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         homeserver: &str,
         user_id: &str,
         device_id: &str,
@@ -385,55 +385,55 @@ impl MatrixClient {
 
     /// Return the list of tracked rooms.
     #[must_use]
-    pub fn rooms(&self) -> &[Room] {
+    pub(crate) fn rooms(&self) -> &[Room] {
         &self.rooms
     }
 
     /// Return messages for a specific room, if it exists.
     #[must_use]
-    pub fn room_messages(&self, room_id: &str) -> Option<&[MatrixMessage]> {
+    pub(crate) fn room_messages(&self, room_id: &str) -> Option<&[MatrixMessage]> {
         self.find_room(room_id)
             .map(|r| r.messages.as_slice())
     }
 
     /// Return the homeserver hostname.
     #[must_use]
-    pub fn homeserver(&self) -> &str {
+    pub(crate) fn homeserver(&self) -> &str {
         &self.homeserver
     }
 
     /// Return the authenticated user ID.
     #[must_use]
-    pub fn user_id(&self) -> &str {
+    pub(crate) fn user_id(&self) -> &str {
         &self.user_id
     }
 
     /// Return the device ID.
     #[must_use]
-    pub fn device_id(&self) -> &str {
+    pub(crate) fn device_id(&self) -> &str {
         &self.device_id
     }
 
     /// Return a reference to the E2E crypto state.
     #[must_use]
-    pub fn crypto(&self) -> &MatrixCrypto {
+    pub(crate) fn crypto(&self) -> &MatrixCrypto {
         &self.crypto
     }
 
     /// Return a mutable reference to the E2E crypto state.
-    pub fn crypto_mut(&mut self) -> &mut MatrixCrypto {
+    pub(crate) fn crypto_mut(&mut self) -> &mut MatrixCrypto {
         &mut self.crypto
     }
 
     /// Return the current outbox contents.
     #[must_use]
-    pub fn outbox(&self) -> &[PendingMessage] {
+    pub(crate) fn outbox(&self) -> &[PendingMessage] {
         &self.outbox
     }
 
     /// Return the current sync token, if set.
     #[must_use]
-    pub fn sync_token(&self) -> Option<&str> {
+    pub(crate) fn sync_token(&self) -> Option<&str> {
         self.sync_token.as_deref()
     }
 
@@ -446,7 +446,7 @@ impl MatrixClient {
     /// Compares `current_tick` against `last_sync_tick + sync_interval_ms`.
     /// For continuous mode (`sync_interval_ms == 0`), always returns `true`.
     #[must_use]
-    pub fn should_sync(&self, current_tick: u64) -> bool {
+    pub(crate) fn should_sync(&self, current_tick: u64) -> bool {
         if self.sync_interval_ms == 0 {
             return true;
         }
@@ -458,7 +458,7 @@ impl MatrixClient {
 
     /// Update the sync interval based on the current security mode and
     /// whether the screen is active.
-    pub fn update_sync_cadence(&mut self, mode: SecurityMode, screen_on: bool) {
+    pub(crate) fn update_sync_cadence(&mut self, mode: SecurityMode, screen_on: bool) {
         self.sync_interval_ms = match mode {
             SecurityMode::Daily => {
                 if screen_on {
@@ -481,7 +481,7 @@ impl MatrixClient {
     ///
     /// Returns [`MatrixError::SyncDisabled`] if the current sync interval
     /// indicates sync is disabled (Sentinel/Panic mode).
-    pub fn build_sync_request(&self) -> Result<HttpRequest, MatrixError> {
+    pub(crate) fn build_sync_request(&self) -> Result<HttpRequest, MatrixError> {
         if self.sync_interval_ms == u64::MAX {
             return Err(MatrixError::SyncDisabled);
         }
@@ -510,7 +510,7 @@ impl MatrixClient {
     /// Returns [`MatrixError::Json`] if the response body is not valid JSON.
     /// Returns [`MatrixError::MalformedSync`] if required fields are missing.
     /// Returns [`MatrixError::Http`] on HTTP parse errors.
-    pub fn process_sync_response(
+    pub(crate) fn process_sync_response(
         &mut self,
         response: &HttpResponse,
         current_tick: u64,
@@ -594,7 +594,7 @@ impl MatrixClient {
     /// # Errors
     ///
     /// Returns errors from either the request build or response parse.
-    pub fn sync(
+    pub(crate) fn sync(
         &mut self,
         response: &HttpResponse,
         current_tick: u64,
@@ -614,7 +614,7 @@ impl MatrixClient {
     /// # Errors
     ///
     /// Returns [`MatrixError::Http`] if the request cannot be built.
-    pub fn build_send_request(
+    pub(crate) fn build_send_request(
         &mut self,
         room_id: &str,
         body: &str,
@@ -645,7 +645,7 @@ impl MatrixClient {
     ///
     /// Returns [`MatrixError::Http`] if the request cannot be built.
     /// Returns [`MatrixError::Json`] if encryption fails (wraps `CryptoError`).
-    pub fn build_encrypted_send_request(
+    pub(crate) fn build_encrypted_send_request(
         &mut self,
         room_id: &str,
         body: &str,
@@ -712,7 +712,7 @@ impl MatrixClient {
     /// Returns [`MatrixError::ServerError`] on non-2xx responses.
     /// Returns [`MatrixError::MissingSendResponse`] if the response
     /// does not contain an `event_id`.
-    pub fn process_send_response(
+    pub(crate) fn process_send_response(
         &self,
         response: &HttpResponse,
     ) -> Result<String, MatrixError> {
@@ -743,7 +743,7 @@ impl MatrixClient {
     /// # Errors
     ///
     /// Returns [`MatrixError::Http`] if the request cannot be built.
-    pub fn send_message(
+    pub(crate) fn send_message(
         &mut self,
         room_id: &str,
         body: &str,
@@ -760,7 +760,7 @@ impl MatrixClient {
     }
 
     /// Remove a successfully sent message from the outbox by transaction ID.
-    pub fn confirm_sent(&mut self, txn_id: u32) {
+    pub(crate) fn confirm_sent(&mut self, txn_id: u32) {
         self.outbox.retain(|m| m.txn_id != txn_id);
     }
 
@@ -771,7 +771,7 @@ impl MatrixClient {
     /// Queue a message for later sending (when offline).
     ///
     /// The message is added to the outbox with the next transaction ID.
-    pub fn queue_message(&mut self, room_id: &str, body: &str) {
+    pub(crate) fn queue_message(&mut self, room_id: &str, body: &str) {
         let txn_id = self.next_txn_id;
         self.next_txn_id = self.next_txn_id.saturating_add(1);
 
@@ -792,7 +792,7 @@ impl MatrixClient {
     ///
     /// Returns errors from individual request builds. Continues building
     /// remaining requests even if one fails.
-    pub fn flush_outbox(&mut self) -> Vec<Result<(HttpRequest, u32), MatrixError>> {
+    pub(crate) fn flush_outbox(&mut self) -> Vec<Result<(HttpRequest, u32), MatrixError>> {
         let pending: Vec<PendingMessage> = self.outbox.clone();
         let mut results = Vec::with_capacity(pending.len());
 
@@ -821,7 +821,7 @@ impl MatrixClient {
     /// Build a join-room HTTP request.
     ///
     /// Uses POST `/_matrix/client/v3/join/{roomId}`.
-    pub fn build_join_request(&self, room_id: &str) -> HttpRequest {
+    pub(crate) fn build_join_request(&self, room_id: &str) -> HttpRequest {
         let mut path = String::from(API_PREFIX);
         path.push_str("/join/");
         path.push_str(room_id);
@@ -840,7 +840,7 @@ impl MatrixClient {
     ///
     /// Returns [`MatrixError::ServerError`] on non-2xx responses.
     /// Returns [`MatrixError::RoomCapacityReached`] if the room list is full.
-    pub fn process_join_response(
+    pub(crate) fn process_join_response(
         &mut self,
         room_id: &str,
         response: &HttpResponse,
@@ -867,7 +867,7 @@ impl MatrixClient {
     /// Join a room (build request + queue join). The caller handles transport.
     ///
     /// Returns the built HTTP request.
-    pub fn join_room(&self, room_id: &str) -> HttpRequest {
+    pub(crate) fn join_room(&self, room_id: &str) -> HttpRequest {
         self.build_join_request(room_id)
     }
 

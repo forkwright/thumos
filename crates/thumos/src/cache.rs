@@ -23,7 +23,7 @@ use crate::block::{BlockDevice, BlockError, BLOCK_SIZE, SECTORS_PER_BLOCK};
 // ---------------------------------------------------------------------------
 
 /// Number of cache entries (256 x 4 KiB = 1 MiB of cached data).
-pub const CACHE_ENTRIES: usize = 256;
+pub(crate) const CACHE_ENTRIES: usize = 256;
 
 // ---------------------------------------------------------------------------
 // CacheEntry
@@ -66,7 +66,7 @@ impl CacheEntry {
 /// 1 MiB on the stack. Cache entries are evicted using a simple LRU counter:
 /// every access increments a global counter and stamps the accessed entry.
 /// On eviction, the entry with the lowest counter value is selected.
-pub struct BlockCache {
+pub(crate) struct BlockCache {
     /// Heap-allocated cache entries.
     entries: Vec<CacheEntry>,
     /// Monotonically increasing counter for LRU tracking.
@@ -75,7 +75,7 @@ pub struct BlockCache {
 
 impl BlockCache {
     /// Create a new block cache with all entries marked invalid.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut entries = Vec::with_capacity(CACHE_ENTRIES);
         for _ in 0..CACHE_ENTRIES {
             entries.push(CacheEntry::new());
@@ -97,7 +97,7 @@ impl BlockCache {
     ///
     /// Returns [`BlockError`] if the underlying device read or a dirty-entry
     /// write-back fails.
-    pub fn read(
+    pub(crate) fn read(
         &mut self,
         dev: &mut dyn BlockDevice,
         block_num: u64,
@@ -137,7 +137,7 @@ impl BlockCache {
     /// # Errors
     ///
     /// Returns [`BlockError`] if evicting a dirty entry for the new write fails.
-    pub fn write(
+    pub(crate) fn write(
         &mut self,
         dev: &mut dyn BlockDevice,
         block_num: u64,
@@ -164,7 +164,7 @@ impl BlockCache {
     ///
     /// Returns [`BlockError`] if any write-back to the device fails. Entries
     /// that were successfully flushed before the failure are marked clean.
-    pub fn flush(&mut self, dev: &mut dyn BlockDevice) -> Result<(), BlockError> {
+    pub(crate) fn flush(&mut self, dev: &mut dyn BlockDevice) -> Result<(), BlockError> {
         for i in 0..self.entries.len() {
             if self.entries[i].valid && self.entries[i].dirty {
                 self.write_back(dev, i)?;
@@ -180,7 +180,7 @@ impl BlockCache {
     /// # Errors
     ///
     /// Returns [`BlockError`] if any write-back fails.
-    pub fn sync(&mut self, dev: &mut dyn BlockDevice) -> Result<(), BlockError> {
+    pub(crate) fn sync(&mut self, dev: &mut dyn BlockDevice) -> Result<(), BlockError> {
         self.flush(dev)
     }
 
@@ -189,7 +189,7 @@ impl BlockCache {
     /// After invalidation, all entries are empty. Any unflushed dirty data
     /// is lost — call [`BlockCache::flush`] first if dirty data must be
     /// preserved.
-    pub fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         for entry in &mut self.entries {
             entry.valid = false;
             entry.dirty = false;

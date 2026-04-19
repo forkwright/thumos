@@ -61,7 +61,7 @@ struct Elf32Phdr {
 
 /// Result of loading an ELF binary.
 #[cfg(not(test))]
-pub struct LoadedElf {
+pub(crate) struct LoadedElf {
     /// Entry point address.
     pub entry: usize,
     /// Number of pages allocated.
@@ -183,7 +183,7 @@ struct ValidatedElf {
 /// The loaded code will execute with kernel privileges until we implement
 /// user/kernel memory separation (Wave 4+).
 #[cfg(not(test))]
-pub fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
+pub(crate) fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
     let (entry, validated) = validate(data)?;
     let mut pages_used = 0;
 

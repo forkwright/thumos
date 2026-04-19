@@ -126,7 +126,7 @@ pub enum JsonValue {
 impl JsonValue {
     /// Return this value as a string reference, if it is a `String`.
     #[must_use]
-    pub fn as_str(&self) -> Option<&str> {
+    pub(crate) fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(s) => Some(s.as_str()),
             _ => None,
@@ -135,7 +135,7 @@ impl JsonValue {
 
     /// Return this value as an i64, if it is a `Number`.
     #[must_use]
-    pub fn as_i64(&self) -> Option<i64> {
+    pub(crate) fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Number(n) => Some(*n),
             _ => None,
@@ -144,7 +144,7 @@ impl JsonValue {
 
     /// Return this value as a bool, if it is a `Bool`.
     #[must_use]
-    pub fn as_bool(&self) -> Option<bool> {
+    pub(crate) fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(b) => Some(*b),
             _ => None,
@@ -153,7 +153,7 @@ impl JsonValue {
 
     /// Return this value as an array reference, if it is an `Array`.
     #[must_use]
-    pub fn as_array(&self) -> Option<&[JsonValue]> {
+    pub(crate) fn as_array(&self) -> Option<&[JsonValue]> {
         match self {
             Self::Array(a) => Some(a.as_slice()),
             _ => None,
@@ -162,7 +162,7 @@ impl JsonValue {
 
     /// Return this value as an object reference, if it is an `Object`.
     #[must_use]
-    pub fn as_object(&self) -> Option<&[(String, JsonValue)]> {
+    pub(crate) fn as_object(&self) -> Option<&[(String, JsonValue)]> {
         match self {
             Self::Object(o) => Some(o.as_slice()),
             _ => None,
@@ -172,7 +172,7 @@ impl JsonValue {
     /// Look up a field by key in an `Object`. Returns `None` if this
     /// is not an object or the key is not found.
     #[must_use]
-    pub fn get(&self, key: &str) -> Option<&JsonValue> {
+    pub(crate) fn get(&self, key: &str) -> Option<&JsonValue> {
         match self {
             Self::Object(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
             _ => None,
@@ -181,7 +181,7 @@ impl JsonValue {
 
     /// Return true if this value is `Null`.
     #[must_use]
-    pub fn is_null(&self) -> bool {
+    pub(crate) fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
 }
@@ -260,7 +260,7 @@ pub struct JsonWriter {
 impl JsonWriter {
     /// Create a new writer with an empty output buffer.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             buf: String::with_capacity(WRITER_INITIAL_CAPACITY),
             stack: Vec::new(),
@@ -274,7 +274,7 @@ impl JsonWriter {
     /// the opening brace if this is not the first element. When used as
     /// a value after a key in an object, the preceding `key()` call
     /// already handled the comma.
-    pub fn object_start(&mut self) {
+    pub(crate) fn object_start(&mut self) {
         self.pre_value();
         self.buf.push('{');
         self.stack.push(WriterContext::Object);
@@ -285,7 +285,7 @@ impl JsonWriter {
     ///
     /// Same comma logic as `object_start`: commas are inserted
     /// automatically in array context.
-    pub fn array_start(&mut self) {
+    pub(crate) fn array_start(&mut self) {
         self.pre_value();
         self.buf.push('[');
         self.stack.push(WriterContext::Array);
@@ -294,7 +294,7 @@ impl JsonWriter {
 
     /// Write an object key. Must be called inside an object context,
     /// before a value method.
-    pub fn key(&mut self, name: &str) {
+    pub(crate) fn key(&mut self, name: &str) {
         self.maybe_comma();
         self.buf.push('"');
         escape_string_into(&mut self.buf, name);
@@ -302,7 +302,7 @@ impl JsonWriter {
     }
 
     /// Write a string value.
-    pub fn string_value(&mut self, value: &str) {
+    pub(crate) fn string_value(&mut self, value: &str) {
         self.pre_value();
         self.buf.push('"');
         escape_string_into(&mut self.buf, value);
@@ -311,7 +311,7 @@ impl JsonWriter {
     }
 
     /// Write a number value (i64).
-    pub fn number_value(&mut self, value: i64) {
+    pub(crate) fn number_value(&mut self, value: i64) {
         self.pre_value();
         // WHY: use Display trait to convert i64 to string in no_std.
         use core::fmt::Write;
@@ -320,14 +320,14 @@ impl JsonWriter {
     }
 
     /// Write a boolean value.
-    pub fn bool_value(&mut self, value: bool) {
+    pub(crate) fn bool_value(&mut self, value: bool) {
         self.pre_value();
         self.buf.push_str(if value { "true" } else { "false" });
         self.post_value();
     }
 
     /// Write a null value.
-    pub fn null_value(&mut self) {
+    pub(crate) fn null_value(&mut self) {
         self.pre_value();
         self.buf.push_str("null");
         self.post_value();
@@ -337,14 +337,14 @@ impl JsonWriter {
     ///
     /// The caller is responsible for ensuring `raw` is valid JSON.
     /// Used for embedding pre-serialized fragments.
-    pub fn raw_value(&mut self, raw: &str) {
+    pub(crate) fn raw_value(&mut self, raw: &str) {
         self.pre_value();
         self.buf.push_str(raw);
         self.post_value();
     }
 
     /// End the current object or array.
-    pub fn end(&mut self) {
+    pub(crate) fn end(&mut self) {
         if let Some(ctx) = self.stack.pop() {
             self.counts.pop();
             match ctx {
@@ -360,25 +360,25 @@ impl JsonWriter {
 
     /// Consume the writer and return the built JSON string.
     #[must_use]
-    pub fn finish(self) -> String {
+    pub(crate) fn finish(self) -> String {
         self.buf
     }
 
     /// Return the current output as a byte slice (for inspection/testing).
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         self.buf.as_bytes()
     }
 
     /// Return the current length of the output buffer.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.buf.len()
     }
 
     /// Return true if the output buffer is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
@@ -428,7 +428,7 @@ impl fmt::Display for JsonWriter {
 /// Parses a complete JSON value from a byte slice. Not streaming —
 /// the full input must be available. Designed for Matrix CS API
 /// response bodies which are fully buffered by the HTTP layer.
-pub struct JsonParser<'a> {
+pub(crate) struct JsonParser<'a> {
     /// The input bytes.
     data: &'a [u8],
     /// Current read position.
@@ -445,7 +445,7 @@ impl<'a> JsonParser<'a> {
     /// Returns [`JsonError`] if the input is not valid JSON (within
     /// the subset we support).
     #[must_use]
-    pub fn parse(data: &'a [u8]) -> Result<JsonValue, JsonError> {
+    pub(crate) fn parse(data: &'a [u8]) -> Result<JsonValue, JsonError> {
         let mut parser = Self {
             data,
             pos: 0,

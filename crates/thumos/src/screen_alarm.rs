@@ -123,7 +123,7 @@ struct AlarmEntry {
 // ---------------------------------------------------------------------------
 
 /// Combined alarm/timer/stopwatch screen.
-pub struct AlarmScreen {
+pub(crate) struct AlarmScreen {
     /// Active tab.
     tab: Tab,
     /// Alarm entries snapshot.
@@ -154,7 +154,7 @@ pub struct AlarmScreen {
 
 impl AlarmScreen {
     /// Create a new alarm screen.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             tab: Tab::Alarms,
             alarm_entries: Vec::new(),
@@ -176,7 +176,7 @@ impl AlarmScreen {
     ///
     /// Called each render cycle to refresh alarm list, timer state,
     /// and stopwatch state.
-    pub fn update(&mut self, manager: &HeorteManager, current_tick: u64) {
+    pub(crate) fn update(&mut self, manager: &HeorteManager, current_tick: u64) {
         self.current_tick = current_tick;
 
         // Refresh alarm entries.
@@ -490,12 +490,12 @@ impl Screen for AlarmScreen {
 /// Public accessors for caller integration.
 impl AlarmScreen {
     /// Get the active tab.
-    pub fn active_tab_index(&self) -> usize {
+    pub(crate) fn active_tab_index(&self) -> usize {
         self.tab as usize
     }
 
     /// Get the alarm ID at the current cursor (if on Alarms tab).
-    pub fn selected_alarm_id(&self) -> Option<u32> {
+    pub(crate) fn selected_alarm_id(&self) -> Option<u32> {
         if self.tab != Tab::Alarms {
             return None;
         }
@@ -503,12 +503,12 @@ impl AlarmScreen {
     }
 
     /// Whether the timer tab is active.
-    pub fn is_timer_tab(&self) -> bool {
+    pub(crate) fn is_timer_tab(&self) -> bool {
         self.tab == Tab::Timer
     }
 
     /// Whether the stopwatch tab is active.
-    pub fn is_stopwatch_tab(&self) -> bool {
+    pub(crate) fn is_stopwatch_tab(&self) -> bool {
         self.tab == Tab::Stopwatch
     }
 }

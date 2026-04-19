@@ -33,7 +33,7 @@ use crate::lfs_segment::LfsSegmentManager;
 /// Percentage of total segments that must remain free before compaction is
 /// triggered. WHY: 10% headroom prevents allocation failures during burst
 /// writes while keeping the threshold low enough to avoid unnecessary I/O.
-pub const COMPACT_THRESHOLD_PERCENT: u32 = 10;
+pub(crate) const COMPACT_THRESHOLD_PERCENT: u32 = 10;
 
 // ---------------------------------------------------------------------------
 // LfsWriter
@@ -45,7 +45,7 @@ pub const COMPACT_THRESHOLD_PERCENT: u32 = 10;
 /// handles segment transitions (seal + allocate) when the segment fills.
 /// All block writes flow through this struct to ensure the log invariant:
 /// new data is always appended, never overwritten in place.
-pub struct LfsWriter {
+pub(crate) struct LfsWriter {
     /// Index of the segment currently being written to.
     current_segment: u32,
     /// Next block offset within the current segment (0 = header, 1..N = data).
@@ -61,7 +61,7 @@ impl LfsWriter {
     ///
     /// Returns [`LfsError::NoFreeSegments`] if no segments are available.
     #[must_use]
-    pub fn new(seg_mgr: &mut LfsSegmentManager) -> Result<Self, LfsError> {
+    pub(crate) fn new(seg_mgr: &mut LfsSegmentManager) -> Result<Self, LfsError> {
         let seg = seg_mgr.allocate().ok_or(LfsError::NoFreeSegments)?;
         Ok(Self {
             current_segment: seg,
@@ -79,7 +79,7 @@ impl LfsWriter {
     /// # Errors
     ///
     /// Returns [`LfsError::NoFreeSegments`] if no segments are available.
-    pub fn with_sequence(
+    pub(crate) fn with_sequence(
         seg_mgr: &mut LfsSegmentManager,
         sequence: u64,
     ) -> Result<Self, LfsError> {
@@ -92,7 +92,7 @@ impl LfsWriter {
     }
 
     /// Return the current sequence number.
-    pub fn sequence(&self) -> u64 {
+    pub(crate) fn sequence(&self) -> u64 {
         self.sequence
     }
 
@@ -100,7 +100,7 @@ impl LfsWriter {
     ///
     /// Used by the compactor to avoid selecting the active write segment
     /// as a compaction candidate.
-    pub fn current_segment(&self) -> u32 {
+    pub(crate) fn current_segment(&self) -> u32 {
         self.current_segment
     }
 
@@ -116,7 +116,7 @@ impl LfsWriter {
     ///
     /// - [`LfsError::NoFreeSegments`] if a new segment is needed but none are free.
     /// - [`LfsError::BlockIo`] if any block write fails.
-    pub fn write_inode(
+    pub(crate) fn write_inode(
         &mut self,
         dev: &mut dyn BlockDevice,
         cache: &mut BlockCache,
@@ -156,7 +156,7 @@ impl LfsWriter {
     ///
     /// - [`LfsError::NoFreeSegments`] if a new segment is needed but none are free.
     /// - [`LfsError::BlockIo`] if the block write fails.
-    pub fn write_data_block(
+    pub(crate) fn write_data_block(
         &mut self,
         dev: &mut dyn BlockDevice,
         cache: &mut BlockCache,
@@ -186,7 +186,7 @@ impl LfsWriter {
     ///
     /// - [`LfsError::NoFreeSegments`] if no new segment can be allocated.
     /// - [`LfsError::BlockIo`] if writing the segment header fails.
-    pub fn seal_segment(
+    pub(crate) fn seal_segment(
         &mut self,
         dev: &mut dyn BlockDevice,
         cache: &mut BlockCache,
@@ -228,7 +228,7 @@ impl LfsWriter {
     /// # Errors
     ///
     /// - [`LfsError::BlockIo`] if any block write fails.
-    pub fn write_checkpoint(
+    pub(crate) fn write_checkpoint(
         &mut self,
         dev: &mut dyn BlockDevice,
         cache: &mut BlockCache,

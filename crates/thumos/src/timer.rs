@@ -7,10 +7,10 @@
 //! which we use as the scheduler tick.
 
 /// Timer IRQ number (PPI 14 = SPI-less, mapped to GIC IRQ 30 on A53).
-pub const TIMER_IRQ: u32 = 30;
+pub(crate) const TIMER_IRQ: u32 = 30;
 
 /// Read the counter frequency (CNTFRQ).
-pub fn frequency() -> u32 {
+pub(crate) fn frequency() -> u32 {
     let freq: u32;
     // SAFETY: CNTP_TVAL/CNTP_CTL are system timer registers accessible at EL1.
     unsafe {
@@ -23,7 +23,7 @@ pub fn frequency() -> u32 {
 }
 
 /// Read the current counter value (CNTPCT, 64-bit).
-pub fn counter() -> u64 {
+pub(crate) fn counter() -> u64 {
     let lo: u32;
     let hi: u32;
     // SAFETY: CNTP_TVAL/CNTP_CTL are system timer registers accessible at EL1.
@@ -38,7 +38,7 @@ pub fn counter() -> u64 {
 }
 
 /// Set the timer to fire after `ticks` counter increments.
-pub fn set_timer(ticks: u32) {
+pub(crate) fn set_timer(ticks: u32) {
     // SAFETY: CNTP_TVAL/CNTP_CTL are system timer registers accessible at EL1.
     unsafe {
         // Set countdown value
@@ -55,7 +55,7 @@ pub fn set_timer(ticks: u32) {
 }
 
 /// Disable the timer.
-pub fn disable() {
+pub(crate) fn disable() {
     // SAFETY: CNTP_TVAL/CNTP_CTL are system timer registers accessible at EL1.
     unsafe {
         core::arch::asm!(
@@ -66,14 +66,14 @@ pub fn disable() {
 }
 
 /// Set timer to fire after `ms` milliseconds.
-pub fn set_ms(ms: u32) {
+pub(crate) fn set_ms(ms: u32) {
     let freq = frequency();
     let ticks = (freq / 1000) * ms;
     set_timer(ticks);
 }
 
 /// Get elapsed time since boot in milliseconds.
-pub fn elapsed_ms() -> u64 {
+pub(crate) fn elapsed_ms() -> u64 {
     let freq = frequency() as u64;
     if freq == 0 {
         return 0;

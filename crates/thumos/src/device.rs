@@ -105,7 +105,7 @@ pub enum DeviceStatus {
 }
 
 /// A hardware device descriptor.
-pub struct Device {
+pub(crate) struct Device {
     /// Human-readable name (e.g., "uart0", "mtk-tpd", "ccci-modem").
     pub name: String,
     /// MMIO base address.
@@ -117,20 +117,20 @@ pub struct Device {
 }
 
 /// Device registry.
-pub struct DeviceRegistry {
+pub(crate) struct DeviceRegistry {
     devices: Vec<Device>,
 }
 
 impl DeviceRegistry {
     /// Create an empty registry.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             devices: Vec::new(),
         }
     }
 
     /// Register a device.
-    pub fn register(&mut self, name: &str, base_addr: usize, irq: u32) {
+    pub(crate) fn register(&mut self, name: &str, base_addr: usize, irq: u32) {
         self.devices.push(Device {
             name: String::from(name),
             base_addr,
@@ -140,42 +140,42 @@ impl DeviceRegistry {
     }
 
     /// Find a device by name.
-    pub fn find(&self, name: &str) -> Option<&Device> {
+    pub(crate) fn find(&self, name: &str) -> Option<&Device> {
         self.devices.iter().find(|d| d.name == name)
     }
 
     /// Find a device by name (mutable).
-    pub fn find_mut(&mut self, name: &str) -> Option<&mut Device> {
+    pub(crate) fn find_mut(&mut self, name: &str) -> Option<&mut Device> {
         self.devices.iter_mut().find(|d| d.name == name)
     }
 
     /// Mark a device as active.
-    pub fn activate(&mut self, name: &str) {
+    pub(crate) fn activate(&mut self, name: &str) {
         if let Some(dev) = self.find_mut(name) {
             dev.status = DeviceStatus::Active;
         }
     }
 
     /// Mark a device as powered off.
-    pub fn power_off(&mut self, name: &str) {
+    pub(crate) fn power_off(&mut self, name: &str) {
         if let Some(dev) = self.find_mut(name) {
             dev.status = DeviceStatus::PoweredOff;
         }
     }
 
     /// List all devices.
-    pub fn list(&self) -> &[Device] {
+    pub(crate) fn list(&self) -> &[Device] {
         &self.devices
     }
 
     /// Count devices by status.
-    pub fn count_by_status(&self, status: DeviceStatus) -> usize {
+    pub(crate) fn count_by_status(&self, status: DeviceStatus) -> usize {
         self.devices.iter().filter(|d| d.status == status).count()
     }
 
     /// Register all MT6739 AGM M7 devices with known addresses.
     /// Addresses from `docs/DRIVER-INTERFACES.md` and `docs/PROBE.md`.
-    pub fn register_mt6739_devices(&mut self) {
+    pub(crate) fn register_mt6739_devices(&mut self) {
         // UART
         self.register("uart0", 0x1100_2000, 0);
         self.register("uart1", 0x1100_3000, 0);

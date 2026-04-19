@@ -72,7 +72,7 @@ const MENU_ITEMS: &[MenuItem] = &[
 ];
 
 /// Main settings menu screen.
-pub struct SettingsMenuScreen {
+pub(crate) struct SettingsMenuScreen {
     /// Currently selected menu item index.
     cursor: usize,
     /// Scroll offset for the visible window.
@@ -81,7 +81,7 @@ pub struct SettingsMenuScreen {
 
 impl SettingsMenuScreen {
     /// Create a new settings menu screen.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             cursor: 0,
             scroll_offset: 0,
@@ -182,11 +182,11 @@ const DEVICE_MODEL: &str = "AGM M7";
 const BUILD_DATE: &str = "2026-04-09";
 
 /// About screen showing device and OS information.
-pub struct AboutScreen;
+pub(crate) struct AboutScreen;
 
 impl AboutScreen {
     /// Create a new About screen.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }
@@ -284,21 +284,21 @@ impl Default for WifiSettingsState {
 }
 
 /// WiFi settings screen (read-only display of WiFi state).
-pub struct WifiSettingsScreen {
+pub(crate) struct WifiSettingsScreen {
     /// Current WiFi state snapshot.
     pub state: WifiSettingsState,
 }
 
 impl WifiSettingsScreen {
     /// Create a new WiFi settings screen with default (disconnected) state.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: WifiSettingsState::default(),
         }
     }
 
     /// Update the state snapshot. Called each render cycle.
-    pub fn update_state(&mut self, state: WifiSettingsState) {
+    pub(crate) fn update_state(&mut self, state: WifiSettingsState) {
         self.state = state;
     }
 }
@@ -397,21 +397,21 @@ pub struct BtSettingsState {
 }
 
 /// Bluetooth settings screen (read-only display of BT state).
-pub struct BtSettingsScreen {
+pub(crate) struct BtSettingsScreen {
     /// Current BT state snapshot.
     pub state: BtSettingsState,
 }
 
 impl BtSettingsScreen {
     /// Create a new BT settings screen with default (disabled) state.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: BtSettingsState::default(),
         }
     }
 
     /// Update the state snapshot. Called each render cycle.
-    pub fn update_state(&mut self, state: BtSettingsState) {
+    pub(crate) fn update_state(&mut self, state: BtSettingsState) {
         self.state = state;
     }
 }
