@@ -54,7 +54,10 @@ impl Drop for Ptk {
     // eliding zeroing as a dead store. This is a security requirement for
     // key material cleanup. The unsafe blocks access only valid mutable
     // references to initialized memory within the struct.
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "volatile writes prevent the compiler from eliding zeroing as dead store"
+    )]
     fn drop(&mut self) {
         for byte in &mut self.kck {
             // SAFETY: byte is a valid mutable reference to initialized memory.

@@ -112,7 +112,7 @@ Read ID command `0x04` returns three bytes. The GC9306 device ID is `0x009306` (
 
 ## Interface
 
-The AGM M7 BSP configures `gc9306_dbi_c_qvgal`, indicating DBI (parallel) interface in command mode. The init sequence is the same regardless of physical interface (SPI vs DBI parallel). The transport layer differs but the DCS commands are identical.
+The AGM M7 BSP configures `gc9306_dbi_c_qvgal`, indicating DBI (parallel) interface in command mode. Panel init sequence stays the same regardless of physical interface (SPI vs DBI parallel). Transport layer differs but the DCS commands are identical.
 
 ## Sources
 

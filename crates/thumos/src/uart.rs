@@ -46,7 +46,10 @@ impl Uart {
             let thr = (self.base + THR) as *mut u32;
 
             // Wait until transmit holding register is empty
-            #[allow(clippy::while_immutable_condition)]
+            #[expect(
+                clippy::while_immutable_condition,
+                reason = "volatile MMIO read sees hardware-driven changes the compiler cannot observe"
+            )]
             while core::ptr::read_volatile(lsr) & LSR_THRE == 0 {}
 
             // Write byte
