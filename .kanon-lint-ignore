@@ -4,3 +4,28 @@
 RELEASES/changelog-present:CHANGELOG.md
 # DISCLAIMER.md is required by thumos's legal status (research/educational software).
 RELEASES/disclaimer-present:DISCLAIMER.md
+
+# =============================================================================
+# Workspace library crates — public API for the out-of-workspace kernel binary
+# =============================================================================
+#
+# WHY(#126): The thumos kernel binary is excluded from the workspace (bare-metal
+# target, separate Cargo.toml). The 12 workspace library crates below are the
+# intended consumer-facing API surface — items declared `pub` are consumed by
+# the binary and by external consumers via cargo publish. Narrowing to
+# `pub(crate)` would trip clippy's dead-code detection for every non-internally-
+# used item, because the workspace cannot see the binary's consumption. Once
+# the binary imports these crates as path deps (#126 tracks that work), each
+# crate's pub surface can be audited and narrowed per-item.
+RUST/pub-visibility:crates/aither/**
+RUST/pub-visibility:crates/asphaleia/**
+RUST/pub-visibility:crates/eidolon/**
+RUST/pub-visibility:crates/haphe/**
+RUST/pub-visibility:crates/kelyphos/**
+RUST/pub-visibility:crates/klesis/**
+RUST/pub-visibility:crates/krypta/**
+RUST/pub-visibility:crates/leipsanon/**
+RUST/pub-visibility:crates/pteron/**
+RUST/pub-visibility:crates/sema/**
+RUST/pub-visibility:crates/stegnos/**
+RUST/pub-visibility:crates/topos/**
