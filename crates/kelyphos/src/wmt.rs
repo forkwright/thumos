@@ -151,7 +151,11 @@ pub const EMI_FULL_DUMP_SYSB3_OFFSET: u32 = EMI_FULL_DUMP_SYSB2_OFFSET + 0x6800;
 // ── Poll LIMIT ────────────────────────────────────────────────────────────────
 
 /// Maximum poll iterations before a hardware ack is declared timed out.
-const POLL_TIMEOUT_ITERS: u32 = 1_000;
+///
+/// Aliases [`crate::config::DEFAULT_POLL_TIMEOUT_ITERS`]; for
+/// runtime-configurable behaviour construct the manager with
+/// [`WmtManager::new_with_config`].
+pub const POLL_TIMEOUT_ITERS: u32 = crate::config::DEFAULT_POLL_TIMEOUT_ITERS;
 
 // ── Error types ───────────────────────────────────────────────────────────────
 
@@ -396,11 +400,29 @@ impl PowerOnStep {
 
     /// Execute this step via `io` and return the next step, or an error.
     ///
+    /// Uses the default [`crate::config::DEFAULT_POLL_TIMEOUT_ITERS`] poll
+    /// budget. For runtime-configurable polling use
+    /// [`execute_and_advance_with_poll`](Self::execute_and_advance_with_poll).
+    ///
     /// `clock_type` is an out-parameter updated during [`DetectClockType`](Self::DetectClockType).
     pub fn execute_and_advance<R: RegisterIo>(
         self,
         io: &mut R,
         clock_type: &mut ClockType,
+    ) -> Result<Self, WmtError> {
+        self.execute_and_advance_with_poll(io, clock_type, POLL_TIMEOUT_ITERS)
+    }
+
+    /// Execute this step, polling hardware-ack registers up to
+    /// `poll_timeout_iters` times before returning a timeout error.
+    ///
+    /// `clock_type` is an out-parameter updated during
+    /// [`DetectClockType`](Self::DetectClockType).
+    pub fn execute_and_advance_with_poll<R: RegisterIo>(
+        self,
+        io: &mut R,
+        clock_type: &mut ClockType,
+        poll_timeout_iters: u32,
     ) -> Result<Self, WmtError> {
         match self {
             // Step 1: enable SPM clock gating for CONSYS domain
@@ -417,7 +439,7 @@ impl PowerOnStep {
 
             // Step 3: spin until power-on ack register bit 1 is SET
             Self::PollPowerAck => {
-                for _ in 0..POLL_TIMEOUT_ITERS {
+                for _ in 0..poll_timeout_iters {
                     if io.read32(CONSYS_PWR_CONN_ACK_REG) & (1 << 1) != 0 {
                         return Ok(Self::ShadowPowerOn);
                     }
@@ -445,7 +467,7 @@ impl PowerOnStep {
 
             // Step 7: spin until shadow power-on ack bit 1 is SET
             Self::PollShadowAck => {
-                for _ in 0..POLL_TIMEOUT_ITERS {
+                for _ in 0..poll_timeout_iters {
                     if io.read32(CONSYS_PWR_CONN_ACK_S_REG) & (1 << 1) != 0 {
                         return Ok(Self::ReleaseIso);
                     }
@@ -468,7 +490,7 @@ impl PowerOnStep {
             // Step 10: remove AXI bus isolation so CONSYS can reach system bus
             Self::DisableAxiProtect => {
                 io.clear_bits32(CONSYS_TOPAXI_PROT_EN, CONSYS_TOPAXI_PROT_BITS);
-                for _ in 0..POLL_TIMEOUT_ITERS {
+                for _ in 0..poll_timeout_iters {
                     if io.read32(CONSYS_TOPAXI_PROT_STA1) & CONSYS_TOPAXI_PROT_BITS == 0 {
                         return Ok(Self::AssertCpuReset);
                     }
@@ -512,7 +534,7 @@ impl PowerOnStep {
 
             // Step 15: verify the CONSYS MCU responded with the correct chip ID
             Self::PollChipId => {
-                for _ in 0..POLL_TIMEOUT_ITERS {
+                for _ in 0..poll_timeout_iters {
                     let id = io.read32(CONSYS_CHIP_ID_REG);
                     if id == CONSYS_CHIP_ID_EXPECTED {
                         return Ok(Self::ReleaseCpuReset);
@@ -659,10 +681,14 @@ pub struct WmtManager<R: RegisterIo> {
     subsystems: u8,
     /// Computed EMI region layout for this device.
     emi: EmiRegion,
+    /// Poll-iteration cap used by every register-ack step in the power-on
+    /// state machine, resolved from [`crate::config::Config`] at construction.
+    poll_timeout_iters: u32,
 }
 
 impl<R: RegisterIo> WmtManager<R> {
-    /// Create a new manager with the given I/O handle.
+    /// Create a new manager with the given I/O handle and the default
+    /// [`crate::config::Config`] poll budget.
     ///
     /// CONSYS starts in [`PowerState::Off`]. Call [`power_on`](Self::power_on)
     /// before enabling any subsystem.
@@ -674,7 +700,28 @@ impl<R: RegisterIo> WmtManager<R> {
             clock_type: ClockType::Unknown,
             subsystems: 0,
             emi: EmiRegion::CONSYS_DEFAULT,
+            poll_timeout_iters: POLL_TIMEOUT_ITERS,
         }
+    }
+
+    /// Create a new manager using an explicit [`crate::config::Config`].
+    #[must_use]
+    pub fn new_with_config(io: R, config: &crate::config::Config) -> Self {
+        Self {
+            io,
+            power: PowerState::Off,
+            power_on_step: PowerOnStep::SpmClockEnable,
+            clock_type: ClockType::Unknown,
+            subsystems: 0,
+            emi: EmiRegion::CONSYS_DEFAULT,
+            poll_timeout_iters: config.poll_timeout_iters(),
+        }
+    }
+
+    /// Poll-iteration cap this manager was constructed with.
+    #[must_use]
+    pub const fn poll_timeout_iters(&self) -> u32 {
+        self.poll_timeout_iters
     }
 
     /// Execute the 17-step CONSYS power-on sequence.
@@ -694,7 +741,11 @@ impl<R: RegisterIo> WmtManager<R> {
         let mut step = PowerOnStep::SpmClockEnable;
         loop {
             self.power_on_step = step;
-            step = step.execute_and_advance(&mut self.io, &mut self.clock_type)?;
+            step = step.execute_and_advance_with_poll(
+                &mut self.io,
+                &mut self.clock_type,
+                self.poll_timeout_iters,
+            )?;
             if step == PowerOnStep::Done {
                 self.power_on_step = PowerOnStep::Done;
                 break;
@@ -1063,6 +1114,44 @@ mod tests {
             val & CONSYS_CPU_SW_RST_KEY,
             CONSYS_CPU_SW_RST_KEY,
             "step 16 must preserve key field"
+        );
+    }
+
+    #[test]
+    fn custom_poll_timeout_changes_wmt_behaviour() {
+        // WHY: prove Config.poll_timeout_iters flows through power_on. With a
+        // poll budget of 100 iterations, a stuck ack still fails with
+        // PowerAckTimeout but it does so far faster than the default 1 000
+        // iterations — the observable effect is identical *outcome* but
+        // fewer `io.read32` calls.
+        let mut io = FakeIo::new();
+        io.regs.insert(CONSYS_PWR_CONN_ACK_REG, 0x0000_0000);
+        let cfg = crate::config::Config {
+            poll_timeout_iters: 100,
+            ..crate::config::Config::default()
+        };
+        let mut mgr = WmtManager::new_with_config(io, &cfg);
+        assert_eq!(
+            mgr.poll_timeout_iters(),
+            100,
+            "manager must report the configured poll budget"
+        );
+        let err = mgr
+            .power_on()
+            .expect_err("must still fail with a stuck ack register");
+        assert!(
+            matches!(err, WmtError::PowerAckTimeout { step: 3 }),
+            "error must be PowerAckTimeout(step=3), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn default_manager_uses_default_poll_budget() {
+        let mgr = WmtManager::new(FakeIo::new());
+        assert_eq!(
+            mgr.poll_timeout_iters(),
+            POLL_TIMEOUT_ITERS,
+            "default manager must use DEFAULT_POLL_TIMEOUT_ITERS"
         );
     }
 
