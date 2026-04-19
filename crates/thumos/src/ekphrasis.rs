@@ -45,9 +45,10 @@
 
 extern crate alloc;
 
+use core::fmt;
+
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt;
 
 use crate::http_client::{HttpMethod, HttpRequest};
 use crate::json_mini::{JsonError, JsonParser, JsonValue};
@@ -1088,8 +1089,9 @@ fn parse_proposal_json(json_str: &str) -> Result<ActionProposal, EkphrasisError>
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+    
+    use super::*;
 
     // -----------------------------------------------------------------------
     // WebSocket frame round-trip tests

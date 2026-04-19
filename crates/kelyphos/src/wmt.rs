@@ -839,8 +839,9 @@ impl<R: RegisterIo> WmtManager<R> {
     reason = "test code — expect_err on Results is intentional for verifying error conditions"
 )]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     /// Fake register I/O for unit testing without hardware.
     struct FakeIo {

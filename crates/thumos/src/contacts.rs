@@ -315,8 +315,9 @@ impl AsciiLowercase for str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+    
+    use super::*;
 
     #[test]
     fn add_and_retrieve() {

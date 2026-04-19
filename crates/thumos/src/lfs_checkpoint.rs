@@ -284,9 +284,10 @@ fn blocks_needed(byte_count: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+    
     use super::*;
     use crate::block::MemBlockDevice;
-    use alloc::vec;
 
     /// Create an 8 MB test device (16384 sectors = 2048 blocks).
     fn block_device_for_checkpoint() -> MemBlockDevice {

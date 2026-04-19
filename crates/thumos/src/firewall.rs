@@ -31,11 +31,11 @@
 
 extern crate alloc;
 
-use crate::audit::{AuditEventType, AuditLog};
-use crate::security::KEY_SIZE;
-
 use alloc::string::String;
 use alloc::vec::Vec;
+
+use crate::audit::{AuditEventType, AuditLog};
+use crate::security::KEY_SIZE;
 
 // ---------------------------------------------------------------------------
 // Constants
