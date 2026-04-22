@@ -14,24 +14,24 @@ const EAPOL_HEADER_LEN: usize = 4;
 const EAPOL_KEY_FIXED_LEN: usize = 95;
 
 /// Length of the MIC field.
-pub const MIC_LEN: usize = 16;
+pub(crate) const MIC_LEN: usize = 16;
 
 /// Length of the nonce field.
-pub const NONCE_LEN: usize = 32;
+pub(crate) const NONCE_LEN: usize = 32;
 
 /// Length of the IV field.
-pub const IV_LEN: usize = 16;
+pub(crate) const IV_LEN: usize = 16;
 
 /// RSN key descriptor type (WPA2/WPA3).
-pub const DESCRIPTOR_TYPE_RSN: u8 = 0x02;
+pub(crate) const DESCRIPTOR_TYPE_RSN: u8 = 0x02;
 
 /// WPA (legacy) key descriptor type.
-pub const DESCRIPTOR_TYPE_WPA: u8 = 0xFE;
+pub(crate) const DESCRIPTOR_TYPE_WPA: u8 = 0xFE;
 
 /// Errors produced by EAPOL parsing.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum Error {
+pub(crate) enum Error {
     /// Buffer is too short to contain required fields.
     #[snafu(display("frame too short: need {need} bytes, have {have}"))]
     TooShort {
@@ -52,7 +52,7 @@ pub enum Error {
 /// EAPOL packet type discriminant (IEEE 802.1X-2020, table 11-3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum EapolType {
+pub(crate) enum EapolType {
     /// EAP authentication message.
     EapPacket,
     /// Supplicant requests authentication start.
@@ -86,56 +86,56 @@ impl EapolType {
 
 /// Packed key-information field (IEEE 802.11-2020, section 12.7.2, figure 12-33).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct KeyInfo(pub u16);
+pub(crate) struct KeyInfo(pub(crate) u16);
 
 impl KeyInfo {
     /// Key descriptor version (bits 0–2).
     #[must_use]
-    pub const fn descriptor_version(self) -> u8 {
+    pub(crate) const fn descriptor_version(self) -> u8 {
         // WHY: masked to 3 bits (0x0007), result is always 0–7; fits u8 without truncation.
         (self.0 & 0x0007) as u8
     }
 
     /// True if pairwise (unicast) key; false for GROUP/broadcast key.
     #[must_use]
-    pub const fn pairwise(self) -> bool {
+    pub(crate) const fn pairwise(self) -> bool {
         self.0 & 0x0008 != 0
     }
 
     /// Key index for GROUP keys (bits 4–5).
     #[must_use]
-    pub const fn key_index(self) -> u8 {
+    pub(crate) const fn key_index(self) -> u8 {
         // WHY: masked to 2 bits (0x03), result is always 0–3; fits u8 without truncation.
         ((self.0 >> 4) & 0x03) as u8
     }
 
     /// True if supplicant shall install the key.
     #[must_use]
-    pub const fn install(self) -> bool {
+    pub(crate) const fn install(self) -> bool {
         self.0 & 0x0040 != 0
     }
 
     /// True if message requires an acknowledgement.
     #[must_use]
-    pub const fn ack(self) -> bool {
+    pub(crate) const fn ack(self) -> bool {
         self.0 & 0x0080 != 0
     }
 
     /// True if a MIC is present in this frame.
     #[must_use]
-    pub const fn mic(self) -> bool {
+    pub(crate) const fn mic(self) -> bool {
         self.0 & 0x0100 != 0
     }
 
     /// True if the RSNA has been established.
     #[must_use]
-    pub const fn secure(self) -> bool {
+    pub(crate) const fn secure(self) -> bool {
         self.0 & 0x0200 != 0
     }
 
     /// True if key data is encrypted (AESKEYWRAP).
     #[must_use]
-    pub const fn encrypted_key_data(self) -> bool {
+    pub(crate) const fn encrypted_key_data(self) -> bool {
         self.0 & 0x1000 != 0
     }
 }
@@ -143,39 +143,39 @@ impl KeyInfo {
 /// EAPOL-Key frame body (IEEE 802.11-2020, section 12.7.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct EapolKeyFrame {
+pub(crate) struct EapolKeyFrame {
     /// Key descriptor type (0x02 = RSN, 0xFE = WPA legacy).
-    pub descriptor_type: u8,
+    pub(crate) descriptor_type: u8,
     /// Key information flags.
-    pub key_info: KeyInfo,
+    pub(crate) key_info: KeyInfo,
     /// Length of the pairwise temporal key in octets.
-    pub key_length: u16,
+    pub(crate) key_length: u16,
     /// Strictly monotonic replay counter.
-    pub replay_counter: u64,
+    pub(crate) replay_counter: u64,
     /// Authenticator or supplicant nonce (`ANonce` / `SNonce`).
-    pub nonce: [u8; NONCE_LEN],
+    pub(crate) nonce: [u8; NONCE_LEN],
     /// Key IV (all-zero for CCMP; used by TKIP).
-    pub iv: [u8; IV_LEN],
+    pub(crate) iv: [u8; IV_LEN],
     /// RSC / GTK sequence counter.
-    pub rsc: u64,
+    pub(crate) rsc: u64,
     /// Message Integrity Code (MIC field zeroed before MIC computation).
-    pub mic: [u8; MIC_LEN],
+    pub(crate) mic: [u8; MIC_LEN],
     /// Optional key material (wrapped GTK or RSNE IE).
-    pub key_data: Vec<u8>,
+    pub(crate) key_data: Vec<u8>,
 }
 
 /// Top-level EAPOL frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct EapolFrame {
+pub(crate) struct EapolFrame {
     /// Protocol version (1 = 802.1X-2001, 2 = 802.1X-2004, 3 = 802.1X-2010).
-    pub version: u8,
+    pub(crate) version: u8,
     /// Packet type discriminant.
-    pub packet_type: EapolType,
+    pub(crate) packet_type: EapolType,
     /// Key frame (present only when `packet_type == EapolType::Key`).
-    pub key_frame: Option<EapolKeyFrame>,
+    pub(crate) key_frame: Option<EapolKeyFrame>,
     /// Raw body bytes (for EAP-Packet, Start, and Logoff).
-    pub raw_body: Vec<u8>,
+    pub(crate) raw_body: Vec<u8>,
 }
 
 /// Parse an EAPOL frame FROM a byte slice.
@@ -184,7 +184,7 @@ pub struct EapolFrame {
 ///
 /// Returns [`Error::TooShort`] when the slice cannot satisfy the declared packet
 /// length, and [`Error::UnknownType`] for unrecognised packet type bytes.
-pub fn parse(data: &[u8]) -> Result<EapolFrame, Error> {
+pub(crate) fn parse(data: &[u8]) -> Result<EapolFrame, Error> {
     ensure!(
         data.len() >= EAPOL_HEADER_LEN,
         TooShortSnafu {
@@ -298,7 +298,7 @@ fn parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, Error> {
 
 /// Encode an EAPOL frame INTO a byte vector.
 #[must_use]
-pub fn encode(frame: &EapolFrame) -> Vec<u8> {
+pub(crate) fn encode(frame: &EapolFrame) -> Vec<u8> {
     let body = frame
         .key_frame
         .as_ref()

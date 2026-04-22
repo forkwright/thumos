@@ -21,7 +21,7 @@ use crate::config::Config;
 /// Radio access technology generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum CellTechnology {
+pub(crate) enum CellTechnology {
     /// GSM (2G). Weak encryption (A5/1 or A5/2); susceptible to downgrade attacks.
     Gsm,
     /// UMTS / WCDMA (3G).
@@ -33,27 +33,27 @@ pub enum CellTechnology {
 /// A cell tower observed or connected to by the device.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct CellTower {
+pub(crate) struct CellTower {
     /// Mobile Country Code (3 decimal digits, e.g. 234 for UK).
-    pub mcc: u16,
+    pub(crate) mcc: u16,
     /// Mobile Network Code (2–3 decimal digits).
-    pub mnc: u16,
+    pub(crate) mnc: u16,
     /// Location Area Code (2G/3G) or Tracking Area Code (4G).
-    pub lac: u32,
+    pub(crate) lac: u32,
     /// Cell Identity.
-    pub cid: u32,
+    pub(crate) cid: u32,
     /// Received signal strength in dBm (higher is stronger).
-    pub signal_dbm: i32,
+    pub(crate) signal_dbm: i32,
     /// Radio access technology generation.
-    pub technology: CellTechnology,
+    pub(crate) technology: CellTechnology,
     /// Wall-clock time when this tower was observed.
-    pub timestamp: Timestamp,
+    pub(crate) timestamp: Timestamp,
 }
 
 /// An event in the device's cell tower history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum CellEvent {
+pub(crate) enum CellEvent {
     /// Device registered to a serving cell.
     Connected(CellTower),
     /// Device lost registration with a serving cell.
@@ -72,7 +72,7 @@ pub enum CellEvent {
 /// An alert raised by [`detect_imsi_catcher`].
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-pub enum ImsiCatcherAlert {
+pub(crate) enum ImsiCatcherAlert {
     /// The device was forced to a weaker radio technology.
     TechnologyDowngrade {
         /// Technology before the downgrade.
@@ -133,7 +133,7 @@ impl core::fmt::Display for ImsiCatcherAlert {
 /// GSM cipher algorithm identifier (3GPP TS 43.020).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum CipherAlgorithm {
+pub(crate) enum CipherAlgorithm {
     /// A5/0: no encryption.
     A5_0,
     /// A5/1: weak stream cipher, broken since 2009.
@@ -166,7 +166,7 @@ impl core::fmt::Display for CipherAlgorithm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[must_use]
 #[non_exhaustive]
-pub enum ThreatLevel {
+pub(crate) enum ThreatLevel {
     /// Score below 30. Normal operating conditions.
     Low,
     /// Score 30–59. Suspicious activity detected.
@@ -190,13 +190,13 @@ impl core::fmt::Display for ThreatLevel {
 
 /// A contributing factor to the overall [`ThreatScore`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThreatFactor {
+pub(crate) struct ThreatFactor {
     /// Short identifier for this factor (e.g. `cipher_downgrade`).
-    pub name: &'static str,
+    pub(crate) name: &'static str,
     /// Numeric weight this factor contributes to the total score.
-    pub weight: u32,
+    pub(crate) weight: u32,
     /// Human-readable description of what was detected.
-    pub description: String,
+    pub(crate) description: String,
 }
 
 impl core::fmt::Display for ThreatFactor {
@@ -214,13 +214,13 @@ impl core::fmt::Display for ThreatFactor {
 /// Produced by [`score_threat`] from a set of [`ImsiCatcherAlert`]s.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
-pub struct ThreatScore {
+pub(crate) struct ThreatScore {
     /// Cumulative numeric score.
-    pub total: u32,
+    pub(crate) total: u32,
     /// Threat level derived from `total`.
-    pub level: ThreatLevel,
+    pub(crate) level: ThreatLevel,
     /// Individual contributing factors.
-    pub factors: Vec<ThreatFactor>,
+    pub(crate) factors: Vec<ThreatFactor>,
 }
 
 impl core::fmt::Display for ThreatScore {
@@ -250,7 +250,7 @@ const fn level_from_score(score: u32) -> ThreatLevel {
 ///
 /// Each alert type maps to a weight defined by the active [`Config`]; see
 /// [`score_threat_with_config`] for the configurable form.
-pub fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
+pub(crate) fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
     score_threat_with_config(alerts, &Config::default())
 }
 
@@ -259,7 +259,10 @@ pub fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
 /// Supplying a non-default `config` observably changes the per-alert weights
 /// in the result and can move the overall [`ThreatLevel`] boundary. This is
 /// the primary entry point for agents tuning detection policy.
-pub fn score_threat_with_config(alerts: &[ImsiCatcherAlert], config: &Config) -> ThreatScore {
+pub(crate) fn score_threat_with_config(
+    alerts: &[ImsiCatcherAlert],
+    config: &Config,
+) -> ThreatScore {
     let mut total: u32 = 0;
     let mut factors = Vec::new();
 
@@ -321,7 +324,7 @@ pub fn score_threat_with_config(alerts: &[ImsiCatcherAlert], config: &Config) ->
 
 impl CellTower {
     /// Construct a [`CellTower`] with all fields.
-    pub const fn new(
+    pub(crate) const fn new(
         mcc: u16,
         mnc: u16,
         lac: u32,
@@ -383,7 +386,7 @@ const fn is_technology_downgrade(from: &CellTechnology, to: &CellTechnology) -> 
 ///
 /// See [`detect_imsi_catcher_with_config`] for the configurable form.
 #[must_use]
-pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
+pub(crate) fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
     detect_imsi_catcher_with_config(events, &Config::default())
 }
 
@@ -406,7 +409,7 @@ pub fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert> {
 /// Events are processed in order; `NeighborSeen` events accumulate a set of known
 /// neighbours used to evaluate subsequent handovers.
 #[must_use]
-pub fn detect_imsi_catcher_with_config(
+pub(crate) fn detect_imsi_catcher_with_config(
     events: &[CellEvent],
     config: &Config,
 ) -> Vec<ImsiCatcherAlert> {

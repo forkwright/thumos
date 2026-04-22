@@ -16,33 +16,33 @@
 /// private addresses at most once per 15 minutes to balance tracker resistance
 /// against bonding costs. Shorter rotation leaks transient peers; longer
 /// rotation enables cross-session correlation.
-pub const DEFAULT_ROTATION_INTERVAL_SECS: u64 = 15 * 60;
+pub(crate) const DEFAULT_ROTATION_INTERVAL_SECS: u64 = 15 * 60;
 
 /// Minimum accepted rotation interval.
 ///
 /// Source: 10 s is the BLE spec floor for resolvable addresses. Faster rotation
 /// exhausts the resolving-list cache on bonded peers and causes reconnect storms.
-pub const MIN_ROTATION_INTERVAL_SECS: u64 = 10;
+pub(crate) const MIN_ROTATION_INTERVAL_SECS: u64 = 10;
 
 /// Maximum accepted rotation interval.
 ///
 /// Source: 24 hours is the practical ceiling; beyond this, cross-day
 /// correlation is no longer meaningfully defeated and the parameter has
 /// effectively disabled rotation.
-pub const MAX_ROTATION_INTERVAL_SECS: u64 = 24 * 60 * 60;
+pub(crate) const MAX_ROTATION_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 /// Runtime-tunable knobs for [`crate::transport::BtHciTransport`].
 ///
 /// [`Default`] reproduces the historical `const` behaviour so adopting
 /// `Config` is a no-op for callers that do not override anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Config {
+pub(crate) struct Config {
     /// BLE random-address rotation interval in seconds.
     ///
     /// **Affects:** tracker-correlation window for this device.
     /// **Evidence:** privacy-mode requirement (Daily: 15 min, Sentinel: 1 min).
     /// **Bounds:** `[MIN_ROTATION_INTERVAL_SECS, MAX_ROTATION_INTERVAL_SECS]`.
-    pub rotation_interval_secs: u64,
+    pub(crate) rotation_interval_secs: u64,
 }
 
 impl Default for Config {
@@ -56,7 +56,7 @@ impl Default for Config {
 impl Config {
     /// Rotation interval clamped to the accepted domain range.
     #[must_use]
-    pub fn rotation_interval_secs(&self) -> u64 {
+    pub(crate) fn rotation_interval_secs(&self) -> u64 {
         let v = self.rotation_interval_secs;
         if (MIN_ROTATION_INTERVAL_SECS..=MAX_ROTATION_INTERVAL_SECS).contains(&v) {
             v

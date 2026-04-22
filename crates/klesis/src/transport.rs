@@ -16,7 +16,7 @@ use crate::error::{NotReadySnafu, ParseSnafu, Result, UnexpectedResponseSnafu};
 /// Byte-stream transport to and FROM the modem.
 ///
 /// Implementors map this onto a CCCI char device, a UART, or a test fixture.
-pub trait ModemTransport {
+pub(crate) trait ModemTransport {
     /// Write `data` to the modem.
     ///
     /// # Errors
@@ -41,20 +41,20 @@ pub trait ModemTransport {
 /// The full response to a single AT command: zero or more informational lines
 /// followed by a final result code.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CommandResponse {
+pub(crate) struct CommandResponse {
     /// Informational text lines that preceded the final result code.
     ///
     /// For example, `AT+CSQ` returns `["+CSQ: 18,99"]` before `OK`.
-    pub info: Vec<String>,
+    pub(crate) info: Vec<String>,
     /// Final result code (`OK`, `ERROR`, `+CME ERROR: n`, or `+CMS ERROR: n`).
-    pub result: Response,
+    pub(crate) result: Response,
 }
 
 /// AT command session over a [`ModemTransport`].
 ///
 /// Manages a byte receive buffer so that partial lines are preserved across
 /// calls to [`AtSession::read_line`].
-pub struct AtSession<T: ModemTransport> {
+pub(crate) struct AtSession<T: ModemTransport> {
     transport: T,
     /// Bytes received but not yet consumed as a complete line.
     rx_buf: Vec<u8>,
@@ -63,7 +63,7 @@ pub struct AtSession<T: ModemTransport> {
 impl<T: ModemTransport> AtSession<T> {
     /// Wrap a transport in an AT session.
     #[must_use]
-    pub const fn new(transport: T) -> Self {
+    pub(crate) const fn new(transport: T) -> Self {
         Self {
             transport,
             rx_buf: Vec::new(),
@@ -82,7 +82,7 @@ impl<T: ModemTransport> AtSession<T> {
     /// - [`crate::error::Error::Ccci`] / [`crate::error::Error::NotReady`]
     ///   on transport failure.
     /// - [`crate::error::Error::Parse`] on malformed line data.
-    pub fn send_command(&mut self, cmd: &str) -> Result<CommandResponse> {
+    pub(crate) fn send_command(&mut self, cmd: &str) -> Result<CommandResponse> {
         let frame = format!("{cmd}\r\n");
         self.transport.send(frame.as_bytes())?;
 
@@ -112,7 +112,7 @@ impl<T: ModemTransport> AtSession<T> {
     /// - [`crate::error::Error::Parse`] on malformed line data.
     /// - [`crate::error::Error::UnexpectedResponse`] when the transport
     ///   returns only empty data with no URC.
-    pub fn wait_urc(&mut self) -> Result<Urc> {
+    pub(crate) fn wait_urc(&mut self) -> Result<Urc> {
         // Limit iterations so callers are not surprised by silent loops during
         // tests; real drivers would add a deadline here.
         const MAX_ATTEMPTS: usize = 1024;

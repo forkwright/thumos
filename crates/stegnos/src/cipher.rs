@@ -5,7 +5,7 @@ use snafu::Snafu;
 use xts_mode::Xts128;
 
 /// Block size in bytes  -  matches the OS page size and dm-crypt sector size.
-pub const BLOCK_SIZE: usize = 4096;
+pub(crate) const BLOCK_SIZE: usize = 4096;
 
 /// XTS key length: two AES-256 keys (32 bytes each = 64 bytes total).
 const XTS_KEY_LEN: usize = 64;
@@ -16,7 +16,7 @@ const KEY_HALF_LEN: usize = XTS_KEY_LEN / 2;
 /// Errors FROM block cipher operations.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum Error {
+pub(crate) enum Error {
     /// The provided key is not `XTS_KEY_LEN` (64) bytes.
     #[snafu(display("invalid XTS key length: expected {XTS_KEY_LEN} bytes, got {actual}"))]
     InvalidKeyLength {
@@ -39,7 +39,7 @@ pub enum Error {
 }
 
 /// Convenience alias.
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 
 /// Encrypt `plaintext` in-place INTO `ciphertext` using AES-256-XTS.
 ///
@@ -50,7 +50,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// Returns [`Error::InvalidKeyLength`] if `key` is not 64 bytes.
 /// Returns [`Error::InvalidBlockSize`] if either buffer is not 4096 bytes.
-pub fn encrypt_block(
+pub(crate) fn encrypt_block(
     key: &[u8; XTS_KEY_LEN],
     block_number: u64,
     plaintext: &[u8],
@@ -83,7 +83,7 @@ pub fn encrypt_block(
 ///
 /// Returns [`Error::InvalidKeyLength`] if `key` is not 64 bytes.
 /// Returns [`Error::InvalidBlockSize`] if either buffer is not 4096 bytes.
-pub fn decrypt_block(
+pub(crate) fn decrypt_block(
     key: &[u8; XTS_KEY_LEN],
     block_number: u64,
     ciphertext: &[u8],

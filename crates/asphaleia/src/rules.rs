@@ -52,9 +52,9 @@ pub enum Action {
 #[derive(Debug, Clone, Copy)]
 pub struct AddressMatch {
     /// The reference address.
-    pub addr: Ipv4Addr,
+    pub(crate) addr: Ipv4Addr,
     /// The subnet mask (host-byte order).
-    pub mask: Ipv4Addr,
+    pub(crate) mask: Ipv4Addr,
 }
 
 /// Port selector for a [`Rule`].
@@ -76,19 +76,19 @@ pub enum PortMatch {
 #[derive(Debug, Clone)]
 pub struct Rule {
     /// Which direction of traffic this rule applies to.
-    pub direction: Direction,
+    pub(crate) direction: Direction,
     /// Which protocol this rule applies to.
-    pub protocol: Protocol,
+    pub(crate) protocol: Protocol,
     /// Source address constraint.
-    pub src_addr: AddressMatch,
+    pub(crate) src_addr: AddressMatch,
     /// Destination address constraint.
-    pub dst_addr: AddressMatch,
+    pub(crate) dst_addr: AddressMatch,
     /// Source port constraint. Ignored for ICMP.
-    pub src_port: PortMatch,
+    pub(crate) src_port: PortMatch,
     /// Destination port constraint. Ignored for ICMP.
-    pub dst_port: PortMatch,
+    pub(crate) dst_port: PortMatch,
     /// Action to take when this rule matches.
-    pub action: Action,
+    pub(crate) action: Action,
 }
 
 /// A packet's layer-3/4 attributes, extracted for rule evaluation.
@@ -118,19 +118,19 @@ pub struct RuleSet {
 impl Action {
     /// Returns `true` if this action results in the packet being forwarded.
     #[must_use]
-    pub const fn is_allow(self) -> bool {
+    pub(crate) const fn is_allow(self) -> bool {
         matches!(self, Self::Allow | Self::LogAndAllow)
     }
 
     /// Returns `true` if this action results in the packet being dropped.
     #[must_use]
-    pub const fn is_deny(self) -> bool {
+    pub(crate) const fn is_deny(self) -> bool {
         matches!(self, Self::Deny | Self::LogAndDeny)
     }
 
     /// Returns `true` if this action produces a log entry.
     #[must_use]
-    pub const fn is_logged(self) -> bool {
+    pub(crate) const fn is_logged(self) -> bool {
         matches!(self, Self::LogAndAllow | Self::LogAndDeny)
     }
 }
@@ -138,7 +138,7 @@ impl Action {
 impl AddressMatch {
     /// Match any source or destination address (mask = `0.0.0.0`).
     #[must_use]
-    pub const fn any() -> Self {
+    pub(crate) const fn any() -> Self {
         Self {
             addr: Ipv4Addr::UNSPECIFIED,
             mask: Ipv4Addr::UNSPECIFIED,
@@ -147,7 +147,7 @@ impl AddressMatch {
 
     /// Match exactly one host (mask = `255.255.255.255`).
     #[must_use]
-    pub const fn host(addr: Ipv4Addr) -> Self {
+    pub(crate) const fn host(addr: Ipv4Addr) -> Self {
         Self {
             addr,
             mask: Ipv4Addr::BROADCAST,
@@ -160,7 +160,7 @@ impl AddressMatch {
     ///
     /// Panics if `prefix_len` is greater than 32.
     #[must_use]
-    pub fn subnet(addr: Ipv4Addr, prefix_len: u8) -> Self {
+    pub(crate) fn subnet(addr: Ipv4Addr, prefix_len: u8) -> Self {
         assert!(
             prefix_len <= 32,
             "prefix_len must be 0..=32, got {prefix_len}"
@@ -178,7 +178,7 @@ impl AddressMatch {
 
     /// Returns `true` if `addr` falls within this address/mask range.
     #[must_use]
-    pub fn matches(self, addr: Ipv4Addr) -> bool {
+    pub(crate) fn matches(self, addr: Ipv4Addr) -> bool {
         let mask = u32::from(self.mask);
         u32::from(addr) & mask == u32::from(self.addr) & mask
     }
@@ -187,7 +187,7 @@ impl AddressMatch {
 impl PortMatch {
     /// Returns `true` if `port` satisfies this selector.
     #[must_use]
-    pub const fn matches(self, port: u16) -> bool {
+    pub(crate) const fn matches(self, port: u16) -> bool {
         match self {
             Self::Any => true,
             Self::Single(p) => port == p,
@@ -199,12 +199,12 @@ impl PortMatch {
 impl RuleSet {
     /// Create an empty rule set.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Append a rule. Rules are evaluated in insertion order.
-    pub fn add_rule(&mut self, rule: Rule) {
+    pub(crate) fn add_rule(&mut self, rule: Rule) {
         self.rules.push(rule);
     }
 

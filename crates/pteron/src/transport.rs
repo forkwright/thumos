@@ -35,7 +35,7 @@ const STP_DELIMITER_LEN: usize = 2;
 const STP_FUNC_BT: u8 = 0;
 
 /// RX/TX ring buffer capacity mandated by hardware (DRIVER-INTERFACES.md §4.1).
-pub const RING_BUF_SIZE: usize = 2048;
+pub(crate) const RING_BUF_SIZE: usize = 2048;
 
 /// Maximum HCI payload in a single STP frame (12-bit length field).
 const STP_MAX_PAYLOAD: usize = 0xFFF;
@@ -43,35 +43,35 @@ const STP_MAX_PAYLOAD: usize = 0xFFF;
 /// Default address-rotation interval: 15 minutes in seconds, matching BLE spec
 /// recommendation.
 ///
-/// Kept as a `pub const` for backward compatibility with external callers; the
+/// Kept as a `pub(crate) const` for backward compatibility with external callers; the
 /// runtime-tunable entry point is [`Config::rotation_interval_secs`].
 ///
 /// WHY: persistent random addresses allow tracking within a session; rotating at
 /// 15-minute boundaries limits the correlation window to spec-recommended duration.
-pub const ROTATION_INTERVAL_SECS: u64 = crate::config::DEFAULT_ROTATION_INTERVAL_SECS;
+pub(crate) const ROTATION_INTERVAL_SECS: u64 = crate::config::DEFAULT_ROTATION_INTERVAL_SECS;
 
 /// `Own_Address_Type` value for random address (BLE spec Table 7.2).
 ///
 /// WHY: all LE HCI commands that accept an address type must use random (0x01)
 /// so the controller sends the random address rather than the burned-in `BD_ADDR`.
-pub const OWN_ADDR_TYPE_RANDOM: u8 = 0x01;
+pub(crate) const OWN_ADDR_TYPE_RANDOM: u8 = 0x01;
 
 /// IOCTL magic byte for the BT character device (DRIVER-INTERFACES.md §4.2).
-pub const IOCTL_MAGIC: u8 = 0xb0;
+pub(crate) const IOCTL_MAGIC: u8 = 0xb0;
 
 // ── IOCTL command numbers ──────────────────────────────────────────────────────
 
 /// Trigger a firmware assert  -  used for diagnostics and crash reporting.
-pub const COMBO_IOCTL_FW_ASSERT: u32 = 0;
+pub(crate) const COMBO_IOCTL_FW_ASSERT: u32 = 0;
 
 /// Enable or disable BT power-save mode.
-pub const COMBO_IOCTL_BT_SET_PSM: u32 = 1;
+pub(crate) const COMBO_IOCTL_BT_SET_PSM: u32 = 1;
 
 /// Read the hardware version FROM the combo chip.
-pub const COMBO_IOCTL_BT_IC_HW_VER: u32 = 2;
+pub(crate) const COMBO_IOCTL_BT_IC_HW_VER: u32 = 2;
 
 /// Read the firmware version FROM the combo chip.
-pub const COMBO_IOCTL_BT_IC_FW_VER: u32 = 3;
+pub(crate) const COMBO_IOCTL_BT_IC_FW_VER: u32 = 3;
 
 // ── RPA/NRPA address bit masks ─────────────────────────────────────────────────
 
@@ -101,7 +101,7 @@ const HCI_LE_SET_RANDOM_ADDR_OPCODE: u16 = (0x08 << 10) | 0x0005;
 /// Errors FROM the STP transport layer.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum Error {
+pub(crate) enum Error {
     /// The STP frame header checksum did not match the computed value.
     #[snafu(display("STP checksum mismatch: expected 0x{expected:02X}, got 0x{actual:02X}"))]
     ChecksumMismatch {
@@ -159,7 +159,7 @@ pub enum Error {
 }
 
 /// Result alias for this module.
-pub type Result<T> = core::result::Result<T, Error>;
+pub(crate) type Result<T> = core::result::Result<T, Error>;
 
 // ── Reset state ────────────────────────────────────────────────────────────────
 
@@ -168,7 +168,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[non_exhaustive]
-pub enum RstFlag {
+pub(crate) enum RstFlag {
     /// Normal operation  -  no reset in progress.
     Normal = 0,
     /// Reset started  -  HCI traffic must be gated.
@@ -286,7 +286,7 @@ impl RingBuffer {
 /// Returns [`Error::BufferOverflow`] if `out` is too short for the encoded frame.
 /// Returns [`Error::PayloadTooLarge`] if `payload` exceeds the 12-bit STP length
 /// field maximum.
-pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
+pub(crate) fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
     if payload.len() > STP_MAX_PAYLOAD {
         return Err(Error::PayloadTooLarge {
             length: payload.len(),
@@ -339,7 +339,7 @@ pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
 /// Returns [`Error::FuncTypeMismatch`] if the frame is not for BT (function type 0).
 /// Returns [`Error::PayloadTooLarge`] if the declared payload length exceeds the
 /// ring-buffer size.
-pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
+pub(crate) fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
     // Skip optional delimiter bytes
     let start = if data.get(..2) == Some(&STP_DELIMITER) {
         STP_DELIMITER_LEN
@@ -404,7 +404,7 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
 /// # Errors
 ///
 /// Returns [`Error::BufferOverflow`] if `entropy` does not contain enough bytes.
-pub const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
+pub(crate) const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
     let [mut b0, b1, b2, b3, b4, b5] = *entropy;
     // Force two MSBs to 0b00 in the most-significant byte (index 0 = display MSB)
     b0 = (b0 & !RANDOM_ADDR_MSB_MASK) | NRPA_MSB_BITS;
@@ -422,7 +422,7 @@ pub const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
 ///
 /// WHY: used when bonding is established; allows the bonded peer to resolve
 /// the address via their stored IRK while remaining opaque to others.
-pub const fn generate_rpa(entropy: &[u8; 6]) -> BdAddr {
+pub(crate) const fn generate_rpa(entropy: &[u8; 6]) -> BdAddr {
     let [mut b0, b1, b2, b3, b4, b5] = *entropy;
     // Force two MSBs to 0b01 in the most-significant byte (index 0 = display MSB)
     b0 = (b0 & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
@@ -432,7 +432,7 @@ pub const fn generate_rpa(entropy: &[u8; 6]) -> BdAddr {
 /// Build the `HCI_LE_Set_Random_Address` command packet (OGF=0x08, OCF=0x0005).
 ///
 /// The address bytes are encoded LSB-first per HCI spec §7.8.4.
-pub fn build_le_set_random_address_cmd(addr: &BdAddr) -> Vec<u8> {
+pub(crate) fn build_le_set_random_address_cmd(addr: &BdAddr) -> Vec<u8> {
     let opcode_bytes = HCI_LE_SET_RANDOM_ADDR_OPCODE.to_le_bytes();
     // H4 type(1) + opcode(2) + param_len(1) + addr(6)
     let mut pkt = Vec::with_capacity(10);
@@ -459,7 +459,7 @@ pub fn build_le_set_random_address_cmd(addr: &BdAddr) -> Vec<u8> {
 ///
 /// This struct owns the 2048-byte RX and TX ring buffers mandated by the
 /// MT6739 hardware character device (DRIVER-INTERFACES.md §4.1).
-pub struct BtHciTransport {
+pub(crate) struct BtHciTransport {
     rx: RingBuffer,
     tx: RingBuffer,
 
@@ -490,7 +490,7 @@ impl BtHciTransport {
     /// Create a new transport with empty buffers, normal reset state, and the
     /// default [`Config`] rotation cadence.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::new_with_config(&Config::default())
     }
 
@@ -500,7 +500,7 @@ impl BtHciTransport {
     /// [`Config::rotation_interval_secs`], which controls how often
     /// [`tick_seconds`] signals that a new random address should be installed.
     #[must_use]
-    pub fn new_with_config(config: &Config) -> Self {
+    pub(crate) fn new_with_config(config: &Config) -> Self {
         Self {
             rx: RingBuffer::new(),
             tx: RingBuffer::new(),
@@ -526,7 +526,7 @@ impl BtHciTransport {
     /// # Errors
     ///
     /// Returns [`Error::UnexpectedResetState`] if the transition is not valid.
-    pub fn advance_reset(&mut self) -> Result<RstFlag> {
+    pub(crate) fn advance_reset(&mut self) -> Result<RstFlag> {
         let next = match self.rstflag {
             RstFlag::Normal => RstFlag::ResetStart,
             RstFlag::ResetStart => RstFlag::ResetCompleteEventPending,
@@ -544,12 +544,12 @@ impl BtHciTransport {
     }
 
     /// Return the current reset state flag.
-    pub const fn rstflag(&self) -> RstFlag {
+    pub(crate) const fn rstflag(&self) -> RstFlag {
         self.rstflag
     }
 
     /// Force the reset state to a specific value (used by WMT reset callback).
-    pub const fn set_rstflag(&mut self, flag: u8) {
+    pub(crate) const fn set_rstflag(&mut self, flag: u8) {
         self.rstflag = RstFlag::from_u8(flag);
     }
 
@@ -563,7 +563,7 @@ impl BtHciTransport {
     ///
     /// Returns [`Error::BufferOverflow`] if the TX ring buffer does not have
     /// enough space for the encoded frame.
-    pub fn send_command(&mut self, cmd: &HciCommand) -> Result<usize> {
+    pub(crate) fn send_command(&mut self, cmd: &HciCommand) -> Result<usize> {
         let hci_bytes = encode_command(cmd);
         let frame_size = STP_DELIMITER_LEN + STP_HEADER_LEN + hci_bytes.len();
         let mut frame_buf = vec![0u8; frame_size];
@@ -581,7 +581,7 @@ impl BtHciTransport {
     /// Drain up to `out.len()` bytes FROM the TX ring buffer INTO `out`.
     ///
     /// Returns the number of bytes actually drained.
-    pub fn drain_tx(&mut self, out: &mut [u8]) -> usize {
+    pub(crate) fn drain_tx(&mut self, out: &mut [u8]) -> usize {
         let available = self.tx.len().min(out.len());
         if available == 0 {
             return 0;
@@ -598,7 +598,7 @@ impl BtHciTransport {
     /// Push raw bytes FROM the hardware character device INTO the RX ring buffer.
     ///
     /// Returns `false` if the buffer does not have sufficient free space.
-    pub fn push_rx(&mut self, data: &[u8]) -> bool {
+    pub(crate) fn push_rx(&mut self, data: &[u8]) -> bool {
         self.rx.push(data)
     }
 
@@ -615,7 +615,7 @@ impl BtHciTransport {
     /// Returns [`Error::ChecksumMismatch`] on STP header corruption.
     /// Returns [`Error::FuncTypeMismatch`] if the frame is not BT function type 0.
     /// Returns [`Error::HciDecode`] if the HCI payload is malformed.
-    pub fn recv_event(&mut self) -> Result<Option<HciEvent>> {
+    pub(crate) fn recv_event(&mut self) -> Result<Option<HciEvent>> {
         if self.rx.is_empty() {
             return Ok(None);
         }
@@ -658,7 +658,7 @@ impl BtHciTransport {
     /// # Errors
     ///
     /// Returns [`Error::BufferOverflow`] if the TX ring buffer is full.
-    pub fn set_random_address(&mut self, addr: BdAddr) -> Result<usize> {
+    pub(crate) fn set_random_address(&mut self, addr: BdAddr) -> Result<usize> {
         let pkt = build_le_set_random_address_cmd(&addr);
         let frame_size = STP_DELIMITER_LEN + STP_HEADER_LEN + pkt.len();
         let mut frame_buf = vec![0u8; frame_size];
@@ -676,7 +676,7 @@ impl BtHciTransport {
     }
 
     /// Return the currently active random address, if one has been SET.
-    pub const fn current_random_addr(&self) -> Option<&BdAddr> {
+    pub(crate) const fn current_random_addr(&self) -> Option<&BdAddr> {
         self.current_random_addr.as_ref()
     }
 
@@ -688,7 +688,7 @@ impl BtHciTransport {
     ///
     /// WHY: the caller drives time in this bare-metal driver; the transport
     /// signals when rotation is due rather than managing entropy itself.
-    pub const fn tick_seconds(&mut self, secs: u64) -> bool {
+    pub(crate) const fn tick_seconds(&mut self, secs: u64) -> bool {
         self.secs_since_rotation = self.secs_since_rotation.saturating_add(secs);
         if self.secs_since_rotation >= self.rotation_interval_secs {
             self.secs_since_rotation = 0;
@@ -698,12 +698,12 @@ impl BtHciTransport {
     }
 
     /// Return the rotation interval this transport was constructed with.
-    pub const fn rotation_interval_secs(&self) -> u64 {
+    pub(crate) const fn rotation_interval_secs(&self) -> u64 {
         self.rotation_interval_secs
     }
 
     /// Return the number of seconds elapsed since the last address rotation.
-    pub const fn secs_since_rotation(&self) -> u64 {
+    pub(crate) const fn secs_since_rotation(&self) -> u64 {
         self.secs_since_rotation
     }
 
@@ -715,7 +715,7 @@ impl BtHciTransport {
     /// # Errors
     ///
     /// Returns [`Error::BufferOverflow`] if the TX ring buffer is full.
-    pub fn send_le_set_scan_parameters(
+    pub(crate) fn send_le_set_scan_parameters(
         &mut self,
         scan_type: u8,
         scan_interval: u16,

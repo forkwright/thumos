@@ -9,16 +9,16 @@ const PUBLIC_KEY_LEN: usize = 32;
 
 /// Ed25519 public identity key (32 bytes).
 #[derive(Clone, PartialEq, Eq)]
-pub struct PublicIdentityKey([u8; PUBLIC_KEY_LEN]);
+pub(crate) struct PublicIdentityKey([u8; PUBLIC_KEY_LEN]);
 
 impl PublicIdentityKey {
     /// Returns the raw 32-byte public key.
-    pub const fn as_bytes(&self) -> &[u8; PUBLIC_KEY_LEN] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; PUBLIC_KEY_LEN] {
         &self.0
     }
 
     /// Constructs a `PublicIdentityKey` from raw bytes.
-    pub const fn from_bytes(bytes: [u8; PUBLIC_KEY_LEN]) -> Self {
+    pub(crate) const fn from_bytes(bytes: [u8; PUBLIC_KEY_LEN]) -> Self {
         Self(bytes)
     }
 }
@@ -39,7 +39,7 @@ impl std::fmt::Display for PublicIdentityKey {
 }
 
 /// Ed25519 identity key pair. Holds private key material; never logged.
-pub struct IdentityKeyPair {
+pub(crate) struct IdentityKeyPair {
     /// PKCS#8-encoded Ed25519 private key.
     pkcs8_bytes: Vec<u8>,
     /// Cached public key bytes (32 bytes).
@@ -60,7 +60,7 @@ impl IdentityKeyPair {
     /// # Errors
     ///
     /// Returns [`Error::KeyGeneration`] if key generation or parsing fails.
-    pub fn generate() -> Result<Self> {
+    pub(crate) fn generate() -> Result<Self> {
         let rng = SystemRandom::new();
         let pkcs8_doc =
             Ed25519KeyPair::generate_pkcs8(&rng).map_err(|_| KeyGenerationSnafu.build())?;
@@ -76,7 +76,7 @@ impl IdentityKeyPair {
     }
 
     /// Returns the public key half of this identity key pair.
-    pub const fn public_key(&self) -> PublicIdentityKey {
+    pub(crate) const fn public_key(&self) -> PublicIdentityKey {
         PublicIdentityKey(self.public_key_bytes)
     }
 
@@ -85,7 +85,7 @@ impl IdentityKeyPair {
     /// # Errors
     ///
     /// Returns [`Error::InvalidKey`] if the stored key bytes are malformed.
-    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
         let key_pair =
             Ed25519KeyPair::from_pkcs8(&self.pkcs8_bytes).map_err(|_| InvalidKeySnafu.build())?;
         Ok(key_pair.sign(data).as_ref().to_vec())
@@ -96,7 +96,11 @@ impl IdentityKeyPair {
     /// # Errors
     ///
     /// Returns [`Error::InvalidSignature`] if verification fails.
-    pub fn verify(public_key: &PublicIdentityKey, data: &[u8], signature: &[u8]) -> Result<()> {
+    pub(crate) fn verify(
+        public_key: &PublicIdentityKey,
+        data: &[u8],
+        signature: &[u8],
+    ) -> Result<()> {
         let pub_key = UnparsedPublicKey::new(&ED25519, public_key.as_bytes().as_ref());
         pub_key
             .verify(data, signature)

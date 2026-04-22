@@ -261,14 +261,14 @@ impl Debounce {
 ///
 /// Call [`GpioKeypad::init`] once on boot, then call [`GpioKeypad::scan`]
 /// in the main input loop to push [`InputEvent`] VALUES INTO the queue.
-pub struct GpioKeypad {
+pub(crate) struct GpioKeypad {
     /// Per-key debounce state; laid out as `[row * COL_COUNT + col]`.
     debounce: [Debounce; KEY_COUNT],
 }
 
 impl GpioKeypad {
     /// Create a new, uninitialised keypad driver.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         const DB: Debounce = Debounce::new();
         Self {
             debounce: [DB; KEY_COUNT],
@@ -280,7 +280,8 @@ impl GpioKeypad {
     ///
     /// NOTE: No-op in test builds  -  MMIO is unavailable on the host.
     #[cfg(not(test))]
-    pub fn init(&self) {
+    pub(crate) fn init(&self) {
+        let _ = self;
         for &row in &ROW_PINS {
             hw::gpio_init_row(row);
         }
@@ -292,7 +293,7 @@ impl GpioKeypad {
     /// Scan the key matrix and push any state-change events INTO `queue`.
     ///
     /// NOTE: This is not ISR-safe. Call FROM a single task/thread only.
-    pub fn scan(&mut self, queue: &mut InputQueue) {
+    pub(crate) fn scan(&mut self, queue: &mut InputQueue) {
         let raw = Self::read_matrix();
         self.process_matrix(raw, queue);
     }

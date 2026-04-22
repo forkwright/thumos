@@ -17,13 +17,13 @@
 const SOF: u8 = 0x80;
 
 /// Maximum STP payload size.
-pub const MAX_PAYLOAD: usize = 4095;
+pub(crate) const MAX_PAYLOAD: usize = 4095;
 
 /// STP frame type (4 bits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[non_exhaustive]
-pub enum FrameType {
+pub(crate) enum FrameType {
     /// Data frame (`WiFi`, `BT`, `GPS`, FM).
     Data = 0,
     /// Management frame.
@@ -58,34 +58,34 @@ impl From<FrameType> for u8 {
 
 /// STP frame header.
 #[derive(Debug, Clone, Copy)]
-pub struct StpHeader {
+pub(crate) struct StpHeader {
     /// Frame type.
-    pub frame_type: FrameType,
+    pub(crate) frame_type: FrameType,
     /// ACK flag.
-    pub ack: bool,
+    pub(crate) ack: bool,
     /// Sequence number (0-7).
-    pub seq: u8,
+    pub(crate) seq: u8,
     /// Payload length (0-4095).
-    pub length: u16,
+    pub(crate) length: u16,
     /// Header checksum.
-    pub checksum: u8,
+    pub(crate) checksum: u8,
 }
 
 /// A complete STP frame.
-pub struct StpFrame {
+pub(crate) struct StpFrame {
     /// Frame header.
-    pub header: StpHeader,
+    pub(crate) header: StpHeader,
     /// Payload data.
-    pub payload: [u8; MAX_PAYLOAD],
+    pub(crate) payload: [u8; MAX_PAYLOAD],
     /// Actual payload length.
-    pub payload_len: usize,
+    pub(crate) payload_len: usize,
     /// CRC-16 over header + payload.
-    pub crc: u16,
+    pub(crate) crc: u16,
 }
 
 impl StpFrame {
     /// Create an empty frame.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             header: StpHeader {
                 frame_type: FrameType::Data,
@@ -101,7 +101,7 @@ impl StpFrame {
     }
 
     /// Create a data frame with the given payload.
-    pub fn data(seq: u8, payload: &[u8]) -> Self {
+    pub(crate) fn data(seq: u8, payload: &[u8]) -> Self {
         let mut frame = Self::new();
         frame.header.frame_type = FrameType::Data;
         frame.header.seq = seq & 0x07;
@@ -115,7 +115,7 @@ impl StpFrame {
     }
 
     /// Create an ACK frame.
-    pub fn ack(seq: u8) -> Self {
+    pub(crate) fn ack(seq: u8) -> Self {
         let mut frame = Self::new();
         frame.header.frame_type = FrameType::Ack;
         frame.header.ack = true;
@@ -127,7 +127,7 @@ impl StpFrame {
     }
 
     /// Encode the frame INTO bytes. Returns the number of bytes written.
-    pub fn encode(&self, buf: &mut [u8]) -> usize {
+    pub(crate) fn encode(&self, buf: &mut [u8]) -> usize {
         let total = 1 + 4 + self.payload_len + 2; // SOF + header + payload + CRC
         if buf.len() < total {
             return 0;
@@ -217,7 +217,7 @@ const fn crc16_ccitt_byte(crc: u16, byte: u8) -> u16 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[non_exhaustive]
-pub enum WmtSubsystem {
+pub(crate) enum WmtSubsystem {
     /// `WiFi`
     Wifi = 0,
     /// Bluetooth

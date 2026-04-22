@@ -14,7 +14,7 @@ use zeroize::Zeroize as _;
 /// Errors FROM secure memory operations.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum MemoryError {
+pub(crate) enum MemoryError {
     /// The system random number generator failed to produce bytes.
     #[snafu(display("failed to generate random bytes"))]
     RandomGeneration,
@@ -26,7 +26,7 @@ pub enum MemoryError {
 ///
 /// Uses [`zeroize`], which issues volatile writes to prevent dead-store
 /// elimination in release builds.
-pub fn secure_zero(buf: &mut [u8]) {
+pub(crate) fn secure_zero(buf: &mut [u8]) {
     buf.zeroize();
 }
 
@@ -35,7 +35,7 @@ pub fn secure_zero(buf: &mut [u8]) {
 /// # Errors
 ///
 /// Returns [`MemoryError::RandomGeneration`] if the system RNG fails.
-pub fn secure_random_fill(buf: &mut [u8]) -> Result<(), MemoryError> {
+pub(crate) fn secure_random_fill(buf: &mut [u8]) -> Result<(), MemoryError> {
     use ring::rand::SecureRandom as _;
 
     let rng = ring::rand::SystemRandom::new();
@@ -60,7 +60,7 @@ pub fn secure_random_fill(buf: &mut [u8]) -> Result<(), MemoryError> {
 /// buf.iter_mut().enumerate().for_each(|(i, b)| *b = u8::try_from(i).unwrap_or(u8::MAX));
 /// // Contents are zeroed when buf is dropped.
 /// ```
-pub struct SecureBuffer<const N: usize> {
+pub(crate) struct SecureBuffer<const N: usize> {
     data: [u8; N],
 }
 
@@ -69,7 +69,7 @@ pub struct SecureBuffer<const N: usize> {
 impl<const N: usize> SecureBuffer<N> {
     /// Create a zeroed secure buffer.
     #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self { data: [0u8; N] }
     }
 }
