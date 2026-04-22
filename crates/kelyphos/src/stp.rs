@@ -133,40 +133,25 @@ impl StpFrame {
             return 0;
         }
 
-        let mut pos = 0;
-
-        // SOF
-        buf[pos] = SOF;
-        pos += 1;
-
-        // Header (4 bytes)
         let h0 = (u8::from(self.header.frame_type) << 4)
             | (if self.header.ack { 0x08 } else { 0 })
             | ((self.header.seq & 0x07) >> 1);
-        // WHY: length is 12 bits (0..=4095); shifting by 5 gives at most 7 bits — fits in u8.
-        let h1 =
-            ((self.header.seq & 0x01) << 7) | ((self.header.length >> 5).to_le_bytes()[0] & 0x7F);
-        // WHY: length & 0x1F is 5 bits; shifting left 3 gives at most 8 bits — fits in u8.
-        let h2 = ((self.header.length & 0x1F) << 3).to_le_bytes()[0];
+        let h1 = ((self.header.seq & 0x01) << 7) | (self.header.length >> 5) as u8 & 0x7F;
+        let h2 = ((self.header.length & 0x1F) << 3) as u8;
         let h3 = self.header.checksum;
 
-        buf[pos] = h0;
-        buf[pos + 1] = h1;
-        buf[pos + 2] = h2;
-        buf[pos + 3] = h3;
-        pos += 4;
+        let (sof_buf, rest) = buf.split_at_mut(1);
+        let (hdr_buf, rest) = rest.split_at_mut(4);
+        let (payload_buf, rest) = rest.split_at_mut(self.payload_len);
+        let (crc_buf, _) = rest.split_at_mut(2);
 
-        // Payload
-        buf[pos..pos + self.payload_len].copy_from_slice(&self.payload[..self.payload_len]);
-        pos += self.payload_len;
-
-        // CRC (big-endian)
+        sof_buf.copy_from_slice(&[SOF]);
+        hdr_buf.copy_from_slice(&[h0, h1, h2, h3]);
+        payload_buf.copy_from_slice(&self.payload[..self.payload_len]);
         let crc_be = self.crc.to_be_bytes();
-        buf[pos] = crc_be[0];
-        buf[pos + 1] = crc_be[1];
-        pos += 2;
+        crc_buf.copy_from_slice(&crc_be);
 
-        pos
+        total
     }
 }
 
@@ -184,9 +169,8 @@ const fn compute_header_checksum(hdr: StpHeader) -> u8 {
     let h0 = (ft_byte << 4) | (if hdr.ack { 0x08 } else { 0 }) | ((hdr.seq & 0x07) >> 1);
     // WHY: length is 12 bits (0..=4095). >> 5 yields ≤7 bits; to_le_bytes()[0] is the
     // safe byte-extraction idiom and is const-stable since Rust 1.52.
-    let h1 = ((hdr.seq & 0x01) << 7) | (hdr.length >> 5).to_le_bytes()[0] & 0x7F;
-    // WHY: length & 0x1F yields 5 bits; << 3 yields ≤8 bits — always fits in u8.
-    let h2 = ((hdr.length & 0x1F) << 3).to_le_bytes()[0];
+    let h1 = ((hdr.seq & 0x01) << 7) | (hdr.length >> 5) as u8 & 0x7F;
+    let h2 = ((hdr.length & 0x1F) << 3) as u8;
     h0 ^ h1 ^ h2
 }
 
@@ -199,10 +183,8 @@ fn compute_crc(frame: &StpFrame) -> u16 {
         (u8::from(frame.header.frame_type) << 4)
             | (if frame.header.ack { 0x08 } else { 0 })
             | ((frame.header.seq & 0x07) >> 1),
-        // WHY: length is 12 bits; >> 5 yields ≤7 bits; to_le_bytes()[0] extracts safely.
-        ((frame.header.seq & 0x01) << 7) | (frame.header.length >> 5).to_le_bytes()[0] & 0x7F,
-        // WHY: length & 0x1F is 5 bits; << 3 yields ≤8 bits — to_le_bytes()[0] is safe.
-        ((frame.header.length & 0x1F) << 3).to_le_bytes()[0],
+        ((frame.header.seq & 0x01) << 7) | (frame.header.length >> 5) as u8 & 0x7F,
+        ((frame.header.length & 0x1F) << 3) as u8,
     ];
 
     for &byte in &header_bytes {

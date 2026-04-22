@@ -335,14 +335,14 @@ impl fmt::Debug for BdAddr {
 /// `[0x01, opcode_lo, opcode_hi, param_len, ...params]`
 pub fn encode_command(cmd: &HciCommand) -> Vec<u8> {
     let (opcode, params) = build_command_parts(cmd);
-    let opcode_bytes = opcode.to_le_bytes();
+    let [op_lo, op_hi] = opcode.to_le_bytes();
     // INVARIANT: HCI parameter total is bounded by spec at 255 bytes; always fits in u8.
     let param_len = u8::try_from(params.len()).unwrap_or_default();
 
     let mut packet = Vec::with_capacity(4 + params.len());
     packet.push(H4_COMMAND_TYPE);
-    packet.push(opcode_bytes[0]);
-    packet.push(opcode_bytes[1]);
+    packet.push(op_lo);
+    packet.push(op_hi);
     packet.push(param_len);
     packet.extend_from_slice(&params);
     packet
@@ -360,7 +360,8 @@ fn build_command_parts(cmd: &HciCommand) -> (u16, Vec<u8>) {
             num_responses,
         } => {
             let opcode = (OGF_LINK_CONTROL << 10) | OCF_INQUIRY;
-            let params = vec![lap[0], lap[1], lap[2], *inquiry_length, *num_responses];
+            let [l0, l1, l2] = *lap;
+            let params = vec![l0, l1, l2, *inquiry_length, *num_responses];
             (opcode, params)
         }
         HciCommand::InquiryCancel => {
@@ -383,14 +384,14 @@ fn build_command_parts(cmd: &HciCommand) -> (u16, Vec<u8>) {
             filter_policy,
         } => {
             let opcode = (OGF_LE_CONTROLLER << 10) | OCF_LE_SET_SCAN_PARAMETERS;
-            let iv = scan_interval.to_le_bytes();
-            let wv = scan_window.to_le_bytes();
+            let [iv_lo, iv_hi] = scan_interval.to_le_bytes();
+            let [wv_lo, wv_hi] = scan_window.to_le_bytes();
             let params = vec![
                 *scan_type,
-                iv.first().copied().unwrap_or_default(),
-                iv.get(1).copied().unwrap_or_default(),
-                wv.first().copied().unwrap_or_default(),
-                wv.get(1).copied().unwrap_or_default(),
+                iv_lo,
+                iv_hi,
+                wv_lo,
+                wv_hi,
                 *own_address_type,
                 *filter_policy,
             ];
@@ -408,8 +409,8 @@ fn build_command_parts(cmd: &HciCommand) -> (u16, Vec<u8>) {
             let opcode = (OGF_LE_CONTROLLER << 10) | OCF_LE_SET_RANDOM_ADDRESS;
             // WHY: HCI spec §7.8.4 transmits BD_ADDR LSB-first; BdAddr stores
             // MSB-first for display, so we reverse when encoding.
-            let a = address.as_bytes();
-            let params = vec![a[5], a[4], a[3], a[2], a[1], a[0]];
+            let [a0, a1, a2, a3, a4, a5] = *address.as_bytes();
+            let params = vec![a5, a4, a3, a2, a1, a0];
             (opcode, params)
         }
     }

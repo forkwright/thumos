@@ -303,7 +303,9 @@ impl GpioKeypad {
             for (col, &key) in row_keys.iter().enumerate() {
                 let idx = row * COL_COUNT + col;
                 let pressed = matrix.is_pressed(row, col);
-                if let Some(state) = self.debounce[idx].update(pressed) {
+                if let Some(debounce) = self.debounce.get_mut(idx)
+                    && let Some(state) = debounce.update(pressed)
+                {
                     queue.push(InputEvent::Key { key, state });
                 }
             }

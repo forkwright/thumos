@@ -232,7 +232,9 @@ impl RingBuffer {
             return false;
         }
         for &byte in data {
-            self.buf[self.write_pos] = byte;
+            if let Some(slot) = self.buf.get_mut(self.write_pos) {
+                *slot = byte;
+            }
             self.write_pos = (self.write_pos + 1) % RING_BUF_SIZE;
         }
         true
@@ -240,11 +242,13 @@ impl RingBuffer {
 
     /// Peek at the byte at `OFFSET` positions ahead of the read cursor
     /// without consuming it.
-    pub(crate) const fn peek_at(&self, offset: usize) -> Option<u8> {
+    pub(crate) fn peek_at(&self, offset: usize) -> Option<u8> {
         if offset >= self.len() {
             return None;
         }
-        Some(self.buf[(self.read_pos + offset) % RING_BUF_SIZE])
+        self.buf
+            .get((self.read_pos + offset) % RING_BUF_SIZE)
+            .copied()
     }
 
     /// Consume `n` bytes FROM the front, copying them INTO `out`.
@@ -256,7 +260,9 @@ impl RingBuffer {
             return false;
         }
         for slot in out.iter_mut() {
-            *slot = self.buf[self.read_pos];
+            if let Some(&byte) = self.buf.get(self.read_pos) {
+                *slot = byte;
+            }
             self.read_pos = (self.read_pos + 1) % RING_BUF_SIZE;
         }
         true
@@ -310,16 +316,12 @@ pub fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
     // HDR3: checksum = XOR(HDR0, HDR1, HDR2)
     let hdr3 = hdr0 ^ hdr1 ^ hdr2;
 
-    out[0] = STP_DELIMITER[0];
-    out[1] = STP_DELIMITER[1];
-    out[2] = hdr0;
-    out[3] = hdr1;
-    out[4] = hdr2;
-    out[5] = hdr3;
+    let (delim_buf, rest) = out.split_at_mut(STP_DELIMITER_LEN);
+    let (hdr_buf, payload_buf) = rest.split_at_mut(STP_HEADER_LEN);
+    delim_buf.copy_from_slice(&STP_DELIMITER);
+    hdr_buf.copy_from_slice(&[hdr0, hdr1, hdr2, hdr3]);
 
-    if let Some(payload_region) = out.get_mut(STP_DELIMITER_LEN + STP_HEADER_LEN..)
-        && let Some(dst) = payload_region.get_mut(..payload.len())
-    {
+    if let Some(dst) = payload_buf.get_mut(..payload.len()) {
         dst.copy_from_slice(payload);
     }
 
@@ -403,10 +405,10 @@ pub fn stp_decode(data: &[u8]) -> Result<(&[u8], usize)> {
 ///
 /// Returns [`Error::BufferOverflow`] if `entropy` does not contain enough bytes.
 pub const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
-    let mut bytes = *entropy;
+    let [mut b0, b1, b2, b3, b4, b5] = *entropy;
     // Force two MSBs to 0b00 in the most-significant byte (index 0 = display MSB)
-    bytes[0] = (bytes[0] & !RANDOM_ADDR_MSB_MASK) | NRPA_MSB_BITS;
-    BdAddr::from_bytes(bytes)
+    b0 = (b0 & !RANDOM_ADDR_MSB_MASK) | NRPA_MSB_BITS;
+    BdAddr::from_bytes([b0, b1, b2, b3, b4, b5])
 }
 
 /// Generate a Resolvable Private Address (RPA) preamble.
@@ -421,10 +423,10 @@ pub const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
 /// WHY: used when bonding is established; allows the bonded peer to resolve
 /// the address via their stored IRK while remaining opaque to others.
 pub const fn generate_rpa(entropy: &[u8; 6]) -> BdAddr {
-    let mut bytes = *entropy;
+    let [mut b0, b1, b2, b3, b4, b5] = *entropy;
     // Force two MSBs to 0b01 in the most-significant byte (index 0 = display MSB)
-    bytes[0] = (bytes[0] & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
-    BdAddr::from_bytes(bytes)
+    b0 = (b0 & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
+    BdAddr::from_bytes([b0, b1, b2, b3, b4, b5])
 }
 
 /// Build the `HCI_LE_Set_Random_Address` command packet (OGF=0x08, OCF=0x0005).
@@ -434,9 +436,10 @@ pub fn build_le_set_random_address_cmd(addr: &BdAddr) -> Vec<u8> {
     let opcode_bytes = HCI_LE_SET_RANDOM_ADDR_OPCODE.to_le_bytes();
     // H4 type(1) + opcode(2) + param_len(1) + addr(6)
     let mut pkt = Vec::with_capacity(10);
+    let [op_lo, op_hi] = opcode_bytes;
     pkt.push(0x01_u8); // H4 command indicator
-    pkt.push(opcode_bytes[0]);
-    pkt.push(opcode_bytes[1]);
+    pkt.push(op_lo);
+    pkt.push(op_hi);
     pkt.push(6_u8); // parameter length: BD_ADDR is always 6 bytes
     // Address is stored MSB-first in BdAddr; HCI wants LSB-first
     let a = addr.as_bytes();
