@@ -44,7 +44,7 @@ const IBEACON_TOTAL_LEN: usize = 25; // company_id(2) + type(1) + len(1) + UUID(
 /// Known BLE AD type codes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum AdType {
+pub(crate) enum AdType {
     /// Flags (AD type `0x01`).
     #[default]
     Flags,
@@ -65,33 +65,33 @@ pub enum AdType {
 /// A single AD structure extracted from a BLE advertising payload.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct AdStructure {
+pub(crate) struct AdStructure {
     /// The AD type of this structure.
-    pub ad_type: AdType,
+    pub(crate) ad_type: AdType,
     /// Raw data bytes (everything after the type byte).
-    pub data: Vec<u8>,
+    pub(crate) data: Vec<u8>,
 }
 
 /// Parsed BLE advertising payload, consisting of zero or more AD structures.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
-pub struct AdvertisingData {
+pub(crate) struct AdvertisingData {
     /// AD structures parsed from the raw payload.
-    pub structures: Vec<AdStructure>,
+    pub(crate) structures: Vec<AdStructure>,
 }
 
 /// Apple iBeacon payload extracted from a manufacturer-specific AD structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct IBeacon {
+pub(crate) struct IBeacon {
     /// 128-bit proximity UUID.
-    pub uuid: [u8; IBEACON_UUID_LEN],
+    pub(crate) uuid: [u8; IBEACON_UUID_LEN],
     /// Major grouping identifier.
-    pub major: u16,
+    pub(crate) major: u16,
     /// Minor sub-grouping identifier.
-    pub minor: u16,
+    pub(crate) minor: u16,
     /// Measured TX power at 1 metre (dBm), used for ranging.
-    pub tx_power: i8,
+    pub(crate) tx_power: i8,
 }
 
 // ── AdType impl ────────────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ impl AdType {
 
 impl AdvertisingData {
     /// Construct an [`AdvertisingData`] from pre-parsed AD structures.
-    pub const fn new(structures: Vec<AdStructure>) -> Self {
+    pub(crate) const fn new(structures: Vec<AdStructure>) -> Self {
         Self { structures }
     }
 
@@ -122,7 +122,7 @@ impl AdvertisingData {
     ///
     /// Parsing is best-effort: if a structure is truncated, parsing stops and
     /// whatever was already decoded is returned.
-    pub fn parse(data: &[u8]) -> Self {
+    pub(crate) fn parse(data: &[u8]) -> Self {
         Self {
             structures: parse_ad_structures(data),
         }
@@ -134,17 +134,17 @@ impl AdvertisingData {
 /// All fields use the recommended defaults from the BLE spec and Thumos
 /// privacy policy: passive scan, random own address, no filter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScanParameters {
+pub(crate) struct ScanParameters {
     /// Scan type: `0x00` = passive, `0x01` = active.
-    pub scan_type: u8,
+    pub(crate) scan_type: u8,
     /// Scan interval in 0.625 ms units.
-    pub scan_interval: u16,
+    pub(crate) scan_interval: u16,
     /// Scan window in 0.625 ms units.
-    pub scan_window: u16,
+    pub(crate) scan_window: u16,
     /// Own address type: always `0x01` (Random).
-    pub own_address_type: u8,
+    pub(crate) own_address_type: u8,
     /// Scanning filter policy: `0x00` = accept all.
-    pub filter_policy: u8,
+    pub(crate) filter_policy: u8,
 }
 
 impl ScanParameters {
@@ -153,7 +153,7 @@ impl ScanParameters {
     /// WHY: passive scanning does not transmit scan requests, so the scanner's
     /// address is never broadcast; combined with a random own address type,
     /// this eliminates `BD_ADDR` exposure during discovery.
-    pub const fn passive_random() -> Self {
+    pub(crate) const fn passive_random() -> Self {
         Self {
             scan_type: 0x00,       // passive
             scan_interval: 0x0010, // 10 ms
@@ -175,7 +175,7 @@ impl ScanParameters {
 ///
 /// Parsing is best-effort — a zero-length entry or truncated payload stops
 /// iteration; whatever was decoded up to that point is returned.
-pub fn parse_ad_structures(data: &[u8]) -> Vec<AdStructure> {
+pub(crate) fn parse_ad_structures(data: &[u8]) -> Vec<AdStructure> {
     let mut structures = Vec::new();
     let mut pos = 0;
 
@@ -213,7 +213,7 @@ pub fn parse_ad_structures(data: &[u8]) -> Vec<AdStructure> {
 /// Searches the AD structures for a `ManufacturerData` entry that matches the
 /// iBeacon format (Apple company ID `0x004C`, type `0x02`, length `0x15`).
 /// Returns `None` if no iBeacon is found.
-pub fn is_ibeacon(ad: &AdvertisingData) -> Option<IBeacon> {
+pub(crate) fn is_ibeacon(ad: &AdvertisingData) -> Option<IBeacon> {
     for structure in &ad.structures {
         if structure.ad_type != AdType::ManufacturerData {
             continue;

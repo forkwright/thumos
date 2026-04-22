@@ -35,7 +35,7 @@ use crate::wifi::{AccessPoint, Bssid, Encryption};
 /// assert_eq!(pairs.len(), 1);
 /// ```
 #[must_use]
-pub fn detect_evil_twin(aps: &[AccessPoint]) -> Vec<(&AccessPoint, &AccessPoint)> {
+pub(crate) fn detect_evil_twin(aps: &[AccessPoint]) -> Vec<(&AccessPoint, &AccessPoint)> {
     let mut by_ssid: HashMap<&str, Vec<&AccessPoint>> = HashMap::new();
     for ap in aps {
         by_ssid.entry(ap.ssid.as_str()).or_default().push(ap);
@@ -73,7 +73,10 @@ pub fn detect_evil_twin(aps: &[AccessPoint]) -> Vec<(&AccessPoint, &AccessPoint)
 /// assert_eq!(rogues.len(), 1);
 /// ```
 #[must_use]
-pub fn detect_rogue_ap<'a>(aps: &'a [AccessPoint], known_bssids: &[Bssid]) -> Vec<&'a AccessPoint> {
+pub(crate) fn detect_rogue_ap<'a>(
+    aps: &'a [AccessPoint],
+    known_bssids: &[Bssid],
+) -> Vec<&'a AccessPoint> {
     aps.iter()
         .filter(|ap| !known_bssids.contains(&ap.bssid))
         .collect()
@@ -100,7 +103,7 @@ pub fn detect_rogue_ap<'a>(aps: &'a [AccessPoint], known_bssids: &[Bssid]) -> Ve
 /// assert_eq!(counts[&11], 1);
 /// ```
 #[must_use]
-pub fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
+pub(crate) fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
     let mut counts: HashMap<u8, usize> = HashMap::new();
     for ap in aps {
         let entry = counts.entry(ap.channel).or_insert(0);
@@ -129,7 +132,7 @@ pub fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
 /// assert_eq!(sorted[0].ssid, "Strong");
 /// ```
 #[must_use]
-pub fn signal_map(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
+pub(crate) fn signal_map(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
     let mut sorted: Vec<&AccessPoint> = aps.iter().collect();
     sorted.sort_by_key(|ap| core::cmp::Reverse(ap.signal_dbm));
     sorted
@@ -156,7 +159,7 @@ pub fn signal_map(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
 /// assert_eq!(result[0].ssid, "Free WiFi");
 /// ```
 #[must_use]
-pub fn open_networks(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
+pub(crate) fn open_networks(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
     aps.iter()
         .filter(|ap| ap.encryption == Encryption::Open)
         .collect()

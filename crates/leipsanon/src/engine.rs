@@ -18,10 +18,10 @@ use crate::targets::{WipeAction, WipeMethod};
 
 /// Default overwrite-chunk size in bytes.
 ///
-/// Preserved as a `pub const` alias of
+/// Preserved as a `pub(crate) const` alias of
 /// [`crate::config::DEFAULT_CHUNK_SIZE`] for backward compatibility. The
 /// runtime-tunable entry point is [`Config::chunk_size`].
-pub const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
+pub(crate) const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
 
 // ----- Errors ---------------------------------------------------------------
 
@@ -44,19 +44,19 @@ pub(crate) enum WipeError {
 
 /// Summary of a completed wipe plan execution.
 #[derive(Debug, Clone)]
-pub struct WipeResult {
+pub(crate) struct WipeResult {
     /// Number of actions that completed successfully (or were dry-run).
-    pub actions_completed: usize,
+    pub(crate) actions_completed: usize,
     /// Number of actions that encountered an I/O error.
-    pub actions_failed: usize,
+    pub(crate) actions_failed: usize,
     /// Total bytes actually written (zero in dry-run mode).
-    pub bytes_wiped: u64,
+    pub(crate) bytes_wiped: u64,
     /// Wall-clock time FROM first to last action.
-    pub elapsed: Duration,
+    pub(crate) elapsed: Duration,
 }
 
 /// Executes wipe plans produced by [`crate::targets::plan`].
-pub struct WipeEngine {
+pub(crate) struct WipeEngine {
     dry_run: bool,
     chunk_size: usize,
 }
@@ -67,13 +67,13 @@ impl WipeEngine {
     /// Create an engine with the default [`Config`]. Set `dry_run = true` for
     /// testing: actions are logged but no I/O is performed.
     #[must_use]
-    pub fn new(dry_run: bool) -> Self {
+    pub(crate) fn new(dry_run: bool) -> Self {
         Self::new_with_config(dry_run, &Config::default())
     }
 
     /// Create an engine using an explicit [`Config`].
     #[must_use]
-    pub fn new_with_config(dry_run: bool, config: &Config) -> Self {
+    pub(crate) fn new_with_config(dry_run: bool, config: &Config) -> Self {
         Self {
             dry_run,
             chunk_size: config.chunk_size(),
@@ -82,13 +82,13 @@ impl WipeEngine {
 
     /// Whether this engine runs in dry-run mode.
     #[must_use]
-    pub const fn is_dry_run(&self) -> bool {
+    pub(crate) const fn is_dry_run(&self) -> bool {
         self.dry_run
     }
 
     /// Overwrite-chunk size this engine was constructed with.
     #[must_use]
-    pub const fn chunk_size(&self) -> usize {
+    pub(crate) const fn chunk_size(&self) -> usize {
         self.chunk_size
     }
 
@@ -100,7 +100,7 @@ impl WipeEngine {
     /// In dry-run mode all actions are counted as completed with zero bytes
     /// wiped. In real mode, actions on paths that do not exist are silently
     /// skipped (not counted as failures).
-    pub fn execute(&mut self, plan: &[WipeAction]) -> WipeResult {
+    pub(crate) fn execute(&mut self, plan: &[WipeAction]) -> WipeResult {
         let start = Instant::now();
         let mut completed: usize = 0;
         let mut failed: usize = 0;

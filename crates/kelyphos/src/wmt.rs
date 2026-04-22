@@ -10,113 +10,113 @@ use snafu::Snafu;
 // ── Register base addresses ────────────────────────────────────────────────────
 
 /// System power manager base address (MT6739).
-pub const SPM_BASE: u32 = 0xF000_6000;
+pub(crate) const SPM_BASE: u32 = 0xF000_6000;
 
 /// Top clock generator base address (MT6739).
-pub const TOPCKGEN_BASE: u32 = 0xF000_0000;
+pub(crate) const TOPCKGEN_BASE: u32 = 0xF000_0000;
 
 /// CONSYS MCU config base address (MT6739).
-pub const CONN_MCU_CONFIG_BASE: u32 = 0xF807_0000;
+pub(crate) const CONN_MCU_CONFIG_BASE: u32 = 0xF807_0000;
 
 /// AP reset generator base address (MT6739).
-pub const AP_RGU_BASE: u32 = 0xF000_7000;
+pub(crate) const AP_RGU_BASE: u32 = 0xF000_7000;
 
 /// CONSYS EMI firmware physical base  -  MCU firmware load target.
-pub const CONSYS_EMI_FW_PHY_BASE: u32 = 0xF008_0000;
+pub(crate) const CONSYS_EMI_FW_PHY_BASE: u32 = 0xF008_0000;
 
 /// CONSYS EMI AP-view physical base.
-pub const CONSYS_EMI_AP_PHY_BASE: u32 = 0x8008_0000;
+pub(crate) const CONSYS_EMI_AP_PHY_BASE: u32 = 0x8008_0000;
 
 // ── SPM registers ─────────────────────────────────────────────────────────────
 
 /// SPM clock gating config register (SPM + 0x000).
-pub const CONSYS_SPM_PWRON_CFG_REG: u32 = SPM_BASE;
+pub(crate) const CONSYS_SPM_PWRON_CFG_REG: u32 = SPM_BASE;
 
 /// CONSYS top1 power control register (SPM + 0x32C).
-pub const CONSYS_TOP1_PWR_CTRL_REG: u32 = SPM_BASE + 0x32C;
+pub(crate) const CONSYS_TOP1_PWR_CTRL_REG: u32 = SPM_BASE + 0x32C;
 
 /// Power-on ack register  -  bit 1 = ready (SPM + 0x180).
-pub const CONSYS_PWR_CONN_ACK_REG: u32 = SPM_BASE + 0x180;
+pub(crate) const CONSYS_PWR_CONN_ACK_REG: u32 = SPM_BASE + 0x180;
 
 /// Power-on ack shadow register  -  bit 1 = ready (SPM + 0x184).
-pub const CONSYS_PWR_CONN_ACK_S_REG: u32 = SPM_BASE + 0x184;
+pub(crate) const CONSYS_PWR_CONN_ACK_S_REG: u32 = SPM_BASE + 0x184;
 
 // ── SPM CONSYS_TOP1_PWR_CTRL_REG bit fields ───────────────────────────────────
 
 /// Bit 0: release SW reset of CONSYS.
-pub const CONSYS_SPM_PWR_RST_BIT: u32 = 1 << 0;
+pub(crate) const CONSYS_SPM_PWR_RST_BIT: u32 = 1 << 0;
 
 /// Bit 1: ISO control  -  1 = isolated.
-pub const CONSYS_SPM_PWR_ISO_S_BIT: u32 = 1 << 1;
+pub(crate) const CONSYS_SPM_PWR_ISO_S_BIT: u32 = 1 << 1;
 
 /// Bit 2: power on CONSYS top1.
-pub const CONSYS_SPM_PWR_ON_BIT: u32 = 1 << 2;
+pub(crate) const CONSYS_SPM_PWR_ON_BIT: u32 = 1 << 2;
 
 /// Bit 3: power on CONSYS top1 (shadow).
-pub const CONSYS_SPM_PWR_ON_S_BIT: u32 = 1 << 3;
+pub(crate) const CONSYS_SPM_PWR_ON_S_BIT: u32 = 1 << 3;
 
 /// Bit 4: clock disable  -  writing 0 enables the clock.
-pub const CONSYS_CLK_CTRL_BIT: u32 = 1 << 4;
+pub(crate) const CONSYS_CLK_CTRL_BIT: u32 = 1 << 4;
 
 /// Bit 8: SRAM power-down.
-pub const CONSYS_SRAM_CONN_PD_BIT: u32 = 1 << 8;
+pub(crate) const CONSYS_SRAM_CONN_PD_BIT: u32 = 1 << 8;
 
 /// Value written to [`CONSYS_SPM_PWRON_CFG_REG`] to enable SPM clock gating.
-pub const CONSYS_PWRON_CONFG_EN_VALUE: u32 = 0x0B16_0001;
+pub(crate) const CONSYS_PWRON_CONFG_EN_VALUE: u32 = 0x0B16_0001;
 
 // ── TOPCKGEN registers ────────────────────────────────────────────────────────
 
 /// Watchdog system reset register (TOPCKGEN + 0x018).
-pub const CONSYS_WD_SYS_RST_REG: u32 = TOPCKGEN_BASE + 0x018;
+pub(crate) const CONSYS_WD_SYS_RST_REG: u32 = TOPCKGEN_BASE + 0x018;
 
 /// Clock gate SET register (TOPCKGEN + 0x054), bit 26.
-pub const CONSYS_TOP_CLKCG_SET_REG: u32 = TOPCKGEN_BASE + 0x054;
+pub(crate) const CONSYS_TOP_CLKCG_SET_REG: u32 = TOPCKGEN_BASE + 0x054;
 
 /// Clock gate clear register (TOPCKGEN + 0x084), bit 26.
-pub const CONSYS_TOP_CLKCG_CLR_REG: u32 = TOPCKGEN_BASE + 0x084;
+pub(crate) const CONSYS_TOP_CLKCG_CLR_REG: u32 = TOPCKGEN_BASE + 0x084;
 
 /// AXI bus protect enable register (TOPCKGEN + 0x1220), bits 13–14.
-pub const CONSYS_TOPAXI_PROT_EN: u32 = TOPCKGEN_BASE + 0x1220;
+pub(crate) const CONSYS_TOPAXI_PROT_EN: u32 = TOPCKGEN_BASE + 0x1220;
 
 /// AXI bus protect status register (TOPCKGEN + 0x1228), bits 13–14.
-pub const CONSYS_TOPAXI_PROT_STA1: u32 = TOPCKGEN_BASE + 0x1228;
+pub(crate) const CONSYS_TOPAXI_PROT_STA1: u32 = TOPCKGEN_BASE + 0x1228;
 
 /// EMI remapping register (TOPCKGEN + 0x1380).
-pub const CONSYS_EMI_MAPPING: u32 = TOPCKGEN_BASE + 0x1380;
+pub(crate) const CONSYS_EMI_MAPPING: u32 = TOPCKGEN_BASE + 0x1380;
 
 /// OSC enable register (TOPCKGEN + 0x1800): bit 10 = `OSC_EN`, bit 9 = WAKEUP.
-pub const CONSYS_AP2CONN_OSC_EN_REG: u32 = TOPCKGEN_BASE + 0x1800;
+pub(crate) const CONSYS_AP2CONN_OSC_EN_REG: u32 = TOPCKGEN_BASE + 0x1800;
 
 /// AXI bus protect bits (13 and 14) used in [`CONSYS_TOPAXI_PROT_EN`].
-pub const CONSYS_TOPAXI_PROT_BITS: u32 = (1 << 13) | (1 << 14);
+pub(crate) const CONSYS_TOPAXI_PROT_BITS: u32 = (1 << 13) | (1 << 14);
 
 /// CONSYS clock gate bit (bit 26) in [`CONSYS_TOP_CLKCG_SET_REG`] / [`CONSYS_TOP_CLKCG_CLR_REG`].
-pub const CONSYS_CLKCG_BIT: u32 = 1 << 26;
+pub(crate) const CONSYS_CLKCG_BIT: u32 = 1 << 26;
 
 // ── AP_RGU registers ──────────────────────────────────────────────────────────
 
 /// CONSYS CPU SW reset register (`AP_RGU` + 0x018).
-pub const CONSYS_CPU_SW_RST_REG: u32 = AP_RGU_BASE + 0x018;
+pub(crate) const CONSYS_CPU_SW_RST_REG: u32 = AP_RGU_BASE + 0x018;
 
 /// Key field required by writes to [`CONSYS_CPU_SW_RST_REG`].
-pub const CONSYS_CPU_SW_RST_KEY: u32 = 0x88 << 24;
+pub(crate) const CONSYS_CPU_SW_RST_KEY: u32 = 0x88 << 24;
 
 /// Bit 12: CONSYS CPU SW reset assert.
-pub const CONSYS_CPU_SW_RST_BIT: u32 = 1 << 12;
+pub(crate) const CONSYS_CPU_SW_RST_BIT: u32 = 1 << 12;
 
 // ── CONN_MCU registers ────────────────────────────────────────────────────────
 
 /// Chip ID register (`CONN_MCU` + 0x008). Expected value: [`CONSYS_CHIP_ID_EXPECTED`].
-pub const CONSYS_CHIP_ID_REG: u32 = CONN_MCU_CONFIG_BASE + 0x008;
+pub(crate) const CONSYS_CHIP_ID_REG: u32 = CONN_MCU_CONFIG_BASE + 0x008;
 
 /// Expected MT6739 CONSYS chip ID value.
-pub const CONSYS_CHIP_ID_EXPECTED: u32 = 0x0699;
+pub(crate) const CONSYS_CHIP_ID_EXPECTED: u32 = 0x0699;
 
 /// ACR register (`CONN_MCU` + 0x110).
-pub const CONSYS_MCU_CFG_ACR_REG: u32 = CONN_MCU_CONFIG_BASE + 0x110;
+pub(crate) const CONSYS_MCU_CFG_ACR_REG: u32 = CONN_MCU_CONFIG_BASE + 0x110;
 
 /// Bit 18: MBIST control in [`CONSYS_MCU_CFG_ACR_REG`].
-pub const CONSYS_MCU_CFG_ACR_MBIST_BIT: u32 = 1 << 18;
+pub(crate) const CONSYS_MCU_CFG_ACR_MBIST_BIT: u32 = 1 << 18;
 
 // ── PMIC ──────────────────────────────────────────────────────────────────────
 
@@ -134,19 +134,19 @@ const DCXO_TCXO_BIT: u8 = 1 << 7;
 // ── EMI region offsets ────────────────────────────────────────────────────────
 
 /// Paged trace ring OFFSET FROM firmware base.
-pub const EMI_PAGED_TRACE_OFFSET: u32 = 0x0000_0400;
+pub(crate) const EMI_PAGED_TRACE_OFFSET: u32 = 0x0000_0400;
 
 /// Paged dump OFFSET FROM firmware base (32 KB region).
-pub const EMI_PAGED_DUMP_OFFSET: u32 = 0x0000_8400;
+pub(crate) const EMI_PAGED_DUMP_OFFSET: u32 = 0x0000_8400;
 
 /// Full dump (DLM) OFFSET FROM firmware base (0x1F000 bytes).
-pub const EMI_FULL_DUMP_DLM_OFFSET: u32 = 0x0001_0400;
+pub(crate) const EMI_FULL_DUMP_DLM_OFFSET: u32 = 0x0001_0400;
 
 /// Full dump SYSB2 OFFSET  -  immediately after DLM region (0x6800 bytes).
-pub const EMI_FULL_DUMP_SYSB2_OFFSET: u32 = EMI_FULL_DUMP_DLM_OFFSET + 0x1F000;
+pub(crate) const EMI_FULL_DUMP_SYSB2_OFFSET: u32 = EMI_FULL_DUMP_DLM_OFFSET + 0x1F000;
 
 /// Full dump SYSB3 OFFSET  -  immediately after SYSB2 region (0x16800 bytes).
-pub const EMI_FULL_DUMP_SYSB3_OFFSET: u32 = EMI_FULL_DUMP_SYSB2_OFFSET + 0x6800;
+pub(crate) const EMI_FULL_DUMP_SYSB3_OFFSET: u32 = EMI_FULL_DUMP_SYSB2_OFFSET + 0x6800;
 
 // ── Poll LIMIT ────────────────────────────────────────────────────────────────
 
@@ -155,14 +155,14 @@ pub const EMI_FULL_DUMP_SYSB3_OFFSET: u32 = EMI_FULL_DUMP_SYSB2_OFFSET + 0x6800;
 /// Aliases [`crate::config::DEFAULT_POLL_TIMEOUT_ITERS`]; for
 /// runtime-configurable behaviour construct the manager with
 /// [`WmtManager::new_with_config`].
-pub const POLL_TIMEOUT_ITERS: u32 = crate::config::DEFAULT_POLL_TIMEOUT_ITERS;
+pub(crate) const POLL_TIMEOUT_ITERS: u32 = crate::config::DEFAULT_POLL_TIMEOUT_ITERS;
 
 // ── Error types ───────────────────────────────────────────────────────────────
 
 /// Errors produced by WMT power and subsystem operations.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum WmtError {
+pub(crate) enum WmtError {
     /// CONSYS power-on ack register did not become ready within the poll LIMIT.
     #[snafu(display("CONSYS power-on ack timed out at step {step}"))]
     PowerAckTimeout {
@@ -206,7 +206,7 @@ pub enum WmtError {
 /// Radio subsystems managed by WMT over the CONSYS combo chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Subsystem {
+pub(crate) enum Subsystem {
     /// Bluetooth.
     Bt,
     /// FM radio.
@@ -233,7 +233,7 @@ impl Subsystem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[non_exhaustive]
-pub enum PmicRegulator {
+pub(crate) enum PmicRegulator {
     /// VCN 1.8V  -  all CONSYS core logic.
     Vcn18,
     /// VCN 2.8V  -  GPS and FM RF circuits.
@@ -246,7 +246,7 @@ pub enum PmicRegulator {
 
 impl PmicRegulator {
     /// Nominal output voltage in millivolts.
-    pub const fn millivolts(self) -> u32 {
+    pub(crate) const fn millivolts(self) -> u32 {
         match self {
             Self::Vcn18 => 1800,
             Self::Vcn28 => 2800,
@@ -264,7 +264,7 @@ impl From<PmicRegulator> for u8 {
 /// Co-clock type detected during step 12 of the power-on sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ClockType {
+pub(crate) enum ClockType {
     /// CO-TSX: crystal shared with AP (`DCXO_CW16` bit 6 SET).
     CoTsx,
     /// TCXO: temperature-compensated XO (`DCXO_CW16` bit 7 SET).
@@ -276,7 +276,7 @@ pub enum ClockType {
 /// Overall CONSYS block power state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum PowerState {
+pub(crate) enum PowerState {
     /// CONSYS is powered off.
     Off,
     /// CONSYS is powered on and the firmware CPU is running.
@@ -292,7 +292,7 @@ pub enum PowerState {
     reason = "hardware addresses share _base suffix to distinguish FROM offsets; renaming removes clarity"
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EmiRegion {
+pub(crate) struct EmiRegion {
     /// CONSYS MCU firmware load target.
     pub(crate) fw_base: u32,
     /// Live paged trace ring (`fw_base` + 0x400).
@@ -309,7 +309,7 @@ pub struct EmiRegion {
 
 impl EmiRegion {
     /// Compute all region addresses FROM a firmware base address.
-    pub const fn from_fw_base(fw_base: u32) -> Self {
+    pub(crate) const fn from_fw_base(fw_base: u32) -> Self {
         Self {
             fw_base,
             paged_trace_base: fw_base + EMI_PAGED_TRACE_OFFSET,
@@ -321,7 +321,7 @@ impl EmiRegion {
     }
 
     /// Standard CONSYS EMI layout for MT6739.
-    pub const CONSYS_DEFAULT: Self = Self::from_fw_base(CONSYS_EMI_FW_PHY_BASE);
+    pub(crate) const CONSYS_DEFAULT: Self = Self::from_fw_base(CONSYS_EMI_FW_PHY_BASE);
 }
 
 // ── Power-on state machine ────────────────────────────────────────────────────
@@ -333,7 +333,7 @@ impl EmiRegion {
 /// [`Done`](Self::Done) marks successful completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
-pub enum PowerOnStep {
+pub(crate) enum PowerOnStep {
     #[default]
     /// Step 1: write [`CONSYS_PWRON_CONFG_EN_VALUE`] to SPM clock config.
     SpmClockEnable,
@@ -375,7 +375,7 @@ pub enum PowerOnStep {
 
 impl PowerOnStep {
     /// 1-based step index for diagnostics. Returns 0 for [`Done`](Self::Done).
-    pub const fn index(self) -> u8 {
+    pub(crate) const fn index(self) -> u8 {
         match self {
             Self::SpmClockEnable => 1,
             Self::Top1PowerOn => 2,
@@ -405,7 +405,7 @@ impl PowerOnStep {
     /// [`execute_and_advance_with_poll`](Self::execute_and_advance_with_poll).
     ///
     /// `clock_type` is an out-parameter updated during [`DetectClockType`](Self::DetectClockType).
-    pub fn execute_and_advance<R: RegisterIo>(
+    pub(crate) fn execute_and_advance<R: RegisterIo>(
         self,
         io: &mut R,
         clock_type: &mut ClockType,
@@ -418,7 +418,7 @@ impl PowerOnStep {
     ///
     /// `clock_type` is an out-parameter updated during
     /// [`DetectClockType`](Self::DetectClockType).
-    pub fn execute_and_advance_with_poll<R: RegisterIo>(
+    pub(crate) fn execute_and_advance_with_poll<R: RegisterIo>(
         self,
         io: &mut R,
         clock_type: &mut ClockType,
@@ -571,7 +571,7 @@ impl PowerOnStep {
 /// WHY: abstracting all hardware operations behind this trait allows the
 /// [`WmtManager`] power-on state machine to be unit-tested without physical
 /// hardware by substituting a [`FakeIo`] implementation.
-pub trait RegisterIo {
+pub(crate) trait RegisterIo {
     /// Read a 32-bit MMIO register at `addr`.
     fn read32(&mut self, addr: u32) -> u32;
 
@@ -610,7 +610,7 @@ pub trait RegisterIo {
 }
 
 /// MMIO [`RegisterIo`] implementation using volatile reads/writes to physical addresses.
-pub struct MmioRegisterIo;
+pub(crate) struct MmioRegisterIo;
 
 impl RegisterIo for MmioRegisterIo {
     #[expect(
@@ -670,7 +670,7 @@ impl RegisterIo for MmioRegisterIo {
 /// Owns power sequencing, subsystem enable/disable, and the platform I/O handle.
 /// Generic over [`RegisterIo`] so the power-on state machine can be tested
 /// without hardware.
-pub struct WmtManager<R: RegisterIo> {
+pub(crate) struct WmtManager<R: RegisterIo> {
     io: R,
     power: PowerState,
     /// WHY: persisted for post-failure diagnostics  -  tells the debugger
@@ -692,7 +692,7 @@ impl<R: RegisterIo> WmtManager<R> {
     ///
     /// CONSYS starts in [`PowerState::Off`]. Call [`power_on`](Self::power_on)
     /// before enabling any subsystem.
-    pub const fn new(io: R) -> Self {
+    pub(crate) const fn new(io: R) -> Self {
         Self {
             io,
             power: PowerState::Off,
@@ -706,7 +706,7 @@ impl<R: RegisterIo> WmtManager<R> {
 
     /// Create a new manager using an explicit [`crate::config::Config`].
     #[must_use]
-    pub fn new_with_config(io: R, config: &crate::config::Config) -> Self {
+    pub(crate) fn new_with_config(io: R, config: &crate::config::Config) -> Self {
         Self {
             io,
             power: PowerState::Off,
@@ -720,7 +720,7 @@ impl<R: RegisterIo> WmtManager<R> {
 
     /// Poll-iteration cap this manager was constructed with.
     #[must_use]
-    pub const fn poll_timeout_iters(&self) -> u32 {
+    pub(crate) const fn poll_timeout_iters(&self) -> u32 {
         self.poll_timeout_iters
     }
 
@@ -730,7 +730,7 @@ impl<R: RegisterIo> WmtManager<R> {
     /// `Done`, returning an error if any step fails. The failing step is
     /// preserved in the manager and visible via [`current_step`](Self::current_step).
     #[must_use = "power-on failure must be handled"]
-    pub fn power_on(&mut self) -> Result<(), WmtError> {
+    pub(crate) fn power_on(&mut self) -> Result<(), WmtError> {
         if self.power == PowerState::On {
             return Err(WmtError::AlreadyPoweredOn);
         }
@@ -758,7 +758,7 @@ impl<R: RegisterIo> WmtManager<R> {
 
     /// Reverse shutdown sequence  -  mirrors power-on in reverse ORDER.
     #[must_use = "power-off failure must be handled"]
-    pub fn power_off(&mut self) -> Result<(), WmtError> {
+    pub(crate) fn power_off(&mut self) -> Result<(), WmtError> {
         if self.power == PowerState::Off {
             return Err(WmtError::AlreadyPoweredOff);
         }
@@ -805,7 +805,7 @@ impl<R: RegisterIo> WmtManager<R> {
     /// Turns on the appropriate PMIC regulator for the subsystem and records
     /// it as active. CONSYS must already be powered on.
     #[must_use = "subsystem enable failure must be handled"]
-    pub fn enable_subsystem(&mut self, subsystem: Subsystem) -> Result<(), WmtError> {
+    pub(crate) fn enable_subsystem(&mut self, subsystem: Subsystem) -> Result<(), WmtError> {
         if self.subsystems & subsystem.mask() != 0 {
             return Err(WmtError::SubsystemStateConflict {
                 subsystem,
@@ -823,7 +823,7 @@ impl<R: RegisterIo> WmtManager<R> {
     /// Turns off the subsystem's PMIC regulator (if no other subsystem sharing
     /// it remains active) and records it as inactive.
     #[must_use = "subsystem disable failure must be handled"]
-    pub fn disable_subsystem(&mut self, subsystem: Subsystem) -> Result<(), WmtError> {
+    pub(crate) fn disable_subsystem(&mut self, subsystem: Subsystem) -> Result<(), WmtError> {
         if self.subsystems & subsystem.mask() == 0 {
             return Err(WmtError::SubsystemStateConflict {
                 subsystem,
@@ -837,37 +837,37 @@ impl<R: RegisterIo> WmtManager<R> {
     }
 
     /// Enable a PMIC regulator directly.
-    pub fn enable_regulator(&mut self, reg: PmicRegulator) {
+    pub(crate) fn enable_regulator(&mut self, reg: PmicRegulator) {
         self.io.pmic_regulator_enable(reg);
     }
 
     /// Disable a PMIC regulator directly.
-    pub fn disable_regulator(&mut self, reg: PmicRegulator) {
+    pub(crate) fn disable_regulator(&mut self, reg: PmicRegulator) {
         self.io.pmic_regulator_disable(reg);
     }
 
     /// Current power-on step  -  useful for diagnosing boot failures.
-    pub const fn current_step(&self) -> PowerOnStep {
+    pub(crate) const fn current_step(&self) -> PowerOnStep {
         self.power_on_step
     }
 
     /// Current CONSYS power state.
-    pub const fn power_state(&self) -> PowerState {
+    pub(crate) const fn power_state(&self) -> PowerState {
         self.power
     }
 
     /// Detected co-clock type (valid after [`power_on`](Self::power_on) succeeds).
-    pub const fn clock_type(&self) -> ClockType {
+    pub(crate) const fn clock_type(&self) -> ClockType {
         self.clock_type
     }
 
     /// Reference to the EMI region layout.
-    pub const fn emi_region(&self) -> &EmiRegion {
+    pub(crate) const fn emi_region(&self) -> &EmiRegion {
         &self.emi
     }
 
     /// Returns true if the given subsystem is currently enabled.
-    pub const fn subsystem_enabled(&self, subsystem: Subsystem) -> bool {
+    pub(crate) const fn subsystem_enabled(&self, subsystem: Subsystem) -> bool {
         self.subsystems & subsystem.mask() != 0
     }
 

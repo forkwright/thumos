@@ -14,7 +14,7 @@ use std::path::PathBuf;
 /// encrypted data unrecoverable without any further I/O.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum WipeLevel {
+pub(crate) enum WipeLevel {
     /// Cryptographic key material only. Fastest; disables decryption.
     Keys,
     /// Contact database.
@@ -30,7 +30,7 @@ pub enum WipeLevel {
 /// How to overwrite a path or region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum WipeMethod {
+pub(crate) enum WipeMethod {
     /// Overwrite with zeros.
     Zero,
     /// Overwrite with cryptographically random bytes.
@@ -41,13 +41,13 @@ pub enum WipeMethod {
 
 /// A single item in a wipe execution plan.
 #[derive(Debug, Clone)]
-pub struct WipeAction {
+pub(crate) struct WipeAction {
     /// Filesystem path or block device to wipe.
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
     /// Erasure method to apply.
-    pub method: WipeMethod,
+    pub(crate) method: WipeMethod,
     /// Execution priority: 1 = immediate (always keys), higher = later.
-    pub priority: u8,
+    pub(crate) priority: u8,
 }
 
 // ----- Functions ------------------------------------------------------------
@@ -57,7 +57,7 @@ pub struct WipeAction {
 /// Keys are always included at priority 1 (wiped first) regardless of level.
 /// The returned list is ordered by ascending priority.
 #[must_use]
-pub fn plan(level: WipeLevel) -> Vec<WipeAction> {
+pub(crate) fn plan(level: WipeLevel) -> Vec<WipeAction> {
     match level {
         WipeLevel::Keys => key_actions(),
 

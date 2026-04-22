@@ -11,22 +11,22 @@ const HKDF_SALT: [u8; 32] = [0u8; 32];
 
 /// Public pre-key bundle advertised by a party. Contains no private material.
 #[derive(Debug, Clone)]
-pub struct PreKeyBundle {
+pub(crate) struct PreKeyBundle {
     /// Ed25519 public identity key.
-    pub identity_key: PublicIdentityKey,
+    pub(crate) identity_key: PublicIdentityKey,
     /// X25519 signed pre-key public bytes.
-    pub signed_prekey: [u8; X25519_KEY_LEN],
+    pub(crate) signed_prekey: [u8; X25519_KEY_LEN],
     /// Ed25519 signature of `signed_prekey` by `identity_key`.
-    pub prekey_signature: Vec<u8>,
+    pub(crate) prekey_signature: Vec<u8>,
     /// Optional one-time X25519 pre-key public bytes.
-    pub one_time_prekey: Option<[u8; X25519_KEY_LEN]>,
+    pub(crate) one_time_prekey: Option<[u8; X25519_KEY_LEN]>,
 }
 
 /// Owned bundle: full bundle including private pre-key material.
 /// Not clonable; private keys are single-use.
-pub struct OwnedBundle {
+pub(crate) struct OwnedBundle {
     /// Public side  -  share this with initiators.
-    pub public_bundle: PreKeyBundle,
+    pub(crate) public_bundle: PreKeyBundle,
     signed_prekey_private: EphemeralPrivateKey,
     one_time_prekey_private: Option<EphemeralPrivateKey>,
 }
@@ -40,7 +40,7 @@ impl std::fmt::Debug for OwnedBundle {
 }
 
 /// Derived shared secret (32 bytes). Not Clone intentionally.
-pub struct SharedSecret {
+pub(crate) struct SharedSecret {
     #[cfg_attr(
         not(test),
         expect(
@@ -60,11 +60,11 @@ impl std::fmt::Debug for SharedSecret {
 }
 
 /// Session keys derived FROM a shared secret via HKDF.
-pub struct SessionKeys {
+pub(crate) struct SessionKeys {
     /// Key for messages FROM initiator to responder.
-    pub initiator_to_responder: [u8; 32],
+    pub(crate) initiator_to_responder: [u8; 32],
     /// Key for messages FROM responder to initiator.
-    pub responder_to_initiator: [u8; 32],
+    pub(crate) responder_to_initiator: [u8; 32],
 }
 
 impl std::fmt::Debug for SessionKeys {
@@ -78,13 +78,13 @@ impl std::fmt::Debug for SessionKeys {
 
 /// Message sent by the initiator to the responder after session setup.
 #[derive(Debug, Clone)]
-pub struct InitiatorMessage {
+pub(crate) struct InitiatorMessage {
     /// Initiator's Ed25519 public identity key.
-    pub identity_key: PublicIdentityKey,
+    pub(crate) identity_key: PublicIdentityKey,
     /// Initiator's primary ephemeral X25519 key (used for DH with signed pre-key).
-    pub ephemeral_key: [u8; X25519_KEY_LEN],
+    pub(crate) ephemeral_key: [u8; X25519_KEY_LEN],
     /// Initiator's second ephemeral key for DH with the one-time pre-key, if present.
-    pub one_time_ephemeral_key: Option<[u8; X25519_KEY_LEN]>,
+    pub(crate) one_time_ephemeral_key: Option<[u8; X25519_KEY_LEN]>,
 }
 
 /// Creates a new pre-key bundle for `identity`, generating fresh X25519 pre-keys.
@@ -93,7 +93,7 @@ pub struct InitiatorMessage {
 ///
 /// Returns [`Error::KeyGeneration`] if key generation fails.
 /// Returns [`Error::InvalidKey`] if the signing step fails.
-pub fn create_bundle(identity: &IdentityKeyPair) -> Result<OwnedBundle> {
+pub(crate) fn create_bundle(identity: &IdentityKeyPair) -> Result<OwnedBundle> {
     let rng = SystemRandom::new();
 
     let (spk_priv, spk_pub) = generate_x25519(&rng)?;
@@ -123,7 +123,7 @@ pub fn create_bundle(identity: &IdentityKeyPair) -> Result<OwnedBundle> {
 /// Returns [`Error::KeyGeneration`] if ephemeral key generation fails.
 /// Returns [`Error::KeyAgreement`] if any DH step fails.
 /// Returns [`Error::KeyDerivation`] if HKDF expansion fails.
-pub fn initiate_session(
+pub(crate) fn initiate_session(
     our_identity: &IdentityKeyPair,
     their_bundle: &PreKeyBundle,
 ) -> Result<(SharedSecret, SessionKeys, InitiatorMessage)> {
@@ -168,7 +168,7 @@ pub fn initiate_session(
 ///
 /// Returns [`Error::KeyAgreement`] if DH fails.
 /// Returns [`Error::KeyDerivation`] if HKDF fails.
-pub fn respond_session(
+pub(crate) fn respond_session(
     bundle: OwnedBundle,
     msg: &InitiatorMessage,
 ) -> Result<(SharedSecret, SessionKeys)> {

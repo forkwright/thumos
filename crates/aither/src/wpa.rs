@@ -15,22 +15,22 @@ use ring::{hmac, pbkdf2};
 const PBKDF2_ITERS: NonZeroU32 = NonZeroU32::MIN.saturating_add(4095);
 
 /// PMK/PSK output length in bytes.
-pub const PMK_LEN: usize = 32;
+pub(crate) const PMK_LEN: usize = 32;
 
 /// Key Confirmation Key length in bytes.
-pub const KCK_LEN: usize = 16;
+pub(crate) const KCK_LEN: usize = 16;
 
 /// Key Encryption Key length in bytes.
-pub const KEK_LEN: usize = 16;
+pub(crate) const KEK_LEN: usize = 16;
 
 /// Temporal Key length in bytes (WPA2-CCMP).
-pub const TK_LEN: usize = 16;
+pub(crate) const TK_LEN: usize = 16;
 
 /// Total PTK length: KCK + KEK + TK (WPA2-CCMP, 384 bits).
-pub const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
+pub(crate) const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
 
 /// MIC length in bytes.
-pub const MIC_LEN: usize = 16;
+pub(crate) const MIC_LEN: usize = 16;
 
 /// Pairwise Transient Key components.
 ///
@@ -40,13 +40,13 @@ pub const MIC_LEN: usize = 16;
 /// in memory after use. Uses `write_volatile` to prevent the compiler from
 /// optimizing away the zeroing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ptk {
+pub(crate) struct Ptk {
     /// Key Confirmation Key: used to compute and verify MIC.
-    pub kck: [u8; KCK_LEN],
+    pub(crate) kck: [u8; KCK_LEN],
     /// Key Encryption Key: used to wrap the GTK with AES-KEYWRAP.
-    pub kek: [u8; KEK_LEN],
+    pub(crate) kek: [u8; KEK_LEN],
     /// Temporal Key: used for data frame encryption (AES-CCMP).
-    pub tk: [u8; TK_LEN],
+    pub(crate) tk: [u8; TK_LEN],
 }
 
 impl Drop for Ptk {
@@ -89,7 +89,7 @@ impl Drop for Ptk {
 /// * `passphrase` – UTF-8 encoded network password.
 /// * `ssid` – network SSID used as the PBKDF2 salt.
 #[must_use]
-pub fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
+pub(crate) fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
     let mut pmk = [0u8; PMK_LEN];
     pbkdf2::derive(
         pbkdf2::PBKDF2_HMAC_SHA1,
@@ -116,12 +116,12 @@ pub fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
 /// * `aa` – Authenticator MAC address.
 /// * `spa` – Supplicant MAC address.
 #[must_use]
-pub fn derive_ptk(
+pub(crate) fn derive_ptk(
     pmk: &[u8; PMK_LEN],
     anonce: &[u8; 32],
     snonce: &[u8; 32],
-    aa: &[u8; 6],
-    spa: &[u8; 6],
+    aa: [u8; 6],
+    spa: [u8; 6],
 ) -> Ptk {
     const LABEL: &[u8] = b"Pairwise key expansion";
 
@@ -137,8 +137,8 @@ pub fn derive_ptk(
     let mut input = Vec::with_capacity(LABEL.len() + 1 + 6 + 6 + 32 + 32);
     input.extend_from_slice(LABEL);
     input.push(0x00); // NUL separator between A and B in PRF
-    input.extend_from_slice(mac_lo);
-    input.extend_from_slice(mac_hi);
+    input.extend_from_slice(&mac_lo);
+    input.extend_from_slice(&mac_hi);
     input.extend_from_slice(nonce_lo);
     input.extend_from_slice(nonce_hi);
 
@@ -162,7 +162,7 @@ pub fn derive_ptk(
 /// 2, 3, and 4).  The MIC field in the EAPOL frame must be zeroed before
 /// passing `data` to this function.
 #[must_use]
-pub fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
+pub(crate) fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
     let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, kck);
     let tag = hmac::sign(&key, data);
     let bytes = tag.as_ref();
@@ -177,7 +177,7 @@ pub fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
 /// Uses constant-time comparison to prevent timing side-channel attacks.
 /// Returns `true` only when the MIC is correct.
 #[must_use]
-pub fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
+pub(crate) fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
     let computed = compute_mic(kck, data);
     constant_time_eq(&computed, expected_mic)
 }
@@ -267,7 +267,7 @@ mod tests {
         let snonce = [0xbbu8; 32];
         let aa = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
         let spa = [0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb];
-        let ptk = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
+        let ptk = derive_ptk(&pmk, &anonce, &snonce, aa, spa);
         // Verify lengths via compile-time array sizes  -  just check fields exist.
         assert_eq!(ptk.kck.len(), KCK_LEN, "KCK must be KCK_LEN bytes");
         assert_eq!(ptk.kek.len(), KEK_LEN, "KEK must be KEK_LEN bytes");
@@ -281,8 +281,8 @@ mod tests {
         let snonce = [0x02u8; 32];
         let aa = [0xa0, 0xc0, 0x89, 0x7f, 0x0c, 0xf0];
         let spa = [0x00, 0x0e, 0x35, 0x58, 0x10, 0xd2];
-        let ptk1 = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
-        let ptk2 = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
+        let ptk1 = derive_ptk(&pmk, &anonce, &snonce, aa, spa);
+        let ptk2 = derive_ptk(&pmk, &anonce, &snonce, aa, spa);
         assert_eq!(ptk1, ptk2, "PTK must be identical for identical inputs");
     }
 
@@ -294,8 +294,8 @@ mod tests {
         let snonce = [0x20u8; 32];
         let aa = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
         let spa = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
-        let ptk_ab = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
-        let ptk_ba = derive_ptk(&pmk, &anonce, &snonce, &spa, &aa);
+        let ptk_ab = derive_ptk(&pmk, &anonce, &snonce, aa, spa);
+        let ptk_ba = derive_ptk(&pmk, &anonce, &snonce, spa, aa);
         assert_eq!(
             ptk_ab, ptk_ba,
             "PTK must be identical regardless of AA/SPA order"

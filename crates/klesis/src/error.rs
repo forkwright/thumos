@@ -6,7 +6,7 @@ use snafu::Snafu;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 #[non_exhaustive]
-pub enum Error {
+pub(crate) enum Error {
     /// AT command timed out.
     #[snafu(display("AT command timed out after {timeout_ms}ms"))]
     Timeout {
@@ -93,4 +93,4 @@ pub enum Error {
 }
 
 /// Result type for telephony operations.
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;

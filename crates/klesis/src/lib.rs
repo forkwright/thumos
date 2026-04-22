@@ -1,4 +1,6 @@
 #![deny(missing_docs)]
+#![expect(dead_code, reason = "public API surface for future kernel binary integration (#126)")]
+#![allow(unfulfilled_lint_expectations)]
 //! Telephony daemon for the MT6739 modem.
 //!
 //! Direct `CCCI` channel access, AT command parser, call state machine,

@@ -5,7 +5,7 @@ use snafu::Snafu;
 /// Errors from GPS operations.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum Error {
+pub(crate) enum Error {
     /// NMEA sentence failed checksum validation.
     #[snafu(display("NMEA checksum mismatch: expected {expected:02X}, got {actual:02X}"))]
     ChecksumMismatch {
@@ -17,7 +17,7 @@ pub enum Error {
 
     /// NMEA sentence has invalid format.
     #[snafu(display("NMEA parse error: {message}"))]
-    ParseError {
+    Parse {
         /// Description of what went wrong.
         message: String,
     },
@@ -32,4 +32,4 @@ pub enum Error {
 }
 
 /// Result type for GPS operations.
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;

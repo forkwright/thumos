@@ -9,7 +9,7 @@ use crate::font::{CHAR_HEIGHT, draw_str, str_pixel_width};
 use crate::framebuffer::Framebuffer;
 
 /// Height of the status bar in pixels. Matches one font row (`CHAR_HEIGHT`).
-pub const STATUS_BAR_HEIGHT: u32 = CHAR_HEIGHT;
+pub(crate) const STATUS_BAR_HEIGHT: u32 = CHAR_HEIGHT;
 
 /// Number of signal bar columns rendered.
 const SIGNAL_BAR_COUNT: u8 = 4;
@@ -34,7 +34,7 @@ impl StatusBar {
     /// - `signal_bars`: active bar count, clamped to `0..=4`.
     /// - `battery_pct`: battery percentage, clamped to `0..=100`.
     /// - `time_str`: time string displayed centred (e.g. `"12:34"`).
-    pub fn draw(fb: &mut Framebuffer, signal_bars: u8, battery_pct: u8, time_str: &str) {
+    pub(crate) fn draw(fb: &mut Framebuffer, signal_bars: u8, battery_pct: u8, time_str: &str) {
         let w = fb.width();
 
         // Background

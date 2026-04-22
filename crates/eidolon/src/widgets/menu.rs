@@ -26,20 +26,20 @@ pub const ACTION_NONE: u32 = u32::MAX;
 #[expect(clippy::use_self, reason = "Self cannot be used in struct field types")]
 pub struct MenuItem {
     /// Display label.
-    pub label: String,
+    pub(crate) label: String,
     /// Optional single-character icon rendered before the label.
-    pub icon: Option<char>,
+    pub(crate) icon: Option<char>,
     /// Action ID returned to the caller when this item is selected.
     /// Use [`ACTION_NONE`] for items that only open a submenu.
-    pub action_id: u32,
+    pub(crate) action_id: u32,
     /// Optional submenu opened when this item is selected.
-    pub submenu: Option<Vec<MenuItem>>,
+    pub(crate) submenu: Option<Vec<MenuItem>>,
 }
 
 impl MenuItem {
     /// Create a leaf item with no submenu.
     #[must_use]
-    pub fn leaf(label: impl Into<String>, action_id: u32) -> Self {
+    pub(crate) fn leaf(label: impl Into<String>, action_id: u32) -> Self {
         Self {
             label: label.into(),
             icon: None,
@@ -50,7 +50,7 @@ impl MenuItem {
 
     /// Create a leaf item with an icon.
     #[must_use]
-    pub fn with_icon(label: impl Into<String>, icon: char, action_id: u32) -> Self {
+    pub(crate) fn with_icon(label: impl Into<String>, icon: char, action_id: u32) -> Self {
         Self {
             label: label.into(),
             icon: Some(icon),
@@ -65,7 +65,7 @@ impl MenuItem {
         clippy::use_self,
         reason = "Self cannot be used in function parameter types"
     )]
-    pub fn folder(label: impl Into<String>, children: Vec<MenuItem>) -> Self {
+    pub(crate) fn folder(label: impl Into<String>, children: Vec<MenuItem>) -> Self {
         Self {
             label: label.into(),
             icon: None,
@@ -104,7 +104,7 @@ pub struct Menu {
 impl Menu {
     /// Create a new menu with the given root items and pixel width.
     #[must_use]
-    pub const fn new(items: Vec<MenuItem>, width: u32) -> Self {
+    pub(crate) const fn new(items: Vec<MenuItem>, width: u32) -> Self {
         Self {
             current: items,
             cursor: 0,
@@ -118,19 +118,19 @@ impl Menu {
 
     /// Set the number of rows visible at once (controls widget height).
     #[must_use]
-    pub const fn with_visible_rows(mut self, rows: usize) -> Self {
+    pub(crate) const fn with_visible_rows(mut self, rows: usize) -> Self {
         self.visible_rows = rows;
         self
     }
 
     /// Return and clear the pending action, if any.
-    pub const fn take_action(&mut self) -> Option<u32> {
+    pub(crate) const fn take_action(&mut self) -> Option<u32> {
         self.pending_action.take()
     }
 
     /// Whether the menu has navigated into a submenu (i.e., Back is possible).
     #[must_use]
-    pub const fn can_go_back(&self) -> bool {
+    pub(crate) const fn can_go_back(&self) -> bool {
         !self.nav_stack.is_empty()
     }
 

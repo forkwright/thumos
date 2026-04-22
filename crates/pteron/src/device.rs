@@ -11,24 +11,24 @@ use crate::hci::BdAddr;
 /// A Bluetooth device observed during scanning or inquiry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct BluetoothDevice {
+pub(crate) struct BluetoothDevice {
     /// Bluetooth device address.
-    pub address: BdAddr,
+    pub(crate) address: BdAddr,
     /// Friendly device name, if received via name request or EIR.
-    pub name: Option<String>,
+    pub(crate) name: Option<String>,
     /// Most-recently observed RSSI in dBm.
-    pub rssi: i8,
+    pub(crate) rssi: i8,
     /// 24-bit Class of Device (classic BT only; `0` for BLE).
-    pub class_of_device: u32,
+    pub(crate) class_of_device: u32,
     /// Wall-clock time of the last observation.
-    pub last_seen: Timestamp,
+    pub(crate) last_seen: Timestamp,
     /// Total number of times this device has been observed.
-    pub seen_count: u32,
+    pub(crate) seen_count: u32,
 }
 
 /// A deduplicated collection of discovered Bluetooth devices, keyed by address.
 #[derive(Debug, Default)]
-pub struct DeviceList {
+pub(crate) struct DeviceList {
     devices: HashMap<BdAddr, BluetoothDevice>,
 }
 
@@ -36,7 +36,7 @@ pub struct DeviceList {
 
 impl BluetoothDevice {
     /// Construct a new [`BluetoothDevice`] with `seen_count` initialised to `1`.
-    pub const fn new(
+    pub(crate) const fn new(
         address: BdAddr,
         name: Option<String>,
         rssi: i8,
@@ -58,7 +58,7 @@ impl BluetoothDevice {
 
 impl DeviceList {
     /// Create an empty [`DeviceList`].
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -67,7 +67,7 @@ impl DeviceList {
     /// If the address is already present, the `rssi`, `last_seen`, and
     /// `seen_count` fields are updated.  The `name` is updated if the
     /// incoming device carries a non-`None` name.
-    pub fn add_or_update(&mut self, device: BluetoothDevice) {
+    pub(crate) fn add_or_update(&mut self, device: BluetoothDevice) {
         self.devices
             .entry(device.address.clone())
             .and_modify(|existing| {
@@ -83,7 +83,7 @@ impl DeviceList {
 
     /// Return all devices whose `last_seen` timestamp is older than `max_age`
     /// relative to the current wall-clock time.
-    pub fn stale_devices(&self, max_age: SignedDuration) -> Vec<&BluetoothDevice> {
+    pub(crate) fn stale_devices(&self, max_age: SignedDuration) -> Vec<&BluetoothDevice> {
         let now = Timestamp::now();
         self.devices
             .values()
@@ -92,22 +92,22 @@ impl DeviceList {
     }
 
     /// Return the number of devices currently tracked.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.devices.len()
     }
 
     /// Return `true` if no devices are tracked.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.devices.is_empty()
     }
 
     /// Look up a device by address.
-    pub fn get(&self, address: &BdAddr) -> Option<&BluetoothDevice> {
+    pub(crate) fn get(&self, address: &BdAddr) -> Option<&BluetoothDevice> {
         self.devices.get(address)
     }
 
     /// Iterate over all tracked devices.
-    pub fn iter(&self) -> impl Iterator<Item = &BluetoothDevice> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &BluetoothDevice> {
         self.devices.values()
     }
 }

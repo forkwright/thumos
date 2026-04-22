@@ -16,7 +16,7 @@ const MAC_BYTE_COUNT: usize = 6;
 /// Error type for MAC address parsing.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum ParseError {
+pub(crate) enum ParseError {
     /// Input does not have exactly 6 colon-separated segments.
     #[snafu(display("invalid MAC address format: expected AA:BB:CC:DD:EE:FF, got '{input}'"))]
     InvalidMacFormat {
@@ -34,12 +34,12 @@ pub enum ParseError {
 
 /// A `WiFi` MAC address (`BSSID`), stored as six raw bytes.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Bssid([u8; MAC_BYTE_COUNT]);
+pub(crate) struct Bssid([u8; MAC_BYTE_COUNT]);
 
 /// Wireless encryption mode reported by an access point.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum Encryption {
+pub(crate) enum Encryption {
     /// No encryption; network is open.
     Open,
     /// Wired Equivalent Privacy (legacy, broken).
@@ -57,7 +57,7 @@ pub enum Encryption {
 /// The RF frequency band a channel belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum Band {
+pub(crate) enum Band {
     /// 2.4 GHz band (channels 1–14).
     Band2_4Ghz,
     /// 5 GHz band (channels 36–165).
@@ -67,21 +67,21 @@ pub enum Band {
 /// A `WiFi` access point observed during a scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct AccessPoint {
+pub(crate) struct AccessPoint {
     /// Hardware MAC address of the AP radio.
-    pub bssid: Bssid,
+    pub(crate) bssid: Bssid,
     /// Network name (SSID).
-    pub ssid: String,
+    pub(crate) ssid: String,
     /// Channel number (1–14 for 2.4 GHz; 36–165 for 5 GHz).
-    pub channel: u8,
+    pub(crate) channel: u8,
     /// Center frequency in MHz.
-    pub frequency_mhz: u32,
+    pub(crate) frequency_mhz: u32,
     /// Received signal strength in dBm (higher is stronger; typical range −30 to −90).
-    pub signal_dbm: i32,
+    pub(crate) signal_dbm: i32,
     /// Encryption mode advertised in beacon frames.
-    pub encryption: Encryption,
+    pub(crate) encryption: Encryption,
     /// Wall-clock time when this AP was last seen.
-    pub last_seen: Timestamp,
+    pub(crate) last_seen: Timestamp,
 }
 
 impl Bssid {
@@ -105,13 +105,13 @@ impl Bssid {
     /// let bssid = Bssid::parse("AA:BB:CC:DD:EE:FF").unwrap();
     /// assert_eq!(bssid.to_string(), "AA:BB:CC:DD:EE:FF");
     /// ```
-    pub fn parse(s: &str) -> Result<Self, ParseError> {
+    pub(crate) fn parse(s: &str) -> Result<Self, ParseError> {
         s.parse()
     }
 
     /// Return the raw bytes of this MAC address.
     #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; MAC_BYTE_COUNT] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; MAC_BYTE_COUNT] {
         &self.0
     }
 }
@@ -175,7 +175,7 @@ impl fmt::Display for Band {
 
 impl AccessPoint {
     /// Construct an [`AccessPoint`] with all fields.
-    pub fn new(
+    pub(crate) fn new(
         bssid: Bssid,
         ssid: impl Into<String>,
         channel: u8,
@@ -213,7 +213,7 @@ impl AccessPoint {
 /// assert_eq!(channel_to_frequency(0), None);
 /// ```
 #[must_use]
-pub fn channel_to_frequency(channel: u8) -> Option<u32> {
+pub(crate) fn channel_to_frequency(channel: u8) -> Option<u32> {
     match channel {
         1..=13 => {
             let ch = u32::from(channel);
@@ -248,7 +248,7 @@ pub fn channel_to_frequency(channel: u8) -> Option<u32> {
 /// assert_eq!(frequency_to_channel(9999), None);
 /// ```
 #[must_use]
-pub fn frequency_to_channel(freq_mhz: u32) -> Option<u8> {
+pub(crate) fn frequency_to_channel(freq_mhz: u32) -> Option<u8> {
     if freq_mhz == BAND_2_4_GHZ_CHANNEL_14_FREQ {
         return Some(14);
     }
@@ -281,7 +281,7 @@ pub fn frequency_to_channel(freq_mhz: u32) -> Option<u8> {
 /// assert_eq!(channel_band(0), None);
 /// ```
 #[must_use]
-pub const fn channel_band(channel: u8) -> Option<Band> {
+pub(crate) const fn channel_band(channel: u8) -> Option<Band> {
     match channel {
         1..=14 => Some(Band::Band2_4Ghz),
         36..=165 => Some(Band::Band5Ghz),
