@@ -21,25 +21,25 @@ use crate::stp::{MAX_PAYLOAD, StpFrame};
 /// Remains `const` — this is a protocol invariant fixed by the STP spec and
 /// is used as the size of the sliding-window array. Changing it at runtime
 /// would require reallocating the window.
-pub const WINDOW_SIZE: usize = 7;
+pub(crate) const WINDOW_SIZE: usize = 7;
 
 /// Default TX timeout in milliseconds before a frame is assumed lost and
 /// retransmitted.
 ///
-/// Preserved as a `pub const` alias of [`DEFAULT_TX_TIMEOUT_MS`] for backward
+/// Preserved as a `pub(crate) const` alias of [`DEFAULT_TX_TIMEOUT_MS`] for backward
 /// compatibility. The runtime-tunable entry point is
 /// [`Config::tx_timeout_ms`].
-pub const TX_TIMEOUT_MS: u32 = DEFAULT_TX_TIMEOUT_MS;
+pub(crate) const TX_TIMEOUT_MS: u32 = DEFAULT_TX_TIMEOUT_MS;
 
 /// Default maximum retransmissions per frame before the link is declared dead.
 ///
-/// Preserved as a `pub const` alias of [`DEFAULT_RETRY_LIMIT`] for backward
+/// Preserved as a `pub(crate) const` alias of [`DEFAULT_RETRY_LIMIT`] for backward
 /// compatibility. The runtime-tunable entry point is
 /// [`Config::retry_limit`].
-pub const RETRY_LIMIT: u8 = DEFAULT_RETRY_LIMIT;
+pub(crate) const RETRY_LIMIT: u8 = DEFAULT_RETRY_LIMIT;
 
 /// Maximum encoded STP frame size: SOF(1) + header(4) + payload + CRC(2).
-pub const TX_FRAME_MAX_ENCODED: usize = 1 + 4 + MAX_PAYLOAD + 2;
+pub(crate) const TX_FRAME_MAX_ENCODED: usize = 1 + 4 + MAX_PAYLOAD + 2;
 
 /// STP Start of Frame byte  -  used by RX parser to synchronise.
 const STP_SOF: u8 = 0x80;
@@ -49,7 +49,7 @@ const STP_SOF: u8 = 0x80;
 /// Errors produced by the STP transport layer.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum TransportError {
+pub(crate) enum TransportError {
     /// TX sliding window is full  -  caller must wait for acknowledgements.
     #[snafu(display(
         "TX window is full ({WINDOW_SIZE} frames in flight); wait for acknowledgements"
@@ -78,7 +78,7 @@ pub enum TransportError {
 // ── TX window ─────────────────────────────────────────────────────────────────
 
 /// A queued TX frame awaiting acknowledgement.
-pub struct TxEntry {
+pub(crate) struct TxEntry {
     /// Encoded STP frame bytes ready to write to UART.
     data: [u8; TX_FRAME_MAX_ENCODED],
     /// Number of valid bytes in [`data`](Self::data).
@@ -103,7 +103,7 @@ impl TxEntry {
     }
 
     /// Raw encoded bytes slice.
-    pub fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         // WHY: len is SET by encode() which returns exact byte count; safe slice.
         &self.data[..self.len]
     }
@@ -125,7 +125,7 @@ enum RxState {
 }
 
 /// Byte-stream RX parser that reassembles raw bytes INTO complete STP frames.
-pub struct RxParser {
+pub(crate) struct RxParser {
     state: RxState,
     /// Raw accumulation buffer.
     buf: [u8; TX_FRAME_MAX_ENCODED],
@@ -142,7 +142,7 @@ impl Default for RxParser {
 
 impl RxParser {
     /// Create a new parser in the initial [`WaitSof`](RxState::WaitSof) state.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             state: RxState::WaitSof,
             buf: [0u8; TX_FRAME_MAX_ENCODED],
@@ -155,7 +155,7 @@ impl RxParser {
     ///
     /// Returns `true` when a complete frame has been assembled and is
     /// readable via [`take_raw`](Self::take_raw).
-    pub fn push_byte(&mut self, byte: u8) -> bool {
+    pub(crate) fn push_byte(&mut self, byte: u8) -> bool {
         match self.state {
             RxState::WaitSof => {
                 if byte == STP_SOF {
@@ -227,12 +227,12 @@ impl RxParser {
     /// Return the raw accumulated bytes of the last complete frame.
     ///
     /// Only valid immediately after [`push_byte`](Self::push_byte) returns `true`.
-    pub fn take_raw(&self) -> &[u8] {
+    pub(crate) fn take_raw(&self) -> &[u8] {
         &self.buf[..self.pos]
     }
 
     /// Payload length decoded FROM the most recently completed frame header.
-    pub const fn last_payload_len(&self) -> u16 {
+    pub(crate) const fn last_payload_len(&self) -> u16 {
         self.payload_len
     }
 }
@@ -244,7 +244,7 @@ impl RxParser {
 /// The transport encodes outgoing [`StpFrame`]s INTO the TX window and
 /// advances the window as ACKs arrive. The RX side assembles raw bytes
 /// FROM UART INTO complete frames via [`RxParser`].
-pub struct StpTransport {
+pub(crate) struct StpTransport {
     /// Sliding window of in-flight TX frames.
     tx_window: [Option<TxEntry>; WINDOW_SIZE],
     /// Sequence number for the next transmitted frame (mod 8).
@@ -270,7 +270,7 @@ impl Default for StpTransport {
 impl StpTransport {
     /// Create a new transport in the idle state using [`Config::default`].
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::new_with_config(&Config::default())
     }
 
@@ -284,7 +284,7 @@ impl StpTransport {
         reason = "no_std kernel context  -  heap allocation is unavailable; 7-slot window is the spec-mandated size"
     )]
     #[must_use]
-    pub fn new_with_config(config: &Config) -> Self {
+    pub(crate) fn new_with_config(config: &Config) -> Self {
         // WHY: Option<TxEntry> is not Copy because TxEntry has a large array,
         // so we cannot use array repeat syntax [None; N]. Build manually.
         Self {
@@ -298,13 +298,13 @@ impl StpTransport {
 
     /// Retry limit this transport was constructed with.
     #[must_use]
-    pub const fn retry_limit(&self) -> u8 {
+    pub(crate) const fn retry_limit(&self) -> u8 {
         self.retry_limit
     }
 
     /// TX timeout in milliseconds this transport was constructed with.
     #[must_use]
-    pub const fn tx_timeout_ms(&self) -> u32 {
+    pub(crate) const fn tx_timeout_ms(&self) -> u32 {
         self.tx_timeout_ms
     }
 
@@ -313,7 +313,7 @@ impl StpTransport {
     /// Returns the slot index on success, or [`TransportError::WindowFull`]
     /// when all [`WINDOW_SIZE`] slots are occupied.
     #[must_use = "enqueue failure must be handled"]
-    pub fn enqueue(&mut self, frame: &StpFrame) -> Result<usize, TransportError> {
+    pub(crate) fn enqueue(&mut self, frame: &StpFrame) -> Result<usize, TransportError> {
         for (idx, slot) in self.tx_window.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(TxEntry::from_frame(frame));
@@ -329,7 +329,7 @@ impl StpTransport {
     /// Frees the corresponding window slot. Returns [`TransportError::StaleAck`]
     /// if `seq` is not present in the current window.
     #[must_use = "ack failure must be handled"]
-    pub fn acknowledge(&mut self, seq: u8) -> Result<(), TransportError> {
+    pub(crate) fn acknowledge(&mut self, seq: u8) -> Result<(), TransportError> {
         for slot in &mut self.tx_window {
             if let Some(entry) = slot
                 && entry.seq == seq
@@ -347,7 +347,7 @@ impl StpTransport {
     /// when the counter reaches the configured [`Config::retry_limit`], or
     /// [`TransportError::StaleAck`] if `seq` is not in the window.
     #[must_use = "retransmit failure must be handled"]
-    pub fn retransmit(&mut self, seq: u8) -> Result<&[u8], TransportError> {
+    pub(crate) fn retransmit(&mut self, seq: u8) -> Result<&[u8], TransportError> {
         for slot in &mut self.tx_window {
             if let Some(entry) = slot
                 && entry.seq == seq
@@ -369,7 +369,7 @@ impl StpTransport {
     ///
     /// Returns `Some(&[u8])` with the raw frame bytes when a complete frame
     /// has been assembled, or `None` if more bytes are needed.
-    pub fn receive_byte(&mut self, byte: u8) -> Option<&[u8]> {
+    pub(crate) fn receive_byte(&mut self, byte: u8) -> Option<&[u8]> {
         if self.rx_parser.push_byte(byte) {
             Some(self.rx_parser.take_raw())
         } else {
@@ -378,12 +378,12 @@ impl StpTransport {
     }
 
     /// Number of in-flight frames currently occupying window slots.
-    pub fn in_flight(&self) -> usize {
+    pub(crate) fn in_flight(&self) -> usize {
         self.tx_window.iter().filter(|s| s.is_some()).count()
     }
 
     /// Next TX sequence number (0–7).
-    pub const fn next_seq(&self) -> u8 {
+    pub(crate) const fn next_seq(&self) -> u8 {
         self.tx_seq
     }
 }

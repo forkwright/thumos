@@ -53,7 +53,7 @@ const fn key_to_digit(key: Key) -> Option<char> {
 /// Produces patterns like `123-456-7890` for 10-digit numbers.
 /// Shorter or longer strings are returned as-is.
 #[must_use]
-pub fn format_number(digits: &str) -> String {
+pub(crate) fn format_number(digits: &str) -> String {
     match digits.len() {
         10 => {
             let (area, rest) = digits.split_at(3);
@@ -86,7 +86,7 @@ pub struct PhoneDialer {
 impl PhoneDialer {
     /// Create a new dialer with the given pixel width.
     #[must_use]
-    pub const fn new(width: u32) -> Self {
+    pub(crate) const fn new(width: u32) -> Self {
         Self {
             digits: String::new(),
             call_pressed: false,
@@ -98,30 +98,30 @@ impl PhoneDialer {
 
     /// Current raw digit string (no formatting separators).
     #[must_use]
-    pub fn digits(&self) -> &str {
+    pub(crate) fn digits(&self) -> &str {
         &self.digits
     }
 
     /// Formatted display number (e.g., `123-456-7890`).
     #[must_use]
-    pub fn formatted(&self) -> String {
+    pub(crate) fn formatted(&self) -> String {
         format_number(&self.digits)
     }
 
     /// Whether the Call button was pressed since the last [`clear_actions`](Self::clear_actions).
     #[must_use]
-    pub const fn is_call_pressed(&self) -> bool {
+    pub(crate) const fn is_call_pressed(&self) -> bool {
         self.call_pressed
     }
 
     /// Whether the End button was pressed since the last [`clear_actions`](Self::clear_actions).
     #[must_use]
-    pub const fn is_end_pressed(&self) -> bool {
+    pub(crate) const fn is_end_pressed(&self) -> bool {
         self.end_pressed
     }
 
     /// Clear Call/End action flags.
-    pub const fn clear_actions(&mut self) {
+    pub(crate) const fn clear_actions(&mut self) {
         self.call_pressed = false;
         self.end_pressed = false;
     }

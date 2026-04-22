@@ -8,14 +8,14 @@ use zeroize::Zeroize;
 ///
 /// Uses the [`zeroize`] crate, which issues volatile writes to prevent dead-store
 /// elimination in release builds.
-pub fn secure_zero(buf: &mut [u8]) {
+pub(crate) fn secure_zero(buf: &mut [u8]) {
     buf.zeroize();
 }
 
 /// What data should be erased during a wipe operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum WipeTarget {
+pub(crate) enum WipeTarget {
     /// Cryptographic key material only (fastest; disables decryption).
     Keys,
     /// Contact database.
@@ -31,7 +31,7 @@ pub enum WipeTarget {
 /// How a path or partition should be wiped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum WipeMethod {
+pub(crate) enum WipeMethod {
     /// Overwrite with zeros.
     Zero,
     /// Overwrite with cryptographically random bytes.
@@ -42,13 +42,13 @@ pub enum WipeMethod {
 
 /// A single target in a wipe plan.
 #[derive(Debug, Clone)]
-pub struct WipePath {
+pub(crate) struct WipePath {
     /// Filesystem path or block device to wipe.
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
     /// Erasure method to apply.
-    pub method: WipeMethod,
+    pub(crate) method: WipeMethod,
     /// Execution priority: lower numbers run first.
-    pub priority: u8,
+    pub(crate) priority: u8,
 }
 
 /// Generate the ordered list of paths and partitions to wipe for `target`.
@@ -57,7 +57,7 @@ pub struct WipePath {
 /// is responsible for executing the wipe in priority ORDER and applying the
 /// specified method to each path.
 #[must_use]
-pub fn wipe_plan(target: WipeTarget) -> Vec<WipePath> {
+pub(crate) fn wipe_plan(target: WipeTarget) -> Vec<WipePath> {
     match target {
         WipeTarget::Keys => key_paths(),
 

@@ -14,7 +14,7 @@ use nom::sequence::{delimited, preceded};
 /// Raw AT response FROM the modem.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Response {
+pub(crate) enum Response {
     /// Command succeeded.
     #[default]
     Ok,
@@ -33,7 +33,7 @@ pub enum Response {
 /// Unsolicited result codes FROM the modem.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Urc {
+pub(crate) enum Urc {
     /// Incoming call.
     #[default]
     Ring,
@@ -80,7 +80,7 @@ pub enum Urc {
 /// Network registration status (3GPP TS 27.007 +CREG).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum RegStatus {
+pub(crate) enum RegStatus {
     /// Not registered, not searching.
     NotRegistered,
     /// Registered on home network.
@@ -110,13 +110,13 @@ impl From<u8> for RegStatus {
 
 /// Signal strength in dBm, converted FROM AT+CSQ RSSI value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SignalStrength {
+pub(crate) struct SignalStrength {
     /// Raw AT+CSQ RSSI value (0-31, 99=unknown).
-    pub rssi_raw: u8,
+    pub(crate) rssi_raw: u8,
     /// Signal strength in dBm.
-    pub dbm: i16,
+    pub(crate) dbm: i16,
     /// Signal bar count (0-5).
-    pub bars: u8,
+    pub(crate) bars: u8,
 }
 
 impl From<u8> for SignalStrength {
@@ -146,7 +146,7 @@ impl From<u8> for SignalStrength {
 // (variable whitespace, optional fields, interleaved URCs).
 
 /// Parse a final result code (OK, ERROR, +CME ERROR, +CMS ERROR).
-pub fn parse_final_result(input: &str) -> IResult<&str, Response> {
+pub(crate) fn parse_final_result(input: &str) -> IResult<&str, Response> {
     alt((
         value(Response::Ok, tag("OK")),
         value(Response::Error, tag("ERROR")),
@@ -163,7 +163,7 @@ pub fn parse_final_result(input: &str) -> IResult<&str, Response> {
 }
 
 /// Parse a +CSQ response: +CSQ: <rssi>,<ber>
-pub fn parse_csq(input: &str) -> IResult<&str, (u8, u8)> {
+pub(crate) fn parse_csq(input: &str) -> IResult<&str, (u8, u8)> {
     preceded(
         tag("+CSQ: "),
         (
@@ -175,7 +175,7 @@ pub fn parse_csq(input: &str) -> IResult<&str, (u8, u8)> {
 }
 
 /// Parse a +CREG URC: +CREG: <stat>[,<lac>,<ci>]
-pub fn parse_creg(input: &str) -> IResult<&str, Urc> {
+pub(crate) fn parse_creg(input: &str) -> IResult<&str, Urc> {
     let (input, _) = tag("+CREG: ").parse(input)?;
     let (input, stat) = map_res(digit1, str::parse::<u8>).parse(input)?;
     let (input, lac_ci) = opt((
@@ -210,12 +210,12 @@ pub fn parse_creg(input: &str) -> IResult<&str, Urc> {
 }
 
 /// Parse a RING URC.
-pub fn parse_ring(input: &str) -> IResult<&str, Urc> {
+pub(crate) fn parse_ring(input: &str) -> IResult<&str, Urc> {
     value(Urc::Ring, tag("RING")).parse(input)
 }
 
 /// Parse a +CMTI URC: +CMTI: "<storage>",<index>
-pub fn parse_cmti(input: &str) -> IResult<&str, Urc> {
+pub(crate) fn parse_cmti(input: &str) -> IResult<&str, Urc> {
     let (input, _) = tag("+CMTI: ").parse(input)?;
     let (input, storage) =
         delimited(char('"'), map(take_until("\""), String::from), char('"')).parse(input)?;
@@ -225,62 +225,62 @@ pub fn parse_cmti(input: &str) -> IResult<&str, Urc> {
 }
 
 /// Build an AT command string with proper CR/LF termination.
-pub fn build_cmd(cmd: &str) -> String {
+pub(crate) fn build_cmd(cmd: &str) -> String {
     format!("{cmd}\r\n")
 }
 
 /// Common AT commands.
-pub mod cmd {
+pub(crate) mod cmd {
     /// Check modem is alive.
-    pub const AT: &str = "AT";
+    pub(crate) const AT: &str = "AT";
     /// Request manufacturer identification.
-    pub const CGMI: &str = "AT+CGMI";
+    pub(crate) const CGMI: &str = "AT+CGMI";
     /// Request model identification.
-    pub const CGMM: &str = "AT+CGMM";
+    pub(crate) const CGMM: &str = "AT+CGMM";
     /// Request IMEI.
-    pub const CGSN: &str = "AT+CGSN";
+    pub(crate) const CGSN: &str = "AT+CGSN";
     /// Request signal quality.
-    pub const CSQ: &str = "AT+CSQ";
+    pub(crate) const CSQ: &str = "AT+CSQ";
     /// Enable network registration URCs.
-    pub const CREG_ENABLE: &str = "AT+CREG=2";
+    pub(crate) const CREG_ENABLE: &str = "AT+CREG=2";
     /// Query network registration.
-    pub const CREG_QUERY: &str = "AT+CREG?";
+    pub(crate) const CREG_QUERY: &str = "AT+CREG?";
     /// Enable caller ID.
-    pub const CLIP_ENABLE: &str = "AT+CLIP=1";
+    pub(crate) const CLIP_ENABLE: &str = "AT+CLIP=1";
     /// Dial a number.
-    pub fn dial(number: &str) -> String {
+    pub(crate) fn dial(number: &str) -> String {
         format!("ATD{number};")
     }
     /// Answer incoming call.
-    pub const ATA: &str = "ATA";
+    pub(crate) const ATA: &str = "ATA";
     /// Hang up.
-    pub const ATH: &str = "ATH";
+    pub(crate) const ATH: &str = "ATH";
     /// Set SMS text mode.
-    pub const CMGF_TEXT: &str = "AT+CMGF=1";
+    pub(crate) const CMGF_TEXT: &str = "AT+CMGF=1";
     /// Set SMS PDU mode.
-    pub const CMGF_PDU: &str = "AT+CMGF=0";
+    pub(crate) const CMGF_PDU: &str = "AT+CMGF=0";
     /// Send SMS (text mode). Returns prompt ">" for message body.
-    pub fn cmgs(number: &str) -> String {
+    pub(crate) fn cmgs(number: &str) -> String {
         format!("AT+CMGS=\"{number}\"")
     }
     /// Read SMS at index.
-    pub fn cmgr(index: u16) -> String {
+    pub(crate) fn cmgr(index: u16) -> String {
         format!("AT+CMGR={index}")
     }
     /// Delete SMS at index.
-    pub fn cmgd(index: u16) -> String {
+    pub(crate) fn cmgd(index: u16) -> String {
         format!("AT+CMGD={index}")
     }
     /// Query operator name.
-    pub const COPS_QUERY: &str = "AT+COPS?";
+    pub(crate) const COPS_QUERY: &str = "AT+COPS?";
     /// Enable extended error reporting.
-    pub const CMEE_ENABLE: &str = "AT+CMEE=1";
+    pub(crate) const CMEE_ENABLE: &str = "AT+CMEE=1";
     /// Query SIM status.
-    pub const CPIN_QUERY: &str = "AT+CPIN?";
+    pub(crate) const CPIN_QUERY: &str = "AT+CPIN?";
     /// Power off radio (airplane mode).
-    pub const CFUN_OFF: &str = "AT+CFUN=0";
+    pub(crate) const CFUN_OFF: &str = "AT+CFUN=0";
     /// Power on radio (full functionality).
-    pub const CFUN_ON: &str = "AT+CFUN=1";
+    pub(crate) const CFUN_ON: &str = "AT+CFUN=1";
     /// Restrict network selection to LTE only (refuse 2G/3G).
     ///
     /// `AT+COPS=0,,,7` sets automatic operator selection with access technology
@@ -289,7 +289,7 @@ pub mod cmd {
     ///
     /// 3GPP TS 27.007 § 7.3: the fourth parameter is the access technology:
     /// 0=GSM, 2=UTRAN, 7=E-UTRAN (LTE).
-    pub const COPS_LTE_ONLY: &str = "AT+COPS=0,,,7";
+    pub(crate) const COPS_LTE_ONLY: &str = "AT+COPS=0,,,7";
 }
 
 #[cfg(test)]

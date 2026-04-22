@@ -13,23 +13,23 @@ const CK_LABEL: &[u8] = &[0x02];
 
 /// Encrypted message produced by [`encrypt`].
 #[derive(Debug, Clone)]
-pub struct CiphertextMessage {
+pub(crate) struct CiphertextMessage {
     /// Message counter  -  used to reconstruct the nonce on the receiving side.
-    pub counter: u32,
+    pub(crate) counter: u32,
     /// Ciphertext with appended AES-256-GCM authentication tag (16 bytes).
-    pub ciphertext: Vec<u8>,
+    pub(crate) ciphertext: Vec<u8>,
 }
 
 /// Ratchet state: current chain key and message counter.
 #[derive(Clone)]
-pub struct RatchetState {
+pub(crate) struct RatchetState {
     chain_key: [u8; 32],
     pub(crate) counter: u32,
 }
 
 impl RatchetState {
     /// Initialises a ratchet FROM a 32-byte root key.
-    pub const fn new(root_key: [u8; 32]) -> Self {
+    pub(crate) const fn new(root_key: [u8; 32]) -> Self {
         Self {
             chain_key: root_key,
             counter: 0,
@@ -37,7 +37,7 @@ impl RatchetState {
     }
 
     /// Returns the current message counter.
-    pub const fn counter(&self) -> u32 {
+    pub(crate) const fn counter(&self) -> u32 {
         self.counter
     }
 }
@@ -57,7 +57,7 @@ impl std::fmt::Debug for RatchetState {
 ///
 /// Returns [`Error::InvalidKey`] if the derived message key is malformed.
 /// Returns [`Error::Encryption`] if AES-256-GCM sealing fails.
-pub fn encrypt(state: &mut RatchetState, plaintext: &[u8]) -> Result<CiphertextMessage> {
+pub(crate) fn encrypt(state: &mut RatchetState, plaintext: &[u8]) -> Result<CiphertextMessage> {
     let message_key = derive_message_key(&state.chain_key);
     let next_chain_key = derive_next_chain_key(&state.chain_key);
 
@@ -84,7 +84,7 @@ pub fn encrypt(state: &mut RatchetState, plaintext: &[u8]) -> Result<CiphertextM
 ///
 /// Returns [`Error::InvalidKey`] if the derived message key is malformed.
 /// Returns [`Error::Decryption`] if AES-256-GCM authentication or decryption fails.
-pub fn decrypt(state: &mut RatchetState, msg: &CiphertextMessage) -> Result<Vec<u8>> {
+pub(crate) fn decrypt(state: &mut RatchetState, msg: &CiphertextMessage) -> Result<Vec<u8>> {
     let message_key = derive_message_key(&state.chain_key);
     let next_chain_key = derive_next_chain_key(&state.chain_key);
 

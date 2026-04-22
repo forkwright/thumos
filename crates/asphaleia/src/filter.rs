@@ -17,11 +17,11 @@ pub struct Filter {
     ruleset: RuleSet,
     blocklist: Option<DnsBlocklist>,
     /// Total packets that resulted in [`Action::Allow`] or [`Action::LogAndAllow`].
-    pub packets_allowed: u64,
+    pub(crate) packets_allowed: u64,
     /// Total packets that resulted in [`Action::Deny`] or [`Action::LogAndDeny`].
-    pub packets_denied: u64,
+    pub(crate) packets_denied: u64,
     /// Total packets that produced a log entry (either `LogAndAllow` or `LogAndDeny`).
-    pub packets_logged: u64,
+    pub(crate) packets_logged: u64,
 }
 
 // Impl blocks
@@ -29,13 +29,13 @@ pub struct Filter {
 impl Filter {
     /// Create a filter with an empty rule set and no DNS blocklist.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Create a filter with a pre-populated rule set.
     #[must_use]
-    pub fn with_ruleset(ruleset: RuleSet) -> Self {
+    pub(crate) fn with_ruleset(ruleset: RuleSet) -> Self {
         Self {
             ruleset,
             ..Self::default()
@@ -44,12 +44,12 @@ impl Filter {
 
     /// Attach a DNS blocklist. DNS queries matching the blocklist are denied
     /// before any rules are evaluated.
-    pub fn set_blocklist(&mut self, blocklist: DnsBlocklist) {
+    pub(crate) fn set_blocklist(&mut self, blocklist: DnsBlocklist) {
         self.blocklist = Some(blocklist);
     }
 
     /// Provide mutable access to the rule set.
-    pub const fn ruleset_mut(&mut self) -> &mut RuleSet {
+    pub(crate) const fn ruleset_mut(&mut self) -> &mut RuleSet {
         &mut self.ruleset
     }
 
@@ -57,7 +57,7 @@ impl Filter {
     ///
     /// All packets from the modem are treated as inbound (`Direction::In`).
     /// Packets that fail to parse are denied (fail-closed).
-    pub fn evaluate(&mut self, packet: &[u8]) -> Action {
+    pub(crate) fn evaluate(&mut self, packet: &[u8]) -> Action {
         let action = self.classify(packet);
         self.record(action);
         action

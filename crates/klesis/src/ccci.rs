@@ -17,15 +17,15 @@ use crate::error::{ParseSnafu, Result};
 /// Maximum CCCI message payload size (bytes).
 ///
 /// Source: `eccci/mt6739/ccci_config.h`
-pub const CCCI_MTU: usize = 3456;
+pub(crate) const CCCI_MTU: usize = 3456;
 
 /// Magic value placed in `data[0]` to mark an internal control message.
 ///
 /// Source: `eccci/inc/ccci_core.h:33`
-pub const CCCI_MAGIC_NUM: u32 = 0xFFFF_FFFF;
+pub(crate) const CCCI_MAGIC_NUM: u32 = 0xFFFF_FFFF;
 
 /// Wire size of a [`CcciHeader`] in bytes.
-pub const HEADER_SIZE: usize = 16;
+pub(crate) const HEADER_SIZE: usize = 16;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,7 +36,7 @@ pub const HEADER_SIZE: usize = 16;
 /// placed in the header's `channel` field.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum CcciChannel {
+pub(crate) enum CcciChannel {
     /// Modem control handshake, AP-receive direction.
     #[default]
     ControlRx,
@@ -91,7 +91,7 @@ pub enum CcciChannel {
 impl CcciChannel {
     /// Raw channel number placed in the CCCI header `channel` field.
     #[must_use]
-    pub const fn id(self) -> u32 {
+    pub(crate) const fn id(self) -> u32 {
         match self {
             Self::ControlRx => 0,
             Self::ControlTx => 1,
@@ -177,20 +177,20 @@ impl TryFrom<u32> for CcciChannel {
 ///
 /// Source: `eccci/inc/ccci_core.h:33`, `docs/DRIVER-INTERFACES.md §1.6`
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CcciHeader {
+pub(crate) struct CcciHeader {
     /// Channel-specific words. `data[0] == CCCI_MAGIC_NUM` signals a control
     /// message; for data channels `data[0]` carries the packet length.
-    pub data: [u32; 2],
+    pub(crate) data: [u32; 2],
     /// Logical channel number (see [`CcciChannel::id`]).
-    pub channel: u32,
+    pub(crate) channel: u32,
     /// Sequence number, flags, or C2K control word depending on channel.
-    pub reserved: u32,
+    pub(crate) reserved: u32,
 }
 
 impl CcciHeader {
     /// Construct a header FROM its four words.
     #[must_use]
-    pub const fn new(data0: u32, data1: u32, channel: u32, reserved: u32) -> Self {
+    pub(crate) const fn new(data0: u32, data1: u32, channel: u32, reserved: u32) -> Self {
         Self {
             data: [data0, data1],
             channel,
@@ -200,7 +200,7 @@ impl CcciHeader {
 
     /// Encode to the 16-byte little-endian wire format.
     #[must_use]
-    pub const fn to_bytes(self) -> [u8; HEADER_SIZE] {
+    pub(crate) const fn to_bytes(self) -> [u8; HEADER_SIZE] {
         let [d00, d01, d02, d03] = self.data[0].to_le_bytes();
         let [d10, d11, d12, d13] = self.data[1].to_le_bytes();
         let [c0, c1, c2, c3] = self.channel.to_le_bytes();
@@ -216,7 +216,7 @@ impl CcciHeader {
     ///
     /// Returns [`crate::error::Error::Parse`] when `buf` is shorter than
     /// [`HEADER_SIZE`].
-    pub fn from_bytes(buf: &[u8]) -> Result<Self> {
+    pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self> {
         ensure!(
             buf.len() >= HEADER_SIZE,
             ParseSnafu {
@@ -259,7 +259,7 @@ impl CcciHeader {
 
     /// Returns `true` when `data[0]` holds the internal-control magic value.
     #[must_use]
-    pub const fn is_internal(&self) -> bool {
+    pub(crate) const fn is_internal(&self) -> bool {
         let [d0, ..] = self.data;
         d0 == CCCI_MAGIC_NUM
     }
@@ -267,23 +267,23 @@ impl CcciHeader {
 
 /// A complete CCCI message: 16-byte header plus variable-length payload.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CcciMessage {
+pub(crate) struct CcciMessage {
     /// Parsed header.
-    pub header: CcciHeader,
+    pub(crate) header: CcciHeader,
     /// Raw payload bytes (up to [`CCCI_MTU`] bytes).
-    pub payload: Vec<u8>,
+    pub(crate) payload: Vec<u8>,
 }
 
 impl CcciMessage {
     /// Create a message FROM a header and payload.
     #[must_use]
-    pub const fn new(header: CcciHeader, payload: Vec<u8>) -> Self {
+    pub(crate) const fn new(header: CcciHeader, payload: Vec<u8>) -> Self {
         Self { header, payload }
     }
 
     /// Encode header followed by payload INTO a single byte buffer.
     #[must_use]
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_SIZE + self.payload.len());
         out.extend_from_slice(&self.header.to_bytes());
         out.extend_from_slice(&self.payload);
@@ -297,7 +297,7 @@ impl CcciMessage {
     ///
     /// Returns [`crate::error::Error::Parse`] when `buf` is shorter than
     /// [`HEADER_SIZE`].
-    pub fn from_bytes(buf: &[u8]) -> Result<Self> {
+    pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self> {
         let header = CcciHeader::from_bytes(buf)?;
         let payload = buf.get(HEADER_SIZE..).unwrap_or(&[]).to_vec();
         Ok(Self { header, payload })

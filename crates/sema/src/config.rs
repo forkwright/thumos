@@ -20,21 +20,21 @@ use serde::{Deserialize, Serialize};
 /// Source: IMSI catchers typically outpower legitimate cells to force
 /// reselection; -50 dBm indicates a transmitter within ~10 m line-of-sight,
 /// which is implausible for a licensed cell site in typical deployment.
-pub const DEFAULT_UNUSUALLY_STRONG_SIGNAL_DBM: i32 = -50;
+pub(crate) const DEFAULT_UNUSUALLY_STRONG_SIGNAL_DBM: i32 = -50;
 
 /// Minimum sensible signal threshold (never flag).
 ///
 /// Source: -30 dBm is roughly "device touching the antenna"; values above
 /// this are physically implausible but tolerated to avoid clamping operator
 /// intent.
-pub const MIN_UNUSUALLY_STRONG_SIGNAL_DBM: i32 = -30;
+pub(crate) const MIN_UNUSUALLY_STRONG_SIGNAL_DBM: i32 = -30;
 
 /// Maximum sensible signal threshold (flag almost everything).
 ///
 /// Source: -110 dBm is at the edge of GSM demodulation; below this, a signal
 /// would not be usable as a serving cell, so flagging it as "unusually strong"
 /// is never correct.
-pub const MIN_BOUND_DBM: i32 = -110;
+pub(crate) const MIN_BOUND_DBM: i32 = -110;
 
 // ── Rapid reselection threshold ───────────────────────────────────────────────
 
@@ -43,17 +43,17 @@ pub const MIN_BOUND_DBM: i32 = -110;
 ///
 /// Source: normal mobility produces 0-2 reselections per observation window;
 /// 3+ within a short window suggests coerced reselection.
-pub const DEFAULT_RAPID_RESELECTION_THRESHOLD: u32 = 3;
+pub(crate) const DEFAULT_RAPID_RESELECTION_THRESHOLD: u32 = 3;
 
 /// Minimum accepted rapid-reselection threshold.
 ///
 /// A threshold of 0 would flag every observation; 1 flags any reselection.
-pub const MIN_RAPID_RESELECTION_THRESHOLD: u32 = 1;
+pub(crate) const MIN_RAPID_RESELECTION_THRESHOLD: u32 = 1;
 
 /// Maximum accepted rapid-reselection threshold.
 ///
 /// Beyond 100 the signal effectively never fires; documented as a sanity bound.
-pub const MAX_RAPID_RESELECTION_THRESHOLD: u32 = 100;
+pub(crate) const MAX_RAPID_RESELECTION_THRESHOLD: u32 = 100;
 
 // ── Threat-score weights ──────────────────────────────────────────────────────
 
@@ -62,22 +62,22 @@ pub const MAX_RAPID_RESELECTION_THRESHOLD: u32 = 100;
 /// Source: cipher downgrade is the strongest single indicator of active
 /// interception; the historical value of 40 lifts a lone alert to Medium
 /// level on its own.
-pub const DEFAULT_WEIGHT_CIPHER_DOWNGRADE: u32 = 40;
+pub(crate) const DEFAULT_WEIGHT_CIPHER_DOWNGRADE: u32 = 40;
 
 /// Default weight for an unannounced handover (sudden-tower-change).
-pub const DEFAULT_WEIGHT_UNUSUAL_LAC_CID: u32 = 30;
+pub(crate) const DEFAULT_WEIGHT_UNUSUAL_LAC_CID: u32 = 30;
 
 /// Default weight for an unknown tower advertising an unusually strong signal.
-pub const DEFAULT_WEIGHT_ABNORMAL_SIGNAL: u32 = 20;
+pub(crate) const DEFAULT_WEIGHT_ABNORMAL_SIGNAL: u32 = 20;
 
 /// Default weight for rapid-reselection.
-pub const DEFAULT_WEIGHT_RAPID_RESELECTION: u32 = 10;
+pub(crate) const DEFAULT_WEIGHT_RAPID_RESELECTION: u32 = 10;
 
 /// Upper bound on any single weight.
 ///
 /// Source: the Critical threshold is 80; no single alert should exceed that
 /// on its own because Critical means "multiple strong indicators".
-pub const MAX_SIGNAL_WEIGHT: u32 = 80;
+pub(crate) const MAX_SIGNAL_WEIGHT: u32 = 80;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -89,33 +89,33 @@ pub const MAX_SIGNAL_WEIGHT: u32 = 80;
 /// anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Config {
+pub(crate) struct Config {
     /// Signal threshold (dBm, higher is stronger) above which a new tower is
     /// flagged as unusually strong.
     ///
     /// **Affects:** false-positive rate of `UnusuallyStrongNewTower`.
     /// **Evidence:** measured tower-signal histogram in the deployment area.
     /// **Bounds:** `[MIN_BOUND_DBM, MIN_UNUSUALLY_STRONG_SIGNAL_DBM]`.
-    pub unusually_strong_signal_dbm: i32,
+    pub(crate) unusually_strong_signal_dbm: i32,
 
     /// Reselection count above which `RapidReselection` fires.
     ///
     /// **Affects:** sensitivity to coerced handovers vs. normal mobility.
     /// **Evidence:** baseline reselection-per-minute in the target area.
     /// **Bounds:** `[MIN_RAPID_RESELECTION_THRESHOLD, MAX_RAPID_RESELECTION_THRESHOLD]`.
-    pub rapid_reselection_threshold: u32,
+    pub(crate) rapid_reselection_threshold: u32,
 
     /// Threat-score weight for a cipher-downgrade alert.
-    pub weight_cipher_downgrade: u32,
+    pub(crate) weight_cipher_downgrade: u32,
 
     /// Threat-score weight for an unannounced handover.
-    pub weight_unusual_lac_cid: u32,
+    pub(crate) weight_unusual_lac_cid: u32,
 
     /// Threat-score weight for an abnormally strong unknown tower.
-    pub weight_abnormal_signal: u32,
+    pub(crate) weight_abnormal_signal: u32,
 
     /// Threat-score weight for rapid-reselection.
-    pub weight_rapid_reselection: u32,
+    pub(crate) weight_rapid_reselection: u32,
 }
 
 impl Default for Config {
@@ -136,7 +136,7 @@ impl Config {
     ///
     /// Logs at `warn` and falls back to default for out-of-range values.
     #[must_use]
-    pub fn unusually_strong_signal_dbm(&self) -> i32 {
+    pub(crate) fn unusually_strong_signal_dbm(&self) -> i32 {
         let v = self.unusually_strong_signal_dbm;
         if (MIN_BOUND_DBM..=MIN_UNUSUALLY_STRONG_SIGNAL_DBM).contains(&v) {
             v
@@ -152,7 +152,7 @@ impl Config {
 
     /// Bounded rapid-reselection threshold.
     #[must_use]
-    pub fn rapid_reselection_threshold(&self) -> u32 {
+    pub(crate) fn rapid_reselection_threshold(&self) -> u32 {
         bounded_u32(
             self.rapid_reselection_threshold,
             DEFAULT_RAPID_RESELECTION_THRESHOLD,
@@ -164,7 +164,7 @@ impl Config {
 
     /// Bounded cipher-downgrade weight.
     #[must_use]
-    pub fn weight_cipher_downgrade(&self) -> u32 {
+    pub(crate) fn weight_cipher_downgrade(&self) -> u32 {
         bounded_weight(
             self.weight_cipher_downgrade,
             DEFAULT_WEIGHT_CIPHER_DOWNGRADE,
@@ -174,7 +174,7 @@ impl Config {
 
     /// Bounded unusual-LAC/CID weight.
     #[must_use]
-    pub fn weight_unusual_lac_cid(&self) -> u32 {
+    pub(crate) fn weight_unusual_lac_cid(&self) -> u32 {
         bounded_weight(
             self.weight_unusual_lac_cid,
             DEFAULT_WEIGHT_UNUSUAL_LAC_CID,
@@ -184,7 +184,7 @@ impl Config {
 
     /// Bounded abnormal-signal weight.
     #[must_use]
-    pub fn weight_abnormal_signal(&self) -> u32 {
+    pub(crate) fn weight_abnormal_signal(&self) -> u32 {
         bounded_weight(
             self.weight_abnormal_signal,
             DEFAULT_WEIGHT_ABNORMAL_SIGNAL,
@@ -194,7 +194,7 @@ impl Config {
 
     /// Bounded rapid-reselection weight.
     #[must_use]
-    pub fn weight_rapid_reselection(&self) -> u32 {
+    pub(crate) fn weight_rapid_reselection(&self) -> u32 {
         bounded_weight(
             self.weight_rapid_reselection,
             DEFAULT_WEIGHT_RAPID_RESELECTION,

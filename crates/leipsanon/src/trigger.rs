@@ -13,7 +13,7 @@ use crate::targets::WipeLevel;
 /// A condition that activates a wipe.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum PanicTrigger {
+pub(crate) enum PanicTrigger {
     /// A specific key-code sequence held simultaneously.
     KeyCombo(Vec<u8>),
     /// A timer that fires after the given duration has elapsed.
@@ -25,7 +25,7 @@ pub enum PanicTrigger {
 /// The event or state snapshot passed to [`TriggerConfig::check_trigger`].
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum TriggerInput<'a> {
+pub(crate) enum TriggerInput<'a> {
     /// Active key codes at the time of evaluation.
     Keys(&'a [u8]),
     /// Signal number received.
@@ -39,7 +39,7 @@ pub enum TriggerInput<'a> {
 /// The first matching trigger wins. Use [`TriggerConfig::add`] to build up the
 /// configuration and [`TriggerConfig::check_trigger`] to evaluate it.
 #[derive(Debug, Default)]
-pub struct TriggerConfig {
+pub(crate) struct TriggerConfig {
     entries: Vec<(PanicTrigger, WipeLevel)>,
 }
 
@@ -48,12 +48,12 @@ pub struct TriggerConfig {
 impl TriggerConfig {
     /// Create an empty configuration.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Register `trigger` to activate `level`.
-    pub fn add(&mut self, trigger: PanicTrigger, level: WipeLevel) {
+    pub(crate) fn add(&mut self, trigger: PanicTrigger, level: WipeLevel) {
         self.entries.push((trigger, level));
     }
 
@@ -62,7 +62,7 @@ impl TriggerConfig {
     /// Returns the [`WipeLevel`] for the first matching trigger, or `None` if
     /// no trigger matches.
     #[must_use]
-    pub fn check_trigger(&self, input: &TriggerInput<'_>) -> Option<WipeLevel> {
+    pub(crate) fn check_trigger(&self, input: &TriggerInput<'_>) -> Option<WipeLevel> {
         for (trigger, level) in &self.entries {
             if trigger_matches(trigger, input) {
                 return Some(*level);

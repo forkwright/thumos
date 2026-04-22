@@ -20,7 +20,7 @@ pub struct Framebuffer {
 
 impl Framebuffer {
     /// Allocate a new framebuffer filled with black.
-    pub fn new(width: u32, height: u32) -> Self {
+    pub(crate) fn new(width: u32, height: u32) -> Self {
         let size = usize::try_from(width).unwrap_or_default()
             * usize::try_from(height).unwrap_or_default()
             * BYTES_PER_PIXEL;
@@ -32,7 +32,7 @@ impl Framebuffer {
     }
 
     /// Set a single pixel. Out-of-bounds coordinates are silently ignored.
-    pub fn set_pixel(&mut self, x: u32, y: u32, color: Rgb565) {
+    pub(crate) fn set_pixel(&mut self, x: u32, y: u32, color: Rgb565) {
         if x >= self.width || y >= self.height {
             return;
         }
@@ -51,7 +51,7 @@ impl Framebuffer {
     }
 
     /// Fill a rectangular region with `color`. Clips to the framebuffer boundary.
-    pub fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: Rgb565) {
+    pub(crate) fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: Rgb565) {
         let bytes = color.0.to_le_bytes();
         let y_end = y.saturating_add(h).min(self.height);
         let x_end = x.saturating_add(w).min(self.width);
@@ -73,7 +73,7 @@ impl Framebuffer {
     }
 
     /// Fill the entire framebuffer with `color`.
-    pub fn clear(&mut self, color: Rgb565) {
+    pub(crate) fn clear(&mut self, color: Rgb565) {
         let bytes = color.0.to_le_bytes();
         for chunk in self.buf.chunks_exact_mut(BYTES_PER_PIXEL) {
             if let Ok(slot) = <&mut [u8; BYTES_PER_PIXEL]>::try_from(chunk) {
@@ -83,17 +83,17 @@ impl Framebuffer {
     }
 
     /// Display width in pixels.
-    pub const fn width(&self) -> u32 {
+    pub(crate) const fn width(&self) -> u32 {
         self.width
     }
 
     /// Display height in pixels.
-    pub const fn height(&self) -> u32 {
+    pub(crate) const fn height(&self) -> u32 {
         self.height
     }
 
     /// Raw byte slice for direct hardware write. Two bytes per pixel, little-endian.
-    pub const fn as_bytes(&self) -> &[u8] {
+    pub(crate) const fn as_bytes(&self) -> &[u8] {
         self.buf.as_slice()
     }
 }

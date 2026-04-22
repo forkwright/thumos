@@ -1,4 +1,6 @@
 #![deny(missing_docs)]
+#![expect(dead_code, reason = "public API surface for future kernel binary integration (#126)")]
+#![allow(unfulfilled_lint_expectations)]
 //! Emergency data destruction. Selective wipe of sensitive partitions
 //! (contacts, messages, keys), memory scrubbing, secure delete.
 //!

@@ -20,19 +20,19 @@ const TEXT_PAD_X: u32 = 2;
 #[derive(Debug, Clone)]
 pub struct TextListConfig {
     /// Pixel width of the list widget.
-    pub width: u32,
+    pub(crate) width: u32,
     /// Maximum number of items visible at once (determines widget height).
-    pub visible_rows: usize,
+    pub(crate) visible_rows: usize,
     /// Height of each row in pixels.
-    pub item_height: u32,
+    pub(crate) item_height: u32,
     /// Background color for selected item.
-    pub selected_bg: Rgb565,
+    pub(crate) selected_bg: Rgb565,
     /// Text color for selected item.
-    pub selected_fg: Rgb565,
+    pub(crate) selected_fg: Rgb565,
     /// Normal text color.
-    pub text_color: Rgb565,
+    pub(crate) text_color: Rgb565,
     /// Normal background color.
-    pub bg_color: Rgb565,
+    pub(crate) bg_color: Rgb565,
 }
 
 impl Default for TextListConfig {
@@ -67,7 +67,7 @@ pub struct TextList {
 impl TextList {
     /// Create a new, empty list with the given configuration.
     #[must_use]
-    pub const fn new(config: TextListConfig) -> Self {
+    pub(crate) const fn new(config: TextListConfig) -> Self {
         Self {
             items: Vec::new(),
             selected: 0,
@@ -79,7 +79,7 @@ impl TextList {
 
     /// Create a new list with default configuration and given pixel width.
     #[must_use]
-    pub fn with_width(width: u32) -> Self {
+    pub(crate) fn with_width(width: u32) -> Self {
         Self::new(TextListConfig {
             width,
             ..TextListConfig::default()
@@ -87,31 +87,31 @@ impl TextList {
     }
 
     /// Append an item to the list.
-    pub fn push(&mut self, item: impl Into<String>) {
+    pub(crate) fn push(&mut self, item: impl Into<String>) {
         self.items.push(item.into());
     }
 
     /// Return the currently selected item text, if any items exist.
     #[must_use]
-    pub fn selected_item(&self) -> Option<&str> {
+    pub(crate) fn selected_item(&self) -> Option<&str> {
         self.items.get(self.selected).map(String::as_str)
     }
 
     /// Return the selected item index.
     #[must_use]
-    pub const fn selected_index(&self) -> usize {
+    pub(crate) const fn selected_index(&self) -> usize {
         self.selected
     }
 
     /// Number of items in the list.
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.items.len()
     }
 
     /// Whether the list is empty.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 

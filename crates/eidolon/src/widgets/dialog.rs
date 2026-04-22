@@ -37,7 +37,7 @@ pub enum DialogButton {
 impl DialogButton {
     /// Short label rendered on the button.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Ok => "OK",
             Self::Cancel => "Cancel",
@@ -72,7 +72,7 @@ impl Dialog {
     ///
     /// Panics in debug builds if `buttons` is empty.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         title: impl Into<String>,
         message: impl Into<String>,
         buttons: Vec<DialogButton>,
@@ -91,25 +91,25 @@ impl Dialog {
 
     /// Create a simple OK dialog.
     #[must_use]
-    pub fn ok(title: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn ok(title: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(title, message, vec![DialogButton::Ok])
     }
 
     /// Create a Yes/No confirmation dialog.
     #[must_use]
-    pub fn confirm(title: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn confirm(title: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(title, message, vec![DialogButton::Yes, DialogButton::No])
     }
 
     /// Set the pixel width of the dialog box.
     #[must_use]
-    pub const fn with_width(mut self, width: u32) -> Self {
+    pub(crate) const fn with_width(mut self, width: u32) -> Self {
         self.width = width;
         self
     }
 
     /// Return and clear the pending button selection, if any.
-    pub const fn take_result(&mut self) -> Option<DialogButton> {
+    pub(crate) const fn take_result(&mut self) -> Option<DialogButton> {
         self.pending.take()
     }
 

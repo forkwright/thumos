@@ -2,19 +2,19 @@
 
 /// A geographic coordinate with latitude, longitude, and optional altitude.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Position {
+pub(crate) struct Position {
     /// Latitude in decimal degrees. Positive = North, negative = South.
-    pub lat: f64,
+    pub(crate) lat: f64,
     /// Longitude in decimal degrees. Positive = East, negative = West.
-    pub lon: f64,
+    pub(crate) lon: f64,
     /// Altitude above mean sea level in meters. None if not available.
-    pub alt: Option<f64>,
+    pub(crate) alt: Option<f64>,
 }
 
 /// GPS fix quality indicator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum FixQuality {
+pub(crate) enum FixQuality {
     /// No fix.
     NoFix,
     /// Standard GPS fix.
@@ -53,17 +53,17 @@ impl From<u8> for FixQuality {
 
 /// A complete GPS fix with position, quality, and satellite info.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Fix {
+pub(crate) struct Fix {
     /// Geographic position.
-    pub position: Position,
+    pub(crate) position: Position,
     /// Fix quality.
-    pub quality: FixQuality,
+    pub(crate) quality: FixQuality,
     /// Number of satellites in use.
-    pub satellites: u8,
+    pub(crate) satellites: u8,
     /// Horizontal dilution of precision.
-    pub hdop: Option<f64>,
+    pub(crate) hdop: Option<f64>,
     /// Speed over ground in knots.
-    pub speed_knots: Option<f64>,
+    pub(crate) speed_knots: Option<f64>,
     /// Course over ground in degrees true.
-    pub course: Option<f64>,
+    pub(crate) course: Option<f64>,
 }
