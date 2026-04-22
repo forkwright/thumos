@@ -93,7 +93,7 @@ impl KeyInfo {
     #[must_use]
     pub const fn descriptor_version(self) -> u8 {
         // WHY: masked to 3 bits (0x0007), result is always 0–7; fits u8 without truncation.
-        (self.0 & 0x0007).to_le_bytes()[0]
+        (self.0 & 0x0007) as u8
     }
 
     /// True if pairwise (unicast) key; false for GROUP/broadcast key.
@@ -106,7 +106,7 @@ impl KeyInfo {
     #[must_use]
     pub const fn key_index(self) -> u8 {
         // WHY: masked to 2 bits (0x03), result is always 0–3; fits u8 without truncation.
-        ((self.0 >> 4) & 0x03).to_le_bytes()[0]
+        ((self.0 >> 4) & 0x03) as u8
     }
 
     /// True if supplicant shall install the key.
