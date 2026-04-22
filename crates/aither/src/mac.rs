@@ -100,17 +100,28 @@ impl HifTxHeader {
     /// - words 2–3: reserved (zero)
     #[must_use]
     pub(crate) const fn encode(&self) -> [u8; TX_HEADER_SIZE] {
-        let mut buf = [0u8; TX_HEADER_SIZE];
-        let len_bytes = self.packet_len.to_le_bytes();
-        buf[0] = len_bytes[0];
-        buf[1] = len_bytes[1];
-        // Word 1 low byte: type [1:0] | priority [4:2] | resource_mask [7:5]
-        buf[2] = (self.packet_type & 0x03)
+        let [len_lo, len_hi] = self.packet_len.to_le_bytes();
+        let word1_lo = (self.packet_type & 0x03)
             | ((self.user_priority & 0x07) << 2)
             | ((self.resource_mask & 0x07) << 5);
-        buf[3] = self.port_index;
-        // bytes 4–15: reserved, already zero
-        buf
+        [
+            len_lo,
+            len_hi,
+            word1_lo,
+            self.port_index,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]
     }
 
     /// Decode FROM a 16-byte buffer.
@@ -216,17 +227,21 @@ impl HifRxHeader {
     /// Encode to the on-wire 12-byte representation.
     #[must_use]
     pub(crate) fn encode(&self) -> [u8; RX_HEADER_SIZE] {
-        let mut buf = [0u8; RX_HEADER_SIZE];
-        let len_bytes = self.packet_len.to_le_bytes();
-        buf[0] = len_bytes[0];
-        buf[1] = len_bytes[1];
-        buf[2] = self.packet_type;
-        buf[3] = self.network_index & 0x0f;
-        buf[4] = (self.tid & 0x0f) | ((self.security_mode & 0x0f) << 4);
-        buf[5] = u8::from(self.dot11_header_present) | (u8::from(self.reorder_flag) << 1);
-        buf[6] = self.channel;
-        // bytes 7–11: reserved, already zero
-        buf
+        let [len_lo, len_hi] = self.packet_len.to_le_bytes();
+        [
+            len_lo,
+            len_hi,
+            self.packet_type,
+            self.network_index & 0x0f,
+            (self.tid & 0x0f) | ((self.security_mode & 0x0f) << 4),
+            u8::from(self.dot11_header_present) | (u8::from(self.reorder_flag) << 1),
+            self.channel,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]
     }
 }
 
@@ -651,21 +666,24 @@ impl MacAddress {
         // so snafu .context() cannot be used; map manually instead.
         rng.fill(&mut bytes).map_err(|_| Error::Rng)?;
         // INVARIANT: bit 0 clear = unicast, bit 1 SET = locally administered
-        bytes[0] &= 0xfe; // clear multicast bit
-        bytes[0] |= 0x02; // SET locally-administered bit
-        Ok(Self(bytes))
+        let [mut b0, b1, b2, b3, b4, b5] = bytes;
+        b0 &= 0xfe; // clear multicast bit
+        b0 |= 0x02; // SET locally-administered bit
+        Ok(Self([b0, b1, b2, b3, b4, b5]))
     }
 
     /// True when the locally-administered bit (bit 1 of octet 0) is SET.
     #[must_use]
     pub(crate) const fn is_locally_administered(self) -> bool {
-        self.0[0] & 0x02 != 0
+        let [b0, ..] = self.0;
+        b0 & 0x02 != 0
     }
 
     /// True when the multicast bit (bit 0 of octet 0) is clear.
     #[must_use]
     pub(crate) const fn is_unicast(self) -> bool {
-        self.0[0] & 0x01 == 0
+        let [b0, ..] = self.0;
+        b0 & 0x01 == 0
     }
 }
 
@@ -684,19 +702,9 @@ const ACCESS_REG_PAYLOAD_SIZE: usize = 9;
 /// Wire layout: `op(1)` | `reg_offset_u32_le(4)` | `value_u32_le(4)`
 #[must_use]
 const fn access_reg_write_payload(reg_offset: u32, value: u32) -> [u8; ACCESS_REG_PAYLOAD_SIZE] {
-    let mut payload = [0u8; ACCESS_REG_PAYLOAD_SIZE];
-    payload[0] = ACCESS_REG_WRITE;
-    let off_bytes = reg_offset.to_le_bytes();
-    payload[1] = off_bytes[0];
-    payload[2] = off_bytes[1];
-    payload[3] = off_bytes[2];
-    payload[4] = off_bytes[3];
-    let val_bytes = value.to_le_bytes();
-    payload[5] = val_bytes[0];
-    payload[6] = val_bytes[1];
-    payload[7] = val_bytes[2];
-    payload[8] = val_bytes[3];
-    payload
+    let [o0, o1, o2, o3] = reg_offset.to_le_bytes();
+    let [v0, v1, v2, v3] = value.to_le_bytes();
+    [ACCESS_REG_WRITE, o0, o1, o2, o3, v0, v1, v2, v3]
 }
 
 // ---------------------------------------------------------------------------

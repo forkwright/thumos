@@ -200,13 +200,14 @@ impl CcciHeader {
 
     /// Encode to the 16-byte little-endian wire format.
     #[must_use]
-    pub fn to_bytes(self) -> [u8; HEADER_SIZE] {
-        let mut buf = [0u8; HEADER_SIZE];
-        buf[0..4].copy_from_slice(&self.data[0].to_le_bytes());
-        buf[4..8].copy_from_slice(&self.data[1].to_le_bytes());
-        buf[8..12].copy_from_slice(&self.channel.to_le_bytes());
-        buf[12..16].copy_from_slice(&self.reserved.to_le_bytes());
-        buf
+    pub const fn to_bytes(self) -> [u8; HEADER_SIZE] {
+        let [d00, d01, d02, d03] = self.data[0].to_le_bytes();
+        let [d10, d11, d12, d13] = self.data[1].to_le_bytes();
+        let [c0, c1, c2, c3] = self.channel.to_le_bytes();
+        let [r0, r1, r2, r3] = self.reserved.to_le_bytes();
+        [
+            d00, d01, d02, d03, d10, d11, d12, d13, c0, c1, c2, c3, r0, r1, r2, r3,
+        ]
     }
 
     /// Decode FROM the 16-byte little-endian wire format.
@@ -259,7 +260,8 @@ impl CcciHeader {
     /// Returns `true` when `data[0]` holds the internal-control magic value.
     #[must_use]
     pub const fn is_internal(&self) -> bool {
-        self.data[0] == CCCI_MAGIC_NUM
+        let [d0, ..] = self.data;
+        d0 == CCCI_MAGIC_NUM
     }
 }
 

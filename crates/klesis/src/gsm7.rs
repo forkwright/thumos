@@ -102,7 +102,9 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
         let bit_shift = bit_offset % 8;
         let val = u16::from(septet) << bit_shift;
         let [lo, hi] = val.to_le_bytes();
-        result[byte_index] |= lo;
+        if let Some(slot) = result.get_mut(byte_index) {
+            *slot |= lo;
+        }
         if hi != 0
             && let Some(slot) = result.get_mut(byte_index + 1)
         {
@@ -143,7 +145,7 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
         let b1 = u16::from(data.get(byte_index + 1).copied().unwrap_or(0));
 
         // NOTE: when bit_shift == 0, (8 - bit_shift) == 8; u16 << 8 is valid.
-        let septet = (((b0 >> bit_shift) | (b1 << (8 - bit_shift))) & 0x7F).to_le_bytes()[0];
+        let septet = (((b0 >> bit_shift) | (b1 << (8 - bit_shift))) & 0x7F) as u8;
         i += 1;
 
         if pending_ext {

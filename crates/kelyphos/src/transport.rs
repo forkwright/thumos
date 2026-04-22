@@ -177,7 +177,7 @@ impl RxParser {
                     // Decode payload length FROM header bytes 1 and 2 (after SOF).
                     // header[1] bits [6:0] = length bits [11:5]
                     // header[2] bits [7:3] = length bits [4:0]
-                    let h1 = self.buf.get(2).copied().unwrap_or_default(); // buf[0] = SOF, buf[1] = h0, buf[2] = h1
+                    let h1 = self.buf.get(2).copied().unwrap_or_default(); // buf index 0 = SOF, index 1 = h0, index 2 = h1
                     let h2 = self.buf.get(3).copied().unwrap_or_default();
                     let len = (u16::from(h1 & 0x7F) << 5) | (u16::from(h2 >> 3));
                     self.payload_len = len;
