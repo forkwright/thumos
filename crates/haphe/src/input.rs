@@ -61,7 +61,7 @@ pub enum Key {
 /// Key state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum KeyState {
+pub(crate) enum KeyState {
     /// Key pressed down.
     Pressed,
     /// Key released.
@@ -73,7 +73,7 @@ pub enum KeyState {
 /// Touch event type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum TouchAction {
+pub(crate) enum TouchAction {
     /// Finger touched the screen.
     Down,
     /// Finger moved on the screen.
@@ -98,7 +98,7 @@ pub struct TouchPoint {
 /// Unified input event.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum InputEvent {
+pub(crate) enum InputEvent {
     /// Keypad key event.
     Key {
         /// Which key was pressed.
@@ -116,7 +116,7 @@ pub enum InputEvent {
 }
 
 /// Input event queue (ring buffer).
-pub struct InputQueue {
+pub(crate) struct InputQueue {
     events: [Option<InputEvent>; 64],
     head: usize,
     tail: usize,
@@ -131,7 +131,7 @@ impl Default for InputQueue {
 
 impl InputQueue {
     /// Create an empty input queue.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         const NONE: Option<InputEvent> = None;
         Self {
             events: [NONE; 64],
@@ -142,7 +142,7 @@ impl InputQueue {
     }
 
     /// Push an event. Drops oldest if full.
-    pub const fn push(&mut self, event: InputEvent) {
+    pub(crate) const fn push(&mut self, event: InputEvent) {
         if self.count >= 64 {
             // Drop oldest
             self.head = (self.head + 1) % 64;
@@ -154,7 +154,7 @@ impl InputQueue {
     }
 
     /// Pop the next event.
-    pub const fn pop(&mut self) -> Option<InputEvent> {
+    pub(crate) const fn pop(&mut self) -> Option<InputEvent> {
         if self.count == 0 {
             return None;
         }
@@ -165,18 +165,18 @@ impl InputQueue {
     }
 
     /// Check if empty.
-    pub const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// Number of pending events.
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.count
     }
 }
 
 /// T9 predictive text input state.
-pub struct T9Input {
+pub(crate) struct T9Input {
     /// Current key sequence (e.g., [2, 2, 3] for "ad" or "be" etc.).
     keys: [u8; 32],
     /// Number of keys in the sequence.
@@ -193,7 +193,7 @@ impl Default for T9Input {
 
 impl T9Input {
     /// Create a new T9 input state.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             keys: [0; 32],
             len: 0,
@@ -202,7 +202,7 @@ impl T9Input {
     }
 
     /// Get the characters mapped to a key (standard phone keypad).
-    pub const fn key_chars(key: Key) -> &'static [char] {
+    pub(crate) const fn key_chars(key: Key) -> &'static [char] {
         match key {
             Key::Num0 => &[' ', '0'],
             Key::Num1 => &['.', ',', '!', '?', '1'],
@@ -221,7 +221,7 @@ impl T9Input {
     }
 
     /// Press a key. Returns the current character selection.
-    pub fn press(&mut self, key: Key) -> Option<char> {
+    pub(crate) fn press(&mut self, key: Key) -> Option<char> {
         let chars = Self::key_chars(key);
         if chars.is_empty() {
             return None;
@@ -245,7 +245,7 @@ impl T9Input {
     }
 
     /// Clear the input buffer.
-    pub const fn clear(&mut self) {
+    pub(crate) const fn clear(&mut self) {
         self.len = 0;
         self.candidate = 0;
     }

@@ -7,9 +7,9 @@ use crate::x3dh::{self, InitiatorMessage, OwnedBundle, PreKeyBundle};
 
 /// An encrypted message ready for transmission.
 #[derive(Debug, Clone)]
-pub struct EncryptedMessage {
+pub(crate) struct EncryptedMessage {
     /// The ratchet-encrypted ciphertext payload.
-    pub inner: CiphertextMessage,
+    pub(crate) inner: CiphertextMessage,
 }
 
 /// Two-party encrypted session backed by a symmetric double ratchet.
@@ -17,7 +17,7 @@ pub struct EncryptedMessage {
 /// The initiator (Alice) calls [`Session::initiate`]; the responder (Bob)
 /// calls [`Session::respond`]. After setup both sessions share the same
 /// root key material and can exchange encrypted messages.
-pub struct Session {
+pub(crate) struct Session {
     identity: IdentityKeyPair,
     peer_identity: PublicIdentityKey,
     /// Ratchet for messages we send.
@@ -50,7 +50,10 @@ impl Session {
     /// # Errors
     ///
     /// Returns an error if key generation, DH agreement, or HKDF derivation fails.
-    pub fn initiate(our_identity: IdentityKeyPair, their_bundle: &PreKeyBundle) -> Result<Self> {
+    pub(crate) fn initiate(
+        our_identity: IdentityKeyPair,
+        their_bundle: &PreKeyBundle,
+    ) -> Result<Self> {
         let (_, keys, init_msg) = x3dh::initiate_session(&our_identity, their_bundle)?;
         let peer_identity = their_bundle.identity_key.clone();
         Ok(Self {
@@ -64,7 +67,7 @@ impl Session {
 
     /// Returns the initiator message to forward to the responder.
     /// `None` if this is not the initiating session.
-    pub const fn initiator_message(&self) -> Option<&InitiatorMessage> {
+    pub(crate) const fn initiator_message(&self) -> Option<&InitiatorMessage> {
         self.initiator_msg.as_ref()
     }
 
@@ -73,7 +76,7 @@ impl Session {
     /// # Errors
     ///
     /// Returns an error if DH agreement or HKDF derivation fails.
-    pub fn respond(
+    pub(crate) fn respond(
         our_identity: IdentityKeyPair,
         our_bundle: OwnedBundle,
         their_message: &InitiatorMessage,
@@ -95,7 +98,7 @@ impl Session {
     /// # Errors
     ///
     /// Returns an error if AES-256-GCM sealing fails.
-    pub fn encrypt_message(&mut self, plaintext: &[u8]) -> Result<EncryptedMessage> {
+    pub(crate) fn encrypt_message(&mut self, plaintext: &[u8]) -> Result<EncryptedMessage> {
         let ct = ratchet::encrypt(&mut self.send_ratchet, plaintext)?;
         Ok(EncryptedMessage { inner: ct })
     }
@@ -106,17 +109,17 @@ impl Session {
     ///
     /// Returns [`Error::Decryption`] if the authentication tag is invalid or the
     /// ciphertext has been tampered with.
-    pub fn decrypt_message(&mut self, msg: &EncryptedMessage) -> Result<Vec<u8>> {
+    pub(crate) fn decrypt_message(&mut self, msg: &EncryptedMessage) -> Result<Vec<u8>> {
         ratchet::decrypt(&mut self.recv_ratchet, &msg.inner)
     }
 
     /// Returns the local identity's public key.
-    pub const fn our_identity(&self) -> PublicIdentityKey {
+    pub(crate) const fn our_identity(&self) -> PublicIdentityKey {
         self.identity.public_key()
     }
 
     /// Returns the peer's public identity key.
-    pub const fn peer_identity(&self) -> &PublicIdentityKey {
+    pub(crate) const fn peer_identity(&self) -> &PublicIdentityKey {
         &self.peer_identity
     }
 }

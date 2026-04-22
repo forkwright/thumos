@@ -16,16 +16,16 @@ const MIN_IHL: u8 = 5;
 const TCP_MIN_HEADER_LEN: usize = 20;
 const UDP_HEADER_LEN: usize = 8;
 
-pub const PROTO_ICMP: u8 = 1;
-pub const PROTO_TCP: u8 = 6;
-pub const PROTO_UDP: u8 = 17;
+pub(crate) const PROTO_ICMP: u8 = 1;
+pub(crate) const PROTO_TCP: u8 = 6;
+pub(crate) const PROTO_UDP: u8 = 17;
 
 // Type definitions
 
 /// Errors that can occur when parsing network packet headers.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum ParseError {
+pub(crate) enum ParseError {
     /// The buffer is shorter than the minimum required for this header.
     #[snafu(display("packet too short: need {needed} bytes, got {got}"))]
     TooShort { needed: usize, got: usize },
@@ -48,19 +48,19 @@ pub enum ParseError {
         reason = "public API — version and total_length are unused in this crate but available to downstream consumers"
     )
 )]
-pub struct IpHeader {
+pub(crate) struct IpHeader {
     /// IP version (always 4 for a successfully parsed header).
-    pub version: u8,
+    pub(crate) version: u8,
     /// Internet Header Length in 32-bit words.
-    pub ihl: u8,
+    pub(crate) ihl: u8,
     /// Total packet length in bytes (header + payload).
-    pub total_length: u16,
+    pub(crate) total_length: u16,
     /// IP protocol number (e.g. `PROTO_TCP`, `PROTO_UDP`, `PROTO_ICMP`).
-    pub protocol: u8,
+    pub(crate) protocol: u8,
     /// Source IPv4 address.
-    pub src_addr: Ipv4Addr,
+    pub(crate) src_addr: Ipv4Addr,
     /// Destination IPv4 address.
-    pub dst_addr: Ipv4Addr,
+    pub(crate) dst_addr: Ipv4Addr,
 }
 
 /// Parsed TCP header fields.
@@ -69,17 +69,17 @@ pub struct IpHeader {
     dead_code,
     reason = "public API — seq and ack are unused in this crate but available to downstream consumers"
 )]
-pub struct TcpHeader {
+pub(crate) struct TcpHeader {
     /// Source TCP port.
-    pub src_port: u16,
+    pub(crate) src_port: u16,
     /// Destination TCP port.
-    pub dst_port: u16,
+    pub(crate) dst_port: u16,
     /// Sequence number.
-    pub seq: u32,
+    pub(crate) seq: u32,
     /// Acknowledgement number.
-    pub ack: u32,
+    pub(crate) ack: u32,
     /// Control flags byte (SYN, ACK, FIN, RST, PSH, URG, ECE, CWR).
-    pub flags: u8,
+    pub(crate) flags: u8,
 }
 
 /// Parsed UDP header fields.
@@ -91,13 +91,13 @@ pub struct TcpHeader {
         reason = "public API — length is unused in this crate but available to downstream consumers"
     )
 )]
-pub struct UdpHeader {
+pub(crate) struct UdpHeader {
     /// Source UDP port.
-    pub src_port: u16,
+    pub(crate) src_port: u16,
     /// Destination UDP port.
-    pub dst_port: u16,
+    pub(crate) dst_port: u16,
     /// UDP datagram length (header + data) in bytes.
-    pub length: u16,
+    pub(crate) length: u16,
 }
 
 // Impl blocks
@@ -111,7 +111,7 @@ impl IpHeader {
     /// shorter than the length encoded in the IHL field.
     /// Returns [`ParseError::InvalidVersion`] if the version is not 4.
     /// Returns [`ParseError::InvalidIhl`] if IHL is less than 5.
-    pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
+    pub(crate) fn parse(data: &[u8]) -> Result<Self, ParseError> {
         if data.len() < IPV4_MIN_HEADER_LEN {
             return Err(ParseError::TooShort {
                 needed: IPV4_MIN_HEADER_LEN,
@@ -168,7 +168,7 @@ impl IpHeader {
     }
 
     /// Return the header length in bytes (`ihl * 4`).
-    pub fn header_len(&self) -> usize {
+    pub(crate) fn header_len(&self) -> usize {
         usize::from(self.ihl) * 4
     }
 }
@@ -182,7 +182,7 @@ impl TcpHeader {
     /// # Errors
     ///
     /// Returns [`ParseError::TooShort`] if `data` is shorter than 20 bytes.
-    pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
+    pub(crate) fn parse(data: &[u8]) -> Result<Self, ParseError> {
         if data.len() < TCP_MIN_HEADER_LEN {
             return Err(ParseError::TooShort {
                 needed: TCP_MIN_HEADER_LEN,
@@ -232,7 +232,7 @@ impl UdpHeader {
     /// # Errors
     ///
     /// Returns [`ParseError::TooShort`] if `data` is shorter than 8 bytes.
-    pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
+    pub(crate) fn parse(data: &[u8]) -> Result<Self, ParseError> {
         if data.len() < UDP_HEADER_LEN {
             return Err(ParseError::TooShort {
                 needed: UDP_HEADER_LEN,

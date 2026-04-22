@@ -7,11 +7,11 @@ use crate::error::{self, Error};
 use crate::position::{Fix, FixQuality, Position};
 
 /// Validate NMEA checksum. The checksum is the XOR of all bytes between '$' and '*'.
-pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
+pub(crate) fn validate_checksum(sentence: &str) -> Result<(), Error> {
     let inner = sentence
         .strip_prefix('$')
         .and_then(|s| s.split('*').next())
-        .ok_or_else(|| Error::ParseError {
+        .ok_or_else(|| Error::Parse {
             message: "missing $ prefix or * checksum delimiter".to_owned(),
         })?;
 
@@ -20,11 +20,11 @@ pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
             .split('*')
             .nth(1)
             .map(str::trim)
-            .ok_or_else(|| Error::ParseError {
+            .ok_or_else(|| Error::Parse {
                 message: "missing checksum after *".to_owned(),
             })?;
 
-    let expected = u8::from_str_radix(expected_str, 16).map_err(|_| Error::ParseError {
+    let expected = u8::from_str_radix(expected_str, 16).map_err(|_| Error::Parse {
         message: format!("invalid checksum hex: {expected_str}"),
     })?;
 
@@ -38,26 +38,26 @@ pub fn validate_checksum(sentence: &str) -> Result<(), Error> {
 }
 
 /// Compute NMEA checksum for a sentence body (without $ and *).
-pub fn compute_checksum(body: &str) -> u8 {
+pub(crate) fn compute_checksum(body: &str) -> u8 {
     body.bytes().fold(0u8, |acc, b| acc ^ b)
 }
 
 /// Parse a GGA sentence (Global Positioning System Fix Data).
 ///
 /// Format: `$GPGGA,hhmmss.ss,llll.ll,a,yyyyy.yy,a,x,xx,x.x,x.x,M,x.x,M,x.x,xxxx*hh`
-pub fn parse_gga(sentence: &str) -> error::Result<Fix> {
+pub(crate) fn parse_gga(sentence: &str) -> error::Result<Fix> {
     validate_checksum(sentence)?;
 
     let body = sentence
         .strip_prefix('$')
         .and_then(|s| s.split('*').next())
-        .ok_or_else(|| Error::ParseError {
+        .ok_or_else(|| Error::Parse {
             message: "invalid GGA sentence".to_owned(),
         })?;
 
     let fields: Vec<&str> = body.split(',').collect();
     if fields.len() < 10 {
-        return Err(Error::ParseError {
+        return Err(Error::Parse {
             message: format!("GGA needs 10+ fields, got {}", fields.len()),
         });
     }
@@ -113,19 +113,19 @@ pub fn parse_gga(sentence: &str) -> error::Result<Fix> {
 /// Parse a RMC sentence (Recommended Minimum Navigation Information).
 ///
 /// Format: `$GPRMC,hhmmss.ss,A,llll.ll,a,yyyyy.yy,a,x.x,x.x,ddmmyy,x.x,a*hh`
-pub fn parse_rmc(sentence: &str) -> error::Result<Fix> {
+pub(crate) fn parse_rmc(sentence: &str) -> error::Result<Fix> {
     validate_checksum(sentence)?;
 
     let body = sentence
         .strip_prefix('$')
         .and_then(|s| s.split('*').next())
-        .ok_or_else(|| Error::ParseError {
+        .ok_or_else(|| Error::Parse {
             message: "invalid RMC sentence".to_owned(),
         })?;
 
     let fields: Vec<&str> = body.split(',').collect();
     if fields.len() < 10 {
-        return Err(Error::ParseError {
+        return Err(Error::Parse {
             message: format!("RMC needs 10+ fields, got {}", fields.len()),
         });
     }
@@ -171,14 +171,14 @@ pub fn parse_rmc(sentence: &str) -> error::Result<Fix> {
 /// Parse latitude FROM split fields (value, hemisphere).
 fn parse_lat_field(value: &str, hemisphere: &str) -> error::Result<f64> {
     if value.len() < 4 {
-        return Err(Error::ParseError {
+        return Err(Error::Parse {
             message: format!("latitude too short: {value}"),
         });
     }
-    let degrees: f64 = value[..2].parse().map_err(|_| Error::ParseError {
+    let degrees: f64 = value[..2].parse().map_err(|_| Error::Parse {
         message: format!("invalid latitude degrees: {value}"),
     })?;
-    let minutes: f64 = value[2..].parse().map_err(|_| Error::ParseError {
+    let minutes: f64 = value[2..].parse().map_err(|_| Error::Parse {
         message: format!("invalid latitude minutes: {value}"),
     })?;
     let mut lat = degrees + minutes / 60.0;
@@ -191,14 +191,14 @@ fn parse_lat_field(value: &str, hemisphere: &str) -> error::Result<f64> {
 /// Parse longitude FROM split fields (value, hemisphere).
 fn parse_lon_field(value: &str, hemisphere: &str) -> error::Result<f64> {
     if value.len() < 5 {
-        return Err(Error::ParseError {
+        return Err(Error::Parse {
             message: format!("longitude too short: {value}"),
         });
     }
-    let degrees: f64 = value[..3].parse().map_err(|_| Error::ParseError {
+    let degrees: f64 = value[..3].parse().map_err(|_| Error::Parse {
         message: format!("invalid longitude degrees: {value}"),
     })?;
-    let minutes: f64 = value[3..].parse().map_err(|_| Error::ParseError {
+    let minutes: f64 = value[3..].parse().map_err(|_| Error::Parse {
         message: format!("invalid longitude minutes: {value}"),
     })?;
     let mut lon = degrees + minutes / 60.0;

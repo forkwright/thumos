@@ -21,28 +21,28 @@ const GREEN_SHIFT_LEFT: u16 = 5; // bits 10:5 in RGB565 word
 ///
 /// Bit layout: `RRRRRGGGGGGBBBBB` (MSB to LSB).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Rgb565(pub u16);
+pub struct Rgb565(pub(crate) u16);
 
 impl Rgb565 {
     /// Black (0x0000).
-    pub const BLACK: Self = Self(0x0000);
+    pub(crate) const BLACK: Self = Self(0x0000);
     /// White (0xFFFF).
-    pub const WHITE: Self = Self(0xFFFF);
+    pub(crate) const WHITE: Self = Self(0xFFFF);
     /// Red (0xF800).
-    pub const RED: Self = Self(0xF800);
+    pub(crate) const RED: Self = Self(0xF800);
     /// Green (0x07E0).
-    pub const GREEN: Self = Self(0x07E0);
+    pub(crate) const GREEN: Self = Self(0x07E0);
     /// Blue (0x001F).
-    pub const BLUE: Self = Self(0x001F);
+    pub(crate) const BLUE: Self = Self(0x001F);
     /// Yellow (0xFFE0).
-    pub const YELLOW: Self = Self(0xFFE0);
+    pub(crate) const YELLOW: Self = Self(0xFFE0);
     /// Cyan (0x07FF).
-    pub const CYAN: Self = Self(0x07FF);
+    pub(crate) const CYAN: Self = Self(0x07FF);
     /// Magenta (0xF81F).
-    pub const MAGENTA: Self = Self(0xF81F);
+    pub(crate) const MAGENTA: Self = Self(0xF81F);
 
     /// Convert 24-bit `RGB888` to `RGB565` by truncating the least significant bits.
-    pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+    pub(crate) const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
         // u8 → u16: always a widening, never truncates. `From` is not yet const-stable.
         let r5 = (r >> RED_SHIFT_RIGHT) as u16;
         let g6 = (g >> GREEN_SHIFT_RIGHT) as u16;

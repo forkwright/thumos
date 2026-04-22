@@ -58,7 +58,7 @@ const MIN_EVENT_PACKET: usize = 3; // H4 type + event_code + param_length
 /// Errors FROM HCI address parsing and event decoding.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum Error {
+pub(crate) enum Error {
     /// Input does not have exactly six colon-separated hex segments.
     #[snafu(display("invalid BD address format: expected AA:BB:CC:DD:EE:FF, got '{input}'"))]
     InvalidAddrFormat {
@@ -107,7 +107,7 @@ pub enum Error {
 }
 
 /// Result alias for this module.
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -118,12 +118,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// FROM raw HCI packet bytes (which are transmitted LSB-first), reverse
 /// the byte array before calling [`BdAddr::from_bytes`].
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
-pub struct BdAddr([u8; BD_ADDR_LEN]);
+pub(crate) struct BdAddr([u8; BD_ADDR_LEN]);
 
 /// HCI command to send to the controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum HciCommand {
+pub(crate) enum HciCommand {
     /// Reset the controller to its default state.
     Reset,
 
@@ -187,35 +187,35 @@ pub enum HciCommand {
 /// A device discovered during a classic Bluetooth inquiry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct InquiryDevice {
+pub(crate) struct InquiryDevice {
     /// Bluetooth device address.
-    pub address: BdAddr,
+    pub(crate) address: BdAddr,
     /// 24-bit Class of Device field, packed INTO the low three bytes.
-    pub class_of_device: u32,
+    pub(crate) class_of_device: u32,
     /// Raw clock OFFSET value FROM the inquiry result.
-    pub clock_offset: u16,
+    pub(crate) clock_offset: u16,
 }
 
 /// A single LE advertising report within a [`HciEvent::LEAdvertisingReport`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct LeAdvReport {
+pub(crate) struct LeAdvReport {
     /// Advertising event type (PDU type flags).
-    pub event_type: u8,
+    pub(crate) event_type: u8,
     /// Address type: `0` = public, `1` = random.
-    pub address_type: u8,
+    pub(crate) address_type: u8,
     /// Advertiser device address.
-    pub address: BdAddr,
+    pub(crate) address: BdAddr,
     /// Raw advertising data payload.
-    pub data: Vec<u8>,
+    pub(crate) data: Vec<u8>,
     /// Received signal strength in dBm.
-    pub rssi: i8,
+    pub(crate) rssi: i8,
 }
 
 /// Decoded HCI event packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum HciEvent {
+pub(crate) enum HciEvent {
     /// A previously-issued command has completed.
     CommandComplete {
         /// Number of HCI command packets the host may now send.
@@ -262,7 +262,7 @@ impl BdAddr {
     ///
     /// When reading FROM an HCI packet (WHERE bytes are LSB-first), reverse
     /// the array before calling this function.
-    pub const fn from_bytes(bytes: [u8; BD_ADDR_LEN]) -> Self {
+    pub(crate) const fn from_bytes(bytes: [u8; BD_ADDR_LEN]) -> Self {
         Self(bytes)
     }
 
@@ -283,12 +283,12 @@ impl BdAddr {
     /// let addr = BdAddr::parse("AA:BB:CC:DD:EE:FF").unwrap();
     /// assert_eq!(addr.to_string(), "AA:BB:CC:DD:EE:FF");
     /// ```
-    pub fn parse(s: &str) -> Result<Self> {
+    pub(crate) fn parse(s: &str) -> Result<Self> {
         s.parse()
     }
 
     /// Return the raw bytes in display ORDER (MSB first).
-    pub const fn as_bytes(&self) -> &[u8; BD_ADDR_LEN] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; BD_ADDR_LEN] {
         &self.0
     }
 }
@@ -333,7 +333,7 @@ impl fmt::Debug for BdAddr {
 ///
 /// The buffer layout is:
 /// `[0x01, opcode_lo, opcode_hi, param_len, ...params]`
-pub fn encode_command(cmd: &HciCommand) -> Vec<u8> {
+pub(crate) fn encode_command(cmd: &HciCommand) -> Vec<u8> {
     let (opcode, params) = build_command_parts(cmd);
     let [op_lo, op_hi] = opcode.to_le_bytes();
     // INVARIANT: HCI parameter total is bounded by spec at 255 bytes; always fits in u8.
@@ -429,7 +429,7 @@ fn build_command_parts(cmd: &HciCommand) -> (u16, Vec<u8>) {
 /// Returns [`Error::UnknownEventCode`] for unrecognised event codes.
 ///
 /// Returns [`Error::MalformedEvent`] if parameters are truncated or invalid.
-pub fn decode_event(data: &[u8]) -> Result<HciEvent> {
+pub(crate) fn decode_event(data: &[u8]) -> Result<HciEvent> {
     if data.len() < MIN_EVENT_PACKET {
         return Err(Error::PacketTooShort {
             min: MIN_EVENT_PACKET,

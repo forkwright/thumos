@@ -21,7 +21,7 @@ const SEALED_KEY_LEN: usize = KEY_LEN + TAG_LEN;
 /// Errors from key management operations.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub enum Error {
+pub(crate) enum Error {
     /// The iteration count passed to key derivation was zero.
     #[snafu(display("iterations must be non-zero"))]
     ZeroIterations {
@@ -72,42 +72,42 @@ pub enum Error {
 }
 
 /// Convenience alias.
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 
 /// A key derived from a passphrase via PBKDF2-HMAC-SHA256.
 #[derive(Debug)]
-pub struct DerivedKey {
+pub(crate) struct DerivedKey {
     /// The 32-byte derived key bytes.
-    pub key: [u8; KEY_LEN],
+    pub(crate) key: [u8; KEY_LEN],
     /// The salt used during derivation.
-    pub salt: [u8; SALT_LEN],
+    pub(crate) salt: [u8; SALT_LEN],
     /// The PBKDF2 iteration count.
-    pub iterations: u32,
+    pub(crate) iterations: u32,
 }
 
 /// Encryption algorithm used to seal a primary key in a [`KeySlot`].
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum Algorithm {
+pub(crate) enum Algorithm {
     /// AES-256-GCM authenticated encryption.
     Aes256Gcm,
 }
 
 /// An encrypted primary key plus metadata needed to unseal it.
 #[derive(Debug, Clone)]
-pub struct KeySlot {
+pub(crate) struct KeySlot {
     /// PBKDF2 salt (randomly generated at seal time).
-    pub salt: [u8; SALT_LEN],
+    pub(crate) salt: [u8; SALT_LEN],
     /// PBKDF2 iteration count used when sealing.
-    pub iterations: u32,
+    pub(crate) iterations: u32,
     /// AES-GCM nonce (randomly generated at seal time).
-    pub nonce: [u8; NONCE_LEN],
+    pub(crate) nonce: [u8; NONCE_LEN],
     /// Encryption algorithm used to protect the primary key.
-    pub algorithm: Algorithm,
+    pub(crate) algorithm: Algorithm,
     /// When this slot was created.
-    pub created: Timestamp,
+    pub(crate) created: Timestamp,
     /// Encrypted primary key (ciphertext || GCM tag), 48 bytes total.
-    pub ciphertext: [u8; SEALED_KEY_LEN],
+    pub(crate) ciphertext: [u8; SEALED_KEY_LEN],
 }
 
 /// Derive a 32-byte key from `passphrase` and `salt` using PBKDF2-HMAC-SHA256.
@@ -115,7 +115,11 @@ pub struct KeySlot {
 /// # Errors
 ///
 /// Returns [`Error::ZeroIterations`] if `iterations` is zero.
-pub fn derive_key(passphrase: &[u8], salt: &[u8; SALT_LEN], iterations: u32) -> Result<DerivedKey> {
+pub(crate) fn derive_key(
+    passphrase: &[u8],
+    salt: &[u8; SALT_LEN],
+    iterations: u32,
+) -> Result<DerivedKey> {
     let iters = NonZeroU32::new(iterations).ok_or_else(|| ZeroIterationsSnafu.build())?;
     let mut key = [0u8; KEY_LEN];
     pbkdf2::derive(
@@ -149,8 +153,8 @@ fn random_bytes<const N: usize>(rng: &SystemRandom) -> Result<[u8; N]> {
 /// # Errors
 ///
 /// Returns an error if random generation fails, key construction fails, or encryption fails.
-pub fn seal_key(primary_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlot> {
-    seal_key_with_config(primary_key, passphrase, &Config::default())
+pub(crate) fn seal_key(primary_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlot> {
+    seal_key_with_config(primary_key, passphrase, Config::default())
 }
 
 /// Seal `primary_key` with a key derived from `passphrase` using AES-256-GCM,
@@ -159,10 +163,10 @@ pub fn seal_key(primary_key: &[u8; KEY_LEN], passphrase: &[u8]) -> Result<KeySlo
 /// # Errors
 ///
 /// Returns an error if random generation fails, key construction fails, or encryption fails.
-pub fn seal_key_with_config(
+pub(crate) fn seal_key_with_config(
     primary_key: &[u8; KEY_LEN],
     passphrase: &[u8],
-    config: &Config,
+    config: Config,
 ) -> Result<KeySlot> {
     let rng = SystemRandom::new();
 
@@ -205,7 +209,7 @@ pub fn seal_key_with_config(
 /// Returns [`Error::KeyUnseal`] if the passphrase is wrong or the slot is corrupted.
 /// Returns [`Error::ZeroIterations`] if the stored iteration count is zero.
 /// Returns [`Error::InvalidKey`] if key construction fails.
-pub fn unseal_key(slot: &KeySlot, passphrase: &[u8]) -> Result<[u8; KEY_LEN]> {
+pub(crate) fn unseal_key(slot: &KeySlot, passphrase: &[u8]) -> Result<[u8; KEY_LEN]> {
     let derived = derive_key(passphrase, &slot.salt, slot.iterations)?;
 
     let unbound =
@@ -301,7 +305,7 @@ mod tests {
         let config = Config {
             pbkdf2_iterations: 50_000,
         };
-        let slot = seal_key_with_config(&primary_key, b"pass", &config)?;
+        let slot = seal_key_with_config(&primary_key, b"pass", config)?;
         assert_eq!(
             slot.iterations, 50_000,
             "non-default config must change the recorded iteration count"

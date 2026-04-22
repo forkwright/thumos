@@ -890,7 +890,7 @@ impl WiFiMacDriver {
         snonce: &[u8; 32],
         ap_mac: [u8; 6],
     ) -> wpa::Ptk {
-        wpa::derive_ptk(pmk, anonce, snonce, &ap_mac, &self.current_mac.0)
+        wpa::derive_ptk(pmk, anonce, snonce, ap_mac, self.current_mac.0)
     }
 }
 
@@ -1311,7 +1311,7 @@ mod tests {
         let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
         let ptk_via_driver = driver.derive_ptk(&pmk, &anonce, &snonce, ap_mac);
         // Manually derive PTK using the same MAC the driver holds.
-        let ptk_direct = wpa::derive_ptk(&pmk, &anonce, &snonce, &ap_mac, &driver.mac_address().0);
+        let ptk_direct = wpa::derive_ptk(&pmk, &anonce, &snonce, ap_mac, driver.mac_address().0);
         assert_eq!(
             ptk_via_driver, ptk_direct,
             "driver PTK derivation must use the current randomized MAC"

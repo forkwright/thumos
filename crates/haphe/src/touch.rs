@@ -19,12 +19,12 @@ use crate::input::{InputEvent, InputQueue, TouchAction, TouchPoint};
 ///
 /// NOTE: 0x38 is the mtk-tpd default. Unconfirmed for the AGM M7  -
 /// verify with `i2cdetect` on the stock Android kernel.
-pub const TPD_I2C_ADDR: u8 = 0x38;
+pub(crate) const TPD_I2C_ADDR: u8 = 0x38;
 
 /// GPIO used for the touch interrupt (EINT).
 ///
 /// NOTE: Placeholder  -  needs hardware probing on the AGM M7.
-pub const TPD_EINT_GPIO: u8 = 1;
+pub(crate) const TPD_EINT_GPIO: u8 = 1;
 
 /// Register: current touch-point count (0–10).
 const REG_TOUCH_COUNT: u8 = 0x00;
@@ -58,7 +58,7 @@ pub(crate) const TRACKING_ID_MAX: u8 = 9;
 ///
 /// Implementations exist for the real MT6739 I2C controller (bare-metal)
 /// and for test doubles.
-pub trait I2cBus {
+pub(crate) trait I2cBus {
     /// The error type for I2C operations on this bus.
     type Error: core::fmt::Debug;
 
@@ -74,7 +74,7 @@ pub trait I2cBus {
 /// Errors produced by the touchscreen driver.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum TouchError<E: core::fmt::Debug> {
+pub(crate) enum TouchError<E: core::fmt::Debug> {
     /// I2C bus transaction failed.
     I2c(E),
 
@@ -181,7 +181,7 @@ impl ActiveMask {
 ///
 /// Call [`TouchscreenDriver::new`] once, then call [`TouchscreenDriver::poll`]
 /// in the main input loop to push [`InputEvent`] VALUES.
-pub struct TouchscreenDriver {
+pub(crate) struct TouchscreenDriver {
     /// I2C device address.
     addr: u8,
     /// Which tracking IDs were active on the previous poll.
@@ -192,7 +192,7 @@ impl TouchscreenDriver {
     /// Create a driver targeting `addr` on the I2C bus.
     ///
     /// Use [`TPD_I2C_ADDR`] for the default hardware address.
-    pub const fn new(addr: u8) -> Self {
+    pub(crate) const fn new(addr: u8) -> Self {
         Self {
             addr,
             prev_active: ActiveMask(0),
@@ -209,7 +209,7 @@ impl TouchscreenDriver {
     ///
     /// Returns an error if the I2C bus transaction fails or the
     /// hardware reports an impossible touch count.
-    pub fn poll<B: I2cBus>(
+    pub(crate) fn poll<B: I2cBus>(
         &mut self,
         bus: &mut B,
         queue: &mut InputQueue,

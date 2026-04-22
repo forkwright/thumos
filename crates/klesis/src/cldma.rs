@@ -21,21 +21,21 @@ use crate::error::{NotReadySnafu, Result};
 
 /// GPD flag bit: hardware-owned. When set the DMA engine may read/write the
 /// descriptor. Software must clear this bit before reclaiming the entry.
-pub const GPD_FLAG_HWO: u8 = 0x01;
+pub(crate) const GPD_FLAG_HWO: u8 = 0x01;
 
 /// GPD flag bit: interrupt-on-completion. Causes a TX-done / RX-done
 /// interrupt when the DMA engine finishes processing this descriptor.
-pub const GPD_FLAG_IOC: u8 = 0x80;
+pub(crate) const GPD_FLAG_IOC: u8 = 0x80;
 
 /// Number of TX queues on MD generation ≥ 6293.
 ///
 /// Source: `eccci/hif/ccci_hif_cldma.h:33`
-pub const CLDMA_TXQ_NUM: usize = 4;
+pub(crate) const CLDMA_TXQ_NUM: usize = 4;
 
 /// Number of RX queues on MD generation ≥ 6293.
 ///
 /// Source: `eccci/hif/ccci_hif_cldma.h:34`
-pub const CLDMA_RXQ_NUM: usize = 1;
+pub(crate) const CLDMA_RXQ_NUM: usize = 1;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -58,34 +58,34 @@ pub const CLDMA_RXQ_NUM: usize = 1;
 /// - `seq_num`: packet sequence number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
-pub struct Gpd {
+pub(crate) struct Gpd {
     /// Descriptor control flags (`GPD_FLAG_HWO`, `GPD_FLAG_IOC`, …).
-    pub flags: u8,
+    pub(crate) flags: u8,
     /// Checksum / debug byte.
-    pub checksum: u8,
+    pub(crate) checksum: u8,
     /// MSB extension for 36-bit physical addresses (unused in 32-bit mode).
-    pub msb: u8,
+    pub(crate) msb: u8,
     /// Network interface identifier (lower 5 bits meaningful).
-    pub netif: u8,
+    pub(crate) netif: u8,
     /// Physical address of the next [`Gpd`] in the ring (0 = end of chain).
-    pub next_ptr: u32,
+    pub(crate) next_ptr: u32,
     /// Physical address of the data buffer or BD-chain head.
-    pub data_ptr: u32,
+    pub(crate) data_ptr: u32,
     /// Byte length of the data referenced by `data_ptr`.
-    pub data_len: u16,
+    pub(crate) data_len: u16,
     /// Packet sequence number.
-    pub seq_num: u16,
+    pub(crate) seq_num: u16,
 }
 
 impl Gpd {
     /// Returns `true` when the hardware-owned bit is set.
     #[must_use]
-    pub const fn is_hw_owned(&self) -> bool {
+    pub(crate) const fn is_hw_owned(&self) -> bool {
         self.flags & GPD_FLAG_HWO != 0
     }
 
     /// Set or clear the hardware-owned bit.
-    pub const fn set_hw_owned(&mut self, owned: bool) {
+    pub(crate) const fn set_hw_owned(&mut self, owned: bool) {
         if owned {
             self.flags |= GPD_FLAG_HWO;
         } else {
@@ -99,7 +99,7 @@ impl Gpd {
 /// The ring holds `capacity` slots. Slots are filled by [`TxQueue::enqueue`]
 /// and reclaimed by [`TxQueue::dequeue`] after the DMA engine clears
 /// `GPD_FLAG_HWO`.
-pub struct TxQueue {
+pub(crate) struct TxQueue {
     ring: Vec<Gpd>,
     capacity: usize,
     /// Index of the next slot to write (producer).
@@ -112,7 +112,7 @@ pub struct TxQueue {
 impl TxQueue {
     /// Create a new TX ring with `capacity` slots.
     #[must_use]
-    pub fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
             ring: vec![Gpd::default(); capacity],
             capacity,
@@ -124,19 +124,19 @@ impl TxQueue {
 
     /// Number of descriptors currently in the queue.
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.len
     }
 
     /// Returns `true` when the ring holds no pending descriptors.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns `true` when every slot is occupied.
     #[must_use]
-    pub const fn is_full(&self) -> bool {
+    pub(crate) const fn is_full(&self) -> bool {
         self.len == self.capacity
     }
 
@@ -145,7 +145,7 @@ impl TxQueue {
     /// # Errors
     ///
     /// Returns [`crate::error::Error::NotReady`] when the ring is full.
-    pub fn enqueue(&mut self, gpd: Gpd) -> Result<()> {
+    pub(crate) fn enqueue(&mut self, gpd: Gpd) -> Result<()> {
         ensure!(!self.is_full(), NotReadySnafu);
         self.ring[self.head] = gpd;
         self.head = (self.head + 1) % self.capacity;
@@ -156,7 +156,7 @@ impl TxQueue {
     /// Remove and return the oldest descriptor from the ring.
     ///
     /// Returns `None` when the ring is empty.
-    pub fn dequeue(&mut self) -> Option<Gpd> {
+    pub(crate) fn dequeue(&mut self) -> Option<Gpd> {
         if self.is_empty() {
             return None;
         }
@@ -172,7 +172,7 @@ impl TxQueue {
 /// The modem DMA engine fills each slot and clears `GPD_FLAG_HWO` when done.
 /// The driver refills slots via [`RxQueue::enqueue`] and consumes received
 /// descriptors via [`RxQueue::dequeue`].
-pub struct RxQueue {
+pub(crate) struct RxQueue {
     ring: Vec<Gpd>,
     capacity: usize,
     head: usize,
@@ -183,7 +183,7 @@ pub struct RxQueue {
 impl RxQueue {
     /// Create a new RX ring with `capacity` slots.
     #[must_use]
-    pub fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
             ring: vec![Gpd::default(); capacity],
             capacity,
@@ -195,19 +195,19 @@ impl RxQueue {
 
     /// Number of descriptors currently in the queue.
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.len
     }
 
     /// Returns `true` when the ring holds no descriptors.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns `true` when every slot is occupied.
     #[must_use]
-    pub const fn is_full(&self) -> bool {
+    pub(crate) const fn is_full(&self) -> bool {
         self.len == self.capacity
     }
 
@@ -216,7 +216,7 @@ impl RxQueue {
     /// # Errors
     ///
     /// Returns [`crate::error::Error::NotReady`] when the ring is full.
-    pub fn enqueue(&mut self, gpd: Gpd) -> Result<()> {
+    pub(crate) fn enqueue(&mut self, gpd: Gpd) -> Result<()> {
         ensure!(!self.is_full(), NotReadySnafu);
         self.ring[self.head] = gpd;
         self.head = (self.head + 1) % self.capacity;
@@ -227,7 +227,7 @@ impl RxQueue {
     /// Remove and return the next completed descriptor.
     ///
     /// Returns `None` when the ring is empty.
-    pub fn dequeue(&mut self) -> Option<Gpd> {
+    pub(crate) fn dequeue(&mut self) -> Option<Gpd> {
         if self.is_empty() {
             return None;
         }

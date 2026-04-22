@@ -38,14 +38,14 @@ pub struct DnsBlocklist {
 impl DnsBlocklist {
     /// Create an empty blocklist.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Create a blocklist pre-populated with the surveillance domains identified
     /// in `docs/SURVEILLANCE-AUDIT.md` (Adups FOTA analysis).
     #[must_use]
-    pub fn with_surveillance_defaults() -> Self {
+    pub(crate) fn with_surveillance_defaults() -> Self {
         let mut bl = Self::new();
         for domain in [
             "app-measurement.com",
@@ -65,7 +65,7 @@ impl DnsBlocklist {
     /// Patterns are lower-cased on insertion. A pattern beginning with `*.`
     /// will match any subdomain of the suffix (e.g. `"*.doubleclick.net"`
     /// matches `"ad.doubleclick.net"` and `"googleads.g.doubleclick.net"`).
-    pub fn add(&mut self, pattern: &str) {
+    pub(crate) fn add(&mut self, pattern: &str) {
         self.patterns.push(pattern.to_ascii_lowercase());
     }
 
@@ -73,7 +73,7 @@ impl DnsBlocklist {
     ///
     /// `domain` is compared case-insensitively.
     #[must_use]
-    pub fn is_blocked(&self, domain: &str) -> bool {
+    pub(crate) fn is_blocked(&self, domain: &str) -> bool {
         let lower = domain.to_ascii_lowercase();
         self.patterns.iter().any(|pat| pattern_matches(pat, &lower))
     }
@@ -84,7 +84,7 @@ impl DnsBlocklist {
     /// `data` must be the DNS message payload (not the IP/UDP framing).
     /// Returns `true` if the query should be blocked.
     #[must_use]
-    pub fn blocks_dns_payload(&self, data: &[u8]) -> bool {
+    pub(crate) fn blocks_dns_payload(&self, data: &[u8]) -> bool {
         extract_query_domain(data)
             .as_deref()
             .is_some_and(|d| self.is_blocked(d))

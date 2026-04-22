@@ -252,7 +252,7 @@ pub fn draw_str(fb: &mut Framebuffer, x: u32, y: u32, s: &str, fg: Rgb565, bg: R
 }
 
 /// Return the pixel width of a string rendered with this font.
-pub fn str_pixel_width(s: &str) -> u32 {
+pub(crate) fn str_pixel_width(s: &str) -> u32 {
     u32::try_from(s.chars().count()).unwrap_or(u32::MAX) * CHAR_WIDTH
 }
 

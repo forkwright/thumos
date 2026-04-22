@@ -5,7 +5,7 @@ use log::debug;
 /// Security protocol in use on a `WiFi` network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum SecurityType {
+pub(crate) enum SecurityType {
     /// No encryption (open network).
     Open,
     /// WPA2-Personal (PSK).
@@ -19,23 +19,23 @@ pub enum SecurityType {
 /// A configured `WiFi` network.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct WifiNetwork {
+pub(crate) struct WifiNetwork {
     /// Network SSID (raw bytes; may not be valid UTF-8).
-    pub ssid: Vec<u8>,
+    pub(crate) ssid: Vec<u8>,
     /// Optional BSSID filter — `None` matches any AP with this SSID.
-    pub bssid: Option<[u8; 6]>,
+    pub(crate) bssid: Option<[u8; 6]>,
     /// Pre-shared key or SAE password (raw bytes).
-    pub password: Option<Vec<u8>>,
+    pub(crate) password: Option<Vec<u8>>,
     /// Security protocol.
-    pub security: SecurityType,
+    pub(crate) security: SecurityType,
     /// Selection priority: higher value is preferred over lower.
-    pub priority: i32,
+    pub(crate) priority: i32,
 }
 
 impl WifiNetwork {
     /// Create a new WPA2-PSK network entry.
     #[must_use]
-    pub const fn wpa2(ssid: Vec<u8>, password: Vec<u8>) -> Self {
+    pub(crate) const fn wpa2(ssid: Vec<u8>, password: Vec<u8>) -> Self {
         Self {
             ssid,
             bssid: None,
@@ -49,37 +49,37 @@ impl WifiNetwork {
 /// A passive or active scan result from the `WiFi` firmware.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct ScanResult {
+pub(crate) struct ScanResult {
     /// Advertised SSID (raw bytes from the beacon/probe response).
-    pub ssid: Vec<u8>,
+    pub(crate) ssid: Vec<u8>,
     /// BSSID (access point MAC address).
-    pub bssid: [u8; 6],
+    pub(crate) bssid: [u8; 6],
     /// Received Signal Strength Indicator in dBm (typically –100 to 0).
-    pub rssi: i16,
+    pub(crate) rssi: i16,
     /// Security capabilities advertised in the beacon.
-    pub security: SecurityType,
+    pub(crate) security: SecurityType,
     /// Operating channel.
-    pub channel: u8,
+    pub(crate) channel: u8,
 }
 
 /// An ordered list of known networks.
 ///
 /// Networks are compared by `priority` (higher wins) then by signal strength.
 #[derive(Debug, Clone, Default)]
-pub struct NetworkConfig {
+pub(crate) struct NetworkConfig {
     /// All configured networks, in arbitrary order.
-    pub networks: Vec<WifiNetwork>,
+    pub(crate) networks: Vec<WifiNetwork>,
 }
 
 impl NetworkConfig {
     /// Create an empty configuration.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Append a network to the configuration.
-    pub fn add(&mut self, network: WifiNetwork) {
+    pub(crate) fn add(&mut self, network: WifiNetwork) {
         self.networks.push(network);
     }
 }
@@ -92,7 +92,7 @@ impl NetworkConfig {
 ///
 /// Returns `None` when no configured network is visible in the scan results.
 #[must_use]
-pub fn select_network<'a>(
+pub(crate) fn select_network<'a>(
     scan_results: &[ScanResult],
     config: &'a NetworkConfig,
 ) -> Option<&'a WifiNetwork> {
@@ -135,7 +135,7 @@ pub fn select_network<'a>(
 /// callbacks, timeout expiry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
-pub enum ConnectionState {
+pub(crate) enum ConnectionState {
     /// No association in progress.
     #[default]
     Disconnected,
