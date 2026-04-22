@@ -140,12 +140,14 @@ fn encode_bcd_address(addr: &Address) -> Vec<u8> {
     for (i, &d) in digit_bytes.iter().enumerate() {
         let nibble = d - b'0';
         let byte_index = i / 2;
-        if i % 2 == 0 {
-            // Low nibble
-            bcd[byte_index] = nibble;
-        } else {
-            // High nibble
-            bcd[byte_index] |= nibble << 4;
+        if let Some(slot) = bcd.get_mut(byte_index) {
+            if i % 2 == 0 {
+                // Low nibble
+                *slot = nibble;
+            } else {
+                // High nibble
+                *slot |= nibble << 4;
+            }
         }
     }
     // Pad odd-length numbers with 0xF in the final high nibble.
@@ -240,9 +242,10 @@ fn hex_encode(data: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(data.len() * 2);
     for &b in data {
-        // INVARIANT: nibble values 0–15 always index into HEX[16]; no truncation possible.
-        out.push(char::from(HEX[usize::from(b >> 4)]));
-        out.push(char::from(HEX[usize::from(b & 0x0F)]));
+        let hi = HEX.get(usize::from(b >> 4)).copied().unwrap_or_default();
+        let lo = HEX.get(usize::from(b & 0x0F)).copied().unwrap_or_default();
+        out.push(char::from(hi));
+        out.push(char::from(lo));
     }
     out
 }
