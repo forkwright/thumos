@@ -1,5 +1,8 @@
 #![deny(missing_docs)]
-#![expect(dead_code, reason = "public API surface for future kernel binary integration (#126)")]
+#![expect(
+    dead_code,
+    reason = "public API surface for future kernel binary integration (#126)"
+)]
 #![allow(unfulfilled_lint_expectations)]
 //! GPS driver and position service for the MT6739 combo chip.
 //!

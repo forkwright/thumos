@@ -15,14 +15,13 @@ pub(crate) fn validate_checksum(sentence: &str) -> Result<(), Error> {
             message: "missing $ prefix or * checksum delimiter".to_owned(),
         })?;
 
-    let expected_str =
-        sentence
-            .split('*')
-            .nth(1)
-            .map(str::trim)
-            .ok_or_else(|| Error::Parse {
-                message: "missing checksum after *".to_owned(),
-            })?;
+    let expected_str = sentence
+        .split('*')
+        .nth(1)
+        .map(str::trim)
+        .ok_or_else(|| Error::Parse {
+            message: "missing checksum after *".to_owned(),
+        })?;
 
     let expected = u8::from_str_radix(expected_str, 16).map_err(|_| Error::Parse {
         message: format!("invalid checksum hex: {expected_str}"),
