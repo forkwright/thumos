@@ -118,6 +118,7 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
 ///
 /// Extension characters (ESC + code) each count as two septets but produce
 /// one output character.
+#[allow(clippy::as_conversions)]
 pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
     if num_chars == 0 {
         return Ok(String::new());

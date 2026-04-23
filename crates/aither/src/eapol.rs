@@ -91,6 +91,7 @@ pub(crate) struct KeyInfo(pub(crate) u16);
 impl KeyInfo {
     /// Key descriptor version (bits 0–2).
     #[must_use]
+    #[allow(clippy::as_conversions)]
     pub(crate) const fn descriptor_version(self) -> u8 {
         // WHY: masked to 3 bits (0x0007), result is always 0–7; fits u8 without truncation.
         (self.0 & 0x0007) as u8
@@ -104,6 +105,7 @@ impl KeyInfo {
 
     /// Key index for GROUP keys (bits 4–5).
     #[must_use]
+    #[allow(clippy::as_conversions)]
     pub(crate) const fn key_index(self) -> u8 {
         // WHY: masked to 2 bits (0x03), result is always 0–3; fits u8 without truncation.
         ((self.0 >> 4) & 0x03) as u8
