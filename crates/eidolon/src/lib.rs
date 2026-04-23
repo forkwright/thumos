@@ -1,5 +1,8 @@
 #![deny(missing_docs)]
-#![expect(dead_code, reason = "public API surface for future kernel binary integration (#126)")]
+#![expect(
+    dead_code,
+    reason = "public API surface for future kernel binary integration (#126)"
+)]
 #![allow(unfulfilled_lint_expectations)]
 //! User interface for the 240×320 framebuffer display. Widget system, keypad navigation, T9 text input, status bar.
 //!
