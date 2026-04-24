@@ -1,3 +1,9 @@
+<!--
+scope: thumos repo conventions (bare-metal Rust kernel + userspace for AGM M7 / MT6739)
+defers_to: ~/menos-ops/CLAUDE.md for machine topology; ~/.claude/CLAUDE.md for operator principles; kanon standards for universal engineering policy
+tightens: MT6739-specific constraints and device-identity protection discipline that do not apply outside this repo
+-->
+
 # CLAUDE.md
 
 Thumos is a custom Rust mobile OS targeting the AGM M7 (MT6739).
