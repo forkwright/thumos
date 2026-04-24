@@ -37,7 +37,7 @@ const MCDI_BASE: usize = 0x1000_DC00;
 
 /// MCDI_CORE_EN: per-core power-down enable register.
 /// Bit N = 1 → core N is powered down.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "reserved for per-core power-down; wired in follow-up")]
 const MCDI_CORE_EN: usize = MCDI_BASE + 0x04;
 
 // ---------------------------------------------------------------------------
@@ -338,7 +338,7 @@ unsafe fn display_wake() {
 ///
 /// DSI0 CMD_FIFO register: 0x1400_D000 + offset 0x200.
 /// Format: bits [7:0] = DCS opcode, bit 8 = last-byte flag.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "DSI0 init helper; invoked by panel bring-up in follow-up")]
 unsafe fn dcs_cmd0(cmd: u8) {
     // SAFETY: DSI0_CMD_FIFO is a valid MMIO register within the DSI0
     // address space at 0x1400_D000.  Volatile access required for hardware.

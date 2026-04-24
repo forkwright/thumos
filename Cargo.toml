@@ -21,7 +21,7 @@ version = "0.1.4"
 edition = "2024"
 # WHY: match the toolchain we actually build and test against.
 rust-version = "1.85"
-license = "AGPL-3.0-only"
+license = "LicenseRef-PolyForm-Shield-1.0.0"
 repository = "https://github.com/forkwright/thumos"
 
 [workspace.lints.rust]
