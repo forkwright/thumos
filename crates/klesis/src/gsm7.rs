@@ -118,7 +118,10 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
 ///
 /// Extension characters (ESC + code) each count as two septets but produce
 /// one output character.
-#[allow(clippy::as_conversions)]
+#[expect(
+    clippy::as_conversions,
+    reason = "septet mask is 7-bit (0x7F); result is always 0-127 so fits u8 without truncation"
+)]
 pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
     if num_chars == 0 {
         return Ok(String::new());
@@ -145,8 +148,8 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
         // NOTE: unwrap_or(0) is safe  -  a missing high byte contributes 0 bits.
         let b1 = u16::from(data.get(byte_index + 1).copied().unwrap_or(0));
 
-        // NOTE: when bit_shift == 0, (8 - bit_shift) == 8; u16 << 8 is valid.
-        let septet = (((b0 >> bit_shift) | (b1 << (8 - bit_shift))) & 0x7F) as u8;
+        // NOTE: bit_shift == 0 case: u16 << 8 is valid.
+        let septet = (((b0 >> bit_shift) | (b1 << (8 - bit_shift))) & 0x7F) as u8; // WHY: masked to 7 bits (0x7F); result is always 0-127 so fits u8
         i += 1;
 
         if pending_ext {

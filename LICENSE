@@ -31,11 +31,11 @@ License](#changes-and-new-works-license).
 
 You must ensure that anyone who gets a copy of any part of
 the software from you also gets a copy of these terms or the
-URL above, as well as copies of any plain-text lines beginning
-with `Required Notice:` that the licensor provided with the
-software.  For example:
+URL for them above, as well as copies of any plain-text lines
+beginning with `Required Notice:` that the licensor provided
+with the software.  For example:
 
-> Required Notice: Copyright Cody Kickertz (https://github.com/forkwright)
+> Required Notice: Copyright forkwright (https://github.com/forkwright)
 
 ## Changes and New Works License
 
@@ -59,34 +59,46 @@ licensor or any of its affiliates provides using the software.
 
 Goods and services compete even when they provide functionality
 through different kinds of interfaces or for different technical
-platforms.  Applications can compete with other applications,
-libraries with other libraries, frameworks with other frameworks,
-and so on, even if they're written in different programming
-languages or for different computer architectures.  Goods and
-services compete even when provided free of charge.
-
-If you market a product as a substitute for the software or
-the licensor's products, it definitely competes.
+platforms.  Applications can compete with services, libraries
+with plugins, frameworks with development tools, and so on,
+even if they're written in different programming languages
+or for different computer architectures.  Goods and services
+compete even when provided free of charge.  If you market a
+product as a practical substitute for the software or another
+product, it definitely competes.
 
 ## New Products
 
 If you are using the software to provide a product that does
-not compete, you may continue doing so even after the licensor
-starts providing a competitive product.  However, you may not
-begin using the software to provide a new product that would
-compete.
+not compete, but the licensor or any of its affiliates brings
+your product into competition by providing a new version of
+the software or another product using the software, you may
+continue using versions of the software available under these
+terms beforehand to provide your competing product, but not
+any later versions.
 
 ## Discontinued Products
 
-If the licensor stops providing a competitive product,
-you may begin using the software to provide a product
-that would have competed with it.
+You may begin using the software to compete with a product
+or service that the licensor or any of its affiliates has
+stopped providing, unless the licensor includes a plain-text
+line beginning with `Licensor Line of Business:` with the
+software that mentions that line of business.  For example:
+
+> Licensor Line of Business: YoyodyneCMS Content Management
+> System (http://example.com/cms)
 
 ## Sales of Business
 
-If the licensor sells a line of business using the software
-to a buyer, the buyer also can enforce any terms of this
-license against you.
+If the licensor or any of its affiliates sells a line of
+business developing the software or using the software
+to provide a product, the buyer can also enforce
+[Noncompete](#noncompete) for that product.
+
+## Fair Use
+
+You may have "fair use" rights for the software under the
+law. These terms do not limit them.
 
 ## No Other Rights
 
@@ -99,7 +111,7 @@ any other licenses.
 
 If you make any written claim that the software infringes or
 contributes to infringement of any patent, your patent license
-for the software granted under these terms ends immediately.  If
+for the software granted under these terms ends immediately. If
 your company makes such a claim, your patent license ends
 immediately for work on behalf of your company.
 
@@ -117,8 +129,8 @@ end immediately.
 
 ***As far as the law allows, the software comes as is, without
 any warranty or condition, and the licensor will not be liable
-to anyone for any damages related to this software or this
-license, under any kind of legal claim.***
+to you for any damages arising out of these terms or the use
+or nature of the software, under any kind of legal claim.***
 
 ## Definitions
 
@@ -126,16 +138,24 @@ The **licensor** is the individual or entity offering these
 terms, and the **software** is the software the licensor makes
 available under these terms.
 
+A **product** can be a good or service, or a combination
+of them.
+
 **You** refers to the individual or entity agreeing to these
 terms.
 
 **Your company** is any legal entity, sole proprietorship,
 or other kind of organization that you work for, plus all
-organizations that have control over, are under the control of,
-or are under common control with that organization.  **Control**
-means ownership of substantially all the assets of an entity,
-or the power to direct its management and policies by vote,
-contract, or otherwise.  Control can be direct or indirect.
+its affiliates.
+
+**Affiliates** means the other organizations than an
+organization has control over, is under the control of, or is
+under common control with.
+
+**Control** means ownership of substantially all the assets of
+an entity, or the power to direct its management and policies
+by vote, contract, or otherwise.  Control can be direct or
+indirect.
 
 **Your licenses** are all the licenses granted to you for the
 software under these terms.
@@ -145,20 +165,9 @@ of your licenses.
 
 ---
 
-Required Notice: Copyright 2026 Cody Kickertz (https://github.com/forkwright)
+## Additional Restriction: AI Training Prohibition
 
----
-
-## Addendum: AI Training Prohibition
-
-Use of this work or its contents, in whole or in part, to train, fine-tune,
-distill, or otherwise improve machine learning or artificial intelligence
-models is expressly prohibited without prior written consent from the
-copyright holder. This prohibition applies regardless of the method of
-access (direct download, API, web scraping, or any other means) and
-regardless of whether the training is performed by the person who accessed
-the work or by a third party.
-
-This prohibition constitutes a machine-readable opt-out of text and data
-mining under Article 4 of the EU Directive on Copyright in the Digital
-Single Market (2019/790).
+Use of this work or its contents, in whole or in part, to train,
+fine-tune, distill, or otherwise improve machine learning or
+artificial intelligence models is expressly prohibited without
+prior written consent from the copyright holder.
