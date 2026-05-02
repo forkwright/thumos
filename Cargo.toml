@@ -23,6 +23,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "LicenseRef-PolyForm-Shield-1.0.0"
 repository = "https://github.com/forkwright/thumos"
+publish = false
 
 [workspace.lints.rust]
 # WHY: bare-metal kernel crate legitimately needs unsafe for MMIO, page

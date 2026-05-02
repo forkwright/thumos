@@ -19,7 +19,7 @@ use crate::csprng;
 use crate::device::{self, DeviceRegistry};
 use crate::dhcp::{DhcpClient, DhcpEvent};
 use crate::display::{DisplayDriver, Gc9306};
-use crate::dns::{DnsResolver, MENOS_DNS, MULLVAD_DNS};
+use crate::dns::{DnsResolver, LAN_DNS, MULLVAD_DNS};
 use crate::elf;
 use crate::exceptions;
 use crate::gic;
@@ -782,12 +782,12 @@ pub unsafe fn run() -> ! {
         }
 
         // Initialize DNS resolver with split-horizon routing.
-        let _resolver = DnsResolver::new(MENOS_DNS, MULLVAD_DNS);
+        let _resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
         let _ = serial.write_str("       DNS resolver ready\r\n");
         let _ = write!(
             serial,
             "       LAN DNS: {} / Internet DNS: {}\r\n",
-            MENOS_DNS,
+            LAN_DNS,
             MULLVAD_DNS
         );
         state.network_ok = true;

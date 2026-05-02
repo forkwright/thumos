@@ -67,13 +67,14 @@ If the forge is unreachable from within the fleet, push to `github` and open a G
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
+- `cd crates/thumos && cargo build --release --target armv7a-none-eabi`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo nextest run --workspace`
 - `kanon lint . --summary`
 
 Per-stage build and test concurrency is pinned to 8 jobs - without this cap, rustc and nextest peak over 100 GB of RSS on the 32-core forge host and collide with other fleet work. See comments in `.kanon-ci.toml` for the budget rationale; keep it in sync with `crates/archeion/src/ci_config.rs::default_rust_gate` if the upstream default shifts.
 
-The kernel binary (`thumos`) lives outside the workspace and has its own build path; CI covers the userspace workspace crates.
+The kernel binary (`thumos`) lives outside the workspace and has its own build path; CI also cross-compiles it for `armv7a-none-eabi` so workspace-only gates cannot hide no-std or target drift.
 
 ## Branch naming and commit format
 
