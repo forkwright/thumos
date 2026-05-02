@@ -6,9 +6,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[lints]
-workspace = true
-
 [dependencies]
 nom = { workspace = true }
 jiff = { workspace = true }
@@ -17,3 +14,6 @@ log = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"
+
+[lints]
+workspace = true

@@ -275,14 +275,8 @@ impl BdAddr {
     ///
     /// Returns [`Error::InvalidAddrByte`] if any segment is not valid hex.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use pteron::hci::BdAddr;
-    ///
-    /// let addr = BdAddr::parse("AA:BB:CC:DD:EE:FF").unwrap();
-    /// assert_eq!(addr.to_string(), "AA:BB:CC:DD:EE:FF");
-    /// ```
+    /// Internal callers use this parser for display-order addresses such as
+    /// `AA:BB:CC:DD:EE:FF`.
     pub(crate) fn parse(s: &str) -> Result<Self> {
         s.parse()
     }

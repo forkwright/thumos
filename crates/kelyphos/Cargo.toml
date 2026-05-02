@@ -6,9 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[lints]
-workspace = true
-
 [dependencies]
 log = { workspace = true }
 snafu.workspace = true
+
+[lints]
+workspace = true

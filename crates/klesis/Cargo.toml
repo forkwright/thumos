@@ -6,11 +6,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[lints]
-workspace = true
-
 [dependencies]
 nom = { workspace = true }
 rustix = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
+
+[lints]
+workspace = true
