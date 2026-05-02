@@ -4,6 +4,7 @@ description = "Radio tools: WiFi/BT/cell scanning, IMSI catcher detection"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 repository.workspace = true
 
 [dependencies]

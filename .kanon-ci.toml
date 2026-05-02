@@ -1,19 +1,28 @@
 # Forge CI pipeline for forkwright/thumos.
 #
-# Mirrors the hardcoded default Rust gate (fmt → check → clippy → nextest
-# → lint) but pins per-stage build + test concurrency to 8. Without this
-# cap, cargo defaults to num_cpus (64 on this Threadripper) and parallel
-# rustc + nextest processes peak well over 100GB of RSS — enough to OOM
-# menos when any other fleet work is running. 8 is the budget that keeps
-# a single CI run under ~25GB peak, low enough that serial drains don't
-# OOM even with aletheia.service and the dispatch fleet resident.
+# Extends the hardcoded default Rust gate (fmt → check → clippy → nextest
+# → lint) with the excluded kernel crate's ARM cross-compile stage, and
+# pins per-stage build + test concurrency to 8. Without this cap, cargo
+# defaults to num_cpus (64 on this Threadripper) and parallel rustc +
+# nextest processes peak well over 100GB of RSS — enough to OOM menos
+# when any other fleet work is running. 8 is the budget that keeps a single
+# CI run under ~25GB peak, low enough that serial drains don't OOM even
+# with aletheia.service and the dispatch fleet resident.
 #
-# Keep in sync with `crates/archeion/src/ci_config.rs::default_rust_gate`
-# when the upstream default changes — only the `--jobs` / `--test-threads`
-# flags should differ.
+# Keep the default stages in sync with
+# `crates/archeion/src/ci_config.rs::default_rust_gate` when the upstream
+# default changes. Thumos-specific differences should remain limited to the
+# kernel cross-compile stage and resource-budget flags.
 
 [pipeline]
-stages = ["cargo fmt", "cargo check", "cargo clippy", "cargo nextest", "kanon lint"]
+stages = [
+    "cargo fmt",
+    "cargo check",
+    "kernel build",
+    "cargo clippy",
+    "cargo nextest",
+    "kanon lint",
+]
 
 [stages."cargo fmt"]
 cmd = "cargo fmt --all -- --check"
@@ -21,6 +30,10 @@ timeout_secs = 300
 
 [stages."cargo check"]
 cmd = "cargo check --workspace --all-targets --jobs 8"
+timeout_secs = 900
+
+[stages."kernel build"]
+cmd = "sh -c 'rustup target add armv7a-none-eabi && RUSTFLAGS=\"-C link-arg=-T$(pwd)/crates/thumos/link.ld\" cargo build --release --target armv7a-none-eabi --manifest-path crates/thumos/Cargo.toml'"
 timeout_secs = 900
 
 [stages."cargo clippy"]
