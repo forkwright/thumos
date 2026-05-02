@@ -4,6 +4,7 @@ description = "Panic mode: selective wipe, anti-forensics, memory scrubbing"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 repository.workspace = true
 
 [dependencies]
