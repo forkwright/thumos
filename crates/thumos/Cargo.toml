@@ -6,6 +6,24 @@ edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/forkwright/thumos"
 
+[dependencies]
+aes = { version = "0.8", default-features = false }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1", default-features = false, features = [
+    "derive",
+    "alloc",
+] }
+smoltcp = { version = "0.12", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-tcp",
+    "socket-udp",
+    "socket-dns",
+    "socket-dhcpv4",
+    "alloc",
+] }
+xts-mode = { version = "0.5", default-features = false }
+
 # WHY: the kernel crate is excluded from the workspace (bare-metal target)
 # but must still enforce the same lint quality floor. These match the
 # workspace lints in the root Cargo.toml.
@@ -30,24 +48,6 @@ unwrap_used = "deny"
 expect_used = "deny"
 dbg_macro = "deny"
 unimplemented = "deny"
-
-[dependencies]
-aes = { version = "0.8", default-features = false }
-postcard = { version = "1", default-features = false, features = ["alloc"] }
-serde = { version = "1", default-features = false, features = [
-    "derive",
-    "alloc",
-] }
-smoltcp = { version = "0.12", default-features = false, features = [
-    "medium-ethernet",
-    "proto-ipv4",
-    "socket-tcp",
-    "socket-udp",
-    "socket-dns",
-    "socket-dhcpv4",
-    "alloc",
-] }
-xts-mode = { version = "0.5", default-features = false }
 
 [profile.release]
 opt-level = "s"

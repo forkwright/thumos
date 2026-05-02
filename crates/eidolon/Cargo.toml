@@ -6,10 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[lints]
-workspace = true
-
 [dependencies]
 embedded-graphics = { workspace = true }
 embedded-graphics-core = { workspace = true }
 haphe = { path = "../haphe", version = "0.1.3" }
+
+[lints]
+workspace = true

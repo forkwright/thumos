@@ -40,7 +40,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 ## Key constraints
 
-- 13 crates (12 workspace userspace + `thumos` kernel binary, excluded from workspace), ~102K LOC (81K kernel + 21K userspace), 2,130 tests (1,618 kernel + 512 workspace), zero clippy warnings. Phase 10 (radio intelligence + counter-surveillance) complete.
+- 13 crates (12 workspace userspace + `thumos` kernel binary, excluded from workspace), ~102K LOC (81K kernel + 21K userspace), 2,187 tests (1,636 kernel + 551 workspace), zero clippy warnings. Phase 10 (radio intelligence + counter-surveillance) complete.
 - 1 GB RAM: every megabyte matters. No unnecessary services.
 - 240x320 display: no standard Android UI. Custom framebuffer or TUI.
 - Keypad + touchscreen input. T9-style or menu navigation.

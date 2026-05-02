@@ -6,12 +6,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[lints]
-workspace = true
-
 [dependencies]
 log = { workspace = true }
 ring = { workspace = true }
 rustix = { workspace = true }
 snafu = { workspace = true }
 zeroize = "1"
+
+[lints]
+workspace = true
