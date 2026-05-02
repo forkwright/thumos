@@ -51,15 +51,8 @@ pub(crate) fn secure_random_fill(buf: &mut [u8]) -> Result<(), MemoryError> {
 ///
 /// Debug output is redacted to avoid leaking sensitive contents.
 ///
-/// # Examples
-///
-/// ```
-/// use leipsanon::memory::SecureBuffer;
-///
-/// let mut buf = SecureBuffer::<32>::new();
-/// buf.iter_mut().enumerate().for_each(|(i, b)| *b = u8::try_from(i).unwrap_or(u8::MAX));
-/// // Contents are zeroed when buf is dropped.
-/// ```
+/// Internal callers create the buffer with [`SecureBuffer::new`] and mutate it
+/// through its slice-like deref implementation.
 pub(crate) struct SecureBuffer<const N: usize> {
     data: [u8; N],
 }

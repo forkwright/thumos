@@ -115,7 +115,3 @@ tokio = { version = "1", features = [
     "signal",
     "macros",
 ] }
-
-# CLI (for tools)
-clap = { version = "4", features = ["derive"] }
-

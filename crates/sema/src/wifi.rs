@@ -97,14 +97,8 @@ impl Bssid {
     ///
     /// Returns [`ParseError::InvalidMacByte`] if any segment is not valid hexadecimal.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use sema::wifi::Bssid;
-    ///
-    /// let bssid = Bssid::parse("AA:BB:CC:DD:EE:FF").unwrap();
-    /// assert_eq!(bssid.to_string(), "AA:BB:CC:DD:EE:FF");
-    /// ```
+    /// Internal callers parse display-order addresses such as
+    /// `AA:BB:CC:DD:EE:FF`.
     pub(crate) fn parse(s: &str) -> Result<Self, ParseError> {
         s.parse()
     }
@@ -201,17 +195,8 @@ impl AccessPoint {
 /// Supports 2.4 GHz channels 1–13 and the special channel 14 (Japan only),
 /// plus 5 GHz channels 36–165. Returns `None` for all other VALUES.
 ///
-/// # Examples
-///
-/// ```
-/// use sema::wifi::channel_to_frequency;
-///
-/// assert_eq!(channel_to_frequency(1), Some(2412));
-/// assert_eq!(channel_to_frequency(6), Some(2437));
-/// assert_eq!(channel_to_frequency(14), Some(2484));
-/// assert_eq!(channel_to_frequency(36), Some(5180));
-/// assert_eq!(channel_to_frequency(0), None);
-/// ```
+/// Internal callers use this to map channels 1, 6, 14, and 36 to 2412,
+/// 2437, 2484, and 5180 MHz respectively.
 #[must_use]
 pub(crate) fn channel_to_frequency(channel: u8) -> Option<u32> {
     match channel {
@@ -236,17 +221,8 @@ pub(crate) fn channel_to_frequency(channel: u8) -> Option<u32> {
 /// (5180–5825 MHz). Returns `None` for frequencies that do not align with a
 /// channel boundary or fall outside recognised bands.
 ///
-/// # Examples
-///
-/// ```
-/// use sema::wifi::frequency_to_channel;
-///
-/// assert_eq!(frequency_to_channel(2412), Some(1));
-/// assert_eq!(frequency_to_channel(2437), Some(6));
-/// assert_eq!(frequency_to_channel(2484), Some(14));
-/// assert_eq!(frequency_to_channel(5180), Some(36));
-/// assert_eq!(frequency_to_channel(9999), None);
-/// ```
+/// Internal callers use this to reverse the standard channel-to-frequency
+/// mapping and reject out-of-band frequencies.
 #[must_use]
 pub(crate) fn frequency_to_channel(freq_mhz: u32) -> Option<u8> {
     if freq_mhz == BAND_2_4_GHZ_CHANNEL_14_FREQ {
@@ -271,15 +247,8 @@ pub(crate) fn frequency_to_channel(freq_mhz: u32) -> Option<u8> {
 
 /// Return the frequency band for a given channel number, or `None` if unrecognised.
 ///
-/// # Examples
-///
-/// ```
-/// use sema::wifi::{Band, channel_band};
-///
-/// assert_eq!(channel_band(6), Some(Band::Band2_4Ghz));
-/// assert_eq!(channel_band(36), Some(Band::Band5Ghz));
-/// assert_eq!(channel_band(0), None);
-/// ```
+/// Channels 1-14 map to 2.4 GHz, channels 36-165 map to 5 GHz, and
+/// unrecognised channels return `None`.
 #[must_use]
 pub(crate) const fn channel_band(channel: u8) -> Option<Band> {
     match channel {

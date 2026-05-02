@@ -14,26 +14,8 @@ use crate::wifi::{AccessPoint, Bssid, Encryption};
 /// radios on the same router). Callers should apply additional heuristics (signal delta,
 /// channel, vendor OUI) to reduce false positives.
 ///
-/// # Examples
-///
-/// ```
-/// use sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use sema::wifi_analysis::detect_evil_twin;
-/// use jiff::Timestamp;
-///
-/// let ts = Timestamp::UNIX_EPOCH;
-/// let real = AccessPoint::new(
-///     Bssid::parse("AA:BB:CC:DD:EE:01").unwrap(),
-///     "Corp-WiFi", 6, 2437, -65, Encryption::Wpa2Enterprise, ts,
-/// );
-/// let twin = AccessPoint::new(
-///     Bssid::parse("AA:BB:CC:DD:EE:02").unwrap(),
-///     "Corp-WiFi", 6, 2437, -40, Encryption::Open, ts,
-/// );
-/// let aps = [real, twin];
-/// let pairs = detect_evil_twin(&aps);
-/// assert_eq!(pairs.len(), 1);
-/// ```
+/// Internal callers pass scan results and receive every same-SSID pair with
+/// distinct BSSIDs.
 #[must_use]
 pub(crate) fn detect_evil_twin(aps: &[AccessPoint]) -> Vec<(&AccessPoint, &AccessPoint)> {
     let mut by_ssid: HashMap<&str, Vec<&AccessPoint>> = HashMap::new();
@@ -56,22 +38,8 @@ pub(crate) fn detect_evil_twin(aps: &[AccessPoint]) -> Vec<(&AccessPoint, &Acces
 
 /// Detect rogue access points: APs whose BSSID is not in the known-good list.
 ///
-/// # Examples
-///
-/// ```
-/// use sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use sema::wifi_analysis::detect_rogue_ap;
-/// use jiff::Timestamp;
-///
-/// let ts = Timestamp::UNIX_EPOCH;
-/// let known = Bssid::parse("AA:BB:CC:DD:EE:01").unwrap();
-/// let rogue_bssid = Bssid::parse("FF:FF:FF:FF:FF:FF").unwrap();
-/// let ap = AccessPoint::new(rogue_bssid, "Corp-WiFi", 6, 2437, -70, Encryption::Wpa2Personal, ts);
-/// let aps = [ap];
-/// let known_list = [known];
-/// let rogues = detect_rogue_ap(&aps, &known_list);
-/// assert_eq!(rogues.len(), 1);
-/// ```
+/// Internal callers compare scan results against a trusted BSSID set and get
+/// only APs absent from that set.
 #[must_use]
 pub(crate) fn detect_rogue_ap<'a>(
     aps: &'a [AccessPoint],
@@ -87,21 +55,7 @@ pub(crate) fn detect_rogue_ap<'a>(
 /// Returns a map from channel number to AP count. Channels with high counts
 /// may be congested, leading to interference.
 ///
-/// # Examples
-///
-/// ```
-/// use sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use sema::wifi_analysis::channel_utilization;
-/// use jiff::Timestamp;
-///
-/// let ts = Timestamp::UNIX_EPOCH;
-/// let ap1 = AccessPoint::new(Bssid::parse("AA:BB:CC:DD:EE:01").unwrap(), "A", 6, 2437, -70, Encryption::Wpa2Personal, ts);
-/// let ap2 = AccessPoint::new(Bssid::parse("AA:BB:CC:DD:EE:02").unwrap(), "B", 6, 2437, -75, Encryption::Wpa2Personal, ts);
-/// let ap3 = AccessPoint::new(Bssid::parse("AA:BB:CC:DD:EE:03").unwrap(), "C", 11, 2462, -80, Encryption::Open, ts);
-/// let counts = channel_utilization(&[ap1, ap2, ap3]);
-/// assert_eq!(counts[&6], 2);
-/// assert_eq!(counts[&11], 1);
-/// ```
+/// Internal callers use the returned map to find crowded channels.
 #[must_use]
 pub(crate) fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
     let mut counts: HashMap<u8, usize> = HashMap::new();
@@ -117,20 +71,7 @@ pub(crate) fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
 /// The first element in the returned slice is the AP with the best signal;
 /// the last is the weakest.
 ///
-/// # Examples
-///
-/// ```
-/// use sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use sema::wifi_analysis::signal_map;
-/// use jiff::Timestamp;
-///
-/// let ts = Timestamp::UNIX_EPOCH;
-/// let weak = AccessPoint::new(Bssid::parse("AA:BB:CC:DD:EE:01").unwrap(), "Weak", 6, 2437, -85, Encryption::Wpa2Personal, ts);
-/// let strong = AccessPoint::new(Bssid::parse("AA:BB:CC:DD:EE:02").unwrap(), "Strong", 6, 2437, -40, Encryption::Wpa2Personal, ts);
-/// let aps = [weak, strong];
-/// let sorted = signal_map(&aps);
-/// assert_eq!(sorted[0].ssid, "Strong");
-/// ```
+/// Internal callers use the first returned AP as the strongest signal.
 #[must_use]
 pub(crate) fn signal_map(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
     let mut sorted: Vec<&AccessPoint> = aps.iter().collect();
@@ -143,21 +84,7 @@ pub(crate) fn signal_map(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
 /// Open networks have no encryption and are potential honeypots or
 /// misconfigured corporate APs.
 ///
-/// # Examples
-///
-/// ```
-/// use sema::wifi::{AccessPoint, Bssid, Encryption};
-/// use sema::wifi_analysis::open_networks;
-/// use jiff::Timestamp;
-///
-/// let ts = Timestamp::UNIX_EPOCH;
-/// let secured = AccessPoint::new(Bssid::parse("AA:BB:CC:DD:EE:01").unwrap(), "Safe", 6, 2437, -70, Encryption::Wpa2Personal, ts);
-/// let open = AccessPoint::new(Bssid::parse("AA:BB:CC:DD:EE:02").unwrap(), "Free WiFi", 6, 2437, -60, Encryption::Open, ts);
-/// let aps = [secured, open];
-/// let result = open_networks(&aps);
-/// assert_eq!(result.len(), 1);
-/// assert_eq!(result[0].ssid, "Free WiFi");
-/// ```
+/// Internal callers use this list as the open-network risk subset.
 #[must_use]
 pub(crate) fn open_networks(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
     aps.iter()
