@@ -1,43 +1,28 @@
 # Thumos
 
-> Sovereign Rust mobile OS for the AGM M7 (MediaTek MT6739). Full-Rust kernel to UI, privacy-first, counter-surveillance. 13 crates (1 bare-metal kernel + 12 userspace), ~102K LOC.
+> Sovereign Rust mobile OS for the AGM M7.
 
-Thumos is a custom OS for a ruggedized feature phone: 1 GB RAM, 240x320 QVGA, LTE Cat.4, integrated WiFi/BT/GPS/FM on the MT6739 CONSYS block. Kernel implements 45 syscalls, slab allocator, VFS (LFS/ramfs/devfs), network stack (TCP/UDP/DHCP/DNS), packet filter, encrypted block device (AES-256-XTS), Matrix E2E (Olm/Megolm), Signal protocol, Briar P2P, Meshtastic LoRa, IMSI catcher detection, and CCCI modem containment. No Linux in the final system, no C authored by the project.
+Thumos replaces Android/Linux on the AGM M7 with a Rust kernel and userspace for counter-surveillance, secure communication, identity protection, and operator-controlled mobile computing.
+
+## Binary
+
+`crates/thumos` - bare-metal ARM kernel built for `armv7a-none-eabi`.
+
+Workspace userspace crates cover input, radios, telephony, security, crypto, radio tools, and UI.
 
 ## Architecture
 
-- [ARCHITECTURE](ARCHITECTURE.md): crate tree, layer diagram, dependency direction, extension points
-- [CLAUDE](CLAUDE.md): agent orientation: phase status, key constraints, build, device identity protection
-- [AGENTS](AGENTS.md): cross-tool build / lint / test commands and common mistakes
-- [_llm/](_llm/README.md): compressed on-demand reference (TOML architecture, decisions, hardware)
+Structured LLM corpus:
+- [_llm/architecture.toml](_llm/architecture.toml): kernel/userspace layers and crate roles
+- [_llm/current_state.toml](_llm/current_state.toml): phase, blockers, and open threads
+- [_llm/decisions.toml](_llm/decisions.toml): accepted OS architecture decisions
+- [_llm/glossary.toml](_llm/glossary.toml): thumos vocabulary
+- [_llm/hardware.toml](_llm/hardware.toml): MT6739 hardware and register reference
 
-## Hardware
+## Agent Entry Points
 
-- [docs/HARDWARE](docs/HARDWARE.md): MT6739 SoC, memory map, LTE bands, display, durability
-- [docs/DRIVER-INTERFACES](docs/DRIVER-INTERFACES.md): register maps and init sequences for CCCI modem, WMT, WiFi gen2, BT, GPS, FM, DDP display, MSDC eMMC
-- [docs/PROBE](docs/PROBE.md): device probing and access paths
-- [docs/GC9306-INIT](docs/GC9306-INIT.md): display panel init sequence
-- [docs/KERNEL-BUILD](docs/KERNEL-BUILD.md): cross-compiling the bare-metal kernel
-- [docs/SURVEILLANCE-AUDIT](docs/SURVEILLANCE-AUDIT.md): counter-surveillance threat model
-
-## Build
-
-```bash
-cargo check --workspace             # userspace crates (host build)
-cargo test --workspace              # 512 workspace tests
-cargo clippy --workspace            # zero warnings required
-cd crates/thumos && cargo build --release  # kernel (armv7a-none-eabi)
-```
-
-Kernel cross-compiles for `armv7a-none-eabi`; boot image built with `mkbootimg` and flashed via mtkclient BROM exploit.
-
-## Related
-
-- [akroasis](https://github.com/forkwright/akroasis): signals intelligence toolkit (thumos as field node)
-- [aletheia](https://github.com/forkwright/aletheia): epistemology runtime (philosophical sibling)
-
-## Optional
-
-- [DISCLAIMER](DISCLAIMER.md): legal notice on user responsibility and research use
-- [SECURITY](SECURITY.md): vulnerability reporting
-- [CHANGELOG](CHANGELOG.md): release history
+- [README.md](README.md): overview, status, and hardware target
+- [ARCHITECTURE.md](ARCHITECTURE.md): crate tree and dependency direction
+- [CLAUDE.md](CLAUDE.md): agent orientation and build constraints
+- [AGENTS.md](AGENTS.md): cross-tool build/lint/test commands
+- [docs/](docs/): hardware, driver, probe, kernel build, and surveillance audit docs

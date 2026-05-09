@@ -1,0 +1,31 @@
+[meta]
+name = "thumos"
+repo = "forkwright/thumos"
+generated = false
+source_docs = [
+  "README.md",
+  "kanon/projects/thumos/STATE.md",
+]
+
+[state]
+summary = "Thumos software milestones through Phase 10 are complete; Phase 11 hardware validation is blocked on restoring AGM M7 factory firmware."
+current_phase = "Phase 11: System Qualification."
+updated = "2026-04-20"
+
+[[recent]]
+date = "2026-04-12"
+item = "Software phases 03-10 complete; no software blockers remain."
+
+[[recent]]
+date = "2026-04-12"
+item = "Factory firmware mismatch identified as the hardware-validation blocker."
+
+[[open_threads]]
+name = "Hardware validation"
+issue = 0
+status = "Requires BROM session and flash of eight stock partitions before proof-of-life kernel testing."
+
+[[open_threads]]
+name = "WPA PMK/PTK"
+issue = 72
+status = "PBKDF2-HMAC-SHA1 needed in kernel before real WiFi on hardware."
