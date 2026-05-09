@@ -1,3 +1,7 @@
+# archetype:
+# forge-only: false
+# spdx: LicenseRef-PolyForm-Shield-1.0.0
+
 # Forge CI pipeline for forkwright/thumos.
 #
 # Extends the hardcoded default Rust gate (fmt → check → clippy → nextest
