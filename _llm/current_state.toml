@@ -4,7 +4,7 @@ repo = "forkwright/thumos"
 generated = false
 source_docs = [
   "README.md",
-  "kanon/projects/thumos/STATE.md",
+  "<canonical-state-doc>/STATE.md",
 ]
 
 [state]

@@ -5,7 +5,7 @@ generated = false
 source_docs = [
   "README.md",
   "CLAUDE.md",
-  "kanon/projects/thumos/STATE.md",
+  "<canonical-state-doc>/STATE.md",
 ]
 
 [glossary]
