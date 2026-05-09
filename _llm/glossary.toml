@@ -1,0 +1,47 @@
+[meta]
+name = "thumos"
+repo = "forkwright/thumos"
+generated = false
+source_docs = [
+  "README.md",
+  "CLAUDE.md",
+  "kanon/projects/thumos/STATE.md",
+]
+
+[glossary]
+description = "Domain vocabulary for thumos."
+
+[[terms]]
+term = "thumos"
+definition = "Spirited force; the sovereign mobile OS and kernel crate."
+canonical = true
+
+[[terms]]
+term = "eidolon"
+definition = "Image; framebuffer UI crate."
+canonical = true
+
+[[terms]]
+term = "haphe"
+definition = "Touch; input crate for keypad, touchscreen, and T9 routing."
+canonical = true
+
+[[terms]]
+term = "aither"
+definition = "Ether; WiFi driver crate."
+canonical = true
+
+[[terms]]
+term = "pteron"
+definition = "Wing; Bluetooth crate."
+canonical = true
+
+[[terms]]
+term = "krypta"
+definition = "Hidden; Signal protocol and encrypted messaging crate."
+canonical = true
+
+[[terms]]
+term = "CCCI"
+definition = "AP-to-modem interface firewalled at the kernel boundary."
+canonical = true

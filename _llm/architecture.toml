@@ -1,135 +1,95 @@
-# Crate architecture — compressed from ../ARCHITECTURE.md
-# Canonical source: ../ARCHITECTURE.md
-#
-# Thumos is a monolithic Rust kernel (bare-metal, excluded from workspace)
-# plus 12 userspace workspace crates. Higher layers depend on lower; never
-# the reverse. The kernel depends on nothing in the workspace.
-
-[[crate]]
+[meta]
 name = "thumos"
-layer = "kernel"
-workspace_member = false
-target = "armv7a-none-eabi"
-path = "crates/thumos/"
-purpose = "Bare-metal ARM kernel: MMU, slab allocator, scheduler, 45 syscalls, IPC (pipe/futex/signals), ELF loader, VFS (LFS/ramfs/devfs), block cache, network stack (TCP/UDP/DHCP/DNS), firewall, encrypted block device, telephony, audio session, UI framework, 107 modules"
-depends = []
+repo = "forkwright/thumos"
+generated = false
+source_docs = [
+  "README.md",
+  "ARCHITECTURE.md",
+  "CLAUDE.md",
+  "kanon/projects/thumos/STATE.md",
+  "_llm/README.md",
+]
 
-[[crate]]
+[architecture]
+summary = "Sovereign Rust mobile OS for the AGM M7: one bare-metal kernel plus userspace crates for input, radios, telephony, security, crypto, UI, and radio tools."
+layers = [
+  "kernel",
+  "input",
+  "security",
+  "radio",
+  "telephony",
+  "crypto",
+  "radio-tools",
+  "ui",
+  "hardware-reference",
+]
+
+[[architecture.crates]]
+name = "thumos"
+path = "crates/thumos"
+role = "Bare-metal ARM kernel for MMU, scheduler, IPC, VFS, network, crypto, telephony, audio, and UI framework."
+
+[[architecture.crates]]
 name = "haphe"
-layer = "input"
-workspace_member = true
-path = "crates/haphe/"
-purpose = "GPIO keypad matrix scan, mtk-tpd touchscreen driver, T9 input routing, event queue (no_std)"
-depends = []
+path = "crates/haphe"
+role = "GPIO keypad, touchscreen, T9 input routing, and event queue."
 
-[[crate]]
+[[architecture.crates]]
 name = "asphaleia"
-layer = "security"
-workspace_member = true
-path = "crates/asphaleia/"
-purpose = "Packet filter firewall, DNS blocklist, capability enforcement, IPv4/TCP/UDP parsing"
-depends = []
+path = "crates/asphaleia"
+role = "Packet filter firewall, DNS blocklist, capability enforcement, and packet parsing."
 
-[[crate]]
+[[architecture.crates]]
 name = "stegnos"
-layer = "security"
-workspace_member = true
-path = "crates/stegnos/"
-purpose = "Encrypted storage: AES-256-XTS block cipher, LUKS key derivation, secure erase"
-depends = []
+path = "crates/stegnos"
+role = "Encrypted storage and secure erase."
 
-[[crate]]
+[[architecture.crates]]
 name = "leipsanon"
-layer = "security"
-workspace_member = true
-path = "crates/leipsanon/"
-purpose = "Panic mode: priority-ordered wipe, trigger system, memory scrubbing"
-depends = []
+path = "crates/leipsanon"
+role = "Panic mode triggers, wipe ordering, and memory scrubbing."
 
-[[crate]]
+[[architecture.crates]]
 name = "aither"
-layer = "radio"
-workspace_member = true
-path = "crates/aither/"
-purpose = "WiFi MAC driver (gen2 HIF), MAC randomization per connection, passive scanning, WPA2/WPA3 supplicant, EAPOL handshake"
-depends = []
+path = "crates/aither"
+role = "WiFi MAC driver, MAC randomization, scanning, and WPA supplicant behavior."
 
-[[crate]]
+[[architecture.crates]]
 name = "pteron"
-layer = "radio"
-workspace_member = true
-path = "crates/pteron/"
-purpose = "Bluetooth HCI over STP, BLE scanning, LE Privacy address rotation (15-min interval), NRPA default"
-depends = []
+path = "crates/pteron"
+role = "Bluetooth HCI and LE Privacy behavior."
 
-[[crate]]
+[[architecture.crates]]
 name = "kelyphos"
-layer = "radio"
-workspace_member = true
-path = "crates/kelyphos/"
-purpose = "WMT combo chip manager (CONSYS): firmware loading, STP framing, subsystem power control"
-depends = []
+path = "crates/kelyphos"
+role = "CONSYS/WMT combo chip manager."
 
-[[crate]]
+[[architecture.crates]]
 name = "topos"
-layer = "radio"
-workspace_member = true
-path = "crates/topos/"
-purpose = "GPS NMEA parser, multi-constellation (GPS/GLONASS/BeiDou), geofencing, position logging"
-depends = []
+path = "crates/topos"
+role = "GPS NMEA parsing, geofencing, and position logging."
 
-[[crate]]
+[[architecture.crates]]
 name = "klesis"
-layer = "telephony"
-workspace_member = true
-path = "crates/klesis/"
-purpose = "AT command parser, CCCI/CLDMA framing, SMS PDU codec, GSM-7 encoding"
-depends = []
+path = "crates/klesis"
+role = "AT command parser, CCCI/CLDMA framing, SMS PDU, and GSM-7."
 
-[[crate]]
+[[architecture.crates]]
 name = "krypta"
-layer = "crypto"
-workspace_member = true
-path = "crates/krypta/"
-purpose = "Signal protocol: X3DH key exchange, double ratchet, session management"
-depends = []
+path = "crates/krypta"
+role = "Signal protocol, X3DH, double ratchet, and sessions."
 
-[[crate]]
+[[architecture.crates]]
 name = "sema"
-layer = "radio_tools"
-workspace_member = true
-path = "crates/sema/"
-purpose = "Radio analysis: WiFi/BT/cell scanning, IMSI catcher detection/scoring, rogue AP detection, Silent SMS detection, 2G refusal"
-depends = []
+path = "crates/sema"
+role = "Radio analysis, WiFi/BT/cell scanning, IMSI-catcher and rogue-AP detection."
 
-[[crate]]
+[[architecture.crates]]
 name = "eidolon"
-layer = "ui"
-workspace_member = true
-path = "crates/eidolon/"
-purpose = "Framebuffer UI: 240x320 rendering, widget system, 3-zone layout, dialer, status bar, T9 input rendering"
-depends = ["haphe"]
+path = "crates/eidolon"
+role = "Framebuffer UI, widgets, status bar, dialer, and T9 rendering."
 
-# Dependency direction:
-#
-#   eidolon (UI) -> haphe (input)
-#
-# All other workspace crates are independent of each other. External
-# dependencies (ring, nom, smoltcp, snafu, embedded-graphics) flow downward.
-# The kernel (thumos) depends on nothing in the workspace.
-
-[layers]
-order = ["kernel", "input", "security", "radio", "telephony", "crypto", "radio_tools", "ui"]
-rule = "Higher layers may depend on lower. Lower layers never import from higher."
-
-[build]
-workspace_cmd = "cargo check --workspace"
-kernel_cmd = "cd crates/thumos && cargo build --release"
-kernel_target = "armv7a-none-eabi"
-boot_image = "mkbootimg (see docs/KERNEL-BUILD.md)"
-flash = "mtkclient BROM exploit"
-
-[extension_points]
-new_kernel_subsystem = "Add module in crates/thumos/src/. Kernel is monolithic; subsystems are modules, not crates."
-new_userspace_crate = "Add crate in crates/<greek-name>/, register in workspace Cargo.toml members. Follow Greek naming (docs/gnomon.md)."
-new_driver_protocol = "Workspace crate (like aither, pteron). If the driver touches MMIO registers, put it in the kernel instead."
+[[interfaces]]
+name = "thumos kernel"
+kind = "kernel"
+path = "crates/thumos"
