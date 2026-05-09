@@ -31,3 +31,4 @@ credentials/
 dump/
 target/
 kernel-*/
+*.bak
