@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **asphaleia:** packet filter core — IPv4/TCP/UDP parsing, rule engine, DNS blocklist ([9dd6d54](https://github.com/forkwright/thumos/commit/9dd6d545e8fe6e2d5905c149c842d4f9f806c77f))
 * CI workflows + topos NMEA parser (11 tests) + haphe touch support planned ([5d176f8](https://github.com/forkwright/thumos/commit/5d176f83401841955452180501a7cc678af493b5))
 * **eidolon:** framebuffer rendering — color, font, status bar ([f18305b](https://github.com/forkwright/thumos/commit/f18305be51c72861a17ba9e6cb5794d64ca9c4f6))
-* **eidolon:** widget system and menu navigation (W4-02) ([e1c6d57](https://github.com/forkwright/thumos/commit/e1c6d576fb5f2e4c1e6c4cec8ce3669dede913d4))
+* **eidolon:** widget system and menu navigation (UI milestone) ([e1c6d57](https://github.com/forkwright/thumos/commit/e1c6d576fb5f2e4c1e6c4cec8ce3669dede913d4))
 * **haphe:** add GPIO keypad matrix scan and mtk-tpd touchscreen driver ([#12](https://github.com/forkwright/thumos/issues/12)) ([90d7494](https://github.com/forkwright/thumos/commit/90d749496c2076197cb89bb02fbadd23634b66c6))
 * **haphe:** input subsystem — keypad, touchscreen, T9 text input ([056683d](https://github.com/forkwright/thumos/commit/056683def744515031341e00f1d9f8cdc6072246))
 * **kelyphos:** STP framing protocol for MT6739 combo chip ([b1a7437](https://github.com/forkwright/thumos/commit/b1a743741a866af80154592cdb617b2cf5e1f6ff))
@@ -143,7 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **asphaleia:** packet filter core — IPv4/TCP/UDP parsing, rule engine, DNS blocklist ([52a64a4](https://github.com/forkwright/thumos/commit/52a64a455d0b893d28b614d48620385e7296d977))
 * CI workflows + topos NMEA parser (11 tests) + haphe touch support planned ([f8286e1](https://github.com/forkwright/thumos/commit/f8286e1e055d6eb85809bfd95cda550a0a0ad2d4))
 * **eidolon:** framebuffer rendering — color, font, status bar ([fc0696b](https://github.com/forkwright/thumos/commit/fc0696b2e0be3682e6b6b7dea5bf3e7ea1b027de))
-* **eidolon:** widget system and menu navigation (W4-02) ([1306cdc](https://github.com/forkwright/thumos/commit/1306cdcce7009f6cfad756fa24b1898cd58ac220))
+* **eidolon:** widget system and menu navigation (UI milestone) ([1306cdc](https://github.com/forkwright/thumos/commit/1306cdcce7009f6cfad756fa24b1898cd58ac220))
 * **haphe:** add GPIO keypad matrix scan and mtk-tpd touchscreen driver ([#12](https://github.com/forkwright/thumos/issues/12)) ([e27e98b](https://github.com/forkwright/thumos/commit/e27e98b2da5e4c3b44157a901af5444350894b1b))
 * **haphe:** input subsystem — keypad, touchscreen, T9 text input ([5759f85](https://github.com/forkwright/thumos/commit/5759f8559cee0e482c3ccd85808a8c940b4187d8))
 * **kelyphos:** STP framing protocol for MT6739 combo chip ([02868df](https://github.com/forkwright/thumos/commit/02868df0b6957f881d491208b4d1b92dfc33d209))
@@ -213,7 +213,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Process isolation (pyknosis-boot)**: two-process isolation with separate address spaces and `waitpid` synchronization (PR #5)
 - **eMMC block device (pyknosis-boot)**: MSDC controller driver with PIO and DMA modes, GPD/BD descriptor support (PR #4)
 - **Syscall expansion (pyknosis-boot)**: syscall interface expanded to 46 calls covering process, memory, IPC, file, time, and signal domains (PR #3)
-- **GC9306 init sequence (docs)**: LCM initialization sequence extracted from four public sources (PR #14)
+- **GC9306 init sequence (docs)**: LCM initialization sequence documented from four public sources (PR #14)
 - **Device identity protection threat model**: CLAUDE.md documents per-identifier mitigations at the register level
 
 ### Changed
@@ -234,5 +234,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Hardware probe complete: BROM access, firmware dump, bootloader unlock, root access
 - Surveillance audit: 7 threats identified across 3 nation-state risk profiles
-- Kernel module map and modem interface map extracted from stock firmware
+- Kernel module map and modem interface map documented from stock firmware
 - Initial workspace structure: 13 crates scaffolded

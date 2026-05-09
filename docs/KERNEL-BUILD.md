@@ -4,23 +4,23 @@ MT6739 Linux 4.4 BSP kernel for AGM M7, compiled from `kernel-wiite/` (cateajans
 
 ---
 
-## W1-02  -  Stock config + USB serial initramfs
+## USB serial initramfs build - Stock config
 
 **Status:** Built. `boot-v2.img` at `~/thumos/boot-v2.img`. Not yet flashed.
 
-### What changed from W1-01
+### What changed from the first boot attempt
 
-| Item | W1-01 | W1-02 |
+| Item | First boot attempt | USB serial initramfs build |
 |------|-------|-------|
-| Base config | `hct6739_36_n1_defconfig` | `kernel-config-stock` (extracted from `/proc/config.gz` on running device) |
+| Base config | `hct6739_36_n1_defconfig` | `kernel-config-stock` (stock AGM M7 `/proc/config.gz` baseline) |
 | LCM driver | `hct_ili9881p_dsi_vdo_hdp_panda_55_hz` (wrong DSI placeholder) | `gc9306_dbi_c_qvgal` (correct DBI panel, stub  -  source absent from BSP) |
 | Initramfs | Shell only | Shell + USB serial gadget (ACM) |
 | CMDLINE | `console=ttyMT0` only | `console=ttyMT0,921600n1 vmalloc=496M` |
 | FPSGO | Disabled | Disabled (same root cause: undefined FBT game symbols) |
 
-### Why W1-01 didn't boot visibly
+### Why the first boot attempt didn't boot visibly
 
-The W1-01 LCM driver (`hct_ili9881p`) is a 1080p DSI panel driver. Our target AGM M7 uses a
+The initial LCM driver (`hct_ili9881p`) is a 1080p DSI panel driver. Our target AGM M7 uses a
 240×320 DBI parallel-interface panel driven by GC9306. The wrong driver left the display
 controller unconfigured; the kernel booted but nothing was visible and there was no console.
 
@@ -34,18 +34,18 @@ drivers/misc/mediatek/lcm/gc9306_dbi_c_qvgal/gc9306_dbi_c_qvgal.c
 ```
 
 The stub sets DBI parallel interface, 240×320, RGB565, and logs a warning at boot.
-Display will not initialize. The actual GC9306 init sequence must be extracted from
+Display will not initialize. The actual GC9306 init sequence must come from
 the stock system partition (`/system/lib/hw/` or display HAL) in a future sprint.
 
-### Additional patches applied in W1-02
+### Additional patches applied in the USB serial initramfs build
 
 #### CONFIG changes (on top of stock config)
 
-| Option | Stock | W1-02 | Reason |
+| Option | Stock | USB serial initramfs build | Reason |
 |--------|-------|-------|--------|
 | `CONFIG_CROSS_COMPILE` | `"arm-eabi-"` | `"arm-linux-gnueabihf-"` | Installed toolchain |
 | `CONFIG_HARDENED_USERCOPY` | `y` | disabled | `mm/slub.c` references `kmem_cache.red_left_pad` which is absent from this BSP's `slub_def.h` (kernel version skew) |
-| `CONFIG_MTK_FPSGO` | `y` | disabled | FBT game symbols (`min_boost_freq`, `cpufreq_notifier_fp`) undefined  -  same issue as W1-01 |
+| `CONFIG_MTK_FPSGO` | `y` | disabled | FBT game symbols (`min_boost_freq`, `cpufreq_notifier_fp`) undefined - same issue as the first boot attempt |
 | `CONFIG_USB_C_SWITCH` | `y` | disabled | `register_typec_switch_callback` defined only in Type-C chip drivers (MT6336/ANX7418), none of which are built; AGM M7 uses micro-USB |
 | `CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES` | `"mt6739"` | `"hct6739_36_n1"` | No `mt6739.dts` in BSP; `hct6739_36_n1.dts` is the only MT6739 DTS |
 
@@ -169,18 +169,18 @@ Cmdline:       bootopt=64S3,32S1,32S1 console=ttyMT0,921600n1 root=/dev/ram vmal
 
 ### Observations
 
-- **Stock CMDLINE** uses `console=ttyMT3` (not `ttyMT0`). W1-02 uses `ttyMT0` for
+- **Stock CMDLINE** uses `console=ttyMT3` (not `ttyMT0`). The USB serial initramfs build uses `ttyMT0` for
   compatibility with the BSP defconfig pattern. If no console output appears, try
   `ttyMT3` in the next build.
 - **GC9306 DBI driver** will need to be reverse-engineered from the stock display HAL
-  or extracted from a different BSP that includes it (e.g., MT6739 Android 9 trees).
+  or sourced from a different BSP that includes it (e.g., MT6739 Android 9 trees).
 - **Camera sensors**: `gc030amipi_raw` vs `gc030a_mipi_raw` naming divergence suggests
   the stock firmware may use a downstream vendor BSP not aligned with this tree.
 - **vmalloc=496M** in cmdline matches stock config CMDLINE setting (`vmalloc=496M`).
 
 ---
 
-# W1-01  -  First boot attempt (wrong LCM driver)
+# First boot attempt (wrong LCM driver)
 
 ## Environment
 
@@ -391,7 +391,7 @@ adb shell dd if=/sdcard/boot.img of=/dev/block/platform/*/by-name/boot
 fastboot boot ~/thumos/boot.img   # test without flashing
 ```
 
-## Known Limitations (W1-01  -  superseded by W1-02)
+## Known Limitations (first boot attempt - superseded by USB serial initramfs build)
 
 - **LCM**: `hct_ili9881p_dsi_vdo_hdp_panda_55_hz` is a placeholder. The AGM M7's actual panel (nt35521) driver is absent from this BSP. Display will not initialize; boot console only.
 - **GPIO/EINT**: `cust.dtsi` is a stub (no DrvGen output). Drivers that depend on GPIO bindings will not probe.

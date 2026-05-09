@@ -6,7 +6,7 @@ Sovereign mobile OS for the AGM M7. Privacy-first, counter-surveillance, hardwar
 
 A custom Rust OS for the AGM M7 (MT6739, 1GB RAM, 240x320 QVGA, IP68) that gives the user complete sovereignty over their device. Full Rust from kernel to UI. Secure communication, counter-surveillance, proactive defense. No backdoors, no telemetry, no trust in infrastructure you don't control.
 
-> **Current status:** See [`kanon/projects/thumos/STATE.md`](https://github.com/forkwright/kanon/blob/main/projects/thumos/STATE.md) for the canonical phase tracker, active blockers, and hardware-validation status.
+> **Current status:** Active phase tracking, blockers, and hardware-validation status are maintained in the internal planning record.
 
 ## Name
 
@@ -43,7 +43,7 @@ MT6739 hardware (modem on separate core, firewalled at CCCI driver level)
 
 13 crates (12 userspace workspace members plus the `thumos` kernel binary, excluded from the main workspace for bare-metal builds), 2,313 tests (1,618 kernel + 695 workspace), ~102K LOC (81K kernel, 21K userspace), 107 kernel modules. Kernel implements 45 syscalls including fork/exec/waitpid, mmap/brk/mprotect, pipe/futex IPC, POSIX signals (sigaction/kill/sigreturn), clock_gettime/nanosleep, network sockets (TCP/UDP/bind/listen/accept/connect/sendto/recvfrom). Slab allocator (7 size classes), ChaCha20 CSPRNG, capability-based access control, DVFS power management, watchdog timer, VFS with LFS/ramfs/devfs, firewall with DNS blocklist, DHCP client, DNS resolver, 3-zone UI framework (240x320), telephony (AT modem, voice calls, SMS), audio session manager (MT6357 codec, priority preemption), battery monitor, T9 input, contacts, FM radio, BT A2DP, calendar/alarm/timer/stopwatch (heorte), mic audit log, measured boot (Ed25519), encrypted block device (AES-256-XTS), key hierarchy (PBKDF2+HKDF), lock screen (passphrase/PIN/duress), security modes (Daily/Sentinel/Panic/Covert Lock), HMAC-chain audit log, BFU auto-reboot timer, panic wipe, privacy dashboard, DNS-over-TLS, HTTP client, JSON parser, Matrix CS API (sync/rooms/send), Matrix E2E encryption (Olm/Megolm), USB credential provisioning, unified inbox (SMS + Matrix + Briar + Meshtastic with bridge support), voice-to-text (ekphrasis via aletheia STT), action proposals, Briar P2P messaging, Meshtastic LoRa mesh, nous AI entity management (capability presets, chat screen with action proposal cards), IMSI catcher scoring, Silent SMS detection, 2G refusal, CCCI traffic logger, modem baseline analysis, CCCI modem firewall, modem PMIC power cut, threat monitor screen. Hardware drivers: eMMC (MSDC), display (DDP + GC9306), WiFi MAC (randomization), BT HCI (LE Privacy), WMT, CCCI modem containment, USB ACM, GPIO keypad, touchscreen, GPS (NMEA), Bluetooth (STP/HCI).
 
-_Phase, test split, LOC, and module totals are aligned to the canonical `kanon/projects/thumos/STATE.md`. Crate count was verified with `ls -d crates/*/ | wc -l` on 2026-05-04. A cheap source grep (`rg "#\[test\]" crates/ | wc -l`) reports 2,187 annotated test functions, so the canonical test inventory remains the source of truth without a full cargo listing._
+_Phase, test split, LOC, and module totals are aligned to the internal project state record. Crate count was verified with `ls -d crates/*/ | wc -l` on 2026-05-04. A cheap source grep (`rg "#\[test\]" crates/ | wc -l`) reports 2,187 annotated test functions, so the canonical test inventory remains the source of truth without a full cargo listing._
 
 ## Related
 

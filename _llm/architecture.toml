@@ -6,7 +6,7 @@ source_docs = [
   "README.md",
   "ARCHITECTURE.md",
   "CLAUDE.md",
-  "kanon/projects/thumos/STATE.md",
+  "<canonical-state-doc>/STATE.md",
   "_llm/README.md",
 ]
 
