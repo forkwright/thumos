@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5](https://github.com/forkwright/thumos/compare/v0.1.4...v0.1.5) (2026-05-21)
+
+
+### Features
+
+* **_llm:** add T0 corpus per [#667](https://github.com/forkwright/thumos/issues/667) / [#673](https://github.com/forkwright/thumos/issues/673) fleet rollout ([#12](https://github.com/forkwright/thumos/issues/12)) ([a02a04f](https://github.com/forkwright/thumos/commit/a02a04f35b28fa7b9422bb9bec99b00de5ba95d6))
+* QEMU test runner for kernel unit tests (closes [#117](https://github.com/forkwright/thumos/issues/117)) ([#127](https://github.com/forkwright/thumos/issues/127)) ([b2117b1](https://github.com/forkwright/thumos/commit/b2117b10343e16ebbd1e30450c828d4d08945dba))
+
+
+### Bug Fixes
+
+* **lint:** clear license-spdx + as-cast + allow-not-expect violations ([#5](https://github.com/forkwright/thumos/issues/5)) ([dfbf66c](https://github.com/forkwright/thumos/commit/dfbf66c281f0e1c7d4d57d82cc51cfc3896ffa6b))
+* **thumos:** clear kanon lint drift ([#7](https://github.com/forkwright/thumos/issues/7)) ([b0a4238](https://github.com/forkwright/thumos/commit/b0a42389abad22404d6601be219f995924996582))
+
 ## [0.1.4](https://github.com/forkwright/thumos/compare/v0.1.3...v0.1.4) (2026-04-13)
 
 
