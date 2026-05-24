@@ -464,7 +464,7 @@ impl fmt::Display for BriarTransport {
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
-    
+
     use super::*;
 
     // --- State tests ---

@@ -653,7 +653,7 @@ const fn align4(n: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use alloc::format;
-    
+
     use super::*;
 
     // -- Backward-compatibility tests (preserved from original) --

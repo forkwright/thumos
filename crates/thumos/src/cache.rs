@@ -274,7 +274,7 @@ impl Default for BlockCache {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    
+
     use super::*;
     use crate::block::MemBlockDevice;
 

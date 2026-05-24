@@ -1090,7 +1090,7 @@ fn parse_proposal_json(json_str: &str) -> Result<ActionProposal, EkphrasisError>
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    
+
     use super::*;
 
     // -----------------------------------------------------------------------
