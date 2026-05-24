@@ -534,7 +534,7 @@ impl fmt::Display for MeshtasticTransport {
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
-    
+
     use super::*;
 
     // --- State tests ---

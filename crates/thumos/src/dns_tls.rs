@@ -496,7 +496,7 @@ impl core::fmt::Display for DotConfig {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    
+
     use super::*;
 
     // -- Mock TLS transport ---------------------------------------------------

@@ -285,7 +285,7 @@ fn blocks_needed(byte_count: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    
+
     use super::*;
     use crate::block::MemBlockDevice;
 

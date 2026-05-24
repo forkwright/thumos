@@ -2055,7 +2055,7 @@ mod tests {
     #[test]
     fn slab_stress_no_leaks() {
         use core::alloc::Layout;
-        
+
         use crate::slab::SlabAllocator;
 
         // Local fake page pool backed by a static array.

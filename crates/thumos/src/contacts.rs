@@ -316,7 +316,7 @@ impl AsciiLowercase for str {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    
+
     use super::*;
 
     #[test]

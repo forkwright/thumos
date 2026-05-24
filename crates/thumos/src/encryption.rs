@@ -291,7 +291,7 @@ impl From<SecurityError> for BlockError {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    
+
     use super::*;
     use crate::block::MemBlockDevice;
 
