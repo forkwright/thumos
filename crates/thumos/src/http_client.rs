@@ -692,7 +692,7 @@ fn write_usize_to_buf(buf: &mut Vec<u8>, mut n: usize) {
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
-    
+
     use super::*;
 
     // -- HttpMethod Display --

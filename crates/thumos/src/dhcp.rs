@@ -220,7 +220,7 @@ impl DhcpClient {
 mod tests {
     use smoltcp::time::Instant;
     use smoltcp::wire::EthernetAddress;
-    
+
     use super::*;
     use crate::net::LoopbackDevice;
 

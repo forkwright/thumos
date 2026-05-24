@@ -570,7 +570,7 @@ impl DnsResolver {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    
+
     use super::*;
 
     // -- Cache tests --

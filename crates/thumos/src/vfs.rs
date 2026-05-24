@@ -505,7 +505,7 @@ pub(crate) fn resolve_path(mounts: &MountTable, path: &str) -> Result<(usize, u3
 #[cfg(test)]
 mod tests {
     use alloc::vec;
-    
+
     use super::*;
 
     // -- TestFs: in-memory filesystem for testing --

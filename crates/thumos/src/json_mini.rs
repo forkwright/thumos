@@ -818,7 +818,7 @@ fn decode_utf8_leading(byte: u8) -> Result<(u32, usize), JsonError> {
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
-    
+
     use super::*;
 
     // ===== JsonWriter tests =====

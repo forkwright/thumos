@@ -437,7 +437,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
 #[cfg(test)]
 mod tests {
     use core::alloc::Layout;
-    
+
     use super::*;
 
     // -----------------------------------------------------------------------

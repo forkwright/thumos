@@ -1966,7 +1966,7 @@ impl CcciDriver {
 mod tests {
     use alloc::format;
     use alloc::vec::Vec;
-    
+
     use super::*;
 
     // -- Message header encode/decode --
