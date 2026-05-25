@@ -8,8 +8,8 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+getrandom = { workspace = true }
 log = { workspace = true }
-ring = { workspace = true }
 rustix = { workspace = true }
 snafu = { workspace = true }
 zeroize = "1"
