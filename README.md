@@ -49,6 +49,7 @@ _Phase, test split, LOC, and module totals are aligned to the internal project s
 
 The Phase 10 / Phase 11 status above describes the kernel's compiled and tested surface. The following surface is tracked as open work and is not yet wired end-to-end on hardware:
 
+- [#141](https://github.com/forkwright/thumos/issues/141) — aletheia agent runtime bridge is not yet designed or wired
 - [#142](https://github.com/forkwright/thumos/issues/142) — boot-time security subsystems are success-without-work placeholders
 - [#143](https://github.com/forkwright/thumos/issues/143) — network stack boots on loopback; WiFi driver and firewall unwired
 - [#144](https://github.com/forkwright/thumos/issues/144) — userspace process spawn falls back to wfe idle loop (no /init or /shell ELF)
