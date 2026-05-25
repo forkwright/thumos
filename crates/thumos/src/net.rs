@@ -26,8 +26,11 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::firewall::{Action, Firewall};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
-use smoltcp::phy::{self, ChecksumCapabilities, Device, DeviceCapabilities, Medium};
+use smoltcp::phy::{
+    self, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken as _,
+};
 use smoltcp::socket::{tcp, udp};
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address, Ipv4Cidr};
@@ -59,6 +62,12 @@ pub(crate) const UDP_TX_BUF_SIZE: usize = 4096;
 
 /// Default Ethernet MTU (standard 1514-byte frame: 14-byte header + 1500 payload).
 const DEFAULT_MTU: usize = 1514;
+
+/// Ethernet header length before the layer-3 payload.
+const ETHERNET_HEADER_LEN: usize = 14;
+
+/// EtherType for IPv4 frames.
+const ETHERTYPE_IPV4: u16 = 0x0800;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -172,6 +181,144 @@ impl Device for LoopbackDevice {
             queue: &mut self.queue,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Firewall device wrapper
+// ---------------------------------------------------------------------------
+
+/// Network device wrapper that filters IPv4 packets before/after smoltcp.
+///
+/// The firewall module evaluates raw IPv4 packets, while smoltcp devices move
+/// Ethernet frames. This wrapper strips the Ethernet header for IPv4 frames,
+/// leaves non-IPv4 traffic untouched, and preserves the existing `Device`
+/// contract for boot smoke tests and future WiFi-backed devices.
+pub(crate) struct FirewallDevice<D> {
+    device: D,
+    firewall: Firewall,
+}
+
+impl<D> FirewallDevice<D> {
+    /// Wrap a device with a firewall that has the default DNS blocklist loaded.
+    pub(crate) fn with_default_firewall(device: D) -> Self {
+        let mut firewall = Firewall::new();
+        firewall.load_default_blocklist();
+        Self { device, firewall }
+    }
+
+    /// Borrow the wrapped device immutably.
+    #[cfg(test)]
+    pub(crate) fn inner(&self) -> &D {
+        &self.device
+    }
+
+    /// Borrow the firewall immutably.
+    #[cfg(test)]
+    pub(crate) fn firewall(&self) -> &Firewall {
+        &self.firewall
+    }
+}
+
+/// Receive token for [`FirewallDevice`].
+pub(crate) struct FirewallRxToken {
+    buffer: Vec<u8>,
+}
+
+impl phy::RxToken for FirewallRxToken {
+    fn consume<R, F>(self, f: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        f(&self.buffer)
+    }
+}
+
+/// Transmit token for [`FirewallDevice`].
+pub(crate) struct FirewallTxToken<'a, T: phy::TxToken> {
+    inner: T,
+    firewall: &'a mut Firewall,
+}
+
+impl<T: phy::TxToken> phy::TxToken for FirewallTxToken<'_, T> {
+    fn consume<R, F>(self, len: usize, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        let mut buffer = vec![0u8; len];
+        let result = f(&mut buffer);
+
+        if frame_allowed_tx(self.firewall, &buffer) {
+            self.inner.consume(len, |out| {
+                out.copy_from_slice(&buffer);
+            });
+        }
+
+        result
+    }
+}
+
+impl<D: Device> Device for FirewallDevice<D> {
+    type RxToken<'a>
+        = FirewallRxToken
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = FirewallTxToken<'a, D::TxToken<'a>>
+    where
+        Self: 'a;
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        self.device.capabilities()
+    }
+
+    fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        let (rx, tx) = self.device.receive(timestamp)?;
+        let mut buffer = Vec::new();
+        rx.consume(|frame| buffer.extend_from_slice(frame));
+
+        if !frame_allowed_rx(&mut self.firewall, &buffer) {
+            return None;
+        }
+
+        Some((
+            FirewallRxToken { buffer },
+            FirewallTxToken {
+                inner: tx,
+                firewall: &mut self.firewall,
+            },
+        ))
+    }
+
+    fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        self.device.transmit(timestamp).map(|inner| FirewallTxToken {
+            inner,
+            firewall: &mut self.firewall,
+        })
+    }
+}
+
+fn ipv4_payload(frame: &[u8]) -> Option<&[u8]> {
+    let ethertype = u16::from_be_bytes([
+        *frame.get(12)?,
+        *frame.get(13)?,
+    ]);
+    if ethertype != ETHERTYPE_IPV4 {
+        return None;
+    }
+
+    frame.get(ETHERNET_HEADER_LEN..)
+}
+
+fn frame_allowed_rx(firewall: &mut Firewall, frame: &[u8]) -> bool {
+    ipv4_payload(frame).is_none_or(|packet| {
+        matches!(firewall.evaluate_rx(packet), Action::Allow | Action::Log)
+    })
+}
+
+fn frame_allowed_tx(firewall: &mut Firewall, frame: &[u8]) -> bool {
+    ipv4_payload(frame).is_none_or(|packet| {
+        matches!(firewall.evaluate_tx(packet), Action::Allow | Action::Log)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +552,59 @@ pub(crate) fn instant_from_millis(millis: i64) -> Instant {
 mod tests {
     use super::*;
 
+    fn make_ethernet_ipv4_frame(ipv4_packet: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(ETHERNET_HEADER_LEN + ipv4_packet.len());
+        frame.extend_from_slice(&[0xff; 6]);
+        frame.extend_from_slice(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        frame.extend_from_slice(&ETHERTYPE_IPV4.to_be_bytes());
+        frame.extend_from_slice(ipv4_packet);
+        frame
+    }
+
+    fn make_ipv4_tcp_packet(src: [u8; 4], dst: [u8; 4], src_port: u16, dst_port: u16) -> Vec<u8> {
+        let mut pkt = vec![0u8; 40];
+        pkt[0] = 0x45;
+        pkt[2..4].copy_from_slice(&40u16.to_be_bytes());
+        pkt[9] = 6;
+        pkt[12..16].copy_from_slice(&src);
+        pkt[16..20].copy_from_slice(&dst);
+        pkt[20..22].copy_from_slice(&src_port.to_be_bytes());
+        pkt[22..24].copy_from_slice(&dst_port.to_be_bytes());
+        pkt[32] = 0x50;
+        pkt
+    }
+
+    fn make_ipv4_udp_dns_query(domain: &str) -> Vec<u8> {
+        let mut dns = Vec::new();
+        dns.extend_from_slice(&[
+            0x00, 0x01, // ID
+            0x01, 0x00, // standard query, RD=1
+            0x00, 0x01, // QDCOUNT
+            0x00, 0x00, // ANCOUNT
+            0x00, 0x00, // NSCOUNT
+            0x00, 0x00, // ARCOUNT
+        ]);
+        for label in domain.split('.') {
+            dns.push(label.len() as u8);
+            dns.extend_from_slice(label.as_bytes());
+        }
+        dns.push(0);
+        dns.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+
+        let total = 20 + 8 + dns.len();
+        let mut pkt = vec![0u8; total];
+        pkt[0] = 0x45;
+        pkt[2..4].copy_from_slice(&(total as u16).to_be_bytes());
+        pkt[9] = 17;
+        pkt[12..16].copy_from_slice(&[127, 0, 0, 1]);
+        pkt[16..20].copy_from_slice(&[9, 9, 9, 9]);
+        pkt[20..22].copy_from_slice(&49152u16.to_be_bytes());
+        pkt[22..24].copy_from_slice(&53u16.to_be_bytes());
+        pkt[24..26].copy_from_slice(&((8 + dns.len()) as u16).to_be_bytes());
+        pkt[28..].copy_from_slice(&dns);
+        pkt
+    }
+
     /// Helper: build a `NetworkStack<LoopbackDevice>` with a stock IP config.
     fn make_stack() -> NetworkStack<LoopbackDevice> {
         let device = LoopbackDevice::new();
@@ -485,6 +685,61 @@ mod tests {
             });
         }
         assert_eq!(device.queued_frames(), 0);
+    }
+
+    #[test]
+    fn firewall_device_drops_blocklisted_dns_tx() {
+        let mut device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
+        let frame = make_ethernet_ipv4_frame(&make_ipv4_udp_dns_query("app-measurement.com"));
+        let now = Instant::from_millis(0);
+
+        let tx = device.transmit(now);
+        assert!(tx.is_some(), "firewall device must expose tx token");
+        phy::TxToken::consume(tx.unwrap(), frame.len(), |buf| {
+            buf.copy_from_slice(&frame);
+        });
+
+        assert_eq!(
+            device.inner().queued_frames(),
+            0,
+            "blocked DNS query must not reach the wrapped device"
+        );
+        assert_eq!(
+            device.firewall().stats().dns_blocked,
+            1,
+            "firewall must account for blocklisted DNS"
+        );
+    }
+
+    #[test]
+    fn firewall_device_drops_default_denied_rx() {
+        let mut device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
+        let frame = make_ethernet_ipv4_frame(&make_ipv4_tcp_packet(
+            [1, 2, 3, 4],
+            [127, 0, 0, 1],
+            443,
+            49152,
+        ));
+        let now = Instant::from_millis(0);
+
+        let tx = device.transmit(now).unwrap();
+        phy::TxToken::consume(tx, frame.len(), |buf| {
+            buf.copy_from_slice(&frame);
+        });
+        assert_eq!(device.inner().queued_frames(), 1);
+
+        let rx = device.receive(now);
+        assert!(rx.is_none(), "default inbound deny must suppress rx token");
+        assert_eq!(
+            device.firewall().stats().packets_denied,
+            1,
+            "firewall must account for denied inbound packet"
+        );
+        assert_eq!(
+            device.inner().queued_frames(),
+            0,
+            "denied rx packet must be consumed from the wrapped queue"
+        );
     }
 
     #[test]
