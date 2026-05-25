@@ -146,6 +146,7 @@ pub(crate) struct BootState { // kanon:ignore RUST/struct-too-many-fields -- one
     pub(crate) modem_ok: bool,
     pub(crate) input_ok: bool,
     pub(crate) network_ok: bool,
+    pub(crate) network_loopback_smoke_ok: bool,
     pub(crate) bluetooth_ok: bool,
     pub(crate) gps_ok: bool,
     pub(crate) processes_spawned: u8,
@@ -170,6 +171,7 @@ impl BootState {
             modem_ok: false,
             input_ok: false,
             network_ok: false,
+            network_loopback_smoke_ok: false,
             bluetooth_ok: false,
             gps_ok: false,
             processes_spawned: 0,
@@ -713,11 +715,13 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 13: Network configuration (DHCP + DNS)
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Network (DHCP + DNS)\r\n");
+    let _ = serial.write_str("[init] Network loopback smoke (DHCP + DNS)\r\n");
     {
         // WHY: In production, the WiFi driver provides the Device impl.
         // Until WiFi hardware init is wired in, we use LoopbackDevice to
-        // prove the DHCP+DNS integration path works end-to-end.
+        // prove the DHCP+DNS integration path works end-to-end. Loopback
+        // success is tracked separately and must not mark production
+        // connectivity ready.
         let device = LoopbackDevice::new();
         let mac = smoltcp::wire::EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
         let now = net::instant_from_millis(crate::timer::elapsed_ms() as i64);
@@ -785,7 +789,7 @@ pub unsafe fn run() -> ! {
             LAN_DNS,
             MULLVAD_DNS
         );
-        state.network_ok = true;
+        state.network_loopback_smoke_ok = true;
     }
 
     // -----------------------------------------------------------------------
@@ -856,6 +860,11 @@ pub unsafe fn run() -> ! {
     if !state.network_ok {
         let _ = serial
             .write_str("       NOTE: network unavailable, no connectivity\r\n");
+    }
+    if state.network_loopback_smoke_ok && !state.network_ok {
+        let _ = serial.write_str(
+            "       NOTE: DHCP/DNS smoke used loopback only; WiFi not wired\r\n",
+        );
     }
     let _ = serial.write_str("\r\n");
 
@@ -1082,6 +1091,10 @@ mod tests {
         assert!(!state.modem_ok, "initial modem_ok must be false");
         assert!(!state.input_ok, "initial input_ok must be false");
         assert!(!state.network_ok, "initial network_ok must be false");
+        assert!(
+            !state.network_loopback_smoke_ok,
+            "initial network_loopback_smoke_ok must be false"
+        );
         assert_eq!(
             state.processes_spawned, 0,
             "initial processes_spawned must be 0"
@@ -1121,7 +1134,24 @@ mod tests {
         state.modem_ok = true;
         state.input_ok = true;
         state.network_ok = true;
-        assert_eq!(state.ok_count(), 15, "all 15 subsystems OK");
+        state.bluetooth_ok = true;
+        state.gps_ok = true;
+        assert_eq!(state.ok_count(), 17, "all 17 subsystems OK");
+    }
+
+    #[test]
+    fn boot_state_loopback_smoke_is_not_production_network_ok() {
+        let mut state = BootState::new();
+        state.network_loopback_smoke_ok = true;
+        assert!(
+            !state.network_ok,
+            "loopback smoke must not mark production network ready"
+        );
+        assert_eq!(
+            state.ok_count(),
+            0,
+            "loopback smoke must not count as an OK production subsystem"
+        );
     }
 
     // -- Degradation paths --
