@@ -8,8 +8,11 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-ring = { workspace = true }
+getrandom = { workspace = true }
+hmac = { workspace = true }
 nom = { workspace = true }
+pbkdf2 = { workspace = true }
+sha1 = { workspace = true }
 smoltcp = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
