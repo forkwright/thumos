@@ -27,7 +27,7 @@ use crate::heap;
 use crate::kconfig;
 use crate::mmio;
 use crate::mmu;
-use crate::net::{self, LoopbackDevice, NetworkStack};
+use crate::net::{self, FirewallDevice, LoopbackDevice, NetworkStack};
 use crate::page;
 use crate::power::PowerManager;
 use crate::process;
@@ -724,10 +724,11 @@ pub unsafe fn run() -> ! {
         // prove the DHCP+DNS integration path works end-to-end. Loopback
         // success is tracked separately and must not mark production
         // connectivity ready.
-        let device = LoopbackDevice::new();
+        let device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
         let mac = smoltcp::wire::EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
         let now = net::instant_from_millis(crate::timer::elapsed_ms() as i64);
         let mut stack = NetworkStack::new(device, mac, now);
+        let _ = serial.write_str("       Firewall DNS blocklist active\r\n");
 
         // Start DHCP client.
         match DhcpClient::new(&mut stack) {
