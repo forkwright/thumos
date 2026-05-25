@@ -20,7 +20,7 @@ exclude = ["crates/thumos"]
 version = "0.1.5"
 edition = "2024"
 # WHY: match the toolchain we actually build and test against.
-rust-version = "1.85"
+rust-version = "1.94"
 license = "LicenseRef-PolyForm-Shield-1.0.0"
 repository = "https://github.com/forkwright/thumos"
 publish = false
