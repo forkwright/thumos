@@ -9,9 +9,12 @@ repository.workspace = true
 
 [dependencies]
 aes = "0.8"
+aes-gcm = { workspace = true }
+getrandom = { workspace = true }
 jiff = { workspace = true }
-ring = { workspace = true }
+pbkdf2 = { workspace = true }
 rustix = { workspace = true }
+sha2 = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
 xts-mode = "0.5"

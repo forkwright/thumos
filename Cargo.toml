@@ -71,11 +71,13 @@ rustix = { version = "1", features = [
 ] }
 
 # Crypto
+aes-gcm = "0.10"
 getrandom = "0.4"
 hmac = "0.12"
 pbkdf2 = "0.12"
 ring = "0.17"
 sha1 = "0.10"
+sha2 = "0.10"
 
 # Networking
 smoltcp = { version = "0.12", default-features = false, features = [
