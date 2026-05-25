@@ -200,9 +200,15 @@ impl RamFs {
 
             // Name starts after 110-byte header
             let name_start = offset + 110;
-            let name_end = name_start + namesize - 1; // -1 for null terminator
+            let Some(name_data_end) = name_start.checked_add(namesize) else {
+                break;
+            };
+            if namesize == 0 {
+                break;
+            }
+            let name_end = name_data_end - 1; // -1 for null terminator
 
-            if name_end > data.len() {
+            if name_data_end > data.len() {
                 break;
             }
 
@@ -214,8 +220,12 @@ impl RamFs {
             }
 
             // Data starts after name, aligned to 4 bytes
-            let data_start = align4(name_start + namesize);
-            let data_end = data_start + filesize;
+            let Some(data_start) = checked_align4(name_data_end) else {
+                break;
+            };
+            let Some(data_end) = data_start.checked_add(filesize) else {
+                break;
+            };
 
             if data_end > data.len() {
                 break;
@@ -643,6 +653,14 @@ const fn align4(n: usize) -> usize {
     (n + 3) & !3
 }
 
+/// Align up to a 4-byte boundary without wrapping.
+const fn checked_align4(n: usize) -> Option<usize> {
+    match n.checked_add(3) {
+        Some(n) => Some(n & !3),
+        None => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -705,6 +723,7 @@ mod tests {
         assert_eq!(align4(4), 4);
         assert_eq!(align4(5), 8);
         assert_eq!(align4(110), 112);
+        assert_eq!(checked_align4(usize::MAX), None);
     }
 
     // -- Filesystem trait tests --
@@ -1039,6 +1058,17 @@ mod tests {
         assert_eq!(fs.find("init"), Some(b"#!/bin/sh".as_slice()));
         assert_eq!(fs.find("etc/hostname"), Some(b"thumos".as_slice()));
         assert_eq!(fs.find("./init"), None);
+    }
+
+    #[test]
+    fn parse_cpio_rejects_zero_namesize() {
+        let mut archive = build_cpio_entry("init", b"#!/bin/sh", 0o100755);
+        archive[94..102].copy_from_slice(b"00000000");
+
+        let fs = RamFs::from_cpio(&archive);
+
+        assert_eq!(fs.find("init"), None);
+        assert_eq!(fs.count(), 1);
     }
 
     #[test]
