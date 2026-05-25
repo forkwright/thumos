@@ -553,7 +553,7 @@ pub unsafe fn run() -> ! {
         //
         // NOTE: In production, the kernel image is read from a known
         // partition offset.  Here we log the verification step and mark
-        // it as OK.  The actual image read + verify_combined_image()
+        // it as pending.  The actual image read + verify_combined_image()
         // call is wired when the boot partition layout is finalized.
         //
         // let image = read_kernel_image_from_partition();
@@ -561,8 +561,7 @@ pub unsafe fn run() -> ! {
         //     Ok(()) => { ... }
         //     Err(e) => { display error, halt }
         // }
-        let _ = serial.write_str("       Secure boot: placeholder (awaiting boot partition)\r\n");
-        state.secure_boot_ok = true;
+        let _ = serial.write_str("       Secure boot: PENDING (awaiting boot partition)\r\n");
     } else {
         let _ = serial.write_str("  WARN Secure boot skipped (no display for error)\r\n");
     }
@@ -582,8 +581,7 @@ pub unsafe fn run() -> ! {
         // crate::lock_screen::LockScreen and the result feeds into
         // key_manager::derive_from_passphrase().  Placeholder here
         // until the boot-time input loop is wired.
-        let _ = serial.write_str("       Passphrase: placeholder (awaiting boot input loop)\r\n");
-        state.passphrase_ok = true;
+        let _ = serial.write_str("       Passphrase: PENDING (awaiting boot input loop)\r\n");
     } else {
         let _ = serial.write_str("  WARN Passphrase entry skipped (no display/input)\r\n");
     }
@@ -600,8 +598,7 @@ pub unsafe fn run() -> ! {
         // let data_key = key_manager.data_key().as_bytes().clone();
         // let enc_dev = EncryptedBlockDevice::new(&mut blk_dev, data_key);
         // lfs::mount(Box::new(enc_dev));
-        let _ = serial.write_str("       Encryption: placeholder (awaiting key derivation)\r\n");
-        state.encryption_ok = true;
+        let _ = serial.write_str("       Encryption: PENDING (awaiting key derivation)\r\n");
     } else {
         let _ = serial.write_str("  WARN Encrypted mount skipped (no passphrase/eMMC)\r\n");
     }
@@ -617,8 +614,7 @@ pub unsafe fn run() -> ! {
         // NOTE: In production:
         // let audit_key = key_manager.audit_key().as_bytes();
         // AUDIT_LOG.init(audit_key);
-        let _ = serial.write_str("       Audit log: placeholder (awaiting audit key)\r\n");
-        state.audit_ok = true;
+        let _ = serial.write_str("       Audit log: PENDING (awaiting audit key)\r\n");
     }
 
     // -----------------------------------------------------------------------
@@ -633,8 +629,7 @@ pub unsafe fn run() -> ! {
         // let mode_mgr = ModeManager::new(pin_hash);
         // let bfu = BfuTimer::new(SecurityMode::Daily);
         // apply_mode_policy(&mode_mgr.effective_policy(), &mut pm);
-        let _ = serial.write_str("       Security mode: Daily\r\n");
-        state.security_mode_ok = true;
+        let _ = serial.write_str("       Security mode: PENDING (Daily policy not applied)\r\n");
     }
 
     // -----------------------------------------------------------------------
