@@ -1,13 +1,12 @@
 //! Key management: PBKDF2 key derivation, AES-256-GCM primary key seal/unseal.
 
-use std::num::NonZeroU32;
-
-use jiff::Timestamp;
-use ring::{
-    aead::{self, AES_256_GCM, LessSafeKey, Nonce, UnboundKey},
-    pbkdf2,
-    rand::{SecureRandom, SystemRandom},
+use aes_gcm::{
+    Aes256Gcm, Nonce,
+    aead::{AeadInPlace, KeyInit},
 };
+use jiff::Timestamp;
+use pbkdf2::pbkdf2_hmac;
+use sha2::Sha256;
 use snafu::Snafu;
 
 use crate::config::Config;
@@ -120,15 +119,12 @@ pub(crate) fn derive_key(
     salt: &[u8; SALT_LEN],
     iterations: u32,
 ) -> Result<DerivedKey> {
-    let iters = NonZeroU32::new(iterations).ok_or_else(|| ZeroIterationsSnafu.build())?;
+    if iterations == 0 {
+        return ZeroIterationsSnafu.fail();
+    }
+
     let mut key = [0u8; KEY_LEN];
-    pbkdf2::derive(
-        pbkdf2::PBKDF2_HMAC_SHA256,
-        iters,
-        salt,
-        passphrase,
-        &mut key,
-    );
+    pbkdf2_hmac::<Sha256>(passphrase, salt, iterations, &mut key);
     Ok(DerivedKey {
         key,
         salt: *salt,
@@ -137,10 +133,9 @@ pub(crate) fn derive_key(
 }
 
 /// Generate `N` cryptographically random bytes.
-fn random_bytes<const N: usize>(rng: &SystemRandom) -> Result<[u8; N]> {
+fn random_bytes<const N: usize>() -> Result<[u8; N]> {
     let mut buf = [0u8; N];
-    rng.fill(&mut buf)
-        .map_err(|_| RandomGenerationSnafu.build())?;
+    getrandom::fill(&mut buf).map_err(|_| RandomGenerationSnafu.build())?;
     Ok(buf)
 }
 
@@ -168,22 +163,19 @@ pub(crate) fn seal_key_with_config(
     passphrase: &[u8],
     config: Config,
 ) -> Result<KeySlot> {
-    let rng = SystemRandom::new();
-
-    let salt = random_bytes::<SALT_LEN>(&rng)?;
-    let nonce_bytes = random_bytes::<NONCE_LEN>(&rng)?;
+    let salt = random_bytes::<SALT_LEN>()?;
+    let nonce_bytes = random_bytes::<NONCE_LEN>()?;
 
     let iterations = config.pbkdf2_iterations();
     let derived = derive_key(passphrase, &salt, iterations)?;
 
-    let unbound =
-        UnboundKey::new(&AES_256_GCM, &derived.key).map_err(|_| InvalidKeySnafu.build())?;
-    let sealing_key = LessSafeKey::new(unbound);
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    let sealing_key =
+        Aes256Gcm::new_from_slice(&derived.key).map_err(|_| InvalidKeySnafu.build())?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
 
     let mut buf = primary_key.to_vec();
     sealing_key
-        .seal_in_place_append_tag(nonce, aead::Aad::empty(), &mut buf)
+        .encrypt_in_place(nonce, b"", &mut buf)
         .map_err(|_| KeySealSnafu.build())?;
 
     let mut ciphertext = [0u8; SEALED_KEY_LEN];
@@ -212,17 +204,16 @@ pub(crate) fn seal_key_with_config(
 pub(crate) fn unseal_key(slot: &KeySlot, passphrase: &[u8]) -> Result<[u8; KEY_LEN]> {
     let derived = derive_key(passphrase, &slot.salt, slot.iterations)?;
 
-    let unbound =
-        UnboundKey::new(&AES_256_GCM, &derived.key).map_err(|_| InvalidKeySnafu.build())?;
-    let opening_key = LessSafeKey::new(unbound);
-    let nonce = Nonce::assume_unique_for_key(slot.nonce);
+    let opening_key =
+        Aes256Gcm::new_from_slice(&derived.key).map_err(|_| InvalidKeySnafu.build())?;
+    let nonce = Nonce::from_slice(&slot.nonce);
 
     let mut buf = slot.ciphertext.to_vec();
-    let plaintext = opening_key
-        .open_in_place(nonce, aead::Aad::empty(), &mut buf)
+    opening_key
+        .decrypt_in_place(nonce, b"", &mut buf)
         .map_err(|_| KeyUnsealSnafu.build())?;
 
-    let slice = plaintext
+    let slice = buf
         .get(..KEY_LEN)
         .ok_or_else(|| BadPlaintextLengthSnafu.build())?;
     let mut primary_key = [0u8; KEY_LEN];
@@ -244,6 +235,26 @@ mod tests {
         assert_eq!(
             a.key, b.key,
             "PBKDF2 must be deterministic for same passphrase and salt"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn derive_key_matches_pbkdf2_sha256_known_answer() -> Result<()> {
+        // PBKDF2-HMAC-SHA256 vector from common RFC 6070-style test suites.
+        let mut salt = [0u8; SALT_LEN];
+        salt[..4].copy_from_slice(b"salt");
+
+        let derived = derive_key(b"password", &salt, 1)?;
+
+        assert_eq!(
+            derived.key,
+            [
+                0x1f, 0x0b, 0x0d, 0x29, 0x78, 0x96, 0x2e, 0xb0, 0xa4, 0x14, 0x6d, 0xdc, 0x02, 0xe2,
+                0x2c, 0x04, 0x5e, 0x42, 0xe4, 0x99, 0xf4, 0x0f, 0xf2, 0x84, 0x15, 0x3f, 0xa8, 0x45,
+                0x68, 0xbf, 0xbf, 0xff,
+            ],
+            "PBKDF2-HMAC-SHA256 output must match known answer"
         );
         Ok(())
     }
