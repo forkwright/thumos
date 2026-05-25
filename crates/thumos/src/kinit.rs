@@ -150,6 +150,7 @@ pub(crate) struct BootState { // kanon:ignore RUST/struct-too-many-fields -- one
     pub(crate) bluetooth_ok: bool,
     pub(crate) gps_ok: bool,
     pub(crate) processes_spawned: u8,
+    pub(crate) idle_fallbacks_spawned: u8,
 }
 
 impl BootState {
@@ -175,6 +176,7 @@ impl BootState {
             bluetooth_ok: false,
             gps_ok: false,
             processes_spawned: 0,
+            idle_fallbacks_spawned: 0,
         }
     }
 
@@ -913,7 +915,7 @@ pub unsafe fn run() -> ! {
                         "       idle/init spawned (PID {}) [built-in]\r\n",
                         pid
                     );
-                    state.processes_spawned += 1;
+                    state.idle_fallbacks_spawned += 1;
                 }
             }
         }
@@ -947,16 +949,23 @@ pub unsafe fn run() -> ! {
                         "       idle/shell spawned (PID {}) [built-in]\r\n",
                         pid
                     );
-                    state.processes_spawned += 1;
+                    state.idle_fallbacks_spawned += 1;
                 }
             }
         }
 
         let _ = write!(
             serial,
-            "       {} processes running\r\n",
+            "       {} userspace ELF processes running\r\n",
             state.processes_spawned
         );
+        if state.idle_fallbacks_spawned > 0 {
+            let _ = write!(
+                serial,
+                "       {} built-in idle fallbacks running\r\n",
+                state.idle_fallbacks_spawned
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1099,6 +1108,10 @@ mod tests {
             state.processes_spawned, 0,
             "initial processes_spawned must be 0"
         );
+        assert_eq!(
+            state.idle_fallbacks_spawned, 0,
+            "initial idle_fallbacks_spawned must be 0"
+        );
     }
 
     #[test]
@@ -1151,6 +1164,16 @@ mod tests {
             state.ok_count(),
             0,
             "loopback smoke must not count as an OK production subsystem"
+        );
+    }
+
+    #[test]
+    fn boot_state_idle_fallbacks_do_not_count_as_userspace() {
+        let mut state = BootState::new();
+        state.idle_fallbacks_spawned = 2;
+        assert_eq!(
+            state.processes_spawned, 0,
+            "built-in idle fallbacks must not count as ELF userspace processes"
         );
     }
 
