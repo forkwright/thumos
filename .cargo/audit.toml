@@ -1,0 +1,25 @@
+# cargo-audit configuration.
+#
+# WHY: cargo-audit does not read deny.toml. This file mirrors the advisory
+# ignore list in deny.toml so both tools stay in sync. When adding or
+# removing an ignore here, update deny.toml's [[advisories.ignore]]
+# entries to match (and vice versa). See standards/SUPPLY-CHAIN.md.
+
+[advisories]
+ignore = [
+    # bincode 1.x unmaintained — used directly by kanon storage codec (index +
+    # treesitter cache) and transitively via syntect. No safe upgrade: bincode
+    # 2.x is a breaking-change rewrite and syntect has not migrated.
+    "RUSTSEC-2025-0141",
+    # paste unmaintained — transitive via tokenizers (logismos → mnemosyne);
+    # no safe upgrade available upstream.
+    "RUSTSEC-2024-0436",
+    # False positive: name+version collision. The "cache 0.0.0" matched here
+    # is logismos's internal KV-cache crate (publish = false, path dep), not
+    # the abandoned crates.io "cache" crate that the 2020 advisory covers.
+    "RUSTSEC-2020-0128",
+    # False positive: same collision as RUSTSEC-2020-0128. The flagged
+    # "cache 0.0.0" is logismos's internal KV-cache crate, unrelated to the
+    # 2021 advisory's raw-pointer footgun in the abandoned crates.io crate.
+    "RUSTSEC-2021-0006",
+]
