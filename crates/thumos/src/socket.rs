@@ -28,7 +28,7 @@ use smoltcp::socket::{tcp, udp};
 use smoltcp::wire::{IpEndpoint, IpAddress, Ipv4Address};
 
 use crate::fd::{self, FileDescriptor, MAX_FDS};
-use crate::net::{LoopbackDevice, NetworkStack};
+use crate::net::{FirewallDevice, LoopbackDevice, NetworkStack};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -168,7 +168,9 @@ static mut SOCKET_TABLE: [Option<SocketInfo>; MAX_FDS] = {
 ///
 /// WHY Option: NetworkStack::new() is not const. Initialized by
 /// `init_network_stack()` during kernel boot or test setup.
-static mut NETWORK_STACK: Option<NetworkStack<LoopbackDevice>> = None;
+type SocketNetworkStack = NetworkStack<FirewallDevice<LoopbackDevice>>;
+
+static mut NETWORK_STACK: Option<SocketNetworkStack> = None;
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -185,7 +187,7 @@ pub unsafe fn init_network_stack() {
     use smoltcp::wire::EthernetAddress;
 
     unsafe {
-        let device = LoopbackDevice::new();
+        let device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
         let mac = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
         let mut stack = NetworkStack::new(device, mac, Instant::from_millis(0));
         stack.set_ipv4_addr(Ipv4Address::new(127, 0, 0, 1), 8);
@@ -204,7 +206,7 @@ pub unsafe fn init_network_stack() {
 ///
 /// Caller must ensure `init_network_stack` has been called.
 /// Single-core cooperative kernel ensures exclusive access.
-unsafe fn get_network_stack() -> Option<&'static mut NetworkStack<LoopbackDevice>> {
+unsafe fn get_network_stack() -> Option<&'static mut SocketNetworkStack> {
     unsafe {
         let ns = &mut *core::ptr::addr_of_mut!(NETWORK_STACK);
         ns.as_mut()
@@ -561,7 +563,7 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
             let connect_result = unsafe {
                 let stack_ptr = &mut *core::ptr::addr_of_mut!(NETWORK_STACK);
                 let stack_ref = match stack_ptr.as_mut() {
-                    Some(s) => s as *mut NetworkStack<LoopbackDevice>,
+                    Some(s) => s as *mut SocketNetworkStack,
                     None => return fd::EBADF,
                 };
                 let cx = (*stack_ref).iface_mut().context();

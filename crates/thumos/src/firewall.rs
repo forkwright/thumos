@@ -18,16 +18,10 @@
 //!
 //! # Integration
 //!
-//! This module is standalone — it does not modify `net.rs`. The wiring into
-//! the smoltcp poll loop will happen in a future integration pass. Callers
-//! can use [`Firewall::evaluate_rx`] and [`Firewall::evaluate_tx`] at any
-//! packet interception point.
-
-// WHY: firewall API not yet wired into the network poll path (future integration).
-#![expect(
-    dead_code,
-    reason = "Firewall API not yet wired to net.rs poll loop (future integration pass)"
-)]
+//! `net.rs` wires this filter through a device wrapper that evaluates RX
+//! packets before smoltcp sees them and TX packets before the driver sends
+//! them. Callers can still use [`Firewall::evaluate_rx`] and
+//! [`Firewall::evaluate_tx`] at other packet interception points.
 
 extern crate alloc;
 
@@ -107,6 +101,7 @@ pub enum Action {
     /// Drop the packet.
     Deny,
     /// Forward the packet and log the event.
+    #[expect(dead_code, reason = "log action reserved for audit-policy rules")]
     Log,
 }
 
@@ -256,6 +251,7 @@ impl Firewall {
     ///
     /// Rules are evaluated in order and the first match wins, so prepending
     /// gives the new rule highest priority.
+    #[expect(dead_code, reason = "dynamic firewall rules await policy wiring")]
     pub(crate) fn add_rule(&mut self, rule: FilterRule) {
         self.rules.insert(0, rule);
     }
@@ -304,6 +300,7 @@ impl Firewall {
     }
 
     /// Return a reference to the firewall statistics.
+    #[cfg_attr(not(test), expect(dead_code, reason = "runtime firewall metrics UI pending"))]
     pub(crate) fn stats(&self) -> &FirewallStats {
         &self.stats
     }
@@ -391,6 +388,7 @@ impl Firewall {
 /// Called when [`Firewall::evaluate_rx`] or [`Firewall::evaluate_tx`]
 /// denies a packet. The `direction` indicates whether the packet was
 /// inbound or outbound.
+#[expect(dead_code, reason = "audit key plumbing is not available at net device hook yet")]
 pub(crate) fn log_packet_deny(
     direction: Direction,
     audit_log: &mut AuditLog,
