@@ -51,9 +51,9 @@ The Phase 10 / Phase 11 status above describes the kernel's compiled and tested 
 
 - [#141](https://github.com/forkwright/thumos/issues/141) — aletheia agent runtime bridge is not yet designed or wired
 - [#142](https://github.com/forkwright/thumos/issues/142) — boot-time security subsystems are success-without-work placeholders
-- [#143](https://github.com/forkwright/thumos/issues/143) — network stack boots on loopback; WiFi driver and firewall unwired
+- [#143](https://github.com/forkwright/thumos/issues/143) — network stack still boots on a firewall-backed loopback path; WiFi driver remains unwired
 - [#144](https://github.com/forkwright/thumos/issues/144) — userspace process spawn falls back to wfe idle loop (no /init or /shell ELF)
-- [#145](https://github.com/forkwright/thumos/issues/145) — advertised kernel features compiled but unwired: 47 crate-level expectation blocks, plus 40 item-level low-level dead-code suppressions tracked separately
+- [#145](https://github.com/forkwright/thumos/issues/145) — advertised kernel features compiled but unwired: 46 crate-level expectation blocks, plus 43 item-level low-level dead-code suppressions tracked separately
 - [#146](https://github.com/forkwright/thumos/issues/146) — `ring` dependency violates pure-Rust sovereignty policy in 4 crates
 
 ## Related
