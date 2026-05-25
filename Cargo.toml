@@ -71,6 +71,7 @@ rustix = { version = "1", features = [
 ] }
 
 # Crypto
+getrandom = "0.4"
 ring = "0.17"
 
 # Networking

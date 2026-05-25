@@ -36,10 +36,7 @@ pub(crate) fn secure_zero(buf: &mut [u8]) {
 ///
 /// Returns [`MemoryError::RandomGeneration`] if the system RNG fails.
 pub(crate) fn secure_random_fill(buf: &mut [u8]) -> Result<(), MemoryError> {
-    use ring::rand::SecureRandom as _;
-
-    let rng = ring::rand::SystemRandom::new();
-    rng.fill(buf).map_err(|_| MemoryError::RandomGeneration)
+    getrandom::fill(buf).map_err(|_| MemoryError::RandomGeneration)
 }
 
 // ----- Types ----------------------------------------------------------------
