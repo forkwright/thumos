@@ -23,13 +23,20 @@ reason = "False positive: name+version collision. The flagged `cache 0.0.0` is l
 id = "RUSTSEC-2021-0006"
 reason = "False positive: same collision as RUSTSEC-2020-0128. The flagged `cache 0.0.0` is logismos's internal KV-cache crate, unrelated to the 2021 advisory's raw-pointer footgun in the abandoned crates.io crate."
 
+[[advisories.ignore]]
+id = "RUSTSEC-2023-0089"
+reason = "atomic-polyfill unmaintained — transitive via heapless 0.7.17 → postcard 1.1.3 → sema/krypta. heapless 0.8+ drops atomic-polyfill in favor of portable-atomic, but postcard 1.x has not yet bumped its heapless pin past 0.7. Track postcard upstream for the heapless bump."
+
 [licenses]
 # WHY: license allow list mirrors aletheia's deny.toml. Each addition over
 # kanon's original list is for a real transitive dep:
 #   - BSL-1.0: xxhash-rust (via fjall)
 #   - CC0-1.0: spin or option-ext-class permissive (via various)
 #   - Apache-2.0 WITH LLVM-exception: psm/stacker (via typst-eval chain)
-allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "MPL-2.0", "BSL-1.0", "CC0-1.0", "Apache-2.0 WITH LLVM-exception", "CDLA-Permissive-2.0", "LicenseRef-PolyForm-Shield-1.0.0"]
+#   - 0BSD: managed v0.8.0 + smoltcp v0.12.0 (via aither network stack).
+#     0BSD is the BSD Zero Clause License — OSI-approved, public-domain
+#     equivalent. Less restrictive than MIT (no attribution required).
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "MPL-2.0", "BSL-1.0", "CC0-1.0", "0BSD", "Apache-2.0 WITH LLVM-exception", "CDLA-Permissive-2.0", "LicenseRef-PolyForm-Shield-1.0.0"]
 confidence-threshold = 0.8
 
 [bans]
