@@ -45,6 +45,16 @@ MT6739 hardware (modem on separate core, firewalled at CCCI driver level)
 
 _Phase, test split, LOC, and module totals are aligned to the internal project state record. Crate count was verified with `ls -d crates/*/ | wc -l` on 2026-05-04. A cheap source grep (`rg "#\[test\]" crates/ | wc -l`) reports 2,187 annotated test functions, so the canonical test inventory remains the source of truth without a full cargo listing._
 
+### Known gaps
+
+The Phase 10 / Phase 11 status above describes the kernel's compiled and tested surface. The following surface is tracked as open work and is not yet wired end-to-end on hardware:
+
+- [#142](https://github.com/forkwright/thumos/issues/142) — boot-time security subsystems are success-without-work placeholders
+- [#143](https://github.com/forkwright/thumos/issues/143) — network stack boots on loopback; WiFi driver and firewall unwired
+- [#144](https://github.com/forkwright/thumos/issues/144) — userspace process spawn falls back to wfe idle loop (no /init or /shell ELF)
+- [#145](https://github.com/forkwright/thumos/issues/145) — ~30 advertised kernel features compiled but unwired (dead-code suppressions)
+- [#146](https://github.com/forkwright/thumos/issues/146) — `ring` dependency violates pure-Rust sovereignty policy in 4 crates
+
 ## Related
 
 - [akroasis](https://github.com/forkwright/akroasis): signals intelligence toolkit (thumos as field node)
