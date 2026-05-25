@@ -2,7 +2,7 @@
 //!
 //! Implements HIF MCR register constants, TX/RX descriptors, command/event
 //! protocol, passive-default scanning, association state machine, and
-//! per-connection MAC randomization via ring CSPRNG.
+//! per-connection MAC randomization via the OS CSPRNG.
 
 // WHY: All items are hardware API surface wired to lower layers. Upper-layer
 // callers (supplicant, netif) will be added in subsequent phases.
@@ -15,7 +15,6 @@
     reason = "private module; pub(crate) is consistent with project visibility convention"
 )]
 
-use ring::rand::{SecureRandom, SystemRandom};
 use snafu::{Snafu, ensure};
 
 use crate::wpa::{self, PMK_LEN};
@@ -660,11 +659,9 @@ impl MacAddress {
     /// # Errors
     ///
     /// Returns [`Error::Rng`] if the system CSPRNG fails.
-    pub(crate) fn generate_random(rng: &SystemRandom) -> Result<Self, Error> {
+    pub(crate) fn generate_random() -> Result<Self, Error> {
         let mut bytes = [0u8; 6];
-        // WHY: ring::error::Unspecified does not implement std::error::Error,
-        // so snafu .context() cannot be used; map manually instead.
-        rng.fill(&mut bytes).map_err(|_| Error::Rng)?;
+        getrandom::fill(&mut bytes).map_err(|_| Error::Rng)?;
         // INVARIANT: bit 0 clear = unicast, bit 1 SET = locally administered
         let [mut b0, b1, b2, b3, b4, b5] = bytes;
         b0 &= 0xfe; // clear multicast bit
@@ -759,9 +756,6 @@ pub(crate) enum Error {
     },
 
     /// CSPRNG failure during MAC generation.
-    ///
-    /// `ring::error::Unspecified` carries no additional information beyond the
-    /// fact that entropy collection failed.
     #[snafu(display("MAC randomization RNG failure"))]
     Rng,
 }
@@ -772,10 +766,8 @@ pub(crate) enum Error {
 
 /// MAC driver state for a single `WiFi` HIF interface instance.
 ///
-/// Owns the CSPRNG, the active randomized MAC address, and the association FSM.
+/// Owns the active randomized MAC address and the association FSM.
 pub(crate) struct WiFiMacDriver {
-    /// System CSPRNG for MAC randomization.
-    rng: SystemRandom,
     /// Current locally-administered MAC address for this connection.
     current_mac: MacAddress,
     /// Hardware AHB base address (FROM device tree).
@@ -791,10 +783,8 @@ impl WiFiMacDriver {
     ///
     /// Returns [`Error::Rng`] if initial MAC generation fails.
     pub(crate) fn new(hif_base: u32) -> Result<Self, Error> {
-        let rng = SystemRandom::new();
-        let current_mac = MacAddress::generate_random(&rng)?;
+        let current_mac = MacAddress::generate_random()?;
         Ok(Self {
-            rng,
             current_mac,
             hif_base,
             assoc_state: AssocState::Idle,
@@ -814,7 +804,7 @@ impl WiFiMacDriver {
     ///
     /// Returns [`Error::Rng`] if MAC generation fails.
     pub(crate) fn set_mac_address(&mut self, seq_num: u8) -> Result<WifiCommand, Error> {
-        self.current_mac = MacAddress::generate_random(&self.rng)?;
+        self.current_mac = MacAddress::generate_random()?;
         // WHY: MAC bytes are packed INTO two 32-bit registers: low 4 bytes and
         // high 2 bytes. We write the low word here via ACCESS_REG. Callers must
         // issue a follow-up ACCESS_REG write for the high 2 bytes (seq_num+1).
@@ -903,7 +893,6 @@ impl Default for WiFiMacDriver {
     /// this default in a working environment.
     fn default() -> Self {
         Self {
-            rng: SystemRandom::new(),
             current_mac: MacAddress([0u8; 6]),
             hif_base: 0,
             assoc_state: AssocState::Idle,
@@ -1110,9 +1099,8 @@ mod tests {
 
     #[test]
     fn generated_mac_always_has_locally_administered_bit_set() {
-        let rng = SystemRandom::new();
         for _ in 0..20 {
-            let mac = MacAddress::generate_random(&rng).unwrap_or_default();
+            let mac = MacAddress::generate_random().unwrap_or_default();
             assert!(
                 mac.is_locally_administered(),
                 "locally-administered bit must be SET in generated MAC"
@@ -1122,9 +1110,8 @@ mod tests {
 
     #[test]
     fn generated_mac_always_has_multicast_bit_clear() {
-        let rng = SystemRandom::new();
         for _ in 0..20 {
-            let mac = MacAddress::generate_random(&rng).unwrap_or_default();
+            let mac = MacAddress::generate_random().unwrap_or_default();
             assert!(
                 mac.is_unicast(),
                 "multicast bit must be clear in generated MAC"
@@ -1135,9 +1122,8 @@ mod tests {
     #[test]
     fn generated_macs_are_independently_valid() {
         // NOTE: Probability of collision is 2^{-46}  -  negligible.
-        let rng = SystemRandom::new();
-        let mac_a = MacAddress::generate_random(&rng).unwrap_or_default();
-        let mac_b = MacAddress::generate_random(&rng).unwrap_or_default();
+        let mac_a = MacAddress::generate_random().unwrap_or_default();
+        let mac_b = MacAddress::generate_random().unwrap_or_default();
         // We verify both are valid rather than asserting inequality
         // (collision is theoretically possible but negligibly unlikely).
         assert!(

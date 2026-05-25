@@ -7,7 +7,11 @@
 
 use std::num::NonZeroU32;
 
-use ring::{hmac, pbkdf2};
+use hmac::{Hmac, Mac};
+use pbkdf2::pbkdf2_hmac;
+use sha1::Sha1;
+
+type HmacSha1 = Hmac<Sha1>;
 
 /// PBKDF2 iteration count for PSK derivation (IEEE 802.11-2020 fixed value).
 ///
@@ -91,13 +95,7 @@ impl Drop for Ptk {
 #[must_use]
 pub(crate) fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
     let mut pmk = [0u8; PMK_LEN];
-    pbkdf2::derive(
-        pbkdf2::PBKDF2_HMAC_SHA1,
-        PBKDF2_ITERS,
-        ssid,       // salt
-        passphrase, // secret
-        &mut pmk,
-    );
+    pbkdf2_hmac::<Sha1>(passphrase, ssid, PBKDF2_ITERS.get(), &mut pmk);
     pmk
 }
 
@@ -163,9 +161,11 @@ pub(crate) fn derive_ptk(
 /// passing `data` to this function.
 #[must_use]
 pub(crate) fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
-    let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, kck);
-    let tag = hmac::sign(&key, data);
-    let bytes = tag.as_ref();
+    let Ok(mut mac) = HmacSha1::new_from_slice(kck) else {
+        return [0u8; MIC_LEN];
+    };
+    mac.update(data);
+    let bytes = mac.finalize().into_bytes();
     let mut mic = [0u8; MIC_LEN];
     // HMAC-SHA1 produces 20 bytes; we take the first 16 (128 bits).
     mic.copy_from_slice(&bytes[..MIC_LEN]);
@@ -207,7 +207,6 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// `input` must already be the concatenation `A || 0x00 || B`; the counter
 /// byte `i` is appended per iteration.
 fn prf(key: &[u8], input: &[u8], output: &mut [u8]) {
-    let hmac_key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key);
     let out_len = output.len();
     let mut pos = 0usize;
     let mut counter = 0u8;
@@ -217,8 +216,11 @@ fn prf(key: &[u8], input: &[u8], output: &mut [u8]) {
         msg.extend_from_slice(input);
         msg.push(counter);
 
-        let tag = hmac::sign(&hmac_key, &msg);
-        let tag_bytes = tag.as_ref();
+        let Ok(mut mac) = HmacSha1::new_from_slice(key) else {
+            return;
+        };
+        mac.update(&msg);
+        let tag_bytes = mac.finalize().into_bytes();
         let copy_len = (out_len - pos).min(tag_bytes.len());
         output[pos..pos + copy_len].copy_from_slice(&tag_bytes[..copy_len]);
         pos += copy_len;
