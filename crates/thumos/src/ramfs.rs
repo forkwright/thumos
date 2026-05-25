@@ -228,11 +228,8 @@ impl RamFs {
 
             if !name.is_empty() && name != "." {
                 // Strip leading "./" if present (common in CPIO archives)
-                let clean_name = name
-                    .strip_prefix("./")
-                    .unwrap_or(name)
-                    .strip_prefix('/')
-                    .unwrap_or(name);
+                let clean_name = name.strip_prefix("./").unwrap_or(name);
+                let clean_name = clean_name.strip_prefix('/').unwrap_or(clean_name);
 
                 if !clean_name.is_empty() {
                     if is_dir {
@@ -1028,6 +1025,20 @@ mod tests {
         let mut buf = [0u8; 32];
         let read = fs.read(init_id, 0, &mut buf).expect("read init");
         assert_eq!(&buf[..read], b"#!/bin/sh");
+    }
+
+    #[test]
+    fn parse_cpio_strips_dot_slash_prefixes() {
+        let mut archive = Vec::new();
+        archive.extend(build_cpio_entry("./init", b"#!/bin/sh", 0o100755));
+        archive.extend(build_cpio_entry("./etc/hostname", b"thumos", 0o100644));
+        archive.extend(build_cpio_trailer());
+
+        let fs = RamFs::from_cpio(&archive);
+
+        assert_eq!(fs.find("init"), Some(b"#!/bin/sh".as_slice()));
+        assert_eq!(fs.find("etc/hostname"), Some(b"thumos".as_slice()));
+        assert_eq!(fs.find("./init"), None);
     }
 
     #[test]
