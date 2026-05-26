@@ -83,6 +83,8 @@ pub(crate) enum TouchAction {
 }
 
 /// Touch point with coordinates and pressure.
+// WHY: plain data struct — mirrors hardware touch report format;
+// behavior belongs in the driver layer.
 #[derive(Debug, Clone, Copy)]
 pub struct TouchPoint {
     /// X coordinate (0-240).
@@ -93,6 +95,25 @@ pub struct TouchPoint {
     pub pressure: u8,
     /// Tracking ID for multi-touch (0-9).
     pub tracking_id: u8,
+}
+
+impl TouchPoint {
+    /// Create a new touch point.
+    #[must_use]
+    pub const fn new(x: u16, y: u16, pressure: u8, tracking_id: u8) -> Self {
+        Self {
+            x,
+            y,
+            pressure,
+            tracking_id,
+        }
+    }
+
+    /// Whether this touch point represents actual contact.
+    #[must_use]
+    pub const fn is_contact(self) -> bool {
+        self.pressure > 0
+    }
 }
 
 /// Unified input event.

@@ -143,13 +143,9 @@ pub(crate) fn derive_ptk(
     let mut raw = [0u8; PTK_LEN];
     prf(pmk, &input, &mut raw);
 
-    let mut kck = [0u8; KCK_LEN];
-    let mut kek = [0u8; KEK_LEN];
-    let mut tk = [0u8; TK_LEN];
-
-    kck.copy_from_slice(&raw[..KCK_LEN]);
-    kek.copy_from_slice(&raw[KCK_LEN..KCK_LEN + KEK_LEN]);
-    tk.copy_from_slice(&raw[KCK_LEN + KEK_LEN..]);
+    let kck = std::array::from_fn(|i| raw.get(i).copied().unwrap_or(0));
+    let kek = std::array::from_fn(|i| raw.get(KCK_LEN + i).copied().unwrap_or(0));
+    let tk = std::array::from_fn(|i| raw.get(KCK_LEN + KEK_LEN + i).copied().unwrap_or(0));
 
     Ptk { kck, kek, tk }
 }
@@ -166,10 +162,8 @@ pub(crate) fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
     };
     mac.update(data);
     let bytes = mac.finalize().into_bytes();
-    let mut mic = [0u8; MIC_LEN];
     // HMAC-SHA1 produces 20 bytes; we take the first 16 (128 bits).
-    mic.copy_from_slice(&bytes[..MIC_LEN]);
-    mic
+    std::array::from_fn(|i| bytes.get(i).copied().unwrap_or(0))
 }
 
 /// Verify that `expected_mic` matches the MIC computed over `data` with `kck`.
@@ -222,7 +216,11 @@ fn prf(key: &[u8], input: &[u8], output: &mut [u8]) {
         mac.update(&msg);
         let tag_bytes = mac.finalize().into_bytes();
         let copy_len = (out_len - pos).min(tag_bytes.len());
-        output[pos..pos + copy_len].copy_from_slice(&tag_bytes[..copy_len]);
+        for j in 0..copy_len {
+            if let Some(out) = output.get_mut(pos + j) {
+                *out = tag_bytes.get(j).copied().unwrap_or(0);
+            }
+        }
         pos += copy_len;
         counter = counter.wrapping_add(1);
     }
