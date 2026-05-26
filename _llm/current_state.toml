@@ -8,13 +8,13 @@ source_docs = [
 ]
 
 [state]
-summary = "Thumos software milestones through Phase 10 are complete; Phase 11 hardware validation is blocked on restoring AGM M7 factory firmware."
+summary = "Thumos has a broad compiled/tested Phase 10 code catalog, but Phase 11 hardware validation and several boot/userspace wiring paths remain open."
 current_phase = "Phase 11: System Qualification."
 updated = "2026-04-20"
 
 [[recent]]
 date = "2026-04-12"
-item = "Software phases 03-10 complete; no software blockers remain."
+item = "Software phases 03-10 produced compiled/tested surfaces; end-to-end wiring gaps remain tracked in repo issues."
 
 [[recent]]
 date = "2026-04-12"
