@@ -8,11 +8,17 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-ring = { workspace = true }
+aes-gcm = { workspace = true }
+ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
+x25519-dalek = { workspace = true }
 
 [lints]
 workspace = true

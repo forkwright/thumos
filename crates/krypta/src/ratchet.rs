@@ -1,9 +1,15 @@
 //! Symmetric ratchet: HMAC-SHA256 chain key advancement, AES-256-GCM message encryption.
 
-use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
-use ring::hmac::{self, HMAC_SHA256};
+use aes_gcm::aead::{AeadInPlace, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 use crate::error::{DecryptionSnafu, EncryptionSnafu, InvalidKeySnafu, Result};
+
+const NONCE_LEN: usize = 12;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Byte appended to chain key for message key derivation: HMAC(CK, 0x01).
 const MK_LABEL: &[u8] = &[0x01];
@@ -58,14 +64,15 @@ impl std::fmt::Debug for RatchetState {
 /// Returns [`Error::InvalidKey`] if the derived message key is malformed.
 /// Returns [`Error::Encryption`] if AES-256-GCM sealing fails.
 pub(crate) fn encrypt(state: &mut RatchetState, plaintext: &[u8]) -> Result<CiphertextMessage> {
-    let message_key = derive_message_key(&state.chain_key);
-    let next_chain_key = derive_next_chain_key(&state.chain_key);
+    let message_key = derive_message_key(&state.chain_key)?;
+    let next_chain_key = derive_next_chain_key(&state.chain_key)?;
 
     let nonce = counter_nonce(state.counter);
-    let key = make_aes_key(&message_key)?;
+    let cipher = make_aes_cipher(&message_key)?;
 
     let mut in_out = plaintext.to_vec();
-    key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
+    cipher
+        .encrypt_in_place(Nonce::from_slice(&nonce), b"", &mut in_out)
         .map_err(|_| EncryptionSnafu.build())?;
 
     let counter = state.counter;
@@ -85,49 +92,47 @@ pub(crate) fn encrypt(state: &mut RatchetState, plaintext: &[u8]) -> Result<Ciph
 /// Returns [`Error::InvalidKey`] if the derived message key is malformed.
 /// Returns [`Error::Decryption`] if AES-256-GCM authentication or decryption fails.
 pub(crate) fn decrypt(state: &mut RatchetState, msg: &CiphertextMessage) -> Result<Vec<u8>> {
-    let message_key = derive_message_key(&state.chain_key);
-    let next_chain_key = derive_next_chain_key(&state.chain_key);
+    let message_key = derive_message_key(&state.chain_key)?;
+    let next_chain_key = derive_next_chain_key(&state.chain_key)?;
 
     let nonce = counter_nonce(msg.counter);
-    let key = make_aes_key(&message_key)?;
+    let cipher = make_aes_cipher(&message_key)?;
 
     let mut in_out = msg.ciphertext.clone();
-    let plaintext_slice = key
-        .open_in_place(nonce, Aad::empty(), &mut in_out)
+    cipher
+        .decrypt_in_place(Nonce::from_slice(&nonce), b"", &mut in_out)
         .map_err(|_| DecryptionSnafu.build())?;
-    let plaintext = plaintext_slice.to_vec();
 
     state.chain_key = next_chain_key;
     state.counter = state.counter.wrapping_add(1);
 
-    Ok(plaintext)
+    Ok(in_out)
 }
 
-fn derive_message_key(chain_key: &[u8; 32]) -> [u8; 32] {
-    let key = hmac::Key::new(HMAC_SHA256, chain_key);
-    let tag = hmac::sign(&key, MK_LABEL);
+fn derive_message_key(chain_key: &[u8; 32]) -> Result<[u8; 32]> {
+    hmac_sha256(chain_key, MK_LABEL)
+}
+
+fn derive_next_chain_key(chain_key: &[u8; 32]) -> Result<[u8; 32]> {
+    hmac_sha256(chain_key, CK_LABEL)
+}
+
+fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> Result<[u8; 32]> {
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).map_err(|_| InvalidKeySnafu.build())?;
+    mac.update(data);
+    let tag = mac.finalize().into_bytes();
     let mut out = [0u8; 32];
-    out.copy_from_slice(tag.as_ref());
-    out
+    out.copy_from_slice(&tag);
+    Ok(out)
 }
 
-fn derive_next_chain_key(chain_key: &[u8; 32]) -> [u8; 32] {
-    let key = hmac::Key::new(HMAC_SHA256, chain_key);
-    let tag = hmac::sign(&key, CK_LABEL);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(tag.as_ref());
-    out
+const fn counter_nonce(counter: u32) -> [u8; NONCE_LEN] {
+    let [b0, b1, b2, b3] = counter.to_le_bytes();
+    [b0, b1, b2, b3, 0, 0, 0, 0, 0, 0, 0, 0]
 }
 
-fn counter_nonce(counter: u32) -> Nonce {
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    nonce_bytes[..4].copy_from_slice(&counter.to_le_bytes());
-    Nonce::assume_unique_for_key(nonce_bytes)
-}
-
-fn make_aes_key(key_bytes: &[u8; 32]) -> Result<LessSafeKey> {
-    let unbound = UnboundKey::new(&AES_256_GCM, key_bytes).map_err(|_| InvalidKeySnafu.build())?;
-    Ok(LessSafeKey::new(unbound))
+fn make_aes_cipher(key_bytes: &[u8; 32]) -> Result<Aes256Gcm> {
+    Aes256Gcm::new_from_slice(key_bytes).map_err(|_| InvalidKeySnafu.build())
 }
 
 #[cfg(test)]
