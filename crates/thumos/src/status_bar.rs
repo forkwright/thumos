@@ -23,9 +23,6 @@
 //! - [`BtState::Ready`] or [`BtState::Scanning`] -> "BT"
 //! - [`GpsState::FixAcquired`] -> "GPS"
 
-// WHY: status bar created in Phase 07 Wave 1, not yet called from kinit.
-#![expect(dead_code, reason = "Status bar created in Phase 07 Wave 1, kinit wiring pending")]
-
 use crate::ui::{
     self, color,
     CHAR_HEIGHT, CHAR_WIDTH, SCREEN_WIDTH, STATUS_BAR_HEIGHT,
@@ -43,10 +40,13 @@ pub enum NetworkService {
     #[default]
     NoService,
     /// 2G (GSM/EDGE).
+    #[expect(dead_code, reason = "requires modem registration state wiring")]
     Edge,
     /// 3G (WCDMA/HSPA).
+    #[expect(dead_code, reason = "requires modem registration state wiring")]
     ThreeG,
     /// 4G LTE.
+    #[expect(dead_code, reason = "requires modem registration state wiring")]
     Lte,
 }
 

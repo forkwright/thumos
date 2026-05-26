@@ -12,12 +12,9 @@
 //! accepts a snapshot of the current state to avoid holding references
 //! to kernel globals across the render boundary.
 
-// WHY: home screen is created in Phase 07 Wave 1, not yet wired to kinit.
-#![expect(dead_code, reason = "Home screen created in Phase 07 Wave 1, kinit wiring pending")]
-
 use crate::ui::{
     self, color, Key, Screen, ScreenAction, ScreenId,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    CHAR_HEIGHT, CONTENT_HEIGHT, SCREEN_WIDTH,
 };
 
 // ---------------------------------------------------------------------------
@@ -44,12 +41,6 @@ const UNREAD_Y: u16 = MODE_Y + CHAR_HEIGHT + 4;
 /// Time is rendered at 2x the base font size (16x32 pixels per character).
 const TIME_SCALE: u16 = 2;
 
-/// Width of a scaled character.
-const SCALED_CHAR_WIDTH: u16 = CHAR_WIDTH * TIME_SCALE;
-
-/// Height of a scaled character.
-const SCALED_CHAR_HEIGHT: u16 = CHAR_HEIGHT * TIME_SCALE;
-
 // ---------------------------------------------------------------------------
 // Operating mode
 // ---------------------------------------------------------------------------
@@ -62,8 +53,10 @@ pub enum OperatingMode {
     #[default]
     Daily,
     /// Heightened awareness mode.
+    #[expect(dead_code, reason = "requires security mode manager state wiring")]
     Sentinel,
     /// Emergency mode.
+    #[expect(dead_code, reason = "requires security mode manager state wiring")]
     Panic,
 }
 

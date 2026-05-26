@@ -11,6 +11,7 @@
 extern crate alloc;
 
 use core::fmt::Write;
+use core::slice;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::ccci::CcciDriver;
@@ -36,7 +37,10 @@ use crate::power::PowerManager;
 use crate::process;
 #[cfg(test)]
 use crate::ramfs::RamFs;
+use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
+use crate::status_bar::{KernelStatusBar, StatusBarState};
 use crate::uart::Uart;
+use crate::ui::{self, UiManager};
 use crate::usb::UsbController;
 use crate::watchdog;
 
@@ -271,6 +275,9 @@ const MODEM_BOOT_TIMEOUT_MS: u64 = 10_000;
 )]
 const PANIC_RED_RGB565: u16 = 0xF800;
 
+/// Number of RGB565 pixels in the hardware framebuffer.
+const FRAMEBUFFER_PIXELS: usize = ui::SCREEN_WIDTH as usize * ui::SCREEN_HEIGHT as usize;
+
 // ---------------------------------------------------------------------------
 // Panic display helper
 // ---------------------------------------------------------------------------
@@ -293,6 +300,35 @@ pub(crate) unsafe fn fill_framebuffer(fb_addr: usize, width: u32, height: u32, c
             core::ptr::write_volatile(ptr.add(i), color);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Initial UI frame
+// ---------------------------------------------------------------------------
+
+/// Render the first user-visible home frame after boot-time hardware init.
+fn render_initial_home_frame(fb: &mut [u16], state: &BootState) {
+    let mut home = HomeScreen::new();
+    home.update_state(HomeScreenState {
+        epoch_secs: 0,
+        carrier: "",
+        mode: OperatingMode::Daily,
+        unread_count: 0,
+    });
+
+    let status = StatusBarState {
+        battery_pct: 0,
+        mode_badge: Some("DAILY"),
+        mode_badge_color: Some(ui::color::WHITE),
+        threat_high: !state.modem_ok,
+        ..StatusBarState::default()
+    };
+
+    UiManager::new().render(
+        &home,
+        |status_fb| KernelStatusBar::draw(status_fb, &status),
+        fb,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -938,7 +974,21 @@ pub unsafe fn run() -> ! {
     let _ = serial.write_str("\r\n");
 
     // -----------------------------------------------------------------------
-    // Step 13: Spawn userspace processes FROM mounted root ramfs
+    // Step 13d: Initial UI home frame
+    // -----------------------------------------------------------------------
+    if state.display_ok {
+        let _ = serial.write_str("[init] Rendering home UI\r\n");
+        // SAFETY: state.display_ok is only set after display.init(FB_BASE)
+        // succeeds. That maps FB_BASE as a writable RGB565 framebuffer of
+        // SCREEN_WIDTH * SCREEN_HEIGHT pixels for the GC9306 panel.
+        let fb =
+            unsafe { slice::from_raw_parts_mut(kconfig::FB_BASE as *mut u16, FRAMEBUFFER_PIXELS) };
+        render_initial_home_frame(fb, &state);
+        let _ = serial.write_str("       Home/status frame rendered\r\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 14: Spawn userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
     let _ = serial
         .write_str("[init] Spawning userspace processes\r\n");
