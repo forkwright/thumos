@@ -331,7 +331,8 @@ pub(crate) fn encode_command(cmd: &HciCommand) -> Vec<u8> {
     let (opcode, params) = build_command_parts(cmd);
     let [op_lo, op_hi] = opcode.to_le_bytes();
     // INVARIANT: HCI parameter total is bounded by spec at 255 bytes; always fits in u8.
-    let param_len = u8::try_from(params.len()).unwrap_or_default();
+    let param_len = u8::try_from(params.len())
+        .expect("invariant: HCI parameter total is bounded by 255 bytes"); // kanon:ignore RUST/expect -- infallible by HCI spec; bounded at 255 bytes
 
     let mut packet = Vec::with_capacity(4 + params.len());
     packet.push(H4_COMMAND_TYPE);
