@@ -397,7 +397,11 @@ mod tests {
     fn draw_does_not_panic_on_empty_list() {
         let list = TextList::with_width(240);
         let mut fb = Framebuffer::new(240, 320);
-        // NOTE: should complete without panic or index error
+        fb.clear(Rgb565::WHITE);
         list.draw(&mut fb, 0, 0);
+        assert!(
+            fb.as_bytes().iter().any(|&b| b != 0xFF),
+            "empty list must still write row backgrounds"
+        );
     }
 }

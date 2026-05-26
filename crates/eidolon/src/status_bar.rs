@@ -100,19 +100,34 @@ mod tests {
     #[test]
     fn draw_does_not_panic_at_nominal_values() {
         let mut fb = Framebuffer::new(240, 320);
+        fb.clear(Rgb565::WHITE);
         StatusBar::draw(&mut fb, 3, 75, "12:34");
+        assert!(
+            fb.as_bytes().iter().any(|&b| b != 0xFF),
+            "status bar must write at least one pixel"
+        );
     }
 
     #[test]
     fn draw_does_not_panic_at_zero_values() {
         let mut fb = Framebuffer::new(240, 320);
+        fb.clear(Rgb565::WHITE);
         StatusBar::draw(&mut fb, 0, 0, "");
+        assert!(
+            fb.as_bytes().iter().any(|&b| b != 0xFF),
+            "status bar must write at least one pixel even at zero values"
+        );
     }
 
     #[test]
     fn draw_does_not_panic_at_max_values() {
         let mut fb = Framebuffer::new(240, 320);
+        fb.clear(Rgb565::WHITE);
         StatusBar::draw(&mut fb, 255, 255, "00:00");
+        assert!(
+            fb.as_bytes().iter().any(|&b| b != 0xFF),
+            "status bar must write at least one pixel even at max values"
+        );
     }
 
     #[test]
@@ -162,6 +177,11 @@ mod tests {
     fn signal_bars_clamped_above_4() {
         // Should not panic with more than 4 bars
         let mut fb = Framebuffer::new(240, 320);
+        fb.clear(Rgb565::WHITE);
         StatusBar::draw(&mut fb, 10, 80, "09:00");
+        assert!(
+            fb.as_bytes().iter().any(|&b| b != 0xFF),
+            "status bar must write at least one pixel when signal bars are clamped"
+        );
     }
 }
