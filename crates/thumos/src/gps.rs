@@ -635,17 +635,17 @@ impl GpsHw {
 #[cfg(not(test))]
 impl GpsHwOps for GpsHw {
     fn read_data(&mut self, _buf: &mut [u8]) -> usize {
-        // TODO(#129): implement WMT STP frame RX for GPS channel.
+        // TODO(#129)[deliberate-prudent]: implement WMT STP frame RX for GPS channel.
         0
     }
 
     fn power_on(&mut self) -> Result<(), GpsError> {
-        // TODO(#129): send WMT power-on command for GPS subsystem.
+        // TODO(#129)[deliberate-prudent]: send WMT power-on command for GPS subsystem.
         Ok(())
     }
 
     fn power_off(&mut self) -> Result<(), GpsError> {
-        // TODO(#129): send WMT power-off command for GPS subsystem.
+        // TODO(#129)[deliberate-prudent]: send WMT power-off command for GPS subsystem.
         Ok(())
     }
 }
