@@ -641,7 +641,8 @@ mod tests {
         let screen = WifiSettingsScreen::new();
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
-        // Should render without panic.
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "wifi disconnected screen must render visible content");
     }
 
     #[test]
@@ -659,7 +660,8 @@ mod tests {
         });
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
-        // Should render without panic.
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "wifi connected screen must render visible content");
     }
 
     #[test]
@@ -667,6 +669,8 @@ mod tests {
         let screen = BtSettingsScreen::new();
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "bluetooth disabled screen must render visible content");
     }
 
     #[test]
@@ -680,6 +684,8 @@ mod tests {
         });
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "bluetooth scanning screen must render visible content");
     }
 
     #[test]
