@@ -41,7 +41,7 @@ fuzz_target!(|data: &[u8]| {
     // path in klesis with maximally adversarial input byte sequences.
     let hex_pdu: String = data.iter().map(|b| format!("{b:02X}")).collect();
     // Errors are expected and fine; we only care that it never panics.
-    let _ = decode_deliver(&hex_pdu);
+    let _ = decode_deliver(&hex_pdu); // WHY: fuzz target — only contract is no panic; Ok/Err are both valid outcomes
 
     // ── Phase 2: encode path round-trip ─────────────────────────────────────
     // Interpret the fuzz bytes as UTF-8. If they form valid UTF-8, attempt to
