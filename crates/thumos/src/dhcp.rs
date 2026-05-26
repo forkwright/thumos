@@ -179,9 +179,7 @@ impl DhcpClient {
 
                 // Apply gateway if provided.
                 if let Some(router) = gateway {
-                    // WHY: best-effort — if the route table is full we still
-                    // report the config so callers know the IP is set.
-                    let _ = stack.set_default_gateway(router);
+                    let _ = stack.set_default_gateway(router); // WHY: best-effort — if the route table is full we still report the config so callers know the IP is set
                 }
 
                 self.configured = true;
