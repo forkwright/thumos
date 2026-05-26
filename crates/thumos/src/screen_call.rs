@@ -511,6 +511,8 @@ mod tests {
         let screen = make_active_screen(0, 5000);
         let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "active call screen must render visible content");
     }
 
     #[test]

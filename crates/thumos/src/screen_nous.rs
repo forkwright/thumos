@@ -1033,7 +1033,8 @@ mod tests {
         let screen = NousChatScreen::new();
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
-        // No panic = success.
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "empty nous chat must render visible content");
     }
 
     #[test]
@@ -1051,6 +1052,8 @@ mod tests {
 
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "nous chat with messages must render visible content");
     }
 
     #[test]
@@ -1063,6 +1066,8 @@ mod tests {
 
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "nous chat with proposal must render visible content");
     }
 
     #[test]
