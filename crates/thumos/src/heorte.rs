@@ -24,8 +24,9 @@
 //! - Tick-based timing: callers pass the current kernel tick count; the engine
 //!   computes elapsed time from deltas rather than polling a clock.
 
-// WHY: heorte module created in Phase 07 Wave 7, kinit wiring pending.
-#![expect(dead_code, reason = "Heorte created in Phase 07 Wave 7, kinit wiring pending")]
+// WHY: the engine is compiled and tested but no boot-time runtime manager
+// owns calendar/alarm/timer state yet.
+#![expect(dead_code, reason = "Heorte runtime manager is not wired into kinit")]
 
 extern crate alloc;
 use alloc::vec::Vec;

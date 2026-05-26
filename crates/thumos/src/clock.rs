@@ -20,8 +20,9 @@
 //! server, parses the response for server transmit timestamp, and computes
 //! the clock offset. Uses the socket syscall layer (Wave 4) for UDP.
 
-// WHY: clock module provides wall-clock time but is not yet called from userspace.
-#![expect(dead_code, reason = "Clock module wired in kinit but not yet called from userspace")]
+// WHY: clock module provides wall-clock policy, but kernel time and userspace
+// syscalls still use the lower-level timer/time paths.
+#![expect(dead_code, reason = "Clock trust manager is not wired into kernel time")]
 
 extern crate alloc;
 

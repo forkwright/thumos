@@ -14,8 +14,9 @@
 //! before each render cycle, avoiding references to kernel globals across
 //! the render boundary.
 
-// WHY: calendar screen created in Phase 07 Wave 7, kinit wiring pending.
-#![expect(dead_code, reason = "Calendar screen created in Phase 07 Wave 7, kinit wiring pending")]
+// WHY: renderable screen exists, but kinit currently renders only the home
+// frame and has no calendar route/input path.
+#![expect(dead_code, reason = "Calendar screen is not wired into the kinit UI route")]
 
 extern crate alloc;
 use alloc::vec::Vec;
