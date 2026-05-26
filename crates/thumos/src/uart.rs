@@ -53,7 +53,7 @@ impl Uart {
             while core::ptr::read_volatile(lsr) & LSR_THRE == 0 {}
 
             // Write byte
-            *thr = u32::try_from(byte).unwrap_or_default();
+            *thr = u32::from(byte);
         }
     }
 
