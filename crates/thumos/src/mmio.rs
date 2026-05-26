@@ -92,6 +92,8 @@ pub unsafe fn wait_bits_clear(addr: usize, bits: u32, max_iterations: u32) -> bo
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     // NOTE: MMIO tests require actual hardware or a mock.
     // These functions are verified by integration testing on the device.
 }
