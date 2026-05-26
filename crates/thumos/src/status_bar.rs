@@ -226,6 +226,8 @@ mod tests {
         let mut fb = [0u16; STATUS_PIXELS];
         let state = StatusBarState::default();
         KernelStatusBar::draw(&mut fb, &state);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "status bar default state must render pixels");
     }
 
     #[test]
