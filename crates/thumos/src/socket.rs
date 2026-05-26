@@ -10,9 +10,9 @@
 //!
 //! - `SOCKET_TABLE`: fixed-size array of `Option<SocketInfo>`, indexed by fd
 //!   number (0..MAX_FDS). Populated on `sys_socket`, cleared on close.
-//! - `NETWORK_STACK`: global `NetworkStack<LoopbackDevice>` instance. Socket
-//!   creation and I/O go through this stack. Production WiFi integration
-//!   happens in a future boot-sequence wiring pass.
+//! - `NETWORK_STACK`: global firewall-backed loopback stack. Socket creation
+//!   and I/O go through this host-only smoke path until WiFi hardware frame
+//!   TX/RX is available; it must not be reported as production connectivity.
 //! - fd flags encode `FD_KIND_SOCKET` in the kind field so that close, read,
 //!   and write dispatch can identify socket fds without consulting the table.
 //!
@@ -28,7 +28,7 @@ use smoltcp::socket::{tcp, udp};
 use smoltcp::wire::{IpEndpoint, IpAddress, Ipv4Address};
 
 use crate::fd::{self, FileDescriptor, MAX_FDS};
-use crate::net::{FirewallDevice, LoopbackDevice, NetworkStack};
+use crate::net::{self, FirewallDevice, LoopbackDevice, NetworkStack};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -163,8 +163,9 @@ static mut SOCKET_TABLE: [Option<SocketInfo>; MAX_FDS] = {
 
 /// Global network stack for socket I/O.
 ///
-/// Uses LoopbackDevice for now; production WiFi integration will replace
-/// this with the WiFi driver's device in the boot sequence.
+/// Uses a firewall-backed LoopbackDevice for now. Production WiFi readiness is
+/// tracked separately during boot and remains false until hardware frame I/O is
+/// available.
 ///
 /// WHY Option: NetworkStack::new() is not const. Initialized by
 /// `init_network_stack()` during kernel boot or test setup.
@@ -176,7 +177,10 @@ static mut NETWORK_STACK: Option<SocketNetworkStack> = None;
 // Initialization
 // ---------------------------------------------------------------------------
 
-/// Initialize the global network stack with a loopback device.
+/// Initialize the global network stack with a firewall-backed loopback device.
+///
+/// This preserves socket syscall smoke coverage without claiming external
+/// network reachability.
 ///
 /// # Safety
 ///
@@ -184,11 +188,10 @@ static mut NETWORK_STACK: Option<SocketNetworkStack> = None;
 /// (cooperative kernel guarantee).
 pub unsafe fn init_network_stack() {
     use smoltcp::time::Instant;
-    use smoltcp::wire::EthernetAddress;
 
     unsafe {
         let device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
-        let mac = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        let mac = net::randomized_local_ethernet_address();
         let mut stack = NetworkStack::new(device, mac, Instant::from_millis(0));
         stack.set_ipv4_addr(Ipv4Address::new(127, 0, 0, 1), 8);
         let ns = &mut *core::ptr::addr_of_mut!(NETWORK_STACK);

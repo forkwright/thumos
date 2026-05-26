@@ -49,9 +49,14 @@ _Phase, test split, LOC, and module totals are aligned to the internal project s
 
 The Phase 10 / Phase 11 status above describes compiled and tested surfaces, not end-to-end readiness. The following work is open and is not yet wired end-to-end on hardware:
 
+Network reality check: boot checks the WiFi hardware boundary through a
+fail-closed smoltcp adapter, reports production networking unavailable when the
+MT6739 data path is absent, and keeps DHCP/DNS/socket smoke coverage on a
+firewall-backed loopback path. Real WiFi packet I/O is not boot-ready until
+WMT/STP frame TX/RX, scan, and association are implemented on hardware.
+
 - [#141](https://github.com/forkwright/thumos/issues/141) — aletheia agent runtime bridge is not yet designed or wired
 - [#142](https://github.com/forkwright/thumos/issues/142) — boot-time security subsystems are success-without-work placeholders
-- [#143](https://github.com/forkwright/thumos/issues/143) — network stack still boots on a firewall-backed loopback path; WiFi driver remains unwired
 - Userspace image packaging remains incomplete: boot reports missing `/init` or `/shell` entries instead of spawning kernel-owned idle placeholders.
 - [#145](https://github.com/forkwright/thumos/issues/145) — advertised kernel features compiled but unwired: current baseline is 8 crate-level `dead_code` expectations plus 48 item-level suppressions; see [kernel wiring audit](docs/KERNEL-WIRING-AUDIT.md)
 - [#146](https://github.com/forkwright/thumos/issues/146) — remaining direct `ring` dependency is isolated to `krypta` protocol crypto
