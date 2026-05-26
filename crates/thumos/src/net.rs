@@ -27,6 +27,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::firewall::{Action, Firewall};
+use crate::wifi::{WifiError, WifiHwOps};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{
     self, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken as _,
@@ -68,6 +69,51 @@ const ETHERNET_HEADER_LEN: usize = 14;
 
 /// EtherType for IPv4 frames.
 const ETHERTYPE_IPV4: u16 = 0x0800;
+
+// ---------------------------------------------------------------------------
+// Device readiness
+// ---------------------------------------------------------------------------
+
+/// Network device class used for boot readiness accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NetworkDeviceKind {
+    /// Host-only loopback smoke path. Useful for stack tests, not connectivity.
+    LoopbackSmoke,
+    /// Real WiFi hardware data path.
+    Wifi,
+}
+
+/// Typed network boot readiness result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NetworkReadiness {
+    /// Loopback stack smoke passed, but no production network is available.
+    LoopbackSmokeOnly,
+    /// The selected production device cannot exchange frames.
+    HardwareUnavailable(NetworkDeviceKind),
+    /// A production network device has reported its frame data path ready.
+    ProductionReady(NetworkDeviceKind),
+}
+
+impl NetworkReadiness {
+    /// Classify a device kind and its low-level data path readiness.
+    pub(crate) const fn from_device(kind: NetworkDeviceKind, data_path_ready: bool) -> Self {
+        match kind {
+            NetworkDeviceKind::LoopbackSmoke => Self::LoopbackSmokeOnly,
+            NetworkDeviceKind::Wifi if data_path_ready => Self::ProductionReady(kind),
+            NetworkDeviceKind::Wifi => Self::HardwareUnavailable(kind),
+        }
+    }
+
+    /// Return true only for real-device production connectivity.
+    pub(crate) const fn production_network_ok(self) -> bool {
+        matches!(self, Self::ProductionReady(NetworkDeviceKind::Wifi))
+    }
+
+    /// Return true when the result is only a loopback smoke pass.
+    pub(crate) const fn loopback_smoke_only(self) -> bool {
+        matches!(self, Self::LoopbackSmokeOnly)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -179,6 +225,130 @@ impl Device for LoopbackDevice {
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
         Some(LoopbackTxToken {
             queue: &mut self.queue,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WiFi device adapter
+// ---------------------------------------------------------------------------
+
+/// smoltcp device adapter for the kernel WiFi hardware boundary.
+///
+/// This adapter only exposes TX/RX tokens after the hardware backend reports
+/// its Ethernet data path ready. The current MT6739 backend returns false, so
+/// boot can instantiate the real-device boundary without claiming hardware
+/// packet I/O works before WMT/STP operations are wired.
+pub(crate) struct WifiDevice<H: WifiHwOps> {
+    hw: H,
+    last_error: Option<WifiError>,
+}
+
+impl<H: WifiHwOps> WifiDevice<H> {
+    /// Create a WiFi smoltcp adapter around hardware operations.
+    pub(crate) const fn new(hw: H) -> Self {
+        Self {
+            hw,
+            last_error: None,
+        }
+    }
+
+    /// Device kind for boot readiness accounting.
+    pub(crate) const fn kind(&self) -> NetworkDeviceKind {
+        NetworkDeviceKind::Wifi
+    }
+
+    /// Return true once the hardware data path is ready for Ethernet frames.
+    pub(crate) fn data_path_ready(&self) -> bool {
+        self.hw.data_path_ready()
+    }
+
+    /// Last transmit error observed through the smoltcp token path.
+    #[cfg(test)]
+    pub(crate) const fn last_error(&self) -> Option<WifiError> {
+        self.last_error
+    }
+
+    /// Borrow the hardware backend.
+    #[cfg(test)]
+    pub(crate) const fn hw(&self) -> &H {
+        &self.hw
+    }
+}
+
+/// Receive token for [`WifiDevice`].
+pub(crate) struct WifiRxToken {
+    buffer: Vec<u8>,
+}
+
+impl phy::RxToken for WifiRxToken {
+    fn consume<R, F>(self, f: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        f(&self.buffer)
+    }
+}
+
+/// Transmit token for [`WifiDevice`].
+pub(crate) struct WifiTxToken<'a, H: WifiHwOps> {
+    hw: &'a mut H,
+    last_error: &'a mut Option<WifiError>,
+}
+
+impl<H: WifiHwOps> phy::TxToken for WifiTxToken<'_, H> {
+    fn consume<R, F>(self, len: usize, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        let mut buffer = vec![0u8; len];
+        let result = f(&mut buffer);
+        *self.last_error = self.hw.send_frame(&buffer).err();
+        result
+    }
+}
+
+impl<H: WifiHwOps> Device for WifiDevice<H> {
+    type RxToken<'a>
+        = WifiRxToken
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = WifiTxToken<'a, H>
+    where
+        Self: 'a;
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        let mut caps = DeviceCapabilities::default();
+        caps.max_transmission_unit = DEFAULT_MTU;
+        caps.medium = Medium::Ethernet;
+        caps.checksum = ChecksumCapabilities::ignored();
+        caps
+    }
+
+    fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        if !self.hw.data_path_ready() {
+            return None;
+        }
+
+        let buffer = self.hw.recv_frame()?;
+        Some((
+            WifiRxToken { buffer },
+            WifiTxToken {
+                hw: &mut self.hw,
+                last_error: &mut self.last_error,
+            },
+        ))
+    }
+
+    fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        if !self.hw.data_path_ready() {
+            return None;
+        }
+
+        Some(WifiTxToken {
+            hw: &mut self.hw,
+            last_error: &mut self.last_error,
         })
     }
 }
@@ -550,7 +720,63 @@ pub(crate) fn instant_from_millis(millis: i64) -> Instant {
 
 #[cfg(test)]
 mod tests {
+    use alloc::collections::VecDeque;
+
     use super::*;
+
+    struct TestWifiHw {
+        ready: bool,
+        rx_frames: VecDeque<Vec<u8>>,
+        sent_frames: Vec<Vec<u8>>,
+        tx_result: Result<(), WifiError>,
+    }
+
+    impl TestWifiHw {
+        fn unavailable() -> Self {
+            Self {
+                ready: false,
+                rx_frames: VecDeque::new(),
+                sent_frames: Vec::new(),
+                tx_result: Ok(()),
+            }
+        }
+
+        fn ready() -> Self {
+            Self {
+                ready: true,
+                rx_frames: VecDeque::new(),
+                sent_frames: Vec::new(),
+                tx_result: Ok(()),
+            }
+        }
+    }
+
+    impl WifiHwOps for TestWifiHw {
+        fn data_path_ready(&self) -> bool {
+            self.ready
+        }
+
+        fn send_frame(&mut self, data: &[u8]) -> Result<(), WifiError> {
+            self.sent_frames.push(data.to_vec());
+            self.tx_result
+        }
+
+        fn recv_frame(&mut self) -> Option<Vec<u8>> {
+            self.rx_frames.pop_front()
+        }
+
+        fn scan_start(&mut self) -> Result<(), WifiError> {
+            Ok(())
+        }
+
+        fn scan_results(&self) -> &[crate::wifi::ScanResult] {
+            &[]
+        }
+
+        fn associate(&mut self, _ssid: &[u8], _bssid: &[u8; 6]) -> Result<(), WifiError> {
+            Ok(())
+        }
+    }
 
     fn make_ethernet_ipv4_frame(ipv4_packet: &[u8]) -> Vec<u8> {
         let mut frame = Vec::with_capacity(ETHERNET_HEADER_LEN + ipv4_packet.len());
@@ -622,6 +848,67 @@ mod tests {
         // Interface should have the IP we configured.
         let addrs = stack.iface().ip_addrs();
         assert_eq!(addrs.len(), 1);
+    }
+
+    #[test]
+    fn wifi_unavailable_is_not_production_ready() {
+        let readiness = NetworkReadiness::from_device(NetworkDeviceKind::Wifi, false);
+
+        assert_eq!(
+            readiness,
+            NetworkReadiness::HardwareUnavailable(NetworkDeviceKind::Wifi)
+        );
+        assert!(
+            !readiness.production_network_ok(),
+            "unavailable WiFi hardware must not mark production network ready"
+        );
+    }
+
+    #[test]
+    fn loopback_readiness_remains_smoke_only() {
+        let readiness = NetworkReadiness::from_device(NetworkDeviceKind::LoopbackSmoke, true);
+
+        assert_eq!(readiness, NetworkReadiness::LoopbackSmokeOnly);
+        assert!(
+            readiness.loopback_smoke_only(),
+            "loopback must be tracked only as smoke coverage"
+        );
+        assert!(
+            !readiness.production_network_ok(),
+            "loopback smoke must not mark production network ready"
+        );
+    }
+
+    #[test]
+    fn wifi_device_unavailable_fails_closed() {
+        let mut device = WifiDevice::new(TestWifiHw::unavailable());
+        let now = Instant::from_millis(0);
+
+        assert!(!device.data_path_ready(), "test WiFi hw starts unavailable");
+        assert!(
+            device.transmit(now).is_none(),
+            "unavailable WiFi must not expose a TX token"
+        );
+        assert!(
+            device.receive(now).is_none(),
+            "unavailable WiFi must not expose an RX token"
+        );
+    }
+
+    #[test]
+    fn wifi_device_ready_transmits_through_hardware_ops() {
+        let mut device = WifiDevice::new(TestWifiHw::ready());
+        let now = Instant::from_millis(0);
+
+        let tx = device
+            .transmit(now)
+            .expect("ready WiFi device must expose a TX token");
+        phy::TxToken::consume(tx, 4, |buf| {
+            buf.copy_from_slice(&[1, 2, 3, 4]);
+        });
+
+        assert_eq!(device.hw().sent_frames.as_slice(), &[vec![1, 2, 3, 4]]);
+        assert_eq!(device.last_error(), None);
     }
 
     #[test]
