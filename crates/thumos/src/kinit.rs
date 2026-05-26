@@ -22,6 +22,7 @@ use crate::display::{DisplayDriver, Gc9306};
 use crate::dns::{DnsResolver, LAN_DNS, MULLVAD_DNS};
 use crate::elf;
 use crate::exceptions;
+use crate::fd;
 use crate::gic;
 use crate::heap;
 use crate::kconfig;
@@ -31,6 +32,7 @@ use crate::net::{self, FirewallDevice, LoopbackDevice, NetworkStack};
 use crate::page;
 use crate::power::PowerManager;
 use crate::process;
+#[cfg(test)]
 use crate::ramfs::RamFs;
 use crate::uart::Uart;
 use crate::usb::UsbController;
@@ -290,6 +292,28 @@ fn userspace_idle() -> ! {
         unsafe {
             core::arch::asm!("wfe");
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserspaceSpawnPlan<'a> {
+    Elf(&'a [u8]),
+    IdleFallback,
+}
+
+#[cfg(test)]
+fn plan_userspace_spawn_from_ramfs<'a>(fs: &'a RamFs, path: &str) -> UserspaceSpawnPlan<'a> {
+    match fs.find(path) {
+        Some(elf_data) => UserspaceSpawnPlan::Elf(elf_data),
+        None => UserspaceSpawnPlan::IdleFallback,
+    }
+}
+
+fn plan_userspace_spawn_from_vfs(path: &str) -> UserspaceSpawnPlan<'static> {
+    // SAFETY: the VFS mount table is initialized before userspace spawn.
+    match unsafe { fd::ramfs_find(path) } {
+        Some(elf_data) => UserspaceSpawnPlan::Elf(elf_data),
+        None => UserspaceSpawnPlan::IdleFallback,
     }
 }
 
@@ -872,24 +896,18 @@ pub unsafe fn run() -> ! {
     let _ = serial.write_str("\r\n");
 
     // -----------------------------------------------------------------------
-    // Step 13: Spawn userspace processes FROM ramfs
+    // Step 13: Spawn userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
     let _ = serial
         .write_str("[init] Spawning userspace processes\r\n");
     {
-        let fs = RamFs::new();
-
-        // NOTE: In production, ramfs is populated FROM initramfs CPIO embedded
-        // in the kernel image. For Phase 03, we add stub ELF binaries to prove
-        // process isolation works end-to-end.
-        //
         // Attempt to load and spawn two processes: /init and /shell.
-        // If ELF binaries aren't in ramfs, fall back to spawning FROM
-        // the built-in idle entry point.
+        // If an entry is absent from the mounted root ramfs, fall back to
+        // spawning the built-in idle entry point.
 
         // WHY: process 1  -  init daemon (PID 1, supervisor)
-        match fs.find("/init") {
-            Some(elf_data) => match elf::load(elf_data) {
+        match plan_userspace_spawn_from_vfs("/init") {
+            UserspaceSpawnPlan::Elf(elf_data) => match elf::load(elf_data) {
                 Ok(loaded) => {
                     if let Some(pid) = process::spawn(
                         // SAFETY: loaded.entry is the ELF entry point validated
@@ -908,7 +926,7 @@ pub unsafe fn run() -> ! {
                     let _ = write!(serial, "  WARN /init ELF load failed: {:?}\r\n", e);
                 }
             },
-            None => {
+            UserspaceSpawnPlan::IdleFallback => {
                 // Fallback: spawn built-in idle process as init
                 if let Some(pid) = process::spawn(userspace_idle) {
                     let _ = write!(
@@ -922,8 +940,8 @@ pub unsafe fn run() -> ! {
         }
 
         // WHY: process 2  -  shell (PID 2, user interface)
-        match fs.find("/shell") {
-            Some(elf_data) => match elf::load(elf_data) {
+        match plan_userspace_spawn_from_vfs("/shell") {
+            UserspaceSpawnPlan::Elf(elf_data) => match elf::load(elf_data) {
                 Ok(loaded) => {
                     if let Some(pid) = process::spawn(
                         // SAFETY: loaded.entry is the ELF entry point validated
@@ -942,7 +960,7 @@ pub unsafe fn run() -> ! {
                     let _ = write!(serial, "  WARN /shell ELF load failed: {:?}\r\n", e);
                 }
             },
-            None => {
+            UserspaceSpawnPlan::IdleFallback => {
                 // Fallback: spawn second idle process as shell
                 if let Some(pid) = process::spawn(userspace_idle) {
                     let _ = write!(
@@ -1009,7 +1027,83 @@ pub unsafe fn run() -> ! {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+    use alloc::vec::Vec;
+
     use super::*;
+
+    fn build_cpio_entry(name: &str, data: &[u8], mode: u32) -> Vec<u8> {
+        let mut entry = Vec::new();
+        let namesize = name.len() + 1;
+        let filesize = data.len();
+
+        entry.extend_from_slice(b"070701");
+        entry.extend_from_slice(b"00000001");
+        entry.extend_from_slice(format!("{mode:08X}").as_bytes());
+        entry.extend_from_slice(b"00000000");
+        entry.extend_from_slice(b"00000000");
+        entry.extend_from_slice(b"00000001");
+        entry.extend_from_slice(b"00000000");
+        entry.extend_from_slice(format!("{filesize:08X}").as_bytes());
+        entry.extend_from_slice(b"00000000");
+        entry.extend_from_slice(b"00000000");
+        entry.extend_from_slice(b"00000000");
+        entry.extend_from_slice(b"00000000");
+        entry.extend_from_slice(format!("{namesize:08X}").as_bytes());
+        entry.extend_from_slice(b"00000000");
+        assert_eq!(entry.len(), 110, "header must be exactly 110 bytes");
+
+        entry.extend_from_slice(name.as_bytes());
+        entry.push(0);
+        while entry.len() % 4 != 0 {
+            entry.push(0);
+        }
+
+        entry.extend_from_slice(data);
+        while entry.len() % 4 != 0 {
+            entry.push(0);
+        }
+
+        entry
+    }
+
+    fn build_cpio_trailer() -> Vec<u8> {
+        build_cpio_entry("TRAILER!!!", &[], 0)
+    }
+
+    // -- Userspace spawn planning --
+
+    #[test]
+    fn userspace_spawn_plan_prefers_populated_initramfs_entry() {
+        let mut archive = Vec::new();
+        archive.extend(build_cpio_entry("init", b"\x7FELFinit", 0o100755));
+        archive.extend(build_cpio_entry("shell", b"\x7FELFshell", 0o100755));
+        archive.extend(build_cpio_trailer());
+        let fs = RamFs::from_cpio(&archive);
+
+        assert_eq!(
+            plan_userspace_spawn_from_ramfs(&fs, "/init"),
+            UserspaceSpawnPlan::Elf(b"\x7FELFinit")
+        );
+        assert_eq!(
+            plan_userspace_spawn_from_ramfs(&fs, "/shell"),
+            UserspaceSpawnPlan::Elf(b"\x7FELFshell")
+        );
+    }
+
+    #[test]
+    fn userspace_spawn_plan_uses_idle_fallback_for_absent_entry() {
+        let fs = RamFs::new();
+
+        assert_eq!(
+            plan_userspace_spawn_from_ramfs(&fs, "/init"),
+            UserspaceSpawnPlan::IdleFallback
+        );
+        assert_eq!(
+            plan_userspace_spawn_from_ramfs(&fs, "/shell"),
+            UserspaceSpawnPlan::IdleFallback
+        );
+    }
 
     // -- BootStep ordering --
 
