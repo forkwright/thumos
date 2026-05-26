@@ -26,8 +26,6 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::firewall::{Action, Firewall};
-use crate::wifi::{WifiError, WifiHwOps, generate_random_mac};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{
     self, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken as _,
@@ -35,6 +33,9 @@ use smoltcp::phy::{
 use smoltcp::socket::{tcp, udp};
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address, Ipv4Cidr};
+
+use crate::firewall::{Action, Firewall};
+use crate::wifi::{WifiError, WifiHwOps, generate_random_mac};
 
 // ---------------------------------------------------------------------------
 // Constants

@@ -88,7 +88,7 @@ pub(crate) const MAX_SIGNAL_WEIGHT: u32 = 80;
 /// behaviour; adopting `Config` is a no-op for callers that do not override
 /// anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct Config {
     /// Signal threshold (dBm, higher is stronger) above which a new tower is
     /// flagged as unusually strong.
