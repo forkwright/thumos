@@ -418,16 +418,16 @@ impl<H: BtHwOps> A2dpProfile<H> {
                 let label = self.next_transaction_label();
                 let suspend_msg = AvdtpMessage::suspend(label, self.remote_seid);
                 // Best-effort suspend; continue to close even if it fails.
-                let _ = self.hw.send_command(&suspend_msg);
+                let _ = self.hw.send_command(&suspend_msg); // WHY: best-effort hardware write; failure is non-fatal in this context
 
                 let label = self.next_transaction_label();
                 let close_msg = AvdtpMessage::close(label, self.remote_seid);
-                let _ = self.hw.send_command(&close_msg);
+                let _ = self.hw.send_command(&close_msg); // WHY: best-effort hardware write; failure is non-fatal in this context
             }
             A2dpState::Connected | A2dpState::Connecting => {
                 let label = self.next_transaction_label();
                 let close_msg = AvdtpMessage::close(label, self.remote_seid);
-                let _ = self.hw.send_command(&close_msg);
+                let _ = self.hw.send_command(&close_msg); // WHY: best-effort hardware write; failure is non-fatal in this context
             }
             A2dpState::Disconnected | A2dpState::Error(_) => {
                 // Already disconnected or errored, nothing to send.
