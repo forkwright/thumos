@@ -361,23 +361,23 @@ impl BtHw {
 #[cfg(not(test))]
 impl BtHwOps for BtHw {
     fn send_command(&mut self, _data: &[u8]) -> Result<(), BtError> {
-        // TODO(#129): implement WMT STP frame TX for BT channel.
+        // TODO(#129)[deliberate-prudent]: implement WMT STP frame TX for BT channel.
         // Data is framed with WMT_BT_CHANNEL and written to CONSYS MMIO.
         Err(BtError::NotInitialized)
     }
 
     fn recv_event(&mut self) -> Option<Vec<u8>> {
-        // TODO(#129): implement WMT STP frame RX for BT channel.
+        // TODO(#129)[deliberate-prudent]: implement WMT STP frame RX for BT channel.
         None
     }
 
     fn power_on(&mut self) -> Result<(), BtError> {
-        // TODO(#129): send WMT power-on command for BT subsystem.
+        // TODO(#129)[deliberate-prudent]: send WMT power-on command for BT subsystem.
         Ok(())
     }
 
     fn power_off(&mut self) -> Result<(), BtError> {
-        // TODO(#129): send WMT power-off command for BT subsystem.
+        // TODO(#129)[deliberate-prudent]: send WMT power-off command for BT subsystem.
         Ok(())
     }
 }
