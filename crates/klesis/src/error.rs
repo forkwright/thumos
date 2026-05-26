@@ -55,6 +55,13 @@ pub(crate) enum Error {
         message: String,
     },
 
+    /// PDU encoding error.
+    #[snafu(display("PDU encode error: {message}"))]
+    PduEncode {
+        /// Description of the encode failure.
+        message: String,
+    },
+
     /// Invalid hex encoding in PDU data.
     #[snafu(display("invalid PDU hex: {message}"))]
     InvalidHex {

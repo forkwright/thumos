@@ -154,7 +154,11 @@ mod tests {
         let alice_id = IdentityKeyPair::generate()?;
         let bob_id = IdentityKeyPair::generate()?;
         let bob_bundle = x3dh::create_bundle(&bob_id)?;
-        Session::initiate(alice_id, &bob_bundle.public_bundle)?;
+        let session = Session::initiate(alice_id, &bob_bundle.public_bundle)?;
+        assert!(
+            session.initiator_message().is_some(),
+            "initiator session must produce an initiator message"
+        );
         Ok(())
     }
 

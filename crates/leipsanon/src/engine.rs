@@ -38,6 +38,9 @@ pub(crate) enum WipeError {
 
     #[snafu(display("failed to generate random fill for {path}: {source}"))]
     Random { path: String, source: MemoryError },
+
+    #[snafu(display("size conversion failed for {path}: {message}"))]
+    Size { path: String, message: String },
 }
 
 // ----- Types ----------------------------------------------------------------
@@ -191,7 +194,12 @@ fn wipe_file(
 
     while written < len {
         let remaining = len.saturating_sub(written);
-        let chunk_len = (usize::try_from(remaining).unwrap_or_default()).min(chunk_size);
+        let chunk_len = usize::try_from(remaining)
+            .map_err(|_| WipeError::Size {
+                path: path.to_owned(),
+                message: "remaining bytes exceed usize".to_owned(),
+            })?
+            .min(chunk_size);
         let buf = &mut chunk[..chunk_len];
 
         match method {
@@ -216,7 +224,11 @@ fn wipe_file(
             source: e,
         })?;
 
-        written = written.saturating_add(u64::try_from(chunk_len).unwrap_or_default());
+        written =
+            written.saturating_add(u64::try_from(chunk_len).map_err(|_| WipeError::Size {
+                path: path.to_owned(),
+                message: "chunk length conversion failed".to_owned(),
+            })?);
     }
 
     file.sync_all().map_err(|e| WipeError::Sync {
@@ -274,8 +286,10 @@ mod tests {
         let p = plan(WipeLevel::Keys);
         let mut engine = WipeEngine::new(true);
         let result = engine.execute(&p);
-        // elapsed is non-negative (Duration can't be negative)
-        let _ = result.elapsed; // just verify the field is accessible
+        assert!(
+            result.elapsed < Duration::from_secs(1),
+            "dry-run of a small plan must complete in under one second"
+        );
     }
 
     #[test]

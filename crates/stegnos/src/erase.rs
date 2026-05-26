@@ -160,7 +160,10 @@ mod tests {
     fn secure_zero_works_on_empty_buffer() {
         let mut buf: [u8; 0] = [];
         secure_zero(&mut buf);
-        // no panic, no-op
+        assert!(
+            buf.is_empty(),
+            "empty buffer must remain empty after secure_zero"
+        );
     }
 
     #[test]

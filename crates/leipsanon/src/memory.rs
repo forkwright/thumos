@@ -120,7 +120,10 @@ mod tests {
     fn secure_zero_works_on_empty_buffer() {
         let mut buf: [u8; 0] = [];
         secure_zero(&mut buf);
-        // no panic, no-op  -  just verify it completes
+        assert!(
+            buf.is_empty(),
+            "empty buffer must remain empty after secure_zero"
+        );
     }
 
     #[test]
@@ -139,6 +142,10 @@ mod tests {
     fn secure_random_fill_ok_on_empty_buffer() -> Result<(), MemoryError> {
         let mut buf: [u8; 0] = [];
         secure_random_fill(&mut buf)?;
+        assert!(
+            buf.is_empty(),
+            "empty buffer must remain empty after secure_random_fill"
+        );
         Ok(())
     }
 
