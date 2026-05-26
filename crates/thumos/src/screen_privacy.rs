@@ -1122,6 +1122,8 @@ mod tests {
         screen.view = PrivacyView::Detail;
         let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "privacy detail view must render visible content");
     }
 
     #[test]
@@ -1131,6 +1133,8 @@ mod tests {
         screen.purge_state = Some(PurgeConfirmState::new(1));
         let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "privacy purge confirm must render visible content");
     }
 
     #[test]

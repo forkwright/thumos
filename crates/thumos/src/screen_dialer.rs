@@ -421,6 +421,7 @@ mod tests {
         let screen = DialerScreen::new();
         let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
-        // Must complete without panic.
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "dialer screen must render visible content");
     }
 }

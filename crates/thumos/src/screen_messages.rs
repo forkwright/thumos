@@ -1103,6 +1103,8 @@ mod tests {
         screen.enter_compose();
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "compose screen must render visible content");
     }
 
     // --- Wave 5: transport integration tests ---
