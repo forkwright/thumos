@@ -55,11 +55,11 @@ MT6739 data path is absent, and keeps DHCP/DNS/socket smoke coverage on a
 firewall-backed loopback path. Real WiFi packet I/O is not boot-ready until
 WMT/STP frame TX/RX, scan, and association are implemented on hardware.
 
-- Aletheia live runtime integration — phase-1 decision recorded in [docs/ALETHEIA-BRIDGE.md](docs/ALETHEIA-BRIDGE.md) and `metaxu`; live transport, grant verification, and UI wiring remain future work
-- [#142](https://github.com/forkwright/thumos/issues/142) — boot-time security subsystems are success-without-work placeholders
+- Aletheia live runtime integration  -  phase-1 decision recorded in [docs/ALETHEIA-BRIDGE.md](docs/ALETHEIA-BRIDGE.md) and `metaxu`; live transport, grant verification, and UI wiring remain future work
+- [#142](https://github.com/forkwright/thumos/issues/142)  -  boot-time security subsystems are success-without-work placeholders
 - Userspace image packaging remains incomplete: boot reports missing `/init` or `/shell` entries instead of spawning kernel-owned idle placeholders.
-- [#145](https://github.com/forkwright/thumos/issues/145) — advertised kernel features compiled but unwired: current baseline is 8 crate-level `dead_code` expectations plus 48 item-level suppressions; see [kernel wiring audit](docs/KERNEL-WIRING-AUDIT.md)
-- [#146](https://github.com/forkwright/thumos/issues/146) — remaining direct `ring` dependency is isolated to `krypta` protocol crypto
+- [#145](https://github.com/forkwright/thumos/issues/145)  -  advertised kernel features compiled but unwired: current baseline is 8 crate-level `dead_code` expectations plus 48 item-level suppressions; see [kernel wiring audit](docs/KERNEL-WIRING-AUDIT.md)
+- [#146](https://github.com/forkwright/thumos/issues/146)  -  remaining direct `ring` dependency is isolated to `krypta` protocol crypto
 
 ## Related
 

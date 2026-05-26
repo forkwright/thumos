@@ -21,4 +21,5 @@ paths = [
   '''\.gitleaks\.toml''',
   '''SECURITY\.md''',
   '''crates/thumos/src/security\.rs''', # WHY: T1 - RFC 7914 test vector; see small-repo-security-triage-2026-05-21.md
+
 ]
