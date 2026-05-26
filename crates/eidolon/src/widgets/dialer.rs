@@ -426,8 +426,12 @@ mod tests {
         d.on_key(Key::Num1);
         d.on_key(Key::Num2);
         let mut fb = Framebuffer::new(240, 320);
-        // NOTE: should complete without panic
+        fb.clear(Rgb565::WHITE);
         d.draw(&mut fb, 0, 0);
+        assert!(
+            fb.as_bytes().iter().any(|&b| b != 0xFF),
+            "dialer must write at least one pixel"
+        );
     }
 
     #[test]

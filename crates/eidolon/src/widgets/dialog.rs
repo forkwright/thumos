@@ -325,7 +325,11 @@ mod tests {
     fn draw_does_not_panic() {
         let d = Dialog::confirm("Alert", "Delete everything?");
         let mut fb = Framebuffer::new(240, 320);
-        // NOTE: should not panic
+        fb.clear(Rgb565::WHITE);
         d.draw(&mut fb, 20, 100);
+        assert!(
+            fb.as_bytes().iter().any(|&b| b != 0xFF),
+            "dialog must write at least one pixel"
+        );
     }
 }
