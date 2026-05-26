@@ -811,7 +811,7 @@ pub unsafe fn run() -> ! {
         // success is tracked separately and must not mark production
         // connectivity ready.
         let device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
-        let mac = smoltcp::wire::EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        let mac = net::randomized_local_ethernet_address();
         let now = net::instant_from_millis(crate::timer::elapsed_ms() as i64);
         let mut stack = NetworkStack::new(device, mac, now);
         let _ = serial.write_str("       Firewall DNS blocklist active\r\n");
