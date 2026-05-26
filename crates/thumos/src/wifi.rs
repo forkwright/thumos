@@ -18,13 +18,15 @@
 //!
 //! ## Integration plan
 //!
-//! Wave 2 creates the module and tests. Wave 3 wires DHCP, smoltcp
-//! `phy::Device`, and boot integration via `kinit.rs`.
+//! The smoltcp adapter and boot readiness path are wired fail-closed: boot
+//! checks this backend, but it reports production networking unavailable until
+//! WMT/STP frame TX/RX, scan, and association are implemented on hardware.
 
-// WHY: hardware driver API not yet wired to upper layers (Wave 3 integration).
+// WHY: hardware data-path APIs are intentionally fail-closed until WMT/STP
+// frame TX/RX, scan, and association are implemented on the target.
 #![expect(
     dead_code,
-    reason = "WiFi driver API not yet wired to kinit (Wave 3)"
+    reason = "WiFi hardware data path not yet implemented on target"
 )]
 
 extern crate alloc;

@@ -27,7 +27,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::firewall::{Action, Firewall};
-use crate::wifi::{WifiError, WifiHwOps};
+use crate::wifi::{WifiError, WifiHwOps, generate_random_mac};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{
     self, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken as _,
@@ -69,6 +69,14 @@ const ETHERNET_HEADER_LEN: usize = 14;
 
 /// EtherType for IPv4 frames.
 const ETHERTYPE_IPV4: u16 = 0x0800;
+
+/// Generate a locally administered unicast Ethernet address for kernel stacks.
+///
+/// This is used even for host-only loopback smoke stacks so the production
+/// boot path never grows a fixed device address by accident.
+pub(crate) fn randomized_local_ethernet_address() -> EthernetAddress {
+    EthernetAddress(generate_random_mac())
+}
 
 // ---------------------------------------------------------------------------
 // Device readiness
