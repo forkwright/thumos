@@ -388,7 +388,7 @@ impl Syscall {
 pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     let Some(call) = Syscall::from_u32(num) else {
         let mut serial = Uart::new();
-        let _ = write!(serial, "Unknown syscall: {num}\r\n");
+        let _ = write!(serial, "Unknown syscall: {num}\r\n"); // WHY: best-effort serial debug; write failure is non-fatal in panic path
         return ENOSYS;
     };
 
@@ -396,7 +396,8 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         // ---- Legacy handlers (implemented) ----
 
         Syscall::Exit => {
-            process::exit_with_status(i32::try_from(arg0).unwrap_or_default());
+            let Ok(status) = i32::try_from(arg0) else { return EINVAL; };
+            process::exit_with_status(status);
         }
         Syscall::Write => sys_write_dispatch(arg0, arg1, arg2),
         Syscall::Yield => {
@@ -413,7 +414,10 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         }
         Syscall::Getpid => process::current_pid() as u32,
         Syscall::AllocPage => match crate::page::alloc_page() {
-            Some(addr) => u32::try_from(addr).unwrap_or_default(),
+            Some(addr) => {
+                let Ok(addr_u32) = u32::try_from(addr) else { return EINVAL; };
+                addr_u32
+            }
             None => u32::MAX, // NOTE: error indicator
         },
         Syscall::FreePage => {
@@ -422,7 +426,8 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             // double-freeing. No pointer validation is needed because
             // free_page operates on physical addresses managed by the allocator.
             unsafe {
-                crate::page::free_page(usize::try_from(arg0).unwrap_or_default());
+                let Ok(page_addr) = usize::try_from(arg0) else { return EINVAL; };
+                crate::page::free_page(page_addr);
             }
             0
         }
@@ -430,7 +435,10 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         Syscall::Sleep => {
             // NOTE: approximate sleep via busy-wait on tick counter.
             // A proper implementation would block the process and wake on tick.
-            let target = crate::exceptions::uptime_ms() + u64::try_from(arg0).unwrap_or_default();
+            let target = crate::exceptions::uptime_ms() + {
+                let Ok(ms) = u64::try_from(arg0) else { return EINVAL; };
+                ms
+            };
             while crate::exceptions::uptime_ms() < target {
                 // SAFETY: WFE is a hint instruction available in all ARM privilege
                 // levels. No memory is accessed; the CPU waits for the next event.
@@ -441,10 +449,10 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             0
         }
         Syscall::Send => {
-            let to = u8::try_from(arg0).unwrap_or_default();
+            let Ok(to) = u8::try_from(arg0) else { return EINVAL; };
             let tag = arg1;
-            let ptr = usize::try_from(arg2).unwrap_or_default();
-            let len = usize::try_from(arg3).unwrap_or_default();
+            let Ok(ptr) = usize::try_from(arg2) else { return EINVAL; };
+            let Ok(len) = usize::try_from(arg3) else { return EINVAL; };
             let payload = if len > 0 && ptr != 0 {
                 let capped_len = len.min(ipc::MSG_MAX_SIZE);
                 if !validate_user_buffer(ptr, capped_len) {
@@ -467,13 +475,19 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         // ---- Process management ----
 
         Syscall::Fork => match process::fork() {
-            Some(child_pid) => u32::try_from(child_pid).unwrap_or_default(),
+            Some(child_pid) => {
+                let Ok(pid_u32) = u32::try_from(child_pid) else { return EINVAL; };
+                pid_u32
+            }
             None => u32::MAX,
         },
         Syscall::Waitpid => {
-            let child_pid = u8::try_from(arg0).unwrap_or_default();
+            let Ok(child_pid) = u8::try_from(arg0) else { return EINVAL; };
             match process::waitpid(child_pid) {
-                Some(status) => u32::try_from(status).unwrap_or_default(),
+                Some(status) => {
+                    let Ok(status_u32) = u32::try_from(status) else { return EINVAL; };
+                    status_u32
+                }
                 None => u32::MAX,
             }
         }
@@ -608,8 +622,8 @@ fn sys_close_with_pipe(fd: u32) -> u32 {
 fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     // fd 1 is stdout — always goes to UART (legacy behavior).
     if fd == 1 {
-        let ptr = usize::try_from(buf_ptr).unwrap_or_default();
-        let len = usize::try_from(count).unwrap_or_default();
+        let Ok(ptr) = usize::try_from(buf_ptr) else { return EINVAL; };
+        let Ok(len) = usize::try_from(count) else { return EINVAL; };
         if !validate_user_buffer(ptr, len) {
             return EFAULT;
         }
@@ -620,7 +634,8 @@ fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
         for &byte in slice {
             serial.putc(byte);
         }
-        return u32::try_from(len).unwrap_or_default();
+        let Ok(len_u32) = u32::try_from(len) else { return EINVAL; };
+        return len_u32;
     }
 
     let fd_idx = fd as usize;
@@ -903,7 +918,8 @@ fn sys_brk(new_break_raw: u32) -> u32 {
 
     // Query: return current break
     if new_break_req == 0 {
-        return u32::try_from(current).unwrap_or_default();
+        let Ok(current_u32) = u32::try_from(current) else { return EINVAL; };
+        return current_u32;
     }
 
     // Page-align the requested break (round up)
@@ -911,7 +927,8 @@ fn sys_brk(new_break_raw: u32) -> u32 {
 
     let pt = process::current_page_table();
     if pt == 0 {
-        return u32::try_from(current).unwrap_or_default();
+        let Ok(current_u32) = u32::try_from(current) else { return EINVAL; };
+        return current_u32;
     }
 
     let l2_attrs = mmu::prot_to_l2_flags(mmu::prot::PROT_READ | mmu::prot::PROT_WRITE);
@@ -936,7 +953,8 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                         // A production kernel would track the phys addrs.
                     }
                 }
-                return u32::try_from(current).unwrap_or_default();
+                let Ok(current_u32) = u32::try_from(current) else { return EINVAL; };
+                return current_u32;
             };
 
             // SAFETY: pt is the current process's valid L1 table, vaddr is
@@ -947,7 +965,8 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                 // SAFETY: phys was just returned by alloc_page() and has not
                 // been mapped (map_page failed), so it is safe to free.
                 unsafe { page::free_page(phys); }
-                return u32::try_from(current).unwrap_or_default();
+                let Ok(current_u32) = u32::try_from(current) else { return EINVAL; };
+                return current_u32;
             }
         }
         process::set_heap_break(new_break);
@@ -972,7 +991,8 @@ fn sys_brk(new_break_raw: u32) -> u32 {
         process::set_heap_break(new_break);
     }
 
-    u32::try_from(process::current_heap_break()).unwrap_or_default()
+    let Ok(break_u32) = u32::try_from(process::current_heap_break()) else { return EINVAL; };
+    break_u32
 }
 
 /// mmap(addr_hint, length, prot, flags_and_fd):
@@ -1106,7 +1126,8 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         return MAP_FAILED;
     }
 
-    u32::try_from(candidate).unwrap_or_default()
+    let Ok(candidate_u32) = u32::try_from(candidate) else { return EINVAL; };
+    candidate_u32
 }
 
 /// munmap(addr, length): unmap a previously mapped memory region.

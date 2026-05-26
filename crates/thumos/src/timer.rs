@@ -34,7 +34,7 @@ pub(crate) fn counter() -> u64 {
             hi = out(reg) hi,
         );
     }
-    ((u64::try_from(hi).unwrap_or_default()) << 32) | (u64::try_from(lo).unwrap_or_default())
+    ((u64::from(hi)) << 32) | (u64::from(lo))
 }
 
 /// Set the timer to fire after `ticks` counter increments.

@@ -323,8 +323,7 @@ impl Drop for Ptk {
 #[must_use]
 pub(crate) fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
     let mut pmk = [0u8; PMK_LEN];
-    // Infallible: 4096 > 0.
-    let _ = pbkdf2_hmac_sha1(passphrase, ssid, 4096, &mut pmk);
+    let _ = pbkdf2_hmac_sha1(passphrase, ssid, 4096, &mut pmk); // WHY: pbkdf2 with 4096 iterations is infallible; Result discarded for API uniformity
     pmk
 }
 
