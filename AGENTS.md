@@ -1,3 +1,9 @@
+<!--
+scope: thumos repo build/lint rules and agent conventions (cross-tool reference for AI coding assistants)
+defers_to: CLAUDE.md for architecture decisions and operator principles; kanon standards for universal engineering policy
+tightens: build commands, lint invariants, and non-obvious Rust/kernel constraints specific to this repo
+-->
+
 # AGENTS.md - Thumos
 
 Cross-tool guide for AI coding agents (Claude Code, Cursor, Windsurf, Copilot, etc.) working on the Thumos mobile OS. Authoritative agent orientation (phase status, Greek naming rationale, constraints) lives in [CLAUDE.md](CLAUDE.md); this file captures build/lint invariants and the non-obvious rules that differ from a standard Rust workspace.
