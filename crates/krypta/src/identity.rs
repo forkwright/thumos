@@ -1,11 +1,11 @@
 //! Ed25519 identity key pairs for signing and authentication.
 
-use ring::rand::SystemRandom;
-use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use crate::error::{InvalidKeySnafu, InvalidSignatureSnafu, KeyGenerationSnafu, Result};
 
 const PUBLIC_KEY_LEN: usize = 32;
+const PRIVATE_KEY_LEN: usize = 32;
 
 /// Ed25519 public identity key (32 bytes).
 #[derive(Clone, PartialEq, Eq)]
@@ -25,7 +25,11 @@ impl PublicIdentityKey {
 
 impl std::fmt::Debug for PublicIdentityKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PublicIdentityKey({:02x}{:02x}..)", self.0[0], self.0[1])
+        write!(f, "PublicIdentityKey(")?;
+        for byte in self.0.iter().take(2) {
+            write!(f, "{byte:02x}")?;
+        }
+        write!(f, "..)")
     }
 }
 
@@ -40,8 +44,8 @@ impl std::fmt::Display for PublicIdentityKey {
 
 /// Ed25519 identity key pair. Holds private key material; never logged.
 pub(crate) struct IdentityKeyPair {
-    /// PKCS#8-encoded Ed25519 private key.
-    pkcs8_bytes: Vec<u8>,
+    /// Raw Ed25519 signing seed.
+    private_key_bytes: [u8; PRIVATE_KEY_LEN],
     /// Cached public key bytes (32 bytes).
     public_key_bytes: [u8; PUBLIC_KEY_LEN],
 }
@@ -61,16 +65,12 @@ impl IdentityKeyPair {
     ///
     /// Returns [`Error::KeyGeneration`] if key generation or parsing fails.
     pub(crate) fn generate() -> Result<Self> {
-        let rng = SystemRandom::new();
-        let pkcs8_doc =
-            Ed25519KeyPair::generate_pkcs8(&rng).map_err(|_| KeyGenerationSnafu.build())?;
-        let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8_doc.as_ref())
-            .map_err(|_| KeyGenerationSnafu.build())?;
-        let pub_bytes = key_pair.public_key().as_ref();
-        let mut public_key_bytes = [0u8; PUBLIC_KEY_LEN];
-        public_key_bytes.copy_from_slice(pub_bytes);
+        let mut private_key_bytes = [0u8; PRIVATE_KEY_LEN];
+        getrandom::fill(&mut private_key_bytes).map_err(|_| KeyGenerationSnafu.build())?;
+        let key_pair = SigningKey::from_bytes(&private_key_bytes);
+        let public_key_bytes = key_pair.verifying_key().to_bytes();
         Ok(Self {
-            pkcs8_bytes: pkcs8_doc.as_ref().to_vec(),
+            private_key_bytes,
             public_key_bytes,
         })
     }
@@ -86,9 +86,8 @@ impl IdentityKeyPair {
     ///
     /// Returns [`Error::InvalidKey`] if the stored key bytes are malformed.
     pub(crate) fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let key_pair =
-            Ed25519KeyPair::from_pkcs8(&self.pkcs8_bytes).map_err(|_| InvalidKeySnafu.build())?;
-        Ok(key_pair.sign(data).as_ref().to_vec())
+        let key_pair = SigningKey::from_bytes(&self.private_key_bytes);
+        Ok(key_pair.sign(data).to_bytes().to_vec())
     }
 
     /// Verifies an Ed25519 `signature` over `data` against `public_key`.
@@ -101,9 +100,11 @@ impl IdentityKeyPair {
         data: &[u8],
         signature: &[u8],
     ) -> Result<()> {
-        let pub_key = UnparsedPublicKey::new(&ED25519, public_key.as_bytes().as_ref());
+        let pub_key =
+            VerifyingKey::from_bytes(public_key.as_bytes()).map_err(|_| InvalidKeySnafu.build())?;
+        let sig = Signature::from_slice(signature).map_err(|_| InvalidSignatureSnafu.build())?;
         pub_key
-            .verify(data, signature)
+            .verify_strict(data, &sig)
             .map_err(|_| InvalidSignatureSnafu.build())
     }
 }
@@ -114,7 +115,13 @@ mod tests {
 
     #[test]
     fn generates_key_pair_without_error() -> Result<()> {
-        IdentityKeyPair::generate()?;
+        let key = IdentityKeyPair::generate()?;
+
+        assert_ne!(
+            key.public_key().as_bytes(),
+            &[0u8; PUBLIC_KEY_LEN],
+            "generated public key must not be all zeroes"
+        );
         Ok(())
     }
 
@@ -176,5 +183,37 @@ mod tests {
             "Ed25519 public key must be 32 bytes"
         );
         Ok(())
+    }
+
+    #[test]
+    fn ed25519_rfc8032_test_vector_1_signs_and_verifies() -> Result<()> {
+        let private_key_bytes = [
+            0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec,
+            0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03,
+            0x1c, 0xae, 0x7f, 0x60,
+        ];
+        let public_key_bytes = [
+            0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64,
+            0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68,
+            0xf7, 0x07, 0x51, 0x1a,
+        ];
+        let expected_signature = [
+            0xe5, 0x56, 0x43, 0x00, 0xc3, 0x60, 0xac, 0x72, 0x90, 0x86, 0xe2, 0xcc, 0x80, 0x6e,
+            0x82, 0x8a, 0x84, 0x87, 0x7f, 0x1e, 0xb8, 0xe5, 0xd9, 0x74, 0xd8, 0x73, 0xe0, 0x65,
+            0x22, 0x49, 0x01, 0x55, 0x5f, 0xb8, 0x82, 0x15, 0x90, 0xa3, 0x3b, 0xac, 0xc6, 0x1e,
+            0x39, 0x70, 0x1c, 0xf9, 0xb4, 0x6b, 0xd2, 0x5b, 0xf5, 0xf0, 0x59, 0x5b, 0xbe, 0x24,
+            0x65, 0x51, 0x41, 0x43, 0x8e, 0x7a, 0x10, 0x0b,
+        ];
+        let key = IdentityKeyPair {
+            private_key_bytes,
+            public_key_bytes,
+        };
+        let signature = key.sign(b"")?;
+
+        assert_eq!(
+            signature, expected_signature,
+            "RFC 8032 Ed25519 test vector 1 signature must match"
+        );
+        IdentityKeyPair::verify(&key.public_key(), b"", &signature)
     }
 }
