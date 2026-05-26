@@ -806,8 +806,9 @@ impl WiFiMacDriver {
     pub(crate) fn set_mac_address(&mut self, seq_num: u8) -> Result<WifiCommand, Error> {
         self.current_mac = MacAddress::generate_random()?;
         // WHY: MAC bytes are packed INTO two 32-bit registers: low 4 bytes and
-        // high 2 bytes. We write the low word here via ACCESS_REG. Callers must
-        // issue a follow-up ACCESS_REG write for the high 2 bytes (seq_num+1).
+        // high 2 bytes. We write the low word here via ACCESS_REG with seq_num;
+        // the high 2 bytes require a separate ACCESS_REG write (seq_num+1)
+        // because the firmware exposes two distinct registers.
         let mac = self.current_mac.0;
         let low32 = u32::from_le_bytes([
             mac.first().copied().unwrap_or_default(),
