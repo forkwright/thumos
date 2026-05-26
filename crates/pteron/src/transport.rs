@@ -302,7 +302,8 @@ pub(crate) fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usiz
     }
 
     // INVARIANT: payload.len() <= STP_MAX_PAYLOAD (0xFFF), checked above; fits in u16.
-    let plen = u16::try_from(payload.len()).unwrap_or_default();
+    let plen = u16::try_from(payload.len())
+        .expect("invariant: payload.len() <= STP_MAX_PAYLOAD (0xFFF), checked above"); // kanon:ignore RUST/expect -- infallible: checked against STP_MAX_PAYLOAD above
     let [plen_lo, plen_hi_raw] = plen.to_le_bytes();
     let seq4 = seq & 0x0F;
 
@@ -534,7 +535,7 @@ impl BtHciTransport {
                 // Inject HCI Hardware Error event INTO RX path per DRIVER-INTERFACES.md §4.4.
                 // Event: H4=0x04, code=0x10, param_len=0x01, hw_code=0x00
                 let hw_error_event: [u8; 4] = [0x04, 0x10, 0x01, 0x00];
-                let _ = self.rx.push(&hw_error_event);
+                let _ = self.rx.push(&hw_error_event); // WHY: best-effort RX injection; ring buffer may be full during reset storm.
                 RstFlag::ResetCompleteEventDelivered
             }
             RstFlag::ResetCompleteEventDelivered => RstFlag::Normal,
