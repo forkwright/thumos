@@ -64,7 +64,7 @@ pub(crate) fn ticks() -> u64 {
 
 /// Get uptime in milliseconds FROM tick count.
 pub(crate) fn uptime_ms() -> u64 {
-    ticks() * u64::try_from(TICK_MS).unwrap_or_default()
+    ticks() * u64::from(TICK_MS)
 }
 
 // ARM vector table  -  must be 32-byte aligned
@@ -188,7 +188,7 @@ pub extern "C" fn irq_handler_rust() {
         // The timer IRQ is the primary exception return point. Full signal
         // frame setup requires user-mode register state from the IRQ stack;
         // that is wired through the SVC path once userspace is active.
-        let _ = process::check_pending_signal();
+        let _ = process::check_pending_signal(); // WHY: signal delivery failure is non-actionable in IRQ context; will retry on next tick
 
     }
 
@@ -208,9 +208,9 @@ pub extern "C" fn data_abort_handler_rust() {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 0", out(reg) dfar); // DFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 0", out(reg) dfsr); // DFSR
     }
-    let _ = write!(serial, "\r\n!!! DATA ABORT !!!\r\n");
-    let _ = write!(serial, "DFAR: {dfar:#010x} (fault address)\r\n");
-    let _ = write!(serial, "DFSR: {dfsr:#010x} (fault status)\r\n");
+    let _ = write!(serial, "\r\n!!! DATA ABORT !!!\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
+    let _ = write!(serial, "DFAR: {dfar:#010x} (fault address)\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
+    let _ = write!(serial, "DFSR: {dfsr:#010x} (fault status)\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
 }
 
 /// Prefetch abort handler.
@@ -226,9 +226,9 @@ pub extern "C" fn prefetch_abort_handler_rust() {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 2", out(reg) ifar); // IFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 1", out(reg) ifsr); // IFSR
     }
-    let _ = write!(serial, "\r\n!!! PREFETCH ABORT !!!\r\n");
-    let _ = write!(serial, "IFAR: {ifar:#010x}\r\n");
-    let _ = write!(serial, "IFSR: {ifsr:#010x}\r\n");
+    let _ = write!(serial, "\r\n!!! PREFETCH ABORT !!!\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
+    let _ = write!(serial, "IFAR: {ifar:#010x}\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
+    let _ = write!(serial, "IFSR: {ifsr:#010x}\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
 }
 
 /// Undefined instruction handler.

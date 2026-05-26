@@ -35,7 +35,7 @@ impl Console {
 
     /// Print the prompt.
     pub(crate) fn prompt(&mut self) {
-        let _ = self.serial.write_str("thumos> ");
+        let _ = self.serial.write_str("thumos> "); // WHY: best-effort serial write; kernel cannot block on failed UART output
     }
 
     /// Process a received byte (FROM UART RX interrupt or polling).
@@ -43,7 +43,7 @@ impl Console {
         match byte {
             // Enter
             b'\r' | b'\n' => {
-                let _ = self.serial.write_str("\r\n");
+                let _ = self.serial.write_str("\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
                 if self.line_len > 0 {
                     let mut cmd_buf = [0u8; 128];
                     cmd_buf[..self.line_len].copy_from_slice(&self.line_buf[..self.line_len]);
@@ -59,7 +59,7 @@ impl Console {
             0x7F | 0x08 => {
                 if self.line_len > 0 {
                     self.line_len -= 1;
-                    let _ = self.serial.write_str("\x08 \x08");
+                    let _ = self.serial.write_str("\x08 \x08"); // WHY: best-effort serial write; kernel cannot block on failed UART output
                 }
             }
             // Printable
@@ -90,20 +90,20 @@ impl Console {
             "panic" => self.cmd_panic(),
             "reboot" => self.cmd_reboot(),
             _ => {
-                let _ = write!(self.serial, "unknown command: {}\r\n", parts.get(0).copied().unwrap_or_default());
-                let _ = self.serial.write_str("type 'help' for commands\r\n");
+                let _ = write!(self.serial, "unknown command: {}\r\n", parts.get(0).copied().unwrap_or_default()); // WHY: best-effort serial write; kernel cannot block on failed UART output
+                let _ = self.serial.write_str("type 'help' for commands\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
             }
         }
     }
 
     fn cmd_help(&mut self) {
-        let _ = self.serial.write_str("commands:\r\n");
-        let _ = self.serial.write_str("  help     -  show this help\r\n");
+        let _ = self.serial.write_str("commands:\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
+        let _ = self.serial.write_str("  help     -  show this help\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
         let _ = self.serial
             .write_str("  uptime   -  show system uptime\r\n");
         let _ = self.serial
             .write_str("  mem      -  show memory usage\r\n");
-        let _ = self.serial.write_str("  ps       -  show processes\r\n");
+        let _ = self.serial.write_str("  ps       -  show processes\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
         let _ = self.serial
             .write_str("  ver      -  show kernel version\r\n");
         let _ = self.serial
@@ -131,7 +131,7 @@ impl Console {
         let free = page::free_count();
         let free_mb = page::free_bytes() / 1024 / 1024;
         let (heap_allocs, heap_frees) = crate::heap::stats();
-        let _ = write!(self.serial, "pages: {} free ({} MB)\r\n", free, free_mb);
+        let _ = write!(self.serial, "pages: {} free ({} MB)\r\n", free, free_mb); // WHY: best-effort serial write; kernel cannot block on failed UART output
         let _ = write!(
             self.serial,
             "heap: {} allocs, {} frees, {} live\r\n",
@@ -142,11 +142,11 @@ impl Console {
     }
 
     fn cmd_ps(&mut self) {
-        let _ = write!(self.serial, "PID {} running\r\n", process::current_pid());
+        let _ = write!(self.serial, "PID {} running\r\n", process::current_pid()); // WHY: best-effort serial write; kernel cannot block on failed UART output
     }
 
     fn cmd_version(&mut self) {
-        let _ = self.serial.write_str("thumos v0.1.0\r\n");
+        let _ = self.serial.write_str("thumos v0.1.0\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
         let _ = self.serial
             .write_str("Rust monolithic kernel for MT6739\r\n");
     }
@@ -156,7 +156,7 @@ impl Console {
     }
 
     fn cmd_reboot(&mut self) {
-        let _ = self.serial.write_str("rebooting...\r\n");
+        let _ = self.serial.write_str("rebooting...\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
         // NOTE: ARM watchdog reset
         // SAFETY: WDT_MODE and WDT_SWRST are MT6739 watchdog MMIO registers at known addresses.
         unsafe {
