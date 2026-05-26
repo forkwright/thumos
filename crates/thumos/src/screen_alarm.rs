@@ -10,8 +10,9 @@
 //! large `HH:MM:SS.mmm`. Both use the kernel tick count passed via
 //! state updates.
 
-// WHY: alarm screen created in Phase 07 Wave 7, kinit wiring pending.
-#![expect(dead_code, reason = "Alarm screen created in Phase 07 Wave 7, kinit wiring pending")]
+// WHY: renderable screen exists, but kinit currently renders only the home
+// frame and has no alarm/timer route/input path.
+#![expect(dead_code, reason = "Alarm screen is not wired into the kinit UI route")]
 
 extern crate alloc;
 use alloc::vec::Vec;

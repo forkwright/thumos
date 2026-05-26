@@ -4,8 +4,9 @@
 //! recording). Both use tick-based timing: callers pass the current kernel
 //! tick count and the engine computes elapsed time from deltas.
 
-// WHY: heorte module created in Phase 07 Wave 7, kinit wiring pending.
-#![expect(dead_code, reason = "Heorte created in Phase 07 Wave 7, kinit wiring pending")]
+// WHY: timers are compiled and tested through heorte but are not owned by a
+// boot-time runtime manager yet.
+#![expect(dead_code, reason = "Heorte timer runtime is not wired into kinit")]
 
 extern crate alloc;
 use alloc::vec::Vec;

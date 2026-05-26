@@ -21,8 +21,9 @@
 //! The font module is duplicated here because eidolon depends on `std` (via `Vec`)
 //! and cannot be linked into the `#![no_std]` kernel.
 
-// WHY: UI framework wired in Phase 07 but screens are not yet called from kinit.
-#![expect(dead_code, reason = "UI framework created in Phase 07 Wave 1, kinit wiring pending")]
+// WHY: kinit renders one initial home frame; full screen routing and input
+// dispatch through UiManager are still pending.
+#![expect(dead_code, reason = "UI framework has only initial home-frame kinit wiring")]
 
 extern crate alloc;
 use alloc::vec::Vec;
