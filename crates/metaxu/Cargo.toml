@@ -1,0 +1,19 @@
+[package]
+name = "metaxu"
+description = "Aletheia/Thumos thin-client capability bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+compact_str = { workspace = true, features = ["serde"] }
+jiff = { workspace = true, features = ["serde"] }
+postcard = { workspace = true }
+serde = { workspace = true }
+snafu = { workspace = true }
+ulid = { workspace = true }
+
+[lints]
+workspace = true
