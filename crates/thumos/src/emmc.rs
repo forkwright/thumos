@@ -609,7 +609,9 @@ impl MsdcController {
 
         // CMD16: SET_BLOCKLEN to 512 bytes
         // SAFETY: controller is powered and register block is mapped per caller contract.
-        unsafe { self.send_command(CMD16_SET_BLOCKLEN, u32::try_from(SECTOR_SIZE).unwrap_or_default(), CMD_RSPTYP_R1)? };
+        let Ok(blocklen) = u32::try_from(SECTOR_SIZE) else { return Err(MsdcError::CommandTimeout); };
+        // SAFETY: controller is powered and register block is mapped per caller contract.
+        unsafe { self.send_command(CMD16_SET_BLOCKLEN, blocklen, CMD_RSPTYP_R1)? };
 
         self.initialized = true;
         Ok(())

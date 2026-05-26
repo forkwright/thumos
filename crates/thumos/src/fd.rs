@@ -349,15 +349,15 @@ pub unsafe fn init_vfs(cpio_data: Option<&[u8]>) {
         };
         // Ignore mount errors during init; these are fatal if they fail but
         // the mount table has 8 slots and we use only 3.
-        let _ = mt.mount("/", Box::new(root_fs));
+        let _ = mt.mount("/", Box::new(root_fs)); // WHY: init-time best-effort mount; failure is fatal and detected by later syscalls
 
         // /dev filesystem
         let devfs = crate::devfs::DevFs::new(0xDEAD_BEEF_CAFE_BABE);
-        let _ = mt.mount("/dev", Box::new(devfs));
+        let _ = mt.mount("/dev", Box::new(devfs)); // WHY: init-time best-effort mount; failure is fatal and detected by later syscalls
 
         // /tmp filesystem (empty ramfs)
         let tmp_fs = crate::ramfs::RamFs::new();
-        let _ = mt.mount("/tmp", Box::new(tmp_fs));
+        let _ = mt.mount("/tmp", Box::new(tmp_fs)); // WHY: init-time best-effort mount; failure is fatal and detected by later syscalls
 
         let mt_opt = &mut *core::ptr::addr_of_mut!(MOUNT_TABLE);
         *mt_opt = Some(mt);
@@ -382,13 +382,13 @@ pub unsafe fn init_ramfs(fs: crate::ramfs::RamFs) {
             Some(mt) => {
                 // Only mount root if not already mounted (init_vfs may have been called first)
                 if mt.lookup("/").is_none() {
-                    let _ = mt.mount("/", Box::new(fs));
+                    let _ = mt.mount("/", Box::new(fs)); // WHY: legacy init shim; mount failure leaves table unpopulated and later syscalls fail
                 }
             }
             None => {
                 // init_vfs was never called; create a new mount table with just ramfs.
                 let mut mt = MountTable::new();
-                let _ = mt.mount("/", Box::new(fs));
+                let _ = mt.mount("/", Box::new(fs)); // WHY: legacy init shim; mount failure leaves table unpopulated and later syscalls fail
                 *mt_opt = Some(mt);
             }
         }
@@ -872,7 +872,7 @@ pub(crate) fn sys_dup2(oldfd: u32, newfd: u32) -> u32 {
         return newfd;
     }
 
-    let _ = table.close(new_idx);
+    let _ = table.close(new_idx); // WHY: dup2 must close target fd before reuse; failure means it was already closed
 
     if table.alloc_at(new_idx, entry) {
         newfd
