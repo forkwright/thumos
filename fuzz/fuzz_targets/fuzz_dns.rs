@@ -31,12 +31,12 @@ fuzz_target!(|data: &[u8]| {
 
     // blocks_dns_payload calls extract_query_domain → is_blocked.
     // Any panic here is a bug.
-    let _ = bl.blocks_dns_payload(data);
+    let _ = bl.blocks_dns_payload(data); // WHY: fuzz target — only contract is no panic; Ok/Err are both valid outcomes
 
     // ── Phase 2: blocklist matching on extracted domain ──────────────────────
     // Also test is_blocked directly with the raw bytes interpreted as a string
     // to exercise the pattern matching paths independently of DNS parsing.
     if let Ok(s) = std::str::from_utf8(data) {
-        let _ = bl.is_blocked(s);
+        let _ = bl.is_blocked(s); // WHY: fuzz target — only contract is no panic; Ok/Err are both valid outcomes
     }
 });
