@@ -111,7 +111,7 @@ pub(crate) enum BootStep {
     Bluetooth = 20,
     /// GPS receiver initialization.
     Gps = 21,
-    /// Userspace processes spawned.
+    /// Userspace process spawn attempted.
     Userspace = 22,
     /// Boot complete.
     Complete = 23,
@@ -159,7 +159,7 @@ pub(crate) struct BootState { // kanon:ignore RUST/struct-too-many-fields -- one
     pub(crate) bluetooth_ok: bool,
     pub(crate) gps_ok: bool,
     pub(crate) processes_spawned: u8,
-    pub(crate) idle_fallbacks_spawned: u8,
+    pub(crate) userspace_entries_missing: u8,
 }
 
 impl BootState {
@@ -188,7 +188,7 @@ impl BootState {
             bluetooth_ok: false,
             gps_ok: false,
             processes_spawned: 0,
-            idle_fallbacks_spawned: 0,
+            userspace_entries_missing: 0,
         }
     }
 
@@ -335,30 +335,17 @@ fn render_initial_home_frame(fb: &mut [u16], state: &BootState) {
 // Init helpers  -  each returns Ok/Err for fault isolation
 // ---------------------------------------------------------------------------
 
-/// Dummy userspace entry for testing process spawn.
-/// In production, this is replaced by ELF-loaded binaries.
-fn userspace_idle() -> ! {
-    loop {
-        // WHY: wfe sleeps until next interrupt, preventing busy-loop.
-        // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
-        // No memory is accessed; the CPU enters a low-power wait state until an event.
-        unsafe {
-            core::arch::asm!("wfe");
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UserspaceSpawnPlan<'a> {
     Elf(&'a [u8]),
-    IdleFallback,
+    Missing,
 }
 
 #[cfg(test)]
 fn plan_userspace_spawn_from_ramfs<'a>(fs: &'a RamFs, path: &str) -> UserspaceSpawnPlan<'a> {
     match fs.find(path) {
         Some(elf_data) => UserspaceSpawnPlan::Elf(elf_data),
-        None => UserspaceSpawnPlan::IdleFallback,
+        None => UserspaceSpawnPlan::Missing,
     }
 }
 
@@ -366,7 +353,7 @@ fn plan_userspace_spawn_from_vfs(path: &str) -> UserspaceSpawnPlan<'static> {
     // SAFETY: the VFS mount table is initialized before userspace spawn.
     match unsafe { fd::ramfs_find(path) } {
         Some(elf_data) => UserspaceSpawnPlan::Elf(elf_data),
-        None => UserspaceSpawnPlan::IdleFallback,
+        None => UserspaceSpawnPlan::Missing,
     }
 }
 
@@ -988,14 +975,14 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 14: Spawn userspace processes FROM mounted root ramfs
+    // Step 14: Spawn packaged userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
     let _ = serial
         .write_str("[init] Spawning userspace processes\r\n");
     {
         // Attempt to load and spawn two processes: /init and /shell.
-        // If an entry is absent from the mounted root ramfs, fall back to
-        // spawning the built-in idle entry point.
+        // If an entry is absent from the mounted root ramfs, report the
+        // packaging gap instead of spawning a kernel-owned placeholder.
 
         // WHY: process 1  -  init daemon (PID 1, supervisor)
         match plan_userspace_spawn_from_vfs("/init") {
@@ -1018,16 +1005,10 @@ pub unsafe fn run() -> ! {
                     let _ = write!(serial, "  WARN /init ELF load failed: {:?}\r\n", e);
                 }
             },
-            UserspaceSpawnPlan::IdleFallback => {
-                // Fallback: spawn built-in idle process as init
-                if let Some(pid) = process::spawn(userspace_idle) {
-                    let _ = write!(
-                        serial,
-                        "       idle/init spawned (PID {}) [built-in]\r\n",
-                        pid
-                    );
-                    state.idle_fallbacks_spawned += 1;
-                }
+            UserspaceSpawnPlan::Missing => {
+                let _ = serial
+                    .write_str("  WARN /init missing from root ramfs; no init spawned\r\n");
+                state.userspace_entries_missing += 1;
             }
         }
 
@@ -1052,16 +1033,10 @@ pub unsafe fn run() -> ! {
                     let _ = write!(serial, "  WARN /shell ELF load failed: {:?}\r\n", e);
                 }
             },
-            UserspaceSpawnPlan::IdleFallback => {
-                // Fallback: spawn second idle process as shell
-                if let Some(pid) = process::spawn(userspace_idle) {
-                    let _ = write!(
-                        serial,
-                        "       idle/shell spawned (PID {}) [built-in]\r\n",
-                        pid
-                    );
-                    state.idle_fallbacks_spawned += 1;
-                }
+            UserspaceSpawnPlan::Missing => {
+                let _ = serial
+                    .write_str("  WARN /shell missing from root ramfs; no shell spawned\r\n");
+                state.userspace_entries_missing += 1;
             }
         }
 
@@ -1070,11 +1045,11 @@ pub unsafe fn run() -> ! {
             "       {} userspace ELF processes running\r\n",
             state.processes_spawned
         );
-        if state.idle_fallbacks_spawned > 0 {
+        if state.userspace_entries_missing > 0 {
             let _ = write!(
                 serial,
-                "       {} built-in idle fallbacks running\r\n",
-                state.idle_fallbacks_spawned
+                "       {} userspace entries missing from root ramfs\r\n",
+                state.userspace_entries_missing
             );
         }
     }
@@ -1184,16 +1159,16 @@ mod tests {
     }
 
     #[test]
-    fn userspace_spawn_plan_uses_idle_fallback_for_absent_entry() {
+    fn userspace_spawn_plan_reports_absent_entry() {
         let fs = RamFs::new();
 
         assert_eq!(
             plan_userspace_spawn_from_ramfs(&fs, "/init"),
-            UserspaceSpawnPlan::IdleFallback
+            UserspaceSpawnPlan::Missing
         );
         assert_eq!(
             plan_userspace_spawn_from_ramfs(&fs, "/shell"),
-            UserspaceSpawnPlan::IdleFallback
+            UserspaceSpawnPlan::Missing
         );
     }
 
@@ -1301,8 +1276,8 @@ mod tests {
             "initial processes_spawned must be 0"
         );
         assert_eq!(
-            state.idle_fallbacks_spawned, 0,
-            "initial idle_fallbacks_spawned must be 0"
+            state.userspace_entries_missing, 0,
+            "initial userspace_entries_missing must be 0"
         );
     }
 
@@ -1381,12 +1356,12 @@ mod tests {
     }
 
     #[test]
-    fn boot_state_idle_fallbacks_do_not_count_as_userspace() {
+    fn boot_state_missing_entries_do_not_count_as_userspace() {
         let mut state = BootState::new();
-        state.idle_fallbacks_spawned = 2;
+        state.userspace_entries_missing = 2;
         assert_eq!(
             state.processes_spawned, 0,
-            "built-in idle fallbacks must not count as ELF userspace processes"
+            "missing userspace entries must not count as ELF userspace processes"
         );
     }
 
