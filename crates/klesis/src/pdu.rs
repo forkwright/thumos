@@ -121,7 +121,7 @@ fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Address {
 /// Encode an [`Address`] INTO the PDU wire format.
 ///
 /// Returns `[length_in_digits, type_byte, bcd_bytes…]`.
-fn encode_bcd_address(addr: &Address) -> Vec<u8> {
+fn encode_bcd_address(addr: &Address) -> Result<Vec<u8>> {
     // Strip any leading '+'.
     let digits: &str = addr.number.strip_prefix('+').unwrap_or(&addr.number);
 
@@ -132,8 +132,10 @@ fn encode_bcd_address(addr: &Address) -> Vec<u8> {
     };
 
     let digit_bytes: Vec<u8> = digits.as_bytes().to_vec();
-    // INVARIANT: SMS phone numbers are at most 20 digits (E.164), always fits in u8.
-    let len_digits = u8::try_from(digit_bytes.len()).unwrap_or_default();
+    let len_digits =
+        u8::try_from(digit_bytes.len()).map_err(|_| crate::error::Error::PduEncode {
+            message: "SMS address exceeds u8 length limit".to_owned(),
+        })?;
     let bcd_byte_count = usize::from(len_digits.div_ceil(2));
 
     let mut bcd: Vec<u8> = vec![0u8; bcd_byte_count];
@@ -161,7 +163,7 @@ fn encode_bcd_address(addr: &Address) -> Vec<u8> {
     out.push(len_digits);
     out.push(type_byte);
     out.extend_from_slice(&bcd);
-    out
+    Ok(out)
 }
 
 // ── Timestamp helpers ─────────────────────────────────────────────────────────
@@ -499,7 +501,7 @@ pub(crate) fn encode_submit(msg: &SmsSubmit) -> Result<String> {
     out.push(0x00);
 
     // Destination address.
-    out.extend_from_slice(&encode_bcd_address(&msg.destination));
+    out.extend_from_slice(&encode_bcd_address(&msg.destination)?);
 
     // PID: 0x00 (normal SMS).
     out.push(0x00);
@@ -580,7 +582,11 @@ fn encode_user_data_into(ud: &UserData, out: &mut Vec<u8>) -> Result<()> {
             // UDL = number of septets. We need to count them (extension chars
             // produce 2 septets but 1 character).
             let septet_count = count_gsm7_septets(&ud.text)?;
-            out.push(u8::try_from(septet_count).unwrap_or_default());
+            out.push(
+                u8::try_from(septet_count).map_err(|_| crate::error::Error::PduEncode {
+                    message: "GSM-7 septet count exceeds u8".to_owned(),
+                })?,
+            );
             out.extend_from_slice(&packed);
         }
         DataEncoding::Ucs2 => {
@@ -588,14 +594,19 @@ fn encode_user_data_into(ud: &UserData, out: &mut Vec<u8>) -> Result<()> {
             let mut utf16_bytes: Vec<u8> = Vec::with_capacity(ud.text.len() * 2);
             for c in ud.text.chars() {
                 let code = u32::from(c);
-                // NOTE: BMP characters fit in one u16.
-                let unit = u16::try_from(code).unwrap_or_default();
+                // NOTE: BMP characters fit in one u16; surrogates are not supported.
+                let unit = u16::try_from(code).map_err(|_| crate::error::Error::PduEncode {
+                    message: format!("UCS-2 does not support non-BMP character U+{code:04X}"),
+                })?;
                 let [hi, lo] = unit.to_be_bytes();
                 utf16_bytes.push(hi);
                 utf16_bytes.push(lo);
             }
-            // INVARIANT: single-segment SMS UCS-2 is max 140 bytes, always fits in u8.
-            out.push(u8::try_from(utf16_bytes.len()).unwrap_or_default());
+            out.push(u8::try_from(utf16_bytes.len()).map_err(|_| {
+                crate::error::Error::PduEncode {
+                    message: "UCS-2 byte count exceeds u8".to_owned(),
+                }
+            })?);
             out.extend_from_slice(&utf16_bytes);
         }
     }
@@ -652,7 +663,7 @@ mod tests {
             number: "+1234567890".to_owned(),
             type_of_address: AddressType::International,
         };
-        let encoded = encode_bcd_address(&addr);
+        let encoded = encode_bcd_address(&addr).expect("encode must succeed");
         // encoded = [len_digits=10, type=0x91, bcd*5]
         assert_eq!(
             encoded.first().copied().unwrap_or_default(),
@@ -683,7 +694,7 @@ mod tests {
             number: "+12345678901".to_owned(),
             type_of_address: AddressType::International,
         };
-        let encoded = encode_bcd_address(&addr);
+        let encoded = encode_bcd_address(&addr).expect("encode must succeed");
         assert_eq!(
             encoded.first().copied().unwrap_or_default(),
             11,
