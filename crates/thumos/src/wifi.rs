@@ -954,6 +954,14 @@ impl Default for WpaHandshake {
 /// Allows test-friendly mocking of MMIO access. The real implementation
 /// (`WifiHw`) uses `#[cfg(not(test))]` MMIO; tests provide a mock.
 pub(crate) trait WifiHwOps {
+    /// Return true once the WiFi data path can exchange Ethernet frames.
+    ///
+    /// The default is closed so partially wired hardware operations cannot be
+    /// mistaken for production connectivity.
+    fn data_path_ready(&self) -> bool {
+        false
+    }
+
     /// Transmit a frame to the WiFi hardware.
     fn send_frame(&mut self, data: &[u8]) -> Result<(), WifiError>;
 
@@ -996,6 +1004,10 @@ impl WifiHw {
 }
 
 impl WifiHwOps for WifiHw {
+    fn data_path_ready(&self) -> bool {
+        false
+    }
+
     fn send_frame(&mut self, _data: &[u8]) -> Result<(), WifiError> {
         // TODO(#129): implement WMT STP frame TX via MMIO write to WLAN registers.
         // The data path goes through the WMT combo-chip transport layer

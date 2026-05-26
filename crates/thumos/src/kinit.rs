@@ -27,7 +27,9 @@ use crate::heap;
 use crate::kconfig;
 use crate::mmio;
 use crate::mmu;
-use crate::net::{self, FirewallDevice, LoopbackDevice, NetworkStack};
+use crate::net::{
+    self, FirewallDevice, LoopbackDevice, NetworkReadiness, NetworkStack, WifiDevice,
+};
 use crate::page;
 use crate::power::PowerManager;
 use crate::process;
@@ -147,6 +149,7 @@ pub(crate) struct BootState { // kanon:ignore RUST/struct-too-many-fields -- one
     pub(crate) input_ok: bool,
     pub(crate) network_ok: bool,
     pub(crate) network_loopback_smoke_ok: bool,
+    pub(crate) network_readiness: NetworkReadiness,
     pub(crate) bluetooth_ok: bool,
     pub(crate) gps_ok: bool,
     pub(crate) processes_spawned: u8,
@@ -173,6 +176,9 @@ impl BootState {
             input_ok: false,
             network_ok: false,
             network_loopback_smoke_ok: false,
+            network_readiness: NetworkReadiness::HardwareUnavailable(
+                net::NetworkDeviceKind::Wifi,
+            ),
             bluetooth_ok: false,
             gps_ok: false,
             processes_spawned: 0,
@@ -235,6 +241,17 @@ impl BootState {
             n += 1;
         }
         n
+    }
+
+    /// Record the production network readiness result from a real device.
+    pub(crate) fn record_network_readiness(&mut self, readiness: NetworkReadiness) {
+        self.network_readiness = readiness;
+        self.network_ok = readiness.production_network_ok();
+    }
+
+    /// Record that the host-only loopback smoke path completed.
+    pub(crate) fn record_loopback_smoke(&mut self, readiness: NetworkReadiness) {
+        self.network_loopback_smoke_ok = readiness.loopback_smoke_only();
     }
 }
 
@@ -715,8 +732,30 @@ pub unsafe fn run() -> ! {
         .write_str("       All radios OFF (silent mode)\r\n");
 
     // -----------------------------------------------------------------------
-    // Step 13: Network configuration (DHCP + DNS)
+    // Step 13: Network configuration (WiFi readiness + DHCP/DNS smoke)
     // -----------------------------------------------------------------------
+    let _ = serial.write_str("[init] Network WiFi readiness\r\n");
+    {
+        let wifi_device = WifiDevice::new(crate::wifi::WifiHw::new());
+        let readiness =
+            NetworkReadiness::from_device(wifi_device.kind(), wifi_device.data_path_ready());
+        state.record_network_readiness(readiness);
+
+        match readiness {
+            NetworkReadiness::ProductionReady(_) => {
+                let _ = serial.write_str("       WiFi data path ready\r\n");
+            }
+            NetworkReadiness::HardwareUnavailable(_) => {
+                let _ = serial.write_str(
+                    "  WARN WiFi data path unavailable; production network disabled\r\n",
+                );
+            }
+            NetworkReadiness::LoopbackSmokeOnly => {
+                let _ = serial.write_str("  WARN WiFi readiness returned loopback-only\r\n");
+            }
+        }
+    }
+
     let _ = serial.write_str("[init] Network loopback smoke (DHCP + DNS)\r\n");
     {
         // WHY: In production, the WiFi driver provides the Device impl.
@@ -792,7 +831,10 @@ pub unsafe fn run() -> ! {
             LAN_DNS,
             MULLVAD_DNS
         );
-        state.network_loopback_smoke_ok = true;
+        state.record_loopback_smoke(NetworkReadiness::from_device(
+            net::NetworkDeviceKind::LoopbackSmoke,
+            true,
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -1106,6 +1148,11 @@ mod tests {
             "initial network_loopback_smoke_ok must be false"
         );
         assert_eq!(
+            state.network_readiness,
+            NetworkReadiness::HardwareUnavailable(net::NetworkDeviceKind::Wifi),
+            "initial network readiness must fail closed"
+        );
+        assert_eq!(
             state.processes_spawned, 0,
             "initial processes_spawned must be 0"
         );
@@ -1156,7 +1203,10 @@ mod tests {
     #[test]
     fn boot_state_loopback_smoke_is_not_production_network_ok() {
         let mut state = BootState::new();
-        state.network_loopback_smoke_ok = true;
+        state.record_loopback_smoke(NetworkReadiness::from_device(
+            net::NetworkDeviceKind::LoopbackSmoke,
+            true,
+        ));
         assert!(
             !state.network_ok,
             "loopback smoke must not mark production network ready"
@@ -1165,6 +1215,24 @@ mod tests {
             state.ok_count(),
             0,
             "loopback smoke must not count as an OK production subsystem"
+        );
+    }
+
+    #[test]
+    fn boot_state_wifi_unavailable_is_not_production_network_ok() {
+        let mut state = BootState::new();
+        state.record_network_readiness(NetworkReadiness::from_device(
+            net::NetworkDeviceKind::Wifi,
+            false,
+        ));
+
+        assert_eq!(
+            state.network_readiness,
+            NetworkReadiness::HardwareUnavailable(net::NetworkDeviceKind::Wifi)
+        );
+        assert!(
+            !state.network_ok,
+            "WiFi-unavailable readiness must not mark production network ready"
         );
     }
 
