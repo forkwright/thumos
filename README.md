@@ -41,9 +41,9 @@ MT6739 hardware (modem on separate core, firewalled at CCCI driver level)
 
 **Phase 11: System Qualification** (canonical tracker last updated 2026-04-20; phase status updated 2026-04-12). Hardware validation is pending on an AGM M7 factory firmware flash. Phase 10 names a compiled/tested code catalog, not a claim that every named capability is boot-wired, reachable from userspace, or hardware-ready.
 
-13 crates (12 userspace workspace members plus the `thumos` kernel binary, excluded from the main workspace for bare-metal builds), 2,313 tests (1,618 kernel + 695 workspace), ~102K LOC (81K kernel, 21K userspace), 107 kernel modules. The kernel has implemented and tested core surfaces including MMU, allocator, GIC/timer, scheduler, IPC, signals, 45 syscalls, VFS with LFS/ramfs/devfs, block cache, CSPRNG, capabilities, DVFS, watchdog, telephony parsing/containment, security modes, lock screen, audit log, panic wipe, measured boot primitives, encryption primitives, and several UI/radio/messaging modules. Named higher-level capabilities such as multi-screen UI routing, calendar/alarm runtime ownership, wall-clock trust selection, Bluetooth/GPS userspace control, BT audio, Matrix/voice assistant flows, and mesh/inbox integrations remain compiled surfaces unless a boot or userspace call path is listed in the wiring audit.
+14 crates (13 userspace workspace members plus the `thumos` kernel binary, excluded from the main workspace for bare-metal builds), 2,313 tests (1,618 kernel + 695 workspace), ~102K LOC (81K kernel, 21K userspace), 107 kernel modules. The kernel has implemented and tested core surfaces including MMU, allocator, GIC/timer, scheduler, IPC, signals, 45 syscalls, VFS with LFS/ramfs/devfs, block cache, CSPRNG, capabilities, DVFS, watchdog, telephony parsing/containment, security modes, lock screen, audit log, panic wipe, measured boot primitives, encryption primitives, and several UI/radio/messaging modules. Named higher-level capabilities such as multi-screen UI routing, calendar/alarm runtime ownership, wall-clock trust selection, Bluetooth/GPS userspace control, BT audio, Matrix/voice assistant flows, and mesh/inbox integrations remain compiled surfaces unless a boot or userspace call path is listed in the wiring audit. The userspace workspace also includes `metaxu`, the thin-client protocol surface for Aletheia bridge tasks; it does not embed a live Aletheia runtime.
 
-_Phase, test split, LOC, and module totals are aligned to the internal project state record. Crate count was verified with `ls -d crates/*/ | wc -l` on 2026-05-04. A cheap source grep (`rg "#\[test\]" crates/ | wc -l`) reports 2,187 annotated test functions, so the canonical test inventory remains the source of truth without a full cargo listing._
+_Phase, test split, LOC, and module totals are aligned to the internal project state record. Crate count was verified with `ls -d crates/*/ | wc -l` on 2026-05-26. A cheap source grep (`rg "#\[test\]" crates/ | wc -l`) reports 2,208 annotated test functions, so the canonical test inventory remains the source of truth without a full cargo listing._
 
 ### Known gaps
 
@@ -55,7 +55,7 @@ MT6739 data path is absent, and keeps DHCP/DNS/socket smoke coverage on a
 firewall-backed loopback path. Real WiFi packet I/O is not boot-ready until
 WMT/STP frame TX/RX, scan, and association are implemented on hardware.
 
-- [#141](https://github.com/forkwright/thumos/issues/141) — aletheia agent runtime bridge is not yet designed or wired
+- Aletheia live runtime integration — phase-1 decision recorded in [docs/ALETHEIA-BRIDGE.md](docs/ALETHEIA-BRIDGE.md) and `metaxu`; live transport, grant verification, and UI wiring remain future work
 - [#142](https://github.com/forkwright/thumos/issues/142) — boot-time security subsystems are success-without-work placeholders
 - Userspace image packaging remains incomplete: boot reports missing `/init` or `/shell` entries instead of spawning kernel-owned idle placeholders.
 - [#145](https://github.com/forkwright/thumos/issues/145) — advertised kernel features compiled but unwired: current baseline is 8 crate-level `dead_code` expectations plus 48 item-level suppressions; see [kernel wiring audit](docs/KERNEL-WIRING-AUDIT.md)
@@ -64,7 +64,7 @@ WMT/STP frame TX/RX, scan, and association are implemented on hardware.
 ## Related
 
 - [akroasis](https://github.com/forkwright/akroasis): signals intelligence toolkit (thumos as field node)
-- [aletheia](https://github.com/forkwright/aletheia): epistemology runtime (philosophical sibling)
+- [aletheia](https://github.com/forkwright/aletheia): epistemology runtime (remote runtime for the `metaxu` thin-client bridge)
 
 ## Disclaimer
 
