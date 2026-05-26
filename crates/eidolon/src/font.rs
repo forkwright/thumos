@@ -231,9 +231,10 @@ pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg:
         for col in 0u8..8 {
             let bit = (byte >> (7 - col)) & 1;
             let color = if bit != 0 { fg } else { bg };
+            // SAFETY: glyph has exactly 16 rows, so row is 0..16, always fits in u32.
             fb.set_pixel(
                 x + u32::from(col),
-                y + u32::try_from(row).unwrap_or_default(),
+                y + row as u32,
                 color,
             );
         }
@@ -246,7 +247,9 @@ pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg:
 /// outside the framebuffer boundary are clipped.
 pub fn draw_str(fb: &mut Framebuffer, x: u32, y: u32, s: &str, fg: Rgb565, bg: Rgb565) {
     for (i, ch) in s.chars().enumerate() {
-        let cx = x.saturating_add(u32::try_from(i).unwrap_or_default() * CHAR_WIDTH);
+        // WHY: i exceeds u32 only for >4 GiB strings, impossible on this device;
+        // saturating_add handles u32::MAX gracefully.
+        let cx = x.saturating_add(u32::try_from(i).unwrap_or(u32::MAX) * CHAR_WIDTH);
         draw_char(fb, cx, y, ch, fg, bg);
     }
 }

@@ -21,9 +21,8 @@ pub struct Framebuffer {
 impl Framebuffer {
     /// Allocate a new framebuffer filled with black.
     pub(crate) fn new(width: u32, height: u32) -> Self {
-        let size = usize::try_from(width).unwrap_or_default()
-            * usize::try_from(height).unwrap_or_default()
-            * BYTES_PER_PIXEL;
+        // SAFETY: u32 always fits in usize.
+        let size = width as usize * height as usize * BYTES_PER_PIXEL;
         Self {
             buf: vec![0u8; size],
             width,
@@ -36,10 +35,8 @@ impl Framebuffer {
         if x >= self.width || y >= self.height {
             return;
         }
-        let idx = (usize::try_from(y).unwrap_or_default()
-            * usize::try_from(self.width).unwrap_or_default()
-            + usize::try_from(x).unwrap_or_default())
-            * BYTES_PER_PIXEL;
+        // SAFETY: coordinates are bounds-checked and buffer dimensions fit in usize.
+        let idx = (y as usize * self.width as usize + x as usize) * BYTES_PER_PIXEL;
         let bytes = color.0.to_le_bytes();
         if let Some(slot) = self
             .buf
@@ -57,10 +54,8 @@ impl Framebuffer {
         let x_end = x.saturating_add(w).min(self.width);
         for row in y..y_end {
             for col in x..x_end {
-                let idx = (usize::try_from(row).unwrap_or_default()
-                    * usize::try_from(self.width).unwrap_or_default()
-                    + usize::try_from(col).unwrap_or_default())
-                    * BYTES_PER_PIXEL;
+                // SAFETY: coordinates are bounds-checked and buffer dimensions fit in usize.
+                let idx = (row as usize * self.width as usize + col as usize) * BYTES_PER_PIXEL;
                 if let Some(slot) = self
                     .buf
                     .get_mut(idx..idx + BYTES_PER_PIXEL)
