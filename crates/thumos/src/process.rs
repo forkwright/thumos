@@ -291,7 +291,7 @@ pub(crate) fn fork() -> Option<Pid> {
         let parent_pid = CURRENT;
 
         // Get parent's page table
-        let parent_pt = procs[usize::try_from(parent_pid).unwrap_or_default()]
+        let parent_pt = procs[usize::from(parent_pid)]
             .as_ref()
             .map(|p| p.page_table_phys)
             .unwrap_or(0);
@@ -322,7 +322,7 @@ pub(crate) fn fork() -> Option<Pid> {
         }
 
         // Inherit parent context and memory layout (child resumes FROM same saved state)
-        let parent_ref = procs[usize::try_from(parent_pid).unwrap_or_default()].as_ref();
+        let parent_ref = procs[usize::from(parent_pid)].as_ref();
         let parent_ctx = parent_ref.map(|p| p.ctx).unwrap_or_else(Context::zero);
         let parent_break = parent_ref.map_or(DEFAULT_HEAP_BREAK, |p| p.heap_break);
         let parent_mappings = parent_ref.map_or([None; MAX_MAPPINGS], |p| p.mappings);
@@ -372,7 +372,7 @@ pub(crate) fn waitpid(child_pid: Pid) -> Option<i32> {
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let child = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref()?;
+        let child = procs[usize::from(child_pid)].as_ref()?;
         // INVARIANT: only the direct parent may retrieve the exit status.
         if child.parent != Some(CURRENT) {
             return None;
@@ -415,7 +415,7 @@ pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
     // with the faulting PID as sender; CURRENT is restored before returning.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        if let Some(ref mut proc) = procs[usize::try_from(faulting_pid).unwrap_or_default()] {
+        if let Some(ref mut proc) = procs[usize::from(faulting_pid)] {
             proc.state = State::Dead;
         }
         // WHY: ipc::send stamps msg.from = current_pid(); temporarily set CURRENT
@@ -434,7 +434,7 @@ pub(crate) fn exit_cleanup(status: i32) {
     // context switch. Page table and stack pages are reclaimed only after
     // marking the process Dead; mmu::free_addr_space validates its input.
     unsafe {
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         let procs = &mut *addr_of_mut!(PROCS);
         if let Some(ref mut proc) = procs[cur] {
             proc.exit_status = status;
@@ -516,7 +516,7 @@ pub(crate) fn schedule() -> Pid {
     // a single-core ARMv7. PROCS is accessed exclusively via addr_of_mut!
     // to avoid intermediate references to the static mut.
     unsafe {
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         let procs = &mut *addr_of_mut!(PROCS);
 
         // First pass: wake any sleeping processes whose timer has elapsed.
@@ -557,8 +557,8 @@ pub unsafe fn switch_to(next_pid: Pid) {
     // is valid for the target process. Called from the timer IRQ handler with
     // interrupts disabled; no concurrent access to PROCS or CURRENT.
     unsafe {
-        let cur_pid = usize::try_from(CURRENT).unwrap_or_default();
-        let next = usize::try_from(next_pid).unwrap_or_default();
+        let cur_pid = usize::from(CURRENT);
+        let next = usize::from(next_pid);
 
         if cur_pid == next {
             return;
@@ -658,7 +658,7 @@ pub(crate) fn current_page_table() -> usize {
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         procs[cur].as_ref().map_or(0, |p| p.page_table_phys)
     }
 }
@@ -669,7 +669,7 @@ pub(crate) fn current_heap_break() -> usize {
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         procs[cur].as_ref().map_or(DEFAULT_HEAP_BREAK, |p| p.heap_break)
     }
 }
@@ -681,7 +681,7 @@ pub(crate) fn set_heap_break(new_break: usize) {
     // reference to the static mut; called from syscall context (single-core).
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         if let Some(ref mut proc) = procs[cur] {
             proc.heap_break = new_break;
         }
@@ -695,7 +695,7 @@ pub(crate) fn add_mapping(mapping: VmMapping) -> Option<usize> {
     // context switch. Mutation via addr_of_mut!; called from syscall context.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         let proc = procs[cur].as_mut()?;
         let slot = proc.mappings.iter().position(|m| m.is_none())?;
         proc.mappings[slot] = Some(mapping);
@@ -710,7 +710,7 @@ pub(crate) fn remove_mapping(start_addr: usize) -> Option<VmMapping> {
     // context switch. Mutation via addr_of_mut!; called from syscall context.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         let proc = procs[cur].as_mut()?;
         for slot in proc.mappings.iter_mut() {
             if let Some(m) = slot {
@@ -730,7 +730,7 @@ pub(crate) fn find_mapping(start_addr: usize) -> Option<VmMapping> {
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         let proc = procs[cur].as_ref()?;
         for slot in &proc.mappings {
             if let Some(m) = slot {
@@ -750,7 +750,7 @@ pub(crate) fn update_mapping_prot(start_addr: usize, new_prot: u32) -> bool {
     // context switch. Mutation via addr_of_mut!; called from syscall context.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         let Some(proc) = procs[cur].as_mut() else { return false };
         for slot in proc.mappings.iter_mut() {
             if let Some(m) = slot {
@@ -771,7 +771,7 @@ pub(crate) fn current_mappings() -> [Option<VmMapping>; MAX_MAPPINGS] {
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         procs[cur]
             .as_ref()
             .map_or([None; MAX_MAPPINGS], |p| p.mappings)
@@ -785,7 +785,7 @@ pub(crate) fn current_uid() -> u32 {
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         procs[cur].as_ref().map_or(0, |p| p.uid)
     }
 }
@@ -800,7 +800,7 @@ pub(crate) fn current_capabilities() -> u32 {
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         procs[cur]
             .as_ref()
             .map_or(crate::capability::Capabilities::FORK_DEFAULT, |p| p.capabilities)
@@ -818,7 +818,7 @@ pub(crate) fn set_wake_tick(wake_tick: u64) {
     // the static mut PROCS.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         if let Some(ref mut proc) = procs[cur] {
             proc.wake_tick = wake_tick;
             proc.state = State::Sleeping;
@@ -834,7 +834,7 @@ pub(crate) fn clear_wake_tick() {
     // SAFETY: same as set_wake_tick — called from syscall context only.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         if let Some(ref mut proc) = procs[cur] {
             proc.wake_tick = 0;
             proc.state = State::Running;
@@ -854,7 +854,7 @@ pub(crate) fn clear_wake_tick() {
 pub unsafe fn set_signal_action(sig: Signal, action: SignalAction) {
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         if let Some(ref mut proc) = procs[cur] {
             proc.signal_state.set_action(sig, action);
         }
@@ -869,7 +869,7 @@ pub unsafe fn set_signal_action(sig: Signal, action: SignalAction) {
 pub unsafe fn get_signal_action(sig: Signal) -> SignalAction {
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         procs[cur]
             .as_ref()
             .map_or(SignalAction::Default, |p| p.signal_state.action(sig))
@@ -935,7 +935,7 @@ pub unsafe fn reset_signal_state() {
     // Called from syscall context; no concurrent mutation of PROCS.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         if let Some(ref mut proc) = procs[cur] {
             proc.signal_state = SignalState::new();
         }
@@ -961,14 +961,17 @@ pub unsafe fn exec_replace_context(entry_point: usize, stack_top: usize,
     // Called from execve syscall with interrupts disabled (SVC mode, ARMv7).
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         if let Some(ref mut proc) = procs[cur] {
             // WHY cpsr 0x10 (User mode, IRQs enabled): execve transfers control
             // to an unprivileged userspace binary. User mode (0x10) is the correct
             // CPSR for the new image. Contrast with spawn() which uses 0x1F (System
             // mode) for kernel-internal threads.
-            proc.ctx.lr = u32::try_from(entry_point).unwrap_or_default();
-            proc.ctx.sp = u32::try_from(stack_top).unwrap_or_default();
+            // SAFETY: ARMv7 target has 32-bit usize; try_from cannot fail
+            // in production. On 64-bit test hosts the addresses are
+            // test-controlled and verified to fit via the test setup.
+            proc.ctx.lr = u32::try_from(entry_point).unwrap_or(0u32);
+            proc.ctx.sp = u32::try_from(stack_top).unwrap_or(0u32);
             proc.ctx.cpsr = 0x10; // User mode, IRQs enabled
             // Free the old stack (replaced by exec).
             let old_base = proc.stack_base;
@@ -997,7 +1000,7 @@ pub unsafe fn exec_replace_context(entry_point: usize, stack_top: usize,
 pub unsafe fn clear_any_pending() {
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         if let Some(ref mut proc) = procs[cur] {
             if let Some(sig) = proc.signal_state.next_pending() {
                 proc.signal_state.clear_pending(sig);
@@ -1014,7 +1017,7 @@ pub(crate) fn check_pending_signal() -> Option<(Signal, u32)> {
     // SAFETY: read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let cur = usize::try_from(CURRENT).unwrap_or_default();
+        let cur = usize::from(CURRENT);
         let proc = procs[cur].as_ref()?;
         let sig = proc.signal_state.next_pending()?;
         if let SignalAction::Handler(addr) = proc.signal_state.action(sig) {
@@ -1180,7 +1183,7 @@ mod tests {
 
             let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
-            assert!(procs[usize::try_from(child_pid).unwrap_or_default()].is_some(), "child slot must be populated");
+            assert!(procs[usize::from(child_pid)].is_some(), "child slot must be populated");
         }
     }
 
@@ -1213,7 +1216,7 @@ mod tests {
             let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
             let parent_pt = procs.get(0).copied().unwrap_or_default().as_ref().unwrap().page_table_phys;
-            let child_pt = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap().page_table_phys;
+            let child_pt = procs[usize::from(child_pid)].as_ref().unwrap().page_table_phys;
             assert_ne!(parent_pt, child_pt, "parent and child must have distinct page tables");
         }
     }
@@ -1246,7 +1249,7 @@ mod tests {
 
             let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
-            let child_parent = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap().parent;
+            let child_parent = procs[usize::from(child_pid)].as_ref().unwrap().parent;
             assert_eq!(child_parent, Some(0u8), "child.parent must be parent PID");
         }
     }
@@ -1282,7 +1285,7 @@ mod tests {
             let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
             let parent_pt = procs.get(0).copied().unwrap_or_default().as_ref().unwrap().page_table_phys;
-            let child_pt = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap().page_table_phys;
+            let child_pt = procs[usize::from(child_pid)].as_ref().unwrap().page_table_phys;
 
             // Write INTO entry 100 in the child's table
             (child_pt as *mut u32).add(100).write(0xCAFE_BABE);
@@ -1355,7 +1358,7 @@ mod tests {
 
             // Manually mark child as dead with exit status 42
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
-            if let Some(ref mut child) = procs[usize::try_from(child_pid).unwrap_or_default()] {
+            if let Some(ref mut child) = procs[usize::from(child_pid)] {
                 child.state = State::Dead;
                 child.exit_status = 42;
             }
@@ -1399,7 +1402,7 @@ mod tests {
             exit_cleanup(0);
 
             let procs = &*core::ptr::addr_of!(PROCS);
-            let child = procs[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap();
+            let child = procs[usize::from(child_pid)].as_ref().unwrap();
             assert_eq!(child.state, State::Dead, "exit_cleanup must mark state Dead");
 
             let free_after = page::free_count();
@@ -1544,7 +1547,7 @@ mod tests {
 
             let child_pid = fork().unwrap_or_default();
             let procs_ref = &*core::ptr::addr_of!(PROCS);
-            let child_pt = procs_ref[usize::try_from(child_pid).unwrap_or_default()].as_ref().unwrap().page_table_phys;
+            let child_pt = procs_ref[usize::from(child_pid)].as_ref().unwrap().page_table_phys;
 
             // Exit the child  -  should free its page table slot
             CURRENT = child_pid;

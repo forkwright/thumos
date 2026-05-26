@@ -527,7 +527,7 @@ mod tests {
     /// Test HMAC key (non-zero, deterministic).
     const TEST_KEY: [u8; KEY_SIZE] = [0xAA; KEY_SIZE];
 
-    /// Helper: log a single event and return the timestamp used.
+    /// Append a single audit event for use in test assertions.
     fn log_one(
         log: &mut AuditLog,
         event_type: AuditEventType,

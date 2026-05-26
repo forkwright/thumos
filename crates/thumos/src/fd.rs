@@ -89,7 +89,7 @@ pub struct StatBuf {
 /// (see `pipe.rs` for the encoding). `mount_idx` and `inode_id` are
 /// unused for pipes.
 ///
-/// TODO(#84): close-on-exec flag (O_CLOEXEC) -- not tracked in current FileDescriptor
+/// TODO(#84)[deliberate-prudent]: close-on-exec flag (O_CLOEXEC) -- not tracked in current FileDescriptor
 #[derive(Clone, Copy)]
 pub struct FileDescriptor {
     /// Index into the global MountTable identifying the filesystem.
@@ -235,8 +235,8 @@ impl FdTable {
 /// for the initial bring-up a single global table is sufficient since only
 /// one process uses filesystem syscalls at a time in the cooperative scheduler.
 ///
-/// TODO(#32): migrate to per-process fd tables when Process struct supports it.
-/// TODO(#84): per-process fd tables -- current global table doesn't support concurrent processes
+/// TODO(#32)[deliberate-prudent]: migrate to per-process fd tables when Process struct supports it.
+/// TODO(#84)[deliberate-prudent]: per-process fd tables -- current global table doesn't support concurrent processes
 pub(crate) static mut FD_TABLE: FdTable = FdTable::new();
 
 /// Global mount table for VFS dispatch.
@@ -1313,7 +1313,7 @@ mod tests {
 
     // -- VFS-backed syscall tests --
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1330,7 +1330,7 @@ mod tests {
         assert_eq!(fd, 0, "first open should return fd 0");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1347,7 +1347,7 @@ mod tests {
         assert_eq!(result, ENOENT);
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1369,7 +1369,7 @@ mod tests {
         assert_eq!(&buf[..14], b"Hello, thumos!");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1392,7 +1392,7 @@ mod tests {
         assert_eq!(bytes_read, 0, "read at EOF must return 0");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1413,7 +1413,7 @@ mod tests {
         assert_eq!(result, EBADF, "read after close must return EBADF");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1438,7 +1438,7 @@ mod tests {
         assert_eq!(&buf[..7], b"thumos!");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1461,7 +1461,7 @@ mod tests {
         assert_eq!(bytes_read, 0, "read at EOF (via SEEK_END) must return 0");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1491,7 +1491,7 @@ mod tests {
         assert_eq!(&buf2, b"Hello");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1519,7 +1519,7 @@ mod tests {
         assert_eq!(&buf, b"Hello");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1546,7 +1546,7 @@ mod tests {
         assert_eq!(stat.file_type, S_IFREG);
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1571,7 +1571,7 @@ mod tests {
         assert_eq!(result, ENOENT);
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1611,7 +1611,7 @@ mod tests {
         assert_eq!(result, EBADF);
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1632,7 +1632,7 @@ mod tests {
 
     // -- New VFS-specific tests --
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1665,7 +1665,7 @@ mod tests {
         assert_eq!(&buf[..12], b"written data");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1682,7 +1682,7 @@ mod tests {
         assert!(fd < MAX_FDS as u32, "opening /dev/null should succeed");
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1712,7 +1712,7 @@ mod tests {
         assert_eq!(stat.file_type, S_IFDIR);
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1740,7 +1740,7 @@ mod tests {
         assert_eq!(fd2, ENOENT);
     }
 
-    // TODO(#129): gated on 32-bit pointer width — this test uses
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with

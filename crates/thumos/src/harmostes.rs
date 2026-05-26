@@ -232,7 +232,7 @@ impl Room {
     /// Add a message to this room's cache, evicting the oldest if at capacity.
     fn add_message(&mut self, msg: MatrixMessage) {
         if self.messages.len() >= MAX_MESSAGES_PER_ROOM {
-            let _ = self.messages.remove(0);
+            let _ = self.messages.remove(0); // WHY: Vec::remove returns the evicted element; cache eviction discards oldest intentionally
         }
         self.messages.push(msg);
         self.unread_count = self.unread_count.saturating_add(1);

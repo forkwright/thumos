@@ -6,8 +6,10 @@
 use crate::error::{self, Error};
 use crate::position::{Fix, FixQuality, Position};
 
-/// Validate NMEA checksum. The checksum is the XOR of all bytes between '$' and '*'.
-pub(crate) fn validate_checksum(sentence: &str) -> Result<(), Error> {
+/// Validate NMEA checksum and return the sentence body (between '$' and '*').
+///
+/// Callers can use the returned `&str` to avoid re-parsing the sentence boundary.
+pub(crate) fn validate_checksum(sentence: &str) -> Result<&str, Error> {
     let inner = sentence
         .strip_prefix('$')
         .and_then(|s| s.split('*').next())
@@ -30,7 +32,7 @@ pub(crate) fn validate_checksum(sentence: &str) -> Result<(), Error> {
     let actual = inner.bytes().fold(0u8, |acc, b| acc ^ b);
 
     if actual == expected {
-        Ok(())
+        Ok(inner)
     } else {
         Err(Error::ChecksumMismatch { expected, actual })
     }
