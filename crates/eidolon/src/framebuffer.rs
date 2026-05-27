@@ -54,8 +54,7 @@ impl Framebuffer {
         let x_end = x.saturating_add(w).min(self.width);
         for row in y..y_end {
             for col in x..x_end {
-                // SAFETY: coordinates are bounds-checked and buffer dimensions fit in usize.
-                let idx = (row as usize * self.width as usize + col as usize) * BYTES_PER_PIXEL;
+                let idx = (row as usize * self.width as usize + col as usize) * BYTES_PER_PIXEL; // SAFETY: u32->usize widening, always valid
                 if let Some(slot) = self
                     .buf
                     .get_mut(idx..idx + BYTES_PER_PIXEL)

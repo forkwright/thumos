@@ -58,8 +58,7 @@ impl Default for Config {
 impl Config {
     /// Iteration count clamped to the accepted domain range.
     ///
-    /// Out-of-range values log at `warn` and fall back to
-    /// [`DEFAULT_PBKDF2_ITERATIONS`] per the standard.
+    /// Out-of-range values fall back to [`DEFAULT_PBKDF2_ITERATIONS`] per the standard.
     #[must_use]
     pub(crate) fn pbkdf2_iterations(self) -> u32 {
         let v = self.pbkdf2_iterations;
