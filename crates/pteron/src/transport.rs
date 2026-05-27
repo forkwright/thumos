@@ -301,9 +301,10 @@ pub(crate) fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usiz
         });
     }
 
-    // INVARIANT: payload.len() <= STP_MAX_PAYLOAD (0xFFF), checked above; fits in u16.
-    let plen = u16::try_from(payload.len())
-        .expect("invariant: payload.len() <= STP_MAX_PAYLOAD (0xFFF), checked above"); // kanon:ignore RUST/expect -- infallible: checked against STP_MAX_PAYLOAD above
+    let plen = u16::try_from(payload.len()).map_err(|_| Error::PayloadTooLarge {
+        length: payload.len(),
+        limit: STP_MAX_PAYLOAD,
+    })?;
     let [plen_lo, plen_hi_raw] = plen.to_le_bytes();
     let seq4 = seq & 0x0F;
 

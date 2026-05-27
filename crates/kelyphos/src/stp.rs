@@ -106,8 +106,7 @@ impl StpFrame {
         frame.header.frame_type = FrameType::Data;
         frame.header.seq = seq & 0x07;
         let len = payload.len().min(MAX_PAYLOAD);
-        frame.header.length = u16::try_from(len)
-            .expect("invariant: len <= MAX_PAYLOAD (4095) fits in u16"); // kanon:ignore RUST/expect -- infallible: len <= MAX_PAYLOAD (4095) fits in u16
+        frame.header.length = len as u16;
         frame.payload[..len].copy_from_slice(&payload[..len]);
         frame.payload_len = len;
         frame.header.checksum = compute_header_checksum(frame.header);
