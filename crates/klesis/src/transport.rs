@@ -176,7 +176,11 @@ impl<T: ModemTransport> AtSession<T> {
             }
             let n = self.transport.recv(&mut byte)?;
             ensure!(n > 0, NotReadySnafu);
-            self.rx_buf.push(byte.first().copied().unwrap_or_default());
+            // WHY: recv fills exactly byte[0] when n > 0; ensure!(n > 0) above
+            // guarantees a valid byte exists.
+            if let Some(b) = byte.first().copied() {
+                self.rx_buf.push(b);
+            }
         }
     }
 }
@@ -217,7 +221,9 @@ mod tests {
         fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
             let n = buf.len().min(self.inbound.len());
             for b in buf.iter_mut().take(n) {
-                *b = self.inbound.pop_front().unwrap_or_default();
+                if let Some(byte) = self.inbound.pop_front() {
+                    *b = byte;
+                }
             }
             Ok(n)
         }

@@ -294,13 +294,14 @@ impl RouteManager {
         }
     }
 
-    /// Validate that a requested route is available.
+    /// Validate that a requested route is available and return it.
     ///
-    /// Returns `Ok(())` if the route is connected, or
-    /// `Err(AudioError::RouteUnavailable)` otherwise.
-    pub(crate) fn validate_route(&self, route: AudioRoute) -> Result<(), AudioError> {
+    /// Returns `Ok(route)` if the route is connected, allowing callers to
+    /// use the validated route without re-stating it.
+    /// Returns `Err(AudioError::RouteUnavailable)` when the route is not connected.
+    pub(crate) fn validate_route(&self, route: AudioRoute) -> Result<AudioRoute, AudioError> {
         if self.is_output_available(route) {
-            Ok(())
+            Ok(route)
         } else {
             Err(AudioError::RouteUnavailable)
         }

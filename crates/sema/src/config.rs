@@ -134,7 +134,7 @@ impl Default for Config {
 impl Config {
     /// Bounded unusually-strong-signal threshold.
     ///
-    /// Logs at `warn` and falls back to default for out-of-range values.
+    /// Falls back to the default for out-of-range values.
     #[must_use]
     pub(crate) fn unusually_strong_signal_dbm(&self) -> i32 {
         let v = self.unusually_strong_signal_dbm;

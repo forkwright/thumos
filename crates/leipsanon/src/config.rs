@@ -50,8 +50,7 @@ impl Default for Config {
 impl Config {
     /// Chunk size clamped to the accepted domain range.
     ///
-    /// Logs at `warn` and falls back to [`DEFAULT_CHUNK_SIZE`] for
-    /// out-of-range values.
+    /// Falls back to [`DEFAULT_CHUNK_SIZE`] for out-of-range values.
     #[must_use]
     pub(crate) fn chunk_size(&self) -> usize {
         let v = self.chunk_size;

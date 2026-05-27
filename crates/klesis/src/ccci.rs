@@ -201,8 +201,9 @@ impl CcciHeader {
     /// Encode to the 16-byte little-endian wire format.
     #[must_use]
     pub(crate) const fn to_bytes(self) -> [u8; HEADER_SIZE] {
-        let [d00, d01, d02, d03] = self.data[0].to_le_bytes();
-        let [d10, d11, d12, d13] = self.data[1].to_le_bytes();
+        let [data0, data1] = self.data;
+        let [d00, d01, d02, d03] = data0.to_le_bytes();
+        let [d10, d11, d12, d13] = data1.to_le_bytes();
         let [c0, c1, c2, c3] = self.channel.to_le_bytes();
         let [r0, r1, r2, r3] = self.reserved.to_le_bytes();
         [
@@ -226,30 +227,12 @@ impl CcciHeader {
                 ),
             }
         );
-        let data0 = u32::from_le_bytes([
-            buf.first().copied().unwrap_or_default(),
-            buf.get(1).copied().unwrap_or_default(),
-            buf.get(2).copied().unwrap_or_default(),
-            buf.get(3).copied().unwrap_or_default(),
-        ]);
-        let data1 = u32::from_le_bytes([
-            buf.get(4).copied().unwrap_or_default(),
-            buf.get(5).copied().unwrap_or_default(),
-            buf.get(6).copied().unwrap_or_default(),
-            buf.get(7).copied().unwrap_or_default(),
-        ]);
-        let channel = u32::from_le_bytes([
-            buf.get(8).copied().unwrap_or_default(),
-            buf.get(9).copied().unwrap_or_default(),
-            buf.get(10).copied().unwrap_or_default(),
-            buf.get(11).copied().unwrap_or_default(),
-        ]);
-        let reserved = u32::from_le_bytes([
-            buf.get(12).copied().unwrap_or_default(),
-            buf.get(13).copied().unwrap_or_default(),
-            buf.get(14).copied().unwrap_or_default(),
-            buf.get(15).copied().unwrap_or_default(),
-        ]);
+        // WHY: ensure! above guarantees buf.len() >= HEADER_SIZE (16), so these
+        // fixed wire-format byte reads are in bounds.
+        let data0 = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let data1 = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let channel = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        let reserved = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
         Ok(Self {
             data: [data0, data1],
             channel,
@@ -260,7 +243,7 @@ impl CcciHeader {
     /// Returns `true` when `data[0]` holds the internal-control magic value.
     #[must_use]
     pub(crate) const fn is_internal(&self) -> bool {
-        let [d0, ..] = self.data;
+        let [d0, _] = self.data;
         d0 == CCCI_MAGIC_NUM
     }
 }

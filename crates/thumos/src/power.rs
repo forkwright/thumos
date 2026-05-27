@@ -244,7 +244,7 @@ pub(crate) fn evaluate_core_parking(runnable_count: usize) {
     }
 }
 
-/// Record an input event, resetting the backlight timeout.
+/// Reset the backlight timeout on keypad or touch input.
 ///
 /// Call this from the keypad / touch interrupt handler whenever the user
 /// produces input.

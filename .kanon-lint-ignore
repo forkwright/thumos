@@ -65,6 +65,7 @@ RUST/string-slice:crates/klesis/src/pdu.rs
 RUST/string-slice:crates/krypta/src/ratchet.rs
 RUST/string-slice:crates/krypta/src/x3dh.rs
 RUST/string-slice:crates/leipsanon/src/engine.rs
+RUST/indexing-slicing:crates/leipsanon/src/engine.rs
 RUST/string-slice:crates/pteron/src/transport.rs
 RUST/string-slice:crates/stegnos/src/cipher.rs
 RUST/string-slice:crates/topos/src/nmea.rs
@@ -147,3 +148,8 @@ ARCHITECTURE/thick-binary:crates/thumos/src/main.rs
 # the test mock (also in kelyphos). Revisit once thumos gains path deps
 # (#126) — until then the colocation is deliberate.
 ARCHITECTURE/trait-impl-colocation:crates/kelyphos/src/wmt.rs
+
+# WHY: crates/thumos is excluded from [workspace] (separate license + bare-metal target).
+# Excluded crates cannot use version.workspace = true or edition.workspace = true.
+# These fields must be explicitly set in the kernel Cargo.toml.
+MANIFEST/package-workspace-inheritance:crates/thumos/Cargo.toml

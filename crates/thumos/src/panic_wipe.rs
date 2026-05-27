@@ -245,7 +245,7 @@ pub(crate) fn build_panic_plan() -> WipePlan {
 /// Execute the panic wipe sequence.
 ///
 /// 1. Zeroize keys in memory via `key_manager` (immediate, priority 1).
-/// 2. Emit distress mesh beacon (placeholder event).
+/// 2. Build and queue a distress mesh beacon (placeholder).
 /// 3. Execute remaining wipe targets (filesystem overwrites — these are
 ///    defense-in-depth since key zeroization already makes data
 ///    unrecoverable).
@@ -364,7 +364,7 @@ pub(crate) fn scrub_user_pages() -> bool {
     scrubbed > 0
 }
 
-/// Emit a distress mesh beacon event.
+/// Build the distress mesh beacon payload.
 ///
 /// This is a placeholder: it constructs the beacon payload for the mesh
 /// subsystem. Actual `LoRa` transmission will be wired in a future wave
