@@ -17,7 +17,6 @@ Structured LLM corpus:
 - [_llm/current_state.toml](_llm/current_state.toml): phase, blockers, and open threads
 - [_llm/decisions.toml](_llm/decisions.toml): accepted OS architecture decisions
 - [_llm/glossary.toml](_llm/glossary.toml): thumos vocabulary
-- [_llm/hardware.toml](_llm/hardware.toml): MT6739 hardware and register reference
 
 ## Agent Entry Points
 

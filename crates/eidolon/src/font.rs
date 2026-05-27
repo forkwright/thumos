@@ -232,11 +232,7 @@ pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg:
             let bit = (byte >> (7 - col)) & 1;
             let color = if bit != 0 { fg } else { bg };
             // SAFETY: glyph has exactly 16 rows, so row is 0..16, always fits in u32.
-            fb.set_pixel(
-                x + u32::from(col),
-                y + row as u32,
-                color,
-            );
+            fb.set_pixel(x + u32::from(col), y + row as u32, color);
         }
     }
 }
