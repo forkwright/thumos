@@ -43,6 +43,7 @@ use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
 
+use crate::matrix_ids::{MatrixDeviceId, MatrixUserId};
 use crate::security;
 
 // ---------------------------------------------------------------------------
@@ -147,9 +148,9 @@ impl fmt::Display for ProvisionState {
 #[non_exhaustive]
 pub struct ProvisionBundle {
     /// Matrix user ID (e.g., `@cody:matrix.example.com`).
-    pub user_id: String,
+    pub user_id: MatrixUserId,
     /// Device ID assigned during registration.
-    pub device_id: String,
+    pub device_id: MatrixDeviceId,
     /// Access token for Bearer auth.
     pub access_token: String,
     /// Homeserver hostname (e.g., `matrix.example.com`).
@@ -407,8 +408,8 @@ mod tests {
     /// Create a test bundle with deterministic data.
     fn provision_bundle_with_cross_signing() -> ProvisionBundle {
         ProvisionBundle {
-            user_id: String::from("@cody:matrix.example.com"),
-            device_id: String::from("THMSTESTDEV01"),
+            user_id: String::from("@cody:matrix.example.com").into(),
+            device_id: String::from("THMSTESTDEV01").into(),
             access_token: String::from("syt_test_provision_token_1234"),
             homeserver: String::from("matrix.example.com"),
             ed25519_key: [0xAA; 32],
@@ -420,8 +421,8 @@ mod tests {
     /// Create a test bundle without cross-signing key.
     fn provision_bundle_without_cross_signing() -> ProvisionBundle {
         ProvisionBundle {
-            user_id: String::from("@test:example.org"),
-            device_id: String::from("DEVNOCSIGN"),
+            user_id: String::from("@test:example.org").into(),
+            device_id: String::from("DEVNOCSIGN").into(),
             access_token: String::from("syt_no_cross_sign"),
             homeserver: String::from("example.org"),
             ed25519_key: [0x11; 32],

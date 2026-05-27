@@ -43,6 +43,7 @@ use aes::cipher::generic_array::GenericArray;
 
 use crate::csprng;
 use crate::json_mini::{JsonParser, JsonWriter, JsonValue};
+use crate::matrix_ids::MatrixRoomId;
 use crate::security::{self, KEY_SIZE, SHA256_DIGEST_LEN};
 
 // ---------------------------------------------------------------------------
@@ -207,7 +208,7 @@ pub struct MegolmSession {
     /// Number of messages encrypted with this session.
     pub message_index: u32,
     /// The Matrix room ID this session is bound to.
-    pub room_id: String,
+    pub room_id: MatrixRoomId,
 }
 
 impl fmt::Display for MegolmSession {
@@ -462,7 +463,7 @@ impl MatrixCrypto {
             session_id,
             session_key,
             message_index: 0,
-            room_id: String::from(room_id),
+            room_id: String::from(room_id).into(),
         };
 
         // Replace existing session for this room, or add new one.
@@ -1156,7 +1157,7 @@ mod tests {
                 session_id: [0u8; KEY_SIZE],
                 session_key: [0u8; KEY_SIZE],
                 message_index: 0,
-                room_id: String::new(),
+                room_id: String::new().into(),
             });
 
         // Get mutable reference to the outbound session.
@@ -1407,7 +1408,7 @@ mod tests {
             session_id: [0x42; KEY_SIZE],
             session_key: [0xFF; KEY_SIZE],
             message_index: 0,
-            room_id: String::from("!room:example.com"),
+            room_id: String::from("!room:example.com").into(),
         };
 
         let result = crypto.add_inbound_megolm(session);
