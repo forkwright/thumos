@@ -581,9 +581,11 @@ mod tests {
     fn draw_with_filter_does_not_panic() {
         let mut screen = SearchScreen::new();
         screen.append_t9_key(Key::Num6); // 'm'
+        assert!(screen.match_count() > 0, "filter must keep matching entries");
         let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
-        // Should still render without panic.
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "filtered search screen must render visible content");
     }
 
     #[test]
