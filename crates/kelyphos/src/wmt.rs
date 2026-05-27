@@ -634,9 +634,8 @@ impl RegisterIo for MmioRegisterIo {
     fn udelay(&mut self, micros: u32) {
         // WHY: busy-loop delay in kernel context WHERE sleep is unavailable.
         // Calibration assumes ~1000 cycles/µs at 1 GHz; acceptable for 1 µs steps.
-        let cycles = usize::try_from(micros)
-            .expect("invariant: u32 fits in usize on 32-bit target") // kanon:ignore RUST/expect -- infallible: u32 fits in usize on 32-bit target
-            * 1000;
+        let cycles =
+            usize::try_from(micros).map_or(usize::MAX, |micros| micros.saturating_mul(1000));
         for _ in 0..cycles {
             core::hint::spin_loop();
         }

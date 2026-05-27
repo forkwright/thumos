@@ -37,7 +37,7 @@ cmd = "cargo check --workspace --all-targets --jobs 8"
 timeout_secs = 900
 
 [stages."kernel build"]
-cmd = "sh -c 'rustup target add armv7a-none-eabi && RUSTFLAGS=\"-C link-arg=-T$(pwd)/crates/thumos/link.ld\" cargo build --release --target armv7a-none-eabi --manifest-path crates/thumos/Cargo.toml'"
+cmd = "sh -c 'rustup target add armv7a-none-eabi && RUSTFLAGS=\"-C link-arg=-T$(pwd)/crates/thumos/link.ld\" cargo build --release --target armv7a-none-eabi --manifest-path crates/thumos/Cargo.toml --jobs 8'"
 timeout_secs = 900
 
 [stages."cargo clippy"]
