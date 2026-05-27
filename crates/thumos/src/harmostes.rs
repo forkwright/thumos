@@ -45,6 +45,7 @@ use alloc::vec::Vec;
 
 use crate::http_client::{self, HttpRequest, HttpResponse, HttpError};
 use crate::json_mini::{JsonParser, JsonWriter, JsonValue, JsonError};
+use crate::matrix_ids::{MatrixEventId, MatrixRoomId};
 use crate::matrix_crypto::{self, MatrixCrypto, MegolmSession, CryptoError};
 use crate::security_mode::SecurityMode;
 
@@ -172,9 +173,9 @@ impl fmt::Display for SyncResult {
 #[non_exhaustive]
 pub struct IncomingMessage {
     /// The room this message belongs to.
-    pub room_id: String,
+    pub room_id: MatrixRoomId,
     /// The Matrix event ID.
-    pub event_id: String,
+    pub event_id: MatrixEventId,
     /// The sender's Matrix user ID.
     pub sender: String,
     /// The message body (plaintext).
@@ -205,7 +206,7 @@ impl fmt::Display for IncomingMessage {
 #[non_exhaustive]
 pub struct Room {
     /// The Matrix room ID (e.g., `!abc123:matrix.example.com`).
-    pub room_id: String,
+    pub room_id: MatrixRoomId,
     /// Human-readable display name for the room.
     pub display_name: String,
     /// Whether this room is a direct message (1:1).
@@ -221,7 +222,7 @@ impl Room {
     #[must_use]
     fn new(room_id: String, display_name: String, is_dm: bool) -> Self {
         Self {
-            room_id,
+            room_id: room_id.into(),
             display_name,
             is_dm,
             messages: Vec::new(),
@@ -262,7 +263,7 @@ impl fmt::Display for Room {
 #[non_exhaustive]
 pub struct MatrixMessage {
     /// The Matrix event ID (e.g., `$event123`).
-    pub event_id: String,
+    pub event_id: MatrixEventId,
     /// The sender's Matrix user ID (e.g., `@user:server`).
     pub sender: String,
     /// The message body (plaintext).
@@ -295,7 +296,7 @@ impl fmt::Display for MatrixMessage {
 #[non_exhaustive]
 pub struct PendingMessage {
     /// Target room ID.
-    pub room_id: String,
+    pub room_id: MatrixRoomId,
     /// Message body to send.
     pub body: String,
     /// Client-generated transaction ID for idempotent retries.
@@ -569,7 +570,7 @@ impl MatrixClient {
                 let msg = parse_timeline_event(event, room_id, &self.crypto);
                 if let Some(msg) = msg {
                     let incoming = IncomingMessage {
-                        room_id: String::from(room_id.as_str()),
+                        room_id: String::from(room_id.as_str()).into(),
                         event_id: msg.event_id.clone(),
                         sender: msg.sender.clone(),
                         body: msg.body.clone(),
@@ -752,7 +753,7 @@ impl MatrixClient {
         let (req, txn_id) = self.build_send_request(room_id, body)?;
 
         self.outbox.push(PendingMessage {
-            room_id: String::from(room_id),
+            room_id: String::from(room_id).into(),
             body: String::from(body),
             txn_id,
         });
@@ -777,7 +778,7 @@ impl MatrixClient {
         self.next_txn_id = self.next_txn_id.saturating_add(1);
 
         self.outbox.push(PendingMessage {
-            room_id: String::from(room_id),
+            room_id: String::from(room_id).into(),
             body: String::from(body),
             txn_id,
         });
@@ -1054,7 +1055,7 @@ fn parse_timeline_event(
     };
 
     Some(MatrixMessage {
-        event_id: String::from(event_id),
+        event_id: String::from(event_id).into(),
         sender: String::from(sender),
         body,
         timestamp: if timestamp >= 0 {
@@ -1700,7 +1701,7 @@ mod tests {
                 event_id: {
                     let mut id = String::from("$msg");
                     push_u32(&mut id, i as u32);
-                    id
+                    id.into()
                 },
                 sender: String::from("@test:example.com"),
                 body: String::from("msg"),
@@ -1712,7 +1713,7 @@ mod tests {
 
         // Add one more — oldest should be evicted.
         room.add_message(MatrixMessage {
-            event_id: String::from("$new"),
+            event_id: String::from("$new").into(),
             sender: String::from("@test:example.com"),
             body: String::from("newest"),
             timestamp: MAX_MESSAGES_PER_ROOM as u64,

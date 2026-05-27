@@ -59,6 +59,8 @@ use core::fmt;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::matrix_ids::MatrixUserId;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -306,7 +308,7 @@ pub struct NousEntity {
     /// Number of valid bytes in `name`.
     pub name_len: u8,
     /// Matrix user ID (e.g., "@syn:thumos.lan").
-    pub matrix_id: String,
+    pub matrix_id: MatrixUserId,
     /// Capability preset governing what this entity can do.
     pub capability_preset: CapabilityPreset,
 }
@@ -335,7 +337,7 @@ impl NousEntity {
         Ok(Self {
             name: name_buf,
             name_len: name_bytes.len() as u8,
-            matrix_id,
+            matrix_id: matrix_id.into(),
             capability_preset: preset,
         })
     }
@@ -409,7 +411,7 @@ pub(crate) fn default_syn() -> NousEntity {
         NousEntity {
             name,
             name_len: 1,
-            matrix_id: String::from("@syn:thumos.lan"),
+            matrix_id: String::from("@syn:thumos.lan").into(),
             capability_preset: CapabilityPreset::Off,
         }
     })
@@ -428,7 +430,7 @@ pub(crate) fn default_phrouros() -> NousEntity {
         NousEntity {
             name,
             name_len: 1,
-            matrix_id: String::from("@phrouros:thumos.lan"),
+            matrix_id: String::from("@phrouros:thumos.lan").into(),
             capability_preset: CapabilityPreset::Off,
         }
     })
@@ -447,7 +449,7 @@ pub(crate) fn default_paideia() -> NousEntity {
         NousEntity {
             name,
             name_len: 1,
-            matrix_id: String::from("@paideia:thumos.lan"),
+            matrix_id: String::from("@paideia:thumos.lan").into(),
             capability_preset: CapabilityPreset::Off,
         }
     })
