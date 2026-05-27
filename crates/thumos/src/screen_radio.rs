@@ -389,6 +389,11 @@ mod tests {
         screen.apply_preset(0);
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
+        let off_status_rendered = fb.iter().any(|&px| px == color::RED);
+        assert!(
+            off_status_rendered,
+            "covert lock must render OFF radio status text"
+        );
     }
 
     #[test]

@@ -517,11 +517,12 @@ mod tests {
     #[test]
     fn scrub_user_pages_returns_result() {
         // NOTE: in test mode, the page allocator may not be initialized,
-        // so free_count() returns 0. We verify the function handles that.
+        // so free_count() returns 0. We verify the return value reflects
+        // whether there was memory available to scrub.
+        let free_before = page::free_count();
         let result = scrub_user_pages();
-        // On host (test), no pages are initialized so this returns false.
-        // The important thing is it doesn't panic.
-        let _ = result;
+        assert_eq!(result, free_before > 0);
+        assert_eq!(page::free_count(), free_before);
     }
 
     // -----------------------------------------------------------------------
