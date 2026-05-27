@@ -45,3 +45,8 @@ opt-level = 1
 [package.metadata]
 # WHY: required marker so `cargo fuzz list` recognises this as a fuzz project.
 cargo-fuzz = true
+
+[package.metadata.kanon]
+maturity = "alpha"
+since = "2026-05-27"
+exit-criteria = "operator-reviewed hardware validation and release-readiness gate"
