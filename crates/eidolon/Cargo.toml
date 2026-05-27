@@ -14,3 +14,8 @@ haphe = { path = "../haphe", version = "0.1.3" }
 
 [lints]
 workspace = true
+
+[package.metadata.kanon]
+maturity = "alpha"
+since = "2026-05-27"
+exit-criteria = "operator-reviewed hardware validation and release-readiness gate"
