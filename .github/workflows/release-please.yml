@@ -8,9 +8,11 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
+  attestations: write
 
 concurrency:
-  group: release-please-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -25,3 +27,36 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  release-attest:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: release-attest
+      - name: Package workspace crates
+        run: cargo package --workspace --no-verify
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked --quiet
+      - name: Generate CycloneDX SBOM
+        run: cargo cyclonedx --format json --output-file sbom.cdx.json
+      - name: Attest crate provenance
+        uses: actions/attest-build-provenance@10334b5f1e684784025c3fc0a277c88c19089275 # v2
+        with:
+          subject-path: target/package/*.crate
+      - name: Attest CycloneDX SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v2
+        with:
+          subject-path: target/package/*.crate
+          sbom-path: sbom.cdx.json
