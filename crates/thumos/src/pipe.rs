@@ -301,8 +301,16 @@ pub(crate) fn sys_pipe_read(pipe_idx: usize, buf_ptr: u32, count: u32) -> u32 {
         return EAGAIN;
     }
 
-    // SAFETY: buf_ptr is validated non-null above; count bytes are available.
-    // Wave 4 will add proper bounds validation.
+    // Validate the full [buf_ptr, buf_ptr+count) range lies within user DRAM
+    // before constructing the slice — rejects kernel/MMIO/unmapped targets and
+    // count-driven overflow (e.g. count == u32::MAX). Placed after the
+    // EOF/EAGAIN early returns so a bad pointer is only rejected once the read
+    // would actually dereference it.
+    if !crate::memguard::validate_user_buffer(buf_ptr as usize, count) {
+        return EFAULT;
+    }
+    // SAFETY: buf_ptr + count validated to lie within user DRAM; count bytes
+    // are available.
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count) };
     buf.read(dst) as u32
 }
@@ -346,7 +354,14 @@ pub(crate) fn sys_pipe_write(pipe_idx: usize, buf_ptr: u32, count: u32, writer_p
         return EAGAIN;
     }
 
-    // SAFETY: buf_ptr is validated non-null above; count bytes available in src.
+    // Validate the full [buf_ptr, buf_ptr+count) range lies within user DRAM
+    // before constructing the slice — rejects kernel/MMIO/unmapped targets and
+    // count-driven overflow. Placed after the EPIPE/EAGAIN early returns.
+    if !crate::memguard::validate_user_buffer(buf_ptr as usize, count) {
+        return EFAULT;
+    }
+    // SAFETY: buf_ptr + count validated to lie within user DRAM; count bytes
+    // available in src.
     let src = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, count) };
     buf.write(src) as u32
 }
@@ -471,6 +486,32 @@ mod tests {
         let more = [0u8; 1];
         let result = sys_pipe_write(pipe_idx, more.as_ptr() as u32, 1, 0);
         assert_eq!(result, EAGAIN, "write to full pipe → EAGAIN");
+    }
+
+    #[test]
+    fn pipe_read_rejects_kernel_range_buffer() {
+        reset_pool();
+        let pipe_idx = alloc_pipe_slot().expect("alloc pipe");
+        // Make data available so the read reaches buffer validation rather than
+        // short-circuiting on EAGAIN/EOF.
+        unsafe {
+            let buf = get_pipe_mut(pipe_idx).unwrap();
+            assert_eq!(buf.write(b"data"), 4);
+        }
+        // A pointer inside the kernel image must be rejected before any deref.
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_pipe_read(pipe_idx, kernel_ptr, 4);
+        assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn pipe_write_rejects_kernel_range_buffer() {
+        reset_pool();
+        let pipe_idx = alloc_pipe_slot().expect("alloc pipe");
+        // Buffer empty and both ends open, so the write reaches validation.
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_pipe_write(pipe_idx, kernel_ptr, 4, 0);
+        assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
     }
 
     #[test]
