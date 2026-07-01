@@ -1089,6 +1089,7 @@ fn parse_proposal_json(json_str: &str) -> Result<ActionProposal, EkphrasisError>
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
     use alloc::vec;
 
     use super::*;

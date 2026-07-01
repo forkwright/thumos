@@ -522,6 +522,8 @@ impl fmt::Display for AuditLog {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     /// Test HMAC key (non-zero, deterministic).

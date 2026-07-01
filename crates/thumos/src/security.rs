@@ -813,6 +813,8 @@ pub(crate) fn hkdf_sha256(
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     // -- SHA-256 tests (NIST test vectors) --

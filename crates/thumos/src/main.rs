@@ -74,12 +74,12 @@ mod heap;
 mod json_mini;
 #[cfg(not(test))]
 mod ipc;
-#[cfg(not(test))]
 mod kconfig;
 mod key_manager;
 mod lock_screen;
 #[cfg(not(test))]
 mod kinit;
+mod memguard;
 mod mic_audit;
 mod mmio;
 #[cfg(not(test))]

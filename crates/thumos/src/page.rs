@@ -68,20 +68,70 @@ pub(crate) fn alloc_page() -> Option<usize> {
     }
 }
 
-/// Free a physical page back to the allocator.
+/// Free a physical page back to the allocator, reporting whether it happened.
+///
+/// Returns `true` if a page was freed, `false` if `addr` is rejected: below the
+/// managed base (a raw subtraction would unsigned-wrap into a huge index),
+/// misaligned, past the bitmap, or not currently allocated (double-free). A
+/// rejected address leaves allocator state completely unchanged.
 ///
 /// # Safety
 ///
-/// The caller must ensure `addr` was previously returned by `alloc_page`.
-pub unsafe fn free_page(addr: usize) {
-    // SAFETY: page frame index is within physical memory bounds (checked by caller).
+/// `addr` should be an address previously returned by `alloc_page`. The range
+/// and allocation-state guards make an invalid `addr` a no-op rather than a
+/// bitmap-corruption / double-free primitive, but callers must still not use a
+/// page after freeing it.
+pub unsafe fn try_free_page(addr: usize) -> bool {
+    // SAFETY: every bitmap access below is bounds-checked against the array
+    // length, and FREE_PAGES is incremented only when a set bit is actually
+    // cleared, so an out-of-range or already-free address cannot corrupt
+    // memory or inflate the free count.
     unsafe {
-        let page_num = (addr - FIRST_PAGE) / PAGE_SIZE;
+        // Reject addresses below the managed base — the frame-index subtraction
+        // would underflow (unsigned wrap on ARM32) into a huge out-of-range
+        // index, corrupting kernel .bss/.data.
+        if addr < FIRST_PAGE {
+            return false;
+        }
+        let offset = addr - FIRST_PAGE;
+        // Reject misaligned addresses — they never name a real frame.
+        if offset % PAGE_SIZE != 0 {
+            return false;
+        }
+        let page_num = offset / PAGE_SIZE;
         let word = page_num / 32;
         let bit = page_num % 32;
         let bitmap = &mut *addr_of_mut!(PAGE_BITMAP);
+        // Reject indices past the bitmap — prevents out-of-bounds writes.
+        if word >= bitmap.len() {
+            return false;
+        }
+        // Reject double-free — only a currently-allocated (set) bit may be
+        // cleared, so freeing a free page cannot alias it back into service.
+        if bitmap[word] & (1 << bit) == 0 {
+            return false;
+        }
         bitmap[word] &= !(1 << bit);
         FREE_PAGES += 1;
+        true
+    }
+}
+
+/// Free a physical page back to the allocator, ignoring the outcome.
+///
+/// Fire-and-forget wrapper over [`try_free_page`] for callers that free pages
+/// they are certain they own, and for use as a bare `unsafe fn(usize)` pointer
+/// (e.g. the slab allocator's large-object free hook). An invalid address is a
+/// safe no-op via the same guards.
+///
+/// # Safety
+///
+/// Same contract as [`try_free_page`].
+pub unsafe fn free_page(addr: usize) {
+    // SAFETY: try_free_page validates the address range and allocation state;
+    // an invalid address is a no-op rather than corruption.
+    unsafe {
+        let _ = try_free_page(addr);
     }
 }
 

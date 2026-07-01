@@ -30,6 +30,7 @@ use crate::pipe;
 use crate::signal;
 use crate::socket;
 use crate::kconfig;
+use crate::memguard::validate_user_buffer;
 use crate::mmu;
 use crate::page;
 use crate::process;
@@ -47,38 +48,6 @@ pub(crate) const ENOSYS: u32 = 0u32.wrapping_sub(38);
 /// Returned when a syscall argument points to kernel memory, device MMIO,
 /// unmapped regions, or when a buffer overflows the address space.
 pub(crate) const EFAULT: u32 = 0u32.wrapping_sub(14);
-
-/// Validate that a user-supplied buffer `[ptr, ptr+len)` lies entirely
-/// within user-accessible DRAM and does not overlap kernel-reserved memory.
-///
-/// # Memory layout (MT6739)
-///
-/// - `0x0000_0000 - 0x3FFF_FFFF`: device MMIO (boot ROM, peripherals, modem)
-/// - `0x4000_0000 - 0x4000_7FFF`: DRAM below kernel load (reserved)
-/// - `0x4000_8000 - 0x400F_FFFF`: kernel image + reserved (`KERNEL_LOAD..KERNEL_END`)
-/// - `0x4010_0000 - 0x7FFF_FFFF`: user-accessible DRAM
-/// - `0x8000_0000 - 0xFFFF_FFFF`: unmapped
-///
-/// Returns `true` if the entire buffer falls within user-accessible DRAM.
-/// Returns `false` for null, overflow, kernel-space, device, or unmapped addresses.
-pub(crate) fn validate_user_buffer(ptr: usize, len: usize) -> bool {
-    // Null pointer
-    if ptr == 0 {
-        return false;
-    }
-    // Zero-length buffer is vacuously valid (no memory accessed)
-    if len == 0 {
-        return true;
-    }
-    // Overflow check: ptr + len must not wrap
-    let Some(end) = ptr.checked_add(len) else {
-        return false;
-    };
-    // Entire range must be within user DRAM: [KERNEL_END, RAM_END)
-    // WHY: KERNEL_END is the first byte after kernel-reserved memory;
-    // RAM_END is one past the last byte of physical DRAM.
-    ptr >= kconfig::KERNEL_END && end <= kconfig::RAM_END
-}
 
 /// Total number of defined syscalls.
 pub(crate) const SYSCALL_COUNT: usize = 46;
@@ -421,15 +390,22 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             None => u32::MAX, // NOTE: error indicator
         },
         Syscall::FreePage => {
-            // SAFETY: arg0 is a physical page address previously returned by
-            // alloc_page (syscall 4). The caller is responsible for not
-            // double-freeing. No pointer validation is needed because
-            // free_page operates on physical addresses managed by the allocator.
-            unsafe {
-                let Ok(page_addr) = usize::try_from(arg0) else { return EINVAL; };
-                crate::page::free_page(page_addr);
+            let Ok(page_addr) = usize::try_from(arg0) else { return EINVAL; };
+            // Reject any address that is not page-aligned or falls outside the
+            // user-allocatable DRAM window before touching the allocator. This
+            // is exactly the [KERNEL_END, RAM_END) range alloc_page hands out,
+            // so a well-behaved AllocPage result always passes while a forged
+            // address (0, a kernel/image address, MMIO) is refused — closing the
+            // arbitrary-address bitmap-corruption and underflow primitive.
+            if !crate::memguard::is_freeable_user_page(page_addr) {
+                return EINVAL;
             }
-            0
+            // SAFETY: page_addr is page-aligned and within the allocator-managed
+            // user DRAM range. try_free_page additionally rejects a not-currently-
+            // allocated (double-free) address, returning false with no state
+            // change, which we surface as EINVAL.
+            let freed = unsafe { crate::page::try_free_page(page_addr) };
+            if freed { 0 } else { EINVAL }
         }
         Syscall::Uptime => crate::exceptions::uptime_ms() as u32,
         Syscall::Sleep => {

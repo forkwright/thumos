@@ -1174,6 +1174,8 @@ pub(crate) fn verify_combined_image(image: &[u8]) -> Result<(), SecureBootError>
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     // -- SHA-512 test vectors (NIST) --

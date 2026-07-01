@@ -32,7 +32,8 @@ use crate::exceptions;
 #[cfg(not(test))]
 use crate::process;
 #[cfg(not(test))]
-use crate::syscall::{EFAULT, validate_user_buffer};
+use crate::memguard::validate_user_buffer;
+use crate::syscall::EFAULT;
 #[cfg(not(test))]
 use crate::timer;
 
