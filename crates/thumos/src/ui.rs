@@ -612,6 +612,10 @@ pub enum ScreenAction {
     Exit,
     /// Trigger modem PMIC power cut (emergency kill).
     KillModem,
+    /// Duress authentication detected — start the silent panic/wipe sequence.
+    /// The unlock looks normal on screen; this is the only navigation-channel
+    /// signal that carries the duress event to the privileged event loop.
+    Duress,
 }
 
 /// Screen trait -- each screen implements this.
@@ -718,6 +722,12 @@ impl UiManager {
             // it upward by returning true (same as Exit) so the caller can
             // execute the PMIC power cut in privileged context.
             ScreenAction::KillModem => true,
+            // WHY: Duress, like KillModem, is a privileged action the kernel
+            // event loop executes (start panic/wipe) in privileged context.
+            // The loop inspects the returned ScreenAction and branches on
+            // Duress before applying it; apply_action returns true so the UI
+            // yields to the panic sequence.
+            ScreenAction::Duress => true,
         }
     }
 
