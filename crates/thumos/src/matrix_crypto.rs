@@ -97,6 +97,15 @@ pub enum CryptoError {
     KeyDerivationFailed,
     /// The plaintext is empty.
     EmptyPlaintext,
+    /// The kernel CSPRNG was not seeded, so no key material could be generated
+    /// (fail-closed, audit #284).
+    EntropyUnavailable,
+}
+
+impl From<csprng::CsprngError> for CryptoError {
+    fn from(_: csprng::CsprngError) -> Self {
+        Self::EntropyUnavailable
+    }
 }
 
 impl fmt::Display for CryptoError {
@@ -118,6 +127,7 @@ impl fmt::Display for CryptoError {
             Self::InvalidKeyResponse => write!(f, "invalid key query response JSON"),
             Self::KeyDerivationFailed => write!(f, "HKDF key derivation failed"),
             Self::EmptyPlaintext => write!(f, "plaintext is empty"),
+            Self::EntropyUnavailable => write!(f, "kernel CSPRNG not seeded"),
         }
     }
 }
@@ -254,15 +264,19 @@ impl MatrixCrypto {
     ///
     /// The device keys are generated from the kernel CSPRNG. The caller must
     /// ensure `csprng::init()` has been called before constructing this.
-    #[must_use]
-    pub(crate) fn new() -> Self {
-        Self {
-            device_keys: generate_device_keys(),
+    ///
+    /// # Errors
+    ///
+    /// [`CryptoError::EntropyUnavailable`] if the CSPRNG is not yet seeded
+    /// (fail-closed, audit #284).
+    pub(crate) fn new() -> Result<Self, CryptoError> {
+        Ok(Self {
+            device_keys: generate_device_keys()?,
             olm_sessions: Vec::new(),
             megolm_outbound: Vec::new(),
             megolm_inbound: Vec::new(),
             one_time_keys: Vec::new(),
-        }
+        })
     }
 
     /// Return a reference to this device's identity keys.
@@ -319,7 +333,7 @@ impl MatrixCrypto {
         let mut keys = Vec::with_capacity(count_usize);
         for _ in 0..count_usize {
             let mut key = [0u8; KEY_SIZE];
-            csprng::kernel_random_bytes(&mut key);
+            csprng::kernel_random_bytes(&mut key)?;
             keys.push(key);
             self.one_time_keys.push(key);
         }
@@ -455,7 +469,7 @@ impl MatrixCrypto {
     ) -> Result<&MegolmSession, CryptoError> {
         // Generate fresh session key and ID.
         let mut session_key = [0u8; KEY_SIZE];
-        csprng::kernel_random_bytes(&mut session_key);
+        csprng::kernel_random_bytes(&mut session_key)?;
 
         let session_id = security::sha256(&session_key);
 
@@ -534,16 +548,20 @@ impl fmt::Display for MatrixCrypto {
 // ---------------------------------------------------------------------------
 
 /// Generate a fresh Ed25519 + Curve25519 device keypair from the kernel CSPRNG.
-#[must_use]
-fn generate_device_keys() -> DeviceKeys {
+///
+/// # Errors
+///
+/// [`CryptoError::EntropyUnavailable`] if the CSPRNG is not yet seeded — device
+/// keys are never emitted as zeroed key material (fail-closed, audit #284).
+fn generate_device_keys() -> Result<DeviceKeys, CryptoError> {
     let mut ed25519_key = [0u8; KEY_SIZE];
     let mut curve25519_key = [0u8; KEY_SIZE];
-    csprng::kernel_random_bytes(&mut ed25519_key);
-    csprng::kernel_random_bytes(&mut curve25519_key);
-    DeviceKeys {
+    csprng::kernel_random_bytes(&mut ed25519_key)?;
+    csprng::kernel_random_bytes(&mut curve25519_key)?;
+    Ok(DeviceKeys {
         ed25519_key,
         curve25519_key,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -569,7 +587,7 @@ fn aes256_cbc_encrypt(key: &[u8; KEY_SIZE], plaintext: &[u8]) -> Result<Vec<u8>,
 
     // Generate random IV.
     let mut iv = [0u8; AES_BLOCK_SIZE];
-    csprng::kernel_random_bytes(&mut iv);
+    csprng::kernel_random_bytes(&mut iv)?;
 
     // PKCS#7 padding: pad to next block boundary.
     let pad_len = AES_BLOCK_SIZE - (plaintext.len() % AES_BLOCK_SIZE);
@@ -1006,7 +1024,7 @@ mod tests {
     #[test]
     fn device_keys_have_correct_length() {
         setup_test_rng();
-        let keys = generate_device_keys();
+        let keys = generate_device_keys().expect("test csprng seeded");
         assert_eq!(keys.ed25519_key.len(), KEY_SIZE);
         assert_eq!(keys.curve25519_key.len(), KEY_SIZE);
     }
@@ -1014,7 +1032,7 @@ mod tests {
     #[test]
     fn device_keys_are_distinct() {
         setup_test_rng();
-        let keys = generate_device_keys();
+        let keys = generate_device_keys().expect("test csprng seeded");
         // Ed25519 and Curve25519 keys should be independently generated.
         assert_ne!(
             keys.ed25519_key, keys.curve25519_key,
@@ -1025,7 +1043,7 @@ mod tests {
     #[test]
     fn one_time_keys_have_correct_count_and_length() {
         setup_test_rng();
-        let mut crypto = MatrixCrypto::new();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let keys = crypto.generate_one_time_keys(5);
         assert!(keys.is_ok());
         let keys = keys.unwrap_or_default();
@@ -1039,7 +1057,7 @@ mod tests {
     #[test]
     fn one_time_key_count_too_large_fails() {
         setup_test_rng();
-        let mut crypto = MatrixCrypto::new();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let result = crypto.generate_one_time_keys(MAX_GENERATED_KEYS as u32 + 1);
         assert_eq!(result, Err(CryptoError::KeyCountTooLarge));
     }
@@ -1050,7 +1068,7 @@ mod tests {
     fn aes256_cbc_round_trip_single_block() {
         setup_test_rng();
         let mut key = [0u8; KEY_SIZE];
-        csprng::kernel_random_bytes(&mut key);
+        csprng::kernel_random_bytes(&mut key).expect("test csprng seeded");
         let plaintext = b"exactly16bytes!!";
 
         let ciphertext = aes256_cbc_encrypt(&key, plaintext);
@@ -1069,7 +1087,7 @@ mod tests {
     fn aes256_cbc_round_trip_multi_block() {
         setup_test_rng();
         let mut key = [0u8; KEY_SIZE];
-        csprng::kernel_random_bytes(&mut key);
+        csprng::kernel_random_bytes(&mut key).expect("test csprng seeded");
         let plaintext = b"hello world, this is a longer test message for AES-256-CBC encryption!";
 
         let ciphertext = aes256_cbc_encrypt(&key, plaintext);
@@ -1085,7 +1103,7 @@ mod tests {
     fn aes256_cbc_round_trip_short_message() {
         setup_test_rng();
         let mut key = [0u8; KEY_SIZE];
-        csprng::kernel_random_bytes(&mut key);
+        csprng::kernel_random_bytes(&mut key).expect("test csprng seeded");
         let plaintext = b"hi";
 
         let ciphertext = aes256_cbc_encrypt(&key, plaintext);
@@ -1102,8 +1120,8 @@ mod tests {
         setup_test_rng();
         let mut key1 = [0u8; KEY_SIZE];
         let mut key2 = [0u8; KEY_SIZE];
-        csprng::kernel_random_bytes(&mut key1);
-        csprng::kernel_random_bytes(&mut key2);
+        csprng::kernel_random_bytes(&mut key1).expect("test csprng seeded");
+        csprng::kernel_random_bytes(&mut key2).expect("test csprng seeded");
         // Ensure keys differ.
         key2[0] ^= 0xff;
 
@@ -1142,7 +1160,7 @@ mod tests {
     #[test]
     fn megolm_encrypt_decrypt_round_trip() {
         setup_test_rng();
-        let mut crypto = MatrixCrypto::new();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let room_id = "!test:matrix.example.com";
 
         let result = crypto.create_outbound_megolm(room_id);
@@ -1180,7 +1198,7 @@ mod tests {
     #[test]
     fn megolm_message_index_increments() {
         setup_test_rng();
-        let mut crypto = MatrixCrypto::new();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let room_id = "!test:matrix.example.com";
         let _ = crypto.create_outbound_megolm(room_id);
 
@@ -1200,7 +1218,7 @@ mod tests {
     #[test]
     fn megolm_different_sessions_produce_different_ciphertext() {
         setup_test_rng();
-        let mut crypto = MatrixCrypto::new();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
 
         // Create two sessions for different rooms.
         let _ = crypto.create_outbound_megolm("!room1:example.com");
@@ -1227,7 +1245,7 @@ mod tests {
     #[test]
     fn key_upload_json_has_correct_structure() {
         setup_test_rng();
-        let crypto = MatrixCrypto::new();
+        let crypto = MatrixCrypto::new().expect("test csprng seeded");
         let (device_json, _otk_json) = crypto.build_key_upload_request();
 
         // Device keys JSON should contain algorithms and keys.
@@ -1241,7 +1259,7 @@ mod tests {
     #[test]
     fn key_upload_json_contains_hex_keys() {
         setup_test_rng();
-        let crypto = MatrixCrypto::new();
+        let crypto = MatrixCrypto::new().expect("test csprng seeded");
         let (device_json, _) = crypto.build_key_upload_request();
 
         // Parse the JSON back to verify key format.
@@ -1341,7 +1359,7 @@ mod tests {
     #[test]
     fn display_traits_produce_output() {
         setup_test_rng();
-        let crypto = MatrixCrypto::new();
+        let crypto = MatrixCrypto::new().expect("test csprng seeded");
         let display = alloc::format!("{crypto}");
         assert!(display.contains("MatrixCrypto"));
         assert!(display.contains("olm:"));
@@ -1361,7 +1379,7 @@ mod tests {
     #[test]
     fn megolm_wrong_session_fails_decrypt() {
         setup_test_rng();
-        let mut crypto = MatrixCrypto::new();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
 
         let _ = crypto.create_outbound_megolm("!room1:example.com");
         let _ = crypto.create_outbound_megolm("!room2:example.com");
@@ -1384,7 +1402,7 @@ mod tests {
     #[test]
     fn create_outbound_megolm_replaces_existing() {
         setup_test_rng();
-        let mut crypto = MatrixCrypto::new();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let room = "!room:example.com";
 
         let _ = crypto.create_outbound_megolm(room);
@@ -1402,7 +1420,7 @@ mod tests {
     #[test]
     fn inbound_megolm_session_lookup() {
         setup_test_rng();
-        let mut crypto = MatrixCrypto::new();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
 
         let session = MegolmSession {
             session_id: [0x42; KEY_SIZE],

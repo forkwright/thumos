@@ -468,9 +468,10 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] CSPRNG (ChaCha20)\r\n");
     // SAFETY: called once after exceptions::init() (timer running, IRQs enabled).
-    // csprng::init() spins on WFI until sufficient timer-jitter entropy is
-    // accumulated (MIN_MIX_COUNT ISR samples ≈ 640 ms at 100 Hz), then seeds
-    // ChaCha20 and sets INITIALIZED. Must complete before any radio driver init.
+    // csprng::init() spins on WFI until the entropy pool accumulates a full
+    // SEED_ENTROPY_BITS estimate of timer-jitter entropy, then seeds the
+    // ChaCha20Rng DRBG and sets INITIALIZED. Must complete before any radio
+    // driver init.
     unsafe {
         csprng::init();
     }

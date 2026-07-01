@@ -252,7 +252,11 @@ impl ScanResult {
 #[must_use]
 pub(crate) fn generate_random_mac() -> [u8; 6] {
     let mut mac = [0u8; 6];
-    csprng::kernel_random_bytes(&mut mac);
+    // NOTE(#284): the fail-closed CSPRNG returns Err only before seeding, which
+    // cannot occur here — MAC randomization runs after `csprng::init()`. On that
+    // unreachable path `mac` stays zeroed; the locally-administered/unicast bits
+    // below still yield a clearly-synthetic address, never key material.
+    let _ = csprng::kernel_random_bytes(&mut mac);
     // INVARIANT: bit 0 clear = unicast, bit 1 set = locally administered
     mac[0] = (mac[0] | 0x02) & 0xFE;
     mac
@@ -793,8 +797,13 @@ impl WpaHandshake {
                 self.anonce = key_frame.nonce;
                 self.replay_counter = key_frame.replay_counter;
 
-                // Generate supplicant nonce
-                csprng::kernel_random_bytes(&mut self.snonce);
+                // Generate supplicant nonce. Fail closed (#284): if the CSPRNG
+                // is unseeded, abort the handshake rather than deriving a PTK
+                // from a zero SNonce.
+                if csprng::kernel_random_bytes(&mut self.snonce).is_err() {
+                    self.state = HandshakeState::Failed;
+                    return self.state;
+                }
 
                 // Derive PTK
                 let ptk = derive_ptk(pmk, &self.anonce, &self.snonce, ap_mac, own_mac);

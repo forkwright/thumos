@@ -359,14 +359,19 @@ impl MatrixClient {
     ///
     /// The client starts with no rooms, no sync token, and the default
     /// active-mode sync interval (continuous long-poll).
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// [`CryptoError::EntropyUnavailable`] if the kernel CSPRNG is not yet
+    /// seeded when the device keys are generated (fail-closed, audit #284).
+    /// The caller must ensure `csprng::init()` has completed first.
     pub(crate) fn new(
         homeserver: &str,
         user_id: &str,
         device_id: &str,
         access_token: &str,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, CryptoError> {
+        Ok(Self {
             homeserver: String::from(homeserver),
             user_id: String::from(user_id),
             device_id: String::from(device_id),
@@ -377,8 +382,8 @@ impl MatrixClient {
             sync_interval_ms: SYNC_INTERVAL_ACTIVE_MS,
             last_sync_tick: 0,
             next_txn_id: TXN_ID_START,
-            crypto: MatrixCrypto::new(),
-        }
+            crypto: MatrixCrypto::new()?,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1257,12 +1262,14 @@ mod tests {
     }
 
     fn matrix_client_with_test_credentials() -> MatrixClient {
+        crate::csprng::seed_for_test(&[0x42u8; 32], &[0u8; 8], 0);
         MatrixClient::new(
             "matrix.example.com",
             "@cody:matrix.example.com",
             "TESTDEVICE",
             "syt_test_token",
         )
+        .expect("test csprng seeded")
     }
 
     #[test]

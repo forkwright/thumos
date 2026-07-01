@@ -22,6 +22,8 @@ extern crate alloc;
 
 use core::fmt;
 
+use subtle::ConstantTimeEq;
+
 use crate::audit::{AuditEventType, AuditLog};
 use crate::key_manager::KeyManager;
 use crate::security::{self, KEY_SIZE, SHA256_DIGEST_LEN};
@@ -142,17 +144,15 @@ impl fmt::Display for UnlockResult {
 /// side-channel attacks. Returns `true` only when both slices have equal
 /// length and identical content.
 ///
-/// Same pattern as `wifi.rs` MIC verification (audit fix).
+/// WHY: backed by `subtle::ConstantTimeEq`, which inserts optimization barriers
+/// the compiler cannot elide — a hand-rolled XOR loop can be defeated by an
+/// optimizing backend. The lock screen is the duress/coercion surface, so a
+/// timing oracle on PIN/passphrase hashes must not exist.
 #[must_use]
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    // Slice `ct_eq` returns Choice(0) on a length mismatch (lengths here are
+    // fixed 32-byte SHA-256 digests, so length is not secret).
+    a.ct_eq(b).unwrap_u8() == 1
 }
 
 // ---------------------------------------------------------------------------

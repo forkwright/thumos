@@ -1,197 +1,107 @@
-//! Kernel CSPRNG — ChaCha20-based, seeded from ARM generic timer jitter.
+//! Kernel CSPRNG — RustCrypto `ChaCha20Rng`, seeded from ARM generic timer jitter.
 //!
 //! Architecture mirrors Linux kernel random.c:
 //!   entropy pool (256 bits) → ChaCha20 key → keystream output
 //!
-//! Entropy sources:
-//!   (a) ARM generic timer (CNTPCT_EL0 / mrrc p15,0,…,c14) low bits sampled
-//!       at every timer interrupt entry.
-//!   (b) Interrupt arrival timing jitter from source (a).
+//! The DRBG core is `rand_chacha::ChaCha20Rng` (RustCrypto). This module owns
+//! only the kernel-specific parts: entropy sourcing, the seededness gate, the
+//! reseed-after-N-bytes policy, and the fail-closed `kernel_random_bytes`
+//! interface. It does NOT hand-roll ChaCha20.
 //!
-//! Initialization must complete (via `init()`) before any radio driver calls
-//! `kernel_random_bytes()`. The CSPRNG auto-reseeds after every 2^20 bytes.
+//! Entropy sources:
+//!   (a) ARM generic timer (CNTPCT_EL0 / mrrc p15,0,…,c14) low word sampled
+//!       at every timer interrupt entry.
+//!   (b) Interrupt arrival timing jitter from source (a) — the *variation*
+//!       between successive samples, which is what earns entropy credit.
+//!
+//! Initialization must complete (via `init()`) before any driver calls
+//! `kernel_random_bytes()`. The CSPRNG auto-reseeds after every
+//! `RESEED_THRESHOLD` bytes.
+//!
+//! # Fail-closed (audit #284)
+//!
+//! `kernel_random_bytes` returns `Result<(), CsprngError>` and NEVER writes
+//! keystream before the pool is seeded — it returns `Err(CsprngError::NotSeeded)`
+//! and leaves the caller buffer untouched. Callers must handle the error rather
+//! than consuming silent all-zero key material.
+//!
+//! # Seededness (audit #304)
+//!
+//! The pool is "seeded" only once it has accumulated a conservative
+//! `SEED_ENTROPY_BITS` estimate of *actual* entropy. Timer samples earn credit
+//! solely from the bit-flips in their low (jitter) band relative to the previous
+//! sample, so a constant / stuck timer credits zero and can never satisfy the
+//! gate.
 //!
 //! # Safety model
 //!
 //! All mutable globals are `static mut`. Access is restricted to:
-//!   - `add_entropy` / `collect_timer_entropy`: called only from the IRQ handler
+//!   - `collect_timer_entropy` / `add_entropy`: called only from the IRQ handler
 //!     (non-reentrant on single-core ARMv7, IRQ disabled during execution).
-//!   - `init`: called once from kinit, with IRQs enabled but no concurrent
-//!     writer (only the IRQ handler touches ENTROPY, and init is a one-time
-//!     call before any code reads CSPRNG).
-//!   - `kernel_random_bytes`: callable from kernel context after `init()`.
-//!     On single-core ARMv7 this is safe because the caller disables IRQs
-//!     implicitly through the critical-section contract of the kernel.
-//!
-//! ChaCha20 block cipher with 64-bit counter extension (Linux kernel convention).
-//! Core quarter-round arithmetic follows RFC 8439 §2.1. State layout differs:
-//! uses 64-bit counter (state[12-13]) + 64-bit nonce (state[14-15]) instead of
-//! RFC 8439's 32-bit counter + 96-bit nonce. The CSPRNG is seeded from hardware
-//! entropy, so the layout difference does not affect cryptographic strength.
+//!   - `init`: called once from kinit, before any code reads the CSPRNG.
+//!   - `kernel_random_bytes`: callable from kernel context after `init()`; not
+//!     called concurrently on this single-core kernel.
+
+use rand_chacha::ChaCha20Rng;
+use rand_core::{RngCore, SeedableRng};
 
 // ---------------------------------------------------------------------------
-// ChaCha20 constants
+// Policy constants
 // ---------------------------------------------------------------------------
-
-/// RFC 8439 §2.1 — "expand 32-byte k" as four little-endian u32 words.
-const CHACHA_CONSTANT: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];
-
-/// Output block size in bytes (512 bits).
-const BLOCK_BYTES: usize = 64;
 
 /// Reseed threshold: reseed after this many bytes generated.
 const RESEED_THRESHOLD: u64 = 1 << 20; // 1 MiB
 
-/// Minimum entropy mix operations before the pool is considered seeded.
-const MIN_MIX_COUNT: u32 = 64;
+/// Estimated accumulated entropy (bits) required before the pool is seeded.
+/// 256 bits = full pool width; fail-closed gate for #284/#304.
+const SEED_ENTROPY_BITS: u32 = 256;
+
+/// Low-bit mask isolating the ARM generic timer's interrupt-latency jitter
+/// band. Higher bits track the deterministic tick period and carry no fresh
+/// entropy, so only bit-flips within this mask are credited.
+const TIMER_JITTER_MASK: u32 = 0x0000_0FFF;
 
 // ---------------------------------------------------------------------------
-// ChaCha20 state
+// Errors
 // ---------------------------------------------------------------------------
 
-/// ChaCha20 stream cipher state (RFC 8439 §2.3).
-///
-/// State layout (16 × u32):
-///   [0..3]   constants ("expand 32-byte k")
-///   [4..11]  key (256 bits)
-///   [12..13] block counter (64 bits, little-endian)
-///   [14..15] nonce (64 bits; we use 96-bit nonce packed as [14..16] with
-///            word 13 carrying the low nonce word and 14-15 the high bits —
-///            actually we keep it simple: counter in [12], nonce in [13..15])
-///
-/// Actual layout used (matches RFC 8439 §2.3 Figure 1):
-///   words 0-3:   constants
-///   words 4-11:  key
-///   word  12:    counter low
-///   word  13:    counter high   (we extend to 64-bit counter)
-///   words 14-15: nonce (64 bits of the 96-bit nonce; upper 32 bits fixed 0)
-struct ChaCha20 {
-    /// Full 16-word state: [constants | key | counter_lo | counter_hi | nonce_lo | nonce_hi]
-    state: [u32; 16],
-    /// Bytes generated since last reseed (used to trigger auto-reseed).
+/// Failure returned by [`kernel_random_bytes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsprngError {
+    /// The entropy pool has not yet accumulated sufficient entropy, so no
+    /// keystream can be produced. Callers must NOT proceed with zeroed output.
+    NotSeeded,
+}
+
+// ---------------------------------------------------------------------------
+// DRBG wrapper
+// ---------------------------------------------------------------------------
+
+/// Kernel DRBG: a RustCrypto `ChaCha20Rng` plus the reseed accounting the
+/// kernel policy needs.
+struct Csprng {
+    rng: ChaCha20Rng,
+    /// Bytes generated since the last reseed (drives auto-reseed).
     bytes_generated: u64,
-}
-
-impl ChaCha20 {
-    /// Construct a zeroed instance. Must be seeded via `seed()` before use.
-    const fn new() -> Self {
-        let mut state = [0u32; 16];
-        // Install constants
-        state[0] = CHACHA_CONSTANT[0];
-        state[1] = CHACHA_CONSTANT[1];
-        state[2] = CHACHA_CONSTANT[2];
-        state[3] = CHACHA_CONSTANT[3];
-        Self {
-            state,
-            bytes_generated: 0,
-        }
-    }
-
-    /// Seed the key from a 32-byte entropy pool and reset counter/nonce.
-    ///
-    /// Words 4-11 = key, word 12 = counter_lo = 0, word 13 = counter_hi = 0,
-    /// words 14-15 = nonce derived from pool tail (bytes 24-31).
-    fn seed(&mut self, pool: &[u8; 32]) {
-        // Key: pool bytes 0-31 as 8 little-endian u32 words → state[4..12]
-        for i in 0..8 {
-            let base = i * 4;
-            self.state[4 + i] = u32::from_le_bytes([
-                pool[base],
-                pool[base + 1],
-                pool[base + 2],
-                pool[base + 3],
-            ]);
-        }
-        // Counter starts at 0
-        self.state[12] = 0;
-        self.state[13] = 0;
-        // Nonce: derive from pool bytes 24-31 (last 8 bytes) reused as nonce
-        self.state[14] = u32::from_le_bytes([pool[24], pool[25], pool[26], pool[27]]);
-        self.state[15] = u32::from_le_bytes([pool[28], pool[29], pool[30], pool[31]]);
-        self.bytes_generated = 0;
-    }
-
-    /// Advance the 64-bit counter (state[12] lo, state[13] hi).
-    fn increment_counter(&mut self) {
-        let (lo, carry) = self.state[12].overflowing_add(1);
-        self.state[12] = lo;
-        if carry {
-            self.state[13] = self.state[13].wrapping_add(1);
-        }
-    }
-
-    /// Generate one 64-byte block into `out`.
-    fn generate_block(&mut self, out: &mut [u8; BLOCK_BYTES]) {
-        let mut working = self.state;
-        chacha20_block(&mut working);
-        // XOR working state with initial state (RFC 8439 §2.3.1 step 3)
-        for i in 0..16 {
-            let word = working[i].wrapping_add(self.state[i]);
-            let bytes = word.to_le_bytes();
-            let base = i * 4;
-            out[base] = bytes[0];
-            out[base + 1] = bytes[1];
-            out[base + 2] = bytes[2];
-            out[base + 3] = bytes[3];
-        }
-        self.increment_counter();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ChaCha20 core — RFC 8439 §2.1–§2.3
-// ---------------------------------------------------------------------------
-
-/// ChaCha20 quarter round (RFC 8439 §2.1.1).
-#[inline(always)]
-fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
-    state[a] = state[a].wrapping_add(state[b]);
-    state[d] ^= state[a];
-    state[d] = state[d].rotate_left(16);
-
-    state[c] = state[c].wrapping_add(state[d]);
-    state[b] ^= state[c];
-    state[b] = state[b].rotate_left(12);
-
-    state[a] = state[a].wrapping_add(state[b]);
-    state[d] ^= state[a];
-    state[d] = state[d].rotate_left(8);
-
-    state[c] = state[c].wrapping_add(state[d]);
-    state[b] ^= state[c];
-    state[b] = state[b].rotate_left(7);
-}
-
-/// ChaCha20 block function: 20 rounds (10 double-rounds) in-place (RFC 8439 §2.3).
-///
-/// Caller must add the original state to the result after this returns.
-fn chacha20_block(state: &mut [u32; 16]) {
-    for _ in 0..10 {
-        // Column rounds
-        quarter_round(state, 0, 4, 8, 12);
-        quarter_round(state, 1, 5, 9, 13);
-        quarter_round(state, 2, 6, 10, 14);
-        quarter_round(state, 3, 7, 11, 15);
-        // Diagonal rounds
-        quarter_round(state, 0, 5, 10, 15);
-        quarter_round(state, 1, 6, 11, 12);
-        quarter_round(state, 2, 7, 8, 13);
-        quarter_round(state, 3, 4, 9, 14);
-    }
 }
 
 // ---------------------------------------------------------------------------
 // Entropy pool
 // ---------------------------------------------------------------------------
 
-/// 256-bit entropy accumulator.
+/// 256-bit entropy accumulator with a conservative entropy estimate.
 ///
-/// Entropy is mixed in via XOR at a rotating position. `mix_count` is
-/// incremented on every mix; once it reaches MIN_MIX_COUNT the pool is
-/// considered seeded.
+/// Entropy is mixed in via XOR at a rotating cursor. `entropy_bits` tracks a
+/// conservative bit estimate; the pool is seeded once it reaches
+/// `SEED_ENTROPY_BITS`. Only timer-jitter variation earns credit.
 struct EntropyPool {
     pool: [u8; 32],
-    mix_count: u32,
+    /// Conservative running estimate of accumulated entropy, in bits.
+    entropy_bits: u32,
+    /// Previous timer sample, for delta-based (jitter) crediting.
+    last_sample: u32,
+    /// Whether `last_sample` holds a valid prior reading.
+    have_sample: bool,
     /// Write cursor (rotates through pool bytes).
     cursor: usize,
 }
@@ -200,23 +110,41 @@ impl EntropyPool {
     const fn new() -> Self {
         Self {
             pool: [0u8; 32],
-            mix_count: 0,
+            entropy_bits: 0,
+            last_sample: 0,
+            have_sample: false,
             cursor: 0,
         }
     }
 
-    /// Mix `data` bytes into the pool via XOR, advancing the cursor.
-    fn mix(&mut self, data: &[u8]) {
+    /// XOR `data` bytes into the pool, advancing the cursor. Mixing alone earns
+    /// NO entropy credit — only `add_timer_sample` credits the seededness gate.
+    fn mix_bytes(&mut self, data: &[u8]) {
         for &byte in data {
             self.pool[self.cursor] ^= byte;
             self.cursor = (self.cursor + 1) % 32;
         }
-        self.mix_count = self.mix_count.saturating_add(1);
     }
 
-    /// True once sufficient entropy has been accumulated.
+    /// Mix a timer sample and credit entropy from its jitter-band variation.
+    ///
+    /// A repeated sample (`sample == last_sample`) flips no bits in the jitter
+    /// band and credits zero — closing #304 (a stuck/constant timer can never
+    /// seed the pool).
+    fn add_timer_sample(&mut self, sample: u32) {
+        self.mix_bytes(&sample.to_le_bytes());
+        if self.have_sample {
+            // Credit only the bits that actually flipped inside the jitter band.
+            let flips = ((sample ^ self.last_sample) & TIMER_JITTER_MASK).count_ones();
+            self.entropy_bits = self.entropy_bits.saturating_add(flips);
+        }
+        self.last_sample = sample;
+        self.have_sample = true;
+    }
+
+    /// True once a conservative `SEED_ENTROPY_BITS` estimate has accumulated.
     fn is_seeded(&self) -> bool {
-        self.mix_count >= MIN_MIX_COUNT
+        self.entropy_bits >= SEED_ENTROPY_BITS
     }
 }
 
@@ -227,9 +155,9 @@ impl EntropyPool {
 /// Global CSPRNG instance. None until `init()` is called.
 ///
 /// SAFETY: written once (in `init()`) before any reader; thereafter mutated
-/// only through `kernel_random_bytes()`, which is not called concurrently
-/// on this single-core kernel.
-static mut CSPRNG: Option<ChaCha20> = None;
+/// only through `kernel_random_bytes()`, which is not called concurrently on
+/// this single-core kernel.
+static mut CSPRNG: Option<Csprng> = None;
 
 /// Global entropy accumulator. Written only from the IRQ handler.
 ///
@@ -240,7 +168,7 @@ static mut ENTROPY: EntropyPool = EntropyPool::new();
 
 /// True after `init()` completes successfully.
 ///
-/// SAFETY: written once in `init()`, read from kernel_random_bytes(). Single-
+/// SAFETY: written once in `init()`, read from `kernel_random_bytes()`. Single-
 /// core, no races.
 static mut INITIALIZED: bool = false;
 
@@ -250,15 +178,15 @@ static mut INITIALIZED: bool = false;
 
 /// Collect entropy from the ARM generic timer (CNTPCT via mrrc p15,0,…,c14).
 ///
-/// Called from the timer IRQ handler. Reads the physical counter and XOR-mixes
-/// the low 16 bits into the entropy pool. The timing jitter between successive
-/// interrupts provides the actual entropy.
+/// Called from the timer IRQ handler. Reads the physical counter's low word and
+/// mixes it; the timing jitter between successive interrupts is the actual
+/// entropy source.
 ///
 /// # Safety
 ///
 /// Must be called only from the IRQ handler context (single-core, non-reentrant,
-/// IRQ disabled during execution). Accessing ENTROPY without a lock is safe here
-/// because the IRQ handler is the sole writer and is not re-entrant.
+/// IRQ disabled during execution). Accessing `ENTROPY` without a lock is safe
+/// here because the IRQ handler is the sole writer and is not re-entrant.
 pub unsafe fn collect_timer_entropy() {
     // On the ARM target: read the physical counter (CNTPCT) via mrrc p15,0,…,c14.
     // In test builds (host): no hardware available, this function is a no-op —
@@ -277,29 +205,26 @@ pub unsafe fn collect_timer_entropy() {
                 hi = out(reg) hi,
             );
         }
-
-        // Take the low 16 bits of the counter (maximum jitter signal) plus the
-        // low byte of the high word for additional mixing material.
-        let entropy_bytes = [
-            (lo & 0xFF) as u8,
-            ((lo >> 8) & 0xFF) as u8,
-            (hi & 0xFF) as u8,
-        ];
+        // NOTE: `hi` changes far too slowly to carry per-tick jitter; the low
+        // word `lo` is the jitter signal used for both mixing and crediting.
+        let _ = hi;
 
         // SAFETY: ENTROPY is only accessed from IRQ context (this function).
         // Single-core ARMv7: IRQs are masked for the duration of the handler,
         // so there is no concurrent access. addr_of_mut! avoids creating an
         // intermediate reference to the static mut (Rust 2024 static_mut_refs).
         unsafe {
-            (*core::ptr::addr_of_mut!(ENTROPY)).mix(&entropy_bytes);
+            (*core::ptr::addr_of_mut!(ENTROPY)).add_timer_sample(lo);
         }
     }
 }
 
 /// Add arbitrary entropy bytes to the pool.
 ///
-/// Called internally during init or from drivers that have access to additional
-/// entropy sources (e.g. eMMC CID registers). Safe to call from IRQ context.
+/// Called from drivers with access to additional entropy sources (e.g. eMMC
+/// CID registers). The bytes are mixed but earn NO seededness credit: only the
+/// hardware timer jitter is trusted to satisfy the fail-closed gate, so
+/// caller-supplied data can never (falsely) seed the pool.
 ///
 /// # Safety
 ///
@@ -309,29 +234,24 @@ pub unsafe fn add_entropy(data: &[u8]) {
     // SAFETY: See ENTROPY static's safety comment above. addr_of_mut! avoids
     // creating an intermediate reference to the static mut.
     unsafe {
-        (*core::ptr::addr_of_mut!(ENTROPY)).mix(data);
+        (*core::ptr::addr_of_mut!(ENTROPY)).mix_bytes(data);
     }
 }
 
 /// Initialize the CSPRNG from the accumulated entropy pool.
 ///
 /// Call this from kinit after the timer has been running long enough to
-/// accumulate at least `MIN_MIX_COUNT` interrupt-driven samples. If the
-/// pool is not yet seeded, spins (busy-polls) until it is — the timer ISR
-/// is running at this point and will call `collect_timer_entropy()` each tick.
+/// accumulate `SEED_ENTROPY_BITS` of jitter entropy. If the pool is not yet
+/// seeded, spins (busy-polls) until it is — the timer ISR is running at this
+/// point and will call `collect_timer_entropy()` each tick.
 ///
 /// # Safety
 ///
 /// Must be called exactly once from kinit, after `exceptions::init()` (timer
-/// running), before any radio driver calls `kernel_random_bytes()`. IRQs must
-/// be enabled at call time so the timer ISR can supply entropy.
+/// running), before any driver calls `kernel_random_bytes()`. IRQs must be
+/// enabled at call time so the timer ISR can supply entropy.
 pub unsafe fn init() {
-    // Spin until the entropy pool has accumulated sufficient samples.
-    // On a 100 Hz tick rate this takes at most ~640 ms (64 ticks × 10 ms).
-    // SAFETY: reading ENTROPY.is_seeded() is safe here: we are the sole reader;
-    // the IRQ handler is the sole writer; single-core ARM cannot interleave
-    // these on the same memory word without a data race, and the volatile-
-    // equivalent access through the static mut guarantees visibility.
+    // Spin until the entropy pool has accumulated a full seed estimate.
     loop {
         // SAFETY: ENTROPY is accessed read-only here; writes only come from the
         // IRQ handler which cannot execute concurrently on single-core ARMv7.
@@ -341,94 +261,89 @@ pub unsafe fn init() {
             break;
         }
         // Yield to allow the timer IRQ to fire.
-        // In test builds this loop is never reached (seed_for_test bypasses init()).
         #[cfg(not(test))]
         // SAFETY: WFI is a hint instruction available at all ARM privilege levels.
         unsafe {
             core::arch::asm!("wfi");
         }
-        // On test host: spin without yield (init() is not called in test mode).
+        // On test host: init() is not exercised (seed_for_test bypasses it);
+        // break to prevent an infinite loop should it ever be reached.
         #[cfg(test)]
         {
-            break; // unreachable in practice; prevents infinite loop in host tests
+            break;
         }
     }
 
-    // Seed the ChaCha20 instance from the entropy pool.
-    let mut rng = ChaCha20::new();
+    // Seed the DRBG from the entropy pool.
     // SAFETY: ENTROPY is read once here; no concurrent writer is possible because
-    // we only reach this point after `is_seeded()` returns true, and the init
-    // function is called exactly once.
-    let pool_snapshot = unsafe { ENTROPY.pool };
-    rng.seed(&pool_snapshot);
+    // we only reach this point after `is_seeded()` returns true, and init() is
+    // called exactly once.
+    let pool_snapshot = unsafe { (*core::ptr::addr_of!(ENTROPY)).pool };
+    let csprng = Csprng {
+        rng: ChaCha20Rng::from_seed(pool_snapshot),
+        bytes_generated: 0,
+    };
 
-    // SAFETY: CSPRNG is written exactly once here; no reader exists yet (init()
-    // is called before any driver uses kernel_random_bytes()).
+    // SAFETY: CSPRNG/INITIALIZED are written exactly once here; no reader exists
+    // yet (init() runs before any driver uses kernel_random_bytes()).
     unsafe {
-        CSPRNG = Some(rng);
+        CSPRNG = Some(csprng);
         INITIALIZED = true;
     }
 }
 
 /// Generate `buf.len()` cryptographically random bytes.
 ///
-/// Panics are intentionally absent: if the CSPRNG is not initialized,
-/// the buffer is left zeroed (safe degradation — callers must ensure
-/// `init()` was called before using randomness for security purposes).
+/// Fail-closed (audit #284): if the CSPRNG is not yet seeded this returns
+/// `Err(CsprngError::NotSeeded)` and leaves `buf` untouched — it never emits
+/// zeroed (or any) output before seeding. Callers MUST handle the error and
+/// not treat the buffer as key material on failure.
 ///
-/// Auto-reseeds after every RESEED_THRESHOLD bytes generated.
-pub fn kernel_random_bytes(buf: &mut [u8]) {
-    // SAFETY: INITIALIZED is written once in `init()` and never again.
-    // Reading it here without a lock is safe on single-core ARMv7.
+/// Auto-reseeds after every `RESEED_THRESHOLD` bytes generated.
+///
+/// # Errors
+///
+/// [`CsprngError::NotSeeded`] if `init()` has not completed.
+pub fn kernel_random_bytes(buf: &mut [u8]) -> Result<(), CsprngError> {
+    // SAFETY: INITIALIZED is written once in `init()`. Reading it here without a
+    // lock is safe on single-core ARMv7.
     if !unsafe { INITIALIZED } {
-        // Not yet initialized — fill with zeros and return.
-        // This is a safe degradation; callers with security requirements
-        // must verify init() succeeded before calling this.
-        for b in buf.iter_mut() {
-            *b = 0;
-        }
-        return;
+        return Err(CsprngError::NotSeeded);
     }
 
-    // SAFETY: CSPRNG is Some after INITIALIZED is true (set atomically in init()).
-    // kernel_random_bytes() is not called concurrently on this single-core kernel;
-    // the IRQ handler only calls collect_timer_entropy() which touches ENTROPY,
-    // not CSPRNG. addr_of_mut! avoids creating an implicit reference to static mut.
-    let rng = unsafe {
+    // SAFETY: CSPRNG is Some after INITIALIZED is true (set together in init()).
+    // kernel_random_bytes() is not called concurrently on this single-core
+    // kernel; the IRQ handler only touches ENTROPY, not CSPRNG. addr_of_mut!
+    // avoids creating an implicit reference to the static mut.
+    let csprng = unsafe {
         match (*core::ptr::addr_of_mut!(CSPRNG)).as_mut() {
-            Some(r) => r,
-            None => {
-                for b in buf.iter_mut() {
-                    *b = 0;
-                }
-                return;
-            }
+            Some(c) => c,
+            None => return Err(CsprngError::NotSeeded),
         }
     };
 
-    let mut block = [0u8; BLOCK_BYTES];
-    let mut pos = 0;
+    csprng.rng.fill_bytes(buf);
+    csprng.bytes_generated = csprng.bytes_generated.saturating_add(buf.len() as u64);
 
-    while pos < buf.len() {
-        rng.generate_block(&mut block);
-        let remaining = buf.len() - pos;
-        let take = remaining.min(BLOCK_BYTES);
-        buf[pos..pos + take].copy_from_slice(&block[..take]);
-        pos += take;
-        rng.bytes_generated = rng.bytes_generated.saturating_add(take as u64);
+    // Auto-reseed once the threshold is crossed.
+    if csprng.bytes_generated >= RESEED_THRESHOLD {
+        // Combine the accumulated pool entropy with fresh keystream so the new
+        // key never repeats a prior stream even if the pool is momentarily
+        // static between reseeds.
+        // SAFETY: ENTROPY is only written from IRQ context; on single-core
+        // ARMv7 this read cannot interleave mid-instruction with the handler.
+        // A missed tick or two of entropy is acceptable for the snapshot.
+        let mut new_seed = unsafe { (*core::ptr::addr_of!(ENTROPY)).pool };
+        let mut mixer = [0u8; 32];
+        csprng.rng.fill_bytes(&mut mixer);
+        for (s, m) in new_seed.iter_mut().zip(mixer.iter()) {
+            *s ^= *m;
+        }
+        csprng.rng = ChaCha20Rng::from_seed(new_seed);
+        csprng.bytes_generated = 0;
     }
 
-    // Auto-reseed if threshold exceeded.
-    if rng.bytes_generated >= RESEED_THRESHOLD {
-        // SAFETY: ENTROPY is only written from IRQ context; this read is safe here
-        // because on single-core ARMv7, kernel_random_bytes() cannot execute
-        // concurrently with the IRQ handler — IRQs may fire between instructions,
-        // but not mid-instruction. Taking a snapshot of the pool and reseeding
-        // is not required to be atomic; worst case we miss a few entropy bytes
-        // from the current tick, which is acceptable.
-        let pool_snapshot = unsafe { ENTROPY.pool };
-        rng.seed(&pool_snapshot);
-    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -437,21 +352,21 @@ pub fn kernel_random_bytes(buf: &mut [u8]) {
 
 /// Inject a known seed for deterministic testing.
 ///
-/// Only available in `#[cfg(test)]` builds. Allows test vectors to be verified
-/// without platform hardware.
+/// Only available in `#[cfg(test)]` builds. Seeds the DRBG deterministically so
+/// test vectors are reproducible without platform hardware. `nonce` sets the
+/// ChaCha20 stream and `counter` the block position (both zero for most callers).
 #[cfg(test)]
 pub fn seed_for_test(key: &[u8; 32], nonce: &[u8; 8], counter: u64) {
-    let mut rng = ChaCha20::new();
-    rng.seed(key);
-    // Override nonce from the 8-byte parameter (overwrites what seed() set from key tail)
-    rng.state[14] = u32::from_le_bytes([nonce[0], nonce[1], nonce[2], nonce[3]]);
-    rng.state[15] = u32::from_le_bytes([nonce[4], nonce[5], nonce[6], nonce[7]]);
-    // Override counter
-    rng.state[12] = (counter & 0xFFFF_FFFF) as u32;
-    rng.state[13] = (counter >> 32) as u32;
+    let mut rng = ChaCha20Rng::from_seed(*key);
+    rng.set_stream(u64::from_le_bytes(*nonce));
+    // set_word_pos is measured in 32-bit words; one 64-byte block = 16 words.
+    rng.set_word_pos(u128::from(counter) * 16);
     // SAFETY: test-only, single-threaded.
     unsafe {
-        CSPRNG = Some(rng);
+        CSPRNG = Some(Csprng {
+            rng,
+            bytes_generated: 0,
+        });
         INITIALIZED = true;
     }
 }
@@ -464,87 +379,14 @@ pub fn seed_for_test(key: &[u8; 32], nonce: &[u8; 8], counter: u64) {
 mod tests {
     use super::*;
 
-    // --- RFC 8439 §2.1.1 Quarter Round Test Vector ---
-
-    #[test]
-    fn quarter_round_rfc8439_test_vector() {
-        // RFC 8439 §2.1.1 test vector
-        let mut state = [0u32; 16];
-        state[0] = 0x11111111;
-        state[4] = 0x01020304;
-        state[8] = 0x9b8d6f43;
-        state[12] = 0x01234567;
-
-        quarter_round(&mut state, 0, 4, 8, 12);
-
-        assert_eq!(state[0], 0xea2a92f4, "a after QR");
-        assert_eq!(state[4], 0xcb1cf8ce, "b after QR");
-        assert_eq!(state[8], 0x4581472e, "c after QR");
-        assert_eq!(state[12], 0x5881c4bb, "d after QR");
-    }
-
-    // --- RFC 8439 §2.3.2 ChaCha20 Block Test Vector ---
-
-    // TODO(#129)[deliberate-prudent]: structural mismatch between impl and RFC 8439.
-    // The impl uses state[13] as counter-high (64-bit counter) and
-    // state[14..15] as a 2-word nonce. RFC 8439 §2.3.2 uses state[12]
-    // as a 32-bit counter and state[13..15] as a 3-word (96-bit) nonce.
-    // These layouts cannot be reconciled by adjusting test values alone.
-    // Either refactor csprng to follow RFC exactly, or rewrite this test
-    // against a custom vector that matches the 64-bit-counter variant.
-    // Until then, ignore: quarter_round tests (above) still exercise the
-    // core arithmetic, and the CSPRNG is seeded from hardware entropy in
-    // production, not from the RFC test vectors.
-    #[ignore = "impl uses 64-bit counter; RFC 8439 uses 32-bit counter + 96-bit nonce — see #129"]
-    #[test]
-    fn chacha20_test_vector() {
-        // RFC 8439 §2.3.2: key = 0x00..0x1f, nonce = 0x00..0x0b, counter = 1
-        let key: [u8; 32] = [
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
-            0x1c, 0x1d, 0x1e, 0x1f,
-        ];
-
-        let mut rng = ChaCha20::new();
-        rng.seed(&key);
-        // RFC 8439 §2.3.2 uses nonce = [0x00..0x0b] and counter = 1
-        // Our seed() sets counter=0 and nonce from key tail; override here:
-        // RFC 8439 §2.3.2 uses counter = 1 and 96-bit nonce
-        // = 00 00 00 09 00 00 00 4a 00 00 00 00 (12 bytes, LE u32s).
-        // State layout per RFC 8439: [12] = counter, [13..15] = nonce.
-        rng.state[12] = 1; // counter = 1
-        rng.state[13] = 0x0000_0009; // nonce word 0 (LE: bytes 09,00,00,00)
-        rng.state[14] = 0x0000_004a; // nonce word 1 (LE: bytes 4a,00,00,00)
-        rng.state[15] = 0;           // nonce word 2
-
-        let mut block = [0u8; BLOCK_BYTES];
-        rng.generate_block(&mut block);
-
-        // Expected output from RFC 8439 §2.3.2
-        #[rustfmt::skip]
-        let expected: [u8; 64] = [
-            0x10, 0xf1, 0xe7, 0xe4, 0xd1, 0x3b, 0x59, 0x15,
-            0x50, 0x0f, 0xdd, 0x1f, 0xa3, 0x20, 0x71, 0xc4,
-            0xc7, 0xd1, 0xf4, 0xc7, 0x33, 0xc0, 0x68, 0x03,
-            0x04, 0x22, 0xaa, 0x9a, 0xc3, 0xd4, 0x6c, 0x4e,
-            0xd2, 0x82, 0x64, 0x46, 0x07, 0x9f, 0xaa, 0x09,
-            0x14, 0xc2, 0xd7, 0x05, 0xd9, 0x8b, 0x02, 0xa2,
-            0xb5, 0x12, 0x9c, 0xd1, 0xde, 0x16, 0x4e, 0xb9,
-            0xcb, 0xd0, 0x83, 0xe8, 0xa2, 0x50, 0x3c, 0x4e,
-        ];
-
-        assert_eq!(block, expected, "ChaCha20 block must match RFC 8439 §2.3.2");
-    }
-
     // --- Entropy pool tests ---
 
     #[test]
     fn entropy_pool_mixes_data() {
         let mut pool = EntropyPool::new();
         let initial = pool.pool;
-        pool.mix(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        pool.mix_bytes(&[0xDE, 0xAD, 0xBE, 0xEF]);
         assert_ne!(pool.pool, initial, "pool must change after mix");
-        assert_eq!(pool.mix_count, 1, "mix_count must be 1 after one mix");
     }
 
     #[test]
@@ -554,22 +396,40 @@ mod tests {
     }
 
     #[test]
-    fn entropy_pool_seeded_after_min_mixes() {
+    fn entropy_pool_constant_samples_do_not_seed() {
+        // #304 regression: a stuck/constant timer flips no jitter bits and must
+        // NEVER satisfy the seededness gate, no matter how many samples arrive.
         let mut pool = EntropyPool::new();
-        for i in 0..MIN_MIX_COUNT {
-            pool.mix(&[i as u8]);
+        for _ in 0..10_000 {
+            pool.add_timer_sample(0x1234_5678);
         }
         assert!(
-            pool.is_seeded(),
-            "pool must be seeded after MIN_MIX_COUNT mixes"
+            !pool.is_seeded(),
+            "constant timer samples must not seed the pool (#304)"
         );
+        assert_eq!(pool.entropy_bits, 0, "constant samples credit zero entropy");
+    }
+
+    #[test]
+    fn entropy_pool_varying_samples_seed() {
+        // Distinct samples that flip jitter-band bits accumulate real credit.
+        let mut pool = EntropyPool::new();
+        let mut sample: u32 = 0;
+        let mut ticks = 0;
+        while !pool.is_seeded() && ticks < 100_000 {
+            // Vary the low (jitter) bits each tick.
+            sample = sample.wrapping_add(0x0000_0ABF);
+            pool.add_timer_sample(sample);
+            ticks += 1;
+        }
+        assert!(pool.is_seeded(), "varying timer jitter must seed the pool");
+        assert!(pool.entropy_bits >= SEED_ENTROPY_BITS);
     }
 
     #[test]
     fn entropy_pool_cursor_wraps() {
         let mut pool = EntropyPool::new();
-        // Mix 32 bytes to advance cursor back to 0
-        pool.mix(&[0xFFu8; 32]);
+        pool.mix_bytes(&[0xFFu8; 32]);
         assert_eq!(pool.cursor, 0, "cursor must wrap around to 0 after 32 bytes");
     }
 
@@ -589,7 +449,7 @@ mod tests {
     fn random_bytes_not_zero() {
         setup_test_rng();
         let mut buf = [0u8; 32];
-        kernel_random_bytes(&mut buf);
+        kernel_random_bytes(&mut buf).expect("seeded test rng");
         assert_ne!(buf, [0u8; 32], "random bytes must not be all zero");
     }
 
@@ -598,8 +458,8 @@ mod tests {
         setup_test_rng();
         let mut buf1 = [0u8; 32];
         let mut buf2 = [0u8; 32];
-        kernel_random_bytes(&mut buf1);
-        kernel_random_bytes(&mut buf2);
+        kernel_random_bytes(&mut buf1).expect("seeded test rng");
+        kernel_random_bytes(&mut buf2).expect("seeded test rng");
         assert_ne!(buf1, buf2, "sequential calls must produce different output");
     }
 
@@ -608,29 +468,23 @@ mod tests {
         // Request more than 64 bytes to exercise the multi-block path.
         setup_test_rng();
         let mut buf = [0u8; 128];
-        kernel_random_bytes(&mut buf);
-        // First and second 64-byte halves must differ.
-        assert_ne!(
-            &buf[..64],
-            &buf[64..],
-            "consecutive blocks must be distinct"
-        );
+        kernel_random_bytes(&mut buf).expect("seeded test rng");
+        assert_ne!(&buf[..64], &buf[64..], "consecutive blocks must be distinct");
     }
 
     #[test]
     fn reseed_changes_output() {
-        // Seed, generate a block, reseed with different key, generate again.
         let key1 = [0x11u8; 32];
         let key2 = [0x22u8; 32];
         let nonce = [0u8; 8];
 
         seed_for_test(&key1, &nonce, 0);
         let mut out1 = [0u8; 32];
-        kernel_random_bytes(&mut out1);
+        kernel_random_bytes(&mut out1).expect("seeded test rng");
 
         seed_for_test(&key2, &nonce, 0);
         let mut out2 = [0u8; 32];
-        kernel_random_bytes(&mut out2);
+        kernel_random_bytes(&mut out2).expect("seeded test rng");
 
         assert_ne!(
             out1, out2,
@@ -645,11 +499,11 @@ mod tests {
 
         seed_for_test(&key, &nonce, 0);
         let mut out1 = [0u8; 64];
-        kernel_random_bytes(&mut out1);
+        kernel_random_bytes(&mut out1).expect("seeded test rng");
 
         seed_for_test(&key, &nonce, 0);
         let mut out2 = [0u8; 64];
-        kernel_random_bytes(&mut out2);
+        kernel_random_bytes(&mut out2).expect("seeded test rng");
 
         assert_eq!(
             out1, out2,
@@ -658,15 +512,20 @@ mod tests {
     }
 
     #[test]
-    fn uninitialized_returns_zeros() {
-        // Force uninitialized state.
+    fn uninitialized_fails_closed() {
+        // #284: an unseeded CSPRNG must fail closed — return an error and leave
+        // the caller buffer untouched, never emitting (zeroed) key material.
         // SAFETY: test-only manipulation of global state.
         unsafe {
             CSPRNG = None;
             INITIALIZED = false;
         }
         let mut buf = [0xFFu8; 16];
-        kernel_random_bytes(&mut buf);
-        assert_eq!(buf, [0u8; 16], "uninitialized CSPRNG must return zeros");
+        let result = kernel_random_bytes(&mut buf);
+        assert_eq!(result, Err(CsprngError::NotSeeded), "must signal failure");
+        assert_eq!(
+            buf, [0xFFu8; 16],
+            "buffer must be left untouched on fail-closed"
+        );
     }
 }
