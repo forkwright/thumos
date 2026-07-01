@@ -33,10 +33,18 @@ use crate::page;
 /// Size classes, in bytes. Must be powers-of-two and strictly increasing.
 const SLAB_SIZES: [usize; 7] = [32, 64, 128, 256, 512, 1024, 2048];
 
-/// Maximum slab pages per size class. 8 pages × 7 classes = 56 pages total.
-/// Each page at the smallest class (32 bytes) holds 128 objects, so the
-/// practical object ceiling is well above what early boot needs.
-const MAX_SLABS: usize = 8;
+/// Maximum slab pages per size class. 32 pages × 7 classes = 224 pages total
+/// worst case, within `kconfig::HEAP_PAGES` (256 pages / 1 MB) even if every
+/// class maxes out simultaneously (pages are claimed lazily, not
+/// pre-allocated, so this is a ceiling, not a reservation).
+///
+/// WHY 32: the smallest classes need concurrent-object headroom well past
+/// "early boot" — e.g. the 128-byte class holds `32 * (PAGE_SIZE / 128) =
+/// 1024` objects. A cap of 8 (256 objects for the 128-byte class) is
+/// exhausted by realistic workloads (many live pipe buffers / small
+/// structs) well before physical RAM is under any pressure, which
+/// surfaces as spurious allocation failure.
+const MAX_SLABS: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Intrusive free list node

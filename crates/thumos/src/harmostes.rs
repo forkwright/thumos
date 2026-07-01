@@ -447,10 +447,22 @@ impl MatrixClient {
     ///
     /// Compares `current_tick` against `last_sync_tick + sync_interval_ms`.
     /// For continuous mode (`sync_interval_ms == 0`), always returns `true`.
+    /// For disabled sync (`sync_interval_ms == u64::MAX`, set by
+    /// `update_sync_cadence` in Sentinel/Panic mode), always returns `false`.
     #[must_use]
     pub(crate) fn should_sync(&self, current_tick: u64) -> bool {
         if self.sync_interval_ms == 0 {
             return true;
+        }
+        // WHY: u64::MAX is the disabled-sync sentinel (see
+        // `update_sync_cadence`/`build_sync_request`). Handle it explicitly
+        // rather than folding it into the tick-interval arithmetic below:
+        // `u64::MAX / 10` truncates to roughly a tenth of u64::MAX, so a
+        // sufficiently large `current_tick` (e.g. u64::MAX - 1) could still
+        // exceed `last_sync_tick + interval_ticks` and wrongly report due,
+        // defeating the "never sync while disabled" contract.
+        if self.sync_interval_ms == u64::MAX {
+            return false;
         }
         // Ticks are at 10 ms granularity in the kernel tick counter.
         // sync_interval_ms is in real milliseconds, so convert to ticks.

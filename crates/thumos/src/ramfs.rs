@@ -1067,8 +1067,11 @@ mod tests {
 
         let fs = RamFs::from_cpio(&archive);
 
+        // WHY: a zero namesize entry aborts the parse before any file is
+        // inserted (`from_cpio` breaks out of the loop at the first
+        // malformed header), so the archive yields zero files, not one.
         assert_eq!(fs.find("init"), None);
-        assert_eq!(fs.count(), 1);
+        assert_eq!(fs.count(), 0);
     }
 
     #[test]
