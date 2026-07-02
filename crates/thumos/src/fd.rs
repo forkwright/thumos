@@ -416,8 +416,42 @@ pub unsafe fn init_ramfs(fs: crate::ramfs::RamFs) {
     }
 }
 
+/// Maximum distinct ramfs files kept resident in the exec-image cache.
+/// WHY (#222): `ramfs_find` used to leak a fresh heap copy of the file on
+/// every call (every `execve` and kinit spawn), accumulating without bound
+/// across process restarts. Caching by (mount, inode, size) bounds the leak
+/// to at most this many resident images, and makes repeated launches of the
+/// same binary free after the first.
+const ELF_CACHE_SLOTS: usize = 16;
+
+/// One resident cache entry: the (mount, inode, size) it was loaded for, and
+/// the leaked `'static` slice backing it.
+struct ElfCacheEntry {
+    mount_idx: u8,
+    inode_id: u32,
+    size: usize,
+    data: &'static [u8],
+}
+
+/// Cache of previously-leaked `ramfs_find` reads, keyed on (mount, inode,
+/// size). A size mismatch (the file was rewritten to a different length
+/// since it was cached) is treated as a miss, so a stale entry is never
+/// served as if it were current.
+static mut ELF_CACHE: [Option<ElfCacheEntry>; ELF_CACHE_SLOTS] = {
+    const NONE: Option<ElfCacheEntry> = None;
+    [NONE; ELF_CACHE_SLOTS]
+};
+
+/// Next cache slot to evict when all `ELF_CACHE_SLOTS` are occupied
+/// (round-robin).
+static mut ELF_CACHE_NEXT: usize = 0;
+
 /// Look up a file in the mounted filesystems by path.
 /// Returns a reference to the file data, or None if not found.
+///
+/// Repeated lookups of the same (mount, inode, size) are served from a
+/// bounded resident cache instead of leaking a fresh heap copy on every
+/// call (#222).
 ///
 /// # Safety
 ///
@@ -441,12 +475,22 @@ pub unsafe fn ramfs_find(path: &str) -> Option<&'static [u8]> {
             return None;
         }
 
+        let size = stat.size as usize;
+        let mount_idx_u8 = mount_idx as u8;
+
+        // Serve from cache if this (mount, inode, size) was already loaded.
+        let cache = &*core::ptr::addr_of!(ELF_CACHE);
+        for slot in cache.iter().flatten() {
+            if slot.mount_idx == mount_idx_u8 && slot.inode_id == inode_id && slot.size == size {
+                return Some(slot.data);
+            }
+        }
+
         // Read the entire file into a buffer
         // WHY alloc: we need a 'static reference but Filesystem::read copies
         // into a provided buffer. We allocate a Vec, leak it to get 'static
-        // lifetime. This matches the original behavior where ramfs data lived
-        // for the kernel's lifetime.
-        let size = stat.size as usize;
+        // lifetime, and register it in ELF_CACHE so a later lookup of the
+        // same (mount, inode, size) reuses it instead of leaking again.
         if size == 0 {
             return Some(&[]);
         }
@@ -456,6 +500,24 @@ pub unsafe fn ramfs_find(path: &str) -> Option<&'static [u8]> {
             Ok(n) => {
                 buf.truncate(n);
                 let leaked = buf.leak();
+
+                let cache = &mut *core::ptr::addr_of_mut!(ELF_CACHE);
+                let slot_idx = match cache.iter().position(|s| s.is_none()) {
+                    Some(idx) => idx,
+                    None => {
+                        let next = &mut *core::ptr::addr_of_mut!(ELF_CACHE_NEXT);
+                        let idx = *next % ELF_CACHE_SLOTS;
+                        *next = (*next + 1) % ELF_CACHE_SLOTS;
+                        idx
+                    }
+                };
+                cache[slot_idx] = Some(ElfCacheEntry {
+                    mount_idx: mount_idx_u8,
+                    inode_id,
+                    size,
+                    data: leaked,
+                });
+
                 Some(leaked)
             }
             Err(_) => None,
@@ -811,17 +873,12 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
 
     let inode_stat = match fs.stat(entry.inode_id) {
         Ok(s) => s,
-        Err(_) => {
-            let stat = StatBuf {
-                size: 0,
-                file_type: S_IFREG,
-            };
-            unsafe {
-                let dst = stat_buf_ptr as *mut StatBuf;
-                core::ptr::write(dst, stat);
-            }
-            return 0;
-        }
+        // WHY (#249): a real fs.stat() failure (corrupt inode, I/O error) is a
+        // genuine error, unlike the two preceding arms above (mount table /
+        // filesystem absent), which are expected fallbacks for fds without
+        // VFS backing (pipes/sockets). Propagate it instead of fabricating a
+        // zeroed success stat that would mask the failure from the caller.
+        Err(e) => return e.to_errno(),
     };
 
     let file_type = match inode_stat.inode_type {
@@ -1423,6 +1480,22 @@ mod tests {
         assert_eq!(fd, 0, "first open should return fd 0");
     }
 
+    /// #222: repeated ramfs_find on the same file must reuse the cached
+    /// leak, not allocate a fresh copy on every call.
+    #[test]
+    fn ramfs_find_caches_repeated_lookups() {
+        unsafe {
+            setup_test_vfs();
+            let first = ramfs_find("/test.txt").expect("file must be found");
+            let second = ramfs_find("/test.txt").expect("file must be found");
+            assert_eq!(
+                first.as_ptr(), second.as_ptr(),
+                "repeated ramfs_find on the same file must reuse the cached leak (#222)"
+            );
+            assert_eq!(first, second, "cached and fresh reads must return identical content");
+        }
+    }
+
     // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
@@ -1732,6 +1805,25 @@ mod tests {
         let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
         let result = sys_fstat(99, stat as *mut StatBuf as u32);
         assert_eq!(result, EBADF);
+    }
+
+    /// #249: a genuine fs.stat() failure (bogus inode) must propagate a
+    /// non-zero errno, not a fabricated zeroed success stat.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn fstat_propagates_real_stat_error_instead_of_fabricating_success() {
+        unsafe {
+            setup_test_vfs();
+            let table = &mut *core::ptr::addr_of_mut!(FD_TABLE);
+            let bogus = FileDescriptor::from_vfs(0, 9_999, 0);
+            let fd = table.alloc(bogus).expect("test fd alloc must succeed");
+
+            static mut STAT: StatBuf = StatBuf { size: 0, file_type: 0 };
+            let stat = &mut *core::ptr::addr_of_mut!(STAT);
+            let result = sys_fstat(fd as u32, stat as *mut StatBuf as u32);
+
+            assert_ne!(result, 0, "fstat must propagate a real VFS stat error, not fabricate success (#249)");
+        }
     }
 
     // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
