@@ -563,11 +563,14 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 
     match fs.read_mut(inode_id, offset, dst) {
         Ok(n) => {
-            // Update offset in the fd entry
-            let entry = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) }
-                .get_mut(fd_idx)
-                .expect("fd was valid above");
-            entry.offset += n;
+            // Update offset in the fd entry. The fd was validated above, so
+            // this is expected to be Some; guard defensively instead of
+            // panicking (expect_used is denied in kernel code).
+            if let Some(entry) =
+                unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) }.get_mut(fd_idx)
+            {
+                entry.offset += n;
+            }
             n as u32
         }
         Err(e) => e.to_errno(),
