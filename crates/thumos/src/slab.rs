@@ -182,7 +182,7 @@ impl SlabClass {
 // Allocator
 // ---------------------------------------------------------------------------
 
-struct SlabAllocator {
+pub(crate) struct SlabAllocator {
     classes: [SlabClass; 7],
     /// Counts of large (>2048 byte) allocations backed by whole pages.
     large_alloc_count: u64,
@@ -192,7 +192,7 @@ struct SlabAllocator {
 }
 
 impl SlabAllocator {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         SlabAllocator {
             classes: [
                 SlabClass::zeroed(),
@@ -210,7 +210,7 @@ impl SlabAllocator {
     }
 
     /// Wire up size classes. Must be called once before any allocation.
-    fn init(&mut self) {
+    pub(crate) fn init(&mut self) {
         for (cls, &sz) in self.classes.iter_mut().zip(SLAB_SIZES.iter()) {
             cls.obj_size = sz;
         }
@@ -228,7 +228,7 @@ impl SlabAllocator {
     /// # Safety
     ///
     /// Caller must hold the spinlock.
-    unsafe fn alloc_inner(
+    pub(crate) unsafe fn alloc_inner(
         &mut self,
         layout: Layout,
         page_fn: unsafe fn() -> Option<usize>,
@@ -274,7 +274,7 @@ impl SlabAllocator {
     ///
     /// Caller must hold the spinlock. `ptr` must have been returned by
     /// `alloc_inner` and must not have been freed since.
-    unsafe fn dealloc_inner(
+    pub(crate) unsafe fn dealloc_inner(
         &mut self,
         ptr: *mut u8,
         layout: Layout,
@@ -303,7 +303,7 @@ impl SlabAllocator {
 
     /// Return `(total_allocs, total_frees)` across all size classes and large
     /// allocations. Equal counts indicate no leaks.
-    fn stats(&self) -> (u64, u64) {
+    pub(crate) fn stats(&self) -> (u64, u64) {
         let mut allocs = self.large_alloc_count;
         let mut frees = self.large_free_count;
         for cls in &self.classes {
@@ -452,11 +452,18 @@ mod tests {
     // Fake page allocator for tests
     // -----------------------------------------------------------------------
 
-    // 64 pages of static backing storage. No alignment padding needed because
-    // PAGE_SIZE is 4096, which is naturally aligned for a static [u8; N].
+    // 64 pages of static backing storage, forced to page alignment.
+    // WHY repr(align): a bare `static [u8; N]` has alignment 1, so the
+    // compiler may place it at any byte address (it landed on 0x5a953669 on a
+    // CI runner). The slab casts these bytes to `*mut FreeNode` and
+    // dereferences them, so the pool must be page-aligned to match
+    // production's page-aligned `alloc_page` — otherwise the debug
+    // misaligned-pointer-dereference check aborts nondeterministically
+    // (passed locally, SIGABRT on CI).
     const TEST_PAGES: usize = 64;
-    static mut TEST_POOL: [u8; TEST_PAGES * page::PAGE_SIZE] =
-        [0u8; TEST_PAGES * page::PAGE_SIZE];
+    #[repr(align(4096))]
+    struct AlignedPool([u8; TEST_PAGES * page::PAGE_SIZE]);
+    static mut TEST_POOL: AlignedPool = AlignedPool([0u8; TEST_PAGES * page::PAGE_SIZE]);
     static mut TEST_NEXT_PAGE: usize = 0;
     static mut TEST_FREED_PAGES: [usize; TEST_PAGES] = [0; TEST_PAGES];
     static mut TEST_FREED_COUNT: usize = 0;

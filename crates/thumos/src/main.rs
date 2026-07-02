@@ -127,14 +127,25 @@ mod telephony;
 #[cfg(test)]
 mod telephony_mock;
 mod telephony_parser;
-#[cfg(not(test))]
 mod syscall;
-#[cfg(not(test))]
 mod time;
 #[cfg(not(test))]
 mod timer;
+// WHY(host-test): time::sys_clock_gettime reads the ARM generic timer (CP15
+// CNTPCT/CNTFRQ), which is ARM-only. Under test a stub returns fixed sane
+// values so time is host-testable without dragging in CP15 asm. Production
+// is unaffected.
+#[cfg(test)]
+#[path = "timer_stub.rs"]
+mod timer;
 mod ui;
 #[cfg(not(test))]
+mod uart;
+// WHY(host-test): syscall's stdout (fd 1) and unknown-syscall debug paths
+// write to the MT6739 UART (ttyMT0 MMIO), which is ARM-only. Under test a
+// stub swallows output so syscall is host-testable. Production is unaffected.
+#[cfg(test)]
+#[path = "uart_stub.rs"]
 mod uart;
 mod usb;
 mod vfs;

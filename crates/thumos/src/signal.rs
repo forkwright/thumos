@@ -202,16 +202,14 @@ impl SignalState {
 }
 
 // ---------------------------------------------------------------------------
-// Syscall implementations — only compiled in kernel (not test) mode because
-// sys_sigaction, sys_kill, sys_sigreturn call crate::process which is
-// #[cfg(not(test))] gated in main.rs.
+// Syscall implementations. Host-testable since `crate::process` (their only
+// hardware-adjacent dependency) was un-gated; they touch no asm/MMIO, so they
+// are compiled on both targets.
 // ---------------------------------------------------------------------------
 
 /// Error: invalid argument (two's complement -22, matches Linux EINVAL).
-#[cfg(not(test))]
 const EINVAL: u32 = 0u32.wrapping_sub(22);
 /// Error: no such process (two's complement -3, matches Linux ESRCH).
-#[cfg(not(test))]
 const ESRCH: u32 = 0u32.wrapping_sub(3);
 /// Error: operation not permitted (two's complement -1, matches Linux EPERM).
 #[cfg_attr(not(test), allow(dead_code))]
@@ -227,7 +225,6 @@ const EPERM: u32 = 0u32.wrapping_sub(1);
 /// Returns 0 on success, or an error code:
 /// - `EINVAL` — unrecognised signal number
 /// - `EPERM` — attempt to catch or ignore SIGKILL
-#[cfg(not(test))]
 pub(crate) fn sys_sigaction(signum: u32, handler_ptr: u32) -> u32 {
     let Some(sig) = Signal::from_u32(signum) else {
         return EINVAL;
@@ -267,7 +264,6 @@ pub(crate) fn sys_sigaction(signum: u32, handler_ptr: u32) -> u32 {
 /// - `EINVAL` — unrecognised signal number
 /// - `ESRCH` — target PID not found or not alive
 /// - `EPERM` — caller lacks `CAP_KILL` and target is a different process (REQ-09)
-#[cfg(not(test))]
 pub(crate) fn sys_kill(pid: u32, signum: u32) -> u32 {
     let Some(sig) = Signal::from_u32(signum) else {
         return EINVAL;
@@ -307,7 +303,6 @@ pub(crate) fn sys_kill(pid: u32, signum: u32) -> u32 {
 ///
 /// Returns 0 (the value is placed in r0, but the handler will overwrite
 /// it from the restored frame before returning to user mode).
-#[cfg(not(test))]
 pub(crate) fn sys_sigreturn() -> u32 {
     // SAFETY: clear_current_pending accesses PROCS via addr_of_mut!.
     unsafe { crate::process::clear_any_pending(); }

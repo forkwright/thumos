@@ -7,7 +7,6 @@
 //! The loader allocates pages for each segment, copies the data,
 //! and returns the entry point address for process creation.
 
-#[cfg(not(test))]
 use crate::page;
 
 /// ELF magic: 0x7F 'E' 'L' 'F'
@@ -63,7 +62,6 @@ struct Elf32Phdr {
 }
 
 /// Result of loading an ELF binary.
-#[cfg(not(test))]
 pub(crate) struct LoadedElf {
     /// Entry point address.
     pub entry: usize,
@@ -185,7 +183,6 @@ struct ValidatedElf {
 ///
 /// The loaded code will execute with kernel privileges until we implement
 /// user/kernel memory separation (Wave 4+).
-#[cfg(not(test))]
 pub(crate) fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
     let (entry, validated) = validate(data)?;
     let mut pages_used = 0;
