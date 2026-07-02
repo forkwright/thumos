@@ -272,7 +272,18 @@ pub(crate) fn free_bytes() -> usize {
 mod tests {
     use super::*;
 
-    static mut TEST_BUF_SINGLE: [u8; PAGE_SIZE] = [0u8; PAGE_SIZE];
+    /// Page-aligned static backing buffer for the zeroing tests.
+    ///
+    /// WHY repr(align): `zero_page` writes through `*mut usize`, so the
+    /// backing store must be at least usize-aligned. A bare `static [u8; N]`
+    /// has alignment 1 — the compiler may place it at any byte address, and a
+    /// CI runner did, tripping the debug misaligned-pointer-dereference check
+    /// (SIGABRT) that a locally-lucky address had hidden. Page alignment also
+    /// matches production, where these buffers stand in for real page frames.
+    #[repr(align(4096))]
+    struct AlignedBuf<const N: usize>([u8; N]);
+
+    static mut TEST_BUF_SINGLE: AlignedBuf<PAGE_SIZE> = AlignedBuf([0u8; PAGE_SIZE]);
 
     #[test]
     fn zero_page_clears_every_byte() {
@@ -298,8 +309,8 @@ mod tests {
     }
 
     const TEST_RANGE_PAGES: usize = 3;
-    static mut TEST_BUF_RANGE: [u8; TEST_RANGE_PAGES * PAGE_SIZE] =
-        [0u8; TEST_RANGE_PAGES * PAGE_SIZE];
+    static mut TEST_BUF_RANGE: AlignedBuf<{ TEST_RANGE_PAGES * PAGE_SIZE }> =
+        AlignedBuf([0u8; TEST_RANGE_PAGES * PAGE_SIZE]);
 
     #[test]
     fn zero_page_range_zeroes_every_page_in_range() {
