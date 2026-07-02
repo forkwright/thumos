@@ -1258,6 +1258,10 @@ mod tests {
             status,
             headers: Vec::new(),
             body: body.as_bytes().to_vec(),
+            // NOTE: synthetic mock has no raw wire bytes to derive a real
+            // consumed length from; total_bytes() is not exercised via
+            // this helper (see the total_bytes() tests in http_client.rs).
+            consumed: 0,
         }
     }
 

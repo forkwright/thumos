@@ -54,26 +54,26 @@ static mut FUTEX_WAITERS: [Option<FutexWaiter>; MAX_FUTEX_WAITERS] = {
 
 /// FUTEX_WAIT: if `*addr == val`, block the current process.
 ///
-/// Returns 0 after being woken, or EAGAIN if `*addr != val`.
-///
-/// # Safety
-///
-/// `addr` must be a valid userspace address pointing to a `u32`. On this
-/// kernel the caller is responsible for pointer validity (Wave 4 will add
-/// proper validation).
+/// Returns 0 after being woken, EAGAIN if `*addr != val`, or EINVAL if
+/// `addr` does not lie within user-accessible DRAM (see
+/// `memguard::validate_user_buffer`) — checked before any dereference.
 ///
 /// WHY split: the value-mismatch fast path does not call `crate::process` and
 /// is therefore testable on the host. The register-and-block path is gated
 /// `#[cfg(not(test))]` because `crate::process` is not compiled under test
 /// (it requires ARM-specific code and the full kernel environment).
 pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
-    if addr == 0 {
+    // validate_user_buffer rejects null, kernel-space, MMIO, and
+    // above-RAM addresses in one gate (see memguard.rs) — this also covers
+    // the waiter registration below, which stores this same `addr` for
+    // later comparison in sys_futex_wake without ever dereferencing it.
+    if !crate::memguard::validate_user_buffer(addr as usize, 4) {
         return EINVAL;
     }
 
     // Read the current value atomically (single-core: no racing stores).
-    // SAFETY: addr is a userspace pointer; the kernel trusts it per the
-    // existing syscall pattern. Wave 4 adds proper bounds validation.
+    // SAFETY: validate_user_buffer confirmed [addr, addr+4) lies within
+    // user-accessible DRAM.
     let current_val = unsafe { core::ptr::read_volatile(addr as *const u32) };
 
     if current_val != val {
@@ -203,10 +203,30 @@ mod tests {
     fn futex_wait_returns_eagain_on_mismatch() {
         reset_waiters();
 
-        let word: u32 = 42;
+        // WHY function-local `static mut`: sys_futex_wait now validates
+        // `addr` via validate_user_buffer before dereferencing it. A stack
+        // address (e.g. `&word`) falls outside
+        // [kconfig::KERNEL_END, kconfig::RAM_END) on this host binary and
+        // would be rejected before the mismatch check is ever reached; a
+        // function-local static lands inside that window (see fd.rs tests
+        // for the same pattern).
+        static mut WORD: u32 = 42;
+        // SAFETY: test-only static; single-threaded per test.
+        let addr = unsafe { core::ptr::addr_of!(WORD) as u32 };
+
         // val != *addr → should return EAGAIN immediately without blocking.
-        let result = sys_futex_wait((&word) as *const u32 as u32, 99);
+        let result = sys_futex_wait(addr, 99);
         assert_eq!(result, EAGAIN, "mismatch on futex word should return EAGAIN");
+    }
+
+    #[test]
+    fn futex_wait_rejects_kernel_range_addr() {
+        reset_waiters();
+        // A kernel-range addr must be rejected by validate_user_buffer
+        // before any read_volatile — verified by never reaching the mismatch
+        // path (which would return EAGAIN, not EINVAL).
+        let result = sys_futex_wait(crate::kconfig::KERNEL_LOAD as u32, 0);
+        assert_eq!(result, EINVAL, "kernel-range addr must return EINVAL without a load");
     }
 
     #[test]

@@ -325,12 +325,17 @@ impl Firewall {
             None => return Action::Deny,
         };
 
-        // Check DNS blocklist for UDP port 53 queries (both directions).
-        if info.protocol == Protocol::Udp
+        // WHY: cover port-53 queries over both UDP (the common case) and
+        // DNS-over-TCP (RFC 1035 4.2.2 / RFC 7766 — large/DNSSEC-bearing
+        // responses, or any client that prefers TCP). Restricting this
+        // check to UDP alone let TCP/53 traffic bypass the blocklist
+        // entirely (#296). A parse failure fails closed via
+        // `.unwrap_or(true)` rather than falling through to the
+        // default-allow policy — a malformed payload must not silently
+        // defeat the blocklist (#300).
+        if (info.protocol == Protocol::Udp || info.protocol == Protocol::Tcp)
             && info.dst_port == Some(DNS_PORT)
-            && self
-                .check_dns_blocklist(packet, &info)
-                .is_some_and(|blocked| blocked)
+            && self.check_dns_blocklist(packet, &info).unwrap_or(true)
         {
             self.stats.dns_blocked += 1;
             return Action::Deny;
@@ -350,10 +355,13 @@ impl Firewall {
         }
     }
 
-    /// Extract the DNS payload from a UDP packet and check the blocklist.
+    /// Extract the DNS payload from a UDP or DNS-over-TCP packet and check
+    /// the blocklist.
     ///
-    /// Returns `Some(true)` if blocked, `Some(false)` if not blocked,
-    /// `None` if the DNS payload could not be extracted.
+    /// Returns `Some(true)` if blocked, `Some(false)` if not blocked (or
+    /// not applicable, e.g. an empty-payload TCP control segment), `None`
+    /// if the DNS payload could not be extracted from a segment that
+    /// should carry one.
     fn check_dns_blocklist(&self, packet: &[u8], info: &PacketInfo) -> Option<bool> {
         if self.dns_blocklist.is_empty() {
             return Some(false);
@@ -361,11 +369,45 @@ impl Firewall {
 
         // IP header length.
         let ihl = (packet.first()? & 0x0F) as usize * 4;
-        // UDP payload starts after IP header + 8-byte UDP header.
-        let dns_start = ihl.checked_add(UDP_HEADER_LEN)?;
-        let dns_payload = packet.get(dns_start..)?;
 
-        let _ = info; // info already used for protocol/port check above
+        let dns_payload = match info.protocol {
+            Protocol::Udp => {
+                // UDP payload starts after IP header + 8-byte UDP header.
+                let dns_start = ihl.checked_add(UDP_HEADER_LEN)?;
+                packet.get(dns_start..)?
+            }
+            Protocol::Tcp => {
+                // WHY: the TCP header's own data-offset field gives the
+                // real header length (may exceed TCP_MIN_HEADER_LEN when
+                // options are present) — a fixed 20-byte assumption would
+                // misread the payload for any segment carrying options
+                // (common: MSS, window scale, timestamps).
+                let data_offset_byte = *packet.get(ihl.checked_add(12)?)?;
+                let tcp_header_len = ((data_offset_byte >> 4) as usize) * 4;
+                if tcp_header_len < TCP_MIN_HEADER_LEN {
+                    return None;
+                }
+                let tcp_payload_start = ihl.checked_add(tcp_header_len)?;
+                let tcp_payload = packet.get(tcp_payload_start..)?;
+                if tcp_payload.is_empty() {
+                    // WHY: a pure control segment (SYN/ACK/FIN, no data)
+                    // carries no query. This firewall is stateless (no
+                    // TCP reassembly), so most segments in a DNS-over-TCP
+                    // connection are control-only; fail-closing on those
+                    // would block the handshake itself, breaking TCP DNS
+                    // entirely rather than just filtering it (#296).
+                    return Some(false);
+                }
+                // NOTE: DNS-over-TCP framing (RFC 1035 4.2.2): a 2-byte
+                // big-endian message length prefix precedes the message.
+                if tcp_payload.len() < 2 {
+                    return None;
+                }
+                &tcp_payload[2..]
+            }
+            Protocol::Icmp => return Some(false),
+        };
+
         let domain = extract_query_domain(dns_payload)?;
         Some(self.is_dns_blocked(&domain))
     }
@@ -632,6 +674,38 @@ fn make_ip_tcp(
     pkt[22] = dp[0];
     pkt[23] = dp[1];
     pkt[32] = 0x50; // data offset = 5 (20 bytes)
+    pkt
+}
+
+/// Build a minimal IPv4/TCP packet carrying a payload, for testing
+/// DNS-over-TCP framing (issue #296).
+#[cfg(test)]
+fn make_ip_tcp_with_payload(
+    src: [u8; 4],
+    dst: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    tcp_payload: &[u8],
+) -> alloc::vec::Vec<u8> {
+    let total = 20 + 20 + tcp_payload.len();
+    let mut pkt = alloc::vec![0u8; total];
+    pkt[0] = 0x45; // version=4, IHL=5
+    let tl = (total as u16).to_be_bytes();
+    pkt[2] = tl[0];
+    pkt[3] = tl[1];
+    pkt[9] = PROTO_TCP;
+    pkt[12..16].copy_from_slice(&src);
+    pkt[16..20].copy_from_slice(&dst);
+    let sp = src_port.to_be_bytes();
+    let dp = dst_port.to_be_bytes();
+    pkt[20] = sp[0];
+    pkt[21] = sp[1];
+    pkt[22] = dp[0];
+    pkt[23] = dp[1];
+    pkt[32] = 0x50; // data offset = 5 (20 bytes, no options)
+    if !tcp_payload.is_empty() {
+        pkt[40..].copy_from_slice(tcp_payload);
+    }
     pkt
 }
 
@@ -955,6 +1029,128 @@ mod tests {
         assert_eq!(
             fw.stats().dns_blocked, 0,
             "dns_blocked counter must not increment for clean domain"
+        );
+    }
+
+    #[test]
+    fn dns_blocklist_fails_closed_on_malformed_udp_dns_payload() {
+        // Regression test for issue #300: a truncated/malformed DNS
+        // payload must be denied, not silently allowed through the
+        // default-allow outbound policy.
+        let mut fw = Firewall::new();
+        fw.load_default_blocklist();
+
+        // Header claims QDCOUNT=1 but the payload is truncated before any
+        // QNAME bytes — extract_query_domain must fail to parse this.
+        let malformed = [
+            0x00, 0x01, // ID
+            0x01, 0x00, // flags
+            0x00, 0x01, // QDCOUNT = 1
+            0x00, 0x00, // ANCOUNT
+            0x00, 0x00, // NSCOUNT
+            0x00, 0x00, // ARCOUNT
+        ];
+        let pkt = make_ip_udp([10, 0, 0, 1], [8, 8, 8, 8], 54321, DNS_PORT, &malformed);
+
+        assert_eq!(
+            fw.evaluate_tx(&pkt),
+            Action::Deny,
+            "malformed DNS payload must fail closed, not fall through to default-allow"
+        );
+        assert_eq!(
+            fw.stats().dns_blocked, 1,
+            "dns_blocked counter must increment on fail-closed parse failure"
+        );
+    }
+
+    #[test]
+    fn dns_blocklist_denies_outbound_tcp_dns_query() {
+        // Regression test for issue #296: DNS-over-TCP queries must not
+        // bypass the blocklist.
+        let mut fw = Firewall::new();
+        fw.load_default_blocklist();
+
+        let dns_msg = make_dns_query("app-measurement.com");
+        let mut tcp_payload = (dns_msg.len() as u16).to_be_bytes().to_vec();
+        tcp_payload.extend_from_slice(&dns_msg);
+        let pkt =
+            make_ip_tcp_with_payload([10, 0, 0, 1], [8, 8, 8, 8], 54321, DNS_PORT, &tcp_payload);
+
+        assert_eq!(
+            fw.evaluate_tx(&pkt),
+            Action::Deny,
+            "outbound DNS-over-TCP query for surveillance domain must be denied"
+        );
+        assert_eq!(
+            fw.stats().dns_blocked, 1,
+            "dns_blocked counter must increment for blocked TCP DNS query"
+        );
+    }
+
+    #[test]
+    fn dns_blocklist_allows_clean_tcp_dns_query() {
+        let mut fw = Firewall::new();
+        fw.load_default_blocklist();
+
+        let dns_msg = make_dns_query("example.com");
+        let mut tcp_payload = (dns_msg.len() as u16).to_be_bytes().to_vec();
+        tcp_payload.extend_from_slice(&dns_msg);
+        let pkt =
+            make_ip_tcp_with_payload([10, 0, 0, 1], [8, 8, 8, 8], 54321, DNS_PORT, &tcp_payload);
+
+        assert_eq!(
+            fw.evaluate_tx(&pkt),
+            Action::Allow,
+            "outbound DNS-over-TCP query for clean domain must be allowed"
+        );
+        assert_eq!(fw.stats().dns_blocked, 0);
+    }
+
+    #[test]
+    fn dns_blocklist_ignores_tcp_control_segments() {
+        // A SYN/pure-ACK segment on port 53 carries no DNS payload — it
+        // must not be treated as an unparseable query and fail-closed, or
+        // the TCP handshake to any DNS server would be blocked outright.
+        let mut fw = Firewall::new();
+        fw.load_default_blocklist();
+
+        let syn_pkt = make_ip_tcp([10, 0, 0, 1], [8, 8, 8, 8], 54321, DNS_PORT);
+        assert_eq!(
+            fw.evaluate_tx(&syn_pkt),
+            Action::Allow,
+            "empty-payload TCP/53 control segment must not be fail-closed-blocked"
+        );
+        assert_eq!(
+            fw.stats().dns_blocked, 0,
+            "control segment must not increment dns_blocked"
+        );
+    }
+
+    #[test]
+    fn dns_blocklist_fails_closed_on_malformed_tcp_dns_payload() {
+        // Malformed DNS-over-TCP payload (a length prefix followed by a
+        // body too short to be a real DNS header) must be denied, not
+        // silently allowed through (#300).
+        let mut fw = Firewall::new();
+        fw.load_default_blocklist();
+
+        let garbage_payload = [0x00, 0x04, 0xFF, 0xFF, 0xFF, 0xFF]; // len=4, garbage body
+        let pkt = make_ip_tcp_with_payload(
+            [10, 0, 0, 1],
+            [8, 8, 8, 8],
+            54321,
+            DNS_PORT,
+            &garbage_payload,
+        );
+
+        assert_eq!(
+            fw.evaluate_tx(&pkt),
+            Action::Deny,
+            "malformed DNS-over-TCP payload must fail closed"
+        );
+        assert_eq!(
+            fw.stats().dns_blocked, 1,
+            "dns_blocked counter must increment on fail-closed TCP parse failure"
         );
     }
 

@@ -138,39 +138,6 @@ impl DevFs {
         inode_id < NUM_INODES
     }
 
-    /// Read from a device, with mutable access for PRNG state.
-    ///
-    /// This is the primary read implementation. The trait `read` method
-    /// (which takes `&self`) cannot mutate the PRNG, so `/dev/urandom` reads
-    /// must go through this method when mutable access is available.
-    ///
-    /// # Errors
-    ///
-    /// - `VfsError::IsADirectory` if `inode_id` is the root directory (0).
-    /// - `VfsError::NotFound` if `inode_id` is out of range.
-    pub(crate) fn read_mut(
-        &mut self,
-        inode_id: u32,
-        _offset: u64,
-        buf: &mut [u8],
-    ) -> Result<usize, VfsError> {
-        match inode_id {
-            ROOT_INODE => Err(VfsError::IsADirectory),
-            NULL_INODE => Ok(0),
-            ZERO_INODE => {
-                for b in buf.iter_mut() {
-                    *b = 0;
-                }
-                Ok(buf.len())
-            }
-            URANDOM_INODE => {
-                self.rng.fill_bytes(buf);
-                Ok(buf.len())
-            }
-            TTYMT0_INODE | FB0_INODE | BT0_INODE | GPS0_INODE => Ok(0),
-            _ => Err(VfsError::NotFound),
-        }
-    }
 }
 
 impl Filesystem for DevFs {
@@ -234,8 +201,8 @@ impl Filesystem for DevFs {
     ///
     /// - `/dev/null` (1): always returns `Ok(0)` (EOF).
     /// - `/dev/zero` (2): fills buffer with `0x00`, returns `Ok(buf.len())`.
-    /// - `/dev/urandom` (3): returns `Err(VfsError::IoError)` — use `read_mut`
-    ///   when mutable access is available.
+    /// - `/dev/urandom` (3): returns `Err(VfsError::RequiresMut)` — use
+    ///   `read_mut` when mutable access is available.
     /// - `/dev/ttyMT0` (4): stub, returns `Ok(0)`.
     /// - `/dev/fb0` (5): stub, returns `Ok(0)`.
     /// - `/dev/bt0` (6): stub, returns `Ok(0)`.
@@ -245,7 +212,8 @@ impl Filesystem for DevFs {
     ///
     /// - `VfsError::IsADirectory` if `inode_id` is the root directory (0).
     /// - `VfsError::NotFound` if `inode_id` is out of range.
-    /// - `VfsError::IoError` for urandom (PRNG needs `&mut self`).
+    /// - `VfsError::RequiresMut` for urandom (PRNG needs `&mut self`; call
+    ///   `read_mut` instead).
     fn read(&self, inode_id: u32, _offset: u64, buf: &mut [u8]) -> Result<usize, VfsError> {
         match inode_id {
             ROOT_INODE => Err(VfsError::IsADirectory),
@@ -256,10 +224,31 @@ impl Filesystem for DevFs {
                 }
                 Ok(buf.len())
             }
-            // urandom needs &mut self for PRNG; callers should use read_mut().
-            URANDOM_INODE => Err(VfsError::IoError),
+            // urandom needs &mut self for PRNG; callers must use read_mut().
+            URANDOM_INODE => Err(VfsError::RequiresMut),
             TTYMT0_INODE | FB0_INODE | BT0_INODE | GPS0_INODE => Ok(0),
             _ => Err(VfsError::NotFound),
+        }
+    }
+
+    /// Read from a device, with mutable access for PRNG state.
+    ///
+    /// The only path that can serve `/dev/urandom`: the trait's `read()`
+    /// (which takes `&self`) cannot mutate the PRNG and returns
+    /// `VfsError::RequiresMut` for that inode instead. Every other inode
+    /// delegates to `read()`.
+    ///
+    /// # Errors
+    ///
+    /// Same as `read()`, minus `RequiresMut` (this method serves every inode
+    /// `read()` can, plus urandom).
+    fn read_mut(&mut self, inode_id: u32, offset: u64, buf: &mut [u8]) -> Result<usize, VfsError> {
+        match inode_id {
+            URANDOM_INODE => {
+                self.rng.fill_bytes(buf);
+                Ok(buf.len())
+            }
+            _ => self.read(inode_id, offset, buf),
         }
     }
 
@@ -402,6 +391,27 @@ mod tests {
             !buf.iter().all(|&b| b == 0),
             "/dev/urandom output must not be all zeros"
         );
+    }
+
+    #[test]
+    fn urandom_read_immutable_returns_requires_mut() {
+        let devfs = DevFs::new(42);
+        let mut buf = [0u8; 8];
+        let result = devfs.read(URANDOM_INODE, 0, &mut buf);
+        assert_eq!(
+            result,
+            Err(VfsError::RequiresMut),
+            "/dev/urandom via the immutable read() must signal RequiresMut, not a generic IoError"
+        );
+    }
+
+    #[test]
+    fn read_mut_non_urandom_delegates_to_read() {
+        let mut devfs = DevFs::new(42);
+        let mut buf = [0xFFu8; 8];
+        let result = devfs.read_mut(ZERO_INODE, 0, &mut buf);
+        assert_eq!(result, Ok(8));
+        assert!(buf.iter().all(|&b| b == 0), "read_mut must delegate ZERO_INODE to read()'s zero-fill behavior");
     }
 
     #[test]

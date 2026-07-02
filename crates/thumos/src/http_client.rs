@@ -92,6 +92,13 @@ pub enum HttpError {
     EmptyHost,
     /// The path field in a request is empty.
     EmptyPath,
+    /// The path field contains a CR or LF byte (CRLF/header injection).
+    InvalidPath,
+    /// The host field contains a CR or LF byte (CRLF/header injection).
+    InvalidHost,
+    /// A header name or value contains a CR or LF byte (CRLF/header
+    /// injection).
+    InvalidHeader,
 }
 
 impl fmt::Display for HttpError {
@@ -107,6 +114,9 @@ impl fmt::Display for HttpError {
             Self::BodyTooLarge => write!(f, "response body too large"),
             Self::EmptyHost => write!(f, "empty host in HTTP request"),
             Self::EmptyPath => write!(f, "empty path in HTTP request"),
+            Self::InvalidPath => write!(f, "path contains CR or LF (CRLF injection)"),
+            Self::InvalidHost => write!(f, "host contains CR or LF (CRLF injection)"),
+            Self::InvalidHeader => write!(f, "header contains CR or LF (CRLF injection)"),
         }
     }
 }
@@ -171,6 +181,15 @@ pub struct HttpRequest {
     pub body: Option<Vec<u8>>,
 }
 
+/// Return true if `s` contains a bare CR (`\r`) or LF (`\n`) byte.
+///
+/// WHY: any caller-supplied field written into the HTTP wire buffer
+/// without this check enables CRLF/header injection (CWE-93) — see
+/// issue #289.
+fn contains_crlf(s: &str) -> bool {
+    s.bytes().any(|b| b == b'\r' || b == b'\n')
+}
+
 impl HttpRequest {
     /// Create a new request with the given method, host, and path.
     ///
@@ -219,6 +238,21 @@ impl HttpRequest {
         }
         if self.path.is_empty() {
             return Err(HttpError::EmptyPath);
+        }
+        // WHY: reject CR/LF in any caller-supplied field before it is
+        // written to the wire buffer. An untrusted value (e.g. a Matrix
+        // room ID from a hostile homeserver) containing "\r\n" could
+        // otherwise inject additional request headers (CWE-93, #289).
+        if contains_crlf(&self.path) {
+            return Err(HttpError::InvalidPath);
+        }
+        if contains_crlf(&self.host) {
+            return Err(HttpError::InvalidHost);
+        }
+        for (name, value) in &self.headers {
+            if contains_crlf(name) || contains_crlf(value) {
+                return Err(HttpError::InvalidHeader);
+            }
         }
 
         // Estimate capacity: request line + host header + other headers + body.
@@ -297,6 +331,10 @@ pub struct HttpResponse {
     pub headers: Vec<(String, String)>,
     /// The response body (may be empty).
     pub body: Vec<u8>,
+    /// Total bytes consumed from the raw input by [`parse`](Self::parse)
+    /// (header block + `\r\n\r\n` + body). Backing store for
+    /// [`total_bytes`](Self::total_bytes).
+    pub(crate) consumed: usize,
 }
 
 impl HttpResponse {
@@ -364,10 +402,13 @@ impl HttpResponse {
             }
         };
 
+        let consumed = body_start + body.len();
+
         Ok(Self {
             status,
             headers,
             body,
+            consumed,
         })
     }
 
@@ -407,11 +448,7 @@ impl HttpResponse {
     /// the receive buffer after a successful parse.
     #[must_use]
     pub(crate) fn total_bytes(&self) -> usize {
-        // We need to recompute: header block + \r\n\r\n + body.
-        // This is approximate — the caller should track the original
-        // data length passed to parse(). Provided for convenience.
-        // In practice, the caller passes exactly the right amount.
-        0 // Callers should use the data slice length.
+        self.consumed
     }
 }
 
@@ -795,6 +832,48 @@ mod tests {
         assert_eq!(result, Err(HttpError::EmptyPath));
     }
 
+    #[test]
+    fn build_request_rejects_crlf_in_path() {
+        let req = get("matrix.example.com", "/path\r\nX-Injected: evil");
+        let result = req.build_raw();
+        assert_eq!(result, Err(HttpError::InvalidPath));
+    }
+
+    #[test]
+    fn build_request_rejects_bare_lf_in_path() {
+        // A bare LF (no CR) is also a valid line terminator for many
+        // lenient HTTP parsers — must be rejected too, not just CRLF pairs.
+        let req = get("matrix.example.com", "/path\nX-Injected: evil");
+        let result = req.build_raw();
+        assert_eq!(result, Err(HttpError::InvalidPath));
+    }
+
+    #[test]
+    fn build_request_rejects_crlf_in_host() {
+        let req = get("matrix.example.com\r\nX-Injected: evil", "/path");
+        let result = req.build_raw();
+        assert_eq!(result, Err(HttpError::InvalidHost));
+    }
+
+    #[test]
+    fn build_request_rejects_crlf_in_header_name() {
+        let mut req = get("matrix.example.com", "/path");
+        req.add_header(String::from("X-Evil\r\nX-Injected"), String::from("value"));
+        let result = req.build_raw();
+        assert_eq!(result, Err(HttpError::InvalidHeader));
+    }
+
+    #[test]
+    fn build_request_rejects_crlf_in_header_value() {
+        let mut req = get("matrix.example.com", "/path");
+        req.add_header(
+            String::from("X-Custom"),
+            String::from("value\r\nX-Injected: evil"),
+        );
+        let result = req.build_raw();
+        assert_eq!(result, Err(HttpError::InvalidHeader));
+    }
+
     // -- HttpResponse::parse --
 
     #[test]
@@ -811,6 +890,31 @@ mod tests {
             Some("application/json")
         );
         assert_eq!(resp.content_length(), Some(15));
+    }
+
+    #[test]
+    fn total_bytes_matches_input_length() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\"}";
+        let resp = HttpResponse::parse(raw).ok().unwrap(); // ok: test
+        assert_eq!(
+            resp.total_bytes(),
+            raw.len(),
+            "total_bytes() must equal the exact input-slice length for a well-formed response"
+        );
+    }
+
+    #[test]
+    fn total_bytes_excludes_trailing_bytes_after_body() {
+        // Bytes after the Content-Length-bounded body (e.g. the start of
+        // a second pipelined/forged response, issue #294) must not be
+        // counted as consumed.
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}TRAILING";
+        let resp = HttpResponse::parse(raw).ok().unwrap(); // ok: test
+        assert_eq!(
+            resp.total_bytes(),
+            raw.len() - b"TRAILING".len(),
+            "total_bytes() must not include bytes past the parsed body"
+        );
     }
 
     #[test]

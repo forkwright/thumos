@@ -14,10 +14,19 @@
 
 extern crate alloc;
 use alloc::boxed::Box;
+use crate::memguard::validate_user_buffer;
 use crate::vfs::{self, InodeType, MountTable, VfsError};
 
 /// Maximum number of open file descriptors per process.
 pub(crate) const MAX_FDS: usize = 256;
+
+/// Maximum path length accepted from userspace for path-taking syscalls
+/// (open/stat/mkdir/unlink/chdir), mirroring `sys_execve`'s bound. WHY: an
+/// unbounded caller-supplied length drives an unbounded UTF-8 scan and VFS
+/// path-resolve over the validated buffer — a CPU-time denial of service
+/// from a single syscall, independent of whether the pointer range itself
+/// is valid.
+pub(crate) const MAX_PATH: usize = 256;
 
 /// Error codes matching Linux ARM conventions (two's complement negation).
 /// WHY: toolchain compatibility with userspace built against Linux headers.
@@ -459,10 +468,16 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
     if path_ptr == 0 || len == 0 {
         return ENOENT;
     }
+    if len > MAX_PATH {
+        return ENOENT;
+    }
 
-    // SAFETY: path_ptr is a userspace pointer validated non-null above; len
-    // is the caller-supplied path length. Wave 4 will add proper bounds
-    // validation; for now we trust the pointer per the existing syscall pattern.
+    if !validate_user_buffer(path_ptr as usize, len) {
+        return EFAULT;
+    }
+
+    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
+    // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let path = match core::str::from_utf8(path_slice) {
         Ok(s) => s,
@@ -508,6 +523,12 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
+    // Validated ahead of the FD_TABLE/mount-table lookups below (an
+    // early-reject, rather than right at the deref) so a bad buf_ptr is
+    // rejected regardless of fd/mount state.
+    if !validate_user_buffer(buf_ptr as usize, count) {
+        return EFAULT;
+    }
 
     // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
     // reference. Single-core kernel with cooperative scheduling ensures
@@ -522,21 +543,25 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let inode_id = entry.inode_id;
     let offset = entry.offset as u64;
 
-    // SAFETY: init_vfs has been called during kernel init.
-    let mt = match unsafe { get_mount_table() } {
+    // SAFETY: init_vfs has been called during kernel init. Mutable access is
+    // required so devfs can serve /dev/urandom via Filesystem::read_mut()
+    // (its PRNG needs &mut self); every other filesystem's read_mut()
+    // defaults to its immutable read() (see vfs.rs).
+    let mt = match unsafe { get_mount_table_mut() } {
         Some(t) => t,
         None => return EBADF,
     };
-    let fs = match mt.get(mount_idx) {
+    let fs = match mt.get_mut(mount_idx) {
         Some(f) => f,
         None => return EBADF,
     };
 
-    // SAFETY: buf_ptr is a userspace pointer validated non-null above.
-    // Wave 4 will add proper bounds validation.
+    // SAFETY: buf_ptr + count validated by validate_user_buffer above
+    // (before the FD_TABLE/mount-table lookups) to lie within
+    // user-accessible DRAM.
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count) };
 
-    match fs.read(inode_id, offset, dst) {
+    match fs.read_mut(inode_id, offset, dst) {
         Ok(n) => {
             // Update offset in the fd entry
             let entry = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) }
@@ -565,6 +590,12 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
+    // Validated ahead of the FD_TABLE/mount-table lookups below (an
+    // early-reject, rather than right at the deref) so a bad buf_ptr is
+    // rejected regardless of fd/mount state.
+    if !validate_user_buffer(buf_ptr as usize, count) {
+        return EFAULT;
+    }
 
     // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
     // reference. Single-core cooperative kernel ensures exclusive access.
@@ -589,7 +620,9 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
         None => return EBADF,
     };
 
-    // SAFETY: buf_ptr is a userspace pointer validated non-null above.
+    // SAFETY: buf_ptr + count validated by validate_user_buffer above
+    // (before the FD_TABLE/mount-table lookups) to lie within
+    // user-accessible DRAM.
     let src = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, count) };
 
     match fs.write(inode_id, offset, src) {
@@ -639,11 +672,20 @@ pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
     if path_ptr == 0 || len == 0 {
         return ENOENT;
     }
+    if len > MAX_PATH {
+        return ENOENT;
+    }
     if stat_buf_ptr == 0 {
         return EFAULT;
     }
+    if !validate_user_buffer(path_ptr as usize, len)
+        || !validate_user_buffer(stat_buf_ptr as usize, core::mem::size_of::<StatBuf>())
+    {
+        return EFAULT;
+    }
 
-    // SAFETY: path_ptr is validated non-null above.
+    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
+    // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let path = match core::str::from_utf8(path_slice) {
         Ok(s) => s,
@@ -712,6 +754,13 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
         Some(e) => *e,
         None => return EBADF,
     };
+
+    // Validated once the fd is confirmed to exist — every return path below
+    // (mount-absent, fs-absent, fs.stat() error, and success) writes through
+    // stat_buf_ptr, so this one guard covers all four unsafe writes.
+    if !validate_user_buffer(stat_buf_ptr as usize, core::mem::size_of::<StatBuf>()) {
+        return EFAULT;
+    }
 
     // SAFETY: init_vfs has been called during kernel init.
     let mt = match unsafe { get_mount_table() } {
@@ -979,6 +1028,9 @@ pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
+    if !validate_user_buffer(buf_ptr as usize, size as usize) {
+        return EFAULT;
+    }
 
     // SAFETY: single-core cooperative kernel.
     let cwd = unsafe { get_cwd() };
@@ -989,7 +1041,9 @@ pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
         return EINVAL;
     }
 
-    // SAFETY: buf_ptr is validated non-null above; size is sufficient.
+    // SAFETY: validate_user_buffer confirmed [buf_ptr, buf_ptr+size) lies
+    // within user-accessible DRAM; size is sufficient for cwd_bytes plus the
+    // null terminator (checked above).
     unsafe {
         let dst = buf_ptr as *mut u8;
         core::ptr::copy_nonoverlapping(cwd_bytes.as_ptr(), dst, cwd_bytes.len());
@@ -1016,8 +1070,16 @@ pub(crate) fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
     if path_ptr == 0 || len == 0 {
         return EINVAL;
     }
+    if len > MAX_PATH {
+        return ENOENT;
+    }
 
-    // SAFETY: path_ptr is validated non-null above.
+    if !validate_user_buffer(path_ptr as usize, len) {
+        return EFAULT;
+    }
+
+    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
+    // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let path = match core::str::from_utf8(path_slice) {
         Ok(s) => s,
@@ -1073,8 +1135,16 @@ pub(crate) fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
     if path_ptr == 0 || len == 0 {
         return EINVAL;
     }
+    if len > MAX_PATH {
+        return ENOENT;
+    }
 
-    // SAFETY: path_ptr is validated non-null above.
+    if !validate_user_buffer(path_ptr as usize, len) {
+        return EFAULT;
+    }
+
+    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
+    // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let path = match core::str::from_utf8(path_slice) {
         Ok(s) => s,
@@ -1127,8 +1197,16 @@ pub(crate) fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
     if path_ptr == 0 || len == 0 {
         return EINVAL;
     }
+    if len > MAX_PATH {
+        return ENOENT;
+    }
 
-    // SAFETY: path_ptr is validated non-null above.
+    if !validate_user_buffer(path_ptr as usize, len) {
+        return EFAULT;
+    }
+
+    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
+    // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let path = match core::str::from_utf8(path_slice) {
         Ok(s) => s,
@@ -1363,7 +1441,15 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert_eq!(fd, 0);
 
-        let mut buf = [0u8; 64];
+        // WHY function-local `static mut`: sys_read now validates buf_ptr via
+        // validate_user_buffer before dereferencing it. This binary's PIE
+        // image (hence any `static`) loads inside
+        // [kconfig::KERNEL_END, kconfig::RAM_END) on this host toolchain;
+        // a stack array does not (verified: glibc places the per-test-thread
+        // stack near the top of the 32-bit address space, above RAM_END).
+        static mut BUF: [u8; 64] = [0u8; 64];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let bytes_read = sys_read(fd, buf.as_mut_ptr() as u32, 64);
         assert_eq!(bytes_read, 14); // "Hello, thumos!" is 14 bytes
         assert_eq!(&buf[..14], b"Hello, thumos!");
@@ -1384,7 +1470,9 @@ mod tests {
         let path = b"/test.txt";
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
 
-        let mut buf = [0u8; 64];
+        static mut BUF: [u8; 64] = [0u8; 64];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let _ = sys_read(fd, buf.as_mut_ptr() as u32, 64);
 
         // Second read should return 0 (EOF)
@@ -1408,7 +1496,9 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert_eq!(sys_close(fd), 0);
 
-        let mut buf = [0u8; 64];
+        static mut BUF: [u8; 64] = [0u8; 64];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let result = sys_read(fd, buf.as_mut_ptr() as u32, 64);
         assert_eq!(result, EBADF, "read after close must return EBADF");
     }
@@ -1432,7 +1522,9 @@ mod tests {
         let new_pos = sys_lseek(fd, 7, SEEK_SET);
         assert_eq!(new_pos, 7);
 
-        let mut buf = [0u8; 32];
+        static mut BUF: [u8; 32] = [0u8; 32];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let bytes_read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
         assert_eq!(bytes_read, 7); // "thumos!" is 7 bytes
         assert_eq!(&buf[..7], b"thumos!");
@@ -1456,7 +1548,9 @@ mod tests {
         let new_pos = sys_lseek(fd, 0, SEEK_END);
         assert_eq!(new_pos, 14);
 
-        let mut buf = [0u8; 32];
+        static mut BUF: [u8; 32] = [0u8; 32];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let bytes_read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
         assert_eq!(bytes_read, 0, "read at EOF (via SEEK_END) must return 0");
     }
@@ -1481,14 +1575,18 @@ mod tests {
         assert_eq!(fd1, 1, "dup should return lowest available fd");
 
         // Read from fd0 — should not affect fd1's offset
-        let mut buf = [0u8; 5];
+        static mut BUF: [u8; 5] = [0u8; 5];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let _ = sys_read(fd0, buf.as_mut_ptr() as u32, 5);
 
         // fd1 should still read from offset 0
-        let mut buf2 = [0u8; 5];
+        static mut BUF2: [u8; 5] = [0u8; 5];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
         let bytes = sys_read(fd1, buf2.as_mut_ptr() as u32, 5);
         assert_eq!(bytes, 5);
-        assert_eq!(&buf2, b"Hello");
+        assert_eq!(&*buf2, b"Hello");
     }
 
     // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
@@ -1513,10 +1611,12 @@ mod tests {
         let result = sys_dup2(fd0, fd1);
         assert_eq!(result, 1);
 
-        let mut buf = [0u8; 5];
+        static mut BUF: [u8; 5] = [0u8; 5];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let bytes = sys_read(1, buf.as_mut_ptr() as u32, 5);
         assert_eq!(bytes, 5);
-        assert_eq!(&buf, b"Hello");
+        assert_eq!(&*buf, b"Hello");
     }
 
     // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
@@ -1532,14 +1632,16 @@ mod tests {
             setup_test_vfs();
         }
         let path = b"/test.txt";
-        let mut stat = StatBuf {
+        static mut STAT: StatBuf = StatBuf {
             size: 0,
             file_type: 0,
         };
+        // SAFETY: test-only static; single-threaded per test.
+        let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
         let result = sys_stat(
             path.as_ptr() as u32,
             path.len() as u32,
-            &mut stat as *mut StatBuf as u32,
+            stat as *mut StatBuf as u32,
         );
         assert_eq!(result, 0);
         assert_eq!(stat.size, 14);
@@ -1559,14 +1661,16 @@ mod tests {
             setup_test_vfs();
         }
         let path = b"/nope";
-        let mut stat = StatBuf {
+        static mut STAT: StatBuf = StatBuf {
             size: 0,
             file_type: 0,
         };
+        // SAFETY: test-only static; single-threaded per test.
+        let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
         let result = sys_stat(
             path.as_ptr() as u32,
             path.len() as u32,
-            &mut stat as *mut StatBuf as u32,
+            stat as *mut StatBuf as u32,
         );
         assert_eq!(result, ENOENT);
     }
@@ -1587,11 +1691,13 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert_eq!(fd, 0);
 
-        let mut stat = StatBuf {
+        static mut STAT: StatBuf = StatBuf {
             size: 0,
             file_type: 0,
         };
-        let result = sys_fstat(fd, &mut stat as *mut StatBuf as u32);
+        // SAFETY: test-only static; single-threaded per test.
+        let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
+        let result = sys_fstat(fd, stat as *mut StatBuf as u32);
         assert_eq!(result, 0);
         assert_eq!(stat.size, 6);
         assert_eq!(stat.file_type, S_IFREG);
@@ -1603,11 +1709,13 @@ mod tests {
         unsafe {
             setup_test_vfs();
         }
-        let mut stat = StatBuf {
+        static mut STAT: StatBuf = StatBuf {
             size: 0,
             file_type: 0,
         };
-        let result = sys_fstat(99, &mut stat as *mut StatBuf as u32);
+        // SAFETY: test-only static; single-threaded per test.
+        let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
+        let result = sys_fstat(99, stat as *mut StatBuf as u32);
         assert_eq!(result, EBADF);
     }
 
@@ -1623,7 +1731,9 @@ mod tests {
         unsafe {
             setup_test_vfs();
         }
-        let mut buf = [0u8; 16];
+        static mut BUF: [u8; 16] = [0u8; 16];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let result = sys_getcwd(buf.as_mut_ptr() as u32, 16);
         assert_eq!(result, 0);
         assert_eq!(buf[0], b'/');
@@ -1659,7 +1769,9 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert!(fd < MAX_FDS as u32, "open should succeed");
 
-        let mut buf = [0u8; 32];
+        static mut BUF: [u8; 32] = [0u8; 32];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
         assert_eq!(read, 12);
         assert_eq!(&buf[..12], b"written data");
@@ -1689,6 +1801,33 @@ mod tests {
     // host-safe buffer helpers or leak-on-test heap allocations.
     #[cfg(target_pointer_width = "32")]
     #[test]
+    fn read_dev_urandom_returns_random_bytes() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        let path = b"/dev/urandom";
+        let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert!(fd < MAX_FDS as u32, "opening /dev/urandom should succeed");
+
+        static mut BUF: [u8; 32] = [0u8; 32];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        let read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
+        assert_eq!(read, 32, "sys_read on /dev/urandom must fill the buffer, not return an errno");
+        assert!(
+            buf.iter().any(|&b| b != 0),
+            "sys_read on /dev/urandom must return real entropy, not silently-zeroed/garbage data"
+        );
+    }
+
+    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
+    // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
+    // 64-bit pointers and dereferences garbage. Revisit with
+    // host-safe buffer helpers or leak-on-test heap allocations.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
     fn mkdir_and_verify() {
         // SAFETY: test-only.
         unsafe {
@@ -1699,14 +1838,16 @@ mod tests {
 
         // Stat should show directory
         let path = b"/mydir";
-        let mut stat = StatBuf {
+        static mut STAT: StatBuf = StatBuf {
             size: 0,
             file_type: 0,
         };
+        // SAFETY: test-only static; single-threaded per test.
+        let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
         let r = sys_stat(
             path.as_ptr() as u32,
             path.len() as u32,
-            &mut stat as *mut StatBuf as u32,
+            stat as *mut StatBuf as u32,
         );
         assert_eq!(r, 0);
         assert_eq!(stat.file_type, S_IFDIR);
@@ -1760,7 +1901,9 @@ mod tests {
         assert_eq!(result, 0);
 
         // getcwd should return "/subdir"
-        let mut buf = [0u8; 32];
+        static mut BUF: [u8; 32] = [0u8; 32];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         sys_getcwd(buf.as_mut_ptr() as u32, 32);
         let cwd = core::str::from_utf8(&buf[..7]).expect("utf8");
         assert_eq!(cwd, "/subdir");
@@ -1977,7 +2120,9 @@ mod tests {
 
         // Read back
         let _ = sys_lseek(fd, 0, SEEK_SET);
-        let mut buf = [0u8; 32];
+        static mut BUF: [u8; 32] = [0u8; 32];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
         assert_eq!(read, data.len() as u32);
         assert_eq!(&buf[..data.len()], data);
@@ -2027,5 +2172,114 @@ mod tests {
             assert!(mt.lookup("/dev").is_some(), "/dev should be mounted");
             assert!(mt.lookup("/tmp").is_some(), "/tmp should be mounted");
         }
+    }
+
+    // -- User pointer validation (#223) --
+    //
+    // Every case here is rejected before any pointer is dereferenced, so
+    // these tests are host-safe and pointer-width-independent (unlike the
+    // VFS-backed tests above, gated #[cfg(target_pointer_width = "32")] per
+    // #129). validate_user_buffer's own null/overflow/boundary behavior is
+    // covered by memguard's tests; these confirm each fd-layer entry point
+    // actually calls it.
+
+    /// A non-null, in-range address used as the "already valid" side of a
+    // two-argument validate_user_buffer check — the other (deliberately
+    // bad) argument's rejection short-circuits before either pointer would
+    // be dereferenced.
+    const IN_RANGE_UNBACKED_PTR: u32 = 0x5000_0000;
+
+    #[test]
+    fn sys_open_rejects_oversized_path_len() {
+        // Rejected by the MAX_PATH cap before any slice is built or
+        // validate_user_buffer is consulted — path_ptr is a plausible
+        // in-range value so this isolates the length check.
+        let result = sys_open(IN_RANGE_UNBACKED_PTR, u32::MAX, 0);
+        assert_eq!(result, ENOENT, "path_len > MAX_PATH must return ENOENT before any slice is built");
+    }
+
+    #[test]
+    fn sys_mkdir_rejects_oversized_path_len() {
+        let result = sys_mkdir(IN_RANGE_UNBACKED_PTR, u32::MAX);
+        assert_eq!(result, ENOENT, "path_len > MAX_PATH must return ENOENT before any slice is built");
+    }
+
+    #[test]
+    fn sys_open_rejects_kernel_range_path_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_open(kernel_ptr, 4, 0);
+        assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn sys_read_rejects_kernel_range_buf_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_read(99, kernel_ptr, 4);
+        assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn sys_write_rejects_kernel_range_buf_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_write(99, kernel_ptr, 4);
+        assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn sys_stat_rejects_kernel_range_path_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_stat(kernel_ptr, 4, IN_RANGE_UNBACKED_PTR);
+        assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn sys_stat_rejects_kernel_range_stat_buf_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_stat(IN_RANGE_UNBACKED_PTR, 4, kernel_ptr);
+        assert_eq!(result, EFAULT, "kernel-range stat_buf_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn sys_fstat_rejects_kernel_range_stat_buf_ptr() {
+        // SAFETY: test-only; FD_TABLE reset/alloc is a plain array write.
+        let fd = unsafe {
+            let table = &mut *core::ptr::addr_of_mut!(FD_TABLE);
+            *table = FdTable::new();
+            table
+                .alloc(FileDescriptor::from_vfs(0, 1, 0))
+                .expect("alloc fd") as u32
+        };
+
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_fstat(fd, kernel_ptr);
+        assert_eq!(result, EFAULT, "kernel-range stat_buf_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn sys_getcwd_rejects_kernel_range_buf_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_getcwd(kernel_ptr, 32);
+        assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn sys_mkdir_rejects_kernel_range_path_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_mkdir(kernel_ptr, 4);
+        assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn sys_unlink_rejects_kernel_range_path_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_unlink(kernel_ptr, 4);
+        assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn sys_chdir_rejects_kernel_range_path_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_chdir(kernel_ptr, 4);
+        assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
     }
 }
