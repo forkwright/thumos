@@ -80,6 +80,7 @@ mod gic;
 mod heap;
 mod json_mini;
 mod ipc;
+mod irq;
 mod kconfig;
 mod key_manager;
 mod lock_screen;
