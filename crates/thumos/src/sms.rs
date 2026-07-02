@@ -440,8 +440,7 @@ impl SmsManager {
 
         // DCS: only GSM-7 (0x00) supported in this kernel build.
         let dcs = cur.read_byte()?;
-        let class_bits = (dcs >> 2) & 0x03;
-        if class_bits != 0x00 {
+        if dcs != 0x00 {
             return Err(SmsError::PduDecode);
         }
 
@@ -641,6 +640,36 @@ mod tests {
         assert_eq!(sender, "+1234567890", "sender must decode to +1234567890");
         assert_eq!(msg.body, "Hello", "body must decode to 'Hello'");
         assert!(!msg.read, "incoming message must be unread");
+    }
+
+    #[test]
+    fn handle_incoming_rejects_non_gsm7_dcs() {
+        // WHY: regression test for #306 — bits-3:2-only validation admitted
+        // any DCS whose bits 3:2 were 0b00, letting compressed-GSM-7 (0x20,
+        // 0x30), message-waiting-indication (0xC0), and other non-GSM-7
+        // schemes reach the septet decoder. Only DCS 0x00 is supported.
+        let base: [u8; 24] = [
+            0x00, // SCA len
+            0x00, // first octet (MTI=0)
+            0x0A, // OA len (10 digits)
+            0x91, // OA type (international)
+            0x21, 0x43, 0x65, 0x87, 0x09, // BCD +1234567890
+            0x00, // PID
+            0x00, // DCS (overwritten per case below)
+            0x32, 0x10, 0x51, 0x21, 0x03, 0x00, 0x00, // SCTS
+            0x05, // UDL (5 septets)
+            0xC8, 0x32, 0x9B, 0xFD, 0x06, // "Hello" packed
+        ];
+
+        for &adversarial_dcs in &[0x10u8, 0xF0, 0xC0, 0x20, 0x30] {
+            let mut pdu = base.to_vec();
+            pdu[10] = adversarial_dcs;
+            let result = SmsManager::handle_incoming(&pdu);
+            assert!(
+                matches!(result, Err(SmsError::PduDecode)),
+                "DCS {adversarial_dcs:#04x} must be rejected, not admitted as GSM-7"
+            );
+        }
     }
 
     #[test]

@@ -522,20 +522,15 @@ impl ModeManager {
     }
 
     /// Apply the current effective policy to the power manager.
+    ///
+    /// Delegates to [`crate::power::apply_mode_policy`] — the single
+    /// authoritative `ModePolicy` -> radio-actuation mapping, including
+    /// Mesh/LoRa (#254). Do not hand-roll radio actuation here again: a
+    /// second, independently-drifting copy of this mapping is exactly how
+    /// Mesh went unactuated in two places at once.
     fn apply_radio_policy(&self, pm: &mut PowerManager) {
         let policy = self.effective_policy();
-
-        let cell_state = if policy.cellular_enabled { PowerState::On } else { PowerState::Off };
-        let wifi_state = if policy.wifi_enabled { PowerState::On } else { PowerState::Off };
-        let bt_state = if policy.bluetooth_enabled { PowerState::On } else { PowerState::Off };
-        let gps_state = if policy.gps_enabled { PowerState::On } else { PowerState::Off };
-
-        pm.set_state(Radio::Cellular, cell_state);
-        pm.set_state(Radio::Wifi, wifi_state);
-        pm.set_state(Radio::Bluetooth, bt_state);
-        pm.set_state(Radio::Gps, gps_state);
-        // FM is always off in security modes (not a security-relevant radio).
-        pm.set_state(Radio::Fm, PowerState::Off);
+        crate::power::apply_mode_policy(&policy, pm);
     }
 
     // -----------------------------------------------------------------------
@@ -994,11 +989,13 @@ mod tests {
         assert!(event.keys_zeroized);
         assert_eq!(event.triggered_at, 1000);
 
-        // All radios must be off.
+        // All radios must be off, including Mesh/LoRa (#254).
         assert_eq!(pm.state(Radio::Cellular), PowerState::Off);
         assert_eq!(pm.state(Radio::Wifi), PowerState::Off);
         assert_eq!(pm.state(Radio::Bluetooth), PowerState::Off);
         assert_eq!(pm.state(Radio::Gps), PowerState::Off);
+        assert_eq!(pm.state(Radio::Mesh), PowerState::Off,
+            "Panic must leave the Mesh/LoRa transceiver off (#254)");
     }
 
     // -----------------------------------------------------------------------
@@ -1063,6 +1060,8 @@ mod tests {
         assert_eq!(pm.state(Radio::Wifi), PowerState::Off);
         assert_eq!(pm.state(Radio::Bluetooth), PowerState::Off);
         assert_eq!(pm.state(Radio::Gps), PowerState::Off);
+        assert_eq!(pm.state(Radio::Mesh), PowerState::On,
+            "Covert Lock must keep mesh on (#254)");
 
         // Deactivate Covert Lock — Daily mode restores all radios.
         mm.toggle_covert_lock(&mut pm);
@@ -1072,6 +1071,7 @@ mod tests {
         assert_eq!(pm.state(Radio::Wifi), PowerState::On);
         assert_eq!(pm.state(Radio::Bluetooth), PowerState::On);
         assert_eq!(pm.state(Radio::Gps), PowerState::On);
+        assert_eq!(pm.state(Radio::Mesh), PowerState::On);
     }
 
     // -----------------------------------------------------------------------

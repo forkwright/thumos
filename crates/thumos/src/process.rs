@@ -524,7 +524,7 @@ pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Temporarily mutating CURRENT to deliver the fault message
     // with the faulting PID as sender; CURRENT is restored before returning.
-    unsafe {
+    let sent = unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         if let Some(ref mut proc) = procs[usize::from(faulting_pid)] {
             proc.state = State::Dead;
@@ -533,8 +533,21 @@ pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
         // to faulting_pid so the message arrives with the correct sender identity.
         let saved = CURRENT;
         CURRENT = faulting_pid;
-        ipc::send(0, msg);
+        let sent = ipc::send(0, msg);
         CURRENT = saved;
+        sent
+    };
+
+    // WHY: kinit (PID 0) is the userspace fault supervisor; a full inbox
+    // means this fault notification is silently lost and the Dead process
+    // (already marked above) is never reaped (#252). Surface the drop on
+    // UART, matching the CAPDEN diagnostic pattern in capability.rs.
+    if !sent {
+        use core::fmt::Write;
+
+        use crate::uart::Uart;
+        let mut serial = Uart::new();
+        write!(serial, "FAULTDROP pid={faulting_pid} tag={tag} kinit-inbox-full\r\n").ok();
     }
 }
 
@@ -1880,6 +1893,71 @@ mod tests {
             let msg = ipc::recv().expect("UndefinedInstruction fault must deliver a message to pid 0");
             assert_eq!(msg.tag, 3, "UndefinedInstruction tag must be 3");
             assert_eq!(msg.payload()[0], 1u8, "first payload byte must be faulting PID");
+        }
+    }
+
+    #[test]
+    fn notify_fault_full_inbox_does_not_panic() {
+        // WHY: regression test for #252 — ipc::send's bool return was
+        // previously discarded inside notify_fault; a full kinit inbox must
+        // not panic, and the faulting process must still be marked Dead
+        // even when the notification itself is dropped.
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+
+            let pt0 = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt0,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            let pt1 = mmu::alloc_addr_space().unwrap();
+            procs[1] = Some(Process {
+                pid: 1,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: Some(0),
+                exit_status: 0,
+                page_table_phys: pt1,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            // Saturate PID 0's inbox so ipc::send(0, ...) returns false.
+            for _ in 0..20 {
+                ipc::send(0, ipc::Message::new(99, b"fill"));
+            }
+
+            // Must not panic even though the fault notification cannot be delivered.
+            notify_fault(1, FaultKind::UndefinedInstruction);
+
+            let procs = &*core::ptr::addr_of!(PROCS);
+            assert_eq!(
+                procs[1].as_ref().unwrap().state,
+                State::Dead,
+                "faulting process must still be marked Dead when the fault notification is dropped"
+            );
         }
     }
 
