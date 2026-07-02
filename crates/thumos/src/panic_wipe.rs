@@ -15,9 +15,14 @@
 //!
 //! ## Memory scrub
 //!
-//! After the wipe plan executes (or on normal shutdown), all user-space
-//! page frames are zeroed to prevent cold-boot recovery. Uses the
-//! [`page`] module's frame metadata to iterate allocatable pages.
+//! After the wipe plan executes, every page frame in the managed usable
+//! range is zeroed in place — free and in-use alike — via
+//! [`page::zero_usable_range`], which walks physical addresses directly
+//! and performs no heap allocation (#321: the previous alloc_page-then-
+//! free_page loop only reached free frames and could abort via
+//! `handle_alloc_error` under memory pressure). This is destructive to any
+//! live kernel/user state backed by that range and must be the LAST
+//! action taken before an immediate halt/reboot.
 //!
 //! ## Distress mesh beacon
 //!
@@ -255,7 +260,17 @@ pub(crate) fn build_panic_plan() -> WipePlan {
 /// performed. In dry-run mode, the plan is traversed but no writes occur.
 ///
 /// Returns a [`WipeResult`] summarizing the operation.
-pub(crate) fn execute_panic_wipe(
+///
+/// # Safety
+///
+/// When `dry_run` is `false`, this destroys live memory: step 4
+/// ([`scrub_user_pages`]) zeroes every page frame in the managed usable
+/// range, including pages currently backing the kernel's own heap and any
+/// running process. The caller must treat a non-dry-run call as the LAST
+/// kernel action before an immediate halt/reboot — nothing may read or
+/// write heap/page-backed memory afterward. `dry_run = true` performs no
+/// destructive I/O and carries no such requirement.
+pub(crate) unsafe fn execute_panic_wipe(
     key_manager: &mut KeyManager,
     triggered_at: u64,
     dry_run: bool,
@@ -297,7 +312,10 @@ pub(crate) fn execute_panic_wipe(
     let memory_scrubbed = if dry_run {
         true // Dry-run: report as done.
     } else {
-        scrub_user_pages()
+        // SAFETY: propagated from execute_panic_wipe's own `# Safety`
+        // section — a non-dry-run caller must already be treating this as
+        // the last action before an immediate halt/reboot.
+        unsafe { scrub_user_pages() }
     };
 
     WipeResult {
@@ -308,60 +326,27 @@ pub(crate) fn execute_panic_wipe(
     }
 }
 
-/// Scrub all user-space page frames by zeroing them.
+/// Scrub every page frame in the managed usable range by zeroing it in
+/// place — free and in-use alike.
 ///
-/// Iterates the page allocator's frame space and writes zeros to every
-/// page. This prevents cold-boot attacks from recovering sensitive data
-/// after shutdown or reboot.
+/// Walks the physical page range directly via [`page::zero_usable_range`]
+/// rather than allocating through `page::alloc_page`, so it reaches
+/// frames that are currently in use as well as free ones, and cannot
+/// abort via `handle_alloc_error` regardless of free-page count (#321).
 ///
-/// Returns `true` if the scrub completed, `false` if it was a no-op
-/// (e.g., no free pages to scrub).
-pub(crate) fn scrub_user_pages() -> bool {
-    let free = page::free_count();
-    if free == 0 {
-        return false;
-    }
-
-    // Allocate and zero pages, then free them back.
-    // This ensures every free page frame has been overwritten with zeros.
-    //
-    // WHY we alloc-then-free rather than walking the bitmap directly:
-    // the bitmap is in a static mut (unsafe to access from here), and
-    // alloc_page/free_page are the safe public API. Each page is zero-
-    // filled by the write_volatile loop below, then returned to the pool.
-    let mut scrubbed: usize = 0;
-    let mut pages_to_free = alloc::vec::Vec::new();
-
-    // Allocate as many pages as possible.
-    while let Some(addr) = page::alloc_page() {
-        // Zero the page via volatile writes to prevent dead-store elimination.
-        for offset in (0..page::PAGE_SIZE).step_by(core::mem::size_of::<usize>()) {
-            let ptr = (addr + offset) as *mut u8;
-            for i in 0..core::mem::size_of::<usize>() {
-                // SAFETY: `addr` was returned by alloc_page, which guarantees
-                // it points to a valid, mapped 4 KiB page frame. The offset
-                // is within [0, PAGE_SIZE), so the pointer is within bounds.
-                #[expect(unsafe_code, reason = "volatile write required for memory scrub")]
-                unsafe {
-                    core::ptr::write_volatile(ptr.add(i), 0);
-                }
-            }
-        }
-        pages_to_free.push(addr);
-        scrubbed = scrubbed.saturating_add(1);
-    }
-
-    // Free all pages back.
-    for addr in pages_to_free {
-        // SAFETY: every address in this vec was returned by alloc_page
-        // in the loop above and has not been freed yet.
-        #[expect(unsafe_code, reason = "freeing pages we just allocated")]
-        unsafe {
-            page::free_page(addr);
-        }
-    }
-
-    scrubbed > 0
+/// Returns `true` if any page was scrubbed, `false` if the usable range is
+/// empty (e.g., the page allocator was never initialized — the host test
+/// harness case).
+///
+/// # Safety
+///
+/// See [`page::zero_usable_range`]. This must be the last action taken
+/// before an immediate halt/reboot; it is not yet wired into a live
+/// boot/panic path (Wave 8 integration item).
+pub(crate) unsafe fn scrub_user_pages() -> bool {
+    // SAFETY: propagated from this function's own `# Safety` contract.
+    let zeroed = unsafe { page::zero_usable_range() };
+    zeroed > 0
 }
 
 /// Build the distress mesh beacon payload.
@@ -380,13 +365,15 @@ fn emit_distress_beacon(triggered_at: u64, keys_zeroized: bool) -> DistressBeaco
 ///
 /// This is a placeholder for the actual LFS wipe integration (Wave 8).
 /// In the real implementation, this would call into `lfs.rs` to locate
-/// the inode and overwrite the data blocks. For now it returns `true`
-/// (success) since the kernel LFS is not yet wired for runtime I/O
-/// from this module.
+/// the inode and overwrite the data blocks. Until that lands, this
+/// performs no I/O and must report failure — reporting success for a
+/// target it never touched would tell the caller a persisted key/data
+/// store was destroyed when it was not (#324).
 fn wipe_target_path(_path: &str) -> bool {
     // TODO(#129)[deliberate-prudent]: wire to lfs::overwrite_path() when filesystem
-    // runtime I/O is available from the security subsystem.
-    true
+    // runtime I/O is available from the security subsystem. Until then this
+    // MUST return false — see the WHY above.
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -491,7 +478,8 @@ mod tests {
         let mut km = key_manager_with_derived_keys();
         assert!(km.has_keys(), "keys must be loaded before wipe");
 
-        let result = execute_panic_wipe(&mut km, 1000, true);
+        // SAFETY: dry_run = true performs no destructive I/O.
+        let result = unsafe { execute_panic_wipe(&mut km, 1000, true) };
 
         assert!(!km.has_keys(), "keys must be zeroized after wipe");
         assert_eq!(
@@ -507,7 +495,8 @@ mod tests {
     #[test]
     fn execute_wipe_dry_run_no_failures() {
         let mut km = key_manager_with_derived_keys();
-        let result = execute_panic_wipe(&mut km, 500, true);
+        // SAFETY: dry_run = true performs no destructive I/O.
+        let result = unsafe { execute_panic_wipe(&mut km, 500, true) };
         assert_eq!(result.targets_failed, 0, "dry-run must have zero failures");
         assert!(result.memory_scrubbed, "dry-run must report memory as scrubbed");
     }
@@ -518,13 +507,14 @@ mod tests {
 
     #[test]
     fn scrub_user_pages_returns_result() {
-        // NOTE: in test mode, the page allocator may not be initialized,
-        // so free_count() returns 0. We verify the return value reflects
-        // whether there was memory available to scrub.
-        let free_before = page::free_count();
-        let result = scrub_user_pages();
-        assert_eq!(result, free_before > 0);
-        assert_eq!(page::free_count(), free_before);
+        // NOTE: page::init() is never called in this test binary (no test
+        // in this module maps real physical RAM), so the usable range is
+        // empty and this exercises the "nothing to scrub" path.
+        // SAFETY: an empty usable range means zero_usable_range performs no
+        // memory access.
+        let result = unsafe { scrub_user_pages() };
+        assert!(!result, "scrub of an empty (uninitialized) usable range must report false");
+        assert_eq!(page::free_count(), 0, "scrub must never mutate FREE_PAGES bookkeeping");
     }
 
     // -----------------------------------------------------------------------
@@ -599,9 +589,35 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn wipe_target_path_succeeds() {
-        // The placeholder always returns true.
-        assert!(wipe_target_path("/data/keys"));
-        assert!(wipe_target_path("/data/contacts"));
+    fn wipe_target_path_reports_not_implemented() {
+        // Regression test for #324: the LFS wipe backend (#129) is not yet
+        // wired, so wipe_target_path must not claim success for filesystem
+        // targets it never actually overwrote.
+        assert!(!wipe_target_path("/data/keys"));
+        assert!(!wipe_target_path("/data/contacts"));
+    }
+
+    #[test]
+    fn execute_wipe_real_run_reports_filesystem_targets_as_failed() {
+        // Regression test for #324: with the LFS backend absent (#129), a
+        // real (non-dry-run) panic wipe must not claim the filesystem
+        // targets completed — it never overwrote them. The in-memory key
+        // zeroization (step 1) still happens independently and is verified
+        // by execute_wipe_zeroizes_keys.
+        let mut km = key_manager_with_derived_keys();
+        // SAFETY: this is the last action in this test — nothing reads
+        // page/heap-backed memory afterward.
+        let result = unsafe { execute_panic_wipe(&mut km, 2000, false) };
+
+        assert!(!km.has_keys(), "in-memory keys must still be zeroized on a real run");
+        assert_eq!(
+            result.targets_completed, 0,
+            "no filesystem target can be reported completed while wipe_target_path is a no-op stub"
+        );
+        assert_eq!(
+            result.targets_failed,
+            PANIC_WIPE_TARGET_COUNT,
+            "every target, including keys' filesystem copy, must be reported failed/unverified"
+        );
     }
 }

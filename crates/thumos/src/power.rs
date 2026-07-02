@@ -433,14 +433,19 @@ impl PowerManager {
 
     /// Set the power state of a radio.
     /// Returns false if hardware kill switch or PMIC kill prevents the change.
+    ///
+    /// INVARIANT: once a radio reaches [`PowerState::HardwareKilled`] or
+    /// [`PowerState::PmicKilled`], no software `set_state` call — for ANY
+    /// target state, not only `On` — can move it out of that state (#345).
+    /// Only a fresh [`PowerManager`] (i.e. a reboot) clears a kill.
     pub(crate) fn set_state(&mut self, radio: Radio, state: PowerState) -> bool {
         if radio == Radio::All {
             let mut all_ok = true;
             for (_, s) in &mut self.states {
-                if (*s == PowerState::HardwareKilled || *s == PowerState::PmicKilled)
-                    && state == PowerState::On
-                {
-                    all_ok = false;
+                if *s == PowerState::HardwareKilled || *s == PowerState::PmicKilled {
+                    if state != *s {
+                        all_ok = false;
+                    }
                 } else {
                     *s = state;
                 }
@@ -450,11 +455,11 @@ impl PowerManager {
 
         for (r, s) in &mut self.states {
             if *r == radio {
-                // INVARIANT: hardware/PMIC kill cannot be overridden by software
-                if (*s == PowerState::HardwareKilled || *s == PowerState::PmicKilled)
-                    && state == PowerState::On
-                {
-                    return false;
+                // INVARIANT: hardware/PMIC kill cannot be overridden by
+                // software, for any target state (not just On) — see the
+                // doc comment above.
+                if *s == PowerState::HardwareKilled || *s == PowerState::PmicKilled {
+                    return state == *s;
                 }
                 *s = state;
                 return true;
@@ -791,6 +796,52 @@ mod tests {
         pm.hardware_kill(Radio::All);
         assert_eq!(pm.active_count(), 0);
         assert_eq!(pm.state(Radio::All), PowerState::Off);
+    }
+
+    #[test]
+    fn hardware_kill_survives_software_off_then_on() {
+        // Regression test for #345: previously any set_state call with a
+        // target other than On silently erased HardwareKilled/PmicKilled.
+        let mut pm = PowerManager::new();
+        pm.apply_mode(PowerMode::Full);
+        pm.hardware_kill(Radio::Cellular);
+        assert_eq!(pm.state(Radio::Cellular), PowerState::HardwareKilled);
+
+        let off_result = pm.set_state(Radio::Cellular, PowerState::Off);
+        assert!(!off_result, "software Off must not succeed over a hardware kill");
+        assert_eq!(
+            pm.state(Radio::Cellular),
+            PowerState::HardwareKilled,
+            "hardware kill must survive a software Off"
+        );
+
+        let on_result = pm.set_state(Radio::Cellular, PowerState::On);
+        assert!(!on_result);
+        assert_eq!(pm.state(Radio::Cellular), PowerState::HardwareKilled);
+    }
+
+    #[test]
+    fn hardware_kill_all_survives_apply_mode_silent() {
+        // Regression test for #345: the Radio::All branch had the same bug
+        // — apply_mode(Silent) -> set_state(All, Off) erased every kill.
+        let mut pm = PowerManager::new();
+        pm.apply_mode(PowerMode::Full);
+        pm.hardware_kill(Radio::All);
+
+        let radios = [Radio::Cellular, Radio::Wifi, Radio::Bluetooth, Radio::Gps, Radio::Fm];
+        for radio in radios {
+            assert_eq!(pm.state(radio), PowerState::HardwareKilled);
+        }
+
+        pm.apply_mode(PowerMode::Silent);
+
+        for radio in radios {
+            assert_eq!(
+                pm.state(radio),
+                PowerState::HardwareKilled,
+                "{radio:?} must remain hardware-killed after apply_mode(Silent)"
+            );
+        }
     }
 
     #[test]

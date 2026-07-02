@@ -16,6 +16,7 @@ use aes::{Aes256, cipher::KeyInit};
 use xts_mode::Xts128;
 
 use crate::block::{BlockDevice, BlockError, BLOCK_SIZE, SECTORS_PER_BLOCK, SECTOR_SIZE};
+use crate::key_manager::SecureKey;
 use crate::security::{SecurityError, XTS_KEY_SIZE};
 
 // ---------------------------------------------------------------------------
@@ -36,8 +37,11 @@ use crate::security::{SecurityError, XTS_KEY_SIZE};
 pub(crate) struct EncryptedBlockDevice<'a> {
     /// The underlying (raw) block device.
     inner: &'a mut dyn BlockDevice,
-    /// XTS key: two AES-256 keys concatenated (64 bytes).
-    key: [u8; XTS_KEY_SIZE],
+    /// XTS key: two AES-256 keys concatenated (64 bytes). Wrapped in
+    /// `SecureKey` so the master partition-encryption key is
+    /// `write_volatile`-zeroized on drop, matching the `key_manager`
+    /// zeroization discipline (#332).
+    key: SecureKey<XTS_KEY_SIZE>,
 }
 
 impl<'a> EncryptedBlockDevice<'a> {
@@ -45,7 +49,10 @@ impl<'a> EncryptedBlockDevice<'a> {
     ///
     /// The key must be 64 bytes (two AES-256 keys for XTS mode).
     pub(crate) fn new(inner: &'a mut dyn BlockDevice, key: [u8; XTS_KEY_SIZE]) -> Self {
-        Self { inner, key }
+        Self {
+            inner,
+            key: SecureKey::new(key),
+        }
     }
 
     /// Build the XTS cipher from the stored key.
@@ -55,7 +62,7 @@ impl<'a> EncryptedBlockDevice<'a> {
     /// Returns [`BlockError::InvalidArgument`] if the key is malformed
     /// (should not happen with a valid 64-byte key).
     fn make_xts(&self) -> Result<Xts128<Aes256>, BlockError> {
-        let (k1, k2) = self.key.split_at(32);
+        let (k1, k2) = self.key.as_bytes().split_at(32);
         let c1 = Aes256::new_from_slice(k1).map_err(|_| BlockError::InvalidArgument)?;
         let c2 = Aes256::new_from_slice(k2).map_err(|_| BlockError::InvalidArgument)?;
         Ok(Xts128::new(c1, c2))
@@ -521,6 +528,20 @@ mod tests {
         let mut buf = vec![];
         enc.read_sectors(0, 0, &mut buf)
             .expect("zero-count read must succeed");
+    }
+
+    #[test]
+    fn key_is_a_zeroizable_secure_key() {
+        // Regression test for #332: the XTS key must be a SecureKey (which
+        // write_volatile-zeroizes on drop), not a bare array. Verified via
+        // direct field access — the tests submodule can see private fields
+        // of its ancestor module, same pattern key_manager.rs itself uses.
+        let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
+        let key = sample_xts_key();
+        let mut enc = EncryptedBlockDevice::new(&mut dev, key);
+        assert!(!enc.key.is_zero(), "key must hold the real XTS key before zeroize");
+        enc.key.zeroize();
+        assert!(enc.key.is_zero(), "SecureKey::zeroize must clear the XTS key");
     }
 
     #[test]

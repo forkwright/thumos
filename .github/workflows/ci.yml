@@ -69,6 +69,10 @@ jobs:
         run: cargo install cargo-nextest --locked --version ^0.9
       - name: nextest
         run: cargo nextest run --workspace --build-jobs 8 --test-threads 8
+      - name: doctests
+        # WHY: cargo nextest does not run doctests; this covers them (and is
+        # the workspace's `cargo test` gate step).
+        run: cargo test --doc --workspace --jobs 8
 
   kernel:
     # WHY: the bare-metal kernel is excluded from the workspace, so its host

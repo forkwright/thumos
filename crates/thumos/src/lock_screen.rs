@@ -205,6 +205,10 @@ pub(crate) struct LockScreen { // kanon:ignore RUST/struct-too-many-fields -- co
     last_attempt_tick: u64,
     /// Tick until which input is throttled (no attempts accepted).
     throttle_until_tick: u64,
+    /// The current monotonic tick, as last reported by [`Self::advance_tick`].
+    /// `on_key` forwards this to `submit_pin`/`submit_passphrase` instead of
+    /// a hardcoded value, so throttle deadlines actually advance (#388).
+    current_tick: u64,
     /// SHA-256 hash of the real PIN (set during provisioning).
     pin_hash: [u8; SHA256_DIGEST_LEN],
     /// SHA-256 hash of the duress PIN (checked before real PIN).
@@ -240,6 +244,7 @@ impl LockScreen {
             attempts: 0,
             last_attempt_tick: 0,
             throttle_until_tick: 0,
+            current_tick: 0,
             pin_hash,
             duress_pin_hash,
             passphrase_hash,
@@ -286,6 +291,20 @@ impl LockScreen {
     /// Record the tick when the device was locked, for tiered sleep.
     pub fn set_locked_at(&mut self, tick: u64) {
         self.locked_at_tick = tick;
+    }
+
+    /// Advance the lock screen's notion of "now" to `tick`.
+    ///
+    /// The event loop must call this (or otherwise keep it current) before
+    /// dispatching key events, so `on_key` can pass a real monotonic tick
+    /// to `submit_pin`/`submit_passphrase` instead of a frozen constant.
+    /// Without this, the throttle deadline computed in `on_failure` never
+    /// advances relative to what `on_key` checks against, and after 3
+    /// failures every later attempt — including the correct PIN — is
+    /// rejected as throttled forever, and the 10-attempt wipe threshold is
+    /// never reached (#388).
+    pub fn advance_tick(&mut self, tick: u64) {
+        self.current_tick = tick;
     }
 
     /// Determine the lock mode based on elapsed time since lock.
@@ -376,6 +395,13 @@ impl LockScreen {
         // Check throttle.
         if self.is_throttled(current_tick) {
             let wait = self.throttle_remaining(current_tick);
+            // WHY clear here: mirrors submit_pin — the throttled early
+            // return is the only submit exit that would otherwise leave the
+            // entered buffer in place, letting it accumulate across
+            // throttled attempts so the correct passphrase can never
+            // re-match after the window elapses (#388). Keeps throttle
+            // recoverable and keeps all submit exits consistent.
+            self.clear_input();
             return UnlockResult::Throttled { wait_secs: wait };
         }
 
@@ -399,6 +425,14 @@ impl LockScreen {
         // Check throttle.
         if self.is_throttled(current_tick) {
             let wait = self.throttle_remaining(current_tick);
+            // WHY clear here: this is the only submit exit that does not
+            // otherwise clear the buffer (on_failure/on_success both do). A
+            // throttled OK-press that left its digits in place would append
+            // to the next entry, so after the throttle window elapsed the
+            // buffer would exceed REQUIRED_PIN_LEN and the correct PIN could
+            // never re-match — the same "locked out after throttle" failure
+            // class #388 targets. Clearing keeps the throttle recoverable.
+            self.clear_input();
             return UnlockResult::Throttled { wait_secs: wait };
         }
 
@@ -656,7 +690,7 @@ impl Screen for LockScreen {
                         // event loop can start the silent panic sequence. A real
                         // unlock stays ScreenAction::None (caller reads
                         // last_result == Success for normal dispatch).
-                        match self.submit_pin(0) {
+                        match self.submit_pin(self.current_tick) {
                             UnlockResult::DuressDetected => ScreenAction::Duress,
                             _ => ScreenAction::None,
                         }
@@ -683,7 +717,7 @@ impl Screen for LockScreen {
                 }
                 match key {
                     Key::Ok | Key::Rsk => {
-                        let _ = self.submit_passphrase(0);
+                        let _ = self.submit_passphrase(self.current_tick);
                         ScreenAction::None
                     }
                     Key::End => {
@@ -967,6 +1001,62 @@ mod tests {
             "duress via on_key must surface ScreenAction::Duress"
         );
         assert!(matches!(real_action, ScreenAction::None));
+    }
+
+    #[test]
+    fn on_key_forwards_a_real_tick_so_unlock_recovers_after_throttle() {
+        // Regression test for #388: on_key previously called
+        // submit_pin(0)/submit_passphrase(0) unconditionally. Since
+        // is_throttled compares against a frozen tick of 0, once 3
+        // failures set throttle_until_tick = 5, EVERY later on_key call
+        // (still passing 0) hit the throttled early-return in submit_pin
+        // forever — the correct PIN could never be entered again. Driving
+        // real, advancing ticks via advance_tick() and confirming the
+        // correct PIN eventually succeeds through on_key proves the tick
+        // is no longer frozen at 0.
+        let mut screen = make_screen();
+        screen.set_mode(LockMode::PinUnlock);
+
+        for i in 0..3u64 {
+            screen.advance_tick(100 + i);
+            for &byte in b"999999" {
+                screen.on_key(digit_key(byte));
+            }
+            screen.on_key(Key::Ok);
+        }
+        assert_eq!(screen.attempts(), 3, "3 wrong attempts must be recorded");
+
+        // Immediately retrying (tick barely advanced past the 3rd failure
+        // at tick 102, throttle_until_tick = 107) must still be throttled —
+        // attempts must not grow further while throttled.
+        screen.advance_tick(103);
+        for &byte in TEST_PIN {
+            screen.on_key(digit_key(byte));
+        }
+        screen.on_key(Key::Ok);
+        assert_eq!(
+            screen.attempts(),
+            3,
+            "an attempt inside the throttle window must be rejected before \
+             ever checking the PIN, leaving the attempt count unchanged"
+        );
+
+        // Advance past the 5-second throttle (3 failures -> 5s delay) and
+        // retry with the correct PIN: this must now succeed, proving the
+        // throttle clock is fed a real, advancing tick rather than a
+        // frozen 0.
+        screen.advance_tick(200);
+        for &byte in TEST_PIN {
+            screen.on_key(digit_key(byte));
+        }
+        screen.on_key(Key::Ok);
+        assert_eq!(
+            screen.last_result,
+            Some(UnlockResult::Success),
+            "the correct PIN must be accepted once the throttle window has \
+             elapsed, proving on_key no longer freezes the throttle clock at 0"
+        );
+        assert_eq!(screen.attempts(), 0, "attempts must reset on success");
     }
 
     #[test]
