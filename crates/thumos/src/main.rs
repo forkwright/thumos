@@ -51,6 +51,13 @@ mod emmc;
 mod encryption;
 #[cfg(not(test))]
 mod exceptions;
+// WHY(host-test): process.rs calls exceptions::ticks() (the timer-IRQ tick
+// counter). The real exceptions module is ARM-only (CP15 vector table, GIC).
+// Under test a stub supplies the tick source so process is host-testable
+// without dragging in gic/timer/uart/watchdog. Production is unaffected.
+#[cfg(test)]
+#[path = "exceptions_stub.rs"]
+mod exceptions;
 mod fd;
 mod firewall;
 mod fm_radio;
@@ -72,7 +79,6 @@ mod gic;
 #[cfg(not(test))]
 mod heap;
 mod json_mini;
-#[cfg(not(test))]
 mod ipc;
 mod kconfig;
 mod key_manager;
@@ -82,7 +88,6 @@ mod kinit;
 mod memguard;
 mod mic_audit;
 mod mmio;
-#[cfg(not(test))]
 mod mmu;
 mod net;
 mod nous;
@@ -90,7 +95,6 @@ mod page;
 mod panic_wipe;
 mod pipe;
 mod power;
-#[cfg(not(test))]
 mod process;
 mod provision;
 mod ramfs;
