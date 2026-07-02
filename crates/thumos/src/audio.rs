@@ -201,14 +201,21 @@ impl<C: AudioCodecOps> AudioManager<C> {
     ///
     /// 1. If this is the first session (refcount 0 -> 1), power on the codec.
     /// 2. If the session kind is `VoiceCall`, enable mic (ADC + bias).
-    /// 3. Preempt any lower-priority active sessions.
-    /// 4. Configure the codec for the requested route.
+    /// 3. Preempt any active session at lower-or-equal priority; if a
+    ///    strictly higher-priority session is active, the new session is
+    ///    inserted paused instead (#386).
+    /// 4. Configure the codec for the requested route — skipped if step 3
+    ///    inserted the new session paused.
     /// 5. Return the new session's ID.
     ///
     /// ## Preemption rules
     ///
     /// - Higher priority preempts lower priority (pauses them).
     /// - Same priority: most recent session wins (pauses earlier ones).
+    /// - A session opened while a strictly higher-priority session is
+    ///   active is itself inserted paused, not active: it does not touch
+    ///   the codec route and resumes automatically when the higher-priority
+    ///   session closes.
     /// - When the preempting session closes, preempted sessions resume.
     /// # Errors
     ///
@@ -249,20 +256,34 @@ impl<C: AudioCodecOps> AudioManager<C> {
             }
         }
 
-        // Set the codec output route for the new session.
-        self.codec.set_output(route)?;
-        self.active_route = route;
+        // WHY: the loop above only pauses <= priority sessions, so a
+        // strictly-higher-priority active session survives it by
+        // construction. The new session must not become active, and must
+        // not touch the codec route, or it silently displaces the
+        // higher-priority session's audio (#386).
+        let blocked_by_higher_priority =
+            self.sessions.iter().any(|s| s.active && s.priority > priority);
 
-        // Create and store the session.
+        // Set the codec output route for the new session, unless a
+        // strictly higher-priority session is already active.
+        if !blocked_by_higher_priority {
+            self.codec.set_output(route)?;
+            self.active_route = route;
+        }
+
+        // Create and store the session. Starts paused if a higher-priority
+        // session is active; it resumes automatically via
+        // resume_highest_priority() when that session closes.
         let session = AudioSession {
             id,
             kind,
             priority,
             route,
-            active: true,
+            active: !blocked_by_higher_priority,
         };
         self.sessions.push(session);
 
+        self.debug_check_single_active_invariant();
         Ok(id)
     }
 
@@ -295,6 +316,7 @@ impl<C: AudioCodecOps> AudioManager<C> {
             self.codec.disable_dac()?;
             self.codec.power_off()?;
             self.codec_powered = false;
+            self.debug_check_single_active_invariant();
             return Ok(());
         }
 
@@ -310,6 +332,7 @@ impl<C: AudioCodecOps> AudioManager<C> {
             self.power_down_mic()?;
         }
 
+        self.debug_check_single_active_invariant();
         Ok(())
     }
 
@@ -396,6 +419,20 @@ impl<C: AudioCodecOps> AudioManager<C> {
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
+
+    /// Debug invariant: at most one session may be active at a time.
+    ///
+    /// Compiled out in release builds (`debug_assert!`). Invoked at the end
+    /// of [`Self::open_session`] and [`Self::close_session`] — the two
+    /// methods that mutate session activation state — to catch a
+    /// preemption-logic regression like #386 immediately instead of via a
+    /// silently-corrupted `active_route`.
+    fn debug_check_single_active_invariant(&self) {
+        debug_assert!(
+            self.sessions.iter().filter(|s| s.active).count() <= 1,
+            "AudioManager invariant violated: more than one active session"
+        );
+    }
 
     /// Resume the highest-priority paused session.
     ///
@@ -892,6 +929,60 @@ mod tests {
         assert!(
             ops.contains(&alloc::string::String::from("enable_dac")),
             "enable_dac must be recorded: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn lower_priority_open_does_not_preempt_active_higher_priority() {
+        // WHY: regression test for #386 — the preemption loop only paused
+        // sessions at priority <= the new session's priority, so opening a
+        // LOWER-priority session while a HIGHER-priority one was active
+        // left both active and silently rerouted the codec to the new
+        // session.
+        let mut mgr = make_manager();
+
+        let call_id = mgr
+            .open_session(SessionKind::VoiceCall, AudioRoute::Earpiece)
+            .unwrap_or(0);
+        assert!(
+            mgr.active_sessions().iter().find(|s| s.id == call_id).map_or(false, |s| s.active),
+            "voice call must be active"
+        );
+
+        // Open a lower-priority Music (Normal) session while the call is active.
+        let music_id = mgr
+            .open_session(SessionKind::Music, AudioRoute::Speaker)
+            .unwrap_or(0);
+
+        // The call must remain the sole active session and keep its route.
+        let call = mgr.active_sessions().iter().find(|s| s.id == call_id);
+        assert!(
+            call.map_or(false, |s| s.active),
+            "higher-priority call must remain active"
+        );
+        assert_eq!(
+            mgr.active_route(),
+            AudioRoute::Earpiece,
+            "codec route must not be stolen by the lower-priority open (#386)"
+        );
+
+        // The new lower-priority session must be inserted paused, not active.
+        let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
+        assert!(
+            !music.map_or(true, |s| s.active),
+            "lower-priority session opened over an active higher-priority one must start paused"
+        );
+
+        // At most one session may be active.
+        let active_count = mgr.active_sessions().iter().filter(|s| s.active).count();
+        assert_eq!(active_count, 1, "at most one session may be active at a time");
+
+        // When the call closes, the paused Music session must resume.
+        mgr.close_session(call_id).ok();
+        let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
+        assert!(
+            music.map_or(false, |s| s.active),
+            "music must resume once the call closes"
         );
     }
 }

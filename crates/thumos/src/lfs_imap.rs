@@ -163,7 +163,15 @@ impl LfsImap {
             buf[..4].try_into().map_err(|_| LfsError::Corrupt)?,
         ) as usize;
 
-        let expected_len = IMAP_HEADER_SIZE + count * IMAP_ENTRY_SIZE;
+        // WHY: count is an attacker-controlled on-disk field; count *
+        // IMAP_ENTRY_SIZE wraps on the 32-bit target for a crafted large
+        // count, defeating this length guard and letting the entry-parse
+        // loop below index past `buf` (#333). Checked arithmetic rejects
+        // the overflowing case instead of silently wrapping.
+        let expected_len = count
+            .checked_mul(IMAP_ENTRY_SIZE)
+            .and_then(|entries_len| entries_len.checked_add(IMAP_HEADER_SIZE))
+            .ok_or(LfsError::Corrupt)?;
         if buf.len() < expected_len {
             return Err(LfsError::Corrupt);
         }
@@ -237,7 +245,22 @@ impl LfsImap {
         start_block: u64,
         block_count: u32,
     ) -> Result<Self, LfsError> {
-        let mut data = Vec::with_capacity(block_count as usize * BLOCK_SIZE);
+        // WHY: block_count is an attacker-controlled on-disk field
+        // (CheckpointHeader::imap_block_count, validated for magic only —
+        // see lfs::mount). Bound it with checked arithmetic against the
+        // device's actual capacity before sizing any allocation from it,
+        // so a crafted/bit-flipped value cannot wrap the multiply (32-bit
+        // target) or request an allocation the device could never back
+        // (#333).
+        let byte_len = (block_count as usize)
+            .checked_mul(BLOCK_SIZE)
+            .ok_or(LfsError::Corrupt)?;
+        let device_bytes = dev.sector_count().saturating_mul(dev.sector_size() as u64);
+        if byte_len as u64 > device_bytes {
+            return Err(LfsError::Corrupt);
+        }
+
+        let mut data = Vec::with_capacity(byte_len);
         let mut buf = [0u8; BLOCK_SIZE];
 
         for i in 0..block_count {
@@ -376,5 +399,50 @@ mod tests {
 
         let restored = LfsImap::deserialize(&buf).expect("deserialize empty");
         assert!(restored.is_empty());
+    }
+
+    #[test]
+    fn deserialize_rejects_overflowing_count() {
+        // WHY: count * IMAP_ENTRY_SIZE must not wrap on a 32-bit usize. A
+        // crafted count near usize::MAX must be rejected via checked
+        // arithmetic, not silently truncated into a short expected_len that
+        // then lets the entry-parse loop index past `buf` (#333).
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 16]);
+
+        let result = LfsImap::deserialize(&buf);
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "overflowing count must be rejected as Corrupt, not wrap and OOB-index"
+        );
+    }
+
+    #[test]
+    fn load_from_disk_rejects_block_count_exceeding_device_capacity() {
+        // WHY: block_count is an attacker-controlled on-disk field; an
+        // oversized value must be rejected against the device's actual
+        // capacity before Vec::with_capacity is sized from it (#333).
+        let mut dev = MemBlockDevice::new(64).expect("create device"); // 32 KiB device
+        let mut cache = BlockCache::new();
+
+        let result = LfsImap::load_from_disk(&mut dev, &mut cache, 0, 262_145);
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "block_count implying ~1 GiB on a 32 KiB device must be rejected before allocating"
+        );
+    }
+
+    #[test]
+    fn load_from_disk_rejects_overflowing_block_count() {
+        // WHY: block_count * BLOCK_SIZE must not wrap on a 32-bit usize (#333).
+        let mut dev = MemBlockDevice::new(64).expect("create device");
+        let mut cache = BlockCache::new();
+
+        let result = LfsImap::load_from_disk(&mut dev, &mut cache, 0, u32::MAX);
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "overflowing block_count must be rejected, not wrap into a tiny allocation"
+        );
     }
 }

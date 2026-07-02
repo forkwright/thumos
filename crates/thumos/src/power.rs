@@ -361,6 +361,8 @@ pub enum Radio {
     Gps,
     /// FM radio receiver.
     Fm,
+    /// Mesh (`LoRa`/Meshtastic) transceiver.
+    Mesh,
     /// All radios.
     All,
 }
@@ -394,7 +396,7 @@ pub enum PowerMode {
 
 /// Power manager state.
 pub(crate) struct PowerManager {
-    states: [(Radio, PowerState); 5],
+    states: [(Radio, PowerState); 6],
     mode: PowerMode,
 }
 
@@ -408,6 +410,7 @@ impl PowerManager {
                 (Radio::Bluetooth, PowerState::Off),
                 (Radio::Gps, PowerState::Off),
                 (Radio::Fm, PowerState::Off),
+                (Radio::Mesh, PowerState::Off),
             ],
             mode: PowerMode::Silent,
         }
@@ -480,6 +483,7 @@ impl PowerManager {
                 self.set_state(Radio::Bluetooth, PowerState::Off);
                 self.set_state(Radio::Gps, PowerState::Off);
                 self.set_state(Radio::Fm, PowerState::Off);
+                self.set_state(Radio::Mesh, PowerState::Off);
             }
             PowerMode::Silent => {
                 self.set_state(Radio::All, PowerState::Off);
@@ -490,6 +494,7 @@ impl PowerManager {
                 self.set_state(Radio::Bluetooth, PowerState::On);
                 self.set_state(Radio::Gps, PowerState::Off);
                 self.set_state(Radio::Fm, PowerState::Off);
+                self.set_state(Radio::Mesh, PowerState::Off);
             }
         }
         self.mode = mode;
@@ -564,8 +569,9 @@ impl Default for PowerManager {
 ///
 /// Maps boolean enable/disable flags from a [`ModePolicy`] to
 /// [`PowerState::On`] / [`PowerState::Off`] and calls
-/// [`PowerManager::set_state`] for each radio.  FM is always turned
-/// off in security mode transitions (not a security-relevant radio).
+/// [`PowerManager::set_state`] for each radio, including Mesh/LoRa (#254).
+/// FM is always turned off in security mode transitions (not a
+/// security-relevant radio).
 ///
 /// Used by the boot sequence (Wave 8) and by [`ModeManager`] on mode
 /// transitions to enforce radio policy without coupling security_mode
@@ -582,6 +588,7 @@ pub(crate) fn apply_mode_policy(
     pm.set_state(Radio::Wifi, to_state(policy.wifi_enabled));
     pm.set_state(Radio::Bluetooth, to_state(policy.bluetooth_enabled));
     pm.set_state(Radio::Gps, to_state(policy.gps_enabled));
+    pm.set_state(Radio::Mesh, to_state(policy.mesh_enabled));
     // FM is always off during security mode transitions.
     pm.set_state(Radio::Fm, PowerState::Off);
 }
@@ -765,9 +772,10 @@ mod tests {
     fn full_mode() {
         let mut pm = PowerManager::new();
         pm.apply_mode(PowerMode::Full);
-        assert_eq!(pm.active_count(), 5);
+        assert_eq!(pm.active_count(), 6);
         assert_eq!(pm.state(Radio::Cellular), PowerState::On);
         assert_eq!(pm.state(Radio::Wifi), PowerState::On);
+        assert_eq!(pm.state(Radio::Mesh), PowerState::On, "Full mode must enable mesh (#254)");
     }
 
     #[test]
@@ -828,7 +836,7 @@ mod tests {
         pm.apply_mode(PowerMode::Full);
         pm.hardware_kill(Radio::All);
 
-        let radios = [Radio::Cellular, Radio::Wifi, Radio::Bluetooth, Radio::Gps, Radio::Fm];
+        let radios = [Radio::Cellular, Radio::Wifi, Radio::Bluetooth, Radio::Gps, Radio::Fm, Radio::Mesh];
         for radio in radios {
             assert_eq!(pm.state(radio), PowerState::HardwareKilled);
         }
@@ -889,6 +897,8 @@ mod tests {
             "Sentinel must keep GPS on");
         assert_eq!(pm.state(Radio::Fm), PowerState::Off,
             "FM must always be off in security modes");
+        assert_eq!(pm.state(Radio::Mesh), PowerState::On,
+            "Sentinel must keep mesh on (#254)");
     }
 
     #[test]
@@ -919,6 +929,33 @@ mod tests {
             "Daily must enable Bluetooth");
         assert_eq!(pm.state(Radio::Gps), PowerState::On,
             "Daily must enable GPS");
+        assert_eq!(pm.state(Radio::Mesh), PowerState::On,
+            "Daily must enable mesh (#254)");
+    }
+
+    #[test]
+    fn mode_policy_applies_radio_state_panic_disables_mesh() {
+        use crate::security::SleepTier;
+        use crate::security_mode::ModePolicy;
+
+        let mut pm = PowerManager::new();
+        pm.apply_mode(PowerMode::Full);
+
+        // Panic policy: everything off, including mesh (#254).
+        let panic_policy = ModePolicy {
+            cellular_enabled: false,
+            wifi_enabled: false,
+            bluetooth_enabled: false,
+            gps_enabled: false,
+            mesh_enabled: false,
+            sleep_tier: SleepTier::Long,
+            scan_interval_ms: 0,
+        };
+
+        apply_mode_policy(&panic_policy, &mut pm);
+
+        assert_eq!(pm.state(Radio::Mesh), PowerState::Off,
+            "Panic must disable mesh/LoRa (#254)");
     }
 
     // -----------------------------------------------------------------------

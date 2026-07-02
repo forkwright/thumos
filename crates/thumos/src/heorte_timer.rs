@@ -100,7 +100,12 @@ impl Timer {
         }
 
         self.remaining_secs = self.remaining_secs.saturating_sub(elapsed_secs);
-        self.started_tick = current_tick;
+        // WHY: advance the epoch by only the consumed whole seconds, not to
+        // current_tick, so the sub-second remainder (elapsed_ms % 1000)
+        // carries forward into the next update() instead of being
+        // discarded — a timer polled faster than 1 Hz must still advance
+        // wall-clock seconds (#342).
+        self.started_tick = self.started_tick.saturating_add(u64::from(elapsed_secs) * 1000);
         false
     }
 
@@ -358,6 +363,38 @@ mod tests {
         timer.set_duration(0);
         let buf = timer.format_remaining();
         assert_eq!(&buf, b"00:00");
+    }
+
+    #[test]
+    fn timer_sub_second_polls_accumulate_at_500ms() {
+        // WHY: regression test for #342 — update() must not discard the
+        // sub-second remainder every call; a 2s timer polled at 500ms
+        // intervals must expire after exactly 4 calls (2000ms).
+        let mut timer = Timer::new();
+        timer.set_duration(2);
+        timer.start(0);
+
+        assert!(!timer.update(500), "must not expire after 500ms");
+        assert!(!timer.update(1_000), "must not expire after 1000ms");
+        assert!(!timer.update(1_500), "must not expire after 1500ms");
+        assert!(timer.update(2_000), "must expire after exactly 2000ms (4th call)");
+    }
+
+    #[test]
+    fn timer_sub_second_polls_accumulate_at_100ms() {
+        // WHY: regression test for #342 — the same 2s timer polled at
+        // 100ms intervals must expire after exactly 20 calls (2000ms); a
+        // truncating update() never accumulates past 0 elapsed_secs per
+        // call and never expires.
+        let mut timer = Timer::new();
+        timer.set_duration(2);
+        timer.start(0);
+
+        let mut expired = false;
+        for i in 1..=20 {
+            expired = timer.update(i * 100);
+        }
+        assert!(expired, "timer polled at 100ms intervals must expire after 20 calls (2000ms)");
     }
 
     #[test]
