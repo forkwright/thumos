@@ -174,10 +174,28 @@ const fn compute_header_checksum(hdr: StpHeader) -> u8 {
     h0 ^ h1 ^ h2
 }
 
-/// Compute `CRC-16` CCITT over header + payload.
-fn compute_crc(frame: &StpFrame) -> u16 {
+/// Compute `CRC-16` CCITT over a 3-byte header (excluding the checksum byte)
+/// and a payload slice.
+///
+/// Shared by the TX encode path ([`compute_crc`]) and the RX integrity check
+/// in [`crate::transport::RxParser`], which recomputes this over raw received
+/// bytes to detect corrupted or injected frames.
+pub(crate) fn compute_crc_over(header_bytes: &[u8], payload: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
 
+    for &byte in header_bytes {
+        crc = crc16_ccitt_byte(crc, byte);
+    }
+
+    for &byte in payload {
+        crc = crc16_ccitt_byte(crc, byte);
+    }
+
+    crc
+}
+
+/// Compute `CRC-16` CCITT over header + payload.
+fn compute_crc(frame: &StpFrame) -> u16 {
     // CRC over header bytes (excluding checksum)
     let header_bytes = [
         (u8::from(frame.header.frame_type) << 4)
@@ -187,16 +205,7 @@ fn compute_crc(frame: &StpFrame) -> u16 {
         ((frame.header.length & 0x1F) << 3) as u8,
     ];
 
-    for &byte in &header_bytes {
-        crc = crc16_ccitt_byte(crc, byte);
-    }
-
-    // CRC over payload
-    for &byte in &frame.payload[..frame.payload_len] {
-        crc = crc16_ccitt_byte(crc, byte);
-    }
-
-    crc
+    compute_crc_over(&header_bytes, &frame.payload[..frame.payload_len])
 }
 
 /// `CRC-16` CCITT UPDATE for one byte.

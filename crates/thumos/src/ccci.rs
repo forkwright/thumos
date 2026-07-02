@@ -882,7 +882,12 @@ impl RxRing {
         if self.descriptors[idx].is_hw_owned() {
             return None;
         }
-        let recv_len = self.descriptors[idx].recv_len;
+        // SECURITY: recv_len is modem-written and untrusted; clamp to the
+        // AP-allocated buffer capacity (data_len) before it can be used as a
+        // slice length/copy count by the caller.
+        let recv_len = self.descriptors[idx]
+            .recv_len
+            .min(self.descriptors[idx].data_len);
         self.head = (self.head + 1) % RX_RING_SIZE;
         self.hw_count -= 1;
         Some((idx, recv_len))
@@ -2191,6 +2196,28 @@ mod tests {
         assert!(
             ring.descriptors[idx].is_hw_owned(),
             "descriptor must be HW-owned after rearm"
+        );
+    }
+
+    #[test]
+    fn rx_ring_clamps_oversized_recv_len_to_buffer_capacity() {
+        let mut ring = RxRing::new();
+        let base: u32 = 0x4030_0000;
+        let buf_addrs: [u32; RX_RING_SIZE] =
+            core::array::from_fn(|i| 0x5100_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000);
+        let buf_size: u16 = 2048;
+        ring.init_chain(base, &buf_addrs, buf_size);
+
+        // A hostile/malfunctioning modem writes a recv_len larger than the
+        // AP-allocated buffer.
+        ring.descriptors[0].clear_hw_owned();
+        ring.descriptors[0].recv_len = 0xFFFF;
+
+        let (idx, len) = ring.poll_rx().unwrap_or_default();
+        assert_eq!(idx, 0, "first descriptor should be polled first");
+        assert_eq!(
+            len, buf_size,
+            "recv_len must be clamped to the descriptor's data_len (buffer capacity)"
         );
     }
 

@@ -258,9 +258,18 @@ impl fmt::Display for BriarMessage {
             write!(f, "{b:02x}")?;
         }
         write!(f, ".. @ {}: ", self.timestamp)?;
-        let preview_len = self.body.len().min(64);
+        // WHY: byte-index 64 can land inside a multi-byte UTF-8 sequence in
+        // an adversary-crafted body; walk char boundaries instead of
+        // slicing at a fixed byte offset.
+        let preview_len = self
+            .body
+            .char_indices()
+            .map(|(i, c)| i + c.len_utf8())
+            .take_while(|&end| end <= 64)
+            .last()
+            .unwrap_or(0);
         write!(f, "{}", &self.body[..preview_len])?;
-        if self.body.len() > 64 {
+        if self.body.len() > preview_len {
             write!(f, "...")?;
         }
         Ok(())
@@ -497,6 +506,19 @@ mod tests {
             "new transport must have no messages"
         );
         assert_eq!(transport.inbox_count(), 0);
+    }
+
+    #[test]
+    fn display_does_not_panic_on_multibyte_char_straddling_preview_boundary() {
+        let mut body = "a".repeat(62);
+        body.push('\u{20AC}'); // 3-byte UTF-8 '\u{20ac}' starting at byte offset 62, spanning 62..65
+        let msg = BriarMessage::new([0x11; CONTACT_ID_LEN], body, 0)
+            .unwrap_or_else(|_| unreachable!("valid message"));
+        let rendered = msg.to_string();
+        assert!(
+            rendered.contains('a'),
+            "preview must contain the leading ASCII content without panicking"
+        );
     }
 
     // --- Contact tests ---
