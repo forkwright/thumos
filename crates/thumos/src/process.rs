@@ -215,22 +215,26 @@ pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
         mmu::clone_addr_space(mmu::table_base(), new_pt);
 
         // Allocate stack
-        let mut stack_base: usize = 0;
+        // WHY array-tracked (#251): page::alloc_page() is a bitmap scanner
+        // with no contiguity guarantee; an OOM rollback that assumes
+        // `stack_base + j * PAGE_SIZE` names the j-th allocated page can free
+        // an unrelated live page. Recording each returned address makes the
+        // rollback exact regardless of fragmentation.
+        let mut stack_pages_alloc: [usize; STACK_PAGES] = [0; STACK_PAGES];
         for i in 0..STACK_PAGES {
             match page::alloc_page() {
-                Some(page) => {
-                    if i == 0 { stack_base = page; }
-                }
+                Some(page) => stack_pages_alloc[i] = page,
                 None => {
-                    // OOM: roll back already-allocated pages
+                    // OOM: roll back exactly the pages allocated so far.
                     for j in 0..i {
-                        page::free_page(stack_base + j * page::PAGE_SIZE);
+                        page::free_page(stack_pages_alloc[j]);
                     }
                     mmu::free_addr_space(new_pt);
                     return None;
                 }
             }
         }
+        let stack_base = stack_pages_alloc[0];
         let stack_top = stack_base + page::PAGE_SIZE * STACK_PAGES;
 
         // Set up initial context
@@ -304,22 +308,29 @@ pub(crate) fn fork() -> Option<Pid> {
         mmu::clone_addr_space(src_pt, child_pt);
 
         // Allocate child stack pages
-        let mut stack_base: usize = 0;
+        // WHY array-tracked (#251): page::alloc_page() is a bitmap scanner
+        // with no contiguity guarantee; an OOM rollback that assumes
+        // `stack_base + j * PAGE_SIZE` names the j-th allocated page can free
+        // an unrelated live page. Recording each returned address makes the
+        // rollback exact regardless of fragmentation. #208 fixed only the
+        // SUCCESS path (translated sp + stack image copy); its rollback still
+        // assumed contiguity.
+        let mut child_stack_pages_alloc: [usize; STACK_PAGES] = [0; STACK_PAGES];
         for i in 0..STACK_PAGES {
             match page::alloc_page() {
-                Some(page) => {
-                    if i == 0 { stack_base = page; }
-                }
+                Some(page) => child_stack_pages_alloc[i] = page,
                 None => {
-                    // OOM: roll back pages then table
+                    // OOM: roll back exactly the pages allocated so far, then
+                    // the child's address space.
                     for j in 0..i {
-                        page::free_page(stack_base + j * page::PAGE_SIZE);
+                        page::free_page(child_stack_pages_alloc[j]);
                     }
                     mmu::free_addr_space(child_pt);
                     return None;
                 }
             }
         }
+        let stack_base = child_stack_pages_alloc[0];
 
         // Inherit parent context and memory layout (child resumes FROM same saved state)
         let parent_ref = procs[usize::from(parent_pid)].as_ref();
@@ -453,22 +464,35 @@ fn translate_stack_pointer(
 }
 
 /// Non-blocking wait for a child exit status.
-/// Returns Some(status) if the child is Dead, None if still running or not a child.
+/// Returns Some(status) if the child is Dead, None if still running or not a
+/// child. Reaps the child's process-table slot on success (#218, #224): once
+/// the parent has collected the exit status the slot is returned to the free
+/// pool, matching POSIX wait semantics, so a Dead-but-unreaped PCB does not
+/// permanently occupy a process-table slot.
 pub(crate) fn waitpid(child_pid: Pid) -> Option<i32> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
-    // context switch. Read-only access via addr_of!; no mutation occurs here.
+    // context switch. A single mutable borrow covers both the read (exit
+    // status, parent check) and the reap (clearing the slot) so no
+    // immutable/mutable aliasing of the static PROCS table occurs.
     unsafe {
-        let procs = &*core::ptr::addr_of!(PROCS);
-        let child = procs[usize::from(child_pid)].as_ref()?;
+        // #232: bound-check before indexing the fixed-size table — child_pid
+        // is a userspace-controlled value with no upper-bound guarantee.
+        let idx = usize::from(child_pid);
+        if idx >= MAX_PROCS {
+            return None;
+        }
+        let procs = &mut *addr_of_mut!(PROCS);
+        let child = procs[idx].as_ref()?;
         // INVARIANT: only the direct parent may retrieve the exit status.
         if child.parent != Some(CURRENT) {
             return None;
         }
-        if child.state == State::Dead {
-            Some(child.exit_status)
-        } else {
-            None
+        if child.state != State::Dead {
+            return None;
         }
+        let status = child.exit_status;
+        procs[idx] = None; // reap (#218/#224)
+        Some(status)
     }
 }
 
@@ -976,6 +1000,14 @@ pub unsafe fn get_signal_action(sig: Signal) -> SignalAction {
 /// Must be called from syscall context (single-core).
 pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
     const ESRCH: u32 = 0u32.wrapping_sub(3);
+    // WHY (#269): PID 0 (kinit) is the fault supervisor and process-hierarchy
+    // anchor; it must never be a userspace signal target, regardless of
+    // capability or self-signal status. sys_kill enforces the same rule as a
+    // belt-and-suspenders check before this function is ever reached.
+    const EPERM: u32 = 0u32.wrapping_sub(1);
+    if pid == 0 {
+        return EPERM;
+    }
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         let idx = usize::try_from(pid).unwrap_or(MAX_PROCS);
@@ -1070,6 +1102,35 @@ pub unsafe fn exec_replace_context(entry_point: usize, stack_top: usize,
             for i in 0..old_pages {
                 page::free_page(old_base + i * page::PAGE_SIZE);
             }
+
+            // WHY (#225): the page table is REUSED across exec (same
+            // page_table_phys), so the previous image's mmap regions and grown
+            // heap pages are still mapped at their old virtual addresses. Unmap
+            // and free each one before resetting the tracking state below, or
+            // the physical frames leak permanently and the new image can read
+            // the previous image's residual contents at the same VAs.
+            let pt = proc.page_table_phys;
+            for mapping in proc.mappings.iter().flatten() {
+                for i in 0..mapping.pages {
+                    let vaddr = mapping.start + i * page::PAGE_SIZE;
+                    if let Some(phys) = mmu::read_l2_phys(pt, vaddr) {
+                        mmu::unmap_page(pt, vaddr);
+                        mmu::flush_tlb_page(vaddr);
+                        page::free_page(phys);
+                    }
+                }
+            }
+            let old_heap_break = proc.heap_break;
+            let mut heap_vaddr = DEFAULT_HEAP_BREAK;
+            while heap_vaddr < old_heap_break {
+                if let Some(phys) = mmu::read_l2_phys(pt, heap_vaddr) {
+                    mmu::unmap_page(pt, heap_vaddr);
+                    mmu::flush_tlb_page(heap_vaddr);
+                    page::free_page(phys);
+                }
+                heap_vaddr += page::PAGE_SIZE;
+            }
+
             // Reset heap break to default for the new image.
             proc.heap_break = DEFAULT_HEAP_BREAK;
             // Clear all tracked mmap mappings — the new image has a fresh VA space.
@@ -1383,6 +1444,92 @@ mod tests {
         }
     }
 
+    /// #251: an OOM partway through spawn()'s stack allocation must roll
+    /// back exactly the pages allocated so far, verified against the bitmap
+    /// free-count (not assumed physically contiguous).
+    #[test]
+    fn spawn_oom_rollback_frees_exact_allocated_pages() {
+        fn spawn_test_entry() -> ! { loop {} }
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            // Shrink the free pool to exactly 2 pages so the 4-page stack
+            // allocation (STACK_PAGES = 4) OOMs on the 3rd page.
+            page::init(0x4000_0000, 0x4000_0000 + 6 * page::PAGE_SIZE, 0x4000_0000 + 4 * page::PAGE_SIZE);
+            let free_before = page::free_count();
+            assert_eq!(free_before, 2, "test setup must yield exactly 2 free pages");
+
+            let result = spawn(spawn_test_entry);
+            assert!(result.is_none(), "spawn must fail when the stack allocation OOMs");
+
+            let free_after = page::free_count();
+            assert_eq!(free_after, free_before,
+                "OOM rollback must return exactly the pages allocated before the failure, leaving free-count unchanged (#251)");
+        }
+    }
+
+    /// #251: an OOM partway through fork()'s child-stack allocation must roll
+    /// back exactly the pages allocated so far. #208 rewrote fork()'s SUCCESS
+    /// path (translated sp + stack copy) but left the rollback assuming
+    /// physical contiguity; this guards the re-derived array-tracked rollback.
+    #[test]
+    fn fork_oom_rollback_frees_exact_allocated_pages() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            // Shrink the free pool to exactly 2 pages so the 4-page child
+            // stack allocation (STACK_PAGES = 4) OOMs on the 3rd page.
+            page::init(0x4000_0000, 0x4000_0000 + 6 * page::PAGE_SIZE, 0x4000_0000 + 4 * page::PAGE_SIZE);
+            let free_before = page::free_count();
+            assert_eq!(free_before, 2, "test setup must yield exactly 2 free pages");
+
+            let result = fork();
+            assert!(result.is_none(), "fork must fail when the child stack allocation OOMs");
+
+            let free_after = page::free_count();
+            assert_eq!(free_after, free_before,
+                "OOM rollback must return exactly the pages allocated before the failure, leaving free-count unchanged (#251)");
+        }
+    }
+
     #[test]
     fn waitpid_returns_none_while_running() {
         // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
@@ -1412,6 +1559,86 @@ mod tests {
             let child_pid = fork().unwrap_or_default();
             // Child is Ready, not Dead  -  waitpid must return None
             assert_eq!(waitpid(child_pid), None, "should return None while child is alive");
+        }
+    }
+
+    /// #232: waitpid must reject any PID >= MAX_PROCS instead of indexing
+    /// the fixed-size table out of bounds.
+    #[test]
+    fn waitpid_rejects_out_of_bounds_pid() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            assert_eq!(waitpid(200), None, "waitpid must reject an out-of-bounds PID instead of panicking");
+            assert_eq!(waitpid(255), None, "waitpid must reject PID 255 (u8::MAX) instead of panicking");
+        }
+    }
+
+    /// #218/#224: fork/exit/waitpid MAX_PROCS times must leave every
+    /// non-init slot reaped (None), and a further fork must then succeed —
+    /// not permanently exhaust the table with Dead-but-unreaped PCBs.
+    #[test]
+    fn waitpid_reaps_dead_child_and_frees_the_slot() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            for _ in 0..(MAX_PROCS - 1) {
+                assert!(fork().is_some(), "fork must succeed while slots remain");
+            }
+            assert!(fork().is_none(), "fork must fail once the process table is full");
+
+            for pid in 1..MAX_PROCS as Pid {
+                CURRENT = pid;
+                exit_cleanup(0);
+            }
+            CURRENT = 0;
+            for pid in 1..MAX_PROCS as Pid {
+                assert_eq!(waitpid(pid), Some(0), "waitpid must return the exit status for each Dead child");
+            }
+
+            let procs_ro = &*core::ptr::addr_of!(PROCS);
+            for pid in 1..MAX_PROCS {
+                assert!(procs_ro[pid].is_none(), "reaped slot {pid} must be None, not a lingering Dead PCB");
+            }
+            assert!(fork().is_some(), "fork must succeed again once reaped slots are available (#224)");
         }
     }
 
@@ -1648,6 +1875,63 @@ mod tests {
         }
     }
 
+    /// #225: exec_replace_context must unmap and free every previously
+    /// tracked mmap page and every grown heap page, not just reset the
+    /// tracking state and leak the physical frames.
+    #[test]
+    fn exec_replace_context_frees_mmap_and_heap_pages() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            // Simulate one mmap'd page.
+            let mmap_phys = page::alloc_page().unwrap();
+            let mmap_vaddr = MMAP_BASE;
+            let l2_attrs = mmu::prot_to_l2_flags(mmu::prot::PROT_READ | mmu::prot::PROT_WRITE);
+            assert!(mmu::map_page(pt, mmap_vaddr, mmap_phys, l2_attrs));
+            add_mapping(VmMapping { start: mmap_vaddr, pages: 1, prot: mmu::prot::PROT_READ | mmu::prot::PROT_WRITE });
+
+            // Simulate one grown heap page.
+            let heap_phys = page::alloc_page().unwrap();
+            assert!(mmu::map_page(pt, DEFAULT_HEAP_BREAK, heap_phys, l2_attrs));
+            set_heap_break(DEFAULT_HEAP_BREAK + page::PAGE_SIZE);
+
+            // Capture the baseline AFTER allocating the new stack so the delta
+            // measures exactly the frames exec frees, not the new stack alloc.
+            let new_stack_phys = page::alloc_page().unwrap();
+            let free_before = page::free_count();
+
+            exec_replace_context(0x1000, new_stack_phys + page::PAGE_SIZE, new_stack_phys, 1);
+
+            let free_after = page::free_count();
+            assert_eq!(free_after, free_before + 2,
+                "exec must free exactly the 1 mmap page + 1 heap page from the old image");
+
+            let procs_ro = &*core::ptr::addr_of!(PROCS);
+            let proc = procs_ro[0].as_ref().unwrap();
+            assert!(proc.mappings.iter().all(|m| m.is_none()), "mappings must be cleared");
+            assert_eq!(proc.heap_break, DEFAULT_HEAP_BREAK, "heap break must reset to default");
+        }
+    }
+
     /// kinit (PID 0) must have UID 0 (root).
     #[test]
     fn getuid_returns_zero_for_init() {
@@ -1819,17 +2103,22 @@ mod tests {
             });
             CURRENT = 0;
 
+            // Target a non-zero PID (#269 guards PID 0 against deliver_signal_to).
+            let child_pid = fork().unwrap_or_default();
+
             // Install a handler so kill marks it pending (not terminate).
+            CURRENT = child_pid;
             let handler_addr: u32 = 0x4020_0000;
             set_signal_action(
                 crate::signal::Signal::Sigusr1,
                 crate::signal::SignalAction::Handler(handler_addr),
             );
+            CURRENT = 0;
 
-            let ret = deliver_signal_to(0, crate::signal::Signal::Sigusr1);
+            let ret = deliver_signal_to(child_pid, crate::signal::Signal::Sigusr1);
             assert_eq!(ret, 0, "deliver_signal_to should succeed");
 
-            let pending = get_pending_mask(0);
+            let pending = get_pending_mask(child_pid);
             let expected_bit = 1u32 << (crate::signal::Signal::Sigusr1 as u32);
             assert_ne!(pending & expected_bit, 0,
                 "SIGUSR1 pending bit should be set after kill");
@@ -1861,11 +2150,14 @@ mod tests {
             });
             CURRENT = 0;
 
+            // Target a non-zero PID (#269 guards PID 0 against deliver_signal_to).
+            let child_pid = fork().unwrap_or_default();
+
             // No handler for SIGTERM — default is Terminate.
-            let ret = deliver_signal_to(0, crate::signal::Signal::Sigterm);
+            let ret = deliver_signal_to(child_pid, crate::signal::Signal::Sigterm);
             assert_eq!(ret, 0, "deliver_signal_to should return 0");
 
-            let state = get_state(0);
+            let state = get_state(child_pid);
             assert_eq!(state, Some(State::Dead),
                 "process should be Dead after default SIGTERM");
         }
@@ -1896,15 +2188,19 @@ mod tests {
             });
             CURRENT = 0;
 
+            // Target a non-zero PID (#269 guards PID 0 against deliver_signal_to).
+            let child_pid = fork().unwrap_or_default();
+            let state_before = get_state(child_pid);
+
             // No handler for SIGCHLD — default is Ignore.
-            let ret = deliver_signal_to(0, crate::signal::Signal::Sigchld);
+            let ret = deliver_signal_to(child_pid, crate::signal::Signal::Sigchld);
             assert_eq!(ret, 0, "deliver_signal_to should return 0");
 
-            let state = get_state(0);
-            assert_eq!(state, Some(State::Running),
-                "process should still be Running after default SIGCHLD");
+            let state = get_state(child_pid);
+            assert_eq!(state, state_before,
+                "process state should be unchanged after default-Ignore SIGCHLD");
 
-            let pending = get_pending_mask(0);
+            let pending = get_pending_mask(child_pid);
             let sigchld_bit = 1u32 << (crate::signal::Signal::Sigchld as u32);
             assert_eq!(pending & sigchld_bit, 0,
                 "SIGCHLD should not be pending when default action is Ignore");
@@ -2059,6 +2355,73 @@ mod tests {
             // would already be free and the call would be rejected.
             assert!(page::try_free_page(parent_base),
                 "parent stack page must remain allocated after the child exits (#208)");
+        }
+    }
+
+    /// #269: kinit (PID 0) must never be a valid deliver_signal_to target,
+    /// even for SIGKILL.
+    #[test]
+    fn deliver_signal_to_rejects_pid_zero() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            const EPERM: u32 = 0u32.wrapping_sub(1);
+            let ret = deliver_signal_to(0, crate::signal::Signal::Sigkill);
+            assert_eq!(ret, EPERM, "deliver_signal_to(0, ...) must return EPERM");
+
+            let state = get_state(0);
+            assert_eq!(state, Some(State::Running), "PID 0 must stay alive");
+        }
+    }
+
+    /// #269: sys_kill must reject PID 0 outright, even for a self-signal
+    /// from kinit, before any capability check.
+    #[test]
+    fn sys_kill_rejects_pid_zero_even_for_self() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            const EPERM: u32 = 0u32.wrapping_sub(1);
+            let ret = crate::signal::sys_kill(0, crate::signal::Signal::Sigkill as u32);
+            assert_eq!(ret, EPERM, "sys_kill(0, ...) must return EPERM regardless of caller");
         }
     }
 
