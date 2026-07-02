@@ -261,8 +261,13 @@ fn wipe_file(
 // ----- Tests ----------------------------------------------------------------
 
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "test code — expect is intentional for asserting fixture setup/read/cleanup succeeded"
+)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::targets::{WipeLevel, plan};
 
@@ -398,6 +403,92 @@ mod tests {
             clamped.chunk_size(),
             CHUNK_SIZE,
             "too-small chunk_size must clamp to the default"
+        );
+    }
+
+    /// Deletes its backing file on drop so a fixture is cleaned up even if
+    /// an assertion later in the test panics.
+    struct TempFile {
+        path: PathBuf,
+    }
+
+    static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    impl TempFile {
+        fn with_contents(label: &str, contents: &[u8]) -> Self {
+            let n = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "leipsanon_wipe_test_{label}_{}_{n}",
+                std::process::id()
+            ));
+            std::fs::write(&path, contents).expect("write test fixture");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    #[test]
+    fn real_wipe_zero_overwrites_file_contents() {
+        let original = vec![0xABu8; CHUNK_SIZE * 2 + 37];
+        let fixture = TempFile::with_contents("zero", &original);
+
+        let plan = vec![WipeAction {
+            path: fixture.path.clone(),
+            method: WipeMethod::Zero,
+            priority: 1,
+        }];
+        let mut engine = WipeEngine::new(false);
+        let result = engine.execute(&plan);
+
+        let wiped = std::fs::read(&fixture.path).expect("read wiped fixture");
+
+        assert_eq!(result.actions_completed, 1, "the wipe action must complete");
+        assert_eq!(result.actions_failed, 0, "the wipe action must not fail");
+        assert_eq!(
+            result.bytes_wiped,
+            original.len() as u64,
+            "bytes_wiped must equal the file size for a full-file Zero wipe"
+        );
+        assert!(
+            wiped.iter().all(|&b| b == 0),
+            "every byte must be zero after a Zero-method wipe"
+        );
+        assert_ne!(
+            wiped, original,
+            "wiped content must differ from the original fixture content"
+        );
+    }
+
+    #[test]
+    fn real_wipe_random_overwrites_file_contents() {
+        let original = vec![0x55u8; CHUNK_SIZE * 2 + 37];
+        let fixture = TempFile::with_contents("random", &original);
+
+        let plan = vec![WipeAction {
+            path: fixture.path.clone(),
+            method: WipeMethod::Random,
+            priority: 1,
+        }];
+        let mut engine = WipeEngine::new(false);
+        let result = engine.execute(&plan);
+
+        let wiped = std::fs::read(&fixture.path).expect("read wiped fixture");
+
+        assert_eq!(result.actions_completed, 1, "the wipe action must complete");
+        assert_eq!(result.actions_failed, 0, "the wipe action must not fail");
+        assert_eq!(
+            result.bytes_wiped,
+            original.len() as u64,
+            "bytes_wiped must equal the file size for a full-file Random wipe"
+        );
+        assert_ne!(
+            wiped, original,
+            "wiped content must no longer match the original fixture content after a Random-method wipe"
         );
     }
 }
