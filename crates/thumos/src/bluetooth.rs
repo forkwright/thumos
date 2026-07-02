@@ -480,16 +480,46 @@ impl<H: BtHwOps> BtAdapter<H> {
     /// Rotate the random address if the rotation interval has elapsed.
     ///
     /// Should be called periodically. Returns `true` if the address was rotated.
+    ///
+    /// No-ops (returns `Ok(false)`) outside [`BtState::Ready`]/[`BtState::Scanning`]
+    /// — an unpowered or not-yet-initialized adapter must never receive an HCI
+    /// command. While scanning, the controller rejects `LE Set Random Address`
+    /// with Command Disallowed (Bluetooth Core Spec v5.4 Vol 4 Part E §7.8.4),
+    /// so scanning is paused for the rotation and restarted afterward. The new
+    /// address and rotation timestamp are committed only after the hardware
+    /// write succeeds, so a rejected/failed write leaves state unchanged and
+    /// eligible for retry on the next call.
     #[must_use]
     pub(crate) fn maybe_rotate_address(&mut self, current_tick_ms: u64) -> Result<bool, BtError> {
+        if !matches!(self.state, BtState::Ready | BtState::Scanning) {
+            return Ok(false);
+        }
         if current_tick_ms.saturating_sub(self.address_set_at) < ADDRESS_ROTATION_MS {
             return Ok(false);
         }
 
-        self.random_address = generate_random_address();
-        self.address_set_at = current_tick_ms;
-        let addr_cmd = hci_set_random_address(&self.random_address);
-        self.hw.send_command(&addr_cmd)?;
+        let was_scanning = self.state == BtState::Scanning;
+        if was_scanning {
+            self.stop_scan()?;
+        }
+
+        let new_address = generate_random_address();
+        let addr_cmd = hci_set_random_address(&new_address);
+        let send_result = self.hw.send_command(&addr_cmd);
+
+        if send_result.is_ok() {
+            self.random_address = new_address;
+            self.address_set_at = current_tick_ms;
+        }
+
+        if was_scanning {
+            let restart_result = self.start_scan();
+            if send_result.is_ok() {
+                restart_result?;
+            }
+        }
+
+        send_result?;
         Ok(true)
     }
 
@@ -572,6 +602,12 @@ pub struct MockBtHw {
     pub power_on_ok: bool,
     /// Whether send_command succeeds.
     pub send_ok: bool,
+    /// Number of `send_command` calls observed so far.
+    pub send_calls: usize,
+    /// If set, `send_command` fails from this call count onward (1-indexed),
+    /// letting a test succeed through setup (e.g. `init`) and then force a
+    /// later call to fail without touching the earlier ones.
+    pub fail_after_calls: Option<usize>,
 }
 
 #[cfg(test)]
@@ -582,6 +618,8 @@ impl MockBtHw {
             sent_commands: Vec::new(),
             power_on_ok: true,
             send_ok: true,
+            send_calls: 0,
+            fail_after_calls: None,
         }
     }
 }
@@ -589,7 +627,11 @@ impl MockBtHw {
 #[cfg(test)]
 impl BtHwOps for MockBtHw {
     fn send_command(&mut self, data: &[u8]) -> Result<(), BtError> {
-        if !self.send_ok {
+        self.send_calls += 1;
+        let exceeded_budget = self
+            .fail_after_calls
+            .is_some_and(|budget| self.send_calls > budget);
+        if !self.send_ok || exceeded_budget {
             return Err(BtError::HardwareTimeout);
         }
         self.sent_commands.push(data.to_vec());
@@ -795,6 +837,71 @@ mod tests {
             "rotated address must still be non-resolvable"
         );
         let _ = original; // used for conceptual comparison
+    }
+
+    #[test]
+    fn maybe_rotate_address_guards_off_state() {
+        let mut hw = MockBtHw::new();
+        hw.send_ok = false; // any invocation would surface as an error
+        let mut adapter = BtAdapter::new(hw);
+        let result = adapter.maybe_rotate_address(ADDRESS_ROTATION_MS);
+        assert_eq!(
+            result,
+            Ok(false),
+            "rotation must no-op in Off state without issuing an HCI command"
+        );
+    }
+
+    #[test]
+    fn maybe_rotate_address_stops_and_restarts_scan() {
+        // Seed the CSPRNG so generate_random_address() produces real random
+        // bytes; unseeded it fails closed (#284) and returns a deterministic
+        // near-zero address, which would make the rotation a no-op change.
+        crate::csprng::seed_for_test(&[0x42u8; 32], &[0u8; 8], 0);
+        let hw = MockBtHw::new();
+        let mut adapter = BtAdapter::new(hw);
+        adapter.init(0).ok();
+        adapter.start_scan().ok();
+        let original = *adapter.random_address();
+
+        let result = adapter.maybe_rotate_address(ADDRESS_ROTATION_MS);
+        assert_eq!(result, Ok(true), "rotation must succeed while scanning");
+        assert_eq!(
+            adapter.state(),
+            BtState::Scanning,
+            "adapter must return to Scanning after rotation"
+        );
+        assert_ne!(
+            *adapter.random_address(),
+            original,
+            "address must change after a successful rotation"
+        );
+    }
+
+    #[test]
+    fn maybe_rotate_address_failed_write_leaves_state_unchanged() {
+        let mut hw = MockBtHw::new();
+        hw.fail_after_calls = Some(2); // reset + initial addr-set succeed; rotation's write fails
+        let mut adapter = BtAdapter::new(hw);
+        adapter.init(0).ok();
+        let original_addr = *adapter.random_address();
+
+        let result = adapter.maybe_rotate_address(ADDRESS_ROTATION_MS);
+        assert_eq!(
+            result,
+            Err(BtError::HardwareTimeout),
+            "a rejected HCI write must surface as an error"
+        );
+        assert_eq!(
+            *adapter.random_address(),
+            original_addr,
+            "random_address must be unchanged after a failed rotation write"
+        );
+        assert_eq!(
+            adapter.state(),
+            BtState::Ready,
+            "adapter must remain Ready (not Scanning) after a failed non-scanning rotation"
+        );
     }
 
     // --- Error path coverage ---

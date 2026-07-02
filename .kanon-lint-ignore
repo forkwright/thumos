@@ -87,6 +87,7 @@ RUST/as-cast:crates/kelyphos/src/stp.rs
 RUST/file-too-long:crates/thumos/**
 RUST/file-too-long:crates/aither/src/mac.rs
 RUST/file-too-long:crates/kelyphos/src/wmt.rs
+RUST/file-too-long:crates/kelyphos/src/transport.rs
 RUST/file-too-long:crates/klesis/src/pdu.rs
 RUST/file-too-long:crates/pteron/src/hci.rs
 RUST/file-too-long:crates/pteron/src/transport.rs

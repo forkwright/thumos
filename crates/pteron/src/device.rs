@@ -26,6 +26,11 @@ pub(crate) struct BluetoothDevice {
     pub(crate) seen_count: u32,
 }
 
+/// Hard cap on tracked devices. Bounds worst-case memory even under a burst
+/// of spoofed/rotating BLE advertisements within a single `remove_stale`
+/// window, before any entry would otherwise qualify as stale.
+pub(crate) const MAX_TRACKED_DEVICES: usize = 256;
+
 /// A deduplicated collection of discovered Bluetooth devices, keyed by address.
 #[derive(Debug, Default)]
 pub(crate) struct DeviceList {
@@ -67,18 +72,32 @@ impl DeviceList {
     /// If the address is already present, the `rssi`, `last_seen`, and
     /// `seen_count` fields are updated.  The `name` is updated if the
     /// incoming device carries a non-`None` name.
+    ///
+    /// A brand-new address inserted at [`MAX_TRACKED_DEVICES`] capacity
+    /// evicts the single oldest-`last_seen` entry first, bounding memory
+    /// under a burst of spoofed/rotating BLE advertisements.
     pub(crate) fn add_or_update(&mut self, device: BluetoothDevice) {
-        self.devices
-            .entry(device.address.clone())
-            .and_modify(|existing| {
-                existing.rssi = device.rssi;
-                existing.last_seen = device.last_seen;
-                existing.seen_count = existing.seen_count.saturating_add(1);
-                if device.name.is_some() {
-                    existing.name.clone_from(&device.name);
-                }
-            })
-            .or_insert(device);
+        if let Some(existing) = self.devices.get_mut(&device.address) {
+            existing.rssi = device.rssi;
+            existing.last_seen = device.last_seen;
+            existing.seen_count = existing.seen_count.saturating_add(1);
+            if device.name.is_some() {
+                existing.name.clone_from(&device.name);
+            }
+            return;
+        }
+
+        if self.devices.len() >= MAX_TRACKED_DEVICES
+            && let Some(oldest) = self
+                .devices
+                .iter()
+                .min_by_key(|(_, d)| d.last_seen)
+                .map(|(addr, _)| addr.clone())
+        {
+            self.devices.remove(&oldest);
+        }
+
+        self.devices.insert(device.address.clone(), device);
     }
 
     /// Return all devices whose `last_seen` timestamp is older than `max_age`
@@ -89,6 +108,18 @@ impl DeviceList {
             .values()
             .filter(|d| now.duration_since(d.last_seen) >= max_age)
             .collect()
+    }
+
+    /// Prune tracked devices whose `last_seen` timestamp is older than
+    /// `max_age` relative to the current wall-clock time.
+    ///
+    /// Call on the same cadence as [`stale_devices`](Self::stale_devices) to
+    /// keep the map bounded by recency under BLE address rotation and
+    /// long-running passive scan sessions.
+    pub(crate) fn remove_stale(&mut self, max_age: SignedDuration) {
+        let now = Timestamp::now();
+        self.devices
+            .retain(|_, d| now.duration_since(d.last_seen) < max_age);
     }
 
     /// Return the number of devices currently tracked.
@@ -259,6 +290,61 @@ mod tests {
             device.name.as_deref(),
             Some("MyDevice"),
             "name should be updated FROM the second observation"
+        );
+    }
+
+    #[test]
+    fn remove_stale_evicts_aged_entries_and_keeps_fresh() {
+        let mut list = DeviceList::new();
+        list.add_or_update(make_device("AA:BB:CC:DD:EE:01", -60, Timestamp::UNIX_EPOCH));
+        list.add_or_update(make_device("AA:BB:CC:DD:EE:02", -70, Timestamp::now()));
+
+        list.remove_stale(SignedDuration::from_secs(1));
+
+        assert_eq!(
+            list.len(),
+            1,
+            "only the fresh entry should remain after pruning"
+        );
+        let Ok(fresh) = BdAddr::parse("AA:BB:CC:DD:EE:02") else {
+            unreachable!("test address should be valid");
+        };
+        assert!(
+            list.get(&fresh).is_some(),
+            "fresh entry must survive pruning"
+        );
+    }
+
+    #[test]
+    fn add_or_update_evicts_oldest_when_at_capacity() {
+        let mut list = DeviceList::new();
+        for i in 0..MAX_TRACKED_DEVICES {
+            let addr = format!("AA:BB:CC:DD:EE:{i:02X}");
+            let Ok(last_seen) = Timestamp::from_second(i64::try_from(i).unwrap_or_default()) else {
+                unreachable!("small positive second should be valid");
+            };
+            list.add_or_update(make_device(&addr, -60, last_seen));
+        }
+        assert_eq!(list.len(), MAX_TRACKED_DEVICES, "list must be at capacity");
+
+        let Ok(newest) =
+            Timestamp::from_second(i64::try_from(MAX_TRACKED_DEVICES).unwrap_or_default())
+        else {
+            unreachable!("small positive second should be valid");
+        };
+        list.add_or_update(make_device("FF:FF:FF:FF:FF:FF", -40, newest));
+
+        assert_eq!(
+            list.len(),
+            MAX_TRACKED_DEVICES,
+            "insertion at capacity must evict rather than grow the map"
+        );
+        let Ok(oldest) = BdAddr::parse("AA:BB:CC:DD:EE:00") else {
+            unreachable!("test address should be valid");
+        };
+        assert!(
+            list.get(&oldest).is_none(),
+            "the oldest entry must have been evicted to make room"
         );
     }
 }

@@ -322,6 +322,13 @@ fn parse_nmea_coord(value: &[u8], deg_digits: usize) -> Result<i64, GpsError> {
         let raw = parse_int(frac_part).ok_or(GpsError::ParseError)? as i64;
         // Scale to 4 digits (10000).
         let frac_len = frac_part.len() as u32;
+        // WHY: an adversarial GPS source controls frac_part length; beyond
+        // 18 digits 10i64.pow(frac_len - 4) can wrap to 0 in release builds
+        // (panic = "abort"), turning the division below into a divide-by-zero
+        // kernel abort. Reject rather than let the exponent grow unbounded.
+        if frac_len > 18 {
+            return Err(GpsError::ParseError);
+        }
         if frac_len < 4 {
             raw * 10i64.pow(4 - frac_len)
         } else if frac_len > 4 {
@@ -974,6 +981,19 @@ mod tests {
         assert_eq!(parse_int(b"0"), Some(0));
         assert_eq!(parse_int(b""), None);
         assert_eq!(parse_int(b"abc"), None);
+    }
+
+    // -- Coordinate parsing --
+
+    #[test]
+    fn parse_lat_rejects_excessive_fractional_digit_count() {
+        let value = b"5321.00000000000000000000000"; // 23 fractional digits
+        let result = parse_lat(value, b"N");
+        assert_eq!(
+            result,
+            Err(GpsError::ParseError),
+            "23+ fractional digits must error instead of overflowing 10i64.pow"
+        );
     }
 
     // -- GpsTime epoch conversion --

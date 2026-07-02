@@ -171,9 +171,13 @@ pub(crate) fn parse_rmc(sentence: &str) -> error::Result<Fix> {
 
 /// Parse latitude FROM split fields (value, hemisphere).
 fn parse_lat_field(value: &str, hemisphere: &str) -> error::Result<f64> {
-    if value.len() < 4 {
+    // WHY: NMEA fields are wire-ASCII; a non-ASCII field means the fixed
+    // byte offsets below could land inside a multi-byte UTF-8 sequence and
+    // panic on a &str byte-range slice. Reject non-ASCII input up front so
+    // every subsequent slice index is guaranteed to be a char boundary.
+    if value.len() < 4 || !value.is_ascii() {
         return Err(Error::Parse {
-            message: format!("latitude too short: {value}"),
+            message: format!("invalid latitude field: {value}"),
         });
     }
     let degrees: f64 = value[..2].parse().map_err(|_| Error::Parse {
@@ -191,9 +195,13 @@ fn parse_lat_field(value: &str, hemisphere: &str) -> error::Result<f64> {
 
 /// Parse longitude FROM split fields (value, hemisphere).
 fn parse_lon_field(value: &str, hemisphere: &str) -> error::Result<f64> {
-    if value.len() < 5 {
+    // WHY: NMEA fields are wire-ASCII; a non-ASCII field means the fixed
+    // byte offsets below could land inside a multi-byte UTF-8 sequence and
+    // panic on a &str byte-range slice. Reject non-ASCII input up front so
+    // every subsequent slice index is guaranteed to be a char boundary.
+    if value.len() < 5 || !value.is_ascii() {
         return Err(Error::Parse {
-            message: format!("longitude too short: {value}"),
+            message: format!("invalid longitude field: {value}"),
         });
     }
     let degrees: f64 = value[..3].parse().map_err(|_| Error::Parse {
@@ -340,6 +348,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_lat_field_rejects_non_ascii_instead_of_panicking() {
+        let result = parse_lat_field("\u{4e00}21.6802", "N");
+        assert!(
+            matches!(result, Err(Error::Parse { .. })),
+            "non-ASCII latitude field must return Error::Parse, not panic"
+        );
+    }
+
+    #[test]
+    fn parse_lon_field_rejects_non_ascii_instead_of_panicking() {
+        let result = parse_lon_field("\u{4e00}030.3372", "E");
+        assert!(
+            matches!(result, Err(Error::Parse { .. })),
+            "non-ASCII longitude field must return Error::Parse, not panic"
+        );
+    }
+
+    #[test]
+    fn parse_gga_never_panics_on_valid_checksum_non_ascii_coordinate() {
+        let body = "GPGGA,092750.000,\u{4e00}21.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,";
+        let checksum = compute_checksum(body);
+        let sentence = format!("${body}*{checksum:02X}");
+        let result = parse_gga(&sentence);
+        assert!(
+            matches!(result, Err(Error::Parse { .. })),
+            "a valid-checksum sentence with a non-ASCII latitude field must error, not panic"
+        );
+    }
+
     // -- Proptest: fuzz the NMEA parser to verify no panics on arbitrary input --
 
     mod proptest_fuzz {
@@ -364,6 +402,18 @@ mod tests {
             #[test]
             fn validate_checksum_never_panics(data in "\\PC{0,200}") {
                 let result = validate_checksum(&data);
+                prop_assert!(result.is_ok() || result.is_err());
+            }
+
+            #[test]
+            fn parse_gga_never_panics_on_valid_checksum_multibyte_coordinate(c in "\\PC") {
+                // WHY: the random-byte proptests above fail checksum validation
+                // before reaching the slice, so they never exercise a
+                // valid-checksum sentence with a multi-byte coordinate field.
+                let body = format!("GPGGA,092750.000,{c}21.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,");
+                let checksum = compute_checksum(&body);
+                let sentence = format!("${body}*{checksum:02X}");
+                let result = parse_gga(&sentence);
                 prop_assert!(result.is_ok() || result.is_err());
             }
         }

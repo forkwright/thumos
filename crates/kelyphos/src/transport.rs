@@ -12,7 +12,7 @@
 use snafu::Snafu;
 
 use crate::config::{Config, DEFAULT_RETRY_LIMIT, DEFAULT_TX_TIMEOUT_MS};
-use crate::stp::{MAX_PAYLOAD, StpFrame};
+use crate::stp::{MAX_PAYLOAD, StpFrame, compute_crc_over};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -132,6 +132,9 @@ pub(crate) struct RxParser {
     pos: usize,
     /// Payload length decoded FROM the header (SET during [`Header`](RxState::Header) phase).
     payload_len: u16,
+    /// Count of frames discarded because the received CRC-16 CCITT did not
+    /// match the recomputed value over the received header + payload bytes.
+    crc_errors: u32,
 }
 
 impl Default for RxParser {
@@ -148,6 +151,7 @@ impl RxParser {
             buf: [0u8; TX_FRAME_MAX_ENCODED],
             pos: 0,
             payload_len: 0,
+            crc_errors: 0,
         }
     }
 
@@ -168,10 +172,17 @@ impl RxParser {
             }
 
             RxState::Header { collected } => {
-                if self.pos < TX_FRAME_MAX_ENCODED {
-                    self.buf[self.pos] = byte;
-                    self.pos += 1;
+                if self.pos >= TX_FRAME_MAX_ENCODED {
+                    // WARNING: header phase cannot overflow the buffer under
+                    // the current 12-bit length field / TX_FRAME_MAX_ENCODED
+                    // sizing, but bail rather than silently drop the byte and
+                    // let a corrupt/truncated header decode as if intact.
+                    self.state = RxState::WaitSof;
+                    self.pos = 0;
+                    return false;
                 }
+                self.buf[self.pos] = byte;
+                self.pos += 1;
                 let collected = collected + 1;
                 if collected == 4 {
                     // Decode payload length FROM header bytes 1 and 2 (after SOF).
@@ -193,10 +204,16 @@ impl RxParser {
             }
 
             RxState::Payload { remaining } => {
-                if self.pos < TX_FRAME_MAX_ENCODED {
-                    self.buf[self.pos] = byte;
-                    self.pos += 1;
+                if self.pos >= TX_FRAME_MAX_ENCODED {
+                    // WARNING: declared payload length would overflow the RX
+                    // buffer  -  abandon the frame instead of silently
+                    // truncating it and presenting a short frame as complete.
+                    self.state = RxState::WaitSof;
+                    self.pos = 0;
+                    return false;
                 }
+                self.buf[self.pos] = byte;
+                self.pos += 1;
                 if remaining == 1 {
                     self.state = RxState::Crc { collected: 0 };
                 } else {
@@ -213,9 +230,23 @@ impl RxParser {
                     self.pos += 1;
                 }
                 if collected == 1 {
-                    // Both CRC bytes received  -  frame is complete.
+                    // Both CRC bytes received  -  verify integrity before
+                    // surfacing the frame as complete.
                     self.state = RxState::WaitSof;
-                    true
+                    // INVARIANT: Crc state is only reached after Header fully
+                    // decodes (pos >= 5), so pos - 2 and pos - 1 are always
+                    // valid indices into buf here.
+                    let received_crc =
+                        u16::from_be_bytes([self.buf[self.pos - 2], self.buf[self.pos - 1]]);
+                    let header_bytes = &self.buf[1..4];
+                    let payload_bytes = &self.buf[5..self.pos - 2];
+                    let computed_crc = compute_crc_over(header_bytes, payload_bytes);
+                    if received_crc == computed_crc {
+                        true
+                    } else {
+                        self.crc_errors += 1;
+                        false
+                    }
                 } else {
                     self.state = RxState::Crc { collected: 1 };
                     false
@@ -234,6 +265,11 @@ impl RxParser {
     /// Payload length decoded FROM the most recently completed frame header.
     pub(crate) const fn last_payload_len(&self) -> u16 {
         self.payload_len
+    }
+
+    /// Count of frames discarded due to a CRC-16 CCITT mismatch on RX.
+    pub(crate) const fn crc_errors(&self) -> u32 {
+        self.crc_errors
     }
 }
 
@@ -348,21 +384,36 @@ impl StpTransport {
     /// [`TransportError::StaleAck`] if `seq` is not in the window.
     #[must_use = "retransmit failure must be handled"]
     pub(crate) fn retransmit(&mut self, seq: u8) -> Result<&[u8], TransportError> {
-        for slot in &mut self.tx_window {
-            if let Some(entry) = slot
-                && entry.seq == seq
-            {
-                if entry.retries >= self.retry_limit {
-                    return Err(TransportError::RetryLimitExceeded {
-                        seq,
-                        limit: self.retry_limit,
-                    });
-                }
-                entry.retries += 1;
-                return Ok(entry.as_bytes());
-            }
+        let limit = self.retry_limit;
+        // Locate the window slot holding this seq (read-only borrow, released
+        // before any mutation below so the terminal-failure clear and the
+        // success-path reborrow do not overlap — see #351).
+        let Some(idx) = self
+            .tx_window
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|e| e.seq == seq))
+        else {
+            return Err(TransportError::StaleAck { seq });
+        };
+
+        // Terminal failure: free the slot on retry exhaustion, mirroring
+        // acknowledge()'s cleanup  -  otherwise a link-declared-dead frame
+        // occupies its window slot forever (no ACK will ever arrive for it),
+        // and enough exhausted slots permanently write-locks the transport.
+        if self.tx_window[idx]
+            .as_ref()
+            .is_some_and(|e| e.retries >= limit)
+        {
+            self.tx_window[idx] = None;
+            return Err(TransportError::RetryLimitExceeded { seq, limit });
         }
-        Err(TransportError::StaleAck { seq })
+
+        // Otherwise bump the retry count and hand back the encoded bytes.
+        let Some(entry) = self.tx_window[idx].as_mut() else {
+            return Err(TransportError::StaleAck { seq });
+        };
+        entry.retries += 1;
+        Ok(entry.as_bytes())
     }
 
     /// Feed one received byte INTO the RX parser.
@@ -385,6 +436,11 @@ impl StpTransport {
     /// Next TX sequence number (0–7).
     pub(crate) const fn next_seq(&self) -> u8 {
         self.tx_seq
+    }
+
+    /// Count of received frames discarded due to a CRC-16 CCITT mismatch.
+    pub(crate) const fn crc_errors(&self) -> u32 {
+        self.rx_parser.crc_errors()
     }
 }
 
@@ -517,6 +573,42 @@ mod tests {
     }
 
     #[test]
+    fn retransmit_limit_exceeded_frees_window_slot_for_reuse() {
+        let mut t = StpTransport::new();
+        // Fill every window slot and drive each to RetryLimitExceeded.
+        for i in 0..WINDOW_SIZE {
+            let seq = u8::try_from(i).unwrap_or_default() & 0x07;
+            let frame = make_frame(seq, b"exhaust");
+            t.enqueue(&frame)
+                .unwrap_or_else(|_| panic!("enqueue {i} must succeed when window not full"));
+        }
+        for i in 0..WINDOW_SIZE {
+            let seq = u8::try_from(i).unwrap_or_default() & 0x07;
+            for _ in 0..RETRY_LIMIT {
+                t.retransmit(seq).unwrap_or_default();
+            }
+            let err = t.retransmit(seq);
+            assert!(
+                matches!(err, Err(TransportError::RetryLimitExceeded { .. })),
+                "slot {i} must report RetryLimitExceeded once retries are exhausted"
+            );
+        }
+
+        assert_eq!(
+            t.in_flight(),
+            0,
+            "every exhausted slot must be freed, not permanently occupied"
+        );
+
+        // The transport must accept new traffic instead of staying write-locked.
+        let next = make_frame(0, b"fresh");
+        assert!(
+            t.enqueue(&next).is_ok(),
+            "enqueue must succeed after all slots are freed by retry exhaustion"
+        );
+    }
+
+    #[test]
     fn custom_config_changes_retry_budget() {
         // WHY: prove Config.retry_limit flows through to retransmit. A 2-retry
         // budget must reject on the 3rd call where default (10) would accept.
@@ -586,6 +678,56 @@ mod tests {
     }
 
     #[test]
+    fn rx_parser_rejects_frame_with_corrupted_payload_byte() {
+        let frame = make_frame(0, b"integrity-check");
+        let mut encoded = [0u8; TX_FRAME_MAX_ENCODED];
+        let len = frame.encode(&mut encoded);
+
+        // Flip one payload byte after encoding (payload starts at index 5);
+        // the trailing CRC bytes are left untouched, simulating line
+        // corruption/injection after the sender computed the CRC.
+        encoded[5] ^= 0xFF;
+
+        let mut t = StpTransport::new();
+        let mut saw_complete = false;
+        for &byte in encoded.iter().take(len) {
+            if t.receive_byte(byte).is_some() {
+                saw_complete = true;
+            }
+        }
+        assert!(
+            !saw_complete,
+            "a frame with a corrupted payload byte must never be surfaced as complete"
+        );
+        assert_eq!(
+            t.crc_errors(),
+            1,
+            "crc_errors must increment exactly once for the corrupted frame"
+        );
+    }
+
+    #[test]
+    fn rx_parser_accepts_intact_frame_and_leaves_crc_errors_at_zero() {
+        let frame = make_frame(1, b"clean");
+        let mut encoded = [0u8; TX_FRAME_MAX_ENCODED];
+        let len = frame.encode(&mut encoded);
+
+        let mut t = StpTransport::new();
+        let mut complete = None;
+        for &byte in encoded.iter().take(len) {
+            if let Some(raw) = t.receive_byte(byte) {
+                complete = Some(raw.to_vec());
+            }
+        }
+        assert!(complete.is_some(), "an intact frame must complete");
+        assert_eq!(
+            t.crc_errors(),
+            0,
+            "an intact frame must not count as a CRC error"
+        );
+    }
+
+    #[test]
     fn transport_window_constants() {
         assert_eq!(WINDOW_SIZE, 7, "WINDOW_SIZE must be 7 per STP spec");
         assert_eq!(TX_TIMEOUT_MS, 180, "TX_TIMEOUT_MS must be 180 per STP spec");
@@ -624,6 +766,36 @@ mod tests {
             FrameType::FwDownload as u8,
             3,
             "FwDownload frame type must be 3"
+        );
+    }
+
+    #[test]
+    fn rx_parser_reassembles_max_payload_frame_without_truncation() {
+        // WHY: proves TX_FRAME_MAX_ENCODED exactly accommodates the largest
+        // legitimately-decodable frame (12-bit length field, max 4095 ==
+        // MAX_PAYLOAD) with zero loss, i.e. the overflow-bail path above is
+        // never hit on a real frame.
+        let payload = [0xABu8; MAX_PAYLOAD];
+        let frame = make_frame(0, &payload);
+        let mut encoded = [0u8; TX_FRAME_MAX_ENCODED];
+        let len = frame.encode(&mut encoded);
+        assert_eq!(
+            len, TX_FRAME_MAX_ENCODED,
+            "max-payload frame must fill the encode buffer exactly"
+        );
+
+        let mut t = StpTransport::new();
+        let mut complete = None;
+        for &byte in encoded.iter().take(len) {
+            if let Some(raw) = t.receive_byte(byte) {
+                complete = Some(raw.to_vec());
+            }
+        }
+        let raw = complete.unwrap_or_default();
+        assert_eq!(
+            raw.len(),
+            TX_FRAME_MAX_ENCODED,
+            "a max-size frame must be reassembled at full length, never silently truncated"
         );
     }
 }
