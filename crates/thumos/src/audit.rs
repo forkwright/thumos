@@ -45,6 +45,8 @@
 
 use core::fmt;
 
+use subtle::ConstantTimeEq;
+
 use crate::security::{self, KEY_SIZE, SHA256_DIGEST_LEN};
 
 // ---------------------------------------------------------------------------
@@ -419,7 +421,10 @@ impl AuditLog {
             let len = entry.serialize_for_hmac(&prev_hmac, &mut serialized);
             let expected = security::hmac_sha256(hmac_key, &serialized[..len]);
 
-            if entry.hmac != expected {
+            // WHY: constant-time compare — a variable-time `!=` on the HMAC
+            // leaks, via timing, how many leading bytes matched, aiding forgery
+            // of a tampered chain. `subtle::ConstantTimeEq` compares all bytes.
+            if entry.hmac[..].ct_eq(&expected[..]).unwrap_u8() == 0 {
                 return Err(AuditError::ChainTampered);
             }
 
@@ -522,6 +527,8 @@ impl fmt::Display for AuditLog {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     /// Test HMAC key (non-zero, deterministic).

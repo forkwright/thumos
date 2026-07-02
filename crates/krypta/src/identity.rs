@@ -1,6 +1,7 @@
 //! Ed25519 identity key pairs for signing and authentication.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use x25519_dalek::StaticSecret;
 
 use crate::error::{InvalidKeySnafu, InvalidSignatureSnafu, KeyGenerationSnafu, Result};
 
@@ -20,6 +21,23 @@ impl PublicIdentityKey {
     /// Constructs a `PublicIdentityKey` from raw bytes.
     pub(crate) const fn from_bytes(bytes: [u8; PUBLIC_KEY_LEN]) -> Self {
         Self(bytes)
+    }
+
+    /// Maps this Ed25519 identity key to its X25519 (Montgomery) public form.
+    ///
+    /// WHY(#207): lets the long-term identity enter X3DH DH legs with no new
+    /// wire field. INVARIANT: pairs with [`IdentityKeyPair::x25519_secret`] —
+    /// the returned bytes are the X25519 public whose secret is the peer's
+    /// `to_scalar_bytes()` (guaranteed by `ed25519_dalek`'s birational map).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidKey`] if the stored bytes are not a valid
+    /// Ed25519 point.
+    pub(crate) fn to_x25519(&self) -> Result<[u8; PUBLIC_KEY_LEN]> {
+        let verifying_key =
+            VerifyingKey::from_bytes(&self.0).map_err(|_| InvalidKeySnafu.build())?;
+        Ok(verifying_key.to_montgomery().to_bytes())
     }
 }
 
@@ -78,6 +96,19 @@ impl IdentityKeyPair {
     /// Returns the public key half of this identity key pair.
     pub(crate) const fn public_key(&self) -> PublicIdentityKey {
         PublicIdentityKey(self.public_key_bytes)
+    }
+
+    /// Derives the long-term X25519 secret from the Ed25519 seed via the
+    /// birational Edwards→Montgomery map (`to_scalar_bytes` →
+    /// `StaticSecret::from`). `StaticSecret` clamps at DH time, so the raw
+    /// unclamped scalar bytes are the correct input.
+    ///
+    /// WHY(#207): binds X3DH to the long-term identity without adding an
+    /// independent X25519 key or wire field. INVARIANT: the corresponding
+    /// public equals `self.public_key().to_x25519()`.
+    pub(crate) fn x25519_secret(&self) -> StaticSecret {
+        let signing_key = SigningKey::from_bytes(&self.private_key_bytes);
+        StaticSecret::from(signing_key.to_scalar_bytes())
     }
 
     /// Signs `data` using this identity key.
@@ -181,6 +212,20 @@ mod tests {
             key.public_key().as_bytes().len(),
             32,
             "Ed25519 public key must be 32 bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn x25519_derivation_public_matches_montgomery_map() -> Result<()> {
+        use x25519_dalek::PublicKey;
+
+        let key = IdentityKeyPair::generate()?;
+        let derived_public = PublicKey::from(&key.x25519_secret()).to_bytes();
+        let mapped_public = key.public_key().to_x25519()?;
+        assert_eq!(
+            derived_public, mapped_public,
+            "X25519 public derived from the secret must equal the Ed25519→Montgomery map of the identity"
         );
         Ok(())
     }

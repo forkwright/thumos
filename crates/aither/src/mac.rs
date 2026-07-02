@@ -797,34 +797,58 @@ impl WiFiMacDriver {
         self.current_mac
     }
 
-    /// Rotate to a fresh random MAC and build the `ACCESS_REG` command to
+    /// Rotate to a fresh random MAC and build the `ACCESS_REG` commands to
     /// apply it to firmware before the next association attempt.
+    ///
+    /// Returns both the low-word and high-word register writes together so a
+    /// caller cannot apply only the low 32 bits and leave the top 16 bits
+    /// stale (audit #339 — that split write left a permanent hardware/
+    /// software MAC mismatch and broke WPA2 PTK derivation, which is keyed
+    /// on the software-visible MAC).
     ///
     /// # Errors
     ///
     /// Returns [`Error::Rng`] if MAC generation fails.
-    pub(crate) fn set_mac_address(&mut self, seq_num: u8) -> Result<WifiCommand, Error> {
-        self.current_mac = MacAddress::generate_random()?;
+    pub(crate) fn set_mac_address(&mut self, seq_num: u8) -> Result<[WifiCommand; 2], Error> {
+        let new_mac = MacAddress::generate_random()?;
+        let mac = new_mac.0;
         // WHY: MAC bytes are packed INTO two 32-bit registers: low 4 bytes and
-        // high 2 bytes. We write the low word here via ACCESS_REG with seq_num;
-        // the high 2 bytes require a separate ACCESS_REG write (seq_num+1)
-        // because the firmware exposes two distinct registers.
-        let mac = self.current_mac.0;
+        // high 2 bytes (upper 16 bits of that register reserved). Both
+        // ACCESS_REG writes are built and returned together — seq_num for
+        // the low word, seq_num+1 for the high word — because the firmware
+        // exposes two distinct registers and a caller must never apply one
+        // without the other.
         let low32 = u32::from_le_bytes([
             mac.first().copied().unwrap_or_default(),
             mac.get(1).copied().unwrap_or_default(),
             mac.get(2).copied().unwrap_or_default(),
             mac.get(3).copied().unwrap_or_default(),
         ]);
-        // NOTE: MCR_WASR (0x0020) is used as the representative MAC low register;
-        // exact register is firmware-version-specific.
+        let high32 = u32::from_le_bytes([
+            mac.get(4).copied().unwrap_or_default(),
+            mac.get(5).copied().unwrap_or_default(),
+            0,
+            0,
+        ]);
+        // NOTE: MCR_WASR (0x0020/0x0024) are the representative MAC low/high
+        // registers; exact registers are firmware-version-specific.
         let _ = self.hif_base;
-        let payload = access_reg_write_payload(MCR_WASR_MAC_LOW, low32);
-        Ok(WifiCommand::with_payload(
-            CommandId::AccessReg,
-            seq_num,
-            payload.to_vec(),
-        ))
+        let low_payload = access_reg_write_payload(MCR_WASR_MAC_LOW, low32);
+        let high_payload = access_reg_write_payload(MCR_WASR_MAC_HIGH, high32);
+        let commands = [
+            WifiCommand::with_payload(CommandId::AccessReg, seq_num, low_payload.to_vec()),
+            WifiCommand::with_payload(
+                CommandId::AccessReg,
+                seq_num.wrapping_add(1),
+                high_payload.to_vec(),
+            ),
+        ];
+        // INVARIANT: current_mac is committed only after both register-write
+        // commands are constructed, so a caller inspecting mac_address()
+        // between building and sending the two commands never observes a
+        // partially-rotated address.
+        self.current_mac = new_mac;
+        Ok(commands)
     }
 
     /// Build a passive scan request command (privacy-safe default).
@@ -906,6 +930,13 @@ impl Default for WiFiMacDriver {
 /// NOTE: Matches `MCR_WASR` (WLAN async status register, 0x0020) which doubles
 /// as the software-visible MAC register on gen2 HIF.
 const MCR_WASR_MAC_LOW: u32 = 0x0020;
+
+/// Offset of the MAC high-word register used by `CMD_ID_ACCESS_REG` writes.
+///
+/// NOTE: Holds the top 2 MAC octets in its low 16 bits (upper 16 bits
+/// reserved); paired with `MCR_WASR_MAC_LOW` so a MAC rotation always writes
+/// all 48 bits (audit #339).
+const MCR_WASR_MAC_HIGH: u32 = 0x0024;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1250,24 +1281,77 @@ mod tests {
     }
 
     #[test]
-    fn set_mac_address_produces_access_reg_command() {
+    fn set_mac_address_writes_both_registers() {
         let mut driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
-        let cmd = driver.set_mac_address(3).unwrap_or_default();
+        let commands = driver.set_mac_address(3).unwrap_or_default();
+        let [low, high] = commands;
+
         assert_eq!(
-            cmd.cid,
+            low.cid,
             CommandId::AccessReg,
-            "must produce ACCESS_REG command"
+            "low-word command must be ACCESS_REG"
         );
-        assert_eq!(cmd.seq_num, 3, "seq_num must match argument");
+        assert_eq!(low.seq_num, 3, "low-word seq_num must match argument");
         assert_eq!(
-            cmd.payload.len(),
+            low.payload.len(),
             ACCESS_REG_PAYLOAD_SIZE,
-            "payload must be exactly {ACCESS_REG_PAYLOAD_SIZE} bytes"
+            "low-word payload must be exactly {ACCESS_REG_PAYLOAD_SIZE} bytes"
         );
         assert_eq!(
-            cmd.payload.first().copied().unwrap_or_default(),
+            low.payload.first().copied().unwrap_or_default(),
             ACCESS_REG_WRITE,
-            "operation byte must be write"
+            "low-word operation byte must be write"
+        );
+
+        assert_eq!(
+            high.cid,
+            CommandId::AccessReg,
+            "high-word command must be ACCESS_REG"
+        );
+        assert_eq!(high.seq_num, 4, "high-word seq_num must be low seq_num + 1");
+        assert_eq!(
+            high.payload.len(),
+            ACCESS_REG_PAYLOAD_SIZE,
+            "high-word payload must be exactly {ACCESS_REG_PAYLOAD_SIZE} bytes"
+        );
+        assert_eq!(
+            high.payload.first().copied().unwrap_or_default(),
+            ACCESS_REG_WRITE,
+            "high-word operation byte must be write"
+        );
+    }
+
+    #[test]
+    fn set_mac_address_writes_all_six_mac_bytes_to_firmware() {
+        let mut driver = WiFiMacDriver::new(0x1800_0000).unwrap_or_default();
+        let commands = driver.set_mac_address(9).unwrap_or_default();
+        let [low, high] = commands;
+        let new_mac = driver.mac_address().0;
+
+        // Payload layout: op(1) | reg_offset_u32_le(4) | value_u32_le(4).
+        let low32 = u32::from_le_bytes([
+            low.payload.get(5).copied().unwrap_or_default(),
+            low.payload.get(6).copied().unwrap_or_default(),
+            low.payload.get(7).copied().unwrap_or_default(),
+            low.payload.get(8).copied().unwrap_or_default(),
+        ]);
+        let high32 = u32::from_le_bytes([
+            high.payload.get(5).copied().unwrap_or_default(),
+            high.payload.get(6).copied().unwrap_or_default(),
+            high.payload.get(7).copied().unwrap_or_default(),
+            high.payload.get(8).copied().unwrap_or_default(),
+        ]);
+
+        let low_expected = u32::from_le_bytes([new_mac[0], new_mac[1], new_mac[2], new_mac[3]]);
+        let high_expected = u32::from_le_bytes([new_mac[4], new_mac[5], 0, 0]);
+
+        assert_eq!(
+            low32, low_expected,
+            "low-word register value must carry MAC bytes 0-3"
+        );
+        assert_eq!(
+            high32, high_expected,
+            "high-word register value must carry MAC bytes 4-5 in its low 16 bits"
         );
     }
 

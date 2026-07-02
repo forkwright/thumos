@@ -468,9 +468,10 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] CSPRNG (ChaCha20)\r\n");
     // SAFETY: called once after exceptions::init() (timer running, IRQs enabled).
-    // csprng::init() spins on WFI until sufficient timer-jitter entropy is
-    // accumulated (MIN_MIX_COUNT ISR samples ≈ 640 ms at 100 Hz), then seeds
-    // ChaCha20 and sets INITIALIZED. Must complete before any radio driver init.
+    // csprng::init() spins on WFI until the entropy pool accumulates a full
+    // SEED_ENTROPY_BITS estimate of timer-jitter entropy, then seeds the
+    // ChaCha20Rng DRBG and sets INITIALIZED. Must complete before any radio
+    // driver init.
     unsafe {
         csprng::init();
     }
@@ -524,9 +525,14 @@ pub unsafe fn run() -> ! {
     // Step 7b: Filesystem
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Filesystem (LFS)\r\n");
+    // Captures the mounted LFS so it can back the VFS root below instead
+    // of a fresh, volatile ramfs (#343). Stays `None` on any path that
+    // does not end with a durably mounted filesystem.
+    let mut lfs_root: Option<alloc::boxed::Box<dyn crate::vfs::Filesystem>> = None;
     if state.emmc_ok {
         use crate::block::MsdcBlockDevice;
         use crate::lfs;
+        use crate::lfs_imap::LfsError;
 
         // Compute device size in sectors from the partition constants.
         let sector_count = kconfig::LFS_PARTITION_SIZE;
@@ -539,22 +545,66 @@ pub unsafe fn run() -> ! {
         match unsafe { blk_dev.init() } {
             Ok(()) => {
                 // Try to mount existing LFS.
-                let mount_result = lfs::mount(alloc::boxed::Box::new(blk_dev));
-                match mount_result {
-                    Ok(_fs) => {
+                match lfs::mount(alloc::boxed::Box::new(blk_dev)) {
+                    Ok(fs) => {
                         let _ = serial.write_str("       LFS mounted OK\r\n");
+                        lfs_root = Some(alloc::boxed::Box::new(fs));
                     }
-                    Err(_) => {
-                        let _ = serial.write_str("       LFS mount failed, formatting\r\n");
-                        // First boot: format and try again.
+                    // A missing/invalid superblock means a genuine first
+                    // boot (or a never-formatted partition) -- format and
+                    // remount. Any OTHER error (Corrupt, BlockIo) is NOT
+                    // first boot and must not trigger a reformat: that
+                    // would silently destroy user data on a bit flip or a
+                    // transient I/O fault (#360).
+                    Err(LfsError::InvalidSuperblock) => {
+                        let _ = serial
+                            .write_str("       LFS mount failed (no superblock), formatting\r\n");
                         let mut fmt_dev = MsdcBlockDevice::new(sector_count);
-                        if unsafe { fmt_dev.init() }.is_ok() {
-                            if lfs::format(&mut fmt_dev).is_ok() {
-                                let _ = serial.write_str("       LFS formatted OK\r\n");
-                            } else {
-                                let _ = serial.write_str("  WARN LFS format failed\r\n");
+                        // SAFETY: eMMC controller was initialized successfully in
+                        // Step 7; fmt_dev.init() is called once here on a
+                        // freshly constructed MsdcBlockDevice.
+                        if unsafe { fmt_dev.init() }.is_ok() && lfs::format(&mut fmt_dev).is_ok() {
+                            let _ = serial.write_str("       LFS formatted OK\r\n");
+                            // Remount the freshly formatted device so the
+                            // VFS root is backed by durable storage from
+                            // this boot onward, not just after the NEXT
+                            // reboot (#343).
+                            let mut remount_dev = MsdcBlockDevice::new(sector_count);
+                            // SAFETY: eMMC controller was initialized successfully
+                            // in Step 7; remount_dev.init() is called once here on
+                            // a freshly constructed MsdcBlockDevice.
+                            match unsafe { remount_dev.init() } {
+                                Ok(()) => match lfs::mount(alloc::boxed::Box::new(remount_dev)) {
+                                    Ok(fs) => {
+                                        let _ = serial.write_str("       LFS remounted OK\r\n");
+                                        lfs_root = Some(alloc::boxed::Box::new(fs));
+                                    }
+                                    Err(e) => {
+                                        let _ = write!(
+                                            serial,
+                                            "  WARN LFS remount after format failed: {:?}\r\n",
+                                            e
+                                        );
+                                    }
+                                },
+                                Err(e) => {
+                                    let _ = write!(
+                                        serial,
+                                        "  WARN Block device re-init for remount failed: {:?}\r\n",
+                                        e
+                                    );
+                                }
                             }
+                        } else {
+                            let _ = serial.write_str("  WARN LFS format failed\r\n");
                         }
+                    }
+                    Err(e) => {
+                        let _ = write!(
+                            serial,
+                            "  CRIT LFS mount failed ({:?}) -- not reformatting, data at risk\r\n",
+                            e
+                        );
                     }
                 }
             }
@@ -562,19 +612,16 @@ pub unsafe fn run() -> ! {
                 let _ = write!(serial, "  WARN Block device init failed: {:?}\r\n", e);
             }
         }
-
-        // Initialize the VFS mount table.
-        // SAFETY: called once during boot, before any filesystem syscalls.
-        unsafe {
-            crate::fd::init_vfs(None);
-        }
     } else {
         let _ = serial.write_str("       Skipped (no eMMC)\r\n");
-        // Initialize VFS with ramfs-only fallback.
-        // SAFETY: called once during boot, before any filesystem syscalls.
-        unsafe {
-            crate::fd::init_vfs(None);
-        }
+    }
+
+    // Initialize the VFS mount table, backed by the mounted LFS when one
+    // is available so writes survive a reboot; falls back to a fresh
+    // ramfs root otherwise (#343).
+    // SAFETY: called once during boot, before any filesystem syscalls.
+    unsafe {
+        crate::fd::init_vfs(None, lfs_root);
     }
 
     // -----------------------------------------------------------------------

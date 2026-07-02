@@ -64,15 +64,48 @@ impl LfsSegmentManager {
         }
     }
 
-    /// Allocate the first available free segment.
+    /// Allocate the first available free segment for ordinary (non-compaction)
+    /// use.
     ///
     /// Returns the segment index, or `None` if no free segments remain.
     /// The allocated segment is marked as in-use.
     ///
+    /// INVARIANT: refuses to hand out the last standing free segment
+    /// (`free_count <= 1`) -- that one is reserved exclusively for the
+    /// compactor via [`Self::allocate_for_compaction`], so a mid-relocation
+    /// seal always has somewhere to land instead of deadlocking with
+    /// [`LfsError::NoFreeSegments`] while a reclaimable segment still
+    /// exists (#329).
+    ///
     /// # Errors
     ///
-    /// This method is infallible; returns `None` when full.
+    /// This method is infallible; returns `None` when full or when only
+    /// the compaction reserve remains.
     pub(crate) fn allocate(&mut self) -> Option<u32> {
+        if self.free_count <= 1 {
+            return None;
+        }
+        self.allocate_any()
+    }
+
+    /// Allocate the first available free segment, bypassing the
+    /// compaction-reserve floor that [`Self::allocate`] enforces.
+    ///
+    /// May take the LAST free segment. Used exclusively by the compactor's
+    /// relocation writes, which must never fail with
+    /// [`LfsError::NoFreeSegments`] mid-relocation while a candidate
+    /// segment is still awaiting `free()` (#329).
+    ///
+    /// # Errors
+    ///
+    /// This method is infallible; returns `None` when completely full.
+    pub(crate) fn allocate_for_compaction(&mut self) -> Option<u32> {
+        self.allocate_any()
+    }
+
+    /// Shared linear-scan allocation used by both [`Self::allocate`] and
+    /// [`Self::allocate_for_compaction`].
+    fn allocate_any(&mut self) -> Option<u32> {
         for i in 0..self.bitmap.len() {
             if !self.bitmap[i] {
                 self.bitmap[i] = true;
@@ -279,7 +312,10 @@ mod tests {
     fn allocate_skips_segment_zero() {
         let mut mgr = LfsSegmentManager::new(4, 256);
 
-        // Allocate all available segments.
+        // Allocate all available segments via the ordinary path. Segment 0
+        // is always reserved; the LAST standing free segment is also
+        // withheld as the compaction reserve (#329), so only 2 of the 3
+        // non-zero segments are handed out here.
         let mut allocated = Vec::new();
         while let Some(seg) = mgr.allocate() {
             allocated.push(seg);
@@ -290,7 +326,25 @@ mod tests {
             !allocated.contains(&0),
             "segment 0 should never be allocated"
         );
-        assert_eq!(allocated, &[1, 2, 3]);
+        assert_eq!(allocated, &[1, 2]);
+        assert_eq!(
+            mgr.free_count(),
+            1,
+            "the compaction reserve segment must remain free"
+        );
+
+        // Only allocate_for_compaction() may take the reserve.
+        let reserved = mgr
+            .allocate_for_compaction()
+            .expect("compaction path may take the last free segment");
+        assert_eq!(reserved, 3);
+        assert_eq!(mgr.free_count(), 0);
+        assert_eq!(mgr.allocate(), None, "no segments remain for ordinary use");
+        assert_eq!(
+            mgr.allocate_for_compaction(),
+            None,
+            "no segments remain at all"
+        );
     }
 
     #[test]

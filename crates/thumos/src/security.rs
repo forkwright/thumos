@@ -1,16 +1,17 @@
 //! Security constants, types, and cryptographic primitives.
 //!
 //! Shared definitions used across the encryption and key management
-//! subsystems. Includes inline implementations of SHA-256, SHA-1,
-//! HMAC-SHA256, HMAC-SHA1, PBKDF2, PRF-384, and HKDF-SHA256 for
-//! the bare-metal kernel (no `std` or `ring` dependency).
+//! subsystems. SHA-256, HMAC-SHA256, HKDF-SHA256, and PBKDF2-HMAC-SHA256
+//! are provided by the audited `sha2`, `hmac`, `hkdf`, and `pbkdf2` crates,
+//! matching the kernel's existing `aes` / `xts-mode` usage.
 //!
-//! All cryptographic implementations follow their respective RFCs:
-//! - SHA-256: FIPS 180-4 / RFC 6234
-//! - SHA-1: FIPS 180-4 (required by WPA2; collision resistance broken — do not use for new designs)
-//! - HMAC: RFC 2104
-//! - PBKDF2: RFC 8018 (PKCS#5 v2.1)
-//! - HKDF: RFC 5869
+//! SHA-1, HMAC-SHA1, PBKDF2-HMAC-SHA1, and PRF-384 remain inline: they
+//! exist solely for WPA2 (IEEE 802.11-2020) PMK/PTK derivation. SHA-1's
+//! collision resistance is broken — do not use for new designs.
+//!
+//! Standards followed:
+//! - SHA-256 / HMAC / HKDF / PBKDF2: FIPS 180-4, RFC 2104, RFC 5869, RFC 8018
+//! - SHA-1: FIPS 180-4 (WPA2 only)
 //! - PRF-384: IEEE 802.11-2020 section 12.7.1.2
 
 use core::fmt;
@@ -40,9 +41,6 @@ pub(crate) const SECTORS_PER_BLOCK: usize = BLOCK_SIZE / SECTOR_SIZE;
 
 /// SHA-256 digest length in bytes.
 pub(crate) const SHA256_DIGEST_LEN: usize = 32;
-
-/// SHA-256 block size in bytes.
-const SHA256_BLOCK_SIZE: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Sleep tiers
@@ -103,253 +101,45 @@ impl fmt::Display for SecurityError {
 }
 
 // ---------------------------------------------------------------------------
-// SHA-256 — FIPS 180-4
+// SHA-256 — FIPS 180-4 (via the `sha2` crate)
 // ---------------------------------------------------------------------------
-
-/// SHA-256 initial hash values (FIPS 180-4 section 5.3.3).
-const SHA256_H: [u32; 8] = [
-    0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a,
-    0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
-];
-
-/// SHA-256 round constants (FIPS 180-4 section 4.2.2).
-const K256: [u32; 64] = [
-    0x428a_2f98, 0x7137_4491, 0xb5c0_fbcf, 0xe9b5_dba5,
-    0x3956_c25b, 0x59f1_11f1, 0x923f_82a4, 0xab1c_5ed5,
-    0xd807_aa98, 0x1283_5b01, 0x2431_85be, 0x550c_7dc3,
-    0x72be_5d74, 0x80de_b1fe, 0x9bdc_06a7, 0xc19b_f174,
-    0xe49b_69c1, 0xefbe_4786, 0x0fc1_9dc6, 0x240c_a1cc,
-    0x2de9_2c6f, 0x4a74_84aa, 0x5cb0_a9dc, 0x76f9_88da,
-    0x983e_5152, 0xa831_c66d, 0xb003_27c8, 0xbf59_7fc7,
-    0xc6e0_0bf3, 0xd5a7_9147, 0x06ca_6351, 0x1429_2967,
-    0x27b7_0a85, 0x2e1b_2138, 0x4d2c_6dfc, 0x5338_0d13,
-    0x650a_7354, 0x766a_0abb, 0x81c2_c92e, 0x9272_2c85,
-    0xa2bf_e8a1, 0xa81a_664b, 0xc24b_8b70, 0xc76c_51a3,
-    0xd192_e819, 0xd699_0624, 0xf40e_3585, 0x106a_a070,
-    0x19a4_c116, 0x1e37_6c08, 0x2748_774c, 0x34b0_bcb5,
-    0x391c_0cb3, 0x4ed8_aa4a, 0x5b9c_ca4f, 0x682e_6ff3,
-    0x748f_82ee, 0x78a5_636f, 0x84c8_7814, 0x8cc7_0208,
-    0x90be_fffa, 0xa450_6ceb, 0xbef9_a3f7, 0xc671_78f2,
-];
-
-/// Incremental SHA-256 hasher.
-///
-/// Processes data in 64-byte blocks. Call [`Sha256::update`] with arbitrary
-/// slices, then [`Sha256::finalize`] to get the 32-byte digest.
-pub(crate) struct Sha256 {
-    state: [u32; 8],
-    buffer: [u8; SHA256_BLOCK_SIZE],
-    buf_len: usize,
-    total_len: u64,
-}
-
-impl Sha256 {
-    /// Create a new SHA-256 hasher.
-    #[must_use]
-    pub(crate) const fn new() -> Self {
-        Self {
-            state: SHA256_H,
-            buffer: [0u8; SHA256_BLOCK_SIZE],
-            buf_len: 0,
-            total_len: 0,
-        }
-    }
-
-    /// Feed data into the hasher.
-    pub(crate) fn update(&mut self, data: &[u8]) {
-        let mut offset = 0;
-        self.total_len += data.len() as u64;
-
-        // If there's leftover data in the buffer, fill it first.
-        if self.buf_len > 0 {
-            let space = SHA256_BLOCK_SIZE - self.buf_len;
-            let to_copy = data.len().min(space);
-            self.buffer[self.buf_len..self.buf_len + to_copy]
-                .copy_from_slice(&data[..to_copy]);
-            self.buf_len += to_copy;
-            offset += to_copy;
-
-            if self.buf_len == SHA256_BLOCK_SIZE {
-                let block = self.buffer;
-                sha256_compress(&mut self.state, &block);
-                self.buf_len = 0;
-            }
-        }
-
-        // Process full blocks directly from the input.
-        while offset + SHA256_BLOCK_SIZE <= data.len() {
-            let mut block = [0u8; SHA256_BLOCK_SIZE];
-            block.copy_from_slice(&data[offset..offset + SHA256_BLOCK_SIZE]);
-            sha256_compress(&mut self.state, &block);
-            offset += SHA256_BLOCK_SIZE;
-        }
-
-        // Buffer any remaining bytes.
-        let remaining = data.len() - offset;
-        if remaining > 0 {
-            self.buffer[..remaining].copy_from_slice(&data[offset..]);
-            self.buf_len = remaining;
-        }
-    }
-
-    /// Finalize and return the 32-byte digest. Consumes the hasher.
-    #[must_use]
-    pub(crate) fn finalize(mut self) -> [u8; SHA256_DIGEST_LEN] {
-        // Padding: append 0x80, then zeros, then 64-bit big-endian bit length.
-        let bit_len = self.total_len * 8;
-
-        // Append the 0x80 byte.
-        self.buffer[self.buf_len] = 0x80;
-        self.buf_len += 1;
-
-        // If there isn't room for the 8-byte length, pad and compress.
-        if self.buf_len > 56 {
-            for i in self.buf_len..SHA256_BLOCK_SIZE {
-                self.buffer[i] = 0;
-            }
-            let block = self.buffer;
-            sha256_compress(&mut self.state, &block);
-            self.buf_len = 0;
-            self.buffer = [0u8; SHA256_BLOCK_SIZE];
-        }
-
-        // Zero-pad up to byte 56.
-        for i in self.buf_len..56 {
-            self.buffer[i] = 0;
-        }
-
-        // Append 64-bit big-endian bit length.
-        let len_bytes = bit_len.to_be_bytes();
-        self.buffer[56..64].copy_from_slice(&len_bytes);
-
-        let block = self.buffer;
-        sha256_compress(&mut self.state, &block);
-
-        // Convert state to big-endian bytes.
-        let mut digest = [0u8; SHA256_DIGEST_LEN];
-        for (i, word) in self.state.iter().enumerate() {
-            let bytes = word.to_be_bytes();
-            digest[i * 4..i * 4 + 4].copy_from_slice(&bytes);
-        }
-        digest
-    }
-}
 
 /// One-shot SHA-256 hash.
 #[must_use]
 pub(crate) fn sha256(data: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize()
-}
-
-/// SHA-256 compression function (FIPS 180-4 section 6.2.2).
-fn sha256_compress(state: &mut [u32; 8], block: &[u8; SHA256_BLOCK_SIZE]) {
-    // Parse block into 16 big-endian u32 words.
-    let mut w = [0u32; 64];
-    for i in 0..16 {
-        w[i] = u32::from_be_bytes([
-            block[i * 4],
-            block[i * 4 + 1],
-            block[i * 4 + 2],
-            block[i * 4 + 3],
-        ]);
-    }
-
-    // Message schedule expansion.
-    for i in 16..64 {
-        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16]
-            .wrapping_add(s0)
-            .wrapping_add(w[i - 7])
-            .wrapping_add(s1);
-    }
-
-    // Working variables (FIPS 180-4 section 6.2.2 step 2).
-    // Names prefixed with 'w' to avoid clippy::many_single_char_names while
-    // remaining recognizable from the FIPS spec's a-h naming convention.
-    let [mut wa, mut wb, mut wc, mut wd, mut we, mut wf, mut wg, mut wh] = *state;
-
-    // 64 rounds.
-    for i in 0..64 {
-        let s1 = we.rotate_right(6) ^ we.rotate_right(11) ^ we.rotate_right(25);
-        let ch = (we & wf) ^ ((!we) & wg);
-        let temp1 = wh
-            .wrapping_add(s1)
-            .wrapping_add(ch)
-            .wrapping_add(K256[i])
-            .wrapping_add(w[i]);
-        let s0 = wa.rotate_right(2) ^ wa.rotate_right(13) ^ wa.rotate_right(22);
-        let maj = (wa & wb) ^ (wa & wc) ^ (wb & wc);
-        let temp2 = s0.wrapping_add(maj);
-
-        wh = wg;
-        wg = wf;
-        wf = we;
-        we = wd.wrapping_add(temp1);
-        wd = wc;
-        wc = wb;
-        wb = wa;
-        wa = temp1.wrapping_add(temp2);
-    }
-
-    state[0] = state[0].wrapping_add(wa);
-    state[1] = state[1].wrapping_add(wb);
-    state[2] = state[2].wrapping_add(wc);
-    state[3] = state[3].wrapping_add(wd);
-    state[4] = state[4].wrapping_add(we);
-    state[5] = state[5].wrapping_add(wf);
-    state[6] = state[6].wrapping_add(wg);
-    state[7] = state[7].wrapping_add(wh);
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(data);
+    let mut out = [0u8; SHA256_DIGEST_LEN];
+    out.copy_from_slice(&digest);
+    out
 }
 
 // ---------------------------------------------------------------------------
-// HMAC-SHA256 — RFC 2104
+// HMAC-SHA256 — RFC 2104 (via the `hmac` crate)
 // ---------------------------------------------------------------------------
 
 /// Compute HMAC-SHA256(key, message).
 ///
-/// Handles key normalization: keys longer than 64 bytes are hashed,
-/// keys shorter are zero-padded.
+/// HMAC accepts a key of any length (long keys are hashed, short keys are
+/// zero-padded), so construction never fails.
 #[must_use]
 pub(crate) fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
-    // Key normalization.
-    let mut k_prime = [0u8; SHA256_BLOCK_SIZE];
-    if key.len() > SHA256_BLOCK_SIZE {
-        let hashed = sha256(key);
-        k_prime[..SHA256_DIGEST_LEN].copy_from_slice(&hashed);
-    } else {
-        k_prime[..key.len()].copy_from_slice(key);
-    }
-
-    // Inner key pad: k_prime XOR 0x36
-    let mut i_key_pad = [0u8; SHA256_BLOCK_SIZE];
-    for (i, byte) in k_prime.iter().enumerate() {
-        i_key_pad[i] = byte ^ 0x36;
-    }
-
-    // Outer key pad: k_prime XOR 0x5c
-    let mut o_key_pad = [0u8; SHA256_BLOCK_SIZE];
-    for (i, byte) in k_prime.iter().enumerate() {
-        o_key_pad[i] = byte ^ 0x5c;
-    }
-
-    // Inner hash: SHA-256(i_key_pad || message)
-    let mut inner = Sha256::new();
-    inner.update(&i_key_pad);
-    inner.update(message);
-    let inner_hash = inner.finalize();
-
-    // Outer hash: SHA-256(o_key_pad || inner_hash)
-    let mut outer = Sha256::new();
-    outer.update(&o_key_pad);
-    outer.update(&inner_hash);
-    outer.finalize()
+    use hmac::{Hmac, Mac};
+    // INVARIANT: HMAC keys may be any length, so `new_from_slice` cannot
+    // return an error here; the zero fallback only preserves totality of the
+    // signature and is never reached.
+    let Ok(mut mac) = Hmac::<sha2::Sha256>::new_from_slice(key) else {
+        return [0u8; SHA256_DIGEST_LEN];
+    };
+    mac.update(message);
+    let tag = mac.finalize().into_bytes();
+    let mut out = [0u8; SHA256_DIGEST_LEN];
+    out.copy_from_slice(&tag);
+    out
 }
 
 // ---------------------------------------------------------------------------
-// PBKDF2-HMAC-SHA256 — RFC 8018
+// PBKDF2-HMAC-SHA256 — RFC 8018 (via the `pbkdf2` crate)
 // ---------------------------------------------------------------------------
 
 /// Derive a 32-byte key from `passphrase` and `salt` using PBKDF2-HMAC-SHA256.
@@ -367,25 +157,10 @@ pub(crate) fn pbkdf2_sha256(
         return Err(SecurityError::ZeroIterations);
     }
 
-    // PBKDF2 with dkLen = 32 bytes needs only one block (i=1).
-    // U_1 = HMAC(passphrase, salt || INT_32_BE(1))
-    let mut salt_with_index = [0u8; 128]; // salt up to 96 bytes + 4 bytes index
-    let salt_len = salt.len().min(124);
-    salt_with_index[..salt_len].copy_from_slice(&salt[..salt_len]);
-    salt_with_index[salt_len..salt_len + 4].copy_from_slice(&1u32.to_be_bytes());
-
-    let mut u = hmac_sha256(passphrase, &salt_with_index[..salt_len + 4]);
-    let mut result = u;
-
-    // U_2 .. U_c
-    for _ in 1..iterations {
-        u = hmac_sha256(passphrase, &u);
-        for (r, b) in result.iter_mut().zip(u.iter()) {
-            *r ^= b;
-        }
-    }
-
-    output.copy_from_slice(&result);
+    // WHY: HMAC accepts any key length, so the InvalidLength arm is
+    // unreachable; mapped for totality rather than panicking.
+    pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(passphrase, salt, iterations, output)
+        .map_err(|_| SecurityError::InvalidKeyLength)?;
     Ok(())
 }
 
@@ -713,18 +488,20 @@ pub(crate) fn prf_384(key: &[u8], label: &[u8], data: &[u8]) -> [u8; 48] {
 }
 
 // ---------------------------------------------------------------------------
-// HKDF-SHA256 — RFC 5869
+// HKDF-SHA256 — RFC 5869 (via the `hkdf` crate)
 // ---------------------------------------------------------------------------
 
 /// HKDF-Extract: PRK = HMAC-SHA256(salt, IKM).
+///
+/// An empty `salt` is equivalent to a salt of `HashLen` zero bytes
+/// (RFC 5869 section 2.2), because HMAC zero-pads a short key to the block
+/// size — matching the previous behaviour.
 #[must_use]
 pub(crate) fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
-    let actual_salt = if salt.is_empty() {
-        &[0u8; SHA256_DIGEST_LEN] as &[u8]
-    } else {
-        salt
-    };
-    hmac_sha256(actual_salt, ikm)
+    let (prk, _) = hkdf::Hkdf::<sha2::Sha256>::extract(Some(salt), ikm);
+    let mut out = [0u8; SHA256_DIGEST_LEN];
+    out.copy_from_slice(&prk);
+    out
 }
 
 /// HKDF-Expand: OKM = T(1) || T(2) || ... truncated to `okm.len()`.
@@ -740,53 +517,12 @@ pub(crate) fn hkdf_expand(
     info: &[u8],
     okm: &mut [u8],
 ) -> Result<(), SecurityError> {
-    let n = okm.len().div_ceil(SHA256_DIGEST_LEN);
-    if n > 255 {
-        return Err(SecurityError::HkdfOutputTooLong);
-    }
-
-    let mut t = [0u8; SHA256_DIGEST_LEN];
-    let mut offset = 0;
-
-    for i in 1..=n {
-        // T(i) = HMAC(PRK, T(i-1) || info || i_byte)
-        // Build message: T(i-1) || info || counter
-        // For i=1, T(0) is empty.
-        let mut hasher_key = [0u8; SHA256_BLOCK_SIZE];
-        if prk.len() > SHA256_BLOCK_SIZE {
-            let h = sha256(prk);
-            hasher_key[..SHA256_DIGEST_LEN].copy_from_slice(&h);
-        } else {
-            hasher_key[..prk.len()].copy_from_slice(prk);
-        }
-
-        let mut i_key_pad = [0u8; SHA256_BLOCK_SIZE];
-        let mut o_key_pad = [0u8; SHA256_BLOCK_SIZE];
-        for (j, byte) in hasher_key.iter().enumerate() {
-            i_key_pad[j] = byte ^ 0x36;
-            o_key_pad[j] = byte ^ 0x5c;
-        }
-
-        let mut inner = Sha256::new();
-        inner.update(&i_key_pad);
-        if i > 1 {
-            inner.update(&t);
-        }
-        inner.update(info);
-        inner.update(&[i as u8]);
-        let inner_hash = inner.finalize();
-
-        let mut outer = Sha256::new();
-        outer.update(&o_key_pad);
-        outer.update(&inner_hash);
-        t = outer.finalize();
-
-        let remaining = okm.len() - offset;
-        let to_copy = remaining.min(SHA256_DIGEST_LEN);
-        okm[offset..offset + to_copy].copy_from_slice(&t[..to_copy]);
-        offset += to_copy;
-    }
-
+    // WHY: a 32-byte PRK is exactly `HashLen`, so `from_prk` never rejects
+    // it; mapped for totality. `expand` rejects `okm.len() > 255 * HashLen`.
+    let hkdf = hkdf::Hkdf::<sha2::Sha256>::from_prk(prk)
+        .map_err(|_| SecurityError::InvalidKeyLength)?;
+    hkdf.expand(info, okm)
+        .map_err(|_| SecurityError::HkdfOutputTooLong)?;
     Ok(())
 }
 
@@ -813,6 +549,8 @@ pub(crate) fn hkdf_sha256(
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     // -- SHA-256 tests (NIST test vectors) --
@@ -856,20 +594,6 @@ mod tests {
             0xf6, 0xec, 0xed, 0xd4, 0x19, 0xdb, 0x06, 0xc1,
         ];
         assert_eq!(digest, expected, "SHA-256 two-block message must match NIST vector");
-    }
-
-    #[test]
-    fn sha256_incremental_matches_oneshot() {
-        let data = b"The quick brown fox jumps over the lazy dog";
-        let oneshot = sha256(data);
-
-        let mut hasher = Sha256::new();
-        hasher.update(&data[..10]);
-        hasher.update(&data[10..30]);
-        hasher.update(&data[30..]);
-        let incremental = hasher.finalize();
-
-        assert_eq!(oneshot, incremental, "incremental must match one-shot SHA-256");
     }
 
     // -- HMAC-SHA256 tests (RFC 4231 test vectors) --

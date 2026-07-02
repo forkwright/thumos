@@ -49,6 +49,13 @@ pub enum VfsError {
     PermissionDenied,
     /// Too many links (EMLINK = 31).
     TooManyLinks,
+    /// This inode's read path requires `Filesystem::read_mut()`; the
+    /// immutable `read()` cannot serve it (EIO = 5). WHY a distinct variant
+    /// instead of reusing `IoError`: this means the caller used the wrong
+    /// entry point (a fixable caller bug), not a device fault — collapsing
+    /// the two hid that distinction and let a caller silently treat "wrong
+    /// access mode" as a generic I/O error.
+    RequiresMut,
 }
 
 impl core::fmt::Display for VfsError {
@@ -64,6 +71,7 @@ impl core::fmt::Display for VfsError {
             Self::IoError => write!(f, "I/O error"),
             Self::PermissionDenied => write!(f, "permission denied"),
             Self::TooManyLinks => write!(f, "too many links"),
+            Self::RequiresMut => write!(f, "requires mutable read access"),
         }
     }
 }
@@ -85,6 +93,10 @@ impl VfsError {
             Self::IoError => 5,
             Self::PermissionDenied => 13,
             Self::TooManyLinks => 31,
+            // WHY EIO: no POSIX code fits "wrong access mode used
+            // internally"; this should never reach userspace once every
+            // call site uses read_mut() (see RequiresMut's doc).
+            Self::RequiresMut => 5,
         };
         0u32.wrapping_sub(raw)
     }
@@ -205,6 +217,20 @@ pub(crate) trait Filesystem {
     /// - `VfsError::IsADirectory` if `inode_id` refers to a directory.
     /// - `VfsError::IoError` on I/O failure.
     fn read(&self, inode_id: u32, offset: u64, buf: &mut [u8]) -> Result<usize, VfsError>;
+
+    /// Read bytes from a file, with mutable access to filesystem state.
+    ///
+    /// Default implementation delegates to `read()`. Override for a
+    /// filesystem whose read path must mutate internal state to serve some
+    /// inode (e.g. devfs's PRNG for `/dev/urandom` — the entropy source
+    /// cannot be read through `&self`).
+    ///
+    /// # Errors
+    ///
+    /// Same as `read()`.
+    fn read_mut(&mut self, inode_id: u32, offset: u64, buf: &mut [u8]) -> Result<usize, VfsError> {
+        self.read(inode_id, offset, buf)
+    }
 
     /// Write bytes to a file.
     ///
@@ -789,6 +815,18 @@ mod tests {
         assert_eq!(VfsError::IoError.to_errno(), 0u32.wrapping_sub(5));
         assert_eq!(VfsError::PermissionDenied.to_errno(), 0u32.wrapping_sub(13));
         assert_eq!(VfsError::TooManyLinks.to_errno(), 0u32.wrapping_sub(31));
+        assert_eq!(VfsError::RequiresMut.to_errno(), 0u32.wrapping_sub(5));
+    }
+
+    #[test]
+    fn read_mut_default_delegates_to_read() {
+        let mut fs = TestFs;
+        let mut buf = [0u8; 4];
+        assert_eq!(
+            fs.read_mut(1, 0, &mut buf),
+            Ok(0),
+            "default read_mut must delegate to read() for filesystems that don't override it"
+        );
     }
 
     // -- Edge cases --

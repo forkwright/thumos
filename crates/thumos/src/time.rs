@@ -27,13 +27,10 @@
 //! ```
 //! This matches the 32-bit ABI layout used by musl on ARMv7.
 
-#[cfg(not(test))]
 use crate::exceptions;
-#[cfg(not(test))]
 use crate::process;
-#[cfg(not(test))]
-use crate::syscall::{EFAULT, validate_user_buffer};
-#[cfg(not(test))]
+use crate::memguard::validate_user_buffer;
+use crate::syscall::EFAULT;
 use crate::timer;
 
 // ---------------------------------------------------------------------------
@@ -101,6 +98,25 @@ fn monotonic_secs() -> u64 {
     timer::counter() / freq
 }
 
+/// Low-power wait-for-event hint, used by the nanosleep tick-busy-wait.
+///
+/// On ARM this issues the `wfe` hint so the CPU parks until the next timer
+/// IRQ. On the host test target there is no such instruction and no interrupt
+/// source, so it is a no-op.
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+fn wait_for_event() {
+    // SAFETY: WFE is a hint instruction available at EL1; no memory is accessed.
+    unsafe {
+        core::arch::asm!("wfe");
+    }
+}
+
+/// Host-test no-op counterpart to the ARM `wfe` hint.
+#[cfg(not(target_arch = "arm"))]
+#[inline(always)]
+fn wait_for_event() {}
+
 /// Convert a raw timer counter value to a (seconds, nanoseconds) pair.
 fn counter_to_timespec(count: u64, freq: u64) -> (u32, u32) {
     if freq == 0 {
@@ -116,8 +132,9 @@ fn counter_to_timespec(count: u64, freq: u64) -> (u32, u32) {
 }
 
 // ---------------------------------------------------------------------------
-// Syscall implementations (not available in test builds; depend on timer,
-// process, exceptions, and syscall modules which are #[cfg(not(test))]).
+// Syscall implementations. Host-testable via the timer/exceptions stubs and
+// the un-gated process module; the ARM-only `wfe` hint in the nanosleep
+// tick-wait is target_arch-split (real hint on ARM, no-op on the host).
 // ---------------------------------------------------------------------------
 
 /// sys_clock_gettime — fill a user-space timespec with the requested clock.
@@ -130,7 +147,6 @@ fn counter_to_timespec(count: u64, freq: u64) -> (u32, u32) {
 /// # Returns
 ///
 /// 0 on success, EFAULT if `ts_ptr` is invalid, EINVAL for unknown `clock_id`.
-#[cfg(not(test))]
 pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
     // Validate the user pointer: timespec is 8 bytes (two u32 fields).
     let ptr = ts_ptr as usize;
@@ -188,7 +204,6 @@ pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
 /// # Returns
 ///
 /// 0 on success (sleep elapsed), EFAULT if `ts_ptr` is invalid.
-#[cfg(not(test))]
 pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     let ptr = ts_ptr as usize;
     if !validate_user_buffer(ptr, 8) {
@@ -243,10 +258,7 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     // return from the SVC handler to a yield point that the scheduler then
     // preempts, matching the Linux approach of process blocking in kernel.
     while exceptions::ticks() < wake_tick {
-        // SAFETY: WFE is a hint instruction available at EL1; no memory access.
-        unsafe {
-            core::arch::asm!("wfe");
-        }
+        wait_for_event();
     }
 
     // Clear the sleeping state now that we've woken.

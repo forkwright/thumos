@@ -25,6 +25,7 @@ use alloc::vec::Vec;
 use smoltcp::phy::Device;
 use smoltcp::wire::{IpAddress, Ipv4Address};
 
+use crate::csprng;
 use crate::net::NetworkStack;
 
 // ---------------------------------------------------------------------------
@@ -250,6 +251,23 @@ fn is_lan_hostname(hostname: &str) -> bool {
 // DNS wire format helpers
 // ---------------------------------------------------------------------------
 
+/// Generate a DNS transaction ID from the kernel CSPRNG.
+///
+/// WHY: a sequential/predictable transaction ID lets an on-path or
+/// off-path attacker predict the next query's TXID and race a spoofed
+/// response ahead of the real DNS server (CWE-330, DNS cache
+/// poisoning, issue #288). Each query must draw independent entropy
+/// rather than incrementing a counter.
+fn random_txid() -> u16 {
+    let mut buf = [0u8; 2];
+    // NOTE(#284): the fail-closed CSPRNG returns Err only before seeding,
+    // which cannot occur here — DNS resolution runs after `csprng::init()`
+    // completes during kinit. On that unreachable path `buf` stays zeroed,
+    // never key material.
+    let _ = csprng::kernel_random_bytes(&mut buf); // kanon:ignore RUST/no-silent-result-swallow -- fail-closed CSPRNG Err path is unreachable post-init (see NOTE above); zeroed buf on that path yields a valid (if predictable) TXID, not key material
+    u16::from_le_bytes(buf)
+}
+
 /// Build a DNS A query packet for the given hostname.
 ///
 /// Returns the wire-format query bytes and the transaction ID.
@@ -422,8 +440,6 @@ pub(crate) struct DnsResolver {
     lan_dns: Ipv4Address,
     /// DNS server for all other queries (Mullvad, privacy-respecting).
     internet_dns: Ipv4Address,
-    /// Transaction ID counter for DNS queries.
-    next_txid: u16,
     /// Whether to use DNS-over-TLS for non-LAN queries.
     ///
     /// When true, the resolver signals that queries for non-LAN hostnames
@@ -445,7 +461,6 @@ impl DnsResolver {
             cache: DnsCache::new(),
             lan_dns,
             internet_dns,
-            next_txid: 1,
             use_dot: false,
         }
     }
@@ -516,8 +531,7 @@ impl DnsResolver {
     /// appropriate DNS server on port 53.
     #[must_use]
     pub(crate) fn build_query(&mut self, hostname: &str) -> Result<(Vec<u8>, u16), DnsError> {
-        let txid = self.next_txid;
-        self.next_txid = self.next_txid.wrapping_add(1);
+        let txid = random_txid();
         let packet = build_dns_query(hostname, txid)?;
         Ok((packet, txid))
     }
@@ -941,5 +955,38 @@ mod tests {
             !resolver.should_use_dot("example.com"),
             "must not use DoT when disabled"
         );
+    }
+
+    // -- TXID entropy tests (issue #288) --
+
+    #[test]
+    fn build_query_txids_are_not_sequential() {
+        let key = [
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+            0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b,
+            0x2c, 0x2d, 0x2e, 0x2f,
+        ];
+        csprng::seed_for_test(&key, &[0u8; 8], 0);
+
+        let mut resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
+        let mut txids: Vec<u16> = Vec::new();
+        for _ in 0..16 {
+            let (_, txid) = resolver.build_query("example.com").ok().unwrap(); // ok: test
+            txids.push(txid);
+        }
+
+        // A sequential counter (the regression this test guards against)
+        // produces txid[i+1] == txid[i] + 1 for every consecutive pair.
+        let all_sequential = txids.windows(2).all(|w| w[1] == w[0].wrapping_add(1));
+        assert!(!all_sequential, "txids must not be a sequential counter: {txids:?}");
+
+        // Must not be monotonically increasing either.
+        let monotonic = txids.windows(2).all(|w| w[1] > w[0]);
+        assert!(!monotonic, "txids must not be monotonically increasing: {txids:?}");
+
+        // Must not be constant (rules out a degraded/uninitialized CSPRNG
+        // silently returning all-zero bytes).
+        let all_same = txids.windows(2).all(|w| w[0] == w[1]);
+        assert!(!all_same, "txids must not all be identical: {txids:?}");
     }
 }

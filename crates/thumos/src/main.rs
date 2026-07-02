@@ -51,6 +51,13 @@ mod emmc;
 mod encryption;
 #[cfg(not(test))]
 mod exceptions;
+// WHY(host-test): process.rs calls exceptions::ticks() (the timer-IRQ tick
+// counter). The real exceptions module is ARM-only (CP15 vector table, GIC).
+// Under test a stub supplies the tick source so process is host-testable
+// without dragging in gic/timer/uart/watchdog. Production is unaffected.
+#[cfg(test)]
+#[path = "exceptions_stub.rs"]
+mod exceptions;
 mod fd;
 mod firewall;
 mod fm_radio;
@@ -72,17 +79,15 @@ mod gic;
 #[cfg(not(test))]
 mod heap;
 mod json_mini;
-#[cfg(not(test))]
 mod ipc;
-#[cfg(not(test))]
 mod kconfig;
 mod key_manager;
 mod lock_screen;
 #[cfg(not(test))]
 mod kinit;
+mod memguard;
 mod mic_audit;
 mod mmio;
-#[cfg(not(test))]
 mod mmu;
 mod net;
 mod nous;
@@ -90,7 +95,6 @@ mod page;
 mod panic_wipe;
 mod pipe;
 mod power;
-#[cfg(not(test))]
 mod process;
 mod provision;
 mod ramfs;
@@ -123,14 +127,25 @@ mod telephony;
 #[cfg(test)]
 mod telephony_mock;
 mod telephony_parser;
-#[cfg(not(test))]
 mod syscall;
-#[cfg(not(test))]
 mod time;
 #[cfg(not(test))]
 mod timer;
+// WHY(host-test): time::sys_clock_gettime reads the ARM generic timer (CP15
+// CNTPCT/CNTFRQ), which is ARM-only. Under test a stub returns fixed sane
+// values so time is host-testable without dragging in CP15 asm. Production
+// is unaffected.
+#[cfg(test)]
+#[path = "timer_stub.rs"]
+mod timer;
 mod ui;
 #[cfg(not(test))]
+mod uart;
+// WHY(host-test): syscall's stdout (fd 1) and unknown-syscall debug paths
+// write to the MT6739 UART (ttyMT0 MMIO), which is ARM-only. Under test a
+// stub swallows output so syscall is host-testable. Production is unaffected.
+#[cfg(test)]
+#[path = "uart_stub.rs"]
 mod uart;
 mod usb;
 mod vfs;

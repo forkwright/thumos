@@ -30,6 +30,9 @@ pub(crate) struct OwnedBundle {
     pub(crate) public_bundle: PreKeyBundle,
     signed_prekey_private: StaticSecret,
     one_time_prekey_private: Option<StaticSecret>,
+    /// WHY(#207): the responder's long-term X25519 identity secret, needed to
+    /// mirror the initiator's identity DH legs at `respond_session` time.
+    identity_x25519_private: StaticSecret,
 }
 
 impl std::fmt::Debug for OwnedBundle {
@@ -108,6 +111,7 @@ pub(crate) fn create_bundle(identity: &IdentityKeyPair) -> Result<OwnedBundle> {
         },
         signed_prekey_private: spk_priv,
         one_time_prekey_private: Some(otpk_priv),
+        identity_x25519_private: identity.x25519_secret(),
     })
 }
 
@@ -119,6 +123,10 @@ pub(crate) fn create_bundle(identity: &IdentityKeyPair) -> Result<OwnedBundle> {
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidSignature`] if the responder's signed pre-key is not
+/// signed by its advertised identity key.
+/// Returns [`Error::InvalidKey`] if the responder's identity key is not a valid
+/// Ed25519 point.
 /// Returns [`Error::KeyGeneration`] if ephemeral key generation fails.
 /// Returns [`Error::KeyAgreement`] if any DH step fails.
 /// Returns [`Error::KeyDerivation`] if HKDF expansion fails.
@@ -126,25 +134,46 @@ pub(crate) fn initiate_session(
     our_identity: &IdentityKeyPair,
     their_bundle: &PreKeyBundle,
 ) -> Result<(SharedSecret, SessionKeys, InitiatorMessage)> {
-    // Primary ephemeral key for DH with signed pre-key.
-    let (spk_eph_priv, spk_eph_pub) = generate_x25519()?;
-    let dh1 = agree(&spk_eph_priv, &their_bundle.signed_prekey)?;
+    // WHY(#213): the signed pre-key is only trustworthy if it is signed by the
+    // advertised identity key. Reject before any DH so a substituted pre-key
+    // (active MITM on bundle delivery) never enters key agreement.
+    IdentityKeyPair::verify(
+        &their_bundle.identity_key,
+        &their_bundle.signed_prekey,
+        &their_bundle.prekey_signature,
+    )?;
 
-    // Optional second ephemeral key for DH with one-time pre-key.
-    // Each DH uses separate initiator key material so every advertised public
-    // key maps to one X25519 operation.
-    // The second ephemeral public key is included in InitiatorMessage so the
-    // responder can compute the matching DH output.
-    let (ikm, otp_eph_pub) = match their_bundle.one_time_prekey {
+    // WHY(#207): fold the long-term identity legs so the derived secret binds
+    // to both identities. IK_A is our identity's X25519 secret; IK_B is the
+    // peer identity mapped to Montgomery form.
+    let our_identity_x25519 = our_identity.x25519_secret();
+    let their_identity_x25519 = their_bundle.identity_key.to_x25519()?;
+
+    // Primary ephemeral key (EK_A) for DH with the signed pre-key and IK_B.
+    let (spk_eph_priv, spk_eph_pub) = generate_x25519()?;
+
+    // INVARIANT: IKM leg order must match respond_session byte-for-byte:
+    //   DH(IK_A, SPK_B) || DH(EK_A, IK_B) || DH(EK_A, SPK_B) [|| DH(EK_A2, OPK_B)]
+    let leg_identity_prekey = agree(&our_identity_x25519, &their_bundle.signed_prekey)?;
+    let leg_ephemeral_identity = agree(&spk_eph_priv, &their_identity_x25519)?;
+    let leg_ephemeral_prekey = agree(&spk_eph_priv, &their_bundle.signed_prekey)?;
+
+    let mut ikm = Vec::with_capacity(128);
+    ikm.extend_from_slice(&leg_identity_prekey);
+    ikm.extend_from_slice(&leg_ephemeral_identity);
+    ikm.extend_from_slice(&leg_ephemeral_prekey);
+
+    // Optional one-time pre-key leg. A second ephemeral (EK_A2) is used so
+    // every advertised public key maps to one X25519 operation; its public is
+    // carried in InitiatorMessage so the responder can mirror the DH output.
+    let otp_eph_pub = match their_bundle.one_time_prekey {
         Some(bundle_otp_pub) => {
             let (otp_eph_priv, otp_pub) = generate_x25519()?;
-            let dh2 = agree(&otp_eph_priv, &bundle_otp_pub)?;
-            let mut combined = Vec::with_capacity(64);
-            combined.extend_from_slice(&dh1);
-            combined.extend_from_slice(&dh2);
-            (combined, Some(otp_pub))
+            let leg_one_time = agree(&otp_eph_priv, &bundle_otp_pub)?;
+            ikm.extend_from_slice(&leg_one_time);
+            Some(otp_pub)
         }
-        None => (dh1.to_vec(), None),
+        None => None,
     };
 
     let (shared_secret, session_keys) = derive_keys(&ikm)?;
@@ -164,26 +193,38 @@ pub(crate) fn initiate_session(
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidKey`] if the initiator's identity key is not a valid
+/// Ed25519 point.
 /// Returns [`Error::KeyAgreement`] if DH fails.
 /// Returns [`Error::KeyDerivation`] if HKDF fails.
 pub(crate) fn respond_session(
     bundle: OwnedBundle,
     msg: &InitiatorMessage,
 ) -> Result<(SharedSecret, SessionKeys)> {
-    // DH1: SPK_B_priv × EK_A_pub  -  mirrors initiate's EK_A × SPK_B.
-    let dh1 = agree(&bundle.signed_prekey_private, &msg.ephemeral_key)?;
+    // WHY(#207): IK_A is the initiator's identity mapped to Montgomery form;
+    // IK_B is our own long-term X25519 identity secret. Each leg mirrors an
+    // initiate_session leg by DH symmetry, in the SAME byte order.
+    let their_identity_x25519 = msg.identity_key.to_x25519()?;
 
-    let ikm = match (bundle.one_time_prekey_private, msg.one_time_ephemeral_key) {
-        (Some(otpk_priv), Some(ek2_pub)) => {
-            // DH2: OPK_B_priv × EK_A2_pub  -  mirrors initiate's EK_A2 × OPK_B.
-            let dh2 = agree(&otpk_priv, &ek2_pub)?;
-            let mut combined = Vec::with_capacity(64);
-            combined.extend_from_slice(&dh1);
-            combined.extend_from_slice(&dh2);
-            combined
-        }
-        _ => dh1.to_vec(),
-    };
+    // DH(IK_A, SPK_B) : SPK_B_priv × IK_A_pub  ≡  IK_A_priv × SPK_B_pub
+    let leg_identity_prekey = agree(&bundle.signed_prekey_private, &their_identity_x25519)?;
+    // DH(EK_A, IK_B)  : IK_B_priv × EK_A_pub    ≡  EK_A_priv × IK_B_pub
+    let leg_ephemeral_identity = agree(&bundle.identity_x25519_private, &msg.ephemeral_key)?;
+    // DH(EK_A, SPK_B) : SPK_B_priv × EK_A_pub   ≡  EK_A_priv × SPK_B_pub
+    let leg_ephemeral_prekey = agree(&bundle.signed_prekey_private, &msg.ephemeral_key)?;
+
+    let mut ikm = Vec::with_capacity(128);
+    ikm.extend_from_slice(&leg_identity_prekey);
+    ikm.extend_from_slice(&leg_ephemeral_identity);
+    ikm.extend_from_slice(&leg_ephemeral_prekey);
+
+    // Optional one-time pre-key leg: DH(EK_A2, OPK_B).
+    if let (Some(otpk_priv), Some(ek2_pub)) =
+        (bundle.one_time_prekey_private, msg.one_time_ephemeral_key)
+    {
+        let leg_one_time = agree(&otpk_priv, &ek2_pub)?;
+        ikm.extend_from_slice(&leg_one_time);
+    }
 
     derive_keys(&ikm)
 }
@@ -280,6 +321,110 @@ mod tests {
         assert_eq!(
             alice_secret.raw, bob_secret.raw,
             "initiator and responder must derive the same shared secret"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shared_secret_is_bound_to_initiator_identity() -> Result<()> {
+        // #207 Done-when: a session built with a DIFFERENT IK_A must NOT derive
+        // the same shared secret. Models an active MITM who replays the honest
+        // initiator's ephemerals but substitutes a different identity key.
+        let alice = IdentityKeyPair::generate()?;
+        let mallory = IdentityKeyPair::generate()?;
+        let bob = IdentityKeyPair::generate()?;
+        let bob_bundle = create_bundle(&bob)?;
+        let pub_bundle = bob_bundle.public_bundle.clone();
+
+        let (alice_secret, _, mut init_msg) = initiate_session(&alice, &pub_bundle)?;
+        // Substitute a different initiator identity, keeping every ephemeral.
+        init_msg.identity_key = mallory.public_key();
+
+        let (bob_secret, _) = respond_session(bob_bundle, &init_msg)?;
+        assert_ne!(
+            alice_secret.raw, bob_secret.raw,
+            "substituting the initiator identity must break shared-secret agreement (#207)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shared_secret_is_bound_to_responder_identity() -> Result<()> {
+        // The identity binding must also cover the responder: two bundles that
+        // differ ONLY in the identity key produce different secrets under a
+        // fixed initiator.
+        let alice = IdentityKeyPair::generate()?;
+        let bob = IdentityKeyPair::generate()?;
+        let bob_bundle = create_bundle(&bob)?;
+
+        let (alice_secret, _, _) = initiate_session(&alice, &bob_bundle.public_bundle)?;
+
+        // Re-sign the SAME signed pre-key under a different identity so the
+        // signature check passes but IK_B differs.
+        let mallory = IdentityKeyPair::generate()?;
+        let mut forged = bob_bundle.public_bundle;
+        forged.identity_key = mallory.public_key();
+        forged.prekey_signature = mallory.sign(&forged.signed_prekey)?;
+
+        let (alice_secret_2, _, _) = initiate_session(&alice, &forged)?;
+        assert_ne!(
+            alice_secret.raw, alice_secret_2.raw,
+            "a different responder identity must change the derived secret (#207)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initiate_rejects_tampered_prekey_signature() -> Result<()> {
+        // #213: a corrupted signed-pre-key signature must be rejected.
+        let alice = IdentityKeyPair::generate()?;
+        let bob = IdentityKeyPair::generate()?;
+        let mut pub_bundle = create_bundle(&bob)?.public_bundle;
+        if let Some(byte) = pub_bundle.prekey_signature.first_mut() {
+            *byte ^= 0xFF;
+        }
+        let err = initiate_session(&alice, &pub_bundle);
+        assert!(
+            matches!(err, Err(crate::error::Error::InvalidSignature { .. })),
+            "a tampered prekey signature must yield Err(InvalidSignature) (#213)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initiate_rejects_prekey_not_signed_by_identity() -> Result<()> {
+        // #213 attack model: MITM substitutes their own signed pre-key while
+        // keeping the victim's identity key. The signature no longer verifies.
+        let alice = IdentityKeyPair::generate()?;
+        let bob = IdentityKeyPair::generate()?;
+        let mallory = IdentityKeyPair::generate()?;
+        let mallory_bundle = create_bundle(&mallory)?.public_bundle;
+        let mut victim = create_bundle(&bob)?.public_bundle;
+        // Swap in Mallory's signed pre-key + signature under Bob's identity.
+        victim.signed_prekey = mallory_bundle.signed_prekey;
+        victim.prekey_signature = mallory_bundle.prekey_signature;
+        assert!(
+            initiate_session(&alice, &victim).is_err(),
+            "a signed pre-key not signed by the bundle identity must be rejected (#213)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initiator_and_responder_agree_without_one_time_prekey() -> Result<()> {
+        // Three-leg path (no OPK): both sides must still derive the same secret.
+        let alice = IdentityKeyPair::generate()?;
+        let bob = IdentityKeyPair::generate()?;
+        let mut bob_bundle = create_bundle(&bob)?;
+        bob_bundle.public_bundle.one_time_prekey = None;
+        bob_bundle.one_time_prekey_private = None;
+        let pub_bundle = bob_bundle.public_bundle.clone();
+
+        let (alice_secret, _, init_msg) = initiate_session(&alice, &pub_bundle)?;
+        let (bob_secret, _) = respond_session(bob_bundle, &init_msg)?;
+        assert_eq!(
+            alice_secret.raw, bob_secret.raw,
+            "3-leg X3DH (no one-time pre-key) must still agree"
         );
         Ok(())
     }

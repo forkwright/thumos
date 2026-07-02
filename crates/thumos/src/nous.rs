@@ -698,6 +698,8 @@ impl fmt::Display for NousManager {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     // --- CapabilityPreset tests ---

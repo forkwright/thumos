@@ -359,6 +359,27 @@ pub unsafe fn init_and_enable() {
         map_section(mb, mb, MemoryType::Ram);
     }
 
+    // Program CP15 and enable address translation.
+    // WHY(host-test): the L1 table is populated above on every target, but the
+    // CP15 register programming and MMU-enable barriers are ARM-only. On the
+    // host test target `program_translation` is a no-op, so this function
+    // populates the static table and returns without enabling translation.
+    // SAFETY: the L1 table has just been fully populated; called once during
+    // early boot with interrupts disabled before any VA-dependent code runs.
+    unsafe {
+        program_translation();
+    }
+}
+
+/// Program TTBR0/TTBCR/DACR, invalidate the TLB, and enable the MMU + caches.
+///
+/// # Safety
+///
+/// Must be called from `init_and_enable` after the L1 table is fully populated,
+/// once during early boot with interrupts disabled.
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+unsafe fn program_translation() {
     // Set TTBR0 to our page table
     let ttbr0 = core::ptr::addr_of!(L1) as u32;
     // SAFETY: CP15 system register access is a privileged operation. The register
@@ -437,6 +458,15 @@ pub unsafe fn init_and_enable() {
         core::arch::asm!("isb sy");
     }
 }
+
+/// Host-test no-op: address translation is never enabled off-ARM.
+///
+/// # Safety
+///
+/// No preconditions; performs no operation.
+#[cfg(not(target_arch = "arm"))]
+#[inline(always)]
+unsafe fn program_translation() {}
 
 /// Return the physical address of the L1 page table.
 pub fn table_base() -> usize {

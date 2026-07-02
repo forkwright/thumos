@@ -789,7 +789,7 @@ fn format_msg_header(sender: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::String;
+    use alloc::string::{String, ToString};
 
     use super::*;
     use crate::ui::CONTENT_PIXELS;

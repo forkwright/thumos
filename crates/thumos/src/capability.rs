@@ -87,8 +87,11 @@ pub(crate) const EPERM: u32 = 0u32.wrapping_sub(1);
 // ---------------------------------------------------------------------------
 // Kernel-mode capability check helpers
 //
-// Both functions are #[cfg(not(test))] gated because they call
-// crate::process (which is itself cfg-gated) to read the current PCB.
+// `check` reads the current PCB via crate::process (now un-gated) and logs
+// denials to the UART (host-test stub), so it is host-testable and compiled on
+// both targets — the syscall `kill` path (signal::sys_kill) needs it under
+// test. `has` has no caller anywhere and stays #[cfg(not(test))] to avoid a
+// host-build dead-code item.
 // Pure-logic tests live in the `tests` module below using `Capabilities`
 // directly without going through the process table.
 // ---------------------------------------------------------------------------
@@ -104,7 +107,6 @@ pub(crate) const EPERM: u32 = 0u32.wrapping_sub(1);
 /// ```rust,ignore
 /// capability::check(Capabilities::KILL)?;
 /// ```
-#[cfg(not(test))]
 pub(crate) fn check(required: u32) -> Result<(), u32> {
     let caps = crate::process::current_capabilities();
     if (caps & required) == required {
