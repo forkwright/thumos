@@ -153,3 +153,15 @@ ARCHITECTURE/trait-impl-colocation:crates/kelyphos/src/wmt.rs
 # Excluded crates cannot use version.workspace = true or edition.workspace = true.
 # These fields must be explicitly set in the kernel Cargo.toml.
 MANIFEST/package-workspace-inheritance:crates/thumos/Cargo.toml
+
+# =============================================================================
+# ci.yml — dependency audit lives in the dedicated security.yml workflow
+# =============================================================================
+#
+# WHY: cargo deny + cargo audit run in .github/workflows/security.yml — the
+# fleet SUPPLY-CHAIN.md pattern keeps security scanning in a dedicated workflow
+# (PRs + a daily schedule so newly-published CVEs against existing deps are
+# caught even with no PR open). The CI/no-deny-check rule assumes a single
+# consolidated CI file and does not see the sibling security workflow. The
+# check genuinely runs; it is just not duplicated in ci.yml.
+CI/no-deny-check:.github/workflows/ci.yml

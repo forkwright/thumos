@@ -100,6 +100,25 @@ impl<const N: usize> fmt::Display for SecureKey<N> {
     }
 }
 
+/// Overwrite a stack key buffer with zeros via volatile writes.
+///
+/// WHY: mirrors [`SecureKey::zeroize`] for buffers that never become a
+/// `SecureKey` themselves. The plaintext intermediate arrays in
+/// [`KeyManager::derive_from_passphrase`] and
+/// [`KeyManager::derive_partition_keys`] are `Copy`, so constructing a
+/// `SecureKey` from them leaves the original array un-zeroized; this
+/// closes that gap explicitly on every return path (#325).
+fn volatile_zero<const N: usize>(buf: &mut [u8; N]) {
+    for byte in buf.iter_mut() {
+        // SAFETY: write_volatile prevents dead-store elimination; byte
+        // points into the caller-owned stack array.
+        #[expect(unsafe_code, reason = "write_volatile required to prevent dead-store elimination of zeroization")]
+        unsafe {
+            core::ptr::write_volatile(byte, 0);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // KeySet
 // ---------------------------------------------------------------------------
@@ -187,8 +206,14 @@ impl KeyManager {
         passphrase: &[u8],
     ) -> Result<SecureKey<KEY_SIZE>, SecurityError> {
         let mut key_bytes = [0u8; KEY_SIZE];
-        security::pbkdf2_sha256(passphrase, PBKDF2_SALT, PBKDF2_ITERATIONS, &mut key_bytes)?;
-        Ok(SecureKey::new(key_bytes))
+        let derive_result =
+            security::pbkdf2_sha256(passphrase, PBKDF2_SALT, PBKDF2_ITERATIONS, &mut key_bytes);
+        let result = derive_result.map(|()| SecureKey::new(key_bytes));
+        // WHY: zero the stack copy on every path (success or error) — see
+        // volatile_zero's doc comment. key_bytes is Copy, so SecureKey::new
+        // above (on success) left this array fully populated (#325).
+        volatile_zero(&mut key_bytes);
+        result
     }
 
     /// Derive per-purpose partition keys from a primary key via HKDF-SHA256.
@@ -213,25 +238,40 @@ impl KeyManager {
         let ikm = primary.as_bytes();
 
         let mut data_bytes = [0u8; XTS_KEY_SIZE];
-        security::hkdf_sha256(ikm, &[], LABEL_DATA, &mut data_bytes)?;
+        let data_result = security::hkdf_sha256(ikm, &[], LABEL_DATA, &mut data_bytes);
 
         let mut audit_bytes = [0u8; KEY_SIZE];
-        security::hkdf_sha256(ikm, &[], LABEL_AUDIT, &mut audit_bytes)?;
+        let audit_result = security::hkdf_sha256(ikm, &[], LABEL_AUDIT, &mut audit_bytes);
 
         let mut csprng_bytes = [0u8; KEY_SIZE];
-        security::hkdf_sha256(ikm, &[], LABEL_CSPRNG, &mut csprng_bytes)?;
+        let csprng_result = security::hkdf_sha256(ikm, &[], LABEL_CSPRNG, &mut csprng_bytes);
 
         let mut session_bytes = [0u8; KEY_SIZE];
-        security::hkdf_sha256(ikm, &[], LABEL_SESSION, &mut session_bytes)?;
+        let session_result = security::hkdf_sha256(ikm, &[], LABEL_SESSION, &mut session_bytes);
 
-        self.data_key = Some(SecureKey::new(data_bytes));
-        self.audit_key = Some(SecureKey::new(audit_bytes));
-        self.csprng_key = Some(SecureKey::new(csprng_bytes));
-        self.session_key = Some(SecureKey::new(session_bytes));
-        self.primary_key_derived = true;
-        self.sleep_tier = SleepTier::Short;
+        let result = data_result
+            .and(audit_result)
+            .and(csprng_result)
+            .and(session_result);
 
-        Ok(())
+        if result.is_ok() {
+            self.data_key = Some(SecureKey::new(data_bytes));
+            self.audit_key = Some(SecureKey::new(audit_bytes));
+            self.csprng_key = Some(SecureKey::new(csprng_bytes));
+            self.session_key = Some(SecureKey::new(session_bytes));
+            self.primary_key_derived = true;
+            self.sleep_tier = SleepTier::Short;
+        }
+
+        // WHY: zero every intermediate stack buffer on both the success and
+        // error paths — each is Copy, so constructing the SecureKey above
+        // (when successful) left the original array fully populated (#325).
+        volatile_zero(&mut data_bytes);
+        volatile_zero(&mut audit_bytes);
+        volatile_zero(&mut csprng_bytes);
+        volatile_zero(&mut session_bytes);
+
+        result
     }
 
     /// Zeroize all partition keys and transition to long-sleep tier.
@@ -413,6 +453,14 @@ mod tests {
         assert!(km.csprng_key().is_none(), "csprng key must be None");
         assert!(km.session_key().is_none(), "session key must be None");
         assert_eq!(km.sleep_tier(), SleepTier::Long);
+    }
+
+    #[test]
+    fn volatile_zero_clears_buffer() {
+        let mut buf = [0xAAu8; KEY_SIZE];
+        assert!(buf.iter().any(|&b| b != 0));
+        volatile_zero(&mut buf);
+        assert!(buf.iter().all(|&b| b == 0), "volatile_zero must clear every byte");
     }
 
     #[test]
