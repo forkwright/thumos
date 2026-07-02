@@ -92,9 +92,13 @@ unsafe fn uart_write_str(s: &str) {
 // ARM semihosting — SYS_EXIT
 // -----------------------------------------------------------------------------
 
-// Operation number for SYS_EXIT (angel_SWIreason_ReportException with
-// ADP_Stopped_ApplicationExit, the canonical "clean exit" path).
-const SYS_EXIT: u32 = 0x18;
+// SYS_EXIT_EXTENDED (angel_SWIreason_ReportExceptionExtended). WHY: on AArch32
+// the plain SYS_EXIT (0x18) call takes the reason code DIRECTLY in r1 and cannot
+// convey an explicit status; only SYS_EXIT_EXTENDED (0x20) accepts a
+// [reason, exit_code] parameter block, so pass (0) and fail (1) are
+// distinguishable. On A64 SYS_EXIT already takes the block, but this example is
+// A32-only.
+const SYS_EXIT_EXTENDED: u32 = 0x20;
 const ADP_STOPPED_APPLICATION_EXIT: u32 = 0x2002_6;
 
 /// Triggers a clean QEMU exit via ARM semihosting. Exit code 0 means
@@ -103,17 +107,17 @@ const ADP_STOPPED_APPLICATION_EXIT: u32 = 0x2002_6;
 /// This never returns.
 fn semihost_exit(status: u32) -> ! {
     let params = [ADP_STOPPED_APPLICATION_EXIT, status];
-    // ARM semihosting call: r0 = operation, r1 = &params, then `bkpt 0xAB`
-    // (on A32) traps into the emulator/debugger.
-    // SAFETY: inline asm performs a deterministic semihosting trap; QEMU
-    // handles it and terminates the guest, so control never returns to Rust.
+    // WHY: the AArch32 semihosting trap instruction is `svc 0x123456`. QEMU does
+    // NOT treat `bkpt 0xAB` as a semihosting call in ARM state, so a bkpt-based
+    // exit is never serviced — the guest faults and hangs until the runner times
+    // out. `svc 0x123456` is the architecturally-defined A32 trap.
+    // SAFETY: inline asm performs the deterministic AArch32 semihosting trap;
+    // QEMU handles it and terminates the guest, so control never returns.
     unsafe {
         core::arch::asm!(
-            "mov r0, {op}",
-            "mov r1, {p}",
-            "bkpt 0xAB",
-            op = in(reg) SYS_EXIT,
-            p = in(reg) params.as_ptr(),
+            "svc #0x123456",
+            in("r0") SYS_EXIT_EXTENDED,
+            in("r1") params.as_ptr(),
             options(noreturn, nostack),
         );
     }
