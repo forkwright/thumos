@@ -46,7 +46,7 @@ use alloc::vec::Vec;
 use crate::http_client::{self, HttpRequest, HttpResponse, HttpError};
 use crate::json_mini::{JsonParser, JsonWriter, JsonValue, JsonError};
 use crate::matrix_ids::{MatrixEventId, MatrixRoomId};
-use crate::matrix_crypto::{self, MatrixCrypto, MegolmSession, CryptoError};
+use crate::matrix_crypto::{self, CryptoError, MatrixCrypto};
 use crate::security_mode::SecurityMode;
 
 // ---------------------------------------------------------------------------
@@ -669,45 +669,52 @@ impl MatrixClient {
         room_id: &str,
         body: &str,
     ) -> Result<(HttpRequest, u32), MatrixError> {
+        let txn_id = self.next_txn_id;
+        self.next_txn_id = self.next_txn_id.saturating_add(1);
+        let req = self.build_megolm_request(room_id, body, txn_id)?;
+        Ok((req, txn_id))
+    }
+
+    /// Encrypt `body` for `room_id` with the room's outbound Megolm session and
+    /// build the `m.room.encrypted` PUT request for transaction `txn_id`.
+    ///
+    /// Creates an outbound session if none exists. This is the single encrypted
+    /// send path, shared by [`build_encrypted_send_request`] and
+    /// [`flush_outbox`] so plaintext can never bypass Megolm (audit #370).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::ServerError`] if session creation or encryption
+    /// fails.
+    fn build_megolm_request(
+        &mut self,
+        room_id: &str,
+        body: &str,
+        txn_id: u32,
+    ) -> Result<HttpRequest, MatrixError> {
         // Ensure an outbound Megolm session exists for this room.
         if self.crypto.find_outbound_megolm(room_id).is_none() {
             self.crypto
                 .create_outbound_megolm(room_id)
-                .map_err(|e| MatrixError::ServerError {
-                    status: 0,
-                    errcode: String::from("M_CRYPTO_ERROR"),
-                    message: alloc::format!("{e}"),
-                })?;
+                .map_err(crypto_error)?;
         }
 
-        // Encrypt the message body.
         let session_idx = self
             .crypto
             .megolm_outbound
             .iter()
-            .position(|s| s.room_id == room_id);
+            .position(|s| s.room_id == room_id)
+            .ok_or_else(|| MatrixError::ServerError {
+                status: 0,
+                errcode: String::from("M_CRYPTO_ERROR"),
+                message: String::from("no outbound session after creation"),
+            })?;
 
-        let ciphertext = match session_idx {
-            Some(idx) => {
-                let session = &mut self.crypto.megolm_outbound[idx];
-                matrix_crypto::encrypt_megolm(session, body.as_bytes())
-                    .map_err(|e| MatrixError::ServerError {
-                        status: 0,
-                        errcode: String::from("M_CRYPTO_ERROR"),
-                        message: alloc::format!("{e}"),
-                    })?
-            }
-            None => {
-                return Err(MatrixError::ServerError {
-                    status: 0,
-                    errcode: String::from("M_CRYPTO_ERROR"),
-                    message: String::from("no outbound session after creation"),
-                });
-            }
-        };
-
-        let txn_id = self.next_txn_id;
-        self.next_txn_id = self.next_txn_id.saturating_add(1);
+        let session = &mut self.crypto.megolm_outbound[session_idx];
+        // `[u8; 32]` is `Copy`; capture the session id before the mutable borrow.
+        let session_id = session.session_id;
+        let ciphertext =
+            matrix_crypto::encrypt_megolm(session, body.as_bytes()).map_err(crypto_error)?;
 
         let mut path = String::from(API_PREFIX);
         path.push_str("/rooms/");
@@ -715,11 +722,10 @@ impl MatrixClient {
         path.push_str("/send/m.room.encrypted/");
         push_u32(&mut path, txn_id);
 
-        let json_body = build_encrypted_body(&ciphertext);
+        let json_body = build_encrypted_body(&ciphertext, &session_id);
         let mut req = http_client::put_json(&self.homeserver, &path, json_body.as_bytes());
         http_client::with_auth(&mut req, &self.access_token);
-
-        Ok((req, txn_id))
+        Ok(req)
     }
 
     /// Process a send-message HTTP response.
@@ -801,33 +807,27 @@ impl MatrixClient {
         });
     }
 
-    /// Build HTTP requests for all pending outbox messages.
+    /// Build encrypted HTTP requests for all pending outbox messages.
     ///
-    /// Returns a list of `(request, txn_id)` pairs. The caller sends
-    /// each request and calls [`confirm_sent`] on success, or leaves
-    /// the message in the outbox for the next flush cycle.
+    /// Each message is routed through the room's Megolm session and sent as an
+    /// authenticated `m.room.encrypted` event — the outbox never emits plaintext
+    /// `m.room.message` (audit #370). Returns a list of `(request, txn_id)`
+    /// results; the caller sends each and calls [`confirm_sent`] on success, or
+    /// leaves the message in the outbox for the next flush cycle.
     ///
     /// # Errors
     ///
-    /// Returns errors from individual request builds. Continues building
-    /// remaining requests even if one fails.
+    /// Each element carries the per-message encryption/build result. A failed
+    /// encryption yields an `Err` for that message without dropping the others.
     pub(crate) fn flush_outbox(&mut self) -> Vec<Result<(HttpRequest, u32), MatrixError>> {
         let pending: Vec<PendingMessage> = self.outbox.clone();
         let mut results = Vec::with_capacity(pending.len());
 
         for msg in &pending {
-            let mut path = String::from(API_PREFIX);
-            path.push_str("/rooms/");
-            path.push_str(&msg.room_id);
-            path.push_str("/send/m.room.message/");
-            push_u32(&mut path, msg.txn_id);
-
-            let json_body = build_message_body(&msg.body);
-            let mut req =
-                http_client::put_json(&self.homeserver, &path, json_body.as_bytes());
-            http_client::with_auth(&mut req, &self.access_token);
-
-            results.push(Ok((req, msg.txn_id)));
+            let result = self
+                .build_megolm_request(&msg.room_id, &msg.body, msg.txn_id)
+                .map(|req| (req, msg.txn_id));
+            results.push(result);
         }
 
         results
@@ -956,19 +956,22 @@ fn build_message_body(body: &str) -> String {
 
 /// Build the JSON body for an `m.room.encrypted` event.
 ///
-/// The ciphertext is hex-encoded in the JSON body alongside the
-/// algorithm identifier.
+/// The ciphertext and the Megolm session ID are hex-encoded alongside the
+/// algorithm identifier. The `session_id` lets the receiver select the inbound
+/// Megolm session to decrypt with.
 ///
 /// ```json
-/// {"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"<hex>"}
+/// {"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"<hex>","session_id":"<hex>"}
 /// ```
-fn build_encrypted_body(ciphertext: &[u8]) -> String {
+fn build_encrypted_body(ciphertext: &[u8], session_id: &[u8; 32]) -> String {
     let mut w = JsonWriter::new();
     w.object_start();
     w.key("algorithm");
     w.string_value("m.megolm.v1.aes-sha2");
     w.key("ciphertext");
     w.string_value(&hex_encode_bytes(ciphertext));
+    w.key("session_id");
+    w.string_value(&hex_encode_bytes(session_id));
     w.end();
     w.finish()
 }
@@ -1013,7 +1016,7 @@ fn extract_timeline_events(room_data: &JsonValue) -> Vec<&JsonValue> {
 /// indicate they were originally encrypted but are now readable.
 fn parse_timeline_event(
     event: &JsonValue,
-    _room_id: &str,
+    room_id: &str,
     crypto: &MatrixCrypto,
 ) -> Option<MatrixMessage> {
     let event_type = event.get("type")?.as_str()?;
@@ -1048,7 +1051,10 @@ fn parse_timeline_event(
                         // Look up the inbound session.
                         match crypto.find_inbound_megolm(&sid) {
                             Some(session) => {
-                                match matrix_crypto::decrypt_megolm(session, &ct) {
+                                // #229: bind the session to the room the event
+                                // actually arrived in (from the sync grouping,
+                                // not the untrusted event body).
+                                match matrix_crypto::decrypt_megolm(session, &ct, room_id) {
                                     Ok(plaintext) => {
                                         match core::str::from_utf8(&plaintext) {
                                             Ok(s) => String::from(s),
@@ -1125,6 +1131,16 @@ fn hex_nibble_val(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+/// Map a [`CryptoError`] into a client-side [`MatrixError::ServerError`] so
+/// encryption failures never silently fall back to plaintext (audit #370).
+fn crypto_error(e: CryptoError) -> MatrixError {
+    MatrixError::ServerError {
+        status: 0,
+        errcode: String::from("M_CRYPTO_ERROR"),
+        message: alloc::format!("{e}"),
     }
 }
 
