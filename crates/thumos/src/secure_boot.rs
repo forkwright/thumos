@@ -54,7 +54,7 @@ const MIN_IMAGE_SIZE: usize = SIGNATURE_LEN + 1;
 
 /// Embedded Ed25519 public key for kernel signature verification.
 ///
-/// TODO(#233): this is the RFC 8032 section 7.1 Test 1 public key, NOT a
+/// TODO(#233)[deliberate-prudent]: this is the RFC 8032 section 7.1 Test 1 public key, NOT a
 /// real trust anchor. It must be replaced with the production boot key
 /// injected by the offline signing infrastructure before any release
 /// build. The corresponding private key is stored on a Titan security key

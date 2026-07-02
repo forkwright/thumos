@@ -131,7 +131,7 @@ pub unsafe fn free_page(addr: usize) {
     // SAFETY: try_free_page validates the address range and allocation state;
     // an invalid address is a no-op rather than corruption.
     unsafe {
-        let _ = try_free_page(addr);
+        let _ = try_free_page(addr); // kanon:ignore RUST/no-silent-result-swallow -- try_free_page returns bool (not Result); deliberate fire-and-forget per doc comment above, an invalid address is a defined safe no-op, not an error to propagate
     }
 }
 

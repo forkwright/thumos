@@ -256,7 +256,7 @@ pub(crate) fn generate_random_mac() -> [u8; 6] {
     // cannot occur here — MAC randomization runs after `csprng::init()`. On that
     // unreachable path `mac` stays zeroed; the locally-administered/unicast bits
     // below still yield a clearly-synthetic address, never key material.
-    let _ = csprng::kernel_random_bytes(&mut mac);
+    let _ = csprng::kernel_random_bytes(&mut mac); // kanon:ignore RUST/no-silent-result-swallow -- fail-closed CSPRNG Err path is unreachable post-init (see NOTE above); zeroed mac on that path still yields a clearly-synthetic address, never key material
     // INVARIANT: bit 0 clear = unicast, bit 1 set = locally administered
     mac[0] = (mac[0] | 0x02) & 0xFE;
     mac

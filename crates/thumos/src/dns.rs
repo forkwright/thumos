@@ -264,7 +264,7 @@ fn random_txid() -> u16 {
     // which cannot occur here — DNS resolution runs after `csprng::init()`
     // completes during kinit. On that unreachable path `buf` stays zeroed,
     // never key material.
-    let _ = csprng::kernel_random_bytes(&mut buf);
+    let _ = csprng::kernel_random_bytes(&mut buf); // kanon:ignore RUST/no-silent-result-swallow -- fail-closed CSPRNG Err path is unreachable post-init (see NOTE above); zeroed buf on that path yields a valid (if predictable) TXID, not key material
     u16::from_le_bytes(buf)
 }
 

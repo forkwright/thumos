@@ -810,7 +810,7 @@ impl MatrixClient {
     /// Build encrypted HTTP requests for all pending outbox messages.
     ///
     /// Each message is routed through the room's Megolm session and sent as an
-    /// authenticated `m.room.encrypted` event — the outbox never emits plaintext
+    /// authenticated `m.room.encrypted` payload — the outbox never sends plaintext
     /// `m.room.message` (audit #370). Returns a list of `(request, txn_id)`
     /// results; the caller sends each and calls [`confirm_sent`] on success, or
     /// leaves the message in the outbox for the next flush cycle.

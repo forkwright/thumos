@@ -304,7 +304,7 @@ pub(crate) fn generate_random_address() -> [u8; 6] {
     // cannot occur here — address rotation runs after `csprng::init()`. On that
     // unreachable path `addr` stays zeroed and the all-zero guard below rewrites
     // it to a clearly-synthetic address, never key material.
-    let _ = csprng::kernel_random_bytes(&mut addr);
+    let _ = csprng::kernel_random_bytes(&mut addr); // kanon:ignore RUST/no-silent-result-swallow -- fail-closed CSPRNG Err path is unreachable post-init (see NOTE above); all-zero guard below already handles the theoretical zeroed-buffer case
     // INVARIANT: clear bits 47:46 (top two bits of byte 0) to mark as
     // non-resolvable private address per BT Core Spec v5.4 Vol 6 Part B 1.3.2.2.
     addr[0] &= 0x3F;

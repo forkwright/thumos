@@ -130,7 +130,7 @@ pub(crate) fn decrypt(state: &mut RatchetState, msg: &CiphertextMessage) -> Resu
 
     // WHY(#212): bound the forward jump so a forged high counter cannot force
     // unbounded key derivation.
-    let gap = msg.counter - state.counter;
+    let gap: u32 = msg.counter - state.counter;
     if gap > MAX_SKIP_AHEAD {
         return Err(DecryptionSnafu.build());
     }
@@ -169,7 +169,12 @@ fn decrypt_from_skipped(state: &mut RatchetState, msg: &CiphertextMessage) -> Re
         .iter()
         .position(|k| k.counter == msg.counter)
         .ok_or_else(|| DecryptionSnafu.build())?;
-    let plaintext = aead_open(&state.skipped[index].message_key, msg)?;
+    let message_key = state
+        .skipped
+        .get(index)
+        .ok_or_else(|| DecryptionSnafu.build())?
+        .message_key;
+    let plaintext = aead_open(&message_key, msg)?;
     state.skipped.remove(index);
     Ok(plaintext)
 }
