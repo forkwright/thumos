@@ -167,8 +167,19 @@ impl SlabClass {
     /// already be on the free list (no double-free), and must be valid for a
     /// write of `size_of::<FreeNode>()` bytes.
     unsafe fn dealloc_obj(&mut self, ptr: *mut u8) {
-        // SAFETY: ptr is object-sized (>= 32 bytes) and properly aligned from
-        // alloc_obj; reinterpreting as FreeNode is safe.
+        // SAFETY: ptr is object-sized (>= 32 bytes) and properly aligned
+        // from alloc_obj. Zero the full object before it re-enters the free
+        // list so a secret that lived in this slot does not leak to
+        // whichever caller alloc_obj hands it to next (#334); the free-list
+        // link is written into the now-zeroed buffer immediately after.
+        let obj_size = self.obj_size;
+        for i in 0..obj_size {
+            // SAFETY: ptr is valid for obj_size bytes per this function's
+            // own contract; write_volatile defeats dead-store elimination.
+            unsafe {
+                core::ptr::write_volatile(ptr.add(i), 0);
+            }
+        }
         let node = ptr as *mut FreeNode;
         unsafe {
             (*node).next = self.free_list;
@@ -518,6 +529,42 @@ mod tests {
             let (allocs, frees) = sa.stats();
             assert_eq!(allocs, 1, "one allocation recorded");
             assert_eq!(frees, 1, "one free recorded");
+        }
+    }
+
+    #[test]
+    fn dealloc_zeroizes_object_before_relinking() {
+        // Regression test for #334: dealloc_obj previously only wrote the
+        // free-list pointer into the freed object, leaving the rest of a
+        // former secret's bytes intact. The fix zeroes the full object
+        // before relinking.
+        //
+        // WHY the assertion excludes the head: the free list is intrusive
+        // (see `FreeNode`), so dealloc_obj writes the free-list link back
+        // into the first `size_of::<FreeNode>()` bytes AFTER zeroing —
+        // those bytes legitimately hold an allocator pointer whose byte
+        // values are unconstrained (checking them for 0/non-0xAB would flake
+        // on the pointer's own bytes). The bytes the fix is responsible for
+        // scrubbing are the object body past that link, which formerly kept
+        // the 0xAB secret and must now be entirely zero.
+        // SAFETY: test is single-threaded; sa is local; ptr stays valid
+        // (belongs to the fake test pool) for this immediate read-back,
+        // before any subsequent allocation could reuse it.
+        unsafe {
+            let mut sa = make_allocator();
+            let layout = Layout::from_size_align(32, 4).unwrap();
+            let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
+            assert!(!ptr.is_null());
+
+            ptr.write_bytes(0xAB, 32);
+            sa.dealloc_inner(ptr, layout, fake_free_page);
+
+            let link_len = core::mem::size_of::<FreeNode>();
+            let body = core::slice::from_raw_parts(ptr.add(link_len), 32 - link_len);
+            assert!(
+                body.iter().all(|&b| b == 0),
+                "object body past the free-list link must be zeroed, not left holding 0xAB"
+            );
         }
     }
 

@@ -6,7 +6,8 @@
 //!
 //! Boot ORDER:
 //! MMU → page alloc → heap → GIC → process → exceptions/timer → CSPRNG → devices →
-//! eMMC → display → USB serial → CCCI modem → GPIO keypad → power → userspace.
+//! eMMC → display → GPIO keypad → secure boot → passphrase → encrypted fs →
+//! audit log → security mode → USB serial → CCCI modem → power → userspace.
 
 extern crate alloc;
 
@@ -658,13 +659,47 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
+    // Step 8a: GPIO keypad scanning
+    // -----------------------------------------------------------------------
+    // WHY relocated here (was Step 11, after CCCI modem): passphrase entry
+    // (Step 8c) gates on `state.input_ok`, which this step sets. The keypad
+    // must be initialized before the passphrase gate is evaluated, or the
+    // gate condition is always false and passphrase entry (and the
+    // encrypted-filesystem mount that depends on it) is silently skipped on
+    // every boot (#344). This step only depends on the device registry
+    // (Step 6) and has no dependency on display/USB/modem, so moving it
+    // earlier is safe.
+    let _ = serial.write_str("[init] GPIO keypad\r\n");
+    {
+        // NOTE: Full keypad driver is in crates/haphe. Here we enable the
+        // KPD hardware so interrupt-driven scanning can start.
+        let kpd_base = device::MT6739_KPD;
+        // SAFETY: KPD_EN and KPD_DEBOUNCE are device MMIO registers at known
+        // offsets from the MT6739_KPD base address (0x1001_0000), which is
+        // identity-mapped as device memory. Writing these registers enables the
+        // hardware keypad scanner with 16 ms debounce.
+        unsafe {
+            // Enable KPD module (bit 0 of KPD_EN).
+            mmio::write32(kpd_base + device::KPD_EN, 1);
+            // Set debounce to 16 ms (hardware units).
+            mmio::write32(kpd_base + device::KPD_DEBOUNCE, 16);
+        }
+        devices.activate("mtk-kpd");
+        state.input_ok = true;
+        let _ = serial.write_str("       Keypad scanning enabled\r\n");
+    }
+
+    // -----------------------------------------------------------------------
     // Step 8b: Measured boot (Ed25519 signature verification)
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Secure boot verification\r\n");
-    if state.display_ok {
-        // WHY: verify kernel image signature AFTER display (so errors
-        // are visible) but BEFORE filesystem mount (so a tampered kernel
-        // cannot access encrypted data).
+    {
+        // WHY: verification is unconditional and fail-closed — it must run
+        // and halt on failure regardless of display availability. Display
+        // availability only controls *how* a failure is reported (rendered
+        // vs UART-only); gating the verification call itself on
+        // state.display_ok let a display-init failure silently bypass the
+        // kernel's only measured-boot gate (#361).
         //
         // NOTE: In production, the kernel image is read from a known
         // partition offset.  Here we log the verification step and mark
@@ -673,12 +708,17 @@ pub unsafe fn run() -> ! {
         //
         // let image = read_kernel_image_from_partition();
         // match crate::secure_boot::verify_combined_image(&image) {
-        //     Ok(()) => { ... }
-        //     Err(e) => { display error, halt }
+        //     Ok(()) => { state.secure_boot_ok = true; }
+        //     Err(e) => {
+        //         if state.display_ok {
+        //             render_secure_boot_error(fb, e);
+        //         } else {
+        //             let _ = write!(serial, "  CRIT Secure boot verification failed: {e}\r\n");
+        //         }
+        //         halt(); // halt regardless of display state
+        //     }
         // }
         let _ = serial.write_str("       Secure boot: PENDING (awaiting boot partition)\r\n");
-    } else {
-        let _ = serial.write_str("  WARN Secure boot skipped (no display for error)\r\n");
     }
 
     // -----------------------------------------------------------------------
@@ -792,29 +832,6 @@ pub unsafe fn run() -> ! {
             let _ = serial
                 .write_str("  WARN Modem boot exceeded timeout\r\n");
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 11: GPIO keypad scanning
-    // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] GPIO keypad\r\n");
-    {
-        // NOTE: Full keypad driver is in crates/haphe. Here we enable the
-        // KPD hardware so interrupt-driven scanning can start.
-        let kpd_base = device::MT6739_KPD;
-        // SAFETY: KPD_EN and KPD_DEBOUNCE are device MMIO registers at known
-        // offsets from the MT6739_KPD base address (0x1001_0000), which is
-        // identity-mapped as device memory. Writing these registers enables the
-        // hardware keypad scanner with 16 ms debounce.
-        unsafe {
-            // Enable KPD module (bit 0 of KPD_EN).
-            mmio::write32(kpd_base + device::KPD_EN, 1);
-            // Set debounce to 16 ms (hardware units).
-            mmio::write32(kpd_base + device::KPD_DEBOUNCE, 16);
-        }
-        devices.activate("mtk-kpd");
-        state.input_ok = true;
-        let _ = serial.write_str("       Keypad scanning enabled\r\n");
     }
 
     // -----------------------------------------------------------------------
