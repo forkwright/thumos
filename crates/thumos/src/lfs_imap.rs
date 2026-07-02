@@ -33,6 +33,9 @@ pub enum LfsError {
     NoFreeSegments,
     /// An inode was not found in the imap.
     InodeNotFound,
+    /// A checkpoint's imap + segment-bitmap payload exceeds the slot's
+    /// reserved capacity.
+    CheckpointOverflow,
 }
 
 impl core::fmt::Display for LfsError {
@@ -43,6 +46,7 @@ impl core::fmt::Display for LfsError {
             Self::InvalidSuperblock => write!(f, "invalid superblock"),
             Self::NoFreeSegments => write!(f, "no free segments"),
             Self::InodeNotFound => write!(f, "inode not found"),
+            Self::CheckpointOverflow => write!(f, "checkpoint payload exceeds reserved slot capacity"),
         }
     }
 }

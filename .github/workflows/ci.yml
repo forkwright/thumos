@@ -1,0 +1,104 @@
+# WHY: The real quality gate — rustfmt, clippy, and the full test suite for
+# both the workspace crates (host) and the excluded bare-metal kernel binary
+# (i686 host tests + armv7a cross-compile). Mirrors the local `kanon gate` and
+# the stages in .kanon-ci.toml, with cargo concurrency pinned per CI.md.
+#
+# Kernel unit tests run on the 32-bit i686 target because the kernel's syscall
+# ABI uses u32 addresses; a 64-bit host truncates real pointers and crashes.
+# See AGENTS.md § Build. cargo-nextest is the canonical runner — its per-test
+# process isolation is required by tests that touch the kernel's static-mut
+# globals.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# PROJECT: explicit top-level default deny; jobs read only.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    # WHY: fastest check first — a formatting miss fails in seconds without
+    # spending build minutes. Only the workspace crates are covered; the
+    # kernel crate is excluded from the workspace and is not yet formatted.
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false # PROJECT: never expose the token to steps
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: "1.94"
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  workspace:
+    # WHY: clippy (deny warnings) + the workspace test suite for the 13
+    # library crates. Concurrency pinned to 8 per CI.md § kanon-ci caps.
+    name: workspace clippy + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: "1.94"
+          components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: workspace
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --jobs 8 -- -D warnings
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked --version ^0.9
+      - name: nextest
+        run: cargo nextest run --workspace --build-jobs 8 --test-threads 8
+
+  kernel:
+    # WHY: the bare-metal kernel is excluded from the workspace, so its host
+    # unit tests (i686, u32-faithful ABI) and its real-target cross-compile
+    # (armv7a-none-eabi) need a dedicated job. The .cargo/config.toml inside
+    # crates/thumos pins the armv7a target + linker script, so the build step
+    # only needs to run from that directory.
+    name: kernel (i686 tests + armv7a build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: "1.94"
+          targets: i686-unknown-linux-gnu, armv7a-none-eabi
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: kernel
+          workspaces: crates/thumos
+      - name: Install 32-bit link support
+        # WHY: linking the i686 test binary needs the multilib crt objects.
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked --version ^0.9
+      - name: Kernel host tests (i686)
+        working-directory: crates/thumos
+        run: cargo nextest run --bin thumos --target i686-unknown-linux-gnu --build-jobs 8 --test-threads 8
+      - name: Kernel cross-compile (armv7a)
+        working-directory: crates/thumos
+        run: cargo build --release --target armv7a-none-eabi --jobs 8

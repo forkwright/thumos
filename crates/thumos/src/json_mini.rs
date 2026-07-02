@@ -78,6 +78,10 @@ pub enum JsonError {
     TrailingData,
     /// Object key is not a string.
     KeyNotString,
+    /// A multi-byte UTF-8 sequence encodes its codepoint using more
+    /// bytes than the minimal encoding for that codepoint (CWE-838,
+    /// overlong UTF-8 — see issue #216).
+    OverlongUtf8,
 }
 
 impl fmt::Display for JsonError {
@@ -95,6 +99,7 @@ impl fmt::Display for JsonError {
             Self::ExpectedCommaOrEnd => write!(f, "expected comma or closing bracket"),
             Self::TrailingData => write!(f, "trailing data after JSON value"),
             Self::KeyNotString => write!(f, "object key must be a string"),
+            Self::OverlongUtf8 => write!(f, "overlong UTF-8 encoding"),
         }
     }
 }
@@ -528,6 +533,23 @@ impl<'a> JsonParser<'a> {
                                 return Err(JsonError::UnexpectedChar);
                             }
                             code = (code << 6) | u32::from(cont & 0x3F);
+                        }
+                        // WHY: reject overlong encodings (CWE-838) — a
+                        // codepoint encoded in more bytes than its minimal
+                        // form (e.g. 0xC0 0x80 for U+0000) can smuggle NUL,
+                        // '/', or other control bytes past byte-level
+                        // filters applied before UTF-8 decoding (#216).
+                        // This also transitively rejects 0xC0/0xC1 lead
+                        // bytes: any 2-byte sequence they start decodes to
+                        // code <= 0x7F, below the extra=1 minimum of 0x80.
+                        let min_codepoint: u32 = match extra {
+                            1 => 0x80,
+                            2 => 0x800,
+                            3 => 0x1_0000,
+                            _ => 0,
+                        };
+                        if code < min_codepoint {
+                            return Err(JsonError::OverlongUtf8);
                         }
                         if let Some(c) = char::from_u32(code) {
                             s.push(c);
@@ -1125,6 +1147,33 @@ mod tests {
     fn parse_empty_string() {
         let val = JsonParser::parse(b"\"\"");
         assert_eq!(val, Ok(JsonValue::String(String::new())));
+    }
+
+    #[test]
+    fn parse_string_rejects_overlong_nul() {
+        // 0xC0 0x80 is an overlong 2-byte encoding of U+0000 (NUL) — must
+        // be rejected, not silently decoded, since it can smuggle a NUL
+        // byte past byte-level filters applied before JSON parsing.
+        let val = JsonParser::parse(b"\"\xC0\x80\"");
+        assert_eq!(val, Err(JsonError::OverlongUtf8));
+    }
+
+    #[test]
+    fn parse_string_rejects_overlong_slash() {
+        // 0xC0 0xAF is an overlong 2-byte encoding of U+002F ('/') — a
+        // path-traversal smuggling vector if the decoded string later
+        // feeds a filesystem lookup.
+        let val = JsonParser::parse(b"\"\xC0\xAF\"");
+        assert_eq!(val, Err(JsonError::OverlongUtf8));
+    }
+
+    #[test]
+    fn parse_string_accepts_valid_multi_byte_utf8() {
+        // 0xC3 0xA9 is the correctly minimal 2-byte UTF-8 encoding of
+        // U+00E9; the overlong guard must not reject legitimate
+        // non-ASCII text.
+        let val = JsonParser::parse(b"\"\xC3\xA9\"");
+        assert_eq!(val, Ok(JsonValue::String(String::from("\u{e9}"))));
     }
 
     #[test]

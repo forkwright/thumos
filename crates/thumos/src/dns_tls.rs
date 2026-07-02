@@ -44,6 +44,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use smoltcp::wire::Ipv4Address;
 
+use crate::csprng;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -188,11 +190,18 @@ pub(crate) fn parse_frame_length(header: &[u8; 2]) -> u16 {
 /// Returns the DNS message payload (without the length prefix).
 #[must_use]
 pub(crate) fn read_dot_frame<T: TlsTransport>(transport: &mut T) -> Result<Vec<u8>, DotError> {
-    // Read the 2-byte length prefix.
+    // Read the 2-byte length prefix. WHY: DoT runs over a TCP-backed TLS
+    // stream; a single recv() call is not guaranteed to return all
+    // requested bytes even for a 2-byte header — loop until the header
+    // is fully read, treating n == 0 as a closed connection.
     let mut header = [0u8; DOT_FRAME_HEADER_SIZE];
-    let n = transport.recv(&mut header)?;
-    if n < DOT_FRAME_HEADER_SIZE {
-        return Err(DotError::TruncatedFrame);
+    let mut received = 0;
+    while received < DOT_FRAME_HEADER_SIZE {
+        let n = transport.recv(&mut header[received..])?;
+        if n == 0 {
+            return Err(DotError::TruncatedFrame);
+        }
+        received += n;
     }
 
     let msg_len = parse_frame_length(&header) as usize;
@@ -203,11 +212,18 @@ pub(crate) fn read_dot_frame<T: TlsTransport>(transport: &mut T) -> Result<Vec<u
         return Err(DotError::InvalidFrameLength);
     }
 
-    // Read the DNS message body.
+    // Read the DNS message body. WHY: a DNS message routinely spans
+    // multiple TCP segments (multiple answer records, DNSSEC RRSIGs); a
+    // single recv() call only returns what's immediately buffered, so
+    // accumulate until msg_len bytes are received (issue #285).
     let mut body = alloc::vec![0u8; msg_len];
-    let n = transport.recv(&mut body)?;
-    if n < msg_len {
-        return Err(DotError::TruncatedFrame);
+    let mut received = 0;
+    while received < msg_len {
+        let n = transport.recv(&mut body[received..])?;
+        if n == 0 {
+            return Err(DotError::TruncatedFrame);
+        }
+        received += n;
     }
 
     Ok(body)
@@ -332,8 +348,23 @@ pub(crate) struct DotClient<T: TlsTransport> {
     server_addr: Ipv4Address,
     /// SHA-256 hash of the server's SPKI for certificate pinning.
     pinned_spki_hash: [u8; SPKI_HASH_LEN],
-    /// Transaction ID counter.
-    next_txid: u16,
+}
+
+/// Generate a DNS transaction ID from the kernel CSPRNG.
+///
+/// WHY: a sequential/predictable transaction ID lets an on-path or
+/// off-path attacker predict the next query's TXID and race a spoofed
+/// response ahead of the real DNS server (CWE-330, DNS cache
+/// poisoning, issue #288). Each query must draw independent entropy
+/// rather than incrementing a counter.
+fn random_txid() -> u16 {
+    let mut buf = [0u8; 2];
+    // NOTE(#284): the fail-closed CSPRNG returns Err only before seeding,
+    // which cannot occur here — DNS resolution runs after `csprng::init()`
+    // completes during kinit. On that unreachable path `buf` stays zeroed,
+    // never key material.
+    let _ = csprng::kernel_random_bytes(&mut buf); // kanon:ignore RUST/no-silent-result-swallow -- fail-closed CSPRNG Err path is unreachable post-init (see NOTE above); zeroed buf on that path yields a valid (if predictable) TXID, not key material
+    u16::from_le_bytes(buf)
 }
 
 impl<T: TlsTransport> DotClient<T> {
@@ -351,7 +382,6 @@ impl<T: TlsTransport> DotClient<T> {
             transport,
             server_addr,
             pinned_spki_hash,
-            next_txid: 1,
         }
     }
 
@@ -388,9 +418,10 @@ impl<T: TlsTransport> DotClient<T> {
     /// raw DNS response message.
     #[must_use]
     pub(crate) fn query(&mut self, name: &str, record_type: u16) -> Result<Vec<u8>, DotError> {
-        // Build the DNS query.
-        let txid = self.next_txid;
-        self.next_txid = self.next_txid.wrapping_add(1);
+        // Build the DNS query. WHY: draw the transaction ID from the
+        // kernel CSPRNG rather than a sequential counter — a predictable
+        // TXID lets an attacker race a spoofed response (CWE-330, #288).
+        let txid = random_txid();
         let dns_query = build_dns_query_typed(name, txid, record_type)?;
 
         // Frame and send.
@@ -702,8 +733,24 @@ mod tests {
 
     #[test]
     fn dot_client_query_sends_framed_message() {
+        // txids are now CSPRNG-derived (issue #288), not a predictable
+        // counter, so the test can't hardcode the expected value. Seed
+        // the CSPRNG deterministically, predict the draw query() will
+        // make, then reseed to the same starting state so the client's
+        // internal draw matches the prediction — this lets the mock
+        // response stage the correct txid ahead of time.
+        let key = [
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+            0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b,
+            0x2c, 0x2d, 0x2e, 0x2f,
+        ];
+        csprng::seed_for_test(&key, &[0u8; 8], 0);
+        let mut predicted = [0u8; 2];
+        csprng::kernel_random_bytes(&mut predicted).expect("test csprng seeded");
+        let txid = u16::from_le_bytes(predicted);
+        csprng::seed_for_test(&key, &[0u8; 8], 0);
+
         // Build a mock response: frame header + DNS response.
-        let txid: u16 = 1;
         let mut dns_response = Vec::new();
         dns_response.extend_from_slice(&txid.to_be_bytes());
         dns_response.extend_from_slice(&0x8180u16.to_be_bytes()); // QR=1, RD=1, RA=1
@@ -741,13 +788,18 @@ mod tests {
         let response = result.ok().unwrap(); // ok: test
         assert_eq!(response, dns_response, "response must match mock DNS message");
 
-        // Verify the sent data contains a DoT frame.
+        // Verify the sent data contains a DoT frame carrying the
+        // CSPRNG-predicted txid, not a hardcoded/predictable one.
         let sent = &client.transport_mut().sent;
         assert!(sent.len() > 2, "must have sent framed data");
         let sent_len = u16::from_be_bytes([sent[0], sent[1]]) as usize;
         assert_eq!(
             sent_len, sent.len() - 2,
             "sent frame length prefix must match payload size"
+        );
+        assert_eq!(
+            &sent[2..4], &txid.to_be_bytes(),
+            "client must send the CSPRNG-derived txid"
         );
     }
 
@@ -784,6 +836,24 @@ mod tests {
         assert_eq!(client.pinned_spki_hash(), &pin);
     }
 
+    #[test]
+    fn random_txid_is_not_sequential() {
+        let key = [
+            0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d,
+            0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b,
+            0x4c, 0x4d, 0x4e, 0x4f,
+        ];
+        csprng::seed_for_test(&key, &[0u8; 8], 0);
+
+        let txids: Vec<u16> = (0..16).map(|_| random_txid()).collect();
+
+        let all_sequential = txids.windows(2).all(|w| w[1] == w[0].wrapping_add(1));
+        assert!(!all_sequential, "txids must not be a sequential counter: {txids:?}");
+
+        let monotonic = txids.windows(2).all(|w| w[1] > w[0]);
+        assert!(!monotonic, "txids must not be monotonically increasing: {txids:?}");
+    }
+
     // -- Read frame tests -----------------------------------------------------
 
     #[test]
@@ -799,9 +869,61 @@ mod tests {
     }
 
     #[test]
+    fn read_frame_accumulates_partial_body_recv() {
+        // Regression test for issue #285: DoT runs over a TCP-backed TLS
+        // stream, so a DNS message body routinely arrives split across
+        // multiple recv() calls. A single-shot recv must not be treated
+        // as fatal truncation.
+        let dns_msg = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        let len = dns_msg.len() as u16;
+        let header = len.to_be_bytes().to_vec();
+        let mid = dns_msg.len() / 2;
+
+        let mut transport = MockTlsTransport::with_responses(vec![
+            header,
+            dns_msg[..mid].to_vec(),
+            dns_msg[mid..].to_vec(),
+        ]);
+        let result = read_dot_frame(&mut transport);
+        assert_eq!(
+            result,
+            Ok(dns_msg),
+            "read_dot_frame must accumulate a body split across multiple recv() calls"
+        );
+    }
+
+    #[test]
+    fn read_frame_accumulates_partial_header_recv() {
+        // The 2-byte length prefix itself can also arrive split across
+        // recv() calls.
+        let dns_msg = vec![0x01, 0x02, 0x03];
+        let len = dns_msg.len() as u16;
+        let header_bytes = len.to_be_bytes();
+
+        let mut transport = MockTlsTransport::with_responses(vec![
+            vec![header_bytes[0]],
+            vec![header_bytes[1]],
+            dns_msg.clone(),
+        ]);
+        let result = read_dot_frame(&mut transport);
+        assert_eq!(
+            result,
+            Ok(dns_msg),
+            "read_dot_frame must accumulate a length prefix split across multiple recv() calls"
+        );
+    }
+
+    #[test]
     fn read_frame_rejects_truncated_header() {
-        // Only 1 byte instead of 2.
-        let mut transport = MockTlsTransport::with_responses(vec![vec![0x00]]);
+        // WHY the trailing empty response (issue #285 regression): 1 byte
+        // instead of 2, then the connection closes. read_dot_frame now
+        // loops until DOT_FRAME_HEADER_SIZE bytes are accumulated, so an
+        // empty recv() (n == 0, the real-world "orderly close" signal) is
+        // what must produce TruncatedFrame here — exhausting
+        // MockTlsTransport's staged responses instead produces
+        // Err(RecvFailed), a distinct "transport failed" scenario, not a
+        // truncated frame.
+        let mut transport = MockTlsTransport::with_responses(vec![vec![0x00], vec![]]);
         let result = read_dot_frame(&mut transport);
         assert_eq!(result, Err(DotError::TruncatedFrame));
     }

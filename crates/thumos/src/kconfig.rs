@@ -34,8 +34,11 @@ pub(crate) const RAM_END: usize = 0x8000_0000;
 /// Kernel load address.
 pub(crate) const KERNEL_LOAD: usize = 0x4000_8000;
 
-/// Kernel reserved size (1 MB).
-pub(crate) const KERNEL_RESERVED: usize = 0x10_0000;
+/// Kernel reserved size (992 KB).
+/// WHY: kernel image + reserved region spans `0x4000_8000..0x400F_FFFF`
+/// (see the memory map in `memguard.rs`), so KERNEL_END lands on the
+/// 0x4010_0000 page boundary rather than a full 1 MB past KERNEL_LOAD.
+pub(crate) const KERNEL_RESERVED: usize = 0xF_8000;
 
 /// Kernel end address (load + reserved).
 pub(crate) const KERNEL_END: usize = KERNEL_LOAD + KERNEL_RESERVED;

@@ -1215,7 +1215,7 @@ mod tests {
 
             let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
-            let parent_pt = procs.get(0).copied().unwrap_or_default().as_ref().unwrap().page_table_phys;
+            let parent_pt = procs[0].as_ref().unwrap().page_table_phys;
             let child_pt = procs[usize::from(child_pid)].as_ref().unwrap().page_table_phys;
             assert_ne!(parent_pt, child_pt, "parent and child must have distinct page tables");
         }
@@ -1284,7 +1284,7 @@ mod tests {
 
             let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
-            let parent_pt = procs.get(0).copied().unwrap_or_default().as_ref().unwrap().page_table_phys;
+            let parent_pt = procs[0].as_ref().unwrap().page_table_phys;
             let child_pt = procs[usize::from(child_pid)].as_ref().unwrap().page_table_phys;
 
             // Write INTO entry 100 in the child's table
@@ -1460,7 +1460,7 @@ mod tests {
             notify_fault(1, FaultKind::DataAbort { fault_addr: 0xDEAD, fault_status: 0x05 });
 
             let procs = &*core::ptr::addr_of!(PROCS);
-            assert_eq!(procs.get(1).copied().unwrap_or_default().as_ref().unwrap().state, State::Dead,
+            assert_eq!(procs[1].as_ref().unwrap().state, State::Dead,
                 "faulting process must be marked Dead");
         }
     }
@@ -1513,7 +1513,7 @@ mod tests {
 
             // PID 0 receives the message; tag must be 3 (UndefinedInstruction)
             CURRENT = 0;
-            let msg = ipc::recv().unwrap_or_default();
+            let msg = ipc::recv().expect("UndefinedInstruction fault must deliver a message to pid 0");
             assert_eq!(msg.tag, 3, "UndefinedInstruction tag must be 3");
             assert_eq!(msg.payload()[0], 1u8, "first payload byte must be faulting PID");
         }

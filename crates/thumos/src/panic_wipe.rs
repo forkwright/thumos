@@ -395,6 +395,8 @@ fn wipe_target_path(_path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
     use crate::security::SleepTier;
 

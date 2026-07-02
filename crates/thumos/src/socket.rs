@@ -369,11 +369,13 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     if (addr_len as usize) < addr_size || addr_ptr == 0 {
         return fd::EINVAL;
     }
+    if !crate::memguard::validate_user_buffer(addr_ptr as usize, addr_size) {
+        return fd::EFAULT;
+    }
 
     // Read the sockaddr_in.
-    // SAFETY: addr_ptr validated non-null above. On 32-bit ARM, the kernel
-    // validates user pointers via validate_user_buffer in the dispatch layer.
-    // On 64-bit host (test), we trust the test-provided pointer.
+    // SAFETY: validate_user_buffer confirmed [addr_ptr, addr_ptr+addr_size)
+    // lies within user-accessible DRAM.
     let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
 
     if sockaddr.sin_family != AF_INET as u16 {
@@ -429,13 +431,17 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
 
     match socket_type {
         SocketType::Tcp => {
-            let tcp_socket: &mut tcp::Socket<'_> =
-                stack.sockets_mut().get_mut(socket_handle);
-            // TCP bind: listen on the port. For a full bind we set the
-            // local endpoint. smoltcp TCP sockets accept a listen call.
-            if tcp_socket.listen(endpoint).is_err() {
-                return fd::EINVAL;
-            }
+            // WHY: record the local port via SocketInfo::bound_port below
+            // only — do NOT call tcp_socket.listen() here. smoltcp's
+            // tcp::Socket::listen() transitions the socket state machine
+            // to LISTEN (the server-accepting state), which smoltcp's
+            // connect() then refuses (it requires CLOSED). Calling
+            // listen() at bind() time broke the standard POSIX
+            // bind()-then-connect() client pattern and turned every bound
+            // client socket into an unintended listener (issue #307).
+            // sys_connect() reads bound_port to build the local endpoint
+            // passed to connect(); an actual LISTEN transition belongs in
+            // sys_listen() (currently EOPNOTSUPP, TODO(#84)).
         }
         SocketType::Udp => {
             let udp_socket: &mut udp::Socket<'_> =
@@ -495,10 +501,13 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     if (addr_len as usize) < addr_size || addr_ptr == 0 {
         return fd::EINVAL;
     }
+    if !crate::memguard::validate_user_buffer(addr_ptr as usize, addr_size) {
+        return fd::EFAULT;
+    }
 
     // Read the sockaddr_in.
-    // SAFETY: addr_ptr validated non-null. Pointer validity ensured by
-    // architecture-specific validation in dispatch layer.
+    // SAFETY: validate_user_buffer confirmed [addr_ptr, addr_ptr+addr_size)
+    // lies within user-accessible DRAM.
     let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
 
     if sockaddr.sin_family != AF_INET as u16 {
@@ -547,10 +556,6 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
             };
 
             let remote = IpEndpoint::new(IpAddress::Ipv4(peer_ip), peer_port);
-            let local = IpEndpoint::new(
-                IpAddress::Ipv4(Ipv4Address::UNSPECIFIED),
-                local_port,
-            );
 
             // WHY split borrow: smoltcp's tcp::Socket::connect() needs both
             // a mutable socket reference and a mutable interface context.
@@ -572,7 +577,19 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
                 let cx = (*stack_ref).iface_mut().context();
                 let tcp_socket: &mut tcp::Socket<'_> =
                     (*stack_ref).sockets_mut().get_mut(socket_handle);
-                tcp_socket.connect(cx, remote, local)
+                // WHY: pass the bare local port, not an IpEndpoint carrying
+                // Ipv4Address::UNSPECIFIED. smoltcp's Into<IpListenEndpoint>
+                // treats an IpEndpoint as an *explicit* address
+                // (Some(addr)) and rejects an explicit-but-unspecified
+                // address with ConnectError::Unaddressable; only addr:
+                // None (produced by converting a bare u16) triggers
+                // auto-selection via cx.get_source_address(). SocketInfo
+                // never tracks a bound local IP (only a port), so
+                // auto-selection is correct regardless of whether the
+                // socket was bind()'d first. Without this, sys_connect()
+                // always failed with Unaddressable, independent of the
+                // sys_bind() LISTEN-state bug fixed alongside it (#307).
+                tcp_socket.connect(cx, remote, local_port)
             };
 
             if connect_result.is_err() {
@@ -631,6 +648,9 @@ pub(crate) fn sys_sendto(
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
+    if !crate::memguard::validate_user_buffer(buf_ptr as usize, len as usize) {
+        return fd::EFAULT;
+    }
 
     // Check fd is a socket.
     // SAFETY: FD_TABLE is a static mut; single-core cooperative kernel.
@@ -650,8 +670,8 @@ pub(crate) fn sys_sendto(
         None => return fd::EBADF,
     };
 
-    // SAFETY: buf_ptr validated non-null. Pointer validity ensured by
-    // architecture-specific validation in dispatch layer.
+    // SAFETY: validate_user_buffer confirmed [buf_ptr, buf_ptr+len) lies
+    // within user-accessible DRAM.
     let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
 
     // SAFETY: single-core cooperative kernel; init_network_stack called.
@@ -681,8 +701,14 @@ pub(crate) fn sys_sendto(
             // Determine destination: explicit addr or connected peer.
             let dest = if dest_addr_ptr != 0
                 && (addr_len as usize) >= core::mem::size_of::<SockaddrIn>()
+                && crate::memguard::validate_user_buffer(
+                    dest_addr_ptr as usize,
+                    core::mem::size_of::<SockaddrIn>(),
+                )
             {
-                // SAFETY: dest_addr_ptr validated non-null, size checked.
+                // SAFETY: validate_user_buffer confirmed
+                // [dest_addr_ptr, dest_addr_ptr+size_of::<SockaddrIn>()) lies
+                // within user-accessible DRAM.
                 let sa = unsafe {
                     core::ptr::read_unaligned(dest_addr_ptr as *const SockaddrIn)
                 };
@@ -753,6 +779,9 @@ pub(crate) fn sys_recvfrom(
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
+    if !crate::memguard::validate_user_buffer(buf_ptr as usize, len as usize) {
+        return fd::EFAULT;
+    }
 
     // Check fd is a socket.
     // SAFETY: FD_TABLE is a static mut; single-core cooperative kernel.
@@ -772,8 +801,8 @@ pub(crate) fn sys_recvfrom(
         None => return fd::EBADF,
     };
 
-    // SAFETY: buf_ptr validated non-null. Pointer validity ensured by
-    // architecture-specific validation in dispatch layer.
+    // SAFETY: validate_user_buffer confirmed [buf_ptr, buf_ptr+len) lies
+    // within user-accessible DRAM.
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
 
     // SAFETY: single-core cooperative kernel; init_network_stack called.
@@ -806,8 +835,15 @@ pub(crate) fn sys_recvfrom(
 
             match udp_socket.recv_slice(buf) {
                 Ok((n, meta)) => {
-                    // Optionally write the source address back.
-                    if src_addr_ptr != 0 {
+                    // Optionally write the source address back. A bad
+                    // src_addr_ptr does not fail the read — the data is
+                    // already received — it just skips the writeback.
+                    if src_addr_ptr != 0
+                        && crate::memguard::validate_user_buffer(
+                            src_addr_ptr as usize,
+                            core::mem::size_of::<SockaddrIn>(),
+                        )
+                    {
                         let src_ip = match meta.endpoint.addr {
                             IpAddress::Ipv4(v4) => v4,
                             // Only IPv4 supported in this phase.
@@ -815,8 +851,9 @@ pub(crate) fn sys_recvfrom(
                             _ => Ipv4Address::UNSPECIFIED,
                         };
                         let sa = SockaddrIn::new(meta.endpoint.port, src_ip);
-                        // SAFETY: src_addr_ptr validated non-null. Pointer validity
-                        // ensured by architecture-specific validation.
+                        // SAFETY: validate_user_buffer confirmed
+                        // [src_addr_ptr, src_addr_ptr+size_of::<SockaddrIn>())
+                        // lies within user-accessible DRAM.
                         unsafe {
                             core::ptr::write_unaligned(
                                 src_addr_ptr as *mut SockaddrIn,
@@ -995,21 +1032,121 @@ mod tests {
     }
 
     /// Pointer-dependent test: only runs on 32-bit targets.
+    ///
+    /// WHY function-local `static mut`: sys_bind now validates addr_ptr via
+    /// validate_user_buffer before dereferencing it. A stack address (e.g.
+    /// `&addr`) falls outside [kconfig::KERNEL_END, kconfig::RAM_END) on
+    /// this host binary and would be rejected before bind logic runs; a
+    /// function-local static lands inside that window (see fd.rs tests for
+    /// the same pattern).
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn bind_sets_local_port_syscall() {
         unsafe { setup_test_network(); }
         let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
-        let addr = SockaddrIn::new(8080, Ipv4Address::new(127, 0, 0, 1));
+        static mut ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
+        *addr = SockaddrIn::new(8080, Ipv4Address::new(127, 0, 0, 1));
         let result = sys_bind(
             fd,
-            &addr as *const SockaddrIn as u32,
+            addr as *const SockaddrIn as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(result, 0, "bind should succeed");
         let sock_table = unsafe { &*core::ptr::addr_of!(SOCKET_TABLE) };
         let info = sock_table[fd as usize].as_ref().expect("socket info");
         assert_eq!(info.bound_port, 8080);
+    }
+
+    #[test]
+    fn bind_rejects_kernel_range_addr_ptr() {
+        // No socket setup needed: validate_user_buffer runs before the
+        // FD_TABLE is-a-socket check, so fd=0 (< MAX_FDS) is sufficient.
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_bind(0, kernel_ptr, core::mem::size_of::<SockaddrIn>() as u32);
+        assert_eq!(result, fd::EFAULT, "kernel-range addr_ptr must return EFAULT");
+    }
+
+    #[test]
+    fn connect_rejects_kernel_range_addr_ptr() {
+        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let result = sys_connect(0, kernel_ptr, core::mem::size_of::<SockaddrIn>() as u32);
+        assert_eq!(result, fd::EFAULT, "kernel-range addr_ptr must return EFAULT");
+    }
+
+    /// Regression test for issue #307: bind() must leave a TCP socket in
+    /// CLOSED state (not LISTEN), so a subsequent connect() is not
+    /// refused.
+    ///
+    /// Pointer-dependent test: only runs on 32-bit targets.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn tcp_bind_then_connect_succeeds() {
+        unsafe { setup_test_network(); }
+
+        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
+        // WHY function-local `static mut`: sys_bind/sys_connect now validate
+        // addr_ptr via validate_user_buffer (issue #291) before
+        // dereferencing it. A stack address falls outside
+        // [kconfig::KERNEL_END, kconfig::RAM_END) on this host binary and
+        // would be rejected before bind/connect logic runs.
+        static mut BIND_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let bind_addr = unsafe { &mut *core::ptr::addr_of_mut!(BIND_ADDR) };
+        *bind_addr = SockaddrIn::new(40000, Ipv4Address::new(0, 0, 0, 0));
+
+        // bind() to a specific source port first, per the standard POSIX
+        // bind()-then-connect() client pattern.
+        let bind_result = sys_bind(
+            fd,
+            bind_addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(bind_result, 0, "bind must succeed");
+
+        let sock_table = unsafe { &*core::ptr::addr_of!(SOCKET_TABLE) };
+        let info = sock_table[fd as usize].as_ref().expect("socket info");
+        assert_eq!(info.bound_port, 40000, "bound_port must record the requested port");
+
+        let stack = unsafe { get_network_stack() }.expect("stack");
+        let tcp_socket: &tcp::Socket<'_> = stack.sockets().get(info.socket_handle);
+        assert_eq!(
+            tcp_socket.state(),
+            tcp::State::Closed,
+            "bind() must leave the TCP socket in CLOSED state, not LISTEN"
+        );
+
+        static mut CONNECT_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let connect_addr = unsafe { &mut *core::ptr::addr_of_mut!(CONNECT_ADDR) };
+        *connect_addr = SockaddrIn::new(80, Ipv4Address::new(93, 184, 216, 34));
+        let connect_result = sys_connect(
+            fd,
+            connect_addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(
+            connect_result, 0,
+            "connect() after bind() must succeed, not be refused by a LISTEN-state socket"
+        );
     }
 
     #[test]

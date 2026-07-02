@@ -658,6 +658,8 @@ pub const fn freq_to_display(freq_khz: u32) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     /// Helper: create a fresh FM radio with a mock hardware backend.

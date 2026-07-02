@@ -329,6 +329,8 @@ const fn threshold_for_mode(mode: SecurityMode) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     /// Helper: create a `KeyManager` with loaded keys for testing.

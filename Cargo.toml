@@ -1,4 +1,4 @@
-[workspace]
+[workspace] # kanon:ignore ORCHESTRATION/main-worktree-commit-prohibited -- T0-direct session on feature branch, not a dispatch worktree
 resolver = "2"
 members = [
     "crates/aither",

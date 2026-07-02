@@ -822,6 +822,8 @@ pub unsafe fn modem_power_cut() {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     // -- CcciLogger tests --

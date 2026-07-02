@@ -778,6 +778,8 @@ fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     /// Helper: compute SHA-256 hash of a test PIN.
@@ -1186,7 +1188,7 @@ mod tests {
         let mode_s = SecurityMode::Sentinel.to_string();
         assert_eq!(mode_s, "Sentinel");
 
-        let policy_s = base_policy(SecurityMode::Daily.to_string());
+        let policy_s = base_policy(SecurityMode::Daily).to_string();
         assert!(policy_s.contains("cell=true"));
 
         let event = PanicEvent { triggered_at: 42, keys_zeroized: true };

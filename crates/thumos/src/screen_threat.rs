@@ -556,6 +556,8 @@ impl Screen for ThreatMonitor {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
     use crate::ui::CONTENT_PIXELS;
 

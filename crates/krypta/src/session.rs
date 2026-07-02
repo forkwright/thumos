@@ -189,6 +189,26 @@ mod tests {
     }
 
     #[test]
+    fn session_recovers_from_out_of_order_and_dropped_messages() -> Result<()> {
+        // #212 end-to-end: a session tolerates reordering and a permanent drop.
+        let (mut alice, mut bob) = make_sessions()?;
+        let m0 = alice.encrypt_message(b"zero")?;
+        let _dropped = alice.encrypt_message(b"one-dropped")?;
+        let m2 = alice.encrypt_message(b"two")?;
+        let m3 = alice.encrypt_message(b"three")?;
+
+        // Deliver 3 before 2 (reordered), never deliver the dropped message 1.
+        assert_eq!(bob.decrypt_message(&m0)?.as_slice(), b"zero");
+        assert_eq!(bob.decrypt_message(&m3)?.as_slice(), b"three");
+        assert_eq!(
+            bob.decrypt_message(&m2)?.as_slice(),
+            b"two",
+            "reordered message must decrypt after a later one"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn decryption_with_wrong_session_fails() -> Result<()> {
         let (mut alice, _bob) = make_sessions()?;
         let (_, mut mallory) = make_sessions()?;

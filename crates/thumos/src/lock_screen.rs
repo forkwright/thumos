@@ -22,6 +22,8 @@ extern crate alloc;
 
 use core::fmt;
 
+use subtle::ConstantTimeEq;
+
 use crate::audit::{AuditEventType, AuditLog};
 use crate::key_manager::KeyManager;
 use crate::security::{self, KEY_SIZE, SHA256_DIGEST_LEN};
@@ -142,17 +144,15 @@ impl fmt::Display for UnlockResult {
 /// side-channel attacks. Returns `true` only when both slices have equal
 /// length and identical content.
 ///
-/// Same pattern as `wifi.rs` MIC verification (audit fix).
+/// WHY: backed by `subtle::ConstantTimeEq`, which inserts optimization barriers
+/// the compiler cannot elide — a hand-rolled XOR loop can be defeated by an
+/// optimizing backend. The lock screen is the duress/coercion surface, so a
+/// timing oracle on PIN/passphrase hashes must not exist.
 #[must_use]
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    // Slice `ct_eq` returns Choice(0) on a length mismatch (lengths here are
+    // fixed 32-byte SHA-256 digests, so length is not secret).
+    a.ct_eq(b).unwrap_u8() == 1
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +384,7 @@ impl LockScreen {
         let hash = security::sha256(entered);
 
         if constant_time_eq(&hash, &self.passphrase_hash) {
-            self.on_success();
+            self.on_success(UnlockResult::Success);
             UnlockResult::Success
         } else {
             self.on_failure(current_tick)
@@ -418,10 +418,11 @@ impl LockScreen {
         if is_duress {
             // Duress detected — visual feedback is identical to success.
             // Caller triggers panic after a 2-second delay with no tell.
-            self.on_success();
+            // last_result records DuressDetected so the signal is not lost.
+            self.on_success(UnlockResult::DuressDetected);
             UnlockResult::DuressDetected
         } else if is_real {
-            self.on_success();
+            self.on_success(UnlockResult::Success);
             UnlockResult::Success
         } else {
             self.on_failure(current_tick)
@@ -429,11 +430,18 @@ impl LockScreen {
     }
 
     /// Handle a successful authentication.
-    fn on_success(&mut self) {
+    ///
+    /// WHY `result` param: the duress path and the real-unlock path both funnel
+    /// here, but a caller must be able to tell them apart. Recording the actual
+    /// `result` keeps `last_result` faithful — duress stays visually identical
+    /// to success in `draw()` (both render "UNLOCKED"), yet the field carries
+    /// the duress signal to the privileged panic dispatch instead of being
+    /// clobbered to `Success`.
+    fn on_success(&mut self, result: UnlockResult) {
         self.attempts = 0;
         self.last_attempt_tick = 0;
         self.throttle_until_tick = 0;
-        self.last_result = Some(UnlockResult::Success);
+        self.last_result = Some(result);
         self.long_sleep_forced = false;
         self.clear_input();
     }
@@ -641,10 +649,17 @@ impl Screen for LockScreen {
                 }
                 match key {
                     Key::Ok | Key::Rsk => {
-                        // Submit PIN — result stored in last_result.
-                        // Caller reads last_result for action dispatch.
-                        let _ = self.submit_pin(0);
-                        ScreenAction::None
+                        // Submit PIN. Duress must reach the caller on a distinct
+                        // channel: last_result records DuressDetected (visually
+                        // identical to Success in draw()), and a DuressDetected
+                        // result surfaces ScreenAction::Duress so the privileged
+                        // event loop can start the silent panic sequence. A real
+                        // unlock stays ScreenAction::None (caller reads
+                        // last_result == Success for normal dispatch).
+                        match self.submit_pin(0) {
+                            UnlockResult::DuressDetected => ScreenAction::Duress,
+                            _ => ScreenAction::None,
+                        }
                     }
                     Key::End => {
                         self.clear_pin();
@@ -897,6 +912,61 @@ mod tests {
             UnlockResult::DuressDetected,
             "duress PIN must return DuressDetected"
         );
+    }
+
+    /// Map a decimal digit byte to its keypad key (inverse of key_to_digit).
+    fn digit_key(byte: u8) -> Key {
+        match byte {
+            b'0' => Key::Num0,
+            b'1' => Key::Num1,
+            b'2' => Key::Num2,
+            b'3' => Key::Num3,
+            b'4' => Key::Num4,
+            b'5' => Key::Num5,
+            b'6' => Key::Num6,
+            b'7' => Key::Num7,
+            b'8' => Key::Num8,
+            _ => Key::Num9,
+        }
+    }
+
+    #[test]
+    fn duress_via_on_key_is_distinguishable_from_real_unlock() {
+        // Drive the duress PIN through on_key key events (not submit_pin
+        // directly) and confirm the duress signal survives on both observable
+        // channels — the ScreenAction return and the last_result field.
+        let mut duress_screen = make_screen();
+        duress_screen.set_mode(LockMode::PinUnlock);
+        for &byte in TEST_DURESS_PIN {
+            duress_screen.on_key(digit_key(byte));
+        }
+        let duress_action = duress_screen.on_key(Key::Ok);
+
+        // A real unlock for comparison, driven the same way.
+        let mut real_screen = make_screen();
+        real_screen.set_mode(LockMode::PinUnlock);
+        for &byte in TEST_PIN {
+            real_screen.on_key(digit_key(byte));
+        }
+        let real_action = real_screen.on_key(Key::Ok);
+
+        // last_result must differ; the fix fails if on_success() clobbers the
+        // duress result to Success.
+        assert_eq!(
+            duress_screen.last_result,
+            Some(UnlockResult::DuressDetected),
+            "duress via on_key must record DuressDetected in last_result"
+        );
+        assert_eq!(real_screen.last_result, Some(UnlockResult::Success));
+        assert_ne!(duress_screen.last_result, real_screen.last_result);
+
+        // The ScreenAction channel also carries duress, distinct from a normal
+        // unlock which stays ScreenAction::None.
+        assert!(
+            matches!(duress_action, ScreenAction::Duress),
+            "duress via on_key must surface ScreenAction::Duress"
+        );
+        assert!(matches!(real_action, ScreenAction::None));
     }
 
     #[test]
