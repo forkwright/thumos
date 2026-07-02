@@ -1286,7 +1286,11 @@ mod tests {
         let commands = driver.set_mac_address(3).unwrap_or_default();
         let [low, high] = commands;
 
-        assert_eq!(low.cid, CommandId::AccessReg, "low-word command must be ACCESS_REG");
+        assert_eq!(
+            low.cid,
+            CommandId::AccessReg,
+            "low-word command must be ACCESS_REG"
+        );
         assert_eq!(low.seq_num, 3, "low-word seq_num must match argument");
         assert_eq!(
             low.payload.len(),
@@ -1299,7 +1303,11 @@ mod tests {
             "low-word operation byte must be write"
         );
 
-        assert_eq!(high.cid, CommandId::AccessReg, "high-word command must be ACCESS_REG");
+        assert_eq!(
+            high.cid,
+            CommandId::AccessReg,
+            "high-word command must be ACCESS_REG"
+        );
         assert_eq!(high.seq_num, 4, "high-word seq_num must be low seq_num + 1");
         assert_eq!(
             high.payload.len(),

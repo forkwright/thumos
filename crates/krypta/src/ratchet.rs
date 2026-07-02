@@ -426,9 +426,19 @@ mod tests {
         if let Some(byte) = forged.ciphertext.first_mut() {
             *byte ^= 0xFF;
         }
-        assert!(decrypt(&mut recv, &forged).is_err(), "forged message must fail");
-        assert_eq!(recv.counter, 0, "chain must not advance on a forged message");
-        assert_eq!(recv.skipped.len(), 0, "cache must not be polluted by a forged message");
+        assert!(
+            decrypt(&mut recv, &forged).is_err(),
+            "forged message must fail"
+        );
+        assert_eq!(
+            recv.counter, 0,
+            "chain must not advance on a forged message"
+        );
+        assert_eq!(
+            recv.skipped.len(),
+            0,
+            "cache must not be polluted by a forged message"
+        );
         Ok(())
     }
 

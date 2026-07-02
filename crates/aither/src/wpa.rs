@@ -508,15 +508,27 @@ mod tests {
     #[test]
     fn supplicant_session_accepts_strictly_increasing_counters() {
         let mut session = Supplicant4WaySession::new();
-        assert!(session.accept(&make_key_frame(1)), "counter 1 must be accepted");
-        assert!(session.accept(&make_key_frame(2)), "counter 2 must be accepted");
-        assert!(session.accept(&make_key_frame(100)), "counter 100 must be accepted");
+        assert!(
+            session.accept(&make_key_frame(1)),
+            "counter 1 must be accepted"
+        );
+        assert!(
+            session.accept(&make_key_frame(2)),
+            "counter 2 must be accepted"
+        );
+        assert!(
+            session.accept(&make_key_frame(100)),
+            "counter 100 must be accepted"
+        );
     }
 
     #[test]
     fn supplicant_session_rejects_replayed_equal_counter() {
         let mut session = Supplicant4WaySession::new();
-        assert!(session.accept(&make_key_frame(5)), "counter 5 must be accepted");
+        assert!(
+            session.accept(&make_key_frame(5)),
+            "counter 5 must be accepted"
+        );
         assert!(
             !session.accept(&make_key_frame(5)),
             "a replayed frame with an equal counter must be rejected"
@@ -526,7 +538,10 @@ mod tests {
     #[test]
     fn supplicant_session_rejects_lower_counter() {
         let mut session = Supplicant4WaySession::new();
-        assert!(session.accept(&make_key_frame(10)), "counter 10 must be accepted");
+        assert!(
+            session.accept(&make_key_frame(10)),
+            "counter 10 must be accepted"
+        );
         assert!(
             !session.accept(&make_key_frame(3)),
             "a frame with a lower counter than previously seen must be rejected"
@@ -536,8 +551,14 @@ mod tests {
     #[test]
     fn supplicant_session_state_reflects_last_accepted_not_last_seen() {
         let mut session = Supplicant4WaySession::new();
-        assert!(session.accept(&make_key_frame(10)), "counter 10 must be accepted");
-        assert!(!session.accept(&make_key_frame(10)), "replayed counter 10 must be rejected");
+        assert!(
+            session.accept(&make_key_frame(10)),
+            "counter 10 must be accepted"
+        );
+        assert!(
+            !session.accept(&make_key_frame(10)),
+            "replayed counter 10 must be rejected"
+        );
         assert!(
             session.accept(&make_key_frame(11)),
             "state must reflect the last ACCEPTED counter, not the rejected one"
