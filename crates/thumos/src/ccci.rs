@@ -289,6 +289,13 @@ impl CcifChannel {
     }
 }
 
+/// True if the raw CCIF `BUSY` register value has `channel`'s bit set,
+/// meaning the modem has not yet consumed a previously sent message on
+/// that channel (issue #261).
+fn ccif_channel_busy(busy: u32, channel: CcifChannel) -> bool {
+    busy & channel.mask() != 0
+}
+
 // ---------------------------------------------------------------------------
 // CCCI message format
 // ---------------------------------------------------------------------------
@@ -554,6 +561,8 @@ pub(crate) enum CcciError {
     PayloadTooLarge(usize),
     /// Ring buffer is full — no free descriptors.
     RingBufferFull,
+    /// CCIF channel is still busy with an unconsumed message (issue #261).
+    CcifChannelBusy(CcifChannel),
     /// Modem watchdog timeout.
     ModemWatchdog(u32),
     /// Identity response blocked by kernel filter.
@@ -589,6 +598,7 @@ impl fmt::Display for CcciError {
                 write!(f, "payload {size} exceeds MTU {CCCI_MTU}")
             }
             Self::RingBufferFull => write!(f, "ring buffer full"),
+            Self::CcifChannelBusy(channel) => write!(f, "CCIF channel {channel:?} busy"),
             Self::ModemWatchdog(status) => write!(f, "modem WDT: {status:#010x}"),
             Self::IdentityFiltered => write!(f, "identity response filtered"),
             Self::MalformedHeader => write!(f, "malformed CCCI header"),
@@ -663,6 +673,24 @@ const TX_RING_SIZE: usize = 16;
 /// Number of descriptors per RX queue (single queue).
 const RX_RING_SIZE: usize = 16;
 
+/// Full-system memory barrier (ARM `dmb sy`), used to order CLDMA GPD
+/// descriptor field writes/reads across the AP/DMA-engine ownership
+/// handoff (issue #262).
+#[cfg(target_arch = "arm")]
+#[inline(always)]
+fn dmb_sy() {
+    // SAFETY: dmb is a non-privileged memory-barrier instruction; always safe to execute.
+    unsafe {
+        core::arch::asm!("dmb sy");
+    }
+}
+
+/// No-op stub for non-ARM builds so ccci.rs unit tests compile on the host,
+/// where there is no real DMA engine to synchronize with.
+#[cfg(not(target_arch = "arm"))]
+#[inline(always)]
+fn dmb_sy() {}
+
 /// CLDMA GPD (General Purpose Descriptor) for DMA transfer.
 ///
 /// Each descriptor describes one DMA buffer. Descriptors are chained
@@ -706,18 +734,65 @@ impl CldmaGpd {
     }
 
     /// Whether hardware currently owns this descriptor.
+    ///
+    /// WHY: `flags` is shared with the CLDMA DMA engine (issue #262) -- a
+    /// volatile load is required so a caller polling this method observes
+    /// a hardware-side ownership change rather than a value the compiler
+    /// cached from an earlier read.
     pub(crate) fn is_hw_owned(&self) -> bool {
-        self.flags & GPD_FLAG_HWO != 0
+        // SAFETY: `flags` is a `repr(C)` field of a descriptor the CLDMA
+        // engine writes concurrently; a volatile read is required.
+        let flags = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(self.flags)) };
+        let owned = flags & GPD_FLAG_HWO != 0;
+        if !owned {
+            // Acquire half of the ownership handoff: once HWO reads clear,
+            // this barrier ensures a subsequent read of a DMA-written field
+            // (e.g. recv_len) observes the data the CLDMA engine wrote
+            // before it cleared HWO, rather than a stale/reordered value.
+            dmb_sy();
+        }
+        owned
     }
 
     /// Set hardware ownership (give to DMA engine).
+    ///
+    /// WHY: this is the release half of the ownership handoff (issue
+    /// #262) -- the barrier ensures data_ptr/data_len/recv_len writes the
+    /// caller made before this call are visible to the CLDMA engine before
+    /// it can observe HWO set.
     pub(crate) fn set_hw_owned(&mut self) {
-        self.flags |= GPD_FLAG_HWO;
+        dmb_sy();
+        let flags = self.flags | GPD_FLAG_HWO;
+        // SAFETY: `flags` is a `repr(C)` field shared with the CLDMA DMA
+        // engine; a volatile store is required so the compiler does not
+        // reorder, elide, or coalesce the ownership-transfer write.
+        unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(self.flags), flags) };
     }
 
     /// Clear hardware ownership (reclaim from DMA engine).
     pub(crate) fn clear_hw_owned(&mut self) {
-        self.flags &= !GPD_FLAG_HWO;
+        let flags = self.flags & !GPD_FLAG_HWO;
+        // SAFETY: `flags` is a `repr(C)` field shared with the CLDMA DMA
+        // engine; a volatile store is required for the same reason as
+        // `set_hw_owned`.
+        unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(self.flags), flags) };
+    }
+
+    /// Read `recv_len` with a volatile access.
+    ///
+    /// WHY: `recv_len` is written by the CLDMA DMA engine while the AP does
+    /// not hold Rust-visible ownership of the descriptor (issue #262); a
+    /// plain field read could return the AP's own last write (`0`, set at
+    /// `submit`/`rearm` time) instead of the hardware-written value.
+    ///
+    /// Callers must only trust the result after [`is_hw_owned`] has
+    /// observed `false` for this descriptor.
+    ///
+    /// [`is_hw_owned`]: CldmaGpd::is_hw_owned
+    pub(crate) fn recv_len_volatile(&self) -> u16 {
+        // SAFETY: `recv_len` is a `repr(C)` field the CLDMA engine writes
+        // concurrently; a volatile read is required.
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!(self.recv_len)) }
     }
 }
 
@@ -885,8 +960,11 @@ impl RxRing {
         // SECURITY: recv_len is modem-written and untrusted; clamp to the
         // AP-allocated buffer capacity (data_len) before it can be used as a
         // slice length/copy count by the caller.
+        // WHY: recv_len_volatile, not the plain field -- see
+        // CldmaGpd::recv_len_volatile for why a plain read is unsound here
+        // (issue #262).
         let recv_len = self.descriptors[idx]
-            .recv_len
+            .recv_len_volatile()
             .min(self.descriptors[idx].data_len);
         self.head = (self.head + 1) % RX_RING_SIZE;
         self.hw_count -= 1;
@@ -1474,6 +1552,15 @@ const CCIF_SRAM_SIZE: usize = 512;
 pub(crate) unsafe fn ccif_send(channel: CcifChannel, data: &[u8]) -> Result<(), CcciError> {
     if data.len() > CCIF_SRAM_SIZE {
         return Err(CcciError::PayloadTooLarge(data.len()));
+    }
+
+    // Confirm the modem has consumed any previous message on this channel
+    // before overwriting the shared SRAM window (issue #261).
+    // SAFETY: shared memory region at BUSY is mapped and within the CCCI
+    // aperture. Access is synchronized via CCIF doorbell.
+    let busy = unsafe { mmio::read32(ccif_reg::BUSY) };
+    if ccif_channel_busy(busy, channel) {
+        return Err(CcciError::CcifChannelBusy(channel));
     }
 
     // Write data to SRAM window (word-aligned writes).
@@ -2435,6 +2522,23 @@ mod tests {
     }
 
     #[test]
+    fn ccif_channel_busy_detects_target_bit() {
+        let busy = CcifChannel::Sram.mask();
+        assert!(
+            ccif_channel_busy(busy, CcifChannel::Sram),
+            "BUSY bit set for the target channel must report busy"
+        );
+        assert!(
+            !ccif_channel_busy(busy, CcifChannel::RingQ0),
+            "BUSY bit for a different channel must not report busy"
+        );
+        assert!(
+            !ccif_channel_busy(0, CcifChannel::Sram),
+            "a clear BUSY register must never report busy"
+        );
+    }
+
+    #[test]
     fn ccif_parse_multiple_channels() {
         // Simulate SRAM + Exception channels firing
         let raw = CcifChannel::Sram.mask() | CcifChannel::Exception.mask();
@@ -2698,6 +2802,18 @@ mod tests {
 
         gpd.clear_hw_owned();
         assert!(!gpd.is_hw_owned(), "clear_hw_owned works");
+    }
+
+    #[test]
+    fn gpd_recv_len_volatile_reads_current_value() {
+        let mut gpd = CldmaGpd::zeroed();
+        assert_eq!(gpd.recv_len_volatile(), 0, "starts at zero");
+        gpd.recv_len = 42;
+        assert_eq!(
+            gpd.recv_len_volatile(),
+            42,
+            "reflects a direct field write (host build has no concurrent DMA writer)"
+        );
     }
 
     // -- Error display --
