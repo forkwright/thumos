@@ -17,8 +17,6 @@
 //! `drivers/usb/musb/musb_core.h` and the hardware_info provided in the
 //! dispatch prompt.
 
-use crate::mmio;
-
 // ---------------------------------------------------------------------------
 // Base address
 // ---------------------------------------------------------------------------
@@ -71,6 +69,19 @@ const REG_RXCSR: usize = 0x116;
 const REG_TXMAXP: usize = 0x118;
 /// EPx RX max packet size (16-bit).
 const REG_RXMAXP: usize = 0x11A;
+/// EPx RX byte count for the last received OUT packet (16-bit); valid
+/// when REG_INDEX >= 1. Source: MUSB Programmer's Guide `RxCount`/`COUNT0`
+/// -- may be less than REG_RXMAXP for a short packet (issue #221). Placed
+/// immediately after REG_RXMAXP to follow this driver's banked-register
+/// layout (which already reorders from the raw Mentor Graphics offsets).
+///
+/// WARNING: this offset is inferred from the driver's banked layout, NOT
+/// confirmed against the MT6739 BSP header — the drain is clamped to
+/// EP1_MAX_PKT so a wrong value cannot overrun the ring buffer, but the
+/// exact offset must be verified before trusting short-packet lengths on
+/// real silicon.
+/// TODO(#221)[deliberate-prudent]: confirm REG_RXCOUNT against the MT6739 MUSB BSP header.
+const REG_RXCOUNT: usize = 0x11C;
 
 // ---------------------------------------------------------------------------
 // FIFO registers
@@ -609,6 +620,17 @@ impl UsbIrqStatus {
     }
 }
 
+/// Clamp a raw `RxCount` register value to the endpoint's max packet size.
+///
+/// WHY: `RxCount` reports the number of bytes MUSB placed in the FIFO for
+/// the current OUT packet, which may be less than `max_pkt` for a short
+/// packet. Bounding the result to `max_pkt` also keeps the FIFO drain loop
+/// within the endpoint's configured packet size if the register ever
+/// reports an out-of-range value (issue #221).
+fn clamp_rx_count(raw_count: u16, max_pkt: u16) -> usize {
+    usize::from(raw_count).min(usize::from(max_pkt))
+}
+
 // ---------------------------------------------------------------------------
 // USB controller
 // ---------------------------------------------------------------------------
@@ -777,11 +799,10 @@ impl UsbController {
 
             // Wait for the FIFO to be ready (TxPktRdy cleared by hardware after send).
             // WHY: Timeout prevents infinite spin if the host disconnects mid-transfer.
-            let ready = mmio::wait_bits_clear(
-                self.base + REG_TXCSR,
-                u32::from(TXCSR_TXPKTRDY),
-                100_000,
-            );
+            // WHY: REG_TXCSR is a 16-bit register; mmio::wait_bits_clear performs an
+            // unaligned 32-bit load at this odd half-word offset (issue #227) -- poll
+            // with the 16-bit-aligned accessor instead.
+            let ready = self.wait_bits_clear16(REG_TXCSR, TXCSR_TXPKTRDY, 100_000);
             if !ready {
                 return 0;
             }
@@ -1156,11 +1177,13 @@ impl UsbController {
 
             let fifo = self.base + REG_FIFO_BASE + 4; // EP1 FIFO
 
-            // Drain the entire FIFO (up to EP1_MAX_PKT bytes).
-            for _ in 0..usize::from(EP1_MAX_PKT) {
-                // NOTE: We don't have a RxCount register in this simplified driver.
-                // We drain one full packet worth of bytes and rely on the ring
-                // buffer to absorb whatever arrives.
+            // WHY: RxCount reports the actual number of bytes the host sent
+            // in this OUT packet, which may be less than EP1_MAX_PKT for a
+            // short packet. Draining a fixed 64 bytes regardless of RxCount
+            // read stale FIFO bytes past the valid payload (issue #221).
+            let rx_count = clamp_rx_count(self.read16(REG_RXCOUNT), EP1_MAX_PKT);
+
+            for _ in 0..rx_count {
                 let byte = core::ptr::read_volatile(fifo as *const u8);
                 let next_head = (self.rx_head + 1) % SERIAL_RX_BUF_LEN;
                 if next_head != self.rx_tail {
@@ -1254,6 +1277,28 @@ impl UsbController {
         // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
         unsafe { core::ptr::write_volatile((self.base + offset) as *mut u16, val) }
     }
+
+    /// Poll a 16-bit MUSB register until the given bits are clear, with a timeout.
+    ///
+    /// Returns `true` if the bits became clear, `false` on timeout. Uses a
+    /// correctly-sized 16-bit access -- unlike `mmio::wait_bits_clear`,
+    /// which performs an unconditional 32-bit load and would straddle
+    /// adjacent register bytes when polling a 16-bit-only MUSB register
+    /// such as REG_TXCSR at an odd half-word offset (issue #227).
+    ///
+    /// # Safety
+    ///
+    /// `offset` must be a valid 16-bit MUSB register, 2-byte aligned.
+    #[inline]
+    unsafe fn wait_bits_clear16(&self, offset: usize, bits: u16, max_iterations: u32) -> bool {
+        for _ in 0..max_iterations {
+            // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1121_0000.
+            if unsafe { self.read16(offset) } & bits == 0 {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,7 +1330,38 @@ mod tests {
         assert_eq!(REG_RXCSR, 0x116, "RxCSR OFFSET must be 0x116");
         assert_eq!(REG_TXMAXP, 0x118, "TxMaxP OFFSET must be 0x118");
         assert_eq!(REG_RXMAXP, 0x11A, "RxMaxP OFFSET must be 0x11A");
+        assert_eq!(REG_RXCOUNT, 0x11C, "RxCount OFFSET must be 0x11C");
         assert_eq!(REG_FIFO_BASE, 0x120, "FIFO base OFFSET must be 0x120");
+    }
+
+    // --- RX byte-count clamping (issue #221) ---
+
+    #[test]
+    fn clamp_rx_count_short_packet_uses_actual_count() {
+        assert_eq!(
+            clamp_rx_count(1, EP1_MAX_PKT),
+            1,
+            "a 1-byte OUT packet must drain exactly 1 byte, not a full EP1_MAX_PKT"
+        );
+    }
+
+    #[test]
+    fn clamp_rx_count_full_packet_uses_max_pkt() {
+        assert_eq!(clamp_rx_count(64, EP1_MAX_PKT), 64);
+    }
+
+    #[test]
+    fn clamp_rx_count_zero_length_packet_drains_nothing() {
+        assert_eq!(clamp_rx_count(0, EP1_MAX_PKT), 0);
+    }
+
+    #[test]
+    fn clamp_rx_count_clamps_out_of_range_register_value() {
+        assert_eq!(
+            clamp_rx_count(200, EP1_MAX_PKT),
+            usize::from(EP1_MAX_PKT),
+            "a bogus RxCount above the endpoint max packet size must be clamped"
+        );
     }
 
     // --- Device descriptor serialization ---

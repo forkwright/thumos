@@ -246,6 +246,29 @@ const DMA_CFG_STS_ACTIVE: u32 = 1 << 0;
 /// FIFO clear bit  -  write 1 to flush both TX and RX FIFOs.
 const FIFOCS_CLR: u32 = 1 << 0;
 
+/// RX FIFO word-count field shift (bits [23:16] per the MT6739 MSDC
+/// datasheet, as cited in issue #293).
+///
+/// WARNING: the exact bit position is taken from the issue's datasheet
+/// citation, not independently re-derived against the BSP header. The
+/// per-word poll is bounded by POLL_TIMEOUT so a wrong field position
+/// degrades to a DataTimeout (safe), but must be verified before silicon.
+/// TODO(#293)[deliberate-prudent]: confirm FIFOCS RXCNT field position against the MT6739 BSP.
+const FIFOCS_RXCNT_SHIFT: u32 = 16;
+
+/// RX FIFO word-count field mask (8 bits at [23:16]).
+const FIFOCS_RXCNT_MASK: u32 = 0xFF << FIFOCS_RXCNT_SHIFT;
+
+/// True if the MSDC_FIFOCS RX word count is nonzero, i.e. at least one word
+/// is buffered and safe to read FROM MSDC_RXDATA.
+///
+/// WHY: STS_DATBUSY stays SET for the duration of an entire block transfer,
+/// so it cannot signal per-word FIFO readiness during a PIO read; the RX
+/// count field is the per-word-accurate signal (issue #293).
+fn fifo_rx_ready(fifocs: u32) -> bool {
+    fifocs & FIFOCS_RXCNT_MASK != 0
+}
+
 // ---------------------------------------------------------------------------
 // MSDC_PS bit fields
 // ---------------------------------------------------------------------------
@@ -740,11 +763,20 @@ impl MsdcController {
         // PIO: read 128 words (512 bytes) FROM MSDC_RXDATA
         let buf_ptr = buf.as_mut_ptr().cast::<u32>();
         for i in 0..WORDS_PER_SECTOR {
-            // Poll until FIFO has data (check dat busy clears for completion)
-            // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
-            if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_DATBUSY, POLL_TIMEOUT) } {
-                // NOTE: datbusy stays SET until the full block is transferred,
-                // so we read word-by-word and only check at the end
+            // Poll the RX FIFO word count until at least one word is
+            // buffered, instead of STS_DATBUSY (which cannot signal
+            // per-word readiness -- see fifo_rx_ready, issue #293).
+            let mut ready = false;
+            for _ in 0..POLL_TIMEOUT {
+                // SAFETY: MSDC_FIFOCS is a valid MMIO register at offset 0x14 within the MSDC0 address space. Volatile access is required for hardware registers.
+                let fifocs = unsafe { self.read_reg(REG_MSDC_FIFOCS) };
+                if fifo_rx_ready(fifocs) {
+                    ready = true;
+                    break;
+                }
+            }
+            if !ready {
+                return Err(MsdcError::DataTimeout);
             }
             // SAFETY: MSDC_RXDATA is a valid MMIO register at offset 0x1C within the MSDC0 address space. Volatile access is required for hardware registers.
             let word = unsafe { self.read_reg(REG_MSDC_RXDATA) };
@@ -758,11 +790,11 @@ impl MsdcController {
             return Err(MsdcError::DataTimeout);
         }
 
-        // Clear transfer-complete interrupt
-        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
-        unsafe { self.write_reg(REG_MSDC_INT, INT_XFER_COMPL) };
-
-        Ok(())
+        // Check INT_ERR_MASK before clearing completion so a hardware error
+        // (e.g. INT_DATCRCERR) coinciding with INT_XFER_COMPL is not
+        // silently discarded (issue #286).
+        // SAFETY: controller register block is mapped per caller contract.
+        unsafe { self.check_and_clear_completion(INT_XFER_COMPL) }
     }
 
     /// Write a single 512-byte sector via PIO.
@@ -810,11 +842,10 @@ impl MsdcController {
             return Err(MsdcError::DataTimeout);
         }
 
-        // Clear transfer-complete interrupt
-        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
-        unsafe { self.write_reg(REG_MSDC_INT, INT_XFER_COMPL) };
-
-        Ok(())
+        // Check INT_ERR_MASK before clearing completion so a hardware error
+        // coinciding with INT_XFER_COMPL is not silently discarded (issue #286).
+        // SAFETY: controller register block is mapped per caller contract.
+        unsafe { self.check_and_clear_completion(INT_XFER_COMPL) }
     }
 
     // -- DMA transfers --
@@ -881,11 +912,11 @@ impl MsdcController {
             return Err(MsdcError::DataTimeout);
         }
 
-        // Clear completion interrupt
-        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
-        unsafe { self.write_reg(REG_MSDC_INT, INT_XFER_COMPL | INT_DXFER_DONE) };
-
-        Ok(())
+        // Check INT_ERR_MASK before clearing completion so a hardware error
+        // coinciding with INT_XFER_COMPL/INT_DXFER_DONE is not silently
+        // discarded (issue #286).
+        // SAFETY: controller register block is mapped per caller contract.
+        unsafe { self.check_and_clear_completion(INT_XFER_COMPL | INT_DXFER_DONE) }
     }
 
     /// Write sectors via DMA using a GPD/BD descriptor chain.
@@ -944,11 +975,11 @@ impl MsdcController {
             return Err(MsdcError::DataTimeout);
         }
 
-        // Clear completion interrupt
-        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
-        unsafe { self.write_reg(REG_MSDC_INT, INT_XFER_COMPL | INT_DXFER_DONE) };
-
-        Ok(())
+        // Check INT_ERR_MASK before clearing completion so a hardware error
+        // coinciding with INT_XFER_COMPL/INT_DXFER_DONE is not silently
+        // discarded (issue #286).
+        // SAFETY: controller register block is mapped per caller contract.
+        unsafe { self.check_and_clear_completion(INT_XFER_COMPL | INT_DXFER_DONE) }
     }
 
     /// Read the 32-bit response FROM SDC_RESP0.
@@ -996,6 +1027,34 @@ impl MsdcController {
     pub(crate) unsafe fn clear_interrupts(&self, bits: u32) {
         // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_MSDC_INT, bits) };
+    }
+
+    /// Check for hardware error interrupts before clearing a transfer's
+    /// completion bits.
+    ///
+    /// Reads MSDC_INT; if any bit in [`INT_ERR_MASK`] is set, clears every
+    /// observed bit (MSDC_INT is write-1-to-clear) and returns
+    /// [`MsdcError::InterruptError`] carrying the error bits. Otherwise
+    /// clears only `completion_bits` and returns `Ok(())`.
+    ///
+    /// WHY: clearing a completion bit (e.g. INT_XFER_COMPL) without first
+    /// inspecting INT_ERR_MASK silently discards a hardware error that
+    /// coincided with completion (issue #286).
+    ///
+    /// # Safety
+    ///
+    /// The controller register block must be mapped.
+    unsafe fn check_and_clear_completion(&self, completion_bits: u32) -> Result<(), MsdcError> {
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
+        let status = unsafe { self.interrupt_status() };
+        if status & INT_ERR_MASK != 0 {
+            // SAFETY: MSDC_INT is write-1-to-clear; writing the full observed status clears every pending bit, including the error bits just inspected.
+            unsafe { self.clear_interrupts(status) };
+            return Err(MsdcError::InterruptError(status & INT_ERR_MASK));
+        }
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
+        unsafe { self.clear_interrupts(completion_bits) };
+        Ok(())
     }
 
     /// Enable specific interrupt sources.
@@ -1418,6 +1477,29 @@ mod tests {
             STS_CMDBUSY & STS_DATBUSY,
             0,
             "cmdbusy and datbusy do not overlap"
+        );
+    }
+
+    // -- MSDC_FIFOCS RX readiness (issue #293) --
+
+    #[test]
+    fn fifo_rx_ready_false_when_count_field_zero() {
+        assert!(!fifo_rx_ready(0), "zero RX count must not be ready");
+        assert!(
+            !fifo_rx_ready(FIFOCS_CLR),
+            "bits outside the RXCNT field must not signal readiness"
+        );
+    }
+
+    #[test]
+    fn fifo_rx_ready_true_when_count_field_nonzero() {
+        assert!(
+            fifo_rx_ready(1 << FIFOCS_RXCNT_SHIFT),
+            "a single buffered word must signal readiness"
+        );
+        assert!(
+            fifo_rx_ready(0xFF << FIFOCS_RXCNT_SHIFT),
+            "a full RXCNT field must signal readiness"
         );
     }
 }
