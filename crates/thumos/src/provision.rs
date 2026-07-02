@@ -2,30 +2,38 @@
 //!
 //! Receives a [`ProvisionBundle`] from the host workstation over the USB ACM
 //! serial gadget (see [`usb`]), deserializes it with postcard, verifies a
-//! SHA-256 checksum, and provides the credentials for [`MatrixClient`]
-//! initialization.
+//! SHA-256 integrity checksum and an Ed25519 authenticity signature, and
+//! provides the credentials for [`MatrixClient`] initialization.
 //!
 //! ## Wire format
 //!
 //! ```text
-//! [4-byte magic "THMS"][4-byte LE length][postcard-serialized ProvisionBundle][32-byte SHA-256]
+//! [4-byte magic "THMS"][4-byte LE length][postcard-serialized ProvisionBundle][32-byte SHA-256][64-byte Ed25519 signature]
 //! ```
 //!
-//! The `length` field covers only the postcard payload (not magic, length, or
-//! checksum). The SHA-256 covers magic + length + payload (everything before
-//! the checksum).
+//! The `length` field covers only the postcard payload (not magic, length,
+//! checksum, or signature). The SHA-256 covers magic + length + payload
+//! (everything before the checksum) and is integrity-only: it travels inside
+//! the same untrusted bundle it protects, so it catches corruption but proves
+//! nothing about origin. The Ed25519 signature covers the same magic + length
+//! + payload region and is the sole authenticity guarantee — verified against
+//! [`PROVISION_PUBLIC_KEY`], a compile-time-embedded public key whose
+//! corresponding private key is held offline by the operator, mirroring the
+//! secure-boot Ed25519 key custody model (see [`secure_boot`]).
 //!
 //! ## Provisioning flow
 //!
 //! 1. Device shows "WAITING FOR PROVISIONING" screen.
-//! 2. menos-side tool pushes bundle over USB serial.
-//! 3. Device receives, deserializes, verifies (SHA-256 checksum).
+//! 2. menos-side tool pushes an operator-signed bundle over USB serial.
+//! 3. Device receives, deserializes, verifies (SHA-256 checksum, then
+//!    Ed25519 signature).
 //! 4. Stores credentials to `/data/harmostes/` via LFS.
 //! 5. Initializes [`MatrixClient`] with the provisioned credentials.
 //! 6. Shows "PROVISIONED: @user:server" confirmation.
 //!
 //! [`usb`]: crate::usb
 //! [`MatrixClient`]: crate::harmostes::MatrixClient
+//! [`secure_boot`]: crate::secure_boot
 
 // WHY: Provisioning module created in Phase 09 Wave 4, full integration with
 // MatrixClient pending in Wave 5.
@@ -45,6 +53,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::matrix_ids::{MatrixDeviceId, MatrixUserId};
 use crate::security;
+use crate::secure_boot;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -59,12 +68,34 @@ const HEADER_SIZE: usize = 8;
 /// SHA-256 digest length (bytes).
 const SHA256_LEN: usize = 32;
 
+/// Ed25519 signature length (bytes). Mirrors [`secure_boot::SIGNATURE_LEN`].
+const SIGNATURE_LEN: usize = secure_boot::SIGNATURE_LEN;
+
 /// Maximum payload size (64 KiB). Prevents unbounded allocation from
 /// malformed length fields.
 const MAX_PAYLOAD_SIZE: usize = 65_536;
 
-/// Receive buffer capacity. Must hold header + max payload + checksum.
-const RECV_BUF_CAPACITY: usize = HEADER_SIZE + MAX_PAYLOAD_SIZE + SHA256_LEN;
+/// Receive buffer capacity. Must hold header + max payload + checksum +
+/// signature.
+const RECV_BUF_CAPACITY: usize = HEADER_SIZE + MAX_PAYLOAD_SIZE + SHA256_LEN + SIGNATURE_LEN;
+
+/// Embedded Ed25519 public key for provisioning bundle authenticity.
+///
+/// TODO(#270)[deliberate-prudent]: this is the RFC 8032 section 7.1 Test 2
+/// public key, NOT a real trust anchor. It must be replaced with the
+/// production provisioning key injected by the offline signing
+/// infrastructure before any release build. The corresponding private key
+/// is held offline by the operator (same custody model as
+/// [`secure_boot`]'s boot key) and used by the menos-side provisioning
+/// tool to sign bundles — it never touches this crate's compiled artifact.
+/// Deliberately a distinct key from the boot key: provisioning-bundle
+/// authenticity and kernel-image authenticity are separate trust domains.
+const PROVISION_PUBLIC_KEY: [u8; secure_boot::PUBLIC_KEY_LEN] = [
+    0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a,
+    0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b, 0x7e, 0xbc,
+    0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c,
+    0xc0, 0xcd, 0x55, 0xf1, 0x2a, 0xf4, 0x66, 0x0c,
+];
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -81,6 +112,8 @@ pub enum ProvisionError {
     PayloadTooLarge,
     /// The SHA-256 checksum did not match.
     ChecksumMismatch,
+    /// The Ed25519 signature did not verify against [`PROVISION_PUBLIC_KEY`].
+    SignatureInvalid,
     /// Postcard deserialization failed.
     DeserializeError,
     /// Not enough data received yet (still accumulating).
@@ -95,6 +128,7 @@ impl fmt::Display for ProvisionError {
             Self::InvalidMagic => write!(f, "invalid provision magic header"),
             Self::PayloadTooLarge => write!(f, "provision payload exceeds maximum size"),
             Self::ChecksumMismatch => write!(f, "provision checksum mismatch"),
+            Self::SignatureInvalid => write!(f, "provision bundle signature invalid"),
             Self::DeserializeError => write!(f, "provision bundle deserialization failed"),
             Self::Incomplete => write!(f, "provision data incomplete"),
             Self::PreviousError => write!(f, "provisioner in error state, reset required"),
@@ -205,10 +239,17 @@ pub(crate) struct Provisioner {
     payload_len: Option<usize>,
     /// Successfully deserialized bundle (set after finalize).
     bundle: Option<ProvisionBundle>,
+    /// Ed25519 public key used to verify bundle signatures. Always
+    /// PROVISION_PUBLIC_KEY outside tests; test-injectable via
+    /// [`Provisioner::new_with_key`] to exercise verification against a
+    /// locally generated keypair.
+    provision_public_key: [u8; secure_boot::PUBLIC_KEY_LEN],
 }
 
 impl Provisioner {
     /// Create a new provisioner in the [`ProvisionState::Waiting`] state.
+    ///
+    /// Verifies bundle signatures against [`PROVISION_PUBLIC_KEY`].
     #[must_use]
     pub(crate) fn new() -> Self {
         Self {
@@ -216,6 +257,25 @@ impl Provisioner {
             buffer: Vec::new(),
             payload_len: None,
             bundle: None,
+            provision_public_key: PROVISION_PUBLIC_KEY,
+        }
+    }
+
+    /// Create a new provisioner that verifies bundle signatures against a
+    /// caller-supplied public key instead of [`PROVISION_PUBLIC_KEY`].
+    ///
+    /// Test-only: lets tests exercise the verification path against a
+    /// locally generated Ed25519 keypair without needing a signature
+    /// pre-computed under the production placeholder key.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn new_with_key(provision_public_key: [u8; secure_boot::PUBLIC_KEY_LEN]) -> Self {
+        Self {
+            state: ProvisionState::Waiting,
+            buffer: Vec::new(),
+            payload_len: None,
+            bundle: None,
+            provision_public_key,
         }
     }
 
@@ -282,9 +342,10 @@ impl Provisioner {
             self.payload_len = Some(payload_len);
         }
 
-        // Check if we have the complete message (header + payload + checksum).
+        // Check if we have the complete message (header + payload + checksum
+        // + signature).
         if let Some(payload_len) = self.payload_len {
-            let total_len = HEADER_SIZE + payload_len + SHA256_LEN;
+            let total_len = HEADER_SIZE + payload_len + SHA256_LEN + SIGNATURE_LEN;
             if self.buffer.len() >= total_len {
                 self.state = ProvisionState::Verifying;
                 // Attempt finalization inline.
@@ -328,14 +389,29 @@ impl Provisioner {
     /// Internal: attempt to deserialize and verify the accumulated buffer.
     fn try_finalize(&self, payload_len: usize) -> Result<ProvisionBundle, ProvisionError> {
         let checksum_start = HEADER_SIZE + payload_len;
+        let signature_start = checksum_start + SHA256_LEN;
         let data_region = &self.buffer[..checksum_start];
-        let received_checksum = &self.buffer[checksum_start..checksum_start + SHA256_LEN];
+        let received_checksum = &self.buffer[checksum_start..signature_start];
 
-        // Verify SHA-256 checksum over magic + length + payload.
+        // Verify SHA-256 checksum over magic + length + payload. Integrity
+        // only: the checksum travels inside the same untrusted bundle it
+        // covers, so a mismatch proves corruption but a match proves
+        // nothing about origin — PROVISION_PUBLIC_KEY below is the actual
+        // authenticity check.
         let computed = security::sha256(data_region);
         if computed != received_checksum {
             return Err(ProvisionError::ChecksumMismatch);
         }
+
+        // Verify the Ed25519 signature over the same region. This is the
+        // sole authenticity guarantee: only a host holding the offline
+        // provisioning private key can produce a signature
+        // provision_public_key accepts, closing the "any host can inject
+        // credentials" gap the checksum alone left open (#270).
+        let mut signature = [0u8; SIGNATURE_LEN];
+        signature.copy_from_slice(&self.buffer[signature_start..signature_start + SIGNATURE_LEN]);
+        secure_boot::verify_message_signature(data_region, &signature, &self.provision_public_key)
+            .map_err(|_| ProvisionError::SignatureInvalid)?;
 
         // Deserialize the postcard payload.
         let payload = &self.buffer[HEADER_SIZE..checksum_start];
@@ -372,8 +448,24 @@ impl fmt::Display for Provisioner {
 /// Encode a [`ProvisionBundle`] into the wire format for transmission.
 ///
 /// Returns the complete byte sequence: magic + length + postcard payload +
-/// SHA-256 checksum. Used by the menos-side provisioning tool and in tests.
-pub(crate) fn encode_bundle(bundle: &ProvisionBundle) -> Result<Vec<u8>, ProvisionError> {
+/// SHA-256 checksum + Ed25519 signature. `signature` must be computed by
+/// the caller over the magic + length + payload bytes (the same region
+/// [`Provisioner::try_finalize`] verifies) under the provisioning private
+/// key held offline by the operator. This function never touches
+/// signing-key material itself — it only appends a caller-supplied
+/// signature — so the menos-side provisioning tool (or a test, via a
+/// locally generated keypair) computes the signature with its own crypto
+/// stack and passes the result in.
+///
+/// # Errors
+///
+/// Returns [`ProvisionError::PayloadTooLarge`] if the serialized payload
+/// exceeds [`MAX_PAYLOAD_SIZE`], or [`ProvisionError::DeserializeError`] if
+/// postcard serialization fails.
+pub(crate) fn encode_bundle(
+    bundle: &ProvisionBundle,
+    signature: &[u8; SIGNATURE_LEN],
+) -> Result<Vec<u8>, ProvisionError> {
     let payload = postcard::to_allocvec(bundle).map_err(|_| ProvisionError::DeserializeError)?;
 
     if payload.len() > MAX_PAYLOAD_SIZE {
@@ -381,7 +473,7 @@ pub(crate) fn encode_bundle(bundle: &ProvisionBundle) -> Result<Vec<u8>, Provisi
     }
 
     let payload_len = payload.len() as u32;
-    let mut wire = Vec::with_capacity(HEADER_SIZE + payload.len() + SHA256_LEN);
+    let mut wire = Vec::with_capacity(HEADER_SIZE + payload.len() + SHA256_LEN + SIGNATURE_LEN);
 
     // Magic.
     wire.extend_from_slice(&PROVISION_MAGIC);
@@ -390,9 +482,12 @@ pub(crate) fn encode_bundle(bundle: &ProvisionBundle) -> Result<Vec<u8>, Provisi
     // Payload.
     wire.extend_from_slice(&payload);
 
-    // SHA-256 checksum over everything so far.
+    // SHA-256 checksum over everything so far (integrity only).
     let checksum = security::sha256(&wire);
     wire.extend_from_slice(&checksum);
+
+    // Ed25519 signature over magic + length + payload (authenticity).
+    wire.extend_from_slice(signature);
 
     Ok(wire)
 }
@@ -403,7 +498,51 @@ pub(crate) fn encode_bundle(bundle: &ProvisionBundle) -> Result<Vec<u8>, Provisi
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::{Signer, SigningKey};
+
     use super::*;
+
+    /// Fixed, deterministic Ed25519 signing key for provisioning tests.
+    ///
+    /// Its public half is injected into [`harness_provisioner`] via
+    /// [`Provisioner::new_with_key`], so a locally computed signature verifies
+    /// without the offline production key behind [`PROVISION_PUBLIC_KEY`].
+    fn harness_signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[0x42; 32])
+    }
+
+    /// A provisioner that trusts [`harness_signing_key`]'s public key instead of
+    /// the production [`PROVISION_PUBLIC_KEY`], so test-signed bundles verify.
+    fn harness_provisioner() -> Provisioner {
+        Provisioner::new_with_key(harness_signing_key().verifying_key().to_bytes())
+    }
+
+    /// The exact wire region [`encode_bundle`] signs over: magic + length +
+    /// payload — everything BEFORE the SHA-256 checksum, and the SAME region
+    /// [`Provisioner::try_finalize`] verifies the signature against.
+    fn signed_region(bundle: &ProvisionBundle) -> Vec<u8> {
+        let payload = postcard::to_allocvec(bundle).expect("serialize provision bundle");
+        let payload_len = payload.len() as u32;
+        let mut region = Vec::with_capacity(HEADER_SIZE + payload.len());
+        region.extend_from_slice(&PROVISION_MAGIC);
+        region.extend_from_slice(&payload_len.to_le_bytes());
+        region.extend_from_slice(&payload);
+        region
+    }
+
+    /// Encode `bundle`, signing the magic+length+payload region with
+    /// `signing_key`. [`encode_bundle`] computes the SHA-256 checksum itself
+    /// and appends this caller-supplied signature.
+    fn encode_bundle_with(bundle: &ProvisionBundle, signing_key: &SigningKey) -> Vec<u8> {
+        let signature: [u8; SIGNATURE_LEN] = signing_key.sign(&signed_region(bundle)).to_bytes();
+        encode_bundle(bundle, &signature).expect("encode provision bundle")
+    }
+
+    /// Encode `bundle` signed by the trusted [`harness_signing_key`] — the happy
+    /// path a [`harness_provisioner`] accepts.
+    fn encode_bundle_signed(bundle: &ProvisionBundle) -> Vec<u8> {
+        encode_bundle_with(bundle, &harness_signing_key())
+    }
 
     /// Create a test bundle with deterministic data.
     fn provision_bundle_with_cross_signing() -> ProvisionBundle {
@@ -438,12 +577,10 @@ mod tests {
     #[test]
     fn bundle_round_trip() {
         let bundle = provision_bundle_with_cross_signing();
-        let wire = encode_bundle(&bundle).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
+        let wire = encode_bundle_signed(&bundle);
 
-        let mut prov = Provisioner::new();
-        let state = prov.receive_chunk(wire);
+        let mut prov = harness_provisioner();
+        let state = prov.receive_chunk(&wire);
         assert_eq!(*state, ProvisionState::Complete);
 
         let result = prov.finalize();
@@ -455,12 +592,10 @@ mod tests {
     #[test]
     fn bundle_round_trip_no_cross_signing() {
         let bundle = provision_bundle_without_cross_signing();
-        let wire = encode_bundle(&bundle).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
+        let wire = encode_bundle_signed(&bundle);
 
-        let mut prov = Provisioner::new();
-        prov.receive_chunk(wire);
+        let mut prov = harness_provisioner();
+        prov.receive_chunk(&wire);
         assert!(prov.is_complete());
 
         let decoded = prov.finalize().unwrap_or_else(|_| provision_bundle_with_cross_signing());
@@ -473,13 +608,12 @@ mod tests {
 
     #[test]
     fn invalid_magic_rejected() {
-        let mut wire = encode_bundle(&provision_bundle_with_cross_signing())
-            .unwrap_or_else(|_| Vec::new());
+        let mut wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
         assert!(!wire.is_empty());
         // Corrupt magic.
         wire[0] = b'X';
 
-        let mut prov = Provisioner::new();
+        let mut prov = harness_provisioner();
         let state = prov.receive_chunk(&wire);
         assert_eq!(*state, ProvisionState::Error(ProvisionError::InvalidMagic));
     }
@@ -503,14 +637,17 @@ mod tests {
 
     #[test]
     fn checksum_mismatch_rejected() {
-        let mut wire = encode_bundle(&provision_bundle_with_cross_signing())
-            .unwrap_or_else(|_| Vec::new());
+        let mut wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
         assert!(!wire.is_empty());
-        // Corrupt last byte of checksum.
-        let last = wire.len() - 1;
-        wire[last] ^= 0xFF;
+        // Corrupt a byte INSIDE the SHA-256 checksum region. The trailing
+        // bytes are now the Ed25519 signature, so corrupting the tail would
+        // surface as SignatureInvalid instead (see signature_invalid_rejected).
+        let payload_len =
+            u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
+        let checksum_start = HEADER_SIZE + payload_len;
+        wire[checksum_start + SHA256_LEN - 1] ^= 0xFF;
 
-        let mut prov = Provisioner::new();
+        let mut prov = harness_provisioner();
         let state = prov.receive_chunk(&wire);
         assert_eq!(
             *state,
@@ -520,15 +657,14 @@ mod tests {
 
     #[test]
     fn corrupted_payload_fails_checksum() {
-        let mut wire = encode_bundle(&provision_bundle_with_cross_signing())
-            .unwrap_or_else(|_| Vec::new());
+        let mut wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
         assert!(!wire.is_empty());
         // Corrupt a byte in the payload region.
         if wire.len() > HEADER_SIZE + 5 {
             wire[HEADER_SIZE + 5] ^= 0xFF;
         }
 
-        let mut prov = Provisioner::new();
+        let mut prov = harness_provisioner();
         let state = prov.receive_chunk(&wire);
         // Should be either ChecksumMismatch or DeserializeError depending on
         // whether the checksum is checked first.
@@ -545,13 +681,11 @@ mod tests {
 
     #[test]
     fn truncated_data_stays_receiving() {
-        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
+        let wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
         // Send only half the data.
         let half = wire.len() / 2;
 
-        let mut prov = Provisioner::new();
+        let mut prov = harness_provisioner();
         let state = prov.receive_chunk(&wire[..half]);
         assert_eq!(*state, ProvisionState::Receiving);
 
@@ -589,11 +723,9 @@ mod tests {
 
     #[test]
     fn multi_chunk_accumulation() {
-        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
+        let wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
 
-        let mut prov = Provisioner::new();
+        let mut prov = harness_provisioner();
 
         // Feed one byte at a time for the first 20 bytes.
         let chunk_boundary = 20.min(wire.len());
@@ -624,14 +756,12 @@ mod tests {
 
     #[test]
     fn byte_at_a_time_accumulation() {
-        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
+        let wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
 
-        let mut prov = Provisioner::new();
+        let mut prov = harness_provisioner();
 
         // Feed every single byte individually.
-        for &byte in wire {
+        for &byte in &wire {
             prov.receive_chunk(&[byte]);
         }
 
@@ -660,12 +790,10 @@ mod tests {
 
     #[test]
     fn complete_state_ignores_further_data() {
-        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
+        let wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
 
-        let mut prov = Provisioner::new();
-        prov.receive_chunk(wire);
+        let mut prov = harness_provisioner();
+        prov.receive_chunk(&wire);
         assert!(prov.is_complete());
 
         // Sending more data should not change state.
@@ -690,12 +818,10 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
+        let wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
 
-        let mut prov = Provisioner::new();
-        prov.receive_chunk(wire);
+        let mut prov = harness_provisioner();
+        prov.receive_chunk(&wire);
         assert!(prov.is_complete());
 
         prov.reset();
@@ -706,7 +832,7 @@ mod tests {
 
     #[test]
     fn reset_after_error_allows_retry() {
-        let mut prov = Provisioner::new();
+        let mut prov = harness_provisioner();
         prov.receive_chunk(b"BAD_MAGIC_HEADER_DATA_PLUS_PADDING__");
         assert!(matches!(prov.state(), ProvisionState::Error(_)));
 
@@ -714,10 +840,8 @@ mod tests {
         assert_eq!(*prov.state(), ProvisionState::Waiting);
 
         // Now send valid data.
-        let wire = encode_bundle(&provision_bundle_with_cross_signing()).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().map(Vec::as_slice).unwrap_or_default();
-        prov.receive_chunk(wire);
+        let wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
+        prov.receive_chunk(&wire);
         assert!(prov.is_complete());
     }
 
@@ -762,9 +886,7 @@ mod tests {
     #[test]
     fn encode_bundle_produces_correct_structure() {
         let bundle = provision_bundle_with_cross_signing();
-        let wire = encode_bundle(&bundle).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().unwrap();
+        let wire = encode_bundle_signed(&bundle);
 
         // Check magic.
         assert_eq!(&wire[..4], b"THMS");
@@ -773,21 +895,23 @@ mod tests {
         let payload_len =
             u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
 
-        // Total wire length should be header + payload + checksum.
-        assert_eq!(wire.len(), HEADER_SIZE + payload_len + SHA256_LEN);
+        // Total wire length = header + payload + checksum + signature.
+        assert_eq!(
+            wire.len(),
+            HEADER_SIZE + payload_len + SHA256_LEN + SIGNATURE_LEN
+        );
 
-        // Verify the checksum independently.
+        // Verify the checksum independently. It occupies the 32 bytes after
+        // the payload; the Ed25519 signature follows it.
         let checksum_start = HEADER_SIZE + payload_len;
         let computed = security::sha256(&wire[..checksum_start]);
-        assert_eq!(&wire[checksum_start..], &computed[..]);
+        assert_eq!(&wire[checksum_start..checksum_start + SHA256_LEN], &computed[..]);
     }
 
     #[test]
     fn encoded_payload_deserializes_independently() {
         let bundle = provision_bundle_with_cross_signing();
-        let wire = encode_bundle(&bundle).ok();
-        assert!(wire.is_some());
-        let wire = wire.as_ref().unwrap();
+        let wire = encode_bundle_signed(&bundle);
 
         let payload_len =
             u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
@@ -796,5 +920,84 @@ mod tests {
         let decoded: Result<ProvisionBundle, _> = postcard::from_bytes(payload);
         assert!(decoded.is_ok());
         assert_eq!(decoded.unwrap_or_else(|_| provision_bundle_without_cross_signing()), bundle);
+    }
+
+    // -----------------------------------------------------------------------
+    // Signature authenticity (#270)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn valid_signature_accepted() {
+        // A bundle signed by the trusted provisioning key round-trips to Ok.
+        let bundle = provision_bundle_with_cross_signing();
+        let wire = encode_bundle_signed(&bundle);
+
+        let mut prov = harness_provisioner();
+        let state = prov.receive_chunk(&wire);
+        assert_eq!(*state, ProvisionState::Complete);
+
+        let result = prov.finalize();
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap_or_else(|_| provision_bundle_without_cross_signing()),
+            bundle
+        );
+    }
+
+    #[test]
+    fn signature_invalid_rejected() {
+        // Valid checksum, corrupted trailing Ed25519 signature: the SHA-256
+        // integrity check passes but signature verification fails.
+        let mut wire = encode_bundle_signed(&provision_bundle_with_cross_signing());
+        assert!(!wire.is_empty());
+        let last = wire.len() - 1;
+        wire[last] ^= 0xFF;
+
+        let mut prov = harness_provisioner();
+        let state = prov.receive_chunk(&wire);
+        assert_eq!(
+            *state,
+            ProvisionState::Error(ProvisionError::SignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn hash_only_forgery_rejected() {
+        // The core #270 property: an attacker who does NOT hold the trusted
+        // provisioning key signs the bundle with a DIFFERENT key.
+        // encode_bundle recomputes a correct SHA-256, so the integrity
+        // checksum is genuinely valid — yet the provisioner, trusting only
+        // harness_signing_key's public half, refuses the wrong-key signature. A
+        // correct hash without the right signing key is NOT enough.
+        let attacker_key = SigningKey::from_bytes(&[0x99; 32]);
+        let bundle = provision_bundle_with_cross_signing();
+        let wire = encode_bundle_with(&bundle, &attacker_key);
+
+        // The checksum region is genuinely valid — this is a forgery under the
+        // wrong key, not a corruption.
+        let payload_len =
+            u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
+        let checksum_start = HEADER_SIZE + payload_len;
+        let computed = security::sha256(&wire[..checksum_start]);
+        assert_eq!(
+            &wire[checksum_start..checksum_start + SHA256_LEN],
+            &computed[..],
+            "attacker's SHA-256 checksum is valid; only the signature is wrong"
+        );
+
+        let mut prov = harness_provisioner();
+        let state = prov.receive_chunk(&wire);
+        assert_eq!(
+            *state,
+            ProvisionState::Error(ProvisionError::SignatureInvalid),
+            "valid hash + wrong signing key must be rejected (#270)"
+        );
+    }
+
+    #[test]
+    fn display_provision_error_signature_invalid() {
+        let err = ProvisionError::SignatureInvalid;
+        let s = alloc::format!("{err}");
+        assert!(s.contains("signature"));
     }
 }

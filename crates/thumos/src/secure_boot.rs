@@ -185,6 +185,31 @@ pub(crate) fn verify_kernel_signature_with_key(
     }
 }
 
+/// Verify an Ed25519 signature over an arbitrary message with a
+/// caller-supplied public key.
+///
+/// Generic entry point for non-kernel-image signature verification (e.g.
+/// USB provisioning bundles, see `crate::provision`) that still wants the
+/// audited `ed25519_dalek` `verify_strict` path used by
+/// [`verify_kernel_signature`].
+///
+/// # Errors
+///
+/// Returns [`SecureBootError::InvalidSignature`] if the signature does not
+/// verify against `message` under `public_key`.
+#[must_use = "verification result must be checked"]
+pub(crate) fn verify_message_signature(
+    message: &[u8],
+    signature: &[u8; SIGNATURE_LEN],
+    public_key: &[u8; PUBLIC_KEY_LEN],
+) -> Result<(), SecureBootError> {
+    if ed25519_verify(public_key, message, signature) {
+        Ok(())
+    } else {
+        Err(SecureBootError::InvalidSignature)
+    }
+}
+
 /// Extract the signature and payload from a combined kernel image.
 ///
 /// The expected format is `[payload (N bytes) || signature (64 bytes)]`.
