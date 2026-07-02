@@ -28,8 +28,12 @@ static mut L1: L1Table = L1Table { entries: [0; 4096] };
 mod flags {
     /// This is a section descriptor (bits [1:0] = 0b10).
     pub(crate) const SECTION: u32 = 0b10;
-    /// Access permission: full access (AP = 0b11, bits [11:10]).
-    pub(crate) const AP_FULL: u32 = 0b11 << 10;
+    /// Access permission: PL1 (kernel) read/write, PL0 (user) NO access
+    /// (AP[2:0] = 0b001: APX = 0 at bit 15 (unset), AP[1:0] = 0b01 at bits
+    /// [11:10]). WHY (#323): kernel RAM and device MMIO sections must never
+    /// grant PL0 access -- the prior AP_FULL (AP[2:0] = 0b011) let any user
+    /// process read and write kernel memory and MMIO directly.
+    pub(crate) const AP_PL1_ONLY: u32 = 0b01 << 10;
     /// Shareable (bit 16).
     pub(crate) const SHAREABLE: u32 = 1 << 16;
     /// Normal memory, OUTER/INNER write-back write-allocate.
@@ -199,8 +203,13 @@ pub unsafe fn map_page(l1_phys: usize, virt_addr: usize, phys_addr: usize, l2_at
 
 /// Unmap a single 4 KB page from a process's address space.
 ///
-/// Zeroes the L2 entry for the given virtual address. Does NOT free the
-/// L2 table even if all entries become zero (simplification).
+/// Zeroes the L2 entry for the given virtual address. If clearing that
+/// entry leaves every entry in the L2 table empty, the table is returned to
+/// the global pool (`free_l2_table`) and the owning L1 descriptor is
+/// cleared, so a sparse map/unmap workload cannot permanently strand pool
+/// slots (#330) -- the caller's existing post-unmap `flush_tlb_page(virt_addr)`
+/// call already invalidates the one translation this can affect; no other
+/// entry in a now-empty table was ever live in the TLB.
 ///
 /// # Safety
 ///
@@ -211,13 +220,29 @@ pub unsafe fn unmap_page(l1_phys: usize, virt_addr: usize) {
     let l2_index = (virt_addr >> 12) & 0xFF;
 
     unsafe {
-        let l1_entry_ptr = (l1_phys as *const u32).add(l1_index);
+        let l1_entry_ptr = (l1_phys as *mut u32).add(l1_index);
         let l1_val = l1_entry_ptr.read_volatile();
 
         if l1_val & 0b11 == page_flags::L1_PAGE_TABLE {
             let l2_phys = (l1_val & 0xFFFF_FC00) as usize;
             let l2_entry_ptr = (l2_phys as *mut u32).add(l2_index);
             l2_entry_ptr.write_volatile(0);
+
+            // WHY (#330): reclaim the table once every entry is empty,
+            // rather than leaking a global pool slot per touched 1 MB
+            // region forever.
+            let table_ptr = l2_phys as *const u32;
+            let mut all_empty = true;
+            for i in 0..256isize {
+                if table_ptr.offset(i).read_volatile() != 0 {
+                    all_empty = false;
+                    break;
+                }
+            }
+            if all_empty {
+                l1_entry_ptr.write_volatile(0);
+                free_l2_table(l2_phys);
+            }
         }
     }
 }
@@ -347,8 +372,8 @@ pub enum MemoryType {
 fn map_section(virt_mb: usize, phys_mb: usize, mem_type: MemoryType) {
     let base = (u32::try_from(phys_mb).unwrap_or_default()) << 20;
     let attrs = match mem_type {
-        MemoryType::Ram => flags::SECTION | flags::AP_FULL | flags::SHAREABLE | flags::NORMAL_WB_WA,
-        MemoryType::Device => flags::SECTION | flags::AP_FULL | flags::DEVICE | flags::XN,
+        MemoryType::Ram => flags::SECTION | flags::AP_PL1_ONLY | flags::SHAREABLE | flags::NORMAL_WB_WA,
+        MemoryType::Device => flags::SECTION | flags::AP_PL1_ONLY | flags::DEVICE | flags::XN,
     };
     unsafe {
         let table = &mut *core::ptr::addr_of_mut!(L1);
@@ -555,6 +580,14 @@ pub fn alloc_addr_space() -> Option<usize> {
 
 /// Return a user L1 page table slot to the pool.
 ///
+/// Also reclaims every L2 page table still referenced by this address
+/// space's L1 entries -- page-mapped mmap/heap/stack regions the process
+/// never individually unmapped before exit -- so a process that exits
+/// without tearing down its own mappings cannot permanently strand pool
+/// slots (#330). Cloned kernel identity-map entries are section descriptors
+/// (`flags::SECTION`, bits [1:0] = 0b10), never `page_flags::L1_PAGE_TABLE`
+/// (0b01), so this walk never touches or frees the kernel's own mappings.
+///
 /// # Safety
 ///
 /// `phys_addr` must have been returned by `alloc_addr_space` and not yet freed.
@@ -563,6 +596,15 @@ pub unsafe fn free_addr_space(phys_addr: usize) {
         let tables = &*core::ptr::addr_of!(USER_TABLES);
         for (i, table) in tables.iter().enumerate() {
             if core::ptr::addr_of!(*table) as usize == phys_addr {
+                let l1 = phys_addr as *const u32;
+                for idx in 0..4096isize {
+                    let entry = l1.offset(idx).read_volatile();
+                    if entry & 0b11 == page_flags::L1_PAGE_TABLE {
+                        let l2_phys = (entry & 0xFFFF_FC00) as usize;
+                        free_l2_table(l2_phys);
+                    }
+                }
+
                 let alloc = core::ptr::addr_of_mut!(ADDR_SPACE_ALLOC);
                 let mask = core::ptr::read_volatile(alloc);
                 core::ptr::write_volatile(alloc, mask & !(1 << i));
@@ -703,6 +745,156 @@ mod tests {
             assert_eq!(read_l2_phys(l1, virt), None,
                 "read_l2_phys must return None after unmap_page clears the entry");
             free_addr_space(l1);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // #323: kernel/device sections must be PL1-only
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn kernel_sections_are_pl1_only_not_ap_full() {
+        // Regression test for #323: AP[2:0] for every identity-mapped kernel
+        // RAM / device / modem section must be 0b001 (PL1 R/W, PL0 no
+        // access), never 0b011 (AP_FULL, PL0 R/W). The L1 table is plain
+        // memory -- populating it involves no ARM CPU instructions -- so
+        // this is host-testable even though the actual privilege-fault
+        // enforcement is ARM-only.
+        unsafe {
+            init_and_enable();
+            let table = &*core::ptr::addr_of!(L1);
+            // One section from each identity-mapped region: boot ROM/SRAM,
+            // peripheral MMIO, modem/CCCI, and DRAM (first and last MB).
+            for &mb in &[0x000usize, 0x100, 0x200, 0x400, 0x7FF] {
+                let entry = table.entries[mb];
+                assert_eq!(entry & 0b11, flags::SECTION,
+                    "section {mb:#x} must be a section descriptor");
+                let ap = (entry >> 10) & 0b11;
+                let apx = (entry >> 15) & 0b1;
+                assert_eq!((apx, ap), (0, 0b01),
+                    "section {mb:#x} must be AP[2:0]=001 (PL1-only R/W); PL0 must have zero access");
+            }
+        }
+    }
+
+    #[test]
+    fn cloned_user_table_still_denies_pl0_access_to_kernel_sections() {
+        // #323's clone_addr_space interaction: fork() copies the kernel L1
+        // verbatim into each per-process table, so the PL1-only fix must
+        // hold in the CLONED copy too, not just the primary kernel table.
+        reset();
+        unsafe {
+            init_and_enable();
+            let dst = alloc_addr_space().unwrap_or_default();
+            clone_addr_space(table_base(), dst);
+            let dst_l1 = dst as *const u32;
+            for &mb in &[0x100usize, 0x400] {
+                let entry = dst_l1.add(mb).read_volatile();
+                let ap = (entry >> 10) & 0b11;
+                let apx = (entry >> 15) & 0b1;
+                assert_eq!((apx, ap), (0, 0b01),
+                    "cloned user table section {mb:#x} must still deny PL0 access");
+            }
+            free_addr_space(dst);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // #330: L2 page table reclaim
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unmap_reclaims_l2_table_once_fully_empty() {
+        reset();
+        reset_l2_pool();
+        let l1 = alloc_addr_space().unwrap_or_default();
+        let virt = 0x1000_0000usize;
+        let phys = 0x5000_0000usize;
+        let attrs = page_flags::SMALL_PAGE | page_flags::AP_FULL;
+        unsafe {
+            assert!(map_page(l1, virt, phys, attrs), "map_page must succeed");
+            let l1_index = virt >> 20;
+            let l1_val = (l1 as *const u32).add(l1_index).read_volatile();
+            assert_eq!(l1_val & 0b11, page_flags::L1_PAGE_TABLE,
+                "L1 entry must point at an L2 table after map_page");
+
+            unmap_page(l1, virt);
+
+            let l1_val_after = (l1 as *const u32).add(l1_index).read_volatile();
+            assert_eq!(l1_val_after, 0,
+                "L1 descriptor must be cleared once its only L2 entry is unmapped (#330)");
+
+            free_addr_space(l1);
+        }
+    }
+
+    #[test]
+    fn sparse_map_unmap_over_more_than_pool_size_regions_does_not_exhaust_l2_pool() {
+        // Regression test for #330: before the fix, unmap_page never called
+        // free_l2_table, so touching more than L2_POOL_SIZE distinct 1 MB
+        // regions permanently exhausted the global pool even though every
+        // region was unmapped before moving to the next.
+        reset();
+        reset_l2_pool();
+        let l1 = alloc_addr_space().unwrap_or_default();
+        let attrs = page_flags::SMALL_PAGE | page_flags::AP_FULL;
+        let phys = 0x5000_0000usize;
+        unsafe {
+            for region in 0..(L2_POOL_SIZE * 2) {
+                let virt = region << 20; // one distinct 1 MB region per iteration
+                assert!(map_page(l1, virt, phys, attrs),
+                    "map must succeed in region {region} -- pool must not be exhausted by prior, already-unmapped regions");
+                unmap_page(l1, virt);
+            }
+
+            // The pool must be back to fully available: every slot can be
+            // claimed fresh.
+            let mut reclaimed = [0usize; L2_POOL_SIZE];
+            for slot in reclaimed.iter_mut() {
+                *slot = alloc_l2_table()
+                    .expect("L2 pool must be fully reclaimed after every region was unmapped");
+            }
+            for &addr in &reclaimed {
+                free_l2_table(addr);
+            }
+
+            free_addr_space(l1);
+        }
+    }
+
+    #[test]
+    fn free_addr_space_reclaims_l2_tables_left_mapped_at_exit() {
+        // #330's other reclaim path: a process that exits WITHOUT calling
+        // munmap on its own mappings must not strand their L2 tables
+        // forever -- free_addr_space must walk the L1 and reclaim them.
+        reset();
+        reset_l2_pool();
+        let l1 = alloc_addr_space().unwrap_or_default();
+        let attrs = page_flags::SMALL_PAGE | page_flags::AP_FULL;
+        let phys = 0x5000_0000usize;
+        unsafe {
+            for region in 0..L2_POOL_SIZE {
+                let virt = region << 20;
+                assert!(map_page(l1, virt, phys, attrs),
+                    "map must succeed in region {region}");
+            }
+            // Every pool slot is now live and still mapped (no unmap_page
+            // calls) -- exactly the "process exits with mappings still up"
+            // case.
+            assert!(alloc_l2_table().is_none(), "pool must be fully consumed by the L2_POOL_SIZE live regions");
+
+            free_addr_space(l1);
+
+            // free_addr_space must have walked the L1 and reclaimed every
+            // still-referenced L2 table.
+            let mut reclaimed = [0usize; L2_POOL_SIZE];
+            for slot in reclaimed.iter_mut() {
+                *slot = alloc_l2_table()
+                    .expect("free_addr_space must reclaim L2 tables left mapped at process exit");
+            }
+            for &addr in &reclaimed {
+                free_l2_table(addr);
+            }
         }
     }
 }
