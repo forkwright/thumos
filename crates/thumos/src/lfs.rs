@@ -12,12 +12,15 @@
 //! # On-disk layout
 //!
 //! ```text
-//! Block 0:           Superblock (256 bytes, padded to 4 KiB)
-//! Block 1:           Checkpoint slot A
-//! Block 2:           Checkpoint slot B
-//! Block 3..N:        Imap region (size depends on inode count)
-//! Segment 1..M:      Data segments (each 256 blocks = 1 MiB)
+//! Block 0:                Superblock (256 bytes, padded to 4 KiB)
+//! Block 1..1+R:           Checkpoint slot A (header + reserved imap/bitmap payload)
+//! Block 1+R..1+2R:        Checkpoint slot B (header + reserved imap/bitmap payload)
+//! Segment 1..M:           Data segments (each 256 blocks = 1 MiB)
 //! ```
+//!
+//! `R` is `CHECKPOINT_SLOT_BLOCKS` (`lfs_checkpoint.rs`): each checkpoint
+//! slot reserves a fixed payload region so a slot's imap/bitmap data can
+//! never grow into the other slot's header block (#319).
 //!
 //! # Usage
 //!
@@ -39,7 +42,7 @@ use alloc::vec::Vec;
 
 use crate::block::{BlockDevice, BLOCK_SIZE, SECTORS_PER_BLOCK};
 use crate::cache::BlockCache;
-use crate::lfs_checkpoint::{self, CheckpointHeader, CHECKPOINT_MAGIC};
+use crate::lfs_checkpoint::{self, CheckpointHeader, CHECKPOINT_MAGIC, CHECKPOINT_SLOT_BLOCKS};
 use crate::lfs_compact;
 use crate::lfs_imap::{LfsError, LfsImap};
 use crate::lfs_segment::LfsSegmentManager;
@@ -65,8 +68,10 @@ const SUPERBLOCK_BLOCK: u64 = 0;
 /// Checkpoint slot A is at block 1.
 const CHECKPOINT_SLOT_A: u64 = 1;
 
-/// Checkpoint slot B is at block 2.
-const CHECKPOINT_SLOT_B: u64 = 2;
+/// Checkpoint slot B starts one full reserved slot region after slot A,
+/// so slot A's imap/segment-bitmap payload can never grow into slot B's
+/// header block (#319).
+const CHECKPOINT_SLOT_B: u64 = CHECKPOINT_SLOT_A + CHECKPOINT_SLOT_BLOCKS;
 
 /// Imap region starts at block 3.
 const IMAP_REGION_START: u64 = 3;
@@ -515,6 +520,18 @@ pub(crate) fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
         checkpoint.imap_block_count,
     )?;
 
+    // Sanity-bound segment_bitmap_count before trusting it to drive an
+    // allocation loop: persisted checkpoint data is untrusted input, and
+    // an adversarial or bit-flipped value must not OOM the kernel at
+    // mount (#302).
+    let bits_per_block = (BLOCK_SIZE as u32) * 8;
+    let full_bitmap_blocks = superblock.segment_count / bits_per_block;
+    let partial_bitmap_block = u32::from(superblock.segment_count % bits_per_block != 0);
+    let max_bitmap_blocks = full_bitmap_blocks + partial_bitmap_block + 1;
+    if checkpoint.segment_bitmap_count > max_bitmap_blocks {
+        return Err(LfsError::Corrupt);
+    }
+
     // Load segment bitmap from checkpoint.
     let mut seg_data = Vec::new();
     let mut block_buf = [0u8; BLOCK_SIZE];
@@ -747,12 +764,28 @@ impl Lfs {
 
         for entry in entries {
             let name_bytes = entry.name.as_bytes();
-            let name_len = name_bytes.len() as u16;
-            // Align record length to 4 bytes for clean parsing.
-            let record_len = ((DIR_ENTRY_HEADER_SIZE + name_bytes.len() + 3) & !3) as u16;
+
+            // A record whose aligned length overflows u16 (or exceeds
+            // BLOCK_SIZE) cannot be represented on disk. The previous
+            // `as u16` cast silently wrapped such a length to a small
+            // value, which bypassed the block-full guard below and wrote
+            // out of bounds into `buf` (#290).
+            let name_len: u16 =
+                u16::try_from(name_bytes.len()).map_err(|_| VfsError::InvalidPath)?;
+            let aligned_len = (DIR_ENTRY_HEADER_SIZE + name_bytes.len() + 3) & !3;
+            let record_len: u16 = u16::try_from(aligned_len)
+                .ok()
+                .filter(|&len| (len as usize) <= BLOCK_SIZE)
+                .ok_or(VfsError::InvalidPath)?;
 
             if offset + record_len as usize > BLOCK_SIZE {
-                break; // Block full.
+                // A single directory data block cannot hold every entry.
+                // WHY: silently truncating here would report create()/
+                // unlink() as successful while dropping the entry that
+                // overflowed -- multi-block directories are not yet
+                // implemented, so the caller must see this as NoSpace
+                // rather than lose data (#287).
+                return Err(VfsError::NoSpace);
             }
 
             buf[offset..offset + 4].copy_from_slice(&entry.inode_id.to_le_bytes());
@@ -762,11 +795,6 @@ impl Lfs {
                 .copy_from_slice(name_bytes);
 
             offset += record_len as usize;
-        }
-
-        // Write a sentinel (record_len = 0) if there is room.
-        if offset + DIR_ENTRY_HEADER_SIZE <= BLOCK_SIZE {
-            // Already zeroed, which makes record_len = 0.
         }
 
         let block_num = writer
@@ -1007,6 +1035,15 @@ impl Filesystem for Lfs {
         name: &str,
         inode_type: InodeType,
     ) -> Result<u32, VfsError> {
+        // WHY 255: matches the traditional POSIX NAME_MAX and keeps a
+        // serialized directory-entry record_len (header + name, aligned
+        // to 4 bytes) far under u16::MAX / BLOCK_SIZE, so a userspace-
+        // supplied name can never overflow the on-disk record length
+        // field (#290).
+        if name.len() > 255 {
+            return Err(VfsError::InvalidPath);
+        }
+
         let mut parent = self.load_inode(dir_inode)?;
 
         if parent.inode_type != INODE_TYPE_DIR {
@@ -1134,7 +1171,11 @@ impl Filesystem for Lfs {
         let mut cache = self.cache.borrow_mut();
         let writer = self.writer.as_mut().ok_or(VfsError::IoError)?;
 
-        // Decrement link count on target inode.
+        // Load the target inode and compute its post-unlink link count,
+        // but do NOT mutate the imap yet: the directory entry must be
+        // durably removed first, or an I/O failure below leaves a
+        // dangling entry that points at an inode already missing from
+        // the imap (#301).
         let mut target_inode = {
             let block_num = self.imap.get(target_id).ok_or(VfsError::NotFound)?;
             let mut buf = [0u8; BLOCK_SIZE];
@@ -1143,27 +1184,10 @@ impl Filesystem for Lfs {
                 .map_err(|_| VfsError::IoError)?;
             DiskInode::read_from(&buf, 0).map_err(|_| VfsError::IoError)?
         };
-
         target_inode.link_count = target_inode.link_count.saturating_sub(1);
 
-        if target_inode.link_count == 0 {
-            // Inode is dead. Remove from imap; blocks become garbage.
-            self.imap.remove(target_id);
-        } else {
-            // Write updated inode with decremented link count.
-            writer
-                .write_inode(
-                    dev.as_mut(),
-                    &mut cache,
-                    &mut self.imap,
-                    &mut self.segments,
-                    target_id,
-                    &target_inode,
-                )
-                .map_err(|_| VfsError::IoError)?;
-        }
-
-        // Write updated directory data.
+        // Write updated directory data FIRST -- this is the durable
+        // operation that actually removes the entry from the namespace.
         if remaining.is_empty() {
             // Empty directory: set size to 0, clear data pointers.
             parent.direct[0] = 0;
@@ -1190,6 +1214,24 @@ impl Filesystem for Lfs {
                 &parent,
             )
             .map_err(|_| VfsError::IoError)?;
+
+        // Only now, after the directory entry removal is durable, retire
+        // the target inode: drop it from the imap if this was the last
+        // link, or persist its decremented link count otherwise.
+        if target_inode.link_count == 0 {
+            self.imap.remove(target_id);
+        } else {
+            writer
+                .write_inode(
+                    dev.as_mut(),
+                    &mut cache,
+                    &mut self.imap,
+                    &mut self.segments,
+                    target_id,
+                    &target_inode,
+                )
+                .map_err(|_| VfsError::IoError)?;
+        }
 
         drop(cache);
         drop(dev);
@@ -1712,6 +1754,302 @@ mod tests {
         assert_eq!(restored.block_count, 4096);
         assert_eq!(restored.segment_count, 16);
         assert_eq!(restored.next_inode, 10);
+    }
+
+    #[test]
+    fn alternating_sync_checkpoints_leave_both_slots_valid() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        // First sync after mount uses an even checkpoint_sequence -> slot A.
+        fs.create(root, "a.txt", InodeType::RegularFile)
+            .expect("create a");
+        fs.sync().expect("sync 1 (slot A)");
+
+        // Second sync -> odd sequence -> slot B.
+        fs.create(root, "b.txt", InodeType::RegularFile)
+            .expect("create b");
+        fs.sync().expect("sync 2 (slot B)");
+
+        // Both on-disk checkpoint slot headers must still carry a valid
+        // magic and be independently readable: slot A's payload must not
+        // have overwritten slot B's header or vice versa (#319).
+        let mut dev2 = fs.dev.into_inner();
+        let mut cache = BlockCache::new();
+        let header_a =
+            lfs_checkpoint::read_checkpoint(dev2.as_mut(), &mut cache, CHECKPOINT_SLOT_A)
+                .expect("slot A header still valid");
+        let header_b =
+            lfs_checkpoint::read_checkpoint(dev2.as_mut(), &mut cache, CHECKPOINT_SLOT_B)
+                .expect("slot B header still valid");
+
+        assert_eq!(header_a.magic, CHECKPOINT_MAGIC);
+        assert_eq!(header_b.magic, CHECKPOINT_MAGIC);
+    }
+
+    #[test]
+    fn unlink_io_failure_during_directory_write_leaves_imap_and_directory_consistent() {
+        // A hand-built, minimal Lfs: 5 segments of 6 blocks each. Segment
+        // 0 is reserved; segments 2 and 3 are pinned used up front,
+        // leaving segments 1 and 4 free. LfsWriter::new() ordinarily
+        // allocates segment 1, and segment 4 is withheld as the
+        // compaction reserve (#329) -- ordinary allocation can never
+        // touch it, so once segment 1's 5 data slots fill, there is
+        // nowhere left for the ordinary path to seal into, letting the
+        // directory rewrite inside unlink() fail with a real I/O error
+        // (#301).
+        let mut dev = MemBlockDevice::new(5 * 6 * SECTORS_PER_BLOCK as u64)
+            .expect("create tiny device");
+        let mut cache = BlockCache::new();
+        let mut seg_mgr = LfsSegmentManager::new(5, 6);
+        seg_mgr.mark_used(0);
+        seg_mgr.mark_used(2);
+        seg_mgr.mark_used(3);
+
+        let mut imap = LfsImap::new();
+        let mut writer = LfsWriter::new(&mut seg_mgr).expect("create writer");
+
+        let dir_inode_template = DiskInode {
+            inode_type: INODE_TYPE_DIR,
+            link_count: 1,
+            size: 0,
+            direct: [0u64; DIRECT_BLOCK_COUNT],
+            indirect: 0,
+        };
+        let file_inode_template = DiskInode {
+            inode_type: INODE_TYPE_FILE,
+            link_count: 1,
+            size: 0,
+            direct: [0u64; DIRECT_BLOCK_COUNT],
+            indirect: 0,
+        };
+
+        // Write 1/5: root placeholder (fills a slot; superseded below).
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 0, &dir_inode_template)
+            .expect("write root placeholder");
+        // Write 2/5: victim inode.
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 1, &file_inode_template)
+            .expect("write victim inode");
+        // Write 3/5: keeper inode.
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 2, &file_inode_template)
+            .expect("write keeper inode");
+
+        // Write 4/5: initial directory block listing both entries.
+        let mut entries: Vec<DiskDirEntry> = Vec::new();
+        entries.push(DiskDirEntry {
+            inode_id: 1,
+            name_len: 6,
+            record_len: ((DIR_ENTRY_HEADER_SIZE + 6 + 3) & !3) as u16,
+            name: String::from("victim"),
+        });
+        entries.push(DiskDirEntry {
+            inode_id: 2,
+            name_len: 6,
+            record_len: ((DIR_ENTRY_HEADER_SIZE + 6 + 3) & !3) as u16,
+            name: String::from("keeper"),
+        });
+        let dir_block =
+            Lfs::write_dir_block(&mut dev, &mut cache, &mut writer, &mut seg_mgr, &entries)
+                .expect("write initial dir block");
+
+        // Write 5/5: root inode updated to point at the directory block.
+        // This consumes the last of segment 1's 5 data slots.
+        let mut root = dir_inode_template;
+        root.direct[0] = dir_block;
+        root.size = entries.iter().map(|e| e.record_len as u64).sum();
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 0, &root)
+            .expect("write updated root inode");
+
+        assert_eq!(
+            seg_mgr.free_count(),
+            1,
+            "setup must exhaust every ordinarily-allocatable segment, leaving only the compaction reserve"
+        );
+
+        let superblock = LfsSuperblock {
+            magic: LFS_MAGIC,
+            version: LFS_VERSION,
+            block_count: dev.sector_count() / SECTORS_PER_BLOCK as u64,
+            segment_size: 6,
+            segment_count: 5,
+            checkpoint_block_a: 1,
+            checkpoint_block_b: 2,
+            imap_block: 3,
+            imap_block_count: 1,
+            root_inode: 0,
+            next_inode: 3,
+        };
+
+        let mut fs = Lfs {
+            dev: RefCell::new(Box::new(dev)),
+            cache: RefCell::new(cache),
+            imap,
+            segments: seg_mgr,
+            superblock,
+            next_sequence: writer.sequence(),
+            writer: Some(writer),
+            next_inode: 3,
+            checkpoint_sequence: 1,
+        };
+
+        // The directory now has zero spare capacity in its segment.
+        // Unlinking "victim" must rewrite the directory block for the
+        // remaining "keeper" entry, which needs to seal into a new
+        // segment -- and none is free, so the write fails.
+        let result = fs.unlink(0, "victim");
+        assert_eq!(
+            result,
+            Err(VfsError::IoError),
+            "the directory rewrite should fail: no free segment remains to seal into"
+        );
+
+        // The imap must still show the victim inode: it must NOT have
+        // been removed when the durable directory write never landed
+        // (#301).
+        assert!(
+            fs.stat(1).is_ok(),
+            "victim inode must remain in the imap after a failed unlink"
+        );
+
+        // The on-disk directory must still list the victim entry.
+        let dir_entries = fs.readdir(0).expect("readdir root");
+        assert!(
+            dir_entries.iter().any(|e| e.name == "victim"),
+            "directory entry must remain after a failed unlink"
+        );
+    }
+
+    #[test]
+    fn mount_rejects_oversized_segment_bitmap_count() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        // Corrupt the on-disk checkpoint header: claim a
+        // segment_bitmap_count far beyond what this device's
+        // segment_count could ever need. This must be rejected before
+        // mount() allocates anything sized by it (#302).
+        let mut cache = BlockCache::new();
+        let mut header =
+            lfs_checkpoint::read_checkpoint(&mut dev, &mut cache, CHECKPOINT_SLOT_A)
+                .expect("read initial checkpoint");
+        header.segment_bitmap_count = u32::MAX / 2;
+        let header_buf = header.to_block();
+        block::write_block(&mut dev, CHECKPOINT_SLOT_A, &header_buf)
+            .expect("write corrupted header");
+
+        let result = mount(Box::new(dev));
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "an oversized segment_bitmap_count must be rejected, not used to drive an allocation"
+        );
+    }
+
+    #[test]
+    fn create_past_one_block_capacity_fails_without_dropping_entries() {
+        use alloc::format;
+
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        // Each "fileNNN" entry serializes to a fixed 16-byte record
+        // (8-byte header + 7-byte name, aligned to 4). A 4 KiB block
+        // holds exactly 256 such entries; the 257th must not silently
+        // vanish (#287).
+        let mut created = 0usize;
+        loop {
+            let name = format!("file{:03}", created);
+            match fs.create(root, &name, InodeType::RegularFile) {
+                Ok(_) => created += 1,
+                Err(VfsError::NoSpace) => break,
+                Err(e) => panic!("unexpected error at entry {created}: {e:?}"),
+            }
+            if created > 300 {
+                panic!("directory did not report NoSpace within expected bounds");
+            }
+        }
+
+        assert_eq!(
+            created, 256,
+            "exactly 256 fixed-size entries should fit in one 4 KiB block"
+        );
+
+        // Every entry that WAS created must still be reachable -- none
+        // were silently dropped while create() reported success.
+        for i in 0..created {
+            let name = format!("file{:03}", i);
+            assert!(
+                fs.lookup(root, &name).is_ok(),
+                "entry {name} must be reachable after fitting in the directory block"
+            );
+        }
+
+        // parent.size must reflect exactly what was serialized -- the
+        // failed 257th create must not have inflated it.
+        let stat = fs.stat(root).expect("stat root");
+        assert_eq!(
+            stat.size,
+            256 * 16,
+            "parent.size must match only the entries actually written"
+        );
+    }
+
+    #[test]
+    fn create_rejects_name_over_255_bytes() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let mut name_bytes = Vec::new();
+        for _ in 0..256 {
+            name_bytes.push(b'a');
+        }
+        let long_name = String::from_utf8(name_bytes).expect("valid utf8");
+
+        let result = fs.create(root, &long_name, InodeType::RegularFile);
+        assert_eq!(result, Err(VfsError::InvalidPath));
+    }
+
+    #[test]
+    fn write_dir_block_rejects_name_that_would_overflow_record_len() {
+        let mut dev = block_device_for_lfs();
+        let mut cache = BlockCache::new();
+        let mut seg_mgr = LfsSegmentManager::new(8, 256);
+        seg_mgr.mark_used(0);
+        let mut writer = LfsWriter::new(&mut seg_mgr).expect("create writer");
+
+        // A name long enough that `(DIR_ENTRY_HEADER_SIZE + name.len() +
+        // 3) & !3` overflows u16::MAX (65535); the old `as u16` cast
+        // wrapped this to a small value and bypassed the block-full
+        // guard entirely (#290). Called directly to exercise the guard
+        // independent of create()'s own 255-byte gate.
+        let mut name_bytes = Vec::new();
+        for _ in 0..65530 {
+            name_bytes.push(b'x');
+        }
+        let huge_name = String::from_utf8(name_bytes).expect("valid utf8");
+
+        let mut entries: Vec<DiskDirEntry> = Vec::new();
+        entries.push(DiskDirEntry {
+            inode_id: 1,
+            name_len: 0, // recomputed inside write_dir_block
+            record_len: 0,
+            name: huge_name,
+        });
+
+        let result =
+            Lfs::write_dir_block(&mut dev, &mut cache, &mut writer, &mut seg_mgr, &entries);
+        assert_eq!(result, Err(VfsError::InvalidPath));
     }
 
     #[test]

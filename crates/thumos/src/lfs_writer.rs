@@ -125,9 +125,42 @@ impl LfsWriter {
         inode_id: u32,
         inode: &DiskInode,
     ) -> Result<u64, LfsError> {
+        self.write_inode_inner(dev, cache, imap, seg_mgr, inode_id, inode, false)
+    }
+
+    /// Compaction-flavored [`Self::write_inode`]: may seal into the
+    /// compaction-reserved segment (#329). See
+    /// [`Self::write_data_block_for_compaction`] for the rationale.
+    ///
+    /// # Errors
+    ///
+    /// - [`LfsError::NoFreeSegments`] if the filesystem is completely full.
+    /// - [`LfsError::BlockIo`] if any block write fails.
+    pub(crate) fn write_inode_for_compaction(
+        &mut self,
+        dev: &mut dyn BlockDevice,
+        cache: &mut BlockCache,
+        imap: &mut LfsImap,
+        seg_mgr: &mut LfsSegmentManager,
+        inode_id: u32,
+        inode: &DiskInode,
+    ) -> Result<u64, LfsError> {
+        self.write_inode_inner(dev, cache, imap, seg_mgr, inode_id, inode, true)
+    }
+
+    fn write_inode_inner(
+        &mut self,
+        dev: &mut dyn BlockDevice,
+        cache: &mut BlockCache,
+        imap: &mut LfsImap,
+        seg_mgr: &mut LfsSegmentManager,
+        inode_id: u32,
+        inode: &DiskInode,
+        reserve_ok: bool,
+    ) -> Result<u64, LfsError> {
         // Seal and allocate a new segment if the current one is full.
         if self.write_position >= seg_mgr.segment_size() {
-            self.seal_segment(dev, cache, seg_mgr)?;
+            self.seal_segment_inner(dev, cache, seg_mgr, reserve_ok)?;
         }
 
         let block_num = seg_mgr.segment_start_block(self.current_segment)
@@ -163,8 +196,42 @@ impl LfsWriter {
         seg_mgr: &mut LfsSegmentManager,
         data: &[u8; BLOCK_SIZE],
     ) -> Result<u64, LfsError> {
+        self.write_data_block_inner(dev, cache, seg_mgr, data, false)
+    }
+
+    /// Compaction-flavored [`Self::write_data_block`]: may seal into the
+    /// compaction-reserved segment.
+    ///
+    /// Used exclusively by [`crate::lfs_compact::compact_one_segment`]'s
+    /// relocation loops so a mid-relocation seal always has the reserve
+    /// available, instead of racing ordinary writers for the last free
+    /// segment and aborting with [`LfsError::NoFreeSegments`] partway
+    /// through (#329).
+    ///
+    /// # Errors
+    ///
+    /// - [`LfsError::NoFreeSegments`] if the filesystem is completely full.
+    /// - [`LfsError::BlockIo`] if the block write fails.
+    pub(crate) fn write_data_block_for_compaction(
+        &mut self,
+        dev: &mut dyn BlockDevice,
+        cache: &mut BlockCache,
+        seg_mgr: &mut LfsSegmentManager,
+        data: &[u8; BLOCK_SIZE],
+    ) -> Result<u64, LfsError> {
+        self.write_data_block_inner(dev, cache, seg_mgr, data, true)
+    }
+
+    fn write_data_block_inner(
+        &mut self,
+        dev: &mut dyn BlockDevice,
+        cache: &mut BlockCache,
+        seg_mgr: &mut LfsSegmentManager,
+        data: &[u8; BLOCK_SIZE],
+        reserve_ok: bool,
+    ) -> Result<u64, LfsError> {
         if self.write_position >= seg_mgr.segment_size() {
-            self.seal_segment(dev, cache, seg_mgr)?;
+            self.seal_segment_inner(dev, cache, seg_mgr, reserve_ok)?;
         }
 
         let block_num = seg_mgr.segment_start_block(self.current_segment)
@@ -192,6 +259,33 @@ impl LfsWriter {
         cache: &mut BlockCache,
         seg_mgr: &mut LfsSegmentManager,
     ) -> Result<(), LfsError> {
+        self.seal_segment_inner(dev, cache, seg_mgr, false)
+    }
+
+    /// Compaction-flavored [`Self::seal_segment`]: allocates the next
+    /// segment via [`LfsSegmentManager::allocate_for_compaction`], which
+    /// may take the compaction reserve (#329).
+    ///
+    /// # Errors
+    ///
+    /// - [`LfsError::NoFreeSegments`] if the filesystem is completely full.
+    /// - [`LfsError::BlockIo`] if writing the segment header fails.
+    pub(crate) fn seal_segment_for_compaction(
+        &mut self,
+        dev: &mut dyn BlockDevice,
+        cache: &mut BlockCache,
+        seg_mgr: &mut LfsSegmentManager,
+    ) -> Result<(), LfsError> {
+        self.seal_segment_inner(dev, cache, seg_mgr, true)
+    }
+
+    fn seal_segment_inner(
+        &mut self,
+        dev: &mut dyn BlockDevice,
+        cache: &mut BlockCache,
+        seg_mgr: &mut LfsSegmentManager,
+        reserve_ok: bool,
+    ) -> Result<(), LfsError> {
         // The number of data blocks written is write_position - 1 (block 0 is header).
         let data_block_count = self.write_position.saturating_sub(1);
 
@@ -208,8 +302,15 @@ impl LfsWriter {
 
         self.sequence += 1;
 
-        // Allocate a new segment for the next writes.
-        let new_seg = seg_mgr.allocate().ok_or(LfsError::NoFreeSegments)?;
+        // Allocate a new segment for the next writes. The compaction path
+        // may take the reserved last-free segment; ordinary writers may
+        // not (#329).
+        let new_seg = if reserve_ok {
+            seg_mgr.allocate_for_compaction()
+        } else {
+            seg_mgr.allocate()
+        }
+        .ok_or(LfsError::NoFreeSegments)?;
         self.current_segment = new_seg;
         self.write_position = 1; // Skip header block.
 

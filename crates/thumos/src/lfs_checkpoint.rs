@@ -24,6 +24,14 @@ use crate::lfs_imap::LfsError;
 /// Magic number for checkpoint headers: "CKPT" in ASCII.
 pub(crate) const CHECKPOINT_MAGIC: u32 = 0x434B_5054;
 
+/// Number of blocks reserved for each checkpoint slot: 1 header block plus
+/// headroom for the imap + segment-bitmap payload. WHY 64: at 4 KiB/block
+/// this reserves ~258 KiB per slot (tens of thousands of imap entries),
+/// far beyond any inode/segment count this device can host, while keeping
+/// slot A and slot B far enough apart that neither slot's payload can
+/// ever reach the other slot's header block (#319).
+pub(crate) const CHECKPOINT_SLOT_BLOCKS: u64 = 64;
+
 // ---------------------------------------------------------------------------
 // CheckpointHeader
 // ---------------------------------------------------------------------------
@@ -144,9 +152,16 @@ pub(crate) fn write_checkpoint(
     imap_data: &[u8],
     segment_data: &[u8],
 ) -> Result<(), LfsError> {
-    // Write the header block.
-    let header_buf = header.to_block();
-    cache.write(dev, slot_block, &header_buf)?;
+    // Reject a checkpoint whose imap + segment-bitmap payload would run
+    // past this slot's reserved region and into the adjacent slot's
+    // header block. Fail closed before any bytes are written so a
+    // rejected checkpoint leaves the previously-committed slot untouched
+    // (#319).
+    let slot_end = slot_block + CHECKPOINT_SLOT_BLOCKS;
+    let payload_end = header.segment_bitmap_block + u64::from(header.segment_bitmap_count);
+    if header.imap_block <= slot_block || payload_end > slot_end {
+        return Err(LfsError::CheckpointOverflow);
+    }
 
     // Write imap data blocks.
     let imap_blocks = blocks_needed(imap_data.len());
@@ -178,7 +193,18 @@ pub(crate) fn write_checkpoint(
         )?;
     }
 
+    // WHY: flush the imap + segment-bitmap payload to media BEFORE the
+    // header is written. A crash between this flush and the header write
+    // leaves the slot's prior (still-valid) header in place instead of a
+    // new header pointing at data that never landed (#320).
     cache.flush(dev)?;
+
+    // Write and commit the header last: it is the single point at which
+    // this checkpoint becomes selectable by `pick_latest`.
+    let header_buf = header.to_block();
+    cache.write(dev, slot_block, &header_buf)?;
+    cache.flush(dev)?;
+
     Ok(())
 }
 
@@ -227,7 +253,14 @@ pub(crate) fn pick_latest(
         }
         (Ok(ha), Err(_)) => Ok((ha, slot_a_block)),
         (Err(_), Ok(hb)) => Ok((hb, slot_b_block)),
-        (Err(_), Err(_)) => Err(LfsError::Corrupt),
+        // WHY: only collapse to Corrupt when at least one read failed on
+        // a parse/magic mismatch; two transient BlockIo failures are a
+        // recoverable I/O fault, not proof the metadata is corrupt
+        // (#326).
+        (Err(ea), Err(eb)) => match (ea, eb) {
+            (LfsError::BlockIo(_), LfsError::BlockIo(_)) => Err(ea),
+            _ => Err(LfsError::Corrupt),
+        },
     }
 }
 
@@ -418,6 +451,22 @@ mod tests {
     }
 
     #[test]
+    fn pick_latest_propagates_block_io_when_both_reads_fail() {
+        let mut dev = block_device_for_checkpoint();
+        let mut cache = BlockCache::new();
+
+        // Both slot blocks are beyond the device's block count, so each
+        // read fails with BlockError::OutOfBounds (a transient/
+        // environmental I/O fault), not a magic-mismatch parse failure.
+        let result = pick_latest(&mut dev, &mut cache, 5000, 6000);
+
+        assert!(
+            matches!(result, Err(LfsError::BlockIo(_))),
+            "two transient BlockIo failures must not be reported as Corrupt"
+        );
+    }
+
+    #[test]
     fn header_round_trips_through_block() {
         let header = CheckpointHeader {
             magic: CHECKPOINT_MAGIC,
@@ -441,5 +490,90 @@ mod tests {
         assert_eq!(restored.segment_bitmap_count, 2);
         assert_eq!(restored.next_inode, 128);
         assert_eq!(restored.last_segment_sequence, 500);
+    }
+
+    #[test]
+    fn crash_between_data_and_header_write_leaves_prior_checkpoint_selectable() {
+        let mut dev = block_device_for_checkpoint();
+        let mut cache = BlockCache::new();
+
+        // Commit a full, valid checkpoint first -- this is the "prior
+        // good" state the dual-slot design exists to preserve.
+        let header_v1 = CheckpointHeader {
+            magic: CHECKPOINT_MAGIC,
+            sequence: 1,
+            imap_block: 10,
+            imap_block_count: 1,
+            segment_bitmap_block: 11,
+            segment_bitmap_count: 1,
+            next_inode: 2,
+            last_segment_sequence: 5,
+        };
+        let imap_v1 = vec![0xAA; 16];
+        let seg_v1 = vec![0xBB; 16];
+        write_checkpoint(&mut dev, &mut cache, 1, &header_v1, &imap_v1, &seg_v1)
+            .expect("write v1 checkpoint");
+
+        // Simulate a crash between the data write and the header write of
+        // a would-be v2 checkpoint: the new imap payload lands on disk,
+        // but the header at slot_block (1) is never rewritten. With
+        // write_checkpoint now committing data before the header (#320),
+        // this is exactly what an interrupted checkpoint looks like on
+        // media.
+        let torn_block = [0xCCu8; BLOCK_SIZE];
+        cache
+            .write(&mut dev, header_v1.imap_block, &torn_block)
+            .expect("write torn imap payload");
+        cache.flush(&mut dev).expect("flush torn payload");
+
+        // The slot's header must still be the v1 header: pick_latest must
+        // not be misled into thinking a new checkpoint landed.
+        let mut cache2 = BlockCache::new();
+        let (selected, slot) = pick_latest(&mut dev, &mut cache2, 1, 100)
+            .expect("prior checkpoint must remain selectable");
+
+        assert_eq!(selected.sequence, 1, "an uncommitted header must not win");
+        assert_eq!(slot, 1);
+    }
+
+    #[test]
+    fn write_checkpoint_rejects_payload_exceeding_slot_capacity() {
+        let mut dev = block_device_for_checkpoint();
+        let mut cache = BlockCache::new();
+
+        // A header claiming a segment-bitmap payload that runs past the
+        // slot's reserved region (slot_block + CHECKPOINT_SLOT_BLOCKS)
+        // must be rejected before anything is written (#319).
+        let slot_block = 1u64;
+        let header = CheckpointHeader {
+            magic: CHECKPOINT_MAGIC,
+            sequence: 1,
+            imap_block: slot_block + 1,
+            imap_block_count: 1,
+            segment_bitmap_block: slot_block + CHECKPOINT_SLOT_BLOCKS - 1,
+            segment_bitmap_count: 5,
+            next_inode: 1,
+            last_segment_sequence: 1,
+        };
+
+        let imap_data = vec![0u8; BLOCK_SIZE];
+        let segment_data = vec![0u8; BLOCK_SIZE];
+
+        let result = write_checkpoint(
+            &mut dev,
+            &mut cache,
+            slot_block,
+            &header,
+            &imap_data,
+            &segment_data,
+        );
+        assert!(
+            matches!(result, Err(LfsError::CheckpointOverflow)),
+            "oversized checkpoint payload must be rejected, not written past the slot"
+        );
+
+        // Nothing should have been written for this rejected checkpoint.
+        let mut cache2 = BlockCache::new();
+        assert!(read_checkpoint(&mut dev, &mut cache2, slot_block).is_err());
     }
 }

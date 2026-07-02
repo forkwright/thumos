@@ -15,6 +15,12 @@ use alloc::vec::Vec;
 
 use crate::vfs::{DirEntry, Filesystem, InodeStat, InodeType, VfsError};
 
+/// Maximum size (in bytes) a single ramfs file may grow to via `write()`.
+/// WHY 64 MiB: generous for initramfs/tmp payloads while remaining far
+/// below the 1 GB device's total RAM, so a single untrusted offset+length
+/// pair can never OOM the kernel heap (#303).
+const RAMFS_MAX_FILE_SIZE: u64 = 64 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // Inode data structure
 // ---------------------------------------------------------------------------
@@ -468,14 +474,23 @@ impl Filesystem for RamFs {
             return Err(VfsError::IsADirectory);
         }
 
+        // Bound the write before touching the offset as a usize: an
+        // untrusted offset (e.g. from sys_lseek) plus buf.len() must
+        // never overflow or resize the backing Vec past a sane cap
+        // (#303).
+        let end = offset
+            .checked_add(buf.len() as u64)
+            .filter(|&end| end <= RAMFS_MAX_FILE_SIZE)
+            .ok_or(VfsError::NoSpace)?;
         let off = offset as usize;
+        let end = end as usize;
 
         // Extend the file if writing past the end
-        if off + buf.len() > inode.data.len() {
-            inode.data.resize(off + buf.len(), 0);
+        if end > inode.data.len() {
+            inode.data.resize(end, 0);
         }
 
-        inode.data[off..off + buf.len()].copy_from_slice(buf);
+        inode.data[off..end].copy_from_slice(buf);
         Ok(buf.len())
     }
 
@@ -613,6 +628,14 @@ impl Filesystem for RamFs {
 
         if inode.inode_type == InodeType::Directory {
             return Err(VfsError::IsADirectory);
+        }
+
+        // Bound the target size before casting to usize: an untrusted
+        // size (e.g. from sys_ftruncate) must never wrap or resize the
+        // backing Vec past a sane cap, mirroring write()'s
+        // RAMFS_MAX_FILE_SIZE guard (#303).
+        if size > RAMFS_MAX_FILE_SIZE {
+            return Err(VfsError::NoSpace);
         }
 
         inode.data.resize(size as usize, 0);
@@ -1095,6 +1118,29 @@ mod tests {
 
         // Also findable via backward-compatible path
         assert_eq!(fs.find("etc/hostname"), Some(b"thumos".as_slice()));
+    }
+
+    #[test]
+    fn write_with_u64_max_offset_returns_no_space_without_panicking() {
+        let mut fs = RamFs::new();
+        let file_id = fs
+            .create(0, "huge.dat", InodeType::RegularFile)
+            .expect("create");
+
+        let result = fs.write(file_id, u64::MAX, b"x");
+        assert_eq!(result, Err(VfsError::NoSpace));
+    }
+
+    #[test]
+    fn write_beyond_max_file_size_returns_no_space() {
+        let mut fs = RamFs::new();
+        let file_id = fs
+            .create(0, "big.dat", InodeType::RegularFile)
+            .expect("create");
+
+        // Exactly at the cap -- must be rejected, not allocated.
+        let result = fs.write(file_id, RAMFS_MAX_FILE_SIZE, b"x");
+        assert_eq!(result, Err(VfsError::NoSpace));
     }
 
     #[test]

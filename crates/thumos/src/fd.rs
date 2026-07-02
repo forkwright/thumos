@@ -15,7 +15,7 @@
 extern crate alloc;
 use alloc::boxed::Box;
 use crate::memguard::validate_user_buffer;
-use crate::vfs::{self, InodeType, MountTable, VfsError};
+use crate::vfs::{self, Filesystem, InodeType, MountTable, VfsError};
 
 /// Maximum number of open file descriptors per process.
 pub(crate) const MAX_FDS: usize = 256;
@@ -335,30 +335,42 @@ unsafe fn get_mount_table_mut() -> Option<&'static mut MountTable> {
     }
 }
 
-/// Initialize the VFS with root ramfs, /dev, and /tmp.
+/// Initialize the VFS with a root filesystem, /dev, and /tmp.
 ///
-/// Creates the mount table, populates the root filesystem from CPIO data,
-/// mounts devfs at /dev, and creates an empty ramfs at /tmp.
+/// Creates the mount table, mounts the root filesystem at `/`, mounts
+/// devfs at `/dev`, and creates an empty ramfs at `/tmp`.
+///
+/// The root filesystem is `root_override` when given one -- e.g. an
+/// already-mounted durable [`crate::lfs::Lfs`] -- so callers with
+/// persistent storage do not lose it to a fresh, volatile ramfs on every
+/// boot (#343). When `root_override` is `None`, the root is built fresh
+/// from `cpio_data` (or empty), matching the previous ramfs-only
+/// behavior.
 ///
 /// # Safety
 ///
 /// Must be called once during kernel init, before any filesystem syscalls.
 /// After this call, `MOUNT_TABLE` is populated and ready for use.
-pub unsafe fn init_vfs(cpio_data: Option<&[u8]>) {
+pub unsafe fn init_vfs(cpio_data: Option<&[u8]>, root_override: Option<Box<dyn Filesystem>>) {
     // SAFETY: called once during kernel init before any filesystem syscalls.
     // MOUNT_TABLE is a static mut; addr_of_mut! avoids an intermediate reference.
     // No concurrent access is possible because the scheduler has not started.
     unsafe {
         let mut mt = MountTable::new();
 
-        // Root filesystem from CPIO or empty
-        let root_fs = match cpio_data {
-            Some(data) => crate::ramfs::RamFs::from_cpio(data),
-            None => crate::ramfs::RamFs::new(),
+        // Root filesystem: the caller's already-mounted filesystem when
+        // given one (#343), otherwise a fresh ramfs from CPIO data (or
+        // empty), matching the previous behavior.
+        let root_fs: Box<dyn Filesystem> = match root_override {
+            Some(fs) => fs,
+            None => match cpio_data {
+                Some(data) => Box::new(crate::ramfs::RamFs::from_cpio(data)),
+                None => Box::new(crate::ramfs::RamFs::new()),
+            },
         };
         // Ignore mount errors during init; these are fatal if they fail but
         // the mount table has 8 slots and we use only 3.
-        let _ = mt.mount("/", Box::new(root_fs)); // WHY: init-time best-effort mount; failure is fatal and detected by later syscalls
+        let _ = mt.mount("/", root_fs); // WHY: init-time best-effort mount; failure is fatal and detected by later syscalls
 
         // /dev filesystem
         let devfs = crate::devfs::DevFs::new(0xDEAD_BEEF_CAFE_BABE);
@@ -2167,7 +2179,7 @@ mod tests {
             let table = &mut *core::ptr::addr_of_mut!(FD_TABLE);
             *table = FdTable::new();
 
-            init_vfs(None);
+            init_vfs(None, None);
 
             // Should have root, /dev, /tmp mounted
             let mt = get_mount_table().expect("mount table should exist");
