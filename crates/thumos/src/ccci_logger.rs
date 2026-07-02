@@ -29,7 +29,7 @@
 
 use core::fmt;
 
-use crate::ccci::CcciChannel;
+use crate::ccci::{CCCI_MAGIC, CCCI_MTU, CcciChannel};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -349,6 +349,13 @@ impl fmt::Display for ModemBaseline {
 /// ending at `window_end_ms`.  For each channel, computes packet count
 /// (used as rate), min/max packet size, and min/max data0 values.
 ///
+/// SECURITY: the entire window is adversary-controlled modem traffic (the
+/// MT6739 modem is untrusted per the threat model). `data0` accumulation is
+/// clamped to `CCCI_MTU` (except the `CCCI_MAGIC` control sentinel) so a
+/// modem that floods the 60-second boot window with `data0` spanning
+/// `[0, u32::MAX]` cannot fully defeat later `Data0OutOfRange` anomaly
+/// detection by establishing a maximally permissive baseline.
+///
 /// # Arguments
 ///
 /// * `log` -- the CCCI traffic logger with recorded entries
@@ -379,13 +386,26 @@ pub(crate) fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBasel
         let stats = &mut baseline.channels[ch];
         let count = &mut packet_counts[ch];
 
+        // SECURITY: clamp data0 accumulation to the CCCI MTU ceiling so a
+        // baseline built entirely from adversarial boot-window traffic
+        // (data0 spanning the full u32 range) cannot fully defeat later
+        // Data0OutOfRange anomaly detection. The control-message sentinel
+        // (CCCI_MAGIC) is a known exact value, not attacker-influenced
+        // range data -- validate_packet already treats it specially -- so
+        // it passes through unclamped.
+        let clamped_data0 = if entry.data0 == CCCI_MAGIC {
+            entry.data0
+        } else {
+            entry.data0.min(CCCI_MTU as u32)
+        };
+
         if !stats.active {
             // First packet on this channel: initialize min/max.
             stats.active = true;
             stats.min_size = entry.packet_len;
             stats.max_size = entry.packet_len;
-            stats.min_data0 = entry.data0;
-            stats.max_data0 = entry.data0;
+            stats.min_data0 = clamped_data0;
+            stats.max_data0 = clamped_data0;
         } else {
             if entry.packet_len < stats.min_size {
                 stats.min_size = entry.packet_len;
@@ -393,11 +413,11 @@ pub(crate) fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBasel
             if entry.packet_len > stats.max_size {
                 stats.max_size = entry.packet_len;
             }
-            if entry.data0 < stats.min_data0 {
-                stats.min_data0 = entry.data0;
+            if clamped_data0 < stats.min_data0 {
+                stats.min_data0 = clamped_data0;
             }
-            if entry.data0 > stats.max_data0 {
-                stats.max_data0 = entry.data0;
+            if clamped_data0 > stats.max_data0 {
+                stats.max_data0 = clamped_data0;
             }
         }
 
@@ -1052,6 +1072,95 @@ mod tests {
         assert!(ch4.active);
         assert_eq!(ch4.min_data0, 10);
         assert_eq!(ch4.max_data0, 200);
+    }
+
+    #[test]
+    fn baseline_clamps_poisoned_data0_to_mtu() {
+        let mut log = CcciLogger::new();
+        // Attacker-controlled boot-window traffic carrying a maximal
+        // out-of-range data0 on a data channel. WHY not u32::MAX: that exact
+        // value IS the CCCI_MAGIC control sentinel, which the clamp exempts
+        // by design (see `baseline_preserves_control_message_magic`); a
+        // poison value must therefore be a non-sentinel outlier.
+        log.record(CcciLogEntry {
+            timestamp: 1000,
+            channel: 5,
+            direction: PacketDirection::Rx,
+            data0: 0,
+            data1: 0,
+            packet_len: 16,
+        });
+        log.record(CcciLogEntry {
+            timestamp: 2000,
+            channel: 5,
+            direction: PacketDirection::Rx,
+            data0: u32::MAX - 1,
+            data1: 0,
+            packet_len: 16,
+        });
+
+        let baseline = build_baseline(&log, 60_000);
+        let ch5 = &baseline.channels[5];
+        assert!(ch5.active);
+        assert_eq!(
+            ch5.max_data0,
+            CCCI_MTU as u32,
+            "a non-sentinel out-of-range data0 outlier on a data channel must clamp to CCCI_MTU"
+        );
+    }
+
+    #[test]
+    fn baseline_preserves_control_message_magic() {
+        let mut log = CcciLogger::new();
+        log.record(CcciLogEntry {
+            timestamp: 1000,
+            channel: 0,
+            direction: PacketDirection::Rx,
+            data0: CCCI_MAGIC,
+            data1: 0,
+            packet_len: 16,
+        });
+
+        let baseline = build_baseline(&log, 60_000);
+        assert_eq!(
+            baseline.channels[0].max_data0,
+            CCCI_MAGIC,
+            "the control-message sentinel must pass through unclamped"
+        );
+    }
+
+    #[test]
+    fn anomaly_still_fires_after_baseline_clamp() {
+        let mut log = CcciLogger::new();
+        log.record(CcciLogEntry {
+            timestamp: 1000,
+            channel: 5,
+            direction: PacketDirection::Rx,
+            data0: u32::MAX - 1, // non-sentinel poisoning attempt, clamped to CCCI_MTU
+            data1: 0,
+            packet_len: 16,
+        });
+        let baseline = build_baseline(&log, 60_000);
+
+        // Live traffic still carrying an out-of-spec data0.
+        log.record(CcciLogEntry {
+            timestamp: 70_000,
+            channel: 5,
+            direction: PacketDirection::Rx,
+            data0: u32::MAX - 1,
+            data1: 0,
+            packet_len: 16,
+        });
+
+        let (anomalies, count) = detect_anomalies(&log, &baseline, 70_000, 60_000);
+        let found = anomalies[..count]
+            .iter()
+            .flatten()
+            .any(|a| a.channel == 5 && a.kind == AnomalyKind::Data0OutOfRange);
+        assert!(
+            found,
+            "anomaly detection must still fire on out-of-range data0 after the baseline is clamped"
+        );
     }
 
     #[test]

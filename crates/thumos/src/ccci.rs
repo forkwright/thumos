@@ -1152,7 +1152,9 @@ impl AuditRing {
 /// AT command prefixes that reveal device identity.
 /// SECURITY: These are intercepted at the kernel boundary. The modem
 /// firmware responds to these AT commands with the device's IMEI (CGSN)
-/// and IMSI (CIMI), which tie the physical device to a person.
+/// and IMSI (CIMI), which tie the physical device to a person. Matching is
+/// ASCII case-insensitive (see `contains_subsequence`) because AT commands
+/// are case-insensitive per 3GPP TS 27.007.
 const IDENTITY_AT_COMMANDS: &[&[u8]] = &[
     b"AT+CGSN",  // IMEI query
     b"AT+CIMI",  // IMSI query
@@ -1160,10 +1162,17 @@ const IDENTITY_AT_COMMANDS: &[&[u8]] = &[
     b"+CIMI:",   // IMSI response prefix
 ];
 
+/// Length of a bare IMEI or IMSI decimal digit string (3GPP TS 23.003).
+const IDENTITY_DIGIT_RUN_LEN: usize = 15;
+
 /// Check if a data buffer contains an identity-revealing AT command or response.
 ///
 /// SECURITY: This runs on every UART channel message from the modem. The
 /// check must be performed on data already copied out of shared memory.
+/// Covers three forms: the AT query itself, a `+CGSN:`/`+CIMI:`-prefixed
+/// response, and the bare (unprefixed) digit-string response that the
+/// standard 3GPP TS 27.007 Execute form of `AT+CGSN`/`AT+CIMI` actually
+/// returns.
 ///
 /// Returns `true` if the buffer matches an identity pattern.
 pub(crate) fn contains_identity_pattern(data: &[u8]) -> bool {
@@ -1176,10 +1185,15 @@ pub(crate) fn contains_identity_pattern(data: &[u8]) -> bool {
             }
         }
     }
-    false
+    contains_bare_identity_digits(data)
 }
 
-/// Scan `haystack` for the first occurrence of `needle`.
+/// Scan `haystack` for the first occurrence of `needle`, ASCII
+/// case-insensitively.
+///
+/// SECURITY: AT commands are case-insensitive per 3GPP TS 27.007. A
+/// byte-exact scan let a lowercase response (e.g. `at+cgsn`) bypass the
+/// identity filter entirely.
 fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return true;
@@ -1189,11 +1203,39 @@ fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
     }
     let limit = haystack.len() - needle.len() + 1;
     for i in 0..limit {
-        if haystack.get(i..i + needle.len()) == Some(needle) {
+        if let Some(window) = haystack.get(i..i + needle.len())
+            && window
+                .iter()
+                .zip(needle.iter())
+                .all(|(&a, &b)| a.eq_ignore_ascii_case(&b))
+        {
             return true;
         }
     }
     false
+}
+
+/// Check for a bare (unprefixed) IMEI/IMSI response: a run of exactly
+/// [`IDENTITY_DIGIT_RUN_LEN`] ASCII digits, not part of a longer digit run.
+///
+/// SECURITY: the Execute form of `AT+CGSN`/`AT+CIMI` (3GPP TS 27.007)
+/// returns the identifier as a bare digit string with no `+CGSN:`/`+CIMI:`
+/// prefix -- only the extended `AT+CGSN=<snt>` form is prefixed. Without
+/// this check, a compliant bare-digit response bypasses
+/// `IDENTITY_AT_COMMANDS` entirely.
+fn contains_bare_identity_digits(data: &[u8]) -> bool {
+    let mut run_len = 0usize;
+    for &b in data {
+        if b.is_ascii_digit() {
+            run_len += 1;
+        } else {
+            if run_len == IDENTITY_DIGIT_RUN_LEN {
+                return true;
+            }
+            run_len = 0;
+        }
+    }
+    run_len == IDENTITY_DIGIT_RUN_LEN
 }
 
 /// Capability flag required to pass identity data to userspace.
@@ -2273,6 +2315,42 @@ mod tests {
         assert!(
             !contains_identity_pattern(b"+CIM"),
             "partial CIMI must not match"
+        );
+    }
+
+    #[test]
+    fn identity_filter_case_insensitive() {
+        assert!(
+            contains_identity_pattern(b"at+cgsn\r\n"),
+            "lowercase 'at+cgsn' must still match the IMEI query pattern"
+        );
+        assert!(
+            contains_identity_pattern(b"+cimi: 310260000000000\r\n"),
+            "lowercase '+cimi:' must still match the IMSI response prefix"
+        );
+        assert!(
+            contains_identity_pattern(b"At+CgSn\r\n"),
+            "mixed-case 'At+CgSn' must still match"
+        );
+    }
+
+    #[test]
+    fn identity_filter_bare_imei_digits() {
+        assert!(
+            contains_identity_pattern(b"353882085372845\r\nOK\r\n"),
+            "a bare 15-digit IMEI/IMSI response with no +CGSN:/+CIMI: prefix must still be filtered"
+        );
+    }
+
+    #[test]
+    fn identity_filter_bare_digits_wrong_length_no_match() {
+        assert!(
+            !contains_identity_pattern(b"1234567890\r\nOK\r\n"),
+            "a 10-digit run must not be mistaken for a bare IMEI/IMSI (15 digits)"
+        );
+        assert!(
+            !contains_identity_pattern(b"3538820853728451\r\nOK\r\n"),
+            "a 16-digit run must not be mistaken for a bare IMEI/IMSI (exactly 15 digits)"
         );
     }
 

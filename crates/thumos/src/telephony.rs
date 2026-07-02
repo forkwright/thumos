@@ -107,6 +107,8 @@ pub enum AtResponse {
     Error,
     /// CME error with code.
     CmeError(u32),
+    /// CMS error with code (SMS-specific, 3GPP TS 27.005).
+    CmsError(u32),
 }
 
 impl Default for AtResponse {
@@ -220,6 +222,11 @@ pub enum ModemState {
     Off,
     /// Initialization sequence in progress.
     Initializing,
+    /// Radio is on and initialized; network registration not yet
+    /// confirmed. Set at the end of [`Telephony::initialize`]; promoted to
+    /// / demoted from [`ModemState::Registered`] only by
+    /// `Telephony::apply_reg_status` reacting to `+CREG` state.
+    Ready,
     /// Registered on a cellular network.
     Registered,
     /// A fatal error occurred.
@@ -231,6 +238,7 @@ impl core::fmt::Display for ModemState {
         match self {
             Self::Off => write!(f, "off"),
             Self::Initializing => write!(f, "initializing"),
+            Self::Ready => write!(f, "ready (not registered)"),
             Self::Registered => write!(f, "registered"),
             Self::Error(e) => write!(f, "error: {e}"),
         }
@@ -410,12 +418,19 @@ pub struct Telephony<T: ModemTransport> { // kanon:ignore RUST/struct-too-many-f
     operator_name: [u8; MAX_OPERATOR_LEN],
     /// Length of valid bytes in operator_name.
     operator_len: u8,
-    /// Network registration status.
-    registered: bool,
-    /// Registration status detail.
+    /// Registration status detail. [`Telephony::is_registered`] derives
+    /// directly from this -- no separate `registered` bool is kept, so
+    /// there is exactly one source of truth for registration state.
     reg_status: RegStatus,
     /// Whether LTE-only mode is active (2G/3G refused via `AT+COPS=0,,,7`).
     lte_only: bool,
+    /// Whether `AT+CREG=1` (registration-URC subscription) succeeded
+    /// during init. `false` means registration state updates were never
+    /// subscribed to and `handle_urc` will not see `+CREG` URCs.
+    creg_urc_enabled: bool,
+    /// Whether `AT+CLIP=1` (caller-ID subscription) succeeded during init.
+    /// `false` means incoming calls will not carry caller ID.
+    clip_enabled: bool,
     /// Hardware transport.
     transport: T,
     /// Last signal poll tick (ms).
@@ -436,9 +451,10 @@ impl<T: ModemTransport> Telephony<T> {
             signal_ber: 99,
             operator_name: [0u8; MAX_OPERATOR_LEN],
             operator_len: 0,
-            registered: false,
             reg_status: RegStatus::NotRegistered,
             lte_only: false,
+            creg_urc_enabled: false,
+            clip_enabled: false,
             transport,
             last_signal_poll: 0,
             init_step: 0,
@@ -476,9 +492,15 @@ impl<T: ModemTransport> Telephony<T> {
     }
 
     /// Return whether the modem is registered on a network.
+    ///
+    /// Derived directly from [`RegStatus`] -- there is no separate
+    /// `registered` bool to fall out of sync with it.
     #[must_use]
     pub fn is_registered(&self) -> bool {
-        self.registered
+        matches!(
+            self.reg_status,
+            RegStatus::RegisteredHome | RegStatus::RegisteredRoaming
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -497,6 +519,15 @@ impl<T: ModemTransport> Telephony<T> {
     /// 7. `AT+CREG=1`       — enable network registration URCs
     /// 8. `AT+CLIP=1`       — enable caller ID
     /// 9. `AT+CSQ`          — initial signal strength query
+    /// 10. `AT+CREG?`       — seed initial registration state
+    ///
+    /// `AT+CFUN=1` (step 3) only powers the radio; it does not mean the
+    /// modem is registered. This method leaves `modem_state` at
+    /// [`ModemState::Ready`] unless step 10's query confirms registration,
+    /// and never asserts [`ModemState::Registered`] itself -- all
+    /// subsequent Ready/Registered transitions are owned by
+    /// [`Telephony::apply_reg_status`] (via [`Telephony::handle_urc`]
+    /// reacting to `+CREG` URCs).
     ///
     /// Returns `Ok(())` on success, or an error describing which step failed.
     pub fn initialize(&mut self) -> Result<(), TelephonyError> {
@@ -507,7 +538,7 @@ impl<T: ModemTransport> Telephony<T> {
         let result = send_simple(&mut self.transport, "AT", 5000);
         match result {
             Ok(AtResponse::Ok) => {}
-            Ok(AtResponse::Error | AtResponse::CmeError(_)) | Err(_) => {
+            Ok(AtResponse::Error | AtResponse::CmeError(_) | AtResponse::CmsError(_)) | Err(_) => {
                 self.modem_state = ModemState::Error(TelephonyError::Timeout);
                 return Err(TelephonyError::Timeout);
             }
@@ -582,19 +613,37 @@ impl<T: ModemTransport> Telephony<T> {
         self.init_step = 6;
 
         // Step 7: Enable network registration URCs.
-        let _ = send_simple(&mut self.transport, "AT+CREG=1", 2000);
+        // Non-fatal like refuse_2g, but the outcome is now recorded rather
+        // than silently discarded -- see is_creg_urc_enabled().
+        let creg_result = send_simple(&mut self.transport, "AT+CREG=1", 2000);
+        self.creg_urc_enabled = matches!(creg_result, Ok(AtResponse::Ok));
         self.init_step = 7;
 
         // Step 8: Enable caller ID.
-        let _ = send_simple(&mut self.transport, "AT+CLIP=1", 2000);
+        // Non-fatal, outcome recorded -- see is_clip_enabled().
+        let clip_result = send_simple(&mut self.transport, "AT+CLIP=1", 2000);
+        self.clip_enabled = matches!(clip_result, Ok(AtResponse::Ok));
         self.init_step = 8;
 
         // Step 9: Initial signal strength query.
         self.update_signal_strength()?;
         self.init_step = 9;
 
-        self.modem_state = ModemState::Registered;
-        self.registered = true;
+        // Step 10: Seed registration state. AT+CFUN=1 (step 3) only powers
+        // the radio; registration is asynchronous and may take seconds to
+        // minutes. Query it directly instead of assuming success. All
+        // further Ready/Registered transitions are owned by
+        // apply_reg_status (via handle_urc reacting to +CREG URCs).
+        self.modem_state = ModemState::Ready;
+        let creg_query = send_with_info(&mut self.transport, "AT+CREG?", 5000);
+        if let Ok((AtResponse::Ok, ref info_line, info_len)) = creg_query
+            && info_len > 0
+            && let Some(stat) = parse_creg_response(&info_line[..info_len])
+        {
+            self.apply_reg_status(stat);
+        }
+        self.init_step = 10;
+
         Ok(())
     }
 
@@ -621,6 +670,27 @@ impl<T: ModemTransport> Telephony<T> {
     #[must_use]
     pub fn is_lte_only(&self) -> bool {
         self.lte_only
+    }
+
+    /// Return whether `AT+CREG=1` (registration-URC subscription) succeeded
+    /// during initialization.
+    ///
+    /// `false` means the modem never subscribed to `+CREG` URCs, so
+    /// registration state will never update after the initial
+    /// [`Telephony::initialize`] query -- a silent degradation the caller
+    /// should surface (e.g. in the threat/diagnostics screen).
+    #[must_use]
+    pub fn is_creg_urc_enabled(&self) -> bool {
+        self.creg_urc_enabled
+    }
+
+    /// Return whether `AT+CLIP=1` (caller-ID subscription) succeeded during
+    /// initialization.
+    ///
+    /// `false` means incoming calls will never carry caller ID.
+    #[must_use]
+    pub fn is_clip_enabled(&self) -> bool {
+        self.clip_enabled
     }
 
     // -----------------------------------------------------------------------
@@ -651,7 +721,7 @@ impl<T: ModemTransport> Telephony<T> {
     ///
     /// `current_tick` is the current kernel tick in milliseconds.
     pub fn poll_signal(&mut self, current_tick: u64) -> Option<TelephonyEvent> {
-        if !matches!(self.modem_state, ModemState::Registered) {
+        if !matches!(self.modem_state, ModemState::Ready | ModemState::Registered) {
             return None;
         }
 
@@ -687,6 +757,15 @@ impl<T: ModemTransport> Telephony<T> {
         if number.len() > MAX_NUMBER_LEN {
             return Err(TelephonyError::NumberTooLong);
         }
+        // SECURITY: reject any byte outside the legal GSM dial-string
+        // charset before it reaches the ATD command buffer. Without this,
+        // a `\r`/`\n` in `number` (e.g. relayed verbatim from a forged
+        // +CLIP URC via a UI redial callback) would terminate the ATD line
+        // early and inject arbitrary follow-on AT commands into the modem
+        // stream.
+        if !number.iter().all(|&b| is_valid_dial_byte(b)) {
+            return Err(TelephonyError::ParseError);
+        }
 
         // Build ATD command: "ATD+15551234567;"
         let mut cmd_buf = [0u8; 4 + MAX_NUMBER_LEN + 1]; // "ATD" + number + ";"
@@ -697,8 +776,9 @@ impl<T: ModemTransport> Telephony<T> {
         cmd_buf[3 + number.len()] = b';';
         let cmd_len = 4 + number.len();
 
-        // SAFETY: number was validated as fitting in MAX_NUMBER_LEN,
-        // and we only wrote ASCII bytes from the input + "ATD" + ";".
+        // INVARIANT: every byte of `number` was validated by
+        // `is_valid_dial_byte` above (a strict ASCII subset), so `cmd_buf`
+        // contains only ASCII bytes and this conversion cannot fail.
         let cmd_str = core::str::from_utf8(&cmd_buf[..cmd_len])
             .map_err(|_| TelephonyError::ParseError)?;
 
@@ -715,6 +795,10 @@ impl<T: ModemTransport> Telephony<T> {
             }
             AtResponse::Error => Err(TelephonyError::ModemError),
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: +CMS ERROR is SMS-specific and not expected on a voice
+            // dial, but AtResponse is exhaustively matched here; surface it
+            // through the same numeric-code channel as CME errors.
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
         }
     }
 
@@ -736,6 +820,7 @@ impl<T: ModemTransport> Telephony<T> {
             }
             AtResponse::Error => Err(TelephonyError::ModemError),
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
         }
     }
 
@@ -762,6 +847,7 @@ impl<T: ModemTransport> Telephony<T> {
                 Ok(())
             }
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
         }
     }
 
@@ -786,6 +872,26 @@ impl<T: ModemTransport> Telephony<T> {
         }
 
         None
+    }
+
+    /// Apply a registration status, keeping `reg_status` and `modem_state`
+    /// consistent.
+    ///
+    /// This is the single place that transitions `modem_state` between
+    /// [`ModemState::Ready`] and [`ModemState::Registered`] -- no other
+    /// code path may assert `ModemState::Registered` directly. A stray
+    /// `+CREG` URC arriving outside `Ready`/`Registered` (e.g. during
+    /// `Off`/`Initializing`/`Error`) updates `reg_status` but does not
+    /// clobber the modem's lifecycle state.
+    fn apply_reg_status(&mut self, stat: RegStatus) {
+        self.reg_status = stat;
+        if matches!(self.modem_state, ModemState::Ready | ModemState::Registered) {
+            self.modem_state = if self.is_registered() {
+                ModemState::Registered
+            } else {
+                ModemState::Ready
+            };
+        }
     }
 
     /// Handle a parsed URC and update internal state.
@@ -838,11 +944,7 @@ impl<T: ModemTransport> Telephony<T> {
                 })
             }
             Urc::Creg { stat } => {
-                self.reg_status = stat;
-                self.registered = matches!(
-                    stat,
-                    RegStatus::RegisteredHome | RegStatus::RegisteredRoaming
-                );
+                self.apply_reg_status(stat);
                 Some(TelephonyEvent::RegistrationUpdate { status: stat })
             }
         }
@@ -927,6 +1029,8 @@ mod tests {
         mock.queue_ok();
         // Step 9: AT+CSQ -> +CSQ: 18,99 + OK
         mock.queue_info_ok(b"+CSQ: 18,99");
+        // Step 10: AT+CREG? -> +CREG: 1 (registered home) + OK
+        mock.queue_info_ok(b"+CREG: 1");
         mock
     }
 
@@ -954,7 +1058,7 @@ mod tests {
         assert!(result.is_ok(), "initialization must succeed with valid mock");
 
         let commands = &tel.transport.sent_commands;
-        assert_eq!(commands.len(), 9, "init must send exactly 9 AT commands");
+        assert_eq!(commands.len(), 10, "init must send exactly 10 AT commands");
         assert_eq!(commands[0], b"AT", "step 1: AT");
         assert_eq!(commands[1], b"ATE0", "step 2: ATE0");
         assert_eq!(commands[2], b"AT+CFUN=1", "step 3: AT+CFUN=1");
@@ -964,15 +1068,16 @@ mod tests {
         assert_eq!(commands[6], b"AT+CREG=1", "step 7: AT+CREG=1");
         assert_eq!(commands[7], b"AT+CLIP=1", "step 8: AT+CLIP=1");
         assert_eq!(commands[8], b"AT+CSQ", "step 9: AT+CSQ");
+        assert_eq!(commands[9], b"AT+CREG?", "step 10: AT+CREG?");
 
         assert_eq!(
             tel.modem_state(),
             ModemState::Registered,
-            "modem must be Registered after successful init"
+            "modem must be Registered once step 10's AT+CREG? confirms it"
         );
         assert!(
             tel.is_registered(),
-            "must report registered after init"
+            "must report registered once AT+CREG? confirms it"
         );
     }
 
@@ -1007,6 +1112,51 @@ mod tests {
             Some(b"ATD+15551234567;" as &[u8]),
             "ATD command must be formatted correctly"
         );
+    }
+
+    #[test]
+    fn dial_rejects_crlf_injection() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+
+        let before = tel.transport.sent_commands.len();
+        let result = tel.dial(b"+1\r\nAT+CFUN=0");
+        assert_eq!(
+            result,
+            Err(TelephonyError::ParseError),
+            "CR/LF in dial number must be rejected"
+        );
+        assert_eq!(
+            tel.transport.sent_commands.len(),
+            before,
+            "no ATD command may reach the transport when the number is rejected"
+        );
+    }
+
+    #[test]
+    fn dial_rejects_semicolon_injection() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+
+        let result = tel.dial(b"+1;AT+CFUN=0");
+        assert_eq!(
+            result,
+            Err(TelephonyError::ParseError),
+            "embedded semicolon must be rejected (would close ATD early)"
+        );
+    }
+
+    #[test]
+    fn dial_accepts_full_valid_charset() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+        tel.transport.queue_ok();
+
+        let result = tel.dial(b"+15551234567*#ABCD");
+        assert!(result.is_ok(), "digits/+/*/#/A-D must be accepted");
     }
 
     #[test]
@@ -1095,6 +1245,19 @@ mod tests {
     }
 
     #[test]
+    fn send_and_wait_terminates_immediately_on_cms_error() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_response(b"+CMS ERROR: 302");
+        let mut info_buf = [[0u8; MAX_LINE_LEN]; 4];
+        let result = send_and_wait(&mut mock, "AT+CMGS=10", &mut info_buf, 2000);
+        assert_eq!(
+            result,
+            Ok((AtResponse::CmsError(302), 0)),
+            "a +CMS ERROR final result must terminate immediately with the code, not fall through to Timeout"
+        );
+    }
+
+    #[test]
     fn number_too_long_error() {
         // TelephonyError::NumberTooLong is returned when dialing a number
         // that exceeds MAX_NUMBER_LEN. Verify the variant displays correctly.
@@ -1170,6 +1333,39 @@ mod tests {
         );
     }
 
+    // See #257's spec for the full initialize()/ModemState edit that this
+    // test depends on (creg_urc_enabled/clip_enabled + apply_reg_status).
+
+    #[test]
+    fn creg_and_clip_init_failures_are_recorded_not_swallowed() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // AT
+        mock.queue_ok(); // ATE0
+        mock.queue_ok(); // AT+CFUN=1
+        mock.queue_info_ok(b"+CPIN: READY");
+        mock.queue_ok(); // AT+COPS=0,,,7
+        mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\""); // AT+COPS?
+        mock.queue_response(b"ERROR"); // AT+CREG=1 -> ERROR
+        mock.queue_response(b"ERROR"); // AT+CLIP=1 -> ERROR
+        mock.queue_info_ok(b"+CSQ: 18,99");
+        mock.queue_info_ok(b"+CREG: 0");
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert!(
+            result.is_ok(),
+            "AT+CREG=1/AT+CLIP=1 failures must not abort the whole init sequence"
+        );
+        assert!(
+            !tel.is_creg_urc_enabled(),
+            "a rejected AT+CREG=1 must be recorded as disabled, not silently assumed enabled"
+        );
+        assert!(
+            !tel.is_clip_enabled(),
+            "a rejected AT+CLIP=1 must be recorded as disabled, not silently assumed enabled"
+        );
+    }
+
     #[test]
     fn init_continues_if_lte_only_rejected() {
         // If the modem rejects AT+COPS=0,,,7, init must still complete.
@@ -1192,6 +1388,8 @@ mod tests {
         mock.queue_ok();
         // Step 9: AT+CSQ -> +CSQ: 18,99 + OK
         mock.queue_info_ok(b"+CSQ: 18,99");
+        // Step 10: AT+CREG? -> +CREG: 1 (registered home) + OK
+        mock.queue_info_ok(b"+CREG: 1");
 
         let mut tel = Telephony::new(mock);
         let result = tel.initialize();
@@ -1206,7 +1404,89 @@ mod tests {
         assert_eq!(
             tel.modem_state(),
             ModemState::Registered,
-            "modem must reach Registered state despite LTE-only rejection"
+            "modem must reach Registered state once AT+CREG? confirms it, despite LTE-only rejection"
+        );
+    }
+
+    // --- registration-state confirmation tests (#257) ---
+
+    #[test]
+    fn initialize_stays_unregistered_when_creg_reports_searching() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // AT
+        mock.queue_ok(); // ATE0
+        mock.queue_ok(); // AT+CFUN=1
+        mock.queue_info_ok(b"+CPIN: READY");
+        mock.queue_ok(); // AT+COPS=0,,,7
+        mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\"");
+        mock.queue_ok(); // AT+CREG=1
+        mock.queue_ok(); // AT+CLIP=1
+        mock.queue_info_ok(b"+CSQ: 18,99");
+        mock.queue_info_ok(b"+CREG: 2"); // searching, not registered
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert!(result.is_ok(), "init must succeed even if not yet registered");
+        assert!(
+            !tel.is_registered(),
+            "is_registered must be false when AT+CREG? reports searching (2)"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Ready,
+            "modem_state must stay Ready (not Registered) until actually registered"
+        );
+    }
+
+    #[test]
+    fn creg_urc_downgrades_modem_state_from_registered() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+        assert_eq!(tel.modem_state(), ModemState::Registered, "must start Registered");
+
+        tel.transport.queue_urc(b"+CREG: 0");
+        let event = tel.poll();
+        assert!(
+            matches!(event, Some(TelephonyEvent::RegistrationUpdate { .. })),
+            "CREG URC must produce a RegistrationUpdate event"
+        );
+        assert!(
+            !tel.is_registered(),
+            "is_registered must become false after +CREG: 0"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Ready,
+            "modem_state must downgrade from Registered to Ready on +CREG: 0"
+        );
+    }
+
+    #[test]
+    fn creg_urc_promotes_ready_to_registered() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok();
+        mock.queue_ok();
+        mock.queue_ok();
+        mock.queue_info_ok(b"+CPIN: READY");
+        mock.queue_ok();
+        mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\"");
+        mock.queue_ok();
+        mock.queue_ok();
+        mock.queue_info_ok(b"+CSQ: 18,99");
+        mock.queue_info_ok(b"+CREG: 2"); // searching at init time
+
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+        assert_eq!(tel.modem_state(), ModemState::Ready, "must start Ready (searching)");
+
+        tel.transport.queue_urc(b"+CREG: 5");
+        tel.poll();
+        assert!(tel.is_registered(), "must report registered after +CREG: 5 (roaming)");
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Registered,
+            "modem_state must promote from Ready to Registered on +CREG: 5"
         );
     }
 }

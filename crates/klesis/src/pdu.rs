@@ -132,6 +132,17 @@ fn encode_bcd_address(addr: &Address) -> Result<Vec<u8>> {
     };
 
     let digit_bytes: Vec<u8> = digits.as_bytes().to_vec();
+    // SECURITY/CORRECTNESS: every byte must be validated before the BCD
+    // packing loop performs `d - b'0'`. An unvalidated non-digit byte
+    // (service char, formatting char, or arbitrary attacker-influenced
+    // byte) underflows in debug builds (panic) or wraps to a silently
+    // corrupted nibble in release builds, while this function still
+    // returns `Ok`.
+    if let Some(&bad) = digit_bytes.iter().find(|&&d| !d.is_ascii_digit()) {
+        return Err(crate::error::Error::PduEncode {
+            message: format!("non-digit character in address: 0x{bad:02X}"),
+        });
+    }
     let len_digits =
         u8::try_from(digit_bytes.len()).map_err(|_| crate::error::Error::PduEncode {
             message: "SMS address exceeds u8 length limit".to_owned(),
@@ -388,6 +399,16 @@ const fn is_wap_push_port(port: u16) -> bool {
     port == WAP_PUSH_PORT_OMA_CP || port == WAP_PUSH_PORT_ALT
 }
 
+/// Number of GSM-7 septets consumed by `udh_octets` raw UDH bytes once
+/// folded into the septet stream.
+///
+/// 3GPP TS 23.040 § 9.2.3.24: the UDH is stored as full 8-bit octets; fill
+/// bits pad it to the next septet boundary before the text septets begin.
+/// `ceil(udh_octets * 8 / 7)`.
+const fn gsm7_udh_septets(udh_octets: usize) -> usize {
+    (udh_octets * 8).div_ceil(7)
+}
+
 /// Decode an SMS-DELIVER PDU FROM its hex string representation.
 ///
 /// The hex string must represent the full TPDU including the SMSC prefix.
@@ -405,6 +426,10 @@ const fn is_wap_push_port(port: u16) -> bool {
 ///    16-bit application port addressing IE (0x05) with destination port 2948
 ///    or 49999, the message is an OMA-CP / WAP Push provisioning message.
 ///    Returns [`Error::WapPushRejected`].
+#[expect(
+    clippy::similar_names,
+    reason = "udl/udhl/udhi/oa are canonical 3GPP TS 23.040 SMS field abbreviations; renaming would break spec fidelity"
+)]
 pub(crate) fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
     let raw = hex_decode(pdu_hex)?;
     let mut cur = Cursor::new(&raw);
@@ -448,7 +473,7 @@ pub(crate) fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
     let timestamp = decode_scts(scts);
 
     // User data length (UDL) + user data (UD).
-    let udl = usize::from(cur.read_byte()?);
+    let mut udl = usize::from(cur.read_byte()?);
 
     // WHY: we need the raw UD bytes for UDH inspection before decoding text.
     // If UDHI is set, the first bytes of UD contain the User Data Header.
@@ -470,6 +495,21 @@ pub(crate) fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
                 source_port: ports.source,
             });
         }
+
+        // SECURITY: strip the UDH from the decoded body. Without this, the
+        // header bytes (attacker-controlled on e.g. a concatenation IE) are
+        // decoded as message content and prepended to the visible SMS body
+        // -- a forged-sender-prefix phishing vector.
+        let udhl = usize::from(ud_preview.first().copied().unwrap_or(0));
+        let udh_octets = (udhl + 1).min(ud_preview.len());
+        cur.read_slice(udh_octets)?;
+        udl = match encoding {
+            // 3GPP TS 23.040 § 9.2.3.24: the UDH is byte-aligned; text
+            // resumes at the next septet boundary once folded into the
+            // septet stream.
+            DataEncoding::Gsm7Bit => udl.saturating_sub(gsm7_udh_septets(udh_octets)),
+            DataEncoding::Ucs2 => udl.saturating_sub(udh_octets),
+        };
     }
 
     let user_data = decode_user_data(&mut cur, udl, encoding)?;
@@ -704,6 +744,19 @@ mod tests {
         assert_eq!(
             decoded.number, "+12345678901",
             "decoded number must match 11-digit original including trailing filler nibble"
+        );
+    }
+
+    #[test]
+    fn encode_bcd_address_rejects_non_digit() {
+        let addr = Address {
+            number: "+1234*5678".to_owned(),
+            type_of_address: AddressType::International,
+        };
+        let result = encode_bcd_address(&addr);
+        assert!(
+            result.is_err(),
+            "a non-digit byte ('*') in the address must be rejected, not silently corrupted"
         );
     }
 
@@ -1040,31 +1093,12 @@ mod tests {
     #[test]
     fn decode_deliver_udhi_normal_port_passes() {
         // UDHI set but with a non-WAP-Push destination port (port 1234 = 0x04D2).
-        // DCS=0x08 (UCS-2), UDL = 10 bytes (7 UDH + 2 pad + 2 UCS-2 text, but
-        // the existing decoder does not strip UDH from the user data byte count).
-        // Use UDL=10 so remaining UCS-2 bytes are even after UDH.
-        //   UDH: 06 05 04 04 D2 23 F0
-        //   UD: 00 41 00 41 00 (need 3 bytes = odd — problematic for UCS-2)
         //
-        // WHY: The existing `decode_user_data` function does not perform UDH-aware
-        // byte stripping for UCS-2, so feeding a PDU with UDH + UCS-2 through
-        // the full pipeline will fail at the UCS-2 decode step (odd byte count).
-        // This is correct existing behavior — we only need to verify that the
-        // WAP Push port check itself passes. Use the parse_udh_ports unit test
-        // (above) and the is_wap_push_port test to verify non-WAP ports pass.
-        //
-        // Integration test: construct a GSM-7 PDU with UDHI and non-WAP port.
-        // DCS=0x00 (GSM-7). UDL counts septets including UDH fill bits.
-        // UDH = 7 bytes = 56 bits. GSM-7 fill bits to next septet boundary = 56 bits
-        // → 8 septets consumed by UDH. So UDL = 8 (UDH) + N (text septets).
-        // For 1 text character: UDL = 9. Packed bytes = ceil(9*7/8) = 8.
-        // Total UD bytes = 7 (UDH) + 8 (packed) = ... but wait, the packer
-        // doesn't know about the UDH offset either.
-        //
-        // Simplest correct approach: verify via the unit test that non-WAP ports
-        // return None from parse_udh_ports and don't trigger rejection.
-        // The full-PDU test for WAP Push already covers the UDHI path.
-        // This test verifies the opposite: a safe port is not rejected.
+        // NOTE: decode_deliver now strips the UDH before decoding user data
+        // (see decode_deliver_udhi_concatenation_ie_strips_udh_ucs2 for the
+        // full-pipeline regression test). This test stays at the
+        // parse_udh_ports/is_wap_push_port unit level: it only needs to
+        // confirm that a non-WAP-Push port IE does not trigger rejection.
         let ud = [0x06, 0x05, 0x04, 0x04, 0xD2, 0x23, 0xF0, 0x41];
         let ports = parse_udh_ports(&ud);
         assert!(ports.is_some(), "UDH with port IE must be parsed");
@@ -1073,6 +1107,37 @@ mod tests {
         assert!(
             !is_wap_push_port(ports.destination),
             "port 0x04D2 (1234) must NOT be flagged as WAP Push"
+        );
+    }
+
+    #[test]
+    fn gsm7_udh_septets_alignment() {
+        // A 6-octet UDH (48 bits) needs 7 septets (49 bits) to byte-align,
+        // per 3GPP TS 23.040 fill-bit rules.
+        assert_eq!(
+            gsm7_udh_septets(6),
+            7,
+            "6 UDH octets must consume 7 septets"
+        );
+        // A 7-octet UDH (56 bits) packs exactly into 8 septets (56 bits).
+        assert_eq!(
+            gsm7_udh_septets(7),
+            8,
+            "7 UDH octets must consume exactly 8 septets"
+        );
+    }
+
+    #[test]
+    fn decode_deliver_udhi_concatenation_ie_strips_udh_ucs2() {
+        // UDHI set, UDH = concatenation IE (IEI=0x00, not a port IE), DCS=UCS-2.
+        // UDH: 05 00 03 01 02 01 (UDHL=5, IEI=00, IEL=3, ref=01, total=02, seq=01)
+        // Text: 00 48 00 69 ("Hi" in UCS-2)
+        let pdu = "00400A9121436587090008321051210300000A05000301020100480069";
+        let sms = decode_deliver(pdu).expect("must decode UDHI PDU with concatenation IE");
+        assert_eq!(
+            sms.user_data.text, "Hi",
+            "UDH bytes must be stripped from the decoded body, got: {:?}",
+            sms.user_data.text
         );
     }
 
