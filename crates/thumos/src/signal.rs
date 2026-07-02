@@ -212,7 +212,6 @@ const EINVAL: u32 = 0u32.wrapping_sub(22);
 /// Error: no such process (two's complement -3, matches Linux ESRCH).
 const ESRCH: u32 = 0u32.wrapping_sub(3);
 /// Error: operation not permitted (two's complement -1, matches Linux EPERM).
-#[cfg_attr(not(test), allow(dead_code))]
 const EPERM: u32 = 0u32.wrapping_sub(1);
 
 /// `sigaction(signum, handler_ptr)` — install a signal handler.
@@ -273,6 +272,14 @@ pub(crate) fn sys_kill(pid: u32, signum: u32) -> u32 {
         Ok(p) => p,
         Err(_) => return ESRCH,
     };
+
+    // WHY (#269): PID 0 (kinit) is the fault supervisor; belt-and-suspenders
+    // rejection here (in addition to the deliver_signal_to guard) means no
+    // caller — including a self-signal from kinit — reaches the capability
+    // check with PID 0 as the target.
+    if pid8 == 0 {
+        return EPERM;
+    }
 
     // REQ-09: sending a signal to another process requires CAP_KILL.
     // Self-signals (kill(getpid(), sig)) bypass the check — a process may

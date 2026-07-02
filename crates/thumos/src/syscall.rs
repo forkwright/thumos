@@ -429,15 +429,21 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         }
         Syscall::Uptime => crate::exceptions::uptime_ms() as u32,
         Syscall::Sleep => {
-            // NOTE: approximate sleep via busy-wait on tick counter.
-            // A proper implementation would block the process and wake on tick.
-            let target = crate::exceptions::uptime_ms() + {
-                let Ok(ms) = u64::try_from(arg0) else { return EINVAL; };
-                ms
-            };
-            while crate::exceptions::uptime_ms() < target {
+            // WHY (#264): mirror sys_nanosleep's pattern instead of a bare
+            // uptime_ms() busy-wait that never touched process state — mark
+            // the process Sleeping with its wake tick before waiting so
+            // runnable_count() and any Sleeping-aware scheduler logic see
+            // this process as blocked for the sleep window, not spuriously
+            // Running.
+            let Ok(ms) = u64::try_from(arg0) else { return EINVAL; };
+            const TICK_MS: u64 = 10;
+            let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
+            let wake_tick = crate::exceptions::ticks().saturating_add(ticks_needed);
+            process::set_wake_tick(wake_tick);
+            while crate::exceptions::ticks() < wake_tick {
                 wait_for_event();
             }
+            process::clear_wake_tick();
             0
         }
         Syscall::Send => {
@@ -608,44 +614,45 @@ fn sys_close_with_pipe(fd: u32) -> u32 {
 
 /// SYS_write: dispatch to pipe, UART (stdout), or VFS file based on fd kind.
 ///
-/// - fd 1 (stdout): write to UART serial (legacy behavior).
 /// - Pipe fd: dispatch to pipe::sys_pipe_write.
-/// - VFS fd: dispatch to fd::sys_write for filesystem write.
+/// - VFS fd (including a `dup2`-redirected fd 1): dispatch to fd::sys_write.
+/// - fd 1 with no FD_TABLE entry: the default, un-redirected case — write to
+///   UART serial (legacy behavior).
 fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
-    // fd 1 is stdout — always goes to UART (legacy behavior).
-    if fd == 1 {
-        let Ok(ptr) = usize::try_from(buf_ptr) else { return EINVAL; };
-        let Ok(len) = usize::try_from(count) else { return EINVAL; };
-        if !validate_user_buffer(ptr, len) {
-            return EFAULT;
-        }
-        // SAFETY: validate_user_buffer confirmed [ptr, ptr+len) is within
-        // user-accessible DRAM.
-        let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
-        let mut serial = Uart::new();
-        for &byte in slice {
-            serial.putc(byte);
-        }
-        let Ok(len_u32) = u32::try_from(len) else { return EINVAL; };
-        return len_u32;
-    }
-
     let fd_idx = fd as usize;
     // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
     // reference. Read-only here to inspect flags.
     let flags = {
         let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
-        match table.get(fd_idx) {
-            Some(e) => e.flags,
-            None => return fd::EBADF,
-        }
+        table.get(fd_idx).map(|e| e.flags)
     };
 
-    if pipe::is_pipe_fd(flags) {
-        let pipe_idx = pipe::pipe_idx_from_flags(flags);
-        pipe::sys_pipe_write(pipe_idx, buf_ptr, count, process::current_pid())
-    } else {
-        fd::sys_write(fd, buf_ptr, count)
+    match flags {
+        Some(flags) if pipe::is_pipe_fd(flags) => {
+            let pipe_idx = pipe::pipe_idx_from_flags(flags);
+            pipe::sys_pipe_write(pipe_idx, buf_ptr, count, process::current_pid())
+        }
+        Some(_) => fd::sys_write(fd, buf_ptr, count),
+        // fd 1 with no FD_TABLE entry (#255): the default, un-redirected
+        // case falls back to UART instead of the unconditional fd==1
+        // special-case that used to shadow a dup2(x, 1) redirection.
+        None if fd == 1 => {
+            let Ok(ptr) = usize::try_from(buf_ptr) else { return EINVAL; };
+            let Ok(len) = usize::try_from(count) else { return EINVAL; };
+            if !validate_user_buffer(ptr, len) {
+                return EFAULT;
+            }
+            // SAFETY: validate_user_buffer confirmed [ptr, ptr+len) is within
+            // user-accessible DRAM.
+            let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
+            let mut serial = Uart::new();
+            for &byte in slice {
+                serial.putc(byte);
+            }
+            let Ok(len_u32) = u32::try_from(len) else { return EINVAL; };
+            len_u32
+        }
+        None => fd::EBADF,
     }
 }
 
@@ -683,22 +690,25 @@ const ENOENT: u32 = 0u32.wrapping_sub(2);
 fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // --- Step 1: validate and read path ---
 
-    // Validate that path_ptr is in user DRAM (non-null, non-kernel).
-    // WHY validate 1 byte: catches null/kernel/device pointers before any read.
-    if !validate_user_buffer(path_ptr as usize, 1) {
+    // Cap at 256 bytes to bound the scan; longer paths are rejected.
+    const MAX_PATH: usize = 256;
+
+    // Validate the FULL scan window [path_ptr, path_ptr+MAX_PATH) up front
+    // (#220) — validating only the first byte let the scan below walk past
+    // RAM_END for a path_ptr within MAX_PATH bytes of the top of DRAM,
+    // reading unmapped/device memory. A path within MAX_PATH bytes of
+    // RAM_END is rejected outright as a safe conservative policy.
+    if !validate_user_buffer(path_ptr as usize, MAX_PATH) {
         return EFAULT;
     }
 
     // Read the null-terminated path string from user space.
-    // Cap at 256 bytes to bound the scan; longer paths are rejected.
-    const MAX_PATH: usize = 256;
     let path_len = {
         let mut len = 0usize;
         let ptr = path_ptr as *const u8;
         while len < MAX_PATH {
-            // SAFETY: ptr + len is in user DRAM (validate_user_buffer checked
-            // the base; the loop caps at MAX_PATH which is well within the
-            // ~1 GB user DRAM range, so no wrap occurs).
+            // SAFETY: [path_ptr, path_ptr+MAX_PATH) was validated above to
+            // lie entirely within user-accessible DRAM.
             let byte = unsafe { ptr.add(len).read_volatile() };
             if byte == 0 {
                 break;
@@ -740,25 +750,27 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // WHY 4 pages (16 KB): matches spawn() stack size; sufficient for musl
     // libc start-up (argc/argv + environ + aux vectors + initial stack frame).
     const EXEC_STACK_PAGES: usize = 4;
-    let mut new_stack_base: usize = 0;
+    // WHY array-tracked (#251): page::alloc_page() is a bitmap scanner with
+    // no contiguity guarantee; an OOM rollback that assumes
+    // `new_stack_base + j * PAGE_SIZE` names the j-th allocated page can free
+    // an unrelated live page. Recording each returned address makes the
+    // rollback exact regardless of fragmentation.
+    let mut exec_stack_pages: [usize; EXEC_STACK_PAGES] = [0; EXEC_STACK_PAGES];
     for i in 0..EXEC_STACK_PAGES {
         match page::alloc_page() {
-            Some(phys) => {
-                if i == 0 {
-                    new_stack_base = phys;
-                }
-            }
+            Some(phys) => exec_stack_pages[i] = phys,
             None => {
-                // OOM: free already-allocated stack pages and abort.
+                // OOM: free exactly the pages allocated so far, then abort.
                 for j in 0..i {
                     // SAFETY: pages were returned by alloc_page() in this loop;
                     // they have not been mapped or used yet.
-                    unsafe { page::free_page(new_stack_base + j * page::PAGE_SIZE); }
+                    unsafe { page::free_page(exec_stack_pages[j]); }
                 }
                 return ENOMEM;
             }
         }
     }
+    let new_stack_base = exec_stack_pages[0];
     let new_stack_top = new_stack_base + EXEC_STACK_PAGES * page::PAGE_SIZE;
 
     // --- Step 5: build argc/argv on the new stack ---
@@ -936,13 +948,17 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                     let rollback_vaddr = current + j * page::PAGE_SIZE;
                     // SAFETY: pt is the current process's valid L1 table and
                     // rollback_vaddr is page-aligned within the heap region.
-                    // These pages were successfully mapped in earlier iterations.
+                    // These pages were successfully mapped in earlier
+                    // iterations; the physical frame is read before the L2
+                    // entry is cleared so it can be returned to the page
+                    // allocator instead of leaking (#226).
                     unsafe {
+                        let rollback_phys = mmu::read_l2_phys(pt, rollback_vaddr);
                         mmu::unmap_page(pt, rollback_vaddr);
-                        // NOTE: we can't easily recover the physical address of
-                        // already-mapped pages without reading the L2 entry. For
-                        // simplicity, we accept the leak on OOM during brk grow.
-                        // A production kernel would track the phys addrs.
+                        mmu::flush_tlb_page(rollback_vaddr);
+                        if let Some(rollback_phys) = rollback_phys {
+                            page::free_page(rollback_phys);
+                        }
                     }
                 }
                 let Ok(current_u32) = u32::try_from(current) else { return EINVAL; };
@@ -968,16 +984,18 @@ fn sys_brk(new_break_raw: u32) -> u32 {
         for i in 0..pages_to_free {
             let vaddr = new_break + i * page::PAGE_SIZE;
             // SAFETY: pt is the current process's valid L1 table and vaddr is
-            // page-aligned within the currently mapped heap region.
-            // flush_tlb_page invalidates the TLB entry after the L2 entry is zeroed.
+            // page-aligned within the currently mapped heap region. The
+            // physical frame is read before the L2 entry is cleared so it can
+            // be returned to the page allocator instead of leaking (#226);
+            // flush_tlb_page invalidates the TLB entry after the L2 entry is
+            // zeroed.
             unsafe {
+                let phys = mmu::read_l2_phys(pt, vaddr);
                 mmu::unmap_page(pt, vaddr);
-                // NOTE: we don't have an easy way to get the physical address
-                // from the L2 entry after zeroing it. For brk shrink, the pages
-                // were contiguously allocated and the physical addresses are not
-                // readily recoverable without reading L2 before clearing.
-                // A production kernel would read the L2 entry before clearing.
                 mmu::flush_tlb_page(vaddr);
+                if let Some(phys) = phys {
+                    page::free_page(phys);
+                }
             }
         }
         process::set_heap_break(new_break);
@@ -1692,6 +1710,16 @@ mod tests {
         assert_eq!(EFAULT, 0xFFFF_FFF2u32, "EFAULT must be two's complement -14");
     }
 
+    /// #220: a path_ptr within MAX_PATH (256) bytes of RAM_END must be
+    /// rejected with EFAULT before any read, instead of scanning past
+    /// RAM_END into unmapped/device memory.
+    #[test]
+    fn execve_rejects_path_pointer_near_ram_end() {
+        let result = sys_execve((kconfig::RAM_END - 1) as u32, 0, 0);
+        assert_eq!(result, EFAULT,
+            "execve must reject a path pointer within MAX_PATH bytes of RAM_END instead of scanning past it");
+    }
+
     /// REQ-07: execve must return ENOENT when the path is not found in ramfs.
     ///
     /// WHY: after path validation, sys_execve calls fd::ramfs_find. This test
@@ -1732,6 +1760,40 @@ mod tests {
 
         // ENOENT has the correct two's-complement encoding.
         assert_eq!(ENOENT, 0xFFFF_FFFEu32, "ENOENT must be two's complement -2");
+    }
+
+    /// #255: write(1, ...) after dup2(pipe_write_end, 1) must deliver data to
+    /// the pipe, not silently continue to UART.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn write_dispatch_respects_dup2_redirected_stdout() {
+        unsafe {
+            let table = &mut *core::ptr::addr_of_mut!(fd::FD_TABLE);
+            *table = fd::FdTable::new();
+
+            static mut FDS: [u32; 2] = [0, 0];
+            let fds_ptr = core::ptr::addr_of_mut!(FDS) as u32;
+            let pipe_result = pipe::sys_pipe(fds_ptr);
+            assert_eq!(pipe_result, 0, "pipe creation must succeed");
+            let fds = &*core::ptr::addr_of!(FDS);
+            let read_fd = fds[0];
+            let write_fd = fds[1];
+
+            let dup_result = fd::sys_dup2(write_fd, 1);
+            assert_eq!(dup_result, 1, "dup2 must install the pipe write end at fd 1");
+
+            static mut MSG: [u8; 5] = *b"hello";
+            let msg_ptr = core::ptr::addr_of!(MSG) as u32;
+            let written = sys_write_dispatch(1, msg_ptr, 5);
+            assert_eq!(written, 5, "write(1, ...) after dup2 must report 5 bytes written");
+
+            static mut BUF: [u8; 5] = [0u8; 5];
+            let buf_ptr = core::ptr::addr_of_mut!(BUF) as u32;
+            let read_result = sys_read_with_pipe(read_fd, buf_ptr, 5);
+            assert_eq!(read_result, 5, "5 bytes must be read back from the pipe");
+            assert_eq!(&*core::ptr::addr_of!(BUF), b"hello",
+                "pipe must receive the exact bytes written to fd 1, not UART");
+        }
     }
 
     // ---- Syscall table completeness tests ----
@@ -1999,30 +2061,62 @@ mod tests {
     }
 
     /// Shrinking the heap via brk must correctly update the program break
-    /// back to the requested value.
+    /// back to the requested value AND return the underlying physical pages
+    /// to the allocator (#226) — not just unmap the page-table entries.
     ///
     /// WHY: brk shrink is how musl's free() returns memory. An incorrect
-    /// shrink leaves the break misreported, breaking subsequent brk queries.
-    ///
-    /// NOTE: the current brk shrink path unmaps page-table entries but does
-    /// not call free_page (physical address not recoverable from a zeroed L2
-    /// entry — see comment in sys_brk). The break value is still correctly
-    /// updated.
+    /// shrink leaves the break misreported, breaking subsequent brk queries;
+    /// unmapping without freeing leaks the physical frame permanently.
     #[test]
     fn brk_shrink_frees_pages() {
         unsafe { setup_mm(); }
         let initial = sys_brk(0);
+        let free_before_grow = page::free_count();
 
         // Grow by two pages.
         let grown = initial + u32::try_from(2 * crate::page::PAGE_SIZE).unwrap_or_default();
         let at_grown = sys_brk(grown);
         assert_eq!(at_grown, grown, "brk must advance to grown");
+        assert_eq!(
+            page::free_count(), free_before_grow - 2,
+            "brk grow must consume exactly 2 physical pages"
+        );
 
         // Shrink back to initial break.
         let result = sys_brk(initial);
         assert_eq!(
             result, initial,
             "brk shrink must return break to initial value"
+        );
+        assert_eq!(
+            page::free_count(), free_before_grow,
+            "brk shrink must return exactly the 2 released pages to the allocator (#226)"
+        );
+    }
+
+    /// #226: an OOM partway through a brk grow must roll back exactly the
+    /// pages it mapped before failing, not leak them.
+    #[test]
+    fn brk_grow_oom_rollback_frees_mapped_pages() {
+        unsafe { setup_mm(); }
+        let initial = sys_brk(0);
+
+        // Shrink the free pool to exactly 1 page so a 3-page brk grow OOMs
+        // after mapping the first page.
+        unsafe {
+            crate::page::init(0x4000_0000, 0x4000_0000 + 5 * crate::page::PAGE_SIZE, 0x4000_0000 + 4 * crate::page::PAGE_SIZE);
+        }
+        let free_before = page::free_count();
+        assert_eq!(free_before, 1, "test setup must yield exactly 1 free page");
+
+        let requested = initial + u32::try_from(3 * crate::page::PAGE_SIZE).unwrap_or_default();
+        let result = sys_brk(requested);
+        assert_eq!(result, initial, "brk must return the unchanged break on OOM");
+
+        let free_after = page::free_count();
+        assert_eq!(
+            free_after, free_before,
+            "OOM rollback must return exactly the pages mapped before the failure, leaving free-count unchanged (#226)"
         );
     }
 
@@ -2062,6 +2156,54 @@ mod tests {
             addr2, MAP_FAILED,
             "mmap after munmap must succeed (mapping record was freed)"
         );
+    }
+
+    /// #251: an OOM partway through sys_execve's stack allocation must roll
+    /// back exactly the pages allocated so far. Uses a minimal ELF32 LE ARM
+    /// header with e_phnum = 0 (mirrors elf.rs's make_valid_ehdr test
+    /// helper) so elf::load consumes zero pages and only the execve stack
+    /// allocation exercises the page allocator; the ramfs Vec allocation in
+    /// fd::ramfs_find is unaffected because #[global_allocator] is
+    /// #[cfg(not(test))]-only (heap allocations under test use the host's
+    /// default allocator, decoupled from page::alloc_page()).
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn execve_oom_rollback_frees_exact_stack_pages() {
+        unsafe {
+            process::reset_for_test();
+
+            let mut elf = [0u8; 52];
+            elf[0] = 0x7F; elf[1] = b'E'; elf[2] = b'L'; elf[3] = b'F';
+            elf[4] = 1; elf[5] = 1; elf[6] = 1;
+            elf[16] = 2;
+            elf[18] = 40;
+            elf[20] = 1;
+            elf[25] = 0x80; // e_entry = 0x8000
+            elf[28] = 52;   // e_phoff
+            elf[40] = 52;   // e_ehsize
+            elf[42] = 32;   // e_phentsize
+            elf[44] = 0;    // e_phnum
+
+            let mut fs = crate::ramfs::RamFs::new();
+            fs.add("bin", &elf);
+            fd::init_ramfs(fs);
+
+            // Shrink the free pool to exactly 2 pages so the 4-page execve
+            // stack allocation (EXEC_STACK_PAGES = 4) OOMs on the 3rd page.
+            page::init(0x4000_0000, 0x4000_0000 + 6 * crate::page::PAGE_SIZE, 0x4000_0000 + 4 * crate::page::PAGE_SIZE);
+            let free_before = page::free_count();
+            assert_eq!(free_before, 2, "test setup must yield exactly 2 free pages");
+
+            static mut PATH: [u8; 5] = *b"/bin\0";
+            let path_ptr = core::ptr::addr_of!(PATH) as *const u8 as u32;
+
+            let result = sys_execve(path_ptr, 0, 0);
+            assert_eq!(result, ENOMEM, "execve must fail with ENOMEM when the stack allocation OOMs");
+
+            let free_after = page::free_count();
+            assert_eq!(free_after, free_before,
+                "OOM rollback must return exactly the pages allocated before the failure, leaving free-count unchanged (#251)");
+        }
     }
 
     // ---- Slab allocator integration test ----
@@ -2138,5 +2280,38 @@ mod tests {
                 "free_count must equal number of deallocations ({N}), got {frees}"
             );
         }
+    }
+
+    // ---- Sleep syscall (#264) ----
+
+    /// #264: SYS_Sleep's tick-conversion must round up like sys_nanosleep's
+    /// (ceil(ms / TICK_MS)), now that Sleep uses the same set_wake_tick +
+    /// busy-wait + clear_wake_tick pattern instead of a bare uptime_ms()
+    /// busy-wait that never touched process state at all.
+    #[test]
+    fn sleep_tick_conversion_matches_nanosleep_rounding() {
+        const TICK_MS: u64 = 10;
+        let ms: u64 = 1_000;
+        let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
+        assert_eq!(ticks_needed, 100, "1000 ms must convert to 100 ticks at 10 ms/tick");
+
+        let ms: u64 = 5;
+        let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
+        assert_eq!(ticks_needed, 1, "5 ms sleep must round up to 1 tick, not truncate to 0");
+    }
+
+    /// #264: Sleep(0) must exercise the full set_wake_tick -> wait ->
+    /// clear_wake_tick sequence and leave the process Running, not stuck
+    /// Sleeping. arg0 = 0 makes wake_tick == now_ticks so the wait loop
+    /// resolves immediately without hanging the single-threaded host test
+    /// (nothing else advances the settable exceptions_stub tick source).
+    #[test]
+    fn sleep_zero_round_trips_process_state() {
+        unsafe { process::reset_for_test(); }
+        let result = dispatch(Syscall::Sleep.as_u32(), 0, 0, 0, 0);
+        assert_eq!(result, 0, "Sleep(0) must return 0");
+        let state = unsafe { process::get_state(0) };
+        assert_eq!(state, Some(process::State::Running),
+            "process must be Running (not left Sleeping) after Sleep returns");
     }
 }

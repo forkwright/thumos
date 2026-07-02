@@ -222,6 +222,45 @@ pub unsafe fn unmap_page(l1_phys: usize, virt_addr: usize) {
     }
 }
 
+/// Read the physical small-page base address mapped at `virt_addr` in
+/// `l1_phys`'s address space, without clearing the L2 entry.
+///
+/// WHY (#225, #226): `unmap_page` zeroes the L2 entry, permanently losing the
+/// physical frame it pointed to unless the caller reads it out first. Callers
+/// that need to return the frame to `page::free_page` must call this before
+/// `unmap_page`, not after.
+///
+/// Returns `None` if no L2 table is installed at this L1 index, or if the
+/// L2 entry is not currently mapped.
+///
+/// # Safety
+///
+/// `l1_phys` must be a valid L1 page table address. `virt_addr` must be
+/// page-aligned.
+pub unsafe fn read_l2_phys(l1_phys: usize, virt_addr: usize) -> Option<usize> {
+    let l1_index = virt_addr >> 20;
+    let l2_index = (virt_addr >> 12) & 0xFF;
+
+    unsafe {
+        let l1_entry_ptr = (l1_phys as *const u32).add(l1_index);
+        let l1_val = l1_entry_ptr.read_volatile();
+
+        if l1_val & 0b11 != page_flags::L1_PAGE_TABLE {
+            return None;
+        }
+
+        let l2_phys = (l1_val & 0xFFFF_FC00) as usize;
+        let l2_entry_ptr = (l2_phys as *const u32).add(l2_index);
+        let l2_val = l2_entry_ptr.read_volatile();
+
+        if l2_val & 0b11 == 0 {
+            return None;
+        }
+
+        Some((l2_val & 0xFFFFF000) as usize)
+    }
+}
+
 /// Update the protection flags on a single 4 KB page.
 ///
 /// Returns true if the page was found and updated, false if not mapped.
@@ -644,6 +683,26 @@ mod tests {
                 "dst must be independent after clone");
             free_addr_space(src);
             free_addr_space(dst);
+        }
+    }
+
+    /// #225/#226: read_l2_phys must return the mapped frame while the page is
+    /// mapped, and None once unmap_page has cleared the entry.
+    #[test]
+    fn read_l2_phys_returns_mapped_frame_and_none_after_unmap() {
+        reset();
+        let l1 = alloc_addr_space().unwrap_or_default();
+        let virt = 0x2000_0000usize;
+        let phys = 0x5000_0000usize;
+        let attrs = page_flags::SMALL_PAGE | page_flags::AP_FULL;
+        unsafe {
+            assert!(map_page(l1, virt, phys, attrs), "map_page must succeed");
+            assert_eq!(read_l2_phys(l1, virt), Some(phys),
+                "read_l2_phys must return the mapped physical frame");
+            unmap_page(l1, virt);
+            assert_eq!(read_l2_phys(l1, virt), None,
+                "read_l2_phys must return None after unmap_page clears the entry");
+            free_addr_space(l1);
         }
     }
 }
