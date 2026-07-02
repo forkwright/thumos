@@ -45,6 +45,9 @@
 
 use core::fmt;
 
+extern crate alloc;
+use alloc::{boxed::Box, vec::Vec};
+
 use subtle::ConstantTimeEq;
 
 use crate::security::{self, KEY_SIZE, SHA256_DIGEST_LEN};
@@ -273,10 +276,15 @@ impl fmt::Display for AuditError {
 /// The ring buffer overwrites the oldest entry when full.  The `head`
 /// index tracks the next write position, and `count` tracks how many
 /// entries are live (up to `MAX_ENTRIES`).
+// INVARIANT: `entries` is heap-allocated (`Box<[AuditEntry]>`), never an
+// inline `[AuditEntry; MAX_ENTRIES]` array. MAX_ENTRIES * size_of::<AuditEntry>()
+// is ~64 KiB; an inline array field would make `AuditLog` itself ~64 KiB and
+// risk a stack overflow the moment a caller binds `AuditLog::new()` to a
+// local on the 64 KiB MT6739 boot stack (#297).
 #[must_use]
 pub(crate) struct AuditLog {
-    /// Ring buffer of audit entries.
-    entries: [AuditEntry; MAX_ENTRIES],
+    /// Ring buffer of audit entries (heap-allocated; see struct INVARIANT).
+    entries: Box<[AuditEntry]>,
     /// Index of the next write position in the ring.
     head: usize,
     /// Number of live entries (0..=MAX_ENTRIES).
@@ -287,17 +295,25 @@ pub(crate) struct AuditLog {
 
 impl AuditLog {
     /// Create a new, empty audit log.
+    ///
+    /// `entries` is built element-by-element into a heap-allocated `Vec`
+    /// and converted to a boxed slice, so the ~64 KiB backing storage is
+    /// never materialized as a single stack frame (#297).
     #[must_use]
     pub(crate) fn new() -> Self {
-        Self {
-            entries: core::array::from_fn(|_| AuditEntry {
+        let mut entries = Vec::with_capacity(MAX_ENTRIES);
+        for _ in 0..MAX_ENTRIES {
+            entries.push(AuditEntry {
                 timestamp: 0,
                 event_type: AuditEventType::AuthFail,
                 pid: 0,
                 detail: [0u8; DETAIL_LEN],
                 detail_len: 0,
                 hmac: [0u8; SHA256_DIGEST_LEN],
-            }),
+            });
+        }
+        Self {
+            entries: entries.into_boxed_slice(),
             head: 0,
             count: 0,
             last_hmac: GENESIS_HMAC,
@@ -972,6 +988,19 @@ mod tests {
         assert!(
             utilization_pct >= 80,
             "buffer utilization must be >= 80%: {utilization_pct}%"
+        );
+    }
+
+    #[test]
+    fn audit_log_struct_is_stack_safe() {
+        // WHY: guards the #297 fix — AuditLog itself must stay small (a
+        // Box<[AuditEntry]> fat pointer + a few scalars), never an inline
+        // ~64 KiB array, so AuditLog::new() is safe to bind to a local on
+        // the 64 KiB MT6739 boot stack.
+        let size = core::mem::size_of::<AuditLog>();
+        assert!(
+            size < 256,
+            "AuditLog must stay small (heap-backed entries); got {size} bytes"
         );
     }
 }
