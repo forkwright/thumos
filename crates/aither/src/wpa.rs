@@ -11,6 +11,8 @@ use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
 use sha1::Sha1;
 
+use crate::eapol::EapolKeyFrame;
+
 type HmacSha1 = Hmac<Sha1>;
 
 /// PBKDF2 iteration count for PSK derivation (IEEE 802.11-2020 fixed value).
@@ -226,6 +228,48 @@ fn prf(key: &[u8], input: &[u8], output: &mut [u8]) {
     }
 }
 
+/// Tracks the EAPOL-Key replay counter across a WPA 4-way handshake
+/// supplicant session.
+///
+/// IEEE 802.11-2020 §12.7.6.2 requires the supplicant reject any EAPOL-Key
+/// frame whose replay counter does not strictly exceed the last accepted
+/// value, closing the replay window a KRACK-class attack depends on.
+/// `EapolKeyFrame::replay_counter` (see `crate::eapol`) is parsed from the
+/// wire but was previously never checked against prior state anywhere in
+/// this crate (audit #347); this session type is the enforcement point.
+#[derive(Debug, Default)]
+pub(crate) struct Supplicant4WaySession {
+    last_replay_counter: Option<u64>,
+}
+
+impl Supplicant4WaySession {
+    /// Create a session with no replay counter observed yet.
+    #[must_use]
+    pub(crate) const fn new() -> Self {
+        Self {
+            last_replay_counter: None,
+        }
+    }
+
+    /// Validate `frame`'s replay counter against the last accepted value.
+    ///
+    /// Returns `true` and records the counter when it is the first frame of
+    /// the session or strictly exceeds the last accepted value. Returns
+    /// `false` — without updating internal state — for a replayed or
+    /// out-of-order counter; callers must drop the frame before processing
+    /// any key material it carries.
+    #[must_use]
+    pub(crate) const fn accept(&mut self, frame: &EapolKeyFrame) -> bool {
+        if let Some(last) = self.last_replay_counter
+            && frame.replay_counter <= last
+        {
+            return false;
+        }
+        self.last_replay_counter = Some(frame.replay_counter);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +346,84 @@ mod tests {
         );
     }
 
+    /// IEEE Std 802.11i-2004, Table H.13 / Table H.15 (Annex H.7.1,
+    /// "Pairwise key derivation") — the standard's own published PTK
+    /// worked example. Note the published SNonce/ANonce are 20 bytes each
+    /// (not the 32-byte EAPOL Key Nonce field), as printed in Table H.13;
+    /// this test exercises the shared `prf` primitive directly with the
+    /// literal published B-string rather than `derive_ptk`'s 32-byte-nonce
+    /// typed wrapper, since 20-byte values cannot be passed through that
+    /// signature without altering the vector.
+    #[test]
+    // WHY: expected_kck/expected_kek/expected_tk mirror the IEEE standard's
+    // own KCK/KEK/TK terminology (Table H.15) — renaming would obscure the
+    // cross-reference to the source table.
+    #[allow(clippy::similar_names)]
+    fn prf384_matches_ieee_802_11i_h7_1_vector() {
+        let pmk: [u8; PMK_LEN] = [
+            0x0d, 0xc0, 0xd6, 0xeb, 0x90, 0x55, 0x5e, 0xd6, 0x41, 0x97, 0x56, 0xb9, 0xa1, 0x5e,
+            0xc3, 0xe3, 0x20, 0x9b, 0x63, 0xdf, 0x70, 0x7d, 0xd5, 0x08, 0xd1, 0x45, 0x81, 0xf8,
+            0x98, 0x27, 0x21, 0xaf,
+        ];
+        let aa: [u8; 6] = [0xa0, 0xa1, 0xa1, 0xa3, 0xa4, 0xa5];
+        let spa: [u8; 6] = [0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5];
+        let snonce: [u8; 20] = [
+            0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xd0, 0xd1, 0xd2, 0xd3,
+            0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9,
+        ];
+        let anonce: [u8; 20] = [
+            0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xf0, 0xf1, 0xf2, 0xf3,
+            0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9,
+        ];
+
+        // B = Min(AA,SPA) || Max(AA,SPA) || Min(ANonce,SNonce) || Max(ANonce,SNonce)
+        let (mac_lo, mac_hi) = if aa <= spa { (aa, spa) } else { (spa, aa) };
+        let (nonce_lo, nonce_hi) = if anonce <= snonce {
+            (anonce, snonce)
+        } else {
+            (snonce, anonce)
+        };
+        let mut input = Vec::with_capacity(23 + 1 + 6 + 6 + 20 + 20);
+        input.extend_from_slice(b"Pairwise key expansion");
+        input.push(0x00);
+        input.extend_from_slice(&mac_lo);
+        input.extend_from_slice(&mac_hi);
+        input.extend_from_slice(&nonce_lo);
+        input.extend_from_slice(&nonce_hi);
+
+        let mut ptk = [0u8; PTK_LEN];
+        prf(&pmk, &input, &mut ptk);
+
+        let expected_kck: [u8; KCK_LEN] = [
+            0xaa, 0x7c, 0xfc, 0x85, 0x60, 0x25, 0x1e, 0x4b, 0xc6, 0x87, 0xe0, 0xcb, 0x8d, 0x29,
+            0x83, 0x63,
+        ];
+        let expected_kek: [u8; KEK_LEN] = [
+            0xba, 0x53, 0x16, 0x3d, 0xf3, 0x2a, 0x86, 0x38, 0xf4, 0x79, 0xab, 0xe3, 0x4b, 0xfd,
+            0x2b, 0xc8,
+        ];
+        let expected_tk: [u8; TK_LEN] = [
+            0x8c, 0xb7, 0x78, 0x33, 0x2e, 0x94, 0xac, 0xa6, 0xd3, 0x0b, 0x89, 0xcb, 0xe8, 0x2a,
+            0x9c, 0xa9,
+        ];
+
+        assert_eq!(
+            &ptk[0..16],
+            &expected_kck,
+            "KCK must match IEEE 802.11i-2004 Table H.15"
+        );
+        assert_eq!(
+            &ptk[16..32],
+            &expected_kek,
+            "KEK must match IEEE 802.11i-2004 Table H.15"
+        );
+        assert_eq!(
+            &ptk[32..48],
+            &expected_tk,
+            "TK must match IEEE 802.11i-2004 Table H.15 / Table H.14"
+        );
+    }
+
     #[test]
     fn mic_computation_is_deterministic() {
         let kck = [0x37u8; KCK_LEN];
@@ -355,6 +477,70 @@ mod tests {
             compute_mic(&kck_a, data),
             compute_mic(&kck_b, data),
             "different KCKs must produce different MICs"
+        );
+    }
+
+    // --- Supplicant4WaySession replay-counter enforcement (audit #347) ---
+
+    fn make_key_frame(replay_counter: u64) -> EapolKeyFrame {
+        EapolKeyFrame {
+            descriptor_type: crate::eapol::DESCRIPTOR_TYPE_RSN,
+            key_info: crate::eapol::KeyInfo(0x008a),
+            key_length: 16,
+            replay_counter,
+            nonce: [0u8; crate::eapol::NONCE_LEN],
+            iv: [0u8; crate::eapol::IV_LEN],
+            rsc: 0,
+            mic: [0u8; crate::eapol::MIC_LEN],
+            key_data: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn supplicant_session_accepts_first_replay_counter() {
+        let mut session = Supplicant4WaySession::new();
+        assert!(
+            session.accept(&make_key_frame(1)),
+            "the first frame of a session must be accepted regardless of counter value"
+        );
+    }
+
+    #[test]
+    fn supplicant_session_accepts_strictly_increasing_counters() {
+        let mut session = Supplicant4WaySession::new();
+        assert!(session.accept(&make_key_frame(1)), "counter 1 must be accepted");
+        assert!(session.accept(&make_key_frame(2)), "counter 2 must be accepted");
+        assert!(session.accept(&make_key_frame(100)), "counter 100 must be accepted");
+    }
+
+    #[test]
+    fn supplicant_session_rejects_replayed_equal_counter() {
+        let mut session = Supplicant4WaySession::new();
+        assert!(session.accept(&make_key_frame(5)), "counter 5 must be accepted");
+        assert!(
+            !session.accept(&make_key_frame(5)),
+            "a replayed frame with an equal counter must be rejected"
+        );
+    }
+
+    #[test]
+    fn supplicant_session_rejects_lower_counter() {
+        let mut session = Supplicant4WaySession::new();
+        assert!(session.accept(&make_key_frame(10)), "counter 10 must be accepted");
+        assert!(
+            !session.accept(&make_key_frame(3)),
+            "a frame with a lower counter than previously seen must be rejected"
+        );
+    }
+
+    #[test]
+    fn supplicant_session_state_reflects_last_accepted_not_last_seen() {
+        let mut session = Supplicant4WaySession::new();
+        assert!(session.accept(&make_key_frame(10)), "counter 10 must be accepted");
+        assert!(!session.accept(&make_key_frame(10)), "replayed counter 10 must be rejected");
+        assert!(
+            session.accept(&make_key_frame(11)),
+            "state must reflect the last ACCEPTED counter, not the rejected one"
         );
     }
 }

@@ -755,6 +755,12 @@ pub struct WpaHandshake {
     pub ptk: Option<Ptk>,
     /// Replay counter from the most recent authenticator message.
     pub replay_counter: u64,
+    /// EAPOL protocol version (IEEE 802.1X-2020 §11.3.1) of the most
+    /// recently received frame. Msg3 MIC reconstruction and the Msg2/Msg4
+    /// responses echo this value instead of hardcoding version 2 (audit
+    /// #259) — a version-1 AP (802.1X-2001, common on embedded/enterprise
+    /// gear) otherwise fails every MIC check.
+    pub eapol_version: u8,
 }
 
 impl WpaHandshake {
@@ -767,7 +773,18 @@ impl WpaHandshake {
             snonce: [0u8; NONCE_LEN],
             ptk: None,
             replay_counter: 0,
+            eapol_version: 2,
         }
+    }
+
+    /// Record the EAPOL protocol version of the most recently received frame.
+    ///
+    /// Callers should invoke this with the wire frame's `version` byte
+    /// before passing its key body to [`Self::process_message`] — Msg3 MIC
+    /// reconstruction and Msg2/Msg4 responses then echo the value instead
+    /// of hardcoding version 2 (audit #259).
+    pub(crate) fn set_eapol_version(&mut self, version: u8) {
+        self.eapol_version = version;
     }
 
     /// Process an incoming EAPOL-Key frame (Message 1 or Message 3).
@@ -789,8 +806,11 @@ impl WpaHandshake {
     ) -> HandshakeState {
         match self.state {
             HandshakeState::AwaitMsg1 => {
-                // Message 1: AP sends ANonce, ack=true, mic=false
-                if !key_frame.key_info.ack() || key_frame.key_info.mic() {
+                // Message 1: AP sends ANonce, ack=true, mic=false, pairwise=true
+                if !key_frame.key_info.ack()
+                    || key_frame.key_info.mic()
+                    || !key_frame.key_info.pairwise()
+                {
                     self.state = HandshakeState::Failed;
                     return self.state;
                 }
@@ -813,10 +833,11 @@ impl WpaHandshake {
                 self.state
             }
             HandshakeState::AwaitMsg3 => {
-                // Message 3: AP sends ANonce again, ack=true, mic=true, install=true
+                // Message 3: AP sends ANonce again, ack=true, mic=true, install=true, pairwise=true
                 if !key_frame.key_info.ack()
                     || !key_frame.key_info.mic()
                     || !key_frame.key_info.install()
+                    || !key_frame.key_info.pairwise()
                 {
                     self.state = HandshakeState::Failed;
                     return self.state;
@@ -830,20 +851,24 @@ impl WpaHandshake {
                 self.replay_counter = key_frame.replay_counter;
 
                 // Verify MIC using KCK from PTK (IEEE 802.11-2020 section 12.7.6.4).
-                if let Some(ref ptk) = self.ptk {
-                    let mut zeroed_kf = key_frame.clone();
-                    zeroed_kf.mic = [0u8; MIC_LEN];
-                    let zeroed_frame = EapolFrame {
-                        version: 2,
-                        packet_type: EapolType::Key,
-                        key_frame: Some(zeroed_kf),
-                        raw_body: Vec::new(),
-                    };
-                    let encoded = eapol_encode(&zeroed_frame);
-                    if !verify_mic(&ptk.kck, &encoded, &key_frame.mic) {
-                        self.state = HandshakeState::Failed;
-                        return self.state;
-                    }
+                // Fail closed (#274): a missing PTK means no MIC can be
+                // verified — never fall through to SendMsg4 unchecked.
+                let Some(ref ptk) = self.ptk else {
+                    self.state = HandshakeState::Failed;
+                    return self.state;
+                };
+                let mut zeroed_kf = key_frame.clone();
+                zeroed_kf.mic = [0u8; MIC_LEN];
+                let zeroed_frame = EapolFrame {
+                    version: self.eapol_version,
+                    packet_type: EapolType::Key,
+                    key_frame: Some(zeroed_kf),
+                    raw_body: Vec::new(),
+                };
+                let encoded = eapol_encode(&zeroed_frame);
+                if !verify_mic(&ptk.kck, &encoded, &key_frame.mic) {
+                    self.state = HandshakeState::Failed;
+                    return self.state;
                 }
 
                 self.state = HandshakeState::SendMsg4;
@@ -857,6 +882,20 @@ impl WpaHandshake {
     pub(crate) fn complete(&mut self) {
         if self.state == HandshakeState::SendMsg4 {
             self.state = HandshakeState::Complete;
+        }
+    }
+
+    /// Advance the handshake after Message 2 has been transmitted.
+    ///
+    /// Transitions `SendMsg2 -> AwaitMsg3`. Without this call the state
+    /// machine has no path out of `SendMsg2` (audit #260): `process_message`
+    /// only has match arms for `AwaitMsg1` and `AwaitMsg3`, so the AP's
+    /// Message 3 would otherwise fall through the `_ => self.state`
+    /// catch-all and the handshake could never reach `SendMsg4`/`Complete`.
+    /// No-ops (state unchanged) unless currently in `SendMsg2`.
+    pub(crate) fn msg2_sent(&mut self) {
+        if self.state == HandshakeState::SendMsg2 {
+            self.state = HandshakeState::AwaitMsg3;
         }
     }
 
@@ -884,7 +923,7 @@ impl WpaHandshake {
                 // Compute MIC over the frame with zeroed MIC field.
                 if let Some(ref ptk) = self.ptk {
                     let frame_for_mic = EapolFrame {
-                        version: 2,
+                        version: self.eapol_version,
                         packet_type: EapolType::Key,
                         key_frame: Some(kf.clone()),
                         raw_body: Vec::new(),
@@ -892,7 +931,7 @@ impl WpaHandshake {
                     kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
                 }
                 Some(EapolFrame {
-                    version: 2,
+                    version: self.eapol_version,
                     packet_type: EapolType::Key,
                     key_frame: Some(kf),
                     raw_body: Vec::new(),
@@ -915,7 +954,7 @@ impl WpaHandshake {
                 // Compute MIC over the frame with zeroed MIC field.
                 if let Some(ref ptk) = self.ptk {
                     let frame_for_mic = EapolFrame {
-                        version: 2,
+                        version: self.eapol_version,
                         packet_type: EapolType::Key,
                         key_frame: Some(kf.clone()),
                         raw_body: Vec::new(),
@@ -923,7 +962,7 @@ impl WpaHandshake {
                     kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
                 }
                 Some(EapolFrame {
-                    version: 2,
+                    version: self.eapol_version,
                     packet_type: EapolType::Key,
                     key_frame: Some(kf),
                     raw_body: Vec::new(),
@@ -1462,6 +1501,81 @@ mod tests {
     }
 
     #[test]
+    fn handshake_rejects_msg1_with_pairwise_bit_clear() {
+        setup_csprng();
+        let mut hs = WpaHandshake::new();
+        let pmk = [0u8; PMK_LEN];
+        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        // Group-key frame: ack=true, mic=false, pairwise=false (invalid as Msg1).
+        let msg1 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x0082), // version=2, ack; pairwise CLEAR
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+
+        let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
+        assert_eq!(
+            state,
+            HandshakeState::Failed,
+            "must reject a group-key (pairwise=0) frame as Message 1"
+        );
+    }
+
+    #[test]
+    fn handshake_rejects_msg3_with_pairwise_bit_clear() {
+        setup_csprng();
+        let mut hs = WpaHandshake::new();
+        let pmk = [0u8; PMK_LEN];
+        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        let msg1 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x008a),
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+        hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
+        // Drive to AwaitMsg3 directly (state is `pub`); independent of
+        // whether audit #260's msg2_sent() transition has landed.
+        hs.state = HandshakeState::AwaitMsg3;
+
+        // Group-key frame masquerading as Msg3: ack, mic, install set,
+        // pairwise CLEAR (0x01c2 = version=2 | install | ack | mic).
+        let msg3 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x01c2),
+            key_length: 16,
+            replay_counter: 2,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+
+        let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
+        assert_eq!(
+            state,
+            HandshakeState::Failed,
+            "must reject a group-key (pairwise=0) frame as Message 3"
+        );
+    }
+
+    #[test]
     fn handshake_builds_msg2_response() {
         setup_csprng();
         let mut hs = WpaHandshake::new();
@@ -1500,6 +1614,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn handshake_completes_full_round_trip_after_msg2_sent() {
+        setup_csprng();
+        let mut hs = WpaHandshake::new();
+        let pmk = [0u8; PMK_LEN];
+        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        let msg1 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x008a),
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+        let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
+        assert_eq!(state, HandshakeState::SendMsg2, "Message 1 must yield SendMsg2");
+
+        assert!(
+            hs.build_response().is_some(),
+            "SendMsg2 must produce a Message 2 response"
+        );
+        hs.msg2_sent();
+        assert_eq!(
+            hs.state,
+            HandshakeState::AwaitMsg3,
+            "msg2_sent must transition SendMsg2 -> AwaitMsg3"
+        );
+
+        // Message 3: ack=true, mic=true, install=true, pairwise=true.
+        let mut msg3 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x01ca),
+            key_length: 16,
+            replay_counter: 2,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+        assert!(hs.ptk.is_some(), "PTK must be derived after Message 1");
+        if let Some(ptk) = hs.ptk.clone() {
+            let zeroed_frame = EapolFrame {
+                version: 2,
+                packet_type: EapolType::Key,
+                key_frame: Some(msg3.clone()),
+                raw_body: Vec::new(),
+            };
+            msg3.mic = compute_mic(&ptk.kck, &eapol_encode(&zeroed_frame));
+        }
+
+        let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
+        assert_eq!(
+            state,
+            HandshakeState::SendMsg4,
+            "Message 3 after msg2_sent must be processed and yield SendMsg4"
+        );
+    }
+
     // --- Key info flags ---
 
     #[test]
@@ -1511,6 +1689,38 @@ mod tests {
         assert!(ki.ack(), "ack bit must be set");
         assert!(!ki.install(), "install bit must be clear");
         assert!(!ki.mic(), "MIC bit must be clear");
+    }
+
+    #[test]
+    fn handshake_fails_closed_when_awaiting_msg3_without_ptk() {
+        let mut hs = WpaHandshake::new();
+        let pmk = [0u8; PMK_LEN];
+        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        // Driver misuse: reach AwaitMsg3 without ever processing Message 1,
+        // so `ptk` is still None (`state` is `pub`, per audit #274/#260).
+        hs.state = HandshakeState::AwaitMsg3;
+        assert!(hs.ptk.is_none(), "PTK must be None on this path");
+
+        let msg3 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x01ca), // version=2, pairwise, install, ack, MIC
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0xffu8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+
+        let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
+        assert_eq!(
+            state,
+            HandshakeState::Failed,
+            "entering AwaitMsg3 with ptk == None must fail closed, never reach SendMsg4"
+        );
     }
 
     // --- Error path coverage ---
@@ -1579,6 +1789,81 @@ mod tests {
         assert_ne!(ptk.tk, [0u8; TK_LEN], "TK must not be zero");
     }
 
+    /// IEEE Std 802.11i-2004, Table H.13 / Table H.15 (Annex H.7.1,
+    /// "Pairwise key derivation") — the standard's own published PTK
+    /// worked example. Note the published SNonce/ANonce are 20 bytes each
+    /// (not the 32-byte EAPOL Key Nonce field), as printed in Table H.13;
+    /// this test exercises `prf_384` directly with the literal published
+    /// B-string rather than `derive_ptk`'s 32-byte-nonce typed wrapper,
+    /// since 20-byte values cannot be passed through that signature
+    /// without altering the vector.
+    #[test]
+    // WHY: expected_kck/expected_kek/expected_tk mirror the IEEE standard's
+    // own KCK/KEK/TK terminology (Table H.15) — renaming would obscure the
+    // cross-reference to the source table.
+    #[allow(clippy::similar_names)]
+    fn prf384_matches_ieee_802_11i_h7_1_vector() {
+        let pmk: [u8; PMK_LEN] = [
+            0x0d, 0xc0, 0xd6, 0xeb, 0x90, 0x55, 0x5e, 0xd6, 0x41, 0x97, 0x56, 0xb9, 0xa1, 0x5e,
+            0xc3, 0xe3, 0x20, 0x9b, 0x63, 0xdf, 0x70, 0x7d, 0xd5, 0x08, 0xd1, 0x45, 0x81, 0xf8,
+            0x98, 0x27, 0x21, 0xaf,
+        ];
+        let aa: [u8; 6] = [0xa0, 0xa1, 0xa1, 0xa3, 0xa4, 0xa5];
+        let spa: [u8; 6] = [0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5];
+        let snonce: [u8; 20] = [
+            0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xd0, 0xd1, 0xd2, 0xd3,
+            0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9,
+        ];
+        let anonce: [u8; 20] = [
+            0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xf0, 0xf1, 0xf2, 0xf3,
+            0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9,
+        ];
+
+        // B = Min(AA,SPA) || Max(AA,SPA) || Min(ANonce,SNonce) || Max(ANonce,SNonce)
+        let (mac_lo, mac_hi) = if aa <= spa { (aa, spa) } else { (spa, aa) };
+        let (nonce_lo, nonce_hi) = if anonce <= snonce {
+            (anonce, snonce)
+        } else {
+            (snonce, anonce)
+        };
+        let mut data = Vec::with_capacity(6 + 6 + 20 + 20);
+        data.extend_from_slice(&mac_lo);
+        data.extend_from_slice(&mac_hi);
+        data.extend_from_slice(&nonce_lo);
+        data.extend_from_slice(&nonce_hi);
+
+        let ptk_bytes = prf_384(&pmk, b"Pairwise key expansion", &data);
+
+        let expected_kck: [u8; KCK_LEN] = [
+            0xaa, 0x7c, 0xfc, 0x85, 0x60, 0x25, 0x1e, 0x4b, 0xc6, 0x87, 0xe0, 0xcb, 0x8d, 0x29,
+            0x83, 0x63,
+        ];
+        let expected_kek: [u8; KEK_LEN] = [
+            0xba, 0x53, 0x16, 0x3d, 0xf3, 0x2a, 0x86, 0x38, 0xf4, 0x79, 0xab, 0xe3, 0x4b, 0xfd,
+            0x2b, 0xc8,
+        ];
+        let expected_tk: [u8; TK_LEN] = [
+            0x8c, 0xb7, 0x78, 0x33, 0x2e, 0x94, 0xac, 0xa6, 0xd3, 0x0b, 0x89, 0xcb, 0xe8, 0x2a,
+            0x9c, 0xa9,
+        ];
+
+        assert_eq!(
+            &ptk_bytes[0..16],
+            &expected_kck,
+            "KCK must match IEEE 802.11i-2004 Table H.15"
+        );
+        assert_eq!(
+            &ptk_bytes[16..32],
+            &expected_kek,
+            "KEK must match IEEE 802.11i-2004 Table H.15"
+        );
+        assert_eq!(
+            &ptk_bytes[32..48],
+            &expected_tk,
+            "TK must match IEEE 802.11i-2004 Table H.15 / Table H.14"
+        );
+    }
+
     #[test]
     fn compute_mic_is_16_bytes_nonzero() {
         let kck = [0xCCu8; KCK_LEN];
@@ -1602,5 +1887,59 @@ mod tests {
         let mut bad_mic = compute_mic(&kck, data);
         bad_mic[0] ^= 0xFF; // flip one byte
         assert!(!verify_mic(&kck, data, &bad_mic), "wrong MIC must not verify");
+    }
+
+    #[test]
+    fn handshake_verifies_msg3_mic_using_received_eapol_version() {
+        setup_csprng();
+        for version in [1u8, 2u8] {
+            let mut hs = WpaHandshake::new();
+            hs.set_eapol_version(version);
+            let pmk = [0u8; PMK_LEN];
+            let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+            let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+            let msg1 = EapolKeyFrame {
+                descriptor_type: DESCRIPTOR_TYPE_RSN,
+                key_info: KeyInfo(0x008a),
+                key_length: 16,
+                replay_counter: 1,
+                nonce: [0xaa; NONCE_LEN],
+                iv: [0u8; IV_LEN],
+                rsc: 0,
+                mic: [0u8; MIC_LEN],
+                key_data: Vec::new(),
+            };
+            hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
+            hs.state = HandshakeState::AwaitMsg3;
+
+            let mut msg3 = EapolKeyFrame {
+                descriptor_type: DESCRIPTOR_TYPE_RSN,
+                key_info: KeyInfo(0x01ca),
+                key_length: 16,
+                replay_counter: 2,
+                nonce: [0xaa; NONCE_LEN],
+                iv: [0u8; IV_LEN],
+                rsc: 0,
+                mic: [0u8; MIC_LEN],
+                key_data: Vec::new(),
+            };
+            if let Some(ptk) = hs.ptk.clone() {
+                let frame_for_mic = EapolFrame {
+                    version,
+                    packet_type: EapolType::Key,
+                    key_frame: Some(msg3.clone()),
+                    raw_body: Vec::new(),
+                };
+                msg3.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
+            }
+
+            let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
+            assert_eq!(
+                state,
+                HandshakeState::SendMsg4,
+                "Message 3 MIC must verify using the received EAPOL version {version}"
+            );
+        }
     }
 }
