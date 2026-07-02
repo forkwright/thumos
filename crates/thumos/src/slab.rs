@@ -12,8 +12,13 @@
 //!
 //! # Thread safety
 //!
-//! A single spinlock guards the allocator. This is correct on the single-core
-//! MT6739 boot CPU; the lock also prevents re-entrancy from IRQ handlers.
+//! A single spinlock guards the allocator, with IRQ delivery masked for the
+//! duration of each critical section (mask, then acquire; release, then
+//! unmask -- see `irq::IrqSpinlock`). On the single-core MT6739 boot CPU the
+//! only concurrent caller is an IRQ handler; the atomic flag alone does not
+//! stop that reentrancy -- without masking, an IRQ firing while interrupted
+//! code holds the lock and then allocating would self-deadlock (#322). IRQ
+//! masking is what actually makes the section safe against that case.
 //!
 //! # Invariants
 //!
@@ -22,8 +27,8 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::irq;
 use crate::page;
 
 // ---------------------------------------------------------------------------
@@ -326,55 +331,14 @@ impl SlabAllocator {
 }
 
 // ---------------------------------------------------------------------------
-// Spinlock
-// ---------------------------------------------------------------------------
-
-/// Ticket-free spinlock: a single `AtomicBool` flag.
-///
-/// On a single-core ARM kernel this is equivalent to disabling re-entrancy:
-/// the only concurrent caller is an IRQ handler. If the kernel later becomes
-/// SMP, replace this with a proper ticket lock.
-struct Spinlock {
-    locked: AtomicBool,
-}
-
-impl Spinlock {
-    const fn new() -> Self {
-        Spinlock {
-            locked: AtomicBool::new(false),
-        }
-    }
-
-    /// Spin until the lock is acquired, then return a guard.
-    fn lock(&self) -> SpinGuard<'_> {
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            // Hint the CPU to yield. On ARM, `yield` is a NOP hint that allows
-            // speculative execution to be abandoned on in-order cores.
-            core::hint::spin_loop();
-        }
-        SpinGuard { lock: self }
-    }
-}
-
-struct SpinGuard<'a> {
-    lock: &'a Spinlock,
-}
-
-impl Drop for SpinGuard<'_> {
-    fn drop(&mut self) {
-        self.lock.locked.store(false, Ordering::Release);
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Global state
 // ---------------------------------------------------------------------------
 
-static LOCK: Spinlock = Spinlock::new();
+/// WHY (#322): an `irq::IrqSpinlock`, not a plain atomic flag -- IRQ
+/// delivery is masked for the whole critical section, which is what
+/// actually prevents an allocating IRQ handler from self-deadlocking
+/// against interrupted code that holds this lock.
+static LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
 
 // SAFETY: SlabAllocator is only accessed under LOCK.
 static mut SLAB: SlabAllocator = SlabAllocator::new();
@@ -753,5 +717,42 @@ mod tests {
             let (_, frees) = sa.stats();
             assert_eq!(frees, 0, "dealloc(null) on an initialized allocator must be a no-op, not decrement/crash");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // #322: IRQ-safe locking
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn global_lock_masks_irqs_for_the_critical_section() {
+        // Regression test for #322: the spinlock alone does not stop
+        // IRQ-context reentrancy -- an allocating IRQ handler that fires
+        // while this lock is held self-deadlocks unless IRQ delivery is
+        // masked for the critical section. Host-testable via the mock
+        // IRQ-state seam in `irq` (the real CPSR I-bit is ARM-only).
+        crate::irq::reset_mock();
+        assert!(crate::irq::mock_enabled(), "starts unmasked");
+        let guard = LOCK.lock();
+        assert!(!crate::irq::mock_enabled(), "LOCK.lock() must mask IRQ delivery while held");
+        drop(guard);
+        assert!(crate::irq::mock_enabled(), "dropping the guard must restore IRQ delivery");
+    }
+
+    #[test]
+    fn nested_irq_guard_does_not_unmask_while_global_lock_held() {
+        // The property that prevents the #322 self-deadlock: a nested
+        // critical section (e.g. an IRQ handler's own masking, or a second
+        // lock taken while this one is held) must not unmask IRQ delivery
+        // early and let a handler run before the OUTER critical section --
+        // the slab lock -- has released.
+        crate::irq::reset_mock();
+        let outer = LOCK.lock();
+        assert!(!crate::irq::mock_enabled());
+        let inner = crate::irq::IrqGuard::new();
+        assert!(!crate::irq::mock_enabled());
+        drop(inner);
+        assert!(!crate::irq::mock_enabled(), "inner drop must not unmask while the slab lock is still held");
+        drop(outer);
+        assert!(crate::irq::mock_enabled(), "outer drop restores IRQ delivery");
     }
 }

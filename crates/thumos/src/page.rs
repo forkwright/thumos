@@ -2,8 +2,22 @@
 //!
 //! Simple bitmap allocator for 4 KB pages. The MT6739 has ~914 MB RAM.
 //! The kernel, device memory, and reserved regions are marked as allocated at init.
+//!
+//! # Thread safety
+//!
+//! `PAGE_BITMAP`/`FREE_PAGES` mutations are serialized by `PAGE_LOCK`, an
+//! IRQ-safe spinlock (`irq::IrqSpinlock`) shared by every accessor --
+//! `alloc_page`, `try_free_page`, and `free_count` alike. Without it, an
+//! IRQ-context allocation (the slab allocator's refill path) can interleave
+//! its non-atomic `*word |= 1 << bit` with a direct, non-slab caller
+//! (process creation, mmap/brk, panic-wipe) and hand out the same physical
+//! frame twice (#331). `init()` also takes the lock for the same
+//! `PAGE_BITMAP`/`FREE_PAGES` writes, even though it runs once during early
+//! boot before interrupts are enabled -- no accessor is exempt.
 
 use core::ptr::addr_of_mut;
+
+use crate::irq;
 
 /// Page size: 4 KB (ARM standard).
 pub(crate) const PAGE_SIZE: usize = 4096;
@@ -21,12 +35,16 @@ static mut FIRST_PAGE: usize = 0;
 static mut USABLE_START_PAGE: usize = 0;
 static mut USABLE_END_PAGE: usize = 0;
 
+/// WHY (#331): guards every `PAGE_BITMAP`/`FREE_PAGES` accessor.
+static PAGE_LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
+
 /// Initialize the page allocator.
 ///
 /// # Safety
 ///
 /// Must be called exactly once during kernel init, before any allocations.
 pub unsafe fn init(ram_start: usize, ram_end: usize, kernel_end: usize) {
+    let _g = PAGE_LOCK.lock();
     // SAFETY: page frame index is within physical memory bounds (checked by caller).
     unsafe {
         let usable_start = (kernel_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
@@ -134,6 +152,10 @@ pub unsafe fn zero_usable_range() -> usize {
 
 /// Allocate a single physical page. Returns the physical address, or None.
 pub(crate) fn alloc_page() -> Option<usize> {
+    // WHY (#331): serializes with every other PAGE_BITMAP/FREE_PAGES
+    // accessor, including an IRQ-context caller, so a duplicate-frame race
+    // cannot occur (see the module doc).
+    let _g = PAGE_LOCK.lock();
     // SAFETY: page frame index is within physical memory bounds (checked by caller).
     unsafe {
         if FREE_PAGES == 0 {
@@ -168,6 +190,10 @@ pub(crate) fn alloc_page() -> Option<usize> {
 /// bitmap-corruption / double-free primitive, but callers must still not use a
 /// page after freeing it.
 pub unsafe fn try_free_page(addr: usize) -> bool {
+    // WHY (#331): serializes with every other PAGE_BITMAP/FREE_PAGES
+    // accessor (see the module doc) so a concurrent alloc/free pair can
+    // never observe or corrupt a torn bitmap update.
+    let _g = PAGE_LOCK.lock();
     // SAFETY: every bitmap access below is bounds-checked against the array
     // length, and FREE_PAGES is incremented only when a set bit is actually
     // cleared, so an out-of-range or already-free address cannot corrupt
@@ -247,6 +273,9 @@ pub unsafe fn free_page(addr: usize) {
 
 /// Return the number of free pages.
 pub(crate) fn free_count() -> usize {
+    // WHY (#331): reads FREE_PAGES under the same lock every writer uses,
+    // so this can't observe a torn/partial update mid-mutation.
+    let _g = PAGE_LOCK.lock();
     // SAFETY: page frame index is within physical memory bounds (checked by caller).
     unsafe { FREE_PAGES }
 }
@@ -351,5 +380,51 @@ mod tests {
         // arbitrary base address is safe here.
         let zeroed = unsafe { zero_page_range(0, 5, 5) };
         assert_eq!(zeroed, 0, "an empty range must zero nothing");
+    }
+
+    // -----------------------------------------------------------------------
+    // #331: IRQ-safe locking
+    // -----------------------------------------------------------------------
+    //
+    // WHY these tests exercise PAGE_LOCK directly rather than going through
+    // alloc_page()/try_free_page(): those need page::init() first, and this
+    // file's tests deliberately avoid init() (see the file-level WHY comment
+    // above) because PAGE_BITMAP/FREE_PAGES/FIRST_PAGE are shared statics
+    // that a threaded harness could race across tests. PAGE_LOCK's
+    // masking/nesting contract is independent of whether init() ran, so it
+    // is fully testable in isolation the same way.
+
+    #[test]
+    fn page_lock_masks_irqs_for_the_critical_section() {
+        // Regression test for #331: PAGE_BITMAP/FREE_PAGES mutations must
+        // run inside an IRQ-masked critical section shared by every caller
+        // -- the slab-internal refill path AND the direct callers in
+        // process.rs/syscall.rs -- or an IRQ-context alloc_page() can
+        // interleave with a non-locked in-progress caller and hand out the
+        // same physical frame twice. Host-testable via the mock IRQ-state
+        // seam in `irq` (the real CPSR I-bit is ARM-only).
+        crate::irq::reset_mock();
+        assert!(crate::irq::mock_enabled(), "starts unmasked");
+        let guard = PAGE_LOCK.lock();
+        assert!(!crate::irq::mock_enabled(), "PAGE_LOCK.lock() must mask IRQ delivery while held");
+        drop(guard);
+        assert!(crate::irq::mock_enabled(), "dropping the guard must restore IRQ delivery");
+    }
+
+    #[test]
+    fn nested_irq_guard_does_not_unmask_while_page_lock_held() {
+        // The property that prevents the #331 double-allocation race: a
+        // nested critical section must not unmask IRQ delivery early and
+        // let an interrupt-context allocator run before the OUTER critical
+        // section -- the page lock -- has released.
+        crate::irq::reset_mock();
+        let outer = PAGE_LOCK.lock();
+        assert!(!crate::irq::mock_enabled());
+        let inner = crate::irq::IrqGuard::new();
+        assert!(!crate::irq::mock_enabled());
+        drop(inner);
+        assert!(!crate::irq::mock_enabled(), "inner drop must not unmask while the page lock is still held");
+        drop(outer);
+        assert!(crate::irq::mock_enabled(), "outer drop restores IRQ delivery");
     }
 }
