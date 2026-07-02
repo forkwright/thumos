@@ -52,10 +52,24 @@ pub(crate) struct WipeResult {
     pub(crate) actions_completed: usize,
     /// Number of actions that encountered an I/O error.
     pub(crate) actions_failed: usize,
+    /// Number of PRIORITY-1 (key-wipe) actions that failed. Destroying key
+    /// material is what actually renders encrypted data unrecoverable, so
+    /// this must be checked independently of `actions_failed` — a caller
+    /// gating on `actions_failed == 0` cannot otherwise tell a catastrophic
+    /// key-wipe failure apart from a benign lower-priority one (#244).
+    pub(crate) critical_failures: usize,
     /// Total bytes actually written (zero in dry-run mode).
     pub(crate) bytes_wiped: u64,
     /// Wall-clock time FROM first to last action.
     pub(crate) elapsed: Duration,
+}
+
+impl WipeResult {
+    /// Whether a priority-1 (key-wipe) action failed.
+    #[must_use]
+    pub(crate) const fn has_critical_failure(&self) -> bool {
+        self.critical_failures > 0
+    }
 }
 
 /// Executes wipe plans produced by [`crate::targets::plan`].
@@ -107,6 +121,7 @@ impl WipeEngine {
         let start = Instant::now();
         let mut completed: usize = 0;
         let mut failed: usize = 0;
+        let mut critical_failed: usize = 0;
         let mut bytes_wiped: u64 = 0;
 
         for action in plan {
@@ -128,6 +143,9 @@ impl WipeEngine {
                     Err(ref e) => {
                         log::error!("wipe failed for {}: {}", action.path.display(), e);
                         failed = failed.saturating_add(1);
+                        if action.priority == 1 {
+                            critical_failed = critical_failed.saturating_add(1);
+                        }
                     }
                 }
             }
@@ -136,6 +154,7 @@ impl WipeEngine {
         WipeResult {
             actions_completed: completed,
             actions_failed: failed,
+            critical_failures: critical_failed,
             bytes_wiped,
             elapsed: start.elapsed(),
         }
@@ -243,6 +262,8 @@ fn wipe_file(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use crate::targets::{WipeLevel, plan};
 
     use super::*;
@@ -321,6 +342,44 @@ mod tests {
             CHUNK_SIZE,
             "default engine must use DEFAULT_CHUNK_SIZE"
         );
+    }
+
+    #[test]
+    fn critical_failure_distinguishes_key_wipe_from_benign_failure() {
+        // A priority-1 (key) action targeting a real directory (not a
+        // regular file) fails to open for write (EISDIR on Linux) — a
+        // deterministic, non-NotFound failure that reaches the Err arm
+        // rather than the silent "missing target, skip" path.
+        let plan = vec![WipeAction {
+            path: PathBuf::from("/"),
+            method: WipeMethod::Zero,
+            priority: 1,
+        }];
+        let mut engine = WipeEngine::new(false);
+        let result = engine.execute(&plan);
+        assert_eq!(result.actions_failed, 1);
+        assert_eq!(
+            result.critical_failures, 1,
+            "priority-1 failure must be counted as critical"
+        );
+        assert!(result.has_critical_failure());
+    }
+
+    #[test]
+    fn benign_failure_does_not_count_as_critical() {
+        let plan = vec![WipeAction {
+            path: PathBuf::from("/proc"),
+            method: WipeMethod::Zero,
+            priority: 5,
+        }];
+        let mut engine = WipeEngine::new(false);
+        let result = engine.execute(&plan);
+        assert_eq!(result.actions_failed, 1);
+        assert_eq!(
+            result.critical_failures, 0,
+            "a lower-priority failure must not count as critical"
+        );
+        assert!(!result.has_critical_failure());
     }
 
     #[test]

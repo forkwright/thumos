@@ -8,6 +8,7 @@ use jiff::Timestamp;
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use snafu::Snafu;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::config::Config;
 
@@ -74,14 +75,26 @@ pub(crate) enum Error {
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
 /// A key derived from a passphrase via PBKDF2-HMAC-SHA256.
-#[derive(Debug)]
 pub(crate) struct DerivedKey {
-    /// The 32-byte derived key bytes.
-    pub(crate) key: [u8; KEY_LEN],
+    /// The 32-byte derived key bytes — the AES-GCM wrapping key that
+    /// protects the primary key at rest. Zeroized on drop (#356).
+    pub(crate) key: Zeroizing<[u8; KEY_LEN]>,
     /// The salt used during derivation.
     pub(crate) salt: [u8; SALT_LEN],
     /// The PBKDF2 iteration count.
     pub(crate) iterations: u32,
+}
+
+impl std::fmt::Debug for DerivedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // WHY: a derived #[derive(Debug)] would print the raw 32-byte
+        // wrapping key AND salt verbatim (#356) — redact both.
+        f.debug_struct("DerivedKey")
+            .field("key", &"[REDACTED]")
+            .field("salt", &"[REDACTED]")
+            .field("iterations", &self.iterations)
+            .finish()
+    }
 }
 
 /// Encryption algorithm used to seal a primary key in a [`KeySlot`].
@@ -126,7 +139,7 @@ pub(crate) fn derive_key(
     let mut key = [0u8; KEY_LEN];
     pbkdf2_hmac::<Sha256>(passphrase, salt, iterations, &mut key);
     Ok(DerivedKey {
-        key,
+        key: Zeroizing::new(key),
         salt: *salt,
         iterations,
     })
@@ -170,16 +183,25 @@ pub(crate) fn seal_key_with_config(
     let derived = derive_key(passphrase, &salt, iterations)?;
 
     let sealing_key =
-        Aes256Gcm::new_from_slice(&derived.key).map_err(|_| InvalidKeySnafu.build())?;
+        Aes256Gcm::new_from_slice(derived.key.as_slice()).map_err(|_| InvalidKeySnafu.build())?;
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let mut buf = primary_key.to_vec();
-    sealing_key
-        .encrypt_in_place(nonce, b"", &mut buf)
-        .map_err(|_| KeySealSnafu.build())?;
+    let encrypt_result = sealing_key.encrypt_in_place(nonce, b"", &mut buf);
+
+    if encrypt_result.is_err() {
+        // WHY: buf may still hold plaintext or partially-transformed data
+        // on an error path; zeroize before propagating (#356).
+        buf.zeroize();
+        return Err(KeySealSnafu.build());
+    }
 
     let mut ciphertext = [0u8; SEALED_KEY_LEN];
     ciphertext.copy_from_slice(&buf);
+    // WHY: buf held the plaintext primary key before encrypt_in_place; zero
+    // it now that the ciphertext has been extracted, rather than relying
+    // on normal (non-zeroizing) Drop (#356).
+    buf.zeroize();
 
     Ok(KeySlot {
         salt,
@@ -205,20 +227,28 @@ pub(crate) fn unseal_key(slot: &KeySlot, passphrase: &[u8]) -> Result<[u8; KEY_L
     let derived = derive_key(passphrase, &slot.salt, slot.iterations)?;
 
     let opening_key =
-        Aes256Gcm::new_from_slice(&derived.key).map_err(|_| InvalidKeySnafu.build())?;
+        Aes256Gcm::new_from_slice(derived.key.as_slice()).map_err(|_| InvalidKeySnafu.build())?;
     let nonce = Nonce::from_slice(&slot.nonce);
 
     let mut buf = slot.ciphertext.to_vec();
-    opening_key
-        .decrypt_in_place(nonce, b"", &mut buf)
-        .map_err(|_| KeyUnsealSnafu.build())?;
+    let decrypt_result = opening_key.decrypt_in_place(nonce, b"", &mut buf);
 
-    let slice = buf
-        .get(..KEY_LEN)
-        .ok_or_else(|| BadPlaintextLengthSnafu.build())?;
-    let mut primary_key = [0u8; KEY_LEN];
-    primary_key.copy_from_slice(slice);
-    Ok(primary_key)
+    // WHY: buf holds the decrypted plaintext primary key from this point
+    // regardless of outcome below; zero it before returning on every path
+    // instead of relying on normal (non-zeroizing) Drop (#356).
+    let outcome = decrypt_result
+        .map_err(|_| KeyUnsealSnafu.build())
+        .and_then(|()| {
+            let mut primary_key = [0u8; KEY_LEN];
+            let slice = buf
+                .get(..KEY_LEN)
+                .ok_or_else(|| BadPlaintextLengthSnafu.build())?;
+            primary_key.copy_from_slice(slice);
+            Ok(primary_key)
+        });
+    buf.zeroize();
+
+    outcome
 }
 
 #[cfg(test)]
@@ -233,7 +263,7 @@ mod tests {
         let a = derive_key(passphrase, &salt, 1)?;
         let b = derive_key(passphrase, &salt, 1)?;
         assert_eq!(
-            a.key, b.key,
+            *a.key, *b.key,
             "PBKDF2 must be deterministic for same passphrase and salt"
         );
         Ok(())
@@ -248,7 +278,7 @@ mod tests {
         let derived = derive_key(b"password", &salt, 1)?;
 
         assert_eq!(
-            derived.key,
+            *derived.key,
             [
                 0x1f, 0x0b, 0x0d, 0x29, 0x78, 0x96, 0x2e, 0xb0, 0xa4, 0x14, 0x6d, 0xdc, 0x02, 0xe2,
                 0x2c, 0x04, 0x5e, 0x42, 0xe4, 0x99, 0xf4, 0x0f, 0xf2, 0x84, 0x15, 0x3f, 0xa8, 0x45,
@@ -268,7 +298,7 @@ mod tests {
         let a = derive_key(passphrase, &salt_a, 1)?;
         let b = derive_key(passphrase, &salt_b, 1)?;
         assert_ne!(
-            a.key, b.key,
+            *a.key, *b.key,
             "different salts must produce different derived keys"
         );
         Ok(())
@@ -323,6 +353,22 @@ mod tests {
         );
         let recovered = unseal_key(&slot, b"pass")?;
         assert_eq!(primary_key, recovered, "unseal must reverse seal");
+        Ok(())
+    }
+
+    #[test]
+    fn derived_key_zeroizes_on_manual_zeroize() -> Result<()> {
+        let salt = [0u8; SALT_LEN];
+        let mut derived = derive_key(b"pass", &salt, 1)?;
+        assert!(
+            derived.key.iter().any(|&b| b != 0),
+            "key must be non-zero before zeroize"
+        );
+        derived.key.zeroize();
+        assert!(
+            derived.key.iter().all(|&b| b == 0),
+            "key must be zero after explicit zeroize"
+        );
         Ok(())
     }
 

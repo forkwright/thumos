@@ -61,9 +61,17 @@ pub(crate) fn plan(level: WipeLevel) -> Vec<WipeAction> {
     match level {
         WipeLevel::Keys => key_actions(),
 
-        WipeLevel::Contacts => contacts_actions(),
+        WipeLevel::Contacts => {
+            let mut actions = key_actions();
+            actions.extend(contacts_actions());
+            actions
+        }
 
-        WipeLevel::Messages => messages_actions(),
+        WipeLevel::Messages => {
+            let mut actions = key_actions();
+            actions.extend(messages_actions());
+            actions
+        }
 
         WipeLevel::UserData => {
             let mut actions = key_actions();
@@ -168,6 +176,34 @@ mod tests {
         let p = plan(WipeLevel::Messages);
         let found = p.iter().any(|a| a.path == Path::new("/data/messages"));
         assert!(found, "Messages plan must include /data/messages");
+    }
+
+    #[test]
+    fn contacts_plan_wipes_keys_first() {
+        let p = plan(WipeLevel::Contacts);
+        assert_eq!(
+            p.first().map(|a| a.priority),
+            Some(1),
+            "Contacts plan must wipe keys (priority 1) first"
+        );
+        assert!(
+            p.first().is_some_and(|a| a.path.starts_with("/data/keys")),
+            "Contacts plan's first action must target /data/keys"
+        );
+    }
+
+    #[test]
+    fn messages_plan_wipes_keys_first() {
+        let p = plan(WipeLevel::Messages);
+        assert_eq!(
+            p.first().map(|a| a.priority),
+            Some(1),
+            "Messages plan must wipe keys (priority 1) first"
+        );
+        assert!(
+            p.first().is_some_and(|a| a.path.starts_with("/data/keys")),
+            "Messages plan's first action must target /data/keys"
+        );
     }
 
     #[test]
