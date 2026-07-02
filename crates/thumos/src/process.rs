@@ -1403,6 +1403,56 @@ mod tests {
     }
 
     #[test]
+    fn fork_strips_privileged_capabilities() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            let child_pid = fork().unwrap_or_default();
+            let procs = &*core::ptr::addr_of!(PROCS);
+            let parent_caps = procs[0].as_ref().unwrap().capabilities;
+            let child_caps = procs[usize::from(child_pid)].as_ref().unwrap().capabilities;
+
+            // WHY: production computes child_caps = parent_caps & FORK_DEFAULT
+            // (process.rs). A `|`-for-`&` slip would grant the child every
+            // parent capability, including MODEM (baseband) and AUDIT (log).
+            assert_eq!(
+                child_caps,
+                parent_caps & crate::capability::Capabilities::FORK_DEFAULT,
+                "child capabilities must equal parent_caps & FORK_DEFAULT"
+            );
+            assert_eq!(
+                child_caps & crate::capability::Capabilities::MODEM, 0,
+                "MODEM must be stripped from a forked child"
+            );
+            assert_eq!(
+                child_caps & crate::capability::Capabilities::AUDIT, 0,
+                "AUDIT must be stripped from a forked child"
+            );
+        }
+    }
+
+    #[test]
     fn address_space_independence() {
         // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
         // test execution ensures no concurrent access to PROCS or CURRENT.
@@ -2122,6 +2172,90 @@ mod tests {
             let expected_bit = 1u32 << (crate::signal::Signal::Sigusr1 as u32);
             assert_ne!(pending & expected_bit, 0,
                 "SIGUSR1 pending bit should be set after kill");
+        }
+    }
+
+    #[test]
+    fn check_pending_signal_returns_handler() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            let child_pid = fork().unwrap_or_default();
+
+            // NOTE: install the handler on the child (set_signal_action acts on CURRENT).
+            CURRENT = child_pid;
+            let handler_addr: u32 = 0x4020_0000;
+            set_signal_action(
+                crate::signal::Signal::Sigusr1,
+                crate::signal::SignalAction::Handler(handler_addr),
+            );
+            CURRENT = 0;
+
+            // WHY: with a Handler action installed, deliver_signal_to marks the
+            // signal pending (rather than applying the default Terminate).
+            let ret = deliver_signal_to(child_pid, crate::signal::Signal::Sigusr1);
+            assert_eq!(ret, 0, "deliver_signal_to should succeed");
+
+            // NOTE: check_pending_signal reads CURRENT's state — switch to the
+            // child as the exception-return path does after scheduling it.
+            CURRENT = child_pid;
+            let result = check_pending_signal();
+            assert_eq!(
+                result,
+                Some((crate::signal::Signal::Sigusr1, handler_addr)),
+                "a pending signal with a Handler action must yield (sig, handler_addr)"
+            );
+        }
+    }
+
+    #[test]
+    fn check_pending_signal_none_when_clear() {
+        // SAFETY: test-only; reset_all reinitialises global state.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            let result = check_pending_signal();
+            assert_eq!(result, None, "no pending signal must yield None");
         }
     }
 

@@ -639,4 +639,119 @@ mod tests {
             assert_eq!(sa.large_free_count, 1, "large_free_count incremented");
         }
     }
+
+    // WHY a second, scarce fake page_fn: the shared fake_alloc_page pool holds
+    // TEST_PAGES(64) pages, well above MAX_SLABS(32), so a single size class
+    // always trips MAX_SLABS before the page pool empties — a distinct 3-page
+    // source is needed to isolate refill's page_fn()==None branch.
+    static mut TEST_SCARCE_NEXT_PAGE: usize = 0;
+    const TEST_SCARCE_PAGES: usize = 3;
+
+    unsafe fn fake_alloc_page_scarce() -> Option<usize> {
+        // SAFETY: single-threaded test execution; TEST_SCARCE_NEXT_PAGE is private.
+        unsafe {
+            if TEST_SCARCE_NEXT_PAGE >= TEST_SCARCE_PAGES {
+                return None;
+            }
+            let base = core::ptr::addr_of_mut!(TEST_POOL) as *mut u8 as usize;
+            let addr = base + TEST_SCARCE_NEXT_PAGE * page::PAGE_SIZE;
+            TEST_SCARCE_NEXT_PAGE += 1;
+            Some(addr)
+        }
+    }
+
+    #[test]
+    fn slab_exhaustion_returns_null_after_max_slabs() {
+        // SAFETY: test is single-threaded; sa is local.
+        unsafe {
+            let mut sa = make_allocator();
+            let layout = Layout::from_size_align(32, 4).unwrap();
+            // WHY the 32B class: PAGE_SIZE/32 objects per slab page, so
+            // MAX_SLABS pages of capacity stay under TEST_PAGES — the null
+            // below is the MAX_SLABS guard in refill(), not page exhaustion.
+            let objs_per_slab = page::PAGE_SIZE / 32;
+            let total_capacity = objs_per_slab * MAX_SLABS;
+            for _ in 0..total_capacity {
+                let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
+                assert!(!ptr.is_null(), "allocation within MAX_SLABS capacity must succeed");
+            }
+            let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
+            assert!(ptr.is_null(), "allocation beyond MAX_SLABS must return null, not panic");
+        }
+    }
+
+    #[test]
+    fn page_allocator_exhaustion_returns_null() {
+        // SAFETY: single-threaded; sa is local; the scarce page_fn holds only
+        // TEST_SCARCE_PAGES(3) pages, far below MAX_SLABS, isolating the
+        // page_fn()==None branch from the MAX_SLABS cap.
+        unsafe {
+            let mut sa = make_allocator();
+            let layout = Layout::from_size_align(32, 4).unwrap();
+            let objs_per_slab = page::PAGE_SIZE / 32;
+            for _ in 0..(objs_per_slab * TEST_SCARCE_PAGES) {
+                let ptr = sa.alloc_inner(layout, fake_alloc_page_scarce, fake_alloc_page_scarce);
+                assert!(!ptr.is_null(), "allocation within the scarce page budget must succeed");
+            }
+            let ptr = sa.alloc_inner(layout, fake_alloc_page_scarce, fake_alloc_page_scarce);
+            assert!(
+                ptr.is_null(),
+                "allocation once the page allocator is exhausted must return null, not panic"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_allocation_rejected() {
+        // SAFETY: test is single-threaded; sa is local.
+        unsafe {
+            let mut sa = make_allocator();
+            // WHY 4097: needs 2 pages; multi-page large allocs are unsupported
+            // and must be rejected before the page allocator is touched.
+            let layout = Layout::from_size_align(4097, 1).unwrap();
+            let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
+            assert!(ptr.is_null(), "a >4096-byte request must be rejected, not silently truncated");
+            assert_eq!(
+                sa.large_alloc_count, 0,
+                "a rejected multi-page request must not be counted as a successful large alloc"
+            );
+        }
+    }
+
+    #[test]
+    fn uninitialized_allocator_returns_null() {
+        // SAFETY: single-threaded; sa is local; init() deliberately not called.
+        unsafe {
+            let mut sa = SlabAllocator::new();
+            let layout = Layout::from_size_align(32, 4).unwrap();
+            let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
+            assert!(ptr.is_null(), "alloc on an uninitialized allocator must return null, not panic");
+        }
+    }
+
+    #[test]
+    fn uninitialized_dealloc_is_noop() {
+        // SAFETY: single-threaded; sa is local; init() deliberately not called.
+        // WHY the bogus non-null ptr: if the !initialized guard were removed,
+        // dealloc_obj would dereference it — the guard must bail out first.
+        unsafe {
+            let mut sa = SlabAllocator::new();
+            let layout = Layout::from_size_align(32, 4).unwrap();
+            let fake_ptr = 0x1000 as *mut u8;
+            sa.dealloc_inner(fake_ptr, layout, fake_free_page);
+            assert_eq!(sa.stats(), (0, 0), "dealloc on an uninitialized allocator must be a pure no-op");
+        }
+    }
+
+    #[test]
+    fn null_ptr_dealloc_is_noop() {
+        // SAFETY: test is single-threaded; sa is local.
+        unsafe {
+            let mut sa = make_allocator();
+            let layout = Layout::from_size_align(32, 4).unwrap();
+            sa.dealloc_inner(ptr::null_mut(), layout, fake_free_page);
+            let (_, frees) = sa.stats();
+            assert_eq!(frees, 0, "dealloc(null) on an initialized allocator must be a no-op, not decrement/crash");
+        }
+    }
 }

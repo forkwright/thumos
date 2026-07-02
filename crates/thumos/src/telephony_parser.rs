@@ -321,6 +321,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_final_result_ok() {
+        assert_eq!(
+            parse_final_result(b"OK"),
+            Some(AtResponse::Ok),
+            "a bare OK line must classify as AtResponse::Ok"
+        );
+    }
+
+    #[test]
+    fn parse_final_result_error() {
+        assert_eq!(
+            parse_final_result(b"ERROR"),
+            Some(AtResponse::Error),
+            "a bare ERROR line must classify as AtResponse::Error"
+        );
+    }
+
+    #[test]
+    fn parse_final_result_recognizes_cme_error() {
+        assert_eq!(
+            parse_final_result(b"+CME ERROR: 10"),
+            Some(AtResponse::CmeError(10)),
+            "+CME ERROR must extract its numeric code into AtResponse::CmeError"
+        );
+    }
+
+    #[test]
+    fn parse_final_result_malformed_cme_code_returns_none() {
+        assert_eq!(
+            parse_final_result(b"+CME ERROR: x"),
+            None,
+            "a non-numeric CME error code must not classify as any final result"
+        );
+    }
+
+    #[test]
+    fn parse_final_result_unrecognized_line_returns_none() {
+        assert_eq!(
+            parse_final_result(b"OKK"),
+            None,
+            "a near-miss line must not be classified as OK by prefix/substring confusion"
+        );
+    }
+
+    #[test]
     fn parse_clip_response_extracts_number() {
         let line = b"+CLIP: \"+15551234567\",145";
         let mut number = [0u8; MAX_NUMBER_LEN];
