@@ -11,6 +11,33 @@ use snafu::ensure;
 use crate::at::{self, Response, Urc};
 use crate::error::{NotReadySnafu, ParseSnafu, Result, UnexpectedResponseSnafu};
 
+/// Maximum informational lines collected before a final result code, per
+/// AT command.
+///
+/// SECURITY: the CCCI/AT channel is untrusted (rogue or malfunctioning
+/// baseband). Without this bound, a modem that never returns a final
+/// result code keeps `AtSession::send_command` looping forever and grows
+/// its `info` `Vec` without bound -- a heap-exhaustion `DoS`. Mirrors
+/// `wait_urc`'s `MAX_ATTEMPTS` below.
+const MAX_INFO_LINES: usize = 64;
+
+/// Maximum bytes buffered for a single AT line before giving up.
+///
+/// SECURITY: bounds heap growth from a hostile/malfunctioning modem that
+/// never emits `\n`. 256 bytes generously covers any real AT response.
+const MAX_LINE_LEN: usize = 256;
+
+/// Wall-clock budget for a single line, independent of byte count.
+///
+/// SECURITY: `MAX_LINE_LEN` alone bounds space, not time -- a byte trickle
+/// that stays under the cap but never completes would otherwise block
+/// `read_line` (and therefore the whole AT session) indefinitely. Shortened
+/// under `#[cfg(test)]` so tests exercising this path stay fast.
+#[cfg(not(test))]
+const READ_LINE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(test)]
+const READ_LINE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
+
 // ─── Trait ────────────────────────────────────────────────────────────────────
 
 /// Byte-stream transport to and FROM the modem.
@@ -88,6 +115,13 @@ impl<T: ModemTransport> AtSession<T> {
 
         let mut info = Vec::new();
         loop {
+            ensure!(
+                info.len() < MAX_INFO_LINES,
+                UnexpectedResponseSnafu {
+                    response: format!("no final result after {MAX_INFO_LINES} info lines")
+                }
+            );
+
             let line = self.read_line()?;
             if line.is_empty() {
                 // Blank lines between echo and response are normal; skip them.
@@ -157,6 +191,7 @@ impl<T: ModemTransport> AtSession<T> {
     /// - [`crate::error::Error::NotReady`] when the transport returns 0 bytes.
     /// - [`crate::error::Error::Parse`] on non-UTF-8 byte sequences.
     fn read_line(&mut self) -> Result<String> {
+        let deadline = std::time::Instant::now() + READ_LINE_TIMEOUT;
         let mut byte = [0u8; 1];
         loop {
             // Check if we already have a newline buffered.
@@ -174,6 +209,22 @@ impl<T: ModemTransport> AtSession<T> {
                     .build()
                 });
             }
+
+            if self.rx_buf.len() >= MAX_LINE_LEN {
+                self.rx_buf.clear();
+                return ParseSnafu {
+                    message: format!("AT line exceeds maximum length ({MAX_LINE_LEN} bytes)"),
+                }
+                .fail();
+            }
+            if std::time::Instant::now() >= deadline {
+                self.rx_buf.clear();
+                return ParseSnafu {
+                    message: "AT line read timed out".to_owned(),
+                }
+                .fail();
+            }
+
             let n = self.transport.recv(&mut byte)?;
             ensure!(n > 0, NotReadySnafu);
             // WHY: recv fills exactly byte[0] when n > 0; ensure!(n > 0) above
@@ -315,6 +366,88 @@ mod tests {
             resp.info.len(),
             1,
             "blank lines must not appear as info lines"
+        );
+    }
+
+    #[test]
+    fn send_command_bounds_info_lines_against_flood() {
+        // 1000 info lines, never a final result code.
+        let mut data = Vec::new();
+        for _ in 0..1000 {
+            data.extend_from_slice(b"+CSQ: 1,1\r\n");
+        }
+        let transport = MockTransport::with_response(&data);
+        let mut session = AtSession::new(transport);
+        let result = session.send_command("AT+CSQ");
+        assert!(
+            result.is_err(),
+            "send_command must error rather than buffer 1000 info lines"
+        );
+    }
+
+    #[test]
+    fn send_command_errors_when_no_final_result_ever_arrives() {
+        let mut data = Vec::new();
+        for _ in 0..100 {
+            data.extend_from_slice(b"+CSQ: 1,1\r\n");
+        }
+        let transport = MockTransport::with_response(&data);
+        let mut session = AtSession::new(transport);
+        let result = session.send_command("AT+CSQ");
+        assert!(
+            result.is_err(),
+            "send_command must not loop indefinitely when no final result code arrives"
+        );
+    }
+
+    #[test]
+    fn read_line_rejects_oversized_line() {
+        // No newline anywhere; stream exceeds MAX_LINE_LEN (256) bytes.
+        let data = vec![b'X'; 300];
+        let transport = MockTransport::with_response(&data);
+        let mut session = AtSession::new(transport);
+        let result = session.send_command("AT");
+        assert!(
+            result.is_err(),
+            "a line exceeding MAX_LINE_LEN with no newline must error, not grow forever"
+        );
+    }
+
+    #[test]
+    fn read_line_times_out_on_slow_trickle() {
+        // Yields one byte per call with a small real delay each time -- a
+        // slow, steady trickle that never completes a line and never fills
+        // MAX_LINE_LEN. Under the #[cfg(test)] short READ_LINE_TIMEOUT this
+        // must return Err well before 1000 iterations could complete.
+        struct SlowTrickle {
+            remaining: u32,
+        }
+        impl ModemTransport for SlowTrickle {
+            fn send(&mut self, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
+                std::thread::sleep(std::time::Duration::from_millis(5)); // kanon:ignore TESTING/sleep-in-test -- exercises the real wall-clock READ_LINE_TIMEOUT deadline (read_line reads Instant::now() directly, no injectable clock); a 5ms/byte trickle against the cfg(test) 50ms timeout deterministically forces the timeout before the 1000-byte budget and keeps the test ~50ms
+                if buf.is_empty() || self.remaining == 0 {
+                    return Ok(0);
+                }
+                self.remaining -= 1;
+                buf[0] = b'X'; // never '\n'
+                Ok(1)
+            }
+        }
+
+        let transport = SlowTrickle { remaining: 1000 };
+        let mut session = AtSession::new(transport);
+        let start = std::time::Instant::now();
+        let result = session.send_command("AT");
+        assert!(
+            result.is_err(),
+            "a slow byte trickle that never completes a line must time out"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "the test-mode deadline must trip well within a couple seconds"
         );
     }
 }
