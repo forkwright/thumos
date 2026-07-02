@@ -17,7 +17,7 @@ use crate::error::{NotReadySnafu, ParseSnafu, Result, UnexpectedResponseSnafu};
 /// SECURITY: the CCCI/AT channel is untrusted (rogue or malfunctioning
 /// baseband). Without this bound, a modem that never returns a final
 /// result code keeps `AtSession::send_command` looping forever and grows
-/// its `info` `Vec` without bound -- a heap-exhaustion DoS. Mirrors
+/// its `info` `Vec` without bound -- a heap-exhaustion `DoS`. Mirrors
 /// `wait_urc`'s `MAX_ATTEMPTS` below.
 const MAX_INFO_LINES: usize = 64;
 

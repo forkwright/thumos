@@ -405,7 +405,7 @@ const fn is_wap_push_port(port: u16) -> bool {
 /// 3GPP TS 23.040 § 9.2.3.24: the UDH is stored as full 8-bit octets; fill
 /// bits pad it to the next septet boundary before the text septets begin.
 /// `ceil(udh_octets * 8 / 7)`.
-fn gsm7_udh_septets(udh_octets: usize) -> usize {
+const fn gsm7_udh_septets(udh_octets: usize) -> usize {
     (udh_octets * 8).div_ceil(7)
 }
 
@@ -426,6 +426,10 @@ fn gsm7_udh_septets(udh_octets: usize) -> usize {
 ///    16-bit application port addressing IE (0x05) with destination port 2948
 ///    or 49999, the message is an OMA-CP / WAP Push provisioning message.
 ///    Returns [`Error::WapPushRejected`].
+#[expect(
+    clippy::similar_names,
+    reason = "udl/udhl/udhi/oa are canonical 3GPP TS 23.040 SMS field abbreviations; renaming would break spec fidelity"
+)]
 pub(crate) fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
     let raw = hex_decode(pdu_hex)?;
     let mut cur = Cursor::new(&raw);
