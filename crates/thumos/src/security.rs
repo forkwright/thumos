@@ -628,6 +628,23 @@ mod tests {
         assert_eq!(mac, expected, "HMAC-SHA256 RFC 4231 test case 2");
     }
 
+    #[test]
+    fn hmac_sha256_rfc4231_test_case_6() {
+        // NOTE: RFC 4231 Test Case 6 — key = 131 bytes of 0xaa, longer than the
+        // 64-byte SHA-256 block size; exercises the long-key normalization
+        // path (now owned by RustCrypto Hmac::new_from_slice) end-to-end.
+        let key = [0xaau8; 131];
+        let data = b"Test Using Larger Than Block-Size Key - Hash Key First";
+        let mac = hmac_sha256(key.as_slice(), data);
+        let expected = [
+            0x60, 0xe4, 0x31, 0x59, 0x1e, 0xe0, 0xb6, 0x7f,
+            0x0d, 0x8a, 0x26, 0xaa, 0xcb, 0xf5, 0xb7, 0x7f,
+            0x8e, 0x0b, 0xc6, 0x21, 0x37, 0x28, 0xc5, 0x14,
+            0x05, 0x46, 0x04, 0x0f, 0x0e, 0xe3, 0x7f, 0x54,
+        ];
+        assert_eq!(mac, expected, "HMAC-SHA256 RFC 4231 test case 6 (long key)");
+    }
+
     // -- PBKDF2 tests --
 
     #[test]
@@ -754,6 +771,21 @@ mod tests {
             0x16, 0xd5, 0xf1, 0x84, 0xdf, 0x9c, 0x25, 0x9a, 0x7c, 0x79,
         ];
         assert_eq!(mac, expected, "HMAC-SHA1 RFC 2202 test case 2");
+    }
+
+    #[test]
+    fn hmac_sha1_rfc2202_test_case_6() {
+        // NOTE: RFC 2202 Test Case 6 — key = 80 bytes of 0xaa, longer than the
+        // 64-byte SHA-1 block size; exercises hmac_sha1's hand-rolled
+        // key-hashing normalization branch (key.len() > SHA1_BLOCK_SIZE).
+        let key = [0xaau8; 80];
+        let data = b"Test Using Larger Than Block-Size Key - Hash Key First";
+        let mac = hmac_sha1(key.as_slice(), data);
+        let expected = [
+            0xaa, 0x4a, 0xe5, 0xe1, 0x52, 0x72, 0xd0, 0x0e, 0x95, 0x70,
+            0x56, 0x37, 0xce, 0x8a, 0x3b, 0x55, 0xed, 0x40, 0x21, 0x12,
+        ];
+        assert_eq!(mac, expected, "HMAC-SHA1 RFC 2202 test case 6 (long key)");
     }
 
     // -- PBKDF2-HMAC-SHA1 tests (RFC 6070 test vectors) --

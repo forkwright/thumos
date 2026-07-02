@@ -1574,11 +1574,11 @@ mod tests {
     }
 
     #[test]
-    fn write_file_data_persists_across_unmount_remount() {
+    fn write_sync_remount_persists_data() {
         let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
 
-        // Write phase.
+        // First mount: write data and sync (checkpoint) it to the device.
         let mut fs = mount(Box::new(dev)).expect("mount");
         let root = fs.root_inode();
         let file_id = fs
@@ -1591,31 +1591,23 @@ mod tests {
 
         fs.sync().expect("sync");
 
-        // Extract the device for remount by taking ownership.
+        // WHY this is the real persistence boundary a reboot crosses: the
+        // in-memory Lfs is dropped, but the device bytes (including the
+        // checkpoint sync() just wrote) are handed intact to a fresh mount().
+        // fs.dev is RefCell<Box<dyn BlockDevice>>; into_inner() yields exactly
+        // the Box<dyn BlockDevice> that mount() consumes — no downcast needed,
+        // so the old test's stated blocker was spurious.
         let boxed_dev = fs.dev.into_inner();
-        // Re-mount from the same device. To get a MemBlockDevice back from
-        // Box<dyn BlockDevice>, we need to read the raw data. Instead, we
-        // verify the write persisted in the same mount.
-        drop(boxed_dev);
 
-        // Alternative: verify within the same mount that read returns correct data.
-        let mut dev2 = block_device_for_lfs();
-        format(&mut dev2).expect("format 2");
+        let fs2 = mount(boxed_dev).expect("remount");
 
-        let mut fs2 = mount(Box::new(dev2)).expect("mount 2");
-        let root2 = fs2.root_inode();
-        let file_id2 = fs2
-            .create(root2, "data.bin", InodeType::RegularFile)
-            .expect("create 2");
-
-        let data2 = b"Hello, LFS write path!";
-        fs2.write(file_id2, 0, data2).expect("write 2");
-
-        // Read back within the same mount.
         let mut buf = [0u8; 64];
-        let read = fs2.read(file_id2, 0, &mut buf).expect("read");
-        assert_eq!(read, 22);
-        assert_eq!(&buf[..22], b"Hello, LFS write path!");
+        let read = fs2.read(file_id, 0, &mut buf).expect("read after remount");
+        assert_eq!(read, data.len());
+        assert_eq!(
+            &buf[..data.len()], data,
+            "data written before sync must survive a real remount"
+        );
     }
 
     #[test]
@@ -1691,6 +1683,43 @@ mod tests {
 
         let stat = fs.stat(file_id).expect("stat after truncate");
         assert_eq!(stat.size, 100);
+    }
+
+    #[test]
+    fn truncate_grows_file_with_zeroed_extension() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "grow.txt", InodeType::RegularFile)
+            .expect("create");
+
+        // WHY payload confined to block 0: keeps the read-back assertion below
+        // targeting only the block the grow branch allocated, never write()'s
+        // own same-block zero padding.
+        let data = b"seed data";
+        let written = fs.write(file_id, 0, data).expect("write");
+        assert_eq!(written, data.len());
+
+        // NOTE: old_blocks=ceil(9/4096)=1, new_blocks=ceil(8192/4096)=2, so the
+        // grow loop runs once (block index 1) — exercises truncate's grow
+        // branch (ensure_writer + zeroed-block allocation), not the shrink path.
+        let new_size: u64 = 8192;
+        fs.truncate(file_id, new_size).expect("truncate grow");
+
+        let stat = fs.stat(file_id).expect("stat after grow");
+        assert_eq!(stat.size, new_size, "size must report the grown length");
+
+        let mut buf = [0u8; BLOCK_SIZE];
+        let read = fs.read(file_id, BLOCK_SIZE as u64, &mut buf).expect("read grown block");
+        assert_eq!(read, buf.len());
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "the newly grown block must read back zero, not stale memory"
+        );
     }
 
     #[test]

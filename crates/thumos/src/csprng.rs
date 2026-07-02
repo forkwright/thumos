@@ -361,7 +361,14 @@ pub fn seed_for_test(key: &[u8; 32], nonce: &[u8; 8], counter: u64) {
     rng.set_stream(u64::from_le_bytes(*nonce));
     // set_word_pos is measured in 32-bit words; one 64-byte block = 16 words.
     rng.set_word_pos(u128::from(counter) * 16);
-    // SAFETY: test-only, single-threaded.
+    // SAFETY: cargo-nextest (the canonical runner for this crate/target — see
+    // ci.yml) spawns a fresh OS process per #[test] fn, so CSPRNG/INITIALIZED
+    // here are process-local: no other test's mutation of these statics is ever
+    // visible to this one, regardless of --test-threads. This is process
+    // isolation, not single-threaded execution (nextest parallelizes freely) —
+    // a different mechanism giving the same absence-of-data-race guarantee.
+    // WARNING: this does NOT hold under a bare `cargo test` inside crates/thumos/
+    // (threads in one process); nextest is enforced by CI, not by this code.
     unsafe {
         CSPRNG = Some(Csprng {
             rng,
@@ -527,5 +534,33 @@ mod tests {
             buf, [0xFFu8; 16],
             "buffer must be left untouched on fail-closed"
         );
+    }
+
+    #[test]
+    fn chacha20_rfc8439_test_vector_1() {
+        // NOTE: RFC 8439 §2.3.2 / Appendix A.1 Test Vector #1 — all-zero key,
+        // all-zero nonce, block counter 0. WHY it applies to rand_chacha 0.3.1's
+        // 64-bit-counter/64-bit-stream layout despite RFC 8439 using a
+        // 32-bit-counter/96-bit-nonce split: state words 12-15 are all zero in
+        // BOTH layouts here, so the initial state (hence the keystream) is
+        // identical — the published block applies directly, no derived vector.
+        let key = [0u8; 32];
+        let nonce = [0u8; 8];
+        seed_for_test(&key, &nonce, 0);
+
+        let mut buf = [0u8; 64];
+        kernel_random_bytes(&mut buf).expect("seeded test rng");
+
+        let expected: [u8; 64] = [
+            0x76, 0xb8, 0xe0, 0xad, 0xa0, 0xf1, 0x3d, 0x90,
+            0x40, 0x5d, 0x6a, 0xe5, 0x53, 0x86, 0xbd, 0x28,
+            0xbd, 0xd2, 0x19, 0xb8, 0xa0, 0x8d, 0xed, 0x1a,
+            0xa8, 0x36, 0xef, 0xcc, 0x8b, 0x77, 0x0d, 0xc7,
+            0xda, 0x41, 0x59, 0x7c, 0x51, 0x57, 0x48, 0x8d,
+            0x77, 0x24, 0xe0, 0x3f, 0xb8, 0xd8, 0x4a, 0x37,
+            0x6a, 0x43, 0xb8, 0xf4, 0x15, 0x18, 0xa1, 0x1c,
+            0xc3, 0x87, 0xb6, 0x69, 0xb2, 0xee, 0x65, 0x86,
+        ];
+        assert_eq!(buf, expected, "ChaCha20 block 0 must match RFC 8439 Test Vector #1");
     }
 }
