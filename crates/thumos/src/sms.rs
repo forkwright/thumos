@@ -56,6 +56,8 @@ pub enum SmsError {
     ModemError,
     /// Modem returned a CME error.
     CmeError(u32),
+    /// Modem returned a CMS error (SMS-specific, 3GPP TS 27.005).
+    CmsError(u32),
     /// Transport failure.
     TransportError,
     /// Phone number too long.
@@ -71,6 +73,7 @@ impl core::fmt::Display for SmsError {
             Self::PduDecode => write!(f, "PDU decode error"),
             Self::ModemError => write!(f, "modem error"),
             Self::CmeError(code) => write!(f, "CME error {code}"),
+            Self::CmsError(code) => write!(f, "CMS error {code}"),
             Self::TransportError => write!(f, "transport error"),
             Self::NumberTooLong => write!(f, "phone number too long"),
             Self::MessageTooLong => write!(f, "message too long"),
@@ -346,6 +349,7 @@ impl SmsManager {
                     AtResponse::Ok => break,
                     AtResponse::Error => return Err(SmsError::ModemError),
                     AtResponse::CmeError(code) => return Err(SmsError::CmeError(code)),
+                    AtResponse::CmsError(code) => return Err(SmsError::CmsError(code)),
                 }
             }
         }
@@ -387,6 +391,7 @@ impl SmsManager {
                     AtResponse::Ok => Ok(()),
                     AtResponse::Error => Err(SmsError::ModemError),
                     AtResponse::CmeError(code) => Err(SmsError::CmeError(code)),
+                    AtResponse::CmsError(code) => Err(SmsError::CmsError(code)),
                 };
             }
         }
@@ -636,6 +641,23 @@ mod tests {
         assert_eq!(sender, "+1234567890", "sender must decode to +1234567890");
         assert_eq!(msg.body, "Hello", "body must decode to 'Hello'");
         assert!(!msg.read, "incoming message must be unread");
+    }
+
+    #[test]
+    fn send_returns_cms_error_immediately() {
+        use crate::telephony_mock::MockModemTransport;
+
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // AT+CMGF=0 -> OK
+        mock.queue_response(b">"); // CMGS prompt
+        mock.queue_response(b"+CMS ERROR: 330"); // final result: no network service
+
+        let result = SmsManager::send(&mut mock, "+15551234567", "Hi");
+        assert_eq!(
+            result,
+            Err(SmsError::CmsError(330)),
+            "a +CMS ERROR final result on SMS submit must surface the code immediately, not TransportError after exhausting the wait loop"
+        );
     }
 
     #[test]

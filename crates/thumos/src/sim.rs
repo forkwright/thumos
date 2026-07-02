@@ -213,6 +213,7 @@ impl SimManager {
                 Ok(false)
             }
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -246,6 +247,7 @@ impl SimManager {
             }
             AtResponse::Ok => Ok(()),
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -279,6 +281,7 @@ impl SimManager {
             }
             AtResponse::Ok => Ok(&self.signal_info),
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -321,6 +324,7 @@ impl SimManager {
             }
             AtResponse::Ok => Ok(0),
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }

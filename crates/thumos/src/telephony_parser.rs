@@ -17,7 +17,7 @@ use crate::telephony::{AtResponse, RegStatus, Urc, MAX_NUMBER_LEN};
 
 /// Parse a final result code from an AT response line.
 ///
-/// Handles: "OK", "ERROR", "+CME ERROR: <code>"
+/// Handles: "OK", "ERROR", "+CME ERROR: <code>", "+CMS ERROR: <code>"
 pub(crate) fn parse_final_result(line: &[u8]) -> Option<AtResponse> {
     if line == b"OK" {
         return Some(AtResponse::Ok);
@@ -28,6 +28,11 @@ pub(crate) fn parse_final_result(line: &[u8]) -> Option<AtResponse> {
     if let Some(rest) = strip_prefix(line, b"+CME ERROR: ") {
         if let Some(code) = parse_u32(rest) {
             return Some(AtResponse::CmeError(code));
+        }
+    }
+    if let Some(rest) = strip_prefix(line, b"+CMS ERROR: ") {
+        if let Some(code) = parse_u32(rest) {
+            return Some(AtResponse::CmsError(code));
         }
     }
     None
@@ -70,9 +75,29 @@ pub(crate) fn parse_cops_response(line: &[u8], name_buf: &mut [u8; MAX_OPERATOR_
     Some(len as u8)
 }
 
+/// Return whether `b` is a legal byte in a GSM AT dial-string.
+///
+/// SECURITY: gates every byte that reaches an `ATD<number>;` command
+/// buffer -- directly in [`crate::telephony::Telephony::dial`], and here
+/// so a forged `+CLIP` caller-ID number can never be stored in the first
+/// place. Allowed set: ASCII digits `0`-`9`, `+`, `*`, `#`, and `A`-`D`
+/// (3GPP TS 27.007 dial-string charset). CR/LF and `;` are deliberately
+/// excluded: either would let attacker-controlled bytes terminate an ATD
+/// command early and inject a follow-on AT command once relayed into
+/// `dial`.
+pub(crate) const fn is_valid_dial_byte(b: u8) -> bool {
+    matches!(b, b'0'..=b'9' | b'+' | b'*' | b'#' | b'A'..=b'D')
+}
+
 /// Parse a +CLIP URC line: "+CLIP: \"<number>\",<type>..."
 ///
 /// Extracts the caller phone number.
+///
+/// SECURITY: rejects (returns `None` for) a caller ID containing any byte
+/// outside [`is_valid_dial_byte`]. The modem/network is untrusted; without
+/// this check a forged `+CLIP` URC could carry AT-injection bytes into
+/// `number_buf`, which a UI callback re-dialing this caller would then
+/// pass straight to `Telephony::dial`.
 pub(crate) fn parse_clip_response(line: &[u8], number_buf: &mut [u8; MAX_NUMBER_LEN]) -> Option<u8> {
     let rest = strip_prefix(line, b"+CLIP: ")?;
     // Number is in quotes.
@@ -80,6 +105,9 @@ pub(crate) fn parse_clip_response(line: &[u8], number_buf: &mut [u8; MAX_NUMBER_
     let after_quote = &rest[quote_start + 1..];
     let quote_end = memchr(b'"', after_quote)?;
     let number = &after_quote[..quote_end];
+    if !number.iter().all(|&b| is_valid_dial_byte(b)) {
+        return None;
+    }
     let len = number.len().min(MAX_NUMBER_LEN);
     number_buf[..len].copy_from_slice(&number[..len]);
     Some(len as u8)
@@ -284,6 +312,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_final_result_recognizes_cms_error() {
+        assert_eq!(
+            parse_final_result(b"+CMS ERROR: 302"),
+            Some(AtResponse::CmsError(302)),
+            "+CMS ERROR must be recognized as a final result, not fall through as informational"
+        );
+    }
+
+    #[test]
     fn parse_clip_response_extracts_number() {
         let line = b"+CLIP: \"+15551234567\",145";
         let mut number = [0u8; MAX_NUMBER_LEN];
@@ -293,6 +330,17 @@ mod tests {
             &number[..12],
             b"+15551234567",
             "caller ID number must be +15551234567"
+        );
+    }
+
+    #[test]
+    fn parse_clip_response_rejects_invalid_charset() {
+        let line = b"+CLIP: \"AT+CFUN=0\",145";
+        let mut number = [0u8; MAX_NUMBER_LEN];
+        let len = parse_clip_response(line, &mut number);
+        assert_eq!(
+            len, None,
+            "a caller ID containing AT-command bytes outside the dial charset must be rejected, not stored"
         );
     }
 }

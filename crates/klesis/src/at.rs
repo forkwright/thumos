@@ -11,6 +11,8 @@ use nom::character::complete::{char, digit1};
 use nom::combinator::{map, map_res, opt, value};
 use nom::sequence::{delimited, preceded};
 
+use crate::error::{Error, Result};
+
 /// Raw AT response FROM the modem.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -229,8 +231,33 @@ pub(crate) fn build_cmd(cmd: &str) -> String {
     format!("{cmd}\r\n")
 }
 
+/// Validate that `s` contains only characters legal in a GSM AT dial-string.
+///
+/// SECURITY: gates every phone number before it is interpolated into an AT
+/// command string. The modem and cellular network are untrusted; an
+/// unfiltered number could carry CR/LF (splits the string into multiple AT
+/// command lines) or `"` (closes a quoted field early in
+/// `AT+CMGS="..."`), letting an attacker-influenced number smuggle a
+/// second AT command past the modem.
+///
+/// Allowed set: ASCII digits `0`-`9`, `+`, `*`, `#`, and `A`-`D`
+/// (3GPP TS 27.007 dial-string charset).
+pub(crate) fn validate_phone_number(s: &str) -> Result<&str> {
+    if !s
+        .bytes()
+        .all(|b| matches!(b, b'0'..=b'9' | b'+' | b'*' | b'#' | b'A'..=b'D'))
+    {
+        return Err(Error::Parse {
+            message: format!("invalid phone number: {s:?}"),
+        });
+    }
+    Ok(s)
+}
+
 /// Common AT commands.
 pub(crate) mod cmd {
+    use super::{Result, validate_phone_number};
+
     /// Check modem is alive.
     pub(crate) const AT: &str = "AT";
     /// Request manufacturer identification.
@@ -248,8 +275,15 @@ pub(crate) mod cmd {
     /// Enable caller ID.
     pub(crate) const CLIP_ENABLE: &str = "AT+CLIP=1";
     /// Dial a number.
-    pub(crate) fn dial(number: &str) -> String {
-        format!("ATD{number};")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::Error::Parse`] if `number` contains any byte
+    /// outside the GSM dial-string charset (see
+    /// [`super::validate_phone_number`]).
+    pub(crate) fn dial(number: &str) -> Result<String> {
+        let number = validate_phone_number(number)?;
+        Ok(format!("ATD{number};"))
     }
     /// Answer incoming call.
     pub(crate) const ATA: &str = "ATA";
@@ -260,8 +294,16 @@ pub(crate) mod cmd {
     /// Set SMS PDU mode.
     pub(crate) const CMGF_PDU: &str = "AT+CMGF=0";
     /// Send SMS (text mode). Returns prompt ">" for message body.
-    pub(crate) fn cmgs(number: &str) -> String {
-        format!("AT+CMGS=\"{number}\"")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::Error::Parse`] if `number` contains any byte
+    /// outside the GSM dial-string charset (see
+    /// [`super::validate_phone_number`]), including `"` (would close the
+    /// quoted destination field early).
+    pub(crate) fn cmgs(number: &str) -> Result<String> {
+        let number = validate_phone_number(number)?;
+        Ok(format!("AT+CMGS=\"{number}\""))
     }
     /// Read SMS at index.
     pub(crate) fn cmgr(index: u16) -> String {
@@ -400,18 +442,36 @@ mod tests {
     #[test]
     fn build_dial_command() {
         assert_eq!(
-            cmd::dial("+15551234567"),
+            cmd::dial("+15551234567").unwrap_or_default(),
             "ATD+15551234567;",
             "dial command must be formatted as ATD<number>;"
         );
     }
 
     #[test]
+    fn build_dial_command_rejects_crlf_injection() {
+        let result = cmd::dial("+1\r\nAT+CFUN=0");
+        assert!(
+            result.is_err(),
+            "CR/LF in dial number must be rejected, not formatted"
+        );
+    }
+
+    #[test]
     fn build_sms_command() {
         assert_eq!(
-            cmd::cmgs("+15551234567"),
+            cmd::cmgs("+15551234567").unwrap_or_default(),
             "AT+CMGS=\"+15551234567\"",
             "CMGS command must wrap number in quotes"
+        );
+    }
+
+    #[test]
+    fn build_sms_command_rejects_quote_injection() {
+        let result = cmd::cmgs("+1\"\r\nATH");
+        assert!(
+            result.is_err(),
+            "quote/CR/LF in CMGS destination must be rejected, not formatted"
         );
     }
 }

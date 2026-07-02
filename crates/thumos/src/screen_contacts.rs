@@ -621,9 +621,12 @@ mod tests {
 
     fn make_manager() -> ContactManager {
         let mut mgr = ContactManager::new();
-        mgr.add("Charlie", "+15553333333");
-        mgr.add("Alice", "+15551111111");
-        mgr.add("Bob", "+15552222222");
+        mgr.add("Charlie", "+15553333333")
+            .unwrap_or_else(|_| unreachable!());
+        mgr.add("Alice", "+15551111111")
+            .unwrap_or_else(|_| unreachable!());
+        mgr.add("Bob", "+15552222222")
+            .unwrap_or_else(|_| unreachable!());
         mgr
     }
 
