@@ -501,7 +501,7 @@ const MAX_ANOMALIES: usize = 16;
 /// 1. Unexpected channel active (was inactive during baseline).
 /// 2. Rate spike: packet count in the last `window_ms` exceeds
 ///    3x the baseline maximum rate.
-/// 3. data0 out of range: most recent packet's data0 falls outside
+/// 3. data0 out of range: any packet's data0 in the window falls outside
 ///    the baseline `[min_data0, max_data0]` range.
 ///
 /// # Arguments
@@ -564,26 +564,32 @@ pub(crate) fn detect_anomalies(
             }
         }
 
-        // 3. data0 out of range -- check the most recent packet on this channel.
+        // 3. data0 out of range -- check every packet on this channel in
+        // the window; flag on the first one that violates the baseline
+        // range. SECURITY: checking only the most recent packet let an
+        // adversarial modem smuggle an out-of-range data0 in any packet
+        // except the last and evade detection entirely (issue #248).
         let (older, newer) = log.entries();
-        let mut latest_data0: Option<u32> = None;
+        let mut out_of_range: Option<u32> = None;
         for entry in older.iter().chain(newer.iter()) {
             if entry.channel == ch_u32 && entry.timestamp >= since {
-                latest_data0 = Some(entry.data0);
+                let d0 = entry.data0;
+                if d0 < baseline_stats.min_data0 || d0 > baseline_stats.max_data0 {
+                    out_of_range = Some(d0);
+                    break;
+                }
             }
         }
-        if let Some(d0) = latest_data0 {
-            if d0 < baseline_stats.min_data0 || d0 > baseline_stats.max_data0 {
-                if count < MAX_ANOMALIES {
-                    anomalies[count] = Some(CcciAnomaly {
-                        timestamp: now,
-                        channel: ch_u32,
-                        kind: AnomalyKind::Data0OutOfRange,
-                        observed: d0,
-                        baseline_max: baseline_stats.max_data0,
-                    });
-                    count += 1;
-                }
+        if let Some(d0) = out_of_range {
+            if count < MAX_ANOMALIES {
+                anomalies[count] = Some(CcciAnomaly {
+                    timestamp: now,
+                    channel: ch_u32,
+                    kind: AnomalyKind::Data0OutOfRange,
+                    observed: d0,
+                    baseline_max: baseline_stats.max_data0,
+                });
+                count += 1;
             }
         }
     }
@@ -1293,6 +1299,62 @@ mod tests {
             a.channel == 4 && a.kind == AnomalyKind::Data0OutOfRange
         });
         assert!(found, "must detect data0 out of range on channel 4");
+    }
+
+    #[test]
+    fn anomaly_detects_data0_out_of_range_in_non_last_packet() {
+        let mut log = CcciLogger::new();
+
+        // Baseline: data0 range [100, 200] on channel 4.
+        for d0 in [100u32, 150, 200] {
+            log.record(CcciLogEntry {
+                timestamp: 1000,
+                channel: 4,
+                direction: PacketDirection::Rx,
+                data0: d0,
+                data1: 0,
+                packet_len: 16,
+            });
+        }
+        let baseline = build_baseline(&log, 60_000);
+
+        // Out-of-range packet is FIRST in the live window; every packet
+        // after it (including the last) is in-range. Regression test for
+        // #248: a check that only inspects the trailing packet lets an
+        // attacker smuggle the offending value anywhere but last.
+        log.record(CcciLogEntry {
+            timestamp: 70_000,
+            channel: 4,
+            direction: PacketDirection::Rx,
+            data0: 500,
+            data1: 0,
+            packet_len: 16,
+        });
+        log.record(CcciLogEntry {
+            timestamp: 71_000,
+            channel: 4,
+            direction: PacketDirection::Rx,
+            data0: 150,
+            data1: 0,
+            packet_len: 16,
+        });
+        log.record(CcciLogEntry {
+            timestamp: 72_000,
+            channel: 4,
+            direction: PacketDirection::Rx,
+            data0: 150,
+            data1: 0,
+            packet_len: 16,
+        });
+
+        let (anomalies, count) = detect_anomalies(&log, &baseline, 72_000, 60_000);
+        let found = anomalies[..count].iter().flatten().any(|a| {
+            a.channel == 4 && a.kind == AnomalyKind::Data0OutOfRange
+        });
+        assert!(
+            found,
+            "must detect data0 out of range even when the offending packet is not last in the window"
+        );
     }
 
     #[test]

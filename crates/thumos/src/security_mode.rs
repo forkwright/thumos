@@ -32,6 +32,8 @@ extern crate alloc;
 
 use core::fmt;
 
+use subtle::ConstantTimeEq;
+
 use crate::audit::{AuditEventType, AuditLog};
 use crate::key_manager::KeyManager;
 use crate::power::{PowerManager, PowerState, Radio};
@@ -52,6 +54,14 @@ const SCAN_INTERVAL_SENTINEL_MS: u32 = 10_000;
 
 /// Scan interval for Panic mode (0 — no scanning).
 const SCAN_INTERVAL_PANIC_MS: u32 = 0;
+
+/// Salt for the Sentinel-exit PIN PBKDF2 derivation.
+///
+/// NOTE: fixed (not per-device random) for determinism, mirroring the
+/// `PBKDF2_SALT` pattern in `key_manager.rs`, until the key-slot
+/// provisioning infrastructure (kinit.rs Step 8f, currently PENDING) wires
+/// a per-device random salt into persistent storage.
+const PIN_PBKDF2_SALT: &[u8] = b"thumos-sentinel-pin-salt-v1";
 
 // ---------------------------------------------------------------------------
 // SecurityMode
@@ -271,17 +281,16 @@ pub(crate) struct ModeManager {
     pre_panic_mode: SecurityMode,
     /// Most recent panic event, if any.
     last_panic_event: Option<PanicEvent>,
-    /// Stored PIN hash for Sentinel exit verification.
-    /// In production this would be a SHA-256 hash; for now a simple
-    /// fixed-size array suffices until Wave 3 wires the real PIN system.
+    /// PBKDF2-HMAC-SHA256 derived value for Sentinel exit PIN verification
+    /// (RFC 8018, salted + iterated — see [`ModeManager::exit_sentinel`]).
     pin_hash: [u8; 32],
 }
 
 impl ModeManager {
     /// Create a new `ModeManager` starting in Daily mode.
     ///
-    /// `pin_hash` is the SHA-256 hash of the user's PIN for Sentinel
-    /// exit verification.
+    /// `pin_hash` is the PBKDF2-HMAC-SHA256 derived value of the user's PIN
+    /// for Sentinel exit verification (see [`ModeManager::exit_sentinel`]).
     #[must_use]
     pub(crate) const fn new(pin_hash: [u8; 32]) -> Self {
         Self {
@@ -343,8 +352,12 @@ impl ModeManager {
 
     /// Transition from Sentinel back to Daily mode.
     ///
-    /// Requires PIN confirmation. The provided `pin` is hashed with SHA-256
-    /// and compared against the stored hash.
+    /// Requires PIN confirmation. The provided `pin` is derived with
+    /// PBKDF2-HMAC-SHA256 (RFC 8018, `PIN_PBKDF2_SALT`,
+    /// `security::PBKDF2_ITERATIONS` rounds) and compared in constant time
+    /// against the stored derived value — a single fast unsalted hash is
+    /// brute-forceable offline in milliseconds over the PIN's small
+    /// candidate space (CWE-916 / CWE-759).
     ///
     /// # Errors
     ///
@@ -367,9 +380,24 @@ impl ModeManager {
             return Err(ModeTransitionError::PinRequired);
         }
 
-        // Verify PIN by comparing SHA-256 hash.
-        let pin_hash = crate::security::sha256(pin);
-        if !constant_time_eq(&pin_hash, &self.pin_hash) {
+        // WHY: PBKDF2-HMAC-SHA256 (RFC 8018) replaces the prior single-round
+        // unsalted SHA-256 hash — a 4-6 digit PIN has only 1e4-1e6
+        // candidates, exhaustively searchable offline in milliseconds
+        // against a fast unsalted hash and reusable across every device via
+        // one precomputed table (CWE-916 / CWE-759). The salted, iterated
+        // derivation costs a full PBKDF2 round per guess.
+        let mut derived_pin = [0u8; KEY_SIZE];
+        // INVARIANT: PBKDF2_ITERATIONS is a nonzero constant, so
+        // ZeroIterations is unreachable here; mapped to PinMismatch
+        // (fail-closed) rather than unwrapped.
+        let derive_ok = crate::security::pbkdf2_sha256(
+            pin,
+            PIN_PBKDF2_SALT,
+            crate::security::PBKDF2_ITERATIONS,
+            &mut derived_pin,
+        )
+        .is_ok();
+        if !derive_ok || !constant_time_eq(&derived_pin, &self.pin_hash) {
             return Err(ModeTransitionError::PinMismatch);
         }
 
@@ -764,12 +792,16 @@ pub(crate) fn sync_firewall_mode(
 
 /// Constant-time byte array comparison to prevent timing side-channels
 /// on PIN verification.
+///
+/// WHY: backed by `subtle::ConstantTimeEq`, which inserts optimization
+/// barriers the compiler cannot elide — a hand-rolled XOR loop can be
+/// defeated by an optimizing backend. Mirrors the `lock_screen.rs`
+/// constant-time compare: the duress/coercion surface has the same
+/// timing-oracle requirement as Sentinel-exit PIN verification.
 fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    let a_slice: &[u8] = a;
+    let b_slice: &[u8] = b;
+    a_slice.ct_eq(b_slice).unwrap_u8() == 1
 }
 
 // ---------------------------------------------------------------------------
@@ -782,14 +814,24 @@ mod tests {
 
     use super::*;
 
-    /// Helper: compute SHA-256 hash of a test PIN.
-    fn sha256_hash_of_pin(pin: &[u8]) -> [u8; 32] {
-        crate::security::sha256(pin)
+    /// Helper: derive the PBKDF2-HMAC-SHA256 value of a test PIN, matching
+    /// `ModeManager::exit_sentinel`'s verification derivation exactly (same
+    /// salt + iteration count) so the stored fixture round-trips.
+    fn derive_test_pin_hash(pin: &[u8]) -> [u8; 32] {
+        let mut derived = [0u8; 32];
+        crate::security::pbkdf2_sha256(
+            pin,
+            PIN_PBKDF2_SALT,
+            crate::security::PBKDF2_ITERATIONS,
+            &mut derived,
+        )
+        .expect("pbkdf2 derivation failed in test");
+        derived
     }
 
     /// Helper: create a ModeManager with a known test PIN.
     fn mode_manager_with_test_pin() -> ModeManager {
-        ModeManager::new(sha256_hash_of_pin(b"123456"))
+        ModeManager::new(derive_test_pin_hash(b"123456"))
     }
 
     /// Helper: create a KeyManager with loaded keys for testing.
@@ -864,6 +906,70 @@ mod tests {
 
         // Correct PIN should succeed.
         mm.exit_sentinel(b"123456", &mut pm).expect("exit_sentinel failed");
+        assert_eq!(mm.mode(), SecurityMode::Daily);
+    }
+
+    // -----------------------------------------------------------------------
+    // Sentinel-exit PIN uses a salted, iterated KDF (#272)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn exit_sentinel_pin_is_not_verified_by_plain_sha256() {
+        // Regression test for #272: exit_sentinel previously verified the
+        // PIN via a single-round, unsalted SHA-256 hash. Proves the
+        // stored/derived value is now the PBKDF2-HMAC-SHA256 derivation,
+        // not a bare SHA-256 digest of the same PIN.
+        let derived = derive_test_pin_hash(b"123456");
+        let bare_sha256 = crate::security::sha256(b"123456");
+        assert_ne!(
+            derived, bare_sha256,
+            "Sentinel-exit PIN verification must use a KDF, not a bare SHA-256 hash"
+        );
+    }
+
+    #[test]
+    fn exit_sentinel_pin_derivation_is_salted() {
+        // A KDF without a salt input does not resist a precomputed /
+        // rainbow-table attack. Confirm the salt is load-bearing: a
+        // different salt must produce a different derived value for the
+        // same PIN.
+        let mut with_salt = [0u8; 32];
+        crate::security::pbkdf2_sha256(
+            b"123456",
+            PIN_PBKDF2_SALT,
+            crate::security::PBKDF2_ITERATIONS,
+            &mut with_salt,
+        )
+        .expect("pbkdf2 failed");
+
+        let mut different_salt = [0u8; 32];
+        crate::security::pbkdf2_sha256(
+            b"123456",
+            b"a-different-salt",
+            crate::security::PBKDF2_ITERATIONS,
+            &mut different_salt,
+        )
+        .expect("pbkdf2 failed");
+
+        assert_ne!(
+            with_salt, different_salt,
+            "different salts must produce different derived PIN values"
+        );
+    }
+
+    #[test]
+    fn exit_sentinel_still_succeeds_with_correct_pin_after_kdf_fix() {
+        // Round-trip regression: the salted KDF must not break legitimate
+        // Sentinel exit with the correct PIN (covered indirectly by
+        // transition_sentinel_to_daily_requires_pin above; asserted
+        // directly here for #272 traceability).
+        let mut mm = mode_manager_with_test_pin();
+        let mut km = key_manager_with_derived_keys();
+        let mut pm = PowerManager::new();
+
+        mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
+        mm.exit_sentinel(b"123456", &mut pm)
+            .expect("correct PIN must still unlock after KDF fix");
         assert_eq!(mm.mode(), SecurityMode::Daily);
     }
 
