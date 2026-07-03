@@ -71,6 +71,13 @@ pub enum WifiError {
         /// The invalid type byte.
         value: u8,
     },
+    /// EAPOL-Key frame descriptor type is not RSN (0x02). A non-RSN or
+    /// malformed descriptor must never be parsed and trusted as a WPA2
+    /// handshake frame.
+    UnknownKeyDescriptorType {
+        /// The unexpected descriptor type byte.
+        value: u8,
+    },
     /// No scan results matched the configured network.
     NetworkNotFound,
     /// The WiFi hardware is not initialized.
@@ -88,6 +95,9 @@ impl core::fmt::Display for WifiError {
             }
             Self::UnknownEapolType { value } => {
                 write!(f, "unknown EAPOL type: 0x{value:02x}")
+            }
+            Self::UnknownKeyDescriptorType { value } => {
+                write!(f, "unknown EAPOL-Key descriptor type: 0x{value:02x}")
             }
             Self::NetworkNotFound => write!(f, "network not found"),
             Self::NotInitialized => write!(f, "WiFi not initialized"),
@@ -573,8 +583,9 @@ pub struct EapolFrame {
 /// # Errors
 ///
 /// Returns [`WifiError::FrameTooShort`] when the slice cannot satisfy the
-/// declared packet length, and [`WifiError::UnknownEapolType`] for
-/// unrecognised packet type bytes.
+/// declared packet length, [`WifiError::UnknownEapolType`] for
+/// unrecognised packet type bytes, and [`WifiError::UnknownKeyDescriptorType`]
+/// when an EAPOL-Key frame's descriptor type is not RSN (0x02).
 #[must_use]
 pub(crate) fn eapol_parse(data: &[u8]) -> Result<EapolFrame, WifiError> {
     if data.len() < EAPOL_HEADER_LEN {
@@ -626,6 +637,11 @@ fn eapol_parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, WifiError> {
     }
 
     let descriptor_type = body[0];
+    if descriptor_type != DESCRIPTOR_TYPE_RSN {
+        return Err(WifiError::UnknownKeyDescriptorType {
+            value: descriptor_type,
+        });
+    }
     let key_info = KeyInfo(u16::from_be_bytes([body[1], body[2]]));
     let key_length = u16::from_be_bytes([body[3], body[4]]);
 
@@ -753,24 +769,31 @@ pub enum HandshakeState {
 ///
 /// Tracks handshake progression and stores transient cryptographic material
 /// (nonces, derived keys) for the duration of the handshake.
+///
+/// NOTE: fields are private (audit #282 batch 3). The only sanctioned way
+/// to advance `state` or populate `ptk` is through [`Self::process_message`],
+/// [`Self::msg2_sent`], and [`Self::complete`] -- direct field mutation
+/// from outside this module would bypass MIC verification and the
+/// replay-counter check, e.g. jumping straight to `SendMsg4` without ever
+/// validating Message 3.
 #[derive(Debug, Clone)]
 pub struct WpaHandshake {
     /// Current handshake state.
-    pub state: HandshakeState,
+    state: HandshakeState,
     /// Authenticator nonce (received in Message 1).
-    pub anonce: [u8; NONCE_LEN],
+    anonce: [u8; NONCE_LEN],
     /// Supplicant nonce (generated locally).
-    pub snonce: [u8; NONCE_LEN],
+    snonce: [u8; NONCE_LEN],
     /// Derived Pairwise Transient Key (populated after Message 1 processing).
-    pub ptk: Option<Ptk>,
+    ptk: Option<Ptk>,
     /// Replay counter from the most recent authenticator message.
-    pub replay_counter: u64,
+    replay_counter: u64,
     /// EAPOL protocol version (IEEE 802.1X-2020 §11.3.1) of the most
     /// recently received frame. Msg3 MIC reconstruction and the Msg2/Msg4
     /// responses echo this value instead of hardcoding version 2 (audit
     /// #259) — a version-1 AP (802.1X-2001, common on embedded/enterprise
     /// gear) otherwise fails every MIC check.
-    pub eapol_version: u8,
+    eapol_version: u8,
 }
 
 impl WpaHandshake {
@@ -918,6 +941,12 @@ impl WpaHandshake {
             HandshakeState::SendMsg2 => {
                 // Message 2: supplicant sends SNonce, mic=true, ack=false
                 // Key info: version=2 (AES), pairwise, MIC
+                // Fail closed (#282 batch 3): a missing PTK means no MIC can
+                // be computed -- never emit a frame with a zeroed, spoofable
+                // MIC.
+                let Some(ref ptk) = self.ptk else {
+                    return None;
+                };
                 let key_info = KeyInfo(0x010a); // version=2, pairwise, MIC
                 let mut kf = EapolKeyFrame {
                     descriptor_type: DESCRIPTOR_TYPE_RSN,
@@ -930,16 +959,13 @@ impl WpaHandshake {
                     mic: [0u8; MIC_LEN],
                     key_data: Vec::new(),
                 };
-                // Compute MIC over the frame with zeroed MIC field.
-                if let Some(ref ptk) = self.ptk {
-                    let frame_for_mic = EapolFrame {
-                        version: self.eapol_version,
-                        packet_type: EapolType::Key,
-                        key_frame: Some(kf.clone()),
-                        raw_body: Vec::new(),
-                    };
-                    kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
-                }
+                let frame_for_mic = EapolFrame {
+                    version: self.eapol_version,
+                    packet_type: EapolType::Key,
+                    key_frame: Some(kf.clone()),
+                    raw_body: Vec::new(),
+                };
+                kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
                 Some(EapolFrame {
                     version: self.eapol_version,
                     packet_type: EapolType::Key,
@@ -949,6 +975,12 @@ impl WpaHandshake {
             }
             HandshakeState::SendMsg4 => {
                 // Message 4: supplicant sends final ACK, mic=true, secure=true
+                // Fail closed (#282 batch 3): a missing PTK means no MIC can
+                // be computed -- never emit a frame with a zeroed, spoofable
+                // MIC.
+                let Some(ref ptk) = self.ptk else {
+                    return None;
+                };
                 let key_info = KeyInfo(0x030a); // version=2, pairwise, MIC, secure
                 let mut kf = EapolKeyFrame {
                     descriptor_type: DESCRIPTOR_TYPE_RSN,
@@ -961,16 +993,13 @@ impl WpaHandshake {
                     mic: [0u8; MIC_LEN],
                     key_data: Vec::new(),
                 };
-                // Compute MIC over the frame with zeroed MIC field.
-                if let Some(ref ptk) = self.ptk {
-                    let frame_for_mic = EapolFrame {
-                        version: self.eapol_version,
-                        packet_type: EapolType::Key,
-                        key_frame: Some(kf.clone()),
-                        raw_body: Vec::new(),
-                    };
-                    kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
-                }
+                let frame_for_mic = EapolFrame {
+                    version: self.eapol_version,
+                    packet_type: EapolType::Key,
+                    key_frame: Some(kf.clone()),
+                    raw_body: Vec::new(),
+                };
+                kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
                 Some(EapolFrame {
                     version: self.eapol_version,
                     packet_type: EapolType::Key,
@@ -1402,6 +1431,38 @@ mod tests {
     }
 
     #[test]
+    fn eapol_key_frame_rejects_non_rsn_descriptor_type() {
+        let kf = EapolKeyFrame {
+            descriptor_type: 0xFE, // WPA legacy descriptor, not RSN
+            key_info: KeyInfo(0x008a),
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+        let frame = EapolFrame {
+            version: 2,
+            packet_type: EapolType::Key,
+            key_frame: Some(kf),
+            raw_body: Vec::new(),
+        };
+        let encoded = eapol_encode(&frame);
+        let result = eapol_parse(&encoded);
+        match result {
+            Err(WifiError::UnknownKeyDescriptorType { value }) => {
+                assert_eq!(
+                    value, 0xFE,
+                    "error must report the offending descriptor type"
+                );
+            }
+            _ => panic!("must return UnknownKeyDescriptorType for a non-RSN descriptor"),
+        }
+    }
+
+    #[test]
     fn eapol_encode_truncates_body_bytes_to_match_declared_length_field() {
         let oversized_len = usize::from(u16::MAX) + 100;
         let frame = EapolFrame {
@@ -1586,8 +1647,10 @@ mod tests {
             key_data: Vec::new(),
         };
         hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-        // Drive to AwaitMsg3 directly (state is `pub`); independent of
-        // whether audit #260's msg2_sent() transition has landed.
+        // NOTE: `state` is module-private, not pub (audit #282 batch 3);
+        // this write is legal only because `tests` is a submodule of `wifi`.
+        // Drive to AwaitMsg3 directly, independent of whether audit #260's
+        // msg2_sent() transition has landed.
         hs.state = HandshakeState::AwaitMsg3;
 
         // Group-key frame masquerading as Msg3: ack, mic, install set,
@@ -1733,14 +1796,39 @@ mod tests {
     }
 
     #[test]
+    fn build_response_fails_closed_without_ptk() {
+        let mut hs = WpaHandshake::new();
+
+        // Driver misuse: reach SendMsg2/SendMsg4 without ever deriving a
+        // PTK. `state` is module-private but settable here because `tests`
+        // is a submodule of `wifi` -- see
+        // handshake_fails_closed_when_awaiting_msg3_without_ptk for the
+        // equivalent process_message-side guard (audit #282 batch 3).
+        hs.state = HandshakeState::SendMsg2;
+        assert!(hs.ptk.is_none(), "PTK must be None on this path");
+        assert!(
+            hs.build_response().is_none(),
+            "SendMsg2 with ptk == None must not emit a zero-MIC frame"
+        );
+
+        hs.state = HandshakeState::SendMsg4;
+        assert!(
+            hs.build_response().is_none(),
+            "SendMsg4 with ptk == None must not emit a zero-MIC frame"
+        );
+    }
+
+    #[test]
     fn handshake_fails_closed_when_awaiting_msg3_without_ptk() {
         let mut hs = WpaHandshake::new();
         let pmk = [0u8; PMK_LEN];
         let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
         let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
 
+        // NOTE: `state` is module-private, not pub (audit #282 batch 3);
+        // this write is legal only because `tests` is a submodule of `wifi`.
         // Driver misuse: reach AwaitMsg3 without ever processing Message 1,
-        // so `ptk` is still None (`state` is `pub`, per audit #274/#260).
+        // so `ptk` is still None.
         hs.state = HandshakeState::AwaitMsg3;
         assert!(hs.ptk.is_none(), "PTK must be None on this path");
 

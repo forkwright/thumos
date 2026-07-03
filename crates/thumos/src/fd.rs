@@ -1446,6 +1446,36 @@ mod tests {
         );
     }
 
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn lseek_seek_cur_negative_result_rejected_with_einval() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        // Seeking further back than the current position with SEEK_CUR
+        // would land at a negative file position -- must be rejected with
+        // EINVAL, not wrap or silently succeed (issue #282 finding 12).
+        let mut fd_entry = FileDescriptor::from_vfs(0, 0, 0);
+        fd_entry.offset = 100;
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        let fd = table.alloc(fd_entry).expect("fd alloc must succeed");
+
+        let negative_offset = 0u32.wrapping_sub(200); // -200 two's complement
+        let result = sys_lseek(fd as u32, negative_offset, SEEK_CUR);
+        assert_eq!(
+            result, EINVAL,
+            "SEEK_CUR producing a negative file position must return EINVAL"
+        );
+
+        // A rejected seek must not mutate the stored offset.
+        let unchanged = sys_lseek(fd as u32, 0, SEEK_CUR);
+        assert_eq!(
+            unchanged, 100,
+            "a rejected SEEK_CUR must not mutate the stored file offset"
+        );
+    }
+
     use super::*;
     use crate::vfs::InodeType;
 
@@ -1937,6 +1967,26 @@ mod tests {
         assert_eq!(result, 0);
         assert_eq!(buf[0], b'/');
         assert_eq!(buf[1], 0);
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn getcwd_buffer_too_small_returns_einval() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        // The root cwd ("/") needs 2 bytes (1 char + NUL terminator); a
+        // 1-byte buffer must be rejected, not truncated or overflowed
+        // (issue #282 finding 14).
+        static mut BUF: [u8; 1] = [0u8; 1];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        let result = sys_getcwd(buf.as_mut_ptr() as u32, 1);
+        assert_eq!(
+            result, EINVAL,
+            "a buffer too small for cwd + NUL must return EINVAL"
+        );
     }
 
     // -- New VFS-specific tests --
