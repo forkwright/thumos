@@ -182,8 +182,13 @@ impl CallScreen {
     }
 
     /// Return the number as a string slice.
+    ///
+    /// `number_len` is clamped to the buffer length before slicing — it is
+    /// a public field the telephony driver populates directly from raw
+    /// caller-ID data, with no compile-time guarantee it stays in bounds
+    /// (#394).
     fn number_str(&self) -> &str {
-        let len = self.state.number_len as usize;
+        let len = (self.state.number_len as usize).min(self.state.number.len());
         core::str::from_utf8(&self.state.number[..len]).unwrap_or("")
     }
 
@@ -513,6 +518,21 @@ mod tests {
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "active call screen must render visible content");
+    }
+
+    #[test]
+    fn draw_does_not_panic_on_oversized_number_len() {
+        let mut screen = make_incoming_screen();
+        // Driver/attacker-controlled caller-ID length exceeding the 20-byte
+        // buffer (#394) — number_str() must clamp instead of panicking.
+        screen.state.number_len = 255;
+
+        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        screen.draw(&mut fb);
+        assert!(
+            fb.iter().any(|&px| px != 0),
+            "screen must still render after clamping an oversized number_len"
+        );
     }
 
     #[test]

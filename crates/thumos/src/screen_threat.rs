@@ -283,6 +283,19 @@ pub(crate) struct ThreatMonitor {
     cursor: usize,
 }
 
+/// Truncate `s` to at most `max_bytes`, backing off to the nearest earlier
+/// UTF-8 char boundary so a multi-byte codepoint is never split (#396).
+fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 impl ThreatMonitor {
     /// Create a new threat monitor with no alerts and default state.
     pub(crate) fn new() -> Self {
@@ -300,7 +313,15 @@ impl ThreatMonitor {
 
     /// Add a new alert, maintaining newest-first order and the
     /// `MAX_ALERTS` capacity limit.
-    pub(crate) fn push_alert(&mut self, alert: ThreatAlert) {
+    pub(crate) fn push_alert(&mut self, mut alert: ThreatAlert) {
+        // Enforce MAX_DESC_LEN here (not just at render time) so a single
+        // oversized attacker-controlled description cannot inflate ring
+        // buffer memory (#396).
+        if alert.description.len() > MAX_DESC_LEN {
+            alert.description =
+                String::from(truncate_at_char_boundary(&alert.description, MAX_DESC_LEN));
+        }
+
         // Insert at position determined by timestamp (newest first).
         let pos = self.alerts
             .iter()
@@ -461,14 +482,17 @@ impl Screen for ThreatMonitor {
                 let icon_x = PADDING_X + 6 * 8; // after timestamp
                 ui::draw_char(fb, w, icon_x, row_y + 3, icon, alert.severity.color(), bg);
 
-                // Description (truncated to fit).
+                // Description (truncated to fit the row width). draw_str
+                // renders one glyph per `char`, so the cut must be made at
+                // a character boundary, not a raw byte offset (#396) — a
+                // byte-index slice can land mid-codepoint and panic.
                 let desc_x = icon_x + 2 * 8;
                 let max_chars = ((w - desc_x) / 8) as usize;
-                let desc = if alert.description.len() > max_chars {
-                    &alert.description[..max_chars]
-                } else {
-                    &alert.description
-                };
+                let desc = alert
+                    .description
+                    .char_indices()
+                    .nth(max_chars)
+                    .map_or(alert.description.as_str(), |(i, _)| &alert.description[..i]);
                 ui::draw_str(fb, w, desc_x, row_y + 3, desc, fg, bg);
             }
 
@@ -656,6 +680,45 @@ mod tests {
         monitor.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "threat monitor with alerts must render visible content");
+    }
+
+    #[test]
+    fn draw_handles_multibyte_description_at_truncation_boundary() {
+        let mut monitor = ThreatMonitor::new();
+        let mut alert = make_alert(1000, ThreatAlertType::BleTracker, ThreatLevel::Medium);
+        // 20 ASCII chars + a 2-byte codepoint so the render-time truncation
+        // boundary (byte 21 at this screen width) lands mid-codepoint
+        // pre-fix (#396).
+        alert.description = String::from("12345678901234567890é tracker seen nearby");
+        monitor.push_alert(alert);
+
+        let mut fb = [0u16; CONTENT_PIXELS];
+        // Must not panic ("byte index N is not a char boundary").
+        monitor.draw(&mut fb);
+        assert!(
+            fb.iter().any(|&px| px != 0),
+            "threat screen must render the char-boundary-truncated description"
+        );
+    }
+
+    #[test]
+    fn push_alert_truncates_description_to_max_desc_len_on_char_boundary() {
+        let mut monitor = ThreatMonitor::new();
+        let mut alert = make_alert(1000, ThreatAlertType::BleTracker, ThreatLevel::Low);
+        // 47 ASCII chars + a 2-byte codepoint so MAX_DESC_LEN (48) lands
+        // mid-codepoint if truncation is not char-boundary-safe (#396).
+        let mut long_desc = "A".repeat(47);
+        long_desc.push('é');
+        long_desc.push_str(" more text after the cap");
+        alert.description = long_desc;
+        monitor.push_alert(alert);
+
+        let stored = &monitor.alerts[0].description;
+        assert!(stored.len() <= MAX_DESC_LEN, "description must be capped at MAX_DESC_LEN");
+        assert_eq!(
+            stored.as_str(), "A".repeat(47),
+            "truncation must back off to the last full codepoint"
+        );
     }
 
     #[test]

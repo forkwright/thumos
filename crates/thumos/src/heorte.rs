@@ -75,14 +75,32 @@ pub struct CalendarEvent {
     pub all_day: bool,
 }
 
+/// Return the largest prefix length of `bytes` (capped at `max_len`) that
+/// ends on a valid UTF-8 char boundary, so truncating to it never splits a
+/// multi-byte codepoint (#359).
+pub(crate) fn utf8_truncate_len(bytes: &[u8], max_len: usize) -> usize {
+    let mut len = bytes.len().min(max_len);
+    if len == bytes.len() {
+        return len;
+    }
+    // UTF-8 continuation bytes are `10xxxxxx` (0x80..=0xBF); back off from
+    // a mid-codepoint cut to the start of that codepoint.
+    while len > 0 && (bytes[len] & 0xC0) == 0x80 {
+        len -= 1;
+    }
+    len
+}
+
 impl CalendarEvent {
     /// Create a new calendar event.
     ///
-    /// `title_bytes` is truncated to [`MAX_TITLE_LEN`] if longer.
+    /// `title_bytes` is truncated to [`MAX_TITLE_LEN`] if longer, backing
+    /// off to the last full codepoint so truncation never splits one
+    /// (#359).
     #[must_use]
     pub(crate) fn new(id: u32, title_bytes: &[u8], start_epoch: u64, duration_min: u16, all_day: bool) -> Self {
         let mut title = [0u8; MAX_TITLE_LEN];
-        let len = title_bytes.len().min(MAX_TITLE_LEN);
+        let len = utf8_truncate_len(title_bytes, MAX_TITLE_LEN);
         title[..len].copy_from_slice(&title_bytes[..len]);
         Self {
             id,
@@ -462,6 +480,23 @@ mod tests {
         let long_title = [b'A'; 100];
         let event = CalendarEvent::new(1, &long_title, 0, 0, false);
         assert_eq!(event.title_len as usize, MAX_TITLE_LEN, "title must be truncated");
+    }
+
+    #[test]
+    fn event_title_truncation_preserves_valid_utf8_prefix() {
+        // 63 ASCII bytes + a 2-byte codepoint straddling MAX_TITLE_LEN (64):
+        // pre-fix, a byte-count truncation would cut mid-codepoint and
+        // title_str() would silently return "" instead of the 63 valid
+        // 'A' characters (#359).
+        let mut long_title = alloc::vec![b'A'; 63];
+        long_title.extend_from_slice("é".as_bytes());
+        let event = CalendarEvent::new(1, &long_title, 0, 0, false);
+        assert_eq!(
+            event.title_len as usize, 63,
+            "truncation must back off to the last full codepoint, not split it"
+        );
+        assert_eq!(event.title_str().len(), 63);
+        assert!(event.title_str().chars().all(|c| c == 'A'));
     }
 
     #[test]

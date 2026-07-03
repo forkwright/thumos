@@ -149,7 +149,7 @@ impl fmt::Display for UnlockResult {
 /// optimizing backend. The lock screen is the duress/coercion surface, so a
 /// timing oracle on PIN/passphrase hashes must not exist.
 #[must_use]
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     // Slice `ct_eq` returns Choice(0) on a length mismatch (lengths here are
     // fixed 32-byte SHA-256 digests, so length is not secret).
     a.ct_eq(b).unwrap_u8() == 1

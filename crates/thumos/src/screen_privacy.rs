@@ -23,6 +23,8 @@
     reason = "Privacy dashboard created in Phase 08 Wave 7, kinit wiring pending"
 )]
 
+use crate::lock_screen::constant_time_eq;
+use crate::security::{self, SHA256_DIGEST_LEN};
 use crate::ui::{
     self, color, Key, Screen, ScreenAction, ScreenId,
     CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
@@ -397,14 +399,19 @@ pub(crate) struct PrivacyScreen {
     purge_state: Option<PurgeConfirmState>,
     /// Total storage usage across all categories (cached).
     total_bytes: u64,
+    /// SHA-256 hash of the configured purge confirmation code (#395). The
+    /// purge dialog requires this exact code, not merely non-empty input.
+    purge_passphrase_hash: [u8; SHA256_DIGEST_LEN],
 }
 
 impl PrivacyScreen {
     /// Create a new privacy dashboard with default category data.
     ///
     /// In production, category sizes would be populated from `lfs.rs`
-    /// inode metadata on screen entry.
-    pub(crate) fn new() -> Self {
+    /// inode metadata on screen entry. `purge_passphrase_hash` is the
+    /// SHA-256 hash of the configured purge confirmation code (#395); the
+    /// purge dialog rejects any input that does not hash-match it.
+    pub(crate) fn new(purge_passphrase_hash: [u8; SHA256_DIGEST_LEN]) -> Self {
         let categories = default_categories();
         let total_bytes = categories.iter().map(|c| c.size_bytes).sum();
         Self {
@@ -414,7 +421,14 @@ impl PrivacyScreen {
             view: PrivacyView::List,
             purge_state: None,
             total_bytes,
+            purge_passphrase_hash,
         }
+    }
+
+    /// Create a privacy dashboard for tests with a known purge code.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(purge_code: &[u8]) -> Self {
+        Self::new(security::sha256(purge_code))
     }
 
     /// Update a category's size (called when refreshing from filesystem).
@@ -739,17 +753,19 @@ impl PrivacyScreen {
     /// Handle key input in the purge confirmation dialog.
     fn handle_purge_key(&mut self, key: Key) -> ScreenAction {
         match key {
-            // Numpad keys for passphrase entry.
-            Key::Num0 => { self.purge_digit(0); ScreenAction::None }
-            Key::Num1 => { self.purge_digit(1); ScreenAction::None }
-            Key::Num2 => { self.purge_digit(2); ScreenAction::None }
-            Key::Num3 => { self.purge_digit(3); ScreenAction::None }
-            Key::Num4 => { self.purge_digit(4); ScreenAction::None }
-            Key::Num5 => { self.purge_digit(5); ScreenAction::None }
-            Key::Num6 => { self.purge_digit(6); ScreenAction::None }
-            Key::Num7 => { self.purge_digit(7); ScreenAction::None }
-            Key::Num8 => { self.purge_digit(8); ScreenAction::None }
-            Key::Num9 => { self.purge_digit(9); ScreenAction::None }
+            // Numpad keys for passphrase entry. Stored as ASCII digit bytes
+            // to match the sha256(entered) convention used for comparison
+            // below (and in lock_screen.rs's PIN/passphrase verification).
+            Key::Num0 => { self.purge_digit(b'0'); ScreenAction::None }
+            Key::Num1 => { self.purge_digit(b'1'); ScreenAction::None }
+            Key::Num2 => { self.purge_digit(b'2'); ScreenAction::None }
+            Key::Num3 => { self.purge_digit(b'3'); ScreenAction::None }
+            Key::Num4 => { self.purge_digit(b'4'); ScreenAction::None }
+            Key::Num5 => { self.purge_digit(b'5'); ScreenAction::None }
+            Key::Num6 => { self.purge_digit(b'6'); ScreenAction::None }
+            Key::Num7 => { self.purge_digit(b'7'); ScreenAction::None }
+            Key::Num8 => { self.purge_digit(b'8'); ScreenAction::None }
+            Key::Num9 => { self.purge_digit(b'9'); ScreenAction::None }
 
             Key::Left => {
                 // Backspace.
@@ -760,9 +776,14 @@ impl PrivacyScreen {
             }
 
             Key::Ok => {
-                // Confirm purge (passphrase would be verified in production).
+                // Confirm purge only when the entered code hash-matches the
+                // configured purge_passphrase_hash (#395) — a bare
+                // non-empty check let a single keypress destroy data with
+                // no real verification.
                 if let Some(state) = &self.purge_state {
-                    if state.passphrase_len > 0 {
+                    let entered = &state.passphrase[..state.passphrase_len];
+                    let hash = security::sha256(entered);
+                    if constant_time_eq(&hash, &self.purge_passphrase_hash) {
                         let idx = state.category_idx;
                         self.execute_purge(idx);
                     }
@@ -914,7 +935,7 @@ mod tests {
 
     #[test]
     fn new_screen_starts_at_list_view() {
-        let screen = PrivacyScreen::new();
+        let screen = PrivacyScreen::new_for_test(b"1234");
         assert_eq!(screen.view, PrivacyView::List);
         assert_eq!(screen.cursor, 0);
         assert_eq!(screen.scroll_offset, 0);
@@ -922,7 +943,7 @@ mod tests {
 
     #[test]
     fn total_bytes_calculated() {
-        let screen = PrivacyScreen::new();
+        let screen = PrivacyScreen::new_for_test(b"1234");
         let expected: u64 = default_categories().iter().map(|c| c.size_bytes).sum();
         assert_eq!(
             screen.total_bytes(), expected,
@@ -932,7 +953,7 @@ mod tests {
 
     #[test]
     fn update_size_recalculates_total() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         let old_total = screen.total_bytes();
         screen.update_size(1, 0); // Zero out Messages
         assert!(
@@ -943,7 +964,7 @@ mod tests {
 
     #[test]
     fn cursor_navigation() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
 
         // Down moves cursor.
         let action = screen.on_key(Key::Down);
@@ -963,7 +984,7 @@ mod tests {
 
     #[test]
     fn cursor_stops_at_bottom() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         for _ in 0..CATEGORY_COUNT + 5 {
             screen.on_key(Key::Down);
         }
@@ -975,21 +996,21 @@ mod tests {
 
     #[test]
     fn ok_enters_detail_view() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.on_key(Key::Ok);
         assert_eq!(screen.view, PrivacyView::Detail);
     }
 
     #[test]
     fn rsk_exits_from_list() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         let action = screen.on_key(Key::Rsk);
         assert_eq!(action, ScreenAction::Back);
     }
 
     #[test]
     fn back_from_detail_returns_to_list() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.on_key(Key::Ok); // Enter detail
         assert_eq!(screen.view, PrivacyView::Detail);
 
@@ -999,7 +1020,7 @@ mod tests {
 
     #[test]
     fn purge_flow_for_purgeable_category() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         // Navigate to Messages (index 1, purgeable).
         screen.on_key(Key::Down);
         screen.on_key(Key::Ok); // Detail view
@@ -1008,10 +1029,11 @@ mod tests {
         screen.on_key(Key::Lsk); // PURGE
         assert_eq!(screen.view, PrivacyView::PurgeConfirm);
 
-        // Enter a passphrase digit and confirm.
+        // Enter the correct purge code and confirm.
         screen.on_key(Key::Num1);
         screen.on_key(Key::Num2);
         screen.on_key(Key::Num3);
+        screen.on_key(Key::Num4);
         screen.on_key(Key::Ok); // Confirm
 
         // Should be back in list view with zeroed size.
@@ -1023,8 +1045,33 @@ mod tests {
     }
 
     #[test]
+    fn purge_rejected_for_wrong_passphrase() {
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
+        screen.on_key(Key::Down); // Messages
+        screen.on_key(Key::Ok); // Detail
+        screen.on_key(Key::Lsk); // PURGE
+
+        // Enter a non-empty but WRONG code and confirm (#395).
+        let original_size = screen.categories[1].size_bytes;
+        screen.on_key(Key::Num9);
+        screen.on_key(Key::Num9);
+        screen.on_key(Key::Num9);
+        screen.on_key(Key::Num9);
+        screen.on_key(Key::Ok);
+
+        assert_eq!(
+            screen.view, PrivacyView::PurgeConfirm,
+            "purge must not proceed with a wrong code"
+        );
+        assert_eq!(
+            screen.categories[1].size_bytes, original_size,
+            "size must not change when the wrong purge code is entered"
+        );
+    }
+
+    #[test]
     fn purge_rejected_for_protected_category() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         // First category (Audit log) is not purgeable.
         screen.on_key(Key::Ok); // Detail view
         assert_eq!(screen.view, PrivacyView::Detail);
@@ -1038,7 +1085,7 @@ mod tests {
 
     #[test]
     fn purge_cancel_returns_to_list() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.on_key(Key::Down); // Messages
         screen.on_key(Key::Ok); // Detail
         screen.on_key(Key::Lsk); // PURGE
@@ -1051,7 +1098,7 @@ mod tests {
 
     #[test]
     fn purge_requires_passphrase() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.on_key(Key::Down); // Messages
         screen.on_key(Key::Ok); // Detail
         screen.on_key(Key::Lsk); // PURGE
@@ -1073,7 +1120,7 @@ mod tests {
 
     #[test]
     fn passphrase_backspace() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.on_key(Key::Down); // Messages
         screen.on_key(Key::Ok); // Detail
         screen.on_key(Key::Lsk); // PURGE
@@ -1088,7 +1135,7 @@ mod tests {
 
     #[test]
     fn softkey_labels_change_by_view() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
 
         // List view.
         assert_eq!(screen.softkey_left(), "REVIEW");
@@ -1109,7 +1156,7 @@ mod tests {
 
     #[test]
     fn draw_list_does_not_panic() {
-        let screen = PrivacyScreen::new();
+        let screen = PrivacyScreen::new_for_test(b"1234");
         let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
@@ -1118,7 +1165,7 @@ mod tests {
 
     #[test]
     fn draw_detail_does_not_panic() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.view = PrivacyView::Detail;
         let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
@@ -1128,7 +1175,7 @@ mod tests {
 
     #[test]
     fn draw_purge_confirm_does_not_panic() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.view = PrivacyView::PurgeConfirm;
         screen.purge_state = Some(PurgeConfirmState::new(1));
         let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
@@ -1139,13 +1186,13 @@ mod tests {
 
     #[test]
     fn title_is_privacy() {
-        let screen = PrivacyScreen::new();
+        let screen = PrivacyScreen::new_for_test(b"1234");
         assert_eq!(screen.title(), "Privacy");
     }
 
     #[test]
     fn purgeable_count_correct() {
-        let screen = PrivacyScreen::new();
+        let screen = PrivacyScreen::new_for_test(b"1234");
         let expected = default_categories().iter().filter(|c| c.purgeable).count();
         assert_eq!(screen.purgeable_count(), expected);
     }
@@ -1167,7 +1214,7 @@ mod tests {
 
     #[test]
     fn update_retention() {
-        let mut screen = PrivacyScreen::new();
+        let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.update_retention(1, 180);
         assert_eq!(
             screen.categories[1].retention_days, 180,
@@ -1177,7 +1224,7 @@ mod tests {
 
     #[test]
     fn category_accessor() {
-        let screen = PrivacyScreen::new();
+        let screen = PrivacyScreen::new_for_test(b"1234");
         let cat = screen.category(0);
         assert!(cat.is_some());
         assert_eq!(cat.map(|c| c.name), Some("Audit log"));
