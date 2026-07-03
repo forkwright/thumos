@@ -216,7 +216,12 @@ impl RamFs {
                 break;
             }
 
-            let name = core::str::from_utf8(&data[name_start..name_end]).unwrap_or("");
+            // WARNING: reject non-UTF-8 entry names outright instead of
+            // silently coercing to an empty string — CPIO archives arrive
+            // over untrusted USB provisioning / initramfs input.
+            let Ok(name) = core::str::from_utf8(&data[name_start..name_end]) else {
+                break;
+            };
 
             // Trailer marks end of archive
             if name == "TRAILER!!!" {
@@ -1088,6 +1093,24 @@ mod tests {
         // WHY: a zero namesize entry aborts the parse before any file is
         // inserted (`from_cpio` breaks out of the loop at the first
         // malformed header), so the archive yields zero files, not one.
+        assert_eq!(fs.find("init"), None);
+        assert_eq!(fs.count(), 0);
+    }
+
+    #[test]
+    fn parse_cpio_rejects_invalid_utf8_name() {
+        let mut archive = build_cpio_entry("init", b"#!/bin/sh", 0o100755);
+        // Corrupt the first name byte (header is exactly 110 bytes, so the
+        // name field starts at offset 110). 0xFF can never start a valid
+        // UTF-8 sequence.
+        archive[110] = 0xFF;
+        archive.extend(build_cpio_trailer());
+
+        let fs = RamFs::from_cpio(&archive);
+
+        // WHY: a non-UTF-8 entry name aborts the parse (same fail-closed
+        // convention as the zero-namesize case above) instead of silently
+        // coercing the name to an empty string and continuing.
         assert_eq!(fs.find("init"), None);
         assert_eq!(fs.count(), 0);
     }

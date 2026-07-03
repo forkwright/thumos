@@ -40,7 +40,7 @@ use crate::avdtp::{
     AVDTP_MAX_TRANSACTION_LABEL, AVDTP_SIGNAL_DISCOVER, AVDTP_SIGNAL_GET_CAPABILITIES,
     AVDTP_SIGNAL_OPEN, AVDTP_SIGNAL_SET_CONFIGURATION, AVDTP_SIGNAL_START, AvdtpMessage,
 };
-use crate::bluetooth::{BtError, BtHwOps};
+use crate::bluetooth::{BtError, BtHwOps, hci_acl_data};
 use crate::sbc::{
     SBC_FREQ_44100, SBC_FREQ_48000, SBC_MAX_FRAME_SIZE, SbcEncoder, SbcFrameHeader, StubSbcEncoder,
 };
@@ -212,7 +212,19 @@ impl<H: BtHwOps> A2dpProfile<H> {
     ///
     /// Must be called before `connect()`. Only 44100 and 48000 Hz are
     /// supported; other values default to 44100.
-    pub(crate) fn configure(&mut self, sample_rate: u32, channels: u8) {
+    ///
+    /// # Errors
+    ///
+    /// - [`BtAudioError::InvalidState`] -- not in Disconnected state. Changing
+    ///   SBC parameters once signaling has started would silently diverge the
+    ///   local encoder from the format already negotiated with the peer via
+    ///   `SetConfiguration`.
+    #[must_use]
+    pub(crate) fn configure(&mut self, sample_rate: u32, channels: u8) -> Result<(), BtAudioError> {
+        if self.state != A2dpState::Disconnected {
+            return Err(BtAudioError::InvalidState);
+        }
+
         self.sample_rate = if sample_rate == 48000 { 48000 } else { 44100 };
         self.channels = if channels >= 2 { 2 } else { 1 };
 
@@ -230,6 +242,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
             }
         };
         self.encoder = StubSbcEncoder::new(header);
+        Ok(())
     }
 
     /// Initiate A2DP connection to the configured peer.
@@ -283,7 +296,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::HciError`] -- HCI send failed.
     #[must_use]
     pub(crate) fn advance_signaling(&mut self, signal: u8) -> Result<(), BtAudioError> {
-        if self.state != A2dpState::Connecting {
+        if !matches!(self.state, A2dpState::Connecting | A2dpState::Connected) {
             return Err(BtAudioError::InvalidState);
         }
 
@@ -313,10 +326,13 @@ impl<H: BtHwOps> A2dpProfile<H> {
                 self.hw.send_command(&msg).map_err(BtAudioError::from)?;
             }
             AVDTP_SIGNAL_OPEN => {
-                // Received Open response -- send Start.
+                // Received Open response -- send Start, then commit the
+                // Connected transition once the send succeeds (the stream is
+                // now configured and open per the documented lifecycle).
                 let label = self.next_transaction_label();
                 let msg = AvdtpMessage::start(label, self.remote_seid);
                 self.hw.send_command(&msg).map_err(BtAudioError::from)?;
+                self.state = A2dpState::Connected;
             }
             AVDTP_SIGNAL_START => {
                 // Received Start response -- streaming is active.
@@ -334,7 +350,9 @@ impl<H: BtHwOps> A2dpProfile<H> {
 
     /// Send an SBC-encoded audio frame.
     ///
-    /// Encodes the PCM data using the stub encoder and sends it via HCI.
+    /// Encodes the PCM data and sends it as HCI ACL data (the L2CAP/AVDTP
+    /// media transport channel) -- never the HCI command channel, which the
+    /// controller decodes as command opcodes, not payload.
     ///
     /// # Errors
     ///
@@ -351,8 +369,14 @@ impl<H: BtHwOps> A2dpProfile<H> {
         let mut frame_buf = [0u8; SBC_MAX_FRAME_SIZE];
         let frame_len = self.encoder.encode(pcm, &mut frame_buf)?;
 
+        // NOTE: the ACL connection handle for the AVDTP transport channel is
+        // not yet tracked (BR/EDR Create Connection / Connection Complete
+        // wiring is a known gap, same class as the HCI cmd TX stub in
+        // bluetooth.rs). Handle 0 is a placeholder within the legal 12-bit
+        // range until that lands.
+        let acl_frame = hci_acl_data(0, &frame_buf[..frame_len]);
         self.hw
-            .send_command(&frame_buf[..frame_len])
+            .send_acl_data(&acl_frame)
             .map_err(BtAudioError::from)?;
 
         Ok(frame_len)
@@ -583,8 +607,8 @@ mod tests {
         profile.advance_signaling(AVDTP_SIGNAL_OPEN).ok();
         assert_eq!(
             profile.state(),
-            A2dpState::Connecting,
-            "still connecting after open"
+            A2dpState::Connected,
+            "connection completes on the Open response, before auto-continuing to Start"
         );
 
         profile.advance_signaling(AVDTP_SIGNAL_START).ok();
@@ -592,6 +616,34 @@ mod tests {
             profile.state(),
             A2dpState::Streaming,
             "must be Streaming after Start response"
+        );
+    }
+
+    #[test]
+    fn open_response_reaches_connected_via_normal_sequence() {
+        let mut profile = make_a2dp();
+        let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        profile.set_peer(peer);
+        profile.set_remote_seid(1);
+        profile.connect().ok();
+        profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
+            .ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION)
+            .ok();
+
+        let result = profile.advance_signaling(AVDTP_SIGNAL_OPEN);
+        assert!(
+            result.is_ok(),
+            "advancing past the Open response must succeed"
+        );
+        assert_eq!(
+            profile.state(),
+            A2dpState::Connected,
+            "Connected must be reachable via the normal connection sequence, \
+             not only via suspend() from Streaming"
         );
     }
 
@@ -638,7 +690,7 @@ mod tests {
     #[test]
     fn configure_clamps_parameters() {
         let mut profile = make_a2dp();
-        profile.configure(96000, 5);
+        profile.configure(96000, 5).ok();
         assert_eq!(
             profile.sample_rate(),
             44100,
@@ -646,9 +698,39 @@ mod tests {
         );
         assert_eq!(profile.channels(), 2, "channels > 2 must clamp to 2");
 
-        profile.configure(48000, 1);
+        profile.configure(48000, 1).ok();
         assert_eq!(profile.sample_rate(), 48000);
         assert_eq!(profile.channels(), 1);
+    }
+
+    #[test]
+    fn configure_rejected_outside_disconnected_state() {
+        let mut profile = make_a2dp();
+        let peer = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        profile.set_peer(peer);
+        profile.connect().ok();
+        assert_eq!(profile.state(), A2dpState::Connecting);
+
+        let before_rate = profile.sample_rate();
+        let before_channels = profile.channels();
+
+        let result = profile.configure(48000, 1);
+        assert_eq!(
+            result,
+            Err(BtAudioError::InvalidState),
+            "configure outside Disconnected must not silently diverge the SBC \
+             encoder from the negotiated stream format"
+        );
+        assert_eq!(
+            profile.sample_rate(),
+            before_rate,
+            "sample rate must be unchanged when configure is rejected"
+        );
+        assert_eq!(
+            profile.channels(),
+            before_channels,
+            "channel count must be unchanged when configure is rejected"
+        );
     }
 
     #[test]
@@ -697,5 +779,44 @@ mod tests {
         let err = BtAudioError::CodecNotSupported;
         let msg = alloc::format!("{err}");
         assert_eq!(msg, "SBC codec not supported by peer");
+    }
+
+    #[test]
+    fn send_audio_routes_through_acl_not_command_channel() {
+        let mut profile = make_a2dp();
+        let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        profile.set_peer(peer);
+        profile.set_remote_seid(1);
+        profile.connect().ok();
+        profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
+            .ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION)
+            .ok();
+        profile.advance_signaling(AVDTP_SIGNAL_OPEN).ok();
+        profile.advance_signaling(AVDTP_SIGNAL_START).ok();
+        assert_eq!(profile.state(), A2dpState::Streaming);
+
+        let commands_before = profile.hw.sent_commands.len();
+        let pcm = [0i16; 128];
+        let result = profile.send_audio(&pcm);
+        assert!(result.is_ok(), "send_audio must succeed while Streaming");
+
+        assert_eq!(
+            profile.hw.sent_commands.len(),
+            commands_before,
+            "audio frames must never be sent on the HCI command channel"
+        );
+        assert_eq!(
+            profile.hw.sent_acl_data.len(),
+            1,
+            "audio frame must be sent as exactly one ACL data packet"
+        );
+        assert_eq!(
+            profile.hw.sent_acl_data[0][0], 0x02,
+            "ACL data packet must use H4 type 0x02, not H4 command type 0x01"
+        );
     }
 }

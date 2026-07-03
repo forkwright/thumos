@@ -48,6 +48,9 @@ const WMT_BT_CHANNEL: u8 = 0x01;
 /// H4 UART packet type: command (host -> controller).
 const H4_COMMAND_TYPE: u8 = 0x01;
 
+/// H4 UART packet type: ACL data (bidirectional; L2CAP/profile payload).
+const H4_ACL_DATA_TYPE: u8 = 0x02;
+
 /// OGF: Controller & Baseband commands.
 const OGF_CONTROLLER_BASEBAND: u16 = 0x03;
 
@@ -295,6 +298,38 @@ pub(crate) fn hci_le_scan_enable(enable: bool, filter_duplicates: bool) -> [u8; 
 }
 
 // ---------------------------------------------------------------------------
+// ACL data encoding (L2CAP/profile payload -- distinct from the HCI command
+// path above)
+// ---------------------------------------------------------------------------
+
+/// Encode an HCI ACL Data packet into an H4-framed buffer.
+///
+/// Format: `[0x02, handle_flags_lo, handle_flags_hi, len_lo, len_hi, payload...]`.
+/// `PB` flag is fixed to `0b10` (first packet, auto-flushable) and `BC` flag to
+/// `0b00` (point-to-point) -- the only combination a host emits for outbound
+/// L2CAP data (Bluetooth Core Spec v5.4 Vol 4 Part E section 5.4.2).
+///
+/// Profile-layer payload (AVDTP signaling, SBC media) belongs on this path,
+/// never the HCI command path (`hci_reset`, `hci_set_random_address`, ...) --
+/// the controller decodes command-typed bytes as an opcode, not a payload.
+#[must_use]
+pub(crate) fn hci_acl_data(handle: u16, payload: &[u8]) -> Vec<u8> {
+    const PB_FIRST_AUTO_FLUSHABLE: u16 = 0b10 << 12;
+    let handle_flags = (handle & 0x0FFF) | PB_FIRST_AUTO_FLUSHABLE;
+    let hf = handle_flags.to_le_bytes();
+    let len = u16::try_from(payload.len()).unwrap_or(u16::MAX);
+    let lv = len.to_le_bytes();
+    let mut out = Vec::with_capacity(5 + payload.len());
+    out.push(H4_ACL_DATA_TYPE);
+    out.push(hf[0]);
+    out.push(hf[1]);
+    out.push(lv[0]);
+    out.push(lv[1]);
+    out.extend_from_slice(payload);
+    out
+}
+
+// ---------------------------------------------------------------------------
 // LE Privacy: non-resolvable private address generation
 // ---------------------------------------------------------------------------
 
@@ -339,6 +374,13 @@ pub(crate) trait BtHwOps {
     /// Send an HCI command via WMT STP transport.
     fn send_command(&mut self, data: &[u8]) -> Result<(), BtError>;
 
+    /// Send HCI ACL data (L2CAP/profile payload) via WMT STP transport.
+    ///
+    /// Distinct from `send_command`: this path carries profile-layer bytes
+    /// (AVDTP signaling, SBC media) framed as HCI ACL Data packets, never as
+    /// HCI commands.
+    fn send_acl_data(&mut self, data: &[u8]) -> Result<(), BtError>;
+
     /// Receive an HCI event from the controller, if available.
     fn recv_event(&mut self) -> Option<Vec<u8>>;
 
@@ -374,6 +416,12 @@ impl BtHw {
 #[cfg(not(test))]
 impl BtHwOps for BtHw {
     fn send_command(&mut self, _data: &[u8]) -> Result<(), BtError> {
+        // TODO(#129)[deliberate-prudent]: implement WMT STP frame TX for BT channel.
+        // Data is framed with WMT_BT_CHANNEL and written to CONSYS MMIO.
+        Err(BtError::NotInitialized)
+    }
+
+    fn send_acl_data(&mut self, _data: &[u8]) -> Result<(), BtError> {
         // TODO(#129)[deliberate-prudent]: implement WMT STP frame TX for BT channel.
         // Data is framed with WMT_BT_CHANNEL and written to CONSYS MMIO.
         Err(BtError::NotInitialized)
@@ -473,14 +521,16 @@ impl<H: BtHwOps> BtAdapter<H> {
             return Err(e);
         }
 
-        // Set the initial random address.
-        self.random_address = generate_random_address();
-        self.address_set_at = current_tick_ms;
-        let addr_cmd = hci_set_random_address(&self.random_address);
+        // Set the initial random address. Commit only after the HCI write
+        // succeeds (mirrors maybe_rotate_address's commit-on-success below).
+        let new_address = generate_random_address();
+        let addr_cmd = hci_set_random_address(&new_address);
         if let Err(e) = self.hw.send_command(&addr_cmd) {
             self.state = BtState::Error(e);
             return Err(e);
         }
+        self.random_address = new_address;
+        self.address_set_at = current_tick_ms;
 
         self.state = BtState::Ready;
         Ok(())
@@ -607,6 +657,8 @@ impl<H: BtHwOps> BtAdapter<H> {
 pub struct MockBtHw {
     /// Commands sent via `send_command`.
     pub sent_commands: Vec<Vec<u8>>,
+    /// ACL data sent via `send_acl_data`.
+    pub sent_acl_data: Vec<Vec<u8>>,
     /// Whether power_on succeeds.
     pub power_on_ok: bool,
     /// Whether send_command succeeds.
@@ -625,6 +677,7 @@ impl MockBtHw {
     pub fn new() -> Self {
         Self {
             sent_commands: Vec::new(),
+            sent_acl_data: Vec::new(),
             power_on_ok: true,
             send_ok: true,
             send_calls: 0,
@@ -644,6 +697,14 @@ impl BtHwOps for MockBtHw {
             return Err(BtError::HardwareTimeout);
         }
         self.sent_commands.push(data.to_vec());
+        Ok(())
+    }
+
+    fn send_acl_data(&mut self, data: &[u8]) -> Result<(), BtError> {
+        if !self.send_ok {
+            return Err(BtError::HardwareTimeout);
+        }
+        self.sent_acl_data.push(data.to_vec());
         Ok(())
     }
 
@@ -751,6 +812,28 @@ mod tests {
         let cmd = hci_le_scan_enable(false, false);
         assert_eq!(cmd[4], 0x00, "enable must be 0");
         assert_eq!(cmd[5], 0x00, "filter_duplicates must be 0");
+    }
+
+    #[test]
+    fn hci_acl_data_uses_acl_type_not_command_type() {
+        let payload = [0xAA, 0xBB, 0xCC];
+        let frame = hci_acl_data(0x0042, &payload);
+        assert_eq!(
+            frame[0], 0x02,
+            "ACL data must use H4 type 0x02, distinct from command type 0x01"
+        );
+        // Handle 0x0042 with PB=0b10, BC=0b00 -> 0x2042 LE.
+        assert_eq!(
+            &frame[1..3],
+            &0x2042u16.to_le_bytes(),
+            "handle/flags field must encode handle + PB=10/BC=00"
+        );
+        assert_eq!(
+            &frame[3..5],
+            &3u16.to_le_bytes(),
+            "data total length must equal the payload length"
+        );
+        assert_eq!(&frame[5..], &payload, "payload must be appended verbatim");
     }
 
     #[test]
@@ -986,6 +1069,26 @@ mod tests {
             adapter.state(),
             BtState::Error(BtError::HardwareTimeout),
             "adapter must be in Error state after HCI command failure"
+        );
+    }
+
+    #[test]
+    fn init_failed_addr_set_leaves_random_address_uncommitted() {
+        let mut hw = MockBtHw::new();
+        hw.fail_after_calls = Some(1); // HCI Reset succeeds; Set Random Address fails
+        let mut adapter = BtAdapter::new(hw);
+        let original_addr = *adapter.random_address();
+
+        let result = adapter.init(12_345);
+        assert_eq!(
+            result,
+            Err(BtError::HardwareTimeout),
+            "init must fail when the Set Random Address command fails"
+        );
+        assert_eq!(
+            *adapter.random_address(),
+            original_addr,
+            "random_address must not be committed unless the HCI write succeeds"
         );
     }
 }
