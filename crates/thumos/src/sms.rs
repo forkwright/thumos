@@ -755,6 +755,19 @@ mod tests {
     }
 
     #[test]
+    fn handle_incoming_rejects_non_zero_mti() {
+        // MTI bits (first_octet & 0x03) must be 0b00 (SMS-DELIVER) for an
+        // incoming message. first_octet=0x01 has MTI=01 (SMS-SUBMIT), a
+        // PDU type this receive path must never accept.
+        let pdu: [u8; 2] = [0x00, 0x01]; // SCA len 0, first octet MTI=01
+        let result = SmsManager::handle_incoming(&pdu);
+        assert!(
+            matches!(result, Err(SmsError::PduDecode)),
+            "a non-zero MTI (not SMS-DELIVER) must be rejected as PduDecode"
+        );
+    }
+
+    #[test]
     fn handle_incoming_rejects_udl_over_160() {
         // Same fixed PDU prefix as handle_incoming_parses_pdu, but with a
         // UDL claiming 161 septets -- one past GSM 03.40's 160-septet
@@ -794,6 +807,33 @@ mod tests {
         assert!(
             matches!(result, Err(SmsError::PduDecode)),
             "a truncated PDU must remain PduDecode, distinct from UnsupportedDcs"
+        );
+    }
+
+    #[test]
+    fn handle_incoming_rejects_pdu_truncated_before_full_user_data() {
+        // Distinct from handle_incoming_truncated_pdu_is_pdudecode_not_unsupported_dcs
+        // (which truncates immediately after the first octet): this PDU
+        // is well-formed through the UDL byte, claims 5 septets of user
+        // data (5 packed bytes needed), but only provides 2 -- exercising
+        // the read_slice() length check at the very end of the parse, a
+        // different cursor site than the early read_byte() truncation.
+        let pdu: [u8; 21] = [
+            0x00, // SCA len
+            0x00, // first octet (MTI=0)
+            0x0A, // OA len (10 digits)
+            0x91, // OA type (international)
+            0x21, 0x43, 0x65, 0x87, 0x09, // BCD +1234567890
+            0x00, // PID
+            0x00, // DCS (GSM-7)
+            0x32, 0x10, 0x51, 0x21, 0x03, 0x00, 0x00, // SCTS
+            0x05, // UDL (5 septets -> needs 5 packed bytes)
+            0xC8, 0x32, // only 2 of the 5 needed packed bytes present
+        ];
+        let result = SmsManager::handle_incoming(&pdu);
+        assert!(
+            matches!(result, Err(SmsError::PduDecode)),
+            "user data truncated short of UDL's claimed length must be PduDecode"
         );
     }
 

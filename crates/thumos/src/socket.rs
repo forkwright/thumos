@@ -1040,6 +1040,61 @@ mod tests {
     }
 
     #[test]
+    fn alloc_ephemeral_port_wraps_past_65535_back_to_49152() {
+        // SAFETY: test-only; setup_test_network resets global state.
+        unsafe {
+            setup_test_network();
+        }
+
+        // CSPRNG is unseeded in this fresh test process (nextest: one
+        // process per test), so alloc_ephemeral_port() falls back to
+        // NEXT_EPHEMERAL_PORT as the scan's starting point -- pin it to
+        // the top of the ephemeral range so the next allocation must wrap.
+        // SAFETY: test-only manipulation of global state.
+        unsafe {
+            let next = &mut *core::ptr::addr_of_mut!(NEXT_EPHEMERAL_PORT);
+            *next = 65533;
+        }
+
+        // A real socket handle to reuse in the synthetic occupied entries
+        // below -- alloc_ephemeral_port() only ever reads bound_port,
+        // never the handle, but the struct field must be populated.
+        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        assert!(fd < MAX_FDS as u32);
+        let real_handle = {
+            // SAFETY: test-only read of global state.
+            let table = unsafe { get_socket_table() };
+            table[fd as usize]
+                .as_ref()
+                .expect("real socket must be present")
+                .socket_handle
+        };
+
+        // Occupy every port from the pinned start through the top of the
+        // range (65533..=65535), forcing the scan to wrap past 65535.
+        // SAFETY: test-only manipulation of global state.
+        let table = unsafe { get_socket_table() };
+        for (i, port) in (65533u16..=65535).enumerate() {
+            table[fd as usize + 1 + i] = Some(SocketInfo {
+                socket_handle: real_handle,
+                socket_type: SocketType::Udp,
+                bound_port: port,
+                connected: false,
+                peer_addr: None,
+            });
+        }
+
+        // SAFETY: test-only.
+        let allocated = unsafe { alloc_ephemeral_port() };
+        assert_eq!(
+            allocated,
+            Some(49152),
+            "scanning past 65535 must wrap back to the start of the ephemeral \
+             range (49152), not overflow past u16::MAX or return None early"
+        );
+    }
+
+    #[test]
     fn socket_creates_tcp_fd() {
         // SAFETY: test-only; setup_test_network resets global state.
         unsafe {
@@ -1425,6 +1480,62 @@ mod tests {
         );
     }
 
+    /// Pointer-dependent test: only runs on 32-bit targets.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn tcp_connect_without_prior_bind_allocates_port_and_sets_connected_state() {
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
+        static mut ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
+        *addr = SockaddrIn::new(80, Ipv4Address::new(93, 184, 216, 34));
+
+        let result = sys_connect(
+            fd,
+            addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(
+            result, 0,
+            "connect on a fresh unbound TCP socket must succeed"
+        );
+
+        let sock_table = unsafe { &*core::ptr::addr_of!(SOCKET_TABLE) };
+        let info = sock_table[fd as usize].as_ref().expect("socket info");
+        assert!(
+            info.connected,
+            "a successful connect() must mark the socket connected"
+        );
+        assert_eq!(
+            info.peer_addr,
+            Some((Ipv4Address::new(93, 184, 216, 34), 80)),
+            "peer_addr must record the connected destination"
+        );
+        assert!(
+            (49152..=65535).contains(&info.bound_port),
+            "connect() without a prior bind() must auto-allocate an ephemeral local port, got {}",
+            info.bound_port
+        );
+
+        let stack = unsafe { get_network_stack() }.expect("stack");
+        let tcp_socket: &tcp::Socket<'_> = stack.sockets().get(info.socket_handle);
+        assert_eq!(
+            tcp_socket.state(),
+            tcp::State::SynSent,
+            "a successful TCP connect() must move the smoltcp socket into SynSent"
+        );
+    }
+
     #[test]
     fn bind_sets_local_port() {
         // SAFETY: test-only; setup_test_network resets global state.
@@ -1500,6 +1611,155 @@ mod tests {
             result, EAGAIN,
             "recv on a UDP socket with nothing queued must return EAGAIN, not the old \
              generic 0 (indistinguishable from a legitimate zero-byte datagram)"
+        );
+    }
+
+    /// Pointer-dependent test: only runs on 32-bit targets.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn udp_recvfrom_writes_back_the_real_datagram_source_address() {
+        unsafe {
+            setup_test_network();
+        }
+
+        // The stack's default-deny inbound firewall policy would
+        // otherwise drop the looped-back datagram below before it ever
+        // reaches the socket layer -- install an explicit allow rule for
+        // inbound UDP so the round trip can complete. Broadcast-destined
+        // traffic (below) needs no ARP resolution, unlike a self-
+        // addressed unicast send.
+        {
+            let stack = unsafe { get_network_stack() }.expect("stack");
+            stack
+                .device_mut()
+                .firewall_mut()
+                .add_rule(crate::firewall::FilterRule {
+                    direction: crate::firewall::Direction::Inbound,
+                    protocol: Some(crate::firewall::Protocol::Udp),
+                    src_addr: None,
+                    dst_addr: None,
+                    dst_port: None,
+                    action: crate::firewall::Action::Allow,
+                });
+        }
+
+        // Receiver: bound to a fixed port, any local address.
+        let receiver_fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        static mut BIND_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let bind_addr = unsafe { &mut *core::ptr::addr_of_mut!(BIND_ADDR) };
+        *bind_addr = SockaddrIn::new(9000, Ipv4Address::new(0, 0, 0, 0));
+        let bind_result = sys_bind(
+            receiver_fd,
+            bind_addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(bind_result, 0, "receiver bind must succeed");
+
+        // Sender: unbound, auto-binds an ephemeral source port on first
+        // send. Destination is the broadcast address so the interface
+        // dispatches it immediately without needing ARP resolution.
+        let sender_fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        static mut DEST_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let dest_addr = unsafe { &mut *core::ptr::addr_of_mut!(DEST_ADDR) };
+        *dest_addr = SockaddrIn::new(9000, Ipv4Address::new(255, 255, 255, 255));
+
+        let payload = b"src-check";
+        let send_result = sys_sendto(
+            sender_fd,
+            payload.as_ptr() as u32,
+            payload.len() as u32,
+            0,
+            dest_addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(
+            send_result,
+            payload.len() as u32,
+            "sendto must accept the full payload"
+        );
+
+        // Read back the ephemeral source port the sender auto-bound to --
+        // this is the port the receiver must see as the datagram's
+        // origin, not the receiver's own port or zero.
+        let sender_port = {
+            let sock_table = unsafe { &*core::ptr::addr_of!(SOCKET_TABLE) };
+            sock_table[sender_fd as usize]
+                .as_ref()
+                .expect("sender socket info")
+                .bound_port
+        };
+        assert_ne!(
+            sender_port, 0,
+            "sendto must auto-bind an ephemeral source port"
+        );
+
+        // A broadcast destination needs no ARP resolution, so the
+        // datagram dispatches on the first poll's egress phase and loops
+        // back through the device on the next poll's ingress phase. A
+        // small margin of extra polls is harmless.
+        let stack = unsafe { get_network_stack() }.expect("stack");
+        for step in 0..4u32 {
+            stack.poll(smoltcp::time::Instant::from_millis(i64::from(step) * 10));
+        }
+
+        static mut RECV_BUF: [u8; 32] = [0u8; 32];
+        // SAFETY: test-only static; single-threaded per test.
+        let recv_buf = unsafe { &mut *core::ptr::addr_of_mut!(RECV_BUF) };
+        static mut SRC_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let src_addr = unsafe { &mut *core::ptr::addr_of_mut!(SRC_ADDR) };
+
+        let recv_result = sys_recvfrom(
+            receiver_fd,
+            recv_buf.as_mut_ptr() as u32,
+            recv_buf.len() as u32,
+            0,
+            src_addr as *const SockaddrIn as u32,
+            0,
+        );
+        assert_eq!(
+            recv_result,
+            payload.len() as u32,
+            "receiver must observe the full broadcast datagram"
+        );
+        assert_eq!(
+            &recv_buf[..payload.len()],
+            payload,
+            "payload must round-trip intact"
+        );
+
+        // SECURITY: the written-back source address must be the ACTUAL
+        // sender (the interface's own address + the sender's real bound
+        // port) -- not the broadcast destination, not zeroed, and not
+        // aliased to the receiver's own port. A caller (e.g. a DNS
+        // resolver validating which server answered) trusts this value.
+        assert_eq!(
+            src_addr.ipv4_addr(),
+            Ipv4Address::new(127, 0, 0, 1),
+            "written-back source IP must match the real sender, not the broadcast destination"
+        );
+        assert_eq!(
+            src_addr.port(),
+            sender_port,
+            "written-back source port must match the sender's actual bound (ephemeral) port, \
+             not be zeroed or aliased to the receiver's own port"
         );
     }
 

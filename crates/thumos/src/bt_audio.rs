@@ -761,6 +761,62 @@ mod tests {
     }
 
     #[test]
+    fn suspend_and_resume_invalid_state_return_error() {
+        let mut profile = make_a2dp();
+
+        // suspend() outside Streaming (Disconnected).
+        assert_eq!(
+            profile.suspend(),
+            Err(BtAudioError::InvalidState),
+            "suspend from Disconnected must return InvalidState"
+        );
+        assert_eq!(profile.state(), A2dpState::Disconnected);
+
+        // resume() outside Connected (Disconnected).
+        assert_eq!(
+            profile.resume(),
+            Err(BtAudioError::InvalidState),
+            "resume from Disconnected must return InvalidState"
+        );
+
+        let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        profile.set_peer(peer);
+        profile.connect().ok();
+        assert_eq!(profile.state(), A2dpState::Connecting);
+
+        // suspend()/resume() while Connecting -- neither Streaming nor Connected.
+        assert_eq!(
+            profile.suspend(),
+            Err(BtAudioError::InvalidState),
+            "suspend from Connecting must return InvalidState"
+        );
+        assert_eq!(
+            profile.resume(),
+            Err(BtAudioError::InvalidState),
+            "resume from Connecting must return InvalidState"
+        );
+
+        // Drive to Streaming, then resume() must be rejected there too
+        // (only Connected is valid for resume()).
+        profile.set_remote_seid(1);
+        profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
+            .ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION)
+            .ok();
+        profile.advance_signaling(AVDTP_SIGNAL_OPEN).ok();
+        profile.advance_signaling(AVDTP_SIGNAL_START).ok();
+        assert_eq!(profile.state(), A2dpState::Streaming);
+        assert_eq!(
+            profile.resume(),
+            Err(BtAudioError::InvalidState),
+            "resume while already Streaming must return InvalidState"
+        );
+    }
+
+    #[test]
     fn send_audio_requires_streaming() {
         let mut profile = make_a2dp();
         let pcm = [0i16; 128];
@@ -902,6 +958,39 @@ mod tests {
         assert_eq!(
             profile.hw.sent_acl_data[0][0], 0x02,
             "ACL data packet must use H4 type 0x02, not H4 command type 0x01"
+        );
+    }
+
+    #[test]
+    fn disconnect_from_connected_sends_avdtp_close() {
+        let mut profile = make_a2dp();
+        let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        profile.set_peer(peer);
+        profile.set_remote_seid(1);
+        profile.connect().ok();
+        profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
+            .ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION)
+            .ok();
+        profile.advance_signaling(AVDTP_SIGNAL_OPEN).ok();
+        assert_eq!(profile.state(), A2dpState::Connected);
+
+        let result = profile.disconnect();
+        assert!(result.is_ok(), "disconnect from Connected must succeed");
+        assert_eq!(profile.state(), A2dpState::Disconnected);
+
+        let last_signal = profile
+            .hw
+            .sent_commands
+            .last()
+            .and_then(|cmd| cmd.get(1).copied());
+        assert_eq!(
+            last_signal,
+            Some(AVDTP_SIGNAL_CLOSE),
+            "disconnect from Connected must send exactly an AVDTP Close command"
         );
     }
 }
