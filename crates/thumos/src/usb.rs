@@ -1837,6 +1837,51 @@ mod tests {
         assert_eq!(ctrl.rx_dropped_bytes(), 0, "an accepted push is not a drop");
     }
 
+    #[test]
+    fn ring_push_and_read_wrap_indices_around_buffer_end() {
+        let mut ctrl = UsbController::new();
+        // WHY: position the (empty) ring two slots from the buffer end so the
+        // third push crosses SERIAL_RX_BUF_LEN - 1 and must wrap rx_head back
+        // to 0 rather than index past the end of rx_buf.
+        ctrl.rx_head = SERIAL_RX_BUF_LEN - 2;
+        ctrl.rx_tail = SERIAL_RX_BUF_LEN - 2;
+
+        assert!(
+            ctrl.ring_push(b'A'),
+            "push into a non-full ring must be accepted"
+        );
+        assert!(
+            ctrl.ring_push(b'B'),
+            "push into a non-full ring must be accepted"
+        );
+        assert!(
+            ctrl.ring_push(b'C'),
+            "push that crosses the buffer end must still be accepted"
+        );
+
+        assert_eq!(
+            ctrl.rx_head, 1,
+            "write index must wrap around the buffer end, not overflow past SERIAL_RX_BUF_LEN"
+        );
+        assert_eq!(ctrl.rx_buf[SERIAL_RX_BUF_LEN - 2], b'A');
+        assert_eq!(ctrl.rx_buf[SERIAL_RX_BUF_LEN - 1], b'B');
+        assert_eq!(
+            ctrl.rx_buf[0], b'C',
+            "the byte written after wraparound must land at index 0, not overrun the buffer"
+        );
+
+        let mut buf = [0u8; 3];
+        let n = ctrl.read_serial(&mut buf);
+        assert_eq!(
+            n, 3,
+            "read_serial must drain all 3 bytes across the wrap boundary"
+        );
+        assert_eq!(
+            &buf, b"ABC",
+            "bytes read across the wrap must come back in write order"
+        );
+    }
+
     // --- write_serial gate: not configured ---
 
     #[test]
