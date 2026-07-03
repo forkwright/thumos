@@ -120,6 +120,9 @@ pub(crate) struct CpuGovernor {
     load_history: [u8; LOAD_HISTORY_LEN],
     /// Write pointer into load_history (circular).
     load_idx: usize,
+    /// Number of valid samples in `load_history` (saturates at
+    /// LOAD_HISTORY_LEN once the ring buffer has filled once after boot).
+    load_samples: usize,
 }
 
 impl CpuGovernor {
@@ -134,6 +137,7 @@ impl CpuGovernor {
             backlight_timeout_ticks: BACKLIGHT_TIMEOUT_TICKS,
             load_history: [0u8; LOAD_HISTORY_LEN],
             load_idx: 0,
+            load_samples: 0,
         }
     }
 
@@ -478,32 +482,40 @@ impl PowerManager {
     }
 
     /// Apply a power mode preset.
-    pub(crate) fn apply_mode(&mut self, mode: PowerMode) {
-        match mode {
-            PowerMode::Full => {
-                self.set_state(Radio::All, PowerState::On);
-            }
+    ///
+    /// Returns `true` if every radio in the preset reached its target
+    /// state. Returns `false` if any radio (typically one already
+    /// hardware/PMIC-killed) could not be moved -- in that case `mode()`
+    /// is left at its previous value instead of recording a mode that was
+    /// only partially applied.
+    pub(crate) fn apply_mode(&mut self, mode: PowerMode) -> bool {
+        let all_ok = match mode {
+            PowerMode::Full => self.set_state(Radio::All, PowerState::On),
             PowerMode::CellOnly => {
-                self.set_state(Radio::Cellular, PowerState::On);
-                self.set_state(Radio::Wifi, PowerState::Off);
-                self.set_state(Radio::Bluetooth, PowerState::Off);
-                self.set_state(Radio::Gps, PowerState::Off);
-                self.set_state(Radio::Fm, PowerState::Off);
-                self.set_state(Radio::Mesh, PowerState::Off);
+                let mut ok = self.set_state(Radio::Cellular, PowerState::On);
+                ok &= self.set_state(Radio::Wifi, PowerState::Off);
+                ok &= self.set_state(Radio::Bluetooth, PowerState::Off);
+                ok &= self.set_state(Radio::Gps, PowerState::Off);
+                ok &= self.set_state(Radio::Fm, PowerState::Off);
+                ok &= self.set_state(Radio::Mesh, PowerState::Off);
+                ok
             }
-            PowerMode::Silent => {
-                self.set_state(Radio::All, PowerState::Off);
-            }
+            PowerMode::Silent => self.set_state(Radio::All, PowerState::Off),
             PowerMode::LocalOnly => {
-                self.set_state(Radio::Cellular, PowerState::Off);
-                self.set_state(Radio::Wifi, PowerState::On);
-                self.set_state(Radio::Bluetooth, PowerState::On);
-                self.set_state(Radio::Gps, PowerState::Off);
-                self.set_state(Radio::Fm, PowerState::Off);
-                self.set_state(Radio::Mesh, PowerState::Off);
+                let mut ok = self.set_state(Radio::Cellular, PowerState::Off);
+                ok &= self.set_state(Radio::Wifi, PowerState::On);
+                ok &= self.set_state(Radio::Bluetooth, PowerState::On);
+                ok &= self.set_state(Radio::Gps, PowerState::Off);
+                ok &= self.set_state(Radio::Fm, PowerState::Off);
+                ok &= self.set_state(Radio::Mesh, PowerState::Off);
+                ok
             }
+        };
+
+        if all_ok {
+            self.mode = mode;
         }
-        self.mode = mode;
+        all_ok
     }
 
     /// Get the current power mode.
@@ -611,10 +623,30 @@ impl CpuGovernor {
     pub(crate) fn apply_dvfs(&mut self, load_percent: u8) -> CpuFreq {
         self.load_history[self.load_idx] = load_percent;
         self.load_idx = (self.load_idx + 1) % LOAD_HISTORY_LEN;
+        if self.load_samples < LOAD_HISTORY_LEN {
+            self.load_samples += 1;
+        }
 
-        let new_freq = if load_percent < 30 {
+        // WHY rolling average over the filled portion of load_history, not
+        // raw load_percent: a single-tick sample is the coarsest estimate
+        // available; averaging over load_samples ticks is what
+        // load_history exists for -- using the instantaneous sample
+        // directly (the previous behavior) left load_history write-only
+        // and defeated the smoothing exceptions.rs's DVFS call-site doc
+        // already claims happens here. Averaging only over load_samples
+        // (not the fixed LOAD_HISTORY_LEN) avoids diluting the first few
+        // post-boot samples with phantom zeros from the not-yet-filled
+        // window -- load_idx writes sequentially from 0 during warm-up, so
+        // [..load_samples] is exactly the written slots.
+        let sum: usize = self.load_history[..self.load_samples]
+            .iter()
+            .map(|&l| usize::from(l))
+            .sum();
+        let avg_load = sum / self.load_samples;
+
+        let new_freq = if avg_load < 30 {
             self.current_freq.step_down().unwrap_or(self.current_freq)
-        } else if load_percent > 70 {
+        } else if avg_load > 70 {
             self.current_freq.step_up().unwrap_or(self.current_freq)
         } else {
             self.current_freq
@@ -778,6 +810,27 @@ mod tests {
         assert_eq!(gov.last_input_tick, 500);
     }
 
+    #[test]
+    fn dvfs_averages_across_ticks_instead_of_reacting_to_a_single_spike() {
+        let mut gov = CpuGovernor::new();
+        gov.current_freq = CpuFreq::Mhz900;
+        // Three steady-state ticks (hold band), then one single high spike
+        // -- the rolling average over LOAD_HISTORY_LEN=4 keeps the spike
+        // from single-handedly stepping the frequency up: avg =
+        // (50+50+50+100)/4 = 62, still inside the 30-70 hold band. The
+        // previous (buggy) instantaneous-load logic would have reacted to
+        // the raw 100% sample alone and stepped up to Mhz1200.
+        gov.apply_dvfs(50);
+        gov.apply_dvfs(50);
+        gov.apply_dvfs(50);
+        let freq = gov.apply_dvfs(100);
+        assert_eq!(
+            freq,
+            CpuFreq::Mhz900,
+            "a single-tick spike must be smoothed by the rolling average, not react raw"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Original PowerManager tests (radio kill switches)
     // -----------------------------------------------------------------------
@@ -895,6 +948,25 @@ mod tests {
         assert_eq!(pm.state(Radio::Bluetooth), PowerState::On);
         assert_eq!(pm.state(Radio::Cellular), PowerState::Off);
         assert_eq!(pm.state(Radio::Gps), PowerState::Off);
+    }
+
+    #[test]
+    fn apply_mode_does_not_commit_on_partial_failure() {
+        let mut pm = PowerManager::new();
+        pm.apply_mode(PowerMode::Full);
+        pm.hardware_kill(Radio::Cellular);
+
+        // CellOnly requires turning Cellular On, which the hardware kill blocks.
+        let ok = pm.apply_mode(PowerMode::CellOnly);
+        assert!(
+            !ok,
+            "apply_mode must report failure when a radio cannot reach its target state"
+        );
+        assert_eq!(
+            pm.mode(),
+            PowerMode::Full,
+            "mode() must not record CellOnly when it was only partially applied"
+        );
     }
 
     // -----------------------------------------------------------------------

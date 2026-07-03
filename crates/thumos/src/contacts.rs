@@ -305,12 +305,19 @@ impl ContactManager {
     ///
     /// Returns a vector of indices into the contact list, sorted by name.
     pub(crate) fn sorted_indices(&self) -> Vec<usize> {
+        // WHY precompute keys once: the previous implementation called
+        // to_ascii_lowercase() (a heap allocation) inside the sort
+        // comparator, which runs O(N log N) times for N contacts -- O(N
+        // log N) heap Strings for a single sort. Lowercasing each name
+        // exactly once up front (O(N) allocations) and sorting the
+        // precomputed keys avoids the per-compare allocation entirely.
+        let keys: Vec<alloc::string::String> = self
+            .contacts
+            .iter()
+            .map(|c| c.name_str().to_ascii_lowercase())
+            .collect();
         let mut indices: Vec<usize> = (0..self.contacts.len()).collect();
-        indices.sort_by(|&a, &b| {
-            let name_a = self.contacts[a].name_str().to_ascii_lowercase();
-            let name_b = self.contacts[b].name_str().to_ascii_lowercase();
-            name_a.cmp(&name_b)
-        });
+        indices.sort_by(|&a, &b| keys[a].cmp(&keys[b]));
         indices
     }
 
@@ -482,6 +489,27 @@ mod tests {
 
         let sorted = mgr.sorted_indices();
         assert_eq!(sorted, vec![1, 2, 0], "must be sorted: Alice, Bob, Charlie");
+    }
+
+    #[test]
+    fn sorted_indices_case_insensitive_with_many_contacts() {
+        let mut mgr = ContactManager::new();
+        mgr.add("charlie", "1").unwrap_or_else(|_| unreachable!());
+        mgr.add("Alice", "2").unwrap_or_else(|_| unreachable!());
+        mgr.add("BOB", "3").unwrap_or_else(|_| unreachable!());
+        mgr.add("dave", "4").unwrap_or_else(|_| unreachable!());
+        mgr.add("aaron", "5").unwrap_or_else(|_| unreachable!());
+
+        let sorted = mgr.sorted_indices();
+        let names: Vec<&str> = sorted
+            .iter()
+            .map(|&i| mgr.get(i).map(|c| c.name_str()).unwrap_or(""))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["aaron", "Alice", "BOB", "charlie", "dave"],
+            "precomputed-key sort must still be case-insensitive across many contacts"
+        );
     }
 
     #[test]

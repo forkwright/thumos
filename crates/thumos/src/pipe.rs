@@ -53,10 +53,13 @@ pub(crate) struct PipeBuffer {
     pub write_closed: bool,
     /// True once the read end has been closed.
     pub read_closed: bool,
+    /// PID of the process that created this pipe -- used by
+    /// `alloc_pipe_slot` to enforce `MAX_PIPES_PER_PROCESS`.
+    owner_pid: u8,
 }
 
 impl PipeBuffer {
-    const fn new() -> Self {
+    const fn new(owner_pid: u8) -> Self {
         Self {
             data: [0u8; PIPE_BUF_SIZE],
             read_pos: 0,
@@ -64,6 +67,7 @@ impl PipeBuffer {
             count: 0,
             write_closed: false,
             read_closed: false,
+            owner_pid,
         }
     }
 
@@ -113,14 +117,30 @@ static mut PIPE_POOL: [Option<PipeBuffer>; MAX_PIPES] = {
     [NONE; MAX_PIPES]
 };
 
-/// Allocate a new pipe slot. Returns the pipe index, or None if all slots taken.
-fn alloc_pipe_slot() -> Option<usize> {
+/// Maximum pipes a single process may have open at once, so one process
+/// cannot exhaust the entire MAX_PIPES pool and starve every other
+/// process of pipe fds.
+const MAX_PIPES_PER_PROCESS: usize = 4;
+
+/// Allocate a new pipe slot for `owner_pid`. Returns the pipe index, or
+/// `None` if all slots are taken, or if `owner_pid` already holds
+/// `MAX_PIPES_PER_PROCESS` pipes.
+fn alloc_pipe_slot(owner_pid: u8) -> Option<usize> {
     // SAFETY: single-core cooperative kernel; no concurrent mutation.
     // addr_of_mut! avoids creating a reference to the static mut.
     let pool = unsafe { &mut *core::ptr::addr_of_mut!(PIPE_POOL) };
+
+    let owned_count = pool
+        .iter()
+        .filter(|slot| slot.as_ref().is_some_and(|buf| buf.owner_pid == owner_pid))
+        .count();
+    if owned_count >= MAX_PIPES_PER_PROCESS {
+        return None;
+    }
+
     for (i, slot) in pool.iter_mut().enumerate() {
         if slot.is_none() {
-            *slot = Some(PipeBuffer::new());
+            *slot = Some(PipeBuffer::new(owner_pid));
             return Some(i);
         }
     }
@@ -182,8 +202,14 @@ pub(crate) fn pipe_flags(pipe_idx: usize, end: u32) -> u32 {
 }
 
 /// Extract the pipe index from an fd flags word.
+///
+/// WHY 0x07 not 0x7F: the previous 7-bit mask (max 127) did not match
+/// MAX_PIPES (8 slots) -- a flags word with any of bits 12-15 set would
+/// decode to an out-of-range pipe index and panic on the array index in
+/// get_pipe_mut/on_pipe_fd_closed/maybe_free_pipe. This mask covers
+/// exactly the valid 0..MAX_PIPES range.
 pub(crate) fn pipe_idx_from_flags(flags: u32) -> usize {
-    ((flags >> FD_PIPE_IDX_SHIFT) & 0x7F) as usize
+    ((flags >> FD_PIPE_IDX_SHIFT) & 0x07) as usize
 }
 
 /// Return true if the fd flags word identifies a pipe fd.
@@ -213,8 +239,10 @@ pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
         return EFAULT;
     }
 
-    // Allocate a pipe buffer slot.
-    let pipe_idx = match alloc_pipe_slot() {
+    // Allocate a pipe buffer slot, capped per-process (MAX_PIPES_PER_PROCESS)
+    // so one process cannot exhaust the entire pool.
+    let owner_pid = crate::process::current_pid();
+    let pipe_idx = match alloc_pipe_slot(owner_pid) {
         Some(i) => i,
         None => return EMFILE,
     };
@@ -249,13 +277,18 @@ pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     };
 
     // Write the two fd numbers to userspace.
-    // SAFETY: fds_ptr is validated non-null above. We write 8 bytes (two u32s).
-    // Wave 4 will add proper bounds validation; this matches the existing syscall
-    // pattern in fd.rs (TODO(#84): plan gaps).
+    // SAFETY: fds_ptr is validated non-null above. We write 8 bytes (two
+    // u32s). The pointer alignment is NOT guaranteed by the ABI (POSIX
+    // allows any alignment for char-typed buffers -- the same reasoning
+    // time::sys_clock_gettime documents for its own userspace writes), so
+    // write_unaligned is required: a plain core::ptr::write on a
+    // misaligned fds_ptr is undefined behavior and can fault on ARM.
+    // Wave 4 will add proper bounds validation; this matches the existing
+    // syscall pattern in fd.rs (TODO(#84): plan gaps).
     unsafe {
         let fds = fds_ptr as *mut u32;
-        core::ptr::write(fds, read_fd);
-        core::ptr::write(fds.add(1), write_fd);
+        core::ptr::write_unaligned(fds, read_fd);
+        core::ptr::write_unaligned(fds.add(1), write_fd);
     }
 
     0
@@ -400,6 +433,23 @@ mod tests {
     }
 
     #[test]
+    fn pipe_idx_from_flags_masks_out_of_range_bits() {
+        // Bits 12-15 (which the old 0x7F mask would have included) must
+        // not leak into the decoded pipe index -- it must stay within
+        // 0..MAX_PIPES.
+        let flags = pipe_flags(3, FD_END_READ) | (0xF << 12);
+        assert!(
+            pipe_idx_from_flags(flags) < MAX_PIPES,
+            "decoded pipe index must never exceed MAX_PIPES - 1"
+        );
+        assert_eq!(
+            pipe_idx_from_flags(flags),
+            3,
+            "high garbage bits must not corrupt the real pipe index"
+        );
+    }
+
+    #[test]
     fn pipe_creates_two_fds() {
         // Reset global fd table and pipe pool.
         reset_pool();
@@ -420,11 +470,37 @@ mod tests {
     }
 
     #[test]
+    fn pipe_writes_fds_to_unaligned_userspace_pointer() {
+        reset_pool();
+        unsafe {
+            let table = &mut *core::ptr::addr_of_mut!(crate::fd::FD_TABLE);
+            *table = crate::fd::FdTable::new();
+        }
+
+        // Deliberately misaligned: offset 1 byte into the buffer, so a
+        // plain core::ptr::write (which requires u32 alignment) would be
+        // undefined behavior. write_unaligned must handle this correctly.
+        let mut fds_buf = [0u8; 9];
+        let unaligned_ptr = fds_buf.as_mut_ptr().wrapping_add(1);
+        let result = sys_pipe(unaligned_ptr as u32);
+        assert_eq!(
+            result, 0,
+            "pipe() must succeed even with an unaligned fds pointer"
+        );
+
+        let read_fd = unsafe { core::ptr::read_unaligned(unaligned_ptr as *const u32) };
+        let write_fd = unsafe { core::ptr::read_unaligned(unaligned_ptr.add(4) as *const u32) };
+        assert!((read_fd as usize) < crate::fd::MAX_FDS);
+        assert!((write_fd as usize) < crate::fd::MAX_FDS);
+        assert_ne!(read_fd, write_fd);
+    }
+
+    #[test]
     fn pipe_write_read_round_trip() {
         reset_pool();
 
         // Allocate a pipe slot directly for test isolation.
-        let pipe_idx = alloc_pipe_slot().expect("alloc pipe");
+        let pipe_idx = alloc_pipe_slot(0).expect("alloc pipe");
 
         let message = b"hello from pipe";
         let written = unsafe {
@@ -450,7 +526,7 @@ mod tests {
     fn pipe_eof_on_write_close() {
         reset_pool();
 
-        let pipe_idx = alloc_pipe_slot().expect("alloc pipe");
+        let pipe_idx = alloc_pipe_slot(0).expect("alloc pipe");
 
         // Close the write end.
         on_pipe_fd_closed(pipe_idx, true /* write end */);
@@ -465,7 +541,7 @@ mod tests {
     fn pipe_read_eagain_when_empty_write_open() {
         reset_pool();
 
-        let pipe_idx = alloc_pipe_slot().expect("alloc pipe");
+        let pipe_idx = alloc_pipe_slot(0).expect("alloc pipe");
         // Write end is still open (default), buffer empty.
         let mut dst = [0u8; 8];
         let result = sys_pipe_read(pipe_idx, dst.as_mut_ptr() as u32, 8);
@@ -476,7 +552,7 @@ mod tests {
     fn pipe_write_full_returns_eagain() {
         reset_pool();
 
-        let pipe_idx = alloc_pipe_slot().expect("alloc pipe");
+        let pipe_idx = alloc_pipe_slot(0).expect("alloc pipe");
 
         // Fill the buffer.
         unsafe {
@@ -495,7 +571,7 @@ mod tests {
     #[test]
     fn pipe_read_rejects_kernel_range_buffer() {
         reset_pool();
-        let pipe_idx = alloc_pipe_slot().expect("alloc pipe");
+        let pipe_idx = alloc_pipe_slot(0).expect("alloc pipe");
         // Make data available so the read reaches buffer validation rather than
         // short-circuiting on EAGAIN/EOF.
         unsafe {
@@ -511,7 +587,7 @@ mod tests {
     #[test]
     fn pipe_write_rejects_kernel_range_buffer() {
         reset_pool();
-        let pipe_idx = alloc_pipe_slot().expect("alloc pipe");
+        let pipe_idx = alloc_pipe_slot(0).expect("alloc pipe");
         // Buffer empty and both ends open, so the write reaches validation.
         let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
         let result = sys_pipe_write(pipe_idx, kernel_ptr, 4, 0);
@@ -529,5 +605,26 @@ mod tests {
         assert!(is_pipe_fd(flags_r));
         assert!(!is_write_end(flags_r));
         assert_eq!(pipe_idx_from_flags(flags_r), 7);
+    }
+
+    #[test]
+    fn alloc_pipe_slot_enforces_per_process_cap() {
+        reset_pool();
+        for _ in 0..MAX_PIPES_PER_PROCESS {
+            assert!(
+                alloc_pipe_slot(1).is_some(),
+                "must allow up to the per-process cap"
+            );
+        }
+        assert!(
+            alloc_pipe_slot(1).is_none(),
+            "must reject a pipe past the per-process cap even though pool slots remain"
+        );
+        // A different process must still be able to allocate -- the pool
+        // has MAX_PIPES - MAX_PIPES_PER_PROCESS slots free.
+        assert!(
+            alloc_pipe_slot(2).is_some(),
+            "a different process must not be starved by another process's cap"
+        );
     }
 }

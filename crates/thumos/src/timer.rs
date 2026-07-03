@@ -66,9 +66,18 @@ pub(crate) fn disable() {
 }
 
 /// Set timer to fire after `ms` milliseconds.
+///
+/// WHY saturating: `(freq / 1000) * ms` overflows u32 once `ms` exceeds
+/// roughly 330 s at the MT6739's 13 MHz CNTFRQ. A saturated ticks value
+/// caps the countdown at the longest representable delay instead of
+/// silently wrapping to a near-zero tick count, which would fire the
+/// timer IRQ (the scheduler tick and watchdog pet source) almost
+/// immediately instead of after the requested delay. See
+/// `timer_stub::ms_to_ticks` for the host-tested mirror of this
+/// arithmetic.
 pub(crate) fn set_ms(ms: u32) {
     let freq = frequency();
-    let ticks = (freq / 1000) * ms;
+    let ticks = (freq / 1000).saturating_mul(ms);
     set_timer(ticks);
 }
 
