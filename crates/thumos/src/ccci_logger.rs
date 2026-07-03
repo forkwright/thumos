@@ -523,6 +523,33 @@ pub(crate) fn detect_anomalies(
 
     let since = now.saturating_sub(window_ms);
 
+    // WHY: a single pass over the log ring, bucketed per channel, replaces
+    // the old design where the "data0 out of range" check below called
+    // `log.entries()` and walked the FULL ring ONCE PER CHANNEL --
+    // CHANNEL_COUNT full rescans of the same LOG_CAPACITY entries -- to
+    // find the first out-of-range value per channel (issue #282 finding
+    // 12). Semantics are unchanged: this still records the chronologically
+    // FIRST in-window entry whose data0 falls outside the baseline range,
+    // per channel (issue #248).
+    let (older, newer) = log.entries();
+    let mut out_of_range_data0: [Option<u32>; CHANNEL_COUNT] = [None; CHANNEL_COUNT];
+    for entry in older.iter().chain(newer.iter()) {
+        if entry.timestamp < since {
+            continue;
+        }
+        let Ok(ch) = usize::try_from(entry.channel) else {
+            continue;
+        };
+        if ch >= CHANNEL_COUNT || out_of_range_data0[ch].is_some() {
+            continue;
+        }
+        let baseline_stats = &baseline.channels[ch];
+        let d0 = entry.data0;
+        if d0 < baseline_stats.min_data0 || d0 > baseline_stats.max_data0 {
+            out_of_range_data0[ch] = Some(d0);
+        }
+    }
+
     // Per-channel: check for active channels, rate, and data0.
     for ch in 0..CHANNEL_COUNT {
         let ch_u32 = ch as u32;
@@ -567,23 +594,11 @@ pub(crate) fn detect_anomalies(
             }
         }
 
-        // 3. data0 out of range -- check every packet on this channel in
-        // the window; flag on the first one that violates the baseline
-        // range. SECURITY: checking only the most recent packet let an
+        // 3. data0 out of range (computed in the single pass above).
+        // SECURITY: checking only the most recent packet let an
         // adversarial modem smuggle an out-of-range data0 in any packet
         // except the last and evade detection entirely (issue #248).
-        let (older, newer) = log.entries();
-        let mut out_of_range: Option<u32> = None;
-        for entry in older.iter().chain(newer.iter()) {
-            if entry.channel == ch_u32 && entry.timestamp >= since {
-                let d0 = entry.data0;
-                if d0 < baseline_stats.min_data0 || d0 > baseline_stats.max_data0 {
-                    out_of_range = Some(d0);
-                    break;
-                }
-            }
-        }
-        if let Some(d0) = out_of_range {
+        if let Some(d0) = out_of_range_data0[ch] {
             if count < MAX_ANOMALIES {
                 anomalies[count] = Some(CcciAnomaly {
                     timestamp: now,
@@ -1398,6 +1413,65 @@ mod tests {
         assert!(
             found,
             "must detect data0 out of range even when the offending packet is not last in the window"
+        );
+    }
+
+    #[test]
+    fn anomaly_detects_data0_out_of_range_independently_per_channel() {
+        let mut log = CcciLogger::new();
+
+        for d0 in [100u32, 150, 200] {
+            log.record(CcciLogEntry {
+                timestamp: 1000,
+                channel: 4,
+                direction: PacketDirection::Rx,
+                data0: d0,
+                data1: 0,
+                packet_len: 16,
+            });
+        }
+        for d0 in [10u32, 15, 20] {
+            log.record(CcciLogEntry {
+                timestamp: 1000,
+                channel: 5,
+                direction: PacketDirection::Rx,
+                data0: d0,
+                data1: 0,
+                packet_len: 16,
+            });
+        }
+        let baseline = build_baseline(&log, 60_000);
+
+        log.record(CcciLogEntry {
+            timestamp: 70_000,
+            channel: 4,
+            direction: PacketDirection::Rx,
+            data0: 500,
+            data1: 0,
+            packet_len: 16,
+        });
+        log.record(CcciLogEntry {
+            timestamp: 71_000,
+            channel: 5,
+            direction: PacketDirection::Rx,
+            data0: 999,
+            data1: 0,
+            packet_len: 16,
+        });
+
+        let (anomalies, count, _overflowed) = detect_anomalies(&log, &baseline, 71_000, 60_000);
+        let found4 = anomalies[..count]
+            .iter()
+            .flatten()
+            .any(|a| a.channel == 4 && a.kind == AnomalyKind::Data0OutOfRange && a.observed == 500);
+        let found5 = anomalies[..count]
+            .iter()
+            .flatten()
+            .any(|a| a.channel == 5 && a.kind == AnomalyKind::Data0OutOfRange && a.observed == 999);
+        assert!(found4, "channel 4's violation must be detected");
+        assert!(
+            found5,
+            "channel 5's violation must be detected independently of channel 4's"
         );
     }
 

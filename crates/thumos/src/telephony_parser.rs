@@ -119,18 +119,43 @@ pub(crate) fn parse_clip_response(
     Some(len as u8)
 }
 
+/// SIM card PIN/PUK lock state, parsed from a `+CPIN?` response.
+///
+/// The +CPIN status vocabulary distinguishes many states (3GPP TS 27.007
+/// §8.3); this enum keeps the practically actionable distinction a caller
+/// needs to route to the correct unlock flow -- entering a PUK as if it
+/// were a PIN (or vice versa) burns limited unlock attempts and can
+/// permanently lock the SIM (issue #282 finding 17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub(crate) enum SimPinState {
+    /// SIM ready, no PIN required.
+    Ready,
+    /// SIM PIN required.
+    PinRequired,
+    /// SIM PUK required (after too many wrong PIN attempts).
+    PukRequired,
+    /// A recognized but distinct lock state (e.g. PH-SIM PIN, PH-NET PUK) --
+    /// not READY, and not a plain SIM PIN/PUK unlock flow.
+    Other,
+}
+
 /// Parse a +CPIN? response line: "+CPIN: <status>"
 ///
-/// Returns true if the SIM is ready (no PIN required).
-pub(crate) fn parse_cpin_response(line: &[u8]) -> Option<bool> {
+/// Distinguishes SIM PIN vs SIM PUK vs other lock states (issue #282
+/// finding 17) -- the old boolean collapsed every non-READY state to a
+/// single "not ready" flag, which cannot tell a caller whether to prompt
+/// for a 4-digit PIN or an 8-digit PUK.
+pub(crate) fn parse_cpin_response(line: &[u8]) -> Option<SimPinState> {
     let rest = strip_prefix(line, b"+CPIN: ")?;
     if rest == b"READY" {
-        Some(true)
+        Some(SimPinState::Ready)
+    } else if starts_with(rest, b"SIM PUK") {
+        Some(SimPinState::PukRequired)
     } else if starts_with(rest, b"SIM PIN") {
-        Some(false)
+        Some(SimPinState::PinRequired)
     } else {
-        // Other states (SIM PUK, etc.) — treat as not ready.
-        Some(false)
+        Some(SimPinState::Other)
     }
 }
 
@@ -287,6 +312,31 @@ mod tests {
         assert_eq!(dbm_to_bars(-110), 1, "-110 dBm must be 1 bar");
         assert_eq!(dbm_to_bars(-111), 0, "-111 dBm must be 0 bars");
         assert_eq!(dbm_to_bars(-999), 0, "unknown signal must be 0 bars");
+    }
+
+    #[test]
+    fn parse_cpin_response_distinguishes_pin_from_puk() {
+        // Distinguishes SIM PIN vs SIM PUK vs READY (issue #282 finding 17)
+        // -- routing a PUK-locked SIM through a PIN-entry UI flow burns
+        // limited PUK attempts and can permanently lock the SIM.
+        assert_eq!(
+            parse_cpin_response(b"+CPIN: READY"),
+            Some(SimPinState::Ready)
+        );
+        assert_eq!(
+            parse_cpin_response(b"+CPIN: SIM PIN"),
+            Some(SimPinState::PinRequired)
+        );
+        assert_eq!(
+            parse_cpin_response(b"+CPIN: SIM PUK"),
+            Some(SimPinState::PukRequired),
+            "SIM PUK must not collapse to the same state as SIM PIN"
+        );
+        assert_eq!(
+            parse_cpin_response(b"+CPIN: PH-NET PIN"),
+            Some(SimPinState::Other)
+        );
+        assert_eq!(parse_cpin_response(b"garbage"), None);
     }
 
     #[test]
