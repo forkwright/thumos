@@ -363,14 +363,20 @@ impl SmsManager {
         transport.send_at(cmd_str).map_err(|_| SmsError::TransportError)?;
 
         // Wait for the '>' prompt, then send PDU + Ctrl-Z.
+        let mut prompt_received = false;
         for _ in 0..16 {
             let n = transport
                 .recv_line(&mut line_buf, 5000)
                 .map_err(|_| SmsError::TransportError)?;
             let line = &line_buf[..n];
             if !line.is_empty() && line[0] == b'>' {
+                prompt_received = true;
                 break;
             }
+        }
+
+        if !prompt_received {
+            return Err(SmsError::TransportError);
         }
 
         // Send the PDU hex followed by Ctrl-Z (0x1A).
@@ -686,6 +692,32 @@ mod tests {
             result,
             Err(SmsError::CmsError(330)),
             "a +CMS ERROR final result on SMS submit must surface the code immediately, not TransportError after exhausting the wait loop"
+        );
+    }
+
+    #[test]
+    fn send_returns_transport_error_when_prompt_never_received() {
+        use crate::telephony_mock::MockModemTransport;
+
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // AT+CMGF=0 -> OK
+        // Never queue a '>' prompt line: 16 non-prompt lines exhaust the
+        // wait loop without ever seeing the modem's data-entry prompt.
+        for _ in 0..16 {
+            mock.queue_response(b"");
+        }
+
+        let result = SmsManager::send(&mut mock, "+15551234567", "Hi");
+
+        assert_eq!(
+            result,
+            Err(SmsError::TransportError),
+            "exhausting the '>' prompt wait loop must return TransportError, not fall through to PDU transmission"
+        );
+        assert_eq!(
+            mock.sent_commands.len(),
+            2,
+            "the PDU must never be transmitted when the '>' prompt was not received; only AT+CMGF=0 and AT+CMGS=<len> may have been sent"
         );
     }
 

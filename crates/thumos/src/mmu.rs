@@ -14,6 +14,8 @@
 //! - DACR  (CP15 c3): domain access control
 //! - SCTLR (CP15 c1): system control (bit 0 = MMU enable)
 
+use crate::irq;
+
 /// L1 page table: 4096 entries x 4 bytes = 16 KB.
 /// Must be 16 KB aligned.
 #[repr(C, align(16384))]
@@ -89,8 +91,16 @@ static mut L2_TABLES: [L2Table; L2_POOL_SIZE] = {
 /// Allocation bitmask for L2_TABLES. Bit N = 1 means slot N is in use.
 static mut L2_ALLOC: u64 = 0;
 
+/// WHY (#416): guards every `L2_ALLOC` accessor (`alloc_l2_table`,
+/// `free_l2_table`) -- same defect class as #331/PAGE_LOCK.
+static L2_POOL_LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
+
 /// Allocate an L2 page table from the pool. Returns its physical address.
 pub(crate) fn alloc_l2_table() -> Option<usize> {
+    // WHY (#416): serializes with every other L2_ALLOC accessor, including
+    // an IRQ-context caller, so a concurrent or IRQ-interleaved RMW cannot
+    // double-allocate the same pool slot (same defect class as #331).
+    let _g = L2_POOL_LOCK.lock();
     unsafe {
         let alloc = core::ptr::addr_of_mut!(L2_ALLOC);
         let mask = core::ptr::read_volatile(alloc);
@@ -110,6 +120,10 @@ pub(crate) fn alloc_l2_table() -> Option<usize> {
 ///
 /// `phys_addr` must have been returned by `alloc_l2_table` and not yet freed.
 pub unsafe fn free_l2_table(phys_addr: usize) {
+    // WHY (#416): serializes with every other L2_ALLOC accessor (see
+    // alloc_l2_table) so a concurrent alloc/free pair cannot corrupt a torn
+    // bitmask update.
+    let _g = L2_POOL_LOCK.lock();
     unsafe {
         let tables = &*core::ptr::addr_of!(L2_TABLES);
         for (i, table) in tables.iter().enumerate() {
@@ -560,10 +574,19 @@ pub(crate) static mut ADDR_SPACE_ALLOC: u16 = 0;
 #[cfg(not(test))]
 static mut ADDR_SPACE_ALLOC: u16 = 0;
 
+/// WHY (#416): guards every `ADDR_SPACE_ALLOC` accessor (`alloc_addr_space`,
+/// `free_addr_space`) -- same defect class as #331/PAGE_LOCK.
+static ADDR_SPACE_LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
+
 /// Allocate a free user L1 page table FROM the pool.
 /// Zeroes the slot before returning its physical address.
 /// Returns None if all 16 slots are occupied.
 pub fn alloc_addr_space() -> Option<usize> {
+    // WHY (#416): serializes with every other ADDR_SPACE_ALLOC accessor,
+    // including an IRQ-context caller, so a concurrent or IRQ-interleaved
+    // RMW cannot double-allocate the same address-space slot (same defect
+    // class as #331).
+    let _g = ADDR_SPACE_LOCK.lock();
     unsafe {
         let alloc = core::ptr::addr_of_mut!(ADDR_SPACE_ALLOC);
         let mask = core::ptr::read_volatile(alloc);
@@ -592,6 +615,10 @@ pub fn alloc_addr_space() -> Option<usize> {
 ///
 /// `phys_addr` must have been returned by `alloc_addr_space` and not yet freed.
 pub unsafe fn free_addr_space(phys_addr: usize) {
+    // WHY (#416): serializes with every other ADDR_SPACE_ALLOC accessor (see
+    // alloc_addr_space) so a concurrent alloc/free pair cannot corrupt a
+    // torn bitmask update.
+    let _g = ADDR_SPACE_LOCK.lock();
     unsafe {
         let tables = &*core::ptr::addr_of!(USER_TABLES);
         for (i, table) in tables.iter().enumerate() {
@@ -896,5 +923,71 @@ mod tests {
                 free_l2_table(addr);
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // #416: IRQ-safe locking for L2_ALLOC / ADDR_SPACE_ALLOC pools
+    // -----------------------------------------------------------------------
+    //
+    // WHY these tests exercise L2_POOL_LOCK/ADDR_SPACE_LOCK directly rather
+    // than going through alloc_l2_table()/alloc_addr_space(): the masking
+    // contract is independent of pool state, so it is testable in isolation
+    // the same way page.rs's #331 PAGE_LOCK tests are (see that file).
+
+    #[test]
+    fn l2_pool_lock_masks_irqs_for_the_critical_section() {
+        // Regression test for #416: L2_ALLOC mutations must run inside an
+        // IRQ-masked critical section shared by every caller -- alloc_l2_table
+        // AND free_l2_table -- or an IRQ-context caller can interleave with a
+        // non-locked in-progress caller and double-allocate the same L2 pool
+        // slot (same defect class as #331). Host-testable via the mock
+        // IRQ-state seam in `irq`.
+        crate::irq::reset_mock();
+        assert!(crate::irq::mock_enabled(), "starts unmasked");
+        let guard = L2_POOL_LOCK.lock();
+        assert!(!crate::irq::mock_enabled(), "L2_POOL_LOCK.lock() must mask IRQ delivery while held");
+        drop(guard);
+        assert!(crate::irq::mock_enabled(), "dropping the guard must restore IRQ delivery");
+    }
+
+    #[test]
+    fn nested_irq_guard_does_not_unmask_while_l2_pool_lock_held() {
+        crate::irq::reset_mock();
+        let outer = L2_POOL_LOCK.lock();
+        assert!(!crate::irq::mock_enabled());
+        let inner = crate::irq::IrqGuard::new();
+        assert!(!crate::irq::mock_enabled());
+        drop(inner);
+        assert!(!crate::irq::mock_enabled(), "inner drop must not unmask while L2_POOL_LOCK is still held");
+        drop(outer);
+        assert!(crate::irq::mock_enabled(), "outer drop restores IRQ delivery");
+    }
+
+    #[test]
+    fn addr_space_lock_masks_irqs_for_the_critical_section() {
+        // Regression test for #416: ADDR_SPACE_ALLOC mutations must run
+        // inside an IRQ-masked critical section shared by every caller --
+        // alloc_addr_space AND free_addr_space -- or an IRQ-context caller
+        // can interleave with a non-locked in-progress caller and
+        // double-allocate the same address-space slot.
+        crate::irq::reset_mock();
+        assert!(crate::irq::mock_enabled(), "starts unmasked");
+        let guard = ADDR_SPACE_LOCK.lock();
+        assert!(!crate::irq::mock_enabled(), "ADDR_SPACE_LOCK.lock() must mask IRQ delivery while held");
+        drop(guard);
+        assert!(crate::irq::mock_enabled(), "dropping the guard must restore IRQ delivery");
+    }
+
+    #[test]
+    fn nested_irq_guard_does_not_unmask_while_addr_space_lock_held() {
+        crate::irq::reset_mock();
+        let outer = ADDR_SPACE_LOCK.lock();
+        assert!(!crate::irq::mock_enabled());
+        let inner = crate::irq::IrqGuard::new();
+        assert!(!crate::irq::mock_enabled());
+        drop(inner);
+        assert!(!crate::irq::mock_enabled(), "inner drop must not unmask while ADDR_SPACE_LOCK is still held");
+        drop(outer);
+        assert!(crate::irq::mock_enabled(), "outer drop restores IRQ delivery");
     }
 }
