@@ -43,6 +43,16 @@ const PANIC_TIMEOUT_MS: u64 = 0;
 /// Tick period: 10 ms per kernel tick.
 const TICK_PERIOD_MS: u64 = 10;
 
+/// Maximum time the timer may remain paused before it is force-resumed.
+///
+/// WHY 5 minutes: `pause()` exists for brief active-interaction windows (a
+/// phone call, an unlock flow) -- an indefinite pause (a missed
+/// `resume()` call, or a stuck caller) must not permanently suppress the
+/// BFU reboot. 5 minutes is comfortably longer than any single
+/// interaction yet far short of even the Sentinel threshold (30 min), so
+/// a legitimate pause is never force-ended mid-use.
+const MAX_PAUSE_TICKS: u64 = 5 * 60 * 1_000 / TICK_PERIOD_MS;
+
 /// Daily threshold in ticks.
 const DAILY_THRESHOLD_TICKS: u64 = DAILY_TIMEOUT_MS / TICK_PERIOD_MS;
 
@@ -129,6 +139,10 @@ pub(crate) struct BfuTimer {
     mode: SecurityMode,
     /// Whether the timer has already fired (prevents repeated reboot).
     fired: bool,
+    /// Ticks elapsed since the current pause began. Reset whenever the
+    /// timer leaves the Paused state (resume, reset, or the
+    /// MAX_PAUSE_TICKS force-resume in `tick`).
+    paused_ticks: u64,
 }
 
 impl BfuTimer {
@@ -144,6 +158,7 @@ impl BfuTimer {
             state: BfuTimerState::Running,
             mode,
             fired: false,
+            paused_ticks: 0,
         }
     }
 
@@ -158,6 +173,21 @@ impl BfuTimer {
     pub(crate) fn tick(&mut self, key_manager: &mut KeyManager) -> BfuAction {
         if self.fired {
             return BfuAction::Reboot;
+        }
+
+        if self.state == BfuTimerState::Paused {
+            // WHY: an indefinite pause (a caller that never calls
+            // resume()) must not permanently suppress the BFU reboot --
+            // that would defeat the idle-lock security property the timer
+            // exists to enforce. Force back to Running after
+            // MAX_PAUSE_TICKS so elapsed_ticks resumes counting toward
+            // threshold_ticks.
+            self.paused_ticks = self.paused_ticks.saturating_add(1);
+            if self.paused_ticks >= MAX_PAUSE_TICKS {
+                self.state = BfuTimerState::Running;
+                self.paused_ticks = 0;
+            }
+            return BfuAction::None;
         }
 
         if self.state != BfuTimerState::Running {
@@ -181,12 +211,14 @@ impl BfuTimer {
         self.elapsed_ticks = 0;
         self.state = BfuTimerState::Running;
         self.fired = false;
+        self.paused_ticks = 0;
     }
 
     /// Pause the timer. Ticks will not be counted while paused.
     pub(crate) fn pause(&mut self) {
         if self.state == BfuTimerState::Running {
             self.state = BfuTimerState::Paused;
+            self.paused_ticks = 0;
         }
     }
 
@@ -194,6 +226,7 @@ impl BfuTimer {
     pub(crate) fn resume(&mut self) {
         if self.state == BfuTimerState::Paused {
             self.state = BfuTimerState::Running;
+            self.paused_ticks = 0;
         }
     }
 
@@ -487,6 +520,36 @@ mod tests {
         timer.resume();
         timer.tick(&mut km);
         assert_eq!(timer.elapsed_ticks(), 101);
+    }
+
+    #[test]
+    fn pause_is_capped_and_force_resumes() {
+        let mut km = key_manager_with_derived_keys();
+        let mut timer = BfuTimer::new(SecurityMode::Daily);
+
+        timer.tick(&mut km);
+        assert_eq!(timer.elapsed_ticks(), 1);
+
+        timer.pause();
+        // Tick past the pause cap; the timer must force itself back to
+        // Running rather than staying paused forever.
+        for _ in 0..MAX_PAUSE_TICKS {
+            timer.tick(&mut km);
+        }
+        assert_eq!(
+            timer.state(),
+            BfuTimerState::Running,
+            "an indefinite pause must be force-resumed after MAX_PAUSE_TICKS"
+        );
+
+        // Elapsed time must resume advancing now that the cap forced a resume.
+        let before = timer.elapsed_ticks();
+        timer.tick(&mut km);
+        assert_eq!(
+            timer.elapsed_ticks(),
+            before + 1,
+            "elapsed_ticks must advance again after the forced resume"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -721,6 +721,16 @@ fn line_coding_length_is_valid(w_length: u16) -> bool {
 // USB controller
 // ---------------------------------------------------------------------------
 
+/// Error from [`UsbController::init`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub(crate) enum UsbInitError {
+    /// The POWER register readback did not reflect the SOFTCONN bit that
+    /// was just written -- the MUSB controller is not responding on the
+    /// bus (unmapped/dead MMIO region), so the device will never attach.
+    NotResponding,
+}
+
 /// MUSB OTG controller driver for the MT6739, operating in device mode.
 ///
 /// Manages enumeration via EP0, ACM class requests, and bulk serial I/O on EP1.
@@ -790,7 +800,7 @@ impl UsbController {
     /// Caller must ensure no concurrent access to MUSB registers.
     ///
     /// [`handle_interrupt`]: UsbController::handle_interrupt
-    pub unsafe fn init(&mut self) {
+    pub unsafe fn init(&mut self) -> Result<(), UsbInitError> {
         // SAFETY: Caller asserts exclusive MUSB register access.
         unsafe {
             // Step 1: Disable all interrupts before touching hardware.
@@ -808,6 +818,15 @@ impl UsbController {
             let power = POWER_SOFTCONN | POWER_HSENAB | POWER_SUSPENDEM;
             self.write8(REG_POWER, power);
 
+            // Verify the write landed: a completely unresponsive/unmapped
+            // MUSB bus reads back stale/zero bits regardless of what was
+            // written. Previously this went undetected -- init() returned
+            // () unconditionally, so kinit.rs marked USB serial available
+            // even when the controller never actually attached.
+            if self.read8(REG_POWER) & POWER_SOFTCONN == 0 {
+                return Err(UsbInitError::NotResponding);
+            }
+
             // Step 4: Configure EP1 bulk IN/OUT.
             self.configure_ep1();
 
@@ -822,6 +841,7 @@ impl UsbController {
                 INTRUSB_RESET | INTRUSB_SUSPEND | INTRUSB_RESUME,
             );
         }
+        Ok(())
     }
 
     /// Read and dispatch a USB interrupt.

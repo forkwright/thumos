@@ -934,13 +934,28 @@ impl MatrixClient {
     /// Each element carries the per-message encryption/build result. A failed
     /// encryption yields an `Err` for that message without dropping the others.
     pub(crate) fn flush_outbox(&mut self) -> Vec<Result<(HttpRequest, u32), MatrixError>> {
-        let pending: Vec<PendingMessage> = self.outbox.clone();
-        let mut results = Vec::with_capacity(pending.len());
+        // WHY per-message clone instead of cloning the whole outbox up
+        // front: build_megolm_request needs `&mut self` (it may create an
+        // outbound Megolm session), which cannot coexist with a borrow
+        // into self.outbox -- cloning the entire outbox before the loop
+        // held two full copies of every pending message's body/room_id
+        // simultaneously (doubled peak heap). Cloning only the current
+        // message's (room_id, body, txn_id) per iteration keeps
+        // self.outbox itself untouched -- still required so an
+        // unconfirmed message survives to the next flush_outbox call
+        // (confirm_sent is the only thing that removes one) -- while peak
+        // heap is now the outbox's size plus one message, not two full
+        // outboxes.
+        let mut results = Vec::with_capacity(self.outbox.len());
 
-        for msg in &pending {
+        for i in 0..self.outbox.len() {
+            let room_id = self.outbox[i].room_id.clone();
+            let body = self.outbox[i].body.clone();
+            let txn_id = self.outbox[i].txn_id;
+
             let result = self
-                .build_megolm_request(&msg.room_id, &msg.body, msg.txn_id)
-                .map(|req| (req, msg.txn_id));
+                .build_megolm_request(&room_id, &body, txn_id)
+                .map(|req| (req, txn_id));
             results.push(result);
         }
 
@@ -1647,6 +1662,27 @@ mod tests {
         let first_txn = client.outbox()[0].txn_id;
         client.confirm_sent(first_txn);
         assert_eq!(client.outbox().len(), 2);
+    }
+
+    #[test]
+    fn flush_outbox_preserves_message_identity_per_iteration() {
+        let mut client = matrix_client_with_test_credentials();
+
+        let _ = client.queue_message("!room1:example.com", "alpha");
+        let _ = client.queue_message("!room2:example.com", "beta");
+        let _ = client.queue_message("!room3:example.com", "gamma");
+
+        let results = client.flush_outbox();
+        let txn_ids: Vec<u32> = results
+            .iter()
+            .filter_map(|r| r.as_ref().ok().map(|(_, txn_id)| *txn_id))
+            .collect();
+        let outbox_txn_ids: Vec<u32> = client.outbox().iter().map(|m| m.txn_id).collect();
+
+        assert_eq!(
+            txn_ids, outbox_txn_ids,
+            "each flush_outbox result must correspond to the outbox message at the same index, not a stale/cloned snapshot"
+        );
     }
 
     #[test]

@@ -1098,13 +1098,14 @@ pub(crate) fn parse_action_proposal(
 /// Returns the JSON string and the byte offset past the closing fence.
 fn find_fenced_block(message: &str) -> Option<(&str, usize)> {
     // Try ``` style first, then ~~~ style.
-    if let Some(result) = try_find_fence(message, FENCE_START, "```") {
+    if let Some(result) = try_find_fence(message, FENCE_START, FENCE_END) {
         return Some(result);
     }
-    try_find_fence(message, FENCE_START_ALT, "~~~")
+    try_find_fence(message, FENCE_START_ALT, FENCE_END_ALT)
 }
 
-/// Try to find a fenced block with the given delimiters.
+/// Try to find a fenced block with the given delimiters. `end_marker` must
+/// already include its leading newline (see FENCE_END / FENCE_END_ALT).
 fn try_find_fence<'a>(
     message: &'a str,
     start_marker: &str,
@@ -1114,11 +1115,15 @@ fn try_find_fence<'a>(
     let content_start = start_pos + start_marker.len();
     let remaining = &message[content_start..];
 
-    // Find the closing fence. Must be on its own line (preceded by newline).
-    let end_pos = remaining.find(&alloc::format!("\n{end_marker}"))?;
+    // Find the closing fence. end_marker already carries the leading
+    // newline (FENCE_END / FENCE_END_ALT), so the closing fence must be on
+    // its own line -- with no per-parse heap allocation to build the
+    // pattern (previously alloc::format!("\n{end_marker}") ran once per
+    // parse call).
+    let end_pos = remaining.find(end_marker)?;
 
     let json_str = &remaining[..end_pos];
-    let total_consumed = content_start + end_pos + 1 + end_marker.len();
+    let total_consumed = content_start + end_pos + end_marker.len();
 
     Some((json_str, total_consumed))
 }
@@ -1383,6 +1388,24 @@ Let me know if you need anything else."#;
         assert_eq!(p.description, "Call Maria");
         assert_eq!(p.param("contact_name"), Some("Maria"));
         assert_eq!(p.param("number"), Some("+15550100"));
+    }
+
+    #[test]
+    fn find_fenced_block_reports_correct_consumed_offset() {
+        // Regression test for the alloc-free refactor: the old code built
+        // its search pattern (and its total_consumed offset) from two
+        // separate pieces (a runtime-formatted "\n" + end_marker, plus a
+        // manual "+1"); the new code uses the single pre-built FENCE_END
+        // constant. Both the extracted content and the exact byte offset
+        // past the closing fence must still be correct.
+        let message = "before\n```thumos-action\ncontent\n```\nafter";
+        let (json_str, consumed) = find_fenced_block(message).expect("fence must be found");
+        assert_eq!(json_str, "content");
+        assert_eq!(
+            &message[consumed..],
+            "\nafter",
+            "consumed offset must land exactly after the closing fence"
+        );
     }
 
     #[test]
