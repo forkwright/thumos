@@ -546,7 +546,7 @@ pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
         // to faulting_pid so the message arrives with the correct sender identity.
         let saved = CURRENT;
         CURRENT = faulting_pid;
-        let sent = ipc::send(0, msg);
+        let sent = ipc::send(0, msg).is_ok();
         CURRENT = saved;
         sent
     };

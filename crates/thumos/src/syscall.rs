@@ -53,6 +53,14 @@ pub(crate) const EFAULT: u32 = 0u32.wrapping_sub(14);
 /// Total number of defined syscalls.
 pub(crate) const SYSCALL_COUNT: usize = 46;
 
+/// Operation not permitted (two's complement -1, matches Linux EPERM).
+const EPERM: u32 = 0u32.wrapping_sub(1);
+/// No such process (two's complement -3, matches Linux ESRCH).
+const ESRCH: u32 = 0u32.wrapping_sub(3);
+/// Resource temporarily unavailable (two's complement -11, matches Linux
+/// EAGAIN).
+const EAGAIN: u32 = 0u32.wrapping_sub(11);
+
 /// Syscall numbers grouped by kernel domain.
 ///
 /// Numbers 0-9 are legacy assignments FROM the initial kernel bring-up.
@@ -461,7 +469,7 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             // unaffected, exactly as sys_kill's belt-and-suspenders check
             // does not reach deliver_signal_to's internal callers.
             if to == 0 && capability::check(capability::Capabilities::IPC_INIT).is_err() {
-                return u32::MAX;
+                return EPERM;
             }
             let tag = arg1;
             let Ok(ptr) = usize::try_from(arg2) else {
@@ -482,11 +490,15 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
                 &[]
             };
             let msg = ipc::Message::new(tag, payload);
-            if ipc::send(to, msg) { 0 } else { u32::MAX }
+            match ipc::send(to, msg) {
+                Ok(()) => 0,
+                Err(ipc::IpcSendError::InvalidTarget) => ESRCH,
+                Err(ipc::IpcSendError::InboxFull) => EAGAIN,
+            }
         }
         Syscall::Recv => match ipc::recv() {
             Some(msg) => u32::from(msg.from),
-            None => u32::MAX,
+            None => EAGAIN,
         },
 
         // ---- Process management ----
@@ -684,6 +696,8 @@ fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 
 /// No such file or directory (two's complement -2, matches Linux ENOENT).
 const ENOENT: u32 = 0u32.wrapping_sub(2);
+/// Exec format error (two's complement -8, matches Linux ENOEXEC).
+const ENOEXEC: u32 = 0u32.wrapping_sub(8);
 
 /// execve(path_ptr, argv_ptr, _envp_ptr): replace the current process image.
 ///
@@ -764,7 +778,19 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // --- Step 3: parse and validate ELF ---
     let loaded = match crate::elf::load(elf_data) {
         Ok(l) => l,
-        Err(_) => return EINVAL,
+        // WHY: format/architecture failures -> ENOEXEC (matches Linux's
+        // execve(2) convention: 'not in a recognized format, wrong
+        // architecture, or some other format error'); OOM -> ENOMEM (issue
+        // #282 finding 15 -- the old blanket `Err(_) => EINVAL` never
+        // returned ENOEXEC at all).
+        Err(crate::elf::ElfError::OutOfMemory) => return ENOMEM,
+        Err(
+            crate::elf::ElfError::BadMagic
+            | crate::elf::ElfError::Not32Bit
+            | crate::elf::ElfError::NotLittleEndian
+            | crate::elf::ElfError::NotArm
+            | crate::elf::ElfError::InvalidSegment,
+        ) => return ENOEXEC,
     };
     let entry_point = loaded.entry;
 
@@ -1124,14 +1150,24 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     for i in 0..page_count {
         let vaddr = candidate + i * page::PAGE_SIZE;
         let Some(phys) = page::alloc_page() else {
-            // OOM: roll back
+            // OOM: roll back previously mapped pages, freeing their
+            // physical frames (not just unmapping) -- the old rollback
+            // only unmapped, permanently leaking every already-mapped
+            // frame (issue #282 finding 13, same class as #226/#328).
             for j in 0..i {
                 let rollback_vaddr = candidate + j * page::PAGE_SIZE;
                 // SAFETY: pt is the current process's valid L1 table and
-                // rollback_vaddr is page-aligned within the mmap candidate region.
-                // These pages were successfully mapped in earlier iterations.
+                // rollback_vaddr is page-aligned within the mmap candidate
+                // region. These pages were successfully mapped in earlier
+                // iterations, so read_l2_phys before unmap_page recovers
+                // the frame to return to the allocator.
                 unsafe {
+                    let rollback_phys = mmu::read_l2_phys(pt, rollback_vaddr);
                     mmu::unmap_page(pt, rollback_vaddr);
+                    mmu::flush_tlb_page(rollback_vaddr);
+                    if let Some(rollback_phys) = rollback_phys {
+                        page::free_page(rollback_phys);
+                    }
                 }
             }
             return MAP_FAILED;
@@ -1146,13 +1182,21 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             unsafe {
                 page::free_page(phys);
             }
-            // Roll back previous mappings
+            // Roll back previous mappings, freeing their physical frames
+            // too (issue #282 finding 13).
             for j in 0..i {
                 let rollback_vaddr = candidate + j * page::PAGE_SIZE;
                 // SAFETY: pt is the current process's valid L1 table and
-                // rollback_vaddr was successfully mapped in earlier iterations.
+                // rollback_vaddr was successfully mapped in earlier
+                // iterations, so read_l2_phys before unmap_page recovers
+                // the frame to return to the allocator.
                 unsafe {
+                    let rollback_phys = mmu::read_l2_phys(pt, rollback_vaddr);
                     mmu::unmap_page(pt, rollback_vaddr);
+                    mmu::flush_tlb_page(rollback_vaddr);
+                    if let Some(rollback_phys) = rollback_phys {
+                        page::free_page(rollback_phys);
+                    }
                 }
             }
             return MAP_FAILED;
@@ -1166,13 +1210,21 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         prot: prot_flags,
     };
     if process::add_mapping(mapping).is_none() {
-        // Mapping table full -- roll back
+        // Mapping table full -- roll back, freeing every physical frame
+        // mapped above (issue #282 finding 13).
         for i in 0..page_count {
             let vaddr = candidate + i * page::PAGE_SIZE;
             // SAFETY: pt is the current process's valid L1 table and vaddr
-            // is page-aligned within the region just successfully mapped.
+            // is page-aligned within the region just successfully mapped,
+            // so read_l2_phys before unmap_page recovers the frame to
+            // return to the allocator.
             unsafe {
+                let rollback_phys = mmu::read_l2_phys(pt, vaddr);
                 mmu::unmap_page(pt, vaddr);
+                mmu::flush_tlb_page(vaddr);
+                if let Some(rollback_phys) = rollback_phys {
+                    page::free_page(rollback_phys);
+                }
             }
         }
         return MAP_FAILED;
@@ -1255,6 +1307,82 @@ fn sys_mprotect(arg0: u32, arg1: u32, arg2: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+
+    /// #282 finding 13: an OOM partway through sys_mmap's page allocation must
+    /// roll back exactly the pages it mapped before failing, freeing their
+    /// physical frames -- not just unmapping them (same class as #226).
+    #[test]
+    fn mmap_oom_rollback_frees_mapped_pages() {
+        unsafe {
+            setup_mm();
+        }
+
+        // Shrink the free pool to exactly 2 pages so a 4-page mmap OOMs after
+        // mapping the first 2.
+        unsafe {
+            crate::page::init(
+                0x4000_0000,
+                0x4000_0000 + 6 * crate::page::PAGE_SIZE,
+                0x4000_0000 + 4 * crate::page::PAGE_SIZE,
+            );
+        }
+        let free_before = page::free_count();
+        assert_eq!(free_before, 2, "test setup must yield exactly 2 free pages");
+
+        const MAP_PAGES: u32 = 4;
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
+        let length = MAP_PAGES * u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
+
+        let addr = sys_mmap(0, length, prot, flags_and_fd);
+        assert_eq!(
+            addr, MAP_FAILED,
+            "mmap must fail when it cannot satisfy the full length"
+        );
+
+        let free_after = page::free_count();
+        assert_eq!(
+            free_after, free_before,
+            "OOM rollback must return exactly the pages mapped before the failure, leaving free-count unchanged (issue #282 finding 13)"
+        );
+    }
+
+    #[test]
+    fn recv_returns_eagain_not_sentinel_when_inbox_empty() {
+        let result = dispatch(Syscall::Recv.as_u32(), 0, 0, 0, 0);
+        assert_eq!(
+            result, EAGAIN,
+            "an empty inbox must report EAGAIN, not the old untyped u32::MAX sentinel"
+        );
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn execve_returns_enoexec_for_bad_elf_magic() {
+        unsafe {
+            process::reset_for_test();
+
+            // Not a valid ELF file at all (bad magic) -- elf::load rejects this
+            // at validate() with ElfError::BadMagic, which sys_execve must
+            // surface as ENOEXEC (issue #282 finding 15), not the generic
+            // EINVAL it previously returned for every ELF load failure.
+            let garbage = [0u8; 52];
+
+            let mut fs = crate::ramfs::RamFs::new();
+            fs.add("bin", &garbage);
+            fd::init_ramfs(fs);
+
+            static mut PATH: [u8; 5] = *b"/bin\0";
+            let path_ptr = core::ptr::addr_of!(PATH) as *const u8 as u32;
+
+            let result = sys_execve(path_ptr, 0, 0);
+            assert_eq!(
+                result, ENOEXEC,
+                "execve must return ENOEXEC (not EINVAL) for a malformed ELF"
+            );
+        }
+    }
+
     use super::*;
 
     // ---- Legacy syscall number preservation ----
