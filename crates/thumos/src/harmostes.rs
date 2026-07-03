@@ -162,6 +162,12 @@ pub struct SyncResult {
     pub new_messages: Vec<IncomingMessage>,
     /// Number of rooms that had new timeline events.
     pub rooms_updated: u32,
+    /// Number of rooms whose events were dropped because the room list was
+    /// already at `MAX_ROOMS` capacity (#358). Non-zero means some events
+    /// could not be stored — but the sync token still advances safely,
+    /// because an over-capacity room cannot be persisted regardless, so
+    /// there is nothing a retry could recover.
+    pub rooms_over_capacity: u32,
     /// The next batch token (opaque, stored for incremental sync).
     pub next_batch: String,
 }
@@ -170,9 +176,10 @@ impl fmt::Display for SyncResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "SyncResult({} messages, {} rooms updated)",
+            "SyncResult({} messages, {} rooms updated, {} over capacity)",
             self.new_messages.len(),
             self.rooms_updated,
+            self.rooms_over_capacity,
         )
     }
 }
@@ -563,6 +570,7 @@ impl MatrixClient {
         let mut result = SyncResult {
             new_messages: Vec::new(),
             rooms_updated: 0,
+            rooms_over_capacity: 0,
             next_batch: String::from(next_batch),
         };
 
@@ -588,10 +596,24 @@ impl MatrixClient {
                 continue;
             }
 
-            result.rooms_updated = result.rooms_updated.saturating_add(1);
-
             // Find or create the room in our list.
-            let room_idx = self.find_or_create_room(room_id)?;
+            // WHY(#358): self.sync_token was already advanced above. If this
+            // room is beyond MAX_ROOMS, propagating the Err would leave the
+            // token advanced while reporting the whole batch failed — a
+            // caller retrying from next_batch would permanently lose every
+            // event in this batch. An over-capacity room cannot be stored
+            // regardless, so skip it (counted via rooms_over_capacity) and
+            // keep processing the rest, letting the token advance safely.
+            let room_idx = match self.find_or_create_room(room_id) {
+                Ok(idx) => idx,
+                Err(MatrixError::RoomCapacityReached) => {
+                    result.rooms_over_capacity = result.rooms_over_capacity.saturating_add(1);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
+            result.rooms_updated = result.rooms_updated.saturating_add(1);
 
             for event in &events {
                 let msg = parse_timeline_event(event, room_id, &self.crypto);
@@ -1359,6 +1381,49 @@ mod tests {
         assert_eq!(room.messages[0].sender, "@alice:matrix.example.com");
         assert_eq!(room.messages[1].body, "world");
         assert_eq!(room.unread_count, 2);
+    }
+
+    #[test]
+    fn sync_over_capacity_room_advances_token_and_signals_drop() {
+        // #358: when a sync batch carries events for a room beyond MAX_ROOMS,
+        // process_sync_response must NOT propagate an Err that leaves the
+        // sync token advanced (a retry from next_batch would lose the whole
+        // batch). It must process every storable room, advance the token,
+        // return Ok, and signal the drop via rooms_over_capacity.
+        let mut client = matrix_client_with_test_credentials();
+        for i in 0..MAX_ROOMS {
+            let rid = alloc::format!("!room{i}:matrix.example.com");
+            assert!(
+                client.find_or_create_room(&rid).is_ok(),
+                "filling below MAX_ROOMS must succeed"
+            );
+        }
+        assert_eq!(client.rooms().len(), MAX_ROOMS);
+
+        let sync_json = build_sync_response(
+            "batch_over",
+            "!overflow:matrix.example.com",
+            &[("$e1", "@a:matrix.example.com", "would this be lost?", 1_700_000_001_000)],
+        );
+        let response = mock_response(200, &sync_json);
+        let result = client.sync(&response, 100);
+
+        assert!(
+            result.is_ok(),
+            "an over-capacity room must not fail the whole sync (#358)"
+        );
+        assert_eq!(
+            client.sync_token(),
+            Some("batch_over"),
+            "the sync token must advance safely after a capacity skip"
+        );
+        let dropped = result.map(|r| r.rooms_over_capacity).unwrap_or(0);
+        assert_eq!(dropped, 1, "the dropped over-capacity room must be signaled");
+        assert_eq!(
+            client.rooms().len(),
+            MAX_ROOMS,
+            "no room may be added beyond MAX_ROOMS"
+        );
     }
 
     #[test]
