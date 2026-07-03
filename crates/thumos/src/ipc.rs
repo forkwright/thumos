@@ -12,6 +12,7 @@
 
 extern crate alloc;
 
+use crate::irq;
 use crate::process::{self, Pid};
 
 /// Maximum message payload size in bytes.
@@ -128,6 +129,17 @@ static mut INBOXES: [Inbox; MAX_INBOX_PROCS] = {
     [NEW_INBOX; MAX_INBOX_PROCS]
 };
 
+/// WHY (#322/#331 class): an `irq::IrqSpinlock`, not the bare
+/// single-core-cooperative reasoning the accessors below previously
+/// relied on alone -- `send`/`recv`/`has_messages` can be reached from
+/// IRQ context as well as ordinary kernel-mode code (e.g. a fault handler
+/// relaying a report to PID 0 via `process::notify_fault`), and nothing
+/// enforced that the two paths could never interleave. Masking IRQ
+/// delivery for the access is what actually prevents an interrupting
+/// handler from touching INBOXES while a caller it interrupted is
+/// mid-mutation.
+static INBOXES_LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
+
 /// Validate a PID is within the inbox array bounds.
 ///
 /// Returns the PID as a `usize` index, or `Err(ESRCH)` if the PID
@@ -173,8 +185,10 @@ pub(crate) fn send(to: Pid, mut msg: Message) -> Result<(), IpcSendError> {
     let idx = validate_pid(to).map_err(|_| IpcSendError::InvalidTarget)?;
     msg.from = process::current_pid();
     // SAFETY: INBOXES is a static array indexed by PID. addr_of_mut! avoids
-    // creating an intermediate reference to the static mut. Single-core kernel
-    // with interrupts disabled at call sites ensures exclusive access.
+    // creating an intermediate reference to the static mut. INBOXES_LOCK
+    // masks IRQ delivery for the access, so an IRQ-context caller cannot
+    // interleave with a non-IRQ caller mid-mutation (#322/#331 class).
+    let _guard = INBOXES_LOCK.lock();
     let delivered = unsafe {
         let inboxes = &mut *core::ptr::addr_of_mut!(INBOXES);
         inboxes[idx].push(msg)
@@ -192,8 +206,9 @@ pub(crate) fn recv() -> Option<Message> {
     let pid = process::current_pid();
     let idx = validate_pid(pid).ok()?;
     // SAFETY: INBOXES is a static array indexed by PID. addr_of_mut! avoids
-    // creating an intermediate reference to the static mut. Single-core kernel
-    // with interrupts disabled at call sites ensures exclusive access.
+    // creating an intermediate reference to the static mut. INBOXES_LOCK
+    // masks IRQ delivery for the access (#322/#331 class).
+    let _guard = INBOXES_LOCK.lock();
     unsafe {
         let inboxes = &mut *core::ptr::addr_of_mut!(INBOXES);
         inboxes[idx].pop()
@@ -208,8 +223,9 @@ pub(crate) fn has_messages() -> bool {
         Err(_) => return false,
     };
     // SAFETY: INBOXES is a static array indexed by PID. addr_of! avoids
-    // creating an intermediate reference to the static mut. Read-only access
-    // here; single-core kernel ensures no concurrent mutation.
+    // creating an intermediate reference to the static mut. INBOXES_LOCK
+    // masks IRQ delivery for the read (#322/#331 class).
+    let _guard = INBOXES_LOCK.lock();
     unsafe {
         let inboxes = &*core::ptr::addr_of!(INBOXES);
         !inboxes[idx].is_empty()

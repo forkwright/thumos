@@ -799,13 +799,18 @@ pub unsafe fn run() -> ! {
         let mut usb = UsbController::new();
         // SAFETY: usb.init() programs the MUSB MMIO registers at their known
         // physical address (0x1121_0000). Called once after heap and GIC init.
-        unsafe {
-            usb.init();
+        match unsafe { usb.init() } {
+            Ok(()) => {
+                let _ = serial.write_str("       USB ACM gadget connected\r\n");
+                devices.activate("musb-hdrc");
+                state.usb_ok = true;
+                USB_SERIAL_AVAILABLE.store(true, Ordering::Release);
+            }
+            Err(e) => {
+                let _ = write!(serial, "  WARN USB init failed: {:?}\r\n", e);
+                let _ = serial.write_str("       Continuing without USB serial\r\n");
+            }
         }
-        let _ = serial.write_str("       USB ACM gadget connected\r\n");
-        devices.activate("musb-hdrc");
-        state.usb_ok = true;
-        USB_SERIAL_AVAILABLE.store(true, Ordering::Release);
     }
 
     // -----------------------------------------------------------------------

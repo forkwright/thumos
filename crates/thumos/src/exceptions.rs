@@ -24,8 +24,21 @@ use crate::timer;
 use crate::uart::Uart;
 use crate::watchdog;
 
-/// Tick counter incremented by the timer IRQ handler.
-static mut TICK_COUNT: u64 = 0;
+/// Tick counter incremented by the timer IRQ handler, split into
+/// high/low 32-bit halves.
+///
+/// WHY split: a bare `u64` read on 32-bit ARM lowers to two 32-bit loads,
+/// which can tear if the timer IRQ increments (and carries into the high
+/// half) between them -- `ticks()` could observe a spurious jump forward
+/// or backward once per low-word wraparound (~497 days at 100 Hz).
+/// Reading hi-lo-hi with a retry-on-mismatch (seqlock-lite, see
+/// `ticks()`) makes the combined value tear-free without a real lock: the
+/// sole writer (this IRQ handler) always runs with IRQs disabled and is
+/// never reentrant on this single-core kernel, so a retry only ever needs
+/// to catch a single writer/reader interleaving, never writer/writer
+/// contention.
+static mut TICK_COUNT_HI: u32 = 0;
+static mut TICK_COUNT_LO: u32 = 0;
 
 /// Timer tick interval in milliseconds.
 const TICK_MS: u32 = 10;
@@ -58,8 +71,24 @@ pub unsafe fn init() {
 }
 
 /// Get the current tick count.
+///
+/// Reads the hi/lo split with a seqlock-lite retry: `hi` is read before
+/// and after `lo`. If the timer IRQ carried into `hi` while `lo` was
+/// being read (a torn read), `hi1 != hi2` and the read is retried. See
+/// `TICK_COUNT_HI`/`TICK_COUNT_LO` and `combine_tick_halves` in
+/// `exceptions_stub.rs` for the host-tested version of this logic.
 pub(crate) fn ticks() -> u64 {
-    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TICK_COUNT)) }
+    loop {
+        // SAFETY: TICK_COUNT_HI/LO are written only from the timer IRQ
+        // handler with IRQs disabled (single-core, non-reentrant); this
+        // hi-lo-hi retry loop is the reader side of that seqlock-lite.
+        let hi1 = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TICK_COUNT_HI)) };
+        let lo = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TICK_COUNT_LO)) };
+        let hi2 = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(TICK_COUNT_HI)) };
+        if hi1 == hi2 {
+            return (u64::from(hi1) << 32) | u64::from(lo);
+        }
+    }
 }
 
 /// Get uptime in milliseconds FROM tick count.
@@ -134,11 +163,23 @@ pub extern "C" fn irq_handler_rust() {
 
     if irq == timer::TIMER_IRQ {
         // Timer tick
-        // SAFETY: TICK_COUNT is only written from this IRQ handler, which
-        // is non-reentrant on a single-core ARMv7. The IRQ is disabled
-        // during handler execution so there is no concurrent write.
+        // SAFETY: TICK_COUNT_HI/LO are only written from this IRQ
+        // handler, which is non-reentrant on a single-core ARMv7. The IRQ
+        // is disabled during handler execution so there is no concurrent
+        // write. LO is written before HI so a reader's hi-lo-hi retry (see
+        // ticks()) never observes a new HI paired with a stale pre-carry
+        // LO.
         unsafe {
-            TICK_COUNT += 1;
+            let lo = core::ptr::read_volatile(core::ptr::addr_of!(TICK_COUNT_LO));
+            let (new_lo, carried) = lo.overflowing_add(1);
+            core::ptr::write_volatile(core::ptr::addr_of_mut!(TICK_COUNT_LO), new_lo);
+            if carried {
+                let hi = core::ptr::read_volatile(core::ptr::addr_of!(TICK_COUNT_HI));
+                core::ptr::write_volatile(
+                    core::ptr::addr_of_mut!(TICK_COUNT_HI),
+                    hi.wrapping_add(1),
+                );
+            }
         }
 
         // Collect entropy from timer counter LSBs for the CSPRNG.

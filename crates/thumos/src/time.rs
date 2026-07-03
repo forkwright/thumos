@@ -80,6 +80,11 @@ const MIN_VALID_EPOCH: u64 = 1_577_836_800; // 2020-01-01T00:00:00Z
 /// ordering (#374).
 const MAX_VALID_EPOCH: u64 = 4_102_444_800; // 2100-01-01T00:00:00Z
 
+/// Error returned by [`set_realtime_offset`] when the candidate epoch is
+/// outside `[MIN_VALID_EPOCH, MAX_VALID_EPOCH]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ImplausibleEpoch;
+
 /// Compute the new `REALTIME_OFFSET_SECS` value for a candidate wall-clock
 /// update, or `None` if `unix_now_secs` falls outside the plausible epoch
 /// window `[MIN_VALID_EPOCH, MAX_VALID_EPOCH]`.
@@ -105,6 +110,12 @@ fn compute_realtime_offset(unix_now_secs: u64, elapsed_secs: u64) -> Option<u64>
 /// lowest-trust source per the clock hierarchy) must not be able to set the
 /// clock to an implausible date (#374).
 ///
+/// # Errors
+///
+/// Returns `Err(ImplausibleEpoch)` (and leaves `REALTIME_OFFSET_SECS`
+/// unchanged) when `unix_now_secs` is rejected, so the caller can detect
+/// and log/audit a rejected update instead of it silently vanishing.
+///
 /// # Safety
 ///
 /// Writes to a static mut. Must be called from a single-threaded context
@@ -112,15 +123,16 @@ fn compute_realtime_offset(unix_now_secs: u64, elapsed_secs: u64) -> Option<u64>
 /// interrupts disabled). On ARMv7 a 64-bit store is not atomic; callers
 /// are responsible for ensuring no concurrent read occurs.
 #[cfg(not(test))]
-pub unsafe fn set_realtime_offset(unix_now_secs: u64) {
+pub unsafe fn set_realtime_offset(unix_now_secs: u64) -> Result<(), ImplausibleEpoch> {
     let elapsed_secs = monotonic_secs();
     let Some(new_offset) = compute_realtime_offset(unix_now_secs, elapsed_secs) else {
-        return;
+        return Err(ImplausibleEpoch);
     };
     // SAFETY: see function-level safety doc; caller ensures exclusion.
     unsafe {
         REALTIME_OFFSET_SECS = new_offset;
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +268,12 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
         let n = core::ptr::read_unaligned((ptr + 4) as *const u32);
         (s, n)
     };
+
+    // POSIX: tv_nsec must be in [0, 999_999_999]; anything else is EINVAL,
+    // not silently folded into extra whole seconds of sleep.
+    if req_nanos >= 1_000_000_000 {
+        return EINVAL;
+    }
 
     // Convert duration to ticks.
     // tick period = TICK_MS ms = 10 ms. scheduler tick rate = 100 Hz.
@@ -472,5 +490,23 @@ mod tests {
             };
 
         assert_eq!(ticks_needed, 1, "5 ms sleep must round up to 1 tick");
+    }
+
+    /// POSIX requires EINVAL when tv_nsec is out of [0, 999_999_999]; the
+    /// kernel must not silently fold an out-of-range value into extra
+    /// whole seconds of sleep. A `static mut` buffer is used (not a stack
+    /// array) so its address lands inside validate_user_buffer's accepted
+    /// user-DRAM range on the 32-bit test target.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn nanosleep_rejects_tv_nsec_out_of_range() {
+        static mut TS: [u32; 2] = [0, 1_000_000_000]; // tv_sec=0, tv_nsec=1e9 (invalid)
+        // SAFETY: test-only static; single-threaded per test.
+        let ptr = core::ptr::addr_of!(TS) as u32;
+        let result = sys_nanosleep(ptr);
+        assert_eq!(
+            result, EINVAL,
+            "tv_nsec >= 1_000_000_000 must return EINVAL"
+        );
     }
 }

@@ -205,8 +205,19 @@ impl HeorteManager {
         let id = self.next_event_id;
         self.next_event_id += 1;
         let event = CalendarEvent::new(id, title, start_epoch, duration_min, all_day);
-        self.events.push(event);
-        self.sort_events();
+        // WHY insert-in-place instead of push + full re-sort: `events` is
+        // kept sorted by `start_epoch` at all times, so re-sorting the
+        // whole vector after every single insert was O(N log N) per add
+        // -- O(N^2 log N) for a bulk import of N events. A binary-search
+        // insertion point (`partition_point`) plus a single `Vec::insert`
+        // shift keeps the same sorted invariant at the same O(N)
+        // asymptotic insert cost without repeatedly re-comparing every
+        // element. `<=` keeps ties in insertion order, matching the
+        // previous stable sort's behavior.
+        let pos = self
+            .events
+            .partition_point(|e| e.start_epoch <= start_epoch);
+        self.events.insert(pos, event);
         id
     }
 
@@ -233,11 +244,6 @@ impl HeorteManager {
     /// Find an event by ID.
     pub(crate) fn find_event(&self, id: u32) -> Option<&CalendarEvent> {
         self.events.iter().find(|e| e.id == id)
-    }
-
-    /// Sort events by `start_epoch` (stable sort preserves insertion order for ties).
-    fn sort_events(&mut self) {
-        self.events.sort_by_key(|e| e.start_epoch);
     }
 
     // -- Alarms --
@@ -485,6 +491,24 @@ mod tests {
         );
         assert_eq!(events[0].title_str(), "Earlier");
         assert_eq!(events[1].title_str(), "Later");
+    }
+
+    #[test]
+    fn add_event_maintains_sort_order_with_ties() {
+        let mut mgr = HeorteManager::new();
+        mgr.add_event(b"C", 3_000_000, 30, false);
+        mgr.add_event(b"A", 1_000_000, 30, false);
+        mgr.add_event(b"B1", 2_000_000, 30, false);
+        mgr.add_event(b"B2", 2_000_000, 30, false); // tie with B1
+        let events = mgr.events();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].start_epoch, 1_000_000);
+        assert_eq!(events[1].start_epoch, 2_000_000);
+        assert_eq!(events[2].start_epoch, 2_000_000);
+        assert_eq!(events[3].start_epoch, 3_000_000);
+        // Tie-break: equal start_epoch keeps insertion order (B1 before B2).
+        assert_eq!(events[1].title_str(), "B1");
+        assert_eq!(events[2].title_str(), "B2");
     }
 
     #[test]
