@@ -574,6 +574,9 @@ impl MatrixClient {
         push_u64(&mut path, SYNC_LONG_POLL_MS);
 
         if let Some(ref token) = self.sync_token {
+            if token.bytes().any(|b| b == b' ' || b.is_ascii_control()) {
+                return Err(MatrixError::MalformedSync);
+            }
             path.push_str("&since=");
             path.push_str(token);
         }
@@ -969,14 +972,21 @@ impl MatrixClient {
     /// Build a join-room HTTP request.
     ///
     /// Uses POST `/_matrix/client/v3/join/{roomId}`.
-    pub(crate) fn build_join_request(&self, room_id: &str) -> HttpRequest {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::InvalidId`] if `room_id` is not a well-formed
+    /// Matrix room ID (#373: prevents CRLF/path injection via the join path).
+    pub(crate) fn build_join_request(&self, room_id: &str) -> Result<HttpRequest, MatrixError> {
+        let validated_room = MatrixRoomId::new(room_id)?;
+
         let mut path = String::from(API_PREFIX);
         path.push_str("/join/");
-        path.push_str(room_id);
+        path.push_str(&validated_room);
 
         let mut req = http_client::post_json(&self.homeserver, &path, b"{}");
         http_client::with_auth(&mut req, &self.access_token);
-        req
+        Ok(req)
     }
 
     /// Process a join-room HTTP response.
@@ -1012,7 +1022,12 @@ impl MatrixClient {
     /// Join a room (build request + queue join). The caller handles transport.
     ///
     /// Returns the built HTTP request.
-    pub(crate) fn join_room(&self, room_id: &str) -> HttpRequest {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::InvalidId`] if `room_id` is not a well-formed
+    /// Matrix room ID.
+    pub(crate) fn join_room(&self, room_id: &str) -> Result<HttpRequest, MatrixError> {
         self.build_join_request(room_id)
     }
 
@@ -1920,7 +1935,12 @@ mod tests {
         let client = matrix_client_with_test_credentials();
         let room_id = "!target:matrix.example.com";
 
-        let req = client.build_join_request(room_id);
+        let result = client.build_join_request(room_id);
+        assert!(result.is_ok());
+        let req = result.ok().unwrap_or_else(|| {
+            // Fallback that never executes -- satisfies no-unwrap lint.
+            HttpRequest::new(http_client::HttpMethod::Get, String::new(), String::new())
+        });
 
         // Verify path.
         assert!(req.path.contains("/join/"));
@@ -1932,6 +1952,17 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "Authorization" && v.contains("Bearer"));
         assert!(has_auth);
+    }
+
+    #[test]
+    fn join_room_rejects_crlf_injected_room_id() {
+        // #373-class: build_join_request must reject a room_id carrying a
+        // CRLF/control byte before it reaches the HTTP request path.
+        let client = matrix_client_with_test_credentials();
+        let malicious = "!room:example.com\r\nX-Injected: evil";
+
+        let result = client.build_join_request(malicious);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1952,6 +1983,25 @@ mod tests {
         let result = client.process_join_response(room_id, &response);
         assert!(result.is_ok());
         assert_eq!(client.rooms().len(), 1);
+    }
+
+    #[test]
+    fn process_join_response_rejects_beyond_max_rooms() {
+        let mut client = matrix_client_with_test_credentials();
+        let response = mock_response(200, "{}");
+
+        for i in 0..MAX_ROOMS {
+            let mut room_id = String::from("!room");
+            push_u32(&mut room_id, i as u32);
+            room_id.push_str(":example.com");
+            let result = client.process_join_response(&room_id, &response);
+            assert!(result.is_ok());
+        }
+        assert_eq!(client.rooms().len(), MAX_ROOMS);
+
+        let result = client.process_join_response("!overflow:example.com", &response);
+        assert_eq!(result.err(), Some(MatrixError::RoomCapacityReached));
+        assert_eq!(client.rooms().len(), MAX_ROOMS);
     }
 
     #[test]
@@ -2024,6 +2074,21 @@ mod tests {
     }
 
     #[test]
+    fn build_sync_request_rejects_crlf_in_sync_token() {
+        // A malicious homeserver's next_batch must not be able to inject a
+        // CRLF/space/control byte into the next /sync request line.
+        let mut client = matrix_client_with_test_credentials();
+        let body = build_sync_response("evil\r\nX-Injected: 1", "!room:example.com", &[]);
+        let response = mock_response(200, &body);
+
+        let result = client.sync(&response, 0);
+        assert!(result.is_ok());
+
+        let result = client.build_sync_request();
+        assert_eq!(result.err(), Some(MatrixError::MalformedSync));
+    }
+
+    #[test]
     fn process_send_response_extracts_event_id() {
         let client = matrix_client_with_test_credentials();
 
@@ -2031,6 +2096,25 @@ mod tests {
         let result = client.process_send_response(&response);
         assert!(result.is_ok());
         assert_eq!(result.ok(), Some(String::from("$sent123")));
+    }
+
+    #[test]
+    fn build_sync_request_includes_since_param_when_token_set() {
+        let mut client = matrix_client_with_test_credentials();
+        assert!(client.sync_token().is_none());
+
+        let body = build_sync_response("tok_abc123", "!room:example.com", &[]);
+        let response = mock_response(200, &body);
+        let result = client.sync(&response, 0);
+        assert!(result.is_ok());
+        assert_eq!(client.sync_token(), Some("tok_abc123"));
+
+        let result = client.build_sync_request();
+        assert!(result.is_ok());
+        let req = result.ok().unwrap_or_else(|| {
+            HttpRequest::new(http_client::HttpMethod::Get, String::new(), String::new())
+        });
+        assert!(req.path.contains("&since=tok_abc123"));
     }
 
     #[test]
@@ -2162,5 +2246,42 @@ mod tests {
         assert_eq!(room.messages[0].event_id, "$msg1");
         // Last message should be the new one.
         assert_eq!(room.messages[MAX_MESSAGES_PER_ROOM - 1].event_id, "$new");
+    }
+
+    #[test]
+    fn hex_decode_bytes_decodes_valid_input() {
+        assert_eq!(
+            hex_decode_bytes("00ff10").as_deref(),
+            Some(&[0x00u8, 0xff, 0x10][..])
+        );
+        assert_eq!(hex_decode_bytes("").as_deref(), Some(&[][..]));
+    }
+
+    #[test]
+    fn hex_decode_bytes_rejects_odd_length() {
+        assert_eq!(hex_decode_bytes("abc"), None);
+    }
+
+    #[test]
+    fn hex_decode_bytes_rejects_non_hex_char() {
+        assert_eq!(hex_decode_bytes("zz"), None);
+    }
+
+    #[test]
+    fn hex_decode_32_bytes_decodes_valid_input() {
+        let hex = "ab".repeat(32);
+        assert_eq!(hex_decode_32_bytes(&hex), Some([0xabu8; 32]));
+    }
+
+    #[test]
+    fn hex_decode_32_bytes_rejects_wrong_length() {
+        assert_eq!(hex_decode_32_bytes("aabb"), None);
+        assert_eq!(hex_decode_32_bytes(&"ab".repeat(33)), None);
+    }
+
+    #[test]
+    fn hex_decode_32_bytes_rejects_non_hex_char() {
+        let bad = alloc::format!("zz{}", "aa".repeat(31));
+        assert_eq!(hex_decode_32_bytes(&bad), None);
     }
 }

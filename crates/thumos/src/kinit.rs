@@ -780,15 +780,28 @@ pub unsafe fn run() -> ! {
     // Step 8f: Security mode manager
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Security mode (Daily)\r\n");
+    let mut pm = PowerManager::new();
     {
-        // WHY: start in Daily mode with BFU timer running.  Mode manager
-        // controls radio policy, scan intervals, and key lifecycle.
+        // WHY (finding 46): the radio policy must be established here,
+        // BEFORE USB ACM (Step 9) and the CCCI modem (Step 10) bring
+        // radios up -- previously this step only logged "PENDING" and the
+        // power manager was not constructed until Step 12, well after
+        // both radios had already started, leaving PowerManager state at
+        // its all-Off default the whole time radios were live (a
+        // policy/reality mismatch for any later mode-transition or
+        // threat-response code that reads PowerManager state as ground
+        // truth). A full passphrase-derived pin_hash is not available yet
+        // (Step 8c is pending the boot input loop -- finding 48), so
+        // ModeManager::default() is used: unprovisioned, but still Daily
+        // mode, which is the correct policy to apply at this point.
         //
-        // NOTE: In production:
-        // let mode_mgr = ModeManager::new(pin_hash);
+        // NOTE: BFU (Before First Unlock) timer wiring is separate,
+        // unrelated work -- not part of this radio-policy fix.
         // let bfu = BfuTimer::new(SecurityMode::Daily);
-        // apply_mode_policy(&mode_mgr.effective_policy(), &mut pm);
-        let _ = serial.write_str("       Security mode: PENDING (Daily policy not applied)\r\n");
+        let mode_mgr = crate::security_mode::ModeManager::default();
+        crate::power::apply_mode_policy(&mode_mgr.effective_policy(), &mut pm);
+        state.security_mode_ok = true;
+        let _ = serial.write_str("       Security mode: Daily policy applied\r\n");
     }
 
     // -----------------------------------------------------------------------
@@ -820,7 +833,11 @@ pub unsafe fn run() -> ! {
     {
         let mut ccci = CcciDriver::new();
         let boot_start = crate::timer::elapsed_ms();
-        let boot_result = unsafe { ccci.boot_modem(boot_start) };
+        // WHY (finding 47): MODEM_BOOT_TIMEOUT_MS previously bounded
+        // nothing -- it was only compared against elapsed time in the WARN
+        // check below, AFTER boot_modem had already returned. Threading it
+        // through makes it a real deadline boot_modem enforces per step.
+        let boot_result = unsafe { ccci.boot_modem(boot_start, MODEM_BOOT_TIMEOUT_MS) };
         let boot_elapsed = crate::timer::elapsed_ms() - boot_start;
 
         match boot_result {
@@ -845,9 +862,16 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 12: Power manager
     // -----------------------------------------------------------------------
+    // WHY (finding 46): `pm` was already constructed and given the
+    // Daily-mode radio policy at Step 8f, before USB/modem bring-up -- do
+    // not construct a second PowerManager here and silently discard that
+    // policy state.
     let _ = serial.write_str("[init] Power manager\r\n");
-    let _pm = PowerManager::new();
-    let _ = serial.write_str("       All radios OFF (silent mode)\r\n");
+    let _ = write!(
+        serial,
+        "       {} radios active per Daily policy (applied at security-mode init)\r\n",
+        pm.active_count()
+    );
 
     // -----------------------------------------------------------------------
     // Step 13: Network configuration (WiFi readiness + DHCP/DNS smoke)

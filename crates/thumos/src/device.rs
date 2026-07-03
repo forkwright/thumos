@@ -289,4 +289,41 @@ mod tests {
             Some(DeviceStatus::PoweredOff)
         );
     }
+
+    #[test]
+    fn list_returns_all_registered_devices() {
+        let mut registry = DeviceRegistry::new();
+        assert!(registry.list().is_empty());
+        registry.register("uart0", 0x1100_2000, 0);
+        registry.register("uart1", 0x1100_3000, 0);
+        assert_eq!(registry.list().len(), 2);
+    }
+
+    #[test]
+    fn count_by_status_reflects_registry_state() {
+        let mut registry = DeviceRegistry::new();
+        registry.register("uart0", 0x1100_2000, 0);
+        registry.register("uart1", 0x1100_3000, 0);
+        registry.activate("uart0");
+
+        assert_eq!(registry.count_by_status(DeviceStatus::Registered), 1);
+        assert_eq!(registry.count_by_status(DeviceStatus::Active), 1);
+        assert_eq!(registry.count_by_status(DeviceStatus::PoweredOff), 0);
+    }
+
+    #[test]
+    fn register_mt6739_devices_populates_expected_device_set() {
+        let mut registry = DeviceRegistry::new();
+        registry.register_mt6739_devices();
+
+        assert_eq!(registry.list().len(), 18);
+        assert!(registry.find("uart0").is_some());
+        assert!(registry.find("ccci-cldma").is_some());
+        assert!(registry.find("gic-cpu").is_some());
+        assert_eq!(
+            registry.count_by_status(DeviceStatus::Registered),
+            18,
+            "all devices start in the Registered state"
+        );
+    }
 }

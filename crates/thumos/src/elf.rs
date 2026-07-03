@@ -244,6 +244,22 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
         }
     }
 
+    // WHY (finding 49): e_entry is a fully attacker-controlled u32 header
+    // field, entirely independent of the PT_LOAD segments validated above.
+    // Both callers (kinit.rs's boot-time spawn of /init and /shell, and
+    // syscall.rs's sys_execve) transmute this address straight to a
+    // callable function pointer and jump to it -- an entry point outside
+    // every loaded segment is an arbitrary jump/code-execution primitive,
+    // not merely a crash. Require entry to fall within a segment that was
+    // actually loaded before it is ever handed back to a caller.
+    let entry_in_loaded_segment = (0..segments.count).any(|i| {
+        let (vaddr, memsz, _, _) = segments.segments[i];
+        entry >= vaddr && entry < vaddr.saturating_add(memsz)
+    });
+    if !entry_in_loaded_segment {
+        return Err(ElfError::InvalidSegment);
+    }
+
     Ok((entry, segments))
 }
 
@@ -536,13 +552,55 @@ mod tests {
 
     #[test]
     fn parse_accepts_valid_elf() {
-        // A valid ELF header with phnum=0 should parse successfully
-        // without triggering any page allocation (no PT_LOAD segments).
+        // A valid ELF with one PT_LOAD segment covering e_entry must parse
+        // successfully. WHY a real segment (finding 49): entry is no
+        // longer accepted merely because the header is well-formed -- it
+        // must fall within a segment that was actually loaded, or the
+        // address handed to kinit.rs's transmute+call would be
+        // unmapped/arbitrary. A phnum=0 image (no code loaded at all) can
+        // no longer have any valid entry point.
+        let mut buf = [0u8; ELF32_EHDR_SIZE + ELF32_PHDR_SIZE];
         let h = make_valid_ehdr();
+        buf[..ELF32_EHDR_SIZE].copy_from_slice(&h);
+        buf[44] = 1; // e_phnum = 1
+        // e_entry (offset 24): moved to the start of the PT_LOAD segment below.
+        buf[24..28].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+
+        // Elf32Phdr at offset 52: p_type = PT_LOAD (1).
+        buf[52..56].copy_from_slice(&1u32.to_le_bytes());
+        // p_vaddr (offset 60): inside the allowed load region, matching e_entry.
+        buf[60..64].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+        // p_memsz (offset 72): small, just needs to contain e_entry.
+        buf[72..76].copy_from_slice(&0x1000u32.to_le_bytes());
+
         let (entry, validated) =
-            validate(&h).expect("valid ELF header with no segments must parse");
-        assert_eq!(entry, 0x8000, "entry point must match e_entry");
-        assert_eq!(validated.count, 0, "no PT_LOAD segments expected");
+            validate(&buf).expect("valid ELF with entry inside a loaded segment must parse");
+        assert_eq!(entry, 0x4010_0000, "entry point must match e_entry");
+        assert_eq!(validated.count, 1, "one PT_LOAD segment expected");
+    }
+
+    /// finding 49: e_entry outside every loaded PT_LOAD segment must be
+    /// rejected -- kinit.rs and syscall.rs's sys_execve both transmute this
+    /// address straight to a callable function pointer, so an unvalidated
+    /// entry point is an arbitrary jump/code-execution primitive, not just
+    /// a crash.
+    #[test]
+    fn parse_rejects_entry_outside_loaded_segment() {
+        let mut buf = [0u8; ELF32_EHDR_SIZE + ELF32_PHDR_SIZE];
+        let h = make_valid_ehdr();
+        buf[..ELF32_EHDR_SIZE].copy_from_slice(&h);
+        buf[44] = 1; // e_phnum = 1
+        // e_entry (offset 24): left at make_valid_ehdr()'s 0x8000 default,
+        // which is NOT inside the segment below.
+
+        // Elf32Phdr at offset 52: p_type = PT_LOAD (1).
+        buf[52..56].copy_from_slice(&1u32.to_le_bytes());
+        // p_vaddr (offset 60): inside the allowed load region, but does not
+        // contain e_entry (0x8000).
+        buf[60..64].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+        buf[72..76].copy_from_slice(&0x1000u32.to_le_bytes());
+
+        assert_eq!(validate(&buf).unwrap_err(), ElfError::InvalidSegment);
     }
 
     // ---- #328: load() must not leak physical pages ----
@@ -571,6 +629,9 @@ mod tests {
         let h = make_valid_ehdr();
         data[..ELF32_EHDR_SIZE].copy_from_slice(&h);
         data[44] = 1; // e_phnum = 1
+        // e_entry (offset 24): must fall within the PT_LOAD segment below
+        // (finding 49) -- reuse the segment's own vaddr as the entry point.
+        data[24..28].copy_from_slice(&(vaddr as u32).to_le_bytes());
 
         // Elf32Phdr at offset 52: p_type = PT_LOAD (1).
         data[52..56].copy_from_slice(&1u32.to_le_bytes());
@@ -639,6 +700,9 @@ mod tests {
         let h = make_valid_ehdr();
         data[..ELF32_EHDR_SIZE].copy_from_slice(&h);
         data[44] = 1; // e_phnum = 1
+        // e_entry (offset 24): must fall within the PT_LOAD segment below
+        // (finding 49) -- reuse the segment's own vaddr as the entry point.
+        data[24..28].copy_from_slice(&(vaddr as u32).to_le_bytes());
         data[52..56].copy_from_slice(&1u32.to_le_bytes()); // p_type = PT_LOAD
         data[60..64].copy_from_slice(&(vaddr as u32).to_le_bytes());
         data[72..76].copy_from_slice(&16u32.to_le_bytes()); // p_memsz = 16
