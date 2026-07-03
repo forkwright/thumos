@@ -931,14 +931,19 @@ pub(crate) fn current_mappings() -> [Option<VmMapping>; MAX_MAPPINGS] {
 }
 
 /// Get the current process's UID.
-/// Returns 0 (root) if the current process is not found (should not happen).
-pub(crate) fn current_uid() -> u32 {
+///
+/// Returns `None` if the current process's PCB slot is absent -- this must
+/// never silently resolve to UID 0 (root): a missing PCB is a scheduler
+/// invariant violation, and treating it as root would grant full privilege
+/// to whatever code path hit the gap (fail-open privilege escalation,
+/// issue #282, process.rs).
+pub(crate) fn current_uid() -> Option<u32> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Read-only access via addr_of!; no mutation occurs here.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
         let cur = usize::from(CURRENT);
-        procs[cur].as_ref().map_or(0, |p| p.uid)
+        procs[cur].as_ref().map(|p| p.uid)
     }
 }
 
@@ -2224,7 +2229,26 @@ mod tests {
                 capabilities: crate::capability::Capabilities::ALL,
             });
             CURRENT = 0;
-            assert_eq!(current_uid(), 0, "kinit (PID 0) must have UID 0");
+            assert_eq!(current_uid(), Some(0), "kinit (PID 0) must have UID 0");
+        }
+    }
+
+    /// A missing PCB slot must fail closed: `current_uid` must never
+    /// resolve an absent process to UID 0 (root), since every caller of
+    /// `current_uid` would then treat a scheduler-invariant gap as full
+    /// privilege (issue #282, process.rs).
+    #[test]
+    fn getuid_returns_none_when_pcb_absent_never_zero() {
+        // SAFETY: test-only; reset_all reinitialises global state and
+        // leaves every PROCS slot empty.
+        unsafe {
+            reset_all();
+            CURRENT = 0;
+            assert_eq!(
+                current_uid(),
+                None,
+                "an absent PCB must fail closed with None, never fall back to UID 0"
+            );
         }
     }
 

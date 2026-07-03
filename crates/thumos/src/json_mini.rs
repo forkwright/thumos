@@ -198,7 +198,11 @@ impl fmt::Display for JsonValue {
             Self::Null => write!(f, "null"),
             Self::Bool(b) => write!(f, "{b}"),
             Self::Number(n) => write!(f, "{n}"),
-            Self::String(s) => write!(f, "\"{s}\""),
+            Self::String(s) => {
+                let mut escaped = String::new();
+                escape_string_into(&mut escaped, s);
+                write!(f, "\"{escaped}\"")
+            }
             Self::Array(a) => {
                 write!(f, "[")?;
                 for (i, v) in a.iter().enumerate() {
@@ -215,7 +219,9 @@ impl fmt::Display for JsonValue {
                     if i > 0 {
                         write!(f, ",")?;
                     }
-                    write!(f, "\"{k}\":{v}")?;
+                    let mut escaped_key = String::new();
+                    escape_string_into(&mut escaped_key, k);
+                    write!(f, "\"{escaped_key}\":{v}")?;
                 }
                 write!(f, "}}")
             }
@@ -1144,6 +1150,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_string_unicode_escape_lone_surrogate_substitutes_replacement_char() {
+        // \uD800 is a lone high surrogate -- not a valid standalone Unicode
+        // scalar value, and this parser does not implement surrogate-pair
+        // handling (BMP only, per module docs). char::from_u32 rejects it,
+        // and the documented fallback is U+FFFD REPLACEMENT CHARACTER.
+        let val = JsonParser::parse(b"\"\\uD800\"");
+        assert_eq!(val, Ok(JsonValue::String(String::from("\u{FFFD}"))));
+    }
+
+    #[test]
     fn parse_empty_string() {
         let val = JsonParser::parse(b"\"\"");
         assert_eq!(val, Ok(JsonValue::String(String::new())));
@@ -1497,6 +1513,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_exceeds_max_depth_rejected() {
+        // Build JSON nested one level beyond MAX_DEPTH so the parser must
+        // reject it with TooDeep rather than recursing past the guard
+        // (stack overflow risk on deeply/maliciously nested input).
+        let depth = MAX_DEPTH + 1;
+        let mut json = alloc::vec![b'['; depth];
+        json.extend(alloc::vec![b']'; depth]);
+        let val = JsonParser::parse(&json);
+        assert_eq!(val, Err(JsonError::TooDeep));
+    }
+
+    #[test]
+    fn parse_at_max_depth_accepted() {
+        // Nesting exactly MAX_DEPTH levels must still succeed -- the guard
+        // is `depth > MAX_DEPTH`, not `>=`.
+        let mut json = alloc::vec![b'['; MAX_DEPTH];
+        json.extend(alloc::vec![b']'; MAX_DEPTH]);
+        let val = JsonParser::parse(&json);
+        assert!(val.is_ok(), "exactly MAX_DEPTH nesting must be accepted");
+    }
+
     // ===== Display impls =====
 
     #[test]
@@ -1530,6 +1568,43 @@ mod tests {
         assert_eq!(
             JsonValue::String(String::from("hello")).to_string(),
             "\"hello\""
+        );
+    }
+
+    #[test]
+    fn json_value_display_string_escapes_special_chars() {
+        let value = JsonValue::String(String::from("a\"b\\c\td\ne"));
+        let display = value.to_string();
+        assert_eq!(
+            display, "\"a\\\"b\\\\c\\td\\ne\"",
+            "quote, backslash, and control chars must be escaped in Display output"
+        );
+
+        // The escaped Display output must itself be valid, round-trippable
+        // JSON -- an unescaped embedded '"' would terminate the string
+        // literal early (log/output injection), and raw control bytes
+        // produce non-conformant JSON.
+        let reparsed = JsonParser::parse(display.as_bytes());
+        assert_eq!(
+            reparsed,
+            Ok(value),
+            "escaped Display output must round-trip through the parser"
+        );
+    }
+
+    #[test]
+    fn json_value_display_object_escapes_key() {
+        let value = JsonValue::Object(alloc::vec![(String::from("a\"b"), JsonValue::Null)]);
+        let display = value.to_string();
+        assert_eq!(
+            display, "{\"a\\\"b\":null}",
+            "object keys must be escaped in Display output too"
+        );
+        let reparsed = JsonParser::parse(display.as_bytes());
+        assert_eq!(
+            reparsed,
+            Ok(value),
+            "escaped key must round-trip through the parser"
         );
     }
 

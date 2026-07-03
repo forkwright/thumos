@@ -527,7 +527,10 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         }
         Syscall::Execve => sys_execve(arg0, arg1, arg2),
         Syscall::Kill => signal::sys_kill(arg0, arg1),
-        Syscall::Getuid => process::current_uid(),
+        Syscall::Getuid => match process::current_uid() {
+            Some(uid) => uid,
+            None => ESRCH,
+        },
 
         // ---- Memory management ----
         Syscall::Brk => sys_brk(arg0),

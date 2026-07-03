@@ -2111,6 +2111,29 @@ mod tests {
     }
 
     #[test]
+    fn create_outbound_megolm_at_capacity_returns_session_capacity_reached() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+
+        for i in 0..MAX_MEGOLM_OUTBOUND {
+            let room = alloc::format!("!room{i}:example.com");
+            assert!(
+                crypto.create_outbound_megolm(&room).is_ok(),
+                "filling the outbound pool to capacity must succeed"
+            );
+        }
+        assert_eq!(crypto.megolm_outbound.len(), MAX_MEGOLM_OUTBOUND);
+
+        let overflow_room = alloc::format!("!room{MAX_MEGOLM_OUTBOUND}:example.com");
+        assert_eq!(
+            crypto.create_outbound_megolm(&overflow_room),
+            Err(CryptoError::SessionCapacityReached),
+            "a genuinely new room past capacity must be rejected, not silently evict"
+        );
+        assert_eq!(crypto.megolm_outbound.len(), MAX_MEGOLM_OUTBOUND);
+    }
+
+    #[test]
     fn inbound_megolm_session_lookup() {
         setup_test_rng();
         let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
@@ -2166,5 +2189,40 @@ mod tests {
             "capacity must still be available for a genuinely new session after duplicate resends"
         );
         assert_eq!(crypto.megolm_inbound().len(), 2);
+    }
+
+    #[test]
+    fn add_inbound_megolm_at_capacity_returns_session_capacity_reached() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let room = MatrixRoomId::new("!room:example.com").expect("valid test room id");
+
+        for i in 0..MAX_MEGOLM_INBOUND {
+            let session_id_byte = u8::try_from(i).expect("MAX_MEGOLM_INBOUND fits in u8 range");
+            let session = MegolmSession {
+                session_id: [session_id_byte; KEY_SIZE],
+                session_key: [0xFF; KEY_SIZE],
+                message_index: 0,
+                room_id: room.clone(),
+            };
+            assert!(
+                crypto.add_inbound_megolm(session).is_ok(),
+                "filling the inbound pool to capacity must succeed"
+            );
+        }
+        assert_eq!(crypto.megolm_inbound().len(), MAX_MEGOLM_INBOUND);
+
+        let overflow = MegolmSession {
+            session_id: [0xAA; KEY_SIZE],
+            session_key: [0xBB; KEY_SIZE],
+            message_index: 0,
+            room_id: room,
+        };
+        assert_eq!(
+            crypto.add_inbound_megolm(overflow),
+            Err(CryptoError::SessionCapacityReached),
+            "a genuinely new session_id past capacity must be rejected, not silently evict"
+        );
+        assert_eq!(crypto.megolm_inbound().len(), MAX_MEGOLM_INBOUND);
     }
 }
