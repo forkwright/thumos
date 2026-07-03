@@ -316,7 +316,10 @@ impl HeorteManager {
 
 /// Decompose Unix epoch seconds into `(hour, minute, year, month, day)`.
 ///
-/// Uses a simplified algorithm sufficient for display purposes.
+/// Uses a closed-form Gregorian calendar calculation (O(1) regardless of
+/// epoch magnitude) sufficient for display purposes. `year` saturates to
+/// `u16::MAX` for dates beyond the display range rather than overflowing
+/// or iterating (#366).
 pub(crate) fn decompose_epoch(epoch: u64) -> (u8, u8, u16, u8, u8) {
     if epoch == 0 {
         return (0, 0, 0, 0, 0);
@@ -326,39 +329,36 @@ pub(crate) fn decompose_epoch(epoch: u64) -> (u8, u8, u16, u8, u8) {
     let hour = (day_secs / SECS_PER_HOUR) as u8;
     let minute = ((day_secs % SECS_PER_HOUR) / SECS_PER_MIN) as u8;
 
-    let mut days = (epoch / SECS_PER_DAY) as u32;
-    let mut year: u16 = 1970;
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-
-    let leap = is_leap_year(year);
-    let month_days: [u32; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-    ];
-    let mut month: u8 = 1;
-    for &md in &month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-
-    let day = (days + 1) as u8;
+    let days = epoch / SECS_PER_DAY;
+    let (year, month, day) = civil_from_days(days);
     (hour, minute, year, month, day)
 }
 
-/// Check if a year is a leap year.
-const fn is_leap_year(year: u16) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+/// Convert days-since-Unix-epoch to a `(year, month, day)` civil date in
+/// O(1), replacing the year-by-year iteration that made `decompose_epoch`
+/// an O(years) DoS surface for an adversarial epoch -- up to ~11.7M
+/// iterations for a large `days` value (#366).
+///
+/// Closed-form Gregorian calendar algorithm (Howard Hinnant's
+/// `civil_from_days`, <https://howardhinnant.github.io/date_algorithms.html>).
+/// `days` is always non-negative here (`epoch / SECS_PER_DAY`), so the
+/// `i64` intermediate arithmetic never loses range for any `u64` epoch.
+/// `year` saturates to `u16::MAX` rather than overflowing for dates far
+/// beyond the display range.
+fn civil_from_days(days: u64) -> (u16, u8, u8) {
+    let z = (days as i64).saturating_add(719_468);
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+
+    let year = u16::try_from(y).unwrap_or(u16::MAX);
+    (year, m as u8, d as u8)
 }
 
 /// Format date as "YYYY-MM-DD" into a fixed buffer.
@@ -544,6 +544,19 @@ mod tests {
         // 2026-01-01 00:00:00 UTC = 1767225600
         let (h, m, y, mo, d) = decompose_epoch(1_767_225_600);
         assert_eq!((y, mo, d, h, m), (2026, 1, 1, 0, 0));
+    }
+
+    #[test]
+    fn decompose_epoch_large_value_completes_in_o1() {
+        // #366: an adversarial epoch near u64::MAX previously drove the
+        // year-by-year loop through millions of iterations. The closed-form
+        // civil_from_days() calculation returns in O(1) regardless of
+        // magnitude -- this test would hang under the old implementation
+        // and returns instantly under the fix.
+        let (_, _, year, month, day) = decompose_epoch(u64::MAX / 2);
+        assert_eq!(year, u16::MAX, "year must saturate rather than wrap or panic");
+        assert!((1..=12).contains(&month), "month must stay in valid range");
+        assert!((1..=31).contains(&day), "day must stay in valid range");
     }
 
     #[test]

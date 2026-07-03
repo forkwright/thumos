@@ -10,7 +10,7 @@ use sha2::Sha256;
 use snafu::Snafu;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::config::Config;
+use crate::config::{Config, MIN_PBKDF2_ITERATIONS};
 
 const SALT_LEN: usize = 32;
 const KEY_LEN: usize = 32;
@@ -25,6 +25,22 @@ pub(crate) enum Error {
     /// The iteration count passed to key derivation was zero.
     #[snafu(display("iterations must be non-zero"))]
     ZeroIterations {
+        /// Source location.
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    /// The persisted iteration count on an unseal attempt was below the
+    /// configured minimum -- indicates a tampered on-device header (#357).
+    #[snafu(display(
+        "stored iteration count {iterations} is below the minimum {min} \
+         (possible tampering)"
+    ))]
+    WeakIterations {
+        /// The rejected, tampered-low iteration count read from the slot.
+        iterations: u32,
+        /// The enforced minimum ([`crate::config::MIN_PBKDF2_ITERATIONS`]).
+        min: u32,
         /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
@@ -221,9 +237,22 @@ pub(crate) fn seal_key_with_config(
 /// # Errors
 ///
 /// Returns [`Error::KeyUnseal`] if the passphrase is wrong or the slot is corrupted.
-/// Returns [`Error::ZeroIterations`] if the stored iteration count is zero.
+/// Returns [`Error::WeakIterations`] if the stored iteration count is below
+/// [`crate::config::MIN_PBKDF2_ITERATIONS`] -- the seal path always clamps
+/// into range, so a weakened stored value indicates a tampered header (#357).
+/// Returns [`Error::ZeroIterations`] if the stored iteration count is zero
+/// (subsumed by the `WeakIterations` check above; kept for `derive_key`
+/// callers that bypass `unseal_key`).
 /// Returns [`Error::InvalidKey`] if key construction fails.
 pub(crate) fn unseal_key(slot: &KeySlot, passphrase: &[u8]) -> Result<[u8; KEY_LEN]> {
+    if slot.iterations < MIN_PBKDF2_ITERATIONS {
+        return WeakIterationsSnafu {
+            iterations: slot.iterations,
+            min: MIN_PBKDF2_ITERATIONS,
+        }
+        .fail();
+    }
+
     let derived = derive_key(passphrase, &slot.salt, slot.iterations)?;
 
     let opening_key =
@@ -333,6 +362,26 @@ mod tests {
         assert!(
             result.is_err(),
             "unseal with wrong passphrase must return an error"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unseal_rejects_tampered_low_iteration_slot() -> Result<()> {
+        // #357: an attacker who rewrites the persisted KeySlot header can
+        // set iterations=1, collapsing the PBKDF2 work factor. unseal_key
+        // must reject any stored count below MIN_PBKDF2_ITERATIONS before
+        // ever deriving a key, regardless of whether the passphrase is
+        // otherwise correct.
+        let primary_key = [0x77u8; KEY_LEN];
+        let passphrase = b"correct passphrase";
+        let mut slot = seal_key(&primary_key, passphrase)?;
+        slot.iterations = 1;
+
+        let result = unseal_key(&slot, passphrase);
+        assert!(
+            matches!(result, Err(Error::WeakIterations { iterations: 1, .. })),
+            "tampered slot with iterations=1 must be rejected as WeakIterations"
         );
         Ok(())
     }
