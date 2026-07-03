@@ -97,8 +97,12 @@ pub struct MicAuditEntry {
     pub start_tick: u64,
     /// Kernel tick (ms) when the mic was deactivated.
     ///
-    /// `0` if the session is still active (mic is currently on).
-    pub end_tick: u64,
+    /// `None` if the session is still active (mic is currently on). WHY
+    /// (finding 7): a bare `u64` with `0` doubling as "active" made a
+    /// session that genuinely ended at tick 0 (e.g. system boot), or a
+    /// caller passing `0` to `log_end`, indistinguishable from "still
+    /// running" -- `Option<u64>` has no such collision.
+    pub end_tick: Option<u64>,
     /// Audio session kind that triggered mic activation.
     pub session_kind: SessionKind,
     /// Identifier of the calling subsystem (e.g., "telephony", "voip").
@@ -117,7 +121,7 @@ impl MicAuditEntry {
     /// Return whether this session is still active (mic is on).
     #[must_use]
     pub(crate) fn is_active(&self) -> bool {
-        self.end_tick == 0
+        self.end_tick.is_none()
     }
 
     /// Return the duration of the session in milliseconds.
@@ -125,11 +129,7 @@ impl MicAuditEntry {
     /// Returns `None` if the session is still active.
     #[must_use]
     pub(crate) fn duration_ms(&self) -> Option<u64> {
-        if self.is_active() {
-            None
-        } else {
-            Some(self.end_tick.saturating_sub(self.start_tick))
-        }
+        self.end_tick.map(|end| end.saturating_sub(self.start_tick))
     }
 }
 
@@ -203,7 +203,7 @@ impl MicAuditLog {
         let entry = MicAuditEntry {
             id,
             start_tick: tick_ms,
-            end_tick: 0,
+            end_tick: None,
             session_kind: kind,
             caller: caller_buf,
             caller_len: copy_len as u8,
@@ -227,7 +227,7 @@ impl MicAuditLog {
             return Err(MicAuditError::AlreadyEnded);
         }
 
-        entry.end_tick = tick_ms;
+        entry.end_tick = Some(tick_ms);
         Ok(())
     }
 
@@ -298,7 +298,10 @@ mod tests {
         let entry = &log.entries()[0];
         assert_eq!(entry.id, 1);
         assert_eq!(entry.start_tick, 1000);
-        assert_eq!(entry.end_tick, 0, "active session must have end_tick 0");
+        assert_eq!(
+            entry.end_tick, None,
+            "active session must have end_tick None"
+        );
         assert_eq!(entry.session_kind, SessionKind::VoiceCall);
         assert_eq!(entry.caller(), b"telephony");
         assert!(entry.is_active(), "entry must be active before log_end");
@@ -312,7 +315,7 @@ mod tests {
         assert!(result.is_ok(), "log_end must succeed");
 
         let entry = &log.entries()[0];
-        assert_eq!(entry.end_tick, 5000);
+        assert_eq!(entry.end_tick, Some(5000));
         assert!(!entry.is_active(), "entry must not be active after log_end");
         assert_eq!(
             entry.duration_ms(),
@@ -344,6 +347,25 @@ mod tests {
             Err(MicAuditError::AlreadyEnded),
             "ending an already-ended entry must return AlreadyEnded"
         );
+    }
+
+    #[test]
+    fn log_end_at_tick_zero_is_not_confused_with_active() {
+        // finding 7: a session that legitimately ends at tick 0 must not
+        // be reported as still active -- the old end_tick: u64 sentinel
+        // (0 == "active") made this ambiguous. end_tick: Option<u64> has
+        // no such collision.
+        let mut log = MicAuditLog::new();
+        let id = log.log_start(SessionKind::VoiceCall, b"telephony", 0);
+        log.log_end(id, 0).ok();
+
+        let entry = &log.entries()[0];
+        assert!(
+            !entry.is_active(),
+            "a session ended at tick 0 must not read as active"
+        );
+        assert_eq!(entry.end_tick, Some(0));
+        assert_eq!(entry.duration_ms(), Some(0));
     }
 
     #[test]
