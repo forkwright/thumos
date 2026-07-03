@@ -443,6 +443,23 @@ pub struct Telephony<T: ModemTransport> {
     init_step: u8,
 }
 
+/// Classify a simple OK/ERROR AT command result into a `TelephonyError`,
+/// preserving the modem's own CME/CMS error code and the transport's own
+/// error type instead of collapsing everything to one generic value
+/// (issue #282 findings 16/17).
+fn classify_simple_result(
+    result: Result<AtResponse, TelephonyError>,
+) -> Result<(), TelephonyError> {
+    match result {
+        Ok(AtResponse::Ok) => Ok(()),
+        Ok(AtResponse::CmeError(code) | AtResponse::CmsError(code)) => {
+            Err(TelephonyError::CmeError(code))
+        }
+        Ok(AtResponse::Error) => Err(TelephonyError::ModemError),
+        Err(e) => Err(e),
+    }
+}
+
 impl<T: ModemTransport> Telephony<T> {
     /// Create a new telephony subsystem with the given transport.
     #[must_use]
@@ -540,28 +557,25 @@ impl<T: ModemTransport> Telephony<T> {
 
         // Step 1: Verify modem responds.
         let result = send_simple(&mut self.transport, "AT", 5000);
-        match result {
-            Ok(AtResponse::Ok) => {}
-            Ok(AtResponse::Error | AtResponse::CmeError(_) | AtResponse::CmsError(_)) | Err(_) => {
-                self.modem_state = ModemState::Error(TelephonyError::Timeout);
-                return Err(TelephonyError::Timeout);
-            }
+        if let Err(e) = classify_simple_result(result) {
+            self.modem_state = ModemState::Error(e);
+            return Err(e);
         }
         self.init_step = 1;
 
         // Step 2: Disable echo.
         let result = send_simple(&mut self.transport, "ATE0", 2000);
-        if !matches!(result, Ok(AtResponse::Ok)) {
-            self.modem_state = ModemState::Error(TelephonyError::ModemError);
-            return Err(TelephonyError::ModemError);
+        if let Err(e) = classify_simple_result(result) {
+            self.modem_state = ModemState::Error(e);
+            return Err(e);
         }
         self.init_step = 2;
 
         // Step 3: Full functionality mode.
         let result = send_simple(&mut self.transport, "AT+CFUN=1", 5000);
-        if !matches!(result, Ok(AtResponse::Ok)) {
-            self.modem_state = ModemState::Error(TelephonyError::ModemError);
-            return Err(TelephonyError::ModemError);
+        if let Err(e) = classify_simple_result(result) {
+            self.modem_state = ModemState::Error(e);
+            return Err(e);
         }
         self.init_step = 3;
 
@@ -584,13 +598,29 @@ impl<T: ModemTransport> Telephony<T> {
                     }
                 }
             }
+            Ok((AtResponse::Ok, _, _)) => {
+                // OK with no info line -- the modem accepted the command but
+                // sent no +CPIN status; a malformed/unparseable response, not
+                // evidence the SIM specifically needs a PIN (issue #282
+                // finding 18).
+                self.modem_state = ModemState::Error(TelephonyError::ParseError);
+                return Err(TelephonyError::ParseError);
+            }
             Ok((AtResponse::CmeError(code), _, _)) => {
                 self.modem_state = ModemState::Error(TelephonyError::CmeError(code));
                 return Err(TelephonyError::CmeError(code));
             }
-            _ => {
-                self.modem_state = ModemState::Error(TelephonyError::SimNotReady);
-                return Err(TelephonyError::SimNotReady);
+            Ok((AtResponse::CmsError(code), _, _)) => {
+                self.modem_state = ModemState::Error(TelephonyError::CmeError(code));
+                return Err(TelephonyError::CmeError(code));
+            }
+            Ok((AtResponse::Error, _, _)) => {
+                self.modem_state = ModemState::Error(TelephonyError::ModemError);
+                return Err(TelephonyError::ModemError);
+            }
+            Err(e) => {
+                self.modem_state = ModemState::Error(e);
+                return Err(e);
             }
         }
         self.init_step = 4;
@@ -1007,6 +1037,49 @@ impl ModemTransport for CcciModemTransport {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn classify_simple_result_preserves_cme_cms_code_and_transport_error() {
+        assert_eq!(classify_simple_result(Ok(AtResponse::Ok)), Ok(()));
+        assert_eq!(
+            classify_simple_result(Ok(AtResponse::Error)),
+            Err(TelephonyError::ModemError)
+        );
+        assert_eq!(
+            classify_simple_result(Ok(AtResponse::CmeError(42))),
+            Err(TelephonyError::CmeError(42))
+        );
+        assert_eq!(
+            classify_simple_result(Ok(AtResponse::CmsError(7))),
+            Err(TelephonyError::CmeError(7))
+        );
+        assert_eq!(
+            classify_simple_result(Err(TelephonyError::TransportError)),
+            Err(TelephonyError::TransportError),
+            "a genuine transport error must not be relabeled as Timeout"
+        );
+    }
+
+    #[test]
+    fn cpin_cms_error_preserves_code_not_sim_not_ready() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // Step 1: AT
+        mock.queue_ok(); // Step 2: ATE0
+        mock.queue_ok(); // Step 3: AT+CFUN=1
+        // Step 4: AT+CPIN? -> +CMS ERROR (SMS-storage-class failure, not a SIM
+        // PIN state) -- the old wildcard `_ =>` arm mapped this to
+        // SimNotReady, discarding the code (issue #282 finding 18).
+        mock.queue_response(b"+CMS ERROR: 302");
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert_eq!(
+            result,
+            Err(TelephonyError::CmeError(302)),
+            "a +CMS ERROR on AT+CPIN? must preserve its code, not collapse to SimNotReady"
+        );
+    }
+
     use super::*;
 
     /// Helper: create a mock transport pre-loaded for a full init sequence.
