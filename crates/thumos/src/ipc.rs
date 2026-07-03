@@ -128,6 +128,14 @@ fn validate_pid(pid: Pid) -> Result<usize, i32> {
 
 /// Send a message to a process. Non-blocking: returns false if inbox full
 /// or the target PID is invalid.
+///
+/// NOTE: this primitive performs no capability/authorization check by
+/// design -- it is also used by trusted kernel-internal callers (e.g.
+/// `process::notify_fault`, which relays a fault report to PID 0 on behalf
+/// of the faulting process). The untrusted-facing authorization gate for
+/// PID 0 as a target lives at the syscall boundary instead: see
+/// `syscall::dispatch`'s `Syscall::Send` arm and
+/// `capability::Capabilities::IPC_INIT` (#371).
 pub(crate) fn send(to: Pid, mut msg: Message) -> bool {
     let idx = match validate_pid(to) {
         Ok(i) => i,

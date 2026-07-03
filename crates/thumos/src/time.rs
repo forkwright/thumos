@@ -64,10 +64,46 @@ pub(crate) static mut REALTIME_OFFSET_SECS: u64 = 1_735_603_200;
 // Epoch offset update
 // ---------------------------------------------------------------------------
 
+/// Earliest epoch accepted as a plausible external time-source update.
+///
+/// WHY 2020-01-01: comfortably before this kernel's earliest possible
+/// deployment, so it never rejects a legitimate GPS/NTP/carrier time while
+/// still bounding a hostile modem RTC that reports epoch 0 or another
+/// implausible pre-boot date (#374).
+const MIN_VALID_EPOCH: u64 = 1_577_836_800; // 2020-01-01T00:00:00Z
+
+/// Latest epoch accepted as a plausible external time-source update.
+///
+/// WHY 2100-01-01: generous upper bound -- no legitimate time source should
+/// ever report a date this far out. A hostile modem RTC setting the clock
+/// to year 2500+ would corrupt certificate validity checks and audit-log
+/// ordering (#374).
+const MAX_VALID_EPOCH: u64 = 4_102_444_800; // 2100-01-01T00:00:00Z
+
+/// Compute the new `REALTIME_OFFSET_SECS` value for a candidate wall-clock
+/// update, or `None` if `unix_now_secs` falls outside the plausible epoch
+/// window `[MIN_VALID_EPOCH, MAX_VALID_EPOCH]`.
+///
+/// Pure function (no static access), deliberately kept free of the
+/// `#[cfg(not(test))]` gating that `set_realtime_offset` carries, so the
+/// validation and offset arithmetic are host-testable without the
+/// ARM-only timer read (#374).
+#[must_use]
+fn compute_realtime_offset(unix_now_secs: u64, elapsed_secs: u64) -> Option<u64> {
+    if !(MIN_VALID_EPOCH..=MAX_VALID_EPOCH).contains(&unix_now_secs) {
+        return None;
+    }
+    Some(unix_now_secs.saturating_sub(elapsed_secs))
+}
+
 /// Update the wall-clock boot epoch from an external source (e.g., modem RTC).
 ///
 /// `unix_now_secs` is the current Unix timestamp in seconds. This function
 /// back-calculates the boot epoch by subtracting the elapsed monotonic time.
+/// Rejects `unix_now_secs` outside `[MIN_VALID_EPOCH, MAX_VALID_EPOCH]` and
+/// leaves `REALTIME_OFFSET_SECS` unchanged -- a hostile modem RTC (the
+/// lowest-trust source per the clock hierarchy) must not be able to set the
+/// clock to an implausible date (#374).
 ///
 /// # Safety
 ///
@@ -78,9 +114,12 @@ pub(crate) static mut REALTIME_OFFSET_SECS: u64 = 1_735_603_200;
 #[cfg(not(test))]
 pub unsafe fn set_realtime_offset(unix_now_secs: u64) {
     let elapsed_secs = monotonic_secs();
+    let Some(new_offset) = compute_realtime_offset(unix_now_secs, elapsed_secs) else {
+        return;
+    };
     // SAFETY: see function-level safety doc; caller ensures exclusion.
     unsafe {
-        REALTIME_OFFSET_SECS = unix_now_secs.saturating_sub(elapsed_secs);
+        REALTIME_OFFSET_SECS = new_offset;
     }
 }
 
@@ -352,6 +391,44 @@ mod tests {
         assert!(
             offset >= min_epoch,
             "boot epoch offset must be >= 2025-01-01 (got {offset})"
+        );
+    }
+
+    /// #374: a plausible epoch within the accepted window computes the
+    /// expected offset (unix_now_secs - elapsed_secs).
+    #[test]
+    fn compute_realtime_offset_accepts_plausible_window() {
+        assert_eq!(
+            compute_realtime_offset(MIN_VALID_EPOCH, 0),
+            Some(MIN_VALID_EPOCH),
+            "lower bound must be accepted"
+        );
+        assert_eq!(
+            compute_realtime_offset(MAX_VALID_EPOCH, 100),
+            Some(MAX_VALID_EPOCH - 100),
+            "upper bound must be accepted, offset subtracts elapsed time"
+        );
+    }
+
+    /// #374: epoch 0 (1970, a hostile modem RTC's most common failure
+    /// value) must be rejected -- the offset is left unchanged (None).
+    #[test]
+    fn compute_realtime_offset_rejects_epoch_zero() {
+        assert_eq!(
+            compute_realtime_offset(0, 0),
+            None,
+            "epoch 0 (1970) must be rejected as implausible"
+        );
+    }
+
+    /// #374: a hostile modem RTC reporting year ~2200 must be rejected.
+    #[test]
+    fn compute_realtime_offset_rejects_far_future() {
+        let year_2200_epoch = MAX_VALID_EPOCH + 100 * 365 * 86_400;
+        assert_eq!(
+            compute_realtime_offset(year_2200_epoch, 0),
+            None,
+            "year 2200 must be rejected"
         );
     }
 

@@ -293,11 +293,38 @@ pub(crate) fn build_ntp_request() -> [u8; NTP_PACKET_SIZE] {
 /// - Bytes 40-43: seconds since NTP epoch (1900-01-01)
 /// - Bytes 44-47: fractional seconds
 ///
-/// Returns the transmit timestamp as Unix epoch seconds, or `None`
-/// if the packet is too short or the timestamp is zero.
+/// Validates packet structure before trusting the timestamp (#367): mode
+/// must be 4 (server response), the Leap Indicator must not be 3
+/// (unsynchronized), and stratum must be in `1..16` (0 = kiss-o'-death,
+/// 16 = unsynchronized). This is structural validation only -- NTP
+/// authentication (NTS) is future work per the module doc.
+///
+/// Returns the transmit timestamp as Unix epoch seconds, or `None` if the
+/// packet is too short, structurally invalid, or the timestamp is zero.
 #[must_use]
 pub(crate) fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
     if packet.len() < NTP_PACKET_SIZE {
+        return None;
+    }
+
+    // Mode (bits [2:0] of byte 0) must be 4 (server response). Rejects
+    // client/broadcast/reserved-mode packets an adversary could replay (#367).
+    if packet[0] & 0x07 != 4 {
+        return None;
+    }
+
+    // Leap Indicator (bits [7:6] of byte 0) of 3 signals the server clock is
+    // unsynchronized ("alarm condition" per RFC 5905 SS7.3) and must be
+    // discarded rather than trusted (#367).
+    if packet[0] >> 6 == 3 {
+        return None;
+    }
+
+    // Stratum (byte 1): 0 is kiss-o'-death (server refusing service, no
+    // valid time attached), 16 is unsynchronized. Valid strata are 1-15;
+    // both boundary conditions must be rejected (#367).
+    let stratum = packet[1];
+    if stratum == 0 || stratum >= 16 {
         return None;
     }
 
@@ -525,6 +552,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn get_wall_clock_ntp_positive_offset_path() {
+        // #376: the NTP code path (as opposed to GPS) was previously
+        // untested by get_wall_clock -- this exercises it directly.
+        let mut clock = ClockManager::new();
+        let accepted = clock.update_from_ntp(1_700_000_000, 0);
+        assert!(accepted, "NTP must be accepted when no GPS is present");
+
+        let wall = clock.get_wall_clock(5_000); // 5 seconds later
+        assert_eq!(
+            wall,
+            1_700_000_005,
+            "wall clock must be monotonic_secs + ntp offset"
+        );
+    }
+
+    #[test]
+    fn get_wall_clock_ntp_large_negative_offset_wraps_to_huge_timestamp() {
+        // #376: documents the current (unguarded) behavior of the NTP
+        // path. A hostile NTP server supplying a large-negative offset
+        // drives get_wall_clock() to silently wrap to a near-u64::MAX
+        // timestamp via the `as u64` cast rather than erroring or
+        // clamping. This is the exact silent-wraparound surface #376
+        // exists to make visible, as a regression guard: a future
+        // plausibility guard (companion to #367's packet validation)
+        // should make this test's expected value change to a bounded
+        // result, at which point this assertion should be updated
+        // deliberately rather than silently.
+        let mut clock = ClockManager::new();
+        clock.ntp_offset = Some(i64::MIN);
+        clock.ntp_update_tick = 0;
+
+        let wall = clock.get_wall_clock(0);
+        assert_eq!(
+            wall,
+            i64::MIN as u64,
+            "unguarded NTP path must wrap exactly as documented (#376)"
+        );
+    }
+
     // -- NTP packet tests --
 
     #[test]
@@ -545,6 +612,10 @@ mod tests {
     #[test]
     fn parse_ntp_response_extracts_timestamp() {
         let mut packet = [0u8; 48];
+        // LI=0, VN=4, Mode=4 (server response) -- required for the packet to
+        // pass the structural validation added for #367.
+        packet[0] = 0x24;
+        packet[1] = 1; // stratum 1 (primary reference) -- valid, non-zero, <16.
         // Set transmit timestamp at bytes 40-43.
         // NTP epoch value = Unix epoch + NTP_UNIX_OFFSET
         let unix_time: u64 = 1_700_000_000;
@@ -556,6 +627,72 @@ mod tests {
             result,
             Some(unix_time),
             "must extract Unix epoch from NTP timestamp"
+        );
+    }
+
+    #[test]
+    fn parse_ntp_response_rejects_wrong_mode() {
+        // #367: mode bits [2:0] of byte 0 must be 4 (server response).
+        let mut packet = [0u8; 48];
+        packet[0] = 0x03; // LI=0, VN=0, Mode=3 (client, not server)
+        packet[1] = 1;
+        let unix_time: u64 = 1_700_000_000;
+        let ntp_time = (unix_time + NTP_UNIX_OFFSET) as u32;
+        packet[40..44].copy_from_slice(&ntp_time.to_be_bytes());
+        assert_eq!(
+            parse_ntp_response(&packet),
+            None,
+            "non-server mode must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_ntp_response_rejects_alarm_leap_indicator() {
+        // #367: LI = 3 (bits [7:6] of byte 0) signals an unsynchronized
+        // server clock and must be discarded.
+        let mut packet = [0u8; 48];
+        packet[0] = 0xE4; // LI=3, VN=4, Mode=4
+        packet[1] = 1;
+        let unix_time: u64 = 1_700_000_000;
+        let ntp_time = (unix_time + NTP_UNIX_OFFSET) as u32;
+        packet[40..44].copy_from_slice(&ntp_time.to_be_bytes());
+        assert_eq!(
+            parse_ntp_response(&packet),
+            None,
+            "LI=3 (alarm/unsynchronized) must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_ntp_response_rejects_kiss_of_death_stratum() {
+        // #367: stratum 0 is kiss-o'-death -- the server is refusing
+        // service and the packet carries no valid time.
+        let mut packet = [0u8; 48];
+        packet[0] = 0x24; // LI=0, VN=4, Mode=4
+        packet[1] = 0; // stratum 0
+        let unix_time: u64 = 1_700_000_000;
+        let ntp_time = (unix_time + NTP_UNIX_OFFSET) as u32;
+        packet[40..44].copy_from_slice(&ntp_time.to_be_bytes());
+        assert_eq!(
+            parse_ntp_response(&packet),
+            None,
+            "stratum 0 (kiss-o'-death) must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_ntp_response_rejects_unsynchronized_stratum() {
+        // #367: stratum 16 means the server itself is unsynchronized.
+        let mut packet = [0u8; 48];
+        packet[0] = 0x24; // LI=0, VN=4, Mode=4
+        packet[1] = 16; // stratum 16
+        let unix_time: u64 = 1_700_000_000;
+        let ntp_time = (unix_time + NTP_UNIX_OFFSET) as u32;
+        packet[40..44].copy_from_slice(&ntp_time.to_be_bytes());
+        assert_eq!(
+            parse_ntp_response(&packet),
+            None,
+            "stratum 16 (unsynchronized) must be rejected"
         );
     }
 
