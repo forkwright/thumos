@@ -92,6 +92,14 @@ const AUDIO_SAMPLE_RATE_HZ: u32 = 16_000;
 /// Audio channels for STT capture.
 const AUDIO_CHANNELS: u8 = 1;
 
+/// Maximum buffered audio bytes accumulated by `feed_audio` before the
+/// buffer is drained via `take_audio_frame`. At the 16 kHz mono 16-bit STT
+/// capture rate (32 KB/s), 256 KiB is 8 seconds of un-drained audio —
+/// generous headroom for a slow drain cycle on a 1 GB device without
+/// leaving the slab allocator exposed to unbounded growth from a stuck
+/// audio callback (#363).
+const MAX_AUDIO_BUFFER_BYTES: usize = 256 * 1024;
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -111,7 +119,8 @@ pub enum EkphrasisError {
     PayloadTooLarge,
     /// The transcription text exceeds the maximum length.
     TextTooLong,
-    /// Audio capture failed (mic power or codec error).
+    /// Audio capture failed: mic power/codec error, or the buffered audio
+    /// reached [`MAX_AUDIO_BUFFER_BYTES`] before being drained (#363).
     AudioCaptureFailed,
     /// The ekphrasis state machine is in an invalid state for the operation.
     InvalidState {
@@ -598,10 +607,15 @@ impl Ekphrasis {
     /// # Errors
     ///
     /// Returns [`EkphrasisError::InvalidState`] if not in `Recording`
-    /// or `Streaming` state.
+    /// or `Streaming` state. Returns [`EkphrasisError::AudioCaptureFailed`]
+    /// if appending `data` would exceed [`MAX_AUDIO_BUFFER_BYTES`] — the
+    /// caller should stop capture (#363).
     pub(crate) fn feed_audio(&mut self, data: &[u8]) -> Result<(), EkphrasisError> {
         match &self.state {
             EkphrasisState::Recording | EkphrasisState::Streaming => {
+                if self.audio_buffer.len().saturating_add(data.len()) > MAX_AUDIO_BUFFER_BYTES {
+                    return Err(EkphrasisError::AudioCaptureFailed);
+                }
                 self.audio_buffer.extend_from_slice(data);
                 Ok(())
             }
@@ -1461,6 +1475,26 @@ Let me know if you need anything else."#;
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         let result = ek.feed_audio(&[0x01]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn feed_audio_rejects_beyond_max_buffer() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording();
+
+        // Fill exactly to the cap.
+        let chunk = alloc::vec![0u8; MAX_AUDIO_BUFFER_BYTES];
+        assert!(ek.feed_audio(&chunk).is_ok(), "filling to the cap must succeed");
+        assert_eq!(ek.audio_buffer.len(), MAX_AUDIO_BUFFER_BYTES);
+
+        // One more byte must be rejected, and the buffer must not grow further.
+        let result = ek.feed_audio(&[0x01]);
+        assert_eq!(result, Err(EkphrasisError::AudioCaptureFailed));
+        assert_eq!(
+            ek.audio_buffer.len(), MAX_AUDIO_BUFFER_BYTES,
+            "rejected feed must not grow the buffer past the cap"
+        );
     }
 
     #[test]

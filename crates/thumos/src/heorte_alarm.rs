@@ -5,7 +5,7 @@
 
 // Items in this module are re-exported from heorte.rs.
 
-use crate::heorte::{SECS_PER_DAY, SECS_PER_HOUR, SECS_PER_MIN};
+use crate::heorte::{utf8_truncate_len, SECS_PER_DAY, SECS_PER_HOUR, SECS_PER_MIN};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -80,7 +80,7 @@ impl Alarm {
         repeat_days: u8,
     ) -> Self {
         let mut label = [0u8; MAX_LABEL_LEN];
-        let len = label_bytes.len().min(MAX_LABEL_LEN);
+        let len = utf8_truncate_len(label_bytes, MAX_LABEL_LEN);
         label[..len].copy_from_slice(&label_bytes[..len]);
         Self {
             id,
@@ -181,6 +181,23 @@ mod tests {
         let alarm = Alarm::new(1, 6, 30, b"Wake up", false, 0);
         let epoch_630 = 23400;
         assert!(!alarm.should_fire(epoch_630), "disabled alarm must not fire");
+    }
+
+    #[test]
+    fn alarm_label_truncation_preserves_valid_utf8_prefix() {
+        // 31 ASCII bytes + a 2-byte codepoint straddling MAX_LABEL_LEN (32):
+        // pre-fix, a byte-count truncation would cut mid-codepoint and
+        // label_str() would silently return "" instead of the 31 valid
+        // 'A' characters (#359).
+        let mut long_label = alloc::vec![b'A'; 31];
+        long_label.extend_from_slice("é".as_bytes());
+        let alarm = Alarm::new(1, 6, 30, &long_label, true, 0);
+        assert_eq!(
+            alarm.label_len as usize, 31,
+            "truncation must back off to the last full codepoint, not split it"
+        );
+        assert_eq!(alarm.label_str().len(), 31);
+        assert!(alarm.label_str().chars().all(|c| c == 'A'));
     }
 
     #[test]

@@ -579,6 +579,11 @@ pub(crate) fn exit_cleanup(status: i32) {
                 page::free_page(base + i * page::PAGE_SIZE);
             }
         }
+        // WHY: a self-exiting process cannot itself be blocked in
+        // sys_futex_wait (blocked processes do not run), but sweep
+        // defensively so every Dead-transition path shares the same
+        // invariant (#364).
+        crate::futex::free_waiters_for_pid(u32::from(CURRENT));
     }
 }
 
@@ -1036,6 +1041,11 @@ pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
         // SIGKILL always terminates — handler cannot override.
         if sig == Signal::Sigkill {
             proc.state = State::Dead;
+            // WHY: a process killed while blocked in sys_futex_wait would
+            // otherwise leave its waiter slot permanently occupied — nothing
+            // wakes a dead process, and sys_futex_wake only frees a slot on
+            // a matching wake (#364).
+            crate::futex::free_waiters_for_pid(u32::from(pid));
             return 0;
         }
         match proc.signal_state.action(sig) {
@@ -1046,6 +1056,8 @@ pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
             SignalAction::Default => match sig.default_action() {
                 crate::signal::DefaultAction::Terminate => {
                     proc.state = State::Dead;
+                    // WHY: see the SIGKILL branch above (#364).
+                    crate::futex::free_waiters_for_pid(u32::from(pid));
                 }
                 crate::signal::DefaultAction::Ignore => {}
             },
@@ -2602,6 +2614,55 @@ mod tests {
 
             let state = get_state(0);
             assert_eq!(state, Some(State::Running), "PID 0 must stay alive");
+        }
+    }
+
+    #[test]
+    fn sigkill_frees_futex_waiter_slots_for_dying_pid() {
+        // SAFETY: test-only; reset_all reinitialises global state. nextest
+        // runs each test in its own process, so FUTEX_WAITERS also starts
+        // zeroed here (#364).
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            let child_pid = fork().unwrap_or_default();
+
+            // Simulate the child being blocked in sys_futex_wait when
+            // killed — seed a waiter slot for it directly, bypassing the
+            // host-untestable #[cfg(not(test))] block path in
+            // sys_futex_wait.
+            crate::futex::insert_waiter_for_test(0x1000, u32::from(child_pid));
+            assert!(
+                crate::futex::has_waiter_for_pid(u32::from(child_pid)),
+                "waiter must be seeded before the kill"
+            );
+
+            let ret = deliver_signal_to(child_pid, crate::signal::Signal::Sigkill);
+            assert_eq!(ret, 0, "SIGKILL delivery should succeed");
+
+            assert!(
+                !crate::futex::has_waiter_for_pid(u32::from(child_pid)),
+                "SIGKILL must free the dying process's futex waiter slot"
+            );
         }
     }
 

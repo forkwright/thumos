@@ -165,6 +165,47 @@ pub fn sys_futex_wake(addr: u32, max_wake: u32) -> u32 {
     woken
 }
 
+/// Free all waiter slots belonging to a process that has died — via normal
+/// exit, SIGKILL, default-action termination, or a fault (#364).
+///
+/// Without this sweep, a process killed while blocked in `sys_futex_wait`
+/// leaves its slot permanently occupied: `sys_futex_wake` only frees a slot
+/// on a matching wake, and a dead process can never be woken by anything.
+/// Call from every path that transitions a PCB to `State::Dead`.
+pub(crate) fn free_waiters_for_pid(pid: u32) {
+    // SAFETY: FUTEX_WAITERS is a static mut; addr_of_mut! avoids an
+    // intermediate reference. Single-core cooperative kernel ensures
+    // exclusive access here.
+    let waiters = unsafe { &mut *core::ptr::addr_of_mut!(FUTEX_WAITERS) };
+    for slot in waiters.iter_mut() {
+        if slot.as_ref().is_some_and(|w| w.pid == pid) {
+            *slot = None;
+        }
+    }
+}
+
+/// Insert a waiter directly, bypassing `sys_futex_wait`'s
+/// `#[cfg(not(test))]`-gated block path (that path requires `crate::process`,
+/// which is not compiled under test). Test-only seam for exercising
+/// process-death cleanup from other modules' test suites.
+#[cfg(test)]
+pub(crate) fn insert_waiter_for_test(addr: u32, pid: u32) {
+    // SAFETY: test-only; nextest gives each test its own process, so this
+    // static starts zeroed and is not shared across tests.
+    let waiters = unsafe { &mut *core::ptr::addr_of_mut!(FUTEX_WAITERS) };
+    if let Some(slot) = waiters.iter_mut().find(|s| s.is_none()) {
+        *slot = Some(FutexWaiter { addr, pid });
+    }
+}
+
+/// Whether any waiter slot currently belongs to `pid`. Test-only.
+#[cfg(test)]
+pub(crate) fn has_waiter_for_pid(pid: u32) -> bool {
+    // SAFETY: test-only; see insert_waiter_for_test.
+    let waiters = unsafe { &*core::ptr::addr_of!(FUTEX_WAITERS) };
+    waiters.iter().any(|s| s.as_ref().is_some_and(|w| w.pid == pid))
+}
+
 /// Dispatch futex syscall.
 ///
 /// # Arguments
@@ -254,5 +295,32 @@ mod tests {
         // FUTEX_WAKE with null addr returns 0 (no waiters at null).
         let result_wake = sys_futex_wake(0, 1);
         assert_eq!(result_wake, 0);
+    }
+
+    #[test]
+    fn free_waiters_for_pid_clears_only_matching_slots() {
+        reset_waiters();
+        // SAFETY: test-only direct write to the private static, mirroring
+        // reset_waiters' own access pattern, to seed waiters without
+        // depending on the #[cfg(not(test))] block path in sys_futex_wait.
+        unsafe {
+            let waiters = &mut *core::ptr::addr_of_mut!(FUTEX_WAITERS);
+            waiters[0] = Some(FutexWaiter { addr: 0x1000, pid: 4 });
+            waiters[1] = Some(FutexWaiter { addr: 0x2000, pid: 7 });
+        }
+
+        free_waiters_for_pid(4);
+
+        // SAFETY: same as above.
+        unsafe {
+            let waiters = &*core::ptr::addr_of!(FUTEX_WAITERS);
+            assert!(waiters[0].is_none(), "dead pid's waiter slot must be freed");
+            assert!(waiters[1].is_some(), "other pids' waiter slots must be untouched");
+            assert_eq!(waiters[1].as_ref().map(|w| w.pid), Some(7));
+            assert!(
+                waiters.iter().any(|s| s.is_none()),
+                "a freed slot must be available for reuse"
+            );
+        }
     }
 }
