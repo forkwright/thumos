@@ -263,16 +263,22 @@ impl SimManager {
         match result {
             AtResponse::Ok if info_len > 0 => {
                 let line = &info_line[..info_len];
-                if let Some((rssi_raw, ber)) = telephony::parse_csq_response(line) {
-                    let dbm = rssi_to_dbm(rssi_raw);
-                    self.signal_info = SignalInfo {
-                        rssi: dbm,
-                        bars: dbm_to_bars(dbm),
-                        ber,
-                        rssi_raw,
-                    };
+                // WHY (finding 11): a +CSQ line that fails to parse must
+                // surface as an error, not silently return Ok with the
+                // previous (possibly stale) signal_info left unchanged.
+                match telephony::parse_csq_response(line) {
+                    Some((rssi_raw, ber)) => {
+                        let dbm = rssi_to_dbm(rssi_raw);
+                        self.signal_info = SignalInfo {
+                            rssi: dbm,
+                            bars: dbm_to_bars(dbm),
+                            ber,
+                            rssi_raw,
+                        };
+                        Ok(&self.signal_info)
+                    }
+                    None => Err(TelephonyError::ParseError),
                 }
-                Ok(&self.signal_info)
             }
             AtResponse::Ok => Ok(&self.signal_info),
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
@@ -283,12 +289,19 @@ impl SimManager {
 
     /// Poll signal strength if the polling interval has elapsed.
     ///
-    /// Returns the updated signal info if a poll was performed.
+    /// Returns `None` if the polling interval has not yet elapsed (no poll
+    /// was attempted). Returns `Some(Ok(..))` with the updated signal info
+    /// if the poll succeeded, or `Some(Err(..))` if a poll was attempted
+    /// but the modem query failed. WHY (finding 12): collapsing a failed
+    /// poll into the same `None` used for "not time yet" (via `.ok()`)
+    /// made a modem error indistinguishable from routine throttling,
+    /// mirroring the fix already applied to `Telephony::poll_signal`
+    /// (issue #282 finding 3).
     pub(crate) fn poll_signal<T: ModemTransport>(
         &mut self,
         transport: &mut T,
         current_tick: u64,
-    ) -> Option<&SignalInfo> {
+    ) -> Option<Result<&SignalInfo, TelephonyError>> {
         if let Some(last) = self.last_poll_tick {
             if current_tick.saturating_sub(last) < SIGNAL_POLL_INTERVAL_MS {
                 return None;
@@ -296,7 +309,7 @@ impl SimManager {
         }
 
         self.last_poll_tick = Some(current_tick);
-        self.query_signal(transport).ok()
+        Some(self.query_signal(transport))
     }
 
     // -----------------------------------------------------------------------
@@ -570,6 +583,22 @@ mod tests {
         transport.queue_info_ok(b"+CSQ: 25,0");
         let result = sim.poll_signal(&mut transport, 31_000);
         assert!(result.is_some(), "poll after interval must trigger");
+    }
+
+    #[test]
+    fn poll_signal_distinguishes_modem_error_from_interval_skip() {
+        // finding 12: a failed poll (modem/transport error) must be
+        // visible as Some(Err(..)), not collapsed into the same None used
+        // for "too soon to poll again".
+        let mut transport = MockModemTransport::new();
+        transport.send_ok = false;
+        let mut sim = SimManager::new();
+
+        let result = sim.poll_signal(&mut transport, 0);
+        assert!(
+            matches!(result, Some(Err(_))),
+            "a failed poll must surface as Some(Err(..)), not None"
+        );
     }
 
     #[test]

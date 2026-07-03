@@ -13,7 +13,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::block::{BLOCK_SIZE, BlockDevice};
+use crate::block::{BLOCK_SIZE, BlockDevice, SECTORS_PER_BLOCK};
 use crate::cache::BlockCache;
 use crate::lfs_imap::LfsError;
 
@@ -209,7 +209,11 @@ pub(crate) fn write_checkpoint(
 /// # Errors
 ///
 /// - [`LfsError::BlockIo`] if the block read fails.
-/// - [`LfsError::Corrupt`] if the magic number does not match.
+/// - [`LfsError::Corrupt`] if the magic number does not match, or if the
+///   imap/segment-bitmap block pointers or counts resolve outside the
+///   device's actual block range (SECURITY, finding 18: a crafted or
+///   corrupted header must be rejected before its pointers are handed to
+///   the imap/segment-bitmap loaders).
 pub(crate) fn read_checkpoint(
     dev: &mut dyn BlockDevice,
     cache: &mut BlockCache,
@@ -217,7 +221,42 @@ pub(crate) fn read_checkpoint(
 ) -> Result<CheckpointHeader, LfsError> {
     let mut buf = [0u8; BLOCK_SIZE];
     cache.read(dev, slot_block, &mut buf)?;
-    CheckpointHeader::from_block(&buf)
+    let header = CheckpointHeader::from_block(&buf)?;
+    let device_blocks = dev.sector_count() / SECTORS_PER_BLOCK as u64;
+    validate_header_geometry(&header, device_blocks)?;
+    Ok(header)
+}
+
+/// Validate that a parsed checkpoint header's block pointers and counts
+/// resolve to ranges within the device's actual block count.
+///
+/// WHY (SECURITY, finding 18): [`CheckpointHeader::from_block`] only
+/// checks the magic number -- a crafted or corrupted header with an
+/// out-of-range `imap_block`/`segment_bitmap_block` or an oversized
+/// `*_count` would otherwise be accepted and handed straight to the imap
+/// and segment-bitmap loaders during mount. `write_checkpoint`'s #319
+/// check already treats an out-of-range payload as reject-worthy on the
+/// write side; this is the matching read-side check for whatever a slot
+/// is later found to contain, regardless of how it got there.
+fn validate_header_geometry(header: &CheckpointHeader, device_blocks: u64) -> Result<(), LfsError> {
+    let imap_end = header
+        .imap_block
+        .checked_add(u64::from(header.imap_block_count))
+        .ok_or(LfsError::Corrupt)?;
+    let segment_end = header
+        .segment_bitmap_block
+        .checked_add(u64::from(header.segment_bitmap_count))
+        .ok_or(LfsError::Corrupt)?;
+
+    if header.imap_block >= device_blocks
+        || imap_end > device_blocks
+        || header.segment_bitmap_block >= device_blocks
+        || segment_end > device_blocks
+    {
+        return Err(LfsError::Corrupt);
+    }
+
+    Ok(())
 }
 
 /// Read both checkpoint slots and return the one with the higher sequence.
@@ -568,5 +607,47 @@ mod tests {
         // Nothing should have been written for this rejected checkpoint.
         let mut cache2 = BlockCache::new();
         assert!(read_checkpoint(&mut dev, &mut cache2, slot_block).is_err());
+    }
+
+    #[test]
+    fn read_checkpoint_rejects_pointers_outside_device_geometry() {
+        // SECURITY (finding 18): a crafted or corrupted header claiming an
+        // imap/segment-bitmap pointer beyond the device's actual block
+        // count must be rejected -- write_checkpoint's #319 check only
+        // guards the write path; a checkpoint could reach disk through
+        // some other route (corruption, a crafted image) and must still
+        // be rejected on read, before its pointers are handed to the
+        // imap/segment-bitmap loaders.
+        let mut dev = block_device_for_checkpoint(); // 2048 blocks
+        let mut cache = BlockCache::new();
+
+        let header = CheckpointHeader {
+            magic: CHECKPOINT_MAGIC,
+            sequence: 1,
+            imap_block: 10,
+            imap_block_count: 1,
+            // segment_bitmap_block + count runs far past the device's 2048
+            // blocks. write_checkpoint's slot-capacity check would already
+            // reject this at write time, so write the header block
+            // directly to simulate a corrupted/crafted on-disk header
+            // reaching read.
+            segment_bitmap_block: 2000,
+            segment_bitmap_count: 100,
+            next_inode: 1,
+            last_segment_sequence: 1,
+        };
+
+        let header_buf = header.to_block();
+        cache
+            .write(&mut dev, 1, &header_buf)
+            .expect("write raw header block");
+        cache.flush(&mut dev).expect("flush");
+
+        let mut cache2 = BlockCache::new();
+        let result = read_checkpoint(&mut dev, &mut cache2, 1);
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "an out-of-geometry checkpoint header must be rejected as Corrupt"
+        );
     }
 }

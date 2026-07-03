@@ -885,7 +885,8 @@ impl Lfs {
             | LfsError::Corrupt
             | LfsError::InvalidSuperblock
             | LfsError::InodeNotFound
-            | LfsError::CheckpointOverflow => VfsError::IoError,
+            | LfsError::CheckpointOverflow
+            | LfsError::NoCompactionCandidate => VfsError::IoError,
         }
     }
 

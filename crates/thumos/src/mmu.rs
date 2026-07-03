@@ -116,10 +116,15 @@ pub(crate) fn alloc_l2_table() -> Option<usize> {
 
 /// Free an L2 page table back to the pool.
 ///
+/// Returns `true` if `phys_addr` matched an allocated pool slot and was
+/// freed, `false` if it matched no slot -- WHY (finding 8): the caller can
+/// now detect a free of an unrecognized address instead of the prior
+/// silent no-op.
+///
 /// # Safety
 ///
 /// `phys_addr` must have been returned by `alloc_l2_table` and not yet freed.
-pub unsafe fn free_l2_table(phys_addr: usize) {
+pub unsafe fn free_l2_table(phys_addr: usize) -> bool {
     // WHY (#416): serializes with every other L2_ALLOC accessor (see
     // alloc_l2_table) so a concurrent alloc/free pair cannot corrupt a torn
     // bitmask update.
@@ -131,10 +136,11 @@ pub unsafe fn free_l2_table(phys_addr: usize) {
                 let alloc = core::ptr::addr_of_mut!(L2_ALLOC);
                 let mask = core::ptr::read_volatile(alloc);
                 core::ptr::write_volatile(alloc, mask & !(1u64 << i));
-                return;
+                return true;
             }
         }
     }
+    false
 }
 
 /// POSIX protection flag constants (from mman.h).
@@ -163,8 +169,15 @@ pub(crate) fn prot_to_l2_flags(prot_flags: u32) -> u32 {
         attrs |= page_flags::AP_KERNEL_ONLY; // no user access
     }
 
-    // Execute-never if exec permission not requested
-    if prot_flags & prot::PROT_EXEC == 0 {
+    // WHY (SECURITY, finding 19, W^X / #417): a page must never be both
+    // writable and executable -- that combination is a direct
+    // code-injection primitive (write shellcode, then execute it from the
+    // same mapping). PROT_WRITE always forces XN regardless of whether
+    // PROT_EXEC was also requested, so sys_mmap/sys_mprotect (the only two
+    // callers, in syscall.rs) can never install a WX page even though
+    // neither performs its own WX check before calling this function.
+    // Execute-never unless exec was requested AND write was not.
+    if prot_flags & prot::PROT_WRITE != 0 || prot_flags & prot::PROT_EXEC == 0 {
         attrs |= page_flags::XN;
     }
 
@@ -614,10 +627,15 @@ pub fn alloc_addr_space() -> Option<usize> {
 /// (`flags::SECTION`, bits [1:0] = 0b10), never `page_flags::L1_PAGE_TABLE`
 /// (0b01), so this walk never touches or frees the kernel's own mappings.
 ///
+/// Returns `true` if `phys_addr` matched an allocated pool slot and was
+/// freed, `false` if it matched no slot -- WHY (finding 8): the caller can
+/// now detect a free of an unrecognized address instead of the prior
+/// silent no-op.
+///
 /// # Safety
 ///
 /// `phys_addr` must have been returned by `alloc_addr_space` and not yet freed.
-pub unsafe fn free_addr_space(phys_addr: usize) {
+pub unsafe fn free_addr_space(phys_addr: usize) -> bool {
     // WHY (#416): serializes with every other ADDR_SPACE_ALLOC accessor (see
     // alloc_addr_space) so a concurrent alloc/free pair cannot corrupt a
     // torn bitmask update.
@@ -638,10 +656,11 @@ pub unsafe fn free_addr_space(phys_addr: usize) {
                 let alloc = core::ptr::addr_of_mut!(ADDR_SPACE_ALLOC);
                 let mask = core::ptr::read_volatile(alloc);
                 core::ptr::write_volatile(alloc, mask & !(1 << i));
-                return;
+                return true;
             }
         }
     }
+    false
 }
 
 /// Copy all 4096 L1 entries FROM the source address space INTO the destination.
@@ -701,6 +720,39 @@ mod tests {
 
     fn reset() {
         reset_addr_space_pool();
+    }
+
+    #[test]
+    fn prot_to_l2_flags_denies_write_plus_exec_wx_combo() {
+        // SECURITY (finding 19, W^X / #417): PROT_WRITE | PROT_EXEC must
+        // never yield a page that is both writable and executable -- the
+        // direct code-injection primitive (write shellcode, then execute
+        // it from the same mapping). Neither sys_mmap nor sys_mprotect
+        // perform their own WX check before calling prot_to_l2_flags, so
+        // this function is the sole enforcement point.
+        let attrs = prot_to_l2_flags(prot::PROT_READ | prot::PROT_WRITE | prot::PROT_EXEC);
+        assert_eq!(
+            attrs & page_flags::AP_FULL,
+            page_flags::AP_FULL,
+            "write access must still be granted"
+        );
+        assert_eq!(
+            attrs & page_flags::XN,
+            page_flags::XN,
+            "exec must be stripped (XN set) when write is also requested"
+        );
+    }
+
+    #[test]
+    fn prot_to_l2_flags_allows_exec_without_write() {
+        // A read+exec-only mapping (no write) is not a WX page and must
+        // remain executable.
+        let attrs = prot_to_l2_flags(prot::PROT_READ | prot::PROT_EXEC);
+        assert_eq!(
+            attrs & page_flags::XN,
+            0,
+            "read+exec without write must remain executable"
+        );
     }
 
     #[test]
