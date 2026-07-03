@@ -117,7 +117,7 @@ mod tests {
 
     use super::{
         Capability, CapabilityGrant, DeviceIdentityRef, Error, IdentityKind, TaskRequest,
-        decode_request, encode_request,
+        decode_request, decode_response, encode_request,
     };
 
     #[test]
@@ -138,5 +138,19 @@ mod tests {
 
         assert_eq!(decoded, request);
         Ok(())
+    }
+
+    #[test]
+    fn decode_request_rejects_malformed_bytes() {
+        let result = decode_request(&[]);
+
+        assert!(matches!(result, Err(Error::Decode { .. })));
+    }
+
+    #[test]
+    fn decode_response_rejects_malformed_bytes() {
+        let result = decode_response(&[]);
+
+        assert!(matches!(result, Err(Error::Decode { .. })));
     }
 }

@@ -279,11 +279,23 @@ impl CcciMessage {
     /// # Errors
     ///
     /// Returns [`crate::error::Error::Parse`] when `buf` is shorter than
-    /// [`HEADER_SIZE`].
+    /// [`HEADER_SIZE`], or when the payload exceeds [`CCCI_MTU`].
     pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self> {
         let header = CcciHeader::from_bytes(buf)?;
-        let payload = buf.get(HEADER_SIZE..).unwrap_or(&[]).to_vec();
-        Ok(Self { header, payload })
+        let payload = buf.get(HEADER_SIZE..).unwrap_or(&[]);
+        ensure!(
+            payload.len() <= CCCI_MTU,
+            ParseSnafu {
+                message: format!(
+                    "CCCI payload {} bytes exceeds MTU {CCCI_MTU}",
+                    payload.len()
+                ),
+            }
+        );
+        Ok(Self {
+            header,
+            payload: payload.to_vec(),
+        })
     }
 }
 
@@ -341,6 +353,19 @@ mod tests {
         let msg = CcciMessage::new(hdr, payload);
         let decoded = CcciMessage::from_bytes(&msg.to_bytes()).unwrap_or_default();
         assert_eq!(msg, decoded, "message roundtrip must be lossless");
+    }
+
+    #[test]
+    fn message_from_bytes_rejects_oversized_payload() {
+        // WHY: CCCI_MTU bounds a modem-controlled payload against a
+        // malicious/malfunctioning modem sending far more than the hardware
+        // MTU allows.
+        let buf = vec![0u8; HEADER_SIZE + CCCI_MTU + 1];
+        let result = CcciMessage::from_bytes(&buf);
+        assert!(
+            result.is_err(),
+            "a payload larger than CCCI_MTU must be rejected"
+        );
     }
 
     #[test]

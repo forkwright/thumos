@@ -155,12 +155,19 @@ impl TxQueue {
 
     /// Remove and return the oldest descriptor from the ring.
     ///
-    /// Returns `None` when the ring is empty.
+    /// Returns `None` when the ring is empty, or when the oldest descriptor
+    /// is still hardware-owned (the DMA engine has not cleared `HWO` yet --
+    /// nothing is ready to reclaim).
     pub(crate) fn dequeue(&mut self) -> Option<Gpd> {
         if self.is_empty() {
             return None;
         }
         let gpd = self.ring[self.tail];
+        if gpd.is_hw_owned() {
+            // WARNING: DMA has not cleared HWO; the descriptor is still
+            // hardware-owned and must not be reclaimed yet.
+            return None;
+        }
         self.tail = (self.tail + 1) % self.capacity;
         self.len -= 1;
         Some(gpd)
@@ -293,7 +300,7 @@ mod tests {
         assert!(q.is_empty(), "new queue must be empty");
 
         let gpd = Gpd {
-            flags: GPD_FLAG_HWO,
+            flags: 0,
             data_len: 20,
             ..Gpd::default()
         };
@@ -303,6 +310,27 @@ mod tests {
         let out = q.dequeue().unwrap_or_default();
         assert_eq!(out, gpd, "dequeued descriptor must equal enqueued one");
         assert!(q.is_empty(), "queue must be empty after dequeue");
+    }
+
+    #[test]
+    fn tx_queue_dequeue_blocks_while_hw_owned() {
+        let mut q = TxQueue::new(4);
+        let gpd = Gpd {
+            flags: GPD_FLAG_HWO,
+            data_len: 20,
+            ..Gpd::default()
+        };
+        q.enqueue(gpd).unwrap_or_default();
+
+        assert!(
+            q.dequeue().is_none(),
+            "dequeue must not reclaim a descriptor while the DMA engine still owns it"
+        );
+        assert_eq!(
+            q.len(),
+            1,
+            "queue length must be unchanged when HWO blocks reclaim"
+        );
     }
 
     #[test]

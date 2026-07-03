@@ -2,6 +2,7 @@
 
 use hkdf::Hkdf;
 use sha2::Sha256;
+use snafu::ResultExt as _;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::error::{KeyAgreementSnafu, KeyDerivationSnafu, KeyGenerationSnafu, Result};
@@ -195,7 +196,8 @@ pub(crate) fn initiate_session(
 ///
 /// Returns [`Error::InvalidKey`] if the initiator's identity key is not a valid
 /// Ed25519 point.
-/// Returns [`Error::KeyAgreement`] if DH fails.
+/// Returns [`Error::KeyAgreement`] if DH fails, or if exactly one side offers a
+/// one-time pre-key.
 /// Returns [`Error::KeyDerivation`] if HKDF fails.
 pub(crate) fn respond_session(
     bundle: OwnedBundle,
@@ -218,12 +220,18 @@ pub(crate) fn respond_session(
     ikm.extend_from_slice(&leg_ephemeral_identity);
     ikm.extend_from_slice(&leg_ephemeral_prekey);
 
-    // Optional one-time pre-key leg: DH(EK_A2, OPK_B).
-    if let (Some(otpk_priv), Some(ek2_pub)) =
-        (bundle.one_time_prekey_private, msg.one_time_ephemeral_key)
-    {
-        let leg_one_time = agree(&otpk_priv, &ek2_pub)?;
-        ikm.extend_from_slice(&leg_one_time);
+    // Optional one-time pre-key leg: DH(EK_A2, OPK_B). WHY: presence must
+    // match on both sides — a bundle/message OTP mismatch (e.g. a MITM
+    // stripping the ephemeral in transit) must fail loudly rather than
+    // silently falling back to the 3-leg secret, which would only surface
+    // downstream as an undiagnosable decrypt failure.
+    match (bundle.one_time_prekey_private, msg.one_time_ephemeral_key) {
+        (Some(otpk_priv), Some(ek2_pub)) => {
+            let leg_one_time = agree(&otpk_priv, &ek2_pub)?;
+            ikm.extend_from_slice(&leg_one_time);
+        }
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => return Err(KeyAgreementSnafu.build()),
     }
 
     derive_keys(&ikm)
@@ -232,7 +240,7 @@ pub(crate) fn respond_session(
 /// Generates a fresh X25519 key pair, returning `(private_key, public_key_bytes)`.
 fn generate_x25519() -> Result<(StaticSecret, [u8; X25519_KEY_LEN])> {
     let mut private_bytes = [0u8; X25519_KEY_LEN];
-    getrandom::fill(&mut private_bytes).map_err(|_| KeyGenerationSnafu.build())?;
+    getrandom::fill(&mut private_bytes).context(KeyGenerationSnafu)?;
     let priv_key = StaticSecret::from(private_bytes);
     let pub_bytes = PublicKey::from(&priv_key).to_bytes();
     Ok((priv_key, pub_bytes))
@@ -425,6 +433,28 @@ mod tests {
         assert_eq!(
             alice_secret.raw, bob_secret.raw,
             "3-leg X3DH (no one-time pre-key) must still agree"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn respond_rejects_missing_one_time_prekey_in_message() -> Result<()> {
+        // Attack model: a MITM strips the optional OTP ephemeral from the
+        // initiator message in transit while the responder's bundle still
+        // holds the matching private key. The mismatch must be a hard error,
+        // not a silent fallback to the 3-leg secret.
+        let alice = IdentityKeyPair::generate()?;
+        let bob = IdentityKeyPair::generate()?;
+        let bob_bundle = create_bundle(&bob)?;
+        let pub_bundle = bob_bundle.public_bundle.clone();
+
+        let (_, _, mut init_msg) = initiate_session(&alice, &pub_bundle)?;
+        init_msg.one_time_ephemeral_key = None;
+
+        let err = respond_session(bob_bundle, &init_msg);
+        assert!(
+            matches!(err, Err(crate::error::Error::KeyAgreement { .. })),
+            "a one-time pre-key present in the bundle but stripped from the message must be rejected"
         );
         Ok(())
     }

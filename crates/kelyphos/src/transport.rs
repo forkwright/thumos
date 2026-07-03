@@ -798,4 +798,96 @@ mod tests {
             "a max-size frame must be reassembled at full length, never silently truncated"
         );
     }
+
+    #[test]
+    fn rx_parser_assembles_back_to_back_frames() {
+        // WHY: the RX parser resets to WaitSof immediately after every
+        // completed frame (match or mismatch), so a second frame arriving
+        // with no gap after the first must not be lost or merged into the
+        // first frame's tail.
+        let frame_a = make_frame(0, b"first");
+        let frame_b = make_frame(1, b"second");
+        let mut encoded_a = [0u8; TX_FRAME_MAX_ENCODED];
+        let mut encoded_b = [0u8; TX_FRAME_MAX_ENCODED];
+        let len_a = frame_a.encode(&mut encoded_a);
+        let len_b = frame_b.encode(&mut encoded_b);
+
+        let mut t = StpTransport::new();
+        let mut completed: Vec<Vec<u8>> = Vec::new();
+        for &byte in encoded_a
+            .iter()
+            .take(len_a)
+            .chain(encoded_b.iter().take(len_b))
+        {
+            if let Some(raw) = t.receive_byte(byte) {
+                completed.push(raw.to_vec());
+            }
+        }
+
+        assert_eq!(
+            completed.len(),
+            2,
+            "both back-to-back frames must be surfaced as complete, got {completed:?}"
+        );
+        assert_eq!(
+            completed[0].len(),
+            len_a,
+            "first frame length must match its own encoding, not bleed into the second"
+        );
+        assert_eq!(
+            completed[1].len(),
+            len_b,
+            "second frame length must match its own encoding"
+        );
+        assert_eq!(
+            t.crc_errors(),
+            0,
+            "two intact back-to-back frames must not register any CRC errors"
+        );
+    }
+
+    #[test]
+    fn rx_parser_resyncs_after_truncated_frame_precedes_valid_frame() {
+        // WHY: simulates a truncated/corrupted transmission  -  an SOF
+        // followed by an all-zero header (decodes to a zero-length payload)
+        // and a garbage CRC, mirroring a dropped/re-established UART link.
+        // The bogus mini-frame is fully consumed and rejected without
+        // wedging the state machine, so the parser must resynchronize
+        // cleanly on the SOF of the frame that follows.
+        let truncated_then_garbage = [0x80u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let frame = make_frame(2, b"resynced");
+        let mut encoded = [0u8; TX_FRAME_MAX_ENCODED];
+        let len = frame.encode(&mut encoded);
+
+        let mut t = StpTransport::new();
+        for &byte in &truncated_then_garbage {
+            let _ = t.receive_byte(byte);
+        }
+        let crc_errors_before_valid_frame = t.crc_errors();
+
+        let mut complete = None;
+        for &byte in encoded.iter().take(len) {
+            if let Some(raw) = t.receive_byte(byte) {
+                complete = Some(raw.to_vec());
+            }
+        }
+
+        let raw = complete.unwrap_or_default();
+        assert_eq!(
+            raw.first().copied(),
+            Some(0x80),
+            "the valid frame following the truncated/garbage prefix must start with SOF"
+        );
+        assert_eq!(
+            raw.len(),
+            len,
+            "the valid frame following the truncated/garbage prefix must be fully reassembled"
+        );
+        assert_eq!(
+            t.crc_errors(),
+            crc_errors_before_valid_frame,
+            "the valid frame itself must not register a new CRC error"
+        );
+    }
 }

@@ -16,8 +16,8 @@ use zeroize::Zeroize as _;
 #[non_exhaustive]
 pub(crate) enum MemoryError {
     /// The system random number generator failed to produce bytes.
-    #[snafu(display("failed to generate random bytes"))]
-    RandomGeneration,
+    #[snafu(display("failed to generate random bytes: {source}"))]
+    RandomGeneration { source: getrandom::Error },
 }
 
 // ----- Functions ------------------------------------------------------------
@@ -36,7 +36,7 @@ pub(crate) fn secure_zero(buf: &mut [u8]) {
 ///
 /// Returns [`MemoryError::RandomGeneration`] if the system RNG fails.
 pub(crate) fn secure_random_fill(buf: &mut [u8]) -> Result<(), MemoryError> {
-    getrandom::fill(buf).map_err(|_| MemoryError::RandomGeneration)
+    getrandom::fill(buf).map_err(|source| MemoryError::RandomGeneration { source })
 }
 
 // ----- Types ----------------------------------------------------------------
@@ -147,6 +147,26 @@ mod tests {
             "empty buffer must remain empty after secure_random_fill"
         );
         Ok(())
+    }
+
+    #[test]
+    fn random_generation_error_reports_source_detail() {
+        // WHY: the underlying getrandom::Error carries a diagnosable OS
+        // error code / description; MemoryError::RandomGeneration must embed
+        // it (via `source`) rather than discard it, so an operator can tell
+        // WHY the panic-wipe RNG failed instead of a bare generic message.
+        let err = MemoryError::RandomGeneration {
+            source: getrandom::Error::UNSUPPORTED,
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("failed to generate random bytes"),
+            "error message must retain the constant prefix"
+        );
+        assert!(
+            message.len() > "failed to generate random bytes".len(),
+            "error message must include the embedded source detail, not just the generic prefix"
+        );
     }
 
     #[test]

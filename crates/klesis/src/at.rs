@@ -8,7 +8,7 @@ use nom::Parser;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until, take_while1};
 use nom::character::complete::{char, digit1};
-use nom::combinator::{map, map_res, opt, value};
+use nom::combinator::{map, map_res, opt, value, verify};
 use nom::sequence::{delimited, preceded};
 
 use crate::error::{Error, Result};
@@ -128,12 +128,15 @@ impl From<u8> for SignalStrength {
         } else {
             -113 + (i16::from(rssi) * 2)
         };
-        let bars = match dbm {
-            ..=-100 => 0,
-            -99..=-85 => 1,
-            -84..=-70 => 2,
-            -69..=-55 => 3,
-            _ => 4,
+        // NOTE: thresholds mirror the kernel's telephony_parser::dbm_to_bars
+        // (the canonical 3GPP-derived dBm mapping) so klesis and the kernel
+        // never disagree on how many bars a given dBm value reports.
+        let bars: u8 = match dbm {
+            d if d >= -70 => 4,
+            d if d >= -85 => 3,
+            d if d >= -100 => 2,
+            d if d >= -110 => 1,
+            _ => 0,
         };
         Self {
             rssi_raw: rssi,
@@ -216,11 +219,26 @@ pub(crate) fn parse_ring(input: &str) -> IResult<&str, Urc> {
     value(Urc::Ring, tag("RING")).parse(input)
 }
 
+/// Maximum length accepted for a `+CMTI` storage-location name.
+///
+/// SECURITY: `storage` is a modem-controlled field; without a bound,
+/// `take_until` allocates a `String` proportional to whatever a
+/// malicious/malfunctioning modem sends before the next `"`. Real storage
+/// identifiers (`"SM"`, `"ME"`, `"MT"`, `"SR"`) are 2-3 chars; this stays
+/// generous while removing the unbounded allocation.
+const MAX_CMTI_STORAGE_LEN: usize = 16;
+
 /// Parse a +CMTI URC: +CMTI: "<storage>",<index>
 pub(crate) fn parse_cmti(input: &str) -> IResult<&str, Urc> {
     let (input, _) = tag("+CMTI: ").parse(input)?;
-    let (input, storage) =
-        delimited(char('"'), map(take_until("\""), String::from), char('"')).parse(input)?;
+    let (input, storage) = delimited(
+        char('"'),
+        verify(map(take_until("\""), String::from), |s: &String| {
+            s.len() <= MAX_CMTI_STORAGE_LEN
+        }),
+        char('"'),
+    )
+    .parse(input)?;
     let (input, _) = char(',').parse(input)?;
     let (input, index) = map_res(digit1, str::parse::<u16>).parse(input)?;
     Ok((input, Urc::Cmti { storage, index }))
@@ -346,6 +364,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_final_result_bare_error() {
+        let (_, resp) = parse_final_result("ERROR").unwrap_or_default();
+        assert_eq!(
+            resp,
+            Response::Error,
+            "bare 'ERROR' must parse to Response::Error"
+        );
+    }
+
+    #[test]
     fn parse_cme_error() {
         let (_, resp) = parse_final_result("+CME ERROR: 10").unwrap_or_default();
         assert_eq!(
@@ -379,7 +407,18 @@ mod tests {
             sig.dbm, -77,
             "RSSI 18 must convert to -77 dBm per AT+CSQ formula"
         );
-        assert_eq!(sig.bars, 2, "RSSI 18 (-77 dBm) must be 2 bars");
+        assert_eq!(sig.bars, 3, "RSSI 18 (-77 dBm) must be 3 bars");
+    }
+
+    #[test]
+    fn signal_strength_bars_match_telephony_parser_thresholds() {
+        // WHY: locks bar thresholds to the kernel's telephony_parser::dbm_to_bars
+        // boundary values so a future edit on either side cannot silently
+        // diverge again.
+        // rssi=21 -> dbm = -113 + 21*2 = -71 dBm (just below -70)
+        assert_eq!(SignalStrength::from(21u8).bars, 3, "-71 dBm must be 3 bars");
+        // rssi=22 -> dbm = -113 + 22*2 = -69 dBm (at/above -70)
+        assert_eq!(SignalStrength::from(22u8).bars, 4, "-69 dBm must be 4 bars");
     }
 
     #[test]
@@ -436,6 +475,17 @@ mod tests {
                 index: 3,
             },
             "CMTI URC must parse storage and index correctly"
+        );
+    }
+
+    #[test]
+    fn parse_cmti_rejects_oversized_storage() {
+        let long_storage = "X".repeat(MAX_CMTI_STORAGE_LEN + 1);
+        let input = format!("+CMTI: \"{long_storage}\",3");
+        let result = parse_cmti(&input);
+        assert!(
+            result.is_err(),
+            "storage field longer than MAX_CMTI_STORAGE_LEN must be rejected"
         );
     }
 

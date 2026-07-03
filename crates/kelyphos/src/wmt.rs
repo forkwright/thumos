@@ -199,6 +199,16 @@ pub(crate) enum WmtError {
         /// Human-readable current state ("enabled" or "disabled").
         state: &'static str,
     },
+
+    /// `enable_subsystem` called before CONSYS completed power-on  -  the RF
+    /// regulator would be enabled onto an unpowered/partially-reset CONSYS.
+    #[snafu(display(
+        "CONSYS is not powered on; call power_on before enabling subsystem {subsystem:?}"
+    ))]
+    ConsysNotPoweredOn {
+        /// Subsystem the caller attempted to enable.
+        subsystem: Subsystem,
+    },
 }
 
 // ── Domain types ──────────────────────────────────────────────────────────────
@@ -829,9 +839,13 @@ impl<R: RegisterIo> WmtManager<R> {
     /// Enable a radio subsystem.
     ///
     /// Turns on the appropriate PMIC regulator for the subsystem and records
-    /// it as active. CONSYS must already be powered on.
+    /// it as active. CONSYS must already be powered on  -  returns
+    /// [`WmtError::ConsysNotPoweredOn`] otherwise.
     #[must_use = "subsystem enable failure must be handled"]
     pub(crate) fn enable_subsystem(&mut self, subsystem: Subsystem) -> Result<(), WmtError> {
+        if self.power != PowerState::On {
+            return Err(WmtError::ConsysNotPoweredOn { subsystem });
+        }
         if self.subsystems & subsystem.mask() != 0 {
             return Err(WmtError::SubsystemStateConflict {
                 subsystem,
@@ -1270,6 +1284,28 @@ mod tests {
     }
 
     // ── subsystem enable/disable ──────────────────────────────────────────────
+
+    #[test]
+    fn enable_subsystem_before_power_on_returns_error() {
+        let io = FakeIo::new();
+        let mut mgr = WmtManager::new(io);
+        let err = mgr
+            .enable_subsystem(Subsystem::Bt)
+            .expect_err("enabling a subsystem before power_on must fail");
+        assert!(
+            matches!(
+                err,
+                WmtError::ConsysNotPoweredOn {
+                    subsystem: Subsystem::Bt
+                }
+            ),
+            "error must be ConsysNotPoweredOn, got {err:?}"
+        );
+        assert_eq!(
+            mgr.io.regulators, 0,
+            "the regulator must not be touched when CONSYS is not powered on"
+        );
+    }
 
     #[test]
     fn enable_subsystem_bt_succeeds() {

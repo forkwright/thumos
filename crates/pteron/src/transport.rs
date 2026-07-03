@@ -35,10 +35,13 @@ const STP_DELIMITER_LEN: usize = 2;
 const STP_FUNC_BT: u8 = 0;
 
 /// RX/TX ring buffer capacity mandated by hardware (DRIVER-INTERFACES.md §4.1).
+///
+/// WHY: also the effective STP payload ceiling this driver enforces on both
+/// encode and decode — the STP protocol's own 12-bit length field allows up
+/// to 4095 bytes, but a frame larger than `RING_BUF_SIZE` could never be
+/// received into (or held by) this driver's own ring buffers, so encode and
+/// decode share this tighter bound instead of the raw protocol maximum.
 pub(crate) const RING_BUF_SIZE: usize = 2048;
-
-/// Maximum HCI payload in a single STP frame (12-bit length field).
-const STP_MAX_PAYLOAD: usize = 0xFFF;
 
 /// Default address-rotation interval: 15 minutes in seconds, matching BLE spec
 /// recommendation.
@@ -284,13 +287,13 @@ impl RingBuffer {
 /// # Errors
 ///
 /// Returns [`Error::BufferOverflow`] if `out` is too short for the encoded frame.
-/// Returns [`Error::PayloadTooLarge`] if `payload` exceeds the 12-bit STP length
-/// field maximum.
+/// Returns [`Error::PayloadTooLarge`] if `payload` exceeds [`RING_BUF_SIZE`],
+/// matching the bound [`stp_decode`] enforces on the receive side.
 pub(crate) fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usize> {
-    if payload.len() > STP_MAX_PAYLOAD {
+    if payload.len() > RING_BUF_SIZE {
         return Err(Error::PayloadTooLarge {
             length: payload.len(),
-            limit: STP_MAX_PAYLOAD,
+            limit: RING_BUF_SIZE,
         });
     }
     let total = STP_DELIMITER_LEN + STP_HEADER_LEN + payload.len();
@@ -303,7 +306,7 @@ pub(crate) fn stp_encode(seq: u8, payload: &[u8], out: &mut [u8]) -> Result<usiz
 
     let plen = u16::try_from(payload.len()).map_err(|_| Error::PayloadTooLarge {
         length: payload.len(),
-        limit: STP_MAX_PAYLOAD,
+        limit: RING_BUF_SIZE,
     })?;
     let [plen_lo, plen_hi_raw] = plen.to_le_bytes();
     let seq4 = seq & 0x0F;
@@ -693,7 +696,11 @@ impl BtHciTransport {
     pub(crate) const fn tick_seconds(&mut self, secs: u64) -> bool {
         self.secs_since_rotation = self.secs_since_rotation.saturating_add(secs);
         if self.secs_since_rotation >= self.rotation_interval_secs {
-            self.secs_since_rotation = 0;
+            // WARNING: subtract (not reset to 0) so a tick spanning more than
+            // one rotation interval keeps the overrun instead of discarding
+            // it, which would otherwise extend the BLE address-correlation
+            // window past the configured interval.
+            self.secs_since_rotation -= self.rotation_interval_secs;
             return true;
         }
         false
@@ -861,6 +868,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stp_encode_rejects_payload_larger_than_ring_buffer() {
+        // WHY: RING_BUF_SIZE + 1 fits the STP protocol's 12-bit length field
+        // (max 4095) but stp_decode could never accept it back; encode and
+        // decode must share the same bound.
+        let payload = vec![0u8; RING_BUF_SIZE + 1];
+        let mut buf = vec![0u8; RING_BUF_SIZE + STP_HEADER_LEN + STP_DELIMITER_LEN + 16];
+        let result = stp_encode(0, &payload, &mut buf);
+        let Err(Error::PayloadTooLarge { limit, .. }) = result else {
+            unreachable!("expected PayloadTooLarge for a payload exceeding RING_BUF_SIZE");
+        };
+        assert_eq!(
+            limit, RING_BUF_SIZE,
+            "encode's payload limit must match decode's RING_BUF_SIZE bound"
+        );
+    }
+
     // ── Reset state machine ──
 
     #[test]
@@ -931,6 +955,30 @@ mod tests {
             transport.rx.peek_at(3),
             Some(0x00),
             "fourth byte must be 0x00 (hw_code)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reset_state3_advances_even_when_rx_injection_fails() -> Result<()> {
+        let mut transport = BtHciTransport::new();
+        // WHY: fill the RX ring to capacity so the Hardware Error event
+        // injection at state 3 has no room to land, exercising the
+        // documented best-effort-injection failure path.
+        let filler = vec![0u8; RING_BUF_SIZE - 1];
+        assert!(
+            transport.rx.push(&filler),
+            "filler must fit exactly at capacity - 1"
+        );
+
+        transport.advance_reset()?;
+        transport.advance_reset()?;
+        let s3 = transport.advance_reset()?;
+
+        assert_eq!(
+            s3,
+            RstFlag::ResetCompleteEventDelivered,
+            "reset state machine must still advance even when best-effort RX injection fails"
         );
         Ok(())
     }
@@ -1027,6 +1075,23 @@ mod tests {
         assert!(
             !result,
             "rotation counter must reset to 0 after triggering; second early tick must not rotate"
+        );
+    }
+
+    #[test]
+    fn tick_seconds_preserves_overrun_on_large_tick() {
+        let mut transport = BtHciTransport::new();
+        let interval = transport.rotation_interval_secs();
+        let overrun = 47;
+        let due = transport.tick_seconds(interval + overrun);
+        assert!(
+            due,
+            "a tick spanning more than the interval must signal rotation due"
+        );
+        assert_eq!(
+            transport.secs_since_rotation(),
+            overrun,
+            "the overrun beyond the interval must be preserved, not discarded"
         );
     }
 

@@ -53,19 +53,19 @@ impl Filter {
         &mut self.ruleset
     }
 
-    /// Evaluate a raw IPv4 packet and return the action to take.
+    /// Evaluate a raw IPv4 packet in the given `direction` and return the
+    /// action to take.
     ///
-    /// All packets from the modem are treated as inbound (`Direction::In`).
     /// Packets that fail to parse are denied (fail-closed).
-    pub(crate) fn evaluate(&mut self, packet: &[u8]) -> Action {
-        let action = self.classify(packet);
+    pub(crate) fn evaluate(&mut self, packet: &[u8], direction: Direction) -> Action {
+        let action = self.classify(packet, direction);
         self.record(action);
         action
     }
 
     // Private helpers
 
-    fn classify(&self, packet: &[u8]) -> Action {
+    fn classify(&self, packet: &[u8], direction: Direction) -> Action {
         let Ok(ip) = IpHeader::parse(packet) else {
             return Action::Deny;
         };
@@ -103,7 +103,7 @@ impl Filter {
         };
 
         let info = PacketInfo {
-            direction: Direction::In,
+            direction,
             protocol,
             src_addr: ip.src_addr,
             dst_addr: ip.dst_addr,
@@ -200,11 +200,36 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_honors_direction_parameter_for_outbound_rules() {
+        let mut f = Filter::new();
+        f.ruleset_mut().add_rule(Rule {
+            direction: Direction::Out,
+            protocol: Protocol::Tcp,
+            src_addr: AddressMatch::any(),
+            dst_addr: AddressMatch::any(),
+            src_port: PortMatch::Any,
+            dst_port: PortMatch::Single(443),
+            action: Action::Allow,
+        });
+        let pkt = make_ip_tcp([10, 0, 0, 1], [1, 2, 3, 4], 54321, 443);
+        assert_eq!(
+            f.evaluate(&pkt, Direction::Out),
+            Action::Allow,
+            "outbound-only rule must match when the packet is evaluated as Direction::Out"
+        );
+        assert_eq!(
+            f.evaluate(&pkt, Direction::In),
+            Action::Deny,
+            "the same outbound-only rule must not match when evaluated as Direction::In"
+        );
+    }
+
+    #[test]
     fn empty_filter_denies_all_packets() {
         let mut f = Filter::new();
         let pkt = make_ip_tcp([1, 2, 3, 4], [10, 0, 0, 1], 54321, 80);
         assert_eq!(
-            f.evaluate(&pkt),
+            f.evaluate(&pkt, Direction::In),
             Action::Deny,
             "empty filter must deny all packets"
         );
@@ -224,7 +249,7 @@ mod tests {
         });
         let pkt = make_ip_tcp([1, 2, 3, 4], [10, 0, 0, 1], 54321, 80);
         assert_eq!(
-            f.evaluate(&pkt),
+            f.evaluate(&pkt, Direction::In),
             Action::Allow,
             "matching allow rule must permit packet to port 80"
         );
@@ -244,7 +269,7 @@ mod tests {
         });
         let garbage = [0xFFu8; 5];
         assert_eq!(
-            f.evaluate(&garbage),
+            f.evaluate(&garbage, Direction::In),
             Action::Deny,
             "unparseable packet must be denied even with allow-all rule"
         );
@@ -266,9 +291,9 @@ mod tests {
         let allowed = make_ip_tcp([10, 0, 0, 2], [10, 0, 0, 1], 1234, 443);
         let denied = make_ip_tcp([10, 0, 0, 3], [10, 0, 0, 1], 1234, 443);
 
-        f.evaluate(&allowed);
-        f.evaluate(&allowed);
-        f.evaluate(&denied);
+        f.evaluate(&allowed, Direction::In);
+        f.evaluate(&allowed, Direction::In);
+        f.evaluate(&denied, Direction::In);
 
         assert_eq!(f.packets_allowed, 2, "two allowed packets must be counted");
         assert_eq!(f.packets_denied, 1, "one denied packet must be counted");
@@ -292,7 +317,7 @@ mod tests {
         });
 
         let pkt = make_ip_tcp([1, 2, 3, 4], [10, 0, 0, 1], 12345, 80);
-        f.evaluate(&pkt);
+        f.evaluate(&pkt, Direction::In);
 
         assert_eq!(
             f.packets_denied, 1,
@@ -326,7 +351,7 @@ mod tests {
         let dns_payload = make_dns_query_bytes("app-measurement.com");
         let pkt = make_ip_udp([10, 0, 0, 2], [8, 8, 8, 8], 54321, DNS_PORT, &dns_payload);
         assert_eq!(
-            f.evaluate(&pkt),
+            f.evaluate(&pkt, Direction::In),
             Action::Deny,
             "DNS query for app-measurement.com must be denied by blocklist"
         );
@@ -349,7 +374,7 @@ mod tests {
         let dns_payload = make_dns_query_bytes("example.com");
         let pkt = make_ip_udp([10, 0, 0, 2], [8, 8, 8, 8], 54321, DNS_PORT, &dns_payload);
         assert_eq!(
-            f.evaluate(&pkt),
+            f.evaluate(&pkt, Direction::In),
             Action::Allow,
             "DNS query for example.com must pass the blocklist"
         );

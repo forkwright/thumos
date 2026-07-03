@@ -58,7 +58,7 @@ pub(crate) struct WipePath {
 /// specified method to each path.
 #[must_use]
 pub(crate) fn wipe_plan(target: WipeTarget) -> Vec<WipePath> {
-    match target {
+    let mut plan = match target {
         WipeTarget::Keys => key_paths(),
 
         WipeTarget::Contacts => vec![WipePath {
@@ -121,7 +121,12 @@ pub(crate) fn wipe_plan(target: WipeTarget) -> Vec<WipePath> {
             ]);
             plan
         }
-    }
+    };
+
+    // INVARIANT: callers execute in priority order; sort defensively instead
+    // of relying on match-arm construction order alone.
+    plan.sort_by_key(|path| path.priority);
+    plan
 }
 
 /// Key material paths, always wiped first (highest priority).
@@ -213,5 +218,25 @@ mod tests {
         assert!(has_keys, "AllUserData plan must include key paths");
         assert!(has_contacts, "AllUserData plan must include contacts path");
         assert!(has_messages, "AllUserData plan must include messages path");
+    }
+
+    #[test]
+    fn wipe_plan_is_sorted_by_priority() {
+        for target in [
+            WipeTarget::Keys,
+            WipeTarget::Contacts,
+            WipeTarget::Messages,
+            WipeTarget::AllUserData,
+            WipeTarget::Everything,
+        ] {
+            let plan = wipe_plan(target);
+            let priorities: Vec<u8> = plan.iter().map(|p| p.priority).collect();
+            let mut sorted = priorities.clone();
+            sorted.sort_unstable();
+            assert_eq!(
+                priorities, sorted,
+                "wipe_plan({target:?}) must be sorted ascending by priority"
+            );
+        }
     }
 }

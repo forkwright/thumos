@@ -177,6 +177,20 @@ mod tests {
     }
 
     #[test]
+    fn full_send_receive_flow_bob_to_alice() -> Result<()> {
+        let (mut alice, mut bob) = make_sessions()?;
+        let plaintext = b"hello FROM bob";
+        let encrypted = bob.encrypt_message(plaintext)?;
+        let decrypted = alice.decrypt_message(&encrypted)?;
+        assert_eq!(
+            decrypted.as_slice(),
+            plaintext,
+            "alice must recover bob's plaintext"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn full_send_receive_multiple_messages() -> Result<()> {
         let (mut alice, mut bob) = make_sessions()?;
         let messages: &[&[u8]] = &[b"first", b"second", b"third"];

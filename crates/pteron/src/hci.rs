@@ -440,8 +440,14 @@ pub(crate) fn decode_event(data: &[u8]) -> Result<HciEvent> {
     }
 
     let event_code = data.get(1).copied().unwrap_or_default();
-    // params start at byte 3 (after H4 type, event code, param_length)
+    let param_length = usize::from(data.get(2).copied().unwrap_or_default());
+    // WHY: params must be bounded to the declared param_length, not every
+    // trailing byte in `data` — otherwise bytes past the real event boundary
+    // would be folded into params (e.g. CommandComplete's return_params).
     let params = data.get(3..).unwrap_or(&[]);
+    let params = params.get(..param_length).ok_or(Error::MalformedEvent {
+        detail: "event: param_length exceeds available bytes",
+    })?;
 
     match event_code {
         EVT_COMMAND_COMPLETE => decode_command_complete(params),
@@ -788,6 +794,35 @@ mod tests {
             "should decode as CommandComplete with num_packets=1, opcode=0x0C03"
         );
         Ok(())
+    }
+
+    #[test]
+    fn decode_command_complete_ignores_trailing_bytes_past_param_length() -> Result<()> {
+        // H4=0x04, evt=0x0E, param_len=4 (num_packets + opcode + 1-byte status),
+        // followed by 2 extra trailing bytes that are not part of this event and
+        // must not leak into return_params.
+        let data = [0x04, 0x0E, 0x04, 0x01, 0x03, 0x0C, 0x00, 0xAA, 0xBB];
+        let evt = decode_event(&data)?;
+        let HciEvent::CommandComplete { return_params, .. } = evt else {
+            unreachable!("expected CommandComplete variant");
+        };
+        assert_eq!(
+            return_params,
+            vec![0x00],
+            "return_params must be bounded to the declared param_length, excluding trailing bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn decode_rejects_param_length_exceeding_available_bytes() {
+        // H4=0x04, evt=0x0E, param_len declares 10 bytes but only 4 follow.
+        let data = [0x04, 0x0E, 0x0A, 0x01, 0x03, 0x0C, 0x00];
+        let result = decode_event(&data);
+        assert!(
+            matches!(result, Err(Error::MalformedEvent { .. })),
+            "a param_length exceeding the actual buffer must be rejected, not silently truncated"
+        );
     }
 
     #[test]
