@@ -244,12 +244,8 @@ impl LfsSegmentManager {
             return Err(LfsError::Corrupt);
         }
 
-        let stored_count = u32::from_le_bytes(
-            data[..4].try_into().map_err(|_| LfsError::Corrupt)?,
-        );
-        let stored_size = u32::from_le_bytes(
-            data[4..8].try_into().map_err(|_| LfsError::Corrupt)?,
-        );
+        let stored_count = u32::from_le_bytes(data[..4].try_into().map_err(|_| LfsError::Corrupt)?);
+        let stored_size = u32::from_le_bytes(data[4..8].try_into().map_err(|_| LfsError::Corrupt)?);
 
         if stored_count != segment_count || stored_size != segment_size {
             return Err(LfsError::Corrupt);
@@ -295,7 +291,11 @@ mod tests {
         // Segment 0 is reserved, so the first allocation returns segment 1.
         let mut mgr = LfsSegmentManager::new(8, 256);
         let seg = mgr.allocate();
-        assert_eq!(seg, Some(1), "first free segment should be 1 (0 is reserved)");
+        assert_eq!(
+            seg,
+            Some(1),
+            "first free segment should be 1 (0 is reserved)"
+        );
     }
 
     #[test]
@@ -369,7 +369,7 @@ mod tests {
         mgr.allocate(); // seg 1
         mgr.allocate(); // seg 2
         mgr.allocate(); // seg 3
-        mgr.free(2);    // free seg 2
+        mgr.free(2); // free seg 2
 
         let data = mgr.serialize();
         let restored =

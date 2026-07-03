@@ -115,7 +115,8 @@ pub(crate) const DEFAULT_HEAP_BREAK: usize = 0x1000_0000;
 pub(crate) const MMAP_BASE: usize = 0x2000_0000;
 
 /// Process control block.
-pub(crate) struct Process { // kanon:ignore RUST/struct-too-many-fields -- standard Unix PCB fields; each models a distinct process resource
+pub(crate) struct Process {
+    // kanon:ignore RUST/struct-too-many-fields -- standard Unix PCB fields; each models a distinct process resource
     pub pid: Pid,
     pub state: State,
     pub ctx: Context,
@@ -182,7 +183,7 @@ pub unsafe fn init() {
             parent: None,
             exit_status: 0,
             page_table_phys: mmu::table_base(), // NOTE: kernel global L1
-            stack_base: 0,                       // NOTE: uses the boot stack, not allocated
+            stack_base: 0,                      // NOTE: uses the boot stack, not allocated
             stack_pages: 0,
             heap_break: DEFAULT_HEAP_BREAK,
             mappings: [None; MAX_MAPPINGS],
@@ -304,7 +305,11 @@ pub(crate) fn fork() -> Option<Pid> {
         let child_pt = mmu::alloc_addr_space()?;
 
         // Clone parent mappings INTO child (use kernel table as base if parent has none)
-        let src_pt = if parent_pt == 0 { mmu::table_base() } else { parent_pt };
+        let src_pt = if parent_pt == 0 {
+            mmu::table_base()
+        } else {
+            parent_pt
+        };
         mmu::clone_addr_space(src_pt, child_pt);
 
         // Allocate child stack pages
@@ -399,7 +404,9 @@ pub(crate) fn fork() -> Option<Pid> {
         // parent. The default policy strips MODEM and AUDIT from the parent's set
         // rather than blindly inheriting ALL, so that baseline userspace processes
         // cannot access the baseband or audit log without an explicit grant (REQ-09).
-        let parent_caps = parent_ref.map_or(crate::capability::Capabilities::FORK_DEFAULT, |p| p.capabilities);
+        let parent_caps = parent_ref.map_or(crate::capability::Capabilities::FORK_DEFAULT, |p| {
+            p.capabilities
+        });
         let child_caps = parent_caps & crate::capability::Capabilities::FORK_DEFAULT;
 
         let child = Process {
@@ -502,8 +509,14 @@ pub(crate) fn waitpid(child_pid: Pid) -> Option<i32> {
 /// Payload layout (9 bytes): [pid:1, fault_addr:4 LE, fault_status:4 LE]
 pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
     let (tag, fault_addr, fault_status) = match kind {
-        FaultKind::DataAbort { fault_addr, fault_status } => (1u32, fault_addr, fault_status),
-        FaultKind::PrefetchAbort { fault_addr, fault_status } => (2u32, fault_addr, fault_status),
+        FaultKind::DataAbort {
+            fault_addr,
+            fault_status,
+        } => (1u32, fault_addr, fault_status),
+        FaultKind::PrefetchAbort {
+            fault_addr,
+            fault_status,
+        } => (2u32, fault_addr, fault_status),
         FaultKind::UndefinedInstruction => (3u32, 0u32, 0u32),
     };
 
@@ -547,7 +560,11 @@ pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
 
         use crate::uart::Uart;
         let mut serial = Uart::new();
-        write!(serial, "FAULTDROP pid={faulting_pid} tag={tag} kinit-inbox-full\r\n").ok();
+        write!(
+            serial,
+            "FAULTDROP pid={faulting_pid} tag={tag} kinit-inbox-full\r\n"
+        )
+        .ok();
     }
 }
 
@@ -629,9 +646,11 @@ pub(crate) fn runnable_count() -> usize {
     // addr_of! avoids an intermediate reference to the static mut.
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        procs.iter().flatten().filter(|p| {
-            p.state == State::Ready || p.state == State::Running
-        }).count()
+        procs
+            .iter()
+            .flatten()
+            .filter(|p| p.state == State::Ready || p.state == State::Running)
+            .count()
     }
 }
 
@@ -799,7 +818,9 @@ pub(crate) fn current_heap_break() -> usize {
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
         let cur = usize::from(CURRENT);
-        procs[cur].as_ref().map_or(DEFAULT_HEAP_BREAK, |p| p.heap_break)
+        procs[cur]
+            .as_ref()
+            .map_or(DEFAULT_HEAP_BREAK, |p| p.heap_break)
     }
 }
 
@@ -880,7 +901,9 @@ pub(crate) fn update_mapping_prot(start_addr: usize, new_prot: u32) -> bool {
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::from(CURRENT);
-        let Some(proc) = procs[cur].as_mut() else { return false };
+        let Some(proc) = procs[cur].as_mut() else {
+            return false;
+        };
         for slot in proc.mappings.iter_mut() {
             if let Some(m) = slot {
                 if m.start == start_addr {
@@ -932,7 +955,9 @@ pub(crate) fn current_capabilities() -> u32 {
         let cur = usize::from(CURRENT);
         procs[cur]
             .as_ref()
-            .map_or(crate::capability::Capabilities::FORK_DEFAULT, |p| p.capabilities)
+            .map_or(crate::capability::Capabilities::FORK_DEFAULT, |p| {
+                p.capabilities
+            })
     }
 }
 
@@ -1099,8 +1124,12 @@ pub unsafe fn reset_signal_state() {
 ///
 /// Must be called from syscall context after the new stack pages have been
 /// allocated and `entry_point` is the validated ELF entry address.
-pub unsafe fn exec_replace_context(entry_point: usize, stack_top: usize,
-    new_stack_base: usize, new_stack_pages: usize) {
+pub unsafe fn exec_replace_context(
+    entry_point: usize,
+    stack_top: usize,
+    new_stack_base: usize,
+    new_stack_pages: usize,
+) {
     // SAFETY: addr_of_mut! avoids an intermediate reference to the static mut.
     // Called from execve syscall with interrupts disabled (SVC mode, ARMv7).
     unsafe {
@@ -1356,7 +1385,10 @@ mod tests {
 
             let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
-            assert!(procs[usize::from(child_pid)].is_some(), "child slot must be populated");
+            assert!(
+                procs[usize::from(child_pid)].is_some(),
+                "child slot must be populated"
+            );
         }
     }
 
@@ -1389,8 +1421,14 @@ mod tests {
             let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
             let parent_pt = procs[0].as_ref().unwrap().page_table_phys;
-            let child_pt = procs[usize::from(child_pid)].as_ref().unwrap().page_table_phys;
-            assert_ne!(parent_pt, child_pt, "parent and child must have distinct page tables");
+            let child_pt = procs[usize::from(child_pid)]
+                .as_ref()
+                .unwrap()
+                .page_table_phys;
+            assert_ne!(
+                parent_pt, child_pt,
+                "parent and child must have distinct page tables"
+            );
         }
     }
 
@@ -1467,11 +1505,13 @@ mod tests {
                 "child capabilities must equal parent_caps & FORK_DEFAULT"
             );
             assert_eq!(
-                child_caps & crate::capability::Capabilities::MODEM, 0,
+                child_caps & crate::capability::Capabilities::MODEM,
+                0,
                 "MODEM must be stripped from a forked child"
             );
             assert_eq!(
-                child_caps & crate::capability::Capabilities::AUDIT, 0,
+                child_caps & crate::capability::Capabilities::AUDIT,
+                0,
                 "AUDIT must be stripped from a forked child"
             );
         }
@@ -1508,14 +1548,19 @@ mod tests {
             let child_pid = fork().unwrap_or_default();
             let procs = &*core::ptr::addr_of!(PROCS);
             let parent_pt = procs[0].as_ref().unwrap().page_table_phys;
-            let child_pt = procs[usize::from(child_pid)].as_ref().unwrap().page_table_phys;
+            let child_pt = procs[usize::from(child_pid)]
+                .as_ref()
+                .unwrap()
+                .page_table_phys;
 
             // Write INTO entry 100 in the child's table
             (child_pt as *mut u32).add(100).write(0xCAFE_BABE);
             // Parent's entry 100 must be unchanged
             let parent_val = (parent_pt as *const u32).add(100).read();
-            assert_ne!(parent_val, 0xCAFE_BABE,
-                "writing to child table must not affect parent table (separate L1s)");
+            assert_ne!(
+                parent_val, 0xCAFE_BABE,
+                "writing to child table must not affect parent table (separate L1s)"
+            );
         }
     }
 
@@ -1524,7 +1569,9 @@ mod tests {
     /// free-count (not assumed physically contiguous).
     #[test]
     fn spawn_oom_rollback_frees_exact_allocated_pages() {
-        fn spawn_test_entry() -> ! { loop {} }
+        fn spawn_test_entry() -> ! {
+            loop {}
+        }
         unsafe {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
@@ -1549,16 +1596,25 @@ mod tests {
 
             // Shrink the free pool to exactly 2 pages so the 4-page stack
             // allocation (STACK_PAGES = 4) OOMs on the 3rd page.
-            page::init(0x4000_0000, 0x4000_0000 + 6 * page::PAGE_SIZE, 0x4000_0000 + 4 * page::PAGE_SIZE);
+            page::init(
+                0x4000_0000,
+                0x4000_0000 + 6 * page::PAGE_SIZE,
+                0x4000_0000 + 4 * page::PAGE_SIZE,
+            );
             let free_before = page::free_count();
             assert_eq!(free_before, 2, "test setup must yield exactly 2 free pages");
 
             let result = spawn(spawn_test_entry);
-            assert!(result.is_none(), "spawn must fail when the stack allocation OOMs");
+            assert!(
+                result.is_none(),
+                "spawn must fail when the stack allocation OOMs"
+            );
 
             let free_after = page::free_count();
-            assert_eq!(free_after, free_before,
-                "OOM rollback must return exactly the pages allocated before the failure, leaving free-count unchanged (#251)");
+            assert_eq!(
+                free_after, free_before,
+                "OOM rollback must return exactly the pages allocated before the failure, leaving free-count unchanged (#251)"
+            );
         }
     }
 
@@ -1592,16 +1648,25 @@ mod tests {
 
             // Shrink the free pool to exactly 2 pages so the 4-page child
             // stack allocation (STACK_PAGES = 4) OOMs on the 3rd page.
-            page::init(0x4000_0000, 0x4000_0000 + 6 * page::PAGE_SIZE, 0x4000_0000 + 4 * page::PAGE_SIZE);
+            page::init(
+                0x4000_0000,
+                0x4000_0000 + 6 * page::PAGE_SIZE,
+                0x4000_0000 + 4 * page::PAGE_SIZE,
+            );
             let free_before = page::free_count();
             assert_eq!(free_before, 2, "test setup must yield exactly 2 free pages");
 
             let result = fork();
-            assert!(result.is_none(), "fork must fail when the child stack allocation OOMs");
+            assert!(
+                result.is_none(),
+                "fork must fail when the child stack allocation OOMs"
+            );
 
             let free_after = page::free_count();
-            assert_eq!(free_after, free_before,
-                "OOM rollback must return exactly the pages allocated before the failure, leaving free-count unchanged (#251)");
+            assert_eq!(
+                free_after, free_before,
+                "OOM rollback must return exactly the pages allocated before the failure, leaving free-count unchanged (#251)"
+            );
         }
     }
 
@@ -1633,7 +1698,11 @@ mod tests {
 
             let child_pid = fork().unwrap_or_default();
             // Child is Ready, not Dead  -  waitpid must return None
-            assert_eq!(waitpid(child_pid), None, "should return None while child is alive");
+            assert_eq!(
+                waitpid(child_pid),
+                None,
+                "should return None while child is alive"
+            );
         }
     }
 
@@ -1663,8 +1732,16 @@ mod tests {
             });
             CURRENT = 0;
 
-            assert_eq!(waitpid(200), None, "waitpid must reject an out-of-bounds PID instead of panicking");
-            assert_eq!(waitpid(255), None, "waitpid must reject PID 255 (u8::MAX) instead of panicking");
+            assert_eq!(
+                waitpid(200),
+                None,
+                "waitpid must reject an out-of-bounds PID instead of panicking"
+            );
+            assert_eq!(
+                waitpid(255),
+                None,
+                "waitpid must reject PID 255 (u8::MAX) instead of panicking"
+            );
         }
     }
 
@@ -1698,7 +1775,10 @@ mod tests {
             for _ in 0..(MAX_PROCS - 1) {
                 assert!(fork().is_some(), "fork must succeed while slots remain");
             }
-            assert!(fork().is_none(), "fork must fail once the process table is full");
+            assert!(
+                fork().is_none(),
+                "fork must fail once the process table is full"
+            );
 
             for pid in 1..MAX_PROCS as Pid {
                 CURRENT = pid;
@@ -1706,14 +1786,24 @@ mod tests {
             }
             CURRENT = 0;
             for pid in 1..MAX_PROCS as Pid {
-                assert_eq!(waitpid(pid), Some(0), "waitpid must return the exit status for each Dead child");
+                assert_eq!(
+                    waitpid(pid),
+                    Some(0),
+                    "waitpid must return the exit status for each Dead child"
+                );
             }
 
             let procs_ro = &*core::ptr::addr_of!(PROCS);
             for pid in 1..MAX_PROCS {
-                assert!(procs_ro[pid].is_none(), "reaped slot {pid} must be None, not a lingering Dead PCB");
+                assert!(
+                    procs_ro[pid].is_none(),
+                    "reaped slot {pid} must be None, not a lingering Dead PCB"
+                );
             }
-            assert!(fork().is_some(), "fork must succeed again once reaped slots are available (#224)");
+            assert!(
+                fork().is_some(),
+                "fork must succeed again once reaped slots are available (#224)"
+            );
         }
     }
 
@@ -1792,10 +1882,17 @@ mod tests {
 
             let procs = &*core::ptr::addr_of!(PROCS);
             let child = procs[usize::from(child_pid)].as_ref().unwrap();
-            assert_eq!(child.state, State::Dead, "exit_cleanup must mark state Dead");
+            assert_eq!(
+                child.state,
+                State::Dead,
+                "exit_cleanup must mark state Dead"
+            );
 
             let free_after = page::free_count();
-            assert!(free_after > free_before, "exit_cleanup must reclaim stack pages");
+            assert!(
+                free_after > free_before,
+                "exit_cleanup must reclaim stack pages"
+            );
         }
     }
 
@@ -1846,11 +1943,20 @@ mod tests {
             });
             CURRENT = 0;
 
-            notify_fault(1, FaultKind::DataAbort { fault_addr: 0xDEAD, fault_status: 0x05 });
+            notify_fault(
+                1,
+                FaultKind::DataAbort {
+                    fault_addr: 0xDEAD,
+                    fault_status: 0x05,
+                },
+            );
 
             let procs = &*core::ptr::addr_of!(PROCS);
-            assert_eq!(procs[1].as_ref().unwrap().state, State::Dead,
-                "faulting process must be marked Dead");
+            assert_eq!(
+                procs[1].as_ref().unwrap().state,
+                State::Dead,
+                "faulting process must be marked Dead"
+            );
         }
     }
 
@@ -1902,9 +2008,14 @@ mod tests {
 
             // PID 0 receives the message; tag must be 3 (UndefinedInstruction)
             CURRENT = 0;
-            let msg = ipc::recv().expect("UndefinedInstruction fault must deliver a message to pid 0");
+            let msg =
+                ipc::recv().expect("UndefinedInstruction fault must deliver a message to pid 0");
             assert_eq!(msg.tag, 3, "UndefinedInstruction tag must be 3");
-            assert_eq!(msg.payload()[0], 1u8, "first payload byte must be faulting PID");
+            assert_eq!(
+                msg.payload()[0],
+                1u8,
+                "first payload byte must be faulting PID"
+            );
         }
     }
 
@@ -2001,7 +2112,10 @@ mod tests {
 
             let child_pid = fork().unwrap_or_default();
             let procs_ref = &*core::ptr::addr_of!(PROCS);
-            let child_pt = procs_ref[usize::from(child_pid)].as_ref().unwrap().page_table_phys;
+            let child_pt = procs_ref[usize::from(child_pid)]
+                .as_ref()
+                .unwrap()
+                .page_table_phys;
 
             // Exit the child  -  should free its page table slot
             CURRENT = child_pid;
@@ -2047,7 +2161,11 @@ mod tests {
             let mmap_vaddr = MMAP_BASE;
             let l2_attrs = mmu::prot_to_l2_flags(mmu::prot::PROT_READ | mmu::prot::PROT_WRITE);
             assert!(mmu::map_page(pt, mmap_vaddr, mmap_phys, l2_attrs));
-            add_mapping(VmMapping { start: mmap_vaddr, pages: 1, prot: mmu::prot::PROT_READ | mmu::prot::PROT_WRITE });
+            add_mapping(VmMapping {
+                start: mmap_vaddr,
+                pages: 1,
+                prot: mmu::prot::PROT_READ | mmu::prot::PROT_WRITE,
+            });
 
             // Simulate one grown heap page.
             let heap_phys = page::alloc_page().unwrap();
@@ -2062,13 +2180,22 @@ mod tests {
             exec_replace_context(0x1000, new_stack_phys + page::PAGE_SIZE, new_stack_phys, 1);
 
             let free_after = page::free_count();
-            assert_eq!(free_after, free_before + 2,
-                "exec must free exactly the 1 mmap page + 1 heap page from the old image");
+            assert_eq!(
+                free_after,
+                free_before + 2,
+                "exec must free exactly the 1 mmap page + 1 heap page from the old image"
+            );
 
             let procs_ro = &*core::ptr::addr_of!(PROCS);
             let proc = procs_ro[0].as_ref().unwrap();
-            assert!(proc.mappings.iter().all(|m| m.is_none()), "mappings must be cleared");
-            assert_eq!(proc.heap_break, DEFAULT_HEAP_BREAK, "heap break must reset to default");
+            assert!(
+                proc.mappings.iter().all(|m| m.is_none()),
+                "mappings must be cleared"
+            );
+            assert_eq!(
+                proc.heap_break, DEFAULT_HEAP_BREAK,
+                "heap break must reset to default"
+            );
         }
     }
 
@@ -2132,8 +2259,15 @@ mod tests {
 
             let procs_ro = &*core::ptr::addr_of!(PROCS);
             let p = procs_ro[0].as_ref().unwrap();
-            assert_eq!(p.state, State::Sleeping, "process must be Sleeping after set_wake_tick");
-            assert_eq!(p.wake_tick, target_tick, "wake_tick must match the requested value");
+            assert_eq!(
+                p.state,
+                State::Sleeping,
+                "process must be Sleeping after set_wake_tick"
+            );
+            assert_eq!(
+                p.wake_tick, target_tick,
+                "wake_tick must match the requested value"
+            );
         }
     }
 
@@ -2168,7 +2302,11 @@ mod tests {
 
             let procs_ro = &*core::ptr::addr_of!(PROCS);
             let p = procs_ro[0].as_ref().unwrap();
-            assert_eq!(p.state, State::Running, "process must return to Running after clear_wake_tick");
+            assert_eq!(
+                p.state,
+                State::Running,
+                "process must return to Running after clear_wake_tick"
+            );
             assert_eq!(p.wake_tick, 0, "wake_tick must be reset to 0");
         }
     }
@@ -2205,16 +2343,22 @@ mod tests {
 
             let handler_addr: u32 = 0x4020_0000;
             let stored = get_signal_action(crate::signal::Signal::Sigusr1);
-            assert_eq!(stored, crate::signal::SignalAction::Default,
-                "initial action should be Default");
+            assert_eq!(
+                stored,
+                crate::signal::SignalAction::Default,
+                "initial action should be Default"
+            );
 
             set_signal_action(
                 crate::signal::Signal::Sigusr1,
                 crate::signal::SignalAction::Handler(handler_addr),
             );
             let stored2 = get_signal_action(crate::signal::Signal::Sigusr1);
-            assert_eq!(stored2, crate::signal::SignalAction::Handler(handler_addr),
-                "handler should be stored in PCB");
+            assert_eq!(
+                stored2,
+                crate::signal::SignalAction::Handler(handler_addr),
+                "handler should be stored in PCB"
+            );
         }
     }
 
@@ -2260,8 +2404,11 @@ mod tests {
 
             let pending = get_pending_mask(child_pid);
             let expected_bit = 1u32 << (crate::signal::Signal::Sigusr1 as u32);
-            assert_ne!(pending & expected_bit, 0,
-                "SIGUSR1 pending bit should be set after kill");
+            assert_ne!(
+                pending & expected_bit,
+                0,
+                "SIGUSR1 pending bit should be set after kill"
+            );
         }
     }
 
@@ -2382,8 +2529,11 @@ mod tests {
             assert_eq!(ret, 0, "deliver_signal_to should return 0");
 
             let state = get_state(child_pid);
-            assert_eq!(state, Some(State::Dead),
-                "process should be Dead after default SIGTERM");
+            assert_eq!(
+                state,
+                Some(State::Dead),
+                "process should be Dead after default SIGTERM"
+            );
         }
     }
 
@@ -2421,13 +2571,18 @@ mod tests {
             assert_eq!(ret, 0, "deliver_signal_to should return 0");
 
             let state = get_state(child_pid);
-            assert_eq!(state, state_before,
-                "process state should be unchanged after default-Ignore SIGCHLD");
+            assert_eq!(
+                state, state_before,
+                "process state should be unchanged after default-Ignore SIGCHLD"
+            );
 
             let pending = get_pending_mask(child_pid);
             let sigchld_bit = 1u32 << (crate::signal::Signal::Sigchld as u32);
-            assert_eq!(pending & sigchld_bit, 0,
-                "SIGCHLD should not be pending when default action is Ignore");
+            assert_eq!(
+                pending & sigchld_bit,
+                0,
+                "SIGCHLD should not be pending when default action is Ignore"
+            );
         }
     }
 
@@ -2501,14 +2656,21 @@ mod tests {
             let child_sp = child.ctx.sp as usize;
 
             // Half-open: within the child's own stack region.
-            assert!(child_sp >= child_base && child_sp < child_top,
-                "child.ctx.sp must lie within [child.stack_base, +STACK_PAGES)");
+            assert!(
+                child_sp >= child_base && child_sp < child_top,
+                "child.ctx.sp must lie within [child.stack_base, +STACK_PAGES)"
+            );
             // The #208 corruption: sp must NOT alias the parent's stack.
-            assert!(child_sp < parent_base || child_sp >= parent_top,
-                "child.ctx.sp must NOT alias the parent's stack (#208)");
+            assert!(
+                child_sp < parent_base || child_sp >= parent_top,
+                "child.ctx.sp must NOT alias the parent's stack (#208)"
+            );
             // Offset-within-stack preserved -> same frame depth as the parent.
-            assert_eq!(child_sp - child_base, parent_sp as usize - parent_base,
-                "child sp must preserve the parent's offset-within-stack");
+            assert_eq!(
+                child_sp - child_base,
+                parent_sp as usize - parent_base,
+                "child sp must preserve the parent's offset-within-stack"
+            );
         }
     }
 
@@ -2528,11 +2690,15 @@ mod tests {
             let child_base = child.stack_base;
             let child_top = child_base + STACK_PAGES * page::PAGE_SIZE;
 
-            assert_ne!(child_base, parent_base,
-                "child stack must start at a different physical page");
+            assert_ne!(
+                child_base, parent_base,
+                "child stack must start at a different physical page"
+            );
             // Ranges must not overlap in either direction.
-            assert!(child_top <= parent_base || parent_top <= child_base,
-                "child stack pages must be physically distinct from the parent's");
+            assert!(
+                child_top <= parent_base || parent_top <= child_base,
+                "child stack pages must be physically distinct from the parent's"
+            );
         }
     }
 
@@ -2561,24 +2727,34 @@ mod tests {
             let free_after = page::free_count();
             // Exactly the child's STACK_PAGES returned — not 0 (wrong pages
             // freed), not 2x (parent's freed too).
-            assert_eq!(free_after - free_before, STACK_PAGES,
-                "exit_cleanup must return exactly the child's STACK_PAGES");
+            assert_eq!(
+                free_after - free_before,
+                STACK_PAGES,
+                "exit_cleanup must return exactly the child's STACK_PAGES"
+            );
 
             // Double-free guard: the child's stack is already free, so a second
             // free is a rejected no-op that does not inflate the pool (#208's
             // potential double-free).
             let count = page::free_count();
-            assert!(!page::try_free_page(child_base),
-                "double-free of the child stack must be rejected");
-            assert_eq!(page::free_count(), count,
-                "a rejected free must not change the free-page count");
+            assert!(
+                !page::try_free_page(child_base),
+                "double-free of the child stack must be rejected"
+            );
+            assert_eq!(
+                page::free_count(),
+                count,
+                "a rejected free must not change the free-page count"
+            );
 
             // The parent's stack pages were NOT touched by the child's exit:
             // parent_base is still allocated, so try_free_page succeeds here
             // (returns true) — had the child freed the parent's stack, this page
             // would already be free and the call would be rejected.
-            assert!(page::try_free_page(parent_base),
-                "parent stack page must remain allocated after the child exits (#208)");
+            assert!(
+                page::try_free_page(parent_base),
+                "parent stack page must remain allocated after the child exits (#208)"
+            );
         }
     }
 
@@ -2694,7 +2870,10 @@ mod tests {
 
             const EPERM: u32 = 0u32.wrapping_sub(1);
             let ret = crate::signal::sys_kill(0, crate::signal::Signal::Sigkill as u32);
-            assert_eq!(ret, EPERM, "sys_kill(0, ...) must return EPERM regardless of caller");
+            assert_eq!(
+                ret, EPERM,
+                "sys_kill(0, ...) must return EPERM regardless of caller"
+            );
         }
     }
 
@@ -2872,7 +3051,11 @@ mod tests {
             CURRENT = 1;
 
             let ret = crate::syscall::dispatch(crate::syscall::Syscall::Send.as_u32(), 0, 42, 0, 0);
-            assert_eq!(ret, u32::MAX, "send to PID 0 without CAP_IPC_INIT must be denied");
+            assert_eq!(
+                ret,
+                u32::MAX,
+                "send to PID 0 without CAP_IPC_INIT must be denied"
+            );
 
             CURRENT = 0;
             assert!(
@@ -2932,7 +3115,10 @@ mod tests {
 
             CURRENT = 0;
             let msg = crate::ipc::recv();
-            assert!(msg.is_some(), "allowed send must deliver a message into PID 0's inbox");
+            assert!(
+                msg.is_some(),
+                "allowed send must deliver a message into PID 0's inbox"
+            );
             assert_eq!(
                 msg.map(|m| (m.tag, m.from)),
                 Some((42, 1)),
@@ -2940,5 +3126,4 @@ mod tests {
             );
         }
     }
-
 }

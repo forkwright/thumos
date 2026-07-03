@@ -151,7 +151,11 @@ pub struct InodeStat {
 
 impl core::fmt::Display for InodeStat {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "inode {} ({}, {} bytes)", self.inode_id, self.inode_type, self.size)
+        write!(
+            f,
+            "inode {} ({}, {} bytes)",
+            self.inode_id, self.inode_type, self.size
+        )
     }
 }
 
@@ -172,7 +176,11 @@ pub struct DirEntry {
 
 impl core::fmt::Display for DirEntry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{} (inode {}, {})", self.name, self.inode_id, self.inode_type)
+        write!(
+            f,
+            "{} (inode {}, {})",
+            self.name, self.inode_id, self.inode_type
+        )
     }
 }
 
@@ -490,10 +498,7 @@ pub(crate) fn resolve_path(mounts: &MountTable, path: &str) -> Result<(usize, u3
 
     // Split the remaining path into components, filtering out empty segments
     // (from leading/trailing/doubled slashes).
-    let components: Vec<&str> = remaining
-        .split('/')
-        .filter(|c| !c.is_empty())
-        .collect();
+    let components: Vec<&str> = remaining.split('/').filter(|c| !c.is_empty()).collect();
 
     if components.is_empty() {
         // Path resolves to the mount root itself.
@@ -580,12 +585,7 @@ mod tests {
             Ok(0)
         }
 
-        fn write(
-            &mut self,
-            _inode_id: u32,
-            _offset: u64,
-            _buf: &[u8],
-        ) -> Result<usize, VfsError> {
+        fn write(&mut self, _inode_id: u32, _offset: u64, _buf: &[u8]) -> Result<usize, VfsError> {
             Ok(0)
         }
 
@@ -675,12 +675,7 @@ mod tests {
             Ok(0)
         }
 
-        fn write(
-            &mut self,
-            _inode_id: u32,
-            _offset: u64,
-            _buf: &[u8],
-        ) -> Result<usize, VfsError> {
+        fn write(&mut self, _inode_id: u32, _offset: u64, _buf: &[u8]) -> Result<usize, VfsError> {
             Ok(0)
         }
 
@@ -863,8 +858,8 @@ mod tests {
     fn resolve_path_returns_root_inode_for_slash() {
         let mut mt = MountTable::new();
         mt.mount("/", Box::new(TestFs)).expect("mount");
-        let (mount_idx, inode) = resolve_path(&mt, "/")
-            .expect("resolving / must succeed when root is mounted");
+        let (mount_idx, inode) =
+            resolve_path(&mt, "/").expect("resolving / must succeed when root is mounted");
         assert_eq!(mount_idx, 0, "/ must resolve to mount index 0");
         assert_eq!(inode, 0, "/ must resolve to root inode 0");
     }

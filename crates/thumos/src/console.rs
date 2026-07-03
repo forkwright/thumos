@@ -90,7 +90,11 @@ impl Console {
             "panic" => self.cmd_panic(),
             "reboot" => self.cmd_reboot(),
             _ => {
-                let _ = write!(self.serial, "unknown command: {}\r\n", parts.get(0).copied().unwrap_or_default()); // WHY: best-effort serial write; kernel cannot block on failed UART output
+                let _ = write!(
+                    self.serial,
+                    "unknown command: {}\r\n",
+                    parts.get(0).copied().unwrap_or_default()
+                ); // WHY: best-effort serial write; kernel cannot block on failed UART output
                 let _ = self.serial.write_str("type 'help' for commands\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
             }
         }
@@ -99,17 +103,18 @@ impl Console {
     fn cmd_help(&mut self) {
         let _ = self.serial.write_str("commands:\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
         let _ = self.serial.write_str("  help     -  show this help\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
-        let _ = self.serial
+        let _ = self
+            .serial
             .write_str("  uptime   -  show system uptime\r\n");
-        let _ = self.serial
-            .write_str("  mem      -  show memory usage\r\n");
+        let _ = self.serial.write_str("  mem      -  show memory usage\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
         let _ = self.serial.write_str("  ps       -  show processes\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
-        let _ = self.serial
+        let _ = self
+            .serial
             .write_str("  ver      -  show kernel version\r\n");
-        let _ = self.serial
+        let _ = self
+            .serial
             .write_str("  panic    -  trigger kernel panic (test)\r\n");
-        let _ = self.serial
-            .write_str("  reboot   -  reboot the system\r\n");
+        let _ = self.serial.write_str("  reboot   -  reboot the system\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
     }
 
     fn cmd_uptime(&mut self) {
@@ -147,7 +152,8 @@ impl Console {
 
     fn cmd_version(&mut self) {
         let _ = self.serial.write_str("thumos v0.1.0\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
-        let _ = self.serial
+        let _ = self
+            .serial
             .write_str("Rust monolithic kernel for MT6739\r\n");
     }
 

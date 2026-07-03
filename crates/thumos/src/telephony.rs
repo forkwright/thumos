@@ -33,9 +33,9 @@
 )]
 
 // Re-export parser functions so external callers can still use crate::telephony::*.
-pub(crate) use crate::telephony_parser::*;
 #[cfg(test)]
 pub(crate) use crate::telephony_mock::MockModemTransport;
+pub(crate) use crate::telephony_parser::*;
 
 extern crate alloc;
 
@@ -309,8 +309,11 @@ pub trait ModemTransport {
     /// Returns the raw response bytes (without CR/LF) into the provided
     /// buffer. Returns the number of bytes written, or an error.
     /// A timeout of 0 means non-blocking poll.
-    fn recv_line(&mut self, buf: &mut [u8; MAX_LINE_LEN], timeout_ms: u32)
-        -> Result<usize, TelephonyError>;
+    fn recv_line(
+        &mut self,
+        buf: &mut [u8; MAX_LINE_LEN],
+        timeout_ms: u32,
+    ) -> Result<usize, TelephonyError>;
 
     /// Poll for an unsolicited result code without blocking.
     ///
@@ -403,7 +406,8 @@ fn send_with_info<T: ModemTransport>(
 // ---------------------------------------------------------------------------
 
 /// Telephony subsystem: manages modem state and voice calls.
-pub struct Telephony<T: ModemTransport> { // kanon:ignore RUST/struct-too-many-fields -- cohesive modem state: radio + signal + registration + call + operator fields track one hardware subsystem
+pub struct Telephony<T: ModemTransport> {
+    // kanon:ignore RUST/struct-too-many-fields -- cohesive modem state: radio + signal + registration + call + operator fields track one hardware subsystem
     /// Current modem state.
     modem_state: ModemState,
     /// Current voice call state.
@@ -779,8 +783,8 @@ impl<T: ModemTransport> Telephony<T> {
         // INVARIANT: every byte of `number` was validated by
         // `is_valid_dial_byte` above (a strict ASCII subset), so `cmd_buf`
         // contains only ASCII bytes and this conversion cannot fail.
-        let cmd_str = core::str::from_utf8(&cmd_buf[..cmd_len])
-            .map_err(|_| TelephonyError::ParseError)?;
+        let cmd_str =
+            core::str::from_utf8(&cmd_buf[..cmd_len]).map_err(|_| TelephonyError::ParseError)?;
 
         let result = send_simple(&mut self.transport, cmd_str, 10_000)?;
         match result {
@@ -920,10 +924,7 @@ impl<T: ModemTransport> Telephony<T> {
                     *n = number;
                     *l = number_len;
                 }
-                Some(TelephonyEvent::IncomingCall {
-                    number,
-                    number_len,
-                })
+                Some(TelephonyEvent::IncomingCall { number, number_len })
             }
             Urc::NoCarrier => {
                 self.call_state = CallState::Idle;
@@ -1055,7 +1056,10 @@ mod tests {
         let mock = mock_for_init();
         let mut tel = Telephony::new(mock);
         let result = tel.initialize();
-        assert!(result.is_ok(), "initialization must succeed with valid mock");
+        assert!(
+            result.is_ok(),
+            "initialization must succeed with valid mock"
+        );
 
         let commands = &tel.transport.sent_commands;
         assert_eq!(commands.len(), 10, "init must send exactly 10 AT commands");
@@ -1063,7 +1067,10 @@ mod tests {
         assert_eq!(commands[1], b"ATE0", "step 2: ATE0");
         assert_eq!(commands[2], b"AT+CFUN=1", "step 3: AT+CFUN=1");
         assert_eq!(commands[3], b"AT+CPIN?", "step 4: AT+CPIN?");
-        assert_eq!(commands[4], b"AT+COPS=0,,,7", "step 5: AT+COPS=0,,,7 (LTE only)");
+        assert_eq!(
+            commands[4], b"AT+COPS=0,,,7",
+            "step 5: AT+COPS=0,,,7 (LTE only)"
+        );
         assert_eq!(commands[5], b"AT+COPS?", "step 6: AT+COPS?");
         assert_eq!(commands[6], b"AT+CREG=1", "step 7: AT+CREG=1");
         assert_eq!(commands[7], b"AT+CLIP=1", "step 8: AT+CLIP=1");
@@ -1096,11 +1103,7 @@ mod tests {
 
         match tel.call_state() {
             CallState::Dialing { number: n, len } => {
-                assert_eq!(
-                    &n[..*len as usize],
-                    number,
-                    "dialing number must match"
-                );
+                assert_eq!(&n[..*len as usize], number, "dialing number must match");
             }
             other => panic!("expected Dialing state, got: {other}"),
         }
@@ -1276,8 +1279,7 @@ mod tests {
 
         // Step 5 must be the LTE-only command.
         assert_eq!(
-            tel.transport.sent_commands[4],
-            b"AT+COPS=0,,,7",
+            tel.transport.sent_commands[4], b"AT+COPS=0,,,7",
             "step 5 must send AT+COPS=0,,,7 (LTE only)"
         );
         assert!(
@@ -1327,8 +1329,7 @@ mod tests {
         tel.refuse_2g();
         let cmd = &tel.transport.sent_commands[0];
         assert_eq!(
-            cmd,
-            b"AT+COPS=0,,,7",
+            cmd, b"AT+COPS=0,,,7",
             "command must be AT+COPS=0,,,7 per 3GPP TS 27.007 section 7.3"
         );
     }
@@ -1426,7 +1427,10 @@ mod tests {
 
         let mut tel = Telephony::new(mock);
         let result = tel.initialize();
-        assert!(result.is_ok(), "init must succeed even if not yet registered");
+        assert!(
+            result.is_ok(),
+            "init must succeed even if not yet registered"
+        );
         assert!(
             !tel.is_registered(),
             "is_registered must be false when AT+CREG? reports searching (2)"
@@ -1443,7 +1447,11 @@ mod tests {
         let mock = mock_for_init();
         let mut tel = Telephony::new(mock);
         tel.initialize().ok();
-        assert_eq!(tel.modem_state(), ModemState::Registered, "must start Registered");
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Registered,
+            "must start Registered"
+        );
 
         tel.transport.queue_urc(b"+CREG: 0");
         let event = tel.poll();
@@ -1478,11 +1486,18 @@ mod tests {
 
         let mut tel = Telephony::new(mock);
         tel.initialize().ok();
-        assert_eq!(tel.modem_state(), ModemState::Ready, "must start Ready (searching)");
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Ready,
+            "must start Ready (searching)"
+        );
 
         tel.transport.queue_urc(b"+CREG: 5");
         tel.poll();
-        assert!(tel.is_registered(), "must report registered after +CREG: 5 (roaming)");
+        assert!(
+            tel.is_registered(),
+            "must report registered after +CREG: 5 (roaming)"
+        );
         assert_eq!(
             tel.modem_state(),
             ModemState::Registered,

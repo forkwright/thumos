@@ -772,7 +772,8 @@ mod tests {
         let result = radio.recall_preset(0);
         assert!(result.is_ok(), "recall_preset must succeed");
         assert_eq!(
-            result, Ok(98_500),
+            result,
+            Ok(98_500),
             "recalled frequency must match saved value"
         );
         assert_eq!(radio.frequency(), Some(98_500));
@@ -871,7 +872,11 @@ mod tests {
 
         radio.set_volume(FM_MAX_VOLUME);
         radio.volume_up();
-        assert_eq!(radio.volume(), FM_MAX_VOLUME, "volume_up at max must not overflow");
+        assert_eq!(
+            radio.volume(),
+            FM_MAX_VOLUME,
+            "volume_up at max must not overflow"
+        );
 
         radio.volume_down();
         assert_eq!(radio.volume(), FM_MAX_VOLUME - 1);
@@ -914,7 +919,11 @@ mod tests {
     #[test]
     fn snap_to_step_works() {
         assert_eq!(snap_to_step(98_550), 98_600, "must snap up to nearest step");
-        assert_eq!(snap_to_step(98_540), 98_500, "must snap down to nearest step");
+        assert_eq!(
+            snap_to_step(98_540),
+            98_500,
+            "must snap down to nearest step"
+        );
         assert_eq!(snap_to_step(98_500), 98_500, "exact step must not change");
         assert_eq!(snap_to_step(87_500), 87_500, "min freq must not change");
         assert_eq!(snap_to_step(108_000), 108_000, "max freq must not change");
@@ -925,7 +934,10 @@ mod tests {
         let mut radio = make_radio();
         radio.power_on().ok();
         let result = radio.power_on();
-        assert!(result.is_ok(), "duplicate power_on must succeed (idempotent)");
+        assert!(
+            result.is_ok(),
+            "duplicate power_on must succeed (idempotent)"
+        );
         assert_eq!(radio.state(), FmState::On);
     }
 
@@ -981,7 +993,10 @@ mod tests {
         assert_eq!(FmState::Off.to_string(), "off");
         assert_eq!(FmState::On.to_string(), "on");
         assert_eq!(
-            FmState::Tuned { frequency_khz: 98_500 }.to_string(),
+            FmState::Tuned {
+                frequency_khz: 98_500
+            }
+            .to_string(),
             "tuned to 98.5 MHz"
         );
     }

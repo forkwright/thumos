@@ -26,8 +26,8 @@
 use crate::lock_screen::constant_time_eq;
 use crate::security::{self, SHA256_DIGEST_LEN};
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction, ScreenId,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
+    ScreenId, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,11 @@ impl core::fmt::Display for DataCategory {
             self.name,
             format_size_display(self.size_bytes),
             self.retention_days,
-            if self.purgeable { "purgeable" } else { "protected" },
+            if self.purgeable {
+                "purgeable"
+            } else {
+                "protected"
+            },
         )
     }
 }
@@ -124,15 +128,60 @@ pub(crate) const CATEGORIES: &[&str] = &[
 /// and non-purgeable; user data has 90-day default retention.
 const fn default_categories() -> [DataCategory; CATEGORY_COUNT] {
     [
-        DataCategory { name: "Audit log",  size_bytes: 65536,  retention_days: 0,   purgeable: false },
-        DataCategory { name: "Messages",   size_bytes: 524288, retention_days: 90,  purgeable: true  },
-        DataCategory { name: "Contacts",   size_bytes: 32768,  retention_days: 0,   purgeable: true  },
-        DataCategory { name: "Call log",   size_bytes: 16384,  retention_days: 30,  purgeable: true  },
-        DataCategory { name: "Calendar",   size_bytes: 8192,   retention_days: 0,   purgeable: true  },
-        DataCategory { name: "SIGINT",     size_bytes: 262144, retention_days: 7,   purgeable: true  },
-        DataCategory { name: "Location",   size_bytes: 131072, retention_days: 14,  purgeable: true  },
-        DataCategory { name: "Stats",      size_bytes: 4096,   retention_days: 365, purgeable: true  },
-        DataCategory { name: "Battery",    size_bytes: 2048,   retention_days: 365, purgeable: true  },
+        DataCategory {
+            name: "Audit log",
+            size_bytes: 65536,
+            retention_days: 0,
+            purgeable: false,
+        },
+        DataCategory {
+            name: "Messages",
+            size_bytes: 524288,
+            retention_days: 90,
+            purgeable: true,
+        },
+        DataCategory {
+            name: "Contacts",
+            size_bytes: 32768,
+            retention_days: 0,
+            purgeable: true,
+        },
+        DataCategory {
+            name: "Call log",
+            size_bytes: 16384,
+            retention_days: 30,
+            purgeable: true,
+        },
+        DataCategory {
+            name: "Calendar",
+            size_bytes: 8192,
+            retention_days: 0,
+            purgeable: true,
+        },
+        DataCategory {
+            name: "SIGINT",
+            size_bytes: 262144,
+            retention_days: 7,
+            purgeable: true,
+        },
+        DataCategory {
+            name: "Location",
+            size_bytes: 131072,
+            retention_days: 14,
+            purgeable: true,
+        },
+        DataCategory {
+            name: "Stats",
+            size_bytes: 4096,
+            retention_days: 365,
+            purgeable: true,
+        },
+        DataCategory {
+            name: "Battery",
+            size_bytes: 2048,
+            retention_days: 365,
+            purgeable: true,
+        },
     ]
 }
 
@@ -512,9 +561,33 @@ impl PrivacyScreen {
         ui::fill_rect(fb, w, h, 0, 0, w, h, color::BLACK);
 
         // Draw column headers.
-        ui::draw_str(fb, w, NAME_X, HEADER_Y, "Category", color::DARK_GREY, color::BLACK);
-        ui::draw_str(fb, w, SIZE_X, HEADER_Y, "Size", color::DARK_GREY, color::BLACK);
-        ui::draw_str(fb, w, RETENTION_X, HEADER_Y, "Retain", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            NAME_X,
+            HEADER_Y,
+            "Category",
+            color::DARK_GREY,
+            color::BLACK,
+        );
+        ui::draw_str(
+            fb,
+            w,
+            SIZE_X,
+            HEADER_Y,
+            "Size",
+            color::DARK_GREY,
+            color::BLACK,
+        );
+        ui::draw_str(
+            fb,
+            w,
+            RETENTION_X,
+            HEADER_Y,
+            "Retain",
+            color::DARK_GREY,
+            color::BLACK,
+        );
 
         // Draw header separator.
         let sep_y = HEADER_Y + CHAR_HEIGHT + 2;
@@ -551,7 +624,11 @@ impl PrivacyScreen {
             // Purgeable indicator.
             if !cat.purgeable {
                 let lock_x = w - CHAR_WIDTH - 4;
-                let lock_color = if ci == self.cursor { color::DARK_GREY } else { color::DARK_GREY };
+                let lock_color = if ci == self.cursor {
+                    color::DARK_GREY
+                } else {
+                    color::DARK_GREY
+                };
                 ui::draw_char(fb, w, lock_x, row_y + 2, '*', lock_color, bg);
             }
         }
@@ -559,15 +636,25 @@ impl PrivacyScreen {
         // Scroll indicators.
         if self.scroll_offset > 0 {
             ui::draw_char(
-                fb, w, w - CHAR_WIDTH - 4, LIST_Y,
-                '^', color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                w - CHAR_WIDTH - 4,
+                LIST_Y,
+                '^',
+                color::DARK_GREY,
+                color::BLACK,
             );
         }
         if visible_end < CATEGORY_COUNT {
             let arrow_y = LIST_Y + (VISIBLE_ROWS as u16) * ROW_HEIGHT;
             ui::draw_char(
-                fb, w, w - CHAR_WIDTH - 4, arrow_y,
-                'v', color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                w - CHAR_WIDTH - 4,
+                arrow_y,
+                'v',
+                color::DARK_GREY,
+                color::BLACK,
             );
         }
 
@@ -575,8 +662,24 @@ impl PrivacyScreen {
         let total_size = format_size(self.total_bytes);
         let total_y = LIST_Y + (VISIBLE_ROWS as u16) * ROW_HEIGHT + 4;
         if total_y + CHAR_HEIGHT < h {
-            ui::draw_str(fb, w, NAME_X, total_y, "Total:", color::DARK_GREY, color::BLACK);
-            ui::draw_str(fb, w, SIZE_X, total_y, total_size.as_str(), color::DARK_GREY, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                NAME_X,
+                total_y,
+                "Total:",
+                color::DARK_GREY,
+                color::BLACK,
+            );
+            ui::draw_str(
+                fb,
+                w,
+                SIZE_X,
+                total_y,
+                total_size.as_str(),
+                color::DARK_GREY,
+                color::BLACK,
+            );
         }
     }
 
@@ -591,41 +694,118 @@ impl PrivacyScreen {
 
         // Category name as title.
         ui::draw_str_centered(
-            fb, w, 0, w, DETAIL_START_Y,
-            cat.name, color::WHITE, color::BLACK,
+            fb,
+            w,
+            0,
+            w,
+            DETAIL_START_Y,
+            cat.name,
+            color::WHITE,
+            color::BLACK,
         );
 
         // Separator.
         let sep_y = DETAIL_START_Y + CHAR_HEIGHT + 4;
-        ui::fill_rect(fb, w, h, DETAIL_LABEL_X, sep_y, w - DETAIL_LABEL_X * 2, 1, color::DARK_GREY);
+        ui::fill_rect(
+            fb,
+            w,
+            h,
+            DETAIL_LABEL_X,
+            sep_y,
+            w - DETAIL_LABEL_X * 2,
+            1,
+            color::DARK_GREY,
+        );
 
         // Detail rows.
         let row1_y = sep_y + 8;
 
         // Size.
-        ui::draw_str(fb, w, DETAIL_LABEL_X, row1_y, "Size:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            DETAIL_LABEL_X,
+            row1_y,
+            "Size:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
         let size_str = format_size(cat.size_bytes);
-        ui::draw_str(fb, w, DETAIL_VALUE_X, row1_y, size_str.as_str(), color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            DETAIL_VALUE_X,
+            row1_y,
+            size_str.as_str(),
+            color::WHITE,
+            color::BLACK,
+        );
 
         // Retention.
         let row2_y = row1_y + DETAIL_SPACING;
-        ui::draw_str(fb, w, DETAIL_LABEL_X, row2_y, "Retention:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            DETAIL_LABEL_X,
+            row2_y,
+            "Retention:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
         let ret_str = format_retention(cat.retention_days);
-        ui::draw_str(fb, w, DETAIL_VALUE_X, row2_y, ret_str.as_str(), color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            DETAIL_VALUE_X,
+            row2_y,
+            ret_str.as_str(),
+            color::WHITE,
+            color::BLACK,
+        );
 
         // Purgeable status.
         let row3_y = row2_y + DETAIL_SPACING;
-        ui::draw_str(fb, w, DETAIL_LABEL_X, row3_y, "Purgeable:", color::DARK_GREY, color::BLACK);
-        let purge_text = if cat.purgeable { "Yes" } else { "No (protected)" };
-        let purge_color = if cat.purgeable { color::GREEN } else { color::RED };
-        ui::draw_str(fb, w, DETAIL_VALUE_X, row3_y, purge_text, purge_color, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            DETAIL_LABEL_X,
+            row3_y,
+            "Purgeable:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
+        let purge_text = if cat.purgeable {
+            "Yes"
+        } else {
+            "No (protected)"
+        };
+        let purge_color = if cat.purgeable {
+            color::GREEN
+        } else {
+            color::RED
+        };
+        ui::draw_str(
+            fb,
+            w,
+            DETAIL_VALUE_X,
+            row3_y,
+            purge_text,
+            purge_color,
+            color::BLACK,
+        );
 
         // Action hint.
         if cat.purgeable && cat.size_bytes > 0 {
             let hint_y = row3_y + DETAIL_SPACING + 8;
             ui::draw_str_centered(
-                fb, w, 0, w, hint_y,
-                "LSK: PURGE data", color::YELLOW, color::BLACK,
+                fb,
+                w,
+                0,
+                w,
+                hint_y,
+                "LSK: PURGE data",
+                color::YELLOW,
+                color::BLACK,
             );
         }
     }
@@ -648,27 +828,33 @@ impl PrivacyScreen {
         };
 
         // Warning header.
-        ui::draw_str_centered(
-            fb, w, 0, w, 20,
-            "PURGE DATA", color::RED, color::BLACK,
-        );
+        ui::draw_str_centered(fb, w, 0, w, 20, "PURGE DATA", color::RED, color::BLACK);
 
         // Category name.
-        ui::draw_str_centered(
-            fb, w, 0, w, 48,
-            cat_name, color::WHITE, color::BLACK,
-        );
+        ui::draw_str_centered(fb, w, 0, w, 48, cat_name, color::WHITE, color::BLACK);
 
         // Warning message.
         ui::draw_str_centered(
-            fb, w, 0, w, 80,
-            "This cannot be undone.", color::YELLOW, color::BLACK,
+            fb,
+            w,
+            0,
+            w,
+            80,
+            "This cannot be undone.",
+            color::YELLOW,
+            color::BLACK,
         );
 
         // Passphrase prompt.
         ui::draw_str_centered(
-            fb, w, 0, w, 112,
-            "Enter passphrase:", color::DARK_GREY, color::BLACK,
+            fb,
+            w,
+            0,
+            w,
+            112,
+            "Enter passphrase:",
+            color::DARK_GREY,
+            color::BLACK,
         );
 
         // Show dots for entered passphrase digits.
@@ -684,17 +870,27 @@ impl PrivacyScreen {
             let underline_x = (w.saturating_sub(MAX_PASSPHRASE_LEN as u16 * CHAR_WIDTH)) / 2;
             let underline_w = MAX_PASSPHRASE_LEN as u16 * CHAR_WIDTH;
             ui::fill_rect(
-                fb, w, h,
-                underline_x, 140 + CHAR_HEIGHT + 2,
-                underline_w, 1,
+                fb,
+                w,
+                h,
+                underline_x,
+                140 + CHAR_HEIGHT + 2,
+                underline_w,
+                1,
                 color::DARK_GREY,
             );
         }
 
         // Action hints.
         ui::draw_str_centered(
-            fb, w, 0, w, 190,
-            "OK: Confirm  RSK: Cancel", color::DARK_GREY, color::BLACK,
+            fb,
+            w,
+            0,
+            w,
+            190,
+            "OK: Confirm  RSK: Cancel",
+            color::DARK_GREY,
+            color::BLACK,
         );
     }
 
@@ -756,16 +952,46 @@ impl PrivacyScreen {
             // Numpad keys for passphrase entry. Stored as ASCII digit bytes
             // to match the sha256(entered) convention used for comparison
             // below (and in lock_screen.rs's PIN/passphrase verification).
-            Key::Num0 => { self.purge_digit(b'0'); ScreenAction::None }
-            Key::Num1 => { self.purge_digit(b'1'); ScreenAction::None }
-            Key::Num2 => { self.purge_digit(b'2'); ScreenAction::None }
-            Key::Num3 => { self.purge_digit(b'3'); ScreenAction::None }
-            Key::Num4 => { self.purge_digit(b'4'); ScreenAction::None }
-            Key::Num5 => { self.purge_digit(b'5'); ScreenAction::None }
-            Key::Num6 => { self.purge_digit(b'6'); ScreenAction::None }
-            Key::Num7 => { self.purge_digit(b'7'); ScreenAction::None }
-            Key::Num8 => { self.purge_digit(b'8'); ScreenAction::None }
-            Key::Num9 => { self.purge_digit(b'9'); ScreenAction::None }
+            Key::Num0 => {
+                self.purge_digit(b'0');
+                ScreenAction::None
+            }
+            Key::Num1 => {
+                self.purge_digit(b'1');
+                ScreenAction::None
+            }
+            Key::Num2 => {
+                self.purge_digit(b'2');
+                ScreenAction::None
+            }
+            Key::Num3 => {
+                self.purge_digit(b'3');
+                ScreenAction::None
+            }
+            Key::Num4 => {
+                self.purge_digit(b'4');
+                ScreenAction::None
+            }
+            Key::Num5 => {
+                self.purge_digit(b'5');
+                ScreenAction::None
+            }
+            Key::Num6 => {
+                self.purge_digit(b'6');
+                ScreenAction::None
+            }
+            Key::Num7 => {
+                self.purge_digit(b'7');
+                ScreenAction::None
+            }
+            Key::Num8 => {
+                self.purge_digit(b'8');
+                ScreenAction::None
+            }
+            Key::Num9 => {
+                self.purge_digit(b'9');
+                ScreenAction::None
+            }
 
             Key::Left => {
                 // Backspace.
@@ -869,7 +1095,8 @@ mod tests {
     fn default_categories_has_correct_count() {
         let cats = default_categories();
         assert_eq!(
-            cats.len(), CATEGORY_COUNT,
+            cats.len(),
+            CATEGORY_COUNT,
             "default categories must have {CATEGORY_COUNT} entries"
         );
     }
@@ -946,7 +1173,8 @@ mod tests {
         let screen = PrivacyScreen::new_for_test(b"1234");
         let expected: u64 = default_categories().iter().map(|c| c.size_bytes).sum();
         assert_eq!(
-            screen.total_bytes(), expected,
+            screen.total_bytes(),
+            expected,
             "total_bytes must match sum of all category sizes"
         );
     }
@@ -989,7 +1217,8 @@ mod tests {
             screen.on_key(Key::Down);
         }
         assert_eq!(
-            screen.cursor, CATEGORY_COUNT - 1,
+            screen.cursor,
+            CATEGORY_COUNT - 1,
             "cursor must not exceed last category"
         );
     }
@@ -1060,7 +1289,8 @@ mod tests {
         screen.on_key(Key::Ok);
 
         assert_eq!(
-            screen.view, PrivacyView::PurgeConfirm,
+            screen.view,
+            PrivacyView::PurgeConfirm,
             "purge must not proceed with a wrong code"
         );
         assert_eq!(
@@ -1078,7 +1308,8 @@ mod tests {
 
         screen.on_key(Key::Lsk); // PURGE (should be ignored)
         assert_eq!(
-            screen.view, PrivacyView::Detail,
+            screen.view,
+            PrivacyView::Detail,
             "purge must not start for protected category"
         );
     }
@@ -1093,7 +1324,10 @@ mod tests {
 
         screen.on_key(Key::Rsk); // Cancel
         assert_eq!(screen.view, PrivacyView::List);
-        assert!(screen.purge_state.is_none(), "purge state must be cleared on cancel");
+        assert!(
+            screen.purge_state.is_none(),
+            "purge state must be cleared on cancel"
+        );
     }
 
     #[test]
@@ -1109,7 +1343,8 @@ mod tests {
 
         // Should still be in purge confirm (no passphrase entered).
         assert_eq!(
-            screen.view, PrivacyView::PurgeConfirm,
+            screen.view,
+            PrivacyView::PurgeConfirm,
             "purge must not proceed without passphrase"
         );
         assert_eq!(
@@ -1127,10 +1362,16 @@ mod tests {
 
         screen.on_key(Key::Num1);
         screen.on_key(Key::Num2);
-        assert_eq!(screen.purge_state.as_ref().map(|s| s.passphrase_len), Some(2));
+        assert_eq!(
+            screen.purge_state.as_ref().map(|s| s.passphrase_len),
+            Some(2)
+        );
 
         screen.on_key(Key::Left); // Backspace
-        assert_eq!(screen.purge_state.as_ref().map(|s| s.passphrase_len), Some(1));
+        assert_eq!(
+            screen.purge_state.as_ref().map(|s| s.passphrase_len),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1207,9 +1448,15 @@ mod tests {
         };
         let s = alloc::format!("{cat}");
         assert!(s.contains("Test"), "display must include category name");
-        assert!(s.contains("1 KB"), "display must include human-readable size");
+        assert!(
+            s.contains("1 KB"),
+            "display must include human-readable size"
+        );
         assert!(s.contains("30d"), "display must include retention");
-        assert!(s.contains("purgeable"), "display must include purgeable status");
+        assert!(
+            s.contains("purgeable"),
+            "display must include purgeable status"
+        );
     }
 
     #[test]

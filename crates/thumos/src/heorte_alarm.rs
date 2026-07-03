@@ -5,7 +5,7 @@
 
 // Items in this module are re-exported from heorte.rs.
 
-use crate::heorte::{utf8_truncate_len, SECS_PER_DAY, SECS_PER_HOUR, SECS_PER_MIN};
+use crate::heorte::{SECS_PER_DAY, SECS_PER_HOUR, SECS_PER_MIN, utf8_truncate_len};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -141,7 +141,13 @@ impl Alarm {
 
 impl core::fmt::Display for Alarm {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:02}:{:02} {}", self.hour, self.minute, self.label_str())
+        write!(
+            f,
+            "{:02}:{:02} {}",
+            self.hour,
+            self.minute,
+            self.label_str()
+        )
     }
 }
 
@@ -173,14 +179,20 @@ mod tests {
 
         // 06:31:00 UTC
         let epoch_631 = 23460;
-        assert!(!alarm.should_fire(epoch_631), "alarm must not fire at 06:31");
+        assert!(
+            !alarm.should_fire(epoch_631),
+            "alarm must not fire at 06:31"
+        );
     }
 
     #[test]
     fn alarm_disabled_does_not_fire() {
         let alarm = Alarm::new(1, 6, 30, b"Wake up", false, 0);
         let epoch_630 = 23400;
-        assert!(!alarm.should_fire(epoch_630), "disabled alarm must not fire");
+        assert!(
+            !alarm.should_fire(epoch_630),
+            "disabled alarm must not fire"
+        );
     }
 
     #[test]
@@ -208,23 +220,41 @@ mod tests {
 
         // 1970-01-01 was a Thursday (day 4). 08:00 that day = 28800.
         let thursday_0800 = 28800u64;
-        assert!(alarm.should_fire(thursday_0800), "Thursday must fire for weekday alarm");
+        assert!(
+            alarm.should_fire(thursday_0800),
+            "Thursday must fire for weekday alarm"
+        );
 
         // 1970-01-03 was a Saturday. 08:00 = 2*86400 + 28800 = 201600.
         let saturday_0800 = 2 * SECS_PER_DAY + 28800;
-        assert!(!alarm.should_fire(saturday_0800), "Saturday must not fire for weekday alarm");
+        assert!(
+            !alarm.should_fire(saturday_0800),
+            "Saturday must not fire for weekday alarm"
+        );
 
         // 1970-01-04 was a Sunday. 08:00 = 3*86400 + 28800 = 288000.
         let sunday_0800 = 3 * SECS_PER_DAY + 28800;
-        assert!(!alarm.should_fire(sunday_0800), "Sunday must not fire for weekday alarm");
+        assert!(
+            !alarm.should_fire(sunday_0800),
+            "Sunday must not fire for weekday alarm"
+        );
     }
 
     #[test]
     fn alarm_repeat_labels() {
         assert_eq!(Alarm::new(1, 0, 0, b"", true, 0).repeat_label(), "Once");
-        assert_eq!(Alarm::new(1, 0, 0, b"", true, day_mask::DAILY).repeat_label(), "Daily");
-        assert_eq!(Alarm::new(1, 0, 0, b"", true, day_mask::WEEKDAYS).repeat_label(), "Weekdays");
-        assert_eq!(Alarm::new(1, 0, 0, b"", true, day_mask::MON | day_mask::WED).repeat_label(), "Custom");
+        assert_eq!(
+            Alarm::new(1, 0, 0, b"", true, day_mask::DAILY).repeat_label(),
+            "Daily"
+        );
+        assert_eq!(
+            Alarm::new(1, 0, 0, b"", true, day_mask::WEEKDAYS).repeat_label(),
+            "Weekdays"
+        );
+        assert_eq!(
+            Alarm::new(1, 0, 0, b"", true, day_mask::MON | day_mask::WED).repeat_label(),
+            "Custom"
+        );
     }
 
     #[test]
@@ -232,6 +262,10 @@ mod tests {
         // 1970-01-01 = Thursday = 4
         assert_eq!(day_of_week(0), 4, "1970-01-01 must be Thursday");
         // 1970-01-04 = Sunday = 0
-        assert_eq!(day_of_week(3 * SECS_PER_DAY), 0, "1970-01-04 must be Sunday");
+        assert_eq!(
+            day_of_week(3 * SECS_PER_DAY),
+            0,
+            "1970-01-04 must be Sunday"
+        );
     }
 }

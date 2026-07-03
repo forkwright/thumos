@@ -163,7 +163,11 @@ impl AuditEntry {
     /// Layout: timestamp (8 LE) || event_type (1) || pid (4 LE) || detail (64) || prev_hmac (32)
     ///
     /// Returns the number of bytes written.
-    fn serialize_for_hmac(&self, prev_hmac: &[u8; SHA256_DIGEST_LEN], buf: &mut [u8; 109]) -> usize {
+    fn serialize_for_hmac(
+        &self,
+        prev_hmac: &[u8; SHA256_DIGEST_LEN],
+        buf: &mut [u8; 109],
+    ) -> usize {
         let mut offset = 0;
 
         // Timestamp: 8 bytes little-endian.
@@ -401,10 +405,7 @@ impl AuditLog {
     /// - [`AuditError::Empty`] if the log has no entries.
     /// - [`AuditError::NoKey`] if `hmac_key` is all zeros.
     /// - [`AuditError::ChainTampered`] if any entry's HMAC does not match.
-    pub(crate) fn verify_chain(
-        &self,
-        hmac_key: &[u8; KEY_SIZE],
-    ) -> Result<(), AuditError> {
+    pub(crate) fn verify_chain(&self, hmac_key: &[u8; KEY_SIZE]) -> Result<(), AuditError> {
         if self.count == 0 {
             return Err(AuditError::Empty);
         }
@@ -551,13 +552,7 @@ mod tests {
     const TEST_KEY: [u8; KEY_SIZE] = [0xAA; KEY_SIZE];
 
     /// Append a single audit event for use in test assertions.
-    fn log_one(
-        log: &mut AuditLog,
-        event_type: AuditEventType,
-        pid: u32,
-        detail: &[u8],
-        tick: u64,
-    ) {
+    fn log_one(log: &mut AuditLog, event_type: AuditEventType, pid: u32, detail: &[u8], tick: u64) {
         log.log_event(event_type, pid, detail, tick, &TEST_KEY)
             .expect("log_event failed in test");
     }
@@ -569,13 +564,16 @@ mod tests {
         let mut log = AuditLog::new();
         log_one(&mut log, AuditEventType::AuthFail, 1, b"wrong PIN", 100);
         log_one(&mut log, AuditEventType::CapDeny, 2, b"no NET cap", 200);
-        log_one(&mut log, AuditEventType::ModeChange, 0, b"Daily->Sentinel", 300);
+        log_one(
+            &mut log,
+            AuditEventType::ModeChange,
+            0,
+            b"Daily->Sentinel",
+            300,
+        );
 
         let result = log.verify_chain(&TEST_KEY);
-        assert!(
-            result.is_ok(),
-            "clean chain must verify: {result:?}"
-        );
+        assert!(result.is_ok(), "clean chain must verify: {result:?}");
     }
 
     #[test]
@@ -650,13 +648,7 @@ mod tests {
         assert!(log.has_wrapped(), "buffer must have wrapped");
 
         // Add one more — should overwrite the oldest.
-        log_one(
-            &mut log,
-            AuditEventType::AuthFail,
-            9999,
-            b"overflow",
-            99999,
-        );
+        log_one(&mut log, AuditEventType::AuthFail, 9999, b"overflow", 99999);
         assert_eq!(
             log.len(),
             MAX_ENTRIES,
@@ -665,10 +657,7 @@ mod tests {
 
         // The chain should still verify (with wrapped semantics).
         let result = log.verify_chain(&TEST_KEY);
-        assert!(
-            result.is_ok(),
-            "chain must verify after wrap: {result:?}"
-        );
+        assert!(result.is_ok(), "chain must verify after wrap: {result:?}");
     }
 
     #[test]
@@ -718,16 +707,22 @@ mod tests {
             log_one(&mut log, et, i as u32, b"test", (i as u64 + 1) * 100);
         }
 
-        assert_eq!(log.len(), event_types.len(), "all event types must be logged");
+        assert_eq!(
+            log.len(),
+            event_types.len(),
+            "all event types must be logged"
+        );
 
         // Verify chain integrity with all types.
         let result = log.verify_chain(&TEST_KEY);
-        assert!(result.is_ok(), "chain must verify with all event types: {result:?}");
+        assert!(
+            result.is_ok(),
+            "chain must verify with all event types: {result:?}"
+        );
 
         // Verify each entry has the correct event type.
         let (older, newer) = log.recent(event_types.len());
-        let all_entries: alloc::vec::Vec<&AuditEntry> =
-            older.iter().chain(newer.iter()).collect();
+        let all_entries: alloc::vec::Vec<&AuditEntry> = older.iter().chain(newer.iter()).collect();
         for (i, &et) in event_types.iter().enumerate() {
             assert_eq!(
                 all_entries[i].event_type, et,
@@ -742,13 +737,7 @@ mod tests {
     fn no_key_rejected() {
         let mut log = AuditLog::new();
         let zero_key = [0u8; KEY_SIZE];
-        let result = log.log_event(
-            AuditEventType::AuthFail,
-            1,
-            b"test",
-            100,
-            &zero_key,
-        );
+        let result = log.log_event(AuditEventType::AuthFail, 1, b"test", 100, &zero_key);
         assert_eq!(result, Err(AuditError::NoKey), "zero key must be rejected");
     }
 
@@ -756,7 +745,11 @@ mod tests {
     fn verify_empty_log() {
         let log = AuditLog::new();
         let result = log.verify_chain(&TEST_KEY);
-        assert_eq!(result, Err(AuditError::Empty), "empty log must return Empty");
+        assert_eq!(
+            result,
+            Err(AuditError::Empty),
+            "empty log must return Empty"
+        );
     }
 
     #[test]
@@ -766,7 +759,11 @@ mod tests {
 
         let zero_key = [0u8; KEY_SIZE];
         let result = log.verify_chain(&zero_key);
-        assert_eq!(result, Err(AuditError::NoKey), "zero key must be rejected on verify");
+        assert_eq!(
+            result,
+            Err(AuditError::NoKey),
+            "zero key must be rejected on verify"
+        );
     }
 
     #[test]
@@ -794,11 +791,16 @@ mod tests {
         log_one(&mut log, AuditEventType::PacketDeny, 3, b"third", 300);
 
         let (older, newer) = log.recent(2);
-        let entries: alloc::vec::Vec<&AuditEntry> =
-            older.iter().chain(newer.iter()).collect();
+        let entries: alloc::vec::Vec<&AuditEntry> = older.iter().chain(newer.iter()).collect();
         assert_eq!(entries.len(), 2, "recent(2) must return 2 entries");
-        assert_eq!(entries[0].timestamp, 200, "first of recent(2) must be second entry");
-        assert_eq!(entries[1].timestamp, 300, "second of recent(2) must be third entry");
+        assert_eq!(
+            entries[0].timestamp, 200,
+            "first of recent(2) must be second entry"
+        );
+        assert_eq!(
+            entries[1].timestamp, 300,
+            "second of recent(2) must be third entry"
+        );
     }
 
     #[test]
@@ -817,7 +819,11 @@ mod tests {
         log_one(&mut log, AuditEventType::AuthFail, 1, b"test", 100);
 
         let (older, newer) = log.recent(0);
-        assert_eq!(older.len() + newer.len(), 0, "recent(0) must return nothing");
+        assert_eq!(
+            older.len() + newer.len(),
+            0,
+            "recent(0) must return nothing"
+        );
     }
 
     #[test]
@@ -834,8 +840,7 @@ mod tests {
         }
 
         let (older, newer) = log.recent(3);
-        let entries: alloc::vec::Vec<&AuditEntry> =
-            older.iter().chain(newer.iter()).collect();
+        let entries: alloc::vec::Vec<&AuditEntry> = older.iter().chain(newer.iter()).collect();
         assert_eq!(entries.len(), 3, "recent(3) after wrap must return 3");
 
         // Entries must be in chronological order.
@@ -858,11 +863,9 @@ mod tests {
         log_one(&mut log, AuditEventType::AuthFail, 1, &long_detail, 100);
 
         let (older, newer) = log.recent(1);
-        let entries: alloc::vec::Vec<&AuditEntry> =
-            older.iter().chain(newer.iter()).collect();
+        let entries: alloc::vec::Vec<&AuditEntry> = older.iter().chain(newer.iter()).collect();
         assert_eq!(
-            entries[0].detail_len as usize,
-            DETAIL_LEN,
+            entries[0].detail_len as usize, DETAIL_LEN,
             "detail must be truncated to DETAIL_LEN"
         );
         assert_eq!(
@@ -876,32 +879,34 @@ mod tests {
 
     #[test]
     fn event_type_display() {
-        assert_eq!(
-            AuditEventType::AuthFail.to_string(),
-            "AUTH_FAIL"
-        );
-        assert_eq!(
-            AuditEventType::PanicTrigger.to_string(),
-            "PANIC_TRIGGER"
-        );
-        assert_eq!(
-            AuditEventType::DuressAttempt.to_string(),
-            "DURESS_ATTEMPT"
-        );
+        assert_eq!(AuditEventType::AuthFail.to_string(), "AUTH_FAIL");
+        assert_eq!(AuditEventType::PanicTrigger.to_string(), "PANIC_TRIGGER");
+        assert_eq!(AuditEventType::DuressAttempt.to_string(), "DURESS_ATTEMPT");
     }
 
     #[test]
     fn entry_display() {
         let mut log = AuditLog::new();
-        log_one(&mut log, AuditEventType::ModeChange, 0, b"Daily->Sentinel", 42000);
+        log_one(
+            &mut log,
+            AuditEventType::ModeChange,
+            0,
+            b"Daily->Sentinel",
+            42000,
+        );
 
         let (older, newer) = log.recent(1);
-        let entries: alloc::vec::Vec<&AuditEntry> =
-            older.iter().chain(newer.iter()).collect();
+        let entries: alloc::vec::Vec<&AuditEntry> = older.iter().chain(newer.iter()).collect();
         let display = entries[0].to_string();
         assert!(display.contains("42000"), "display must contain timestamp");
-        assert!(display.contains("MODE_CHANGE"), "display must contain event type");
-        assert!(display.contains("Daily->Sentinel"), "display must contain detail");
+        assert!(
+            display.contains("MODE_CHANGE"),
+            "display must contain event type"
+        );
+        assert!(
+            display.contains("Daily->Sentinel"),
+            "display must contain detail"
+        );
     }
 
     #[test]
@@ -909,7 +914,10 @@ mod tests {
         let log = AuditLog::new();
         let display = alloc::format!("{log}");
         assert!(display.contains("0/"), "display must show count");
-        assert!(display.contains("AuditLog"), "display must include type name");
+        assert!(
+            display.contains("AuditLog"),
+            "display must include type name"
+        );
     }
 
     #[test]
@@ -918,7 +926,10 @@ mod tests {
         assert!(no_key.contains("not available"), "NoKey display: {no_key}");
 
         let tampered = AuditError::ChainTampered.to_string();
-        assert!(tampered.contains("tampering"), "ChainTampered display: {tampered}");
+        assert!(
+            tampered.contains("tampering"),
+            "ChainTampered display: {tampered}"
+        );
 
         let empty = AuditError::Empty.to_string();
         assert!(empty.contains("empty"), "Empty display: {empty}");

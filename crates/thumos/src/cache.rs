@@ -16,7 +16,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::block::{BlockDevice, BlockError, BLOCK_SIZE, SECTORS_PER_BLOCK};
+use crate::block::{BLOCK_SIZE, BlockDevice, BlockError, SECTORS_PER_BLOCK};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -173,7 +173,8 @@ impl BlockCache {
     pub(crate) fn flush(&mut self, dev: &mut dyn BlockDevice) -> Result<(), BlockError> {
         let mut first_err = None;
         for i in 0..self.entries.len() {
-            if self.entries[i].valid && self.entries[i].dirty
+            if self.entries[i].valid
+                && self.entries[i].dirty
                 && let Err(e) = self.write_back(dev, i)
             {
                 first_err.get_or_insert(e);
@@ -288,8 +289,8 @@ mod tests {
     use alloc::vec;
 
     use super::*;
-    use crate::block::tests::FailingBlockDevice;
     use crate::block::MemBlockDevice;
+    use crate::block::tests::FailingBlockDevice;
 
     /// Helper: create a device large enough for cache testing.
     /// 2048 sectors = 256 logical blocks (matches cache size exactly).
@@ -323,11 +324,15 @@ mod tests {
         let mut buf = [0u8; BLOCK_SIZE];
 
         // First read — cache miss, fills from device.
-        cache.read(&mut dev, 5, &mut buf).expect("first read failed");
+        cache
+            .read(&mut dev, 5, &mut buf)
+            .expect("first read failed");
         let counter_after_first = cache.counter;
 
         // Second read — should be a cache hit (counter increments but no device I/O).
-        cache.read(&mut dev, 5, &mut buf).expect("second read failed");
+        cache
+            .read(&mut dev, 5, &mut buf)
+            .expect("second read failed");
         let counter_after_second = cache.counter;
 
         assert_eq!(
@@ -491,7 +496,9 @@ mod tests {
 
         // Touch block 0 again to make it recently used.
         let mut buf = [0u8; BLOCK_SIZE];
-        cache.read(&mut dev, 0, &mut buf).expect("touch read failed");
+        cache
+            .read(&mut dev, 0, &mut buf)
+            .expect("touch read failed");
 
         // Now insert a new block (256) — should evict block 1 (the true LRU),
         // not block 0 (which was just touched).
@@ -507,7 +514,10 @@ mod tests {
             cache.find_entry(1).is_none(),
             "block 1 was LRU and should have been evicted"
         );
-        assert!(cache.find_entry(256).is_some(), "block 256 should be cached");
+        assert!(
+            cache.find_entry(256).is_some(),
+            "block 256 should be cached"
+        );
     }
 
     #[test]
@@ -547,11 +557,15 @@ mod tests {
 
         // Write to block 0.
         let data = pattern_block(0x42);
-        cache.write(&mut dev, 0, &data).expect("write block 0 failed");
+        cache
+            .write(&mut dev, 0, &data)
+            .expect("write block 0 failed");
 
         // Read it back from cache.
         let mut buf = [0u8; BLOCK_SIZE];
-        cache.read(&mut dev, 0, &mut buf).expect("read block 0 failed");
+        cache
+            .read(&mut dev, 0, &mut buf)
+            .expect("read block 0 failed");
         assert_eq!(buf, data);
 
         // Flush and verify on device.

@@ -37,7 +37,7 @@ use subtle::ConstantTimeEq;
 use crate::audit::{AuditEventType, AuditLog};
 use crate::key_manager::KeyManager;
 use crate::power::{PowerManager, PowerState, Radio};
-use crate::security::{SleepTier, KEY_SIZE};
+use crate::security::{KEY_SIZE, SleepTier};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -105,8 +105,11 @@ impl fmt::Display for SecurityMode {
 /// independently (see [`ModeManager::effective_policy`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
-#[expect(clippy::struct_excessive_bools, reason = "radio enable/disable states are inherently boolean")]
-pub struct ModePolicy {
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "radio enable/disable states are inherently boolean"
+)]
+pub(crate) struct ModePolicy {
     /// Whether the cellular modem is enabled.
     pub cellular_enabled: bool,
     /// Whether `WiFi` is enabled.
@@ -866,7 +869,8 @@ mod tests {
         let mut pm = PowerManager::new();
         pm.apply_mode(crate::power::PowerMode::Full);
 
-        mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
+        mm.enter_sentinel(&mut km, &mut pm)
+            .expect("enter_sentinel failed");
 
         assert_eq!(mm.mode(), SecurityMode::Sentinel);
         // Sentinel forces long-sleep, which zeroizes keys.
@@ -889,7 +893,8 @@ mod tests {
         let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
-        mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
+        mm.enter_sentinel(&mut km, &mut pm)
+            .expect("enter_sentinel failed");
 
         // Empty PIN should fail.
         let result = mm.exit_sentinel(b"", &mut pm);
@@ -900,7 +905,8 @@ mod tests {
         assert_eq!(result, Err(ModeTransitionError::PinMismatch));
 
         // Correct PIN should succeed.
-        mm.exit_sentinel(b"123456", &mut pm).expect("exit_sentinel failed");
+        mm.exit_sentinel(b"123456", &mut pm)
+            .expect("exit_sentinel failed");
         assert_eq!(mm.mode(), SecurityMode::Daily);
     }
 
@@ -962,7 +968,8 @@ mod tests {
         let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
-        mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
+        mm.enter_sentinel(&mut km, &mut pm)
+            .expect("enter_sentinel failed");
         mm.exit_sentinel(b"123456", &mut pm)
             .expect("correct PIN must still unlock after KDF fix");
         assert_eq!(mm.mode(), SecurityMode::Daily);
@@ -981,7 +988,8 @@ mod tests {
 
         assert!(km.has_keys(), "keys must be loaded before panic");
 
-        let event = mm.activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
+        let event = mm
+            .activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("activate_panic failed");
 
         assert_eq!(mm.mode(), SecurityMode::Panic);
@@ -994,8 +1002,11 @@ mod tests {
         assert_eq!(pm.state(Radio::Wifi), PowerState::Off);
         assert_eq!(pm.state(Radio::Bluetooth), PowerState::Off);
         assert_eq!(pm.state(Radio::Gps), PowerState::Off);
-        assert_eq!(pm.state(Radio::Mesh), PowerState::Off,
-            "Panic must leave the Mesh/LoRa transceiver off (#254)");
+        assert_eq!(
+            pm.state(Radio::Mesh),
+            PowerState::Off,
+            "Panic must leave the Mesh/LoRa transceiver off (#254)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1060,8 +1071,11 @@ mod tests {
         assert_eq!(pm.state(Radio::Wifi), PowerState::Off);
         assert_eq!(pm.state(Radio::Bluetooth), PowerState::Off);
         assert_eq!(pm.state(Radio::Gps), PowerState::Off);
-        assert_eq!(pm.state(Radio::Mesh), PowerState::On,
-            "Covert Lock must keep mesh on (#254)");
+        assert_eq!(
+            pm.state(Radio::Mesh),
+            PowerState::On,
+            "Covert Lock must keep mesh on (#254)"
+        );
 
         // Deactivate Covert Lock — Daily mode restores all radios.
         mm.toggle_covert_lock(&mut pm);
@@ -1148,7 +1162,8 @@ mod tests {
         let mut mm = mode_manager_with_test_pin();
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
-        mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
+        mm.enter_sentinel(&mut km, &mut pm)
+            .expect("enter_sentinel failed");
         assert_eq!(mm.status_badge(), "SENTL");
     }
 
@@ -1196,7 +1211,8 @@ mod tests {
 
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
-        mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
+        mm.enter_sentinel(&mut km, &mut pm)
+            .expect("enter_sentinel failed");
         assert_eq!(mm.mode_char(), 'S');
 
         mm.activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
@@ -1269,15 +1285,19 @@ mod tests {
         let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
-        mm.enter_sentinel(&mut km, &mut pm).expect("enter_sentinel failed");
+        mm.enter_sentinel(&mut km, &mut pm)
+            .expect("enter_sentinel failed");
         assert_eq!(mm.mode(), SecurityMode::Sentinel);
 
         mm.activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("activate_panic failed");
 
         mm.abort_panic(1100, &mut pm).expect("abort_panic failed");
-        assert_eq!(mm.mode(), SecurityMode::Sentinel,
-            "abort must restore pre-panic mode (Sentinel)");
+        assert_eq!(
+            mm.mode(),
+            SecurityMode::Sentinel,
+            "abort must restore pre-panic mode (Sentinel)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1297,7 +1317,10 @@ mod tests {
         let policy_s = base_policy(SecurityMode::Daily).to_string();
         assert!(policy_s.contains("cell=true"));
 
-        let event = PanicEvent { triggered_at: 42, keys_zeroized: true };
+        let event = PanicEvent {
+            triggered_at: 42,
+            keys_zeroized: true,
+        };
         let event_s = alloc::format!("{event}");
         assert!(event_s.contains("42"));
 
@@ -1341,12 +1364,17 @@ mod tests {
             &mut pm,
         );
 
-        assert_eq!(response, ThreatResponse::ModemPowerCut,
-            "critical score must trigger modem power cut");
-        assert_eq!(fw.mode(), FirewallMode::Panic,
-            "firewall must switch to Panic on critical");
-        assert!(pm.is_modem_pmic_killed(),
-            "modem must be PMIC-killed");
+        assert_eq!(
+            response,
+            ThreatResponse::ModemPowerCut,
+            "critical score must trigger modem power cut"
+        );
+        assert_eq!(
+            fw.mode(),
+            FirewallMode::Panic,
+            "firewall must switch to Panic on critical"
+        );
+        assert!(pm.is_modem_pmic_killed(), "modem must be PMIC-killed");
     }
 
     #[test]
@@ -1364,10 +1392,16 @@ mod tests {
             &mut pm,
         );
 
-        assert_eq!(response, ThreatResponse::FirewallRestricted,
-            "Sentinel mode must restrict firewall");
-        assert_eq!(fw.mode(), FirewallMode::Sentinel,
-            "firewall must switch to Sentinel");
+        assert_eq!(
+            response,
+            ThreatResponse::FirewallRestricted,
+            "Sentinel mode must restrict firewall"
+        );
+        assert_eq!(
+            fw.mode(),
+            FirewallMode::Sentinel,
+            "firewall must switch to Sentinel"
+        );
     }
 
     #[test]
@@ -1377,18 +1411,18 @@ mod tests {
         let mut fw = CcciFirewall::new(FirewallMode::Daily);
         let mut pm = PowerManager::new();
 
-        let response = evaluate_threat(
-            SecurityMode::Daily,
-            10,
-            80,
-            &mut fw,
-            &mut pm,
-        );
+        let response = evaluate_threat(SecurityMode::Daily, 10, 80, &mut fw, &mut pm);
 
-        assert_eq!(response, ThreatResponse::None,
-            "below threshold in Daily must take no action");
-        assert_eq!(fw.mode(), FirewallMode::Daily,
-            "firewall must remain in Daily mode");
+        assert_eq!(
+            response,
+            ThreatResponse::None,
+            "below threshold in Daily must take no action"
+        );
+        assert_eq!(
+            fw.mode(),
+            FirewallMode::Daily,
+            "firewall must remain in Daily mode"
+        );
     }
 
     #[test]

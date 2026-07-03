@@ -109,8 +109,7 @@ pub(crate) fn encode_gsm7(text: &str) -> Result<Vec<u8>, SmsError> {
     // First pass: collect the septet sequence.
     let mut septets: Vec<u8> = Vec::with_capacity(text.len());
     for c in text.chars() {
-        let (is_ext, code) =
-            char_to_septet(c).ok_or(SmsError::Gsm7Encode(u32::from(c)))?;
+        let (is_ext, code) = char_to_septet(c).ok_or(SmsError::Gsm7Encode(u32::from(c)))?;
         if is_ext {
             septets.push(0x1B); // ESC prefix
         }
@@ -163,9 +162,7 @@ pub(crate) fn decode_gsm7(data: &[u8], num_septets: usize) -> Result<String, Sms
         let byte_index = bit_offset / 8;
         let bit_shift = bit_offset % 8;
 
-        let b0 = u16::from(
-            *data.get(byte_index).ok_or(SmsError::PduDecode)?,
-        );
+        let b0 = u16::from(*data.get(byte_index).ok_or(SmsError::PduDecode)?);
         // NOTE: missing high byte contributes 0 bits, which is correct.
         let b1 = u16::from(data.get(byte_index + 1).copied().unwrap_or(0));
 
@@ -241,7 +238,10 @@ mod tests {
         let text = "Testing 123";
         let encoded = encode_gsm7(text).unwrap_or_default();
         let decoded = decode_gsm7(&encoded, text.len()).unwrap_or_default();
-        assert_eq!(decoded, text, "GSM-7 round-trip must be lossless for ASCII text");
+        assert_eq!(
+            decoded, text,
+            "GSM-7 round-trip must be lossless for ASCII text"
+        );
     }
 
     #[test]
@@ -254,7 +254,10 @@ mod tests {
             "'@' must encode to septet 0x00 (single zero byte)"
         );
         let decoded = decode_gsm7(&encoded, 1).unwrap_or_default();
-        assert_eq!(decoded, "@", "round-trip for '@' (septet 0x00) must succeed");
+        assert_eq!(
+            decoded, "@",
+            "round-trip for '@' (septet 0x00) must succeed"
+        );
     }
 
     #[test]

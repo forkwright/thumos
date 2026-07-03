@@ -632,7 +632,9 @@ impl MsdcController {
 
         // CMD16: SET_BLOCKLEN to 512 bytes
         // SAFETY: controller is powered and register block is mapped per caller contract.
-        let Ok(blocklen) = u32::try_from(SECTOR_SIZE) else { return Err(MsdcError::CommandTimeout); };
+        let Ok(blocklen) = u32::try_from(SECTOR_SIZE) else {
+            return Err(MsdcError::CommandTimeout);
+        };
         // SAFETY: controller is powered and register block is mapped per caller contract.
         unsafe { self.send_command(CMD16_SET_BLOCKLEN, blocklen, CMD_RSPTYP_R1)? };
 
@@ -1307,13 +1309,34 @@ mod tests {
         assert!(gpd.has_bd(), "GPD must have BDP");
         assert_eq!(gpd.data_len, 1536, "total length = 3 * 512");
 
-        assert!(!bds.get(0).copied().unwrap_or_default().is_eol(), "first BD is not EOL");
-        assert!(!bds.get(1).copied().unwrap_or_default().is_eol(), "second BD is not EOL");
-        assert!(bds.get(2).copied().unwrap_or_default().is_eol(), "third BD is EOL");
+        assert!(
+            !bds.get(0).copied().unwrap_or_default().is_eol(),
+            "first BD is not EOL"
+        );
+        assert!(
+            !bds.get(1).copied().unwrap_or_default().is_eol(),
+            "second BD is not EOL"
+        );
+        assert!(
+            bds.get(2).copied().unwrap_or_default().is_eol(),
+            "third BD is EOL"
+        );
 
-        assert_eq!(bds.get(0).copied().unwrap_or_default().ptr, 0x4000_0000, "segment 0 address");
-        assert_eq!(bds.get(1).copied().unwrap_or_default().ptr, 0x4000_1000, "segment 1 address");
-        assert_eq!(bds.get(2).copied().unwrap_or_default().ptr, 0x4000_2000, "segment 2 address");
+        assert_eq!(
+            bds.get(0).copied().unwrap_or_default().ptr,
+            0x4000_0000,
+            "segment 0 address"
+        );
+        assert_eq!(
+            bds.get(1).copied().unwrap_or_default().ptr,
+            0x4000_1000,
+            "segment 1 address"
+        );
+        assert_eq!(
+            bds.get(2).copied().unwrap_or_default().ptr,
+            0x4000_2000,
+            "segment 2 address"
+        );
     }
 
     #[test]

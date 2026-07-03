@@ -285,8 +285,10 @@ impl<C: AudioCodecOps> AudioManager<C> {
         // The new session must not become active, and must not touch the
         // codec route, or it silently displaces the higher-priority
         // session's audio (#386).
-        let blocked_by_higher_priority =
-            self.sessions.iter().any(|s| s.active && s.priority > priority);
+        let blocked_by_higher_priority = self
+            .sessions
+            .iter()
+            .any(|s| s.active && s.priority > priority);
 
         // Commit point: set the codec output route for the new session,
         // unless a strictly higher-priority session is already active.
@@ -366,7 +368,10 @@ impl<C: AudioCodecOps> AudioManager<C> {
         }
 
         // Power down mic if no voice call sessions remain.
-        let has_voice = self.sessions.iter().any(|s| s.kind == SessionKind::VoiceCall);
+        let has_voice = self
+            .sessions
+            .iter()
+            .any(|s| s.kind == SessionKind::VoiceCall);
         if !has_voice && self.mic_powered {
             self.power_down_mic()?;
         }
@@ -583,14 +588,12 @@ mod tests {
         let mut mgr = make_manager();
 
         // Open a low-priority session (FM radio).
-        let low_id = mgr
-            .open_session(SessionKind::FmRadio, AudioRoute::Speaker);
+        let low_id = mgr.open_session(SessionKind::FmRadio, AudioRoute::Speaker);
         assert!(low_id.is_ok(), "FM session must open");
         let low_id = low_id.unwrap_or(0);
 
         // Open a high-priority session (alarm).
-        let high_id = mgr
-            .open_session(SessionKind::Alarm, AudioRoute::Speaker);
+        let high_id = mgr.open_session(SessionKind::Alarm, AudioRoute::Speaker);
         assert!(high_id.is_ok(), "alarm session must open");
 
         // Low-priority session must be preempted (paused).
@@ -645,8 +648,7 @@ mod tests {
             .unwrap_or(0);
 
         // Open voice call — preempts music.
-        let call_id = mgr
-            .open_session(SessionKind::VoiceCall, AudioRoute::Earpiece);
+        let call_id = mgr.open_session(SessionKind::VoiceCall, AudioRoute::Earpiece);
         assert!(call_id.is_ok(), "voice call must open");
         let call_id = call_id.unwrap_or(0);
 
@@ -722,10 +724,7 @@ mod tests {
     #[test]
     fn mic_powered_during_voice_call() {
         let mut mgr = make_manager();
-        assert!(
-            !mgr.is_mic_powered(),
-            "mic must be off before any session"
-        );
+        assert!(!mgr.is_mic_powered(), "mic must be off before any session");
 
         // Open a voice call — mic should power on.
         let call_id = mgr
@@ -747,7 +746,8 @@ mod tests {
     #[test]
     fn mic_not_powered_for_music() {
         let mut mgr = make_manager();
-        mgr.open_session(SessionKind::Music, AudioRoute::Speaker).ok();
+        mgr.open_session(SessionKind::Music, AudioRoute::Speaker)
+            .ok();
         assert!(
             !mgr.is_mic_powered(),
             "mic must not be powered for music playback"
@@ -802,14 +802,18 @@ mod tests {
     #[test]
     fn codec_not_powered_with_no_sessions() {
         let mgr = make_manager();
-        assert!(!mgr.is_codec_powered(), "codec must be off with no sessions");
+        assert!(
+            !mgr.is_codec_powered(),
+            "codec must be off with no sessions"
+        );
         assert_eq!(mgr.session_count(), 0, "session count must be 0");
     }
 
     #[test]
     fn set_volume_applies_to_codec() {
         let mut mgr = make_manager();
-        mgr.open_session(SessionKind::Music, AudioRoute::Speaker).ok();
+        mgr.open_session(SessionKind::Music, AudioRoute::Speaker)
+            .ok();
 
         let result = mgr.set_volume(12);
         assert!(result.is_ok(), "set_volume must succeed");
@@ -951,18 +955,9 @@ mod tests {
             active: true,
         };
         let s = alloc::format!("{session}");
-        assert!(
-            s.contains("42"),
-            "display must include session ID"
-        );
-        assert!(
-            s.contains("music"),
-            "display must include session kind"
-        );
-        assert!(
-            s.contains("active"),
-            "display must include active state"
-        );
+        assert!(s.contains("42"), "display must include session ID");
+        assert!(s.contains("music"), "display must include session kind");
+        assert!(s.contains("active"), "display must include active state");
     }
 
     #[test]
@@ -970,7 +965,8 @@ mod tests {
         let mut mgr = make_manager();
 
         // Open session — should power on, enable DAC, set volume, set output.
-        mgr.open_session(SessionKind::Music, AudioRoute::Speaker).ok();
+        mgr.open_session(SessionKind::Music, AudioRoute::Speaker)
+            .ok();
 
         let ops = &mgr.codec().operations;
         assert!(
@@ -996,7 +992,10 @@ mod tests {
             .open_session(SessionKind::VoiceCall, AudioRoute::Earpiece)
             .unwrap_or(0);
         assert!(
-            mgr.active_sessions().iter().find(|s| s.id == call_id).map_or(false, |s| s.active),
+            mgr.active_sessions()
+                .iter()
+                .find(|s| s.id == call_id)
+                .map_or(false, |s| s.active),
             "voice call must be active"
         );
 
@@ -1026,7 +1025,10 @@ mod tests {
 
         // At most one session may be active.
         let active_count = mgr.active_sessions().iter().filter(|s| s.active).count();
-        assert_eq!(active_count, 1, "at most one session may be active at a time");
+        assert_eq!(
+            active_count, 1,
+            "at most one session may be active at a time"
+        );
 
         // When the call closes, the paused Music session must resume.
         mgr.close_session(call_id).ok();
@@ -1046,12 +1048,19 @@ mod tests {
         mgr.codec_mut().fail_enable_dac = Some(AudioError::HardwareError);
 
         let result = mgr.open_session(SessionKind::Music, AudioRoute::Speaker);
-        assert!(result.is_err(), "open_session must fail when enable_dac fails");
+        assert!(
+            result.is_err(),
+            "open_session must fail when enable_dac fails"
+        );
         assert!(
             !mgr.is_codec_powered(),
             "codec must be powered off after a failed open_session (#390)"
         );
-        assert_eq!(mgr.session_count(), 0, "no session must be recorded on failure");
+        assert_eq!(
+            mgr.session_count(),
+            0,
+            "no session must be recorded on failure"
+        );
     }
 
     #[test]
@@ -1063,7 +1072,10 @@ mod tests {
         mgr.codec_mut().fail_enable_mic_bias = Some(AudioError::HardwareError);
 
         let result = mgr.open_session(SessionKind::VoiceCall, AudioRoute::Earpiece);
-        assert!(result.is_err(), "open_session must fail when enable_mic_bias fails");
+        assert!(
+            result.is_err(),
+            "open_session must fail when enable_mic_bias fails"
+        );
         assert!(
             !mgr.codec().is_adc_enabled(),
             "ADC must be rolled back when mic bias enable fails (#390)"
@@ -1086,7 +1098,10 @@ mod tests {
 
         mgr.codec_mut().fail_set_output = Some(AudioError::HardwareError);
         let result = mgr.open_session(SessionKind::Alarm, AudioRoute::Speaker);
-        assert!(result.is_err(), "open_session must fail when set_output fails");
+        assert!(
+            result.is_err(),
+            "open_session must fail when set_output fails"
+        );
 
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(

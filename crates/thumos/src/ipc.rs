@@ -192,10 +192,7 @@ mod tests {
     #[test]
     fn validate_pid_accepts_valid_pids() {
         for pid in 0..MAX_INBOX_PROCS as u8 {
-            assert!(
-                validate_pid(pid).is_ok(),
-                "pid {pid} should be valid"
-            );
+            assert!(validate_pid(pid).is_ok(), "pid {pid} should be valid");
             assert_eq!(validate_pid(pid), Ok(pid as usize));
         }
     }

@@ -386,7 +386,9 @@ pub enum MemoryType {
 fn map_section(virt_mb: usize, phys_mb: usize, mem_type: MemoryType) {
     let base = (u32::try_from(phys_mb).unwrap_or_default()) << 20;
     let attrs = match mem_type {
-        MemoryType::Ram => flags::SECTION | flags::AP_PL1_ONLY | flags::SHAREABLE | flags::NORMAL_WB_WA,
+        MemoryType::Ram => {
+            flags::SECTION | flags::AP_PL1_ONLY | flags::SHAREABLE | flags::NORMAL_WB_WA
+        }
         MemoryType::Device => flags::SECTION | flags::AP_PL1_ONLY | flags::DEVICE | flags::XN,
     };
     unsafe {
@@ -593,7 +595,8 @@ pub fn alloc_addr_space() -> Option<usize> {
         // WHY: find first zero bit (free slot)
         let slot = (0u16..16).find(|&i| mask & (1 << i) == 0)?;
         core::ptr::write_volatile(alloc, mask | (1 << slot));
-        let table = &mut (*core::ptr::addr_of_mut!(USER_TABLES))[usize::try_from(slot).unwrap_or_default()];
+        let table =
+            &mut (*core::ptr::addr_of_mut!(USER_TABLES))[usize::try_from(slot).unwrap_or_default()];
         for entry in table.entries.iter_mut() {
             *entry = 0;
         }
@@ -707,7 +710,10 @@ mod tests {
         let b = alloc_addr_space().unwrap_or_default();
         assert_ne!(a, b, "two allocations must return distinct table addresses");
         // cleanup
-        unsafe { free_addr_space(a); free_addr_space(b); }
+        unsafe {
+            free_addr_space(a);
+            free_addr_space(b);
+        }
     }
 
     #[test]
@@ -720,7 +726,9 @@ mod tests {
         let overflow = alloc_addr_space();
         assert!(overflow.is_none(), "17th allocation must return None");
         for addr in &addrs {
-            unsafe { free_addr_space(*addr); }
+            unsafe {
+                free_addr_space(*addr);
+            }
         }
     }
 
@@ -728,11 +736,15 @@ mod tests {
     fn free_addr_space_allows_reuse() {
         reset();
         let a = alloc_addr_space().unwrap_or_default();
-        unsafe { free_addr_space(a); }
+        unsafe {
+            free_addr_space(a);
+        }
         let b = alloc_addr_space().unwrap_or_default();
         // WHY: slot 0 freed then reallocated  -  must come back at the same address.
         assert_eq!(a, b, "freed slot must be reused");
-        unsafe { free_addr_space(b); }
+        unsafe {
+            free_addr_space(b);
+        }
     }
 
     #[test]
@@ -748,8 +760,11 @@ mod tests {
             assert_eq!((dst as *const u32).add(42).read(), 0xDEAD_BEEF);
             // Modify src after clone  -  dst must be unaffected
             (src as *mut u32).add(42).write(0x1234_5678);
-            assert_eq!((dst as *const u32).add(42).read(), 0xDEAD_BEEF,
-                "dst must be independent after clone");
+            assert_eq!(
+                (dst as *const u32).add(42).read(),
+                0xDEAD_BEEF,
+                "dst must be independent after clone"
+            );
             free_addr_space(src);
             free_addr_space(dst);
         }
@@ -766,11 +781,17 @@ mod tests {
         let attrs = page_flags::SMALL_PAGE | page_flags::AP_FULL;
         unsafe {
             assert!(map_page(l1, virt, phys, attrs), "map_page must succeed");
-            assert_eq!(read_l2_phys(l1, virt), Some(phys),
-                "read_l2_phys must return the mapped physical frame");
+            assert_eq!(
+                read_l2_phys(l1, virt),
+                Some(phys),
+                "read_l2_phys must return the mapped physical frame"
+            );
             unmap_page(l1, virt);
-            assert_eq!(read_l2_phys(l1, virt), None,
-                "read_l2_phys must return None after unmap_page clears the entry");
+            assert_eq!(
+                read_l2_phys(l1, virt),
+                None,
+                "read_l2_phys must return None after unmap_page clears the entry"
+            );
             free_addr_space(l1);
         }
     }
@@ -794,12 +815,18 @@ mod tests {
             // peripheral MMIO, modem/CCCI, and DRAM (first and last MB).
             for &mb in &[0x000usize, 0x100, 0x200, 0x400, 0x7FF] {
                 let entry = table.entries[mb];
-                assert_eq!(entry & 0b11, flags::SECTION,
-                    "section {mb:#x} must be a section descriptor");
+                assert_eq!(
+                    entry & 0b11,
+                    flags::SECTION,
+                    "section {mb:#x} must be a section descriptor"
+                );
                 let ap = (entry >> 10) & 0b11;
                 let apx = (entry >> 15) & 0b1;
-                assert_eq!((apx, ap), (0, 0b01),
-                    "section {mb:#x} must be AP[2:0]=001 (PL1-only R/W); PL0 must have zero access");
+                assert_eq!(
+                    (apx, ap),
+                    (0, 0b01),
+                    "section {mb:#x} must be AP[2:0]=001 (PL1-only R/W); PL0 must have zero access"
+                );
             }
         }
     }
@@ -819,8 +846,11 @@ mod tests {
                 let entry = dst_l1.add(mb).read_volatile();
                 let ap = (entry >> 10) & 0b11;
                 let apx = (entry >> 15) & 0b1;
-                assert_eq!((apx, ap), (0, 0b01),
-                    "cloned user table section {mb:#x} must still deny PL0 access");
+                assert_eq!(
+                    (apx, ap),
+                    (0, 0b01),
+                    "cloned user table section {mb:#x} must still deny PL0 access"
+                );
             }
             free_addr_space(dst);
         }
@@ -842,14 +872,19 @@ mod tests {
             assert!(map_page(l1, virt, phys, attrs), "map_page must succeed");
             let l1_index = virt >> 20;
             let l1_val = (l1 as *const u32).add(l1_index).read_volatile();
-            assert_eq!(l1_val & 0b11, page_flags::L1_PAGE_TABLE,
-                "L1 entry must point at an L2 table after map_page");
+            assert_eq!(
+                l1_val & 0b11,
+                page_flags::L1_PAGE_TABLE,
+                "L1 entry must point at an L2 table after map_page"
+            );
 
             unmap_page(l1, virt);
 
             let l1_val_after = (l1 as *const u32).add(l1_index).read_volatile();
-            assert_eq!(l1_val_after, 0,
-                "L1 descriptor must be cleared once its only L2 entry is unmapped (#330)");
+            assert_eq!(
+                l1_val_after, 0,
+                "L1 descriptor must be cleared once its only L2 entry is unmapped (#330)"
+            );
 
             free_addr_space(l1);
         }
@@ -869,8 +904,10 @@ mod tests {
         unsafe {
             for region in 0..(L2_POOL_SIZE * 2) {
                 let virt = region << 20; // one distinct 1 MB region per iteration
-                assert!(map_page(l1, virt, phys, attrs),
-                    "map must succeed in region {region} -- pool must not be exhausted by prior, already-unmapped regions");
+                assert!(
+                    map_page(l1, virt, phys, attrs),
+                    "map must succeed in region {region} -- pool must not be exhausted by prior, already-unmapped regions"
+                );
                 unmap_page(l1, virt);
             }
 
@@ -902,13 +939,18 @@ mod tests {
         unsafe {
             for region in 0..L2_POOL_SIZE {
                 let virt = region << 20;
-                assert!(map_page(l1, virt, phys, attrs),
-                    "map must succeed in region {region}");
+                assert!(
+                    map_page(l1, virt, phys, attrs),
+                    "map must succeed in region {region}"
+                );
             }
             // Every pool slot is now live and still mapped (no unmap_page
             // calls) -- exactly the "process exits with mappings still up"
             // case.
-            assert!(alloc_l2_table().is_none(), "pool must be fully consumed by the L2_POOL_SIZE live regions");
+            assert!(
+                alloc_l2_table().is_none(),
+                "pool must be fully consumed by the L2_POOL_SIZE live regions"
+            );
 
             free_addr_space(l1);
 
@@ -945,9 +987,15 @@ mod tests {
         crate::irq::reset_mock();
         assert!(crate::irq::mock_enabled(), "starts unmasked");
         let guard = L2_POOL_LOCK.lock();
-        assert!(!crate::irq::mock_enabled(), "L2_POOL_LOCK.lock() must mask IRQ delivery while held");
+        assert!(
+            !crate::irq::mock_enabled(),
+            "L2_POOL_LOCK.lock() must mask IRQ delivery while held"
+        );
         drop(guard);
-        assert!(crate::irq::mock_enabled(), "dropping the guard must restore IRQ delivery");
+        assert!(
+            crate::irq::mock_enabled(),
+            "dropping the guard must restore IRQ delivery"
+        );
     }
 
     #[test]
@@ -958,9 +1006,15 @@ mod tests {
         let inner = crate::irq::IrqGuard::new();
         assert!(!crate::irq::mock_enabled());
         drop(inner);
-        assert!(!crate::irq::mock_enabled(), "inner drop must not unmask while L2_POOL_LOCK is still held");
+        assert!(
+            !crate::irq::mock_enabled(),
+            "inner drop must not unmask while L2_POOL_LOCK is still held"
+        );
         drop(outer);
-        assert!(crate::irq::mock_enabled(), "outer drop restores IRQ delivery");
+        assert!(
+            crate::irq::mock_enabled(),
+            "outer drop restores IRQ delivery"
+        );
     }
 
     #[test]
@@ -973,9 +1027,15 @@ mod tests {
         crate::irq::reset_mock();
         assert!(crate::irq::mock_enabled(), "starts unmasked");
         let guard = ADDR_SPACE_LOCK.lock();
-        assert!(!crate::irq::mock_enabled(), "ADDR_SPACE_LOCK.lock() must mask IRQ delivery while held");
+        assert!(
+            !crate::irq::mock_enabled(),
+            "ADDR_SPACE_LOCK.lock() must mask IRQ delivery while held"
+        );
         drop(guard);
-        assert!(crate::irq::mock_enabled(), "dropping the guard must restore IRQ delivery");
+        assert!(
+            crate::irq::mock_enabled(),
+            "dropping the guard must restore IRQ delivery"
+        );
     }
 
     #[test]
@@ -986,8 +1046,14 @@ mod tests {
         let inner = crate::irq::IrqGuard::new();
         assert!(!crate::irq::mock_enabled());
         drop(inner);
-        assert!(!crate::irq::mock_enabled(), "inner drop must not unmask while ADDR_SPACE_LOCK is still held");
+        assert!(
+            !crate::irq::mock_enabled(),
+            "inner drop must not unmask while ADDR_SPACE_LOCK is still held"
+        );
         drop(outer);
-        assert!(crate::irq::mock_enabled(), "outer drop restores IRQ delivery");
+        assert!(
+            crate::irq::mock_enabled(),
+            "outer drop restores IRQ delivery"
+        );
     }
 }

@@ -12,15 +12,17 @@
 
 // WHY: renderable screen exists, but kinit currently renders only the home
 // frame and has no alarm/timer route/input path.
-#![expect(dead_code, reason = "Alarm screen is not wired into the kinit UI route")]
+#![expect(
+    dead_code,
+    reason = "Alarm screen is not wired into the kinit UI route"
+)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::heorte::{self, HeorteManager};
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -124,7 +126,8 @@ struct AlarmEntry {
 // ---------------------------------------------------------------------------
 
 /// Combined alarm/timer/stopwatch screen.
-pub(crate) struct AlarmScreen { // kanon:ignore RUST/struct-too-many-fields -- three sub-modes (alarm/timer/stopwatch) share one screen; splitting would require three parallel screens + a dispatcher
+pub(crate) struct AlarmScreen {
+    // kanon:ignore RUST/struct-too-many-fields -- three sub-modes (alarm/timer/stopwatch) share one screen; splitting would require three parallel screens + a dispatcher
     /// Active tab.
     tab: Tab,
     /// Alarm entries snapshot.
@@ -272,9 +275,14 @@ impl AlarmScreen {
 
         if self.alarm_entries.is_empty() {
             ui::draw_str_centered(
-                fb, w, 0, w, CONTENT_START_Y + 40,
+                fb,
+                w,
+                0,
+                w,
+                CONTENT_START_Y + 40,
                 "No alarms set",
-                color::DARK_GREY, color::BLACK,
+                color::DARK_GREY,
+                color::BLACK,
             );
             return;
         }
@@ -300,7 +308,11 @@ impl AlarmScreen {
             // Enabled indicator.
             let indicator = if entry.enabled { '*' } else { ' ' };
             let indicator_color = if entry.enabled {
-                if is_selected { color::from_rgb(0, 160, 0) } else { color::GREEN }
+                if is_selected {
+                    color::from_rgb(0, 160, 0)
+                } else {
+                    color::GREEN
+                }
             } else {
                 fg
             };
@@ -322,7 +334,15 @@ impl AlarmScreen {
         let w = SCREEN_WIDTH;
 
         // Large countdown display (centered, scaled text).
-        ui::draw_scaled_str_centered(fb, w, BIG_DISPLAY_Y, &self.timer_display, color::WHITE, color::BLACK, BIG_SCALE);
+        ui::draw_scaled_str_centered(
+            fb,
+            w,
+            BIG_DISPLAY_Y,
+            &self.timer_display,
+            color::WHITE,
+            color::BLACK,
+            BIG_SCALE,
+        );
 
         // Status text.
         let status = if self.timer_expired {
@@ -345,8 +365,24 @@ impl AlarmScreen {
 
         // Set duration label.
         let set_str = core::str::from_utf8(&self.timer_set_display).unwrap_or("??:??");
-        ui::draw_str(fb, w, PADDING_X, SET_LABEL_Y, "set: ", color::DARK_GREY, color::BLACK);
-        ui::draw_str(fb, w, PADDING_X + 5 * CHAR_WIDTH, SET_LABEL_Y, set_str, color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            SET_LABEL_Y,
+            "set: ",
+            color::DARK_GREY,
+            color::BLACK,
+        );
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 5 * CHAR_WIDTH,
+            SET_LABEL_Y,
+            set_str,
+            color::WHITE,
+            color::BLACK,
+        );
     }
 
     /// Draw the stopwatch tab content.
@@ -355,19 +391,39 @@ impl AlarmScreen {
 
         // Large elapsed display (centered, scaled text).
         ui::draw_scaled_str_centered(
-            fb, w, BIG_DISPLAY_Y,
+            fb,
+            w,
+            BIG_DISPLAY_Y,
             &self.stopwatch_display,
-            color::WHITE, color::BLACK, BIG_SCALE,
+            color::WHITE,
+            color::BLACK,
+            BIG_SCALE,
         );
 
         // Status.
-        let status = if self.stopwatch_running { "RUNNING" } else { "STOPPED" };
-        let status_color = if self.stopwatch_running { color::GREEN } else { color::DARK_GREY };
+        let status = if self.stopwatch_running {
+            "RUNNING"
+        } else {
+            "STOPPED"
+        };
+        let status_color = if self.stopwatch_running {
+            color::GREEN
+        } else {
+            color::DARK_GREY
+        };
         ui::draw_str_centered(fb, w, 0, w, STATUS_Y, status, status_color, color::BLACK);
 
         // Laps header.
         if !self.lap_entries.is_empty() {
-            ui::draw_str(fb, w, PADDING_X, LAPS_HEADER_Y, "LAPS", color::YELLOW, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                PADDING_X,
+                LAPS_HEADER_Y,
+                "LAPS",
+                color::YELLOW,
+                color::BLACK,
+            );
 
             let visible_end = (self.lap_scroll + MAX_LAP_ROWS).min(self.lap_entries.len());
             for (vi, li) in (self.lap_scroll..visible_end).enumerate() {
@@ -378,11 +434,27 @@ impl AlarmScreen {
                 let mut num_buf = [0u8; 4];
                 let num_len = format_u16_into(num as u16, &mut num_buf);
                 let num_str = core::str::from_utf8(&num_buf[..num_len]).unwrap_or("?");
-                ui::draw_str(fb, w, PADDING_X, row_y, num_str, color::DARK_GREY, color::BLACK);
+                ui::draw_str(
+                    fb,
+                    w,
+                    PADDING_X,
+                    row_y,
+                    num_str,
+                    color::DARK_GREY,
+                    color::BLACK,
+                );
 
                 // Lap duration.
                 let dur_str = core::str::from_utf8(formatted).unwrap_or("??:??.???");
-                ui::draw_str(fb, w, PADDING_X + 4 * CHAR_WIDTH, row_y, dur_str, color::WHITE, color::BLACK);
+                ui::draw_str(
+                    fb,
+                    w,
+                    PADDING_X + 4 * CHAR_WIDTH,
+                    row_y,
+                    dur_str,
+                    color::WHITE,
+                    color::BLACK,
+                );
             }
         }
     }
@@ -605,7 +677,10 @@ mod tests {
         screen.update(&mgr, 0);
 
         assert_eq!(&screen.timer_display, b"05:32", "timer must show 05:32");
-        assert_eq!(&screen.timer_set_display, b"05:32", "set display must show 05:32");
+        assert_eq!(
+            &screen.timer_set_display, b"05:32",
+            "set display must show 05:32"
+        );
     }
 
     #[test]
@@ -620,7 +695,10 @@ mod tests {
         screen.update(&mgr, 10_000);
 
         assert!(screen.timer_running, "timer must be running");
-        assert_eq!(&screen.timer_display, b"00:50", "must show 50 seconds remaining");
+        assert_eq!(
+            &screen.timer_display, b"00:50",
+            "must show 50 seconds remaining"
+        );
     }
 
     #[test]

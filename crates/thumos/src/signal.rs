@@ -88,8 +88,9 @@ impl Signal {
     /// handler is registered and the signal is not ignored.
     pub(crate) const fn default_action(self) -> DefaultAction {
         match self {
-            Self::Sigkill | Self::Sigterm | Self::Sigusr1
-            | Self::Sigusr2 | Self::Sigpipe => DefaultAction::Terminate,
+            Self::Sigkill | Self::Sigterm | Self::Sigusr1 | Self::Sigusr2 | Self::Sigpipe => {
+                DefaultAction::Terminate
+            }
             Self::Sigchld => DefaultAction::Ignore,
         }
     }
@@ -312,7 +313,9 @@ pub(crate) fn sys_kill(pid: u32, signum: u32) -> u32 {
 /// it from the restored frame before returning to user mode).
 pub(crate) fn sys_sigreturn() -> u32 {
     // SAFETY: clear_current_pending accesses PROCS via addr_of_mut!.
-    unsafe { crate::process::clear_any_pending(); }
+    unsafe {
+        crate::process::clear_any_pending();
+    }
     0
 }
 
@@ -338,19 +341,24 @@ mod tests {
     #[test]
     fn sigkill_cannot_be_caught() {
         // SIGKILL is the only signal where can_catch() returns false.
-        assert!(!Signal::Sigkill.can_catch(),
-            "SIGKILL must not be catchable");
+        assert!(
+            !Signal::Sigkill.can_catch(),
+            "SIGKILL must not be catchable"
+        );
 
         // All other supported signals CAN be caught.
-        assert!(Signal::Sigterm.can_catch(),  "SIGTERM can be caught");
-        assert!(Signal::Sigusr1.can_catch(),  "SIGUSR1 can be caught");
-        assert!(Signal::Sigusr2.can_catch(),  "SIGUSR2 can be caught");
-        assert!(Signal::Sigpipe.can_catch(),  "SIGPIPE can be caught");
-        assert!(Signal::Sigchld.can_catch(),  "SIGCHLD can be caught");
+        assert!(Signal::Sigterm.can_catch(), "SIGTERM can be caught");
+        assert!(Signal::Sigusr1.can_catch(), "SIGUSR1 can be caught");
+        assert!(Signal::Sigusr2.can_catch(), "SIGUSR2 can be caught");
+        assert!(Signal::Sigpipe.can_catch(), "SIGPIPE can be caught");
+        assert!(Signal::Sigchld.can_catch(), "SIGCHLD can be caught");
 
         // Verify EPERM constant has the correct value (two's complement -1).
-        assert_eq!(EPERM, 0u32.wrapping_sub(1),
-            "EPERM must be two's complement -1");
+        assert_eq!(
+            EPERM,
+            0u32.wrapping_sub(1),
+            "EPERM must be two's complement -1"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -379,21 +387,33 @@ mod tests {
     #[test]
     fn signal_state_handler_registration() {
         let mut state = SignalState::new();
-        assert_eq!(state.action(Signal::Sigusr1), SignalAction::Default,
-            "initial action should be Default");
+        assert_eq!(
+            state.action(Signal::Sigusr1),
+            SignalAction::Default,
+            "initial action should be Default"
+        );
 
         let handler: u32 = 0x4020_0000;
         state.set_action(Signal::Sigusr1, SignalAction::Handler(handler));
-        assert_eq!(state.action(Signal::Sigusr1), SignalAction::Handler(handler),
-            "handler should be stored");
+        assert_eq!(
+            state.action(Signal::Sigusr1),
+            SignalAction::Handler(handler),
+            "handler should be stored"
+        );
 
         state.set_action(Signal::Sigusr1, SignalAction::Ignore);
-        assert_eq!(state.action(Signal::Sigusr1), SignalAction::Ignore,
-            "action should update to Ignore");
+        assert_eq!(
+            state.action(Signal::Sigusr1),
+            SignalAction::Ignore,
+            "action should update to Ignore"
+        );
 
         state.set_action(Signal::Sigusr1, SignalAction::Default);
-        assert_eq!(state.action(Signal::Sigusr1), SignalAction::Default,
-            "action should revert to Default");
+        assert_eq!(
+            state.action(Signal::Sigusr1),
+            SignalAction::Default,
+            "action should revert to Default"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -414,7 +434,10 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn sigkill_is_uncatchable() {
-        assert!(!Signal::Sigkill.can_catch(), "SIGKILL must not be catchable");
+        assert!(
+            !Signal::Sigkill.can_catch(),
+            "SIGKILL must not be catchable"
+        );
         assert!(Signal::Sigterm.can_catch());
         assert!(Signal::Sigusr1.can_catch());
         assert!(Signal::Sigusr2.can_catch());
@@ -428,10 +451,14 @@ mod tests {
     #[test]
     fn invalid_signal_number_returns_einval() {
         // sys_sigaction is #[cfg(not(test))]; test the parsing logic directly.
-        assert!(Signal::from_u32(99).is_none(),
-            "signal 99 should not be recognised");
-        assert!(Signal::from_u32(0).is_none(),
-            "signal 0 is not in our supported set");
+        assert!(
+            Signal::from_u32(99).is_none(),
+            "signal 99 should not be recognised"
+        );
+        assert!(
+            Signal::from_u32(0).is_none(),
+            "signal 0 is not in our supported set"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -440,27 +467,37 @@ mod tests {
     #[test]
     fn signal_frame_layout() {
         // 17 saved registers × 4 bytes.
-        assert_eq!(SIGNAL_FRAME_REGS * 4, 68,
-            "saved register region should be 68 bytes");
+        assert_eq!(
+            SIGNAL_FRAME_REGS * 4,
+            68,
+            "saved register region should be 68 bytes"
+        );
 
         // signum field follows immediately.
-        assert_eq!(SIGNAL_FRAME_SIGNUM_OFFSET, 68,
-            "signum offset should be 68");
+        assert_eq!(SIGNAL_FRAME_SIGNUM_OFFSET, 68, "signum offset should be 68");
 
         // Trampoline follows signum (4 bytes).
-        assert_eq!(SIGNAL_FRAME_TRAMPOLINE_OFFSET, 72,
-            "trampoline offset should be 72");
+        assert_eq!(
+            SIGNAL_FRAME_TRAMPOLINE_OFFSET, 72,
+            "trampoline offset should be 72"
+        );
 
         // Total frame: 68 + 4 + 8 = 80 bytes.
-        assert_eq!(SIGNAL_FRAME_SIZE, 80,
-            "total signal frame should be 80 bytes");
+        assert_eq!(
+            SIGNAL_FRAME_SIZE, 80,
+            "total signal frame should be 80 bytes"
+        );
 
         // Verify trampoline instruction encodings are ARM32 and correct.
         // MOV r7, #81: cond=1110, op=MOV, Rd=7, imm8=0x51.
-        assert_eq!(TRAMPOLINE_MOV_R7_SIGRETURN, 0xE3A0_7051,
-            "trampoline MOV instruction encoding mismatch");
+        assert_eq!(
+            TRAMPOLINE_MOV_R7_SIGRETURN, 0xE3A0_7051,
+            "trampoline MOV instruction encoding mismatch"
+        );
         // SVC #0: cond=1110, SVC opcode.
-        assert_eq!(TRAMPOLINE_SVC_0, 0xEF00_0000,
-            "trampoline SVC instruction encoding mismatch");
+        assert_eq!(
+            TRAMPOLINE_SVC_0, 0xEF00_0000,
+            "trampoline SVC instruction encoding mismatch"
+        );
     }
 }

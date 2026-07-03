@@ -70,7 +70,10 @@ const AFE_UL_CON0: u16 = 0x200C;
 const AFE_DL_GAIN: u16 = 0x2010;
 
 /// ADC digital gain register offset.
-#[expect(dead_code, reason = "register constant reserved for future gain control")]
+#[expect(
+    dead_code,
+    reason = "register constant reserved for future gain control"
+)]
 const AFE_UL_GAIN: u16 = 0x2014;
 
 /// Decoder analog control 0: HPL/HPR (headphone left/right) amplifier.
@@ -662,11 +665,13 @@ impl MockCodec {
 impl AudioCodecOps for MockCodec {
     fn power_on(&mut self) -> Result<(), AudioError> {
         if let Some(err) = self.fail_power_on {
-            self.operations.push(alloc::string::String::from("power_on:FAIL"));
+            self.operations
+                .push(alloc::string::String::from("power_on:FAIL"));
             return Err(err);
         }
         self.powered = true;
-        self.operations.push(alloc::string::String::from("power_on"));
+        self.operations
+            .push(alloc::string::String::from("power_on"));
         Ok(())
     }
 
@@ -676,7 +681,8 @@ impl AudioCodecOps for MockCodec {
         self.adc_enabled = false;
         self.mic_bias = false;
         self.vol = 0;
-        self.operations.push(alloc::string::String::from("power_off"));
+        self.operations
+            .push(alloc::string::String::from("power_off"));
         Ok(())
     }
 
@@ -685,11 +691,13 @@ impl AudioCodecOps for MockCodec {
             return Err(AudioError::CodecNotPowered);
         }
         if let Some(err) = self.fail_enable_dac {
-            self.operations.push(alloc::string::String::from("enable_dac:FAIL"));
+            self.operations
+                .push(alloc::string::String::from("enable_dac:FAIL"));
             return Err(err);
         }
         self.dac_enabled = true;
-        self.operations.push(alloc::string::String::from("enable_dac"));
+        self.operations
+            .push(alloc::string::String::from("enable_dac"));
         Ok(())
     }
 
@@ -698,23 +706,27 @@ impl AudioCodecOps for MockCodec {
             return Err(AudioError::CodecNotPowered);
         }
         if let Some(err) = self.fail_enable_adc {
-            self.operations.push(alloc::string::String::from("enable_adc:FAIL"));
+            self.operations
+                .push(alloc::string::String::from("enable_adc:FAIL"));
             return Err(err);
         }
         self.adc_enabled = true;
-        self.operations.push(alloc::string::String::from("enable_adc"));
+        self.operations
+            .push(alloc::string::String::from("enable_adc"));
         Ok(())
     }
 
     fn disable_dac(&mut self) -> Result<(), AudioError> {
         self.dac_enabled = false;
-        self.operations.push(alloc::string::String::from("disable_dac"));
+        self.operations
+            .push(alloc::string::String::from("disable_dac"));
         Ok(())
     }
 
     fn disable_adc(&mut self) -> Result<(), AudioError> {
         self.adc_enabled = false;
-        self.operations.push(alloc::string::String::from("disable_adc"));
+        self.operations
+            .push(alloc::string::String::from("disable_adc"));
         Ok(())
     }
 
@@ -726,12 +738,12 @@ impl AudioCodecOps for MockCodec {
             return Err(AudioError::DacNotEnabled);
         }
         if let Some(err) = self.fail_set_output {
-            self.operations.push(alloc::string::String::from("set_output:FAIL"));
+            self.operations
+                .push(alloc::string::String::from("set_output:FAIL"));
             return Err(err);
         }
         self.route = route;
-        self.operations
-            .push(alloc::format!("set_output:{route:?}"));
+        self.operations.push(alloc::format!("set_output:{route:?}"));
         Ok(())
     }
 
@@ -741,8 +753,7 @@ impl AudioCodecOps for MockCodec {
         }
         let clamped = level.min(MAX_VOLUME);
         self.vol = clamped;
-        self.operations
-            .push(alloc::format!("set_volume:{clamped}"));
+        self.operations.push(alloc::format!("set_volume:{clamped}"));
         Ok(())
     }
 
@@ -751,17 +762,20 @@ impl AudioCodecOps for MockCodec {
             return Err(AudioError::CodecNotPowered);
         }
         if let Some(err) = self.fail_enable_mic_bias {
-            self.operations.push(alloc::string::String::from("enable_mic_bias:FAIL"));
+            self.operations
+                .push(alloc::string::String::from("enable_mic_bias:FAIL"));
             return Err(err);
         }
         self.mic_bias = true;
-        self.operations.push(alloc::string::String::from("enable_mic_bias"));
+        self.operations
+            .push(alloc::string::String::from("enable_mic_bias"));
         Ok(())
     }
 
     fn disable_mic_bias(&mut self) -> Result<(), AudioError> {
         self.mic_bias = false;
-        self.operations.push(alloc::string::String::from("disable_mic_bias"));
+        self.operations
+            .push(alloc::string::String::from("disable_mic_bias"));
         Ok(())
     }
 
@@ -801,18 +815,9 @@ mod tests {
     #[test]
     fn mock_codec_starts_unpowered() {
         let codec = MockCodec::new();
-        assert!(
-            !codec.is_powered(),
-            "new mock codec must start unpowered"
-        );
-        assert!(
-            !codec.is_dac_enabled(),
-            "DAC must be disabled on new codec"
-        );
-        assert!(
-            !codec.is_adc_enabled(),
-            "ADC must be disabled on new codec"
-        );
+        assert!(!codec.is_powered(), "new mock codec must start unpowered");
+        assert!(!codec.is_dac_enabled(), "DAC must be disabled on new codec");
+        assert!(!codec.is_adc_enabled(), "ADC must be disabled on new codec");
         assert!(
             !codec.is_mic_bias_enabled(),
             "mic bias must be disabled on new codec"
@@ -839,10 +844,22 @@ mod tests {
 
         codec.power_off().ok();
 
-        assert!(!codec.is_powered(), "codec must be unpowered after power_off");
-        assert!(!codec.is_dac_enabled(), "DAC must be disabled after power_off");
-        assert!(!codec.is_adc_enabled(), "ADC must be disabled after power_off");
-        assert!(!codec.is_mic_bias_enabled(), "mic bias must be disabled after power_off");
+        assert!(
+            !codec.is_powered(),
+            "codec must be unpowered after power_off"
+        );
+        assert!(
+            !codec.is_dac_enabled(),
+            "DAC must be disabled after power_off"
+        );
+        assert!(
+            !codec.is_adc_enabled(),
+            "ADC must be disabled after power_off"
+        );
+        assert!(
+            !codec.is_mic_bias_enabled(),
+            "mic bias must be disabled after power_off"
+        );
         assert_eq!(codec.volume(), 0, "volume must reset to 0 after power_off");
     }
 
@@ -883,7 +900,10 @@ mod tests {
         codec.power_on().ok();
         let result = codec.enable_dac();
         assert!(result.is_ok(), "enable_dac must succeed when powered");
-        assert!(codec.is_dac_enabled(), "DAC must be enabled after enable_dac");
+        assert!(
+            codec.is_dac_enabled(),
+            "DAC must be enabled after enable_dac"
+        );
     }
 
     #[test]
@@ -899,7 +919,10 @@ mod tests {
         codec.power_on().ok();
         let result = codec.enable_adc();
         assert!(result.is_ok(), "enable_adc must succeed when powered");
-        assert!(codec.is_adc_enabled(), "ADC must be enabled after enable_adc");
+        assert!(
+            codec.is_adc_enabled(),
+            "ADC must be enabled after enable_adc"
+        );
     }
 
     #[test]
@@ -952,10 +975,7 @@ mod tests {
         );
 
         for (i, (got, want)) in codec.operations.iter().zip(expected.iter()).enumerate() {
-            assert_eq!(
-                got, want,
-                "operation {i} must be {want}, got {got}"
-            );
+            assert_eq!(got, want, "operation {i} must be {want}, got {got}");
         }
     }
 
@@ -1001,7 +1021,10 @@ mod tests {
             Err(AudioError::HardwareError),
             "power_on failure must propagate the error"
         );
-        assert!(!codec.is_powered(), "codec must remain unpowered on failure");
+        assert!(
+            !codec.is_powered(),
+            "codec must remain unpowered on failure"
+        );
         assert_eq!(
             codec.operations,
             &["power_on:FAIL"],

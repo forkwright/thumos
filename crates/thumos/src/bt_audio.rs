@@ -37,14 +37,12 @@
 extern crate alloc;
 
 use crate::avdtp::{
-    AvdtpMessage, AVDTP_MAX_TRANSACTION_LABEL, AVDTP_SIGNAL_DISCOVER,
-    AVDTP_SIGNAL_GET_CAPABILITIES, AVDTP_SIGNAL_OPEN, AVDTP_SIGNAL_SET_CONFIGURATION,
-    AVDTP_SIGNAL_START,
+    AVDTP_MAX_TRANSACTION_LABEL, AVDTP_SIGNAL_DISCOVER, AVDTP_SIGNAL_GET_CAPABILITIES,
+    AVDTP_SIGNAL_OPEN, AVDTP_SIGNAL_SET_CONFIGURATION, AVDTP_SIGNAL_START, AvdtpMessage,
 };
 use crate::bluetooth::{BtError, BtHwOps};
 use crate::sbc::{
-    SbcEncoder, SbcFrameHeader, StubSbcEncoder, SBC_FREQ_44100, SBC_FREQ_48000,
-    SBC_MAX_FRAME_SIZE,
+    SBC_FREQ_44100, SBC_FREQ_48000, SBC_MAX_FRAME_SIZE, SbcEncoder, SbcFrameHeader, StubSbcEncoder,
 };
 
 // Re-export SBC and AVDTP types so external callers can still use crate::bt_audio::*.
@@ -260,7 +258,9 @@ impl<H: BtHwOps> A2dpProfile<H> {
         // Send AVDTP Discover command.
         let label = self.next_transaction_label();
         let discover = AvdtpMessage::discover(label);
-        self.hw.send_command(&discover).map_err(BtAudioError::from)?;
+        self.hw
+            .send_command(&discover)
+            .map_err(BtAudioError::from)?;
 
         Ok(())
     }
@@ -410,7 +410,10 @@ impl<H: BtHwOps> A2dpProfile<H> {
     ///
     /// Currently infallible but returns `Result` for API consistency.
     #[must_use]
-    #[expect(clippy::unnecessary_wraps, reason = "returns Result for API consistency with other lifecycle methods")]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "returns Result for API consistency with other lifecycle methods"
+    )]
     pub(crate) fn disconnect(&mut self) -> Result<(), BtAudioError> {
         match self.state {
             A2dpState::Streaming => {
@@ -521,8 +524,12 @@ mod tests {
         // Walk through signaling to Streaming.
         profile.set_remote_seid(1);
         profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
-        profile.advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES).ok();
-        profile.advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION).ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
+            .ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION)
+            .ok();
         profile.advance_signaling(AVDTP_SIGNAL_OPEN).ok();
         profile.advance_signaling(AVDTP_SIGNAL_START).ok();
         assert_eq!(profile.state(), A2dpState::Streaming);
@@ -549,16 +556,36 @@ mod tests {
 
         // Drive the full signaling sequence.
         profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
-        assert_eq!(profile.state(), A2dpState::Connecting, "still connecting after discover");
+        assert_eq!(
+            profile.state(),
+            A2dpState::Connecting,
+            "still connecting after discover"
+        );
 
-        profile.advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES).ok();
-        assert_eq!(profile.state(), A2dpState::Connecting, "still connecting after get_caps");
+        profile
+            .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
+            .ok();
+        assert_eq!(
+            profile.state(),
+            A2dpState::Connecting,
+            "still connecting after get_caps"
+        );
 
-        profile.advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION).ok();
-        assert_eq!(profile.state(), A2dpState::Connecting, "still connecting after set_config");
+        profile
+            .advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION)
+            .ok();
+        assert_eq!(
+            profile.state(),
+            A2dpState::Connecting,
+            "still connecting after set_config"
+        );
 
         profile.advance_signaling(AVDTP_SIGNAL_OPEN).ok();
-        assert_eq!(profile.state(), A2dpState::Connecting, "still connecting after open");
+        assert_eq!(
+            profile.state(),
+            A2dpState::Connecting,
+            "still connecting after open"
+        );
 
         profile.advance_signaling(AVDTP_SIGNAL_START).ok();
         assert_eq!(
@@ -576,8 +603,12 @@ mod tests {
         profile.set_remote_seid(1);
         profile.connect().ok();
         profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
-        profile.advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES).ok();
-        profile.advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION).ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
+            .ok();
+        profile
+            .advance_signaling(AVDTP_SIGNAL_SET_CONFIGURATION)
+            .ok();
         profile.advance_signaling(AVDTP_SIGNAL_OPEN).ok();
         profile.advance_signaling(AVDTP_SIGNAL_START).ok();
 
@@ -613,11 +644,7 @@ mod tests {
             44100,
             "invalid sample rate must default to 44100"
         );
-        assert_eq!(
-            profile.channels(),
-            2,
-            "channels > 2 must clamp to 2"
-        );
+        assert_eq!(profile.channels(), 2, "channels > 2 must clamp to 2");
 
         profile.configure(48000, 1);
         assert_eq!(profile.sample_rate(), 48000);

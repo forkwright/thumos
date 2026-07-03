@@ -105,7 +105,9 @@ impl Timer {
         // carries forward into the next update() instead of being
         // discarded — a timer polled faster than 1 Hz must still advance
         // wall-clock seconds (#342).
-        self.started_tick = self.started_tick.saturating_add(u64::from(elapsed_secs) * 1000);
+        self.started_tick = self
+            .started_tick
+            .saturating_add(u64::from(elapsed_secs) * 1000);
         false
     }
 
@@ -312,7 +314,10 @@ mod tests {
         // Advance 60 seconds (60000ms).
         let expired = timer.update(61_000);
         assert!(!expired, "timer must not be expired yet");
-        assert_eq!(timer.remaining_secs, 240, "must have 240s remaining after 60s");
+        assert_eq!(
+            timer.remaining_secs, 240,
+            "must have 240s remaining after 60s"
+        );
     }
 
     #[test]
@@ -349,7 +354,10 @@ mod tests {
         timer.start(0);
         timer.update(30_000); // advance 30 seconds
         timer.reset();
-        assert_eq!(timer.remaining_secs, 120, "reset must restore full duration");
+        assert_eq!(
+            timer.remaining_secs, 120,
+            "reset must restore full duration"
+        );
         assert!(!timer.running, "reset must stop timer");
     }
 
@@ -377,7 +385,10 @@ mod tests {
         assert!(!timer.update(500), "must not expire after 500ms");
         assert!(!timer.update(1_000), "must not expire after 1000ms");
         assert!(!timer.update(1_500), "must not expire after 1500ms");
-        assert!(timer.update(2_000), "must expire after exactly 2000ms (4th call)");
+        assert!(
+            timer.update(2_000),
+            "must expire after exactly 2000ms (4th call)"
+        );
     }
 
     #[test]
@@ -394,7 +405,10 @@ mod tests {
         for i in 1..=20 {
             expired = timer.update(i * 100);
         }
-        assert!(expired, "timer polled at 100ms intervals must expire after 20 calls (2000ms)");
+        assert!(
+            expired,
+            "timer polled at 100ms intervals must expire after 20 calls (2000ms)"
+        );
     }
 
     #[test]
@@ -422,7 +436,10 @@ mod tests {
 
         sw.start(10_000);
         sw.stop(13_000); // 3 more seconds
-        assert_eq!(sw.elapsed_ms, 8_000, "elapsed must accumulate across stop/start");
+        assert_eq!(
+            sw.elapsed_ms, 8_000,
+            "elapsed must accumulate across stop/start"
+        );
     }
 
     #[test]

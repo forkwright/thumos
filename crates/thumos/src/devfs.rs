@@ -137,7 +137,6 @@ impl DevFs {
     fn valid_inode(inode_id: u32) -> bool {
         inode_id < NUM_INODES
     }
-
 }
 
 impl Filesystem for DevFs {
@@ -411,7 +410,10 @@ mod tests {
         let mut buf = [0xFFu8; 8];
         let result = devfs.read_mut(ZERO_INODE, 0, &mut buf);
         assert_eq!(result, Ok(8));
-        assert!(buf.iter().all(|&b| b == 0), "read_mut must delegate ZERO_INODE to read()'s zero-fill behavior");
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "read_mut must delegate ZERO_INODE to read()'s zero-fill behavior"
+        );
     }
 
     #[test]
@@ -518,7 +520,10 @@ mod tests {
     #[test]
     fn lookup_non_root_returns_not_a_directory() {
         let devfs = DevFs::new(42);
-        assert_eq!(devfs.lookup(NULL_INODE, "foo"), Err(VfsError::NotADirectory));
+        assert_eq!(
+            devfs.lookup(NULL_INODE, "foo"),
+            Err(VfsError::NotADirectory)
+        );
     }
 
     #[test]
@@ -540,11 +545,7 @@ mod tests {
         let mut devfs = DevFs::new(42);
         let data = [0xABu8; 16];
         let result = devfs.write(URANDOM_INODE, 0, &data);
-        assert_eq!(
-            result,
-            Ok(16),
-            "/dev/urandom write must discard all bytes"
-        );
+        assert_eq!(result, Ok(16), "/dev/urandom write must discard all bytes");
     }
 
     #[test]

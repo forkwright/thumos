@@ -11,46 +11,46 @@ extern crate alloc;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
-mod audit;
 mod audio;
 mod audio_codec;
 mod audio_route;
+mod audit;
+mod avdtp;
 mod battery;
 mod bfu_timer;
 mod block;
 mod bluetooth;
 mod briar;
 mod bt_audio;
-mod avdtp;
 mod cache;
+mod capability;
 mod ccci;
 mod ccci_logger;
-mod capability;
 mod clock;
-mod contacts;
-mod lfs;
-mod lfs_checkpoint;
-mod lfs_compact;
-mod lfs_imap;
-mod lfs_segment;
-mod lfs_writer;
 #[cfg(not(test))]
 mod console;
+mod contacts;
 mod csprng;
 mod devfs;
-mod dhcp;
-mod dns;
-mod dns_tls;
 #[cfg(not(test))]
 mod device;
-mod ekphrasis;
+mod dhcp;
 mod display;
+mod dns;
+mod dns_tls;
+mod ekphrasis;
 mod elf;
 #[cfg(not(test))]
 mod emmc;
 mod encryption;
 #[cfg(not(test))]
 mod exceptions;
+mod lfs;
+mod lfs_checkpoint;
+mod lfs_compact;
+mod lfs_imap;
+mod lfs_segment;
+mod lfs_writer;
 // WHY(host-test): process.rs calls exceptions::ticks() (the timer-IRQ tick
 // counter). The real exceptions module is ARM-only (CP15 vector table, GIC).
 // Under test a stub supplies the tick source so process is host-testable
@@ -69,24 +69,24 @@ mod heorte;
 mod matrix_ids;
 // WHY: not test-gated because matrix_crypto types will be used by harmostes
 // at runtime for E2E message encryption/decryption.
-mod matrix_crypto;
-mod meshtastic;
-mod heorte_alarm;
-mod heorte_timer;
-mod http_client;
 #[cfg(not(test))]
 mod gic;
 #[cfg(not(test))]
 mod heap;
-mod json_mini;
+mod heorte_alarm;
+mod heorte_timer;
+mod http_client;
 mod ipc;
 mod irq;
+mod json_mini;
 mod kconfig;
 mod key_manager;
-mod lock_screen;
 #[cfg(not(test))]
 mod kinit;
+mod lock_screen;
+mod matrix_crypto;
 mod memguard;
+mod meshtastic;
 mod mic_audit;
 mod mmio;
 mod mmu;
@@ -99,6 +99,7 @@ mod power;
 mod process;
 mod provision;
 mod ramfs;
+mod sbc;
 mod screen_alarm;
 mod screen_calendar;
 mod screen_call;
@@ -119,16 +120,15 @@ mod security_mode;
 mod signal;
 mod sim;
 mod slab;
-mod sbc;
 mod sms;
 mod socket;
 mod status_bar;
+mod syscall;
 mod t9;
 mod telephony;
 #[cfg(test)]
 mod telephony_mock;
 mod telephony_parser;
-mod syscall;
 mod time;
 #[cfg(not(test))]
 mod timer;
@@ -139,9 +139,9 @@ mod timer;
 #[cfg(test)]
 #[path = "timer_stub.rs"]
 mod timer;
-mod ui;
 #[cfg(not(test))]
 mod uart;
+mod ui;
 // WHY(host-test): syscall's stdout (fd 1) and unknown-syscall debug paths
 // write to the MT6739 UART (ttyMT0 MMIO), which is ARM-only. Under test a
 // stub swallows output so syscall is host-testable. Production is unaffected.

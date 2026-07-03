@@ -28,7 +28,7 @@ use crate::audit::{AuditEventType, AuditLog};
 use crate::key_manager::KeyManager;
 use crate::security::{self, KEY_SIZE, SHA256_DIGEST_LEN};
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -188,7 +188,8 @@ pub(crate) const fn throttle_delay(attempts: u32) -> u32 {
 ///
 /// Manages input buffers, attempt counting, throttling, and duress detection.
 /// The screen renders a dot-masked input field and handles numpad/OK/End keys.
-pub(crate) struct LockScreen { // kanon:ignore RUST/struct-too-many-fields -- cohesive auth state machine; splitting would scatter throttle/attempt/duress tracking across types
+pub(crate) struct LockScreen {
+    // kanon:ignore RUST/struct-too-many-fields -- cohesive auth state machine; splitting would scatter throttle/attempt/duress tracking across types
     /// Current authentication mode.
     mode: LockMode,
     /// PIN input buffer (digit bytes, e.g., b'0'..b'9').
@@ -325,7 +326,10 @@ impl LockScreen {
         for byte in &mut self.pin_buffer {
             // SAFETY: write_volatile prevents dead-store elimination of
             // the zeroization — same pattern as SecureKey.
-            #[expect(unsafe_code, reason = "write_volatile for secure zeroization of PIN buffer")]
+            #[expect(
+                unsafe_code,
+                reason = "write_volatile for secure zeroization of PIN buffer"
+            )]
             unsafe {
                 core::ptr::write_volatile(byte, 0);
             }
@@ -336,7 +340,10 @@ impl LockScreen {
     /// Clear the passphrase input buffer. Zeroizes content to prevent leakage.
     pub fn clear_passphrase(&mut self) {
         for byte in &mut self.passphrase_buffer {
-            #[expect(unsafe_code, reason = "write_volatile for secure zeroization of passphrase buffer")]
+            #[expect(
+                unsafe_code,
+                reason = "write_volatile for secure zeroization of passphrase buffer"
+            )]
             unsafe {
                 core::ptr::write_volatile(byte, 0);
             }
@@ -641,9 +648,7 @@ impl Screen for LockScreen {
         // Status/error message.
         if let Some(ref result) = self.last_result {
             let (msg, msg_color) = match result {
-                UnlockResult::Success | UnlockResult::DuressDetected => {
-                    ("UNLOCKED", color::GREEN)
-                }
+                UnlockResult::Success | UnlockResult::DuressDetected => ("UNLOCKED", color::GREEN),
                 UnlockResult::WrongPassphrase | UnlockResult::WrongPin => {
                     ("WRONG - TRY AGAIN", color::RED)
                 }
@@ -1071,7 +1076,11 @@ mod tests {
         assert_eq!(throttle_delay(7), 300);
         assert_eq!(throttle_delay(8), 300);
         assert_eq!(throttle_delay(9), 3600);
-        assert_eq!(throttle_delay(10), u32::MAX, "10+ must trigger wipe sentinel");
+        assert_eq!(
+            throttle_delay(10),
+            u32::MAX,
+            "10+ must trigger wipe sentinel"
+        );
         assert_eq!(throttle_delay(100), u32::MAX);
     }
 
@@ -1272,10 +1281,7 @@ mod tests {
             !display.contains("correct"),
             "Display must not leak passphrase"
         );
-        assert!(
-            !debug.contains("correct"),
-            "Debug must not leak passphrase"
-        );
+        assert!(!debug.contains("correct"), "Debug must not leak passphrase");
         assert!(!display.contains("123456"), "Display must not leak PIN");
         assert!(!debug.contains("123456"), "Debug must not leak PIN");
     }

@@ -20,8 +20,8 @@
 )]
 
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction, ScreenId,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
+    ScreenId, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -104,22 +104,70 @@ pub struct FunctionEntry {
 /// Ordered by likely usage frequency. All screens that exist as `ScreenId`
 /// variants are listed here.
 const FUNCTIONS: &[FunctionEntry] = &[
-    FunctionEntry { name: "Messages", screen_id: ScreenId::Messages },
-    FunctionEntry { name: "Dialer", screen_id: ScreenId::Dialer },
-    FunctionEntry { name: "Contacts", screen_id: ScreenId::Contacts },
-    FunctionEntry { name: "Settings", screen_id: ScreenId::Settings },
-    FunctionEntry { name: "Calendar", screen_id: ScreenId::Calendar },
-    FunctionEntry { name: "Timer", screen_id: ScreenId::Timer },
-    FunctionEntry { name: "Stopwatch", screen_id: ScreenId::Stopwatch },
-    FunctionEntry { name: "Alarms", screen_id: ScreenId::Alarms },
-    FunctionEntry { name: "FM Radio", screen_id: ScreenId::FmRadio },
-    FunctionEntry { name: "WiFi", screen_id: ScreenId::WifiSettings },
-    FunctionEntry { name: "Bluetooth", screen_id: ScreenId::BtSettings },
-    FunctionEntry { name: "Privacy", screen_id: ScreenId::Privacy },
-    FunctionEntry { name: "Radio Control", screen_id: ScreenId::RadioControl },
-    FunctionEntry { name: "About", screen_id: ScreenId::About },
-    FunctionEntry { name: "Battery", screen_id: ScreenId::Battery },
-    FunctionEntry { name: "Threat Monitor", screen_id: ScreenId::ThreatMonitor },
+    FunctionEntry {
+        name: "Messages",
+        screen_id: ScreenId::Messages,
+    },
+    FunctionEntry {
+        name: "Dialer",
+        screen_id: ScreenId::Dialer,
+    },
+    FunctionEntry {
+        name: "Contacts",
+        screen_id: ScreenId::Contacts,
+    },
+    FunctionEntry {
+        name: "Settings",
+        screen_id: ScreenId::Settings,
+    },
+    FunctionEntry {
+        name: "Calendar",
+        screen_id: ScreenId::Calendar,
+    },
+    FunctionEntry {
+        name: "Timer",
+        screen_id: ScreenId::Timer,
+    },
+    FunctionEntry {
+        name: "Stopwatch",
+        screen_id: ScreenId::Stopwatch,
+    },
+    FunctionEntry {
+        name: "Alarms",
+        screen_id: ScreenId::Alarms,
+    },
+    FunctionEntry {
+        name: "FM Radio",
+        screen_id: ScreenId::FmRadio,
+    },
+    FunctionEntry {
+        name: "WiFi",
+        screen_id: ScreenId::WifiSettings,
+    },
+    FunctionEntry {
+        name: "Bluetooth",
+        screen_id: ScreenId::BtSettings,
+    },
+    FunctionEntry {
+        name: "Privacy",
+        screen_id: ScreenId::Privacy,
+    },
+    FunctionEntry {
+        name: "Radio Control",
+        screen_id: ScreenId::RadioControl,
+    },
+    FunctionEntry {
+        name: "About",
+        screen_id: ScreenId::About,
+    },
+    FunctionEntry {
+        name: "Battery",
+        screen_id: ScreenId::Battery,
+    },
+    FunctionEntry {
+        name: "Threat Monitor",
+        screen_id: ScreenId::ThreatMonitor,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -166,11 +214,7 @@ fn fuzzy_match(name: &str, filter: &[u8], filter_len: usize) -> bool {
 
 /// ASCII-only lowercase conversion.
 const fn to_ascii_lower(b: u8) -> u8 {
-    if b >= b'A' && b <= b'Z' {
-        b + 32
-    } else {
-        b
-    }
+    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,26 +351,51 @@ impl Screen for SearchScreen {
         let filter_text = self.filter_str();
         if filter_text.is_empty() {
             ui::draw_str(
-                fb, w, INPUT_PADDING_X, INPUT_Y,
-                "Type to search...", color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                INPUT_PADDING_X,
+                INPUT_Y,
+                "Type to search...",
+                color::DARK_GREY,
+                color::BLACK,
             );
         } else {
             ui::draw_str(
-                fb, w, INPUT_PADDING_X, INPUT_Y,
-                filter_text, color::WHITE, color::BLACK,
+                fb,
+                w,
+                INPUT_PADDING_X,
+                INPUT_Y,
+                filter_text,
+                color::WHITE,
+                color::BLACK,
             );
         }
 
         // Draw underline below input field.
         let underline_y = INPUT_Y + CHAR_HEIGHT + 2;
-        ui::fill_rect(fb, w, h, INPUT_PADDING_X, underline_y, w - INPUT_PADDING_X * 2, 1, color::DARK_GREY);
+        ui::fill_rect(
+            fb,
+            w,
+            h,
+            INPUT_PADDING_X,
+            underline_y,
+            w - INPUT_PADDING_X * 2,
+            1,
+            color::DARK_GREY,
+        );
 
         // --- Results list ---
         if self.match_count == 0 && self.filter_len > 0 {
             // Show "No results" message.
             ui::draw_str_centered(
-                fb, w, 0, w, LIST_Y + ROW_HEIGHT * 2,
-                "No results", color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                0,
+                w,
+                LIST_Y + ROW_HEIGHT * 2,
+                "No results",
+                color::DARK_GREY,
+                color::BLACK,
             );
             return;
         }
@@ -355,12 +424,28 @@ impl Screen for SearchScreen {
         // Draw scroll indicators if needed.
         if self.scroll_offset > 0 {
             // Up arrow indicator.
-            ui::draw_char(fb, w, w - CHAR_WIDTH - 4, LIST_Y, '^', color::DARK_GREY, color::BLACK);
+            ui::draw_char(
+                fb,
+                w,
+                w - CHAR_WIDTH - 4,
+                LIST_Y,
+                '^',
+                color::DARK_GREY,
+                color::BLACK,
+            );
         }
         if visible_end < self.match_count {
             // Down arrow indicator.
             let arrow_y = LIST_Y + (VISIBLE_ROWS as u16) * ROW_HEIGHT;
-            ui::draw_char(fb, w, w - CHAR_WIDTH - 4, arrow_y, 'v', color::DARK_GREY, color::BLACK);
+            ui::draw_char(
+                fb,
+                w,
+                w - CHAR_WIDTH - 4,
+                arrow_y,
+                'v',
+                color::DARK_GREY,
+                color::BLACK,
+            );
         }
     }
 
@@ -399,9 +484,16 @@ impl Screen for SearchScreen {
             Key::Rsk | Key::End => ScreenAction::Back,
 
             // Numpad keys for T9 filtering.
-            Key::Num0 | Key::Num1 | Key::Num2 | Key::Num3 |
-            Key::Num4 | Key::Num5 | Key::Num6 | Key::Num7 |
-            Key::Num8 | Key::Num9 => {
+            Key::Num0
+            | Key::Num1
+            | Key::Num2
+            | Key::Num3
+            | Key::Num4
+            | Key::Num5
+            | Key::Num6
+            | Key::Num7
+            | Key::Num8
+            | Key::Num9 => {
                 self.append_t9_key(key);
                 ScreenAction::None
             }
@@ -446,10 +538,7 @@ mod tests {
             fuzzy_match("Messages", b"es", 2),
             "'es' must match 'Messages'"
         );
-        assert!(
-            fuzzy_match("Timer", b"me", 2),
-            "'me' must match 'Timer'"
-        );
+        assert!(fuzzy_match("Timer", b"me", 2), "'me' must match 'Timer'");
         assert!(
             fuzzy_match("FM Radio", b"rad", 3),
             "'rad' must match 'FM Radio'"
@@ -464,8 +553,10 @@ mod tests {
     fn empty_filter_shows_all() {
         let screen = SearchScreen::new();
         assert_eq!(
-            screen.match_count(), FUNCTIONS.len(),
-            "empty filter must show all {} entries", FUNCTIONS.len()
+            screen.match_count(),
+            FUNCTIONS.len(),
+            "empty filter must show all {} entries",
+            FUNCTIONS.len()
         );
     }
 
@@ -515,7 +606,8 @@ mod tests {
         // Clear and verify all entries are back.
         screen.clear_filter();
         assert_eq!(
-            screen.match_count(), FUNCTIONS.len(),
+            screen.match_count(),
+            FUNCTIONS.len(),
             "clear must restore all entries"
         );
         assert_eq!(screen.filter_len, 0, "filter must be empty after clear");
@@ -527,7 +619,10 @@ mod tests {
         let mut screen = SearchScreen::new();
         // Key 6 maps to "mno", appends 'm'.
         screen.append_t9_key(Key::Num6);
-        assert_eq!(screen.filter_len, 1, "filter length must be 1 after one key");
+        assert_eq!(
+            screen.filter_len, 1,
+            "filter length must be 1 after one key"
+        );
         assert_eq!(screen.filter[0], b'm', "Num6 must append 'm'");
     }
 
@@ -556,7 +651,8 @@ mod tests {
             screen.on_key(Key::Down);
         }
         assert_eq!(
-            screen.cursor, FUNCTIONS.len() - 1,
+            screen.cursor,
+            FUNCTIONS.len() - 1,
             "cursor must stop at last entry"
         );
     }
@@ -581,11 +677,17 @@ mod tests {
     fn draw_with_filter_does_not_panic() {
         let mut screen = SearchScreen::new();
         screen.append_t9_key(Key::Num6); // 'm'
-        assert!(screen.match_count() > 0, "filter must keep matching entries");
+        assert!(
+            screen.match_count() > 0,
+            "filter must keep matching entries"
+        );
         let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "filtered search screen must render visible content");
+        assert!(
+            any_set,
+            "filtered search screen must render visible content"
+        );
     }
 
     #[test]

@@ -98,7 +98,13 @@ impl CalendarEvent {
     /// off to the last full codepoint so truncation never splits one
     /// (#359).
     #[must_use]
-    pub(crate) fn new(id: u32, title_bytes: &[u8], start_epoch: u64, duration_min: u16, all_day: bool) -> Self {
+    pub(crate) fn new(
+        id: u32,
+        title_bytes: &[u8],
+        start_epoch: u64,
+        duration_min: u16,
+        all_day: bool,
+    ) -> Self {
         let mut title = [0u8; MAX_TITLE_LEN];
         let len = utf8_truncate_len(title_bytes, MAX_TITLE_LEN);
         title[..len].copy_from_slice(&title_bytes[..len]);
@@ -471,7 +477,10 @@ mod tests {
         let mut mgr = HeorteManager::new();
         let id = mgr.add_event(b"Delete me", 1_000_000, 60, false);
         assert!(mgr.remove_event(id), "must remove existing event");
-        assert!(mgr.events().is_empty(), "events must be empty after removal");
+        assert!(
+            mgr.events().is_empty(),
+            "events must be empty after removal"
+        );
         assert!(!mgr.remove_event(id), "removing again must return false");
     }
 
@@ -479,7 +488,10 @@ mod tests {
     fn event_title_truncation() {
         let long_title = [b'A'; 100];
         let event = CalendarEvent::new(1, &long_title, 0, 0, false);
-        assert_eq!(event.title_len as usize, MAX_TITLE_LEN, "title must be truncated");
+        assert_eq!(
+            event.title_len as usize, MAX_TITLE_LEN,
+            "title must be truncated"
+        );
     }
 
     #[test]
@@ -554,7 +566,11 @@ mod tests {
         // magnitude -- this test would hang under the old implementation
         // and returns instantly under the fix.
         let (_, _, year, month, day) = decompose_epoch(u64::MAX / 2);
-        assert_eq!(year, u16::MAX, "year must saturate rather than wrap or panic");
+        assert_eq!(
+            year,
+            u16::MAX,
+            "year must saturate rather than wrap or panic"
+        );
         assert!((1..=12).contains(&month), "month must stay in valid range");
         assert!((1..=31).contains(&day), "day must stay in valid range");
     }
@@ -567,7 +583,10 @@ mod tests {
         let other_event = 86400 * 15;
 
         assert!(matches!(day_label(today_event, current), DayLabel::Today));
-        assert!(matches!(day_label(tomorrow_event, current), DayLabel::Tomorrow));
+        assert!(matches!(
+            day_label(tomorrow_event, current),
+            DayLabel::Tomorrow
+        ));
         assert!(matches!(day_label(other_event, current), DayLabel::Date(_)));
     }
 

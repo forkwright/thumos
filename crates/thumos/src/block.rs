@@ -132,7 +132,9 @@ impl MemBlockDevice {
 
     /// Validate that an LBA range is within device bounds.
     fn validate_range(&self, lba: u64, count: u32) -> Result<(), BlockError> {
-        let end = lba.checked_add(u64::from(count)).ok_or(BlockError::OutOfBounds)?;
+        let end = lba
+            .checked_add(u64::from(count))
+            .ok_or(BlockError::OutOfBounds)?;
         if end > self.sectors {
             return Err(BlockError::OutOfBounds);
         }
@@ -226,18 +228,26 @@ mod msdc_wrapper {
         /// # Errors
         ///
         /// Returns [`BlockError::DeviceNotReady`] if hardware initialization fails.
-        #[expect(unsafe_code, reason = "MMIO register access requires raw pointer dereference")]
+        #[expect(
+            unsafe_code,
+            reason = "MMIO register access requires raw pointer dereference"
+        )]
         pub unsafe fn init(&mut self) -> Result<(), BlockError> {
             // SAFETY: caller guarantees the MSDC register block is mapped, and
             // this is called exactly once after power-on per the function contract.
             unsafe {
-                self.controller.init().map_err(|_| BlockError::DeviceNotReady)
+                self.controller
+                    .init()
+                    .map_err(|_| BlockError::DeviceNotReady)
             }
         }
     }
 
     impl BlockDevice for MsdcBlockDevice {
-        #[expect(unsafe_code, reason = "MMIO register access requires raw pointer dereference")]
+        #[expect(
+            unsafe_code,
+            reason = "MMIO register access requires raw pointer dereference"
+        )]
         fn read_sectors(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
             if !self.controller.is_initialized() {
                 return Err(BlockError::DeviceNotReady);
@@ -276,7 +286,10 @@ mod msdc_wrapper {
             Ok(())
         }
 
-        #[expect(unsafe_code, reason = "MMIO register access requires raw pointer dereference")]
+        #[expect(
+            unsafe_code,
+            reason = "MMIO register access requires raw pointer dereference"
+        )]
         fn write_sectors(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
             if !self.controller.is_initialized() {
                 return Err(BlockError::DeviceNotReady);
@@ -445,7 +458,8 @@ pub(crate) mod tests {
     fn zero_count_read_succeeds() {
         let dev = MemBlockDevice::new(4).expect("failed to create device");
         let mut buf = vec![];
-        dev.read_sectors(0, 0, &mut buf).expect("zero-count read should succeed");
+        dev.read_sectors(0, 0, &mut buf)
+            .expect("zero-count read should succeed");
     }
 
     #[test]
@@ -497,7 +511,9 @@ pub(crate) mod tests {
                     return Err(BlockError::IoError);
                 }
             }
-            let end = lba.checked_add(u64::from(count)).ok_or(BlockError::OutOfBounds)?;
+            let end = lba
+                .checked_add(u64::from(count))
+                .ok_or(BlockError::OutOfBounds)?;
             if end > self.sectors {
                 return Err(BlockError::OutOfBounds);
             }
@@ -519,7 +535,9 @@ pub(crate) mod tests {
                     return Err(BlockError::IoError);
                 }
             }
-            let end = lba.checked_add(u64::from(count)).ok_or(BlockError::OutOfBounds)?;
+            let end = lba
+                .checked_add(u64::from(count))
+                .ok_or(BlockError::OutOfBounds)?;
             if end > self.sectors {
                 return Err(BlockError::OutOfBounds);
             }

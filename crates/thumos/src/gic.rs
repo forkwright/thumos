@@ -84,12 +84,20 @@ pub unsafe fn init() {
         // Read number of interrupt lines
         let typer = mmio::read32(gicd::TYPER);
         let num_irqs = ((typer & 0x1F) + 1) * 32;
-        let Ok(max_irqs) = u32::try_from(MAX_IRQS) else { return; };
-        let num_irqs = if num_irqs > max_irqs { max_irqs } else { num_irqs };
+        let Ok(max_irqs) = u32::try_from(MAX_IRQS) else {
+            return;
+        };
+        let num_irqs = if num_irqs > max_irqs {
+            max_irqs
+        } else {
+            num_irqs
+        };
 
         // Disable all interrupts
         let num_regs = (num_irqs + 31) / 32;
-        let Ok(num_regs) = usize::try_from(num_regs) else { return; };
+        let Ok(num_regs) = usize::try_from(num_regs) else {
+            return;
+        };
         for i in 0..num_regs {
             mmio::write32(gicd::icenabler(i), 0xFFFF_FFFF);
             mmio::write32(gicd::icpendr(i), 0xFFFF_FFFF);
@@ -97,14 +105,18 @@ pub unsafe fn init() {
 
         // Set all priorities to 0xA0 (medium)
         let num_prio_regs = (num_irqs + 3) / 4;
-        let Ok(num_prio_regs) = usize::try_from(num_prio_regs) else { return; };
+        let Ok(num_prio_regs) = usize::try_from(num_prio_regs) else {
+            return;
+        };
         for i in 0..num_prio_regs {
             mmio::write32(gicd::ipriorityr(i), 0xA0A0_A0A0);
         }
 
         // Target all SPIs to core 0
         let num_target_regs = (num_irqs + 3) / 4;
-        let Ok(num_target_regs) = usize::try_from(num_target_regs) else { return; };
+        let Ok(num_target_regs) = usize::try_from(num_target_regs) else {
+            return;
+        };
         for i in 8..num_target_regs {
             // NOTE: skip first 8 regs (SGI/PPI, read-only targets)
             mmio::write32(gicd::itargetsr(i), 0x0101_0101);

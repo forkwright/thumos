@@ -18,8 +18,8 @@
 )]
 
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction, ScreenId,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
+    ScreenId, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -188,12 +188,26 @@ impl Screen for DialerScreen {
         if self.digit_count > 0 {
             let (formatted, fmt_len) = format_number(&self.digits, self.digit_count);
             let display_str = core::str::from_utf8(&formatted[..fmt_len]).unwrap_or("");
-            ui::draw_scaled_str_centered(fb, w, NUMBER_Y, display_str.as_bytes(), color::WHITE, color::BLACK, DIGIT_SCALE);
+            ui::draw_scaled_str_centered(
+                fb,
+                w,
+                NUMBER_Y,
+                display_str.as_bytes(),
+                color::WHITE,
+                color::BLACK,
+                DIGIT_SCALE,
+            );
         } else {
             // Placeholder text.
             ui::draw_str_centered(
-                fb, w, 0, w, NUMBER_Y + CHAR_HEIGHT / 2,
-                "Enter number", color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                0,
+                w,
+                NUMBER_Y + CHAR_HEIGHT / 2,
+                "Enter number",
+                color::DARK_GREY,
+                color::BLACK,
             );
         }
 
@@ -211,17 +225,26 @@ impl Screen for DialerScreen {
                 let cell_x = (col as u16) * KEY_CELL_W;
                 // Cell background.
                 ui::fill_rect(
-                    fb, w, h,
-                    cell_x + 1, row_y + 1,
-                    KEY_CELL_W - 2, KEY_ROW_H - 2,
+                    fb,
+                    w,
+                    h,
+                    cell_x + 1,
+                    row_y + 1,
+                    KEY_CELL_W - 2,
+                    KEY_ROW_H - 2,
                     color::from_rgb(30, 30, 60),
                 );
                 // Cell label (centered).
                 let label_x = cell_x + KEY_CELL_W / 2 - CHAR_WIDTH / 2;
                 let label_y = row_y + KEY_ROW_H / 2 - CHAR_HEIGHT / 2;
                 ui::draw_str(
-                    fb, w, label_x, label_y,
-                    label, color::WHITE, color::from_rgb(30, 30, 60),
+                    fb,
+                    w,
+                    label_x,
+                    label_y,
+                    label,
+                    color::WHITE,
+                    color::from_rgb(30, 30, 60),
                 );
             }
         }
@@ -255,9 +278,7 @@ impl Screen for DialerScreen {
                     ScreenAction::Back
                 }
             }
-            Key::Lsk => {
-                ScreenAction::Navigate(ScreenId::Contacts)
-            }
+            Key::Lsk => ScreenAction::Navigate(ScreenId::Contacts),
             _ => ScreenAction::None,
         }
     }
@@ -301,7 +322,11 @@ mod tests {
         assert_eq!(screen.digit_count(), 2);
 
         let action = screen.on_key(Key::End);
-        assert_eq!(action, ScreenAction::None, "End with digits must clear, not navigate");
+        assert_eq!(
+            action,
+            ScreenAction::None,
+            "End with digits must clear, not navigate"
+        );
         assert_eq!(screen.digit_count(), 0, "digits must be cleared");
     }
 
@@ -374,7 +399,10 @@ mod tests {
         let digits = b"1234567890";
         let (buf, len) = format_number(digits, 10);
         let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
-        assert_eq!(s, "123-456-7890", "10-digit number must format as NXX-NXX-XXXX");
+        assert_eq!(
+            s, "123-456-7890",
+            "10-digit number must format as NXX-NXX-XXXX"
+        );
     }
 
     #[test]

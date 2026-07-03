@@ -24,7 +24,10 @@
 //! Boot integration via `kinit.rs` Step 13c. Device node at `/dev/gps0`.
 
 // WHY: hardware driver API not yet wired to upper layers (kinit integration pending).
-#![expect(dead_code, reason = "GPS driver API wired in kinit but not yet called from userspace")]
+#![expect(
+    dead_code,
+    reason = "GPS driver API wired in kinit but not yet called from userspace"
+)]
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -167,8 +170,7 @@ impl core::fmt::Display for GpsTime {
         write!(
             f,
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            self.year, self.month, self.day,
-            self.hour, self.minute, self.second,
+            self.year, self.month, self.day, self.hour, self.minute, self.second,
         )
     }
 }
@@ -187,11 +189,9 @@ impl GpsTime {
         let days = self.day.saturating_sub(1) as u64;
 
         // Approximate calculation — sufficient for clock hierarchy ordering.
-        let total_days = years_since_epoch * 365 + years_since_epoch / 4
-            + months * 30 + days;
+        let total_days = years_since_epoch * 365 + years_since_epoch / 4 + months * 30 + days;
 
-        total_days * 86400 + self.hour as u64 * 3600
-            + self.minute as u64 * 60 + self.second as u64
+        total_days * 86400 + self.hour as u64 * 3600 + self.minute as u64 * 60 + self.second as u64
     }
 }
 
@@ -202,9 +202,13 @@ impl GpsTime {
 /// Validate NMEA checksum. The checksum is the XOR of all bytes between '$' and '*'.
 fn validate_checksum(sentence: &[u8]) -> Result<(), GpsError> {
     // Find $ and * positions.
-    let start = sentence.iter().position(|&b| b == b'$')
+    let start = sentence
+        .iter()
+        .position(|&b| b == b'$')
         .ok_or(GpsError::ParseError)?;
-    let star = sentence.iter().position(|&b| b == b'*')
+    let star = sentence
+        .iter()
+        .position(|&b| b == b'*')
         .ok_or(GpsError::ParseError)?;
 
     if star <= start + 1 || star + 3 > sentence.len() {
@@ -218,8 +222,8 @@ fn validate_checksum(sentence: &[u8]) -> Result<(), GpsError> {
     }
 
     // Parse the expected checksum (two hex chars after *).
-    let expected = parse_hex_byte(sentence[star + 1], sentence[star + 2])
-        .ok_or(GpsError::ChecksumMismatch)?;
+    let expected =
+        parse_hex_byte(sentence[star + 1], sentence[star + 2]).ok_or(GpsError::ChecksumMismatch)?;
 
     if checksum == expected {
         Ok(())
@@ -417,9 +421,13 @@ pub(crate) fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
     validate_checksum(sentence)?;
 
     // Extract body between $ and *.
-    let start = sentence.iter().position(|&b| b == b'$')
+    let start = sentence
+        .iter()
+        .position(|&b| b == b'$')
         .ok_or(GpsError::ParseError)?;
-    let star = sentence.iter().position(|&b| b == b'*')
+    let star = sentence
+        .iter()
+        .position(|&b| b == b'*')
         .ok_or(GpsError::ParseError)?;
     let body = &sentence[start + 1..star];
 
@@ -469,9 +477,13 @@ pub(crate) fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
 pub(crate) fn parse_rmc(sentence: &[u8]) -> Result<(GpsPosition, GpsTime), GpsError> {
     validate_checksum(sentence)?;
 
-    let start = sentence.iter().position(|&b| b == b'$')
+    let start = sentence
+        .iter()
+        .position(|&b| b == b'$')
         .ok_or(GpsError::ParseError)?;
-    let star = sentence.iter().position(|&b| b == b'*')
+    let star = sentence
+        .iter()
+        .position(|&b| b == b'*')
         .ok_or(GpsError::ParseError)?;
     let body = &sentence[start + 1..star];
 
@@ -523,7 +535,11 @@ fn parse_time_date(time_field: &[u8], date_field: &[u8]) -> Result<GpsTime, GpsE
     let month = parse_int(&date_field[2..4]).ok_or(GpsError::ParseError)? as u8;
     let year_short = parse_int(&date_field[4..6]).ok_or(GpsError::ParseError)? as u16;
     // NMEA year is two digits; assume 2000+ for years < 70, 1900+ otherwise.
-    let year = if year_short < 70 { 2000 + year_short } else { 1900 + year_short };
+    let year = if year_short < 70 {
+        2000 + year_short
+    } else {
+        1900 + year_short
+    };
 
     Ok(GpsTime {
         year,
@@ -849,10 +865,7 @@ mod tests {
             pos.latitude
         );
         // 6 degrees 30.3372 minutes W = ~-6505620 microdegrees (negative for W)
-        assert!(
-            pos.longitude < 0,
-            "longitude must be negative for West"
-        );
+        assert!(pos.longitude < 0, "longitude must be negative for West");
     }
 
     // -- RMC parsing --
@@ -913,7 +926,9 @@ mod tests {
     #[test]
     fn sentence_buffer_handles_multiple_sentences() {
         let mut buf = SentenceBuffer::new();
-        buf.feed(b"$GPGGA,1,2,N,3,E,1,4,1.0,10.0,M,0,M,,*53\r\n$GPRMC,1,A,2,N,3,E,0,0,010170,,,A*00\r\n");
+        buf.feed(
+            b"$GPGGA,1,2,N,3,E,1,4,1.0,10.0,M,0,M,,*53\r\n$GPRMC,1,A,2,N,3,E,0,0,010170,,,A*00\r\n",
+        );
 
         let first = buf.take_sentence();
         assert!(first.is_some(), "first sentence must be extractable");
@@ -954,10 +969,7 @@ mod tests {
             GpsState::Off,
             "new receiver must start in Off state"
         );
-        assert!(
-            receiver.position().is_none(),
-            "no position before init"
-        );
+        assert!(receiver.position().is_none(), "no position before init");
     }
 
     #[test]

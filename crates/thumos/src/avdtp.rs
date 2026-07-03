@@ -29,7 +29,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::sbc::{SbcFrameHeader, SBC_MIN_BITPOOL};
+use crate::sbc::{SBC_MIN_BITPOOL, SbcFrameHeader};
 
 // ---------------------------------------------------------------------------
 // AVDTP constants (Bluetooth A2DP Spec v1.3.2, AVDTP Spec v1.3)

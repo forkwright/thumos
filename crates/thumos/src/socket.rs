@@ -25,7 +25,7 @@ extern crate alloc;
 
 use smoltcp::iface::SocketHandle;
 use smoltcp::socket::{tcp, udp};
-use smoltcp::wire::{IpEndpoint, IpAddress, Ipv4Address};
+use smoltcp::wire::{IpAddress, IpEndpoint, Ipv4Address};
 
 use crate::fd::{self, FileDescriptor, MAX_FDS};
 use crate::net::{self, FirewallDevice, LoopbackDevice, NetworkStack};
@@ -262,9 +262,9 @@ unsafe fn alloc_ephemeral_port() -> Option<u16> {
             // Wrap within ephemeral range.
             let port = 49152 + (port.wrapping_sub(49152) % (65535 - 49152 + 1));
 
-            let in_use = table.iter().any(|slot| {
-                matches!(slot, Some(info) if info.bound_port == port)
-            });
+            let in_use = table
+                .iter()
+                .any(|slot| matches!(slot, Some(info) if info.bound_port == port));
 
             if !in_use {
                 let next = &mut *core::ptr::addr_of_mut!(NEXT_EPHEMERAL_PORT);
@@ -444,8 +444,7 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
             // sys_listen() (currently EOPNOTSUPP, TODO(#84)).
         }
         SocketType::Udp => {
-            let udp_socket: &mut udp::Socket<'_> =
-                stack.sockets_mut().get_mut(socket_handle);
+            let udp_socket: &mut udp::Socket<'_> = stack.sockets_mut().get_mut(socket_handle);
             if udp_socket.bind(endpoint).is_err() {
                 return fd::EINVAL;
             }
@@ -685,8 +684,7 @@ pub(crate) fn sys_sendto(
             if !info.connected {
                 return ENOTCONN;
             }
-            let tcp_socket: &mut tcp::Socket<'_> =
-                stack.sockets_mut().get_mut(info.socket_handle);
+            let tcp_socket: &mut tcp::Socket<'_> = stack.sockets_mut().get_mut(info.socket_handle);
 
             if !tcp_socket.may_send() {
                 return ENOTCONN;
@@ -704,14 +702,11 @@ pub(crate) fn sys_sendto(
                 && crate::memguard::validate_user_buffer(
                     dest_addr_ptr as usize,
                     core::mem::size_of::<SockaddrIn>(),
-                )
-            {
+                ) {
                 // SAFETY: validate_user_buffer confirmed
                 // [dest_addr_ptr, dest_addr_ptr+size_of::<SockaddrIn>()) lies
                 // within user-accessible DRAM.
-                let sa = unsafe {
-                    core::ptr::read_unaligned(dest_addr_ptr as *const SockaddrIn)
-                };
+                let sa = unsafe { core::ptr::read_unaligned(dest_addr_ptr as *const SockaddrIn) };
                 IpEndpoint::new(IpAddress::Ipv4(sa.ipv4_addr()), sa.port())
             } else if let Some((ip, port)) = info.peer_addr {
                 IpEndpoint::new(IpAddress::Ipv4(ip), port)
@@ -719,8 +714,7 @@ pub(crate) fn sys_sendto(
                 return ENOTCONN;
             };
 
-            let udp_socket: &mut udp::Socket<'_> =
-                stack.sockets_mut().get_mut(info.socket_handle);
+            let udp_socket: &mut udp::Socket<'_> = stack.sockets_mut().get_mut(info.socket_handle);
 
             // Auto-bind if not yet bound.
             if !udp_socket.is_open() {
@@ -816,8 +810,7 @@ pub(crate) fn sys_recvfrom(
             if !info.connected {
                 return ENOTCONN;
             }
-            let tcp_socket: &mut tcp::Socket<'_> =
-                stack.sockets_mut().get_mut(info.socket_handle);
+            let tcp_socket: &mut tcp::Socket<'_> = stack.sockets_mut().get_mut(info.socket_handle);
 
             if !tcp_socket.may_recv() {
                 // Connection closed — return 0 (EOF).
@@ -830,8 +823,7 @@ pub(crate) fn sys_recvfrom(
             }
         }
         SocketType::Udp => {
-            let udp_socket: &mut udp::Socket<'_> =
-                stack.sockets_mut().get_mut(info.socket_handle);
+            let udp_socket: &mut udp::Socket<'_> = stack.sockets_mut().get_mut(info.socket_handle);
 
             match udp_socket.recv_slice(buf) {
                 Ok((n, meta)) => {
@@ -847,7 +839,10 @@ pub(crate) fn sys_recvfrom(
                         let src_ip = match meta.endpoint.addr {
                             IpAddress::Ipv4(v4) => v4,
                             // Only IPv4 supported in this phase.
-                            #[expect(unreachable_patterns, reason = "future IPv6 support will add variants to IpAddress")]
+                            #[expect(
+                                unreachable_patterns,
+                                reason = "future IPv6 support will add variants to IpAddress"
+                            )]
                             _ => Ipv4Address::UNSPECIFIED,
                         };
                         let sa = SockaddrIn::new(meta.endpoint.port, src_ip);
@@ -855,10 +850,7 @@ pub(crate) fn sys_recvfrom(
                         // [src_addr_ptr, src_addr_ptr+size_of::<SockaddrIn>())
                         // lies within user-accessible DRAM.
                         unsafe {
-                            core::ptr::write_unaligned(
-                                src_addr_ptr as *mut SockaddrIn,
-                                sa,
-                            );
+                            core::ptr::write_unaligned(src_addr_ptr as *mut SockaddrIn, sa);
                         }
                     }
                     n as u32
@@ -896,7 +888,7 @@ pub(crate) fn on_socket_fd_closed(fd_idx: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fd::{FdTable, FD_TABLE};
+    use crate::fd::{FD_TABLE, FdTable};
 
     /// Reset global state for test isolation.
     ///
@@ -928,14 +920,21 @@ mod tests {
     #[test]
     fn socket_creates_tcp_fd() {
         // SAFETY: test-only; setup_test_network resets global state.
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
 
         let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
-        assert!(fd < MAX_FDS as u32, "TCP socket should return valid fd, got {fd}");
+        assert!(
+            fd < MAX_FDS as u32,
+            "TCP socket should return valid fd, got {fd}"
+        );
 
         // Verify it's in the socket table.
         let sock_table = unsafe { &*core::ptr::addr_of!(SOCKET_TABLE) };
-        let info = sock_table[fd as usize].as_ref().expect("socket info must exist");
+        let info = sock_table[fd as usize]
+            .as_ref()
+            .expect("socket info must exist");
         assert_eq!(info.socket_type, SocketType::Tcp);
         assert_eq!(info.bound_port, 0);
         assert!(!info.connected);
@@ -944,20 +943,29 @@ mod tests {
     #[test]
     fn socket_creates_udp_fd() {
         // SAFETY: test-only; setup_test_network resets global state.
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
 
         let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
-        assert!(fd < MAX_FDS as u32, "UDP socket should return valid fd, got {fd}");
+        assert!(
+            fd < MAX_FDS as u32,
+            "UDP socket should return valid fd, got {fd}"
+        );
 
         let sock_table = unsafe { &*core::ptr::addr_of!(SOCKET_TABLE) };
-        let info = sock_table[fd as usize].as_ref().expect("socket info must exist");
+        let info = sock_table[fd as usize]
+            .as_ref()
+            .expect("socket info must exist");
         assert_eq!(info.socket_type, SocketType::Udp);
     }
 
     #[test]
     fn socket_invalid_domain_returns_eafnosupport() {
         // SAFETY: test-only; setup_test_network resets global state.
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
 
         let result = sys_socket(99, SOCK_STREAM, 0);
         assert_eq!(result, EAFNOSUPPORT);
@@ -966,7 +974,9 @@ mod tests {
     #[test]
     fn socket_invalid_type_returns_eprototype() {
         // SAFETY: test-only; setup_test_network resets global state.
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
 
         let result = sys_socket(AF_INET, 99, 0);
         assert_eq!(result, EPROTOTYPE);
@@ -975,7 +985,9 @@ mod tests {
     #[test]
     fn close_socket_fd_frees_resources() {
         // SAFETY: test-only; setup_test_network resets global state.
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
 
         let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
         assert!(fd < MAX_FDS as u32);
@@ -992,7 +1004,10 @@ mod tests {
 
         // Socket info should be cleared.
         let sock_table = unsafe { &*core::ptr::addr_of!(SOCKET_TABLE) };
-        assert!(sock_table[fd as usize].is_none(), "socket info should be cleared");
+        assert!(
+            sock_table[fd as usize].is_none(),
+            "socket info should be cleared"
+        );
 
         // smoltcp socket count should decrease.
         let stack = unsafe { get_network_stack() }.expect("stack");
@@ -1002,7 +1017,9 @@ mod tests {
     #[test]
     fn sendto_on_unconnected_tcp_returns_enotconn() {
         // SAFETY: test-only; setup_test_network resets global state.
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
 
         let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
         assert!(fd < MAX_FDS as u32);
@@ -1015,7 +1032,10 @@ mod tests {
         // we test the ENOTCONN path by checking socket state directly.
         let sock_table = unsafe { &*core::ptr::addr_of!(SOCKET_TABLE) };
         let info = sock_table[fd as usize].as_ref().expect("socket info");
-        assert!(!info.connected, "freshly created socket must not be connected");
+        assert!(
+            !info.connected,
+            "freshly created socket must not be connected"
+        );
         assert_eq!(info.socket_type, SocketType::Tcp);
     }
 
@@ -1024,7 +1044,9 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn sendto_on_unconnected_tcp_returns_enotconn_syscall() {
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
         let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
         let data = b"hello";
         let result = sys_sendto(fd, data.as_ptr() as u32, data.len() as u32, 0, 0, 0);
@@ -1042,7 +1064,9 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn bind_sets_local_port_syscall() {
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
         let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
         static mut ADDR: SockaddrIn = SockaddrIn {
             sin_family: 0,
@@ -1070,14 +1094,22 @@ mod tests {
         // FD_TABLE is-a-socket check, so fd=0 (< MAX_FDS) is sufficient.
         let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
         let result = sys_bind(0, kernel_ptr, core::mem::size_of::<SockaddrIn>() as u32);
-        assert_eq!(result, fd::EFAULT, "kernel-range addr_ptr must return EFAULT");
+        assert_eq!(
+            result,
+            fd::EFAULT,
+            "kernel-range addr_ptr must return EFAULT"
+        );
     }
 
     #[test]
     fn connect_rejects_kernel_range_addr_ptr() {
         let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
         let result = sys_connect(0, kernel_ptr, core::mem::size_of::<SockaddrIn>() as u32);
-        assert_eq!(result, fd::EFAULT, "kernel-range addr_ptr must return EFAULT");
+        assert_eq!(
+            result,
+            fd::EFAULT,
+            "kernel-range addr_ptr must return EFAULT"
+        );
     }
 
     /// Regression test for issue #307: bind() must leave a TCP socket in
@@ -1088,7 +1120,9 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn tcp_bind_then_connect_succeeds() {
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
 
         let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
         assert!(fd < MAX_FDS as u32);
@@ -1119,7 +1153,10 @@ mod tests {
 
         let sock_table = unsafe { &*core::ptr::addr_of!(SOCKET_TABLE) };
         let info = sock_table[fd as usize].as_ref().expect("socket info");
-        assert_eq!(info.bound_port, 40000, "bound_port must record the requested port");
+        assert_eq!(
+            info.bound_port, 40000,
+            "bound_port must record the requested port"
+        );
 
         let stack = unsafe { get_network_stack() }.expect("stack");
         let tcp_socket: &tcp::Socket<'_> = stack.sockets().get(info.socket_handle);
@@ -1152,7 +1189,9 @@ mod tests {
     #[test]
     fn bind_sets_local_port() {
         // SAFETY: test-only; setup_test_network resets global state.
-        unsafe { setup_test_network(); }
+        unsafe {
+            setup_test_network();
+        }
 
         let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
         assert!(fd < MAX_FDS as u32);

@@ -19,10 +19,10 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::block::{BlockDevice, BLOCK_SIZE};
+use crate::block::{BLOCK_SIZE, BlockDevice};
 use crate::cache::BlockCache;
-use crate::lfs::{DiskInode, SegmentHeader, SEGMENT_MAGIC};
-use crate::lfs_checkpoint::{self, CheckpointHeader, CHECKPOINT_MAGIC};
+use crate::lfs::{DiskInode, SEGMENT_MAGIC, SegmentHeader};
+use crate::lfs_checkpoint::{self, CHECKPOINT_MAGIC, CheckpointHeader};
 use crate::lfs_imap::{LfsError, LfsImap};
 use crate::lfs_segment::LfsSegmentManager;
 
@@ -163,8 +163,8 @@ impl LfsWriter {
             self.seal_segment_inner(dev, cache, seg_mgr, reserve_ok)?;
         }
 
-        let block_num = seg_mgr.segment_start_block(self.current_segment)
-            + u64::from(self.write_position);
+        let block_num =
+            seg_mgr.segment_start_block(self.current_segment) + u64::from(self.write_position);
 
         // Serialize the inode into a block-sized buffer.
         let mut buf = [0u8; BLOCK_SIZE];
@@ -234,8 +234,8 @@ impl LfsWriter {
             self.seal_segment_inner(dev, cache, seg_mgr, reserve_ok)?;
         }
 
-        let block_num = seg_mgr.segment_start_block(self.current_segment)
-            + u64::from(self.write_position);
+        let block_num =
+            seg_mgr.segment_start_block(self.current_segment) + u64::from(self.write_position);
 
         cache.write(dev, block_num, data)?;
         self.write_position += 1;
@@ -469,10 +469,14 @@ mod tests {
 
         // Verify data round-trips.
         let mut buf = [0u8; BLOCK_SIZE];
-        cache.read(&mut dev, block1, &mut buf).expect("read block 1");
+        cache
+            .read(&mut dev, block1, &mut buf)
+            .expect("read block 1");
         assert!(buf.iter().all(|&b| b == 0xAA));
 
-        cache.read(&mut dev, block2, &mut buf).expect("read block 2");
+        cache
+            .read(&mut dev, block2, &mut buf)
+            .expect("read block 2");
         assert!(buf.iter().all(|&b| b == 0xBB));
     }
 
@@ -509,7 +513,9 @@ mod tests {
         cache.flush(&mut dev).expect("flush");
         let header_block = seg_mgr.segment_start_block(initial_segment);
         let mut buf = [0u8; BLOCK_SIZE];
-        cache.read(&mut dev, header_block, &mut buf).expect("read header");
+        cache
+            .read(&mut dev, header_block, &mut buf)
+            .expect("read header");
 
         // Verify the magic and block count in the header.
         let magic = u32::from_le_bytes(buf[0..4].try_into().expect("magic bytes"));
@@ -562,8 +568,8 @@ mod tests {
 
         // Read the checkpoint back.
         let mut cache2 = BlockCache::new();
-        let header = lfs_checkpoint::read_checkpoint(&mut dev, &mut cache2, 1)
-            .expect("read checkpoint");
+        let header =
+            lfs_checkpoint::read_checkpoint(&mut dev, &mut cache2, 1).expect("read checkpoint");
 
         assert_eq!(header.magic, CHECKPOINT_MAGIC);
         assert_eq!(header.sequence, checkpoint_seq);
@@ -587,12 +593,16 @@ mod tests {
         let mut buf = [0u8; BLOCK_SIZE];
         for i in 0..header.segment_bitmap_count {
             cache2
-                .read(&mut dev, header.segment_bitmap_block + u64::from(i), &mut buf)
+                .read(
+                    &mut dev,
+                    header.segment_bitmap_block + u64::from(i),
+                    &mut buf,
+                )
                 .expect("read seg bitmap");
             seg_data.extend_from_slice(&buf);
         }
-        let restored_seg = LfsSegmentManager::deserialize(&seg_data, 8, 256)
-            .expect("deserialize segments");
+        let restored_seg =
+            LfsSegmentManager::deserialize(&seg_data, 8, 256).expect("deserialize segments");
 
         assert_eq!(restored_seg.segment_count(), 8);
         // Segment 0 and the writer's segments should be in use.

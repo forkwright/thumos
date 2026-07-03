@@ -35,7 +35,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::telephony::{AtResponse, ModemTransport, TelephonyError, MAX_LINE_LEN};
+use crate::telephony::{AtResponse, MAX_LINE_LEN, ModemTransport, TelephonyError};
 
 // Re-export GSM-7 codec so callers can still use crate::sms::*.
 pub(crate) use crate::gsm7::*;
@@ -310,9 +310,7 @@ impl SmsManager {
     /// Create a new SMS manager with an empty inbox.
     #[must_use]
     pub(crate) fn new() -> Self {
-        Self {
-            inbox: Vec::new(),
-        }
+        Self { inbox: Vec::new() }
     }
 
     /// Send an SMS message via the modem.
@@ -336,7 +334,9 @@ impl SmsManager {
         let (pdu_hex, tpdu_len) = encode_submit_pdu(number, text)?;
 
         // Set PDU mode.
-        transport.send_at("AT+CMGF=0").map_err(|_| SmsError::TransportError)?;
+        transport
+            .send_at("AT+CMGF=0")
+            .map_err(|_| SmsError::TransportError)?;
         let mut line_buf = [0u8; MAX_LINE_LEN];
         // Drain response lines until OK/ERROR.
         for _ in 0..16 {
@@ -357,10 +357,12 @@ impl SmsManager {
         // Send AT+CMGS=<tpdu_len> followed by the PDU.
         let mut cmd_buf = [0u8; 32];
         let cmd_len = write_cmgs_command(&mut cmd_buf, tpdu_len);
-        let cmd_str = core::str::from_utf8(&cmd_buf[..cmd_len])
-            .map_err(|_| SmsError::TransportError)?;
+        let cmd_str =
+            core::str::from_utf8(&cmd_buf[..cmd_len]).map_err(|_| SmsError::TransportError)?;
 
-        transport.send_at(cmd_str).map_err(|_| SmsError::TransportError)?;
+        transport
+            .send_at(cmd_str)
+            .map_err(|_| SmsError::TransportError)?;
 
         // Wait for the '>' prompt, then send PDU + Ctrl-Z.
         let mut prompt_received = false;
@@ -641,8 +643,7 @@ mod tests {
             timestamp: 0,
             read: false,
         });
-        let sender = core::str::from_utf8(&msg.sender[..msg.sender_len as usize])
-            .unwrap_or("");
+        let sender = core::str::from_utf8(&msg.sender[..msg.sender_len as usize]).unwrap_or("");
         assert_eq!(sender, "+1234567890", "sender must decode to +1234567890");
         assert_eq!(msg.body, "Hello", "body must decode to 'Hello'");
         assert!(!msg.read, "incoming message must be unread");
@@ -742,7 +743,10 @@ mod tests {
         });
         assert!(!manager.inbox()[0].read, "message must start unread");
         manager.mark_read(0);
-        assert!(manager.inbox()[0].read, "message must be read after mark_read");
+        assert!(
+            manager.inbox()[0].read,
+            "message must be read after mark_read"
+        );
     }
 
     #[test]
@@ -765,7 +769,11 @@ mod tests {
         assert_eq!(manager.inbox().len(), 2);
         manager.delete(0);
         assert_eq!(manager.inbox().len(), 1);
-        assert_eq!(manager.inbox()[0].body, "msg2", "remaining message must be msg2");
+        assert_eq!(
+            manager.inbox()[0].body,
+            "msg2",
+            "remaining message must be msg2"
+        );
     }
 
     #[test]
@@ -783,7 +791,10 @@ mod tests {
         assert!(bcd.is_ok());
         let bcd = bcd.unwrap_or_default();
         let decoded = decode_bcd_address(bcd[0], bcd[1], &bcd[2..]);
-        assert_eq!(decoded, "+15551234567", "BCD round-trip must preserve number");
+        assert_eq!(
+            decoded, "+15551234567",
+            "BCD round-trip must preserve number"
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@ use smoltcp::phy::Device;
 use smoltcp::socket::dhcpv4;
 use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
 
-use crate::net::{NetError, NetworkStack, MAX_SOCKETS};
+use crate::net::{MAX_SOCKETS, NetError, NetworkStack};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -274,10 +274,7 @@ mod tests {
             ],
         };
         assert_eq!(config.address.prefix_len(), 24);
-        assert_eq!(
-            config.gateway,
-            Some(Ipv4Address::new(192, 168, 1, 1))
-        );
+        assert_eq!(config.gateway, Some(Ipv4Address::new(192, 168, 1, 1)));
         assert_eq!(config.dns_servers.len(), 2);
     }
 }

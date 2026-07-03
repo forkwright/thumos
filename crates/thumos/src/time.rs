@@ -28,8 +28,8 @@
 //! This matches the 32-bit ABI layout used by musl on ARMv7.
 
 use crate::exceptions;
-use crate::process;
 use crate::memguard::validate_user_buffer;
+use crate::process;
 use crate::syscall::EFAULT;
 use crate::timer;
 
@@ -206,9 +206,8 @@ pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
             // threaded init (before IRQs are enabled or before userspace
             // has time syscall access). A torn read produces a mildly wrong
             // clock reading rather than a safety violation.
-            let offset = unsafe {
-                core::ptr::read_volatile(core::ptr::addr_of!(REALTIME_OFFSET_SECS))
-            };
+            let offset =
+                unsafe { core::ptr::read_volatile(core::ptr::addr_of!(REALTIME_OFFSET_SECS)) };
             let real_secs = offset.wrapping_add(u64::from(mono_secs));
             (real_secs as u32, mono_nanos)
         }
@@ -270,7 +269,11 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     // Round up: if there is any sub-tick nanosecond remainder, add one tick.
     let sub_tick_ns = u64::from(req_nanos) % (TICK_MS * 1_000_000);
     let ticks_needed = total_ms / TICK_MS
-        + if sub_tick_ns > 0 || (total_ms % TICK_MS != 0) { 1 } else { 0 };
+        + if sub_tick_ns > 0 || (total_ms % TICK_MS != 0) {
+            1
+        } else {
+            0
+        };
 
     let now_ticks = exceptions::ticks();
     let wake_tick = now_ticks.saturating_add(ticks_needed);
@@ -442,7 +445,11 @@ mod tests {
         let total_ms = u64::from(req_secs) * 1_000 + u64::from(req_nanos) / 1_000_000;
         let sub_tick_ns = u64::from(req_nanos) % (TICK_MS * 1_000_000);
         let ticks_needed = total_ms / TICK_MS
-            + if sub_tick_ns > 0 || (total_ms % TICK_MS != 0) { 1 } else { 0 };
+            + if sub_tick_ns > 0 || (total_ms % TICK_MS != 0) {
+                1
+            } else {
+                0
+            };
 
         assert_eq!(ticks_needed, 100, "1 second = 100 ticks at 10 ms/tick");
     }
@@ -458,7 +465,11 @@ mod tests {
         let total_ms = u64::from(req_secs) * 1_000 + u64::from(req_nanos) / 1_000_000;
         let sub_tick_ns = u64::from(req_nanos) % (TICK_MS * 1_000_000);
         let ticks_needed = total_ms / TICK_MS
-            + if sub_tick_ns > 0 || (total_ms % TICK_MS != 0) { 1 } else { 0 };
+            + if sub_tick_ns > 0 || (total_ms % TICK_MS != 0) {
+                1
+            } else {
+                0
+            };
 
         assert_eq!(ticks_needed, 1, "5 ms sleep must round up to 1 tick");
     }

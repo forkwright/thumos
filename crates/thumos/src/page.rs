@@ -88,7 +88,10 @@ unsafe fn zero_page(addr: usize) {
         // SAFETY: addr is page-aligned (caller contract) and PAGE_SIZE is a
         // multiple of size_of::<usize>(), so offset stays in bounds and ptr
         // stays usize-aligned throughout the loop.
-        #[expect(unsafe_code, reason = "volatile write required to defeat dead-store elimination when zeroing a page")]
+        #[expect(
+            unsafe_code,
+            reason = "volatile write required to defeat dead-store elimination when zeroing a page"
+        )]
         unsafe {
             core::ptr::write_volatile(ptr, 0);
         }
@@ -112,7 +115,10 @@ unsafe fn zero_page_range(first_page: usize, start_page: usize, end_page: usize)
     for page_num in start_page..end_page {
         let addr = first_page + page_num * PAGE_SIZE;
         // SAFETY: addr falls within the caller-validated range.
-        #[expect(unsafe_code, reason = "delegating to zero_page under the caller's range contract")]
+        #[expect(
+            unsafe_code,
+            reason = "delegating to zero_page under the caller's range contract"
+        )]
         unsafe {
             zero_page(addr);
         }
@@ -242,7 +248,10 @@ pub unsafe fn try_free_page(addr: usize) -> bool {
         // under test changes nothing the bitmap-level free tests observe.
         #[cfg(not(test))]
         {
-            #[expect(unsafe_code, reason = "zeroing a page immediately before freeing it, per this function's own SAFETY analysis above")]
+            #[expect(
+                unsafe_code,
+                reason = "zeroing a page immediately before freeing it, per this function's own SAFETY analysis above"
+            )]
             unsafe {
                 zero_page(addr);
             }
@@ -362,7 +371,10 @@ mod tests {
             }
 
             let zeroed = zero_page_range(base, 0, TEST_RANGE_PAGES);
-            assert_eq!(zeroed, TEST_RANGE_PAGES, "must report every page in range as zeroed");
+            assert_eq!(
+                zeroed, TEST_RANGE_PAGES,
+                "must report every page in range as zeroed"
+            );
 
             for i in 0..RANGE_LEN {
                 assert_eq!(
@@ -406,9 +418,15 @@ mod tests {
         crate::irq::reset_mock();
         assert!(crate::irq::mock_enabled(), "starts unmasked");
         let guard = PAGE_LOCK.lock();
-        assert!(!crate::irq::mock_enabled(), "PAGE_LOCK.lock() must mask IRQ delivery while held");
+        assert!(
+            !crate::irq::mock_enabled(),
+            "PAGE_LOCK.lock() must mask IRQ delivery while held"
+        );
         drop(guard);
-        assert!(crate::irq::mock_enabled(), "dropping the guard must restore IRQ delivery");
+        assert!(
+            crate::irq::mock_enabled(),
+            "dropping the guard must restore IRQ delivery"
+        );
     }
 
     #[test]
@@ -423,8 +441,14 @@ mod tests {
         let inner = crate::irq::IrqGuard::new();
         assert!(!crate::irq::mock_enabled());
         drop(inner);
-        assert!(!crate::irq::mock_enabled(), "inner drop must not unmask while the page lock is still held");
+        assert!(
+            !crate::irq::mock_enabled(),
+            "inner drop must not unmask while the page lock is still held"
+        );
         drop(outer);
-        assert!(crate::irq::mock_enabled(), "outer drop restores IRQ delivery");
+        assert!(
+            crate::irq::mock_enabled(),
+            "outer drop restores IRQ delivery"
+        );
     }
 }

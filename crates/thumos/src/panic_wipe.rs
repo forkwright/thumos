@@ -216,10 +216,7 @@ impl fmt::Display for WipeResult {
         write!(
             f,
             "WipeResult(completed={}, failed={}, scrubbed={}, beacon={})",
-            self.targets_completed,
-            self.targets_failed,
-            self.memory_scrubbed,
-            self.beacon_emitted,
+            self.targets_completed, self.targets_failed, self.memory_scrubbed, self.beacon_emitted,
         )
     }
 }
@@ -408,7 +405,11 @@ mod tests {
     #[test]
     fn plan_covers_all_six_targets() {
         let plan = build_panic_plan();
-        assert_eq!(plan.len(), PANIC_WIPE_TARGET_COUNT, "plan must have 6 targets");
+        assert_eq!(
+            plan.len(),
+            PANIC_WIPE_TARGET_COUNT,
+            "plan must have 6 targets"
+        );
         assert!(!plan.is_empty());
     }
 
@@ -421,8 +422,10 @@ mod tests {
             assert!(
                 window[0].priority() <= window[1].priority(),
                 "targets must be in ascending priority order: {} (p{}) must come before {} (p{})",
-                window[0], window[0].priority(),
-                window[1], window[1].priority(),
+                window[0],
+                window[0].priority(),
+                window[1],
+                window[1].priority(),
             );
         }
     }
@@ -452,10 +455,7 @@ mod tests {
         ];
 
         for req in &required {
-            assert!(
-                targets.contains(req),
-                "plan must contain {req}"
-            );
+            assert!(targets.contains(req), "plan must contain {req}");
         }
     }
 
@@ -498,7 +498,10 @@ mod tests {
         // SAFETY: dry_run = true performs no destructive I/O.
         let result = unsafe { execute_panic_wipe(&mut km, 500, true) };
         assert_eq!(result.targets_failed, 0, "dry-run must have zero failures");
-        assert!(result.memory_scrubbed, "dry-run must report memory as scrubbed");
+        assert!(
+            result.memory_scrubbed,
+            "dry-run must report memory as scrubbed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -513,8 +516,15 @@ mod tests {
         // SAFETY: an empty usable range means zero_usable_range performs no
         // memory access.
         let result = unsafe { scrub_user_pages() };
-        assert!(!result, "scrub of an empty (uninitialized) usable range must report false");
-        assert_eq!(page::free_count(), 0, "scrub must never mutate FREE_PAGES bookkeeping");
+        assert!(
+            !result,
+            "scrub of an empty (uninitialized) usable range must report false"
+        );
+        assert_eq!(
+            page::free_count(),
+            0,
+            "scrub must never mutate FREE_PAGES bookkeeping"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -560,7 +570,10 @@ mod tests {
     fn display_impls_produce_output() {
         let plan = build_panic_plan();
         let plan_s = alloc::format!("{plan}");
-        assert!(plan_s.contains("6 targets"), "WipePlan Display must show count");
+        assert!(
+            plan_s.contains("6 targets"),
+            "WipePlan Display must show count"
+        );
         assert!(plan_s.contains("keys"), "WipePlan Display must list keys");
 
         let target_s = WipeTarget::CallHistory.to_string();
@@ -609,14 +622,16 @@ mod tests {
         // page/heap-backed memory afterward.
         let result = unsafe { execute_panic_wipe(&mut km, 2000, false) };
 
-        assert!(!km.has_keys(), "in-memory keys must still be zeroized on a real run");
+        assert!(
+            !km.has_keys(),
+            "in-memory keys must still be zeroized on a real run"
+        );
         assert_eq!(
             result.targets_completed, 0,
             "no filesystem target can be reported completed while wipe_target_path is a no-op stub"
         );
         assert_eq!(
-            result.targets_failed,
-            PANIC_WIPE_TARGET_COUNT,
+            result.targets_failed, PANIC_WIPE_TARGET_COUNT,
             "every target, including keys' filesystem copy, must be reported failed/unverified"
         );
     }
