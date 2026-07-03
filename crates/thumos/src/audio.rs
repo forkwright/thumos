@@ -199,14 +199,19 @@ impl<C: AudioCodecOps> AudioManager<C> {
     ///
     /// ## Lifecycle
     ///
-    /// 1. If this is the first session (refcount 0 -> 1), power on the codec.
-    /// 2. If the session kind is `VoiceCall`, enable mic (ADC + bias).
-    /// 3. Preempt any active session at lower-or-equal priority; if a
-    ///    strictly higher-priority session is active, the new session is
-    ///    inserted paused instead (#386).
-    /// 4. Configure the codec for the requested route — skipped if step 3
-    ///    inserted the new session paused.
-    /// 5. Return the new session's ID.
+    /// 1. If this is the first session (refcount 0 -> 1), power on the
+    ///    codec. Any hardware failure from this step onward rolls back
+    ///    what this call powered on and returns before any session state
+    ///    is mutated (#390) — `open_session` has a single commit point.
+    /// 2. If the session kind is `VoiceCall`, enable mic (ADC + bias);
+    ///    on failure, roll back the ADC if it was already enabled.
+    /// 3. Configure the codec for the requested route, unless a strictly
+    ///    higher-priority session is already active (in which case the
+    ///    new session is inserted paused instead, #386). This is the
+    ///    commit point: no previously-active session is paused before
+    ///    this succeeds.
+    /// 4. Preempt any active session at lower-or-equal priority.
+    /// 5. Push the new session and return its ID.
     ///
     /// ## Preemption rules
     ///
@@ -227,53 +232,87 @@ impl<C: AudioCodecOps> AudioManager<C> {
         kind: SessionKind,
         route: AudioRoute,
     ) -> Result<u32, AudioError> {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
-
         let priority = SessionPriority::from_kind(kind);
+        let first_session = self.sessions.is_empty();
 
-        // Power on codec if this is the first session.
-        if self.sessions.is_empty() {
+        // Power on codec if this is the first session. A failure at any
+        // step here must roll the codec back to powered-off (#390) — the
+        // only prior commit was self.codec_powered, which we also revert.
+        if first_session {
             self.codec.power_on()?;
             self.codec_powered = true;
-            self.codec.enable_dac()?;
-            self.codec.set_volume(self.volume)?;
+
+            if let Err(err) = self.codec.enable_dac() {
+                self.codec.power_off().ok();
+                self.codec_powered = false;
+                return Err(err);
+            }
+            if let Err(err) = self.codec.set_volume(self.volume) {
+                self.codec.power_off().ok();
+                self.codec_powered = false;
+                return Err(err);
+            }
         }
 
-        // Enable mic for voice calls.
+        // Enable mic for voice calls. Roll back the ADC if mic bias fails
+        // to enable, so codec.adc_enabled and mgr.is_mic_powered() never
+        // disagree (#390) — an ADC left hot with no mic-powered session
+        // recorded is an unauditable microphone.
         let needs_mic = kind == SessionKind::VoiceCall;
         if needs_mic && !self.mic_powered {
-            self.codec.enable_adc()?;
-            self.codec.enable_mic_bias()?;
+            if let Err(err) = self.codec.enable_adc() {
+                if first_session {
+                    self.codec.power_off().ok();
+                    self.codec_powered = false;
+                }
+                return Err(err);
+            }
+            if let Err(err) = self.codec.enable_mic_bias() {
+                self.codec.disable_adc().ok();
+                if first_session {
+                    self.codec.power_off().ok();
+                    self.codec_powered = false;
+                }
+                return Err(err);
+            }
             self.mic_powered = true;
         }
 
-        // Preempt sessions: pause any active session at lower or equal priority.
-        // Equal priority: most recent wins, so pause previous same-priority.
+        // WHY: a strictly-higher-priority active session is unaffected by
+        // preemption (only <= priority sessions get paused below), so it
+        // is safe to compute this before the preemption loop runs — the
+        // set of higher-priority actives is the same before and after.
+        // The new session must not become active, and must not touch the
+        // codec route, or it silently displaces the higher-priority
+        // session's audio (#386).
+        let blocked_by_higher_priority =
+            self.sessions.iter().any(|s| s.active && s.priority > priority);
+
+        // Commit point: set the codec output route for the new session,
+        // unless a strictly higher-priority session is already active.
+        // No session state is mutated before this succeeds (#390) — a
+        // set_output failure must not permanently strand previously-active
+        // sessions paused with no path to resume them.
+        if !blocked_by_higher_priority {
+            self.codec.set_output(route)?;
+            self.active_route = route;
+        }
+
+        // Every hardware operation has succeeded — pause preempted
+        // sessions and push the new one. Equal priority: most recent
+        // wins, so pause previous same-priority.
         for session in &mut self.sessions {
             if session.active && session.priority <= priority {
                 session.active = false;
             }
         }
 
-        // WHY: the loop above only pauses <= priority sessions, so a
-        // strictly-higher-priority active session survives it by
-        // construction. The new session must not become active, and must
-        // not touch the codec route, or it silently displaces the
-        // higher-priority session's audio (#386).
-        let blocked_by_higher_priority =
-            self.sessions.iter().any(|s| s.active && s.priority > priority);
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
 
-        // Set the codec output route for the new session, unless a
-        // strictly higher-priority session is already active.
-        if !blocked_by_higher_priority {
-            self.codec.set_output(route)?;
-            self.active_route = route;
-        }
-
-        // Create and store the session. Starts paused if a higher-priority
-        // session is active; it resumes automatically via
-        // resume_highest_priority() when that session closes.
+        // Starts paused if a higher-priority session is active; it
+        // resumes automatically via resume_highest_priority() when that
+        // session closes.
         let session = AudioSession {
             id,
             kind,
@@ -474,6 +513,18 @@ impl<C: AudioCodecOps> AudioManager<C> {
             self.mic_powered = false;
         }
         Ok(())
+    }
+}
+
+impl<C: AudioCodecOps> Drop for AudioManager<C> {
+    /// Backstop against any path that leaves the codec physically powered
+    /// with no session recorded (#390) — a stranded LDO drains power
+    /// indefinitely on a power-constrained device. Best-effort: a failure
+    /// here is not actionable during drop.
+    fn drop(&mut self) {
+        if self.codec_powered {
+            self.codec.power_off().ok();
+        }
     }
 }
 
@@ -983,6 +1034,69 @@ mod tests {
         assert!(
             music.map_or(false, |s| s.active),
             "music must resume once the call closes"
+        );
+    }
+
+    #[test]
+    fn open_session_enable_dac_failure_powers_off_codec() {
+        // WHY: regression test for #390 — a failure partway through the
+        // first-session hardware init sequence must not strand the codec
+        // physically powered with no session recorded.
+        let mut mgr = make_manager();
+        mgr.codec_mut().fail_enable_dac = Some(AudioError::HardwareError);
+
+        let result = mgr.open_session(SessionKind::Music, AudioRoute::Speaker);
+        assert!(result.is_err(), "open_session must fail when enable_dac fails");
+        assert!(
+            !mgr.is_codec_powered(),
+            "codec must be powered off after a failed open_session (#390)"
+        );
+        assert_eq!(mgr.session_count(), 0, "no session must be recorded on failure");
+    }
+
+    #[test]
+    fn open_session_mic_bias_failure_disables_adc() {
+        // WHY: regression test for #390 — enable_mic_bias failing after
+        // enable_adc succeeded must not leave the ADC live with
+        // mgr.is_mic_powered() reporting false (an unobservable hot mic).
+        let mut mgr = make_manager();
+        mgr.codec_mut().fail_enable_mic_bias = Some(AudioError::HardwareError);
+
+        let result = mgr.open_session(SessionKind::VoiceCall, AudioRoute::Earpiece);
+        assert!(result.is_err(), "open_session must fail when enable_mic_bias fails");
+        assert!(
+            !mgr.codec().is_adc_enabled(),
+            "ADC must be rolled back when mic bias enable fails (#390)"
+        );
+        assert!(
+            !mgr.is_mic_powered(),
+            "mic must not be reported powered after a failed open_session"
+        );
+    }
+
+    #[test]
+    fn open_session_set_output_failure_preserves_preempted_sessions() {
+        // WHY: regression test for #390 — a set_output failure during
+        // preemption must not strand previously-active sessions paused
+        // with no way to resume them.
+        let mut mgr = make_manager();
+        let music_id = mgr
+            .open_session(SessionKind::Music, AudioRoute::Speaker)
+            .unwrap_or(0);
+
+        mgr.codec_mut().fail_set_output = Some(AudioError::HardwareError);
+        let result = mgr.open_session(SessionKind::Alarm, AudioRoute::Speaker);
+        assert!(result.is_err(), "open_session must fail when set_output fails");
+
+        let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
+        assert!(
+            music.map_or(false, |s| s.active),
+            "music must remain active when the preempting session's set_output fails (#390)"
+        );
+        assert_eq!(
+            mgr.session_count(),
+            1,
+            "the failed session must not be recorded"
         );
     }
 }

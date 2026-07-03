@@ -742,11 +742,20 @@ impl<R: RegisterIo> WmtManager<R> {
         let mut step = PowerOnStep::SpmClockEnable;
         loop {
             self.power_on_step = step;
-            step = step.execute_and_advance_with_poll(
+            step = match step.execute_and_advance_with_poll(
                 &mut self.io,
                 &mut self.clock_type,
                 self.poll_timeout_iters,
-            )?;
+            ) {
+                Ok(next) => next,
+                Err(err) => {
+                    // Roll back the regulator enabled at sequence start
+                    // (#352) — leaving it live across a retry double-enables
+                    // it while CONSYS sits in a partial-reset state.
+                    self.io.pmic_regulator_disable(PmicRegulator::Vcn18);
+                    return Err(err);
+                }
+            };
             if step == PowerOnStep::Done {
                 self.power_on_step = PowerOnStep::Done;
                 break;
@@ -792,6 +801,22 @@ impl<R: RegisterIo> WmtManager<R> {
             .clear_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_ON_S_BIT);
         self.io
             .clear_bits32(CONSYS_TOP1_PWR_CTRL_REG, CONSYS_SPM_PWR_ON_BIT);
+
+        // Disable each active subsystem's regulator before clearing the
+        // bitmask (#349) — after subsystems is zeroed, disable_subsystem()
+        // rejects every subsystem as "already disabled" with no other path
+        // to turn its regulator off.
+        for subsystem in [
+            Subsystem::Bt,
+            Subsystem::Fm,
+            Subsystem::Gps,
+            Subsystem::Wifi,
+        ] {
+            if self.subsystems & subsystem.mask() != 0 {
+                self.io
+                    .pmic_regulator_disable(Self::subsystem_regulator(subsystem));
+            }
+        }
 
         // Disable core regulator last.
         self.io.pmic_regulator_disable(PmicRegulator::Vcn18);
@@ -1189,6 +1214,27 @@ mod tests {
     }
 
     #[test]
+    fn power_on_failure_disables_vcn18_regulator() {
+        let mut io = FakeIo::new();
+        // Remove the ack bit so polling never succeeds (fails at step 3).
+        io.regs.insert(CONSYS_PWR_CONN_ACK_REG, 0x0000_0000);
+        let mut mgr = WmtManager::new(io);
+        let err = mgr
+            .power_on()
+            .expect_err("must fail when ack bit never sets");
+        assert!(
+            matches!(err, WmtError::PowerAckTimeout { step: 3 }),
+            "error must be PowerAckTimeout at step 3, got {err:?}"
+        );
+        let vcn18_bit = 1u8 << u8::from(PmicRegulator::Vcn18);
+        assert_eq!(
+            mgr.io.regulators & vcn18_bit,
+            0,
+            "Vcn18 must be disabled after a failed power_on, not left stranded (#352)"
+        );
+    }
+
+    #[test]
     fn power_on_chip_id_mismatch_returns_error() {
         let mut io = FakeIo::new();
         // Return wrong chip ID so step 15 never matches.
@@ -1394,6 +1440,27 @@ mod tests {
         assert!(
             matches!(err, WmtError::AlreadyPoweredOff),
             "error must be AlreadyPoweredOff, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn power_off_disables_active_subsystem_regulators() {
+        let io = FakeIo::new();
+        let mut mgr = WmtManager::new(io);
+        mgr.power_on().unwrap_or_default();
+        mgr.enable_subsystem(Subsystem::Bt).unwrap_or_default();
+        let bt_bit = 1u8 << u8::from(PmicRegulator::Vcn33Bt);
+        assert!(
+            mgr.io.regulators & bt_bit != 0,
+            "Vcn33Bt must be enabled after enable_subsystem(Bt)"
+        );
+
+        mgr.power_off().unwrap_or_default();
+
+        assert_eq!(
+            mgr.io.regulators & bt_bit,
+            0,
+            "Vcn33Bt regulator must be disabled by power_off, not left orphaned (#349)"
         );
     }
 }

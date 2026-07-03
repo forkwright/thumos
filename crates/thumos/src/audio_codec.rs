@@ -627,6 +627,14 @@ pub struct MockCodec {
     pub operations: alloc::vec::Vec<alloc::string::String>,
     /// If set, `power_on` returns this error.
     pub fail_power_on: Option<AudioError>,
+    /// If set, `enable_dac` returns this error (#390).
+    pub fail_enable_dac: Option<AudioError>,
+    /// If set, `enable_adc` returns this error (#390).
+    pub fail_enable_adc: Option<AudioError>,
+    /// If set, `enable_mic_bias` returns this error (#390).
+    pub fail_enable_mic_bias: Option<AudioError>,
+    /// If set, `set_output` returns this error (#390).
+    pub fail_set_output: Option<AudioError>,
 }
 
 #[cfg(test)]
@@ -642,6 +650,10 @@ impl MockCodec {
             mic_bias: false,
             operations: alloc::vec::Vec::new(),
             fail_power_on: None,
+            fail_enable_dac: None,
+            fail_enable_adc: None,
+            fail_enable_mic_bias: None,
+            fail_set_output: None,
         }
     }
 }
@@ -672,6 +684,10 @@ impl AudioCodecOps for MockCodec {
         if !self.powered {
             return Err(AudioError::CodecNotPowered);
         }
+        if let Some(err) = self.fail_enable_dac {
+            self.operations.push(alloc::string::String::from("enable_dac:FAIL"));
+            return Err(err);
+        }
         self.dac_enabled = true;
         self.operations.push(alloc::string::String::from("enable_dac"));
         Ok(())
@@ -680,6 +696,10 @@ impl AudioCodecOps for MockCodec {
     fn enable_adc(&mut self) -> Result<(), AudioError> {
         if !self.powered {
             return Err(AudioError::CodecNotPowered);
+        }
+        if let Some(err) = self.fail_enable_adc {
+            self.operations.push(alloc::string::String::from("enable_adc:FAIL"));
+            return Err(err);
         }
         self.adc_enabled = true;
         self.operations.push(alloc::string::String::from("enable_adc"));
@@ -705,6 +725,10 @@ impl AudioCodecOps for MockCodec {
         if !self.dac_enabled {
             return Err(AudioError::DacNotEnabled);
         }
+        if let Some(err) = self.fail_set_output {
+            self.operations.push(alloc::string::String::from("set_output:FAIL"));
+            return Err(err);
+        }
         self.route = route;
         self.operations
             .push(alloc::format!("set_output:{route:?}"));
@@ -725,6 +749,10 @@ impl AudioCodecOps for MockCodec {
     fn enable_mic_bias(&mut self) -> Result<(), AudioError> {
         if !self.powered {
             return Err(AudioError::CodecNotPowered);
+        }
+        if let Some(err) = self.fail_enable_mic_bias {
+            self.operations.push(alloc::string::String::from("enable_mic_bias:FAIL"));
+            return Err(err);
         }
         self.mic_bias = true;
         self.operations.push(alloc::string::String::from("enable_mic_bias"));

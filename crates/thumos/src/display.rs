@@ -235,8 +235,12 @@ mod dsi {
     pub(crate) const LD0_HS_TX_EN: u32 = 1 << 0;
 
     // WHY: CMDQ word format for DCS short writes (the only type we use):
-    //   bits [7:0]   = config (0x00 = short write 0-param, 0x05 = short write 1-param,
-    //                          0x39 = long write / generic long)
+    //   bits [7:0]   = config (0x05 = short write 0-param, 0x15 = short write
+    //                          1-param, 0x39 = long write / generic long) —
+    //                          these are the MIPI DSI standard
+    //                          "Processor-Sourced" packet data types
+    //                          (DCS_SHORT_WRITE / _PARAM / DCS_LONG_WRITE),
+    //                          the same values used by upstream mtk-dsi.c (#387).
     //   bits [15:8]  = DCS command byte
     //   bits [23:16] = first data byte (for 1-param short writes)
     //   bits [31:24] = second data byte (unused for short writes, set to 0)
@@ -245,9 +249,9 @@ mod dsi {
     // subsequent data into additional CMDQ slots.
 
     /// CMDQ config: DCS short write, no parameter (data type 0x05).
-    pub(crate) const CMDQ_SHORT_W0: u32 = 0x00;
+    pub(crate) const CMDQ_SHORT_W0: u32 = 0x05;
     /// CMDQ config: DCS short write, 1 parameter (data type 0x15).
-    pub(crate) const CMDQ_SHORT_W1: u32 = 0x05;
+    pub(crate) const CMDQ_SHORT_W1: u32 = 0x15;
     /// CMDQ config: DCS long write (data type 0x39).
     pub(crate) const CMDQ_LONG_W: u32 = 0x39;
 }
@@ -361,10 +365,15 @@ pub(crate) trait LcmControl {
 
     /// Send the panel initialization command sequence via DSI.
     ///
+    /// # Errors
+    ///
+    /// Returns [`DsiTimeout`] if any DCS command in the sequence times out
+    /// (#389); the remainder of the sequence is aborted.
+    ///
     /// # Safety
     ///
     /// DSI0 must be configured and clock lanes active before calling.
-    unsafe fn init(&self);
+    unsafe fn init(&self) -> Result<(), DsiTimeout>;
 
     /// Enter panel sleep mode (MIPI DCS Sleep In).
     ///
@@ -445,10 +454,19 @@ fn delay_ms(_ms: u32) {}
 /// # Safety
 ///
 /// DSI0 registers must be mapped and accessible.
-unsafe fn dsi_wait_idle() {
+/// A DSI command's poll-wait exhausted [`DSI_POLL_TIMEOUT`] without the
+/// engine going idle (#389). The caller must not proceed to overwrite
+/// `START`/CMDQ while a prior transfer may still be in flight.
+pub(crate) struct DsiTimeout;
+
+unsafe fn dsi_wait_idle() -> Result<(), DsiTimeout> {
     // SAFETY: DSI0_START is a valid MMIO register at 0x1400_D000 within the DSI0 address space. Volatile access is required for hardware registers.
     unsafe {
-        mmio::wait_bits_clear(dsi::START, dsi::START_BIT, DSI_POLL_TIMEOUT);
+        if mmio::wait_bits_clear(dsi::START, dsi::START_BIT, DSI_POLL_TIMEOUT) {
+            Ok(())
+        } else {
+            Err(DsiTimeout)
+        }
     }
 }
 
@@ -457,10 +475,10 @@ unsafe fn dsi_wait_idle() {
 /// # Safety
 ///
 /// DSI0 must be configured with clock and data lanes active.
-unsafe fn dcs_write_cmd0(cmd: u8) {
+unsafe fn dcs_write_cmd0(cmd: u8) -> Result<(), DsiTimeout> {
     // SAFETY: DSI0 registers (START, CMDQ_SIZE, CMDQ_DATA) are valid MMIO registers within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
     unsafe {
-        dsi_wait_idle();
+        dsi_wait_idle()?;
         // Clear start bit before writing command queue
         mmio::write32(dsi::START, 0);
         // One CMDQ entry: short write, 0 params
@@ -471,7 +489,7 @@ unsafe fn dcs_write_cmd0(cmd: u8) {
         );
         // Trigger DSI command
         mmio::write32(dsi::START, dsi::START_BIT);
-        dsi_wait_idle();
+        dsi_wait_idle()
     }
 }
 
@@ -480,10 +498,10 @@ unsafe fn dcs_write_cmd0(cmd: u8) {
 /// # Safety
 ///
 /// DSI0 must be configured with clock and data lanes active.
-unsafe fn dcs_write_cmd1(cmd: u8, data: u8) {
+unsafe fn dcs_write_cmd1(cmd: u8, data: u8) -> Result<(), DsiTimeout> {
     // SAFETY: DSI0 registers (START, CMDQ_SIZE, CMDQ_DATA) are valid MMIO registers within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
     unsafe {
-        dsi_wait_idle();
+        dsi_wait_idle()?;
         mmio::write32(dsi::START, 0);
         mmio::write32(dsi::CMDQ_SIZE, 1);
         mmio::write32(
@@ -491,7 +509,7 @@ unsafe fn dcs_write_cmd1(cmd: u8, data: u8) {
             dsi::CMDQ_SHORT_W1 | (u32::from(cmd) << 8) | (u32::from(data) << 16),
         );
         mmio::write32(dsi::START, dsi::START_BIT);
-        dsi_wait_idle();
+        dsi_wait_idle()
     }
 }
 
@@ -505,10 +523,10 @@ unsafe fn dcs_write_cmd1(cmd: u8, data: u8) {
 ///
 /// DSI0 must be configured. `data.len()` must be <= 60 bytes
 /// (limited by the 16-entry × 4-byte CMDQ minus header overhead).
-unsafe fn dcs_write_long(cmd: u8, data: &[u8]) {
+unsafe fn dcs_write_long(cmd: u8, data: &[u8]) -> Result<(), DsiTimeout> {
     // SAFETY: DSI0 registers (START, CMDQ_SIZE, CMDQ_DATA) are valid MMIO registers within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
     unsafe {
-        dsi_wait_idle();
+        dsi_wait_idle()?;
         mmio::write32(dsi::START, 0);
 
         // Total payload length: cmd byte + data bytes
@@ -546,7 +564,24 @@ unsafe fn dcs_write_long(cmd: u8, data: &[u8]) {
         // CMDQ_SIZE = number of 32-bit slots used.
         mmio::write32(dsi::CMDQ_SIZE, slot as u32);
         mmio::write32(dsi::START, dsi::START_BIT);
-        dsi_wait_idle();
+        dsi_wait_idle()
+    }
+}
+
+/// Assert DSI video-mode START.
+///
+/// Must be called after the LCM DCS init sequence has been fully sent
+/// ([`LcmControl::init`]) — asserting video START first can prevent the
+/// panel from receiving DCS init commands (#391).
+///
+/// # Safety
+///
+/// DSI0 must be configured (`DisplayDriver::configure_dsi`) and the LCM
+/// init sequence must have completed.
+unsafe fn dsi_start_video_mode() {
+    // SAFETY: DSI0_START is a valid MMIO register within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
+    unsafe {
+        mmio::write32(dsi::START, dsi::START_BIT);
     }
 }
 
@@ -593,68 +628,69 @@ impl LcmControl for Gc9306 {
         &self.params
     }
 
-    unsafe fn init(&self) {
+    unsafe fn init(&self) -> Result<(), DsiTimeout> {
         // GC9306 init sequence derived from four independent GPL/Apache
         // driver sources. See docs/GC9306-INIT.md for provenance and
         // per-source gamma differences.
         // SAFETY: DSI0 is configured with clock and data lanes active per caller contract. All DCS commands are routed through dcs_write_* helpers which access valid DSI0 MMIO registers.
         unsafe {
             // Inter register enable (GC-specific page unlock)
-            dcs_write_cmd0(0xFE);
-            dcs_write_cmd0(0xEF);
+            dcs_write_cmd0(0xFE)?;
+            dcs_write_cmd0(0xEF)?;
 
             // Memory access control: MX=1, BGR=1 (direction 0 for AGM M7)
-            dcs_write_cmd1(0x36, 0x48);
+            dcs_write_cmd1(0x36, 0x48)?;
 
             // Pixel format: RGB565, 16-bit
-            dcs_write_cmd1(0x3A, 0x05);
+            dcs_write_cmd1(0x3A, 0x05)?;
 
             // Power control registers
-            dcs_write_long(0xA4, &[0x44, 0x44]); // Power control 7
-            dcs_write_long(0xA5, &[0x42, 0x42]); // Power control 8
-            dcs_write_long(0xAA, &[0x88, 0x88]); // Power control (undocumented)
-            dcs_write_long(0xE8, &[0x11, 0x0B]); // Frame rate control
-            dcs_write_long(0xE3, &[0x01, 0x10]); // Source precharge control
+            dcs_write_long(0xA4, &[0x44, 0x44])?; // Power control 7
+            dcs_write_long(0xA5, &[0x42, 0x42])?; // Power control 8
+            dcs_write_long(0xAA, &[0x88, 0x88])?; // Power control (undocumented)
+            dcs_write_long(0xE8, &[0x11, 0x0B])?; // Frame rate control
+            dcs_write_long(0xE3, &[0x01, 0x10])?; // Source precharge control
 
             // Internal registers
-            dcs_write_cmd1(0xFF, 0x61); // Internal register (undocumented)
-            dcs_write_cmd1(0xAC, 0x00); // LDO enable
-            dcs_write_cmd1(0xAD, 0x33); // VGLO voltage control
-            dcs_write_cmd1(0xAE, 0x2B); // Internal power (undocumented)
-            dcs_write_cmd1(0xAF, 0x55); // DIG_VREFAD_VRDD control
+            dcs_write_cmd1(0xFF, 0x61)?; // Internal register (undocumented)
+            dcs_write_cmd1(0xAC, 0x00)?; // LDO enable
+            dcs_write_cmd1(0xAD, 0x33)?; // VGLO voltage control
+            dcs_write_cmd1(0xAE, 0x2B)?; // Internal power (undocumented)
+            dcs_write_cmd1(0xAF, 0x55)?; // DIG_VREFAD_VRDD control
 
             // VCOM offset voltages
-            dcs_write_long(0xA6, &[0x2A, 0x2A]); // VCOM offset 1
-            dcs_write_long(0xA7, &[0x2B, 0x2B]); // VCOM offset 2
-            dcs_write_long(0xA8, &[0x18, 0x18]); // VCOM offset 3
-            dcs_write_long(0xA9, &[0x2A, 0x2A]); // VCOM offset 4
+            dcs_write_long(0xA6, &[0x2A, 0x2A])?; // VCOM offset 1
+            dcs_write_long(0xA7, &[0x2B, 0x2B])?; // VCOM offset 2
+            dcs_write_long(0xA8, &[0x18, 0x18])?; // VCOM offset 3
+            dcs_write_long(0xA9, &[0x2A, 0x2A])?; // VCOM offset 4
 
             // Column address set: 0-239
-            dcs_write_long(0x2A, &[0x00, 0x00, 0x00, 0xEF]);
+            dcs_write_long(0x2A, &[0x00, 0x00, 0x00, 0xEF])?;
             // Row address set: 0-319
-            dcs_write_long(0x2B, &[0x00, 0x00, 0x01, 0x3F]);
+            dcs_write_long(0x2B, &[0x00, 0x00, 0x01, 0x3F])?;
             // Memory write start
-            dcs_write_cmd0(0x2C);
+            dcs_write_cmd0(0x2C)?;
 
             // Gamma correction (LuatOS/Fibocom values; may need panel tuning)
-            dcs_write_long(0xF0, &[0x02, 0x00, 0x00, 0x1B, 0x1F, 0x0B]); // Positive gamma 1
-            dcs_write_long(0xF1, &[0x01, 0x03, 0x00, 0x28, 0x2B, 0x0E]); // Positive gamma 2
-            dcs_write_long(0xF2, &[0x0B, 0x08, 0x3B, 0x04, 0x03, 0x4C]); // Positive gamma 3
-            dcs_write_long(0xF3, &[0x0E, 0x07, 0x46, 0x04, 0x05, 0x51]); // Positive gamma 4
-            dcs_write_long(0xF4, &[0x08, 0x15, 0x15, 0x1F, 0x22, 0x0F]); // Negative gamma 1
-            dcs_write_long(0xF5, &[0x0B, 0x13, 0x11, 0x1F, 0x21, 0x0F]); // Negative gamma 2
+            dcs_write_long(0xF0, &[0x02, 0x00, 0x00, 0x1B, 0x1F, 0x0B])?; // Positive gamma 1
+            dcs_write_long(0xF1, &[0x01, 0x03, 0x00, 0x28, 0x2B, 0x0E])?; // Positive gamma 2
+            dcs_write_long(0xF2, &[0x0B, 0x08, 0x3B, 0x04, 0x03, 0x4C])?; // Positive gamma 3
+            dcs_write_long(0xF3, &[0x0E, 0x07, 0x46, 0x04, 0x05, 0x51])?; // Positive gamma 4
+            dcs_write_long(0xF4, &[0x08, 0x15, 0x15, 0x1F, 0x22, 0x0F])?; // Negative gamma 1
+            dcs_write_long(0xF5, &[0x0B, 0x13, 0x11, 0x1F, 0x21, 0x0F])?; // Negative gamma 2
 
             // Sleep Out — wait 120 ms for internal voltage stabilization
-            dcs_write_cmd0(0x11);
+            dcs_write_cmd0(0x11)?;
             delay_ms(120);
 
             // Display On — wait 20 ms for display to become active
-            dcs_write_cmd0(0x29);
+            dcs_write_cmd0(0x29)?;
             delay_ms(20);
 
             // Memory write (ready for pixel data)
-            dcs_write_cmd0(0x2C);
+            dcs_write_cmd0(0x2C)?;
         }
+        Ok(())
     }
 
     unsafe fn suspend(&self) {
@@ -662,12 +698,15 @@ impl LcmControl for Gc9306 {
         // Inter register enable must precede power commands.
         // SAFETY: DSI0 is active and panel is in normal operating state per caller contract. All DCS commands are routed through dcs_write_* helpers which access valid DSI0 MMIO registers.
         unsafe {
-            dcs_write_cmd0(0xFE); // Inter register enable 1
-            dcs_write_cmd0(0xEF); // Inter register enable 2
+            // WHY: best-effort teardown — a timed-out DCS command here has
+            // no established recovery path (unlike init, #389); the panel
+            // is being suspended either way.
+            let _ = dcs_write_cmd0(0xFE); // Inter register enable 1
+            let _ = dcs_write_cmd0(0xEF); // Inter register enable 2
             // Display Off first, then Sleep In per MIPI DCS spec
-            dcs_write_cmd0(0x28); // Display Off
+            let _ = dcs_write_cmd0(0x28); // Display Off
             delay_ms(120);
-            dcs_write_cmd0(0x10); // Sleep In (enter minimum power)
+            let _ = dcs_write_cmd0(0x10); // Sleep In (enter minimum power)
         }
     }
 
@@ -675,13 +714,14 @@ impl LcmControl for Gc9306 {
         // GC9306 sleep-out sequence from docs/GC9306-INIT.md.
         // SAFETY: DSI0 is active and panel is in suspended state per caller contract. All DCS commands are routed through dcs_write_* helpers which access valid DSI0 MMIO registers.
         unsafe {
-            dcs_write_cmd0(0xFE); // Inter register enable 1
-            dcs_write_cmd0(0xEF); // Inter register enable 2
+            // WHY: best-effort resume — same rationale as suspend() above.
+            let _ = dcs_write_cmd0(0xFE); // Inter register enable 1
+            let _ = dcs_write_cmd0(0xEF); // Inter register enable 2
             // Sleep Out — wait 120 ms for voltage stabilization
-            dcs_write_cmd0(0x11);
+            let _ = dcs_write_cmd0(0x11);
             delay_ms(120);
             // Display On
-            dcs_write_cmd0(0x29);
+            let _ = dcs_write_cmd0(0x29);
         }
     }
 }
@@ -692,7 +732,9 @@ impl LcmBacklight for Gc9306 {
         // The GC9306 supports this command natively.
         // SAFETY: DSI0 is active and panel is not suspended per caller contract. dcs_write_cmd1 accesses valid DSI0 MMIO registers within the DSI0 address space at 0x1400_D000.
         unsafe {
-            dcs_write_cmd1(0x51, level);
+            // WHY: best-effort — a timed-out backlight write has no
+            // established recovery path from this ()-returning trait method.
+            let _ = dcs_write_cmd1(0x51, level);
         }
     }
 }
@@ -728,6 +770,9 @@ pub enum DisplayState {
     Active,
     /// Panel in sleep mode.
     Suspended,
+    /// A DSI command timed out during initialization; the pipeline is not
+    /// usable (#389).
+    Error,
 }
 
 // ---------------------------------------------------------------------------
@@ -838,10 +883,26 @@ impl<L: LcmDriver> DisplayDriver<L> {
 
         // Step 8: send LCM init commands
         // SAFETY: DSI0 is configured with clock and data lanes active after configure_dsi(). DCS commands access valid DSI0 MMIO registers.
-        unsafe {
-            self.lcm.init();
+        let lcm_init_result = unsafe { self.lcm.init() };
+        if lcm_init_result.is_err() {
+            // WHY: a DSI command timeout during LCM init means the panel
+            // may not have received its DCS init sequence — entering
+            // DisplayState::Error stops the pipeline from proceeding to
+            // configure the mutex and trigger a frame against a
+            // half-initialized (or unresponsive) panel (#389).
+            self.state = DisplayState::Error;
+            return;
         }
         self.state = DisplayState::LcmInitialized;
+
+        // Step 8b: start DSI video mode — must occur AFTER the LCM DCS
+        // init sequence has been fully sent, not before (#391). Asserting
+        // START while the panel is still processing init commands can
+        // prevent those commands from being received correctly.
+        // SAFETY: DSI0_START is a valid MMIO register within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
+        unsafe {
+            dsi_start_video_mode();
+        }
 
         // Step 9: configure mutex
         // SAFETY: display mutex registers are valid MMIO registers within the DISP_MUTEX address space at 0x1400_1000. Volatile access is required for hardware registers.
@@ -1012,8 +1073,13 @@ impl<L: LcmDriver> DisplayDriver<L> {
             mmio::write32(dsi::PHY_LCCON, dsi::LC_HS_TX_EN);
             mmio::write32(dsi::PHY_LD0CON, dsi::LD0_HS_TX_EN);
 
-            // Start DSI
-            mmio::write32(dsi::START, dsi::START_BIT);
+            // WHY: DSI video-mode START is intentionally NOT asserted here.
+            // Asserting START puts the panel into continuous video clocking
+            // before the LCM has received its DCS init sequence (Sleep Out,
+            // gamma, etc.), which can prevent the panel from receiving
+            // those commands correctly. START is asserted by
+            // dsi_start_video_mode(), called after the LCM init sequence
+            // completes (see DisplayDriver::init) (#391).
         }
         self.state = DisplayState::DsiConfigured;
     }
@@ -1258,6 +1324,49 @@ mod tests {
         );
     }
 
+    // -- DSI CMDQ data-type constants (#387) --
+
+    #[test]
+    fn cmdq_short_w0_matches_mipi_dcs_short_write_no_param() {
+        assert_eq!(
+            dsi::CMDQ_SHORT_W0, 0x05,
+            "CMDQ_SHORT_W0 must equal the MIPI DSI DCS short-write, \
+             0-parameter data type (0x05)"
+        );
+    }
+
+    #[test]
+    fn cmdq_short_w1_matches_mipi_dcs_short_write_one_param() {
+        assert_eq!(
+            dsi::CMDQ_SHORT_W1, 0x15,
+            "CMDQ_SHORT_W1 must equal the MIPI DSI DCS short-write, \
+             1-parameter data type (0x15)"
+        );
+    }
+
+    #[test]
+    fn cmdq_word_low_byte_zero_param_command() {
+        let cmd: u8 = 0x11; // Sleep Out
+        let word = dsi::CMDQ_SHORT_W0 | (u32::from(cmd) << 8);
+        assert_eq!(
+            word & 0xFF,
+            0x05,
+            "packed CMDQ word for a 0-param DCS command must carry data type 0x05 in its low byte"
+        );
+    }
+
+    #[test]
+    fn cmdq_word_low_byte_one_param_command() {
+        let cmd: u8 = 0x36; // Memory Access Control
+        let data: u8 = 0x48;
+        let word = dsi::CMDQ_SHORT_W1 | (u32::from(cmd) << 8) | (u32::from(data) << 16);
+        assert_eq!(
+            word & 0xFF,
+            0x15,
+            "packed CMDQ word for a 1-param DCS command must carry data type 0x15 in its low byte"
+        );
+    }
+
     // -- GC9306 panel parameters --
 
     #[test]
@@ -1306,17 +1415,17 @@ mod tests {
 
     #[test]
     fn cmdq_short_w0_encodes_cmd_byte() {
-        // Short write 0-param: config=0x00, cmd in bits[15:8]
+        // Short write 0-param: config=0x05 (MIPI DCS short write, no param), cmd in bits[15:8]
         let word = dsi::CMDQ_SHORT_W0 | (0x11_u32 << 8);
-        assert_eq!(word & 0xFF, 0x00, "config byte = short write 0-param");
+        assert_eq!(word & 0xFF, 0x05, "config byte = short write 0-param (#387)");
         assert_eq!((word >> 8) & 0xFF, 0x11, "cmd byte = Sleep Out");
     }
 
     #[test]
     fn cmdq_short_w1_encodes_cmd_and_data() {
-        // Short write 1-param: config=0x05, cmd in [15:8], data in [23:16]
+        // Short write 1-param: config=0x15 (MIPI DCS short write, 1 param), cmd in [15:8], data in [23:16]
         let word = dsi::CMDQ_SHORT_W1 | (0x36_u32 << 8) | (0x48_u32 << 16);
-        assert_eq!(word & 0xFF, 0x05, "config byte = short write 1-param");
+        assert_eq!(word & 0xFF, 0x15, "config byte = short write 1-param (#387)");
         assert_eq!((word >> 8) & 0xFF, 0x36, "cmd byte = MADCTL");
         assert_eq!((word >> 16) & 0xFF, 0x48, "data byte = MX|BGR");
     }
