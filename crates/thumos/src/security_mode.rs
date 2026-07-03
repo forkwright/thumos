@@ -227,6 +227,12 @@ pub enum ModeTransitionError {
     /// target == current mode"), previously conflated with it (issue #282
     /// finding 11).
     NotInPanic,
+    /// Sentinel exit was attempted before a real PIN was provisioned
+    /// (`pin_hash` is `None`) -- distinct from `PinMismatch` so an
+    /// unprovisioned manager fails closed instead of silently accepting or
+    /// permanently masquerading as a wrong-PIN lockout (issue #282,
+    /// security_mode.rs).
+    NotProvisioned,
 }
 
 impl fmt::Display for ModeTransitionError {
@@ -238,6 +244,7 @@ impl fmt::Display for ModeTransitionError {
             Self::AbortWindowExpired => write!(f, "panic abort window has expired"),
             Self::AlreadyInMode => write!(f, "already in the requested mode"),
             Self::NotInPanic => write!(f, "not currently in Panic mode"),
+            Self::NotProvisioned => write!(f, "Sentinel exit PIN not yet provisioned"),
         }
     }
 }
@@ -292,7 +299,15 @@ pub(crate) struct ModeManager {
     last_panic_event: Option<PanicEvent>,
     /// PBKDF2-HMAC-SHA256 derived value for Sentinel exit PIN verification
     /// (RFC 8018, salted + iterated — see [`ModeManager::exit_sentinel`]).
-    pin_hash: [u8; 32],
+    ///
+    /// `None` means this manager has never been provisioned with a real
+    /// PIN. Tracked as an explicit state rather than storing an all-zero
+    /// placeholder: a PBKDF2-HMAC-SHA256 output colliding with all-zero is
+    /// cryptographically negligible, so an all-zero `pin_hash` would be
+    /// indistinguishable from "unprovisioned" yet would silently behave as
+    /// if provisioned -- permanently failing every future PIN check
+    /// (issue #282, security_mode.rs).
+    pin_hash: Option<[u8; 32]>,
 }
 
 impl ModeManager {
@@ -308,7 +323,7 @@ impl ModeManager {
             panic_initiated_tick: None,
             pre_panic_mode: SecurityMode::Daily,
             last_panic_event: None,
-            pin_hash,
+            pin_hash: Some(pin_hash),
         }
     }
 
@@ -371,6 +386,8 @@ impl ModeManager {
     /// # Errors
     ///
     /// Returns [`ModeTransitionError::PinRequired`] if `pin` is empty.
+    /// Returns [`ModeTransitionError::NotProvisioned`] if no PIN has ever
+    /// been set for this manager.
     /// Returns [`ModeTransitionError::PinMismatch`] if the PIN is wrong.
     /// Returns [`ModeTransitionError::PanicIsTerminal`] if in Panic.
     /// Returns [`ModeTransitionError::AlreadyInMode`] if already in Daily.
@@ -388,6 +405,14 @@ impl ModeManager {
         if pin.is_empty() {
             return Err(ModeTransitionError::PinRequired);
         }
+        // WHY: an unprovisioned manager (Default::default(), or any
+        // constructor path that never received a real PIN derivation) must
+        // fail closed and distinguishably from a wrong-PIN guess -- never
+        // silently accept, and never present as a permanent PinMismatch
+        // that looks like an ordinary typo (issue #282, security_mode.rs).
+        let Some(stored_hash) = self.pin_hash else {
+            return Err(ModeTransitionError::NotProvisioned);
+        };
 
         // WHY: PBKDF2-HMAC-SHA256 (RFC 8018) replaces the prior single-round
         // unsalted SHA-256 hash — a 4-6 digit PIN has only 1e4-1e6
@@ -406,7 +431,7 @@ impl ModeManager {
             &mut derived_pin,
         )
         .is_ok();
-        if !derive_ok || !constant_time_eq(&derived_pin, &self.pin_hash) {
+        if !derive_ok || !constant_time_eq(&derived_pin, &stored_hash) {
             return Err(ModeTransitionError::PinMismatch);
         }
 
@@ -599,7 +624,20 @@ impl ModeManager {
 
 impl Default for ModeManager {
     fn default() -> Self {
-        Self::new([0u8; 32])
+        // INVARIANT: default-constructed managers are explicitly
+        // unprovisioned (`pin_hash: None`), not a `Some([0u8; 32])`
+        // placeholder -- the latter would silently look provisioned and
+        // permanently fail every future Sentinel-exit PIN check, since a
+        // real PBKDF2-HMAC-SHA256 derivation colliding with all-zero is
+        // cryptographically negligible (issue #282, security_mode.rs).
+        Self {
+            mode: SecurityMode::Daily,
+            covert_lock: false,
+            panic_initiated_tick: None,
+            pre_panic_mode: SecurityMode::Daily,
+            last_panic_event: None,
+            pin_hash: None,
+        }
     }
 }
 
@@ -872,6 +910,32 @@ mod tests {
         assert_eq!(mm.mode(), SecurityMode::Daily);
         assert!(!mm.covert_lock());
         assert!(mm.last_panic_event().is_none());
+    }
+
+    /// A `Default`-constructed manager has never been provisioned with a
+    /// real PIN; Sentinel exit must fail closed (`NotProvisioned`), not
+    /// silently accept any input and not masquerade as an ordinary
+    /// wrong-PIN `PinMismatch` (issue #282, security_mode.rs).
+    #[test]
+    fn default_mode_manager_is_unprovisioned_and_cannot_exit_sentinel() {
+        let mut mm = ModeManager::default();
+        let mut km = key_manager_with_derived_keys();
+        let mut pm = PowerManager::new();
+
+        mm.enter_sentinel(&mut km, &mut pm)
+            .expect("enter_sentinel failed");
+
+        let result = mm.exit_sentinel(b"123456", &mut pm);
+        assert_eq!(
+            result,
+            Err(ModeTransitionError::NotProvisioned),
+            "an unprovisioned manager must reject Sentinel exit distinctly from a wrong PIN"
+        );
+        assert_eq!(
+            mm.mode(),
+            SecurityMode::Sentinel,
+            "a rejected exit must not change mode"
+        );
     }
 
     // -----------------------------------------------------------------------

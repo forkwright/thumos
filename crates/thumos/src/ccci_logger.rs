@@ -346,10 +346,13 @@ impl fmt::Display for ModemBaseline {
 ///
 /// SECURITY: the entire window is adversary-controlled modem traffic (the
 /// MT6739 modem is untrusted per the threat model). `data0` accumulation is
-/// clamped to `CCCI_MTU` (except the `CCCI_MAGIC` control sentinel) so a
-/// modem that floods the 60-second boot window with `data0` spanning
-/// `[0, u32::MAX]` cannot fully defeat later `Data0OutOfRange` anomaly
-/// detection by establishing a maximally permissive baseline.
+/// clamped to `CCCI_MTU`, and control-sentinel packets (`data0 ==
+/// CCCI_MAGIC`) are excluded from the fold entirely -- `validate_packet`
+/// does not restrict which channel may carry the sentinel, so a modem that
+/// floods the 60-second boot window with `data0` spanning `[0, u32::MAX]`,
+/// including magic-sentinel packets on data channels, cannot fully defeat
+/// later `Data0OutOfRange` anomaly detection by establishing a maximally
+/// permissive baseline.
 ///
 /// # Arguments
 ///
@@ -367,6 +370,7 @@ pub(crate) fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBasel
 
     // Per-channel accumulators.
     let mut packet_counts = [0u32; CHANNEL_COUNT];
+    let mut data0_initialized = [false; CHANNEL_COUNT];
 
     let (older, newer) = log.entries();
     for entry in older.iter().chain(newer.iter()) {
@@ -380,27 +384,19 @@ pub(crate) fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBasel
 
         let stats = &mut baseline.channels[ch];
         let count = &mut packet_counts[ch];
+        let d0_seen = &mut data0_initialized[ch];
 
         // SECURITY: clamp data0 accumulation to the CCCI MTU ceiling so a
         // baseline built entirely from adversarial boot-window traffic
         // (data0 spanning the full u32 range) cannot fully defeat later
-        // Data0OutOfRange anomaly detection. The control-message sentinel
-        // (CCCI_MAGIC) is a known exact value, not attacker-influenced
-        // range data -- validate_packet already treats it specially -- so
-        // it passes through unclamped.
-        let clamped_data0 = if entry.data0 == CCCI_MAGIC {
-            entry.data0
-        } else {
-            entry.data0.min(CCCI_MTU as u32)
-        };
+        // Data0OutOfRange anomaly detection.
+        let clamped_data0 = entry.data0.min(CCCI_MTU as u32);
 
         if !stats.active {
             // First packet on this channel: initialize min/max.
             stats.active = true;
             stats.min_size = entry.packet_len;
             stats.max_size = entry.packet_len;
-            stats.min_data0 = clamped_data0;
-            stats.max_data0 = clamped_data0;
         } else {
             if entry.packet_len < stats.min_size {
                 stats.min_size = entry.packet_len;
@@ -408,11 +404,28 @@ pub(crate) fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBasel
             if entry.packet_len > stats.max_size {
                 stats.max_size = entry.packet_len;
             }
-            if clamped_data0 < stats.min_data0 {
+        }
+
+        // SECURITY: control-plane sentinel packets (data0 == CCCI_MAGIC) are
+        // excluded from data0 range folding entirely. validate_packet does
+        // not restrict which channel may carry the sentinel (it only skips
+        // the length check for control packets), so an adversarial modem
+        // can send a magic-sentinel packet on ANY channel. Letting it set
+        // min/max data0 -- even unclamped -- would poison that channel's
+        // baseline max to u32::MAX, permanently defeating the upper-bound
+        // Data0OutOfRange check (issue #282 finding 1).
+        if entry.data0 != CCCI_MAGIC {
+            if !*d0_seen {
+                *d0_seen = true;
                 stats.min_data0 = clamped_data0;
-            }
-            if clamped_data0 > stats.max_data0 {
                 stats.max_data0 = clamped_data0;
+            } else {
+                if clamped_data0 < stats.min_data0 {
+                    stats.min_data0 = clamped_data0;
+                }
+                if clamped_data0 > stats.max_data0 {
+                    stats.max_data0 = clamped_data0;
+                }
             }
         }
 
@@ -1024,6 +1037,64 @@ mod tests {
     }
 
     #[test]
+    fn logger_entries_split_across_wrap_boundary() {
+        let mut log = CcciLogger::new();
+        // Overfill by 10 so the ring buffer wraps: head lands at physical
+        // index 10, forcing entries() to split its result across the wrap
+        // boundary rather than returning one contiguous slice.
+        for i in 0..(LOG_CAPACITY + 10) {
+            log.record(CcciLogEntry {
+                timestamp: i as u64,
+                channel: 0,
+                direction: PacketDirection::Rx,
+                data0: 0,
+                data1: 0,
+                packet_len: 16,
+            });
+        }
+
+        let (older, newer) = log.entries();
+        assert!(
+            !older.is_empty(),
+            "wrapped buffer must have a non-empty older slice"
+        );
+        assert!(
+            !newer.is_empty(),
+            "wrapped buffer must have a non-empty newer slice"
+        );
+        assert_eq!(
+            older.len() + newer.len(),
+            LOG_CAPACITY,
+            "split slices cover the full live count"
+        );
+        assert_eq!(
+            older.len(),
+            LOG_CAPACITY - 10,
+            "older slice runs from head to the physical end"
+        );
+        assert_eq!(
+            newer.len(),
+            10,
+            "newer slice runs from physical start to head"
+        );
+
+        assert_eq!(older[0].timestamp, 10, "oldest live entry after wrap");
+        assert_eq!(
+            newer[newer.len() - 1].timestamp,
+            137,
+            "newest live entry after wrap"
+        );
+
+        let all: alloc::vec::Vec<&CcciLogEntry> = older.iter().chain(newer.iter()).collect();
+        for i in 1..all.len() {
+            assert!(
+                all[i].timestamp >= all[i - 1].timestamp,
+                "entries must remain chronological across the wrap split"
+            );
+        }
+    }
+
+    #[test]
     fn logger_get_out_of_range() {
         let log = CcciLogger::new();
         assert!(log.get(0).is_none(), "empty logger returns None");
@@ -1169,7 +1240,7 @@ mod tests {
     }
 
     #[test]
-    fn baseline_preserves_control_message_magic() {
+    fn baseline_excludes_control_message_magic_from_data0_range() {
         let mut log = CcciLogger::new();
         log.record(CcciLogEntry {
             timestamp: 1000,
@@ -1181,9 +1252,17 @@ mod tests {
         });
 
         let baseline = build_baseline(&log, 60_000);
+        assert!(
+            baseline.channels[0].active,
+            "channel must still be marked active from the control packet"
+        );
         assert_eq!(
-            baseline.channels[0].max_data0, CCCI_MAGIC,
-            "the control-message sentinel must pass through unclamped"
+            baseline.channels[0].max_data0, 0,
+            "a lone control-sentinel packet must not fold data0 into the baseline range"
+        );
+        assert_eq!(
+            baseline.channels[0].min_data0, 0,
+            "a lone control-sentinel packet must not fold data0 into the baseline range"
         );
     }
 
@@ -1222,6 +1301,60 @@ mod tests {
     }
 
     #[test]
+    fn anomaly_still_fires_after_control_magic_poisoning_attempt() {
+        let mut log = CcciLogger::new();
+        // Legitimate data-channel traffic during the baseline window.
+        log.record(CcciLogEntry {
+            timestamp: 1000,
+            channel: 5,
+            direction: PacketDirection::Rx,
+            data0: 100,
+            data1: 0,
+            packet_len: 16,
+        });
+        // Adversarial modem injects a control-sentinel packet on the SAME
+        // data channel during the baseline window. validate_packet does not
+        // restrict which channel may carry data0 == CCCI_MAGIC, so this is
+        // reachable from the modem boundary. If folded into the baseline,
+        // this would set max_data0 to u32::MAX and permanently defeat the
+        // Data0OutOfRange upper bound for channel 5.
+        log.record(CcciLogEntry {
+            timestamp: 1500,
+            channel: 5,
+            direction: PacketDirection::Rx,
+            data0: CCCI_MAGIC,
+            data1: 0,
+            packet_len: 16,
+        });
+        let baseline = build_baseline(&log, 60_000);
+        assert_eq!(
+            baseline.channels[5].max_data0, 100,
+            "the control-sentinel packet must not widen the data0 baseline range"
+        );
+
+        // Live traffic with a data0 far outside the legitimate [100, 100]
+        // range established above.
+        log.record(CcciLogEntry {
+            timestamp: 70_000,
+            channel: 5,
+            direction: PacketDirection::Rx,
+            data0: 50_000,
+            data1: 0,
+            packet_len: 16,
+        });
+
+        let (anomalies, count, _overflowed) = detect_anomalies(&log, &baseline, 70_000, 60_000);
+        let found = anomalies[..count]
+            .iter()
+            .flatten()
+            .any(|a| a.channel == 5 && a.kind == AnomalyKind::Data0OutOfRange);
+        assert!(
+            found,
+            "anomaly detection must still fire after a control-sentinel poisoning attempt on a data channel"
+        );
+    }
+
+    #[test]
     fn baseline_respects_window() {
         let mut log = CcciLogger::new();
         // Packet outside window.
@@ -1245,6 +1378,55 @@ mod tests {
         let baseline = build_baseline(&log, 60_000);
         assert!(!baseline.channels[0].active, "ch0 is outside window");
         assert!(baseline.channels[1].active, "ch1 is inside window");
+    }
+
+    #[test]
+    fn build_baseline_rejects_out_of_range_channel() {
+        let mut log = CcciLogger::new();
+        // Channel value the ring buffer itself does not validate (that
+        // happens upstream in ccci::validate_packet); build_baseline must
+        // defensively bound-check it rather than panicking or writing past
+        // `baseline.channels`.
+        log.record(CcciLogEntry {
+            timestamp: 1000,
+            channel: 255,
+            direction: PacketDirection::Rx,
+            data0: 100,
+            data1: 0,
+            packet_len: 16,
+        });
+        log.record(CcciLogEntry {
+            timestamp: 2000,
+            channel: u32::MAX,
+            direction: PacketDirection::Rx,
+            data0: 100,
+            data1: 0,
+            packet_len: 16,
+        });
+        // In-range channel to confirm the scan continues normally past the
+        // rejected entries.
+        log.record(CcciLogEntry {
+            timestamp: 3000,
+            channel: 3,
+            direction: PacketDirection::Rx,
+            data0: 50,
+            data1: 0,
+            packet_len: 16,
+        });
+
+        let baseline = build_baseline(&log, 60_000);
+        assert!(
+            baseline
+                .channels
+                .iter()
+                .enumerate()
+                .all(|(ch, stats)| ch == 3 || !stats.active),
+            "out-of-range channel entries must not activate any in-array channel"
+        );
+        assert!(
+            baseline.channels[3].active,
+            "the in-range entry must still be folded in"
+        );
     }
 
     #[test]

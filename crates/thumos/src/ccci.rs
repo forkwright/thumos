@@ -2397,6 +2397,38 @@ mod tests {
     }
 
     #[test]
+    fn tx_ring_reclaim_stops_at_first_hw_owned_descriptor() {
+        let mut ring = TxRing::new();
+        ring.init_chain(0x4020_0000);
+
+        for i in 0..4 {
+            ring.submit(
+                0x5000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000,
+                64,
+            )
+            .unwrap_or_default();
+        }
+
+        // INVARIANT: tail (descriptor 0) remains HW-owned while descriptors
+        // 1-3 complete out of order. reclaim() must stop at the first
+        // HW-owned descriptor and must not skip ahead to reclaim 1-3.
+        ring.descriptors[1].clear_hw_owned();
+        ring.descriptors[2].clear_hw_owned();
+        ring.descriptors[3].clear_hw_owned();
+
+        let reclaimed = ring.reclaim();
+        assert_eq!(
+            reclaimed, 0,
+            "reclaim must stop at the first HW-owned descriptor, not skip past it"
+        );
+        assert_eq!(
+            ring.free_count(),
+            TX_RING_SIZE - 4,
+            "descriptors 1-3 stay unreclaimed because tail (0) is still HW-owned"
+        );
+    }
+
+    #[test]
     fn rx_ring_init_and_poll() {
         let mut ring = RxRing::new();
         let base: u32 = 0x4030_0000;
@@ -2445,6 +2477,29 @@ mod tests {
         assert_eq!(
             len, buf_size,
             "recv_len must be clamped to the descriptor's data_len (buffer capacity)"
+        );
+    }
+
+    #[test]
+    fn rx_ring_poll_returns_none_when_hw_count_reaches_zero() {
+        let mut ring = RxRing::new();
+        let base: u32 = 0x4030_0000;
+        let buf_addrs: [u32; 2] = [0x5100_0000, 0x5100_1000];
+        ring.init_chain(base, &buf_addrs, 512);
+
+        // Drain both descriptors without rearming -- hw_count reaches 0.
+        ring.descriptors[0].clear_hw_owned();
+        ring.descriptors[1].clear_hw_owned();
+        assert!(ring.poll_rx().is_some(), "first descriptor is ready");
+        assert!(ring.poll_rx().is_some(), "second descriptor is ready");
+
+        // INVARIANT: hw_count == 0 now, and the descriptor at `head` was
+        // drained (not rearmed), so it is NOT HW-owned. Without the
+        // hw_count == 0 early-exit, poll_rx would incorrectly re-yield the
+        // already-drained descriptor instead of reporting no data ready.
+        assert!(
+            ring.poll_rx().is_none(),
+            "hw_count == 0 must short-circuit to None, not re-read a drained descriptor"
         );
     }
 
@@ -2796,6 +2851,51 @@ mod tests {
     }
 
     #[test]
+    fn audit_ring_get_after_wrap_spans_multiple_indices() {
+        // WHY: audit_ring_overflow only asserts get(0) (the oldest entry)
+        // after a wrap. The actual_idx modular-arithmetic path in get() is
+        // reused at every logical index, but a regression there would only
+        // surface away from index 0 -- verify several indices spanning the
+        // point where actual_idx itself wraps back to 0.
+        let mut ring = AuditRing::new();
+
+        // 74 writes = one full wrap (64) + 10 more. write_idx == 10.
+        for i in 0..(AUDIT_RING_CAPACITY + 10) {
+            ring.record(AuditEntry::new(
+                u64::try_from(i).unwrap_or_default(),
+                AuditEventKind::ModemTx,
+                0,
+                &[u8::try_from(i).unwrap_or_default()],
+            ));
+        }
+
+        // Oldest (actual_idx == write_idx == 10, global entry 10).
+        assert_eq!(
+            ring.get(0).expect("entry should exist").timestamp,
+            10,
+            "logical index 0 must resolve to the oldest surviving entry"
+        );
+        // Just before the internal actual_idx wraps back to 0 (actual_idx == 63).
+        assert_eq!(
+            ring.get(53).expect("entry should exist").timestamp,
+            63,
+            "logical index 53 must resolve to actual_idx 63, the last slot before internal wrap"
+        );
+        // Just after the internal actual_idx wraps back to 0.
+        assert_eq!(
+            ring.get(54).expect("entry should exist").timestamp,
+            64,
+            "logical index 54 must resolve to actual_idx 0, the first slot after internal wrap"
+        );
+        // Newest (actual_idx == write_idx - 1 == 9, global entry 73).
+        assert_eq!(
+            ring.get(63).expect("entry should exist").timestamp,
+            73,
+            "logical index 63 (count - 1) must resolve to the newest entry"
+        );
+    }
+
+    #[test]
     fn audit_ring_payload_truncation() {
         let mut ring = AuditRing::new();
         let long_data = [0xAB; 128];
@@ -2939,6 +3039,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn process_rx_control_message_passes_identity_filter() {
+        let mut driver = CcciDriver::new();
+        // WHY: control messages carry CCCI_MAGIC in data0, not a payload
+        // length -- validate_packet's is_control() skip must let this
+        // reach the identity filter as a normal RX event rather than being
+        // misrouted as an oversized data packet or rejected outright.
+        let hdr = CcciHeader::new_control(1, 7);
+        let payload = b"ctrl";
+
+        let result = driver.process_modem_rx(&hdr, payload, 1000);
+        assert_eq!(
+            result,
+            Ok(true),
+            "control message must pass through, not be rejected"
+        );
+        assert_eq!(
+            driver.malformed_packet_count(),
+            0,
+            "control message must not be misrouted as an oversized data packet"
+        );
+
+        let entry = driver.audit().get(0).expect("audit entry should exist");
+        assert_eq!(
+            entry.kind,
+            AuditEventKind::ModemRx,
+            "control message must be logged as ModemRx, not dropped or misrouted"
+        );
+        assert_eq!(
+            entry.channel, 1,
+            "channel must be preserved for the control message"
+        );
+    }
+
     // -- GPD descriptor flags --
 
     #[test]
@@ -3007,6 +3141,25 @@ mod tests {
         assert!(
             validate_packet(&hdr, 16).is_ok(),
             "control message must pass even though data0 >> buffer_len"
+        );
+    }
+
+    #[test]
+    fn validate_packet_control_message_offset_out_of_bounds() {
+        // Control messages skip the data0 length check (data0 carries
+        // CCCI_MAGIC, not a length), but data1 is still used as an offset
+        // on some channels and must remain bounds-checked even when the
+        // header is a control message.
+        let mut hdr = CcciHeader::new_control(5, 0);
+        hdr.data1 = 500;
+        let result = validate_packet(&hdr, 64);
+        assert_eq!(
+            result,
+            Err(CcciError::OffsetOutOfBounds {
+                offset: 500,
+                buffer_len: 64,
+            }),
+            "control message with OOB data1 must still be rejected"
         );
     }
 
