@@ -83,8 +83,9 @@ const MAX_ACTION_LEN: usize = 128;
 /// Maximum length of the description string in a proposal.
 const MAX_DESCRIPTION_LEN: usize = 512;
 
-/// WebSocket magic GUID for the Sec-WebSocket-Accept handshake.
-const _WS_MAGIC_GUID: &str = "258EAFA5-E914-47DA-95CA-5AB5FE82AD65";
+/// WebSocket magic GUID for the Sec-WebSocket-Accept handshake (RFC 6455
+/// §1.3).
+const WS_MAGIC_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// Audio sample rate for STT (16 kHz mono, per design doc).
 const AUDIO_SAMPLE_RATE_HZ: u32 = 16_000;
@@ -268,6 +269,22 @@ pub(crate) fn parse_ws_frame(data: &[u8]) -> Result<(WsFrame, usize), EkphrasisE
     let byte0 = data[0];
     let byte1 = data[1];
 
+    // RFC 6455 §5.2: RSV1-3 (bits 4-6 of byte 0) are reserved for
+    // extensions thumos does not negotiate. A nonzero value means either
+    // an unsupported extension or a malformed/adversarial frame; reject
+    // rather than silently ignore.
+    if byte0 & 0x70 != 0 {
+        return Err(EkphrasisError::InvalidFrame);
+    }
+
+    // FIN bit (bit 7). thumos implements no continuation-frame reassembly
+    // state machine (opcode 0x0 "continuation" is not a WsOpcode variant),
+    // so a fragmented message (FIN=0) is rejected cleanly here instead of
+    // being silently parsed as if it were a complete frame.
+    if byte0 & 0x80 == 0 {
+        return Err(EkphrasisError::InvalidFrame);
+    }
+
     // Extract opcode from lower 4 bits of byte 0.
     let opcode_raw = byte0 & 0x0F;
     let opcode = WsOpcode::from_byte(opcode_raw).ok_or(EkphrasisError::InvalidFrame)?;
@@ -400,6 +417,63 @@ pub(crate) fn build_ws_upgrade(host: &str, path: &str, ws_key: &str) -> HttpRequ
     );
 
     req
+}
+
+/// Verify a server's `Sec-WebSocket-Accept` header value against the
+/// client key sent in the upgrade request (RFC 6455 §4.1 / §4.2.2):
+/// `base64(SHA-1(client_key + WS_MAGIC_GUID))`.
+///
+/// Fails closed: any mismatch -- including a missing or malformed header --
+/// is rejected. Without this check, ANY HTTP 101 response would be accepted
+/// as a valid WebSocket upgrade regardless of which server produced it,
+/// since `WS_MAGIC_GUID` was previously dead code with no verification path
+/// wired to it.
+///
+/// # Errors
+///
+/// Returns [`EkphrasisError::HandshakeFailed`] if `server_accept` does not
+/// match the value computed from `client_key`.
+pub(crate) fn verify_ws_accept(
+    client_key: &str,
+    server_accept: &str,
+) -> Result<(), EkphrasisError> {
+    if compute_ws_accept(client_key) == server_accept {
+        Ok(())
+    } else {
+        Err(EkphrasisError::HandshakeFailed)
+    }
+}
+
+/// Compute the expected `Sec-WebSocket-Accept` value for `client_key`.
+#[must_use]
+pub(crate) fn compute_ws_accept(client_key: &str) -> String {
+    let mut input = Vec::with_capacity(client_key.len() + WS_MAGIC_GUID.len());
+    input.extend_from_slice(client_key.as_bytes());
+    input.extend_from_slice(WS_MAGIC_GUID.as_bytes());
+    base64_encode(&crate::security::sha1(&input))
+}
+
+/// Encode bytes as standard padded base64 (RFC 4648 §4).
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied();
+        let b2 = chunk.get(2).copied();
+
+        out.push(ALPHABET[(b0 >> 2) as usize] as char);
+        out.push(ALPHABET[(((b0 & 0x03) << 4) | (b1.unwrap_or(0) >> 4)) as usize] as char);
+        out.push(match b1 {
+            Some(b1) => ALPHABET[(((b1 & 0x0F) << 2) | (b2.unwrap_or(0) >> 6)) as usize] as char,
+            None => '=',
+        });
+        out.push(match b2 {
+            Some(b2) => ALPHABET[(b2 & 0x3F) as usize] as char,
+            None => '=',
+        });
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +723,17 @@ impl Ekphrasis {
     /// Returns an error if the frame contains invalid JSON or if the
     /// transcription text exceeds the length limit.
     pub(crate) fn handle_server_frame(&mut self, frame: &WsFrame) -> Result<(), EkphrasisError> {
+        // WHY: without this guard, a frame arriving while Idle (no session
+        // active) or already Error (needs an explicit reset()) was processed
+        // exactly like a frame arriving mid-session -- silently transitioning
+        // the state machine OUT of Error on a stray frame.
+        if matches!(self.state, EkphrasisState::Idle | EkphrasisState::Error(_)) {
+            return Err(EkphrasisError::InvalidState {
+                operation: "handle_server_frame",
+                current: self.state.label(),
+            });
+        }
+
         match frame.opcode {
             WsOpcode::Text => {
                 // Parse the text payload as a transcription response.
@@ -679,7 +764,14 @@ impl Ekphrasis {
     fn process_transcription(&mut self, text: &str) -> Result<(), EkphrasisError> {
         let value = JsonParser::parse(text.as_bytes())?;
 
-        let transcript = value.get("text").and_then(JsonValue::as_str).unwrap_or("");
+        // WHY: a missing/non-string "text" field previously fell back to ""
+        // silently -- indistinguishable from the server legitimately sending
+        // an empty transcript. Error instead so a malformed response is
+        // surfaced rather than swallowed.
+        let transcript = value
+            .get("text")
+            .and_then(JsonValue::as_str)
+            .ok_or(EkphrasisError::InvalidFrame)?;
 
         let is_final = value
             .get("final")
@@ -1212,6 +1304,22 @@ mod tests {
     }
 
     #[test]
+    fn ws_frame_rejects_nonzero_rsv_bits() {
+        // FIN(1) + RSV1(1) + text opcode(0x1): byte0 = 1000_0001 | 0100_0000 = 0xC1.
+        let data = [0xC1, 0x00];
+        let result = parse_ws_frame(&data);
+        assert_eq!(result, Err(EkphrasisError::InvalidFrame));
+    }
+
+    #[test]
+    fn ws_frame_rejects_fin_zero_fragmentation() {
+        // FIN=0, text opcode(0x1), no mask, zero length: byte0 = 0x01.
+        let data = [0x01, 0x00];
+        let result = parse_ws_frame(&data);
+        assert_eq!(result, Err(EkphrasisError::InvalidFrame));
+    }
+
+    #[test]
     fn ws_frame_ping_pong() {
         let mask_key = [0x01, 0x02, 0x03, 0x04];
         let ping_frame = build_ws_frame(WsOpcode::Ping, b"ping", mask_key);
@@ -1554,6 +1662,59 @@ Let me know if you need anything else."#;
     }
 
     #[test]
+    fn handle_server_frame_rejects_when_idle() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        let frame = WsFrame::new(WsOpcode::Text, b"{\"text\": \"hi\"}".to_vec());
+        let result = ek.handle_server_frame(&frame);
+        assert!(
+            matches!(
+                result,
+                Err(EkphrasisError::InvalidState {
+                    operation: "handle_server_frame",
+                    ..
+                })
+            ),
+            "a frame arriving in Idle state must be rejected, not processed"
+        );
+    }
+
+    #[test]
+    fn handle_server_frame_rejects_and_stays_in_error_state() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording();
+        let _ = ek.begin_streaming();
+        ek.state = EkphrasisState::Error(EkphrasisError::ConnectionClosed);
+
+        let frame = WsFrame::new(WsOpcode::Text, b"{\"text\": \"hi\"}".to_vec());
+        let result = ek.handle_server_frame(&frame);
+        assert!(
+            matches!(result, Err(EkphrasisError::InvalidState { .. })),
+            "a frame arriving while in Error state must not silently transition out of Error"
+        );
+        assert!(
+            matches!(ek.state(), EkphrasisState::Error(_)),
+            "state must remain Error, not be overwritten by a stray frame"
+        );
+    }
+
+    #[test]
+    fn process_transcription_errors_on_missing_text_field() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording();
+        let _ = ek.begin_streaming();
+
+        let frame = WsFrame::new(WsOpcode::Text, b"{\"final\": false}".to_vec());
+        let result = ek.handle_server_frame(&frame);
+        assert_eq!(
+            result,
+            Err(EkphrasisError::InvalidFrame),
+            "a transcription response missing \"text\" must error, not silently substitute empty string"
+        );
+    }
+
+    #[test]
     fn state_reset_clears_everything() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
@@ -1618,6 +1779,31 @@ Let me know if you need anything else."#;
         let (parsed, _) = parse_ws_frame(&frame).ok().flatten_pair();
         assert_eq!(parsed.opcode, WsOpcode::Close);
         assert!(parsed.payload.is_empty());
+    }
+
+    #[test]
+    fn compute_ws_accept_matches_rfc6455_example() {
+        // RFC 6455 §1.3 worked example.
+        let accept = compute_ws_accept("dGhlIHNhbXBsZSBub25jZQ==");
+        assert_eq!(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    }
+
+    #[test]
+    fn verify_ws_accept_accepts_matching_key() {
+        let result = verify_ws_accept("dGhlIHNhbXBsZSBub25jZQ==", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn verify_ws_accept_rejects_mismatched_key() {
+        let result = verify_ws_accept("dGhlIHNhbXBsZSBub25jZQ==", "not-the-right-value=");
+        assert_eq!(result, Err(EkphrasisError::HandshakeFailed));
+    }
+
+    #[test]
+    fn verify_ws_accept_fails_closed_on_empty_server_value() {
+        let result = verify_ws_accept("dGhlIHNhbXBsZSBub25jZQ==", "");
+        assert_eq!(result, Err(EkphrasisError::HandshakeFailed));
     }
 
     // -----------------------------------------------------------------------

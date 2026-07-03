@@ -26,6 +26,13 @@
 /// EAGAIN — value mismatch (two's complement -11, Linux ARM convention).
 pub(crate) const EAGAIN: u32 = 0u32.wrapping_sub(11);
 
+/// ENOMEM — waiter table exhausted (two's complement -12, Linux ARM
+/// convention). Distinct from EAGAIN: a caller retrying on EAGAIN expects
+/// `*addr` to eventually change on its own, but a full waiter table will
+/// not free itself without a FUTEX_WAKE elsewhere -- conflating the two
+/// would make a retry loop on this specific failure spin forever.
+pub(crate) const ENOMEM: u32 = 0u32.wrapping_sub(12);
+
 /// EINVAL — unknown op (two's complement -22, Linux ARM convention).
 pub(crate) const EINVAL: u32 = 0u32.wrapping_sub(22);
 
@@ -81,6 +88,21 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
         return EAGAIN;
     }
 
+    // WHY hoisted out of #[cfg(not(test))]: this check only reads the
+    // static FUTEX_WAITERS array (no crate::process dependency), so unlike
+    // the block/schedule/switch_to path below it is host-testable. A full
+    // waiter table is a distinct failure from a value mismatch (see the
+    // ENOMEM doc comment).
+    // SAFETY: FUTEX_WAITERS is a static mut; addr_of! avoids an
+    // intermediate reference. Single-core cooperative kernel ensures
+    // exclusive access here.
+    let table_full = unsafe { &*core::ptr::addr_of!(FUTEX_WAITERS) }
+        .iter()
+        .all(Option::is_some);
+    if table_full {
+        return ENOMEM;
+    }
+
     // --- Block path: requires crate::process (not available in test builds) ---
     #[cfg(not(test))]
     {
@@ -94,8 +116,11 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
         let slot = match slot {
             Some(s) => s,
             None => {
-                // Waiter table full — fail gracefully.
-                return EAGAIN;
+                // Unreachable: the table_full check above already returned
+                // ENOMEM if no slot was free, and the single-core
+                // cooperative kernel guarantees no interleaving mutation
+                // between that check and this one.
+                return ENOMEM;
             }
         };
         *slot = Some(FutexWaiter { addr, pid });
@@ -119,7 +144,7 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
 
     // In test builds the block path is absent; the matching value case returns
     // EAGAIN as a conservative sentinel (tests should only exercise the
-    // mismatch path).
+    // mismatch and table-exhaustion paths).
     #[cfg(test)]
     EAGAIN
 }
@@ -339,5 +364,29 @@ mod tests {
                 "a freed slot must be available for reuse"
             );
         }
+    }
+
+    #[test]
+    fn futex_wait_returns_enomem_when_waiter_table_full() {
+        reset_waiters();
+        // Fill every slot via the test-only seam (bypasses the
+        // #[cfg(not(test))]-gated block path, which needs crate::process).
+        for i in 0..MAX_FUTEX_WAITERS {
+            insert_waiter_for_test(0x1000 + i as u32, i as u32);
+        }
+
+        // WHY function-local `static mut`: mirrors futex_wait_returns_eagain_on_mismatch
+        // -- lands inside the validated user-address window on this host binary.
+        static mut WORD: u32 = 42;
+        // SAFETY: test-only static; single-threaded per test.
+        let addr = unsafe { core::ptr::addr_of!(WORD) as u32 };
+
+        // *addr == val, so this would normally proceed to register a
+        // waiter -- but the table is full.
+        let result = sys_futex_wait(addr, 42);
+        assert_eq!(
+            result, ENOMEM,
+            "a full waiter table must return ENOMEM, distinct from EAGAIN's value-mismatch signal"
+        );
     }
 }

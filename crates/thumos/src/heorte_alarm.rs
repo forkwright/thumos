@@ -64,6 +64,12 @@ pub struct Alarm {
     pub enabled: bool,
     /// Day-of-week repeat bitmask. 0 = one-shot, auto-disables after firing.
     pub repeat_days: u8,
+    /// Minute-index (`epoch / SECS_PER_MIN`) at which this alarm last
+    /// fired, or `None` if never fired. Used by [`Alarm::should_fire`] to
+    /// edge-trigger within the 60s window a matching hour:minute spans --
+    /// without it, a repeat alarm re-checked every tick would fire once per
+    /// tick for the whole minute (up to 60x per intended trigger).
+    pub last_fired_minute: Option<u64>,
 }
 
 impl Alarm {
@@ -90,6 +96,7 @@ impl Alarm {
             label_len: len as u8,
             enabled,
             repeat_days,
+            last_fired_minute: None,
         }
     }
 
@@ -114,6 +121,15 @@ impl Alarm {
         let current_minute = ((day_secs % SECS_PER_HOUR) / SECS_PER_MIN) as u8;
 
         if current_hour != self.hour || current_minute != self.minute {
+            return false;
+        }
+
+        // WHY: the hour:minute match above holds for the entire 60s window,
+        // not just one instant. Without this edge-trigger guard, a caller
+        // re-checking should_fire every tick (e.g. HeorteManager::check_alarms)
+        // would see it return true up to 60x for one intended trigger.
+        // last_fired_minute is advanced by the caller once the alarm fires.
+        if self.last_fired_minute == Some(current_epoch / SECS_PER_MIN) {
             return false;
         }
 
@@ -266,6 +282,26 @@ mod tests {
             day_of_week(3 * SECS_PER_DAY),
             0,
             "1970-01-04 must be Sunday"
+        );
+    }
+
+    #[test]
+    fn should_fire_edge_triggers_within_same_minute() {
+        let mut alarm = Alarm::new(1, 6, 30, b"Wake up", true, day_mask::DAILY);
+        let epoch_630 = 23400;
+        assert!(alarm.should_fire(epoch_630), "must fire the first time");
+        alarm.last_fired_minute = Some(epoch_630 / SECS_PER_MIN);
+        assert!(
+            !alarm.should_fire(epoch_630),
+            "must not re-fire within the same minute after being marked fired"
+        );
+        assert!(
+            !alarm.should_fire(epoch_630 + 30),
+            "must not re-fire later in the same 60s window"
+        );
+        assert!(
+            alarm.should_fire(epoch_630 + SECS_PER_DAY),
+            "must fire again on the next matching day"
         );
     }
 }
