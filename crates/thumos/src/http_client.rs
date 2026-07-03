@@ -998,6 +998,83 @@ mod tests {
         assert_eq!(resp.header("x-padded"), Some("value"));
     }
 
+    #[test]
+    fn parse_response_rejects_header_block_exceeding_max_size() {
+        // header_end (the position of the \r\n\r\n terminator) must exceed
+        // MAX_HEADER_BLOCK_SIZE to trip the guard before any header parsing.
+        let mut raw = Vec::from(&b"HTTP/1.1 200 OK\r\nX-Pad: "[..]);
+        raw.extend(core::iter::repeat(b'a').take(MAX_HEADER_BLOCK_SIZE + 16));
+        raw.extend_from_slice(b"\r\n\r\n");
+
+        let result = HttpResponse::parse(&raw);
+        assert_eq!(
+            result,
+            Err(HttpError::HeaderBlockTooLarge),
+            "a header block exceeding MAX_HEADER_BLOCK_SIZE must be rejected before parsing headers"
+        );
+    }
+
+    #[test]
+    fn parse_response_rejects_content_length_exceeding_max_body_size() {
+        let mut raw = Vec::from(&b"HTTP/1.1 200 OK\r\nContent-Length: "[..]);
+        write_usize_to_buf(&mut raw, MAX_BODY_SIZE + 1);
+        raw.extend_from_slice(b"\r\n\r\n");
+        // No actual body bytes needed -- the declared-length check fires
+        // before the available-bytes check.
+
+        let result = HttpResponse::parse(&raw);
+        assert_eq!(
+            result,
+            Err(HttpError::BodyTooLarge),
+            "a declared Content-Length exceeding MAX_BODY_SIZE must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_response_rejects_oversized_body_without_content_length() {
+        // Connection-close framing (a header, but no Content-Length): the
+        // raw remaining-bytes size must be checked against MAX_BODY_SIZE
+        // too, not just the declared-length path above.
+        let mut raw = Vec::from(&b"HTTP/1.1 200 OK\r\nServer: x\r\n\r\n"[..]);
+        raw.extend(core::iter::repeat(b'a').take(MAX_BODY_SIZE + 1));
+
+        let result = HttpResponse::parse(&raw);
+        assert_eq!(
+            result,
+            Err(HttpError::BodyTooLarge),
+            "a connection-close body exceeding MAX_BODY_SIZE must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_response_rejects_too_many_headers() {
+        let mut raw = Vec::from(&b"HTTP/1.1 200 OK\r\n"[..]);
+        for i in 0..=MAX_RESPONSE_HEADERS {
+            raw.extend_from_slice(b"X-H");
+            write_usize_to_buf(&mut raw, i);
+            raw.extend_from_slice(b": v\r\n");
+        }
+        raw.extend_from_slice(b"\r\n");
+
+        let result = HttpResponse::parse(&raw);
+        assert_eq!(
+            result,
+            Err(HttpError::TooManyHeaders),
+            "more than MAX_RESPONSE_HEADERS header lines must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_response_rejects_non_numeric_content_length() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: not-a-number\r\n\r\n";
+        let result = HttpResponse::parse(raw);
+        assert_eq!(
+            result,
+            Err(HttpError::InvalidContentLength),
+            "a non-numeric Content-Length value must be rejected"
+        );
+    }
+
     // -- Convenience constructors --
 
     #[test]

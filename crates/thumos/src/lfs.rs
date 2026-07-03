@@ -1592,6 +1592,21 @@ mod tests {
     }
 
     #[test]
+    fn format_rejects_device_smaller_than_two_segments() {
+        // total_blocks must be >= DEFAULT_SEGMENT_SIZE * 2 (512 blocks);
+        // this device provides only 100 blocks (800 sectors), well under
+        // the minimum -- format() must fail closed rather than write a
+        // superblock describing a filesystem the device cannot hold.
+        let mut dev = MemBlockDevice::new(800).expect("create undersized test device");
+        let result = format(&mut dev);
+        assert_eq!(
+            result,
+            Err(LfsError::InvalidSuperblock),
+            "a device with fewer than two segments worth of blocks must be rejected"
+        );
+    }
+
+    #[test]
     fn mount_reads_formatted_filesystem() {
         let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
@@ -1783,6 +1798,24 @@ mod tests {
     }
 
     #[test]
+    fn create_rejects_duplicate_name() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        fs.create(root, "dup", InodeType::RegularFile)
+            .expect("first create must succeed");
+
+        let result = fs.create(root, "dup", InodeType::RegularFile);
+        assert_eq!(
+            result,
+            Err(VfsError::AlreadyExists),
+            "creating a name that already exists in the directory must be rejected"
+        );
+    }
+
+    #[test]
     fn write_sync_remount_persists_data() {
         let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
@@ -1866,6 +1899,100 @@ mod tests {
 
         // Inode should be removed from imap (link count was 1).
         assert_eq!(fs.stat(file_id), Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn unlink_persists_decremented_link_count_when_links_remain() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "a", InodeType::RegularFile)
+            .expect("create must succeed");
+
+        // Simulate a second hard link ("b") to the same inode with
+        // link_count bumped to 2 -- this filesystem has no public link()
+        // syscall yet, so the second name and the elevated link_count
+        // are constructed directly at the LFS internals level, mirroring
+        // what a real link() implementation would leave on disk.
+        fs.ensure_writer().expect("ensure_writer");
+        let mut parent = fs.load_inode(root).expect("load root");
+        let mut entries = fs.read_dir_entries(&parent).expect("read root entries");
+        entries.push(DiskDirEntry {
+            inode_id: file_id,
+            name_len: 1,
+            record_len: ((DIR_ENTRY_HEADER_SIZE + 1 + 3) & !3) as u16,
+            name: String::from("b"),
+        });
+
+        let mut target_inode = fs.load_inode(file_id).expect("load target");
+        target_inode.link_count = 2;
+
+        {
+            let mut raw_dev = fs.dev.borrow_mut();
+            let mut cache = fs.cache.borrow_mut();
+            let writer = fs
+                .writer
+                .as_mut()
+                .expect("writer present after ensure_writer");
+
+            let dir_block = Lfs::write_dir_block(
+                raw_dev.as_mut(),
+                &mut cache,
+                writer,
+                &mut fs.segments,
+                &entries,
+            )
+            .expect("write_dir_block must succeed");
+            parent.direct[0] = dir_block;
+            parent.size = entries.iter().map(|e| e.record_len as u64).sum();
+
+            writer
+                .write_inode(
+                    raw_dev.as_mut(),
+                    &mut cache,
+                    &mut fs.imap,
+                    &mut fs.segments,
+                    root,
+                    &parent,
+                )
+                .expect("write parent inode");
+            writer
+                .write_inode(
+                    raw_dev.as_mut(),
+                    &mut cache,
+                    &mut fs.imap,
+                    &mut fs.segments,
+                    file_id,
+                    &target_inode,
+                )
+                .expect("write bumped link_count inode");
+        }
+
+        // Now unlink "a" -- the inode has link_count=2, so this must hit
+        // the else-branch: persist link_count=1 and keep the inode in the
+        // imap (not remove it), and "b" must still resolve to it.
+        let result = fs.unlink(root, "a");
+        assert!(result.is_ok(), "unlink must succeed");
+
+        let stat = fs.stat(file_id);
+        assert!(
+            stat.is_ok(),
+            "an inode with remaining links must not be removed from the imap"
+        );
+
+        let via_b = fs
+            .lookup(root, "b")
+            .expect("second link must still resolve");
+        assert_eq!(via_b, file_id);
+
+        let reloaded = fs.load_inode(file_id).expect("load after unlink");
+        assert_eq!(
+            reloaded.link_count, 1,
+            "link_count must be persisted as decremented (2 -> 1), not left stale or removed"
+        );
     }
 
     #[test]

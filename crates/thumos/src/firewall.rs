@@ -757,6 +757,19 @@ fn make_ip_udp(
     pkt
 }
 
+/// Build a minimal IPv4/ICMP packet for testing.
+#[cfg(test)]
+fn make_ip_icmp(src: [u8; 4], dst: [u8; 4]) -> alloc::vec::Vec<u8> {
+    let mut pkt = alloc::vec![0u8; 20];
+    pkt[0] = 0x45; // version=4, IHL=5
+    pkt[2] = 0x00;
+    pkt[3] = 20; // total length
+    pkt[9] = PROTO_ICMP;
+    pkt[12..16].copy_from_slice(&src);
+    pkt[16..20].copy_from_slice(&dst);
+    pkt
+}
+
 /// Build a minimal DNS query message for a given domain.
 #[cfg(test)]
 fn make_dns_query(domain: &str) -> alloc::vec::Vec<u8> {
@@ -836,6 +849,47 @@ mod tests {
             fw.evaluate_rx(&denied),
             Action::Deny,
             "no rule for port 80 — default deny must apply"
+        );
+    }
+
+    #[test]
+    fn evaluate_rx_parses_icmp_packet_and_matches_rule() {
+        let mut fw = Firewall::new();
+        fw.add_rule(FilterRule {
+            direction: Direction::Inbound,
+            protocol: Some(Protocol::Icmp),
+            src_addr: None,
+            dst_addr: None,
+            dst_port: None,
+            action: Action::Allow,
+        });
+
+        let pkt = make_ip_icmp([1, 2, 3, 4], [10, 0, 0, 1]);
+        assert_eq!(
+            fw.evaluate_rx(&pkt),
+            Action::Allow,
+            "an ICMP packet must be parsed and matched against an ICMP-protocol rule"
+        );
+    }
+
+    #[test]
+    fn evaluate_rx_denies_icmp_with_no_matching_rule() {
+        let mut fw = Firewall::new();
+        // Only a TCP-specific rule -- must not match an ICMP packet.
+        fw.add_rule(FilterRule {
+            direction: Direction::Inbound,
+            protocol: Some(Protocol::Tcp),
+            src_addr: None,
+            dst_addr: None,
+            dst_port: None,
+            action: Action::Allow,
+        });
+
+        let pkt = make_ip_icmp([1, 2, 3, 4], [10, 0, 0, 1]);
+        assert_eq!(
+            fw.evaluate_rx(&pkt),
+            Action::Deny,
+            "ICMP packet must fall through to the default-deny inbound policy when no ICMP rule matches"
         );
     }
 
@@ -1221,6 +1275,55 @@ mod tests {
             fw.stats().packets_allowed,
             1,
             "Log action must count as allowed"
+        );
+    }
+
+    #[test]
+    fn extract_query_domain_rejects_compression_pointer_in_qname() {
+        // DNS header (QDCOUNT=1) followed by a compression pointer (0xC0)
+        // in place of a QNAME label-length byte -- a query section must
+        // never legitimately compress into itself; extract_query_domain
+        // fails closed rather than following or misreading the pointer.
+        let mut data = alloc::vec![0u8; DNS_HEADER_LEN];
+        data[4] = 0x00;
+        data[5] = 0x01; // QDCOUNT = 1
+        data.extend_from_slice(&[0xC0, 0x0C]); // compression pointer
+
+        let result = extract_query_domain(&data);
+        assert_eq!(
+            result, None,
+            "a compression pointer in the query name must be rejected"
+        );
+    }
+
+    #[test]
+    fn extract_query_domain_rejects_label_length_exceeding_remaining_data() {
+        let mut data = alloc::vec![0u8; DNS_HEADER_LEN];
+        data[4] = 0x00;
+        data[5] = 0x01; // QDCOUNT = 1
+        data.push(10); // label claims 10 bytes...
+        data.extend_from_slice(b"ab"); // ...but only 2 are present
+
+        let result = extract_query_domain(&data);
+        assert_eq!(
+            result, None,
+            "a label length exceeding the remaining packet bytes must be rejected"
+        );
+    }
+
+    #[test]
+    fn extract_query_domain_rejects_non_utf8_label() {
+        let mut data = alloc::vec![0u8; DNS_HEADER_LEN];
+        data[4] = 0x00;
+        data[5] = 0x01; // QDCOUNT = 1
+        data.push(1); // label length = 1
+        data.push(0xFF); // invalid standalone UTF-8 byte
+        data.push(0); // terminal zero
+
+        let result = extract_query_domain(&data);
+        assert_eq!(
+            result, None,
+            "a non-UTF-8 label must be rejected, not produce garbage domain text"
         );
     }
 

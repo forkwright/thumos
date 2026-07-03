@@ -589,6 +589,38 @@ mod tests {
     }
 
     #[test]
+    fn kernel_random_bytes_auto_reseeds_after_threshold() {
+        let key = [0x33u8; 32];
+        let nonce = [0u8; 8];
+        seed_for_test(&key, &nonce, 0);
+
+        // Force bytes_generated right up to the threshold so the next
+        // call crosses RESEED_THRESHOLD and exercises the auto-reseed
+        // branch inside kernel_random_bytes.
+        // SAFETY: test-only manipulation of global state.
+        unsafe {
+            if let Some(c) = (*core::ptr::addr_of_mut!(CSPRNG)).as_mut() {
+                c.bytes_generated = RESEED_THRESHOLD - 4;
+            }
+        }
+
+        let mut buf = [0u8; 4];
+        kernel_random_bytes(&mut buf).expect("seeded test rng");
+
+        // SAFETY: test-only read of global state.
+        let bytes_generated_after = unsafe {
+            (*core::ptr::addr_of_mut!(CSPRNG))
+                .as_ref()
+                .map(|c| c.bytes_generated)
+        };
+        assert_eq!(
+            bytes_generated_after,
+            Some(0),
+            "crossing RESEED_THRESHOLD must reset the reseed counter"
+        );
+    }
+
+    #[test]
     fn output_is_deterministic_for_same_seed() {
         let key = [0xAAu8; 32];
         let nonce = [0u8; 8];

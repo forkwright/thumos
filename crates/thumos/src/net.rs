@@ -421,6 +421,14 @@ impl<D> FirewallDevice<D> {
     pub(crate) fn firewall(&self) -> &Firewall {
         &self.firewall
     }
+
+    /// Borrow the firewall mutably (test-only: lets a test install an
+    /// explicit allow rule so a loopback RX frame reaches the socket
+    /// layer instead of being dropped by the default-deny inbound policy).
+    #[cfg(test)]
+    pub(crate) fn firewall_mut(&mut self) -> &mut Firewall {
+        &mut self.firewall
+    }
 }
 
 /// Receive token for [`FirewallDevice`].
@@ -1151,5 +1159,36 @@ mod tests {
     fn instant_from_millis_roundtrip() {
         let inst = instant_from_millis(12345);
         assert_eq!(inst, Instant::from_millis(12345));
+    }
+
+    #[test]
+    fn poll_services_ticks_dns_cache_and_reports_no_dhcp_event() {
+        let mut stack = make_stack();
+        let mut resolver = crate::dns::DnsResolver::new(
+            Ipv4Address::new(192, 168, 1, 1),
+            Ipv4Address::new(9, 9, 9, 9),
+        );
+        resolver.cache_mut().insert(
+            "poll-services-test.example",
+            smoltcp::wire::IpAddress::Ipv4(Ipv4Address::new(9, 9, 9, 9)),
+            2,
+        );
+
+        let now = Instant::from_millis(1000);
+        let event = stack.poll_services(now, None, Some(&mut resolver), 5);
+
+        assert_eq!(
+            event,
+            crate::dhcp::DhcpEvent::None,
+            "poll_services with no DHCP client must report DhcpEvent::None"
+        );
+        assert!(
+            resolver
+                .cache_mut()
+                .lookup("poll-services-test.example")
+                .is_none(),
+            "poll_services must forward elapsed_secs to the DNS resolver's tick(), \
+             expiring a TTL=2 entry after 5 elapsed seconds"
+        );
     }
 }
