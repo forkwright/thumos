@@ -111,4 +111,39 @@ mod tests {
             })
         ));
     }
+
+    struct MismatchedResponseRuntime;
+
+    impl BridgeTransport for MismatchedResponseRuntime {
+        fn exchange(&mut self, request_frame: &[u8]) -> Result<Vec<u8>> {
+            let _request = decode_request(request_frame)?;
+            let response = TaskResponse::accepted(Ulid::from_bytes([99; 16]), DeviceAction::None);
+            encode_response(&response)
+        }
+    }
+
+    #[test]
+    fn client_reports_response_request_mismatch() {
+        let request_id = Ulid::from_bytes([3; 16]);
+        let request = TaskRequest::SendSms {
+            request_id,
+            identity: identity_ref(),
+            grants: vec![CapabilityGrant::new(
+                Capability::SmsSend,
+                "policy",
+                "grant-sms-2",
+            )],
+            to: "+15550001111".into(),
+            body: "mismatch test".into(),
+        };
+
+        let mut client = BridgeClient::new(MismatchedResponseRuntime);
+        let result = client.submit(&request);
+
+        assert!(matches!(
+            result,
+            Err(crate::Error::ResponseRequestMismatch { response_id, .. })
+                if response_id == Ulid::from_bytes([99; 16])
+        ));
+    }
 }

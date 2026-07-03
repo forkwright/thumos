@@ -83,6 +83,12 @@ pub(crate) fn encrypt_block(
 ///
 /// Returns [`Error::InvalidKeyLength`] if `key` is not 64 bytes.
 /// Returns [`Error::InvalidBlockSize`] if either buffer is not 4096 bytes.
+///
+/// # Note
+///
+/// XTS provides confidentiality only, not authentication. A mismatched
+/// `block_number` does not produce an error — it silently yields incorrect
+/// plaintext. Callers needing integrity must authenticate at a higher layer.
 pub(crate) fn decrypt_block(
     key: &[u8; XTS_KEY_LEN],
     block_number: u64,
@@ -198,6 +204,26 @@ mod tests {
         assert_ne!(
             plaintext, ciphertext,
             "encrypted block must differ FROM the plaintext"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn decrypt_with_wrong_block_number_does_not_error() -> super::Result<()> {
+        let key = sample_xts_key();
+        let plaintext = sample_plaintext();
+        let mut ciphertext = [0u8; BLOCK_SIZE];
+        let mut recovered = [0u8; BLOCK_SIZE];
+
+        encrypt_block(&key, 5, &plaintext, &mut ciphertext)?;
+        // WHY: XTS provides no authentication — decrypting with the wrong
+        // tweak succeeds and silently yields incorrect plaintext, it does
+        // not surface as an Err.
+        decrypt_block(&key, 6, &ciphertext, &mut recovered)?;
+
+        assert_ne!(
+            plaintext, recovered,
+            "decrypting with the wrong block_number must not recover the original plaintext"
         );
         Ok(())
     }

@@ -11,8 +11,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[non_exhaustive]
 pub enum Error {
     /// Key generation failed.
-    #[snafu(display("key generation failed"))]
+    #[snafu(display("key generation failed at {location}: {source}"))]
     KeyGeneration {
+        /// Underlying OS RNG failure.
+        source: getrandom::Error,
         /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,

@@ -541,4 +541,36 @@ mod tests {
         assert_eq!(result.actions_failed, 0, "empty-file wipe must not fail");
         assert_eq!(result.bytes_wiped, 0, "an empty file wipes zero bytes");
     }
+
+    #[test]
+    fn missing_wipe_target_counts_as_completed_with_zero_bytes() {
+        // WHY: locks in the documented `execute` contract (see its doc
+        // comment) that a wipe target absent FROM the filesystem is treated
+        // as a benign no-op — not a failure, and counted as completed with
+        // zero bytes wiped — rather than surfacing as an I/O error.
+        let missing = std::env::temp_dir().join(format!(
+            "leipsanon_missing_wipe_target_{}_{}",
+            std::process::id(),
+            TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let plan = vec![WipeAction {
+            path: missing,
+            method: WipeMethod::Zero,
+            priority: 1,
+        }];
+        let mut engine = WipeEngine::new(false);
+        let result = engine.execute(&plan);
+        assert_eq!(
+            result.actions_completed, 1,
+            "a missing wipe target must still be counted as completed"
+        );
+        assert_eq!(
+            result.actions_failed, 0,
+            "a missing wipe target must not be counted as a failure"
+        );
+        assert_eq!(
+            result.bytes_wiped, 0,
+            "a missing wipe target has nothing to write, so zero bytes are wiped"
+        );
+    }
 }

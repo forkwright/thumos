@@ -276,6 +276,39 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_does_not_mutate_state_on_auth_failure() -> Result<()> {
+        // An in-order message (gap == 0) that fails authentication must leave
+        // the receive chain key, counter, and skipped-key cache untouched —
+        // only a successfully authenticated message may advance state.
+        let root = root_key(0xDD);
+        let mut send = RatchetState::new(root);
+        let mut recv = RatchetState::new(root);
+        let mut msg = encrypt(&mut send, b"in-order message")?;
+        if let Some(byte) = msg.ciphertext.first_mut() {
+            *byte ^= 0xFF;
+        }
+        let counter_before = recv.counter;
+        let chain_key_before = recv.chain_key;
+        assert!(
+            decrypt(&mut recv, &msg).is_err(),
+            "tampered in-order message must fail authentication"
+        );
+        assert_eq!(
+            recv.counter, counter_before,
+            "a failed in-order decrypt must not advance the receive counter"
+        );
+        assert_eq!(
+            recv.chain_key, chain_key_before,
+            "a failed in-order decrypt must not roll the receive chain key"
+        );
+        assert!(
+            recv.skipped.is_empty(),
+            "a failed in-order decrypt must not populate the skipped-key cache"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn ratchet_advances_for_multiple_messages() -> Result<()> {
         let root = root_key(0x33);
         let mut send_state = RatchetState::new(root);

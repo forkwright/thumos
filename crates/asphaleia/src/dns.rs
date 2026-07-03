@@ -82,12 +82,18 @@ impl DnsBlocklist {
     /// the blocklist.
     ///
     /// `data` must be the DNS message payload (not the IP/UDP framing).
-    /// Returns `true` if the query should be blocked.
+    /// Returns `true` if the query should be blocked, including when the
+    /// message cannot be decoded (non-UTF-8 label, compression pointer,
+    /// truncated, malformed QDCOUNT) — this matches the crate's
+    /// parse-failure-denies default (see `filter.rs`).
     #[must_use]
     pub(crate) fn blocks_dns_payload(&self, data: &[u8]) -> bool {
+        // WHY: fail CLOSED. An undecodable query must not bypass the
+        // blocklist — a malicious app could otherwise evade domain
+        // blocking with a deliberately malformed query.
         extract_query_domain(data)
             .as_deref()
-            .is_some_and(|d| self.is_blocked(d))
+            .is_none_or(|d| self.is_blocked(d))
     }
 }
 
@@ -249,6 +255,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_compression_pointer_in_qname() {
+        let mut msg = make_dns_query("example.com");
+        // Overwrite the first QNAME label-length byte with a compression
+        // pointer (top two bits SET) — the anti-spoof guard must reject it.
+        msg[DNS_HEADER_LEN] = 0xC0;
+        assert_eq!(
+            extract_query_domain(&msg),
+            None,
+            "QNAME starting with a compression pointer must return None"
+        );
+    }
+
+    #[test]
     fn blocklist_exact_match_blocks_domain() {
         let bl = DnsBlocklist::with_surveillance_defaults();
         assert!(
@@ -327,6 +346,27 @@ mod tests {
         assert!(
             !bl.blocks_dns_payload(&msg),
             "example.com DNS query must not be blocked"
+        );
+    }
+
+    #[test]
+    fn blocks_dns_payload_fails_closed_on_non_utf8_label() {
+        let bl = DnsBlocklist::with_surveillance_defaults();
+        let mut msg = vec![
+            0x12, 0x34, // ID
+            0x01, 0x00, // QR=0, OPCODE=0, RD=1
+            0x00, 0x01, // QDCOUNT = 1
+            0x00, 0x00, // ANCOUNT = 0
+            0x00, 0x00, // NSCOUNT = 0
+            0x00, 0x00, // ARCOUNT = 0
+        ];
+        msg.push(3); // label length
+        msg.extend_from_slice(&[0xFF, 0xFE, 0xFD]); // invalid UTF-8 label bytes
+        msg.push(0x00); // root label
+        msg.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE/QCLASS
+        assert!(
+            bl.blocks_dns_payload(&msg),
+            "an undecodable query (non-UTF-8 label) must fail closed, not bypass the blocklist"
         );
     }
 }

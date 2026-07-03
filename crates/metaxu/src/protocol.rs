@@ -375,3 +375,58 @@ pub(crate) fn encode_response(response: &TaskResponse) -> Result<Vec<u8>> {
 pub(crate) fn decode_response(bytes: &[u8]) -> Result<TaskResponse> {
     postcard::from_bytes(bytes).context(crate::error::DecodeSnafu)
 }
+
+#[cfg(test)]
+mod tests {
+    use ulid::Ulid;
+
+    use super::{
+        AudioMode, Capability, CapabilityGrant, DeviceIdentityRef, IdentityKind, TaskRequest,
+        decode_request, encode_request,
+    };
+
+    fn identity_ref() -> DeviceIdentityRef {
+        DeviceIdentityRef::new(IdentityKind::Device, "device-ref", [4; 32])
+    }
+
+    #[test]
+    fn place_call_round_trips() {
+        let request = TaskRequest::PlaceCall {
+            request_id: Ulid::from_bytes([5; 16]),
+            identity: identity_ref(),
+            grants: vec![CapabilityGrant::new(
+                Capability::CallDial,
+                "policy",
+                "grant-call",
+            )],
+            to: "+15559876543".into(),
+        };
+
+        let round_tripped = encode_request(&request)
+            .ok()
+            .and_then(|bytes| decode_request(&bytes).ok());
+
+        assert_eq!(round_tripped, Some(request));
+    }
+
+    #[test]
+    fn audio_session_round_trips() {
+        let request = TaskRequest::AudioSession {
+            request_id: Ulid::from_bytes([6; 16]),
+            identity: identity_ref(),
+            grants: vec![CapabilityGrant::new(
+                Capability::AudioCapture,
+                "policy",
+                "grant-audio",
+            )],
+            mode: AudioMode::Capture,
+            max_duration_ms: 30_000,
+        };
+
+        let round_tripped = encode_request(&request)
+            .ok()
+            .and_then(|bytes| decode_request(&bytes).ok());
+
+        assert_eq!(round_tripped, Some(request));
+    }
+}
