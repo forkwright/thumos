@@ -98,9 +98,7 @@ impl RamFs {
             children: Vec::new(),
             parent: 0,
         });
-        self.inodes[0]
-            .children
-            .push((String::from(name), inode_id));
+        self.inodes[0].children.push((String::from(name), inode_id));
     }
 
     /// Find a file by path (backward-compatibility).
@@ -946,10 +944,7 @@ mod tests {
         let file_id = fs
             .create(0, "file.txt", InodeType::RegularFile)
             .expect("create");
-        assert_eq!(
-            fs.lookup(file_id, "child"),
-            Err(VfsError::NotADirectory)
-        );
+        assert_eq!(fs.lookup(file_id, "child"), Err(VfsError::NotADirectory));
     }
 
     #[test]
@@ -1005,20 +1000,20 @@ mod tests {
         let filesize = data.len();
 
         // 110-byte header: magic + 13 fields of 8 hex chars each
-        entry.extend_from_slice(b"070701");                                  // magic
-        entry.extend_from_slice(b"00000001");                                // ino
-        entry.extend_from_slice(format!("{mode:08X}").as_bytes());           // mode
-        entry.extend_from_slice(b"00000000");                                // uid
-        entry.extend_from_slice(b"00000000");                                // gid
-        entry.extend_from_slice(b"00000001");                                // nlink
-        entry.extend_from_slice(b"00000000");                                // mtime
-        entry.extend_from_slice(format!("{filesize:08X}").as_bytes());       // filesize
-        entry.extend_from_slice(b"00000000");                                // devmajor
-        entry.extend_from_slice(b"00000000");                                // devminor
-        entry.extend_from_slice(b"00000000");                                // rdevmajor
-        entry.extend_from_slice(b"00000000");                                // rdevminor
-        entry.extend_from_slice(format!("{namesize:08X}").as_bytes());       // namesize
-        entry.extend_from_slice(b"00000000");                                // check
+        entry.extend_from_slice(b"070701"); // magic
+        entry.extend_from_slice(b"00000001"); // ino
+        entry.extend_from_slice(format!("{mode:08X}").as_bytes()); // mode
+        entry.extend_from_slice(b"00000000"); // uid
+        entry.extend_from_slice(b"00000000"); // gid
+        entry.extend_from_slice(b"00000001"); // nlink
+        entry.extend_from_slice(b"00000000"); // mtime
+        entry.extend_from_slice(format!("{filesize:08X}").as_bytes()); // filesize
+        entry.extend_from_slice(b"00000000"); // devmajor
+        entry.extend_from_slice(b"00000000"); // devminor
+        entry.extend_from_slice(b"00000000"); // rdevmajor
+        entry.extend_from_slice(b"00000000"); // rdevminor
+        entry.extend_from_slice(format!("{namesize:08X}").as_bytes()); // namesize
+        entry.extend_from_slice(b"00000000"); // check
 
         assert_eq!(entry.len(), 110, "header must be exactly 110 bytes");
 

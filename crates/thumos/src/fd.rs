@@ -13,7 +13,9 @@
 //! sufficient for a BusyBox shell + init + concurrent processes.
 
 extern crate alloc;
+
 use alloc::boxed::Box;
+
 use crate::memguard::validate_user_buffer;
 use crate::vfs::{self, Filesystem, InodeType, MountTable, VfsError};
 
@@ -640,8 +642,7 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
             // Update offset in the fd entry. The fd was validated above, so
             // this is expected to be Some; guard defensively instead of
             // panicking (expect_used is denied in kernel code).
-            if let Some(entry) =
-                unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) }.get_mut(fd_idx)
+            if let Some(entry) = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) }.get_mut(fd_idx)
             {
                 entry.offset += n;
             }
@@ -727,11 +728,7 @@ pub(crate) fn sys_close(fd: u32) -> u32 {
     // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
     // reference. Single-core kernel ensures exclusive access during syscall.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-    if table.close(fd_idx) {
-        0
-    } else {
-        EBADF
-    }
+    if table.close(fd_idx) { 0 } else { EBADF }
 }
 
 /// SYS_stat: get file status by path.
@@ -1489,10 +1486,14 @@ mod tests {
             let first = ramfs_find("/test.txt").expect("file must be found");
             let second = ramfs_find("/test.txt").expect("file must be found");
             assert_eq!(
-                first.as_ptr(), second.as_ptr(),
+                first.as_ptr(),
+                second.as_ptr(),
                 "repeated ramfs_find on the same file must reuse the cached leak (#222)"
             );
-            assert_eq!(first, second, "cached and fresh reads must return identical content");
+            assert_eq!(
+                first, second,
+                "cached and fresh reads must return identical content"
+            );
         }
     }
 
@@ -1818,11 +1819,17 @@ mod tests {
             let bogus = FileDescriptor::from_vfs(0, 9_999, 0);
             let fd = table.alloc(bogus).expect("test fd alloc must succeed");
 
-            static mut STAT: StatBuf = StatBuf { size: 0, file_type: 0 };
+            static mut STAT: StatBuf = StatBuf {
+                size: 0,
+                file_type: 0,
+            };
             let stat = &mut *core::ptr::addr_of_mut!(STAT);
             let result = sys_fstat(fd as u32, stat as *mut StatBuf as u32);
 
-            assert_ne!(result, 0, "fstat must propagate a real VFS stat error, not fabricate success (#249)");
+            assert_ne!(
+                result, 0,
+                "fstat must propagate a real VFS stat error, not fabricate success (#249)"
+            );
         }
     }
 
@@ -1921,7 +1928,10 @@ mod tests {
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
-        assert_eq!(read, 32, "sys_read on /dev/urandom must fill the buffer, not return an errno");
+        assert_eq!(
+            read, 32,
+            "sys_read on /dev/urandom must fill the buffer, not return an errno"
+        );
         assert!(
             buf.iter().any(|&b| b != 0),
             "sys_read on /dev/urandom must return real entropy, not silently-zeroed/garbage data"
@@ -2044,7 +2054,9 @@ mod tests {
     #[test]
     fn fcntl_getfl_returns_flags() {
         // SAFETY: test-only; setup_test_vfs resets global state.
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         // Open a file via internal APIs (avoids pointer truncation).
         let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
@@ -2058,7 +2070,9 @@ mod tests {
 
     #[test]
     fn fcntl_setfl_sets_append() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
         let fd_num = table
@@ -2080,7 +2094,9 @@ mod tests {
 
     #[test]
     fn fcntl_setfl_preserves_accmode() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         // Open with access mode bits set (O_RDWR = 2)
         let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
@@ -2096,16 +2112,14 @@ mod tests {
             2,
             "access mode bits must be preserved by F_SETFL"
         );
-        assert_eq!(
-            flags & O_APPEND,
-            O_APPEND,
-            "O_APPEND must be set"
-        );
+        assert_eq!(flags & O_APPEND, O_APPEND, "O_APPEND must be set");
     }
 
     #[test]
     fn fcntl_dupfd_duplicates_above_arg() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         // Allocate fd 0
         let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
@@ -2125,13 +2139,21 @@ mod tests {
         let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
         let orig = table.get(fd_num as usize).expect("original fd");
         let duped = table.get(new_fd as usize).expect("duped fd");
-        assert_eq!(orig.inode_id, duped.inode_id, "duped fd must reference same inode");
-        assert_eq!(orig.mount_idx, duped.mount_idx, "duped fd must reference same mount");
+        assert_eq!(
+            orig.inode_id, duped.inode_id,
+            "duped fd must reference same inode"
+        );
+        assert_eq!(
+            orig.mount_idx, duped.mount_idx,
+            "duped fd must reference same mount"
+        );
     }
 
     #[test]
     fn fcntl_dupfd_returns_emfile_when_full() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         // Fill fd table
         let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
@@ -2146,7 +2168,9 @@ mod tests {
 
     #[test]
     fn fcntl_invalid_cmd_returns_einval() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
         table.alloc(FileDescriptor::from_vfs(0, 1, 0));
@@ -2157,7 +2181,9 @@ mod tests {
 
     #[test]
     fn fcntl_bad_fd_returns_ebadf() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         assert_eq!(sys_fcntl(99, F_GETFL, 0), EBADF);
         assert_eq!(sys_fcntl(99, F_SETFL, 0), EBADF);
@@ -2168,7 +2194,9 @@ mod tests {
 
     #[test]
     fn ioctl_returns_enotty() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         // Allocate a regular file fd
         let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
@@ -2182,7 +2210,9 @@ mod tests {
 
     #[test]
     fn ioctl_bad_fd_returns_ebadf() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         let result = sys_ioctl(99, 0, 0);
         assert_eq!(result, EBADF, "ioctl on invalid fd must return EBADF");
@@ -2190,7 +2220,9 @@ mod tests {
 
     #[test]
     fn ioctl_devfs_returns_enotty() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         // Open a devfs file via internal APIs — devfs is mount index 1
         let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
@@ -2207,7 +2239,9 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn write_dispatches_to_vfs_for_file_fds() {
-        unsafe { setup_test_vfs(); }
+        unsafe {
+            setup_test_vfs();
+        }
 
         // Create a file through VFS, open it, write through sys_write
         let mt = unsafe { get_mount_table_mut() }.expect("mount table");
@@ -2223,7 +2257,11 @@ mod tests {
 
         let data = b"test write data";
         let written = sys_write(fd, data.as_ptr() as u32, data.len() as u32);
-        assert_eq!(written, data.len() as u32, "sys_write should write all bytes");
+        assert_eq!(
+            written,
+            data.len() as u32,
+            "sys_write should write all bytes"
+        );
 
         // Read back
         let _ = sys_lseek(fd, 0, SEEK_SET);
@@ -2252,7 +2290,11 @@ mod tests {
     fn alloc_from_uses_exact_min_if_available() {
         let mut table = FdTable::new();
         let fd = table.alloc_from(10, FileDescriptor::from_vfs(0, 1, 0));
-        assert_eq!(fd, Some(10), "alloc_from(10) on empty table should return 10");
+        assert_eq!(
+            fd,
+            Some(10),
+            "alloc_from(10) on empty table should return 10"
+        );
     }
 
     #[test]
@@ -2302,13 +2344,19 @@ mod tests {
         // validate_user_buffer is consulted — path_ptr is a plausible
         // in-range value so this isolates the length check.
         let result = sys_open(IN_RANGE_UNBACKED_PTR, u32::MAX, 0);
-        assert_eq!(result, ENOENT, "path_len > MAX_PATH must return ENOENT before any slice is built");
+        assert_eq!(
+            result, ENOENT,
+            "path_len > MAX_PATH must return ENOENT before any slice is built"
+        );
     }
 
     #[test]
     fn sys_mkdir_rejects_oversized_path_len() {
         let result = sys_mkdir(IN_RANGE_UNBACKED_PTR, u32::MAX);
-        assert_eq!(result, ENOENT, "path_len > MAX_PATH must return ENOENT before any slice is built");
+        assert_eq!(
+            result, ENOENT,
+            "path_len > MAX_PATH must return ENOENT before any slice is built"
+        );
     }
 
     #[test]
@@ -2343,7 +2391,10 @@ mod tests {
     fn sys_stat_rejects_kernel_range_stat_buf_ptr() {
         let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
         let result = sys_stat(IN_RANGE_UNBACKED_PTR, 4, kernel_ptr);
-        assert_eq!(result, EFAULT, "kernel-range stat_buf_ptr must return EFAULT");
+        assert_eq!(
+            result, EFAULT,
+            "kernel-range stat_buf_ptr must return EFAULT"
+        );
     }
 
     #[test]
@@ -2359,7 +2410,10 @@ mod tests {
 
         let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
         let result = sys_fstat(fd, kernel_ptr);
-        assert_eq!(result, EFAULT, "kernel-range stat_buf_ptr must return EFAULT");
+        assert_eq!(
+            result, EFAULT,
+            "kernel-range stat_buf_ptr must return EFAULT"
+        );
     }
 
     #[test]

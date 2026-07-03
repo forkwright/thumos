@@ -18,7 +18,10 @@
 //! Boot integration via `kinit.rs` Step 13b. Device node at `/dev/bt0`.
 
 // WHY: hardware driver API not yet wired to upper layers (kinit integration pending).
-#![expect(dead_code, reason = "BT driver API wired in kinit but not yet called from userspace")]
+#![expect(
+    dead_code,
+    reason = "BT driver API wired in kinit but not yet called from userspace"
+)]
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -163,8 +166,12 @@ impl core::fmt::Display for BleDevice {
         write!(
             f,
             "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} ({}dBm)",
-            self.address[0], self.address[1], self.address[2],
-            self.address[3], self.address[4], self.address[5],
+            self.address[0],
+            self.address[1],
+            self.address[2],
+            self.address[3],
+            self.address[4],
+            self.address[5],
             self.rssi,
         )
     }
@@ -259,10 +266,12 @@ pub(crate) fn hci_le_set_scan_params() -> [u8; 11] {
         H4_COMMAND_TYPE,
         ob[0],
         ob[1],
-        0x07,  // parameter length
-        0x00,  // scan_type: passive
-        iv[0], iv[1], // scan_interval
-        wv[0], wv[1], // scan_window
+        0x07, // parameter length
+        0x00, // scan_type: passive
+        iv[0],
+        iv[1], // scan_interval
+        wv[0],
+        wv[1], // scan_window
         0x01,  // own_address_type: random
         0x00,  // filter_policy: accept all
     ]
@@ -684,11 +693,7 @@ mod tests {
             "bits 47:46 must be 00 for non-resolvable private address"
         );
         // Must not be all zeros.
-        assert_ne!(
-            addr,
-            [0u8; 6],
-            "random address must not be all zeros"
-        );
+        assert_ne!(addr, [0u8; 6], "random address must not be all zeros");
     }
 
     #[test]
@@ -822,7 +827,11 @@ mod tests {
 
         // Before interval: no rotation.
         let rotated = adapter.maybe_rotate_address(ADDRESS_ROTATION_MS - 1);
-        assert_eq!(rotated, Ok(false), "must not rotate before interval elapsed");
+        assert_eq!(
+            rotated,
+            Ok(false),
+            "must not rotate before interval elapsed"
+        );
 
         // After interval: rotation occurs.
         let rotated = adapter.maybe_rotate_address(ADDRESS_ROTATION_MS);

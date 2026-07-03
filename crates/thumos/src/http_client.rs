@@ -469,11 +469,7 @@ impl fmt::Display for HttpResponse {
 /// calling [`HttpRequest::build_raw`].
 #[must_use]
 pub(crate) fn get(host: &str, path: &str) -> HttpRequest {
-    HttpRequest::new(
-        HttpMethod::Get,
-        String::from(host),
-        String::from(path),
-    )
+    HttpRequest::new(HttpMethod::Get, String::from(host), String::from(path))
 }
 
 /// Build a POST request with a JSON body.
@@ -481,11 +477,7 @@ pub(crate) fn get(host: &str, path: &str) -> HttpRequest {
 /// Sets `Content-Type: application/json` automatically.
 #[must_use]
 pub(crate) fn post_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
-    let mut req = HttpRequest::new(
-        HttpMethod::Post,
-        String::from(host),
-        String::from(path),
-    );
+    let mut req = HttpRequest::new(HttpMethod::Post, String::from(host), String::from(path));
     req.add_header(
         String::from("Content-Type"),
         String::from(CONTENT_TYPE_JSON),
@@ -500,11 +492,7 @@ pub(crate) fn post_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
 /// Matrix uses PUT for sending room events (m.room.message).
 #[must_use]
 pub(crate) fn put_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
-    let mut req = HttpRequest::new(
-        HttpMethod::Put,
-        String::from(host),
-        String::from(path),
-    );
+    let mut req = HttpRequest::new(HttpMethod::Put, String::from(host), String::from(path));
     req.add_header(
         String::from("Content-Type"),
         String::from(CONTENT_TYPE_JSON),
@@ -518,11 +506,7 @@ pub(crate) fn put_json(host: &str, path: &str, body: &[u8]) -> HttpRequest {
 /// No body. Used for Matrix room leave, etc.
 #[must_use]
 pub(crate) fn delete(host: &str, path: &str) -> HttpRequest {
-    HttpRequest::new(
-        HttpMethod::Delete,
-        String::from(host),
-        String::from(path),
-    )
+    HttpRequest::new(HttpMethod::Delete, String::from(host), String::from(path))
 }
 
 /// Build a request with a Bearer token Authorization header.
@@ -631,8 +615,7 @@ fn parse_headers(data: &[u8]) -> Result<Vec<(String, String)>, HttpError> {
 
         let name = core::str::from_utf8(&line[..colon]).map_err(|_| HttpError::MalformedHeader)?;
         let value_bytes = &line[colon + 1..];
-        let value =
-            core::str::from_utf8(value_bytes).map_err(|_| HttpError::MalformedHeader)?;
+        let value = core::str::from_utf8(value_bytes).map_err(|_| HttpError::MalformedHeader)?;
 
         headers.push((String::from(name.trim()), String::from(value.trim())));
 
@@ -796,7 +779,10 @@ mod tests {
 
     #[test]
     fn build_delete_request() {
-        let req = delete("matrix.example.com", "/_matrix/client/v3/rooms/!abc:ex/leave");
+        let req = delete(
+            "matrix.example.com",
+            "/_matrix/client/v3/rooms/!abc:ex/leave",
+        );
         let raw = req.build_raw();
         assert!(raw.is_ok());
         let raw = raw.ok().unwrap(); // ok: test
@@ -885,10 +871,7 @@ mod tests {
         assert_eq!(resp.status, 200);
         assert!(resp.is_success());
         assert_eq!(resp.body, b"{\"status\":\"ok\"}");
-        assert_eq!(
-            resp.header("content-type"),
-            Some("application/json")
-        );
+        assert_eq!(resp.header("content-type"), Some("application/json"));
         assert_eq!(resp.content_length(), Some(15));
     }
 

@@ -15,7 +15,7 @@ extern crate alloc;
 use aes::{Aes256, cipher::KeyInit};
 use xts_mode::Xts128;
 
-use crate::block::{BlockDevice, BlockError, BLOCK_SIZE, SECTORS_PER_BLOCK, SECTOR_SIZE};
+use crate::block::{BLOCK_SIZE, BlockDevice, BlockError, SECTOR_SIZE, SECTORS_PER_BLOCK};
 use crate::key_manager::SecureKey;
 use crate::security::{SecurityError, XTS_KEY_SIZE};
 
@@ -163,11 +163,8 @@ impl BlockDevice for EncryptedBlockDevice<'_> {
 
             // Read the full 4K block from the underlying device.
             let mut block_buf = [0u8; BLOCK_SIZE];
-            self.inner.read_sectors(
-                block_start_lba,
-                SECTORS_PER_BLOCK as u32,
-                &mut block_buf,
-            )?;
+            self.inner
+                .read_sectors(block_start_lba, SECTORS_PER_BLOCK as u32, &mut block_buf)?;
 
             // Decrypt the block.
             let xts = self.make_xts()?;
@@ -257,11 +254,8 @@ impl BlockDevice for EncryptedBlockDevice<'_> {
             self.encrypt_block_inplace(block_num, &mut block_buf)?;
 
             // Write the encrypted block to the underlying device.
-            self.inner.write_sectors(
-                block_start_lba,
-                SECTORS_PER_BLOCK as u32,
-                &block_buf,
-            )?;
+            self.inner
+                .write_sectors(block_start_lba, SECTORS_PER_BLOCK as u32, &block_buf)?;
 
             buf_offset += byte_count;
             current_lba += sectors_to_write as u64;
@@ -409,10 +403,7 @@ mod tests {
         dev2.read_sectors(0, SECTORS_PER_BLOCK as u32, &mut ct2)
             .expect("raw read key2");
 
-        assert_ne!(
-            ct1, ct2,
-            "different keys must produce different ciphertext"
-        );
+        assert_ne!(ct1, ct2, "different keys must produce different ciphertext");
     }
 
     #[test]
@@ -539,9 +530,15 @@ mod tests {
         let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
         let key = sample_xts_key();
         let mut enc = EncryptedBlockDevice::new(&mut dev, key);
-        assert!(!enc.key.is_zero(), "key must hold the real XTS key before zeroize");
+        assert!(
+            !enc.key.is_zero(),
+            "key must hold the real XTS key before zeroize"
+        );
         enc.key.zeroize();
-        assert!(enc.key.is_zero(), "SecureKey::zeroize must clear the XTS key");
+        assert!(
+            enc.key.is_zero(),
+            "SecureKey::zeroize must clear the XTS key"
+        );
     }
 
     #[test]

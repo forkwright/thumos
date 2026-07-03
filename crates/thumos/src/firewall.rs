@@ -300,7 +300,10 @@ impl Firewall {
     }
 
     /// Return a reference to the firewall statistics.
-    #[cfg_attr(not(test), expect(dead_code, reason = "runtime firewall metrics UI pending"))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "runtime firewall metrics UI pending")
+    )]
     pub(crate) fn stats(&self) -> &FirewallStats {
         &self.stats
     }
@@ -430,7 +433,10 @@ impl Firewall {
 /// Called when [`Firewall::evaluate_rx`] or [`Firewall::evaluate_tx`]
 /// denies a packet. The `direction` indicates whether the packet was
 /// inbound or outbound.
-#[expect(dead_code, reason = "audit key plumbing is not available at net device hook yet")]
+#[expect(
+    dead_code,
+    reason = "audit key plumbing is not available at net device hook yet"
+)]
 pub(crate) fn log_packet_deny(
     direction: Direction,
     audit_log: &mut AuditLog,
@@ -441,13 +447,9 @@ pub(crate) fn log_packet_deny(
         Direction::Inbound => b"inbound packet denied" as &[u8],
         Direction::Outbound => b"outbound packet denied",
     };
-    let _ = audit_log.log_event(
-        AuditEventType::PacketDeny,
-        0,
-        detail,
-        timestamp,
-        audit_key,
-    );
+    audit_log
+        .log_event(AuditEventType::PacketDeny, 0, detail, timestamp, audit_key)
+        .ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -654,12 +656,7 @@ fn domain_matches_suffix(domain: &str, suffix: &str) -> bool {
 
 /// Build a minimal IPv4/TCP packet for testing.
 #[cfg(test)]
-fn make_ip_tcp(
-    src: [u8; 4],
-    dst: [u8; 4],
-    src_port: u16,
-    dst_port: u16,
-) -> alloc::vec::Vec<u8> {
+fn make_ip_tcp(src: [u8; 4], dst: [u8; 4], src_port: u16, dst_port: u16) -> alloc::vec::Vec<u8> {
     let mut pkt = alloc::vec![0u8; 40];
     pkt[0] = 0x45; // version=4, IHL=5
     pkt[2] = 0x00;
@@ -908,11 +905,13 @@ mod tests {
         fw.evaluate_rx(&in_pkt);
 
         assert_eq!(
-            fw.stats().packets_allowed, 2,
+            fw.stats().packets_allowed,
+            2,
             "two outbound packets must be counted as allowed"
         );
         assert_eq!(
-            fw.stats().packets_denied, 1,
+            fw.stats().packets_denied,
+            1,
             "one inbound packet must be counted as denied"
         );
     }
@@ -975,10 +974,7 @@ mod tests {
     #[test]
     fn load_default_blocklist_populates_entries() {
         let mut fw = Firewall::new();
-        assert!(
-            fw.dns_blocklist.is_empty(),
-            "blocklist must start empty"
-        );
+        assert!(fw.dns_blocklist.is_empty(), "blocklist must start empty");
 
         fw.load_default_blocklist();
         assert_eq!(
@@ -1009,7 +1005,8 @@ mod tests {
             "outbound DNS query for surveillance domain must be denied"
         );
         assert_eq!(
-            fw.stats().dns_blocked, 1,
+            fw.stats().dns_blocked,
+            1,
             "dns_blocked counter must increment for blocked DNS query"
         );
     }
@@ -1027,7 +1024,8 @@ mod tests {
             "outbound DNS query for clean domain must be allowed"
         );
         assert_eq!(
-            fw.stats().dns_blocked, 0,
+            fw.stats().dns_blocked,
+            0,
             "dns_blocked counter must not increment for clean domain"
         );
     }
@@ -1058,7 +1056,8 @@ mod tests {
             "malformed DNS payload must fail closed, not fall through to default-allow"
         );
         assert_eq!(
-            fw.stats().dns_blocked, 1,
+            fw.stats().dns_blocked,
+            1,
             "dns_blocked counter must increment on fail-closed parse failure"
         );
     }
@@ -1082,7 +1081,8 @@ mod tests {
             "outbound DNS-over-TCP query for surveillance domain must be denied"
         );
         assert_eq!(
-            fw.stats().dns_blocked, 1,
+            fw.stats().dns_blocked,
+            1,
             "dns_blocked counter must increment for blocked TCP DNS query"
         );
     }
@@ -1121,7 +1121,8 @@ mod tests {
             "empty-payload TCP/53 control segment must not be fail-closed-blocked"
         );
         assert_eq!(
-            fw.stats().dns_blocked, 0,
+            fw.stats().dns_blocked,
+            0,
             "control segment must not increment dns_blocked"
         );
     }
@@ -1149,7 +1150,8 @@ mod tests {
             "malformed DNS-over-TCP payload must fail closed"
         );
         assert_eq!(
-            fw.stats().dns_blocked, 1,
+            fw.stats().dns_blocked,
+            1,
             "dns_blocked counter must increment on fail-closed TCP parse failure"
         );
     }
@@ -1182,7 +1184,8 @@ mod tests {
         let action = fw.evaluate_rx(&pkt);
         assert_eq!(action, Action::Log, "Log rule must return Log action");
         assert_eq!(
-            fw.stats().packets_allowed, 1,
+            fw.stats().packets_allowed,
+            1,
             "Log action must count as allowed"
         );
     }

@@ -288,12 +288,13 @@ const SERIAL_RX_BUF_LEN: usize = 256;
 
 /// Device descriptor byte array (18 bytes).
 const DEVICE_DESCRIPTOR: [u8; 18] = [
-    18,   // bLength
-    USB_DT_DEVICE,    // bDescriptorType
-    0x00, 0x02,       // bcdUSB = 0x0200 (USB 2.0), little-endian
-    0x02,             // bDeviceClass = CDC
-    0x00,             // bDeviceSubClass
-    0x00,             // bDeviceProtocol
+    18,            // bLength
+    USB_DT_DEVICE, // bDescriptorType
+    0x00,
+    0x02,              // bcdUSB = 0x0200 (USB 2.0), little-endian
+    0x02,              // bDeviceClass = CDC
+    0x00,              // bDeviceSubClass
+    0x00,              // bDeviceProtocol
     EP0_MAX_PKT as u8, // bMaxPacketSize0 = 64
     // idVendor = 0x0525, little-endian
     (USB_VID & 0xFF) as u8,
@@ -301,11 +302,12 @@ const DEVICE_DESCRIPTOR: [u8; 18] = [
     // idProduct = 0xA4A7, little-endian
     (USB_PID & 0xFF) as u8,
     (USB_PID >> 8) as u8,
-    0x00, 0x01,       // bcdDevice = 0x0100
-    0x01,             // iManufacturer (string index 1)
-    0x02,             // iProduct (string index 2)
-    0x03,             // iSerialNumber (string index 3)
-    0x01,             // bNumConfigurations
+    0x00,
+    0x01, // bcdDevice = 0x0100
+    0x01, // iManufacturer (string index 1)
+    0x02, // iProduct (string index 2)
+    0x03, // iSerialNumber (string index 3)
+    0x01, // bNumConfigurations
 ];
 
 // ---------------------------------------------------------------------------
@@ -330,84 +332,77 @@ const CONFIG_DESC_TOTAL_LEN: u16 = 62;
 /// Combined configuration descriptor blob (62 bytes).
 const CONFIG_DESCRIPTOR: [u8; 62] = [
     // --- Configuration descriptor (9 bytes) ---
-    9,              // bLength
-    USB_DT_CONFIG,  // bDescriptorType
-    (CONFIG_DESC_TOTAL_LEN & 0xFF) as u8,   // wTotalLength lo
-    (CONFIG_DESC_TOTAL_LEN >> 8) as u8,     // wTotalLength hi
-    2,              // bNumInterfaces
-    1,              // bConfigurationValue
-    0,              // iConfiguration (no string)
-    0xA0,           // bmAttributes: bus-powered, remote wakeup
-    0xFA,           // bMaxPower: 500 mA (250 × 2)
-
+    9,                                    // bLength
+    USB_DT_CONFIG,                        // bDescriptorType
+    (CONFIG_DESC_TOTAL_LEN & 0xFF) as u8, // wTotalLength lo
+    (CONFIG_DESC_TOTAL_LEN >> 8) as u8,   // wTotalLength hi
+    2,                                    // bNumInterfaces
+    1,                                    // bConfigurationValue
+    0,                                    // iConfiguration (no string)
+    0xA0,                                 // bmAttributes: bus-powered, remote wakeup
+    0xFA,                                 // bMaxPower: 500 mA (250 × 2)
     // --- Interface 0: CDC Control (9 bytes) ---
-    9,              // bLength
+    9,                // bLength
     USB_DT_INTERFACE, // bDescriptorType
-    0,              // bInterfaceNumber
-    0,              // bAlternateSetting
-    1,              // bNumEndpoints (EP2 IN interrupt)
-    0x02,           // bInterfaceClass: CDC
-    0x02,           // bInterfaceSubClass: ACM
-    0x00,           // bInterfaceProtocol: V.25ter (AT commands)
-    0,              // iInterface
-
+    0,                // bInterfaceNumber
+    0,                // bAlternateSetting
+    1,                // bNumEndpoints (EP2 IN interrupt)
+    0x02,             // bInterfaceClass: CDC
+    0x02,             // bInterfaceSubClass: ACM
+    0x00,             // bInterfaceProtocol: V.25ter (AT commands)
+    0,                // iInterface
     // --- CDC Header functional descriptor (5 bytes) ---
-    5,              // bLength
-    USB_DT_CS_INTERFACE, // bDescriptorType
+    5,                    // bLength
+    USB_DT_CS_INTERFACE,  // bDescriptorType
     CDC_HEADER_FUNC_DESC, // bDescriptorSubtype
-    0x10, 0x01,     // bcdCDC = 0x0110 (CDC 1.1), little-endian
-
+    0x10,
+    0x01, // bcdCDC = 0x0110 (CDC 1.1), little-endian
     // --- CDC ACM functional descriptor (4 bytes) ---
-    4,              // bLength
+    4,                   // bLength
     USB_DT_CS_INTERFACE, // bDescriptorType
-    CDC_ACM_FUNC_DESC, // bDescriptorSubtype
+    CDC_ACM_FUNC_DESC,   // bDescriptorSubtype
     // bmCapabilities: bit 1 = supports SET/GET_LINE_CODING + SET_CONTROL_LINE_STATE
     0x02,
-
     // --- CDC Union functional descriptor (5 bytes) ---
-    5,              // bLength
+    5,                   // bLength
     USB_DT_CS_INTERFACE, // bDescriptorType
     CDC_UNION_FUNC_DESC, // bDescriptorSubtype
-    0,              // bMasterInterface (interface 0 = control)
-    1,              // bSlaveInterface0 (interface 1 = data)
-
+    0,                   // bMasterInterface (interface 0 = control)
+    1,                   // bSlaveInterface0 (interface 1 = data)
     // --- EP2 IN interrupt endpoint (7 bytes) ---
-    7,              // bLength
-    USB_DT_ENDPOINT,  // bDescriptorType
-    EP2_IN_ADDR,    // bEndpointAddress: EP2 IN
-    EP_TYPE_INTERRUPT, // bmAttributes
-    (EP2_MAX_PKT & 0xFF) as u8,  // wMaxPacketSize lo
-    (EP2_MAX_PKT >> 8) as u8,    // wMaxPacketSize hi
-    0xFF,           // bInterval: 255 ms (polling for FS interrupt EPs)
-
+    7,                          // bLength
+    USB_DT_ENDPOINT,            // bDescriptorType
+    EP2_IN_ADDR,                // bEndpointAddress: EP2 IN
+    EP_TYPE_INTERRUPT,          // bmAttributes
+    (EP2_MAX_PKT & 0xFF) as u8, // wMaxPacketSize lo
+    (EP2_MAX_PKT >> 8) as u8,   // wMaxPacketSize hi
+    0xFF,                       // bInterval: 255 ms (polling for FS interrupt EPs)
     // --- Interface 1: CDC Data (9 bytes) ---
-    9,              // bLength
+    9,                // bLength
     USB_DT_INTERFACE, // bDescriptorType
-    1,              // bInterfaceNumber
-    0,              // bAlternateSetting
-    2,              // bNumEndpoints (EP1 IN + EP1 OUT)
-    0x0A,           // bInterfaceClass: CDC Data
-    0x00,           // bInterfaceSubClass
-    0x00,           // bInterfaceProtocol
-    0,              // iInterface
-
+    1,                // bInterfaceNumber
+    0,                // bAlternateSetting
+    2,                // bNumEndpoints (EP1 IN + EP1 OUT)
+    0x0A,             // bInterfaceClass: CDC Data
+    0x00,             // bInterfaceSubClass
+    0x00,             // bInterfaceProtocol
+    0,                // iInterface
     // --- EP1 IN bulk endpoint (7 bytes) ---
-    7,              // bLength
-    USB_DT_ENDPOINT,  // bDescriptorType
-    EP1_IN_ADDR,    // bEndpointAddress: EP1 IN
-    EP_TYPE_BULK,   // bmAttributes
-    (EP1_MAX_PKT & 0xFF) as u8,  // wMaxPacketSize lo
-    (EP1_MAX_PKT >> 8) as u8,    // wMaxPacketSize hi
-    0,              // bInterval (bulk endpoints ignore this)
-
+    7,                          // bLength
+    USB_DT_ENDPOINT,            // bDescriptorType
+    EP1_IN_ADDR,                // bEndpointAddress: EP1 IN
+    EP_TYPE_BULK,               // bmAttributes
+    (EP1_MAX_PKT & 0xFF) as u8, // wMaxPacketSize lo
+    (EP1_MAX_PKT >> 8) as u8,   // wMaxPacketSize hi
+    0,                          // bInterval (bulk endpoints ignore this)
     // --- EP1 OUT bulk endpoint (7 bytes) ---
-    7,              // bLength
-    USB_DT_ENDPOINT,  // bDescriptorType
-    EP1_OUT_ADDR,   // bEndpointAddress: EP1 OUT
-    EP_TYPE_BULK,   // bmAttributes
-    (EP1_MAX_PKT & 0xFF) as u8,  // wMaxPacketSize lo
-    (EP1_MAX_PKT >> 8) as u8,    // wMaxPacketSize hi
-    0,              // bInterval
+    7,                          // bLength
+    USB_DT_ENDPOINT,            // bDescriptorType
+    EP1_OUT_ADDR,               // bEndpointAddress: EP1 OUT
+    EP_TYPE_BULK,               // bmAttributes
+    (EP1_MAX_PKT & 0xFF) as u8, // wMaxPacketSize lo
+    (EP1_MAX_PKT >> 8) as u8,   // wMaxPacketSize hi
+    0,                          // bInterval
 ];
 
 // ---------------------------------------------------------------------------
@@ -422,22 +417,78 @@ const STR0: [u8; 4] = [0x04, USB_DT_STRING, 0x09, 0x04];
 
 /// String 1: manufacturer "Thumos" (6 chars → 14 bytes total).
 const STR1: [u8; 14] = [
-    14, USB_DT_STRING,
-    b'T', 0, b'h', 0, b'u', 0, b'm', 0, b'o', 0, b's', 0,
+    14,
+    USB_DT_STRING,
+    b'T',
+    0,
+    b'h',
+    0,
+    b'u',
+    0,
+    b'm',
+    0,
+    b'o',
+    0,
+    b's',
+    0,
 ];
 
 /// String 2: product "Thumos Serial" (13 chars → 28 bytes total).
 const STR2: [u8; 28] = [
-    28, USB_DT_STRING,
-    b'T', 0, b'h', 0, b'u', 0, b'm', 0, b'o', 0, b's', 0,
-    b' ', 0, b'S', 0, b'e', 0, b'r', 0, b'i', 0, b'a', 0, b'l', 0,
+    28,
+    USB_DT_STRING,
+    b'T',
+    0,
+    b'h',
+    0,
+    b'u',
+    0,
+    b'm',
+    0,
+    b'o',
+    0,
+    b's',
+    0,
+    b' ',
+    0,
+    b'S',
+    0,
+    b'e',
+    0,
+    b'r',
+    0,
+    b'i',
+    0,
+    b'a',
+    0,
+    b'l',
+    0,
 ];
 
 /// String 3: serial number "THUMOS0001" (10 chars → 22 bytes total).
 const STR3: [u8; 22] = [
-    22, USB_DT_STRING,
-    b'T', 0, b'H', 0, b'U', 0, b'M', 0, b'O', 0, b'S', 0,
-    b'0', 0, b'0', 0, b'0', 0, b'1', 0,
+    22,
+    USB_DT_STRING,
+    b'T',
+    0,
+    b'H',
+    0,
+    b'U',
+    0,
+    b'M',
+    0,
+    b'O',
+    0,
+    b'S',
+    0,
+    b'0',
+    0,
+    b'0',
+    0,
+    b'0',
+    0,
+    b'1',
+    0,
 ];
 
 // ---------------------------------------------------------------------------
@@ -485,9 +536,18 @@ impl SetupPacket {
         Self {
             bm_request_type: b.get(0).copied().unwrap_or_default(),
             b_request: b.get(1).copied().unwrap_or_default(),
-            w_value: u16::from_le_bytes([b.get(2).copied().unwrap_or_default(), b.get(3).copied().unwrap_or_default()]),
-            w_index: u16::from_le_bytes([b.get(4).copied().unwrap_or_default(), b.get(5).copied().unwrap_or_default()]),
-            w_length: u16::from_le_bytes([b.get(6).copied().unwrap_or_default(), b.get(7).copied().unwrap_or_default()]),
+            w_value: u16::from_le_bytes([
+                b.get(2).copied().unwrap_or_default(),
+                b.get(3).copied().unwrap_or_default(),
+            ]),
+            w_index: u16::from_le_bytes([
+                b.get(4).copied().unwrap_or_default(),
+                b.get(5).copied().unwrap_or_default(),
+            ]),
+            w_length: u16::from_le_bytes([
+                b.get(6).copied().unwrap_or_default(),
+                b.get(7).copied().unwrap_or_default(),
+            ]),
         }
     }
 
@@ -543,14 +603,27 @@ impl LineCoding {
     #[must_use]
     pub(crate) fn to_bytes(self) -> [u8; 7] {
         let r = self.dw_dte_rate.to_le_bytes();
-        [r.get(0).copied().unwrap_or_default(), r.get(1).copied().unwrap_or_default(), r.get(2).copied().unwrap_or_default(), r.get(3).copied().unwrap_or_default(), self.b_char_format, self.b_parity_type, self.b_data_bits]
+        [
+            r.get(0).copied().unwrap_or_default(),
+            r.get(1).copied().unwrap_or_default(),
+            r.get(2).copied().unwrap_or_default(),
+            r.get(3).copied().unwrap_or_default(),
+            self.b_char_format,
+            self.b_parity_type,
+            self.b_data_bits,
+        ]
     }
 
     /// Parse FROM 7 bytes received in SET_LINE_CODING.
     #[must_use]
     pub(crate) fn from_bytes(b: &[u8; 7]) -> Self {
         Self {
-            dw_dte_rate: u32::from_le_bytes([b.get(0).copied().unwrap_or_default(), b.get(1).copied().unwrap_or_default(), b.get(2).copied().unwrap_or_default(), b.get(3).copied().unwrap_or_default()]),
+            dw_dte_rate: u32::from_le_bytes([
+                b.get(0).copied().unwrap_or_default(),
+                b.get(1).copied().unwrap_or_default(),
+                b.get(2).copied().unwrap_or_default(),
+                b.get(3).copied().unwrap_or_default(),
+            ]),
             b_char_format: b.get(4).copied().unwrap_or_default(),
             b_parity_type: b.get(5).copied().unwrap_or_default(),
             b_data_bits: b.get(6).copied().unwrap_or_default(),
@@ -727,7 +800,10 @@ impl UsbController {
             // Step 6: Enable interrupts  -  EP0 TX, EP1 TX, EP1 RX, USB reset/suspend/resume.
             self.write16(REG_INTRTXE, INTRTX_EP0 | INTRTX_EP1);
             self.write16(REG_INTRRXE, INTRRX_EP1);
-            self.write8(REG_INTRUSBE, INTRUSB_RESET | INTRUSB_SUSPEND | INTRUSB_RESUME);
+            self.write8(
+                REG_INTRUSBE,
+                INTRUSB_RESET | INTRUSB_SUSPEND | INTRUSB_RESUME,
+            );
         }
     }
 
@@ -749,7 +825,11 @@ impl UsbController {
             let intrusb = self.read8(REG_INTRUSB);
             let intrtx = self.read16(REG_INTRTX);
             let intrrx = self.read16(REG_INTRRX);
-            UsbIrqStatus { intrusb, intrtx, intrrx }
+            UsbIrqStatus {
+                intrusb,
+                intrtx,
+                intrrx,
+            }
         };
 
         if status.is_empty() {
@@ -1369,24 +1449,42 @@ mod tests {
     #[test]
     fn device_descriptor_length() {
         assert_eq!(
-            DEVICE_DESCRIPTOR.len(), 18,
+            DEVICE_DESCRIPTOR.len(),
+            18,
             "device descriptor must be exactly 18 bytes per USB 2.0 spec §9.6.1"
         );
-        assert_eq!(DEVICE_DESCRIPTOR.get(0).copied().unwrap_or_default(), 18, "bLength must equal 18");
-        assert_eq!(DEVICE_DESCRIPTOR.get(1).copied().unwrap_or_default(), USB_DT_DEVICE, "bDescriptorType must be 0x01");
+        assert_eq!(
+            DEVICE_DESCRIPTOR.get(0).copied().unwrap_or_default(),
+            18,
+            "bLength must equal 18"
+        );
+        assert_eq!(
+            DEVICE_DESCRIPTOR.get(1).copied().unwrap_or_default(),
+            USB_DT_DEVICE,
+            "bDescriptorType must be 0x01"
+        );
     }
 
     #[test]
     fn device_descriptor_usb_version() {
         // bcdUSB = 0x0200 at bytes [2..4], little-endian.
-        let bcd_usb = u16::from_le_bytes([DEVICE_DESCRIPTOR.get(2).copied().unwrap_or_default(), DEVICE_DESCRIPTOR.get(3).copied().unwrap_or_default()]);
+        let bcd_usb = u16::from_le_bytes([
+            DEVICE_DESCRIPTOR.get(2).copied().unwrap_or_default(),
+            DEVICE_DESCRIPTOR.get(3).copied().unwrap_or_default(),
+        ]);
         assert_eq!(bcd_usb, 0x0200, "bcdUSB must be 0x0200 (USB 2.0)");
     }
 
     #[test]
     fn device_descriptor_vid_pid() {
-        let vid = u16::from_le_bytes([DEVICE_DESCRIPTOR.get(8).copied().unwrap_or_default(), DEVICE_DESCRIPTOR.get(9).copied().unwrap_or_default()]);
-        let pid = u16::from_le_bytes([DEVICE_DESCRIPTOR.get(10).copied().unwrap_or_default(), DEVICE_DESCRIPTOR.get(11).copied().unwrap_or_default()]);
+        let vid = u16::from_le_bytes([
+            DEVICE_DESCRIPTOR.get(8).copied().unwrap_or_default(),
+            DEVICE_DESCRIPTOR.get(9).copied().unwrap_or_default(),
+        ]);
+        let pid = u16::from_le_bytes([
+            DEVICE_DESCRIPTOR.get(10).copied().unwrap_or_default(),
+            DEVICE_DESCRIPTOR.get(11).copied().unwrap_or_default(),
+        ]);
         assert_eq!(vid, USB_VID, "idVendor must match USB_VID");
         assert_eq!(pid, USB_PID, "idProduct must match USB_PID");
     }
@@ -1400,7 +1498,10 @@ mod tests {
             usize::from(CONFIG_DESC_TOTAL_LEN),
             "CONFIG_DESCRIPTOR length must match CONFIG_DESC_TOTAL_LEN"
         );
-        let wlen = u16::from_le_bytes([CONFIG_DESCRIPTOR.get(2).copied().unwrap_or_default(), CONFIG_DESCRIPTOR.get(3).copied().unwrap_or_default()]);
+        let wlen = u16::from_le_bytes([
+            CONFIG_DESCRIPTOR.get(2).copied().unwrap_or_default(),
+            CONFIG_DESCRIPTOR.get(3).copied().unwrap_or_default(),
+        ]);
         assert_eq!(
             wlen, CONFIG_DESC_TOTAL_LEN,
             "wTotalLength field must match CONFIG_DESC_TOTAL_LEN"
@@ -1409,7 +1510,11 @@ mod tests {
 
     #[test]
     fn config_descriptor_num_interfaces() {
-        assert_eq!(CONFIG_DESCRIPTOR.get(4).copied().unwrap_or_default(), 2, "bNumInterfaces must be 2 (CDC control + CDC data)");
+        assert_eq!(
+            CONFIG_DESCRIPTOR.get(4).copied().unwrap_or_default(),
+            2,
+            "bNumInterfaces must be 2 (CDC control + CDC data)"
+        );
     }
 
     #[test]
@@ -1423,8 +1528,14 @@ mod tests {
         let ep1_in_addr = CONFIG_DESCRIPTOR.get(50).copied().unwrap_or_default();
         let ep1_out_addr = CONFIG_DESCRIPTOR.get(57).copied().unwrap_or_default();
         assert_eq!(ep2_addr, EP2_IN_ADDR, "EP2 bEndpointAddress must be 0x82");
-        assert_eq!(ep1_in_addr, EP1_IN_ADDR, "EP1 IN bEndpointAddress must be 0x81");
-        assert_eq!(ep1_out_addr, EP1_OUT_ADDR, "EP1 OUT bEndpointAddress must be 0x01");
+        assert_eq!(
+            ep1_in_addr, EP1_IN_ADDR,
+            "EP1 IN bEndpointAddress must be 0x81"
+        );
+        assert_eq!(
+            ep1_out_addr, EP1_OUT_ADDR,
+            "EP1 OUT bEndpointAddress must be 0x01"
+        );
     }
 
     // --- EP0 state machine ---
@@ -1454,8 +1565,15 @@ mod tests {
         ctrl.ep0_state = Ep0State::Idle;
         ctrl.pending_address = 0;
         ctrl.configured = false;
-        assert_eq!(ctrl.ep0_state, Ep0State::Idle, "EP0 state must be Idle after reset");
-        assert_eq!(ctrl.pending_address, 0, "pending_address must be 0 after reset");
+        assert_eq!(
+            ctrl.ep0_state,
+            Ep0State::Idle,
+            "EP0 state must be Idle after reset"
+        );
+        assert_eq!(
+            ctrl.pending_address, 0,
+            "pending_address must be 0 after reset"
+        );
         assert!(!ctrl.configured, "configured must be false after reset");
     }
 
@@ -1467,10 +1585,19 @@ mod tests {
         let raw: [u8; 8] = [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x12, 0x00];
         let pkt = SetupPacket::from_bytes(&raw);
         assert_eq!(pkt.bm_request_type, 0x80, "bmRequestType must be 0x80");
-        assert_eq!(pkt.b_request, USB_REQ_GET_DESCRIPTOR, "bRequest must be GET_DESCRIPTOR");
-        assert_eq!(pkt.w_value, 0x0100, "wValue must be 0x0100 (Device descriptor)");
+        assert_eq!(
+            pkt.b_request, USB_REQ_GET_DESCRIPTOR,
+            "bRequest must be GET_DESCRIPTOR"
+        );
+        assert_eq!(
+            pkt.w_value, 0x0100,
+            "wValue must be 0x0100 (Device descriptor)"
+        );
         assert_eq!(pkt.w_length, 18, "wLength must be 18 for device descriptor");
-        assert!(!pkt.is_host_to_device(), "direction must be device-to-host (IN)");
+        assert!(
+            !pkt.is_host_to_device(),
+            "direction must be device-to-host (IN)"
+        );
         assert!(pkt.is_standard(), "request type must be standard");
     }
 
@@ -1479,7 +1606,10 @@ mod tests {
         // SET_ADDRESS 0x05: host-to-device, standard, device.
         let raw: [u8; 8] = [0x00, 0x05, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00];
         let pkt = SetupPacket::from_bytes(&raw);
-        assert_eq!(pkt.b_request, USB_REQ_SET_ADDRESS, "bRequest must be SET_ADDRESS");
+        assert_eq!(
+            pkt.b_request, USB_REQ_SET_ADDRESS,
+            "bRequest must be SET_ADDRESS"
+        );
         assert_eq!(pkt.w_value, 7, "wValue (address) must be 7");
         assert!(pkt.is_host_to_device(), "SET_ADDRESS is host-to-device");
         assert!(pkt.is_standard(), "SET_ADDRESS is a standard request");
@@ -1491,7 +1621,10 @@ mod tests {
         // SET_LINE_CODING: class, host-to-device, interface.
         let raw: [u8; 8] = [0x21, 0x20, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00];
         let pkt = SetupPacket::from_bytes(&raw);
-        assert_eq!(pkt.b_request, CDC_REQ_SET_LINE_CODING, "bRequest must be SET_LINE_CODING");
+        assert_eq!(
+            pkt.b_request, CDC_REQ_SET_LINE_CODING,
+            "bRequest must be SET_LINE_CODING"
+        );
         assert!(pkt.is_host_to_device(), "SET_LINE_CODING is host-to-device");
         assert!(pkt.is_class(), "SET_LINE_CODING is a class request");
         assert_eq!(pkt.w_length, 7, "SET_LINE_CODING wLength must be 7");
@@ -1501,11 +1634,22 @@ mod tests {
 
     #[test]
     fn line_coding_roundtrip() {
-        let original = LineCoding { dw_dte_rate: 9600, b_char_format: 0, b_parity_type: 0, b_data_bits: 8 };
+        let original = LineCoding {
+            dw_dte_rate: 9600,
+            b_char_format: 0,
+            b_parity_type: 0,
+            b_data_bits: 8,
+        };
         let bytes = original.to_bytes();
         let recovered = LineCoding::from_bytes(&bytes);
-        assert_eq!(recovered.dw_dte_rate, 9600, "baud rate must survive roundtrip");
-        assert_eq!(recovered.b_char_format, 0, "char format must survive roundtrip");
+        assert_eq!(
+            recovered.dw_dte_rate, 9600,
+            "baud rate must survive roundtrip"
+        );
+        assert_eq!(
+            recovered.b_char_format, 0,
+            "char format must survive roundtrip"
+        );
         assert_eq!(recovered.b_data_bits, 8, "data bits must survive roundtrip");
     }
 
@@ -1513,7 +1657,10 @@ mod tests {
     fn line_coding_default_is_115200_8n1() {
         let lc = LineCoding::default_115200();
         assert_eq!(lc.dw_dte_rate, 115_200, "default baud must be 115200");
-        assert_eq!(lc.b_char_format, 0, "default stop bits must be 1 (format 0)");
+        assert_eq!(
+            lc.b_char_format, 0,
+            "default stop bits must be 1 (format 0)"
+        );
         assert_eq!(lc.b_parity_type, 0, "default parity must be None (type 0)");
         assert_eq!(lc.b_data_bits, 8, "default data bits must be 8");
     }
@@ -1522,7 +1669,11 @@ mod tests {
 
     #[test]
     fn irq_status_reset_detection() {
-        let s = UsbIrqStatus { intrusb: INTRUSB_RESET, intrtx: 0, intrrx: 0 };
+        let s = UsbIrqStatus {
+            intrusb: INTRUSB_RESET,
+            intrtx: 0,
+            intrrx: 0,
+        };
         assert!(s.has_reset(), "must detect USB reset");
         assert!(!s.has_suspend(), "must not detect suspend without bit");
         assert!(!s.has_ep0(), "must not detect EP0 without IntrTx bit");
@@ -1530,7 +1681,11 @@ mod tests {
 
     #[test]
     fn irq_status_ep0_detection() {
-        let s = UsbIrqStatus { intrusb: 0, intrtx: INTRTX_EP0, intrrx: 0 };
+        let s = UsbIrqStatus {
+            intrusb: 0,
+            intrtx: INTRTX_EP0,
+            intrrx: 0,
+        };
         assert!(s.has_ep0(), "must detect EP0 interrupt");
         assert!(!s.has_ep1_tx(), "must not detect EP1 TX without bit");
         assert!(!s.has_reset(), "must not detect reset without bit");
@@ -1538,7 +1693,11 @@ mod tests {
 
     #[test]
     fn irq_status_ep1_rx_detection() {
-        let s = UsbIrqStatus { intrusb: 0, intrtx: 0, intrrx: INTRRX_EP1 };
+        let s = UsbIrqStatus {
+            intrusb: 0,
+            intrtx: 0,
+            intrrx: INTRRX_EP1,
+        };
         assert!(s.has_ep1_rx(), "must detect EP1 RX interrupt");
         assert!(!s.has_ep1_tx(), "must not detect EP1 TX without bit");
     }
@@ -1547,7 +1706,11 @@ mod tests {
     fn irq_status_empty() {
         let s = UsbIrqStatus::default();
         assert!(s.is_empty(), "default UsbIrqStatus must be empty");
-        let s2 = UsbIrqStatus { intrusb: INTRUSB_RESUME, intrtx: 0, intrrx: 0 };
+        let s2 = UsbIrqStatus {
+            intrusb: INTRUSB_RESUME,
+            intrtx: 0,
+            intrrx: 0,
+        };
         assert!(!s2.is_empty(), "non-zero IntrUSB must not be empty");
     }
 

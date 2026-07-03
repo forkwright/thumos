@@ -101,7 +101,10 @@ impl Contact {
     /// number is never truncated-and-stored: reject, don't sanitize.
     #[must_use]
     pub(crate) fn new(name: &str, number: &str) -> Result<Self, ContactError> {
-        if !number.bytes().all(crate::telephony_parser::is_valid_dial_byte) {
+        if !number
+            .bytes()
+            .all(crate::telephony_parser::is_valid_dial_byte)
+        {
             return Err(ContactError::InvalidNumber);
         }
 
@@ -311,9 +314,7 @@ impl ContactManager {
     /// Returns the index of the first contact with a matching number,
     /// or `None` if no match is found.
     pub(crate) fn find_by_number(&self, number: &str) -> Option<usize> {
-        self.contacts
-            .iter()
-            .position(|c| c.number_str() == number)
+        self.contacts.iter().position(|c| c.number_str() == number)
     }
 
     /// Look up a contact by Matrix user ID.
@@ -375,8 +376,10 @@ mod tests {
     #[test]
     fn add_and_retrieve() {
         let mut mgr = ContactManager::new();
-        mgr.add("Alice", "+15551234567").unwrap_or_else(|_| unreachable!());
-        mgr.add("Bob", "+15559876543").unwrap_or_else(|_| unreachable!());
+        mgr.add("Alice", "+15551234567")
+            .unwrap_or_else(|_| unreachable!());
+        mgr.add("Bob", "+15559876543")
+            .unwrap_or_else(|_| unreachable!());
 
         assert_eq!(mgr.count(), 2);
 
@@ -447,11 +450,7 @@ mod tests {
         mgr.add("Bob", "222").unwrap_or_else(|_| unreachable!());
 
         let results = mgr.search("");
-        assert_eq!(
-            results.len(),
-            2,
-            "empty prefix must return all contacts"
-        );
+        assert_eq!(results.len(), 2, "empty prefix must return all contacts");
     }
 
     #[test]
@@ -483,8 +482,10 @@ mod tests {
     #[test]
     fn find_by_number_works() {
         let mut mgr = ContactManager::new();
-        mgr.add("Alice", "+15551234567").unwrap_or_else(|_| unreachable!());
-        mgr.add("Bob", "+15559876543").unwrap_or_else(|_| unreachable!());
+        mgr.add("Alice", "+15551234567")
+            .unwrap_or_else(|_| unreachable!());
+        mgr.add("Bob", "+15559876543")
+            .unwrap_or_else(|_| unreachable!());
 
         assert_eq!(mgr.find_by_number("+15551234567"), Some(0));
         assert_eq!(mgr.find_by_number("+15559876543"), Some(1));
@@ -496,8 +497,7 @@ mod tests {
         let long_name = "A".repeat(100);
         let contact = Contact::new(&long_name, "123").unwrap_or_else(|_| unreachable!());
         assert_eq!(
-            contact.name_len as usize,
-            MAX_NAME_LEN,
+            contact.name_len as usize, MAX_NAME_LEN,
             "name must be truncated to MAX_NAME_LEN"
         );
     }
@@ -545,8 +545,8 @@ mod tests {
 
     #[test]
     fn contact_with_empty_matrix_id_stays_sms() {
-        let c = Contact::with_matrix_id("Carol", "+15550001111", "")
-            .unwrap_or_else(|_| unreachable!());
+        let c =
+            Contact::with_matrix_id("Carol", "+15550001111", "").unwrap_or_else(|_| unreachable!());
         assert!(!c.has_matrix_id());
         assert_eq!(c.default_transport, MessageTransport::Sms);
     }
@@ -554,7 +554,8 @@ mod tests {
     #[test]
     fn find_by_matrix_id_works() {
         let mut mgr = ContactManager::new();
-        mgr.add("Alice", "+15551234567").unwrap_or_else(|_| unreachable!());
+        mgr.add("Alice", "+15551234567")
+            .unwrap_or_else(|_| unreachable!());
         mgr.add_with_matrix_id("Bob", "+15559876543", "@bob:matrix.org")
             .unwrap_or_else(|_| unreachable!());
         mgr.add_with_matrix_id("Carol", "", "@carol:example.com")
@@ -567,10 +568,7 @@ mod tests {
             None,
             "Alice has no matrix_id"
         );
-        assert_eq!(
-            mgr.find_by_matrix_id("@nobody:nowhere.net"),
-            None,
-        );
+        assert_eq!(mgr.find_by_matrix_id("@nobody:nowhere.net"), None,);
     }
 
     #[test]
@@ -582,8 +580,7 @@ mod tests {
         long_id.push_str(":server.example");
         let c = Contact::with_matrix_id("Dave", "111", &long_id).unwrap_or_else(|_| unreachable!());
         assert_eq!(
-            c.matrix_id_len as usize,
-            MAX_MATRIX_ID_LEN,
+            c.matrix_id_len as usize, MAX_MATRIX_ID_LEN,
             "matrix_id must be truncated to MAX_MATRIX_ID_LEN"
         );
     }
@@ -614,10 +611,7 @@ mod tests {
         let c = Contact::with_matrix_id("Alice", "+1555", "@alice:m.org")
             .unwrap_or_else(|_| unreachable!());
         let s = alloc::format!("{c:?}");
-        assert!(
-            s.contains("Matrix"),
-            "Debug must include default_transport"
-        );
+        assert!(s.contains("Matrix"), "Debug must include default_transport");
     }
 
     #[test]
@@ -653,14 +647,21 @@ mod tests {
             matches!(result, Err(ContactError::InvalidNumber)),
             "invalid number must be rejected"
         );
-        assert_eq!(mgr.count(), 0, "no contact may be created for a rejected number");
+        assert_eq!(
+            mgr.count(),
+            0,
+            "no contact may be created for a rejected number"
+        );
     }
 
     #[test]
     fn contact_new_accepts_empty_number() {
         // Matrix-only contacts have no phone number; empty must stay valid.
         let result = Contact::new("Matrix Only", "");
-        assert!(result.is_ok(), "empty number must remain valid (Matrix-only contact)");
+        assert!(
+            result.is_ok(),
+            "empty number must remain valid (Matrix-only contact)"
+        );
     }
 
     #[test]

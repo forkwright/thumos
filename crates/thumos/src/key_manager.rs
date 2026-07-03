@@ -18,9 +18,7 @@ extern crate alloc;
 
 use core::fmt;
 
-use crate::security::{
-    self, SecurityError, SleepTier, KEY_SIZE, PBKDF2_ITERATIONS, XTS_KEY_SIZE,
-};
+use crate::security::{self, KEY_SIZE, PBKDF2_ITERATIONS, SecurityError, SleepTier, XTS_KEY_SIZE};
 
 // ---------------------------------------------------------------------------
 // HKDF labels
@@ -74,7 +72,10 @@ impl<const N: usize> SecureKey<N> {
         for byte in &mut self.0 {
             // SAFETY: write_volatile prevents dead-store elimination.
             // The pointer is valid because it points into our own array.
-            #[expect(unsafe_code, reason = "write_volatile required to prevent dead-store elimination of zeroization")]
+            #[expect(
+                unsafe_code,
+                reason = "write_volatile required to prevent dead-store elimination of zeroization"
+            )]
             unsafe {
                 core::ptr::write_volatile(byte, 0);
             }
@@ -112,7 +113,10 @@ fn volatile_zero<const N: usize>(buf: &mut [u8; N]) {
     for byte in buf.iter_mut() {
         // SAFETY: write_volatile prevents dead-store elimination; byte
         // points into the caller-owned stack array.
-        #[expect(unsafe_code, reason = "write_volatile required to prevent dead-store elimination of zeroization")]
+        #[expect(
+            unsafe_code,
+            reason = "write_volatile required to prevent dead-store elimination of zeroization"
+        )]
         unsafe {
             core::ptr::write_volatile(byte, 0);
         }
@@ -124,7 +128,10 @@ fn volatile_zero<const N: usize>(buf: &mut [u8; N]) {
 // ---------------------------------------------------------------------------
 
 /// The set of per-purpose keys derived from a primary key.
-#[expect(clippy::struct_field_names, reason = "key suffix is domain terminology, not redundant with struct name")]
+#[expect(
+    clippy::struct_field_names,
+    reason = "key suffix is domain terminology, not redundant with struct name"
+)]
 pub(crate) struct KeySet {
     /// Partition encryption key (AES-256-XTS, 64 bytes).
     pub data_key: SecureKey<XTS_KEY_SIZE>,
@@ -460,7 +467,10 @@ mod tests {
         let mut buf = [0xAAu8; KEY_SIZE];
         assert!(buf.iter().any(|&b| b != 0));
         volatile_zero(&mut buf);
-        assert!(buf.iter().all(|&b| b == 0), "volatile_zero must clear every byte");
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "volatile_zero must clear every byte"
+        );
     }
 
     #[test]

@@ -29,8 +29,8 @@ use alloc::vec::Vec;
 
 use crate::contacts::ContactManager;
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction, ScreenId,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
+    ScreenId, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -193,7 +193,8 @@ impl ContactsScreen {
         for &idx in &self.sorted_indices {
             if let Some(contact) = manager.get(idx) {
                 self.display_names.push(String::from(contact.name_str()));
-                self.display_numbers.push(String::from(contact.number_str()));
+                self.display_numbers
+                    .push(String::from(contact.number_str()));
             }
         }
 
@@ -345,8 +346,14 @@ impl ContactsScreen {
 
         if self.sorted_indices.is_empty() {
             ui::draw_str_centered(
-                fb, w, 0, w, CONTENT_HEIGHT / 2 - CHAR_HEIGHT / 2,
-                "No contacts", color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                0,
+                w,
+                CONTENT_HEIGHT / 2 - CHAR_HEIGHT / 2,
+                "No contacts",
+                color::DARK_GREY,
+                color::BLACK,
             );
             return;
         }
@@ -362,8 +369,13 @@ impl ContactsScreen {
             // Highlight selected entry.
             if is_selected {
                 ui::fill_rect(
-                    fb, w, CONTENT_HEIGHT,
-                    0, y, w, ENTRY_HEIGHT,
+                    fb,
+                    w,
+                    CONTENT_HEIGHT,
+                    0,
+                    y,
+                    w,
+                    ENTRY_HEIGHT,
                     color::from_rgb(20, 20, 50),
                 );
             }
@@ -371,10 +383,7 @@ impl ContactsScreen {
             // Contact name.
             if let Some(name) = self.display_names.get(list_idx) {
                 let display = truncate_display_str(name, 28);
-                ui::draw_str(
-                    fb, w, 4, y + 4,
-                    display, color::WHITE, color::BLACK,
-                );
+                ui::draw_str(fb, w, 4, y + 4, display, color::WHITE, color::BLACK);
             }
         }
     }
@@ -384,8 +393,14 @@ impl ContactsScreen {
     fn draw_detail(&self, fb: &mut [u16]) {
         let w = SCREEN_WIDTH;
 
-        let name = self.display_names.get(self.selected).map_or("", String::as_str);
-        let number = self.display_numbers.get(self.selected).map_or("", String::as_str);
+        let name = self
+            .display_names
+            .get(self.selected)
+            .map_or("", String::as_str);
+        let number = self
+            .display_numbers
+            .get(self.selected)
+            .map_or("", String::as_str);
 
         // Name (large, centered).
         ui::draw_str_centered(fb, w, 0, w, TITLE_Y + 8, name, color::WHITE, color::BLACK);
@@ -406,12 +421,21 @@ impl ContactsScreen {
         for (i, option) in options.iter().enumerate() {
             let y = options_y + i as u16 * (CHAR_HEIGHT + 8);
             let is_selected = *option == self.detail_option;
-            let text_color = if is_selected { color::YELLOW } else { color::WHITE };
+            let text_color = if is_selected {
+                color::YELLOW
+            } else {
+                color::WHITE
+            };
 
             if is_selected {
                 ui::fill_rect(
-                    fb, w, CONTENT_HEIGHT,
-                    0, y, w, CHAR_HEIGHT + 4,
+                    fb,
+                    w,
+                    CONTENT_HEIGHT,
+                    0,
+                    y,
+                    w,
+                    CHAR_HEIGHT + 4,
                     color::from_rgb(20, 20, 50),
                 );
             }
@@ -432,17 +456,34 @@ impl ContactsScreen {
         } else {
             color::DARK_GREY
         };
-        ui::draw_str(fb, w, 4, TITLE_Y + 8, "Name:", name_label_color, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            4,
+            TITLE_Y + 8,
+            "Name:",
+            name_label_color,
+            color::BLACK,
+        );
         let name_str = self.add_name_str();
-        let name_display = if name_str.is_empty() { "Enter name" } else { name_str };
+        let name_display = if name_str.is_empty() {
+            "Enter name"
+        } else {
+            name_str
+        };
         let name_color = if name_str.is_empty() {
             color::DARK_GREY
         } else {
             color::WHITE
         };
         ui::draw_str(
-            fb, w, 4 + 6 * CHAR_WIDTH, TITLE_Y + 8,
-            name_display, name_color, color::BLACK,
+            fb,
+            w,
+            4 + 6 * CHAR_WIDTH,
+            TITLE_Y + 8,
+            name_display,
+            name_color,
+            color::BLACK,
         );
 
         // Separator.
@@ -458,15 +499,24 @@ impl ContactsScreen {
         let num_y = sep_y + 4;
         ui::draw_str(fb, w, 4, num_y, "Num:", num_label_color, color::BLACK);
         let num_str = self.add_number_str();
-        let num_display = if num_str.is_empty() { "Enter number" } else { num_str };
+        let num_display = if num_str.is_empty() {
+            "Enter number"
+        } else {
+            num_str
+        };
         let num_color = if num_str.is_empty() {
             color::DARK_GREY
         } else {
             color::WHITE
         };
         ui::draw_str(
-            fb, w, 4 + 5 * CHAR_WIDTH, num_y,
-            num_display, num_color, color::BLACK,
+            fb,
+            w,
+            4 + 5 * CHAR_WIDTH,
+            num_y,
+            num_display,
+            num_color,
+            color::BLACK,
         );
     }
 
@@ -640,25 +690,14 @@ mod tests {
         screen.draw(&mut fb);
 
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(
-            any_set,
-            "contact list must render visible pixels"
-        );
+        assert!(any_set, "contact list must render visible pixels");
     }
 
     #[test]
     fn softkeys_correct() {
         let screen = ContactsScreen::new();
-        assert_eq!(
-            screen.softkey_left(),
-            "ADD",
-            "list LSK must be 'ADD'"
-        );
-        assert_eq!(
-            screen.softkey_right(),
-            "BACK",
-            "list RSK must be 'BACK'"
-        );
+        assert_eq!(screen.softkey_left(), "ADD", "list LSK must be 'ADD'");
+        assert_eq!(screen.softkey_right(), "BACK", "list RSK must be 'BACK'");
     }
 
     #[test]

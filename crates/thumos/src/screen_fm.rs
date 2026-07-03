@@ -22,8 +22,7 @@
 
 use crate::fm_radio::{self, FmState};
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -185,7 +184,15 @@ impl FmScreen {
         let start_x = PADDING_X;
 
         // Label.
-        ui::draw_str(fb, w, start_x, SIGNAL_Y, "Signal:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            start_x,
+            SIGNAL_Y,
+            "Signal:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
         let bars_start_x = start_x + 8 * CHAR_WIDTH;
 
         for i in 0..SIGNAL_BAR_COUNT {
@@ -205,7 +212,16 @@ impl FmScreen {
                 color::DARK_GREY
             };
 
-            ui::fill_rect(fb, w, h, bar_x, bar_y, SIGNAL_BAR_WIDTH, bar_height, bar_color);
+            ui::fill_rect(
+                fb,
+                w,
+                h,
+                bar_x,
+                bar_y,
+                SIGNAL_BAR_WIDTH,
+                bar_height,
+                bar_color,
+            );
         }
     }
 
@@ -214,7 +230,15 @@ impl FmScreen {
         let w = SCREEN_WIDTH;
 
         // Preset header.
-        ui::draw_str(fb, w, PADDING_X, PRESETS_Y, "Presets:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            PRESETS_Y,
+            "Presets:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
 
         // Draw each preset slot.
         for i in 0..PRESET_COUNT {
@@ -276,26 +300,50 @@ impl Screen for FmScreen {
             FmState::Off => {
                 // Show "FM Radio OFF" centered.
                 ui::draw_str_centered(
-                    fb, w, 0, w, FREQ_Y,
-                    "FM Radio OFF", color::DARK_GREY, color::BLACK,
+                    fb,
+                    w,
+                    0,
+                    w,
+                    FREQ_Y,
+                    "FM Radio OFF",
+                    color::DARK_GREY,
+                    color::BLACK,
                 );
                 ui::draw_str_centered(
-                    fb, w, 0, w, FREQ_Y + CHAR_HEIGHT + 8,
-                    "Press OK to turn on", color::DARK_GREY, color::BLACK,
+                    fb,
+                    w,
+                    0,
+                    w,
+                    FREQ_Y + CHAR_HEIGHT + 8,
+                    "Press OK to turn on",
+                    color::DARK_GREY,
+                    color::BLACK,
                 );
             }
             FmState::On => {
                 // Powered on but not tuned.
                 ui::draw_str_centered(
-                    fb, w, 0, w, FREQ_Y,
-                    "No Station", color::YELLOW, color::BLACK,
+                    fb,
+                    w,
+                    0,
+                    w,
+                    FREQ_Y,
+                    "No Station",
+                    color::YELLOW,
+                    color::BLACK,
                 );
             }
             FmState::Scanning => {
                 // Show scanning animation.
                 ui::draw_str_centered(
-                    fb, w, 0, w, FREQ_Y,
-                    "Scanning...", color::YELLOW, color::BLACK,
+                    fb,
+                    w,
+                    0,
+                    w,
+                    FREQ_Y,
+                    "Scanning...",
+                    color::YELLOW,
+                    color::BLACK,
                 );
             }
             FmState::Tuned { .. } => {
@@ -304,8 +352,14 @@ impl Screen for FmScreen {
 
                 // Draw "MHz" label.
                 ui::draw_str_centered(
-                    fb, w, 0, w, MHZ_LABEL_Y,
-                    "MHz", color::DARK_GREY, color::BLACK,
+                    fb,
+                    w,
+                    0,
+                    w,
+                    MHZ_LABEL_Y,
+                    "MHz",
+                    color::DARK_GREY,
+                    color::BLACK,
                 );
 
                 // Draw signal bars.
@@ -319,13 +373,27 @@ impl Screen for FmScreen {
                 vol_buf[5..5 + digit_len].copy_from_slice(&vol_digits[..digit_len]);
                 // INVARIANT: vol_buf is always "Vol: " (ASCII) followed by ASCII digits.
                 let vol_text = core::str::from_utf8(&vol_buf[..5 + digit_len]).unwrap_or("Vol: ?");
-                ui::draw_str(fb, w, PADDING_X, STATUS_Y, vol_text, color::WHITE, color::BLACK);
+                ui::draw_str(
+                    fb,
+                    w,
+                    PADDING_X,
+                    STATUS_Y,
+                    vol_text,
+                    color::WHITE,
+                    color::BLACK,
+                );
 
                 // Draw seek arrows.
                 let arrows = "<< SEEK >>";
                 ui::draw_str_centered(
-                    fb, w, 0, w, STATUS_Y,
-                    arrows, color::DARK_GREY, color::BLACK,
+                    fb,
+                    w,
+                    0,
+                    w,
+                    STATUS_Y,
+                    arrows,
+                    color::DARK_GREY,
+                    color::BLACK,
                 );
             }
         }
@@ -509,8 +577,16 @@ mod tests {
         assert_eq!(FmScreen::key_to_preset(Key::Num4), Some(3));
         assert_eq!(FmScreen::key_to_preset(Key::Num5), Some(4));
         assert_eq!(FmScreen::key_to_preset(Key::Num6), Some(5));
-        assert_eq!(FmScreen::key_to_preset(Key::Num7), None, "Num7 must not map to a preset");
-        assert_eq!(FmScreen::key_to_preset(Key::Ok), None, "Ok must not map to a preset");
+        assert_eq!(
+            FmScreen::key_to_preset(Key::Num7),
+            None,
+            "Num7 must not map to a preset"
+        );
+        assert_eq!(
+            FmScreen::key_to_preset(Key::Ok),
+            None,
+            "Ok must not map to a preset"
+        );
     }
 
     #[test]
@@ -604,7 +680,10 @@ mod tests {
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "FM screen in Off state must render visible content");
+        assert!(
+            any_set,
+            "FM screen in Off state must render visible content"
+        );
     }
 
     #[test]
@@ -618,7 +697,10 @@ mod tests {
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "FM screen in Tuned state must render visible content");
+        assert!(
+            any_set,
+            "FM screen in Tuned state must render visible content"
+        );
     }
 
     #[test]
@@ -638,7 +720,10 @@ mod tests {
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "FM screen with presets must render visible content");
+        assert!(
+            any_set,
+            "FM screen with presets must render visible content"
+        );
     }
 
     #[test]
@@ -667,15 +752,31 @@ mod tests {
         screen.presets[2] = 107_900;
 
         screen.on_key(Key::Lsk);
-        assert_eq!(screen.active_preset, Some(0), "first LSK must select preset 0");
+        assert_eq!(
+            screen.active_preset,
+            Some(0),
+            "first LSK must select preset 0"
+        );
 
         screen.on_key(Key::Lsk);
-        assert_eq!(screen.active_preset, Some(1), "second LSK must select preset 1");
+        assert_eq!(
+            screen.active_preset,
+            Some(1),
+            "second LSK must select preset 1"
+        );
 
         screen.on_key(Key::Lsk);
-        assert_eq!(screen.active_preset, Some(2), "third LSK must select preset 2");
+        assert_eq!(
+            screen.active_preset,
+            Some(2),
+            "third LSK must select preset 2"
+        );
 
         screen.on_key(Key::Lsk);
-        assert_eq!(screen.active_preset, Some(0), "fourth LSK must wrap to preset 0");
+        assert_eq!(
+            screen.active_preset,
+            Some(0),
+            "fourth LSK must wrap to preset 0"
+        );
     }
 }

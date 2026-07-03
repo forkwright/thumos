@@ -384,11 +384,7 @@ pub(crate) fn build_ws_frame(opcode: WsOpcode, payload: &[u8], mask_key: [u8; 4]
 /// and sent over a TCP socket.
 #[must_use]
 pub(crate) fn build_ws_upgrade(host: &str, path: &str, ws_key: &str) -> HttpRequest {
-    let mut req = HttpRequest::new(
-        HttpMethod::Get,
-        String::from(host),
-        String::from(path),
-    );
+    let mut req = HttpRequest::new(HttpMethod::Get, String::from(host), String::from(path));
 
     req.add_header(String::from("Upgrade"), String::from("websocket"));
     req.add_header(String::from("Connection"), String::from("Upgrade"));
@@ -683,10 +679,7 @@ impl Ekphrasis {
     fn process_transcription(&mut self, text: &str) -> Result<(), EkphrasisError> {
         let value = JsonParser::parse(text.as_bytes())?;
 
-        let transcript = value
-            .get("text")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("");
+        let transcript = value.get("text").and_then(JsonValue::as_str).unwrap_or("");
 
         let is_final = value
             .get("final")
@@ -766,9 +759,7 @@ impl Ekphrasis {
     pub(crate) fn is_recording(&self) -> bool {
         matches!(
             self.state,
-            EkphrasisState::Recording
-                | EkphrasisState::Streaming
-                | EkphrasisState::Transcribing
+            EkphrasisState::Recording | EkphrasisState::Streaming | EkphrasisState::Transcribing
         )
     }
 
@@ -1001,7 +992,9 @@ const FENCE_END_ALT: &str = "\n~~~";
 /// ```
 /// ```
 #[must_use]
-pub(crate) fn parse_action_proposal(message_body: &str) -> Option<Result<ActionProposal, EkphrasisError>> {
+pub(crate) fn parse_action_proposal(
+    message_body: &str,
+) -> Option<Result<ActionProposal, EkphrasisError>> {
     // Try both fence styles.
     let (json_str, _) = find_fenced_block(message_body)?;
 
@@ -1329,8 +1322,7 @@ Let me know if you need anything else."#;
 
     #[test]
     fn parse_action_proposal_missing_action_field() {
-        let message =
-            "```thumos-action\n{\"description\": \"Call Maria\"}\n```";
+        let message = "```thumos-action\n{\"description\": \"Call Maria\"}\n```";
         let result = parse_action_proposal(message);
         assert!(result.is_some());
         let err = result.and_then(|r| r.err());
@@ -1485,14 +1477,18 @@ Let me know if you need anything else."#;
 
         // Fill exactly to the cap.
         let chunk = alloc::vec![0u8; MAX_AUDIO_BUFFER_BYTES];
-        assert!(ek.feed_audio(&chunk).is_ok(), "filling to the cap must succeed");
+        assert!(
+            ek.feed_audio(&chunk).is_ok(),
+            "filling to the cap must succeed"
+        );
         assert_eq!(ek.audio_buffer.len(), MAX_AUDIO_BUFFER_BYTES);
 
         // One more byte must be rejected, and the buffer must not grow further.
         let result = ek.feed_audio(&[0x01]);
         assert_eq!(result, Err(EkphrasisError::AudioCaptureFailed));
         assert_eq!(
-            ek.audio_buffer.len(), MAX_AUDIO_BUFFER_BYTES,
+            ek.audio_buffer.len(),
+            MAX_AUDIO_BUFFER_BYTES,
             "rejected feed must not grow the buffer past the cap"
         );
     }
@@ -1604,14 +1600,16 @@ Let me know if you need anything else."#;
 
         assert_eq!(req.host, "stt.example.lan");
         assert_eq!(req.path, "/stt/stream");
-        assert!(req
-            .headers
-            .iter()
-            .any(|(k, v)| k == "Upgrade" && v == "websocket"));
-        assert!(req
-            .headers
-            .iter()
-            .any(|(k, v)| k == "Sec-WebSocket-Key" && v == "dGVzdC1rZXk="));
+        assert!(
+            req.headers
+                .iter()
+                .any(|(k, v)| k == "Upgrade" && v == "websocket")
+        );
+        assert!(
+            req.headers
+                .iter()
+                .any(|(k, v)| k == "Sec-WebSocket-Key" && v == "dGVzdC1rZXk=")
+        );
     }
 
     #[test]

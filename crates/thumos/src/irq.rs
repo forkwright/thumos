@@ -147,7 +147,10 @@ impl IrqSpinlock {
             // speculative execution to be abandoned on in-order cores.
             core::hint::spin_loop();
         }
-        IrqSpinGuard { lock: self, _irq: irq }
+        IrqSpinGuard {
+            lock: self,
+            _irq: irq,
+        }
     }
 }
 
@@ -180,7 +183,10 @@ mod tests {
         let g = IrqGuard::new();
         assert!(!mock_enabled(), "guard must mask IRQ delivery");
         drop(g);
-        assert!(mock_enabled(), "dropping the guard must restore IRQ delivery");
+        assert!(
+            mock_enabled(),
+            "dropping the guard must restore IRQ delivery"
+        );
     }
 
     #[test]
@@ -196,7 +202,10 @@ mod tests {
             let inner = IrqGuard::new();
             assert!(!mock_enabled(), "inner guard: still masked");
             drop(inner);
-            assert!(!mock_enabled(), "inner drop must not unmask -- outer still holds");
+            assert!(
+                !mock_enabled(),
+                "inner drop must not unmask -- outer still holds"
+            );
         }
         drop(outer);
         assert!(mock_enabled(), "outer drop restores unmasked");
@@ -210,7 +219,10 @@ mod tests {
         let guard = lock.lock();
         assert!(!mock_enabled(), "lock() must mask IRQ delivery while held");
         drop(guard);
-        assert!(mock_enabled(), "dropping the guard must restore IRQ delivery");
+        assert!(
+            mock_enabled(),
+            "dropping the guard must restore IRQ delivery"
+        );
     }
 
     #[test]
@@ -224,7 +236,10 @@ mod tests {
         let guard = lock.lock();
         assert!(lock.locked.load(Ordering::Acquire), "flag set while held");
         drop(guard);
-        assert!(!lock.locked.load(Ordering::Acquire), "flag must be clear after drop");
+        assert!(
+            !lock.locked.load(Ordering::Acquire),
+            "flag must be clear after drop"
+        );
         assert!(mock_enabled(), "and IRQs unmasked after drop");
     }
 }

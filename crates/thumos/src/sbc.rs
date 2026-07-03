@@ -162,7 +162,11 @@ impl SbcFrameHeader {
     /// subbands, blocks, and bitpool.
     #[must_use]
     pub(crate) const fn frame_length(&self) -> usize {
-        let nrof_subbands: usize = if self.subbands == SBC_SUBBANDS_8 { 8 } else { 4 };
+        let nrof_subbands: usize = if self.subbands == SBC_SUBBANDS_8 {
+            8
+        } else {
+            4
+        };
         let nrof_blocks: usize = match self.blocks {
             0 => 4,
             1 => 8,
@@ -170,8 +174,16 @@ impl SbcFrameHeader {
             _ => 16,
         };
 
-        let join = if self.channel_mode == SBC_CHANNEL_JOINT_STEREO { 1 } else { 0 };
-        let nrof_channels: usize = if self.channel_mode == SBC_CHANNEL_MONO { 1 } else { 2 };
+        let join = if self.channel_mode == SBC_CHANNEL_JOINT_STEREO {
+            1
+        } else {
+            0
+        };
+        let nrof_channels: usize = if self.channel_mode == SBC_CHANNEL_MONO {
+            1
+        } else {
+            2
+        };
 
         // frame_length = 4 + (4 * nrof_subbands * nrof_channels) / 8
         //              + ceil(nrof_blocks * bitpool * nrof_channels / 8) (mono/dual)
@@ -179,8 +191,8 @@ impl SbcFrameHeader {
         //
         // Simplified per spec section 12.9:
         let scale_factors_bytes = (4 * nrof_subbands * nrof_channels) / 8;
-        let audio_bits = if self.channel_mode == SBC_CHANNEL_MONO
-            || self.channel_mode == 0x01 // dual channel
+        let audio_bits = if self.channel_mode == SBC_CHANNEL_MONO || self.channel_mode == 0x01
+        // dual channel
         {
             nrof_blocks * self.bitpool as usize * nrof_channels
         } else {

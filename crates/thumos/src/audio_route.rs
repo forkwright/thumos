@@ -250,8 +250,7 @@ impl RouteManager {
     ///
     /// Removes `Headset` from the available outputs.
     pub(crate) fn notify_headset_disconnected(&mut self) {
-        self.connected_outputs
-            .retain(|r| *r != AudioRoute::Headset);
+        self.connected_outputs.retain(|r| *r != AudioRoute::Headset);
     }
 
     /// Notify that a USB DAC has connected.
@@ -267,8 +266,7 @@ impl RouteManager {
     ///
     /// Removes `UsbDac` from the available outputs.
     pub(crate) fn notify_usb_dac_disconnected(&mut self) {
-        self.connected_outputs
-            .retain(|r| *r != AudioRoute::UsbDac);
+        self.connected_outputs.retain(|r| *r != AudioRoute::UsbDac);
     }
 
     /// Set the preferred call route (for when a BT headset is the
@@ -513,7 +511,10 @@ mod tests {
             .iter()
             .filter(|r| **r == AudioRoute::BluetoothA2dp)
             .count();
-        assert_eq!(bt_count, 1, "duplicate connect must not add duplicate entry");
+        assert_eq!(
+            bt_count, 1,
+            "duplicate connect must not add duplicate entry"
+        );
     }
 
     #[test]
@@ -587,34 +588,16 @@ mod tests {
 
     #[test]
     fn audio_route_display() {
-        assert_eq!(
-            AudioRoute::Earpiece.to_string(),
-            "earpiece",
-        );
-        assert_eq!(
-            AudioRoute::Speaker.to_string(),
-            "speaker",
-        );
-        assert_eq!(
-            AudioRoute::BluetoothA2dp.to_string(),
-            "bluetooth",
-        );
-        assert_eq!(
-            AudioRoute::UsbDac.to_string(),
-            "USB DAC",
-        );
+        assert_eq!(AudioRoute::Earpiece.to_string(), "earpiece",);
+        assert_eq!(AudioRoute::Speaker.to_string(), "speaker",);
+        assert_eq!(AudioRoute::BluetoothA2dp.to_string(), "bluetooth",);
+        assert_eq!(AudioRoute::UsbDac.to_string(), "USB DAC",);
     }
 
     #[test]
     fn session_kind_display() {
-        assert_eq!(
-            SessionKind::VoiceCall.to_string(),
-            "voice call",
-        );
-        assert_eq!(
-            SessionKind::Music.to_string(),
-            "music",
-        );
+        assert_eq!(SessionKind::VoiceCall.to_string(), "voice call",);
+        assert_eq!(SessionKind::Music.to_string(), "music",);
     }
 
     #[test]

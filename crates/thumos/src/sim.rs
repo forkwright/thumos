@@ -23,16 +23,11 @@
 //! periodic signal polling. Boot integration deferred to Phase 07 kinit wiring.
 
 // WHY: SIM management API not yet wired to upper layers (kinit integration pending).
-#![expect(
-    dead_code,
-    reason = "SIM management API not yet wired to kinit"
-)]
+#![expect(dead_code, reason = "SIM management API not yet wired to kinit")]
 
 extern crate alloc;
 
-use crate::telephony::{
-    self, AtResponse, ModemTransport, TelephonyError, MAX_LINE_LEN,
-};
+use crate::telephony::{self, AtResponse, MAX_LINE_LEN, ModemTransport, TelephonyError};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -546,7 +541,8 @@ mod tests {
         let result = sim.query_iccid(&mut transport);
         assert!(result.is_ok(), "ICCID query must succeed");
         assert_eq!(
-            sim.sim_info().iccid_len, 20,
+            sim.sim_info().iccid_len,
+            20,
             "ICCID length must be 20 (max)"
         );
         assert_eq!(

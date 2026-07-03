@@ -610,7 +610,10 @@ mod tests {
     fn contact_max_name_succeeds() {
         let max_name = [b'A'; MAX_CONTACT_NAME_LEN];
         let result = BriarContact::new([0x05; 32], &max_name);
-        assert!(result.is_ok(), "name at exactly MAX_CONTACT_NAME_LEN must succeed");
+        assert!(
+            result.is_ok(),
+            "name at exactly MAX_CONTACT_NAME_LEN must succeed"
+        );
         let contact = result.unwrap_or_else(|_| unreachable!());
         assert_eq!(contact.name_len, MAX_CONTACT_NAME_LEN as u8);
         assert_eq!(contact.name(), &max_name[..]);
@@ -711,8 +714,8 @@ mod tests {
         let contact = BriarContact::new(id, b"Alice").unwrap_or_else(|_| unreachable!());
         transport.add_contact(contact).ok();
 
-        let msg = BriarMessage::new(id, "hello".to_string(), 1000)
-            .unwrap_or_else(|_| unreachable!());
+        let msg =
+            BriarMessage::new(id, "hello".to_string(), 1000).unwrap_or_else(|_| unreachable!());
         let result = transport.push_inbox(msg);
         assert!(result.is_ok(), "push from known contact must succeed");
         assert_eq!(transport.inbox_count(), 1);
@@ -721,8 +724,8 @@ mod tests {
     #[test]
     fn push_inbox_rejects_unknown_sender() {
         let mut transport = BriarTransport::new();
-        let msg = BriarMessage::new([0xFF; 32], "spam".to_string(), 0)
-            .unwrap_or_else(|_| unreachable!());
+        let msg =
+            BriarMessage::new([0xFF; 32], "spam".to_string(), 0).unwrap_or_else(|_| unreachable!());
         let result = transport.push_inbox(msg);
         assert_eq!(
             result,
@@ -738,8 +741,8 @@ mod tests {
         let contact = BriarContact::new(id, b"Alice").unwrap_or_else(|_| unreachable!());
         transport.add_contact(contact).ok();
 
-        let msg = BriarMessage::new(id, "hello".to_string(), 1000)
-            .unwrap_or_else(|_| unreachable!());
+        let msg =
+            BriarMessage::new(id, "hello".to_string(), 1000).unwrap_or_else(|_| unreachable!());
         transport.push_inbox(msg).ok();
         assert_eq!(transport.inbox_count(), 1);
 

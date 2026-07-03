@@ -48,14 +48,38 @@ struct LookupEntry {
 /// Sorted descending by voltage. Linear interpolation is used between
 /// adjacent entries.
 const VOLTAGE_TABLE: &[LookupEntry] = &[
-    LookupEntry { voltage_mv: 4200, percentage: 100 },
-    LookupEntry { voltage_mv: 4100, percentage: 90 },
-    LookupEntry { voltage_mv: 3900, percentage: 70 },
-    LookupEntry { voltage_mv: 3800, percentage: 50 },
-    LookupEntry { voltage_mv: 3700, percentage: 30 },
-    LookupEntry { voltage_mv: 3600, percentage: 15 },
-    LookupEntry { voltage_mv: 3400, percentage: 5 },
-    LookupEntry { voltage_mv: 3000, percentage: 0 },
+    LookupEntry {
+        voltage_mv: 4200,
+        percentage: 100,
+    },
+    LookupEntry {
+        voltage_mv: 4100,
+        percentage: 90,
+    },
+    LookupEntry {
+        voltage_mv: 3900,
+        percentage: 70,
+    },
+    LookupEntry {
+        voltage_mv: 3800,
+        percentage: 50,
+    },
+    LookupEntry {
+        voltage_mv: 3700,
+        percentage: 30,
+    },
+    LookupEntry {
+        voltage_mv: 3600,
+        percentage: 15,
+    },
+    LookupEntry {
+        voltage_mv: 3400,
+        percentage: 5,
+    },
+    LookupEntry {
+        voltage_mv: 3000,
+        percentage: 0,
+    },
 ];
 
 /// Polling interval in seconds.
@@ -162,7 +186,11 @@ pub(crate) fn voltage_to_percentage(voltage_mv: u16) -> u8 {
             let interpolated = low.percentage as u32 + (v_offset * p_range) / v_range;
 
             // Clamp to valid range.
-            return if interpolated > 100 { 100 } else { interpolated as u8 };
+            return if interpolated > 100 {
+                100
+            } else {
+                interpolated as u8
+            };
         }
     }
 

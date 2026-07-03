@@ -16,15 +16,17 @@
 
 // WHY: renderable screen exists, but kinit currently renders only the home
 // frame and has no calendar route/input path.
-#![expect(dead_code, reason = "Calendar screen is not wired into the kinit UI route")]
+#![expect(
+    dead_code,
+    reason = "Calendar screen is not wired into the kinit UI route"
+)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::heorte::{self, HeorteManager};
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -191,9 +193,14 @@ impl Screen for CalendarScreen {
         if self.rows.is_empty() {
             // Show empty state message.
             ui::draw_str_centered(
-                fb, w, 0, w, h / 2 - CHAR_HEIGHT / 2,
+                fb,
+                w,
+                0,
+                w,
+                h / 2 - CHAR_HEIGHT / 2,
                 "No upcoming events",
-                color::DARK_GREY, color::BLACK,
+                color::DARK_GREY,
+                color::BLACK,
             );
             return;
         }
@@ -225,17 +232,25 @@ impl Screen for CalendarScreen {
                     if matches!(label, heorte::DayLabel::Today | heorte::DayLabel::Tomorrow) {
                         let label_width = label_str.len() as u16 * CHAR_WIDTH;
                         ui::draw_str(
-                            fb, w,
+                            fb,
+                            w,
                             PADDING_X + label_width + CHAR_WIDTH,
                             y,
                             date_str,
-                            color::DARK_GREY, color::BLACK,
+                            color::DARK_GREY,
+                            color::BLACK,
                         );
                     }
 
                     y += HEADER_HEIGHT;
                 }
-                AgendaRow::Event { time, title, title_len, active, .. } => {
+                AgendaRow::Event {
+                    time,
+                    title,
+                    title_len,
+                    active,
+                    ..
+                } => {
                     let (fg, bg) = if is_selected {
                         (color::BLACK, color::WHITE)
                     } else {
@@ -261,8 +276,8 @@ impl Screen for CalendarScreen {
                     x += 5 * CHAR_WIDTH + CHAR_WIDTH;
 
                     // Title.
-                    let title_str = core::str::from_utf8(&title[..*title_len as usize])
-                        .unwrap_or("");
+                    let title_str =
+                        core::str::from_utf8(&title[..*title_len as usize]).unwrap_or("");
                     ui::draw_str(fb, w, x, y + 2, title_str, fg, bg);
 
                     y += EVENT_ROW_HEIGHT;
@@ -282,7 +297,12 @@ impl Screen for CalendarScreen {
                 if self.cursor > 0 {
                     self.cursor -= 1;
                     // Skip day headers when navigating.
-                    while self.cursor > 0 && matches!(self.rows.get(self.cursor), Some(AgendaRow::DayHeader { .. })) {
+                    while self.cursor > 0
+                        && matches!(
+                            self.rows.get(self.cursor),
+                            Some(AgendaRow::DayHeader { .. })
+                        )
+                    {
                         self.cursor -= 1;
                     }
                     self.adjust_scroll();
@@ -294,7 +314,10 @@ impl Screen for CalendarScreen {
                     self.cursor += 1;
                     // Skip day headers when navigating.
                     while self.cursor < self.rows.len().saturating_sub(1)
-                        && matches!(self.rows.get(self.cursor), Some(AgendaRow::DayHeader { .. }))
+                        && matches!(
+                            self.rows.get(self.cursor),
+                            Some(AgendaRow::DayHeader { .. })
+                        )
                     {
                         self.cursor += 1;
                     }
@@ -358,13 +381,22 @@ mod tests {
 
         // Should have rows: DayHeader(day100), Event(Standup), Event(Lunch),
         // DayHeader(day101), Event(Dentist)
-        assert_eq!(screen.rows.len(), 5, "must have 5 rows (2 headers + 3 events)");
+        assert_eq!(
+            screen.rows.len(),
+            5,
+            "must have 5 rows (2 headers + 3 events)"
+        );
 
         // First event after day header should be Standup (10:00), not Lunch (12:00).
         match &screen.rows[1] {
-            AgendaRow::Event { title, title_len, .. } => {
+            AgendaRow::Event {
+                title, title_len, ..
+            } => {
                 let name = core::str::from_utf8(&title[..*title_len as usize]).unwrap_or("");
-                assert_eq!(name, "Standup", "first event must be Standup (earlier time)");
+                assert_eq!(
+                    name, "Standup",
+                    "first event must be Standup (earlier time)"
+                );
             }
             _ => panic!("row 1 must be an event"),
         }
@@ -413,7 +445,10 @@ mod tests {
         // Navigate down — should skip header and land on first event.
         screen.on_key(Key::Down);
         assert!(
-            matches!(screen.rows.get(screen.cursor), Some(AgendaRow::Event { .. })),
+            matches!(
+                screen.rows.get(screen.cursor),
+                Some(AgendaRow::Event { .. })
+            ),
             "cursor must skip to event row"
         );
     }
@@ -440,7 +475,10 @@ mod tests {
         screen.update(&mgr, current);
 
         // Find the standup event row and check active flag.
-        let has_active = screen.rows.iter().any(|r| matches!(r, AgendaRow::Event { active: true, .. }));
+        let has_active = screen
+            .rows
+            .iter()
+            .any(|r| matches!(r, AgendaRow::Event { active: true, .. }));
         assert!(has_active, "standup event must be marked active");
     }
 }

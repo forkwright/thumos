@@ -61,8 +61,7 @@ use alloc::vec::Vec;
 use crate::ekphrasis::{self, ActionProposal};
 use crate::nous::{CapabilityPreset, NousManager};
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,8 +78,8 @@ const PADDING_Y: u16 = 4;
 const MSG_ROW_HEIGHT: u16 = CHAR_HEIGHT + 6;
 
 /// Maximum characters per line (word-wrap boundary).
-const CHARS_PER_LINE: usize = (SCREEN_WIDTH as usize - PADDING_X as usize * 2)
-    / (CHAR_WIDTH as usize);
+const CHARS_PER_LINE: usize =
+    (SCREEN_WIDTH as usize - PADDING_X as usize * 2) / (CHAR_WIDTH as usize);
 
 /// Maximum messages held in the conversation buffer.
 const MAX_MESSAGES: usize = 64;
@@ -110,8 +109,7 @@ const NOUS_NAME_COLOR: u16 = color::from_rgb(100, 180, 255);
 const USER_MSG_COLOR: u16 = color::from_rgb(200, 200, 200);
 
 /// Maximum visible lines in the content area.
-const MAX_VISIBLE_LINES: usize =
-    (CONTENT_HEIGHT as usize) / (MSG_ROW_HEIGHT as usize);
+const MAX_VISIBLE_LINES: usize = (CONTENT_HEIGHT as usize) / (MSG_ROW_HEIGHT as usize);
 
 // ---------------------------------------------------------------------------
 // Chat message
@@ -166,8 +164,7 @@ impl ChatMessage {
     /// Create a new nous entity message, parsing any action proposal.
     #[must_use]
     pub(crate) fn from_nous(sender: &str, body: String, timestamp: u64) -> Self {
-        let proposal = ekphrasis::parse_action_proposal(&body)
-            .and_then(Result::ok);
+        let proposal = ekphrasis::parse_action_proposal(&body).and_then(Result::ok);
         Self {
             origin: MessageOrigin::Nous,
             sender: String::from(sender),
@@ -301,9 +298,7 @@ impl NousChatScreen {
 
         if has_proposal {
             self.pending_proposal = Some(ProposalState::Pending);
-            self.pending_proposal_msg_idx = Some(
-                self.messages.len().saturating_sub(1),
-            );
+            self.pending_proposal_msg_idx = Some(self.messages.len().saturating_sub(1));
         }
 
         // Auto-scroll to bottom.
@@ -378,16 +373,14 @@ impl NousChatScreen {
         let total_lines: usize = self.messages.iter().map(ChatMessage::line_count).sum();
         let max_scroll = total_lines.saturating_sub(MAX_VISIBLE_LINES);
         if self.scroll_offset < max_scroll {
-            self.scroll_offset = (self.scroll_offset + MAX_VISIBLE_LINES / 2)
-                .min(max_scroll);
+            self.scroll_offset = (self.scroll_offset + MAX_VISIBLE_LINES / 2).min(max_scroll);
         }
     }
 
     /// Scroll down by half a page.
     fn scroll_down(&mut self) {
         if self.scroll_offset > 0 {
-            self.scroll_offset = self.scroll_offset
-                .saturating_sub(MAX_VISIBLE_LINES / 2);
+            self.scroll_offset = self.scroll_offset.saturating_sub(MAX_VISIBLE_LINES / 2);
         }
     }
 
@@ -413,9 +406,9 @@ fn draw_vline(fb: &mut [u16], x: u16, y: u16, height: u16, color: u16) {
 
 /// Draw a bordered rectangle (1px border).
 fn draw_border(fb: &mut [u16], x: u16, y: u16, w: u16, h: u16, border_color: u16) {
-    draw_hline(fb, x, y, w, border_color);                     // top
+    draw_hline(fb, x, y, w, border_color); // top
     draw_hline(fb, x, y.saturating_add(h - 1), w, border_color); // bottom
-    draw_vline(fb, x, y, h, border_color);                     // left
+    draw_vline(fb, x, y, h, border_color); // left
     draw_vline(fb, x.saturating_add(w - 1), y, h, border_color); // right
 }
 
@@ -435,8 +428,14 @@ fn draw_proposal_card(
 
     // Background fill.
     ui::fill_rect(
-        fb, SCREEN_WIDTH, CONTENT_HEIGHT,
-        card_x, y_start, card_w, card_h, CARD_BG_COLOR,
+        fb,
+        SCREEN_WIDTH,
+        CONTENT_HEIGHT,
+        card_x,
+        y_start,
+        card_w,
+        card_h,
+        CARD_BG_COLOR,
     );
 
     // Border.
@@ -448,16 +447,26 @@ fn draw_proposal_card(
     // Line 1: "Entity suggests:"
     let header = format_card_header(entity_name);
     ui::draw_str(
-        fb, SCREEN_WIDTH, text_x, text_y,
-        &header, NOUS_NAME_COLOR, CARD_BG_COLOR,
+        fb,
+        SCREEN_WIDTH,
+        text_x,
+        text_y,
+        &header,
+        NOUS_NAME_COLOR,
+        CARD_BG_COLOR,
     );
     text_y += MSG_ROW_HEIGHT;
 
     // Line 2: Action description (uppercase).
     let desc_upper = to_uppercase_truncated(&proposal.description, CHARS_PER_LINE - 2);
     ui::draw_str(
-        fb, SCREEN_WIDTH, text_x, text_y,
-        &desc_upper, color::WHITE, CARD_BG_COLOR,
+        fb,
+        SCREEN_WIDTH,
+        text_x,
+        text_y,
+        &desc_upper,
+        color::WHITE,
+        CARD_BG_COLOR,
     );
     text_y += MSG_ROW_HEIGHT;
 
@@ -465,8 +474,13 @@ fn draw_proposal_card(
     if let Some((_, value)) = proposal.params.first() {
         let param_display = truncate_str(value, CHARS_PER_LINE - 2);
         ui::draw_str(
-            fb, SCREEN_WIDTH, text_x, text_y,
-            &param_display, color::DARK_GREY, CARD_BG_COLOR,
+            fb,
+            SCREEN_WIDTH,
+            text_x,
+            text_y,
+            &param_display,
+            color::DARK_GREY,
+            CARD_BG_COLOR,
         );
     }
     text_y += MSG_ROW_HEIGHT;
@@ -479,15 +493,24 @@ fn draw_proposal_card(
     };
 
     ui::draw_str(
-        fb, SCREEN_WIDTH, text_x, text_y,
-        "[CANCEL]", cancel_color, CARD_BG_COLOR,
+        fb,
+        SCREEN_WIDTH,
+        text_x,
+        text_y,
+        "[CANCEL]",
+        cancel_color,
+        CARD_BG_COLOR,
     );
 
-    let confirm_x = card_x + card_w - CARD_PADDING - 2
-        - "[CONFIRM]".len() as u16 * CHAR_WIDTH;
+    let confirm_x = card_x + card_w - CARD_PADDING - 2 - "[CONFIRM]".len() as u16 * CHAR_WIDTH;
     ui::draw_str(
-        fb, SCREEN_WIDTH, confirm_x, text_y,
-        "[CONFIRM]", confirm_color, CARD_BG_COLOR,
+        fb,
+        SCREEN_WIDTH,
+        confirm_x,
+        text_y,
+        "[CONFIRM]",
+        confirm_color,
+        CARD_BG_COLOR,
     );
 
     card_h
@@ -550,8 +573,13 @@ impl Screen for NousChatScreen {
         // Draw title: "NOUS: EntityName [PRESET]"
         let title_str = format_title(&self.active_entity_name, self.active_preset_label);
         ui::draw_str(
-            fb, w, PADDING_X, PADDING_Y,
-            &title_str, NOUS_NAME_COLOR, color::BLACK,
+            fb,
+            w,
+            PADDING_X,
+            PADDING_Y,
+            &title_str,
+            NOUS_NAME_COLOR,
+            color::BLACK,
         );
 
         // Separator below title.
@@ -565,9 +593,14 @@ impl Screen for NousChatScreen {
         if self.messages.is_empty() {
             // Empty state.
             ui::draw_str_centered(
-                fb, w, 0, w,
+                fb,
+                w,
+                0,
+                w,
                 msg_area_start + msg_area_height / 2 - CHAR_HEIGHT / 2,
-                "No messages", color::DARK_GREY, color::BLACK,
+                "No messages",
+                color::DARK_GREY,
+                color::BLACK,
             );
         } else {
             // Calculate which lines to display (scrolled from bottom).
@@ -605,8 +638,13 @@ impl Screen for NousChatScreen {
                     };
                     let header = format_msg_header(&msg.sender);
                     ui::draw_str(
-                        fb, w, PADDING_X, render_y,
-                        &header, name_color, color::BLACK,
+                        fb,
+                        w,
+                        PADDING_X,
+                        render_y,
+                        &header,
+                        name_color,
+                        color::BLACK,
                     );
                     render_y += MSG_ROW_HEIGHT;
                 }
@@ -622,11 +660,16 @@ impl Screen for NousChatScreen {
                 while offset < body_bytes.len() {
                     let line_end = (offset + CHARS_PER_LINE).min(body_bytes.len());
                     if render_y < msg_area_start + msg_area_height {
-                        let line_str = core::str::from_utf8(&body_bytes[offset..line_end])
-                            .unwrap_or("");
+                        let line_str =
+                            core::str::from_utf8(&body_bytes[offset..line_end]).unwrap_or("");
                         ui::draw_str(
-                            fb, w, PADDING_X + CHAR_WIDTH, render_y,
-                            line_str, body_color, color::BLACK,
+                            fb,
+                            w,
+                            PADDING_X + CHAR_WIDTH,
+                            render_y,
+                            line_str,
+                            body_color,
+                            color::BLACK,
                         );
                         render_y += MSG_ROW_HEIGHT;
                     }
@@ -642,9 +685,7 @@ impl Screen for NousChatScreen {
                     };
 
                     if render_y < msg_area_start + msg_area_height {
-                        let card_h = draw_proposal_card(
-                            fb, proposal, &msg.sender, render_y, state,
-                        );
+                        let card_h = draw_proposal_card(fb, proposal, &msg.sender, render_y, state);
                         render_y += card_h;
                     }
                 }
@@ -655,13 +696,24 @@ impl Screen for NousChatScreen {
 
         // Input area at bottom of content.
         let input_y = h - CHAR_HEIGHT - 2;
-        draw_hline(fb, PADDING_X, input_y - 2, w - PADDING_X * 2, color::DARK_GREY);
+        draw_hline(
+            fb,
+            PADDING_X,
+            input_y - 2,
+            w - PADDING_X * 2,
+            color::DARK_GREY,
+        );
 
         // Show input buffer or prompt.
         if self.input_buffer.is_empty() {
             ui::draw_str(
-                fb, w, PADDING_X, input_y,
-                "Type a message...", color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                PADDING_X,
+                input_y,
+                "Type a message...",
+                color::DARK_GREY,
+                color::BLACK,
             );
         } else {
             // Show last CHARS_PER_LINE characters of input.
@@ -672,8 +724,13 @@ impl Screen for NousChatScreen {
             };
             let display_text = &self.input_buffer[display_start..];
             ui::draw_str(
-                fb, w, PADDING_X, input_y,
-                display_text, color::WHITE, color::BLACK,
+                fb,
+                w,
+                PADDING_X,
+                input_y,
+                display_text,
+                color::WHITE,
+                color::BLACK,
             );
         }
     }
@@ -736,16 +793,46 @@ impl Screen for NousChatScreen {
             }
 
             // Digit keys: append to input (T9 mapping done by caller).
-            Key::Num0 => { self.input_push(' '); ScreenAction::None }
-            Key::Num1 => { self.input_push('1'); ScreenAction::None }
-            Key::Num2 => { self.input_push('a'); ScreenAction::None }
-            Key::Num3 => { self.input_push('d'); ScreenAction::None }
-            Key::Num4 => { self.input_push('g'); ScreenAction::None }
-            Key::Num5 => { self.input_push('j'); ScreenAction::None }
-            Key::Num6 => { self.input_push('m'); ScreenAction::None }
-            Key::Num7 => { self.input_push('p'); ScreenAction::None }
-            Key::Num8 => { self.input_push('t'); ScreenAction::None }
-            Key::Num9 => { self.input_push('w'); ScreenAction::None }
+            Key::Num0 => {
+                self.input_push(' ');
+                ScreenAction::None
+            }
+            Key::Num1 => {
+                self.input_push('1');
+                ScreenAction::None
+            }
+            Key::Num2 => {
+                self.input_push('a');
+                ScreenAction::None
+            }
+            Key::Num3 => {
+                self.input_push('d');
+                ScreenAction::None
+            }
+            Key::Num4 => {
+                self.input_push('g');
+                ScreenAction::None
+            }
+            Key::Num5 => {
+                self.input_push('j');
+                ScreenAction::None
+            }
+            Key::Num6 => {
+                self.input_push('m');
+                ScreenAction::None
+            }
+            Key::Num7 => {
+                self.input_push('p');
+                ScreenAction::None
+            }
+            Key::Num8 => {
+                self.input_push('t');
+                ScreenAction::None
+            }
+            Key::Num9 => {
+                self.input_push('w');
+                ScreenAction::None
+            }
 
             _ => ScreenAction::None,
         }
@@ -816,11 +903,7 @@ mod tests {
     #[test]
     fn push_nous_message_without_proposal() {
         let mut screen = NousChatScreen::new();
-        let msg = ChatMessage::from_nous(
-            "Syn",
-            String::from("Hello Cody, how can I help?"),
-            1000,
-        );
+        let msg = ChatMessage::from_nous("Syn", String::from("Hello Cody, how can I help?"), 1000);
         screen.push_message(msg);
         assert_eq!(screen.message_count(), 1);
         assert!(screen.pending_proposal().is_none());
@@ -830,7 +913,7 @@ mod tests {
     fn push_nous_message_with_proposal() {
         let mut screen = NousChatScreen::new();
         let body = String::from(
-            "Sure, I'll call Maria.\n\n```thumos-action\n{\"thumos_action\": \"open_dialer\", \"params\": {\"number\": \"+15550100\"}, \"description\": \"Call Maria\"}\n```"
+            "Sure, I'll call Maria.\n\n```thumos-action\n{\"thumos_action\": \"open_dialer\", \"params\": {\"number\": \"+15550100\"}, \"description\": \"Call Maria\"}\n```",
         );
         let msg = ChatMessage::from_nous("Syn", body, 1000);
         screen.push_message(msg);
@@ -839,17 +922,14 @@ mod tests {
 
         let action = screen.pending_action();
         assert!(action.is_some());
-        assert_eq!(
-            action.map(|a| a.action.as_str()),
-            Some("open_dialer"),
-        );
+        assert_eq!(action.map(|a| a.action.as_str()), Some("open_dialer"),);
     }
 
     #[test]
     fn confirm_proposal() {
         let mut screen = NousChatScreen::new();
         let body = String::from(
-            "```thumos-action\n{\"thumos_action\": \"start_timer\", \"params\": {\"duration\": \"300\"}, \"description\": \"5 minute timer\"}\n```"
+            "```thumos-action\n{\"thumos_action\": \"start_timer\", \"params\": {\"duration\": \"300\"}, \"description\": \"5 minute timer\"}\n```",
         );
         let msg = ChatMessage::from_nous("Syn", body, 1000);
         screen.push_message(msg);
@@ -863,7 +943,7 @@ mod tests {
     fn cancel_proposal() {
         let mut screen = NousChatScreen::new();
         let body = String::from(
-            "```thumos-action\n{\"thumos_action\": \"open_dialer\", \"params\": {}, \"description\": \"Call someone\"}\n```"
+            "```thumos-action\n{\"thumos_action\": \"open_dialer\", \"params\": {}, \"description\": \"Call someone\"}\n```",
         );
         let msg = ChatMessage::from_nous("Syn", body, 1000);
         screen.push_message(msg);
@@ -876,7 +956,7 @@ mod tests {
     fn clear_proposal() {
         let mut screen = NousChatScreen::new();
         let body = String::from(
-            "```thumos-action\n{\"thumos_action\": \"open_dialer\", \"params\": {}, \"description\": \"Test\"}\n```"
+            "```thumos-action\n{\"thumos_action\": \"open_dialer\", \"params\": {}, \"description\": \"Test\"}\n```",
         );
         let msg = ChatMessage::from_nous("Syn", body, 1000);
         screen.push_message(msg);
@@ -942,10 +1022,7 @@ mod tests {
     fn max_messages_eviction() {
         let mut screen = NousChatScreen::new();
         for i in 0..MAX_MESSAGES + 5 {
-            let msg = ChatMessage::from_user(
-                alloc::format!("msg {i}"),
-                i as u64,
-            );
+            let msg = ChatMessage::from_user(alloc::format!("msg {i}"), i as u64);
             screen.push_message(msg);
         }
         assert_eq!(
@@ -995,7 +1072,7 @@ mod tests {
     fn on_key_left_cancels_proposal() {
         let mut screen = NousChatScreen::new();
         let body = String::from(
-            "```thumos-action\n{\"thumos_action\": \"test\", \"params\": {}, \"description\": \"Test\"}\n```"
+            "```thumos-action\n{\"thumos_action\": \"test\", \"params\": {}, \"description\": \"Test\"}\n```",
         );
         screen.push_message(ChatMessage::from_nous("Syn", body, 1000));
         assert_eq!(screen.pending_proposal(), Some(ProposalState::Pending));
@@ -1008,7 +1085,7 @@ mod tests {
     fn on_key_right_confirms_proposal() {
         let mut screen = NousChatScreen::new();
         let body = String::from(
-            "```thumos-action\n{\"thumos_action\": \"test\", \"params\": {}, \"description\": \"Test\"}\n```"
+            "```thumos-action\n{\"thumos_action\": \"test\", \"params\": {}, \"description\": \"Test\"}\n```",
         );
         screen.push_message(ChatMessage::from_nous("Syn", body, 1000));
 
@@ -1020,7 +1097,7 @@ mod tests {
     fn on_key_ok_confirms_pending_proposal() {
         let mut screen = NousChatScreen::new();
         let body = String::from(
-            "```thumos-action\n{\"thumos_action\": \"test\", \"params\": {}, \"description\": \"Test\"}\n```"
+            "```thumos-action\n{\"thumos_action\": \"test\", \"params\": {}, \"description\": \"Test\"}\n```",
         );
         screen.push_message(ChatMessage::from_nous("Syn", body, 1000));
 
@@ -1040,10 +1117,7 @@ mod tests {
     #[test]
     fn draw_does_not_panic_with_messages() {
         let mut screen = NousChatScreen::new();
-        screen.push_message(ChatMessage::from_user(
-            String::from("Hello"),
-            1000,
-        ));
+        screen.push_message(ChatMessage::from_user(String::from("Hello"), 1000));
         screen.push_message(ChatMessage::from_nous(
             "Syn",
             String::from("Hi there!"),
@@ -1053,21 +1127,27 @@ mod tests {
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "nous chat with messages must render visible content");
+        assert!(
+            any_set,
+            "nous chat with messages must render visible content"
+        );
     }
 
     #[test]
     fn draw_does_not_panic_with_proposal() {
         let mut screen = NousChatScreen::new();
         let body = String::from(
-            "```thumos-action\n{\"thumos_action\": \"open_dialer\", \"params\": {\"number\": \"+15550100\"}, \"description\": \"Call Maria\"}\n```"
+            "```thumos-action\n{\"thumos_action\": \"open_dialer\", \"params\": {\"number\": \"+15550100\"}, \"description\": \"Call Maria\"}\n```",
         );
         screen.push_message(ChatMessage::from_nous("Syn", body, 1000));
 
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "nous chat with proposal must render visible content");
+        assert!(
+            any_set,
+            "nous chat with proposal must render visible content"
+        );
     }
 
     #[test]

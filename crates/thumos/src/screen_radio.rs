@@ -20,8 +20,7 @@
 )]
 
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -113,9 +112,18 @@ struct RadioPreset {
 
 /// Available radio presets, cycled by the PRESET softkey.
 const PRESETS: [RadioPreset; PRESET_COUNT] = [
-    RadioPreset { label: "COVERT LOCK", state: RadioState::ALL_OFF },
-    RadioPreset { label: "STEALTH", state: RadioState::STEALTH },
-    RadioPreset { label: "RESTORE", state: RadioState::ALL_ON },
+    RadioPreset {
+        label: "COVERT LOCK",
+        state: RadioState::ALL_OFF,
+    },
+    RadioPreset {
+        label: "STEALTH",
+        state: RadioState::STEALTH,
+    },
+    RadioPreset {
+        label: "RESTORE",
+        state: RadioState::ALL_ON,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -211,16 +219,41 @@ impl Screen for RadioControlScreen {
             } else {
                 ("OFF", color::RED)
             };
-            ui::draw_str(fb, w, STATUS_X, row_y, status_text, status_color, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                STATUS_X,
+                row_y,
+                status_text,
+                status_color,
+                color::BLACK,
+            );
         }
 
         // Separator line above preset area.
         let sep_y = PRESET_Y - 8;
-        ui::fill_rect(fb, w, h, PADDING_X, sep_y, w - PADDING_X * 2, 1, color::DARK_GREY);
+        ui::fill_rect(
+            fb,
+            w,
+            h,
+            PADDING_X,
+            sep_y,
+            w - PADDING_X * 2,
+            1,
+            color::DARK_GREY,
+        );
 
         // Active preset label.
         let preset_text = self.preset_label();
-        ui::draw_str(fb, w, PADDING_X, PRESET_Y, "Mode:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            PRESET_Y,
+            "Mode:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
         let mode_color = match self.detect_preset() {
             Some(0) => color::RED,    // COVERT LOCK.
             Some(1) => color::YELLOW, // STEALTH.
@@ -228,9 +261,13 @@ impl Screen for RadioControlScreen {
             _ => color::WHITE,        // CUSTOM.
         };
         ui::draw_str(
-            fb, w,
-            PADDING_X + 6 * CHAR_WIDTH, PRESET_Y,
-            preset_text, mode_color, color::BLACK,
+            fb,
+            w,
+            PADDING_X + 6 * CHAR_WIDTH,
+            PRESET_Y,
+            preset_text,
+            mode_color,
+            color::BLACK,
         );
     }
 

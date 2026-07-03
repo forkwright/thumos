@@ -662,10 +662,7 @@ mod tests {
     #[test]
     fn split_horizon_routes_lan_to_local_dns() {
         let server = select_dns_server("homepage.lan", LAN_DNS, MULLVAD_DNS);
-        assert_eq!(
-            server, LAN_DNS,
-            "*.lan queries must route to LAN DNS"
-        );
+        assert_eq!(server, LAN_DNS, "*.lan queries must route to LAN DNS");
 
         // Also test bare "lan" and mixed case.
         let server = select_dns_server("something.LAN", LAN_DNS, MULLVAD_DNS);
@@ -915,17 +912,17 @@ mod tests {
     #[test]
     fn use_dot_defaults_to_false() {
         let resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
-        assert!(
-            !resolver.use_dot(),
-            "DoT must be disabled by default"
-        );
+        assert!(!resolver.use_dot(), "DoT must be disabled by default");
     }
 
     #[test]
     fn set_use_dot_enables_dot() {
         let mut resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
         resolver.set_use_dot(true);
-        assert!(resolver.use_dot(), "DoT must be enabled after set_use_dot(true)");
+        assert!(
+            resolver.use_dot(),
+            "DoT must be enabled after set_use_dot(true)"
+        );
     }
 
     #[test]
@@ -978,11 +975,17 @@ mod tests {
         // A sequential counter (the regression this test guards against)
         // produces txid[i+1] == txid[i] + 1 for every consecutive pair.
         let all_sequential = txids.windows(2).all(|w| w[1] == w[0].wrapping_add(1));
-        assert!(!all_sequential, "txids must not be a sequential counter: {txids:?}");
+        assert!(
+            !all_sequential,
+            "txids must not be a sequential counter: {txids:?}"
+        );
 
         // Must not be monotonically increasing either.
         let monotonic = txids.windows(2).all(|w| w[1] > w[0]);
-        assert!(!monotonic, "txids must not be monotonically increasing: {txids:?}");
+        assert!(
+            !monotonic,
+            "txids must not be monotonically increasing: {txids:?}"
+        );
 
         // Must not be constant (rules out a degraded/uninitialized CSPRNG
         // silently returning all-zero bytes).

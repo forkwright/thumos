@@ -23,10 +23,7 @@
 //! - [`BtState::Ready`] or [`BtState::Scanning`] -> "BT"
 //! - [`GpsState::FixAcquired`] -> "GPS"
 
-use crate::ui::{
-    self, color,
-    CHAR_HEIGHT, CHAR_WIDTH, SCREEN_WIDTH, STATUS_BAR_HEIGHT,
-};
+use crate::ui::{self, CHAR_HEIGHT, CHAR_WIDTH, SCREEN_WIDTH, STATUS_BAR_HEIGHT, color};
 
 // ---------------------------------------------------------------------------
 // Status bar state
@@ -349,10 +346,7 @@ mod tests {
         let modes = ['D', 'S', 'P'];
         let mut seen = [false; 128];
         for &m in &modes {
-            assert!(
-                !seen[m as usize],
-                "mode character '{m}' must be unique"
-            );
+            assert!(!seen[m as usize], "mode character '{m}' must be unique");
             seen[m as usize] = true;
         }
     }
@@ -367,7 +361,10 @@ mod tests {
         };
         KernelStatusBar::draw(&mut fb, &state);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "status bar with threat indicator must render pixels");
+        assert!(
+            any_set,
+            "status bar with threat indicator must render pixels"
+        );
     }
 
     #[test]

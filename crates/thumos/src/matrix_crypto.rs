@@ -37,9 +37,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use aes::Aes256;
-use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use aes::cipher::block_padding::Pkcs7;
 use aes::cipher::generic_array::GenericArray;
+use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use cbc::{Decryptor as CbcDecryptor, Encryptor as CbcEncryptor};
 use ed25519_dalek::{Signature, VerifyingKey};
 use subtle::ConstantTimeEq;
@@ -163,13 +163,22 @@ impl fmt::Display for CryptoError {
             Self::EmptyPlaintext => write!(f, "plaintext is empty"),
             Self::EntropyUnavailable => write!(f, "kernel CSPRNG not seeded"),
             Self::MacVerificationFailed => {
-                write!(f, "Megolm MAC verification failed (forged or tampered ciphertext)")
+                write!(
+                    f,
+                    "Megolm MAC verification failed (forged or tampered ciphertext)"
+                )
             }
             Self::MegolmMessageTooShort => {
-                write!(f, "Megolm message too short to contain index prefix and MAC")
+                write!(
+                    f,
+                    "Megolm message too short to contain index prefix and MAC"
+                )
             }
             Self::RoomIdMismatch => {
-                write!(f, "Megolm session bound to a different room (cross-room confusion)")
+                write!(
+                    f,
+                    "Megolm session bound to a different room (cross-room confusion)"
+                )
             }
             Self::UntrustedDeviceKey => {
                 write!(f, "device key failed Ed25519 self-signature verification")
@@ -312,10 +321,7 @@ impl fmt::Display for MegolmSession {
         write!(
             f,
             "MegolmSession(id:{:02x}{:02x}..., room:{}, idx:{})",
-            self.session_id[0],
-            self.session_id[1],
-            self.room_id,
-            self.message_index,
+            self.session_id[0], self.session_id[1], self.room_id, self.message_index,
         )
     }
 }
@@ -407,7 +413,10 @@ impl MatrixCrypto {
     /// maximum batch size.
     /// Returns [`CryptoError::KeyCapacityReached`] if the pool would exceed
     /// its maximum size.
-    pub(crate) fn generate_one_time_keys(&mut self, count: u32) -> Result<Vec<[u8; KEY_SIZE]>, CryptoError> {
+    pub(crate) fn generate_one_time_keys(
+        &mut self,
+        count: u32,
+    ) -> Result<Vec<[u8; KEY_SIZE]>, CryptoError> {
         let count_usize = count as usize;
         if count_usize > MAX_GENERATED_KEYS {
             return Err(CryptoError::KeyCountTooLarge);
@@ -474,8 +483,8 @@ impl MatrixCrypto {
     /// Returns [`CryptoError::InvalidKeyResponse`] if the JSON structure
     /// is not valid or is missing expected fields.
     pub(crate) fn process_key_query_response(json: &str) -> Result<Vec<DeviceKeys>, CryptoError> {
-        let root = JsonParser::parse(json.as_bytes())
-            .map_err(|_| CryptoError::InvalidKeyResponse)?;
+        let root =
+            JsonParser::parse(json.as_bytes()).map_err(|_| CryptoError::InvalidKeyResponse)?;
 
         let device_keys_obj = root
             .get("device_keys")
@@ -507,9 +516,7 @@ impl MatrixCrypto {
                 let mut found_curve = false;
 
                 for (key_name, key_val) in keys_entries {
-                    let key_str = key_val
-                        .as_str()
-                        .ok_or(CryptoError::InvalidKeyResponse)?;
+                    let key_str = key_val.as_str().ok_or(CryptoError::InvalidKeyResponse)?;
 
                     if key_name.starts_with("ed25519:") {
                         if let Some(decoded) = decode_base64_key(key_str) {
@@ -614,7 +621,10 @@ impl MatrixCrypto {
 
     /// Find an inbound Megolm session by session ID.
     #[must_use]
-    pub(crate) fn find_inbound_megolm(&self, session_id: &[u8; KEY_SIZE]) -> Option<&MegolmSession> {
+    pub(crate) fn find_inbound_megolm(
+        &self,
+        session_id: &[u8; KEY_SIZE],
+    ) -> Option<&MegolmSession> {
         self.megolm_inbound
             .iter()
             .find(|s| &s.session_id == session_id)
@@ -672,7 +682,8 @@ fn generate_device_keys() -> Result<DeviceKeys, CryptoError> {
 /// IV is a caller responsibility (derived, for Megolm; prepended, for the
 /// standalone helper below).
 fn cbc_encrypt(key: &[u8; KEY_SIZE], iv: &[u8; AES_BLOCK_SIZE], plaintext: &[u8]) -> Vec<u8> {
-    let enc = CbcEncryptor::<Aes256>::new(GenericArray::from_slice(key), GenericArray::from_slice(iv));
+    let enc =
+        CbcEncryptor::<Aes256>::new(GenericArray::from_slice(key), GenericArray::from_slice(iv));
     enc.encrypt_padded_vec_mut::<Pkcs7>(plaintext)
 }
 
@@ -691,7 +702,8 @@ fn cbc_decrypt(
     if ciphertext.is_empty() || ciphertext.len() % AES_BLOCK_SIZE != 0 {
         return Err(CryptoError::InvalidCiphertextLength);
     }
-    let dec = CbcDecryptor::<Aes256>::new(GenericArray::from_slice(key), GenericArray::from_slice(iv));
+    let dec =
+        CbcDecryptor::<Aes256>::new(GenericArray::from_slice(key), GenericArray::from_slice(iv));
     dec.decrypt_padded_vec_mut::<Pkcs7>(ciphertext)
         .map_err(|_| CryptoError::InvalidPadding)
 }
@@ -884,7 +896,11 @@ fn derive_megolm_message_keys(
     aes_key.copy_from_slice(&material[..KEY_SIZE]);
     hmac_key.copy_from_slice(&material[KEY_SIZE..KEY_SIZE * 2]);
     iv.copy_from_slice(&material[KEY_SIZE * 2..]);
-    Ok(MegolmMessageKeys { aes_key, hmac_key, iv })
+    Ok(MegolmMessageKeys {
+        aes_key,
+        hmac_key,
+        iv,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -966,7 +982,9 @@ fn verify_device_self_signature(
         return false;
     };
     let signature = Signature::from_bytes(&signature_bytes);
-    verifying_key.verify_strict(signed.as_bytes(), &signature).is_ok()
+    verifying_key
+        .verify_strict(signed.as_bytes(), &signature)
+        .is_ok()
 }
 
 /// Serialize the signed portion of a device-keys object as Matrix-canonical
@@ -1223,7 +1241,11 @@ fn base64_decode_32(s: &str) -> Option<[u8; KEY_SIZE]> {
         }
     }
 
-    if out_idx == KEY_SIZE { Some(result) } else { None }
+    if out_idx == KEY_SIZE {
+        Some(result)
+    } else {
+        None
+    }
 }
 
 /// Map a base64 character to its 6-bit value.
@@ -1287,10 +1309,9 @@ mod tests {
     /// Must be called before any test that uses random key generation.
     fn setup_test_rng() {
         let key = [
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
         ];
         let nonce = [0u8; 8];
         csprng::seed_for_test(&key, &nonce, 0);
@@ -1299,10 +1320,9 @@ mod tests {
     /// Seed with an alternate key to produce different randomness.
     fn setup_test_rng_alt() {
         let key = [
-            0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
-            0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
-            0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
-            0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
+            0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d,
+            0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b,
+            0x3c, 0x3d, 0x3e, 0x3f,
         ];
         let nonce = [0u8; 8];
         csprng::seed_for_test(&key, &nonce, 0);
@@ -1458,14 +1478,12 @@ mod tests {
         // Clone session for decryption (simulates inbound session).
         let session = crypto.find_outbound_megolm(room_id);
         assert!(session.is_some());
-        let inbound = session
-            .map(|s| s.clone())
-            .unwrap_or_else(|| MegolmSession {
-                session_id: [0u8; KEY_SIZE],
-                session_key: [0u8; KEY_SIZE],
-                message_index: 0,
-                room_id: MatrixRoomId::new("!fallback:test").expect("valid test room id"),
-            });
+        let inbound = session.map(|s| s.clone()).unwrap_or_else(|| MegolmSession {
+            session_id: [0u8; KEY_SIZE],
+            session_key: [0u8; KEY_SIZE],
+            message_index: 0,
+            room_id: MatrixRoomId::new("!fallback:test").expect("valid test room id"),
+        });
 
         // Get mutable reference to the outbound session.
         let outbound = &mut crypto.megolm_outbound[0];
@@ -1496,8 +1514,9 @@ mod tests {
             .map(Clone::clone)
             .expect("session exists");
 
-        let mut ciphertext = encrypt_megolm(&mut crypto.megolm_outbound[0], b"authenticated secret")
-            .expect("encrypt");
+        let mut ciphertext =
+            encrypt_megolm(&mut crypto.megolm_outbound[0], b"authenticated secret")
+                .expect("encrypt");
 
         // Flip one bit inside the AES-CBC ciphertext region (after the 4-byte
         // index prefix, before the 8-byte MAC).
@@ -1544,7 +1563,8 @@ mod tests {
             .map(Clone::clone)
             .expect("session exists");
 
-        let ct = encrypt_megolm(&mut crypto.megolm_outbound[0], b"room-bound message").expect("encrypt");
+        let ct =
+            encrypt_megolm(&mut crypto.megolm_outbound[0], b"room-bound message").expect("encrypt");
 
         // The session is bound to `room_id`; decrypting as if the event arrived
         // in a different room must be rejected before any MAC/crypto work.
@@ -1574,9 +1594,24 @@ mod tests {
         assert_eq!(crypto.megolm_outbound[0].message_index, 3);
 
         // Decrypt out of order — each payload carries its own index (audit #250).
-        assert_eq!(decrypt_megolm(&inbound, &c2, room_id).expect("d2").as_slice(), b"third");
-        assert_eq!(decrypt_megolm(&inbound, &c0, room_id).expect("d0").as_slice(), b"first");
-        assert_eq!(decrypt_megolm(&inbound, &c1, room_id).expect("d1").as_slice(), b"second");
+        assert_eq!(
+            decrypt_megolm(&inbound, &c2, room_id)
+                .expect("d2")
+                .as_slice(),
+            b"third"
+        );
+        assert_eq!(
+            decrypt_megolm(&inbound, &c0, room_id)
+                .expect("d0")
+                .as_slice(),
+            b"first"
+        );
+        assert_eq!(
+            decrypt_megolm(&inbound, &c1, room_id)
+                .expect("d1")
+                .as_slice(),
+            b"second"
+        );
     }
 
     #[test]
@@ -1665,10 +1700,8 @@ mod tests {
 
     #[test]
     fn key_query_request_has_correct_format() {
-        let json = MatrixCrypto::build_key_query_request(&[
-            "@alice:example.com",
-            "@bob:example.com",
-        ]);
+        let json =
+            MatrixCrypto::build_key_query_request(&["@alice:example.com", "@bob:example.com"]);
 
         assert!(json.contains("device_keys"));
         assert!(json.contains("@alice:example.com"));
@@ -1834,10 +1867,11 @@ mod tests {
 
     #[test]
     fn hex_round_trip() {
-        let original = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
-                       0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-                       0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
-                       0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
+        let original = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+            0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x10, 0x20, 0x30, 0x40,
+            0x50, 0x60, 0x70, 0x80,
+        ];
         let encoded = hex_encode(&original);
         let decoded = hex_decode_32(&encoded);
         assert!(decoded.is_some());
@@ -1882,7 +1916,11 @@ mod tests {
         // Try to decrypt with room2's session (its own room passed as expected,
         // so the failure is the MAC, not the room check) — the wrong session key
         // yields a wrong HMAC key, so the MAC must reject it.
-        let result = decrypt_megolm(&crypto.megolm_outbound[1], &ciphertext, "!room2:example.com");
+        let result = decrypt_megolm(
+            &crypto.megolm_outbound[1],
+            &ciphertext,
+            "!room2:example.com",
+        );
         assert_eq!(
             result,
             Err(CryptoError::MacVerificationFailed),

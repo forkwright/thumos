@@ -45,8 +45,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction, ScreenId,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
+    ScreenId, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -455,8 +455,14 @@ impl MessagesScreen {
 
         if self.messages.is_empty() {
             ui::draw_str_centered(
-                fb, w, 0, w, CONTENT_HEIGHT / 2 - CHAR_HEIGHT / 2,
-                "No messages", color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                0,
+                w,
+                CONTENT_HEIGHT / 2 - CHAR_HEIGHT / 2,
+                "No messages",
+                color::DARK_GREY,
+                color::BLACK,
             );
             return;
         }
@@ -472,8 +478,13 @@ impl MessagesScreen {
             // Highlight selected entry.
             if is_selected {
                 ui::fill_rect(
-                    fb, w, CONTENT_HEIGHT,
-                    0, y, w, ENTRY_HEIGHT,
+                    fb,
+                    w,
+                    CONTENT_HEIGHT,
+                    0,
+                    y,
+                    w,
+                    ENTRY_HEIGHT,
                     color::from_rgb(20, 20, 50),
                 );
             }
@@ -486,18 +497,35 @@ impl MessagesScreen {
             let sender_display = truncate_str(&msg.sender, 22);
             let line1 = format_entry_line1_with_badge(badge, marker, &sender_display);
             let badge_color = transport_badge_color(msg.transport);
-            let sender_color = if msg.read { color::WHITE } else { color::YELLOW };
+            let sender_color = if msg.read {
+                color::WHITE
+            } else {
+                color::YELLOW
+            };
             // Draw badge in its own color, then the rest.
             let badge_width = badge.len() as u16 * CHAR_WIDTH;
             ui::draw_str(fb, w, 4, y + 2, badge, badge_color, color::BLACK);
             let rest = &line1[badge.len()..];
-            ui::draw_str(fb, w, 4 + badge_width, y + 2, rest, sender_color, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                4 + badge_width,
+                y + 2,
+                rest,
+                sender_color,
+                color::BLACK,
+            );
 
             // Body preview (first PREVIEW_LEN chars).
             let preview = truncate_str(&msg.body, PREVIEW_LEN);
             ui::draw_str(
-                fb, w, 4, y + CHAR_HEIGHT + 4,
-                &preview, color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                4,
+                y + CHAR_HEIGHT + 4,
+                &preview,
+                color::DARK_GREY,
+                color::BLACK,
             );
         }
     }
@@ -518,29 +546,57 @@ impl MessagesScreen {
 
         // Sender.
         let from_x = 4 + (badge.len() as u16 + 1) * CHAR_WIDTH;
-        ui::draw_str(fb, w, from_x, TITLE_Y, "From:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            from_x,
+            TITLE_Y,
+            "From:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
         let sender_display = truncate_str(&msg.sender, 22);
         ui::draw_str(
-            fb, w, from_x + 6 * CHAR_WIDTH, TITLE_Y,
-            &sender_display, color::WHITE, color::BLACK,
+            fb,
+            w,
+            from_x + 6 * CHAR_WIDTH,
+            TITLE_Y,
+            &sender_display,
+            color::WHITE,
+            color::BLACK,
         );
 
         // Timestamp and transport name.
         if msg.timestamp > 0 {
             let time_str = format_timestamp(msg.timestamp);
             ui::draw_str(
-                fb, w, 4, TITLE_Y + CHAR_HEIGHT + 2,
-                &time_str, color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                4,
+                TITLE_Y + CHAR_HEIGHT + 2,
+                &time_str,
+                color::DARK_GREY,
+                color::BLACK,
             );
             let via_x = 4 + (time_str.len() as u16 + 1) * CHAR_WIDTH;
             ui::draw_str(
-                fb, w, via_x, TITLE_Y + CHAR_HEIGHT + 2,
-                msg.transport.display_name(), color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                via_x,
+                TITLE_Y + CHAR_HEIGHT + 2,
+                msg.transport.display_name(),
+                color::DARK_GREY,
+                color::BLACK,
             );
         } else {
             ui::draw_str(
-                fb, w, 4, TITLE_Y + CHAR_HEIGHT + 2,
-                msg.transport.display_name(), color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                4,
+                TITLE_Y + CHAR_HEIGHT + 2,
+                msg.transport.display_name(),
+                color::DARK_GREY,
+                color::BLACK,
             );
         }
 
@@ -573,8 +629,13 @@ impl MessagesScreen {
         let transport_label = format_transport_label(transport_badge, transport_name);
         let label_width = transport_label.len() as u16 * CHAR_WIDTH;
         ui::draw_str(
-            fb, w, w.saturating_sub(label_width + 4), TITLE_Y,
-            &transport_label, badge_color, color::BLACK,
+            fb,
+            w,
+            w.saturating_sub(label_width + 4),
+            TITLE_Y,
+            &transport_label,
+            badge_color,
+            color::BLACK,
         );
 
         // "To:" field.
@@ -585,15 +646,24 @@ impl MessagesScreen {
         };
         ui::draw_str(fb, w, 4, TITLE_Y, "To:", to_label_color, color::BLACK);
         let to_str = self.compose_to_str();
-        let to_display = if to_str.is_empty() { "Enter number" } else { to_str };
+        let to_display = if to_str.is_empty() {
+            "Enter number"
+        } else {
+            to_str
+        };
         let to_text_color = if to_str.is_empty() {
             color::DARK_GREY
         } else {
             color::WHITE
         };
         ui::draw_str(
-            fb, w, 4 + 4 * CHAR_WIDTH, TITLE_Y,
-            to_display, to_text_color, color::BLACK,
+            fb,
+            w,
+            4 + 4 * CHAR_WIDTH,
+            TITLE_Y,
+            to_display,
+            to_text_color,
+            color::BLACK,
         );
 
         // Separator line.
@@ -805,11 +875,11 @@ fn format_entry_line1_with_badge(badge: &str, marker: &str, sender: &str) -> Str
 fn transport_badge_color(transport: MessageTransport) -> u16 {
     match transport {
         MessageTransport::Sms => color::GREEN,
-        MessageTransport::Matrix => color::from_rgb(0, 180, 200),  // teal
-        MessageTransport::Briar => color::from_rgb(200, 120, 0),   // amber
+        MessageTransport::Matrix => color::from_rgb(0, 180, 200), // teal
+        MessageTransport::Briar => color::from_rgb(200, 120, 0),  // amber
         MessageTransport::Meshtastic => color::from_rgb(130, 130, 200), // lavender
         MessageTransport::BridgedWhatsApp => color::from_rgb(0, 200, 80), // WhatsApp green
-        MessageTransport::BridgedSlack => color::from_rgb(200, 80, 200),  // purple
+        MessageTransport::BridgedSlack => color::from_rgb(200, 80, 200), // purple
         MessageTransport::BridgedTelegram => color::from_rgb(60, 160, 230), // Telegram blue
     }
 }
@@ -964,10 +1034,7 @@ mod tests {
 
         // Should have rendered visible content.
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(
-            any_set,
-            "inbox with messages must render visible pixels"
-        );
+        assert!(any_set, "inbox with messages must render visible pixels");
     }
 
     #[test]
@@ -989,7 +1056,8 @@ mod tests {
         let truncated = truncate_body_for_display(&body);
         assert!(truncated.len() <= MAX_BODY_DISPLAY_LEN);
         assert_eq!(
-            truncated.len(), MAX_BODY_DISPLAY_LEN - 1,
+            truncated.len(),
+            MAX_BODY_DISPLAY_LEN - 1,
             "the 2-byte char must be dropped, not split"
         );
     }
@@ -1021,16 +1089,8 @@ mod tests {
         let mut screen = MessagesScreen::new();
         // Enter compose mode.
         screen.enter_compose();
-        assert_eq!(
-            screen.softkey_left(),
-            "SEND",
-            "compose LSK must be 'SEND'"
-        );
-        assert_eq!(
-            screen.softkey_right(),
-            "BACK",
-            "compose RSK must be 'BACK'"
-        );
+        assert_eq!(screen.softkey_left(), "SEND", "compose LSK must be 'SEND'");
+        assert_eq!(screen.softkey_right(), "BACK", "compose RSK must be 'BACK'");
     }
 
     #[test]
@@ -1223,7 +1283,10 @@ mod tests {
 
         // Fourth -> BridgedWhatsApp.
         screen.on_key(Key::Star);
-        assert_eq!(screen.compose_transport(), MessageTransport::BridgedWhatsApp);
+        assert_eq!(
+            screen.compose_transport(),
+            MessageTransport::BridgedWhatsApp
+        );
 
         // Fifth -> BridgedSlack.
         screen.on_key(Key::Star);
@@ -1231,7 +1294,10 @@ mod tests {
 
         // Sixth -> BridgedTelegram.
         screen.on_key(Key::Star);
-        assert_eq!(screen.compose_transport(), MessageTransport::BridgedTelegram);
+        assert_eq!(
+            screen.compose_transport(),
+            MessageTransport::BridgedTelegram
+        );
 
         // Seventh -> wraps to Sms.
         screen.on_key(Key::Star);
@@ -1305,13 +1371,11 @@ mod tests {
     #[test]
     fn reply_preserves_transport() {
         let mut screen = MessagesScreen::new();
-        let entries = alloc::vec![
-            MessageEntry::from_matrix(
-                String::from("@alice:example.com"),
-                String::from("Matrix msg"),
-                1_775_924_600_000,
-            ),
-        ];
+        let entries = alloc::vec![MessageEntry::from_matrix(
+            String::from("@alice:example.com"),
+            String::from("Matrix msg"),
+            1_775_924_600_000,
+        ),];
         screen.set_messages(entries);
 
         // Open the message.
@@ -1365,7 +1429,10 @@ mod tests {
         let mut screen = MessagesScreen::new();
         screen.enter_compose();
         screen.set_compose_transport(MessageTransport::BridgedTelegram);
-        assert_eq!(screen.compose_transport(), MessageTransport::BridgedTelegram);
+        assert_eq!(
+            screen.compose_transport(),
+            MessageTransport::BridgedTelegram
+        );
     }
 
     #[test]

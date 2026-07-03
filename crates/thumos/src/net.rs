@@ -27,9 +27,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
-use smoltcp::phy::{
-    self, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken as _,
-};
+use smoltcp::phy::{self, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken as _};
 use smoltcp::socket::{tcp, udp};
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address, Ipv4Cidr};
@@ -469,18 +467,17 @@ impl<D: Device> Device for FirewallDevice<D> {
     }
 
     fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        self.device.transmit(timestamp).map(|inner| FirewallTxToken {
-            inner,
-            firewall: &mut self.firewall,
-        })
+        self.device
+            .transmit(timestamp)
+            .map(|inner| FirewallTxToken {
+                inner,
+                firewall: &mut self.firewall,
+            })
     }
 }
 
 fn ipv4_payload(frame: &[u8]) -> Option<&[u8]> {
-    let ethertype = u16::from_be_bytes([
-        *frame.get(12)?,
-        *frame.get(13)?,
-    ]);
+    let ethertype = u16::from_be_bytes([*frame.get(12)?, *frame.get(13)?]);
     if ethertype != ETHERTYPE_IPV4 {
         return None;
     }
@@ -489,15 +486,13 @@ fn ipv4_payload(frame: &[u8]) -> Option<&[u8]> {
 }
 
 fn frame_allowed_rx(firewall: &mut Firewall, frame: &[u8]) -> bool {
-    ipv4_payload(frame).is_none_or(|packet| {
-        matches!(firewall.evaluate_rx(packet), Action::Allow | Action::Log)
-    })
+    ipv4_payload(frame)
+        .is_none_or(|packet| matches!(firewall.evaluate_rx(packet), Action::Allow | Action::Log))
 }
 
 fn frame_allowed_tx(firewall: &mut Firewall, frame: &[u8]) -> bool {
-    ipv4_payload(frame).is_none_or(|packet| {
-        matches!(firewall.evaluate_tx(packet), Action::Allow | Action::Log)
-    })
+    ipv4_payload(frame)
+        .is_none_or(|packet| matches!(firewall.evaluate_tx(packet), Action::Allow | Action::Log))
 }
 
 // ---------------------------------------------------------------------------

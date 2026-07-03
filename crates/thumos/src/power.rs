@@ -37,7 +37,10 @@ const MCDI_BASE: usize = 0x1000_DC00;
 
 /// MCDI_CORE_EN: per-core power-down enable register.
 /// Bit N = 1 → core N is powered down.
-#[expect(dead_code, reason = "reserved for per-core power-down; wired in follow-up")]
+#[expect(
+    dead_code,
+    reason = "reserved for per-core power-down; wired in follow-up"
+)]
 const MCDI_CORE_EN: usize = MCDI_BASE + 0x04;
 
 // ---------------------------------------------------------------------------
@@ -57,9 +60,9 @@ pub enum CpuFreq {
     /// 1 200 MHz — mid-high (PCW ≈ 0x0078_0000).
     Mhz1200 = 0x0078_0000,
     /// 900 MHz — mid-low (PCW ≈ 0x005A_0000).
-    Mhz900  = 0x005A_0000,
+    Mhz900 = 0x005A_0000,
     /// 600 MHz — low power (PCW ≈ 0x003C_0000).
-    Mhz600  = 0x003C_0000,
+    Mhz600 = 0x003C_0000,
 }
 
 impl CpuFreq {
@@ -68,16 +71,16 @@ impl CpuFreq {
         match self {
             Self::Mhz1500 => Some(Self::Mhz1200),
             Self::Mhz1200 => Some(Self::Mhz900),
-            Self::Mhz900  => Some(Self::Mhz600),
-            Self::Mhz600  => None,
+            Self::Mhz900 => Some(Self::Mhz600),
+            Self::Mhz600 => None,
         }
     }
 
     /// Return the next higher frequency step, or `None` if already maximum.
     fn step_up(self) -> Option<Self> {
         match self {
-            Self::Mhz600  => Some(Self::Mhz900),
-            Self::Mhz900  => Some(Self::Mhz1200),
+            Self::Mhz600 => Some(Self::Mhz900),
+            Self::Mhz900 => Some(Self::Mhz1200),
             Self::Mhz1200 => Some(Self::Mhz1500),
             Self::Mhz1500 => None,
         }
@@ -125,7 +128,7 @@ impl CpuGovernor {
     pub(crate) const fn new() -> Self {
         Self {
             current_freq: CpuFreq::Mhz1500,
-            cores_active: 0b0000_1111,     // cores 0-3 active
+            cores_active: 0b0000_1111, // cores 0-3 active
             backlight_on: true,
             last_input_tick: 0,
             backlight_timeout_ticks: BACKLIGHT_TIMEOUT_TICKS,
@@ -338,7 +341,10 @@ unsafe fn display_wake() {
 ///
 /// DSI0 CMD_FIFO register: 0x1400_D000 + offset 0x200.
 /// Format: bits [7:0] = DCS opcode, bit 8 = last-byte flag.
-#[expect(dead_code, reason = "DSI0 init helper; invoked by panel bring-up in follow-up")]
+#[expect(
+    dead_code,
+    reason = "DSI0 init helper; invoked by panel bring-up in follow-up"
+)]
 unsafe fn dcs_cmd0(cmd: u8) {
     // SAFETY: DSI0_CMD_FIFO is a valid MMIO register within the DSI0
     // address space at 0x1400_D000.  Volatile access required for hardware.
@@ -576,12 +582,13 @@ impl Default for PowerManager {
 /// Used by the boot sequence (Wave 8) and by [`ModeManager`] on mode
 /// transitions to enforce radio policy without coupling security_mode
 /// directly to PowerManager internals.
-pub(crate) fn apply_mode_policy(
-    policy: &crate::security_mode::ModePolicy,
-    pm: &mut PowerManager,
-) {
+pub(crate) fn apply_mode_policy(policy: &crate::security_mode::ModePolicy, pm: &mut PowerManager) {
     let to_state = |enabled: bool| -> PowerState {
-        if enabled { PowerState::On } else { PowerState::Off }
+        if enabled {
+            PowerState::On
+        } else {
+            PowerState::Off
+        }
     };
 
     pm.set_state(Radio::Cellular, to_state(policy.cellular_enabled));
@@ -680,7 +687,11 @@ mod tests {
         let mut gov = CpuGovernor::new();
         gov.current_freq = CpuFreq::Mhz1200;
         let freq = gov.apply_dvfs(50); // 30% ≤ 50% ≤ 70%
-        assert_eq!(freq, CpuFreq::Mhz1200, "mid load must hold current frequency");
+        assert_eq!(
+            freq,
+            CpuFreq::Mhz1200,
+            "mid load must hold current frequency"
+        );
     }
 
     #[test]
@@ -701,7 +712,11 @@ mod tests {
     #[test]
     fn core_parking_disables_cores_when_one_runnable() {
         let mut gov = CpuGovernor::new();
-        assert_eq!(gov.cores_active(), 0b0000_1111, "all cores active initially");
+        assert_eq!(
+            gov.cores_active(),
+            0b0000_1111,
+            "all cores active initially"
+        );
         let mask = gov.apply_core_parking(1);
         assert_eq!(mask, 0b0000_0001, "only core 0 must remain active");
     }
@@ -711,7 +726,10 @@ mod tests {
         let mut gov = CpuGovernor::new();
         gov.apply_core_parking(1); // park first
         let mask = gov.apply_core_parking(4); // then unpark
-        assert_eq!(mask, 0b0000_1111, "all cores must be active for >1 runnable");
+        assert_eq!(
+            mask, 0b0000_1111,
+            "all cores must be active for >1 runnable"
+        );
     }
 
     #[test]
@@ -745,7 +763,10 @@ mod tests {
         let woke = gov.apply_notify_input(5_000);
         assert!(woke, "input must wake the display");
         assert!(gov.backlight_on(), "backlight must be on after input");
-        assert_eq!(gov.last_input_tick, 5_000, "last_input_tick must be updated");
+        assert_eq!(
+            gov.last_input_tick, 5_000,
+            "last_input_tick must be updated"
+        );
     }
 
     #[test]
@@ -775,7 +796,11 @@ mod tests {
         assert_eq!(pm.active_count(), 6);
         assert_eq!(pm.state(Radio::Cellular), PowerState::On);
         assert_eq!(pm.state(Radio::Wifi), PowerState::On);
-        assert_eq!(pm.state(Radio::Mesh), PowerState::On, "Full mode must enable mesh (#254)");
+        assert_eq!(
+            pm.state(Radio::Mesh),
+            PowerState::On,
+            "Full mode must enable mesh (#254)"
+        );
     }
 
     #[test]
@@ -816,7 +841,10 @@ mod tests {
         assert_eq!(pm.state(Radio::Cellular), PowerState::HardwareKilled);
 
         let off_result = pm.set_state(Radio::Cellular, PowerState::Off);
-        assert!(!off_result, "software Off must not succeed over a hardware kill");
+        assert!(
+            !off_result,
+            "software Off must not succeed over a hardware kill"
+        );
         assert_eq!(
             pm.state(Radio::Cellular),
             PowerState::HardwareKilled,
@@ -836,7 +864,14 @@ mod tests {
         pm.apply_mode(PowerMode::Full);
         pm.hardware_kill(Radio::All);
 
-        let radios = [Radio::Cellular, Radio::Wifi, Radio::Bluetooth, Radio::Gps, Radio::Fm, Radio::Mesh];
+        let radios = [
+            Radio::Cellular,
+            Radio::Wifi,
+            Radio::Bluetooth,
+            Radio::Gps,
+            Radio::Fm,
+            Radio::Mesh,
+        ];
         for radio in radios {
             assert_eq!(pm.state(radio), PowerState::HardwareKilled);
         }
@@ -887,18 +922,36 @@ mod tests {
 
         apply_mode_policy(&sentinel_policy, &mut pm);
 
-        assert_eq!(pm.state(Radio::Cellular), PowerState::Off,
-            "Sentinel must disable cellular");
-        assert_eq!(pm.state(Radio::Wifi), PowerState::Off,
-            "Sentinel must disable WiFi");
-        assert_eq!(pm.state(Radio::Bluetooth), PowerState::Off,
-            "Sentinel must disable Bluetooth");
-        assert_eq!(pm.state(Radio::Gps), PowerState::On,
-            "Sentinel must keep GPS on");
-        assert_eq!(pm.state(Radio::Fm), PowerState::Off,
-            "FM must always be off in security modes");
-        assert_eq!(pm.state(Radio::Mesh), PowerState::On,
-            "Sentinel must keep mesh on (#254)");
+        assert_eq!(
+            pm.state(Radio::Cellular),
+            PowerState::Off,
+            "Sentinel must disable cellular"
+        );
+        assert_eq!(
+            pm.state(Radio::Wifi),
+            PowerState::Off,
+            "Sentinel must disable WiFi"
+        );
+        assert_eq!(
+            pm.state(Radio::Bluetooth),
+            PowerState::Off,
+            "Sentinel must disable Bluetooth"
+        );
+        assert_eq!(
+            pm.state(Radio::Gps),
+            PowerState::On,
+            "Sentinel must keep GPS on"
+        );
+        assert_eq!(
+            pm.state(Radio::Fm),
+            PowerState::Off,
+            "FM must always be off in security modes"
+        );
+        assert_eq!(
+            pm.state(Radio::Mesh),
+            PowerState::On,
+            "Sentinel must keep mesh on (#254)"
+        );
     }
 
     #[test]
@@ -921,16 +974,31 @@ mod tests {
 
         apply_mode_policy(&daily_policy, &mut pm);
 
-        assert_eq!(pm.state(Radio::Cellular), PowerState::On,
-            "Daily must enable cellular");
-        assert_eq!(pm.state(Radio::Wifi), PowerState::On,
-            "Daily must enable WiFi");
-        assert_eq!(pm.state(Radio::Bluetooth), PowerState::On,
-            "Daily must enable Bluetooth");
-        assert_eq!(pm.state(Radio::Gps), PowerState::On,
-            "Daily must enable GPS");
-        assert_eq!(pm.state(Radio::Mesh), PowerState::On,
-            "Daily must enable mesh (#254)");
+        assert_eq!(
+            pm.state(Radio::Cellular),
+            PowerState::On,
+            "Daily must enable cellular"
+        );
+        assert_eq!(
+            pm.state(Radio::Wifi),
+            PowerState::On,
+            "Daily must enable WiFi"
+        );
+        assert_eq!(
+            pm.state(Radio::Bluetooth),
+            PowerState::On,
+            "Daily must enable Bluetooth"
+        );
+        assert_eq!(
+            pm.state(Radio::Gps),
+            PowerState::On,
+            "Daily must enable GPS"
+        );
+        assert_eq!(
+            pm.state(Radio::Mesh),
+            PowerState::On,
+            "Daily must enable mesh (#254)"
+        );
     }
 
     #[test]
@@ -954,8 +1022,11 @@ mod tests {
 
         apply_mode_policy(&panic_policy, &mut pm);
 
-        assert_eq!(pm.state(Radio::Mesh), PowerState::Off,
-            "Panic must disable mesh/LoRa (#254)");
+        assert_eq!(
+            pm.state(Radio::Mesh),
+            PowerState::Off,
+            "Panic must disable mesh/LoRa (#254)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -980,7 +1051,10 @@ mod tests {
     #[test]
     fn is_modem_pmic_killed_false_initially() {
         let pm = PowerManager::new();
-        assert!(!pm.is_modem_pmic_killed(), "modem not PMIC-killed initially");
+        assert!(
+            !pm.is_modem_pmic_killed(),
+            "modem not PMIC-killed initially"
+        );
     }
 
     #[test]
@@ -1007,7 +1081,10 @@ mod tests {
         // Attempt to turn all on.
         let result = pm.set_state(Radio::All, PowerState::On);
         assert!(!result, "cannot set_state All On when one is PmicKilled");
-        assert_eq!(pm.state(Radio::Cellular), PowerState::PmicKilled,
-            "PMIC-killed radio must stay killed");
+        assert_eq!(
+            pm.state(Radio::Cellular),
+            PowerState::PmicKilled,
+            "PMIC-killed radio must stay killed"
+        );
     }
 }

@@ -637,10 +637,16 @@ mod tests {
             let total_capacity = objs_per_slab * MAX_SLABS;
             for _ in 0..total_capacity {
                 let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
-                assert!(!ptr.is_null(), "allocation within MAX_SLABS capacity must succeed");
+                assert!(
+                    !ptr.is_null(),
+                    "allocation within MAX_SLABS capacity must succeed"
+                );
             }
             let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
-            assert!(ptr.is_null(), "allocation beyond MAX_SLABS must return null, not panic");
+            assert!(
+                ptr.is_null(),
+                "allocation beyond MAX_SLABS must return null, not panic"
+            );
         }
     }
 
@@ -655,7 +661,10 @@ mod tests {
             let objs_per_slab = page::PAGE_SIZE / 32;
             for _ in 0..(objs_per_slab * TEST_SCARCE_PAGES) {
                 let ptr = sa.alloc_inner(layout, fake_alloc_page_scarce, fake_alloc_page_scarce);
-                assert!(!ptr.is_null(), "allocation within the scarce page budget must succeed");
+                assert!(
+                    !ptr.is_null(),
+                    "allocation within the scarce page budget must succeed"
+                );
             }
             let ptr = sa.alloc_inner(layout, fake_alloc_page_scarce, fake_alloc_page_scarce);
             assert!(
@@ -674,7 +683,10 @@ mod tests {
             // and must be rejected before the page allocator is touched.
             let layout = Layout::from_size_align(4097, 1).unwrap();
             let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
-            assert!(ptr.is_null(), "a >4096-byte request must be rejected, not silently truncated");
+            assert!(
+                ptr.is_null(),
+                "a >4096-byte request must be rejected, not silently truncated"
+            );
             assert_eq!(
                 sa.large_alloc_count, 0,
                 "a rejected multi-page request must not be counted as a successful large alloc"
@@ -689,7 +701,10 @@ mod tests {
             let mut sa = SlabAllocator::new();
             let layout = Layout::from_size_align(32, 4).unwrap();
             let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
-            assert!(ptr.is_null(), "alloc on an uninitialized allocator must return null, not panic");
+            assert!(
+                ptr.is_null(),
+                "alloc on an uninitialized allocator must return null, not panic"
+            );
         }
     }
 
@@ -703,7 +718,11 @@ mod tests {
             let layout = Layout::from_size_align(32, 4).unwrap();
             let fake_ptr = 0x1000 as *mut u8;
             sa.dealloc_inner(fake_ptr, layout, fake_free_page);
-            assert_eq!(sa.stats(), (0, 0), "dealloc on an uninitialized allocator must be a pure no-op");
+            assert_eq!(
+                sa.stats(),
+                (0, 0),
+                "dealloc on an uninitialized allocator must be a pure no-op"
+            );
         }
     }
 
@@ -715,7 +734,10 @@ mod tests {
             let layout = Layout::from_size_align(32, 4).unwrap();
             sa.dealloc_inner(ptr::null_mut(), layout, fake_free_page);
             let (_, frees) = sa.stats();
-            assert_eq!(frees, 0, "dealloc(null) on an initialized allocator must be a no-op, not decrement/crash");
+            assert_eq!(
+                frees, 0,
+                "dealloc(null) on an initialized allocator must be a no-op, not decrement/crash"
+            );
         }
     }
 
@@ -733,9 +755,15 @@ mod tests {
         crate::irq::reset_mock();
         assert!(crate::irq::mock_enabled(), "starts unmasked");
         let guard = LOCK.lock();
-        assert!(!crate::irq::mock_enabled(), "LOCK.lock() must mask IRQ delivery while held");
+        assert!(
+            !crate::irq::mock_enabled(),
+            "LOCK.lock() must mask IRQ delivery while held"
+        );
         drop(guard);
-        assert!(crate::irq::mock_enabled(), "dropping the guard must restore IRQ delivery");
+        assert!(
+            crate::irq::mock_enabled(),
+            "dropping the guard must restore IRQ delivery"
+        );
     }
 
     #[test]
@@ -751,8 +779,14 @@ mod tests {
         let inner = crate::irq::IrqGuard::new();
         assert!(!crate::irq::mock_enabled());
         drop(inner);
-        assert!(!crate::irq::mock_enabled(), "inner drop must not unmask while the slab lock is still held");
+        assert!(
+            !crate::irq::mock_enabled(),
+            "inner drop must not unmask while the slab lock is still held"
+        );
         drop(outer);
-        assert!(crate::irq::mock_enabled(), "outer drop restores IRQ delivery");
+        assert!(
+            crate::irq::mock_enabled(),
+            "outer drop restores IRQ delivery"
+        );
     }
 }

@@ -162,23 +162,35 @@ mod tests {
     fn kinit_has_all_capabilities() {
         let caps = Capabilities::new(Capabilities::ALL);
         // Every individual bit must be present.
-        assert!(caps.contains(Capabilities::MODEM),  "kinit must have MODEM");
-        assert!(caps.contains(Capabilities::RAW_NET), "kinit must have RAW_NET");
-        assert!(caps.contains(Capabilities::KILL),    "kinit must have KILL");
-        assert!(caps.contains(Capabilities::CRYPTO),  "kinit must have CRYPTO");
-        assert!(caps.contains(Capabilities::RADIO),   "kinit must have RADIO");
-        assert!(caps.contains(Capabilities::AUDIT),   "kinit must have AUDIT");
-        assert!(caps.contains(Capabilities::IPC_INIT), "kinit must have IPC_INIT");
+        assert!(caps.contains(Capabilities::MODEM), "kinit must have MODEM");
+        assert!(
+            caps.contains(Capabilities::RAW_NET),
+            "kinit must have RAW_NET"
+        );
+        assert!(caps.contains(Capabilities::KILL), "kinit must have KILL");
+        assert!(
+            caps.contains(Capabilities::CRYPTO),
+            "kinit must have CRYPTO"
+        );
+        assert!(caps.contains(Capabilities::RADIO), "kinit must have RADIO");
+        assert!(caps.contains(Capabilities::AUDIT), "kinit must have AUDIT");
+        assert!(
+            caps.contains(Capabilities::IPC_INIT),
+            "kinit must have IPC_INIT"
+        );
         // ALL must equal the union of all individual bits.
-        let union =
-            Capabilities::MODEM
+        let union = Capabilities::MODEM
             | Capabilities::RAW_NET
             | Capabilities::KILL
             | Capabilities::CRYPTO
             | Capabilities::RADIO
             | Capabilities::AUDIT
             | Capabilities::IPC_INIT;
-        assert_eq!(Capabilities::ALL, union, "ALL must equal bitwise-OR of all caps");
+        assert_eq!(
+            Capabilities::ALL,
+            union,
+            "ALL must equal bitwise-OR of all caps"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -187,28 +199,47 @@ mod tests {
     #[test]
     fn forked_process_inherits_subset() {
         let parent = Capabilities::new(Capabilities::ALL);
-        let child  = Capabilities::new(Capabilities::FORK_DEFAULT);
+        let child = Capabilities::new(Capabilities::FORK_DEFAULT);
 
         // Every child bit must also be set in the parent.
         assert_eq!(
-            child.bits() & parent.bits(), child.bits(),
+            child.bits() & parent.bits(),
+            child.bits(),
             "child capabilities must be a subset of parent capabilities"
         );
         // MODEM, AUDIT, and IPC_INIT must be stripped.
-        assert!(!child.contains(Capabilities::MODEM),
-            "MODEM must not be inherited by default");
-        assert!(!child.contains(Capabilities::AUDIT),
-            "AUDIT must not be inherited by default");
-        assert!(!child.contains(Capabilities::IPC_INIT),
-            "IPC_INIT must not be inherited by default (#371)");
+        assert!(
+            !child.contains(Capabilities::MODEM),
+            "MODEM must not be inherited by default"
+        );
+        assert!(
+            !child.contains(Capabilities::AUDIT),
+            "AUDIT must not be inherited by default"
+        );
+        assert!(
+            !child.contains(Capabilities::IPC_INIT),
+            "IPC_INIT must not be inherited by default (#371)"
+        );
         // Remaining caps must be present.
-        assert!(child.contains(Capabilities::RAW_NET), "RAW_NET must be inherited");
-        assert!(child.contains(Capabilities::KILL),    "KILL must be inherited");
-        assert!(child.contains(Capabilities::CRYPTO),  "CRYPTO must be inherited");
-        assert!(child.contains(Capabilities::RADIO),   "RADIO must be inherited");
+        assert!(
+            child.contains(Capabilities::RAW_NET),
+            "RAW_NET must be inherited"
+        );
+        assert!(child.contains(Capabilities::KILL), "KILL must be inherited");
+        assert!(
+            child.contains(Capabilities::CRYPTO),
+            "CRYPTO must be inherited"
+        );
+        assert!(
+            child.contains(Capabilities::RADIO),
+            "RADIO must be inherited"
+        );
         // Child must be a STRICT subset (parent has bits child lacks).
-        assert_ne!(child.bits(), parent.bits(),
-            "default fork must be a strict subset, not equal");
+        assert_ne!(
+            child.bits(),
+            parent.bits(),
+            "default fork must be a strict subset, not equal"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -231,11 +262,15 @@ mod tests {
     fn capability_check_fails_without_required_bits() {
         // A process with only KILL — no MODEM.
         let caps = Capabilities::new(Capabilities::KILL);
-        assert!(!caps.contains(Capabilities::MODEM),
-            "MODEM check must fail when only KILL is held");
+        assert!(
+            !caps.contains(Capabilities::MODEM),
+            "MODEM check must fail when only KILL is held"
+        );
         // Multi-bit check fails when any required bit is absent.
-        assert!(!caps.contains(Capabilities::KILL | Capabilities::MODEM),
-            "combined check must fail when MODEM is absent");
+        assert!(
+            !caps.contains(Capabilities::KILL | Capabilities::MODEM),
+            "combined check must fail when MODEM is absent"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -245,13 +280,17 @@ mod tests {
     fn kill_requires_cap_kill() {
         // Simulate a process without KILL.
         let caps_no_kill = Capabilities::new(Capabilities::CRYPTO | Capabilities::RADIO);
-        assert!(!caps_no_kill.contains(Capabilities::KILL),
-            "process without KILL cap must fail the check");
+        assert!(
+            !caps_no_kill.contains(Capabilities::KILL),
+            "process without KILL cap must fail the check"
+        );
 
         // Simulate a process with KILL.
         let caps_with_kill = Capabilities::new(Capabilities::KILL);
-        assert!(caps_with_kill.contains(Capabilities::KILL),
-            "process with KILL cap must pass the check");
+        assert!(
+            caps_with_kill.contains(Capabilities::KILL),
+            "process with KILL cap must pass the check"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -260,8 +299,7 @@ mod tests {
     #[test]
     fn kill_to_self_bypasses_cap_check() {
         // EPERM is two's complement -1 (0xFFFF_FFFF as u32).
-        assert_eq!(EPERM, 0xFFFF_FFFFu32,
-            "EPERM must be two's complement -1");
+        assert_eq!(EPERM, 0xFFFF_FFFFu32, "EPERM must be two's complement -1");
         // The self-kill bypass is enforced in sys_kill (signal.rs) by comparing
         // the target PID with current_pid() before calling capability::check.
         // Here we verify the EPERM sentinel value is correct so the integration
@@ -273,7 +311,11 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn all_caps_value() {
-        assert_eq!(Capabilities::ALL, 0x7F, "ALL must equal 0x7F (7 bits, #371 adds IPC_INIT)");
+        assert_eq!(
+            Capabilities::ALL,
+            0x7F,
+            "ALL must equal 0x7F (7 bits, #371 adds IPC_INIT)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -281,8 +323,12 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn fork_default_value() {
-        let expected = Capabilities::ALL & !(Capabilities::MODEM | Capabilities::AUDIT | Capabilities::IPC_INIT);
-        assert_eq!(Capabilities::FORK_DEFAULT, expected,
-            "FORK_DEFAULT must equal ALL & !(MODEM | AUDIT | IPC_INIT)");
+        let expected = Capabilities::ALL
+            & !(Capabilities::MODEM | Capabilities::AUDIT | Capabilities::IPC_INIT);
+        assert_eq!(
+            Capabilities::FORK_DEFAULT,
+            expected,
+            "FORK_DEFAULT must equal ALL & !(MODEM | AUDIT | IPC_INIT)"
+        );
     }
 }

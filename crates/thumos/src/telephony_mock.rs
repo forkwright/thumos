@@ -6,7 +6,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::telephony::{ModemTransport, TelephonyError, MAX_LINE_LEN};
+use crate::telephony::{MAX_LINE_LEN, ModemTransport, TelephonyError};
 
 /// Mock modem transport for unit testing.
 ///

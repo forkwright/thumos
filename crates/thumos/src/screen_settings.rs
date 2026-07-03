@@ -22,8 +22,8 @@
 )]
 
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction, ScreenId,
-    CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
+    ScreenId, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -63,12 +63,30 @@ struct MenuItem {
 
 /// Settings menu items, in display order.
 const MENU_ITEMS: &[MenuItem] = &[
-    MenuItem { label: "WiFi", screen_id: ScreenId::WifiSettings },
-    MenuItem { label: "Bluetooth", screen_id: ScreenId::BtSettings },
-    MenuItem { label: "Display", screen_id: ScreenId::Settings },
-    MenuItem { label: "Sound", screen_id: ScreenId::Settings },
-    MenuItem { label: "Privacy", screen_id: ScreenId::Privacy },
-    MenuItem { label: "About", screen_id: ScreenId::About },
+    MenuItem {
+        label: "WiFi",
+        screen_id: ScreenId::WifiSettings,
+    },
+    MenuItem {
+        label: "Bluetooth",
+        screen_id: ScreenId::BtSettings,
+    },
+    MenuItem {
+        label: "Display",
+        screen_id: ScreenId::Settings,
+    },
+    MenuItem {
+        label: "Sound",
+        screen_id: ScreenId::Settings,
+    },
+    MenuItem {
+        label: "Privacy",
+        screen_id: ScreenId::Privacy,
+    },
+    MenuItem {
+        label: "About",
+        screen_id: ScreenId::About,
+    },
 ];
 
 /// Main settings menu screen.
@@ -203,27 +221,83 @@ impl Screen for AboutScreen {
 
         // OS version.
         ui::draw_str(fb, w, PADDING_X, y, "OS:", color::DARK_GREY, color::BLACK);
-        ui::draw_str(fb, w, PADDING_X + 4 * CHAR_WIDTH, y, VERSION, color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 4 * CHAR_WIDTH,
+            y,
+            VERSION,
+            color::WHITE,
+            color::BLACK,
+        );
         y += DETAIL_SPACING;
 
         // Device model.
-        ui::draw_str(fb, w, PADDING_X, y, "Model:", color::DARK_GREY, color::BLACK);
-        ui::draw_str(fb, w, PADDING_X + 7 * CHAR_WIDTH, y, DEVICE_MODEL, color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            y,
+            "Model:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 7 * CHAR_WIDTH,
+            y,
+            DEVICE_MODEL,
+            color::WHITE,
+            color::BLACK,
+        );
         y += DETAIL_SPACING;
 
         // Build date.
-        ui::draw_str(fb, w, PADDING_X, y, "Build:", color::DARK_GREY, color::BLACK);
-        ui::draw_str(fb, w, PADDING_X + 7 * CHAR_WIDTH, y, BUILD_DATE, color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            y,
+            "Build:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 7 * CHAR_WIDTH,
+            y,
+            BUILD_DATE,
+            color::WHITE,
+            color::BLACK,
+        );
         y += DETAIL_SPACING;
 
         // Architecture.
         ui::draw_str(fb, w, PADDING_X, y, "Arch:", color::DARK_GREY, color::BLACK);
-        ui::draw_str(fb, w, PADDING_X + 6 * CHAR_WIDTH, y, "ARMv7-A (MT6739)", color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 6 * CHAR_WIDTH,
+            y,
+            "ARMv7-A (MT6739)",
+            color::WHITE,
+            color::BLACK,
+        );
         y += DETAIL_SPACING;
 
         // Kernel type.
         ui::draw_str(fb, w, PADDING_X, y, "Type:", color::DARK_GREY, color::BLACK);
-        ui::draw_str(fb, w, PADDING_X + 6 * CHAR_WIDTH, y, "Bare-metal Rust", color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 6 * CHAR_WIDTH,
+            y,
+            "Bare-metal Rust",
+            color::WHITE,
+            color::BLACK,
+        );
     }
 
     fn on_key(&mut self, key: Key) -> ScreenAction {
@@ -314,7 +388,15 @@ impl Screen for WifiSettingsScreen {
         let mut y = DETAIL_START_Y;
 
         // Connection status.
-        ui::draw_str(fb, w, PADDING_X, y, "Status:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            y,
+            "Status:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
         let status_text = if self.state.connected {
             "Connected"
         } else if self.state.scanning {
@@ -322,29 +404,81 @@ impl Screen for WifiSettingsScreen {
         } else {
             "Not connected"
         };
-        let status_color = if self.state.connected { color::GREEN } else { color::WHITE };
-        ui::draw_str(fb, w, PADDING_X + 8 * CHAR_WIDTH, y, status_text, status_color, color::BLACK);
+        let status_color = if self.state.connected {
+            color::GREEN
+        } else {
+            color::WHITE
+        };
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 8 * CHAR_WIDTH,
+            y,
+            status_text,
+            status_color,
+            color::BLACK,
+        );
         y += DETAIL_SPACING;
 
         // SSID (only if connected).
         ui::draw_str(fb, w, PADDING_X, y, "SSID:", color::DARK_GREY, color::BLACK);
         if self.state.connected && self.state.ssid_len > 0 {
-            let ssid_str = core::str::from_utf8(&self.state.ssid[..self.state.ssid_len])
-                .unwrap_or("<binary>");
-            ui::draw_str(fb, w, PADDING_X + 6 * CHAR_WIDTH, y, ssid_str, color::WHITE, color::BLACK);
+            let ssid_str =
+                core::str::from_utf8(&self.state.ssid[..self.state.ssid_len]).unwrap_or("<binary>");
+            ui::draw_str(
+                fb,
+                w,
+                PADDING_X + 6 * CHAR_WIDTH,
+                y,
+                ssid_str,
+                color::WHITE,
+                color::BLACK,
+            );
         } else {
-            ui::draw_str(fb, w, PADDING_X + 6 * CHAR_WIDTH, y, "--", color::DARK_GREY, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                PADDING_X + 6 * CHAR_WIDTH,
+                y,
+                "--",
+                color::DARK_GREY,
+                color::BLACK,
+            );
         }
         y += DETAIL_SPACING;
 
         // Signal strength.
-        ui::draw_str(fb, w, PADDING_X, y, "Signal:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            y,
+            "Signal:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
         if self.state.connected {
             let sig_buf = format_percent(self.state.signal_percent);
             let sig_str = core::str::from_utf8(&sig_buf.data[..sig_buf.len]).unwrap_or("?");
-            ui::draw_str(fb, w, PADDING_X + 8 * CHAR_WIDTH, y, sig_str, color::WHITE, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                PADDING_X + 8 * CHAR_WIDTH,
+                y,
+                sig_str,
+                color::WHITE,
+                color::BLACK,
+            );
         } else {
-            ui::draw_str(fb, w, PADDING_X + 8 * CHAR_WIDTH, y, "--", color::DARK_GREY, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                PADDING_X + 8 * CHAR_WIDTH,
+                y,
+                "--",
+                color::DARK_GREY,
+                color::BLACK,
+            );
         }
         y += DETAIL_SPACING;
 
@@ -353,9 +487,25 @@ impl Screen for WifiSettingsScreen {
         if self.state.connected {
             let ip_buf = format_ip(self.state.ip_addr);
             let ip_str = core::str::from_utf8(&ip_buf.data[..ip_buf.len]).unwrap_or("?");
-            ui::draw_str(fb, w, PADDING_X + 4 * CHAR_WIDTH, y, ip_str, color::WHITE, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                PADDING_X + 4 * CHAR_WIDTH,
+                y,
+                ip_str,
+                color::WHITE,
+                color::BLACK,
+            );
         } else {
-            ui::draw_str(fb, w, PADDING_X + 4 * CHAR_WIDTH, y, "--", color::DARK_GREY, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                PADDING_X + 4 * CHAR_WIDTH,
+                y,
+                "--",
+                color::DARK_GREY,
+                color::BLACK,
+            );
         }
     }
 
@@ -427,7 +577,15 @@ impl Screen for BtSettingsScreen {
         let mut y = DETAIL_START_Y;
 
         // Status.
-        ui::draw_str(fb, w, PADDING_X, y, "Status:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            y,
+            "Status:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
         let status_text = if self.state.scanning {
             "Scanning"
         } else if self.state.enabled {
@@ -435,23 +593,67 @@ impl Screen for BtSettingsScreen {
         } else {
             "Disabled"
         };
-        let status_color = if self.state.enabled { color::GREEN } else { color::WHITE };
-        ui::draw_str(fb, w, PADDING_X + 8 * CHAR_WIDTH, y, status_text, status_color, color::BLACK);
+        let status_color = if self.state.enabled {
+            color::GREEN
+        } else {
+            color::WHITE
+        };
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 8 * CHAR_WIDTH,
+            y,
+            status_text,
+            status_color,
+            color::BLACK,
+        );
         y += DETAIL_SPACING;
 
         // Paired devices.
-        ui::draw_str(fb, w, PADDING_X, y, "Paired:", color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            y,
+            "Paired:",
+            color::DARK_GREY,
+            color::BLACK,
+        );
         let paired_buf = format_u8(self.state.paired_count);
         let paired_str = core::str::from_utf8(&paired_buf.data[..paired_buf.len]).unwrap_or("?");
-        ui::draw_str(fb, w, PADDING_X + 8 * CHAR_WIDTH, y, paired_str, color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 8 * CHAR_WIDTH,
+            y,
+            paired_str,
+            color::WHITE,
+            color::BLACK,
+        );
         y += DETAIL_SPACING;
 
         // Scan results (only if scanning or has results).
         if self.state.scanning || self.state.scan_results > 0 {
-            ui::draw_str(fb, w, PADDING_X, y, "Found:", color::DARK_GREY, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                PADDING_X,
+                y,
+                "Found:",
+                color::DARK_GREY,
+                color::BLACK,
+            );
             let found_buf = format_u8(self.state.scan_results);
             let found_str = core::str::from_utf8(&found_buf.data[..found_buf.len]).unwrap_or("?");
-            ui::draw_str(fb, w, PADDING_X + 8 * CHAR_WIDTH, y, found_str, color::WHITE, color::BLACK);
+            ui::draw_str(
+                fb,
+                w,
+                PADDING_X + 8 * CHAR_WIDTH,
+                y,
+                found_str,
+                color::WHITE,
+                color::BLACK,
+            );
         }
     }
 
@@ -563,10 +765,7 @@ mod tests {
         assert!(labels.contains(&"Sound"), "must include Sound");
         assert!(labels.contains(&"About"), "must include About");
         assert!(labels.contains(&"Privacy"), "must include Privacy");
-        assert_eq!(
-            MENU_ITEMS.len(), 6,
-            "settings menu must have 6 items"
-        );
+        assert_eq!(MENU_ITEMS.len(), 6, "settings menu must have 6 items");
 
         // Verify draw does not panic.
         let mut fb = [0u16; CONTENT_PIXELS];
@@ -642,7 +841,10 @@ mod tests {
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "wifi disconnected screen must render visible content");
+        assert!(
+            any_set,
+            "wifi disconnected screen must render visible content"
+        );
     }
 
     #[test]
@@ -670,7 +872,10 @@ mod tests {
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "bluetooth disabled screen must render visible content");
+        assert!(
+            any_set,
+            "bluetooth disabled screen must render visible content"
+        );
     }
 
     #[test]
@@ -685,7 +890,10 @@ mod tests {
         let mut fb = [0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "bluetooth scanning screen must render visible content");
+        assert!(
+            any_set,
+            "bluetooth scanning screen must render visible content"
+        );
     }
 
     #[test]

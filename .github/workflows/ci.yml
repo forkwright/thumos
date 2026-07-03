@@ -31,8 +31,9 @@ env:
 jobs:
   fmt:
     # WHY: fastest check first — a formatting miss fails in seconds without
-    # spending build minutes. Only the workspace crates are covered; the
-    # kernel crate is excluded from the workspace and is not yet formatted.
+    # spending build minutes. Covers both the workspace crates and the
+    # bare-metal kernel crate (excluded from the workspace, so it needs its
+    # own manifest-path invocation).
     name: rustfmt
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -45,6 +46,8 @@ jobs:
           toolchain: "1.94"
           components: rustfmt
       - run: cargo fmt --all --check
+      # WHY: the kernel crate is excluded from the workspace, so --all misses it.
+      - run: cargo fmt --manifest-path crates/thumos/Cargo.toml --check
 
   workspace:
     # WHY: clippy (deny warnings) + the workspace test suite for the 13

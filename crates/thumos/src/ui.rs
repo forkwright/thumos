@@ -23,7 +23,10 @@
 
 // WHY: kinit renders one initial home frame; full screen routing and input
 // dispatch through UiManager are still pending.
-#![expect(dead_code, reason = "UI framework has only initial home-frame kinit wiring")]
+#![expect(
+    dead_code,
+    reason = "UI framework has only initial home-frame kinit wiring"
+)]
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -348,15 +351,7 @@ pub(crate) fn fill_rect(
 /// Render one character at pixel position `(x, y)` into a `u16` framebuffer.
 ///
 /// Characters outside the printable ASCII range are silently skipped.
-pub(crate) fn draw_char(
-    fb: &mut [u16],
-    fb_width: u16,
-    x: u16,
-    y: u16,
-    ch: char,
-    fg: u16,
-    bg: u16,
-) {
+pub(crate) fn draw_char(fb: &mut [u16], fb_width: u16, x: u16, y: u16, ch: char, fg: u16, bg: u16) {
     let code = u32::from(ch);
     if !(FONT_FIRST..=FONT_LAST).contains(&code) {
         return;
@@ -378,15 +373,7 @@ pub(crate) fn draw_char(
 ///
 /// Characters are placed left-to-right with no wrapping. Out-of-bounds
 /// pixels are clipped by [`set_pixel`].
-pub(crate) fn draw_str(
-    fb: &mut [u16],
-    fb_width: u16,
-    x: u16,
-    y: u16,
-    s: &str,
-    fg: u16,
-    bg: u16,
-) {
+pub(crate) fn draw_str(fb: &mut [u16], fb_width: u16, x: u16, y: u16, s: &str, fg: u16, bg: u16) {
     for (i, ch) in s.chars().enumerate() {
         let cx = x.saturating_add((i as u16).saturating_mul(CHAR_WIDTH));
         draw_char(fb, fb_width, cx, y, ch, fg, bg);
@@ -741,7 +728,10 @@ impl UiManager {
     ///
     /// WHY `&self`: the manager will use `self.active_screen` to select the
     /// screen impl once screen ownership is added (Phase 07 Wave 3+).
-    #[expect(clippy::unused_self, reason = "Screen trait requires &self for future state access")]
+    #[expect(
+        clippy::unused_self,
+        reason = "Screen trait requires &self for future state access"
+    )]
     pub(crate) fn render<F>(&self, screen: &dyn Screen, status_bar_fn: F, fb: &mut [u16])
     where
         F: FnOnce(&mut [u16]),
@@ -790,7 +780,15 @@ fn render_softkey_bar(fb: &mut [u16], left_label: &str, right_label: &str) {
     // Right label: 4px padding from right edge, vertically centered.
     let right_text_width = str_pixel_width(right_label);
     let right_x = w.saturating_sub(right_text_width).saturating_sub(4);
-    draw_str(fb, w, right_x, text_y, right_label, color::WHITE, color::BLACK);
+    draw_str(
+        fb,
+        w,
+        right_x,
+        text_y,
+        right_label,
+        color::WHITE,
+        color::BLACK,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -818,11 +816,7 @@ mod tests {
             ScreenId::Home,
             "UI manager must start at the Home screen"
         );
-        assert_eq!(
-            mgr.history_len(),
-            0,
-            "initial history must be empty"
-        );
+        assert_eq!(mgr.history_len(), 0, "initial history must be empty");
     }
 
     #[test]
@@ -1046,7 +1040,9 @@ mod tests {
         let content_start = status_end;
         let content_end = content_start + SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize;
         assert!(
-            fb[content_start..content_end].iter().all(|&px| px == color::BLUE),
+            fb[content_start..content_end]
+                .iter()
+                .all(|&px| px == color::BLUE),
             "content zone must be filled by the Screen::draw implementation"
         );
 

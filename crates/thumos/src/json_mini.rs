@@ -727,8 +727,8 @@ impl<'a> JsonParser<'a> {
         }
 
         // Parse the accumulated digit string.
-        let num_str =
-            core::str::from_utf8(&self.data[start..self.pos]).map_err(|_| JsonError::InvalidNumber)?;
+        let num_str = core::str::from_utf8(&self.data[start..self.pos])
+            .map_err(|_| JsonError::InvalidNumber)?;
         let value: i64 = num_str.parse().map_err(|_| JsonError::InvalidNumber)?;
         Ok(JsonValue::Number(value))
     }
@@ -1207,7 +1207,9 @@ mod tests {
         let outer = val.get("outer");
         assert!(outer.is_some());
         assert_eq!(
-            outer.and_then(|o| o.get("inner")).and_then(JsonValue::as_str),
+            outer
+                .and_then(|o| o.get("inner"))
+                .and_then(JsonValue::as_str),
             Some("value")
         );
     }
@@ -1313,7 +1315,9 @@ mod tests {
         );
         let content = event.get("content");
         assert_eq!(
-            content.and_then(|c| c.get("body")).and_then(JsonValue::as_str),
+            content
+                .and_then(|c| c.get("body"))
+                .and_then(JsonValue::as_str),
             Some("hello")
         );
     }
@@ -1482,10 +1486,7 @@ mod tests {
     fn parse_invalid_literal() {
         // "nope" starts with 'n', so the parser tries parse_null(),
         // sees it doesn't match "null", and returns InvalidLiteral.
-        assert_eq!(
-            JsonParser::parse(b"nope"),
-            Err(JsonError::InvalidLiteral)
-        );
+        assert_eq!(JsonParser::parse(b"nope"), Err(JsonError::InvalidLiteral));
     }
 
     #[test]

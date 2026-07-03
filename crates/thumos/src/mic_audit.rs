@@ -187,12 +187,7 @@ impl MicAuditLog {
     ///
     /// Returns the entry ID, which must be passed to `log_end()` when
     /// the session concludes.
-    pub(crate) fn log_start(
-        &mut self,
-        kind: SessionKind,
-        caller: &[u8],
-        tick_ms: u64,
-    ) -> u32 {
+    pub(crate) fn log_start(&mut self, kind: SessionKind, caller: &[u8], tick_ms: u64) -> u32 {
         // Evict oldest if at capacity.
         if self.entries.len() >= MAX_ENTRIES {
             self.entries.remove(0);
@@ -414,11 +409,17 @@ mod tests {
         assert_eq!(log.active_sessions().len(), 2);
 
         log.log_end(id1, 3000).ok();
-        assert!(log.is_mic_active(), "mic must still be active with one open session");
+        assert!(
+            log.is_mic_active(),
+            "mic must still be active with one open session"
+        );
         assert_eq!(log.active_sessions().len(), 1);
 
         log.log_end(id2, 4000).ok();
-        assert!(!log.is_mic_active(), "mic must not be active with no open sessions");
+        assert!(
+            !log.is_mic_active(),
+            "mic must not be active with no open sessions"
+        );
         assert_eq!(log.active_sessions().len(), 0);
     }
 
@@ -446,7 +447,8 @@ mod tests {
         assert_eq!(log.len(), MAX_ENTRIES, "log must not exceed MAX_ENTRIES");
         // Oldest entry (start_tick=0) should be gone.
         assert_ne!(
-            log.entries()[0].start_tick, 0,
+            log.entries()[0].start_tick,
+            0,
             "oldest entry must have been evicted"
         );
     }
@@ -459,8 +461,7 @@ mod tests {
 
         let entry = &log.entries()[0];
         assert_eq!(
-            entry.caller_len as usize,
-            MAX_CALLER_LEN,
+            entry.caller_len as usize, MAX_CALLER_LEN,
             "caller must be truncated to MAX_CALLER_LEN"
         );
         assert_eq!(
@@ -501,7 +502,10 @@ mod tests {
 
         let entry = &log.entries()[0];
         let display = alloc::format!("{entry}");
-        assert!(display.contains("1m0s"), "completed entry must show duration: {display}");
+        assert!(
+            display.contains("1m0s"),
+            "completed entry must show duration: {display}"
+        );
     }
 
     #[test]
