@@ -150,6 +150,14 @@ const VISIBLE_ENTRIES: u16 = CONTENT_HEIGHT / ENTRY_HEIGHT;
 /// Maximum characters per line in the full message view (word wrap).
 const CHARS_PER_LINE: usize = (SCREEN_WIDTH as usize) / (CHAR_WIDTH as usize);
 
+/// Maximum message body length (bytes) rendered in the Detail view. Longer
+/// bodies are truncated (char-boundary-safe) before word-wrapping so a
+/// large attacker-controlled body cannot drive an unbounded per-render-tick
+/// allocation in `word_wrap` (#393). 4096 bytes is generous for the
+/// 240x320 display (over 130 wrapped lines at 30 chars/line) while
+/// bounding worst-case allocation on the device's 1 GB RAM.
+const MAX_BODY_DISPLAY_LEN: usize = 4096;
+
 /// Y offset for the title in message detail/compose views.
 const TITLE_Y: u16 = 4;
 
@@ -536,9 +544,13 @@ impl MessagesScreen {
             );
         }
 
-        // Body text with word wrap.
+        // Body text with word wrap. The body is truncated to
+        // MAX_BODY_DISPLAY_LEN (char-boundary-safe) before wrapping so a
+        // multi-megabyte whitespace-free attacker-controlled body cannot
+        // drive an unbounded per-tick allocation in word_wrap (#393).
         let body_y_start = CONTENT_START_Y + CHAR_HEIGHT;
-        let lines = word_wrap(&msg.body, CHARS_PER_LINE);
+        let body_display = truncate_body_for_display(&msg.body);
+        let lines = word_wrap(body_display, CHARS_PER_LINE);
         let max_visible_lines = ((CONTENT_HEIGHT - body_y_start) / CHAR_HEIGHT) as usize;
         let start_line = self.detail_scroll;
         let end_line = (start_line + max_visible_lines).min(lines.len());
@@ -881,6 +893,15 @@ fn split_at_char_boundary(s: &str, pos: usize) -> (&str, &str) {
     (&s[..split_pos], &s[split_pos..])
 }
 
+/// Truncate `body` to at most [`MAX_BODY_DISPLAY_LEN`] bytes (char-boundary
+/// safe) for Detail-view rendering (#393).
+fn truncate_body_for_display(body: &str) -> &str {
+    if body.len() <= MAX_BODY_DISPLAY_LEN {
+        return body;
+    }
+    split_at_char_boundary(body, MAX_BODY_DISPLAY_LEN).0
+}
+
 /// Format a Unix timestamp as a simple display string.
 ///
 /// Produces "HH:MM" for the time portion only (date is omitted for
@@ -947,6 +968,52 @@ mod tests {
             any_set,
             "inbox with messages must render visible pixels"
         );
+    }
+
+    #[test]
+    fn truncate_body_for_display_bounds_huge_body() {
+        let huge_body = "A".repeat(1_000_000);
+        let truncated = truncate_body_for_display(&huge_body);
+        assert!(
+            truncated.len() <= MAX_BODY_DISPLAY_LEN,
+            "display body must be capped at MAX_BODY_DISPLAY_LEN"
+        );
+    }
+
+    #[test]
+    fn truncate_body_for_display_is_char_boundary_safe() {
+        // MAX_BODY_DISPLAY_LEN - 1 ASCII bytes + a 2-byte codepoint
+        // straddling the truncation boundary (#393).
+        let mut body = "A".repeat(MAX_BODY_DISPLAY_LEN - 1);
+        body.push('é');
+        let truncated = truncate_body_for_display(&body);
+        assert!(truncated.len() <= MAX_BODY_DISPLAY_LEN);
+        assert_eq!(
+            truncated.len(), MAX_BODY_DISPLAY_LEN - 1,
+            "the 2-byte char must be dropped, not split"
+        );
+    }
+
+    #[test]
+    fn draw_detail_bounds_word_wrap_allocation_for_huge_body() {
+        let mut screen = MessagesScreen::new();
+        // 1 MB whitespace-free body — worst case for word_wrap's per-line
+        // allocation without the MAX_BODY_DISPLAY_LEN cap (#393).
+        let huge_body = "A".repeat(1_000_000);
+        screen.set_messages(alloc::vec![MessageEntry {
+            sender: String::from("+15551234567"),
+            body: huge_body,
+            timestamp: 0,
+            read: false,
+            transport: MessageTransport::Sms,
+        }]);
+        screen.view = MessageView::Detail;
+
+        let mut fb = [0u16; CONTENT_PIXELS];
+        screen.draw(&mut fb);
+
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "detail view must still render visible content");
     }
 
     #[test]

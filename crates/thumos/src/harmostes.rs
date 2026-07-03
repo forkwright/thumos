@@ -71,6 +71,13 @@ const MAX_ROOMS: usize = 150;
 /// Maximum messages cached per room.
 const MAX_MESSAGES_PER_ROOM: usize = 100;
 
+/// Maximum number of pending messages held in the outbox before
+/// `queue_message`/`send_message` reject further additions (#365). Each
+/// entry holds two heap Strings (room_id + body); bounding count bounds
+/// worst-case outbox memory on a 1 GB device the same way MAX_ROOMS and
+/// MAX_MESSAGES_PER_ROOM already bound room/timeline memory.
+const MAX_OUTBOX_MESSAGES: usize = 256;
+
 /// Transaction ID counter starting value.
 const TXN_ID_START: u32 = 1;
 
@@ -106,6 +113,8 @@ pub enum MatrixError {
     SyncDisabled,
     /// The room list has reached capacity.
     RoomCapacityReached,
+    /// The outbox has reached [`MAX_OUTBOX_MESSAGES`] pending messages (#365).
+    OutboxFull,
 }
 
 impl fmt::Display for MatrixError {
@@ -123,6 +132,7 @@ impl fmt::Display for MatrixError {
             Self::MissingSendResponse => write!(f, "send response missing event_id"),
             Self::SyncDisabled => write!(f, "sync disabled in current security mode"),
             Self::RoomCapacityReached => write!(f, "room capacity reached"),
+            Self::OutboxFull => write!(f, "outbox capacity reached"),
         }
     }
 }
@@ -768,11 +778,17 @@ impl MatrixClient {
     /// # Errors
     ///
     /// Returns [`MatrixError::Http`] if the request cannot be built.
+    /// Returns [`MatrixError::OutboxFull`] if the outbox already holds
+    /// [`MAX_OUTBOX_MESSAGES`] pending messages (#365).
     pub(crate) fn send_message(
         &mut self,
         room_id: &str,
         body: &str,
     ) -> Result<(HttpRequest, u32), MatrixError> {
+        if self.outbox.len() >= MAX_OUTBOX_MESSAGES {
+            return Err(MatrixError::OutboxFull);
+        }
+
         let (req, txn_id) = self.build_send_request(room_id, body)?;
 
         self.outbox.push(PendingMessage {
@@ -796,7 +812,16 @@ impl MatrixClient {
     /// Queue a message for later sending (when offline).
     ///
     /// The message is added to the outbox with the next transaction ID.
-    pub(crate) fn queue_message(&mut self, room_id: &str, body: &str) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::OutboxFull`] if the outbox already holds
+    /// [`MAX_OUTBOX_MESSAGES`] pending messages (#365).
+    pub(crate) fn queue_message(&mut self, room_id: &str, body: &str) -> Result<(), MatrixError> {
+        if self.outbox.len() >= MAX_OUTBOX_MESSAGES {
+            return Err(MatrixError::OutboxFull);
+        }
+
         let txn_id = self.next_txn_id;
         self.next_txn_id = self.next_txn_id.saturating_add(1);
 
@@ -805,6 +830,8 @@ impl MatrixClient {
             body: String::from(body),
             txn_id,
         });
+
+        Ok(())
     }
 
     /// Build encrypted HTTP requests for all pending outbox messages.
@@ -1376,8 +1403,8 @@ mod tests {
     fn outbox_queues_when_offline() {
         let mut client = matrix_client_with_test_credentials();
 
-        client.queue_message("!room1:example.com", "msg1");
-        client.queue_message("!room2:example.com", "msg2");
+        let _ = client.queue_message("!room1:example.com", "msg1");
+        let _ = client.queue_message("!room2:example.com", "msg2");
 
         assert_eq!(client.outbox().len(), 2);
         assert_eq!(client.outbox()[0].room_id, "!room1:example.com");
@@ -1390,12 +1417,46 @@ mod tests {
     }
 
     #[test]
+    fn queue_message_rejects_beyond_outbox_cap() {
+        let mut client = matrix_client_with_test_credentials();
+
+        for _ in 0..MAX_OUTBOX_MESSAGES {
+            assert!(
+                client.queue_message("!room:example.com", "msg").is_ok(),
+                "queueing up to the cap must succeed"
+            );
+        }
+        assert_eq!(client.outbox().len(), MAX_OUTBOX_MESSAGES);
+
+        let result = client.queue_message("!overflow:example.com", "msg");
+        assert_eq!(result, Err(MatrixError::OutboxFull));
+        assert_eq!(
+            client.outbox().len(), MAX_OUTBOX_MESSAGES,
+            "outbox must not grow past the cap"
+        );
+    }
+
+    #[test]
+    fn send_message_rejects_when_outbox_full() {
+        let mut client = matrix_client_with_test_credentials();
+        for _ in 0..MAX_OUTBOX_MESSAGES {
+            assert!(client.queue_message("!room:example.com", "msg").is_ok());
+        }
+
+        let result = client.send_message("!room:example.com", "one more");
+        assert!(
+            matches!(result, Err(MatrixError::OutboxFull)),
+            "send_message must reject when the outbox is already full"
+        );
+    }
+
+    #[test]
     fn flush_outbox_attempts_all() {
         let mut client = matrix_client_with_test_credentials();
 
-        client.queue_message("!room1:example.com", "msg1");
-        client.queue_message("!room2:example.com", "msg2");
-        client.queue_message("!room3:example.com", "msg3");
+        let _ = client.queue_message("!room1:example.com", "msg1");
+        let _ = client.queue_message("!room2:example.com", "msg2");
+        let _ = client.queue_message("!room3:example.com", "msg3");
 
         let results = client.flush_outbox();
 
