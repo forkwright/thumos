@@ -815,6 +815,15 @@ mod tests {
     }
 
     #[test]
+    fn hci_le_set_scan_params_uses_random_own_address_type() {
+        let cmd = hci_le_set_scan_params();
+        assert_eq!(
+            cmd[9], 0x01,
+            "own_address_type must be 0x01 (random) for LE privacy, never 0x00 (public)"
+        );
+    }
+
+    #[test]
     fn hci_acl_data_uses_acl_type_not_command_type() {
         let payload = [0xAA, 0xBB, 0xCC];
         let frame = hci_acl_data(0x0042, &payload);
@@ -850,6 +859,19 @@ mod tests {
     }
 
     #[test]
+    fn init_in_non_off_state_returns_invalid_state() {
+        let hw = MockBtHw::new();
+        let mut adapter = BtAdapter::new(hw);
+        adapter.init(0).ok(); // first init succeeds, transitions Off -> Ready
+        let result = adapter.init(0);
+        assert_eq!(
+            result,
+            Err(BtError::InvalidState),
+            "init while already Ready must return InvalidState, not re-run hardware setup"
+        );
+    }
+
+    #[test]
     fn start_scan_transitions_to_scanning() {
         let hw = MockBtHw::new();
         let mut adapter = BtAdapter::new(hw);
@@ -879,6 +901,19 @@ mod tests {
     }
 
     #[test]
+    fn stop_scan_in_ready_state_returns_invalid_state() {
+        let hw = MockBtHw::new();
+        let mut adapter = BtAdapter::new(hw);
+        adapter.init(0).ok(); // Ready, not Scanning
+        let result = adapter.stop_scan();
+        assert_eq!(
+            result,
+            Err(BtError::InvalidState),
+            "stop_scan outside Scanning state must return InvalidState"
+        );
+    }
+
+    #[test]
     fn add_scan_result_deduplicates_by_address() {
         let hw = MockBtHw::new();
         let mut adapter = BtAdapter::new(hw);
@@ -898,6 +933,23 @@ mod tests {
             adapter.scan_results()[0].rssi,
             -50,
             "RSSI must be updated to the latest observation"
+        );
+    }
+
+    #[test]
+    fn add_scan_result_caps_at_max_scan_results() {
+        let hw = MockBtHw::new();
+        let mut adapter = BtAdapter::new(hw);
+
+        // Flood with more distinct addresses than MAX_SCAN_RESULTS allows.
+        for i in 0..(MAX_SCAN_RESULTS + 8) {
+            adapter.add_scan_result(BleDevice::new([i as u8, 0, 0, 0, 0, 0], -50));
+        }
+
+        assert_eq!(
+            adapter.scan_results().len(),
+            MAX_SCAN_RESULTS,
+            "scan results must cap at MAX_SCAN_RESULTS even under a flood of distinct addresses"
         );
     }
 

@@ -735,6 +735,43 @@ mod tests {
     }
 
     #[test]
+    fn push_inbox_drops_oldest_when_full() {
+        let mut transport = BriarTransport::new();
+        let id = [0x01; 32];
+        let contact = BriarContact::new(id, b"Alice").unwrap_or_else(|_| unreachable!());
+        transport.add_contact(contact).ok();
+
+        for i in 0..MAX_INBOX_MESSAGES {
+            let msg =
+                BriarMessage::new(id, "m".to_string(), i as u64).unwrap_or_else(|_| unreachable!());
+            transport.push_inbox(msg).ok();
+        }
+        assert_eq!(transport.inbox_count(), MAX_INBOX_MESSAGES);
+
+        // One more push over capacity must drop the oldest (timestamp 0),
+        // not silently grow past MAX_INBOX_MESSAGES or drop the newest.
+        let overflow_msg = BriarMessage::new(id, "overflow".to_string(), MAX_INBOX_MESSAGES as u64)
+            .unwrap_or_else(|_| unreachable!());
+        transport.push_inbox(overflow_msg).ok();
+
+        assert_eq!(
+            transport.inbox_count(),
+            MAX_INBOX_MESSAGES,
+            "inbox must stay capped at MAX_INBOX_MESSAGES after overflow"
+        );
+        assert_eq!(
+            transport.inbox()[0].timestamp,
+            1,
+            "the oldest message (timestamp 0) must have been dropped, not the newest"
+        );
+        assert_eq!(
+            transport.inbox().last().map(|m| m.timestamp),
+            Some(MAX_INBOX_MESSAGES as u64),
+            "the newly pushed message must be present at the newest end"
+        );
+    }
+
+    #[test]
     fn clear_inbox_empties_buffer() {
         let mut transport = BriarTransport::new();
         let id = [0x01; 32];

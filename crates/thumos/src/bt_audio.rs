@@ -156,6 +156,11 @@ pub(crate) struct A2dpProfile<H: BtHwOps> {
     remote_seid: u8,
     /// Local stream endpoint ID.
     local_seid: u8,
+    /// AVDTP signal ID whose response is currently awaited during the
+    /// Connecting sequence (Discover -> GetCapabilities ->
+    /// SetConfiguration -> Open -> Start) or during resume(). `None`
+    /// when no signaling response is outstanding.
+    pending_signal: Option<u8>,
     /// Bluetooth hardware backend.
     hw: H,
 }
@@ -175,6 +180,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
             transaction_label: 0,
             remote_seid: 0,
             local_seid: 1,
+            pending_signal: None,
             hw,
         }
     }
@@ -274,6 +280,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
         self.hw
             .send_command(&discover)
             .map_err(BtAudioError::from)?;
+        self.pending_signal = Some(AVDTP_SIGNAL_DISCOVER);
 
         Ok(())
     }
@@ -300,12 +307,26 @@ impl<H: BtHwOps> A2dpProfile<H> {
             return Err(BtAudioError::InvalidState);
         }
 
+        // WARNING(security): dispatching purely on the peer-supplied
+        // `signal` ID with no ordering check let a malicious/misbehaving
+        // peer inject e.g. AVDTP_SIGNAL_START as the very first response
+        // and jump straight from Connecting to Streaming, skipping SBC
+        // codec negotiation entirely. `pending_signal` tracks which
+        // response this profile is actually waiting for (set by
+        // connect()/resume() and advanced below); any other signal is a
+        // protocol violation and is rejected here, before the dispatch.
+        if self.pending_signal != Some(signal) {
+            self.state = A2dpState::Error(BtAudioError::AvdtpError);
+            return Err(BtAudioError::AvdtpError);
+        }
+
         match signal {
             AVDTP_SIGNAL_DISCOVER => {
                 // Received Discover response -- send GetCapabilities.
                 let label = self.next_transaction_label();
                 let msg = AvdtpMessage::get_capabilities(label, self.remote_seid);
                 self.hw.send_command(&msg).map_err(BtAudioError::from)?;
+                self.pending_signal = Some(AVDTP_SIGNAL_GET_CAPABILITIES);
             }
             AVDTP_SIGNAL_GET_CAPABILITIES => {
                 // Received GetCapabilities response -- send SetConfiguration.
@@ -318,12 +339,14 @@ impl<H: BtHwOps> A2dpProfile<H> {
                     &header,
                 );
                 self.hw.send_command(&msg).map_err(BtAudioError::from)?;
+                self.pending_signal = Some(AVDTP_SIGNAL_SET_CONFIGURATION);
             }
             AVDTP_SIGNAL_SET_CONFIGURATION => {
                 // Received SetConfiguration response -- send Open.
                 let label = self.next_transaction_label();
                 let msg = AvdtpMessage::open(label, self.remote_seid);
                 self.hw.send_command(&msg).map_err(BtAudioError::from)?;
+                self.pending_signal = Some(AVDTP_SIGNAL_OPEN);
             }
             AVDTP_SIGNAL_OPEN => {
                 // Received Open response -- send Start, then commit the
@@ -333,10 +356,12 @@ impl<H: BtHwOps> A2dpProfile<H> {
                 let msg = AvdtpMessage::start(label, self.remote_seid);
                 self.hw.send_command(&msg).map_err(BtAudioError::from)?;
                 self.state = A2dpState::Connected;
+                self.pending_signal = Some(AVDTP_SIGNAL_START);
             }
             AVDTP_SIGNAL_START => {
                 // Received Start response -- streaming is active.
                 self.state = A2dpState::Streaming;
+                self.pending_signal = None;
             }
             _ => {
                 // Unknown or unexpected signal.
@@ -429,6 +454,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
         let label = self.next_transaction_label();
         let msg = AvdtpMessage::start(label, self.remote_seid);
         self.hw.send_command(&msg).map_err(BtAudioError::from)?;
+        self.pending_signal = Some(AVDTP_SIGNAL_START);
 
         Ok(())
     }
@@ -627,6 +653,33 @@ mod tests {
     }
 
     #[test]
+    fn advance_signaling_rejects_out_of_order_start_before_negotiation() {
+        let mut profile = make_a2dp();
+        let peer = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
+        profile.set_peer(peer);
+        profile.set_remote_seid(2);
+        profile.connect().ok();
+        assert_eq!(profile.state(), A2dpState::Connecting);
+
+        // A malicious/misbehaving peer sends Start as if it were the
+        // very first signaling response, skipping GetCapabilities ->
+        // SetConfiguration -> Open. Before the fix, advance_signaling()
+        // dispatched purely on the signal ID with no ordering check, so
+        // this reached Streaming without ever negotiating the SBC codec.
+        let result = profile.advance_signaling(AVDTP_SIGNAL_START);
+        assert_eq!(
+            result,
+            Err(BtAudioError::AvdtpError),
+            "an out-of-order Start response must be rejected, not fast-forward to Streaming"
+        );
+        assert_ne!(
+            profile.state(),
+            A2dpState::Streaming,
+            "must never reach Streaming without codec negotiation"
+        );
+    }
+
+    #[test]
     fn open_response_reaches_connected_via_normal_sequence() {
         let mut profile = make_a2dp();
         let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
@@ -651,6 +704,18 @@ mod tests {
             A2dpState::Connected,
             "Connected must be reachable via the normal connection sequence, \
              not only via suspend() from Streaming"
+        );
+    }
+
+    #[test]
+    fn advance_signaling_in_disconnected_state_returns_invalid_state() {
+        let mut profile = make_a2dp();
+        // No connect() call -- profile is still Disconnected.
+        let result = profile.advance_signaling(AVDTP_SIGNAL_DISCOVER);
+        assert_eq!(
+            result,
+            Err(BtAudioError::InvalidState),
+            "advance_signaling before connect() (Disconnected state) must return InvalidState"
         );
     }
 

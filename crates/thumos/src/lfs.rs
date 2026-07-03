@@ -575,6 +575,31 @@ pub(crate) fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
 // ---------------------------------------------------------------------------
 
 impl Lfs {
+    /// Validate that an on-disk block pointer falls within the
+    /// filesystem's own block extent before it is used to address the
+    /// block cache.
+    ///
+    /// `inode.direct[]` entries are on-disk, untrusted data: a
+    /// corrupted or maliciously crafted inode could set them to any
+    /// `u64`. Every block the filesystem itself allocates stays within
+    /// `[1, superblock.block_count)` (block 0 is the superblock, never
+    /// an allocatable data block), so any pointer outside that range is
+    /// corruption -- fail closed rather than let it reach the block
+    /// cache and read/write memory outside the filesystem's own
+    /// extent, even when that block number is still within the raw
+    /// block device's physical capacity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VfsError::IoError`] if `block_num` is 0 or `>=
+    /// superblock.block_count`.
+    fn validate_block_num(&self, block_num: u64) -> Result<(), VfsError> {
+        if block_num == 0 || block_num >= self.superblock.block_count {
+            return Err(VfsError::IoError);
+        }
+        Ok(())
+    }
+
     /// Load a `DiskInode` from disk given its inode ID.
     ///
     /// Looks up the block number via the imap, reads the block, and
@@ -697,6 +722,13 @@ impl Lfs {
     }
 
     /// Read all directory entries for a directory inode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VfsError::IoError`] if `inode.size` does not fit in
+    /// `usize` on this target (32-bit ARM: on-disk `size` is `u64` and
+    /// must never silently truncate through an `as usize` cast), or if
+    /// `inode.inode_type` is not a directory.
     fn read_dir_entries(&self, inode: &DiskInode) -> Result<Vec<DiskDirEntry>, VfsError> {
         if inode.inode_type != INODE_TYPE_DIR {
             return Err(VfsError::NotADirectory);
@@ -708,7 +740,8 @@ impl Lfs {
         let data_blocks = if inode.size == 0 {
             0
         } else {
-            ((inode.size as usize + BLOCK_SIZE - 1) / BLOCK_SIZE).min(DIRECT_BLOCK_COUNT)
+            let size = usize::try_from(inode.size).map_err(|_| VfsError::IoError)?;
+            size.div_ceil(BLOCK_SIZE).min(DIRECT_BLOCK_COUNT)
         };
 
         for i in 0..data_blocks {
@@ -716,6 +749,11 @@ impl Lfs {
             if block_num == 0 {
                 continue;
             }
+            // WARNING: inode.direct[] is on-disk, untrusted data -- a
+            // corrupted or crafted inode could point anywhere. Bound it
+            // to the filesystem's own extent before it ever reaches the
+            // block cache (#security).
+            self.validate_block_num(block_num)?;
 
             let mut buf = [0u8; BLOCK_SIZE];
             let mut dev = self.dev.borrow_mut();
@@ -955,6 +993,11 @@ impl Filesystem for Lfs {
                 bytes_read += chunk;
                 continue;
             }
+            // WARNING: inode.direct[] is on-disk, untrusted data -- a
+            // corrupted or crafted inode could point anywhere. Bound it
+            // to the filesystem's own extent before it ever reaches the
+            // block cache (#security).
+            self.validate_block_num(block_num)?;
 
             let mut block_buf = [0u8; BLOCK_SIZE];
             {
@@ -999,6 +1042,11 @@ impl Filesystem for Lfs {
 
         self.ensure_writer()?;
 
+        // Captured before the writer/cache borrows below so the extent
+        // check inside the loop doesn't need a `&self` method call while
+        // `self.writer` is exclusively borrowed.
+        let block_count = self.superblock.block_count;
+
         let mut bytes_written = 0usize;
         let mut dev = self.dev.borrow_mut();
         let mut cache = self.cache.borrow_mut();
@@ -1020,6 +1068,15 @@ impl Filesystem for Lfs {
             if block_offset != 0 || bytes_written + BLOCK_SIZE > buf.len() {
                 let existing_block = inode.direct[block_index];
                 if existing_block != 0 {
+                    // WARNING: inode.direct[] is on-disk, untrusted data --
+                    // bound it to the filesystem's own extent before it
+                    // reaches the block cache (#security, mirrors read()'s
+                    // validate_block_num; inlined here because `writer`
+                    // already holds an exclusive borrow of `self.writer`,
+                    // so a `&self` method call is not available).
+                    if existing_block >= block_count {
+                        return Err(VfsError::IoError);
+                    }
                     cache
                         .read(dev.as_mut(), existing_block, &mut block_buf)
                         .map_err(|_| VfsError::IoError)?;
@@ -1615,6 +1672,30 @@ mod tests {
     }
 
     #[test]
+    fn read_dir_entries_rejects_size_that_overflows_usize_on_32_bit() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let fs = mount(Box::new(dev)).expect("mount");
+
+        // On this 32-bit test target (i686/armv7 usize), u32::MAX + 1
+        // does not fit in usize. Before the fix, `inode.size as usize`
+        // silently truncated instead of erroring.
+        let inode = DiskInode {
+            inode_type: INODE_TYPE_DIR,
+            link_count: 1,
+            size: u64::from(u32::MAX) + 1,
+            direct: [0u64; DIRECT_BLOCK_COUNT],
+            indirect: 0,
+        };
+
+        let result = fs.read_dir_entries(&inode);
+        assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "an inode size that does not fit in usize must be rejected, not silently truncated"
+        );
+    }
+
+    #[test]
     fn inode_to_stat_rejects_unrecognized_on_disk_type() {
         let inode = DiskInode {
             inode_type: 99, // neither INODE_TYPE_FILE nor INODE_TYPE_DIR
@@ -1639,6 +1720,36 @@ mod tests {
         let fs = mount(Box::new(dev)).expect("mount");
         let result = fs.lookup(fs.root_inode(), "nonexistent");
         assert_eq!(result, Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn read_dir_entries_rejects_direct_pointer_outside_extent() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+
+        // Simulate a corrupted/crafted inode whose direct pointer targets
+        // a block within the raw device's capacity but outside the
+        // filesystem's own declared extent -- the block-device layer
+        // alone would happily serve this read (it is a valid LBA); only
+        // a filesystem-level bound check catches it.
+        let real_block_count = fs.superblock.block_count;
+        fs.superblock.block_count = 4;
+
+        let mut inode = DiskInode {
+            inode_type: INODE_TYPE_DIR,
+            link_count: 1,
+            size: BLOCK_SIZE as u64,
+            direct: [0u64; DIRECT_BLOCK_COUNT],
+            indirect: 0,
+        };
+        inode.direct[0] = real_block_count - 1;
+
+        let result = fs.read_dir_entries(&inode);
+        assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "a direct block pointer inside the raw device but outside the filesystem's own extent must be rejected, not read"
+        );
     }
 
     #[test]
