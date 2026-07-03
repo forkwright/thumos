@@ -37,8 +37,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction,
-    CHAR_HEIGHT, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -323,7 +322,8 @@ impl ThreatMonitor {
         }
 
         // Insert at position determined by timestamp (newest first).
-        let pos = self.alerts
+        let pos = self
+            .alerts
             .iter()
             .position(|a| a.timestamp < alert.timestamp)
             .unwrap_or(self.alerts.len());
@@ -445,15 +445,29 @@ impl Screen for ThreatMonitor {
         let score_buf = self.score_text();
         let score_str = core::str::from_utf8(&score_buf[..3]).unwrap_or("  0");
         let score_x = w / 2 + 20;
-        ui::draw_str(fb, w, score_x, label_y, score_str, color::BLACK, level_color);
+        ui::draw_str(
+            fb,
+            w,
+            score_x,
+            label_y,
+            score_str,
+            color::BLACK,
+            level_color,
+        );
 
         // --- Alert list ---
         if self.alerts.is_empty() {
             // Show "No alerts" message.
             let no_alerts_y = ALERT_LIST_Y + ALERT_LIST_HEIGHT / 2 - CHAR_HEIGHT / 2;
             ui::draw_str_centered(
-                fb, w, 0, w, no_alerts_y,
-                "No alerts", color::DARK_GREY, color::BLACK,
+                fb,
+                w,
+                0,
+                w,
+                no_alerts_y,
+                "No alerts",
+                color::DARK_GREY,
+                color::BLACK,
             );
         } else {
             let visible_end = (self.scroll_offset + VISIBLE_ALERTS).min(self.alerts.len());
@@ -498,7 +512,15 @@ impl Screen for ThreatMonitor {
 
             // Scroll indicators.
             if self.scroll_offset > 0 {
-                ui::draw_char(fb, w, w - 12, ALERT_LIST_Y + 2, '^', color::DARK_GREY, color::BLACK);
+                ui::draw_char(
+                    fb,
+                    w,
+                    w - 12,
+                    ALERT_LIST_Y + 2,
+                    '^',
+                    color::DARK_GREY,
+                    color::BLACK,
+                );
             }
             if visible_end < self.alerts.len() {
                 let arrow_y = ALERT_LIST_Y + ALERT_LIST_HEIGHT - CHAR_HEIGHT - 2;
@@ -507,23 +529,56 @@ impl Screen for ThreatMonitor {
         }
 
         // --- Separator above modem status ---
-        ui::fill_rect(fb, w, h, PADDING_X, MODEM_STATUS_Y, w - PADDING_X * 2, 1, color::DARK_GREY);
+        ui::fill_rect(
+            fb,
+            w,
+            h,
+            PADDING_X,
+            MODEM_STATUS_Y,
+            w - PADDING_X * 2,
+            1,
+            color::DARK_GREY,
+        );
 
         // --- Modem status zone ---
         let status_y = MODEM_STATUS_Y + 4;
 
         // Channel count.
         let ch_label = "CH:";
-        ui::draw_str(fb, w, PADDING_X, status_y, ch_label, color::DARK_GREY, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X,
+            status_y,
+            ch_label,
+            color::DARK_GREY,
+            color::BLACK,
+        );
         let ch_digit = b'0' + self.modem_channels.min(9);
         let ch_str: [u8; 2] = [ch_digit, 0];
         let ch_text = core::str::from_utf8(&ch_str[..1]).unwrap_or("0");
-        ui::draw_str(fb, w, PADDING_X + 3 * 8, status_y, ch_text, color::WHITE, color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            PADDING_X + 3 * 8,
+            status_y,
+            ch_text,
+            color::WHITE,
+            color::BLACK,
+        );
 
         // Firewall mode.
         let fw_label = self.firewall_mode.label();
         let fw_x = PADDING_X + 6 * 8;
-        ui::draw_str(fb, w, fw_x, status_y, fw_label, self.firewall_mode.color(), color::BLACK);
+        ui::draw_str(
+            fb,
+            w,
+            fw_x,
+            status_y,
+            fw_label,
+            self.firewall_mode.color(),
+            color::BLACK,
+        );
 
         // Power state.
         let (pwr_label, pwr_color) = if self.modem_power {
@@ -585,7 +640,11 @@ mod tests {
     use super::*;
     use crate::ui::CONTENT_PIXELS;
 
-    fn make_alert(timestamp: u64, alert_type: ThreatAlertType, severity: ThreatLevel) -> ThreatAlert {
+    fn make_alert(
+        timestamp: u64,
+        alert_type: ThreatAlertType,
+        severity: ThreatLevel,
+    ) -> ThreatAlert {
         ThreatAlert {
             timestamp,
             alert_type,
@@ -597,9 +656,21 @@ mod tests {
     #[test]
     fn alert_list_sorts_by_time_newest_first() {
         let mut monitor = ThreatMonitor::new();
-        monitor.push_alert(make_alert(1000, ThreatAlertType::SilentSms, ThreatLevel::Medium));
-        monitor.push_alert(make_alert(3000, ThreatAlertType::ImsiCatcher, ThreatLevel::Critical));
-        monitor.push_alert(make_alert(2000, ThreatAlertType::BleTracker, ThreatLevel::Low));
+        monitor.push_alert(make_alert(
+            1000,
+            ThreatAlertType::SilentSms,
+            ThreatLevel::Medium,
+        ));
+        monitor.push_alert(make_alert(
+            3000,
+            ThreatAlertType::ImsiCatcher,
+            ThreatLevel::Critical,
+        ));
+        monitor.push_alert(make_alert(
+            2000,
+            ThreatAlertType::BleTracker,
+            ThreatLevel::Low,
+        ));
 
         assert_eq!(monitor.alert_count(), 3);
         assert_eq!(
@@ -619,19 +690,23 @@ mod tests {
     #[test]
     fn threat_level_renders_correct_color() {
         assert_eq!(
-            ThreatLevel::Low.color(), color::GREEN,
+            ThreatLevel::Low.color(),
+            color::GREEN,
             "LOW must render green"
         );
         assert_eq!(
-            ThreatLevel::Medium.color(), color::YELLOW,
+            ThreatLevel::Medium.color(),
+            color::YELLOW,
             "MEDIUM must render yellow"
         );
         assert_eq!(
-            ThreatLevel::High.color(), COLOR_ORANGE,
+            ThreatLevel::High.color(),
+            COLOR_ORANGE,
             "HIGH must render orange"
         );
         assert_eq!(
-            ThreatLevel::Critical.color(), color::RED,
+            ThreatLevel::Critical.color(),
+            color::RED,
             "CRITICAL must render red"
         );
     }
@@ -655,9 +730,15 @@ mod tests {
         assert_eq!(ThreatAlertType::BleTracker.to_string(), "BLE_TRACKER");
         assert_eq!(ThreatAlertType::DeauthAttack.to_string(), "DEAUTH_ATTACK");
         assert_eq!(ThreatAlertType::CcciAnomaly.to_string(), "CCCI_ANOMALY");
-        assert_eq!(ThreatAlertType::GeofenceBreach.to_string(), "GEOFENCE_BREACH");
+        assert_eq!(
+            ThreatAlertType::GeofenceBreach.to_string(),
+            "GEOFENCE_BREACH"
+        );
         assert_eq!(ThreatAlertType::SilentSms.to_string(), "SILENT_SMS");
-        assert_eq!(ThreatAlertType::WapPushRejected.to_string(), "WAP_PUSH_REJECTED");
+        assert_eq!(
+            ThreatAlertType::WapPushRejected.to_string(),
+            "WAP_PUSH_REJECTED"
+        );
         assert_eq!(ThreatAlertType::ModemAnomaly.to_string(), "MODEM_ANOMALY");
     }
 
@@ -673,13 +754,24 @@ mod tests {
     #[test]
     fn screen_renders_with_alerts_without_panic() {
         let mut monitor = ThreatMonitor::new();
-        monitor.push_alert(make_alert(1000, ThreatAlertType::SilentSms, ThreatLevel::Medium));
-        monitor.push_alert(make_alert(2000, ThreatAlertType::ImsiCatcher, ThreatLevel::Critical));
+        monitor.push_alert(make_alert(
+            1000,
+            ThreatAlertType::SilentSms,
+            ThreatLevel::Medium,
+        ));
+        monitor.push_alert(make_alert(
+            2000,
+            ThreatAlertType::ImsiCatcher,
+            ThreatLevel::Critical,
+        ));
         monitor.set_score(80);
         let mut fb = [0u16; CONTENT_PIXELS];
         monitor.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
-        assert!(any_set, "threat monitor with alerts must render visible content");
+        assert!(
+            any_set,
+            "threat monitor with alerts must render visible content"
+        );
     }
 
     #[test]
@@ -714,9 +806,13 @@ mod tests {
         monitor.push_alert(alert);
 
         let stored = &monitor.alerts[0].description;
-        assert!(stored.len() <= MAX_DESC_LEN, "description must be capped at MAX_DESC_LEN");
+        assert!(
+            stored.len() <= MAX_DESC_LEN,
+            "description must be capped at MAX_DESC_LEN"
+        );
         assert_eq!(
-            stored.as_str(), "A".repeat(47),
+            stored.as_str(),
+            "A".repeat(47),
             "truncation must back off to the last full codepoint"
         );
     }
@@ -764,10 +860,15 @@ mod tests {
     fn max_alerts_capacity() {
         let mut monitor = ThreatMonitor::new();
         for i in 0..MAX_ALERTS + 10 {
-            monitor.push_alert(make_alert(i as u64, ThreatAlertType::SilentSms, ThreatLevel::Low));
+            monitor.push_alert(make_alert(
+                i as u64,
+                ThreatAlertType::SilentSms,
+                ThreatLevel::Low,
+            ));
         }
         assert_eq!(
-            monitor.alert_count(), MAX_ALERTS,
+            monitor.alert_count(),
+            MAX_ALERTS,
             "alert count must not exceed MAX_ALERTS"
         );
     }
@@ -775,9 +876,21 @@ mod tests {
     #[test]
     fn navigation_keys() {
         let mut monitor = ThreatMonitor::new();
-        monitor.push_alert(make_alert(1000, ThreatAlertType::SilentSms, ThreatLevel::Low));
-        monitor.push_alert(make_alert(2000, ThreatAlertType::ImsiCatcher, ThreatLevel::High));
-        monitor.push_alert(make_alert(3000, ThreatAlertType::BleTracker, ThreatLevel::Medium));
+        monitor.push_alert(make_alert(
+            1000,
+            ThreatAlertType::SilentSms,
+            ThreatLevel::Low,
+        ));
+        monitor.push_alert(make_alert(
+            2000,
+            ThreatAlertType::ImsiCatcher,
+            ThreatLevel::High,
+        ));
+        monitor.push_alert(make_alert(
+            3000,
+            ThreatAlertType::BleTracker,
+            ThreatLevel::Medium,
+        ));
 
         // Starts at cursor 0.
         assert_eq!(monitor.cursor, 0);
@@ -842,7 +955,8 @@ mod tests {
             assert!(
                 !seen[icon],
                 "icon '{}' for {:?} must be unique",
-                t.icon(), t
+                t.icon(),
+                t
             );
             seen[icon] = true;
         }

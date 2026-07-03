@@ -43,10 +43,10 @@ use core::fmt;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::http_client::{self, HttpRequest, HttpResponse, HttpError};
-use crate::json_mini::{JsonParser, JsonWriter, JsonValue, JsonError};
-use crate::matrix_ids::{MatrixEventId, MatrixRoomId};
+use crate::http_client::{self, HttpError, HttpRequest, HttpResponse};
+use crate::json_mini::{JsonError, JsonParser, JsonValue, JsonWriter};
 use crate::matrix_crypto::{self, CryptoError, MatrixCrypto};
+use crate::matrix_ids::{MatrixEventId, MatrixRoomId};
 use crate::security_mode::SecurityMode;
 
 // ---------------------------------------------------------------------------
@@ -437,8 +437,7 @@ impl MatrixClient {
     /// Return messages for a specific room, if it exists.
     #[must_use]
     pub(crate) fn room_messages(&self, room_id: &str) -> Option<&[MatrixMessage]> {
-        self.find_room(room_id)
-            .map(|r| r.messages.as_slice())
+        self.find_room(room_id).map(|r| r.messages.as_slice())
     }
 
     /// Return the homeserver hostname.
@@ -997,7 +996,8 @@ impl MatrixClient {
         if self.rooms.len() >= MAX_ROOMS {
             return Err(MatrixError::RoomCapacityReached);
         }
-        self.rooms.push(Room::new(room_id, String::from(room_id), false)?);
+        self.rooms
+            .push(Room::new(room_id, String::from(room_id), false)?);
         Ok(self.rooms.len() - 1)
     }
 }
@@ -1136,12 +1136,10 @@ fn parse_timeline_event(
                                 // actually arrived in (from the sync grouping,
                                 // not the untrusted event body).
                                 match matrix_crypto::decrypt_megolm(session, &ct, room_id) {
-                                    Ok(plaintext) => {
-                                        match core::str::from_utf8(&plaintext) {
-                                            Ok(s) => String::from(s),
-                                            Err(_) => String::from("[decryption: invalid UTF-8]"),
-                                        }
-                                    }
+                                    Ok(plaintext) => match core::str::from_utf8(&plaintext) {
+                                        Ok(s) => String::from(s),
+                                        Err(_) => String::from("[decryption: invalid UTF-8]"),
+                                    },
                                     Err(_) => String::from("[encrypted: decryption failed]"),
                                 }
                             }
@@ -1164,11 +1162,7 @@ fn parse_timeline_event(
         event_id: MatrixEventId::new(event_id).ok()?,
         sender: String::from(sender),
         body,
-        timestamp: if timestamp >= 0 {
-            timestamp as u64
-        } else {
-            0
-        },
+        timestamp: if timestamp >= 0 { timestamp as u64 } else { 0 },
         encrypted,
     })
 }
@@ -1298,7 +1292,7 @@ mod tests {
     fn build_sync_response(
         next_batch: &str,
         room_id: &str,
-        events: &[(& str, &str, &str, i64)], // (event_id, sender, body, ts)
+        events: &[(&str, &str, &str, i64)], // (event_id, sender, body, ts)
     ) -> String {
         let mut w = JsonWriter::new();
         w.object_start();
@@ -1395,8 +1389,18 @@ mod tests {
             "batch_2",
             room_id,
             &[
-                ("$evt1", "@alice:matrix.example.com", "hello", 1_700_000_001_000),
-                ("$evt2", "@bob:matrix.example.com", "world", 1_700_000_002_000),
+                (
+                    "$evt1",
+                    "@alice:matrix.example.com",
+                    "hello",
+                    1_700_000_001_000,
+                ),
+                (
+                    "$evt2",
+                    "@bob:matrix.example.com",
+                    "world",
+                    1_700_000_002_000,
+                ),
             ],
         );
 
@@ -1437,7 +1441,12 @@ mod tests {
         let sync_json = build_sync_response(
             "batch_over",
             "!overflow:matrix.example.com",
-            &[("$e1", "@a:matrix.example.com", "would this be lost?", 1_700_000_001_000)],
+            &[(
+                "$e1",
+                "@a:matrix.example.com",
+                "would this be lost?",
+                1_700_000_001_000,
+            )],
         );
         let response = mock_response(200, &sync_json);
         let result = client.sync(&response, 100);
@@ -1452,7 +1461,10 @@ mod tests {
             "the sync token must advance safely after a capacity skip"
         );
         let dropped = result.map(|r| r.rooms_over_capacity).unwrap_or(0);
-        assert_eq!(dropped, 1, "the dropped over-capacity room must be signaled");
+        assert_eq!(
+            dropped, 1,
+            "the dropped over-capacity room must be signaled"
+        );
         assert_eq!(
             client.rooms().len(),
             MAX_ROOMS,
@@ -1470,11 +1482,7 @@ mod tests {
 
         let (req, txn_id) = result.ok().unwrap_or_else(|| {
             // Fallback that never executes — satisfies no-unwrap lint.
-            let r = HttpRequest::new(
-                http_client::HttpMethod::Get,
-                String::new(),
-                String::new(),
-            );
+            let r = HttpRequest::new(http_client::HttpMethod::Get, String::new(), String::new());
             (r, 0)
         });
 
@@ -1530,7 +1538,8 @@ mod tests {
         let result = client.queue_message("!overflow:example.com", "msg");
         assert_eq!(result, Err(MatrixError::OutboxFull));
         assert_eq!(
-            client.outbox().len(), MAX_OUTBOX_MESSAGES,
+            client.outbox().len(),
+            MAX_OUTBOX_MESSAGES,
             "outbox must not grow past the cap"
         );
     }
@@ -1587,11 +1596,7 @@ mod tests {
 
         let (req, txn_id) = result.ok().unwrap_or_else(|| {
             // Fallback that never executes -- satisfies no-unwrap lint.
-            let r = HttpRequest::new(
-                http_client::HttpMethod::Get,
-                String::new(),
-                String::new(),
-            );
+            let r = HttpRequest::new(http_client::HttpMethod::Get, String::new(), String::new());
             (r, 0)
         });
 
@@ -1632,7 +1637,11 @@ mod tests {
             "no outbound session should exist before the first encrypted send"
         );
 
-        assert!(client.build_encrypted_send_request(room_id, "first").is_ok());
+        assert!(
+            client
+                .build_encrypted_send_request(room_id, "first")
+                .is_ok()
+        );
         let session_id_after_first = client
             .crypto()
             .find_outbound_megolm(room_id)
@@ -1642,7 +1651,11 @@ mod tests {
             "an outbound session must exist after the first encrypted send"
         );
 
-        assert!(client.build_encrypted_send_request(room_id, "second").is_ok());
+        assert!(
+            client
+                .build_encrypted_send_request(room_id, "second")
+                .is_ok()
+        );
         let session_id_after_second = client
             .crypto()
             .find_outbound_megolm(room_id)
@@ -2014,9 +2027,6 @@ mod tests {
         // First message should now be $msg1 (0 was evicted).
         assert_eq!(room.messages[0].event_id, "$msg1");
         // Last message should be the new one.
-        assert_eq!(
-            room.messages[MAX_MESSAGES_PER_ROOM - 1].event_id,
-            "$new"
-        );
+        assert_eq!(room.messages[MAX_MESSAGES_PER_ROOM - 1].event_id, "$new");
     }
 }

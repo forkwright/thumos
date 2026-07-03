@@ -231,7 +231,6 @@ impl fmt::Display for CapabilityPreset {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Nous entity
 // ---------------------------------------------------------------------------
@@ -288,10 +287,7 @@ impl fmt::Display for NousError {
                 required,
                 current,
             } => {
-                write!(
-                    f,
-                    "{entity} requires {required} capability, has {current}"
-                )
+                write!(f, "{entity} requires {required} capability, has {current}")
             }
             Self::InvalidMatrixId(e) => write!(f, "invalid Matrix user id: {e}"),
         }
@@ -679,8 +675,7 @@ impl fmt::Display for NousManager {
             f,
             "NousManager({} entities, active={})",
             self.entities.len(),
-            self.active()
-                .map_or("none", |e| e.name_str())
+            self.active().map_or("none", |e| e.name_str())
         )
     }
 }
@@ -723,10 +718,7 @@ mod tests {
 
     #[test]
     fn preset_propose_gating() {
-        assert!(
-            !CapabilityPreset::Off.can_propose(),
-            "Off must not propose"
-        );
+        assert!(!CapabilityPreset::Off.can_propose(), "Off must not propose");
         assert!(
             !CapabilityPreset::Observer.can_propose(),
             "Observer must not propose"
@@ -739,10 +731,7 @@ mod tests {
             CapabilityPreset::Advisor.can_propose(),
             "Advisor must propose"
         );
-        assert!(
-            CapabilityPreset::Agent.can_propose(),
-            "Agent must propose"
-        );
+        assert!(CapabilityPreset::Agent.can_propose(), "Agent must propose");
         assert!(
             CapabilityPreset::Autonomous.can_propose(),
             "Autonomous must propose"
@@ -824,14 +813,8 @@ mod tests {
 
     #[test]
     fn preset_display() {
-        assert_eq!(
-            CapabilityPreset::Advisor.to_string(),
-            "ADVISOR"
-        );
-        assert_eq!(
-            CapabilityPreset::Autonomous.to_string(),
-            "AUTONOMOUS"
-        );
+        assert_eq!(CapabilityPreset::Advisor.to_string(), "ADVISOR");
+        assert_eq!(CapabilityPreset::Autonomous.to_string(), "AUTONOMOUS");
     }
 
     #[test]
@@ -912,10 +895,7 @@ mod tests {
             display.contains("@syn:thumos.lan"),
             "display must contain matrix id"
         );
-        assert!(
-            display.contains("ADVISOR"),
-            "display must contain preset"
-        );
+        assert!(display.contains("ADVISOR"), "display must contain preset");
     }
 
     #[test]
@@ -987,10 +967,7 @@ mod tests {
         );
 
         assert!(mgr.switch(2).is_ok());
-        assert_eq!(
-            mgr.active().map(|e| e.name_str()),
-            Some("Paideia"),
-        );
+        assert_eq!(mgr.active().map(|e| e.name_str()), Some("Paideia"),);
 
         // Out of bounds.
         let err = mgr.switch(99);
@@ -1173,10 +1150,7 @@ mod tests {
         let display = alloc::format!("{err}");
         assert!(display.contains("16"));
 
-        let err = NousError::InvalidIndex {
-            index: 5,
-            count: 3,
-        };
+        let err = NousError::InvalidIndex { index: 5, count: 3 };
         let display = alloc::format!("{err}");
         assert!(display.contains("5"));
         assert!(display.contains("3"));

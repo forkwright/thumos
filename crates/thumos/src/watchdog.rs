@@ -135,7 +135,10 @@ mod tests {
     fn watchdog_register_addresses() {
         assert_eq!(WDT_MODE, 0x1000_7000, "WDT_MODE must be at base + 0x00");
         assert_eq!(WDT_LENGTH, 0x1000_7004, "WDT_LENGTH must be at base + 0x04");
-        assert_eq!(WDT_RESTART, 0x1000_7008, "WDT_RESTART must be at base + 0x08");
+        assert_eq!(
+            WDT_RESTART, 0x1000_7008,
+            "WDT_RESTART must be at base + 0x08"
+        );
     }
 
     /// Verify the pet magic value matches the MT6739 BSP specification.
@@ -151,7 +154,10 @@ mod tests {
     fn watchdog_timeout_encoding_is_5_seconds() {
         // Each WDT unit = 512 / 32768 Hz = 15.625 ms
         // 5000 ms / 15.625 ms = 320 units
-        assert_eq!(WDT_TIMEOUT_UNITS, 320, "5-second timeout must encode to 320 WDT units");
+        assert_eq!(
+            WDT_TIMEOUT_UNITS, 320,
+            "5-second timeout must encode to 320 WDT units"
+        );
         // Verify the key is correct
         assert_eq!(WDT_LENGTH_KEY, 0x08, "WDT_LENGTH write key must be 0x08");
         // Verify the full encoded value

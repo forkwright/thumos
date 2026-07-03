@@ -22,7 +22,10 @@
 
 // WHY: clock module provides wall-clock policy, but kernel time and userspace
 // syscalls still use the lower-level timer/time paths.
-#![expect(dead_code, reason = "Clock trust manager is not wired into kernel time")]
+#![expect(
+    dead_code,
+    reason = "Clock trust manager is not wired into kernel time"
+)]
 
 extern crate alloc;
 
@@ -232,22 +235,24 @@ impl ClockManager {
     #[must_use]
     pub(crate) fn get_wall_clock(&self, current_tick_ms: u64) -> u64 {
         // Try sources in trust order.
-        if let Some(ref gps_time) = self.gps_time && self.gps_is_fresh(current_tick_ms) {
+        if let Some(ref gps_time) = self.gps_time
+            && self.gps_is_fresh(current_tick_ms)
+        {
             let base_epoch = gps_time.to_epoch_secs();
-            let elapsed_secs =
-                current_tick_ms.saturating_sub(self.gps_update_tick) / 1000;
+            let elapsed_secs = current_tick_ms.saturating_sub(self.gps_update_tick) / 1000;
             return base_epoch + elapsed_secs;
         }
 
-        if let Some(offset) = self.ntp_offset && self.ntp_is_fresh(current_tick_ms) {
+        if let Some(offset) = self.ntp_offset
+            && self.ntp_is_fresh(current_tick_ms)
+        {
             // NTP offset is relative to monotonic clock.
             let monotonic_secs = current_tick_ms / 1000;
             return (monotonic_secs as i64 + offset) as u64;
         }
 
         if let Some(epoch) = self.rtc_epoch {
-            let elapsed_secs =
-                current_tick_ms.saturating_sub(self.rtc_update_tick) / 1000;
+            let elapsed_secs = current_tick_ms.saturating_sub(self.rtc_update_tick) / 1000;
             return epoch + elapsed_secs;
         }
 
@@ -329,12 +334,7 @@ pub(crate) fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
     }
 
     // Transmit timestamp: seconds at bytes 40-43 (big-endian).
-    let ntp_secs = u32::from_be_bytes([
-        packet[40],
-        packet[41],
-        packet[42],
-        packet[43],
-    ]) as u64;
+    let ntp_secs = u32::from_be_bytes([packet[40], packet[41], packet[42], packet[43]]) as u64;
 
     if ntp_secs == 0 {
         return None;
@@ -356,10 +356,7 @@ pub(crate) fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
 /// would use the four-timestamp algorithm (T1, T2, T3, T4) with RTT
 /// correction.
 #[must_use]
-pub(crate) fn calculate_ntp_offset(
-    local_send_secs: u64,
-    server_transmit_epoch: u64,
-) -> i64 {
+pub(crate) fn calculate_ntp_offset(local_send_secs: u64, server_transmit_epoch: u64) -> i64 {
     server_transmit_epoch as i64 - local_send_secs as i64
 }
 
@@ -456,7 +453,10 @@ mod tests {
 
         // RTC at tick 400_000 — both GPS and NTP stale (400_000 - 61_000 = 339s > 300s).
         let accepted = clock.update_from_rtc(1_700_000_000, 400_000);
-        assert!(accepted, "RTC must be accepted when both GPS and NTP are stale");
+        assert!(
+            accepted,
+            "RTC must be accepted when both GPS and NTP are stale"
+        );
         assert_eq!(clock.current_source(), ClockSource::ModemRtc);
     }
 
@@ -562,8 +562,7 @@ mod tests {
 
         let wall = clock.get_wall_clock(5_000); // 5 seconds later
         assert_eq!(
-            wall,
-            1_700_000_005,
+            wall, 1_700_000_005,
             "wall clock must be monotonic_secs + ntp offset"
         );
     }

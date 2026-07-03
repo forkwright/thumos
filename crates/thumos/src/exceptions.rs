@@ -197,7 +197,6 @@ pub extern "C" fn irq_handler_rust() {
         // frame setup requires user-mode register state from the IRQ stack;
         // that is wired through the SVC path once userspace is active.
         let _ = process::check_pending_signal(); // WHY: signal delivery failure is non-actionable in IRQ context; will retry on next tick
-
     }
 }
 
@@ -241,8 +240,9 @@ pub extern "C" fn prefetch_abort_handler_rust() {
 #[unsafe(no_mangle)]
 pub extern "C" fn undefined_handler_rust() {
     let mut serial = Uart::new();
-    let _ = serial
-        .write_str("\r\n!!! UNDEFINED INSTRUCTION !!!\r\n");
+    serial
+        .write_str("\r\n!!! UNDEFINED INSTRUCTION !!!\r\n")
+        .ok();
 }
 
 /// SVC handler (placeholder for future syscall implementation).

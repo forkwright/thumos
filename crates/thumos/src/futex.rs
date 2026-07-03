@@ -203,7 +203,9 @@ pub(crate) fn insert_waiter_for_test(addr: u32, pid: u32) {
 pub(crate) fn has_waiter_for_pid(pid: u32) -> bool {
     // SAFETY: test-only; see insert_waiter_for_test.
     let waiters = unsafe { &*core::ptr::addr_of!(FUTEX_WAITERS) };
-    waiters.iter().any(|s| s.as_ref().is_some_and(|w| w.pid == pid))
+    waiters
+        .iter()
+        .any(|s| s.as_ref().is_some_and(|w| w.pid == pid))
 }
 
 /// Dispatch futex syscall.
@@ -257,7 +259,10 @@ mod tests {
 
         // val != *addr → should return EAGAIN immediately without blocking.
         let result = sys_futex_wait(addr, 99);
-        assert_eq!(result, EAGAIN, "mismatch on futex word should return EAGAIN");
+        assert_eq!(
+            result, EAGAIN,
+            "mismatch on futex word should return EAGAIN"
+        );
     }
 
     #[test]
@@ -267,7 +272,10 @@ mod tests {
         // before any read_volatile — verified by never reaching the mismatch
         // path (which would return EAGAIN, not EINVAL).
         let result = sys_futex_wait(crate::kconfig::KERNEL_LOAD as u32, 0);
-        assert_eq!(result, EINVAL, "kernel-range addr must return EINVAL without a load");
+        assert_eq!(
+            result, EINVAL,
+            "kernel-range addr must return EINVAL without a load"
+        );
     }
 
     #[test]
@@ -305,8 +313,14 @@ mod tests {
         // depending on the #[cfg(not(test))] block path in sys_futex_wait.
         unsafe {
             let waiters = &mut *core::ptr::addr_of_mut!(FUTEX_WAITERS);
-            waiters[0] = Some(FutexWaiter { addr: 0x1000, pid: 4 });
-            waiters[1] = Some(FutexWaiter { addr: 0x2000, pid: 7 });
+            waiters[0] = Some(FutexWaiter {
+                addr: 0x1000,
+                pid: 4,
+            });
+            waiters[1] = Some(FutexWaiter {
+                addr: 0x2000,
+                pid: 7,
+            });
         }
 
         free_waiters_for_pid(4);
@@ -315,7 +329,10 @@ mod tests {
         unsafe {
             let waiters = &*core::ptr::addr_of!(FUTEX_WAITERS);
             assert!(waiters[0].is_none(), "dead pid's waiter slot must be freed");
-            assert!(waiters[1].is_some(), "other pids' waiter slots must be untouched");
+            assert!(
+                waiters[1].is_some(),
+                "other pids' waiter slots must be untouched"
+            );
             assert_eq!(waiters[1].as_ref().map(|w| w.pid), Some(7));
             assert!(
                 waiters.iter().any(|s| s.is_none()),

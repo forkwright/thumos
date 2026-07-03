@@ -9,7 +9,7 @@
 
 // Items in this module are re-exported from telephony.rs.
 
-use crate::telephony::{AtResponse, RegStatus, Urc, MAX_NUMBER_LEN};
+use crate::telephony::{AtResponse, MAX_NUMBER_LEN, RegStatus, Urc};
 
 // ---------------------------------------------------------------------------
 // AT response parsing (no_std, no nom)
@@ -63,7 +63,10 @@ pub(crate) fn parse_creg_response(line: &[u8]) -> Option<RegStatus> {
 /// Parse a +COPS? response line: "+COPS: <mode>,<format>,\"<operator>\""
 ///
 /// Extracts the operator name string.
-pub(crate) fn parse_cops_response(line: &[u8], name_buf: &mut [u8; MAX_OPERATOR_LEN]) -> Option<u8> {
+pub(crate) fn parse_cops_response(
+    line: &[u8],
+    name_buf: &mut [u8; MAX_OPERATOR_LEN],
+) -> Option<u8> {
     let rest = strip_prefix(line, b"+COPS: ")?;
     // Find the quoted operator name.
     let quote_start = memchr(b'"', rest)?;
@@ -98,7 +101,10 @@ pub(crate) const fn is_valid_dial_byte(b: u8) -> bool {
 /// this check a forged `+CLIP` URC could carry AT-injection bytes into
 /// `number_buf`, which a UI callback re-dialing this caller would then
 /// pass straight to `Telephony::dial`.
-pub(crate) fn parse_clip_response(line: &[u8], number_buf: &mut [u8; MAX_NUMBER_LEN]) -> Option<u8> {
+pub(crate) fn parse_clip_response(
+    line: &[u8],
+    number_buf: &mut [u8; MAX_NUMBER_LEN],
+) -> Option<u8> {
     let rest = strip_prefix(line, b"+CLIP: ")?;
     // Number is in quotes.
     let quote_start = memchr(b'"', rest)?;
@@ -304,11 +310,7 @@ mod tests {
         let mut name = [0u8; MAX_OPERATOR_LEN];
         let len = parse_cops_response(line, &mut name);
         assert_eq!(len, Some(8), "operator name length must be 8");
-        assert_eq!(
-            &name[..8],
-            b"T-Mobile",
-            "operator name must be T-Mobile"
-        );
+        assert_eq!(&name[..8], b"T-Mobile", "operator name must be T-Mobile");
     }
 
     #[test]

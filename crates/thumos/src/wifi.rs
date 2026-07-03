@@ -33,7 +33,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::csprng;
-use crate::security::{hmac_sha1, pbkdf2_hmac_sha1, prf_384, SHA1_DIGEST_LEN};
+use crate::security::{SHA1_DIGEST_LEN, hmac_sha1, pbkdf2_hmac_sha1, prf_384};
 
 // ---------------------------------------------------------------------------
 // MT6739 WiFi hardware constants
@@ -208,7 +208,9 @@ impl Drop for WifiConfig {
         // Zero passphrase material on drop.
         for byte in &mut self.passphrase {
             // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe { core::ptr::write_volatile(byte, 0); }
+            unsafe {
+                core::ptr::write_volatile(byte, 0);
+            }
         }
     }
 }
@@ -307,15 +309,21 @@ impl Drop for Ptk {
         // as a dead store, ensuring key material is actually cleared from memory.
         for byte in &mut self.kck {
             // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe { core::ptr::write_volatile(byte, 0); }
+            unsafe {
+                core::ptr::write_volatile(byte, 0);
+            }
         }
         for byte in &mut self.kek {
             // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe { core::ptr::write_volatile(byte, 0); }
+            unsafe {
+                core::ptr::write_volatile(byte, 0);
+            }
         }
         for byte in &mut self.tk {
             // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe { core::ptr::write_volatile(byte, 0); }
+            unsafe {
+                core::ptr::write_volatile(byte, 0);
+            }
         }
     }
 }
@@ -978,11 +986,15 @@ impl Drop for WpaHandshake {
         // Zero nonces — they contribute to key derivation and are sensitive.
         for byte in &mut self.anonce {
             // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe { core::ptr::write_volatile(byte, 0); }
+            unsafe {
+                core::ptr::write_volatile(byte, 0);
+            }
         }
         for byte in &mut self.snonce {
             // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe { core::ptr::write_volatile(byte, 0); }
+            unsafe {
+                core::ptr::write_volatile(byte, 0);
+            }
         }
         // The PTK is zeroed by its own Drop impl when this Option is dropped.
     }
@@ -1421,7 +1433,11 @@ mod tests {
     fn wifi_config_stores_credentials() {
         let config = WifiConfig::new(b"MyNetwork", b"MyPassword123", WifiSecurity::Wpa2Personal);
         assert_eq!(config.ssid(), b"MyNetwork", "SSID must match");
-        assert_eq!(config.passphrase(), b"MyPassword123", "passphrase must match");
+        assert_eq!(
+            config.passphrase(),
+            b"MyPassword123",
+            "passphrase must match"
+        );
         assert_eq!(
             config.security,
             WifiSecurity::Wpa2Personal,
@@ -1634,7 +1650,11 @@ mod tests {
             key_data: Vec::new(),
         };
         let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-        assert_eq!(state, HandshakeState::SendMsg2, "Message 1 must yield SendMsg2");
+        assert_eq!(
+            state,
+            HandshakeState::SendMsg2,
+            "Message 1 must yield SendMsg2"
+        );
 
         assert!(
             hs.build_response().is_some(),
@@ -1761,10 +1781,9 @@ mod tests {
         // IEEE 802.11-2020 Annex J.3: passphrase="password", SSID="IEEE"
         let pmk = derive_pmk(b"password", b"IEEE");
         let expected = [
-            0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef,
-            0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a, 0x5f, 0x90,
-            0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2,
-            0x3a, 0xed, 0x76, 0x2e, 0x97, 0x10, 0xa1, 0x2e,
+            0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef, 0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a,
+            0x5f, 0x90, 0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2, 0x3a, 0xed, 0x76, 0x2e,
+            0x97, 0x10, 0xa1, 0x2e,
         ];
         assert_eq!(pmk, expected, "PMK must match IEEE 802.11-2020 Annex J.3");
     }
@@ -1886,7 +1905,10 @@ mod tests {
         let data = b"test eapol frame data";
         let mut bad_mic = compute_mic(&kck, data);
         bad_mic[0] ^= 0xFF; // flip one byte
-        assert!(!verify_mic(&kck, data, &bad_mic), "wrong MIC must not verify");
+        assert!(
+            !verify_mic(&kck, data, &bad_mic),
+            "wrong MIC must not verify"
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::block::{BlockDevice, BlockError, BLOCK_SIZE};
+use crate::block::{BLOCK_SIZE, BlockDevice, BlockError};
 use crate::cache::BlockCache;
 
 // ---------------------------------------------------------------------------
@@ -46,7 +46,9 @@ impl core::fmt::Display for LfsError {
             Self::InvalidSuperblock => write!(f, "invalid superblock"),
             Self::NoFreeSegments => write!(f, "no free segments"),
             Self::InodeNotFound => write!(f, "inode not found"),
-            Self::CheckpointOverflow => write!(f, "checkpoint payload exceeds reserved slot capacity"),
+            Self::CheckpointOverflow => {
+                write!(f, "checkpoint payload exceeds reserved slot capacity")
+            }
         }
     }
 }
@@ -159,9 +161,8 @@ impl LfsImap {
             return Err(LfsError::Corrupt);
         }
 
-        let count = u32::from_le_bytes(
-            buf[..4].try_into().map_err(|_| LfsError::Corrupt)?,
-        ) as usize;
+        let count =
+            u32::from_le_bytes(buf[..4].try_into().map_err(|_| LfsError::Corrupt)?) as usize;
 
         // WHY: count is an attacker-controlled on-disk field; count *
         // IMAP_ENTRY_SIZE wraps on the 32-bit target for a crafted large

@@ -19,12 +19,12 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::block::{BlockDevice, BLOCK_SIZE};
+use crate::block::{BLOCK_SIZE, BlockDevice};
 use crate::cache::BlockCache;
 use crate::lfs::DiskInode;
 use crate::lfs_imap::{LfsError, LfsImap};
 use crate::lfs_segment::LfsSegmentManager;
-use crate::lfs_writer::{LfsWriter, COMPACT_THRESHOLD_PERCENT};
+use crate::lfs_writer::{COMPACT_THRESHOLD_PERCENT, LfsWriter};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -105,9 +105,7 @@ pub(crate) fn compact_one_segment(
 
         // Update any inode direct pointers that reference this old block.
         // We need to find which inode references this data block and update it.
-        update_data_block_references(
-            dev, cache, imap, seg_mgr, writer, old_block, new_block,
-        )?;
+        update_data_block_references(dev, cache, imap, seg_mgr, writer, old_block, new_block)?;
         copied += 1;
     }
 
@@ -384,8 +382,9 @@ mod tests {
         let free_before = seg_mgr.free_count();
 
         // Compact: should free the segment containing the garbage v1 block.
-        let copied = compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
-            .expect("compact");
+        let copied =
+            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
+                .expect("compact");
 
         // No live blocks in the garbage segment (imap points to v2).
         assert_eq!(copied, 0, "garbage-only segment should have 0 live blocks");
@@ -419,8 +418,9 @@ mod tests {
             .expect("seal");
 
         // Now compact. The inode is live, so it should be copied.
-        let copied = compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
-            .expect("compact");
+        let copied =
+            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
+                .expect("compact");
 
         assert_eq!(copied, 1, "should copy 1 live inode block");
 
@@ -433,7 +433,9 @@ mod tests {
 
         // Verify the data is intact.
         let mut buf = [0u8; BLOCK_SIZE];
-        cache.read(&mut dev, block_after, &mut buf).expect("read relocated");
+        cache
+            .read(&mut dev, block_after, &mut buf)
+            .expect("read relocated");
         let restored = DiskInode::read_from(&buf, 0).expect("parse");
         assert_eq!(restored.size, 42);
         assert_eq!(restored.inode_type, INODE_TYPE_FILE);
@@ -468,8 +470,9 @@ mod tests {
             .expect("seal");
 
         // Compact.
-        let copied = compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
-            .expect("compact");
+        let copied =
+            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
+                .expect("compact");
 
         assert_eq!(copied, 2, "should copy 2 live inodes");
 
@@ -528,8 +531,7 @@ mod tests {
         cache
             .read(&mut dev, new_inode_block, &mut inode_buf)
             .expect("read relocated inode");
-        let restored_inode =
-            DiskInode::read_from(&inode_buf, 0).expect("parse relocated inode");
+        let restored_inode = DiskInode::read_from(&inode_buf, 0).expect("parse relocated inode");
         let new_data_block = restored_inode.direct[0];
         assert_ne!(
             new_data_block, data_block,
@@ -576,7 +578,11 @@ mod tests {
             .expect("write inode 2 (seals segment 1, fills segment 2)");
 
         // Exactly one segment (3) remains free: the compaction reserve.
-        assert_eq!(seg_mgr.free_count(), 1, "only the reserve should remain free");
+        assert_eq!(
+            seg_mgr.free_count(),
+            1,
+            "only the reserve should remain free"
+        );
         assert_eq!(
             seg_mgr.allocate(),
             None,

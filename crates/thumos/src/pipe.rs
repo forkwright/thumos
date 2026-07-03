@@ -15,7 +15,7 @@
 //! rest of the kernel's fixed-size-table pattern. 8 concurrent pipes is
 //! sufficient for an early BusyBox shell (pipelines have at most 2-3 stages).
 
-use crate::fd::{FdTable, EMFILE};
+use crate::fd::{EMFILE, FdTable};
 // Signal is only used in the #[cfg(not(test))] SIGPIPE delivery block.
 // Keep the import unconditional to avoid dead_code noise; the compiler will
 // drop it in test builds since Signal types are not exported from test-only paths.
@@ -438,7 +438,11 @@ mod tests {
             let buf = get_pipe_mut(pipe_idx).unwrap();
             buf.read(&mut dst)
         };
-        assert_eq!(read_n, message.len(), "should read back same number of bytes");
+        assert_eq!(
+            read_n,
+            message.len(),
+            "should read back same number of bytes"
+        );
         assert_eq!(&dst[..read_n], message, "data should match");
     }
 

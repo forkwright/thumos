@@ -249,10 +249,10 @@ pub(crate) fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DotE
     // Header.
     packet.extend_from_slice(&txid.to_be_bytes());
     packet.extend_from_slice(&0x0100u16.to_be_bytes()); // Flags: RD=1
-    packet.extend_from_slice(&1u16.to_be_bytes());      // QDCOUNT
-    packet.extend_from_slice(&0u16.to_be_bytes());      // ANCOUNT
-    packet.extend_from_slice(&0u16.to_be_bytes());      // NSCOUNT
-    packet.extend_from_slice(&0u16.to_be_bytes());      // ARCOUNT
+    packet.extend_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+    packet.extend_from_slice(&0u16.to_be_bytes()); // ANCOUNT
+    packet.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+    packet.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
 
     // QNAME: encode hostname as DNS labels.
     for label in hostname.split('.') {
@@ -323,7 +323,10 @@ pub(crate) fn build_dns_query_typed(
 /// SPKI extraction from the X.509 certificate is the responsibility
 /// of the TLS library; this function only compares the final hash.
 #[must_use]
-pub(crate) fn verify_pin(received_spki: &[u8; SPKI_HASH_LEN], pinned: &[u8; SPKI_HASH_LEN]) -> bool {
+pub(crate) fn verify_pin(
+    received_spki: &[u8; SPKI_HASH_LEN],
+    pinned: &[u8; SPKI_HASH_LEN],
+) -> bool {
     // Constant-time comparison to prevent timing side-channels.
     let mut diff: u8 = 0;
     for i in 0..SPKI_HASH_LEN {
@@ -489,10 +492,7 @@ pub struct DotConfig {
 
 impl DotConfig {
     /// Create a new DoT configuration.
-    pub(crate) fn new(
-        server_addr: Ipv4Address,
-        pinned_spki_hash: [u8; SPKI_HASH_LEN],
-    ) -> Self {
+    pub(crate) fn new(server_addr: Ipv4Address, pinned_spki_hash: [u8; SPKI_HASH_LEN]) -> Self {
         Self {
             enabled: true,
             server_addr,
@@ -584,23 +584,31 @@ mod tests {
 
     #[test]
     fn frame_adds_correct_length_prefix() {
-        let dns_msg = [0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let dns_msg = [
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
         let framed = frame_dns_message(&dns_msg);
         assert!(framed.is_ok(), "framing must succeed for valid message");
 
         let framed = framed.ok().unwrap(); // ok: test
-        assert_eq!(framed.len(), 2 + dns_msg.len(), "frame = 2-byte header + message");
+        assert_eq!(
+            framed.len(),
+            2 + dns_msg.len(),
+            "frame = 2-byte header + message"
+        );
 
         // Check length prefix.
         let prefix = u16::from_be_bytes([framed[0], framed[1]]);
         assert_eq!(
-            prefix, dns_msg.len() as u16,
+            prefix,
+            dns_msg.len() as u16,
             "length prefix must equal DNS message length"
         );
 
         // Check payload preserved.
         assert_eq!(
-            &framed[2..], &dns_msg,
+            &framed[2..],
+            &dns_msg,
             "payload must be unchanged after framing"
         );
     }
@@ -610,7 +618,8 @@ mod tests {
         let big_msg = vec![0u8; MAX_DNS_MESSAGE_SIZE + 1];
         let result = frame_dns_message(&big_msg);
         assert_eq!(
-            result, Err(DotError::MessageTooLarge),
+            result,
+            Err(DotError::MessageTooLarge),
             "oversized message must be rejected"
         );
     }
@@ -648,7 +657,8 @@ mod tests {
         assert_eq!(packet[2], 0x01, "flags high: RD=1");
         assert_eq!(packet[3], 0x00, "flags low");
         assert_eq!(
-            u16::from_be_bytes([packet[4], packet[5]]), 1,
+            u16::from_be_bytes([packet[4], packet[5]]),
+            1,
             "QDCOUNT must be 1"
         );
 
@@ -656,12 +666,14 @@ mod tests {
         let qname_start = DNS_HEADER_SIZE;
         assert_eq!(packet[qname_start], 7, "first label length = 7 (example)");
         assert_eq!(
-            &packet[qname_start + 1..qname_start + 8], b"example",
+            &packet[qname_start + 1..qname_start + 8],
+            b"example",
             "first label content"
         );
         assert_eq!(packet[qname_start + 8], 3, "second label length = 3 (com)");
         assert_eq!(
-            &packet[qname_start + 9..qname_start + 12], b"com",
+            &packet[qname_start + 9..qname_start + 12],
+            b"com",
             "second label content"
         );
         assert_eq!(packet[qname_start + 12], 0, "terminal zero");
@@ -679,7 +691,8 @@ mod tests {
         let hostname = alloc::format!("{long_label}.com");
         let result = build_dns_query(&hostname, 0x0001);
         assert_eq!(
-            result, Err(DotError::InvalidName),
+            result,
+            Err(DotError::InvalidName),
             "label > 63 chars must be rejected"
         );
     }
@@ -774,19 +787,22 @@ mod tests {
         let resp_len = dns_response.len() as u16;
         let frame_header = resp_len.to_be_bytes().to_vec();
 
-        let transport = MockTlsTransport::with_responses(vec![
-            frame_header,
-            dns_response.clone(),
-        ]);
+        let transport = MockTlsTransport::with_responses(vec![frame_header, dns_response.clone()]);
 
         let pinned = [0xAA; SPKI_HASH_LEN];
         let mut client = DotClient::new(transport, QUAD9_DNS, pinned);
 
         let result = client.query("test.com", DNS_TYPE_A);
-        assert!(result.is_ok(), "query must succeed with valid mock response");
+        assert!(
+            result.is_ok(),
+            "query must succeed with valid mock response"
+        );
 
         let response = result.ok().unwrap(); // ok: test
-        assert_eq!(response, dns_response, "response must match mock DNS message");
+        assert_eq!(
+            response, dns_response,
+            "response must match mock DNS message"
+        );
 
         // Verify the sent data contains a DoT frame carrying the
         // CSPRNG-predicted txid, not a hardcoded/predictable one.
@@ -794,11 +810,13 @@ mod tests {
         assert!(sent.len() > 2, "must have sent framed data");
         let sent_len = u16::from_be_bytes([sent[0], sent[1]]) as usize;
         assert_eq!(
-            sent_len, sent.len() - 2,
+            sent_len,
+            sent.len() - 2,
             "sent frame length prefix must match payload size"
         );
         assert_eq!(
-            &sent[2..4], &txid.to_be_bytes(),
+            &sent[2..4],
+            &txid.to_be_bytes(),
             "client must send the CSPRNG-derived txid"
         );
     }
@@ -815,10 +833,7 @@ mod tests {
 
         // Mismatching pin.
         let wrong = [0xBB; SPKI_HASH_LEN];
-        assert_eq!(
-            client.verify_server_pin(&wrong),
-            Err(DotError::PinMismatch),
-        );
+        assert_eq!(client.verify_server_pin(&wrong), Err(DotError::PinMismatch),);
     }
 
     #[test]
@@ -848,10 +863,16 @@ mod tests {
         let txids: Vec<u16> = (0..16).map(|_| random_txid()).collect();
 
         let all_sequential = txids.windows(2).all(|w| w[1] == w[0].wrapping_add(1));
-        assert!(!all_sequential, "txids must not be a sequential counter: {txids:?}");
+        assert!(
+            !all_sequential,
+            "txids must not be a sequential counter: {txids:?}"
+        );
 
         let monotonic = txids.windows(2).all(|w| w[1] > w[0]);
-        assert!(!monotonic, "txids must not be monotonically increasing: {txids:?}");
+        assert!(
+            !monotonic,
+            "txids must not be monotonically increasing: {txids:?}"
+        );
     }
 
     // -- Read frame tests -----------------------------------------------------
@@ -964,11 +985,17 @@ mod tests {
     fn dot_config_display() {
         let config = DotConfig::new(QUAD9_DNS, [0; SPKI_HASH_LEN]);
         let s = alloc::format!("{config}");
-        assert!(s.contains("DoT enabled"), "display must show enabled status");
+        assert!(
+            s.contains("DoT enabled"),
+            "display must show enabled status"
+        );
 
         let disabled = DotConfig::disabled();
         let s = alloc::format!("{disabled}");
-        assert!(s.contains("DoT disabled"), "display must show disabled status");
+        assert!(
+            s.contains("DoT disabled"),
+            "display must show disabled status"
+        );
     }
 
     // -- DotError Display test ------------------------------------------------

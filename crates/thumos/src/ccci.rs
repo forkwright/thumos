@@ -371,24 +371,9 @@ impl CcciHeader {
             return None;
         }
         Some(Self {
-            data0: u32::from_le_bytes([
-                *buf.first()?,
-                *buf.get(1)?,
-                *buf.get(2)?,
-                *buf.get(3)?,
-            ]),
-            data1: u32::from_le_bytes([
-                *buf.get(4)?,
-                *buf.get(5)?,
-                *buf.get(6)?,
-                *buf.get(7)?,
-            ]),
-            channel: u32::from_le_bytes([
-                *buf.get(8)?,
-                *buf.get(9)?,
-                *buf.get(10)?,
-                *buf.get(11)?,
-            ]),
+            data0: u32::from_le_bytes([*buf.first()?, *buf.get(1)?, *buf.get(2)?, *buf.get(3)?]),
+            data1: u32::from_le_bytes([*buf.get(4)?, *buf.get(5)?, *buf.get(6)?, *buf.get(7)?]),
+            channel: u32::from_le_bytes([*buf.get(8)?, *buf.get(9)?, *buf.get(10)?, *buf.get(11)?]),
             reserved: u32::from_le_bytes([
                 *buf.get(12)?,
                 *buf.get(13)?,
@@ -532,8 +517,27 @@ impl CcciChannel {
     pub(crate) fn is_valid(ch: u32) -> bool {
         matches!(
             ch,
-            0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17
-                | 18 | 19 | 20 | 21
+            0 | 1
+                | 2
+                | 3
+                | 4
+                | 5
+                | 6
+                | 7
+                | 8
+                | 9
+                | 10
+                | 11
+                | 12
+                | 13
+                | 14
+                | 15
+                | 16
+                | 17
+                | 18
+                | 19
+                | 20
+                | 21
         )
     }
 }
@@ -609,10 +613,9 @@ impl fmt::Display for CcciError {
                 f,
                 "packet header length {header_length} exceeds buffer {buffer_len}"
             ),
-            Self::OffsetOutOfBounds { offset, buffer_len } => write!(
-                f,
-                "data1 offset {offset:#x} exceeds buffer {buffer_len}"
-            ),
+            Self::OffsetOutOfBounds { offset, buffer_len } => {
+                write!(f, "data1 offset {offset:#x} exceeds buffer {buffer_len}")
+            }
             Self::Timeout => write!(f, "hardware poll timeout"),
         }
     }
@@ -841,7 +844,8 @@ impl TxRing {
         let count = TX_RING_SIZE;
         for i in 0..count {
             let next_idx = (i + 1) % count;
-            self.descriptors[i].next = base_addr + (u32::try_from(next_idx).unwrap_or_default()) * gpd_size;
+            self.descriptors[i].next =
+                base_addr + (u32::try_from(next_idx).unwrap_or_default()) * gpd_size;
             self.descriptors[i].flags = 0;
         }
         self.head = 0;
@@ -853,11 +857,7 @@ impl TxRing {
     ///
     /// SECURITY: `data_phys` must point to an AP-owned DMA buffer, not
     /// shared memory that the modem can modify.
-    pub(crate) fn submit(
-        &mut self,
-        data_phys: u32,
-        length: u16,
-    ) -> Result<usize, CcciError> {
+    pub(crate) fn submit(&mut self, data_phys: u32, length: u16) -> Result<usize, CcciError> {
         if self.hw_count >= TX_RING_SIZE {
             return Err(CcciError::RingBufferFull);
         }
@@ -932,7 +932,8 @@ impl RxRing {
         let count = RX_RING_SIZE.min(buf_addrs.len());
         for (i, &addr) in buf_addrs.iter().enumerate().take(count) {
             let next_idx = (i + 1) % count;
-            self.descriptors[i].next = base_addr + (u32::try_from(next_idx).unwrap_or_default()) * gpd_size;
+            self.descriptors[i].next =
+                base_addr + (u32::try_from(next_idx).unwrap_or_default()) * gpd_size;
             self.descriptors[i].data_ptr = addr;
             self.descriptors[i].data_len = buf_size;
             self.descriptors[i].recv_len = 0;
@@ -1141,17 +1142,10 @@ pub(crate) struct AuditEntry {
 
 impl AuditEntry {
     /// Create a new audit entry with truncated payload.
-    pub(crate) fn new(
-        timestamp: u64,
-        kind: AuditEventKind,
-        channel: u32,
-        data: &[u8],
-    ) -> Self {
+    pub(crate) fn new(timestamp: u64, kind: AuditEventKind, channel: u32, data: &[u8]) -> Self {
         let mut payload = [0u8; AUDIT_PAYLOAD_MAX];
         let copy_len = data.len().min(AUDIT_PAYLOAD_MAX);
-        payload[..copy_len].copy_from_slice(
-            data.get(..copy_len).unwrap_or(data),
-        );
+        payload[..copy_len].copy_from_slice(data.get(..copy_len).unwrap_or(data));
         Self {
             timestamp,
             kind,
@@ -1239,10 +1233,10 @@ impl AuditRing {
 /// ASCII case-insensitive (see `contains_subsequence`) because AT commands
 /// are case-insensitive per 3GPP TS 27.007.
 const IDENTITY_AT_COMMANDS: &[&[u8]] = &[
-    b"AT+CGSN",  // IMEI query
-    b"AT+CIMI",  // IMSI query
-    b"+CGSN:",   // IMEI response prefix
-    b"+CIMI:",   // IMSI response prefix
+    b"AT+CGSN", // IMEI query
+    b"AT+CIMI", // IMSI query
+    b"+CGSN:",  // IMEI response prefix
+    b"+CIMI:",  // IMSI response prefix
 ];
 
 /// Length of a bare IMEI or IMSI decimal digit string (3GPP TS 23.003).
@@ -1826,10 +1820,7 @@ impl CcciDriver {
     ///
     /// All CCCI-related hardware registers must be mapped (CLDMA, CCIF,
     /// INFRA AO, MD config). Must be called during early boot.
-    pub(crate) unsafe fn boot_modem_step(
-        &mut self,
-        timestamp: u64,
-    ) -> Result<BootStep, CcciError> {
+    pub(crate) unsafe fn boot_modem_step(&mut self, timestamp: u64) -> Result<BootStep, CcciError> {
         match self.boot_state {
             BootStep::EnableClocks => {
                 // Step 1: Enable required clocks.
@@ -2109,8 +2100,7 @@ mod tests {
     fn header_roundtrip() {
         let hdr = CcciHeader::new_data(0x1234_5678, 0xABCD_EF01, 5, 0x42);
         let bytes = hdr.to_bytes();
-        let decoded = CcciHeader::from_bytes(&bytes)
-            .unwrap_or_default();
+        let decoded = CcciHeader::from_bytes(&bytes).unwrap_or_default();
         assert_eq!(decoded, hdr, "roundtrip must be lossless");
     }
 
@@ -2118,8 +2108,7 @@ mod tests {
     fn header_control_roundtrip() {
         let hdr = CcciHeader::new_control(1, 0xFF);
         let bytes = hdr.to_bytes();
-        let decoded = CcciHeader::from_bytes(&bytes)
-            .unwrap_or_default();
+        let decoded = CcciHeader::from_bytes(&bytes).unwrap_or_default();
         assert!(decoded.is_control(), "control flag must survive roundtrip");
         assert_eq!(decoded.data0, CCCI_MAGIC, "magic must be preserved");
     }
@@ -2196,7 +2185,11 @@ mod tests {
         let base: u32 = 0x4020_0000;
         ring.init_chain(base);
 
-        assert_eq!(ring.free_count(), TX_RING_SIZE, "all slots must be free after init");
+        assert_eq!(
+            ring.free_count(),
+            TX_RING_SIZE,
+            "all slots must be free after init"
+        );
         assert!(ring.is_empty(), "ring must be empty after init");
     }
 
@@ -2216,7 +2209,11 @@ mod tests {
 
         let reclaimed = ring.reclaim();
         assert_eq!(reclaimed, 1, "should reclaim one descriptor");
-        assert_eq!(ring.free_count(), TX_RING_SIZE, "all slots free after reclaim");
+        assert_eq!(
+            ring.free_count(),
+            TX_RING_SIZE,
+            "all slots free after reclaim"
+        );
     }
 
     #[test]
@@ -2226,13 +2223,20 @@ mod tests {
 
         // Fill the ring
         for i in 0..TX_RING_SIZE {
-            ring.submit(0x5000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000, 64)
-                .unwrap_or_default();
+            ring.submit(
+                0x5000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000,
+                64,
+            )
+            .unwrap_or_default();
         }
 
         // One more should fail
         let result = ring.submit(0x6000_0000, 64);
-        assert_eq!(result, Err(CcciError::RingBufferFull), "must reject when full");
+        assert_eq!(
+            result,
+            Err(CcciError::RingBufferFull),
+            "must reject when full"
+        );
     }
 
     #[test]
@@ -2242,8 +2246,11 @@ mod tests {
 
         // Fill half, reclaim, fill again to test wrapping
         for i in 0..8 {
-            ring.submit(0x5000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000, 64)
-                .unwrap_or_default();
+            ring.submit(
+                0x5000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000,
+                64,
+            )
+            .unwrap_or_default();
         }
         // Simulate completion of all 8
         for i in 0..8 {
@@ -2253,8 +2260,11 @@ mod tests {
 
         // Submit more — these should wrap around
         for i in 0..TX_RING_SIZE {
-            ring.submit(0x6000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000, 32)
-                .unwrap_or_default();
+            ring.submit(
+                0x6000_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000,
+                32,
+            )
+            .unwrap_or_default();
         }
         assert_eq!(ring.free_count(), 0, "all slots consumed after second fill");
     }
@@ -2268,7 +2278,10 @@ mod tests {
         ring.init_chain(base, &buf_addrs, 2048);
 
         // All descriptors are hardware-owned, so poll should return None
-        assert!(ring.poll_rx().is_none(), "no data ready before HW completes");
+        assert!(
+            ring.poll_rx().is_none(),
+            "no data ready before HW completes"
+        );
 
         // Simulate hardware filling descriptor 0 — must mutate in-place, not a copy
         ring.descriptors[0].clear_hw_owned();
@@ -2504,16 +2517,8 @@ mod tests {
 
     #[test]
     fn ccif_channel_mask() {
-        assert_eq!(
-            CcifChannel::RingQ0.mask(),
-            1,
-            "RingQ0 mask is bit 0"
-        );
-        assert_eq!(
-            CcifChannel::Sram.mask(),
-            1 << 15,
-            "Sram mask is bit 15"
-        );
+        assert_eq!(CcifChannel::RingQ0.mask(), 1, "RingQ0 mask is bit 0");
+        assert_eq!(CcifChannel::Sram.mask(), 1 << 15, "Sram mask is bit 15");
         assert_eq!(
             CcifChannel::Exception.mask(),
             1 << 16,
@@ -2604,10 +2609,7 @@ mod tests {
             BootStep::EnableClocks,
             "driver starts at EnableClocks"
         );
-        assert!(
-            driver.audit().count() == 0,
-            "audit ring starts empty"
-        );
+        assert!(driver.audit().count() == 0, "audit ring starts empty");
     }
 
     // -- Audit ring buffer --
@@ -2632,11 +2634,7 @@ mod tests {
         assert_eq!(entry.kind, AuditEventKind::ModemRx, "kind preserved");
         assert_eq!(entry.channel, 5, "channel preserved");
         assert_eq!(entry.payload_len, 9, "payload_len is original length");
-        assert_eq!(
-            &entry.payload[..9],
-            b"test data",
-            "payload data preserved"
-        );
+        assert_eq!(&entry.payload[..9], b"test data", "payload data preserved");
     }
 
     #[test]
@@ -2654,7 +2652,11 @@ mod tests {
         }
 
         assert!(ring.has_overflowed(), "must detect overflow");
-        assert_eq!(ring.count(), AUDIT_RING_CAPACITY, "count capped at capacity");
+        assert_eq!(
+            ring.count(),
+            AUDIT_RING_CAPACITY,
+            "count capped at capacity"
+        );
         assert_eq!(
             ring.total_written(),
             (AUDIT_RING_CAPACITY + 10) as u64,
@@ -2663,10 +2665,7 @@ mod tests {
 
         // Oldest available should be entry 10 (first 10 were overwritten)
         let oldest = ring.get(0).expect("entry should exist");
-        assert_eq!(
-            oldest.timestamp, 10,
-            "oldest available should be entry 10"
-        );
+        assert_eq!(oldest.timestamp, 10, "oldest available should be entry 10");
     }
 
     #[test]
@@ -2710,29 +2709,56 @@ mod tests {
     fn cldma_tx_interrupt_combined() {
         let status = CLDMA_TX_INT_DONE | CLDMA_TX_INT_ERROR;
         let events = parse_cldma_tx_status(status);
-        assert_eq!(events.get(0).copied().unwrap_or_default(), Some(CldmaIrqEvent::TxDone(0x0F)), "done bits");
-        assert_eq!(events.get(1).copied().unwrap_or_default(), Some(CldmaIrqEvent::TxError(0x0F)), "error bits");
+        assert_eq!(
+            events.get(0).copied().unwrap_or_default(),
+            Some(CldmaIrqEvent::TxDone(0x0F)),
+            "done bits"
+        );
+        assert_eq!(
+            events.get(1).copied().unwrap_or_default(),
+            Some(CldmaIrqEvent::TxError(0x0F)),
+            "error bits"
+        );
     }
 
     #[test]
     fn cldma_rx_interrupt_done() {
         let events = parse_cldma_rx_status(CLDMA_RX_INT_DONE);
-        assert_eq!(events.get(0).copied().unwrap_or_default(), Some(CldmaIrqEvent::RxDone), "RX done");
+        assert_eq!(
+            events.get(0).copied().unwrap_or_default(),
+            Some(CldmaIrqEvent::RxDone),
+            "RX done"
+        );
     }
 
     #[test]
     fn cldma_rx_interrupt_all() {
         let status = CLDMA_RX_INT_DONE | CLDMA_RX_INT_QUEUE_EMPTY | CLDMA_RX_INT_ERROR;
         let events = parse_cldma_rx_status(status);
-        assert_eq!(events.get(0).copied().unwrap_or_default(), Some(CldmaIrqEvent::RxDone), "RX done");
-        assert_eq!(events.get(1).copied().unwrap_or_default(), Some(CldmaIrqEvent::RxQueueEmpty), "RX empty");
-        assert_eq!(events.get(2).copied().unwrap_or_default(), Some(CldmaIrqEvent::RxError), "RX error");
+        assert_eq!(
+            events.get(0).copied().unwrap_or_default(),
+            Some(CldmaIrqEvent::RxDone),
+            "RX done"
+        );
+        assert_eq!(
+            events.get(1).copied().unwrap_or_default(),
+            Some(CldmaIrqEvent::RxQueueEmpty),
+            "RX empty"
+        );
+        assert_eq!(
+            events.get(2).copied().unwrap_or_default(),
+            Some(CldmaIrqEvent::RxError),
+            "RX error"
+        );
     }
 
     #[test]
     fn cldma_tx_no_interrupts() {
         let events = parse_cldma_tx_status(0);
-        assert!(events.iter().all(|e| e.is_none()), "zero status = no events");
+        assert!(
+            events.iter().all(|e| e.is_none()),
+            "zero status = no events"
+        );
     }
 
     // -- Process modem RX with identity filtering --
@@ -2769,11 +2795,7 @@ mod tests {
         let hdr = CcciHeader::new_data(payload.len() as u32, 0, 5, 1);
 
         let result = driver.process_modem_rx(&hdr, payload, 1000);
-        assert_eq!(
-            result,
-            Ok(true),
-            "identity data passes with capability"
-        );
+        assert_eq!(result, Ok(true), "identity data passes with capability");
     }
 
     #[test]
@@ -2826,10 +2848,7 @@ mod tests {
             msg.contains("4000"),
             "error message must include the payload size"
         );
-        assert!(
-            msg.contains("3456"),
-            "error message must include the MTU"
-        );
+        assert!(msg.contains("3456"), "error message must include the MTU");
     }
 
     // -- CcciChannel (logical) --
@@ -2908,10 +2927,7 @@ mod tests {
     fn validate_packet_zero_offset_ok() {
         // data1 = 0 is always valid (no offset)
         let hdr = CcciHeader::new_data(10, 0, 5, 0);
-        assert!(
-            validate_packet(&hdr, 64).is_ok(),
-            "zero offset must pass"
-        );
+        assert!(validate_packet(&hdr, 64).is_ok(), "zero offset must pass");
     }
 
     #[test]
@@ -2987,21 +3003,9 @@ mod tests {
         let mut driver = CcciDriver::new();
 
         // Three different failure modes
-        let _ = driver.process_modem_rx(
-            &CcciHeader::new_data(0, 0, 99, 0),
-            b"data",
-            1000,
-        );
-        let _ = driver.process_modem_rx(
-            &CcciHeader::new_data(9999, 0, 5, 0),
-            b"data",
-            2000,
-        );
-        let _ = driver.process_modem_rx(
-            &CcciHeader::new_data(4, 9999, 5, 0),
-            b"data",
-            3000,
-        );
+        let _ = driver.process_modem_rx(&CcciHeader::new_data(0, 0, 99, 0), b"data", 1000);
+        let _ = driver.process_modem_rx(&CcciHeader::new_data(9999, 0, 5, 0), b"data", 2000);
+        let _ = driver.process_modem_rx(&CcciHeader::new_data(4, 9999, 5, 0), b"data", 3000);
 
         assert_eq!(
             driver.malformed_packet_count(),
@@ -3028,10 +3032,7 @@ mod tests {
     #[test]
     fn ccci_channel_is_valid() {
         for ch in 0..=21u32 {
-            assert!(
-                CcciChannel::is_valid(ch),
-                "channel {ch} must be valid"
-            );
+            assert!(CcciChannel::is_valid(ch), "channel {ch} must be valid");
         }
         assert!(!CcciChannel::is_valid(22), "22 is unassigned");
         assert!(!CcciChannel::is_valid(255), "255 is unassigned");

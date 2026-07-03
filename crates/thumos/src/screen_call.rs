@@ -20,8 +20,7 @@
 )]
 
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction,
-    CHAR_HEIGHT, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -245,8 +244,14 @@ impl Screen for CallScreen {
         let number_str = self.number_str();
         if !number_str.is_empty() {
             ui::draw_str_centered(
-                fb, w, 0, w, NUMBER_Y,
-                number_str, color::WHITE, color::BLACK,
+                fb,
+                w,
+                0,
+                w,
+                NUMBER_Y,
+                number_str,
+                color::WHITE,
+                color::BLACK,
             );
         }
 
@@ -255,10 +260,7 @@ impl Screen for CallScreen {
             let elapsed = self.elapsed_seconds();
             let (timer_buf, timer_len) = format_duration(elapsed);
             let timer_str = core::str::from_utf8(&timer_buf[..timer_len]).unwrap_or("00:00");
-            ui::draw_str_centered(
-                fb, w, 0, w, TIMER_Y,
-                timer_str, color::GREEN, color::BLACK,
-            );
+            ui::draw_str_centered(fb, w, 0, w, TIMER_Y, timer_str, color::GREEN, color::BLACK);
         }
 
         // Mute/Speaker indicators (only for active calls).
@@ -267,17 +269,19 @@ impl Screen for CallScreen {
             let speaker_str = if self.state.speaker { "SPEAKER" } else { "" };
 
             if !mute_str.is_empty() {
-                ui::draw_str(
-                    fb, w, 4, INDICATOR_Y,
-                    mute_str, color::RED, color::BLACK,
-                );
+                ui::draw_str(fb, w, 4, INDICATOR_Y, mute_str, color::RED, color::BLACK);
             }
             if !speaker_str.is_empty() {
                 let sw = ui::str_pixel_width(speaker_str);
                 let sx = w.saturating_sub(sw).saturating_sub(4);
                 ui::draw_str(
-                    fb, w, sx, INDICATOR_Y,
-                    speaker_str, color::YELLOW, color::BLACK,
+                    fb,
+                    w,
+                    sx,
+                    INDICATOR_Y,
+                    speaker_str,
+                    color::YELLOW,
+                    color::BLACK,
                 );
             }
         }
@@ -287,9 +291,7 @@ impl Screen for CallScreen {
         let call_action = self.handle_key(key);
         match call_action {
             CallAction::Hangup => ScreenAction::Back,
-            CallAction::Answer
-            | CallAction::ToggleMute
-            | CallAction::ToggleSpeaker => {
+            CallAction::Answer | CallAction::ToggleMute | CallAction::ToggleSpeaker => {
                 // These are handled by the caller via `handle_key` return value;
                 // the screen itself does not navigate.
                 ScreenAction::None
@@ -424,7 +426,10 @@ mod tests {
         // 3661 seconds -> "61:01" (minutes mod 100, no hour display)
         let (buf, len) = format_duration(3661);
         let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
-        assert_eq!(s, "61:01", "3661 seconds must format as 61:01 (61 min, 1 sec)");
+        assert_eq!(
+            s, "61:01",
+            "3661 seconds must format as 61:01 (61 min, 1 sec)"
+        );
 
         // 59 seconds -> "00:59"
         let (buf, len) = format_duration(59);

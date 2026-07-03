@@ -32,7 +32,8 @@ const PT_LOAD: u32 = 1;
 /// packed)] binary compatibility.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-struct Elf32Ehdr { // kanon:ignore RUST/struct-too-many-fields -- ELF32 spec layout; see doc comment
+struct Elf32Ehdr {
+    // kanon:ignore RUST/struct-too-many-fields -- ELF32 spec layout; see doc comment
     e_ident: [u8; 16],
     e_type: u16,
     e_machine: u16,
@@ -320,7 +321,10 @@ pub(crate) fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
                 // arithmetic self-evidently guarded rather than leaning on
                 // a fact proven elsewhere.
                 let val = if byte_offset < filesz {
-                    match file_offset.checked_add(byte_offset).and_then(|i| data.get(i)) {
+                    match file_offset
+                        .checked_add(byte_offset)
+                        .and_then(|i| data.get(i))
+                    {
                         Some(&b) => b,
                         None => 0, // INVARIANT: unreachable per validate()'s file_end check
                     }
@@ -535,8 +539,8 @@ mod tests {
         // A valid ELF header with phnum=0 should parse successfully
         // without triggering any page allocation (no PT_LOAD segments).
         let h = make_valid_ehdr();
-        let (entry, validated) = validate(&h)
-            .expect("valid ELF header with no segments must parse");
+        let (entry, validated) =
+            validate(&h).expect("valid ELF header with no segments must parse");
         assert_eq!(entry, 0x8000, "entry point must match e_entry");
         assert_eq!(validated.count, 0, "no PT_LOAD segments expected");
     }
@@ -585,23 +589,35 @@ mod tests {
         // SAFETY: test-only page-allocator state; single-threaded per test
         // (matches the established page::init() test precedent).
         unsafe {
-            page::init(0x4000_0000, 0x4000_0000 + 8 * page::PAGE_SIZE, 0x4000_0000 + 4 * page::PAGE_SIZE);
+            page::init(
+                0x4000_0000,
+                0x4000_0000 + 8 * page::PAGE_SIZE,
+                0x4000_0000 + 4 * page::PAGE_SIZE,
+            );
         }
         let free_before = page::free_count();
         assert_eq!(free_before, 4, "test setup must yield exactly 4 free pages");
 
         let loaded = load(&data).expect("well-formed single-page segment must load");
-        assert_eq!(loaded.pages_used, 1, "a 16-byte segment must round up to exactly 1 page");
+        assert_eq!(
+            loaded.pages_used, 1,
+            "a 16-byte segment must round up to exactly 1 page"
+        );
 
         // SAFETY: BUF is a private test-only static, read after load() wrote
         // to its address.
         unsafe {
             assert_eq!(&BUF[..4], b"TEST", "file bytes must be copied to vaddr");
-            assert_eq!(&BUF[4..16], &[0u8; 12], "bytes beyond filesz must be BSS-zeroed");
+            assert_eq!(
+                &BUF[4..16],
+                &[0u8; 12],
+                "bytes beyond filesz must be BSS-zeroed"
+            );
         }
 
         assert_eq!(
-            page::free_count(), free_before,
+            page::free_count(),
+            free_before,
             "a successful load must not permanently consume any page from the allocator (#328)"
         );
     }
@@ -632,12 +648,23 @@ mod tests {
         unsafe {
             page::init(0x4000_0000, 0x4000_0000, 0x4000_0000);
         }
-        assert_eq!(page::free_count(), 0, "test setup must yield zero free pages");
+        assert_eq!(
+            page::free_count(),
+            0,
+            "test setup must yield zero free pages"
+        );
 
         let result = load(&data);
-        assert_eq!(result.unwrap_err(), ElfError::OutOfMemory,
-            "a segment budget exceeding the free pool must be rejected up front");
+        assert_eq!(
+            result.unwrap_err(),
+            ElfError::OutOfMemory,
+            "a segment budget exceeding the free pool must be rejected up front"
+        );
 
-        assert_eq!(unsafe { BUF }, [0u8; 16], "no byte may be written before the OOM precheck passes");
+        assert_eq!(
+            unsafe { BUF },
+            [0u8; 16],
+            "no byte may be written before the OOM precheck passes"
+        );
     }
 }

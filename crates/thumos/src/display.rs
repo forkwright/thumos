@@ -483,10 +483,7 @@ unsafe fn dcs_write_cmd0(cmd: u8) -> Result<(), DsiTimeout> {
         mmio::write32(dsi::START, 0);
         // One CMDQ entry: short write, 0 params
         mmio::write32(dsi::CMDQ_SIZE, 1);
-        mmio::write32(
-            dsi::CMDQ_DATA,
-            dsi::CMDQ_SHORT_W0 | (u32::from(cmd) << 8),
-        );
+        mmio::write32(dsi::CMDQ_DATA, dsi::CMDQ_SHORT_W0 | (u32::from(cmd) << 8));
         // Trigger DSI command
         mmio::write32(dsi::START, dsi::START_BIT);
         dsi_wait_idle()
@@ -937,7 +934,10 @@ impl<L: LcmDriver> DisplayDriver<L> {
         );
         // SAFETY: RDMA0_MEM_START_ADDR and RDMA0_MEM_SRC_PITCH are valid MMIO registers within the RDMA0 address space at 0x1400_8000. addr is a valid physical address per caller contract. Volatile access is required for hardware registers.
         unsafe {
-            mmio::write32(rdma::MEM_START_ADDR, u32::try_from(addr).unwrap_or_default());
+            mmio::write32(
+                rdma::MEM_START_ADDR,
+                u32::try_from(addr).unwrap_or_default(),
+            );
             mmio::write32(rdma::MEM_SRC_PITCH, stride);
         }
     }
@@ -1008,13 +1008,7 @@ impl<L: LcmDriver> DisplayDriver<L> {
     }
 
     /// Step 6: configure RDMA0 in memory mode with framebuffer source.
-    unsafe fn configure_rdma(
-        &mut self,
-        fb_addr: usize,
-        width: u16,
-        height: u16,
-        stride: u32,
-    ) {
+    unsafe fn configure_rdma(&mut self, fb_addr: usize, width: u16, height: u16, stride: u32) {
         // SAFETY: RDMA0 registers (GLOBAL_CON, SIZE_CON_0, SIZE_CON_1, MEM_CON, MEM_SRC_PITCH, MEM_START_ADDR) are valid MMIO registers within the RDMA0 address space at 0x1400_8000. fb_addr is a valid DMA-accessible physical address per caller contract. Volatile access is required for hardware registers.
         unsafe {
             // Memory mode: read FROM framebuffer address
@@ -1031,7 +1025,10 @@ impl<L: LcmDriver> DisplayDriver<L> {
             mmio::write32(rdma::MEM_SRC_PITCH, stride);
 
             // Framebuffer address
-            mmio::write32(rdma::MEM_START_ADDR, u32::try_from(fb_addr).unwrap_or_default());
+            mmio::write32(
+                rdma::MEM_START_ADDR,
+                u32::try_from(fb_addr).unwrap_or_default(),
+            );
         }
         self.state = DisplayState::RdmaConfigured;
     }
@@ -1194,11 +1191,7 @@ mod tests {
             dsi_mode: DsiMode::SyncPulseVdo,
             pll_clock_mhz: 156,
         };
-        assert_eq!(
-            params.stride(),
-            480,
-            "RGB565 stride = 240 × 2 = 480 bytes"
-        );
+        assert_eq!(params.stride(), 480, "RGB565 stride = 240 × 2 = 480 bytes");
     }
 
     #[test]
@@ -1228,11 +1221,7 @@ mod tests {
             dsi_mode: DsiMode::CmdMode,
             pll_clock_mhz: 200,
         };
-        assert_eq!(
-            params.stride(),
-            720,
-            "RGB888 stride = 240 × 3 = 720 bytes"
-        );
+        assert_eq!(params.stride(), 720, "RGB888 stride = 240 × 3 = 720 bytes");
     }
 
     // -- Init sequence state ordering --
@@ -1329,7 +1318,8 @@ mod tests {
     #[test]
     fn cmdq_short_w0_matches_mipi_dcs_short_write_no_param() {
         assert_eq!(
-            dsi::CMDQ_SHORT_W0, 0x05,
+            dsi::CMDQ_SHORT_W0,
+            0x05,
             "CMDQ_SHORT_W0 must equal the MIPI DSI DCS short-write, \
              0-parameter data type (0x05)"
         );
@@ -1338,7 +1328,8 @@ mod tests {
     #[test]
     fn cmdq_short_w1_matches_mipi_dcs_short_write_one_param() {
         assert_eq!(
-            dsi::CMDQ_SHORT_W1, 0x15,
+            dsi::CMDQ_SHORT_W1,
+            0x15,
             "CMDQ_SHORT_W1 must equal the MIPI DSI DCS short-write, \
              1-parameter data type (0x15)"
         );
@@ -1394,16 +1385,17 @@ mod tests {
         let panel = Gc9306::new();
         let params = panel.get_params();
         assert_eq!(params.width, DISPLAY_WIDTH, "width matches DISPLAY_WIDTH");
-        assert_eq!(params.height, DISPLAY_HEIGHT, "height matches DISPLAY_HEIGHT");
+        assert_eq!(
+            params.height, DISPLAY_HEIGHT,
+            "height matches DISPLAY_HEIGHT"
+        );
     }
 
     #[test]
     fn gc9306_framebuffer_size() {
         let panel = Gc9306::new();
         let params = panel.get_params();
-        let expected = u32::from(DISPLAY_WIDTH)
-            * u32::from(DISPLAY_HEIGHT)
-            * u32::from(BPP_RGB565);
+        let expected = u32::from(DISPLAY_WIDTH) * u32::from(DISPLAY_HEIGHT) * u32::from(BPP_RGB565);
         assert_eq!(
             params.framebuffer_size(),
             expected,
@@ -1417,7 +1409,11 @@ mod tests {
     fn cmdq_short_w0_encodes_cmd_byte() {
         // Short write 0-param: config=0x05 (MIPI DCS short write, no param), cmd in bits[15:8]
         let word = dsi::CMDQ_SHORT_W0 | (0x11_u32 << 8);
-        assert_eq!(word & 0xFF, 0x05, "config byte = short write 0-param (#387)");
+        assert_eq!(
+            word & 0xFF,
+            0x05,
+            "config byte = short write 0-param (#387)"
+        );
         assert_eq!((word >> 8) & 0xFF, 0x11, "cmd byte = Sleep Out");
     }
 
@@ -1425,7 +1421,11 @@ mod tests {
     fn cmdq_short_w1_encodes_cmd_and_data() {
         // Short write 1-param: config=0x15 (MIPI DCS short write, 1 param), cmd in [15:8], data in [23:16]
         let word = dsi::CMDQ_SHORT_W1 | (0x36_u32 << 8) | (0x48_u32 << 16);
-        assert_eq!(word & 0xFF, 0x15, "config byte = short write 1-param (#387)");
+        assert_eq!(
+            word & 0xFF,
+            0x15,
+            "config byte = short write 1-param (#387)"
+        );
         assert_eq!((word >> 8) & 0xFF, 0x36, "cmd byte = MADCTL");
         assert_eq!((word >> 16) & 0xFF, 0x48, "data byte = MX|BGR");
     }

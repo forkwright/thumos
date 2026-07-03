@@ -52,8 +52,8 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use crate::matrix_ids::{MatrixDeviceId, MatrixUserId};
-use crate::security;
 use crate::secure_boot;
+use crate::security;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -91,10 +91,8 @@ const RECV_BUF_CAPACITY: usize = HEADER_SIZE + MAX_PAYLOAD_SIZE + SHA256_LEN + S
 /// Deliberately a distinct key from the boot key: provisioning-bundle
 /// authenticity and kernel-image authenticity are separate trust domains.
 const PROVISION_PUBLIC_KEY: [u8; secure_boot::PUBLIC_KEY_LEN] = [
-    0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a,
-    0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b, 0x7e, 0xbc,
-    0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c,
-    0xc0, 0xcd, 0x55, 0xf1, 0x2a, 0xf4, 0x66, 0x0c,
+    0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a, 0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b, 0x7e, 0xbc,
+    0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c, 0xc0, 0xcd, 0x55, 0xf1, 0x2a, 0xf4, 0x66, 0x0c,
 ];
 
 // ---------------------------------------------------------------------------
@@ -371,13 +369,9 @@ impl Provisioner {
     /// the appropriate error.
     pub(crate) fn finalize(&mut self) -> Result<ProvisionBundle, ProvisionError> {
         match &self.state {
-            ProvisionState::Complete => {
-                self.bundle.clone().ok_or(ProvisionError::Incomplete)
-            }
+            ProvisionState::Complete => self.bundle.clone().ok_or(ProvisionError::Incomplete),
             ProvisionState::Error(e) => Err(e.clone()),
-            ProvisionState::Waiting | ProvisionState::Receiving => {
-                Err(ProvisionError::Incomplete)
-            }
+            ProvisionState::Waiting | ProvisionState::Receiving => Err(ProvisionError::Incomplete),
             ProvisionState::Verifying => {
                 // Should not happen — Verifying is transient and resolves in
                 // receive_chunk. If we somehow get here, treat as incomplete.
@@ -598,7 +592,9 @@ mod tests {
         prov.receive_chunk(&wire);
         assert!(prov.is_complete());
 
-        let decoded = prov.finalize().unwrap_or_else(|_| provision_bundle_with_cross_signing());
+        let decoded = prov
+            .finalize()
+            .unwrap_or_else(|_| provision_bundle_with_cross_signing());
         assert_eq!(decoded, bundle);
     }
 
@@ -642,8 +638,7 @@ mod tests {
         // Corrupt a byte INSIDE the SHA-256 checksum region. The trailing
         // bytes are now the Ed25519 signature, so corrupting the tail would
         // surface as SignatureInvalid instead (see signature_invalid_rejected).
-        let payload_len =
-            u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
+        let payload_len = u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
         let checksum_start = HEADER_SIZE + payload_len;
         wire[checksum_start + SHA256_LEN - 1] ^= 0xFF;
 
@@ -750,7 +745,9 @@ mod tests {
         }
 
         assert!(prov.is_complete());
-        let decoded = prov.finalize().unwrap_or_else(|_| provision_bundle_without_cross_signing());
+        let decoded = prov
+            .finalize()
+            .unwrap_or_else(|_| provision_bundle_without_cross_signing());
         assert_eq!(decoded, provision_bundle_with_cross_signing());
     }
 
@@ -766,7 +763,9 @@ mod tests {
         }
 
         assert!(prov.is_complete());
-        let decoded = prov.finalize().unwrap_or_else(|_| provision_bundle_without_cross_signing());
+        let decoded = prov
+            .finalize()
+            .unwrap_or_else(|_| provision_bundle_without_cross_signing());
         assert_eq!(decoded, provision_bundle_with_cross_signing());
     }
 
@@ -892,8 +891,7 @@ mod tests {
         assert_eq!(&wire[..4], b"THMS");
 
         // Check length field.
-        let payload_len =
-            u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
+        let payload_len = u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
 
         // Total wire length = header + payload + checksum + signature.
         assert_eq!(
@@ -905,7 +903,10 @@ mod tests {
         // the payload; the Ed25519 signature follows it.
         let checksum_start = HEADER_SIZE + payload_len;
         let computed = security::sha256(&wire[..checksum_start]);
-        assert_eq!(&wire[checksum_start..checksum_start + SHA256_LEN], &computed[..]);
+        assert_eq!(
+            &wire[checksum_start..checksum_start + SHA256_LEN],
+            &computed[..]
+        );
     }
 
     #[test]
@@ -913,13 +914,15 @@ mod tests {
         let bundle = provision_bundle_with_cross_signing();
         let wire = encode_bundle_signed(&bundle);
 
-        let payload_len =
-            u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
+        let payload_len = u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
         let payload = &wire[HEADER_SIZE..HEADER_SIZE + payload_len];
 
         let decoded: Result<ProvisionBundle, _> = postcard::from_bytes(payload);
         assert!(decoded.is_ok());
-        assert_eq!(decoded.unwrap_or_else(|_| provision_bundle_without_cross_signing()), bundle);
+        assert_eq!(
+            decoded.unwrap_or_else(|_| provision_bundle_without_cross_signing()),
+            bundle
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -975,8 +978,7 @@ mod tests {
 
         // The checksum region is genuinely valid — this is a forgery under the
         // wrong key, not a corruption.
-        let payload_len =
-            u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
+        let payload_len = u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) as usize;
         let checksum_start = HEADER_SIZE + payload_len;
         let computed = security::sha256(&wire[..checksum_start]);
         assert_eq!(

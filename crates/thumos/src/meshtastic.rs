@@ -678,7 +678,10 @@ mod tests {
     fn message_max_body_succeeds() {
         let max_body = "X".repeat(MAX_MESSAGE_BODY_LEN);
         let result = MeshMessage::new(0x1234, 0x5678, max_body, 0, 0, 0);
-        assert!(result.is_ok(), "message at exactly MAX_MESSAGE_BODY_LEN must succeed");
+        assert!(
+            result.is_ok(),
+            "message at exactly MAX_MESSAGE_BODY_LEN must succeed"
+        );
     }
 
     #[test]
@@ -694,18 +697,27 @@ mod tests {
     #[test]
     fn message_max_hop_count_succeeds() {
         let result = MeshMessage::new(0x1234, 0x5678, "hello".to_string(), 0, MAX_HOP_COUNT, 0);
-        assert!(result.is_ok(), "message at exactly MAX_HOP_COUNT must succeed");
+        assert!(
+            result.is_ok(),
+            "message at exactly MAX_HOP_COUNT must succeed"
+        );
     }
 
     #[test]
     fn broadcast_message_detection() {
         let msg = MeshMessage::new(0x1234, BROADCAST_NODE_ID, "broadcast".to_string(), 0, 0, 0)
             .unwrap_or_else(|_| unreachable!());
-        assert!(msg.is_broadcast(), "message to BROADCAST_NODE_ID must be broadcast");
+        assert!(
+            msg.is_broadcast(),
+            "message to BROADCAST_NODE_ID must be broadcast"
+        );
 
         let msg = MeshMessage::new(0x1234, 0x5678, "direct".to_string(), 0, 0, 0)
             .unwrap_or_else(|_| unreachable!());
-        assert!(!msg.is_broadcast(), "message to specific node must not be broadcast");
+        assert!(
+            !msg.is_broadcast(),
+            "message to specific node must not be broadcast"
+        );
     }
 
     // --- Send tests ---
@@ -815,7 +827,9 @@ mod tests {
             1,
             "duplicate node ID must update, not duplicate"
         );
-        let found = transport.find_node(0x1234).unwrap_or_else(|| unreachable!());
+        let found = transport
+            .find_node(0x1234)
+            .unwrap_or_else(|| unreachable!());
         assert_eq!(found.short_name(), b"CD");
         assert_eq!(found.last_seen, 2000);
     }
@@ -882,10 +896,7 @@ mod tests {
             .to_string(),
             "cannot send in state disconnected"
         );
-        assert_eq!(
-            MeshError::InvalidNodeId.to_string(),
-            "invalid node ID"
-        );
+        assert_eq!(MeshError::InvalidNodeId.to_string(), "invalid node ID");
     }
 
     #[test]
@@ -905,8 +916,15 @@ mod tests {
 
     #[test]
     fn message_display() {
-        let msg = MeshMessage::new(0x1234, 0x5678, "Hello mesh!".to_string(), 1_700_000_000, 2, 1)
-            .unwrap_or_else(|_| unreachable!());
+        let msg = MeshMessage::new(
+            0x1234,
+            0x5678,
+            "Hello mesh!".to_string(),
+            1_700_000_000,
+            2,
+            1,
+        )
+        .unwrap_or_else(|_| unreachable!());
         let display = msg.to_string();
         assert!(
             display.contains("!00001234->!00005678"),

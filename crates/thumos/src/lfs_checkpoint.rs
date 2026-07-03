@@ -13,7 +13,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::block::{BlockDevice, BLOCK_SIZE};
+use crate::block::{BLOCK_SIZE, BlockDevice};
 use crate::cache::BlockCache;
 use crate::lfs_imap::LfsError;
 
@@ -186,11 +186,7 @@ pub(crate) fn write_checkpoint(
         let block_data: &[u8; BLOCK_SIZE] = padded_seg[offset..offset + BLOCK_SIZE]
             .try_into()
             .map_err(|_| LfsError::Corrupt)?;
-        cache.write(
-            dev,
-            header.segment_bitmap_block + i as u64,
-            block_data,
-        )?;
+        cache.write(dev, header.segment_bitmap_block + i as u64, block_data)?;
     }
 
     // WHY: flush the imap + segment-bitmap payload to media BEFORE the
@@ -398,8 +394,7 @@ mod tests {
             .expect("write B");
 
         let mut cache2 = BlockCache::new();
-        let (latest, slot) =
-            pick_latest(&mut dev, &mut cache2, 1, 5).expect("pick latest");
+        let (latest, slot) = pick_latest(&mut dev, &mut cache2, 1, 5).expect("pick latest");
 
         assert_eq!(latest.sequence, 20, "should pick higher sequence");
         assert_eq!(slot, 5, "should return slot B block");
@@ -426,8 +421,7 @@ mod tests {
         let seg_data = vec![0; 16];
 
         // Only write to slot A. Slot B is zeroed (corrupt magic).
-        write_checkpoint(&mut dev, &mut cache, 1, &header, &imap_data, &seg_data)
-            .expect("write A");
+        write_checkpoint(&mut dev, &mut cache, 1, &header, &imap_data, &seg_data).expect("write A");
 
         let mut cache2 = BlockCache::new();
         let (latest, slot) =
@@ -480,8 +474,7 @@ mod tests {
         };
 
         let block = header.to_block();
-        let restored =
-            CheckpointHeader::from_block(&block).expect("from_block should succeed");
+        let restored = CheckpointHeader::from_block(&block).expect("from_block should succeed");
 
         assert_eq!(restored.sequence, 999);
         assert_eq!(restored.imap_block, 42);

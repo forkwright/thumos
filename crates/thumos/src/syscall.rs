@@ -27,15 +27,15 @@ use crate::capability;
 use crate::fd;
 use crate::futex;
 use crate::ipc;
-use crate::pipe;
-use crate::signal;
-use crate::socket;
 use crate::kconfig;
 use crate::memguard::validate_user_buffer;
 use crate::mmu;
 use crate::page;
+use crate::pipe;
 use crate::process;
 use crate::process::VmMapping;
+use crate::signal;
+use crate::socket;
 use crate::time;
 use crate::uart::Uart;
 
@@ -66,7 +66,6 @@ pub enum Syscall {
     // WHY: preserved FROM initial bring-up for ABI stability with existing
     // test binaries. Numbers are non-contiguous across domains because they
     // predate the domain grouping.
-
     /// Terminate the calling process.
     Exit = 0,
     /// Write bytes to a file descriptor (currently: UART console).
@@ -92,7 +91,6 @@ pub enum Syscall {
     // WHY: process lifecycle operations needed for multi-process userspace.
     // fork/exec/wait form the standard process creation triangle; kill
     // enables signal delivery; getuid supports identity-aware access control.
-
     /// Create a child process as a copy of the caller.
     Fork = 10,
     /// Replace the current process image with a new program.
@@ -108,7 +106,6 @@ pub enum Syscall {
     // WHY: userspace needs virtual memory control for heap growth (brk),
     // shared memory and mmap'd files (mmap/munmap), and guard pages
     // (mprotect). These are the minimum SET for a musl-linked process.
-
     /// Map files or devices INTO memory.
     Mmap = 20,
     /// Unmap a previously mapped memory region.
@@ -124,7 +121,6 @@ pub enum Syscall {
     // and control; dup/dup2 support shell-style redirection; mkdir/unlink/
     // getcwd/chdir provide directory operations. This SET is sufficient for
     // a BusyBox shell on the ramfs.
-
     /// Open a file or device.
     Open = 30,
     /// Close a file descriptor.
@@ -158,7 +154,6 @@ pub enum Syscall {
     // WHY: pipe enables parent-child data flow (shell pipelines); futex
     // provides the kernel-side of userspace mutexes and condition variables.
     // send/recv (legacy 8/9) handle message-passing IPC.
-
     /// Create a unidirectional data channel (pipe).
     Pipe = 50,
     /// Fast userspace mutex (kernel wait/wake).
@@ -168,7 +163,6 @@ pub enum Syscall {
     // WHY: thumos needs raw socket access for WiFi scanning (sema), packet
     // filtering (asphaleia), and Signal protocol transport (krypta). The
     // BSD socket API is the standard interface for userspace networking.
-
     /// Create a network socket.
     Socket = 60,
     /// Bind a socket to an address.
@@ -188,7 +182,6 @@ pub enum Syscall {
     // WHY: userspace needs wall-clock and monotonic time for timestamps,
     // timeouts, and scheduling. nanosleep is the POSIX sleep primitive.
     // uptime/sleep (legacy 6/7) provide tick-based alternatives.
-
     /// Read a clock (wall, monotonic, or process CPU time).
     ClockGettime = 70,
     /// High-resolution sleep.
@@ -198,7 +191,6 @@ pub enum Syscall {
     // WHY: signals are the standard mechanism for async process notification
     // (SIGTERM, SIGCHLD, SIGSEGV). sigaction installs handlers; sigreturn
     // restores context after a signal handler completes.
-
     /// Install or query a signal handler.
     Sigaction = 80,
     /// Return FROM a signal handler (restores pre-signal context).
@@ -384,9 +376,10 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
 
     match call {
         // ---- Legacy handlers (implemented) ----
-
         Syscall::Exit => {
-            let Ok(status) = i32::try_from(arg0) else { return EINVAL; };
+            let Ok(status) = i32::try_from(arg0) else {
+                return EINVAL;
+            };
             process::exit_with_status(status);
         }
         Syscall::Write => sys_write_dispatch(arg0, arg1, arg2),
@@ -405,13 +398,17 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         Syscall::Getpid => process::current_pid() as u32,
         Syscall::AllocPage => match crate::page::alloc_page() {
             Some(addr) => {
-                let Ok(addr_u32) = u32::try_from(addr) else { return EINVAL; };
+                let Ok(addr_u32) = u32::try_from(addr) else {
+                    return EINVAL;
+                };
                 addr_u32
             }
             None => u32::MAX, // NOTE: error indicator
         },
         Syscall::FreePage => {
-            let Ok(page_addr) = usize::try_from(arg0) else { return EINVAL; };
+            let Ok(page_addr) = usize::try_from(arg0) else {
+                return EINVAL;
+            };
             // Reject any address that is not page-aligned or falls outside the
             // user-allocatable DRAM window before touching the allocator. This
             // is exactly the [KERNEL_END, RAM_END) range alloc_page hands out,
@@ -436,7 +433,9 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             // runnable_count() and any Sleeping-aware scheduler logic see
             // this process as blocked for the sleep window, not spuriously
             // Running.
-            let Ok(ms) = u64::try_from(arg0) else { return EINVAL; };
+            let Ok(ms) = u64::try_from(arg0) else {
+                return EINVAL;
+            };
             const TICK_MS: u64 = 10;
             let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
             let wake_tick = crate::exceptions::ticks().saturating_add(ticks_needed);
@@ -448,7 +447,9 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             0
         }
         Syscall::Send => {
-            let Ok(to) = u8::try_from(arg0) else { return EINVAL; };
+            let Ok(to) = u8::try_from(arg0) else {
+                return EINVAL;
+            };
             // WHY (#371): PID 0 (kinit) is the fault supervisor and
             // IPC-trust anchor -- mirrors the #269/CAP_KILL precedent that
             // protects PID 0 from arbitrary signals. A generic userspace
@@ -463,8 +464,12 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
                 return u32::MAX;
             }
             let tag = arg1;
-            let Ok(ptr) = usize::try_from(arg2) else { return EINVAL; };
-            let Ok(len) = usize::try_from(arg3) else { return EINVAL; };
+            let Ok(ptr) = usize::try_from(arg2) else {
+                return EINVAL;
+            };
+            let Ok(len) = usize::try_from(arg3) else {
+                return EINVAL;
+            };
             let payload = if len > 0 && ptr != 0 {
                 let capped_len = len.min(ipc::MSG_MAX_SIZE);
                 if !validate_user_buffer(ptr, capped_len) {
@@ -485,19 +490,24 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         },
 
         // ---- Process management ----
-
         Syscall::Fork => match process::fork() {
             Some(child_pid) => {
-                let Ok(pid_u32) = u32::try_from(child_pid) else { return EINVAL; };
+                let Ok(pid_u32) = u32::try_from(child_pid) else {
+                    return EINVAL;
+                };
                 pid_u32
             }
             None => u32::MAX,
         },
         Syscall::Waitpid => {
-            let Ok(child_pid) = u8::try_from(arg0) else { return EINVAL; };
+            let Ok(child_pid) = u8::try_from(arg0) else {
+                return EINVAL;
+            };
             match process::waitpid(child_pid) {
                 Some(status) => {
-                    let Ok(status_u32) = u32::try_from(status) else { return EINVAL; };
+                    let Ok(status_u32) = u32::try_from(status) else {
+                        return EINVAL;
+                    };
                     status_u32
                 }
                 None => u32::MAX,
@@ -508,7 +518,6 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         Syscall::Getuid => process::current_uid(),
 
         // ---- Memory management ----
-
         Syscall::Brk => sys_brk(arg0),
         Syscall::Mmap => sys_mmap(arg0, arg1, arg2, arg3),
         Syscall::Munmap => sys_munmap(arg0, arg1),
@@ -517,7 +526,6 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         // ---- Filesystem ----
         // WHY: wired to VFS via fd module. All file operations go through
         // the mount table and Filesystem trait dispatch.
-
         Syscall::Open => fd::sys_open(arg0, arg1, arg2),
         Syscall::Close => sys_close_with_pipe(arg0),
         Syscall::Read => sys_read_with_pipe(arg0, arg1, arg2),
@@ -535,7 +543,6 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         Syscall::Fcntl => fd::sys_fcntl(arg0, arg1, arg2),
 
         // ---- IPC ----
-
         Syscall::Pipe => pipe::sys_pipe(arg0),
         Syscall::Futex => futex::sys_futex(arg0, arg1, arg2),
 
@@ -543,7 +550,6 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         // WHY: BSD socket API backed by smoltcp via the socket module.
         // Socket fds are identified by FD_KIND_SOCKET in the flags field,
         // similar to the pipe fd pattern.
-
         Syscall::Socket => socket::sys_socket(arg0, arg1, arg2),
         Syscall::Bind => socket::sys_bind(arg0, arg1, arg2),
         Syscall::Listen => socket::sys_listen(arg0, arg1),
@@ -553,12 +559,10 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         Syscall::Recvfrom => socket::sys_recvfrom(arg0, arg1, arg2, arg3, 0, 0),
 
         // ---- Time ----
-
         Syscall::ClockGettime => time::sys_clock_gettime(arg0, arg1),
         Syscall::Nanosleep => time::sys_nanosleep(arg0),
 
         // ---- Signal ----
-
         Syscall::Sigaction => signal::sys_sigaction(arg0, arg1),
         Syscall::Sigreturn => signal::sys_sigreturn(),
     }
@@ -651,8 +655,12 @@ fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
         // case falls back to UART instead of the unconditional fd==1
         // special-case that used to shadow a dup2(x, 1) redirection.
         None if fd == 1 => {
-            let Ok(ptr) = usize::try_from(buf_ptr) else { return EINVAL; };
-            let Ok(len) = usize::try_from(count) else { return EINVAL; };
+            let Ok(ptr) = usize::try_from(buf_ptr) else {
+                return EINVAL;
+            };
+            let Ok(len) = usize::try_from(count) else {
+                return EINVAL;
+            };
             if !validate_user_buffer(ptr, len) {
                 return EFAULT;
             }
@@ -663,7 +671,9 @@ fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
             for &byte in slice {
                 serial.putc(byte);
             }
-            let Ok(len_u32) = u32::try_from(len) else { return EINVAL; };
+            let Ok(len_u32) = u32::try_from(len) else {
+                return EINVAL;
+            };
             len_u32
         }
         None => fd::EBADF,
@@ -738,9 +748,7 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // Construct path &str from the validated region.
     // SAFETY: path_ptr is in user DRAM (validated above); path_len bytes
     // were just scanned without trapping. The slice lifetime is local.
-    let path_bytes = unsafe {
-        core::slice::from_raw_parts(path_ptr as *const u8, path_len)
-    };
+    let path_bytes = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len) };
     let path = match core::str::from_utf8(path_bytes) {
         Ok(s) => s,
         Err(_) => return ENOENT,
@@ -778,7 +786,9 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
                 for j in 0..i {
                     // SAFETY: pages were returned by alloc_page() in this loop;
                     // they have not been mapped or used yet.
-                    unsafe { page::free_page(exec_stack_pages[j]); }
+                    unsafe {
+                        page::free_page(exec_stack_pages[j]);
+                    }
                 }
                 return ENOMEM;
             }
@@ -816,9 +826,7 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
                 break;
             }
             // SAFETY: entry_addr is in user DRAM (validated above).
-            let str_ptr = unsafe {
-                core::ptr::read_unaligned(entry_addr as *const u32)
-            } as usize;
+            let str_ptr = unsafe { core::ptr::read_unaligned(entry_addr as *const u32) } as usize;
             if str_ptr == 0 {
                 break; // null terminator of argv[]
             }
@@ -860,7 +868,9 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // SAFETY: sp is within [new_stack_base, new_stack_top); allocation
     // succeeded above. Stack pages are identity-mapped (physical == virtual),
     // so the write reaches the correct physical pages.
-    unsafe { (sp as *mut u32).write(argc as u32); }
+    unsafe {
+        (sp as *mut u32).write(argc as u32);
+    }
 
     // Write argv[] pointers and string data.
     let argv_array_base = sp + 4;
@@ -887,14 +897,18 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     }
     // Write null terminator for argv[argc].
     // SAFETY: argv_array_base + argc*4 is within the stack frame.
-    unsafe { ((argv_array_base + argc * 4) as *mut u32).write(0); }
+    unsafe {
+        ((argv_array_base + argc * 4) as *mut u32).write(0);
+    }
 
     // --- Step 6: reset signal handlers (POSIX exec semantics) ---
     // WHY: POSIX requires exec to reset all signal dispositions to SIG_DFL and
     // clear pending signals that were set via a registered handler. The new
     // image must not inherit any userspace-installed signal handlers.
     // SAFETY: called from syscall context (SVC mode, IRQs disabled, single-core).
-    unsafe { process::reset_signal_state(); }
+    unsafe {
+        process::reset_signal_state();
+    }
 
     // --- Step 7: update PCB ---
     // exec_replace_context frees old stack pages, resets heap_break and the
@@ -936,7 +950,9 @@ fn sys_brk(new_break_raw: u32) -> u32 {
 
     // Query: return current break
     if new_break_req == 0 {
-        let Ok(current_u32) = u32::try_from(current) else { return EINVAL; };
+        let Ok(current_u32) = u32::try_from(current) else {
+            return EINVAL;
+        };
         return current_u32;
     }
 
@@ -945,7 +961,9 @@ fn sys_brk(new_break_raw: u32) -> u32 {
 
     let pt = process::current_page_table();
     if pt == 0 {
-        let Ok(current_u32) = u32::try_from(current) else { return EINVAL; };
+        let Ok(current_u32) = u32::try_from(current) else {
+            return EINVAL;
+        };
         return current_u32;
     }
 
@@ -975,7 +993,9 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                         }
                     }
                 }
-                let Ok(current_u32) = u32::try_from(current) else { return EINVAL; };
+                let Ok(current_u32) = u32::try_from(current) else {
+                    return EINVAL;
+                };
                 return current_u32;
             };
 
@@ -986,8 +1006,12 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                 // Mapping failed (e.g., L2 pool exhausted) -- free the page
                 // SAFETY: phys was just returned by alloc_page() and has not
                 // been mapped (map_page failed), so it is safe to free.
-                unsafe { page::free_page(phys); }
-                let Ok(current_u32) = u32::try_from(current) else { return EINVAL; };
+                unsafe {
+                    page::free_page(phys);
+                }
+                let Ok(current_u32) = u32::try_from(current) else {
+                    return EINVAL;
+                };
                 return current_u32;
             }
         }
@@ -1015,7 +1039,9 @@ fn sys_brk(new_break_raw: u32) -> u32 {
         process::set_heap_break(new_break);
     }
 
-    let Ok(break_u32) = u32::try_from(process::current_heap_break()) else { return EINVAL; };
+    let Ok(break_u32) = u32::try_from(process::current_heap_break()) else {
+        return EINVAL;
+    };
     break_u32
 }
 
@@ -1117,7 +1143,9 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         if !ok {
             // SAFETY: phys was just returned by alloc_page() and has not been
             // mapped (map_page failed), so it is safe to free.
-            unsafe { page::free_page(phys); }
+            unsafe {
+                page::free_page(phys);
+            }
             // Roll back previous mappings
             for j in 0..i {
                 let rollback_vaddr = candidate + j * page::PAGE_SIZE;
@@ -1150,7 +1178,9 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         return MAP_FAILED;
     }
 
-    let Ok(candidate_u32) = u32::try_from(candidate) else { return EINVAL; };
+    let Ok(candidate_u32) = u32::try_from(candidate) else {
+        return EINVAL;
+    };
     candidate_u32
 }
 
@@ -1252,7 +1282,11 @@ mod tests {
 
     #[test]
     fn legacy_alloc_page_is_four() {
-        assert_eq!(Syscall::AllocPage.as_u32(), 4, "alloc_page must be syscall 4");
+        assert_eq!(
+            Syscall::AllocPage.as_u32(),
+            4,
+            "alloc_page must be syscall 4"
+        );
     }
 
     #[test]
@@ -1298,7 +1332,28 @@ mod tests {
     #[test]
     fn from_u32_returns_none_for_gaps() {
         // INVARIANT: numbers between domain ranges are unallocated
-        let gap_numbers: &[u32] = &[15, 16, 17, 18, 19, 24, 25, 26, 44, 45, 52, 53, 67, 68, 72, 73, 82, 99, 255, u32::MAX];
+        let gap_numbers: &[u32] = &[
+            15,
+            16,
+            17,
+            18,
+            19,
+            24,
+            25,
+            26,
+            44,
+            45,
+            52,
+            53,
+            67,
+            68,
+            72,
+            73,
+            82,
+            99,
+            255,
+            u32::MAX,
+        ];
         for &n in gap_numbers {
             assert!(
                 Syscall::from_u32(n).is_none(),
@@ -1335,7 +1390,10 @@ mod tests {
     #[test]
     fn enosys_is_negative_38() {
         // WHY: must match Linux ARM ENOSYS for musl compatibility
-        assert_eq!(ENOSYS, 0xFFFF_FFDA, "ENOSYS must be -u32::try_from(38).unwrap_or_default()");
+        assert_eq!(
+            ENOSYS, 0xFFFF_FFDA,
+            "ENOSYS must be -u32::try_from(38).unwrap_or_default()"
+        );
     }
 
     #[test]
@@ -1377,7 +1435,12 @@ mod tests {
 
     #[test]
     fn memory_group_in_range() {
-        let memory_calls = [Syscall::Mmap, Syscall::Munmap, Syscall::Brk, Syscall::Mprotect];
+        let memory_calls = [
+            Syscall::Mmap,
+            Syscall::Munmap,
+            Syscall::Brk,
+            Syscall::Mprotect,
+        ];
         for call in memory_calls {
             let n = call.as_u32();
             assert!(
@@ -1390,10 +1453,20 @@ mod tests {
     #[test]
     fn filesystem_group_in_range() {
         let fs_calls = [
-            Syscall::Open, Syscall::Close, Syscall::Read, Syscall::Stat,
-            Syscall::Fstat, Syscall::Lseek, Syscall::Ioctl, Syscall::Fcntl,
-            Syscall::Dup, Syscall::Dup2, Syscall::Mkdir, Syscall::Unlink,
-            Syscall::Getcwd, Syscall::Chdir,
+            Syscall::Open,
+            Syscall::Close,
+            Syscall::Read,
+            Syscall::Stat,
+            Syscall::Fstat,
+            Syscall::Lseek,
+            Syscall::Ioctl,
+            Syscall::Fcntl,
+            Syscall::Dup,
+            Syscall::Dup2,
+            Syscall::Mkdir,
+            Syscall::Unlink,
+            Syscall::Getcwd,
+            Syscall::Chdir,
         ];
         for call in fs_calls {
             let n = call.as_u32();
@@ -1407,8 +1480,13 @@ mod tests {
     #[test]
     fn network_group_in_range() {
         let net_calls = [
-            Syscall::Socket, Syscall::Bind, Syscall::Listen, Syscall::Accept,
-            Syscall::Connect, Syscall::Sendto, Syscall::Recvfrom,
+            Syscall::Socket,
+            Syscall::Bind,
+            Syscall::Listen,
+            Syscall::Accept,
+            Syscall::Connect,
+            Syscall::Sendto,
+            Syscall::Recvfrom,
         ];
         for call in net_calls {
             let n = call.as_u32();
@@ -1567,12 +1645,16 @@ mod tests {
 
     /// Set up process 0 with a valid page table for memory management tests.
     unsafe fn setup_mm() {
-        unsafe { process::reset_for_test(); }
+        unsafe {
+            process::reset_for_test();
+        }
     }
 
     #[test]
     fn brk_zero_returns_initial_break() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let result = sys_brk(0);
         assert_eq!(
             result,
@@ -1583,7 +1665,9 @@ mod tests {
 
     #[test]
     fn brk_grow_increases_break_by_one_page() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let initial = sys_brk(0);
         let new_break = initial + u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
         let result = sys_brk(new_break);
@@ -1595,24 +1679,33 @@ mod tests {
 
     #[test]
     fn brk_shrink_decreases_break() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let initial = sys_brk(0);
         let grown = initial + u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
         sys_brk(grown);
         let result = sys_brk(initial);
-        assert_eq!(
-            result, initial,
-            "brk back to original must decrease break"
-        );
+        assert_eq!(result, initial, "brk back to original must decrease break");
     }
 
     #[test]
     fn mmap_returns_address_in_user_range() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
         let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
-        let result = sys_mmap(0, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), prot, flags_and_fd);
-        assert_ne!(result, MAP_FAILED, "mmap must succeed for anonymous mapping");
+        let result = sys_mmap(
+            0,
+            u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(),
+            prot,
+            flags_and_fd,
+        );
+        assert_ne!(
+            result, MAP_FAILED,
+            "mmap must succeed for anonymous mapping"
+        );
         let addr = result as usize;
         assert!(
             addr >= process::MMAP_BASE && addr < 0x3000_0000,
@@ -1622,21 +1715,38 @@ mod tests {
 
     #[test]
     fn munmap_succeeds_for_mapped_address() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
         let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
-        let addr = sys_mmap(0, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), prot, flags_and_fd);
+        let addr = sys_mmap(
+            0,
+            u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(),
+            prot,
+            flags_and_fd,
+        );
         assert_ne!(addr, MAP_FAILED, "mmap must succeed before munmap test");
-        let result = sys_munmap(addr, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default());
+        let result = sys_munmap(
+            addr,
+            u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(),
+        );
         assert_eq!(result, 0, "munmap must return 0 on success");
     }
 
     #[test]
     fn mmap_invalid_flags_returns_error() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let flags_and_fd: u32 = 0;
         let prot = mmu::prot::PROT_READ;
-        let result = sys_mmap(0, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), prot, flags_and_fd);
+        let result = sys_mmap(
+            0,
+            u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(),
+            prot,
+            flags_and_fd,
+        );
         assert_eq!(
             result, MAP_FAILED,
             "mmap without MAP_ANONYMOUS must return MAP_FAILED"
@@ -1645,7 +1755,9 @@ mod tests {
 
     #[test]
     fn mmap_zero_length_returns_error() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
         let prot = mmu::prot::PROT_READ;
         let result = sys_mmap(0, 0, prot, flags_and_fd);
@@ -1657,7 +1769,9 @@ mod tests {
 
     #[test]
     fn munmap_invalid_address_returns_einval() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let result = sys_munmap(0xDEAD_0000, 0x1000);
         assert_eq!(
             result, EINVAL,
@@ -1667,18 +1781,31 @@ mod tests {
 
     #[test]
     fn mprotect_on_mapped_region_succeeds() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
         let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
-        let addr = sys_mmap(0, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), prot, flags_and_fd);
+        let addr = sys_mmap(
+            0,
+            u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(),
+            prot,
+            flags_and_fd,
+        );
         assert_ne!(addr, MAP_FAILED, "mmap must succeed before mprotect test");
-        let result = sys_mprotect(addr, u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(), mmu::prot::PROT_READ);
+        let result = sys_mprotect(
+            addr,
+            u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(),
+            mmu::prot::PROT_READ,
+        );
         assert_eq!(result, 0, "mprotect must return 0 on success");
     }
 
     #[test]
     fn mprotect_unmapped_returns_einval() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let result = sys_mprotect(0xDEAD_0000, 0x1000, mmu::prot::PROT_READ);
         assert_eq!(
             result, EINVAL,
@@ -1721,7 +1848,10 @@ mod tests {
         );
 
         // EFAULT has the correct two's-complement encoding.
-        assert_eq!(EFAULT, 0xFFFF_FFF2u32, "EFAULT must be two's complement -14");
+        assert_eq!(
+            EFAULT, 0xFFFF_FFF2u32,
+            "EFAULT must be two's complement -14"
+        );
     }
 
     /// #220: a path_ptr within MAX_PATH (256) bytes of RAM_END must be
@@ -1730,8 +1860,10 @@ mod tests {
     #[test]
     fn execve_rejects_path_pointer_near_ram_end() {
         let result = sys_execve((kconfig::RAM_END - 1) as u32, 0, 0);
-        assert_eq!(result, EFAULT,
-            "execve must reject a path pointer within MAX_PATH bytes of RAM_END instead of scanning past it");
+        assert_eq!(
+            result, EFAULT,
+            "execve must reject a path pointer within MAX_PATH bytes of RAM_END instead of scanning past it"
+        );
     }
 
     /// REQ-07: execve must return ENOENT when the path is not found in ramfs.
@@ -1754,7 +1886,9 @@ mod tests {
         fs.add("init", b"\x7FELF"); // minimal content; not a real ELF
         // SAFETY: test-only; no concurrent access. The previous RAMFS state
         // (if any) is replaced; this is acceptable in single-threaded tests.
-        unsafe { fd::init_ramfs(fs); }
+        unsafe {
+            fd::init_ramfs(fs);
+        }
 
         // A file that was never added must not be found.
         // SAFETY: init_ramfs was called above.
@@ -1794,19 +1928,28 @@ mod tests {
             let write_fd = fds[1];
 
             let dup_result = fd::sys_dup2(write_fd, 1);
-            assert_eq!(dup_result, 1, "dup2 must install the pipe write end at fd 1");
+            assert_eq!(
+                dup_result, 1,
+                "dup2 must install the pipe write end at fd 1"
+            );
 
             static mut MSG: [u8; 5] = *b"hello";
             let msg_ptr = core::ptr::addr_of!(MSG) as u32;
             let written = sys_write_dispatch(1, msg_ptr, 5);
-            assert_eq!(written, 5, "write(1, ...) after dup2 must report 5 bytes written");
+            assert_eq!(
+                written, 5,
+                "write(1, ...) after dup2 must report 5 bytes written"
+            );
 
             static mut BUF: [u8; 5] = [0u8; 5];
             let buf_ptr = core::ptr::addr_of_mut!(BUF) as u32;
             let read_result = sys_read_with_pipe(read_fd, buf_ptr, 5);
             assert_eq!(read_result, 5, "5 bytes must be read back from the pipe");
-            assert_eq!(&*core::ptr::addr_of!(BUF), b"hello",
-                "pipe must receive the exact bytes written to fd 1, not UART");
+            assert_eq!(
+                &*core::ptr::addr_of!(BUF),
+                b"hello",
+                "pipe must receive the exact bytes written to fd 1, not UART"
+            );
         }
     }
 
@@ -1908,14 +2051,19 @@ mod tests {
     fn syscall_numbers_are_contiguous_within_domains() {
         // (domain_name, base_inclusive, limit_exclusive, assigned_numbers)
         const DOMAINS: &[(&str, u32, u32, &[u32])] = &[
-            ("legacy",  0,  10, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+            ("legacy", 0, 10, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
             ("process", 10, 20, &[10, 11, 12, 13, 14]),
-            ("memory",  20, 30, &[20, 21, 22, 23]),
-            ("fs",      30, 50, &[30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]),
-            ("ipc",     50, 60, &[50, 51]),
+            ("memory", 20, 30, &[20, 21, 22, 23]),
+            (
+                "fs",
+                30,
+                50,
+                &[30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43],
+            ),
+            ("ipc", 50, 60, &[50, 51]),
             ("network", 60, 70, &[60, 61, 62, 63, 64, 65, 66]),
-            ("time",    70, 80, &[70, 71]),
-            ("signal",  80, 90, &[80, 81]),
+            ("time", 70, 80, &[70, 71]),
+            ("signal", 80, 90, &[80, 81]),
         ];
 
         for &(domain_name, base, limit, expected) in DOMAINS {
@@ -2059,7 +2207,9 @@ mod tests {
     /// accessible, causing silent data corruption on first access.
     #[test]
     fn brk_growth_allocates_pages() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let free_before = page::free_count();
 
         let initial = sys_brk(0);
@@ -2083,7 +2233,9 @@ mod tests {
     /// unmapping without freeing leaks the physical frame permanently.
     #[test]
     fn brk_shrink_frees_pages() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let initial = sys_brk(0);
         let free_before_grow = page::free_count();
 
@@ -2092,7 +2244,8 @@ mod tests {
         let at_grown = sys_brk(grown);
         assert_eq!(at_grown, grown, "brk must advance to grown");
         assert_eq!(
-            page::free_count(), free_before_grow - 2,
+            page::free_count(),
+            free_before_grow - 2,
             "brk grow must consume exactly 2 physical pages"
         );
 
@@ -2103,7 +2256,8 @@ mod tests {
             "brk shrink must return break to initial value"
         );
         assert_eq!(
-            page::free_count(), free_before_grow,
+            page::free_count(),
+            free_before_grow,
             "brk shrink must return exactly the 2 released pages to the allocator (#226)"
         );
     }
@@ -2112,20 +2266,29 @@ mod tests {
     /// pages it mapped before failing, not leak them.
     #[test]
     fn brk_grow_oom_rollback_frees_mapped_pages() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let initial = sys_brk(0);
 
         // Shrink the free pool to exactly 1 page so a 3-page brk grow OOMs
         // after mapping the first page.
         unsafe {
-            crate::page::init(0x4000_0000, 0x4000_0000 + 5 * crate::page::PAGE_SIZE, 0x4000_0000 + 4 * crate::page::PAGE_SIZE);
+            crate::page::init(
+                0x4000_0000,
+                0x4000_0000 + 5 * crate::page::PAGE_SIZE,
+                0x4000_0000 + 4 * crate::page::PAGE_SIZE,
+            );
         }
         let free_before = page::free_count();
         assert_eq!(free_before, 1, "test setup must yield exactly 1 free page");
 
         let requested = initial + u32::try_from(3 * crate::page::PAGE_SIZE).unwrap_or_default();
         let result = sys_brk(requested);
-        assert_eq!(result, initial, "brk must return the unchanged break on OOM");
+        assert_eq!(
+            result, initial,
+            "brk must return the unchanged break on OOM"
+        );
 
         let free_after = page::free_count();
         assert_eq!(
@@ -2142,7 +2305,9 @@ mod tests {
     /// mmap_munmap cycles to exhaust the mapping table (MAX_MAPPINGS = 32).
     #[test]
     fn mmap_munmap_balance() {
-        unsafe { setup_mm(); }
+        unsafe {
+            setup_mm();
+        }
         let free_before = page::free_count();
 
         const MAP_PAGES: u32 = 4;
@@ -2187,16 +2352,21 @@ mod tests {
             process::reset_for_test();
 
             let mut elf = [0u8; 52];
-            elf[0] = 0x7F; elf[1] = b'E'; elf[2] = b'L'; elf[3] = b'F';
-            elf[4] = 1; elf[5] = 1; elf[6] = 1;
+            elf[0] = 0x7F;
+            elf[1] = b'E';
+            elf[2] = b'L';
+            elf[3] = b'F';
+            elf[4] = 1;
+            elf[5] = 1;
+            elf[6] = 1;
             elf[16] = 2;
             elf[18] = 40;
             elf[20] = 1;
             elf[25] = 0x80; // e_entry = 0x8000
-            elf[28] = 52;   // e_phoff
-            elf[40] = 52;   // e_ehsize
-            elf[42] = 32;   // e_phentsize
-            elf[44] = 0;    // e_phnum
+            elf[28] = 52; // e_phoff
+            elf[40] = 52; // e_ehsize
+            elf[42] = 32; // e_phentsize
+            elf[44] = 0; // e_phnum
 
             let mut fs = crate::ramfs::RamFs::new();
             fs.add("bin", &elf);
@@ -2204,7 +2374,11 @@ mod tests {
 
             // Shrink the free pool to exactly 2 pages so the 4-page execve
             // stack allocation (EXEC_STACK_PAGES = 4) OOMs on the 3rd page.
-            page::init(0x4000_0000, 0x4000_0000 + 6 * crate::page::PAGE_SIZE, 0x4000_0000 + 4 * crate::page::PAGE_SIZE);
+            page::init(
+                0x4000_0000,
+                0x4000_0000 + 6 * crate::page::PAGE_SIZE,
+                0x4000_0000 + 4 * crate::page::PAGE_SIZE,
+            );
             let free_before = page::free_count();
             assert_eq!(free_before, 2, "test setup must yield exactly 2 free pages");
 
@@ -2212,11 +2386,16 @@ mod tests {
             let path_ptr = core::ptr::addr_of!(PATH) as *const u8 as u32;
 
             let result = sys_execve(path_ptr, 0, 0);
-            assert_eq!(result, ENOMEM, "execve must fail with ENOMEM when the stack allocation OOMs");
+            assert_eq!(
+                result, ENOMEM,
+                "execve must fail with ENOMEM when the stack allocation OOMs"
+            );
 
             let free_after = page::free_count();
-            assert_eq!(free_after, free_before,
-                "OOM rollback must return exactly the pages allocated before the failure, leaving free-count unchanged (#251)");
+            assert_eq!(
+                free_after, free_before,
+                "OOM rollback must return exactly the pages allocated before the failure, leaving free-count unchanged (#251)"
+            );
         }
     }
 
@@ -2254,7 +2433,9 @@ mod tests {
         // accessed through these two functions within this test.
         unsafe fn fake_alloc() -> Option<usize> {
             unsafe {
-                if NEXT >= 32 { return None; }
+                if NEXT >= 32 {
+                    return None;
+                }
                 // WHY addr_of_mut!: avoids forming a reference to the mutable
                 // static. The wrapper's address equals its sole field's array
                 // address, and repr(align(4096)) guarantees page alignment.
@@ -2307,11 +2488,17 @@ mod tests {
         const TICK_MS: u64 = 10;
         let ms: u64 = 1_000;
         let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
-        assert_eq!(ticks_needed, 100, "1000 ms must convert to 100 ticks at 10 ms/tick");
+        assert_eq!(
+            ticks_needed, 100,
+            "1000 ms must convert to 100 ticks at 10 ms/tick"
+        );
 
         let ms: u64 = 5;
         let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
-        assert_eq!(ticks_needed, 1, "5 ms sleep must round up to 1 tick, not truncate to 0");
+        assert_eq!(
+            ticks_needed, 1,
+            "5 ms sleep must round up to 1 tick, not truncate to 0"
+        );
     }
 
     /// #264: Sleep(0) must exercise the full set_wake_tick -> wait ->
@@ -2321,11 +2508,16 @@ mod tests {
     /// (nothing else advances the settable exceptions_stub tick source).
     #[test]
     fn sleep_zero_round_trips_process_state() {
-        unsafe { process::reset_for_test(); }
+        unsafe {
+            process::reset_for_test();
+        }
         let result = dispatch(Syscall::Sleep.as_u32(), 0, 0, 0, 0);
         assert_eq!(result, 0, "Sleep(0) must return 0");
         let state = unsafe { process::get_state(0) };
-        assert_eq!(state, Some(process::State::Running),
-            "process must be Running (not left Sleeping) after Sleep returns");
+        assert_eq!(
+            state,
+            Some(process::State::Running),
+            "process must be Running (not left Sleeping) after Sleep returns"
+        );
     }
 }

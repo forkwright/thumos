@@ -138,8 +138,8 @@ impl BootStep {
 /// The panic handler and degradation logic read this to decide what
 /// output paths are available.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BootState { // kanon:ignore RUST/struct-too-many-fields -- one bool per boot subsystem; grouping would obscure the per-subsystem degradation model
-
+pub(crate) struct BootState {
+    // kanon:ignore RUST/struct-too-many-fields -- one bool per boot subsystem; grouping would obscure the per-subsystem degradation model
     pub(crate) mmu_ok: bool,
     pub(crate) heap_ok: bool,
     pub(crate) gic_ok: bool,
@@ -183,9 +183,7 @@ impl BootState {
             input_ok: false,
             network_ok: false,
             network_loopback_smoke_ok: false,
-            network_readiness: NetworkReadiness::HardwareUnavailable(
-                net::NetworkDeviceKind::Wifi,
-            ),
+            network_readiness: NetworkReadiness::HardwareUnavailable(net::NetworkDeviceKind::Wifi),
             bluetooth_ok: false,
             gps_ok: false,
             processes_spawned: 0,
@@ -378,12 +376,10 @@ pub unsafe fn run() -> ! {
 
     // Banner
     let _ = serial.write_str("\r\n");
-    let _ = serial
-        .write_str("================================\r\n");
+    let _ = serial.write_str("================================\r\n");
     let _ = serial.write_str("  THUMOS v0.1.0\r\n");
     let _ = serial.write_str("  Sovereign OS for MT6739\r\n");
-    let _ = serial
-        .write_str("================================\r\n");
+    let _ = serial.write_str("================================\r\n");
     let _ = serial.write_str("\r\n");
 
     // -----------------------------------------------------------------------
@@ -423,7 +419,11 @@ pub unsafe fn run() -> ! {
         heap::init();
     }
     let (allocs, frees) = heap::stats();
-    let _ = write!(serial, "       slab: {} allocs, {} frees\r\n", allocs, frees);
+    let _ = write!(
+        serial,
+        "       slab: {} allocs, {} frees\r\n",
+        allocs, frees
+    );
     state.heap_ok = true;
 
     // -----------------------------------------------------------------------
@@ -516,8 +516,7 @@ pub unsafe fn run() -> ! {
             }
             Err(e) => {
                 let _ = write!(serial, "  WARN eMMC init failed: {:?}\r\n", e);
-                let _ = serial
-                    .write_str("       Continuing without block storage\r\n");
+                let _ = serial.write_str("       Continuing without block storage\r\n");
             }
         }
     }
@@ -653,8 +652,7 @@ pub unsafe fn run() -> ! {
             DISPLAY_AVAILABLE.store(true, Ordering::Release);
         } else {
             let _ = serial.write_str("  WARN Display init incomplete\r\n");
-            let _ = serial
-                .write_str("       Falling back to USB serial console only\r\n");
+            let _ = serial.write_str("       Falling back to USB serial console only\r\n");
         }
     }
 
@@ -829,8 +827,7 @@ pub unsafe fn run() -> ! {
         }
 
         if boot_elapsed > MODEM_BOOT_TIMEOUT_MS {
-            let _ = serial
-                .write_str("  WARN Modem boot exceeded timeout\r\n");
+            let _ = serial.write_str("  WARN Modem boot exceeded timeout\r\n");
         }
     }
 
@@ -839,8 +836,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Power manager\r\n");
     let _pm = PowerManager::new();
-    let _ = serial
-        .write_str("       All radios OFF (silent mode)\r\n");
+    let _ = serial.write_str("       All radios OFF (silent mode)\r\n");
 
     // -----------------------------------------------------------------------
     // Step 13: Network configuration (WiFi readiness + DHCP/DNS smoke)
@@ -888,26 +884,19 @@ pub unsafe fn run() -> ! {
                 // Poll for DHCP configuration with timeout.
                 let dhcp_start = crate::timer::elapsed_ms();
                 let mut configured = false;
-                while crate::timer::elapsed_ms() - dhcp_start
-                    < crate::dhcp::DHCP_TIMEOUT_MS
-                {
-                    let now =
-                        net::instant_from_millis(crate::timer::elapsed_ms() as i64);
+                while crate::timer::elapsed_ms() - dhcp_start < crate::dhcp::DHCP_TIMEOUT_MS {
+                    let now = net::instant_from_millis(crate::timer::elapsed_ms() as i64);
                     stack.poll(now);
                     match dhcp.poll(&mut stack) {
                         DhcpEvent::Configured(config) => {
                             let _ = write!(
                                 serial,
                                 "       DHCP: {} gw {:?}\r\n",
-                                config.address,
-                                config.gateway
+                                config.address, config.gateway
                             );
                             if !config.dns_servers.is_empty() {
-                                let _ = write!(
-                                    serial,
-                                    "       DHCP DNS: {:?}\r\n",
-                                    config.dns_servers
-                                );
+                                let _ =
+                                    write!(serial, "       DHCP DNS: {:?}\r\n", config.dns_servers);
                             }
                             configured = true;
                             break;
@@ -924,8 +913,7 @@ pub unsafe fn run() -> ! {
                 }
 
                 if !configured {
-                    let _ = serial
-                        .write_str("  WARN DHCP timeout, using link-local\r\n");
+                    let _ = serial.write_str("  WARN DHCP timeout, using link-local\r\n");
                 }
             }
             Err(e) => {
@@ -939,8 +927,7 @@ pub unsafe fn run() -> ! {
         let _ = write!(
             serial,
             "       LAN DNS: {} / Internet DNS: {}\r\n",
-            LAN_DNS,
-            MULLVAD_DNS
+            LAN_DNS, MULLVAD_DNS
         );
         state.record_loopback_smoke(NetworkReadiness::from_device(
             net::NetworkDeviceKind::LoopbackSmoke,
@@ -1006,21 +993,17 @@ pub unsafe fn run() -> ! {
     );
     let _ = write!(serial, "       {} / 17 subsystems OK\r\n", state.ok_count());
     if !state.display_ok {
-        let _ = serial
-            .write_str("       NOTE: display unavailable, USB serial only\r\n");
+        let _ = serial.write_str("       NOTE: display unavailable, USB serial only\r\n");
     }
     if !state.modem_ok {
-        let _ = serial
-            .write_str("       NOTE: modem unavailable, no phone functions\r\n");
+        let _ = serial.write_str("       NOTE: modem unavailable, no phone functions\r\n");
     }
     if !state.network_ok {
-        let _ = serial
-            .write_str("       NOTE: network unavailable, no connectivity\r\n");
+        let _ = serial.write_str("       NOTE: network unavailable, no connectivity\r\n");
     }
     if state.network_loopback_smoke_ok && !state.network_ok {
-        let _ = serial.write_str(
-            "       NOTE: DHCP/DNS smoke used loopback only; WiFi not wired\r\n",
-        );
+        let _ =
+            serial.write_str("       NOTE: DHCP/DNS smoke used loopback only; WiFi not wired\r\n");
     }
     let _ = serial.write_str("\r\n");
 
@@ -1041,8 +1024,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 14: Spawn packaged userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
-    let _ = serial
-        .write_str("[init] Spawning userspace processes\r\n");
+    let _ = serial.write_str("[init] Spawning userspace processes\r\n");
     {
         // Attempt to load and spawn two processes: /init and /shell.
         // If an entry is absent from the mounted root ramfs, report the
@@ -1070,8 +1052,8 @@ pub unsafe fn run() -> ! {
                 }
             },
             UserspaceSpawnPlan::Missing => {
-                let _ = serial
-                    .write_str("  WARN /init missing from root ramfs; no init spawned\r\n");
+                let _ =
+                    serial.write_str("  WARN /init missing from root ramfs; no init spawned\r\n");
                 state.userspace_entries_missing += 1;
             }
         }
@@ -1098,8 +1080,8 @@ pub unsafe fn run() -> ! {
                 }
             },
             UserspaceSpawnPlan::Missing => {
-                let _ = serial
-                    .write_str("  WARN /shell missing from root ramfs; no shell spawned\r\n");
+                let _ =
+                    serial.write_str("  WARN /shell missing from root ramfs; no shell spawned\r\n");
                 state.userspace_entries_missing += 1;
             }
         }
@@ -1125,8 +1107,7 @@ pub unsafe fn run() -> ! {
     // is safe here as it is never written after boot.
     if unsafe { kconfig::DEBUG_CONSOLE } {
         let _ = serial.write_str("[init] Starting debug console\r\n");
-        let _ = serial
-            .write_str("       Type 'help' for commands\r\n\r\n");
+        let _ = serial.write_str("       Type 'help' for commands\r\n\r\n");
         let mut console = Console::new();
         console.prompt();
 
@@ -1317,11 +1298,17 @@ mod tests {
         assert!(!state.timer_ok, "initial timer_ok must be false");
         assert!(!state.emmc_ok, "initial emmc_ok must be false");
         assert!(!state.display_ok, "initial display_ok must be false");
-        assert!(!state.secure_boot_ok, "initial secure_boot_ok must be false");
+        assert!(
+            !state.secure_boot_ok,
+            "initial secure_boot_ok must be false"
+        );
         assert!(!state.passphrase_ok, "initial passphrase_ok must be false");
         assert!(!state.encryption_ok, "initial encryption_ok must be false");
         assert!(!state.audit_ok, "initial audit_ok must be false");
-        assert!(!state.security_mode_ok, "initial security_mode_ok must be false");
+        assert!(
+            !state.security_mode_ok,
+            "initial security_mode_ok must be false"
+        );
         assert!(!state.usb_ok, "initial usb_ok must be false");
         assert!(!state.modem_ok, "initial modem_ok must be false");
         assert!(!state.input_ok, "initial input_ok must be false");

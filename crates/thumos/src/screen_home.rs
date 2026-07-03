@@ -14,8 +14,7 @@
 
 use crate::heorte;
 use crate::ui::{
-    self, color, Key, Screen, ScreenAction, ScreenId,
-    CHAR_HEIGHT, CONTENT_HEIGHT, SCREEN_WIDTH,
+    self, CHAR_HEIGHT, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, ScreenId, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -147,7 +146,15 @@ impl Screen for HomeScreen {
 
         // Large centered time (2x scale).
         let time_buf = format_time(hour, minute);
-        ui::draw_scaled_str_centered(fb, w, TIME_Y, &time_buf, color::WHITE, color::BLACK, TIME_SCALE);
+        ui::draw_scaled_str_centered(
+            fb,
+            w,
+            TIME_Y,
+            &time_buf,
+            color::WHITE,
+            color::BLACK,
+            TIME_SCALE,
+        );
 
         // ISO date.
         let date_buf = format_date(year, month, day);
@@ -161,7 +168,14 @@ impl Screen for HomeScreen {
             self.state.carrier
         };
         ui::draw_str_centered(
-            fb, w, 0, w, CARRIER_Y, carrier_text, color::DARK_GREY, color::BLACK,
+            fb,
+            w,
+            0,
+            w,
+            CARRIER_Y,
+            carrier_text,
+            color::DARK_GREY,
+            color::BLACK,
         );
 
         // Mode indicator.
@@ -173,7 +187,14 @@ impl Screen for HomeScreen {
         if self.state.unread_count > 0 {
             let unread_buf = format_unread(self.state.unread_count);
             ui::draw_str_centered(
-                fb, w, 0, w, UNREAD_Y, unread_buf.as_str(), color::YELLOW, color::BLACK,
+                fb,
+                w,
+                0,
+                w,
+                UNREAD_Y,
+                unread_buf.as_str(),
+                color::YELLOW,
+                color::BLACK,
             );
         }
     }
@@ -374,7 +395,11 @@ mod tests {
     #[test]
     fn decompose_epoch_zero_returns_zeroes() {
         let (h, m, y, mo, d) = heorte::decompose_epoch(0);
-        assert_eq!((h, m, y, mo, d), (0, 0, 0, 0, 0), "epoch 0 must return all zeros");
+        assert_eq!(
+            (h, m, y, mo, d),
+            (0, 0, 0, 0, 0),
+            "epoch 0 must return all zeros"
+        );
     }
 
     #[test]
@@ -405,7 +430,11 @@ mod tests {
         // heorte::decompose_epoch directly, an adversarial epoch near
         // u64::MAX must resolve in O(1) rather than looping ~11.7M times.
         let (_h, _m, year, month, day) = heorte::decompose_epoch(u64::MAX / 2);
-        assert_eq!(year, u16::MAX, "year must saturate rather than wrap or panic");
+        assert_eq!(
+            year,
+            u16::MAX,
+            "year must saturate rather than wrap or panic"
+        );
         assert!((1..=12).contains(&month), "month must stay in valid range");
         assert!((1..=31).contains(&day), "day must stay in valid range");
     }
@@ -466,7 +495,16 @@ mod tests {
     #[test]
     fn scaled_char_draws_without_panic() {
         let mut fb = [0u16; 240 * 50];
-        ui::draw_char_scaled(&mut fb, 240, 0, 0, '1', color::WHITE, color::BLACK, TIME_SCALE);
+        ui::draw_char_scaled(
+            &mut fb,
+            240,
+            0,
+            0,
+            '1',
+            color::WHITE,
+            color::BLACK,
+            TIME_SCALE,
+        );
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "scaled character must produce visible pixels");
     }
@@ -475,7 +513,15 @@ mod tests {
     fn scaled_str_centered_draws_without_panic() {
         let mut fb = [0u16; 240 * 50];
         let time = format_time(12, 34);
-        ui::draw_scaled_str_centered(&mut fb, 240, 0, &time, color::WHITE, color::BLACK, TIME_SCALE);
+        ui::draw_scaled_str_centered(
+            &mut fb,
+            240,
+            0,
+            &time,
+            color::WHITE,
+            color::BLACK,
+            TIME_SCALE,
+        );
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "scaled time string must produce visible pixels");
     }

@@ -432,7 +432,11 @@ mod tests {
 
         // Panic threshold is 0, so the very first tick fires.
         let action = timer.tick(&mut km);
-        assert_eq!(action, BfuAction::Reboot, "Panic mode must fire on first tick");
+        assert_eq!(
+            action,
+            BfuAction::Reboot,
+            "Panic mode must fire on first tick"
+        );
         assert!(!km.has_keys(), "keys must be zeroized in Panic mode");
     }
 
@@ -516,7 +520,11 @@ mod tests {
         timer.set_mode(SecurityMode::Sentinel);
 
         let action = timer.tick(&mut km);
-        assert_eq!(action, BfuAction::Reboot, "must fire after mode shortens threshold");
+        assert_eq!(
+            action,
+            BfuAction::Reboot,
+            "must fire after mode shortens threshold"
+        );
         assert!(!km.has_keys());
     }
 
@@ -534,7 +542,11 @@ mod tests {
 
         // Subsequent ticks should still return Reboot.
         let action = timer.tick(&mut km);
-        assert_eq!(action, BfuAction::Reboot, "fired timer must keep signaling reboot");
+        assert_eq!(
+            action,
+            BfuAction::Reboot,
+            "fired timer must keep signaling reboot"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -587,7 +599,10 @@ mod tests {
         assert!(s.contains("elapsed=0ms"), "Display must show elapsed time");
 
         let action_s = BfuAction::Reboot.to_string();
-        assert!(action_s.contains("reboot"), "BfuAction Display must describe action");
+        assert!(
+            action_s.contains("reboot"),
+            "BfuAction Display must describe action"
+        );
 
         let state_s = BfuTimerState::Expired.to_string();
         assert_eq!(state_s, "expired");

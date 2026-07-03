@@ -146,6 +146,18 @@ RELEASES/independent-crate-version:crates/thumos/Cargo.toml
 # boot stub + panic handler must live in the bin target with `no_main`.
 ARCHITECTURE/thick-binary:crates/thumos/src/main.rs
 
+# WHY: cohesive single-owner kernel structs that exceed the 12-field limit.
+# Elf32Ehdr IS the ELF32 header (14 fields, fixed by the ABI — cannot be
+# reduced). Process (the PCB), LockScreen, Telephony, and AlarmScreen aggregate
+# state whose field-grouping refactor touches every construction site — a
+# separate architectural change, not a formatting concern. (Surfaced when the
+# kernel was first rustfmt-formatted.)
+RUST/struct-too-many-fields:crates/thumos/src/elf.rs
+RUST/struct-too-many-fields:crates/thumos/src/lock_screen.rs
+RUST/struct-too-many-fields:crates/thumos/src/process.rs
+RUST/struct-too-many-fields:crates/thumos/src/screen_alarm.rs
+RUST/struct-too-many-fields:crates/thumos/src/telephony.rs
+
 # WHY: kelyphos::wmt defines `RegisterIo` alongside `MmioRegisterIo`, its only
 # production impl. The consumer (thumos kernel) is outside the workspace so
 # moving the trait into it isn't possible; the other potential consumer is

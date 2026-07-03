@@ -108,12 +108,7 @@ impl fmt::Display for CcciLogEntry {
         write!(
             f,
             "[t={} ch={} {} d0={:#x} d1={:#x} len={}]",
-            self.timestamp,
-            self.channel,
-            self.direction,
-            self.data0,
-            self.data1,
-            self.packet_len,
+            self.timestamp, self.channel, self.direction, self.data0, self.data1, self.packet_len,
         )
     }
 }
@@ -878,8 +873,12 @@ mod tests {
         let entry = log.get(0);
         assert!(entry.is_some());
         let e = entry.unwrap_or_else(|| &CcciLogEntry {
-            timestamp: 0, channel: 0, direction: PacketDirection::Rx,
-            data0: 0, data1: 0, packet_len: 0,
+            timestamp: 0,
+            channel: 0,
+            direction: PacketDirection::Rx,
+            data0: 0,
+            data1: 0,
+            packet_len: 0,
         });
         assert_eq!(e.timestamp, 1000);
         assert_eq!(e.channel, 5);
@@ -905,8 +904,12 @@ mod tests {
         let oldest = log.get(0);
         assert!(oldest.is_some());
         let o = oldest.unwrap_or_else(|| &CcciLogEntry {
-            timestamp: 0, channel: 0, direction: PacketDirection::Rx,
-            data0: 0, data1: 0, packet_len: 0,
+            timestamp: 0,
+            channel: 0,
+            direction: PacketDirection::Rx,
+            data0: 0,
+            data1: 0,
+            packet_len: 0,
         });
         assert_eq!(o.timestamp, 10, "oldest entry after wrap");
     }
@@ -958,8 +961,7 @@ mod tests {
         }
 
         let (older, newer) = log.entries();
-        let all: alloc::vec::Vec<&CcciLogEntry> =
-            older.iter().chain(newer.iter()).collect();
+        let all: alloc::vec::Vec<&CcciLogEntry> = older.iter().chain(newer.iter()).collect();
         assert_eq!(all.len(), 5);
         for i in 1..all.len() {
             assert!(
@@ -1109,8 +1111,7 @@ mod tests {
         let ch5 = &baseline.channels[5];
         assert!(ch5.active);
         assert_eq!(
-            ch5.max_data0,
-            CCCI_MTU as u32,
+            ch5.max_data0, CCCI_MTU as u32,
             "a non-sentinel out-of-range data0 outlier on a data channel must clamp to CCCI_MTU"
         );
     }
@@ -1129,8 +1130,7 @@ mod tests {
 
         let baseline = build_baseline(&log, 60_000);
         assert_eq!(
-            baseline.channels[0].max_data0,
-            CCCI_MAGIC,
+            baseline.channels[0].max_data0, CCCI_MAGIC,
             "the control-message sentinel must pass through unclamped"
         );
     }
@@ -1199,7 +1199,10 @@ mod tests {
     fn baseline_display() {
         let baseline = ModemBaseline::empty();
         let display = alloc::format!("{baseline}");
-        assert!(display.contains("ModemBaseline"), "display contains type name");
+        assert!(
+            display.contains("ModemBaseline"),
+            "display contains type name"
+        );
         assert!(display.contains("0 active"), "empty baseline has 0 active");
     }
 
@@ -1224,9 +1227,10 @@ mod tests {
         let (anomalies, count) = detect_anomalies(&log, &baseline, 70_000, 60_000);
         assert!(count > 0, "must detect unexpected channel");
 
-        let found = anomalies[..count].iter().flatten().any(|a| {
-            a.channel == 10 && a.kind == AnomalyKind::UnexpectedChannel
-        });
+        let found = anomalies[..count]
+            .iter()
+            .flatten()
+            .any(|a| a.channel == 10 && a.kind == AnomalyKind::UnexpectedChannel);
         assert!(found, "must flag channel 10 as unexpected");
     }
 
@@ -1261,9 +1265,10 @@ mod tests {
         }
 
         let (anomalies, count) = detect_anomalies(&log, &baseline, 63_000, 60_000);
-        let found = anomalies[..count].iter().flatten().any(|a| {
-            a.channel == 0 && a.kind == AnomalyKind::RateSpike
-        });
+        let found = anomalies[..count]
+            .iter()
+            .flatten()
+            .any(|a| a.channel == 0 && a.kind == AnomalyKind::RateSpike);
         assert!(found, "must detect rate spike on channel 0");
     }
 
@@ -1295,9 +1300,10 @@ mod tests {
         });
 
         let (anomalies, count) = detect_anomalies(&log, &baseline, 70_000, 60_000);
-        let found = anomalies[..count].iter().flatten().any(|a| {
-            a.channel == 4 && a.kind == AnomalyKind::Data0OutOfRange
-        });
+        let found = anomalies[..count]
+            .iter()
+            .flatten()
+            .any(|a| a.channel == 4 && a.kind == AnomalyKind::Data0OutOfRange);
         assert!(found, "must detect data0 out of range on channel 4");
     }
 
@@ -1348,9 +1354,10 @@ mod tests {
         });
 
         let (anomalies, count) = detect_anomalies(&log, &baseline, 72_000, 60_000);
-        let found = anomalies[..count].iter().flatten().any(|a| {
-            a.channel == 4 && a.kind == AnomalyKind::Data0OutOfRange
-        });
+        let found = anomalies[..count]
+            .iter()
+            .flatten()
+            .any(|a| a.channel == 4 && a.kind == AnomalyKind::Data0OutOfRange);
         assert!(
             found,
             "must detect data0 out of range even when the offending packet is not last in the window"
@@ -1488,7 +1495,10 @@ mod tests {
     fn firewall_display() {
         let fw = CcciFirewall::new(FirewallMode::Daily);
         let display = alloc::format!("{fw}");
-        assert!(display.contains("CcciFirewall"), "display contains type name");
+        assert!(
+            display.contains("CcciFirewall"),
+            "display contains type name"
+        );
         assert!(display.contains("Daily"), "display contains mode");
     }
 
@@ -1523,17 +1533,12 @@ mod tests {
     #[test]
     fn anomaly_kind_display() {
         assert!(
-            AnomalyKind::UnexpectedChannel.to_string()
+            AnomalyKind::UnexpectedChannel
+                .to_string()
                 .contains("unexpected"),
         );
-        assert!(
-            AnomalyKind::RateSpike.to_string()
-                .contains("spike"),
-        );
-        assert!(
-            AnomalyKind::Data0OutOfRange.to_string()
-                .contains("range"),
-        );
+        assert!(AnomalyKind::RateSpike.to_string().contains("spike"),);
+        assert!(AnomalyKind::Data0OutOfRange.to_string().contains("range"),);
     }
 
     // -- CcciAnomaly Display --
@@ -1548,7 +1553,10 @@ mod tests {
             baseline_max: 0,
         };
         let display = alloc::format!("{anomaly}");
-        assert!(display.contains("CcciAnomaly"), "display contains type name");
+        assert!(
+            display.contains("CcciAnomaly"),
+            "display contains type name"
+        );
         assert!(display.contains("ch=10"), "display contains channel");
     }
 

@@ -47,9 +47,7 @@ pub(crate) fn validate_user_buffer(ptr: usize, len: usize) -> bool {
 /// address, device MMIO, or a misaligned value) before it reaches the physical
 /// page allocator, where an out-of-range address would corrupt the bitmap.
 pub(crate) fn is_freeable_user_page(addr: usize) -> bool {
-    addr % crate::page::PAGE_SIZE == 0
-        && addr >= kconfig::KERNEL_END
-        && addr < kconfig::RAM_END
+    addr % crate::page::PAGE_SIZE == 0 && addr >= kconfig::KERNEL_END && addr < kconfig::RAM_END
 }
 
 #[cfg(test)]
@@ -126,7 +124,9 @@ mod tests {
     #[test]
     fn freeable_page_accepts_aligned_user_pages() {
         assert!(is_freeable_user_page(kconfig::KERNEL_END));
-        assert!(is_freeable_user_page(kconfig::RAM_END - crate::page::PAGE_SIZE));
+        assert!(is_freeable_user_page(
+            kconfig::RAM_END - crate::page::PAGE_SIZE
+        ));
     }
 
     #[test]
