@@ -2698,6 +2698,132 @@ mod tests {
         }
     }
 
+    /// #379 (REQ-09): a process without CAP_KILL may not signal a
+    /// different, non-zero process -- sys_kill must return EPERM and the
+    /// target must be left untouched.
+    #[test]
+    fn sys_kill_cross_process_denied_without_cap_kill() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+
+            let pt1 = mmu::alloc_addr_space().unwrap();
+            procs[1] = Some(Process {
+                pid: 1,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: Some(0),
+                exit_status: 0,
+                page_table_phys: pt1,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 1,
+                wake_tick: 0,
+                // No KILL bit -- mirrors capability::tests::kill_requires_cap_kill's
+                // "process without KILL cap" fixture.
+                capabilities: crate::capability::Capabilities::CRYPTO
+                    | crate::capability::Capabilities::RADIO,
+            });
+
+            let pt2 = mmu::alloc_addr_space().unwrap();
+            procs[2] = Some(Process {
+                pid: 2,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: Some(0),
+                exit_status: 0,
+                page_table_phys: pt2,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 2,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::FORK_DEFAULT,
+            });
+            CURRENT = 1;
+
+            const EPERM: u32 = 0u32.wrapping_sub(1);
+            let ret = crate::signal::sys_kill(2, crate::signal::Signal::Sigterm as u32);
+            assert_eq!(
+                ret, EPERM,
+                "sys_kill from a process without CAP_KILL targeting a different PID must return EPERM"
+            );
+
+            let procs = &*core::ptr::addr_of!(PROCS);
+            assert_eq!(
+                procs[2].as_ref().map(|p| p.state),
+                Some(State::Running),
+                "the denied kill must not touch the target process's state"
+            );
+        }
+    }
+
+    /// #379 (REQ-09): a process holding CAP_KILL may signal a different,
+    /// non-zero process -- sys_kill succeeds and the default action
+    /// (SIGTERM -> terminate) is applied to the target.
+    #[test]
+    fn sys_kill_cross_process_allowed_with_cap_kill() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+
+            let pt1 = mmu::alloc_addr_space().unwrap();
+            procs[1] = Some(Process {
+                pid: 1,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: Some(0),
+                exit_status: 0,
+                page_table_phys: pt1,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 1,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::KILL,
+            });
+
+            let pt2 = mmu::alloc_addr_space().unwrap();
+            procs[2] = Some(Process {
+                pid: 2,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: Some(0),
+                exit_status: 0,
+                page_table_phys: pt2,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 2,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::FORK_DEFAULT,
+            });
+            CURRENT = 1;
+
+            let ret = crate::signal::sys_kill(2, crate::signal::Signal::Sigterm as u32);
+            assert_eq!(
+                ret, 0,
+                "sys_kill from a process holding CAP_KILL targeting a different PID must succeed"
+            );
+
+            let procs = &*core::ptr::addr_of!(PROCS);
+            assert_eq!(
+                procs[2].as_ref().map(|p| p.state),
+                Some(State::Dead),
+                "SIGTERM's default action (terminate) must be applied to the target"
+            );
+        }
+    }
+
     /// #371: sys_send (Syscall::Send) targeting PID 0 must be denied when
     /// the sender lacks CAP_IPC_INIT, and the message must not be
     /// delivered into kinit's inbox.

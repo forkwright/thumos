@@ -158,19 +158,31 @@ impl BlockCache {
 
     /// Flush all dirty cache entries to the device.
     ///
-    /// After a successful flush, all entries are marked clean (not dirty).
+    /// Every dirty entry is attempted, even after an earlier one fails --
+    /// a single persistently-failing block must not permanently block
+    /// flushing of every entry that sorts after it in the cache (#375).
+    /// Entries that flush successfully are marked clean regardless of
+    /// failures elsewhere in the same pass.
     ///
     /// # Errors
     ///
-    /// Returns [`BlockError`] if any write-back to the device fails. Entries
-    /// that were successfully flushed before the failure are marked clean.
+    /// Returns the first [`BlockError`] encountered, if any. Entries that
+    /// flushed successfully (including ones after the first failure) are
+    /// marked clean; the entry (or entries) that failed remain dirty and
+    /// are retried on the next `flush` call.
     pub(crate) fn flush(&mut self, dev: &mut dyn BlockDevice) -> Result<(), BlockError> {
+        let mut first_err = None;
         for i in 0..self.entries.len() {
-            if self.entries[i].valid && self.entries[i].dirty {
-                self.write_back(dev, i)?;
+            if self.entries[i].valid && self.entries[i].dirty
+                && let Err(e) = self.write_back(dev, i)
+            {
+                first_err.get_or_insert(e);
             }
         }
-        Ok(())
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Sync all dirty cache entries to the device.
@@ -276,6 +288,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::block::tests::FailingBlockDevice;
     use crate::block::MemBlockDevice;
 
     /// Helper: create a device large enough for cache testing.
@@ -372,6 +385,50 @@ mod tests {
             !cache.entries[idx].dirty,
             "entry should be clean after flush"
         );
+    }
+
+    #[test]
+    fn flush_continues_past_failing_entry_and_returns_first_error() {
+        // #375: entry 4 (block_num 4) fails write-back. flush() must still
+        // attempt every OTHER dirty entry rather than aborting at the first
+        // failure -- otherwise a single persistently-bad block would
+        // permanently block flushing of every entry ordered after it, since
+        // a retried flush() restarts from index 0 and hits the same
+        // failure every time.
+        let fail_lba = 4 * SECTORS_PER_BLOCK as u64;
+        let mut dev = FailingBlockDevice::new(4096, fail_lba);
+        dev.ready = true;
+        let mut cache = BlockCache::new();
+
+        // Fill 10 dirty entries; blocks 0..10 land in cache slots 0..10 on
+        // an empty cache (same fill-order assumption as the eviction test
+        // below).
+        for i in 0..10u64 {
+            let data = pattern_block((i & 0xFF) as u8);
+            cache.write(&mut dev, i, &data).expect("fill write failed");
+        }
+
+        let result = cache.flush(&mut dev);
+        assert_eq!(
+            result,
+            Err(BlockError::IoError),
+            "flush must surface the write-back error"
+        );
+
+        for i in 0..10u64 {
+            let idx = cache.find_entry(i).expect("block should still be cached");
+            if i == 4 {
+                assert!(
+                    cache.entries[idx].dirty,
+                    "the failing entry must remain dirty"
+                );
+            } else {
+                assert!(
+                    !cache.entries[idx].dirty,
+                    "entry {i} must still be flushed despite entry 4's failure"
+                );
+            }
+        }
     }
 
     #[test]
