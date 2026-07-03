@@ -376,6 +376,16 @@ mod tests {
     }
 
     #[test]
+    fn monitor_initial_last_poll_tick_is_zero() {
+        let monitor = BatteryMonitor::new();
+        assert_eq!(
+            monitor.last_poll_tick(),
+            0,
+            "boot-gap state must report no prior poll"
+        );
+    }
+
+    #[test]
     fn monitor_poll_updates_info() {
         let mut monitor = BatteryMonitor::new();
         let hw = MockHw {

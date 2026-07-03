@@ -188,3 +188,40 @@ impl Default for Console {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receive_byte_buffers_printable_chars() {
+        let mut console = Console::new();
+        console.receive_byte(b'h');
+        console.receive_byte(b'i');
+        assert_eq!(console.line_len, 2);
+        assert_eq!(&console.line_buf[..2], b"hi");
+    }
+
+    #[test]
+    fn receive_byte_overflow_drops_excess_bytes_without_panic() {
+        let mut console = Console::new();
+        for _ in 0..MAX_CMD_LEN + 16 {
+            console.receive_byte(b'x');
+        }
+        assert_eq!(
+            console.line_len,
+            MAX_CMD_LEN - 1,
+            "line buffer must cap at MAX_CMD_LEN - 1, dropping excess bytes rather than overflowing"
+        );
+    }
+
+    #[test]
+    fn receive_byte_backspace_after_overflow_shrinks_buffer() {
+        let mut console = Console::new();
+        for _ in 0..MAX_CMD_LEN + 16 {
+            console.receive_byte(b'x');
+        }
+        console.receive_byte(0x7F);
+        assert_eq!(console.line_len, MAX_CMD_LEN - 2);
+    }
+}

@@ -2482,7 +2482,16 @@ mod tests {
         unsafe {
             process::reset_for_test();
 
-            let mut elf = [0u8; 52];
+            // 52-byte header + one 32-byte PT_LOAD program header. e_entry
+            // must fall inside a loaded segment (#384 finding 49), so the
+            // segment covers the entry address. WHY a `static mut BUF`
+            // vaddr: elf::load writes segment (zero-fill) bytes directly to
+            // the identity-mapped p_vaddr, so it must be a host-writable
+            // address (this binary's static lands in user DRAM range) --
+            // same pattern as elf::tests::load_does_not_leak_pages_on_success.
+            static mut SEG_BUF: [u8; 16] = [0u8; 16];
+            let vaddr = core::ptr::addr_of_mut!(SEG_BUF) as *mut u8 as u32;
+            let mut elf = [0u8; 84];
             elf[0] = 0x7F;
             elf[1] = b'E';
             elf[2] = b'L';
@@ -2493,11 +2502,16 @@ mod tests {
             elf[16] = 2;
             elf[18] = 40;
             elf[20] = 1;
-            elf[25] = 0x80; // e_entry = 0x8000
+            elf[24..28].copy_from_slice(&vaddr.to_le_bytes()); // e_entry = SEG_BUF
             elf[28] = 52; // e_phoff
             elf[40] = 52; // e_ehsize
             elf[42] = 32; // e_phentsize
-            elf[44] = 0; // e_phnum
+            elf[44] = 1; // e_phnum = 1
+            // Elf32Phdr at offset 52: PT_LOAD covering e_entry (filesz=0,
+            // memsz=16 = one 16-byte zero-fill into SEG_BUF).
+            elf[52..56].copy_from_slice(&1u32.to_le_bytes()); // p_type = PT_LOAD
+            elf[60..64].copy_from_slice(&vaddr.to_le_bytes()); // p_vaddr = SEG_BUF
+            elf[72..76].copy_from_slice(&16u32.to_le_bytes()); // p_memsz
 
             let mut fs = crate::ramfs::RamFs::new();
             fs.add("bin", &elf);

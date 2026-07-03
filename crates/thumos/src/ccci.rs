@@ -2013,11 +2013,27 @@ impl CcciDriver {
 
     /// Run the full boot sequence to completion.
     ///
+    /// `timeout_ms` bounds the CUMULATIVE wall-clock time across all boot
+    /// steps, checked before each step starts. Each individual step's
+    /// internal hardware poll is already iteration-bounded by
+    /// `BOOT_POLL_MAX`, but that bounds neither the wall-clock duration of
+    /// a single poll nor the sum across steps -- a caller-supplied overall
+    /// deadline (finding 47: `MODEM_BOOT_TIMEOUT_MS` was previously only
+    /// compared against elapsed time AFTER this function returned, which
+    /// enforced nothing) is what actually caps total modem boot time.
+    ///
     /// # Safety
     ///
     /// Same as `boot_modem_step`.
-    pub(crate) unsafe fn boot_modem(&mut self, timestamp: u64) -> Result<(), CcciError> {
+    pub(crate) unsafe fn boot_modem(
+        &mut self,
+        timestamp: u64,
+        timeout_ms: u64,
+    ) -> Result<(), CcciError> {
         while self.boot_state != BootStep::Complete {
+            if crate::timer::elapsed_ms().saturating_sub(timestamp) > timeout_ms {
+                return Err(CcciError::BootFailed(self.boot_state));
+            }
             // SAFETY: same preconditions as boot_modem_step: all CCCI hardware
             // registers must be mapped and the caller is in early boot context.
             unsafe {
@@ -2182,6 +2198,20 @@ mod tests {
             parse_dma_error(0x0000_0007),
             Err(CcciError::DmaError(0x0000_0007))
         );
+    }
+
+    #[test]
+    fn boot_modem_aborts_when_cumulative_deadline_already_exceeded() {
+        // WHY (finding 47): timer_stub::elapsed_ms() returns a fixed
+        // constant under host test, so a start of 0 with timeout_ms = 0 is
+        // already exceeded on the very first loop iteration -- this
+        // exercises the deadline check without touching any MMIO (no real
+        // boot step ever runs).
+        let mut ccci = CcciDriver::new();
+        // SAFETY: test-only; the deadline check short-circuits before any
+        // hardware register access, so no CCCI MMIO needs to be mapped.
+        let result = unsafe { ccci.boot_modem(0, 0) };
+        assert_eq!(result, Err(CcciError::BootFailed(BootStep::EnableClocks)));
     }
 
     #[test]

@@ -114,6 +114,10 @@ pub enum EkphrasisError {
     EndpointUnreachable,
     /// WebSocket handshake failed or was rejected by the server.
     HandshakeFailed,
+    /// The `host` or `ws_key` passed to [`build_ws_upgrade`] contains a
+    /// control character (CR, LF, NUL, or other C0/DEL byte) that could
+    /// corrupt the HTTP request line or inject additional headers.
+    InvalidUpgradeParam,
     /// A WebSocket frame was malformed or violated protocol constraints.
     InvalidFrame,
     /// The frame payload exceeds [`MAX_WS_FRAME_PAYLOAD`].
@@ -143,6 +147,7 @@ impl fmt::Display for EkphrasisError {
         match self {
             Self::EndpointUnreachable => write!(f, "aletheia STT endpoint unreachable"),
             Self::HandshakeFailed => write!(f, "WebSocket handshake failed"),
+            Self::InvalidUpgradeParam => write!(f, "invalid WebSocket upgrade parameter"),
             Self::InvalidFrame => write!(f, "invalid WebSocket frame"),
             Self::PayloadTooLarge => write!(f, "WebSocket payload too large"),
             Self::TextTooLong => write!(f, "transcription text exceeds limit"),
@@ -391,6 +396,13 @@ pub(crate) fn build_ws_frame(opcode: WsOpcode, payload: &[u8], mask_key: [u8; 4]
 // WebSocket upgrade request
 // ---------------------------------------------------------------------------
 
+/// Return true if `s` contains a byte that could corrupt an HTTP header
+/// or request line if written verbatim: a C0 control byte (including CR,
+/// LF, NUL) or DEL.
+fn contains_control_byte(s: &str) -> bool {
+    s.bytes().any(|b| b < 0x20 || b == 0x7F)
+}
+
 /// Build an HTTP/1.1 WebSocket upgrade request for the aletheia STT endpoint.
 ///
 /// The `ws_key` should be a base64-encoded 16-byte random value (per
@@ -399,8 +411,22 @@ pub(crate) fn build_ws_frame(opcode: WsOpcode, payload: &[u8], mask_key: [u8; 4]
 ///
 /// Returns an [`HttpRequest`] that can be serialized with `build_raw()`
 /// and sent over a TCP socket.
+///
+/// # Errors
+///
+/// Returns [`EkphrasisError::InvalidUpgradeParam`] if `host` or `ws_key`
+/// contains a control character (CR, LF, NUL, etc.) that could corrupt
+/// the HTTP request line or inject additional headers.
 #[must_use]
-pub(crate) fn build_ws_upgrade(host: &str, path: &str, ws_key: &str) -> HttpRequest {
+pub(crate) fn build_ws_upgrade(
+    host: &str,
+    path: &str,
+    ws_key: &str,
+) -> Result<HttpRequest, EkphrasisError> {
+    if contains_control_byte(host) || contains_control_byte(ws_key) {
+        return Err(EkphrasisError::InvalidUpgradeParam);
+    }
+
     let mut req = HttpRequest::new(HttpMethod::Get, String::from(host), String::from(path));
 
     req.add_header(String::from("Upgrade"), String::from("websocket"));
@@ -416,7 +442,7 @@ pub(crate) fn build_ws_upgrade(host: &str, path: &str, ws_key: &str) -> HttpRequ
         String::from("stt-audio"),
     );
 
-    req
+    Ok(req)
 }
 
 /// Verify a server's `Sec-WebSocket-Accept` header value against the
@@ -737,9 +763,19 @@ impl Ekphrasis {
         match frame.opcode {
             WsOpcode::Text => {
                 // Parse the text payload as a transcription response.
-                let text = core::str::from_utf8(&frame.payload)
-                    .map_err(|_| EkphrasisError::InvalidFrame)?;
-                self.process_transcription(text)
+                let result = core::str::from_utf8(&frame.payload)
+                    .map_err(|_| EkphrasisError::InvalidFrame)
+                    .and_then(|text| self.process_transcription(text));
+                if let Err(ref err) = result {
+                    // WHY: a malformed/corrupt server response (bad UTF-8,
+                    // invalid JSON, missing "text" field, oversized text)
+                    // leaves the stream untrustworthy -- move to Error so
+                    // the caller must call reset() explicitly instead of
+                    // silently retrying on the next frame. This is the
+                    // transition the Idle|Error guard above assumes exists.
+                    self.state = EkphrasisState::Error(err.clone());
+                }
+                result
             }
             WsOpcode::Close => {
                 self.state = EkphrasisState::Idle;
@@ -900,8 +936,12 @@ impl Ekphrasis {
     /// Build a WebSocket upgrade request for the STT endpoint.
     ///
     /// The `ws_key` should be a base64-encoded 16-byte random value.
-    #[must_use]
-    pub(crate) fn ws_upgrade_request(&self, ws_key: &str) -> HttpRequest {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EkphrasisError::InvalidUpgradeParam`] if the configured
+    /// host or `ws_key` contains a control character.
+    pub(crate) fn ws_upgrade_request(&self, ws_key: &str) -> Result<HttpRequest, EkphrasisError> {
         build_ws_upgrade(&self.aletheia_host, STT_WS_PATH, ws_key)
     }
 
@@ -1268,6 +1308,21 @@ mod tests {
     }
 
     #[test]
+    fn ws_frame_roundtrip_extended_64bit_length() {
+        // Exactly MAX_WS_FRAME_PAYLOAD (65536) bytes — payload_len > 0xFFFF
+        // forces the 64-bit extended length header (len_indicator == 127).
+        let payload = vec![0x99; MAX_WS_FRAME_PAYLOAD];
+        let mask_key = [0xAA, 0xBB, 0xCC, 0xDD];
+
+        let frame_bytes = build_ws_frame(WsOpcode::Binary, &payload, mask_key);
+        let (parsed, consumed) = parse_ws_frame(&frame_bytes).ok().flatten_pair();
+
+        assert_eq!(consumed, frame_bytes.len());
+        assert_eq!(parsed.payload.len(), MAX_WS_FRAME_PAYLOAD);
+        assert_eq!(parsed.payload, payload);
+    }
+
+    #[test]
     fn ws_frame_parse_unmasked_server_frame() {
         // Server-to-client frames are unmasked.
         // Build manually: FIN + Text, len=5, "hello".
@@ -1577,6 +1632,25 @@ Let me know if you need anything else."#;
     }
 
     #[test]
+    fn stop_recording_returns_partial_text_when_no_final() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording();
+        let _ = ek.begin_streaming();
+
+        let partial_frame = WsFrame::new(
+            WsOpcode::Text,
+            b"{\"text\": \"partial only\", \"final\": false}".to_vec(),
+        );
+        let _ = ek.handle_server_frame(&partial_frame);
+        assert!(ek.final_text().is_empty());
+        assert_eq!(ek.partial_text(), "partial only");
+
+        let result = ek.stop_recording();
+        assert_eq!(result, Ok(String::from("partial only")));
+    }
+
+    #[test]
     fn state_stop_from_idle_fails() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         let result = ek.stop_recording();
@@ -1738,6 +1812,22 @@ Let me know if you need anything else."#;
     }
 
     #[test]
+    fn handle_server_frame_transitions_to_error_on_malformed_response() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording();
+        let _ = ek.begin_streaming();
+
+        let frame = WsFrame::new(WsOpcode::Text, b"{\"final\": false}".to_vec());
+        let result = ek.handle_server_frame(&frame);
+        assert!(result.is_err());
+        assert!(
+            matches!(ek.state(), EkphrasisState::Error(_)),
+            "a malformed transcription response must move the state machine to Error, requiring an explicit reset()"
+        );
+    }
+
+    #[test]
     fn state_reset_clears_everything() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
@@ -1780,7 +1870,9 @@ Let me know if you need anything else."#;
     #[test]
     fn ekphrasis_ws_upgrade_request() {
         let ek = Ekphrasis::new("stt.example.lan", 8080);
-        let req = ek.ws_upgrade_request("dGVzdC1rZXk=");
+        let req = ek
+            .ws_upgrade_request("dGVzdC1rZXk=")
+            .expect("a control-char-free host/key must build a request");
 
         assert_eq!(req.host, "stt.example.lan");
         assert_eq!(req.path, "/stt/stream");
@@ -1794,6 +1886,20 @@ Let me know if you need anything else."#;
                 .iter()
                 .any(|(k, v)| k == "Sec-WebSocket-Key" && v == "dGVzdC1rZXk=")
         );
+    }
+
+    #[test]
+    fn ws_upgrade_rejects_crlf_in_host() {
+        let ek = Ekphrasis::new("stt.example.lan\r\nX-Injected: evil", 8080);
+        let result = ek.ws_upgrade_request("dGVzdC1rZXk=");
+        assert!(matches!(result, Err(EkphrasisError::InvalidUpgradeParam)));
+    }
+
+    #[test]
+    fn ws_upgrade_rejects_nul_in_key() {
+        let ek = Ekphrasis::new("stt.example.lan", 8080);
+        let result = ek.ws_upgrade_request("dGVz\0dC1rZXk=");
+        assert!(matches!(result, Err(EkphrasisError::InvalidUpgradeParam)));
     }
 
     #[test]
@@ -1838,6 +1944,7 @@ Let me know if you need anything else."#;
         let errors = [
             EkphrasisError::EndpointUnreachable,
             EkphrasisError::HandshakeFailed,
+            EkphrasisError::InvalidUpgradeParam,
             EkphrasisError::InvalidFrame,
             EkphrasisError::PayloadTooLarge,
             EkphrasisError::TextTooLong,
