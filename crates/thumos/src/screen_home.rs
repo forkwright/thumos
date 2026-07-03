@@ -12,6 +12,7 @@
 //! accepts a snapshot of the current state to avoid holding references
 //! to kernel globals across the render boundary.
 
+use crate::heorte;
 use crate::ui::{
     self, color, Key, Screen, ScreenAction, ScreenId,
     CHAR_HEIGHT, CONTENT_HEIGHT, SCREEN_WIDTH,
@@ -139,8 +140,10 @@ impl Screen for HomeScreen {
         // Clear content area to black.
         ui::fill_rect(fb, w, h, 0, 0, w, h, color::BLACK);
 
-        // Extract HH:MM and YYYY-MM-DD from epoch seconds.
-        let (hour, minute, year, month, day) = decompose_epoch(self.state.epoch_secs);
+        // Extract HH:MM and YYYY-MM-DD from epoch seconds. #423: delegates
+        // to heorte's O(1) closed-form decomposition rather than keeping a
+        // second year-by-year loop (the DoS #366 already fixed once here).
+        let (hour, minute, year, month, day) = heorte::decompose_epoch(self.state.epoch_secs);
 
         // Large centered time (2x scale).
         let time_buf = format_time(hour, minute);
@@ -196,65 +199,6 @@ impl Screen for HomeScreen {
     fn title(&self) -> &'static str {
         ""
     }
-}
-
-// ---------------------------------------------------------------------------
-// Time/date decomposition
-// ---------------------------------------------------------------------------
-
-/// Decompose Unix epoch seconds into `(hour, minute, year, month, day)`.
-///
-/// Uses a simplified algorithm sufficient for display purposes. Not a
-/// full calendar implementation -- no leap-second handling, approximate
-/// leap-year handling.
-fn decompose_epoch(epoch: u64) -> (u8, u8, u16, u8, u8) {
-    if epoch == 0 {
-        return (0, 0, 0, 0, 0);
-    }
-
-    // Time of day.
-    let day_secs = epoch % 86400;
-    let hour = (day_secs / 3600) as u8;
-    let minute = ((day_secs % 3600) / 60) as u8;
-
-    // Days since Unix epoch.
-    let mut days = (epoch / 86400) as u32;
-
-    // Year calculation (accounting for leap years).
-    let mut year: u16 = 1970;
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-
-    // Month calculation.
-    let leap = is_leap_year(year);
-    let month_days: [u32; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-    ];
-    let mut month: u8 = 1;
-    for &md in &month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-
-    let day = (days + 1) as u8; // 1-indexed
-
-    (hour, minute, year, month, day)
-}
-
-/// Check if a year is a leap year.
-const fn is_leap_year(year: u16) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 // ---------------------------------------------------------------------------
@@ -429,14 +373,14 @@ mod tests {
 
     #[test]
     fn decompose_epoch_zero_returns_zeroes() {
-        let (h, m, y, mo, d) = decompose_epoch(0);
+        let (h, m, y, mo, d) = heorte::decompose_epoch(0);
         assert_eq!((h, m, y, mo, d), (0, 0, 0, 0, 0), "epoch 0 must return all zeros");
     }
 
     #[test]
     fn decompose_epoch_known_date() {
         // 2026-01-01 00:00:00 UTC = 1767225600
-        let (h, m, y, mo, d) = decompose_epoch(1_767_225_600);
+        let (h, m, y, mo, d) = heorte::decompose_epoch(1_767_225_600);
         assert_eq!(y, 2026, "year must be 2026");
         assert_eq!(mo, 1, "month must be January");
         assert_eq!(d, 1, "day must be 1");
@@ -448,9 +392,22 @@ mod tests {
     fn decompose_epoch_with_time() {
         // 2026-01-01 14:30:00 UTC = 1767225600 + 14*3600 + 30*60
         let epoch = 1_767_225_600 + 14 * 3600 + 30 * 60;
-        let (h, m, _y, _mo, _d) = decompose_epoch(epoch);
+        let (h, m, _y, _mo, _d) = heorte::decompose_epoch(epoch);
         assert_eq!(h, 14, "hour must be 14");
         assert_eq!(m, 30, "minute must be 30");
+    }
+
+    #[test]
+    fn decompose_epoch_large_value_completes_in_o1() {
+        // #423: screen_home used to carry its own year-by-year
+        // decompose_epoch/is_leap_year (the same O(years) DoS shape as
+        // #366's heorte copy). Now that draw() delegates to
+        // heorte::decompose_epoch directly, an adversarial epoch near
+        // u64::MAX must resolve in O(1) rather than looping ~11.7M times.
+        let (_h, _m, year, month, day) = heorte::decompose_epoch(u64::MAX / 2);
+        assert_eq!(year, u16::MAX, "year must saturate rather than wrap or panic");
+        assert!((1..=12).contains(&month), "month must stay in valid range");
+        assert!((1..=31).contains(&day), "day must stay in valid range");
     }
 
     #[test]
@@ -487,14 +444,6 @@ mod tests {
     fn format_unread_overflow() {
         let buf = format_unread(200);
         assert_eq!(buf.as_str(), "99+ UNREAD", "overflow must show 99+");
-    }
-
-    #[test]
-    fn is_leap_year_correct() {
-        assert!(is_leap_year(2000), "2000 is a leap year (div by 400)");
-        assert!(!is_leap_year(1900), "1900 is not a leap year (div by 100)");
-        assert!(is_leap_year(2024), "2024 is a leap year (div by 4)");
-        assert!(!is_leap_year(2025), "2025 is not a leap year");
     }
 
     #[test]
