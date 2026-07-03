@@ -425,6 +425,14 @@ fn skip_dns_name(data: &[u8], mut offset: usize) -> Result<usize, DnsError> {
             return Ok(offset + 2);
         }
 
+        if len & 0xC0 != 0 {
+            // Reserved extended label type (RFC 1035 section 3.1: top two
+            // bits 01 or 10). The low 6 bits are not a valid label length
+            // under this scheme -- treating them as one would desync the
+            // parser from the real packet structure.
+            return Err(DnsError::MalformedResponse);
+        }
+
         // Regular label.
         offset += 1 + len as usize;
         labels += 1;
@@ -819,6 +827,35 @@ mod tests {
             result,
             Ok(data.len()),
             "a 100-label name within the RFC 1035 name-length limit must not be rejected"
+        );
+    }
+
+    #[test]
+    fn skip_dns_name_rejects_reserved_extended_label_type() {
+        // A length byte of 0x40 (0b01000000) has the RFC 1035 section 3.1
+        // reserved top-bit pattern 01 (extended label type), not a
+        // regular 6-bit length. Before the fix, only 0xC0 (0b11,
+        // compression pointer) was special-cased and this byte was
+        // silently treated as a 0x40-byte-long regular label, desyncing
+        // the parser from the real packet structure.
+        let data = [0x40u8, b'a', b'b', 0u8];
+        let result = skip_dns_name(&data, 0);
+        assert_eq!(
+            result,
+            Err(DnsError::MalformedResponse),
+            "a reserved extended label type (top bits 01) must be rejected, not treated as a length"
+        );
+    }
+
+    #[test]
+    fn skip_dns_name_rejects_top_bit_10_label_type() {
+        // 0x80 (0b10000000) is the other RFC 1035 reserved top-bit pattern.
+        let data = [0x80u8, b'a', b'b', 0u8];
+        let result = skip_dns_name(&data, 0);
+        assert_eq!(
+            result,
+            Err(DnsError::MalformedResponse),
+            "a reserved extended label type (top bits 10) must be rejected, not treated as a length"
         );
     }
 

@@ -253,7 +253,9 @@ impl MeshMessage {
     ///
     /// - [`MeshError::MessageTooLong`] if `body` exceeds the limit
     /// - [`MeshError::InvalidHopCount`] if `hop_count` exceeds maximum
-    /// - [`MeshError::InvalidNodeId`] if `from_node` is zero
+    /// - [`MeshError::InvalidNodeId`] if `from_node` is zero or
+    ///   [`BROADCAST_NODE_ID`] (broadcast is a destination-only address,
+    ///   never a valid sender)
     pub(crate) fn new(
         from_node: u32,
         to_node: u32,
@@ -262,7 +264,7 @@ impl MeshMessage {
         hop_count: u8,
         channel: u8,
     ) -> Result<Self, MeshError> {
-        if from_node == 0 {
+        if from_node == 0 || from_node == BROADCAST_NODE_ID {
             return Err(MeshError::InvalidNodeId);
         }
         if body.len() > MAX_MESSAGE_BODY_LEN {
@@ -671,6 +673,16 @@ mod tests {
             result,
             Err(MeshError::InvalidNodeId),
             "message from node 0 must fail"
+        );
+    }
+
+    #[test]
+    fn message_broadcast_as_from_node_fails() {
+        let result = MeshMessage::new(BROADCAST_NODE_ID, 0x5678, "hello".to_string(), 0, 0, 0);
+        assert_eq!(
+            result,
+            Err(MeshError::InvalidNodeId),
+            "BROADCAST_NODE_ID is a destination-only address and must be rejected as a sender"
         );
     }
 

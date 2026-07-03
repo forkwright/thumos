@@ -27,6 +27,7 @@ use smoltcp::iface::SocketHandle;
 use smoltcp::socket::{tcp, udp};
 use smoltcp::wire::{IpAddress, IpEndpoint, Ipv4Address};
 
+use crate::csprng;
 use crate::fd::{self, FileDescriptor, MAX_FDS};
 use crate::net::{self, FirewallDevice, LoopbackDevice, NetworkStack};
 
@@ -261,11 +262,25 @@ fn socket_flags() -> u32 {
 
 /// Next ephemeral port to allocate.
 ///
-/// WHY static counter: simple sequential allocation from the IANA ephemeral
-/// range (49152-65535). Good enough for a kernel with MAX_SOCKETS=32.
+/// WHY static counter: fallback sequential allocation from the IANA
+/// ephemeral range (49152-65535), used only while the CSPRNG is not yet
+/// seeded (see `alloc_ephemeral_port`). Good enough for a kernel with
+/// MAX_SOCKETS=32.
 static mut NEXT_EPHEMERAL_PORT: u16 = 49152;
 
 /// Allocate an ephemeral port that is not currently in use.
+///
+/// The starting point within the ephemeral range is drawn from the
+/// kernel CSPRNG on every call so allocated source ports are not
+/// trivially predictable to an off-path attacker (a sequential counter
+/// lets a blind attacker guess the next port and race a spoofed
+/// packet/connection into place before the real one completes). If the
+/// CSPRNG is not yet seeded (early boot, before `csprng::init()`
+/// completes), falls back to the previous sequential counter rather
+/// than blocking or panicking -- source-port randomization is
+/// defense-in-depth, not key material, so degrading to
+/// predictable-but-functional allocation is correct here (mirrors
+/// `dns.rs`'s CSPRNG-unseeded TXID fallback).
 ///
 /// # Safety
 ///
@@ -274,7 +289,15 @@ static mut NEXT_EPHEMERAL_PORT: u16 = 49152;
 unsafe fn alloc_ephemeral_port() -> Option<u16> {
     unsafe {
         let table = get_socket_table();
-        let start = *core::ptr::addr_of!(NEXT_EPHEMERAL_PORT);
+
+        const EPHEMERAL_RANGE: u16 = 65535 - 49152 + 1;
+        let start = {
+            let mut rand_buf = [0u8; 2];
+            match csprng::kernel_random_bytes(&mut rand_buf) {
+                Ok(()) => 49152 + (u16::from_le_bytes(rand_buf) % EPHEMERAL_RANGE),
+                Err(_) => *core::ptr::addr_of!(NEXT_EPHEMERAL_PORT),
+            }
+        };
 
         // Scan up to the full ephemeral range (49152..65535).
         for offset in 0..16384u16 {
@@ -969,6 +992,51 @@ mod tests {
             // Initialize network stack.
             init_network_stack();
         }
+    }
+
+    #[test]
+    fn alloc_ephemeral_port_is_not_sequential_when_csprng_seeded() {
+        // SAFETY: test-only; setup_test_network resets global state.
+        unsafe {
+            setup_test_network();
+        }
+        csprng::seed_for_test(&[0x42u8; 32], &[0u8; 8], 0);
+
+        let mut ports = alloc::vec::Vec::new();
+        for _ in 0..8 {
+            let port = unsafe { alloc_ephemeral_port() }.expect("port allocation must succeed");
+            ports.push(port);
+        }
+
+        // Before the fix, alloc_ephemeral_port() always returned a
+        // strictly sequential run (49152, 49153, 49154, ...) starting
+        // from a fixed, predictable counter -- trivially guessable by
+        // an off-path attacker. With a seeded CSPRNG, consecutive
+        // allocations must not all differ by exactly 1; the chance of
+        // that happening by genuine randomness is astronomically small.
+        let all_sequential = ports.windows(2).all(|w| w[1] == w[0].wrapping_add(1));
+        assert!(
+            !all_sequential,
+            "ephemeral ports must be randomized, not allocated sequentially: {ports:?}"
+        );
+    }
+
+    #[test]
+    fn alloc_ephemeral_port_falls_back_when_csprng_unseeded() {
+        // SAFETY: test-only; setup_test_network resets global state.
+        // CSPRNG is never seeded in this test process (nextest runs
+        // each test in its own process), exercising the fail-open
+        // fallback path -- it must still return a valid port, never
+        // hang or panic.
+        unsafe {
+            setup_test_network();
+        }
+
+        let port = unsafe { alloc_ephemeral_port() };
+        assert!(
+            port.is_some_and(|p| (49152..=65535).contains(&p)),
+            "an unseeded CSPRNG must still allocate a valid ephemeral port via the deterministic fallback"
+        );
     }
 
     #[test]
