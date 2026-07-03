@@ -74,6 +74,12 @@ pub enum TelephonyError {
     TransportError,
     /// SIM card not ready or PIN required.
     SimNotReady,
+    /// SIM card requires PUK unlock (too many wrong PIN attempts) -- kept
+    /// distinct from [`Self::SimNotReady`] so a caller does not route to
+    /// the wrong (PIN) unlock flow (issue #282 finding 17). Entering a PIN
+    /// against a PUK-locked SIM burns limited PUK attempts and can
+    /// permanently lock the SIM.
+    SimPukRequired,
     /// Phone number exceeds maximum length.
     NumberTooLong,
 }
@@ -88,6 +94,7 @@ impl core::fmt::Display for TelephonyError {
             Self::InvalidState => write!(f, "invalid telephony state"),
             Self::TransportError => write!(f, "transport error"),
             Self::SimNotReady => write!(f, "SIM not ready"),
+            Self::SimPukRequired => write!(f, "SIM PUK required"),
             Self::NumberTooLong => write!(f, "number too long"),
         }
     }
@@ -325,6 +332,26 @@ pub trait ModemTransport {
 // AT command/response exchange helper
 // ---------------------------------------------------------------------------
 
+/// Maximum informational/blank lines read while waiting for a command's
+/// final result code.
+///
+/// Every AT exchange in this module expects at most one info line before
+/// the final result ([`send_simple`] stores none, [`send_with_info`] stores
+/// one); this cap is generous headroom for stray echo/blank lines, not an
+/// expected-traffic budget. Bounding it (down from 64) shrinks the
+/// worst-case block time a modem pacing junk lines just under `timeout_ms`
+/// can impose on a single command (issue #282 finding 14) -- it narrows,
+/// but does not eliminate, that window; a full fix needs a wall-clock
+/// total budget, which would require threading a clock source into this
+/// currently transport-mock-only, timer-agnostic function.
+const MAX_RESPONSE_LINES: usize = 16;
+
+/// Maximum best-effort drain attempts after a `recv_line` failure.
+///
+/// Bounded the same way [`MAX_RESPONSE_LINES`] is, so a transport that
+/// (incorrectly) always reports a line available cannot loop unboundedly.
+const MAX_DRAIN_LINES: usize = 16;
+
 /// Send an AT command and wait for the final result code.
 ///
 /// Collects informational lines into `info_buf` (up to `info_buf.len()` lines).
@@ -342,8 +369,30 @@ fn send_and_wait<T: ModemTransport>(
 
     // Read lines until we get a final result code.
     // Limit iterations to prevent infinite loop on broken transport.
-    for _ in 0..64 {
-        let n = transport.recv_line(&mut line_buf, timeout_ms)?;
+    for _ in 0..MAX_RESPONSE_LINES {
+        let n = match transport.recv_line(&mut line_buf, timeout_ms) {
+            Ok(n) => n,
+            Err(e) => {
+                // WHY: send_at already committed this command to the modem
+                // -- a recv_line failure here does not mean the modem
+                // won't still emit the final result code a moment later.
+                // Leaving that response unread desyncs the AT channel: the
+                // NEXT send_and_wait call would read the STALE response as
+                // if it belonged to its own command (issue #282 finding
+                // 13). Best-effort non-blocking drain (timeout_ms=0, per
+                // the ModemTransport contract) mops up anything already
+                // sitting in the transport's receive buffer at the moment
+                // of failure; it cannot recover a response that arrives
+                // strictly after this drain.
+                let mut drain_buf = [0u8; MAX_LINE_LEN];
+                for _ in 0..MAX_DRAIN_LINES {
+                    if transport.recv_line(&mut drain_buf, 0).is_err() {
+                        break;
+                    }
+                }
+                return Err(e);
+            }
+        };
         let line = &line_buf[..n];
 
         // Skip blank lines.
@@ -585,12 +634,16 @@ impl<T: ModemTransport> Telephony<T> {
             Ok((AtResponse::Ok, ref info_line, info_len)) if info_len > 0 => {
                 let line = &info_line[..info_len];
                 match parse_cpin_response(line) {
-                    Some(true) => {
+                    Some(SimPinState::Ready) => {
                         // SIM ready, no PIN required.
                     }
-                    Some(false) => {
+                    Some(SimPinState::PinRequired | SimPinState::Other) => {
                         self.modem_state = ModemState::Error(TelephonyError::SimNotReady);
                         return Err(TelephonyError::SimNotReady);
+                    }
+                    Some(SimPinState::PukRequired) => {
+                        self.modem_state = ModemState::Error(TelephonyError::SimPukRequired);
+                        return Err(TelephonyError::SimPukRequired);
                     }
                     None => {
                         self.modem_state = ModemState::Error(TelephonyError::ParseError);
@@ -660,7 +713,10 @@ impl<T: ModemTransport> Telephony<T> {
         self.init_step = 8;
 
         // Step 9: Initial signal strength query.
-        self.update_signal_strength()?;
+        if let Err(e) = self.update_signal_strength() {
+            self.modem_state = ModemState::Error(e);
+            return Err(e);
+        }
         self.init_step = 9;
 
         // Step 10: Seed registration state. AT+CFUN=1 (step 3) only powers
@@ -764,13 +820,19 @@ impl<T: ModemTransport> Telephony<T> {
         }
 
         self.last_signal_poll = current_tick;
-        if self.update_signal_strength().is_ok() {
-            Some(TelephonyEvent::SignalUpdate {
+        match self.update_signal_strength() {
+            Ok(()) => Some(TelephonyEvent::SignalUpdate {
                 bars: self.signal_strength,
                 rssi_dbm: self.signal_dbm,
-            })
-        } else {
-            None
+            }),
+            // WHY: a failed signal poll must be visible (issue #282 finding
+            // 3), not silently swallowed into None (indistinguishable from
+            // "not time to poll yet"). Reuses the existing ModemError event
+            // vocabulary rather than adding new API surface. A single
+            // transient failure does not change modem_state -- Ready and
+            // Registered are owned by initialize()/apply_reg_status, not by
+            // one periodic CSQ query.
+            Err(e) => Some(TelephonyEvent::ModemError(e)),
         }
     }
 
@@ -945,7 +1007,13 @@ impl<T: ModemTransport> Telephony<T> {
                 })
             }
             Urc::Clip { number, number_len } => {
-                // Update the incoming call with caller ID.
+                // Update the incoming call with caller ID -- only if a RING
+                // already transitioned call_state to Incoming. A +CLIP URC
+                // arriving without a prior RING is out-of-order (or forged
+                // -- the modem/network is untrusted per this project's
+                // threat model) and must not synthesize a phantom
+                // IncomingCall event while call_state stays Idle (issue
+                // #282 finding 19).
                 if let CallState::Incoming {
                     number: ref mut n,
                     len: ref mut l,
@@ -953,8 +1021,10 @@ impl<T: ModemTransport> Telephony<T> {
                 {
                     *n = number;
                     *l = number_len;
+                    Some(TelephonyEvent::IncomingCall { number, number_len })
+                } else {
+                    None
                 }
-                Some(TelephonyEvent::IncomingCall { number, number_len })
             }
             Urc::NoCarrier => {
                 self.call_state = CallState::Idle;
@@ -1077,6 +1147,30 @@ mod tests {
             result,
             Err(TelephonyError::CmeError(302)),
             "a +CMS ERROR on AT+CPIN? must preserve its code, not collapse to SimNotReady"
+        );
+    }
+
+    #[test]
+    fn cpin_sim_puk_surfaces_sim_puk_required_not_sim_not_ready() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // Step 1: AT
+        mock.queue_ok(); // Step 2: ATE0
+        mock.queue_ok(); // Step 3: AT+CFUN=1
+        // Step 4: AT+CPIN? -> +CPIN: SIM PUK -- must not be conflated with
+        // SIM PIN (issue #282 finding 17): a UI that responds to
+        // SimNotReady with a 4-digit PIN prompt would burn PUK attempts.
+        mock.queue_info_ok(b"+CPIN: SIM PUK");
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert_eq!(
+            result,
+            Err(TelephonyError::SimPukRequired),
+            "SIM PUK must surface as SimPukRequired, not SimNotReady"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Error(TelephonyError::SimPukRequired)
         );
     }
 
@@ -1236,6 +1330,31 @@ mod tests {
     }
 
     #[test]
+    fn poll_signal_surfaces_error_instead_of_silently_discarding_it() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+        assert_eq!(tel.modem_state(), ModemState::Registered);
+
+        // AT+CSQ fails -- the failure must be surfaced as a ModemError
+        // event, not silently discarded as if nothing happened (issue #282
+        // finding 3).
+        tel.transport.queue_response(b"ERROR");
+
+        let event = tel.poll_signal(SIGNAL_POLL_INTERVAL_MS);
+        assert_eq!(
+            event,
+            Some(TelephonyEvent::ModemError(TelephonyError::ModemError)),
+            "a failed signal poll must surface as an event, not silently return None"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Registered,
+            "a single transient poll failure must not kill the Ready/Registered state"
+        );
+    }
+
+    #[test]
     fn ring_urc_transitions_to_incoming() {
         let mock = mock_for_init();
         let mut tel = Telephony::new(mock);
@@ -1250,6 +1369,24 @@ mod tests {
         assert!(
             matches!(tel.call_state(), CallState::Incoming { .. }),
             "call state must transition to Incoming on RING"
+        );
+    }
+
+    #[test]
+    fn clip_without_prior_ring_does_not_emit_phantom_incoming_call() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+
+        tel.transport.queue_urc(b"+CLIP: \"+15551234567\",145");
+        let event = tel.poll();
+        assert!(
+            event.is_none(),
+            "CLIP without a prior RING must not emit a phantom IncomingCall event"
+        );
+        assert!(
+            matches!(tel.call_state(), CallState::Idle),
+            "call state must remain Idle"
         );
     }
 
@@ -1317,6 +1454,40 @@ mod tests {
             *tel.call_state(),
             CallState::Idle,
             "call state must transition to Idle on NO CARRIER"
+        );
+    }
+
+    #[test]
+    fn send_and_wait_gives_up_after_max_response_lines_not_64() {
+        let mut mock = MockModemTransport::new();
+        for _ in 0..(MAX_RESPONSE_LINES + 4) {
+            mock.queue_response(b"+JUNK: 0");
+        }
+        let mut info_buf = [[0u8; MAX_LINE_LEN]; 1];
+        let result = send_and_wait(&mut mock, "AT", &mut info_buf, 100);
+        assert_eq!(result, Err(TelephonyError::Timeout));
+        assert!(
+            mock.response_lines.len() >= 4,
+            "must give up at MAX_RESPONSE_LINES, leaving unread lines queued"
+        );
+    }
+
+    #[test]
+    fn send_and_wait_drains_stale_response_after_recv_error() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_response(b"OK");
+        mock.fail_next_recv(1);
+
+        let mut info_buf = [[0u8; MAX_LINE_LEN]; 1];
+        let result = send_and_wait(&mut mock, "AT", &mut info_buf, 100);
+        assert_eq!(
+            result,
+            Err(TelephonyError::TransportError),
+            "the injected failure must still surface as an error"
+        );
+        assert!(
+            mock.response_lines.is_empty(),
+            "the stale OK response must be drained, not left for the next exchange"
         );
     }
 
@@ -1479,6 +1650,32 @@ mod tests {
             tel.modem_state(),
             ModemState::Registered,
             "modem must reach Registered state once AT+CREG? confirms it, despite LTE-only rejection"
+        );
+    }
+
+    #[test]
+    fn initialize_records_error_state_on_step_9_signal_query_failure() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // AT
+        mock.queue_ok(); // ATE0
+        mock.queue_ok(); // AT+CFUN=1
+        mock.queue_info_ok(b"+CPIN: READY");
+        mock.queue_ok(); // AT+COPS=0,,,7
+        mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\"");
+        mock.queue_ok(); // AT+CREG=1
+        mock.queue_ok(); // AT+CLIP=1
+        mock.queue_response(b"ERROR");
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert!(
+            result.is_err(),
+            "a failed signal query must fail initialize()"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Error(TelephonyError::ModemError),
+            "modem_state must record Error, not remain stuck at Initializing"
         );
     }
 

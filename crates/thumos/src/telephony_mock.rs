@@ -20,6 +20,12 @@ pub(crate) struct MockModemTransport {
     pub urc_lines: Vec<Vec<u8>>,
     /// Whether send_at should succeed.
     pub send_ok: bool,
+    /// Number of upcoming `recv_line` calls that must fail with
+    /// `TransportError` regardless of queued lines, decrementing on each
+    /// call. Simulates a transient failure (e.g. a real-hardware timeout
+    /// that races a response already in flight) independent of whether a
+    /// response is queued -- see `fail_next_recv`.
+    pub inject_recv_failures: usize,
 }
 
 impl MockModemTransport {
@@ -30,7 +36,14 @@ impl MockModemTransport {
             response_lines: Vec::new(),
             urc_lines: Vec::new(),
             send_ok: true,
+            inject_recv_failures: 0,
         }
+    }
+
+    /// Make the next `n` `recv_line` calls fail with `TransportError`,
+    /// regardless of queued response lines.
+    pub(crate) fn fail_next_recv(&mut self, n: usize) {
+        self.inject_recv_failures = n;
     }
 
     /// Queue a response line to be returned by `recv_line`.
@@ -69,6 +82,10 @@ impl ModemTransport for MockModemTransport {
         buf: &mut [u8; MAX_LINE_LEN],
         _timeout_ms: u32,
     ) -> Result<usize, TelephonyError> {
+        if self.inject_recv_failures > 0 {
+            self.inject_recv_failures -= 1;
+            return Err(TelephonyError::TransportError);
+        }
         if let Some(line) = self.response_lines.first() {
             let len = line.len().min(MAX_LINE_LEN);
             buf[..len].copy_from_slice(&line[..len]);
