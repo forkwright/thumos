@@ -223,6 +223,9 @@ const CDC_REQ_SET_LINE_CODING: u8 = 0x20;
 const CDC_REQ_GET_LINE_CODING: u8 = 0x21;
 /// SET_CONTROL_LINE_STATE: SET DTR/RTS control lines.
 const CDC_REQ_SET_CONTROL_LINE_STATE: u8 = 0x22;
+/// SET_LINE_CODING's fixed payload length (baud[4] + stop[1] + parity[1] +
+/// data bits[1] = 7 bytes) per the CDC ACM spec.
+const LINE_CODING_LEN: u16 = 7;
 
 // ---------------------------------------------------------------------------
 // CDC functional descriptor subtypes (bDescriptorSubtype)
@@ -704,6 +707,16 @@ fn clamp_rx_count(raw_count: u16, max_pkt: u16) -> usize {
     usize::from(raw_count).min(usize::from(max_pkt))
 }
 
+/// True if `w_length` matches SET_LINE_CODING's fixed [`LINE_CODING_LEN`].
+///
+/// SET_LINE_CODING declares a fixed-size (7-byte) payload per the CDC ACM
+/// spec. A request with any other `wLength` did not actually send the
+/// number of bytes `handle_ep0_data_out` unconditionally reads FROM the
+/// FIFO (issue #282 finding 20).
+fn line_coding_length_is_valid(w_length: u16) -> bool {
+    w_length == LINE_CODING_LEN
+}
+
 // ---------------------------------------------------------------------------
 // USB controller
 // ---------------------------------------------------------------------------
@@ -734,6 +747,9 @@ pub(crate) struct UsbController {
     rx_head: usize,
     /// Read index INTO rx_buf.
     rx_tail: usize,
+    /// Count of serial RX bytes dropped because the ring was full -- see
+    /// `rx_dropped_bytes` (issue #282 finding 4).
+    rx_overflow_count: u32,
 }
 
 impl UsbController {
@@ -755,6 +771,7 @@ impl UsbController {
             rx_buf: [0u8; SERIAL_RX_BUF_LEN],
             rx_head: 0,
             rx_tail: 0,
+            rx_overflow_count: 0,
         }
     }
 
@@ -924,6 +941,38 @@ impl UsbController {
             }
         }
         count
+    }
+
+    /// Number of serial RX bytes dropped because the ring buffer was full.
+    ///
+    /// A nonzero count means the host is producing serial data faster than
+    /// [`read_serial`] drains it -- diagnostic-only, does not affect
+    /// transfer correctness of bytes that WERE accepted (issue #282 finding
+    /// 4).
+    ///
+    /// [`read_serial`]: UsbController::read_serial
+    #[must_use]
+    pub(crate) fn rx_dropped_bytes(&self) -> u32 {
+        self.rx_overflow_count
+    }
+
+    /// Push one received byte into the serial RX ring buffer.
+    ///
+    /// Returns `true` if accepted, `false` if the ring was full and the
+    /// byte was dropped. On drop, increments `rx_overflow_count` so a full
+    /// ring no longer discards host bytes with no counter or log (issue
+    /// #282 finding 4) -- see [`rx_dropped_bytes`].
+    ///
+    /// [`rx_dropped_bytes`]: UsbController::rx_dropped_bytes
+    fn ring_push(&mut self, byte: u8) -> bool {
+        let next_head = (self.rx_head + 1) % SERIAL_RX_BUF_LEN;
+        if next_head == self.rx_tail {
+            self.rx_overflow_count = self.rx_overflow_count.saturating_add(1);
+            return false;
+        }
+        self.rx_buf[self.rx_head] = byte;
+        self.rx_head = next_head;
+        true
     }
 
     // -----------------------------------------------------------------------
@@ -1122,7 +1171,23 @@ impl UsbController {
         unsafe {
             match setup.b_request {
                 CDC_REQ_SET_LINE_CODING => {
-                    // Host will send 7 bytes; prepare to receive them.
+                    // WHY: validate the host's declared length before
+                    // transitioning to DataOut -- a request with any
+                    // wLength other than LINE_CODING_LEN is malformed and
+                    // must be rejected rather than silently read as if 7
+                    // valid bytes were present (issue #282 finding 20).
+                    // This does NOT (yet) validate the ACTUAL FIFO receive
+                    // count against wLength -- that needs an EP0
+                    // byte-count register offset this driver has not
+                    // confirmed against the MT6739 MUSB BSP header (same
+                    // class as the already-tracked TODO(#221) for
+                    // REG_RXCOUNT/EP1+).
+                    if !line_coding_length_is_valid(setup.w_length) {
+                        self.ep0_stall();
+                        return;
+                    }
+                    // Host will send LINE_CODING_LEN bytes; prepare to
+                    // receive them.
                     self.ep0_buf_len = 0;
                     self.ep0_buf_pos = 0;
                     self.ep0_state = Ep0State::DataOut;
@@ -1265,12 +1330,9 @@ impl UsbController {
 
             for _ in 0..rx_count {
                 let byte = core::ptr::read_volatile(fifo as *const u8);
-                let next_head = (self.rx_head + 1) % SERIAL_RX_BUF_LEN;
-                if next_head != self.rx_tail {
-                    self.rx_buf[self.rx_head] = byte;
-                    self.rx_head = next_head;
-                }
-                // Ring buffer full: DROP remaining bytes silently.
+                // Ring-full bytes are counted, not silently dropped -- see
+                // ring_push / rx_dropped_bytes (issue #282 finding 4).
+                self.ring_push(byte);
             }
 
             // Clear RxPktRdy to signal we've consumed the packet.
@@ -1630,6 +1692,15 @@ mod tests {
         assert_eq!(pkt.w_length, 7, "SET_LINE_CODING wLength must be 7");
     }
 
+    #[test]
+    fn line_coding_length_validation_accepts_only_seven() {
+        assert!(line_coding_length_is_valid(7));
+        assert!(!line_coding_length_is_valid(0));
+        assert!(!line_coding_length_is_valid(6));
+        assert!(!line_coding_length_is_valid(8));
+        assert!(!line_coding_length_is_valid(64));
+    }
+
     // --- ACM class request handling ---
 
     #[test]
@@ -1738,6 +1809,32 @@ mod tests {
         let n = ctrl.read_serial(&mut buf);
         assert_eq!(n, 3, "must read exactly 3 bytes");
         assert_eq!(&buf[..3], b"ABC", "bytes must match what was written");
+    }
+
+    #[test]
+    fn ring_push_drops_and_counts_overflow_when_ring_is_full() {
+        let mut ctrl = UsbController::new();
+        // SERIAL_RX_BUF_LEN - 1 slots occupied is "full" for a
+        // head==tail-means-empty ring.
+        ctrl.rx_head = SERIAL_RX_BUF_LEN - 1;
+        ctrl.rx_tail = 0;
+        assert_eq!(ctrl.rx_dropped_bytes(), 0, "no drops yet");
+
+        let accepted = ctrl.ring_push(b'X');
+        assert!(!accepted, "ring at capacity must reject the push");
+        assert_eq!(
+            ctrl.rx_dropped_bytes(),
+            1,
+            "a dropped byte must be counted, not silently discarded (issue #282 finding 4)"
+        );
+    }
+
+    #[test]
+    fn ring_push_accepts_when_space_available() {
+        let mut ctrl = UsbController::new();
+        let accepted = ctrl.ring_push(b'Y');
+        assert!(accepted, "ring with free space must accept the push");
+        assert_eq!(ctrl.rx_dropped_bytes(), 0, "an accepted push is not a drop");
     }
 
     // --- write_serial gate: not configured ---

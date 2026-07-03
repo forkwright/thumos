@@ -69,6 +69,15 @@ const MEGOLM_KEY_MATERIAL_LEN: usize = KEY_SIZE + KEY_SIZE + AES_BLOCK_SIZE;
 /// not read from a stale session counter).
 const MEGOLM_INDEX_LEN: usize = 4;
 
+/// Maximum accepted Megolm wire payload length in bytes (issue #282 finding
+/// 9). `decrypt_megolm` allocates proportional to the ciphertext length
+/// during AES-CBC decrypt; without an explicit cap, a room member who holds
+/// the (shared, group) session key -- and can therefore forge a valid MAC
+/// over an arbitrarily large ciphertext -- can force an oversized
+/// allocation on every device in the room. 64 KiB is generous for any real
+/// text/media-key event on this device's 1 GB RAM budget.
+const MEGOLM_MAX_PAYLOAD_LEN: usize = 65536;
+
 /// Ed25519 signature length in bytes.
 const ED25519_SIGNATURE_LEN: usize = 64;
 
@@ -125,6 +134,10 @@ pub enum CryptoError {
     /// The Megolm message is too short to hold the index prefix + MAC tag
     /// (audit #231/#250).
     MegolmMessageTooShort,
+    /// The Megolm message exceeds [`MEGOLM_MAX_PAYLOAD_LEN`] (issue #282
+    /// finding 9) -- rejected before any allocation proportional to its
+    /// length.
+    MegolmMessageTooLong,
     /// The decrypting Megolm session is bound to a different room than the one
     /// the event arrived in — cross-room session confusion (audit #229).
     RoomIdMismatch,
@@ -177,6 +190,9 @@ impl fmt::Display for CryptoError {
                     f,
                     "Megolm message too short to contain index prefix and MAC"
                 )
+            }
+            Self::MegolmMessageTooLong => {
+                write!(f, "Megolm message exceeds maximum accepted payload length")
             }
             Self::RoomIdMismatch => {
                 write!(
@@ -445,6 +461,25 @@ impl MatrixCrypto {
         Ok(keys)
     }
 
+    /// Remove a one-time key from the local pool after the homeserver
+    /// reports it was claimed by a peer during key exchange.
+    ///
+    /// Without this, `one_time_keys` only ever grows: every key the
+    /// homeserver has already handed to a peer for X3DH stays counted
+    /// against [`MAX_ONE_TIME_KEYS`] forever, permanently deadlocking
+    /// [`generate_one_time_keys`] once the pool fills (issue #282 finding
+    /// 8).
+    ///
+    /// Returns `true` if `key` was present and removed.
+    pub(crate) fn consume_one_time_key(&mut self, key: &[u8; KEY_SIZE]) -> bool {
+        if let Some(idx) = self.one_time_keys.iter().position(|k| k == key) {
+            self.one_time_keys.swap_remove(idx);
+            true
+        } else {
+            false
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Key upload/query API
     // -----------------------------------------------------------------------
@@ -626,11 +661,30 @@ impl MatrixCrypto {
 
     /// Add an inbound Megolm session (received from another device).
     ///
+    /// A session with a `session_id` already present is REPLACED in place
+    /// (matching [`create_outbound_megolm`]'s replace-on-match semantics)
+    /// instead of pushed as a duplicate -- without this, an adversary
+    /// resending the same session_id repeatedly fills all
+    /// [`MAX_MEGOLM_INBOUND`] slots with copies of one session, permanently
+    /// exhausting inbound capacity for every other room/device (issue #282
+    /// finding 16).
+    ///
     /// # Errors
     ///
     /// Returns [`CryptoError::SessionCapacityReached`] if the inbound
-    /// session list is at capacity.
+    /// session list is at capacity and `session.session_id` is not already
+    /// present.
+    ///
+    /// [`create_outbound_megolm`]: Self::create_outbound_megolm
     pub(crate) fn add_inbound_megolm(&mut self, session: MegolmSession) -> Result<(), CryptoError> {
+        if let Some(idx) = self
+            .megolm_inbound
+            .iter()
+            .position(|s| s.session_id == session.session_id)
+        {
+            self.megolm_inbound[idx] = session;
+            return Ok(());
+        }
         if self.megolm_inbound.len() >= MAX_MEGOLM_INBOUND {
             return Err(CryptoError::SessionCapacityReached);
         }
@@ -876,6 +930,12 @@ pub(crate) fn decrypt_megolm(
 
     if payload.len() < MEGOLM_INDEX_LEN + MEGOLM_MAC_LEN {
         return Err(CryptoError::MegolmMessageTooShort);
+    }
+
+    // #282 finding 9: reject an oversized payload BEFORE the MAC check or
+    // any allocation proportional to its length.
+    if payload.len() > MEGOLM_MAX_PAYLOAD_LEN {
+        return Err(CryptoError::MegolmMessageTooLong);
     }
 
     let (body, tag) = payload.split_at(payload.len() - MEGOLM_MAC_LEN);
@@ -1421,6 +1481,41 @@ mod tests {
         assert_eq!(result, Err(CryptoError::KeyCountTooLarge));
     }
 
+    #[test]
+    fn consume_one_time_key_frees_capacity_for_regeneration() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+
+        crypto
+            .generate_one_time_keys(MAX_GENERATED_KEYS as u32)
+            .expect("first batch must succeed");
+        crypto
+            .generate_one_time_keys(MAX_GENERATED_KEYS as u32)
+            .expect("second batch must fill the pool to exactly capacity");
+        assert_eq!(crypto.one_time_keys().len(), MAX_ONE_TIME_KEYS);
+
+        assert_eq!(
+            crypto.generate_one_time_keys(1),
+            Err(CryptoError::KeyCapacityReached)
+        );
+
+        let claimed = crypto.one_time_keys()[0];
+        assert!(
+            crypto.consume_one_time_key(&claimed),
+            "a present key must be removed"
+        );
+        assert_eq!(crypto.one_time_keys().len(), MAX_ONE_TIME_KEYS - 1);
+        assert!(
+            crypto.generate_one_time_keys(1).is_ok(),
+            "freeing a slot must unblock regeneration"
+        );
+
+        assert!(
+            !crypto.consume_one_time_key(&claimed),
+            "consuming an already-removed key must return false, not panic"
+        );
+    }
+
     // -- Encrypt/decrypt round-trip tests --
 
     #[test]
@@ -1579,6 +1674,23 @@ mod tests {
             Err(CryptoError::MacVerificationFailed),
             "a flipped ciphertext bit must be rejected by the MAC before decryption"
         );
+    }
+
+    #[test]
+    fn megolm_decrypt_rejects_oversized_payload_before_allocating() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let room_id = "!oversized:matrix.example.com";
+        let _ = crypto.create_outbound_megolm(room_id);
+        let inbound = crypto
+            .find_outbound_megolm(room_id)
+            .map(Clone::clone)
+            .expect("session exists");
+
+        let mut oversized = Vec::with_capacity(MEGOLM_MAX_PAYLOAD_LEN + 1);
+        oversized.resize(MEGOLM_MAX_PAYLOAD_LEN + 1, 0u8);
+        let result = decrypt_megolm(&inbound, &oversized, room_id);
+        assert_eq!(result, Err(CryptoError::MegolmMessageTooLong));
     }
 
     #[test]
@@ -2018,5 +2130,41 @@ mod tests {
 
         let not_found = crypto.find_inbound_megolm(&[0x00; KEY_SIZE]);
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn add_inbound_megolm_duplicate_session_id_replaces_not_duplicates() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+
+        let room_a = MatrixRoomId::new("!a:example.com").expect("valid test room id");
+        let room_b = MatrixRoomId::new("!b:example.com").expect("valid test room id");
+
+        for _ in 0..MAX_MEGOLM_INBOUND {
+            let session = MegolmSession {
+                session_id: [0x11; KEY_SIZE],
+                session_key: [0xFF; KEY_SIZE],
+                message_index: 0,
+                room_id: room_a.clone(),
+            };
+            assert!(crypto.add_inbound_megolm(session).is_ok());
+        }
+        assert_eq!(
+            crypto.megolm_inbound().len(),
+            1,
+            "resending the same session_id must replace, not accumulate duplicates"
+        );
+
+        let fresh = MegolmSession {
+            session_id: [0x22; KEY_SIZE],
+            session_key: [0xEE; KEY_SIZE],
+            message_index: 0,
+            room_id: room_b,
+        };
+        assert!(
+            crypto.add_inbound_megolm(fresh).is_ok(),
+            "capacity must still be available for a genuinely new session after duplicate resends"
+        );
+        assert_eq!(crypto.megolm_inbound().len(), 2);
     }
 }

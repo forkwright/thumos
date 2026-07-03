@@ -681,30 +681,32 @@ pub(crate) fn eapol_encode(frame: &EapolFrame) -> Vec<u8> {
         .map_or_else(|| frame.raw_body.clone(), eapol_encode_key_frame);
 
     // WHY: body length is capped at u16::MAX to match the 2-byte length field
-    // in the EAPOL header. Frames exceeding this are malformed; truncation is
-    // the least-bad option in a no_std context without Result overhead.
-    let body_len = if body.len() > u16::MAX as usize {
-        u16::MAX
-    } else {
-        body.len() as u16
-    };
-    let mut out = Vec::with_capacity(EAPOL_HEADER_LEN + body.len());
+    // in the EAPOL header. Frames exceeding this are malformed; truncating
+    // the body is the least-bad option in a no_std context without Result
+    // overhead -- but the truncation must apply to the BYTES WRITTEN, not
+    // just the length field, or the declared length and the actual frame
+    // body diverge (issue #282 finding 5: the old code capped only
+    // `body_len` and then unconditionally wrote the full untruncated
+    // `body`, corrupting any frame whose body exceeded u16::MAX).
+    let body_len = u16::try_from(body.len()).unwrap_or(u16::MAX);
+    let truncated_body = &body[..usize::from(body_len)];
+
+    let mut out = Vec::with_capacity(EAPOL_HEADER_LEN + truncated_body.len());
     out.push(frame.version);
     out.push(frame.packet_type.to_byte());
     out.extend_from_slice(&body_len.to_be_bytes());
-    out.extend_from_slice(&body);
+    out.extend_from_slice(truncated_body);
     out
 }
 
 /// Encode an EAPOL-Key frame body.
 fn eapol_encode_key_frame(kf: &EapolKeyFrame) -> Vec<u8> {
-    // WHY: same u16::MAX cap as eapol_encode for the key_data_length field.
-    let key_data_len = if kf.key_data.len() > u16::MAX as usize {
-        u16::MAX
-    } else {
-        kf.key_data.len() as u16
-    };
-    let mut out = Vec::with_capacity(EAPOL_KEY_FIXED_LEN + kf.key_data.len());
+    // WHY: same u16::MAX cap and WRITTEN-bytes truncation fix as
+    // eapol_encode, applied to the key_data_length field (issue #282
+    // finding 5).
+    let key_data_len = u16::try_from(kf.key_data.len()).unwrap_or(u16::MAX);
+    let truncated_key_data = &kf.key_data[..usize::from(key_data_len)];
+    let mut out = Vec::with_capacity(EAPOL_KEY_FIXED_LEN + truncated_key_data.len());
 
     out.push(kf.descriptor_type);
     out.extend_from_slice(&kf.key_info.0.to_be_bytes());
@@ -716,7 +718,7 @@ fn eapol_encode_key_frame(kf: &EapolKeyFrame) -> Vec<u8> {
     out.extend_from_slice(&[0u8; 8]); // reserved
     out.extend_from_slice(&kf.mic);
     out.extend_from_slice(&key_data_len.to_be_bytes());
-    out.extend_from_slice(&kf.key_data);
+    out.extend_from_slice(truncated_key_data);
     out
 }
 
@@ -1396,6 +1398,25 @@ mod tests {
             parsed.as_ref().and_then(|f| f.key_frame.as_ref()),
             Some(&kf),
             "key frame must survive encode/parse roundtrip"
+        );
+    }
+
+    #[test]
+    fn eapol_encode_truncates_body_bytes_to_match_declared_length_field() {
+        let oversized_len = usize::from(u16::MAX) + 100;
+        let frame = EapolFrame {
+            version: 2,
+            packet_type: EapolType::Start,
+            key_frame: None,
+            raw_body: vec![0xAB; oversized_len],
+        };
+        let encoded = eapol_encode(&frame);
+        let declared_len = u16::from_be_bytes([encoded[2], encoded[3]]);
+        assert_eq!(declared_len, u16::MAX, "length field must be capped");
+        assert_eq!(
+            encoded.len(),
+            EAPOL_HEADER_LEN + usize::from(u16::MAX),
+            "encoded frame length must match the declared length field, not the untruncated body"
         );
     }
 
