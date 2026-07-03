@@ -134,6 +134,10 @@ pub enum CryptoError {
     /// The room id supplied for session creation is not a well-formed Matrix
     /// room identifier (#373).
     InvalidRoomId(crate::matrix_ids::MatrixIdError),
+    /// The Megolm session's message_index has reached u32::MAX; encrypting
+    /// further would reuse a (key, IV) pair (issue #282 finding 9). The
+    /// session must be rotated.
+    MegolmIndexExhausted,
 }
 
 impl From<csprng::CsprngError> for CryptoError {
@@ -184,6 +188,12 @@ impl fmt::Display for CryptoError {
                 write!(f, "device key failed Ed25519 self-signature verification")
             }
             Self::InvalidRoomId(e) => write!(f, "invalid room identifier: {e}"),
+            Self::MegolmIndexExhausted => {
+                write!(
+                    f,
+                    "Megolm session message index exhausted -- rotate the session"
+                )
+            }
         }
     }
 }
@@ -519,11 +529,20 @@ impl MatrixCrypto {
                     let key_str = key_val.as_str().ok_or(CryptoError::InvalidKeyResponse)?;
 
                     if key_name.starts_with("ed25519:") {
+                        // WHY: a key that fails base64 decode is fail-closed
+                        // excluded (found_ed stays false), not substituted
+                        // with a zero/partial key -- the `found_ed &&
+                        // found_curve` gate below then drops the whole
+                        // device, the same disposition as a failed
+                        // self-signature check (#230). Deliberate: an
+                        // unparseable key from the homeserver is untrusted,
+                        // not merely absent (issue #282 finding 8).
                         if let Some(decoded) = decode_base64_key(key_str) {
                             ed25519 = decoded;
                             found_ed = true;
                         }
                     } else if key_name.starts_with("curve25519:") {
+                        // WHY: see the ed25519 branch above -- same policy.
                         if let Some(decoded) = decode_base64_key(key_str) {
                             curve25519 = decoded;
                             found_curve = true;
@@ -797,6 +816,17 @@ pub(crate) fn encrypt_megolm(
     }
 
     let index = session.message_index;
+    // WHY: message_index is the HKDF derivation input for this message's
+    // (AES key, HMAC key, IV) -- see derive_megolm_message_keys. Reject
+    // BEFORE deriving/encrypting once no fresh index remains: the old
+    // `saturating_add` let message_index sit at u32::MAX forever, so every
+    // later call re-derived and reused the SAME (key, IV) pair, breaking
+    // AES-CBC's IND-CPA guarantee (issue #282 finding 9). The session must
+    // be rotated (a fresh create_outbound_megolm) instead.
+    let next_index = index
+        .checked_add(1)
+        .ok_or(CryptoError::MegolmIndexExhausted)?;
+
     let keys = derive_megolm_message_keys(&session.session_key, index)?;
     let ciphertext = cbc_encrypt(&keys.aes_key, &keys.iv, plaintext);
 
@@ -812,7 +842,7 @@ pub(crate) fn encrypt_megolm(
     payload.extend_from_slice(&body);
     payload.extend_from_slice(&tag[..MEGOLM_MAC_LEN]);
 
-    session.message_index = index.saturating_add(1);
+    session.message_index = next_index;
     Ok(payload)
 }
 
@@ -1303,6 +1333,26 @@ fn push_usize(s: &mut String, mut val: usize) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn encrypt_megolm_refuses_to_reuse_index_at_saturation() {
+        setup_test_rng();
+        let mut session = MegolmSession {
+            session_id: [0u8; KEY_SIZE],
+            session_key: [1u8; KEY_SIZE],
+            message_index: u32::MAX,
+            room_id: MatrixRoomId::new("!test:matrix.example.com").expect("valid test room id"),
+        };
+
+        let result = encrypt_megolm(&mut session, b"one message too many");
+        assert_eq!(result, Err(CryptoError::MegolmIndexExhausted));
+        assert_eq!(
+            session.message_index,
+            u32::MAX,
+            "index must not be mutated on refusal"
+        );
+    }
+
     use super::*;
 
     /// Seed the kernel CSPRNG for deterministic test output.

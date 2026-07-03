@@ -43,6 +43,20 @@ pub(crate) const EINVAL: u32 = 0u32.wrapping_sub(22);
 pub(crate) const EFAULT: u32 = 0u32.wrapping_sub(14);
 /// Is a directory.
 pub(crate) const EISDIR: u32 = 0u32.wrapping_sub(21);
+/// Not a directory.
+pub(crate) const ENOTDIR: u32 = 0u32.wrapping_sub(20);
+/// Entry already exists.
+pub(crate) const EEXIST: u32 = 0u32.wrapping_sub(17);
+/// Directory not empty.
+pub(crate) const ENOTEMPTY: u32 = 0u32.wrapping_sub(39);
+/// No space left on device.
+pub(crate) const ENOSPC: u32 = 0u32.wrapping_sub(28);
+/// I/O error.
+pub(crate) const EIO: u32 = 0u32.wrapping_sub(5);
+/// Permission denied.
+pub(crate) const EACCES: u32 = 0u32.wrapping_sub(13);
+/// Too many links.
+pub(crate) const EMLINK: u32 = 0u32.wrapping_sub(31);
 /// Inappropriate ioctl for device.
 pub(crate) const ENOTTY: u32 = 0u32.wrapping_sub(25);
 
@@ -568,7 +582,16 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
 
     let (mount_idx, inode_id) = match vfs::resolve_path(mt, path) {
         Ok(r) => r,
-        Err(_) => return ENOENT,
+        Err(VfsError::NotFound) => return ENOENT,
+        Err(VfsError::NotADirectory) => return ENOTDIR,
+        Err(VfsError::IsADirectory) => return EISDIR,
+        Err(VfsError::AlreadyExists) => return EEXIST,
+        Err(VfsError::NotEmpty) => return ENOTEMPTY,
+        Err(VfsError::InvalidPath) => return EINVAL,
+        Err(VfsError::NoSpace) => return ENOSPC,
+        Err(VfsError::IoError | VfsError::RequiresMut) => return EIO,
+        Err(VfsError::PermissionDenied) => return EACCES,
+        Err(VfsError::TooManyLinks) => return EMLINK,
     };
 
     let fd = FileDescriptor::from_vfs(mount_idx as u8, inode_id, flags);
@@ -919,24 +942,42 @@ pub(crate) fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
 
     // WHY: offset is treated as signed (i32) for SEEK_CUR and SEEK_END.
     let offset_signed = offset as i32;
-    let file_size = entry.size() as i32;
 
-    let new_pos: i32 = match whence {
-        SEEK_SET => offset_signed,
+    // WHY: entry.offset/file_size are inherently non-negative `usize`
+    // quantities; the old blind `as i32` reinterpreted a legitimate value
+    // >= 2^31 as negative mid-calculation, corrupting SEEK_CUR/SEEK_END
+    // (issue #282 finding 7). Widen via try_from (not `as`) into i64 so
+    // the arithmetic itself cannot silently wrap; unwrap_or(i64::MAX) is a
+    // panic-free fallback for a conversion that cannot fail on this
+    // 32-bit target (usize/u32 always fits i64).
+    let file_size = i64::try_from(entry.size()).unwrap_or(i64::MAX);
+
+    let new_pos: i64 = match whence {
+        SEEK_SET => i64::from(offset_signed),
         SEEK_CUR => {
-            let current = entry.offset as i32;
-            current.saturating_add(offset_signed)
+            let current = i64::try_from(entry.offset).unwrap_or(i64::MAX);
+            current.saturating_add(i64::from(offset_signed))
         }
-        SEEK_END => file_size.saturating_add(offset_signed),
+        SEEK_END => file_size.saturating_add(i64::from(offset_signed)),
         _ => return EINVAL,
     };
 
-    if new_pos < 0 {
+    // The syscall ABI reports the result in r0 as a signed i32 (0 =
+    // success); the representable non-error domain is 0..=i32::MAX.
+    const MAX_REPRESENTABLE_POS: i64 = 0x7FFF_FFFF;
+    if new_pos < 0 || new_pos > MAX_REPRESENTABLE_POS {
         return EINVAL;
     }
 
-    entry.offset = new_pos as usize;
-    new_pos as u32
+    let Ok(new_pos_u32) = u32::try_from(new_pos) else {
+        return EINVAL;
+    };
+    let Ok(new_pos_usize) = usize::try_from(new_pos) else {
+        return EINVAL;
+    };
+
+    entry.offset = new_pos_usize;
+    new_pos_u32
 }
 
 /// SYS_dup: duplicate a file descriptor.
@@ -1361,6 +1402,50 @@ fn split_parent_name(path: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn sys_open_returns_enotdir_not_enoent_for_path_through_a_file() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        // "/test.txt" is a regular file; walking a further component through
+        // it must surface ENOTDIR (issue #282 finding 6), not the generic
+        // ENOENT the old blanket `Err(_) => ENOENT` mapping returned.
+        let path = b"/test.txt/foo";
+        let result = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(
+            result, ENOTDIR,
+            "path through a non-directory component must return ENOTDIR"
+        );
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn lseek_seek_cur_large_offset_no_i32_wraparound() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        // A descriptor whose current position sits exactly at the i32 domain
+        // boundary (2^31) -- `as i32` reinterprets this as i32::MIN, which
+        // previously made a legitimate SEEK_CUR result look negative and
+        // return EINVAL (issue #282 finding 7).
+        let mut fd_entry = FileDescriptor::from_vfs(0, 0, 0);
+        fd_entry.offset = 0x8000_0000; // 2^31
+        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
+        let fd = table.alloc(fd_entry).expect("fd alloc must succeed");
+
+        // Seek back by exactly 2^31 (raw bit pattern 0x8000_0000 == -2^31 when
+        // reinterpreted as i32) -- the true result is position 0.
+        let new_pos = sys_lseek(fd as u32, 0x8000_0000, SEEK_CUR);
+        assert_eq!(
+            new_pos, 0,
+            "SEEK_CUR must not misreport a valid position as EINVAL from i32 truncation"
+        );
+    }
+
     use super::*;
     use crate::vfs::InodeType;
 

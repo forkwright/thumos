@@ -126,8 +126,19 @@ fn validate_pid(pid: Pid) -> Result<usize, i32> {
     Ok(idx)
 }
 
-/// Send a message to a process. Non-blocking: returns false if inbox full
-/// or the target PID is invalid.
+/// Reasons [`send`] can fail to deliver a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IpcSendError {
+    /// `to` does not name a live process.
+    InvalidTarget,
+    /// The target's inbox is at capacity.
+    InboxFull,
+}
+
+/// Send a message to a process.
+///
+/// Non-blocking: fails immediately rather than blocking if the target's
+/// inbox is full.
 ///
 /// NOTE: this primitive performs no capability/authorization check by
 /// design -- it is also used by trusted kernel-internal callers (e.g.
@@ -136,18 +147,28 @@ fn validate_pid(pid: Pid) -> Result<usize, i32> {
 /// PID 0 as a target lives at the syscall boundary instead: see
 /// `syscall::dispatch`'s `Syscall::Send` arm and
 /// `capability::Capabilities::IPC_INIT` (#371).
-pub(crate) fn send(to: Pid, mut msg: Message) -> bool {
-    let idx = match validate_pid(to) {
-        Ok(i) => i,
-        Err(_) => return false,
-    };
+///
+/// # Errors
+///
+/// Returns [`IpcSendError::InvalidTarget`] if `to` does not name a live
+/// process, or [`IpcSendError::InboxFull`] if the target's inbox is at
+/// capacity. These were previously conflated into a single `bool` (issue
+/// #282 finding 14), discarding the distinction `validate_pid` already
+/// computes internally.
+pub(crate) fn send(to: Pid, mut msg: Message) -> Result<(), IpcSendError> {
+    let idx = validate_pid(to).map_err(|_| IpcSendError::InvalidTarget)?;
     msg.from = process::current_pid();
     // SAFETY: INBOXES is a static array indexed by PID. addr_of_mut! avoids
     // creating an intermediate reference to the static mut. Single-core kernel
     // with interrupts disabled at call sites ensures exclusive access.
-    unsafe {
+    let delivered = unsafe {
         let inboxes = &mut *core::ptr::addr_of_mut!(INBOXES);
         inboxes[idx].push(msg)
+    };
+    if delivered {
+        Ok(())
+    } else {
+        Err(IpcSendError::InboxFull)
     }
 }
 
@@ -187,6 +208,24 @@ pub(crate) fn has_messages() -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn send_reports_invalid_target_distinctly() {
+        let msg = Message::new(1, b"x");
+        assert_eq!(
+            send(MAX_INBOX_PROCS as u8, msg),
+            Err(IpcSendError::InvalidTarget)
+        );
+    }
+
+    #[test]
+    fn send_reports_inbox_full_distinctly_from_invalid_target() {
+        for _ in 0..INBOX_SIZE {
+            assert_eq!(send(1, Message::new(1, b"x")), Ok(()));
+        }
+        assert_eq!(send(1, Message::new(1, b"x")), Err(IpcSendError::InboxFull));
+    }
+
     use super::*;
 
     #[test]

@@ -506,16 +506,20 @@ const MAX_ANOMALIES: usize = 16;
 /// * `now` -- current timestamp in milliseconds
 /// * `window_ms` -- the time window to measure current rates over
 ///
-/// Returns an array of up to [`MAX_ANOMALIES`] anomalies and the count.
+/// Returns an array of up to [`MAX_ANOMALIES`] anomalies, the count, and
+/// whether more anomalies were detected than the array could hold (issue
+/// #282 finding 5 -- the old 2-tuple gave no way to distinguish "exactly
+/// MAX_ANOMALIES occurred" from "more occurred and were dropped").
 #[must_use]
 pub(crate) fn detect_anomalies(
     log: &CcciLogger,
     baseline: &ModemBaseline,
     now: u64,
     window_ms: u64,
-) -> ([Option<CcciAnomaly>; MAX_ANOMALIES], usize) {
+) -> ([Option<CcciAnomaly>; MAX_ANOMALIES], usize, bool) {
     let mut anomalies: [Option<CcciAnomaly>; MAX_ANOMALIES] = [None; MAX_ANOMALIES];
     let mut count = 0;
+    let mut overflowed = false;
 
     let since = now.saturating_sub(window_ms);
 
@@ -536,6 +540,8 @@ pub(crate) fn detect_anomalies(
                     baseline_max: 0,
                 });
                 count += 1;
+            } else {
+                overflowed = true;
             }
             continue;
         }
@@ -556,6 +562,8 @@ pub(crate) fn detect_anomalies(
                     baseline_max: baseline_stats.max_rate,
                 });
                 count += 1;
+            } else {
+                overflowed = true;
             }
         }
 
@@ -585,11 +593,13 @@ pub(crate) fn detect_anomalies(
                     baseline_max: baseline_stats.max_data0,
                 });
                 count += 1;
+            } else {
+                overflowed = true;
             }
         }
     }
 
-    (anomalies, count)
+    (anomalies, count, overflowed)
 }
 
 // ---------------------------------------------------------------------------
@@ -843,6 +853,33 @@ pub unsafe fn modem_power_cut() {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn detect_anomalies_reports_overflow_past_max_anomalies() {
+        let mut log = CcciLogger::new();
+        let baseline = build_baseline(&log, 60_000);
+
+        // Traffic on 20 distinct channels (all 'unexpected', none active in
+        // baseline) -- more than MAX_ANOMALIES (16) can hold.
+        for ch in 0..20u32 {
+            log.record(CcciLogEntry {
+                timestamp: 70_000,
+                channel: ch,
+                direction: PacketDirection::Rx,
+                data0: 0,
+                data1: 0,
+                packet_len: 16,
+            });
+        }
+
+        let (_anomalies, count, overflowed) = detect_anomalies(&log, &baseline, 70_000, 60_000);
+        assert_eq!(count, MAX_ANOMALIES, "array fills to capacity");
+        assert!(
+            overflowed,
+            "detect_anomalies must report overflow when more anomalies exist than MAX_ANOMALIES can hold"
+        );
+    }
+
     use alloc::string::ToString;
 
     use super::*;
@@ -1158,7 +1195,7 @@ mod tests {
             packet_len: 16,
         });
 
-        let (anomalies, count) = detect_anomalies(&log, &baseline, 70_000, 60_000);
+        let (anomalies, count, _overflowed) = detect_anomalies(&log, &baseline, 70_000, 60_000);
         let found = anomalies[..count]
             .iter()
             .flatten()
@@ -1224,7 +1261,7 @@ mod tests {
             packet_len: 16,
         });
 
-        let (anomalies, count) = detect_anomalies(&log, &baseline, 70_000, 60_000);
+        let (anomalies, count, _overflowed) = detect_anomalies(&log, &baseline, 70_000, 60_000);
         assert!(count > 0, "must detect unexpected channel");
 
         let found = anomalies[..count]
@@ -1264,7 +1301,7 @@ mod tests {
             });
         }
 
-        let (anomalies, count) = detect_anomalies(&log, &baseline, 63_000, 60_000);
+        let (anomalies, count, _overflowed) = detect_anomalies(&log, &baseline, 63_000, 60_000);
         let found = anomalies[..count]
             .iter()
             .flatten()
@@ -1299,7 +1336,7 @@ mod tests {
             packet_len: 16,
         });
 
-        let (anomalies, count) = detect_anomalies(&log, &baseline, 70_000, 60_000);
+        let (anomalies, count, _overflowed) = detect_anomalies(&log, &baseline, 70_000, 60_000);
         let found = anomalies[..count]
             .iter()
             .flatten()
@@ -1353,7 +1390,7 @@ mod tests {
             packet_len: 16,
         });
 
-        let (anomalies, count) = detect_anomalies(&log, &baseline, 72_000, 60_000);
+        let (anomalies, count, _overflowed) = detect_anomalies(&log, &baseline, 72_000, 60_000);
         let found = anomalies[..count]
             .iter()
             .flatten()
@@ -1393,7 +1430,7 @@ mod tests {
             });
         }
 
-        let (_, count) = detect_anomalies(&log, &baseline, 10_000, 60_000);
+        let (_, count, _overflowed) = detect_anomalies(&log, &baseline, 10_000, 60_000);
         assert_eq!(count, 0, "no anomalies for normal traffic");
     }
 

@@ -222,6 +222,11 @@ pub enum ModeTransitionError {
     AbortWindowExpired,
     /// Already in the requested mode.
     AlreadyInMode,
+    /// Panic abort requested while not currently in Panic mode -- the
+    /// opposite condition from `AlreadyInMode` (which means "transition
+    /// target == current mode"), previously conflated with it (issue #282
+    /// finding 11).
+    NotInPanic,
 }
 
 impl fmt::Display for ModeTransitionError {
@@ -232,6 +237,7 @@ impl fmt::Display for ModeTransitionError {
             Self::PanicIsTerminal => write!(f, "cannot transition out of Panic mode"),
             Self::AbortWindowExpired => write!(f, "panic abort window has expired"),
             Self::AlreadyInMode => write!(f, "already in the requested mode"),
+            Self::NotInPanic => write!(f, "not currently in Panic mode"),
         }
     }
 }
@@ -458,14 +464,14 @@ impl ModeManager {
     ///
     /// Returns [`ModeTransitionError::AbortWindowExpired`] if the abort
     /// window has closed.
-    /// Returns [`ModeTransitionError::AlreadyInMode`] if not in Panic.
+    /// Returns [`ModeTransitionError::NotInPanic`] if not currently in Panic mode.
     pub(crate) fn abort_panic(
         &mut self,
         current_tick: u64,
         power_manager: &mut PowerManager,
     ) -> Result<(), ModeTransitionError> {
         if self.mode != SecurityMode::Panic {
-            return Err(ModeTransitionError::AlreadyInMode);
+            return Err(ModeTransitionError::NotInPanic);
         }
 
         let Some(initiated) = self.panic_initiated_tick else {
@@ -658,13 +664,19 @@ pub(crate) fn log_mode_change(
             offset += 1;
         }
     }
-    let _ = audit_log.log_event(
-        AuditEventType::ModeChange,
-        0,
-        &detail[..offset],
-        timestamp,
-        audit_key,
-    );
+    // WHY: an audit-log write failure (e.g. capacity, missing key) must
+    // never block the mode transition itself -- the transition has already
+    // committed by the time this logs. Best-effort discard via `.ok()`,
+    // not `let _ =` (kanon standard; issue #282 finding 12).
+    audit_log
+        .log_event(
+            AuditEventType::ModeChange,
+            0,
+            &detail[..offset],
+            timestamp,
+            audit_key,
+        )
+        .ok();
 }
 
 /// Log a panic trigger event to the audit log.
@@ -681,13 +693,17 @@ pub(crate) fn log_panic_trigger(
         PanicActivation::PttTripleClick => b"PTT triple-click",
         PanicActivation::DuressPin => b"duress PIN",
     };
-    let _ = audit_log.log_event(
-        AuditEventType::PanicTrigger,
-        0,
-        detail,
-        timestamp,
-        audit_key,
-    );
+    // WHY: see log_mode_change -- audit-log failure must not block the
+    // panic-trigger critical path (issue #282 finding 12).
+    audit_log
+        .log_event(
+            AuditEventType::PanicTrigger,
+            0,
+            detail,
+            timestamp,
+            audit_key,
+        )
+        .ok();
 }
 
 /// Return the string name of a security mode for audit detail fields.
@@ -1276,7 +1292,7 @@ mod tests {
         let mut pm = PowerManager::new();
 
         let result = mm.abort_panic(0, &mut pm);
-        assert_eq!(result, Err(ModeTransitionError::AlreadyInMode));
+        assert_eq!(result, Err(ModeTransitionError::NotInPanic));
     }
 
     #[test]

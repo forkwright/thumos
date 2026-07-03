@@ -567,10 +567,6 @@ pub(crate) enum CcciError {
     RingBufferFull,
     /// CCIF channel is still busy with an unconsumed message (issue #261).
     CcifChannelBusy(CcifChannel),
-    /// Modem watchdog timeout.
-    ModemWatchdog(u32),
-    /// Identity response blocked by kernel filter.
-    IdentityFiltered,
     /// Header deserialization failed.
     MalformedHeader,
     /// Packet header length field exceeds the actual buffer size.
@@ -603,8 +599,6 @@ impl fmt::Display for CcciError {
             }
             Self::RingBufferFull => write!(f, "ring buffer full"),
             Self::CcifChannelBusy(channel) => write!(f, "CCIF channel {channel:?} busy"),
-            Self::ModemWatchdog(status) => write!(f, "modem WDT: {status:#010x}"),
-            Self::IdentityFiltered => write!(f, "identity response filtered"),
             Self::MalformedHeader => write!(f, "malformed CCCI header"),
             Self::PacketLengthExceeded {
                 header_length,
@@ -910,6 +904,11 @@ pub(crate) struct RxRing {
     head: usize,
     /// Number of descriptors currently owned by hardware.
     hw_count: usize,
+    /// Active ring length -- may be less than RX_RING_SIZE if fewer buffer
+    /// addresses were supplied to `init_chain` (e.g. a boot-time allocation
+    /// shortfall). `head` must wrap by this, not RX_RING_SIZE, or it walks
+    /// into descriptors HW never chained into the ring (issue #282 finding 4).
+    count: usize,
 }
 
 impl RxRing {
@@ -919,6 +918,7 @@ impl RxRing {
             descriptors: [CldmaGpd::zeroed(); RX_RING_SIZE],
             head: 0,
             hw_count: 0,
+            count: RX_RING_SIZE,
         }
     }
 
@@ -941,6 +941,7 @@ impl RxRing {
         }
         self.head = 0;
         self.hw_count = count;
+        self.count = count;
     }
 
     /// Poll for received data. Returns descriptor index and received length,
@@ -967,7 +968,7 @@ impl RxRing {
         let recv_len = self.descriptors[idx]
             .recv_len_volatile()
             .min(self.descriptors[idx].data_len);
-        self.head = (self.head + 1) % RX_RING_SIZE;
+        self.head = (self.head + 1) % self.count;
         self.hw_count -= 1;
         Some((idx, recv_len))
     }
@@ -1381,6 +1382,47 @@ pub(crate) unsafe fn dispatch_cldma_irq() -> (u32, u32) {
     (tx_status, rx_status)
 }
 
+/// Parse a raw DMA exception status register value into a typed result.
+///
+/// # Errors
+///
+/// Returns [`CcciError::DmaError`] carrying the raw status bits when the
+/// hardware reports a CLDMA DMA exception (source register: `DMA_ERR`,
+/// `PD_BASE + 0x0870`).
+pub(crate) fn parse_dma_error(status: u32) -> Result<(), CcciError> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(CcciError::DmaError(status))
+    }
+}
+
+/// Read and acknowledge the CLDMA DMA exception status register.
+///
+/// # Safety
+///
+/// Must be called with CLDMA registers mapped (same preconditions as
+/// [`dispatch_cldma_irq`]).
+///
+/// # Errors
+///
+/// See [`parse_dma_error`].
+pub(crate) unsafe fn read_dma_error() -> Result<(), CcciError> {
+    // SAFETY: shared memory region at DMA_ERR is mapped and within the CCCI
+    // aperture. Access is synchronized via CCIF doorbell.
+    let status = unsafe { mmio::read32(cldma_pd::DMA_ERR) };
+    if status != 0 {
+        // WHY: write the same bits back to acknowledge, the same convention
+        // dispatch_cldma_irq uses for L2TISAR0/L2RISAR0.
+        // SAFETY: shared memory region at DMA_ERR is mapped and within the
+        // CCCI aperture. Access is synchronized via CCIF doorbell.
+        unsafe {
+            mmio::write32(cldma_pd::DMA_ERR, status);
+        }
+    }
+    parse_dma_error(status)
+}
+
 /// Parse raw CLDMA TX interrupt status into typed events.
 pub(crate) fn parse_cldma_tx_status(status: u32) -> [Option<CldmaIrqEvent>; 3] {
     let mut events: [Option<CldmaIrqEvent>; 3] = [None; 3];
@@ -1451,12 +1493,14 @@ pub(crate) unsafe fn dispatch_ccif_irq() -> u32 {
 }
 
 /// Dispatch CCIF channels to typed events.
-pub(crate) fn parse_ccif_channels(raw: u32) -> [Option<CcifChannel>; 8] {
-    let mut result: [Option<CcifChannel>; 8] = [None; 8];
+pub(crate) fn parse_ccif_channels(raw: u32) -> [Option<CcifChannel>; 24] {
+    let mut result: [Option<CcifChannel>; 24] = [None; 24];
     let mut idx = 0;
     for bit in 0..24u8 {
-        if raw & (1u32 << bit) != 0 && idx < 8 {
-            result[idx] = CcifChannel::from_raw(bit);
+        if raw & (1u32 << bit) != 0
+            && let Some(channel) = CcifChannel::from_raw(bit)
+        {
+            result[idx] = Some(channel);
             idx += 1;
         }
     }
@@ -2089,6 +2133,89 @@ impl CcciDriver {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ccif_parse_channels_beyond_old_eight_slot_cap() {
+        // All 8 RingQ channels plus Sram and Exception -- 10 concurrent
+        // channels, which the old 8-element result array could not hold
+        // without dropping the high-numbered control channels (issue #282
+        // finding 1).
+        let raw = (0..8u8).fold(0u32, |acc, bit| acc | (1 << bit))
+            | CcifChannel::Sram.mask()
+            | CcifChannel::Exception.mask();
+        let parsed = parse_ccif_channels(raw);
+        let active: Vec<CcifChannel> = parsed.iter().flatten().copied().collect();
+        assert_eq!(
+            active.len(),
+            10,
+            "all 10 concurrently active channels must be reported"
+        );
+        assert!(
+            active.contains(&CcifChannel::Sram),
+            "Sram must not be dropped by ring-queue flood"
+        );
+        assert!(
+            active.contains(&CcifChannel::Exception),
+            "Exception must not be dropped by ring-queue flood"
+        );
+    }
+
+    #[test]
+    fn ccif_parse_channels_ignores_reserved_bit_positions() {
+        // Bits 8-14 are reserved/unmapped (from_raw returns None) and must not
+        // consume a result slot.
+        let raw = 0x7F00 | CcifChannel::Exception.mask();
+        let parsed = parse_ccif_channels(raw);
+        let active: Vec<CcifChannel> = parsed.iter().flatten().copied().collect();
+        assert_eq!(active.len(), 1);
+        assert!(active.contains(&CcifChannel::Exception));
+    }
+
+    #[test]
+    fn parse_dma_error_clean_status_is_ok() {
+        assert_eq!(parse_dma_error(0), Ok(()));
+    }
+
+    #[test]
+    fn parse_dma_error_nonzero_status_reports_dma_error() {
+        assert_eq!(
+            parse_dma_error(0x0000_0007),
+            Err(CcciError::DmaError(0x0000_0007))
+        );
+    }
+
+    #[test]
+    fn rx_ring_partial_init_head_wraps_at_count_not_ring_size() {
+        let mut ring = RxRing::new();
+        let base: u32 = 0x4030_0000;
+        // Only 4 buffers supplied for a 16-slot ring (RX_RING_SIZE) -- a
+        // legitimate partial-init scenario. `head` must wrap at `count` (4),
+        // matching the HW descriptor chain init_chain actually built, not at
+        // RX_RING_SIZE (16) -- issue #282 finding 4.
+        let buf_addrs: [u32; 4] =
+            core::array::from_fn(|i| 0x5100_0000 + (u32::try_from(i).unwrap_or_default()) * 0x1000);
+        ring.init_chain(base, &buf_addrs, 2048);
+
+        for i in 0..4usize {
+            ring.descriptors[i].clear_hw_owned();
+            ring.descriptors[i].recv_len = 128;
+        }
+        for i in 0..4usize {
+            let (idx, len) = ring.poll_rx().unwrap_or_default();
+            assert_eq!(idx, i, "descriptor order within the active ring");
+            assert_eq!(len, 128);
+            ring.rearm(idx, buf_addrs[idx], 2048);
+        }
+
+        // After a full cycle, head must wrap back to descriptor 0 (armed,
+        // HW-owned), not land on the never-initialized descriptor 4, which
+        // would fabricate a phantom zero-length completion (data_ptr == 0).
+        assert!(
+            ring.poll_rx().is_none(),
+            "head must wrap within the active `count` descriptors, not fabricate a phantom completion"
+        );
+    }
+
     use alloc::format;
     use alloc::vec::Vec;
 
