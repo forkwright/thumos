@@ -1,10 +1,13 @@
 //! Inter-process communication via message passing.
 //!
-//! Processes communicate by sending fixed-size messages through channels.
-//! Each process has an inbox (bounded ring buffer). Sending to a full
-//! inbox blocks the sender. Receiving FROM an empty inbox blocks the receiver.
+//! Processes communicate by sending fixed-size messages through per-process
+//! inboxes (bounded ring buffers). Delivery is non-blocking on both ends:
+//! [`send`] fails immediately with [`IpcSendError::InboxFull`] rather than
+//! blocking the sender when the target inbox is at capacity, and [`recv`]
+//! returns `None` immediately rather than blocking the receiver when the
+//! inbox is empty. This is asynchronous mailbox-style IPC, not the
+//! synchronous rendezvous this doc previously (incorrectly) claimed.
 //!
-//! This is synchronous, rendezvous-style IPC inspired by seL4 and QNX.
 //! Asynchronous notifications (for interrupts) can be added later.
 
 extern crate alloc;
@@ -32,6 +35,17 @@ pub struct Message {
 
 impl Message {
     /// Create a new message with the given tag and data.
+    ///
+    /// # WHY silent truncation is safe here
+    ///
+    /// `payload` longer than [`MSG_MAX_SIZE`] is truncated rather than
+    /// rejected. This is safe only because every current caller already
+    /// bounds `payload` to `MSG_MAX_SIZE` before calling: the `Send`
+    /// syscall handler caps the copied length with `len.min(ipc::MSG_MAX_SIZE)`
+    /// before it ever reaches here (see `syscall::dispatch`), and
+    /// `process::notify_fault`'s payload is a fixed 9 bytes. Verify that
+    /// invariant before adding a new call site that does not pre-bound its
+    /// payload -- it would silently lose data with no signal.
     pub(crate) fn new(tag: u32, payload: &[u8]) -> Self {
         let mut msg = Self {
             from: 0,
@@ -287,5 +301,17 @@ mod tests {
     fn inbox_pop_empty_returns_none() {
         let mut inbox = Inbox::new();
         assert!(inbox.pop().is_none());
+    }
+
+    #[test]
+    fn message_new_truncates_oversized_payload_to_max_size() {
+        let oversized = [0xABu8; MSG_MAX_SIZE + 64];
+        let msg = Message::new(7, &oversized);
+        assert_eq!(
+            msg.len, MSG_MAX_SIZE,
+            "payload must truncate to MSG_MAX_SIZE"
+        );
+        assert_eq!(msg.payload().len(), MSG_MAX_SIZE);
+        assert!(msg.payload().iter().all(|&b| b == 0xAB));
     }
 }

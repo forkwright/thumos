@@ -150,16 +150,32 @@ impl DeviceRegistry {
     }
 
     /// Mark a device as active.
-    pub(crate) fn activate(&mut self, name: &str) {
-        if let Some(dev) = self.find_mut(name) {
-            dev.status = DeviceStatus::Active;
+    ///
+    /// Returns `true` if `name` matched a registered device and its status
+    /// was updated, `false` if no such device is registered -- previously
+    /// this was a silent no-op with no way for the caller to detect a
+    /// typo'd or never-registered device name.
+    pub(crate) fn activate(&mut self, name: &str) -> bool {
+        match self.find_mut(name) {
+            Some(dev) => {
+                dev.status = DeviceStatus::Active;
+                true
+            }
+            None => false,
         }
     }
 
     /// Mark a device as powered off.
-    pub(crate) fn power_off(&mut self, name: &str) {
-        if let Some(dev) = self.find_mut(name) {
-            dev.status = DeviceStatus::PoweredOff;
+    ///
+    /// Returns `true` if `name` matched a registered device and its status
+    /// was updated, `false` otherwise (see [`Self::activate`]).
+    pub(crate) fn power_off(&mut self, name: &str) -> bool {
+        match self.find_mut(name) {
+            Some(dev) => {
+                dev.status = DeviceStatus::PoweredOff;
+                true
+            }
+            None => false,
         }
     }
 
@@ -215,5 +231,62 @@ impl DeviceRegistry {
 impl Default for DeviceRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activate_returns_false_for_unknown_device() {
+        let mut registry = DeviceRegistry::new();
+        registry.register("uart0", 0x1100_2000, 0);
+
+        assert!(
+            !registry.activate("does-not-exist"),
+            "activating an unregistered device name must report false, not silently no-op"
+        );
+        assert_eq!(
+            registry.find("uart0").map(|d| d.status),
+            Some(DeviceStatus::Registered)
+        );
+    }
+
+    #[test]
+    fn activate_returns_true_and_updates_status_for_known_device() {
+        let mut registry = DeviceRegistry::new();
+        registry.register("uart0", 0x1100_2000, 0);
+
+        assert!(registry.activate("uart0"));
+        assert_eq!(
+            registry.find("uart0").map(|d| d.status),
+            Some(DeviceStatus::Active)
+        );
+    }
+
+    #[test]
+    fn power_off_returns_false_for_unknown_device() {
+        let mut registry = DeviceRegistry::new();
+        registry.register("uart0", 0x1100_2000, 0);
+
+        assert!(!registry.power_off("does-not-exist"));
+    }
+
+    #[test]
+    fn power_off_returns_true_and_updates_status_for_known_device() {
+        let mut registry = DeviceRegistry::new();
+        registry.register("uart0", 0x1100_2000, 0);
+        registry.activate("uart0");
+
+        assert!(registry.power_off("uart0"));
+        assert_eq!(
+            registry.find("uart0").map(|d| d.status),
+            Some(DeviceStatus::PoweredOff)
+        );
     }
 }

@@ -236,6 +236,12 @@ impl BatteryMonitor {
     /// the provided hardware ops, then updates the internal snapshot.
     pub(crate) fn poll<H: BatteryHwOps>(&mut self, hw: &H, current_tick: u64) {
         let voltage_mv = hw.read_voltage();
+        // WHY: instantaneous current is read from hardware but BatteryInfo
+        // carries no current_ma field -- Phase 07 Wave 5 scope was
+        // voltage/percentage/charging/temperature only. Discarding it here
+        // is a deliberate scope boundary, not an oversight; a future wave
+        // wiring power-draw telemetry should add a field to BatteryInfo
+        // rather than resurrecting this value from thin air.
         let _current_ma = hw.read_current();
         let temperature_c = hw.read_temperature();
         let charging = hw.is_charging();
@@ -386,6 +392,32 @@ mod tests {
         assert!(info.charging);
         assert_eq!(info.temperature_c, 30);
         assert_eq!(monitor.last_poll_tick(), 1000);
+    }
+
+    #[test]
+    fn poll_handles_current_extremes_without_affecting_battery_info() {
+        // read_current() is intentionally discarded (see the WHY comment on
+        // poll) -- verify extreme current readings never leak into or
+        // otherwise affect the BatteryInfo snapshot.
+        let mut monitor = BatteryMonitor::new();
+        let hw = MockHw {
+            voltage: 4000,
+            current: i16::MIN,
+            temperature: 20,
+            charging: false,
+        };
+        monitor.poll(&hw, 100);
+        assert_eq!(monitor.info().voltage_mv, 4000);
+
+        let hw_max = MockHw {
+            voltage: 4000,
+            current: i16::MAX,
+            temperature: 20,
+            charging: true,
+        };
+        monitor.poll(&hw_max, 200);
+        assert_eq!(monitor.info().voltage_mv, 4000);
+        assert!(monitor.info().charging);
     }
 
     #[test]
