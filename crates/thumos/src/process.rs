@@ -2698,4 +2698,121 @@ mod tests {
         }
     }
 
+    /// #371: sys_send (Syscall::Send) targeting PID 0 must be denied when
+    /// the sender lacks CAP_IPC_INIT, and the message must not be
+    /// delivered into kinit's inbox.
+    #[test]
+    fn sys_send_to_pid_zero_denied_without_ipc_init_cap() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+
+            let pt0 = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt0,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+
+            let pt1 = mmu::alloc_addr_space().unwrap();
+            procs[1] = Some(Process {
+                pid: 1,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: Some(0),
+                exit_status: 0,
+                page_table_phys: pt1,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 1,
+                wake_tick: 0,
+                // Generic fork-default userspace process: no CAP_IPC_INIT.
+                capabilities: crate::capability::Capabilities::FORK_DEFAULT,
+            });
+            CURRENT = 1;
+
+            let ret = crate::syscall::dispatch(crate::syscall::Syscall::Send.as_u32(), 0, 42, 0, 0);
+            assert_eq!(ret, u32::MAX, "send to PID 0 without CAP_IPC_INIT must be denied");
+
+            CURRENT = 0;
+            assert!(
+                crate::ipc::recv().is_none(),
+                "denied send must not deliver a message into PID 0's inbox"
+            );
+        }
+    }
+
+    /// #371: a process explicitly granted CAP_IPC_INIT may message PID 0,
+    /// and the delivered message carries the sender's PID and tag.
+    #[test]
+    fn sys_send_to_pid_zero_allowed_with_ipc_init_cap() {
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+
+            let pt0 = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt0,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+
+            let pt1 = mmu::alloc_addr_space().unwrap();
+            procs[1] = Some(Process {
+                pid: 1,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: Some(0),
+                exit_status: 0,
+                page_table_phys: pt1,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 1,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::IPC_INIT,
+            });
+            CURRENT = 1;
+
+            let ret = crate::syscall::dispatch(crate::syscall::Syscall::Send.as_u32(), 0, 42, 0, 0);
+            assert_eq!(ret, 0, "send to PID 0 with CAP_IPC_INIT must succeed");
+
+            CURRENT = 0;
+            let msg = crate::ipc::recv();
+            assert!(msg.is_some(), "allowed send must deliver a message into PID 0's inbox");
+            assert_eq!(
+                msg.map(|m| (m.tag, m.from)),
+                Some((42, 1)),
+                "delivered message must carry the sender's tag and PID"
+            );
+        }
+    }
+
 }

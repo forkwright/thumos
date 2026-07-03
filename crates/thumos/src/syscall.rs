@@ -23,6 +23,7 @@
 
 use core::fmt::Write;
 
+use crate::capability;
 use crate::fd;
 use crate::futex;
 use crate::ipc;
@@ -448,6 +449,19 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         }
         Syscall::Send => {
             let Ok(to) = u8::try_from(arg0) else { return EINVAL; };
+            // WHY (#371): PID 0 (kinit) is the fault supervisor and
+            // IPC-trust anchor -- mirrors the #269/CAP_KILL precedent that
+            // protects PID 0 from arbitrary signals. A generic userspace
+            // process must not be able to flood or spoof messages into
+            // kinit's inbox; only a process holding CAP_IPC_INIT may
+            // target PID 0 via this syscall. This check lives at the
+            // syscall boundary only -- kernel-internal delivery to kinit
+            // (process::notify_fault) calls ipc::send() directly and is
+            // unaffected, exactly as sys_kill's belt-and-suspenders check
+            // does not reach deliver_signal_to's internal callers.
+            if to == 0 && capability::check(capability::Capabilities::IPC_INIT).is_err() {
+                return u32::MAX;
+            }
             let tag = arg1;
             let Ok(ptr) = usize::try_from(arg2) else { return EINVAL; };
             let Ok(len) = usize::try_from(arg3) else { return EINVAL; };

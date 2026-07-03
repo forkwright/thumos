@@ -8,8 +8,10 @@
 //!
 //! - kinit (PID 0) holds `Capabilities::ALL` at boot.
 //! - Forked children receive a subset defined by kinit policy. The default
-//!   policy strips MODEM and AUDIT so that generic userspace cannot access
-//!   the baseband or read the audit log.
+//!   policy strips MODEM, AUDIT, and IPC_INIT so that generic userspace
+//!   cannot access the baseband, read the audit log, or message PID 0's
+//!   inbox (#371 -- mirrors the CAP_KILL precedent for protecting PID 0
+//!   as a signal target, #269).
 //! - Syscalls that access sensitive resources call `check(required)` at entry.
 //!   On failure the syscall returns EPERM; on success execution continues.
 //!
@@ -23,6 +25,7 @@
 //! |  3  | CRYPTO    | Kernel CSPRNG, key material access        |
 //! |  4  | RADIO     | WiFi / BT / GPS radio control             |
 //! |  5  | AUDIT     | Reading the kernel audit log              |
+//! |  6  | IPC_INIT  | Sending an IPC message to PID 0 (kinit)   |
 
 /// Capability bitfield type (32-bit, 6 bits used).
 ///
@@ -45,16 +48,23 @@ impl Capabilities {
     pub(crate) const RADIO: u32 = 1 << 4;
     /// Read audit log.
     pub(crate) const AUDIT: u32 = 1 << 5;
+    /// Send an IPC message to PID 0 (kinit). Mirrors the CAP_KILL precedent
+    /// (#269/REQ-09) of protecting PID 0 -- the fault supervisor and
+    /// IPC-trust anchor -- with a dedicated capability rather than leaving
+    /// it reachable by any process holding a generic "can do IPC" bit
+    /// (#371).
+    pub(crate) const IPC_INIT: u32 = 1 << 6;
     /// All capabilities granted (kinit / PID 0).
-    pub(crate) const ALL: u32 = 0x3F;
+    pub(crate) const ALL: u32 = 0x7F;
 
     /// Default capability set for forked children.
     ///
-    /// WHY: strips MODEM and AUDIT from ALL. Generic userspace processes have
-    /// no legitimate need to speak AT commands to the baseband or read the
-    /// audit log. All other capabilities remain available; the policy can be
+    /// WHY: strips MODEM, AUDIT, and IPC_INIT from ALL. Generic userspace
+    /// processes have no legitimate need to speak AT commands to the
+    /// baseband, read the audit log, or message kinit's inbox directly
+    /// (#371). All other capabilities remain available; the policy can be
     /// tightened per-process by kinit before exec.
-    pub(crate) const FORK_DEFAULT: u32 = Self::ALL & !(Self::MODEM | Self::AUDIT);
+    pub(crate) const FORK_DEFAULT: u32 = Self::ALL & !(Self::MODEM | Self::AUDIT | Self::IPC_INIT);
 
     /// Construct a capability set from a raw bitfield.
     #[inline]
@@ -158,6 +168,7 @@ mod tests {
         assert!(caps.contains(Capabilities::CRYPTO),  "kinit must have CRYPTO");
         assert!(caps.contains(Capabilities::RADIO),   "kinit must have RADIO");
         assert!(caps.contains(Capabilities::AUDIT),   "kinit must have AUDIT");
+        assert!(caps.contains(Capabilities::IPC_INIT), "kinit must have IPC_INIT");
         // ALL must equal the union of all individual bits.
         let union =
             Capabilities::MODEM
@@ -165,7 +176,8 @@ mod tests {
             | Capabilities::KILL
             | Capabilities::CRYPTO
             | Capabilities::RADIO
-            | Capabilities::AUDIT;
+            | Capabilities::AUDIT
+            | Capabilities::IPC_INIT;
         assert_eq!(Capabilities::ALL, union, "ALL must equal bitwise-OR of all caps");
     }
 
@@ -182,11 +194,13 @@ mod tests {
             child.bits() & parent.bits(), child.bits(),
             "child capabilities must be a subset of parent capabilities"
         );
-        // MODEM and AUDIT must be stripped.
+        // MODEM, AUDIT, and IPC_INIT must be stripped.
         assert!(!child.contains(Capabilities::MODEM),
             "MODEM must not be inherited by default");
         assert!(!child.contains(Capabilities::AUDIT),
             "AUDIT must not be inherited by default");
+        assert!(!child.contains(Capabilities::IPC_INIT),
+            "IPC_INIT must not be inherited by default (#371)");
         // Remaining caps must be present.
         assert!(child.contains(Capabilities::RAW_NET), "RAW_NET must be inherited");
         assert!(child.contains(Capabilities::KILL),    "KILL must be inherited");
@@ -259,7 +273,7 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn all_caps_value() {
-        assert_eq!(Capabilities::ALL, 0x3F, "ALL must equal 0x3F (6 bits)");
+        assert_eq!(Capabilities::ALL, 0x7F, "ALL must equal 0x7F (7 bits, #371 adds IPC_INIT)");
     }
 
     // -----------------------------------------------------------------------
@@ -267,8 +281,8 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn fork_default_value() {
-        let expected = Capabilities::ALL & !(Capabilities::MODEM | Capabilities::AUDIT);
+        let expected = Capabilities::ALL & !(Capabilities::MODEM | Capabilities::AUDIT | Capabilities::IPC_INIT);
         assert_eq!(Capabilities::FORK_DEFAULT, expected,
-            "FORK_DEFAULT must equal ALL & !(MODEM | AUDIT)");
+            "FORK_DEFAULT must equal ALL & !(MODEM | AUDIT | IPC_INIT)");
     }
 }
