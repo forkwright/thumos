@@ -479,6 +479,15 @@ impl SmsManager {
 
         // User data length (septets) and packed user data.
         let udl = usize::from(cur.read_byte()?);
+        // GSM 03.40: TP-UD is at most 140 octets, i.e. 160 GSM-7 septets,
+        // for a single (non-concatenated) segment. This kernel does not
+        // parse the concatenation UDH, so no legitimately encodable
+        // single-segment message can claim a larger UDL; treat it as a
+        // malformed PDU rather than decoding whatever bytes follow.
+        const MAX_SINGLE_SEGMENT_SEPTETS: usize = 160;
+        if udl > MAX_SINGLE_SEGMENT_SEPTETS {
+            return Err(SmsError::PduDecode);
+        }
         let ud_byte_count = udl.saturating_mul(7).div_ceil(8);
         let ud_bytes = cur.read_slice(ud_byte_count)?;
         let body = decode_gsm7(ud_bytes, udl)?;
@@ -701,6 +710,36 @@ mod tests {
                 "DCS {adversarial_dcs:#04x} must surface as UnsupportedDcs carrying the offending byte, not conflated with a malformed PDU"
             );
         }
+    }
+
+    #[test]
+    fn handle_incoming_rejects_udl_over_160() {
+        // Same fixed PDU prefix as handle_incoming_parses_pdu, but with a
+        // UDL claiming 161 septets -- one past GSM 03.40's 160-septet
+        // ceiling for a single (non-concatenated) TP-UD. This kernel does
+        // not parse a concatenation UDH, so no larger UDL can legitimately
+        // describe one segment; it must be rejected as malformed rather
+        // than decoded from whatever bytes happen to follow.
+        let mut pdu = alloc::vec![
+            0x00, // SCA len
+            0x00, // first octet (MTI=0)
+            0x0A, // OA len (10 digits)
+            0x91, // OA type (international)
+            0x21, 0x43, 0x65, 0x87, 0x09, // BCD +1234567890
+            0x00, // PID
+            0x00, // DCS (GSM-7)
+            0x32, 0x10, 0x51, 0x21, 0x03, 0x00, 0x00, // SCTS
+            0xA1, // UDL: 161 septets
+        ];
+        // 161 septets needs ceil(161*7/8) = 141 packed bytes; pad enough
+        // that a plain truncation error could never mask the UDL bound.
+        pdu.extend(core::iter::repeat(0u8).take(141));
+
+        let result = SmsManager::handle_incoming(&pdu);
+        assert!(
+            matches!(result, Err(SmsError::PduDecode)),
+            "UDL=161 (over the 160-septet single-segment ceiling) must be rejected"
+        );
     }
 
     #[test]

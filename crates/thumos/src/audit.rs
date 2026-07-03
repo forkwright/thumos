@@ -207,12 +207,23 @@ impl fmt::Debug for AuditEntry {
 
 impl fmt::Display for AuditEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let detail_str = core::str::from_utf8(self.detail()).unwrap_or("?");
         write!(
             f,
-            "[t={} pid={} {}] {}",
-            self.timestamp, self.pid, self.event_type, detail_str,
-        )
+            "[t={} pid={} {}] ",
+            self.timestamp, self.pid, self.event_type,
+        )?;
+        // WHY: non-UTF8 detail bytes previously collapsed to a single "?"
+        // via str::from_utf8(...).unwrap_or("?"), erasing the audit
+        // content entirely. Render every byte instead: printable ASCII
+        // as-is, everything else \xHH-escaped, so no content is lost.
+        for &byte in self.detail() {
+            if byte.is_ascii_graphic() || byte == b' ' {
+                write!(f, "{}", char::from(byte))?;
+            } else {
+                write!(f, "\\x{byte:02x}")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -906,6 +917,38 @@ mod tests {
         assert!(
             display.contains("Daily->Sentinel"),
             "display must contain detail"
+        );
+    }
+
+    #[test]
+    fn entry_display_escapes_non_utf8_detail() {
+        let mut log = AuditLog::new();
+        // 0xFF is never a valid UTF-8 lead byte; the old
+        // str::from_utf8(...).unwrap_or("?") path collapsed this whole
+        // detail to a single '?', discarding the two legible bytes
+        // alongside it.
+        log_one(
+            &mut log,
+            AuditEventType::ModemAnomaly,
+            7,
+            &[0xFFu8, b'X', b'Y'],
+            9000,
+        );
+
+        let (older, newer) = log.recent(1);
+        let entries: alloc::vec::Vec<&AuditEntry> = older.iter().chain(newer.iter()).collect();
+        let display = entries[0].to_string();
+        assert!(
+            display.contains("\\xff"),
+            "non-UTF8 byte must render as a hex escape, not vanish: {display}"
+        );
+        assert!(
+            display.contains("XY"),
+            "legible bytes alongside a non-UTF8 byte must not be discarded: {display}"
+        );
+        assert!(
+            !display.contains('?'),
+            "detail must never collapse to a bare '?': {display}"
         );
     }
 

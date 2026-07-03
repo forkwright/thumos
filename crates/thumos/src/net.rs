@@ -157,9 +157,23 @@ impl core::fmt::Display for NetError {
 /// Every frame transmitted through this device is enqueued and returned on
 /// the next [`Device::receive`] call, in FIFO order. The device uses the
 /// Ethernet medium so that the full ARP / IP path is exercised.
+/// Maximum number of frames the [`LoopbackDevice`] TX queue holds before
+/// new frames are dropped.
+///
+/// WHY bounded: `transmit()` always returns a token and `consume()`
+/// always enqueues -- smoltcp's `TxToken` API has no backpressure signal
+/// -- so an unbounded queue grows without limit whenever polling drains
+/// RX slower than TX produces frames (heap exhaustion on a 128 MB
+/// device). A fixed cap converts that into ordinary tail-drop packet
+/// loss, which every protocol layered on top (TCP retransmission, UDP
+/// at-most-once) already tolerates.
+const LOOPBACK_QUEUE_CAPACITY: usize = 64;
+
 pub(crate) struct LoopbackDevice {
     /// FIFO queue of frames awaiting reception.
     queue: VecDeque<Vec<u8>>,
+    /// Count of frames dropped because the queue was at capacity.
+    dropped_frames: usize,
 }
 
 impl LoopbackDevice {
@@ -167,12 +181,18 @@ impl LoopbackDevice {
     pub(crate) fn new() -> Self {
         Self {
             queue: VecDeque::new(),
+            dropped_frames: 0,
         }
     }
 
     /// Return the number of frames currently queued for reception.
     pub(crate) fn queued_frames(&self) -> usize {
         self.queue.len()
+    }
+
+    /// Return the number of frames dropped because the TX queue was full.
+    pub(crate) fn dropped_frames(&self) -> usize {
+        self.dropped_frames
     }
 }
 
@@ -193,6 +213,7 @@ impl phy::RxToken for LoopbackRxToken {
 /// Transmit token for [`LoopbackDevice`].
 pub(crate) struct LoopbackTxToken<'a> {
     queue: &'a mut VecDeque<Vec<u8>>,
+    dropped_frames: &'a mut usize,
 }
 
 impl<'a> phy::TxToken for LoopbackTxToken<'a> {
@@ -202,7 +223,11 @@ impl<'a> phy::TxToken for LoopbackTxToken<'a> {
     {
         let mut buffer = vec![0u8; len];
         let result = f(&mut buffer);
-        self.queue.push_back(buffer);
+        if self.queue.len() < LOOPBACK_QUEUE_CAPACITY {
+            self.queue.push_back(buffer);
+        } else {
+            *self.dropped_frames = self.dropped_frames.saturating_add(1);
+        }
         result
     }
 }
@@ -224,6 +249,7 @@ impl Device for LoopbackDevice {
             let rx = LoopbackRxToken { buffer };
             let tx = LoopbackTxToken {
                 queue: &mut self.queue,
+                dropped_frames: &mut self.dropped_frames,
             };
             (rx, tx)
         })
@@ -232,6 +258,7 @@ impl Device for LoopbackDevice {
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
         Some(LoopbackTxToken {
             queue: &mut self.queue,
+            dropped_frames: &mut self.dropped_frames,
         })
     }
 }
@@ -976,6 +1003,33 @@ mod tests {
             });
         }
         assert_eq!(device.queued_frames(), 0);
+    }
+
+    #[test]
+    fn loopback_tx_queue_is_bounded() {
+        let mut device = LoopbackDevice::new();
+        let now = Instant::from_millis(0);
+
+        // Transmit far more frames than LOOPBACK_QUEUE_CAPACITY without
+        // ever draining via receive() -- the failure mode this bound
+        // exists to prevent: unbounded heap growth from polling
+        // starvation.
+        let attempts = LOOPBACK_QUEUE_CAPACITY + 10;
+        for _ in 0..attempts {
+            let tx = device.transmit(now).unwrap();
+            phy::TxToken::consume(tx, 8, |_buf| {});
+        }
+
+        assert_eq!(
+            device.queued_frames(),
+            LOOPBACK_QUEUE_CAPACITY,
+            "the TX queue must never grow past LOOPBACK_QUEUE_CAPACITY"
+        );
+        assert_eq!(
+            device.dropped_frames(),
+            10,
+            "frames beyond capacity must be counted as dropped, not silently discarded"
+        );
     }
 
     #[test]

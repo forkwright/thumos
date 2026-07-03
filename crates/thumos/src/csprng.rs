@@ -61,6 +61,16 @@ const SEED_ENTROPY_BITS: u32 = 256;
 /// entropy, so only bit-flips within this mask are credited.
 const TIMER_JITTER_MASK: u32 = 0x0000_0FFF;
 
+/// Maximum wall-clock time `init()` will spin waiting for
+/// `SEED_ENTROPY_BITS` before giving up and reporting failure.
+///
+/// WHY 30s: at the 10ms scheduler tick period even a single flipped
+/// jitter bit per tick reaches 256 bits in ~2.6s; 30s is a generous
+/// multiple that tolerates a noisy/slow timer without masking a
+/// genuinely dead entropy source (a permanent unbounded `wfi` loop here
+/// was a permanent boot hang if the timer ISR never delivered a sample).
+const CSPRNG_INIT_TIMEOUT_MS: u64 = 30_000;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -245,33 +255,66 @@ pub unsafe fn add_entropy(data: &[u8]) {
 /// seeded, spins (busy-polls) until it is — the timer ISR is running at this
 /// point and will call `collect_timer_entropy()` each tick.
 ///
+/// Bounded by `CSPRNG_INIT_TIMEOUT_MS`, measured against the free-running
+/// CNTPCT counter (`crate::timer::elapsed_ms()`) rather than the IRQ-
+/// driven tick count: if the timer ISR never fires at all, the tick
+/// count never advances either (the same handler drives both), so it
+/// cannot detect that failure mode -- CNTPCT keeps counting in hardware
+/// regardless of whether interrupts are ever delivered. Returns `false`
+/// on timeout and leaves the CSPRNG unseeded; `kernel_random_bytes()`
+/// then fails closed with `CsprngError::NotSeeded` forever, exactly as
+/// it already does before `init()` runs. The only behavior change is
+/// that a starved entropy source degrades the boot (per the kinit
+/// Hubris fault-isolation model) instead of hanging it.
+///
 /// # Safety
 ///
 /// Must be called exactly once from kinit, after `exceptions::init()` (timer
 /// running), before any driver calls `kernel_random_bytes()`. IRQs must be
 /// enabled at call time so the timer ISR can supply entropy.
-pub unsafe fn init() {
-    // Spin until the entropy pool has accumulated a full seed estimate.
-    loop {
+#[must_use = "a `false` return means the CSPRNG is unseeded; the caller must record and report the degraded boot state"]
+pub unsafe fn init() -> bool {
+    // SAFETY: elapsed_ms() only reads the free-running CP15 CNTPCT/CNTFRQ
+    // registers; no state is mutated.
+    #[cfg(not(test))]
+    let deadline_start = crate::timer::elapsed_ms();
+
+    // Spin until the entropy pool has accumulated a full seed estimate,
+    // or until CSPRNG_INIT_TIMEOUT_MS elapses.
+    let seeded = loop {
         // SAFETY: ENTROPY is accessed read-only here; writes only come from the
         // IRQ handler which cannot execute concurrently on single-core ARMv7.
         // addr_of! avoids creating a shared reference to the static mut.
         let seeded = unsafe { (*core::ptr::addr_of!(ENTROPY)).is_seeded() };
         if seeded {
-            break;
+            break true;
         }
-        // Yield to allow the timer IRQ to fire.
+
         #[cfg(not(test))]
-        // SAFETY: WFI is a hint instruction available at all ARM privilege levels.
-        unsafe {
-            core::arch::asm!("wfi");
+        {
+            let elapsed = crate::timer::elapsed_ms().saturating_sub(deadline_start);
+            if elapsed >= CSPRNG_INIT_TIMEOUT_MS {
+                break false;
+            }
+            // Yield to allow the timer IRQ to fire.
+            // SAFETY: WFI is a hint instruction available at all ARM privilege levels.
+            unsafe {
+                core::arch::asm!("wfi");
+            }
         }
-        // On test host: init() is not exercised (seed_for_test bypasses it);
-        // break to prevent an infinite loop should it ever be reached.
+
+        // On test host: init() is not exercised for real entropy
+        // collection (seed_for_test bypasses it); break unseeded so the
+        // fail-closed path below runs instead of spinning forever should
+        // this ever execute.
         #[cfg(test)]
         {
-            break;
+            break false;
         }
+    };
+
+    if !seeded {
+        return false;
     }
 
     // Seed the DRBG from the entropy pool.
@@ -290,6 +333,7 @@ pub unsafe fn init() {
         CSPRNG = Some(csprng);
         INITIALIZED = true;
     }
+    true
 }
 
 /// Generate `buf.len()` cryptographically random bytes.
@@ -385,6 +429,44 @@ pub fn seed_for_test(key: &[u8; 32], nonce: &[u8; 8], counter: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- init() fail-closed timeout path ---
+
+    #[test]
+    fn init_without_sufficient_entropy_returns_false_and_stays_unseeded() {
+        // Under #[cfg(test)], init()'s spin loop breaks unseeded on the
+        // first iteration (no real timer ISR to feed it) rather than
+        // looping forever -- this exercises the fail-closed return path
+        // that used to unconditionally seed FROM a zero-entropy pool.
+        // SAFETY: test-only; nextest process isolation means ENTROPY/
+        // CSPRNG/INITIALIZED here are fresh for this test (see
+        // seed_for_test's SAFETY comment for the same guarantee).
+        let seeded = unsafe { init() };
+        assert!(
+            !seeded,
+            "init() must not report seeded with zero accumulated entropy"
+        );
+
+        let mut buf = [0u8; 4];
+        assert_eq!(
+            kernel_random_bytes(&mut buf),
+            Err(CsprngError::NotSeeded),
+            "an init() that gave up before reaching SEED_ENTROPY_BITS must leave \
+             the CSPRNG unseeded (fail-closed), not silently seed FROM an empty pool"
+        );
+    }
+
+    #[test]
+    fn csprng_init_timeout_is_sane() {
+        assert!(
+            CSPRNG_INIT_TIMEOUT_MS >= 5_000,
+            "timeout must be generous enough for a slow/noisy real timer"
+        );
+        assert!(
+            CSPRNG_INIT_TIMEOUT_MS <= 60_000,
+            "timeout must not stall boot for an unreasonable amount of time"
+        );
+    }
 
     // --- Entropy pool tests ---
 

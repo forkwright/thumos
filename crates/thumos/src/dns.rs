@@ -285,9 +285,22 @@ fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DnsError> {
     packet.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
     packet.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
 
-    // QNAME: encode hostname as DNS labels.
+    // QNAME: encode hostname as DNS labels. RFC 1035 section 3.1 caps the
+    // total encoded name -- every length-prefix octet plus every label
+    // octet plus the terminating zero -- at 255 octets; the per-label
+    // <= 63 check above does not bound the SUM across many short labels,
+    // so a long dotted name could otherwise produce an out-of-spec query
+    // with no error.
+    const DNS_MAX_NAME_LEN: usize = 255;
+    let mut qname_len: usize = 0;
     for label in hostname.split('.') {
         if label.is_empty() || label.len() > 63 {
+            return Err(DnsError::InvalidName);
+        }
+        qname_len = qname_len
+            .checked_add(1 + label.len())
+            .ok_or(DnsError::InvalidName)?;
+        if qname_len >= DNS_MAX_NAME_LEN {
             return Err(DnsError::InvalidName);
         }
         packet.push(label.len() as u8);
@@ -957,6 +970,22 @@ mod tests {
             result,
             Err(DnsError::NoRecords),
             "zero answer count must return NoRecords"
+        );
+    }
+
+    #[test]
+    fn build_query_rejects_oversized_total_name() {
+        // Five 63-byte labels: each is individually legal (<= 63 bytes),
+        // but the total encoded QNAME (5 * (1 + 63) + 1 = 321 bytes)
+        // blows well past the RFC 1035 section 3.1 255-byte ceiling. Only
+        // the per-label check existed before; this must be caught too.
+        let label = "a".repeat(63);
+        let hostname = alloc::format!("{label}.{label}.{label}.{label}.{label}");
+        let result = build_dns_query(&hostname, 0x0001);
+        assert_eq!(
+            result,
+            Err(DnsError::InvalidName),
+            "a total QNAME over 255 bytes must return InvalidName even when every label is individually legal"
         );
     }
 

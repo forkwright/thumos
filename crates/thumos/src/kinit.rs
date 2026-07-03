@@ -144,6 +144,7 @@ pub(crate) struct BootState {
     pub(crate) heap_ok: bool,
     pub(crate) gic_ok: bool,
     pub(crate) timer_ok: bool,
+    pub(crate) csprng_ok: bool,
     pub(crate) emmc_ok: bool,
     pub(crate) display_ok: bool,
     pub(crate) secure_boot_ok: bool,
@@ -171,6 +172,7 @@ impl BootState {
             heap_ok: false,
             gic_ok: false,
             timer_ok: false,
+            csprng_ok: false,
             emmc_ok: false,
             display_ok: false,
             secure_boot_ok: false,
@@ -204,6 +206,9 @@ impl BootState {
             n += 1;
         }
         if self.timer_ok {
+            n += 1;
+        }
+        if self.csprng_ok {
             n += 1;
         }
         if self.emmc_ok {
@@ -465,18 +470,25 @@ pub unsafe fn run() -> ! {
     state.timer_ok = true;
 
     // -----------------------------------------------------------------------
-    // Step 5b: CSPRNG (ChaCha20, seeded from timer entropy)
+    // Step 5b: CSPRNG (ChaCha20, seeded from timer entropy; fault-tolerant
+    // with timeout)
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] CSPRNG (ChaCha20)\r\n");
     // SAFETY: called once after exceptions::init() (timer running, IRQs enabled).
     // csprng::init() spins on WFI until the entropy pool accumulates a full
     // SEED_ENTROPY_BITS estimate of timer-jitter entropy, then seeds the
-    // ChaCha20Rng DRBG and sets INITIALIZED. Must complete before any radio
-    // driver init.
-    unsafe {
-        csprng::init();
+    // ChaCha20Rng DRBG and sets INITIALIZED -- bounded by a wall-clock
+    // timeout so a dead timer ISR degrades the boot instead of hanging it.
+    // Must complete before any radio driver init.
+    state.csprng_ok = unsafe { csprng::init() };
+    if state.csprng_ok {
+        let _ = serial.write_str("       CSPRNG ready\r\n");
+    } else {
+        let _ = serial.write_str(
+            "  WARN CSPRNG timed out waiting for timer entropy -- random bytes unavailable\r\n",
+        );
+        let _ = serial.write_str("       Radio identity randomization disabled\r\n");
     }
-    let _ = serial.write_str("       CSPRNG ready\r\n");
 
     // -----------------------------------------------------------------------
     // Step 5c: Hardware watchdog (WDT)
@@ -991,7 +1003,11 @@ pub unsafe fn run() -> ! {
         "[init] Boot complete at {} ms\r\n",
         crate::timer::elapsed_ms()
     );
-    let _ = write!(serial, "       {} / 17 subsystems OK\r\n", state.ok_count());
+    let _ = write!(serial, "       {} / 18 subsystems OK\r\n", state.ok_count());
+    if !state.csprng_ok {
+        let _ = serial
+            .write_str("       NOTE: CSPRNG unseeded, radio identity randomization disabled\r\n");
+    }
     if !state.display_ok {
         let _ = serial.write_str("       NOTE: display unavailable, USB serial only\r\n");
     }
@@ -1296,6 +1312,7 @@ mod tests {
         assert!(!state.heap_ok, "initial heap_ok must be false");
         assert!(!state.gic_ok, "initial gic_ok must be false");
         assert!(!state.timer_ok, "initial timer_ok must be false");
+        assert!(!state.csprng_ok, "initial csprng_ok must be false");
         assert!(!state.emmc_ok, "initial emmc_ok must be false");
         assert!(!state.display_ok, "initial display_ok must be false");
         assert!(
@@ -1354,6 +1371,7 @@ mod tests {
         state.heap_ok = true;
         state.gic_ok = true;
         state.timer_ok = true;
+        state.csprng_ok = true;
         state.emmc_ok = true;
         state.display_ok = true;
         state.secure_boot_ok = true;
@@ -1367,7 +1385,7 @@ mod tests {
         state.network_ok = true;
         state.bluetooth_ok = true;
         state.gps_ok = true;
-        assert_eq!(state.ok_count(), 17, "all 17 subsystems OK");
+        assert_eq!(state.ok_count(), 18, "all 18 subsystems OK");
     }
 
     #[test]
