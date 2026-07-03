@@ -1384,6 +1384,19 @@ mod tests {
     }
 
     #[test]
+    fn eapol_parse_rejects_unknown_packet_type() {
+        // NOTE: version=2, type=0x04 (undefined EAPOL type byte), length=0.
+        let data = [0x02, 0x04, 0x00, 0x00];
+        let result = eapol_parse(&data);
+        match result {
+            Err(WifiError::UnknownEapolType { value }) => {
+                assert_eq!(value, 0x04, "error must report the offending type byte");
+            }
+            _ => panic!("must return UnknownEapolType for an unrecognised packet type byte"),
+        }
+    }
+
+    #[test]
     fn eapol_frame_parse_short_returns_error() {
         // Only 3 bytes: too short for EAPOL header
         let data = [0x02, 0x01, 0x00];
@@ -1395,6 +1408,27 @@ mod tests {
                 assert_eq!(have, 3, "have must be 3");
             }
             _ => panic!("must return FrameTooShort variant"),
+        }
+    }
+
+    #[test]
+    fn eapol_parse_rejects_declared_body_length_exceeding_buffer() {
+        // NOTE: version=2, type=Start(0x01), declared body length=10, but
+        // only 2 bytes of body actually follow the header.
+        let data = [0x02, 0x01, 0x00, 0x0a, 0xAB, 0xCD];
+        let result = eapol_parse(&data);
+        match result {
+            Err(WifiError::FrameTooShort { need, have }) => {
+                assert_eq!(
+                    need,
+                    EAPOL_HEADER_LEN + 10,
+                    "need must be header length plus the declared body length"
+                );
+                assert_eq!(have, 6, "have must be the actual buffer length");
+            }
+            _ => {
+                panic!("must return FrameTooShort when the declared body length exceeds the buffer")
+            }
         }
     }
 
@@ -1459,6 +1493,54 @@ mod tests {
                 );
             }
             _ => panic!("must return UnknownKeyDescriptorType for a non-RSN descriptor"),
+        }
+    }
+
+    #[test]
+    fn eapol_parse_key_frame_rejects_key_data_length_exceeding_buffer() {
+        let kf = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x008a),
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: vec![0x01, 0x02, 0x03],
+        };
+        let frame = EapolFrame {
+            version: 2,
+            packet_type: EapolType::Key,
+            key_frame: Some(kf),
+            raw_body: Vec::new(),
+        };
+        let mut encoded = eapol_encode(&frame);
+
+        // WHY: corrupt key_data_length to claim more bytes than actually
+        // follow it, without touching the outer EAPOL body_len field or
+        // the buffer length -- the last two bytes of the fixed key-frame
+        // portion, at offset EAPOL_HEADER_LEN + EAPOL_KEY_FIXED_LEN - 2.
+        let key_data_len_offset = EAPOL_HEADER_LEN + EAPOL_KEY_FIXED_LEN - 2;
+        encoded[key_data_len_offset..key_data_len_offset + 2].copy_from_slice(&50u16.to_be_bytes());
+
+        let result = eapol_parse(&encoded);
+        match result {
+            Err(WifiError::FrameTooShort { need, have }) => {
+                assert_eq!(
+                    need,
+                    EAPOL_KEY_FIXED_LEN + 50,
+                    "need must reflect the corrupted key_data_length"
+                );
+                assert_eq!(
+                    have,
+                    EAPOL_KEY_FIXED_LEN + 3,
+                    "have must be the actual key-frame body length"
+                );
+            }
+            _ => {
+                panic!("must return FrameTooShort when key_data_length exceeds the remaining body")
+            }
         }
     }
 
@@ -1819,6 +1901,81 @@ mod tests {
     }
 
     #[test]
+    fn handshake_builds_msg4_response_and_completes_after_valid_msg3() {
+        setup_csprng();
+        let mut hs = WpaHandshake::new();
+        let pmk = [0u8; PMK_LEN];
+        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        let msg1 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x008a),
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+        hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
+        hs.msg2_sent();
+
+        let mut msg3 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x01ca),
+            key_length: 16,
+            replay_counter: 2,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+        if let Some(ptk) = hs.ptk.clone() {
+            let zeroed_frame = EapolFrame {
+                version: 2,
+                packet_type: EapolType::Key,
+                key_frame: Some(msg3.clone()),
+                raw_body: Vec::new(),
+            };
+            msg3.mic = compute_mic(&ptk.kck, &eapol_encode(&zeroed_frame));
+        }
+
+        let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
+        assert_eq!(
+            state,
+            HandshakeState::SendMsg4,
+            "Message 3 with a valid MIC must yield SendMsg4"
+        );
+
+        let response = hs.build_response();
+        assert!(
+            response.is_some(),
+            "SendMsg4 with a derived PTK must produce a Message 4 response"
+        );
+        let kf = response.and_then(|f| f.key_frame);
+        assert!(kf.is_some(), "Message 4 response must carry a key frame");
+        if let Some(kf) = kf {
+            assert!(kf.key_info.secure(), "Message 4 must set the secure bit");
+            assert!(kf.key_info.mic(), "Message 4 must set the MIC bit");
+            assert!(!kf.key_info.install(), "Message 4 must not set install");
+            assert_ne!(
+                kf.mic, [0u8; MIC_LEN],
+                "Message 4 MIC must be computed, not zeroed"
+            );
+        }
+
+        hs.complete();
+        assert_eq!(
+            hs.state,
+            HandshakeState::Complete,
+            "complete() must transition SendMsg4 -> Complete"
+        );
+    }
+
+    #[test]
     fn handshake_fails_closed_when_awaiting_msg3_without_ptk() {
         let mut hs = WpaHandshake::new();
         let pmk = [0u8; PMK_LEN];
@@ -1915,6 +2072,53 @@ mod tests {
         assert_ne!(ptk.kck, [0u8; KCK_LEN], "KCK must not be zero");
         assert_ne!(ptk.kek, [0u8; KEK_LEN], "KEK must not be zero");
         assert_ne!(ptk.tk, [0u8; TK_LEN], "TK must not be zero");
+    }
+
+    #[test]
+    fn derive_ptk_normalizes_reversed_aa_spa_and_nonce_order() {
+        let pmk = derive_pmk(b"password", b"TestSSID");
+        let low_mac = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        let high_mac = [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
+        let low_nonce = [0xAAu8; 32];
+        let high_nonce = [0xBBu8; 32];
+
+        // NOTE: canonical order (aa <= spa, anonce <= snonce) exercises the
+        // already-sorted `if` branches.
+        let sorted = derive_ptk(&pmk, &low_nonce, &high_nonce, &low_mac, &high_mac);
+        // NOTE: reversed order (aa > spa, anonce > snonce) forces both
+        // `else` branches to swap back to the canonical min-first order.
+        let swapped = derive_ptk(&pmk, &high_nonce, &low_nonce, &high_mac, &low_mac);
+
+        assert_eq!(
+            sorted, swapped,
+            "PTK must be identical regardless of AA/SPA and ANonce/SNonce argument order"
+        );
+
+        // WHY: cross-check against PRF-384 computed directly over the
+        // canonical min(AA,SPA) || max(AA,SPA) || min(ANonce,SNonce) ||
+        // max(ANonce,SNonce) concatenation, confirming the swapped call
+        // normalized to that order rather than merely being self-consistent.
+        let mut data = [0u8; 76];
+        data[0..6].copy_from_slice(&low_mac);
+        data[6..12].copy_from_slice(&high_mac);
+        data[12..44].copy_from_slice(&low_nonce);
+        data[44..76].copy_from_slice(&high_nonce);
+        let expected = prf_384(&pmk, b"Pairwise key expansion", &data);
+        assert_eq!(
+            &expected[0..16],
+            &swapped.kck,
+            "swapped-order KCK must match the canonical PRF-384 output"
+        );
+        assert_eq!(
+            &expected[16..32],
+            &swapped.kek,
+            "swapped-order KEK must match the canonical PRF-384 output"
+        );
+        assert_eq!(
+            &expected[32..48],
+            &swapped.tk,
+            "swapped-order TK must match the canonical PRF-384 output"
+        );
     }
 
     /// IEEE Std 802.11i-2004, Table H.13 / Table H.15 (Annex H.7.1,

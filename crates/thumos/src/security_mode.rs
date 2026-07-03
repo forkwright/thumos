@@ -1131,6 +1131,34 @@ mod tests {
         assert_eq!(mm.mode(), SecurityMode::Panic);
     }
 
+    #[test]
+    fn panic_abort_window_exact_boundary_ticks() {
+        // WHY: elapsed == PANIC_ABORT_WINDOW_TICKS (1500) sits on the
+        // inclusive edge of `elapsed > PANIC_ABORT_WINDOW_TICKS` -- the
+        // abort must still succeed here.
+        let mut mm = mode_manager_with_test_pin();
+        let mut km = key_manager_with_derived_keys();
+        let mut pm = PowerManager::new();
+
+        mm.activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
+            .expect("activate_panic failed");
+        mm.abort_panic(2500, &mut pm)
+            .expect("abort at elapsed == PANIC_ABORT_WINDOW_TICKS must succeed");
+        assert_eq!(mm.mode(), SecurityMode::Daily);
+
+        // WHY: elapsed == PANIC_ABORT_WINDOW_TICKS + 1 (1501) is one tick
+        // past the inclusive edge -- the abort must fail here.
+        let mut mm = mode_manager_with_test_pin();
+        let mut km = key_manager_with_derived_keys();
+        let mut pm = PowerManager::new();
+
+        mm.activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
+            .expect("activate_panic failed");
+        let result = mm.abort_panic(2501, &mut pm);
+        assert_eq!(result, Err(ModeTransitionError::AbortWindowExpired));
+        assert_eq!(mm.mode(), SecurityMode::Panic);
+    }
+
     // -----------------------------------------------------------------------
     // Covert Lock toggles RF
     // -----------------------------------------------------------------------
@@ -1424,6 +1452,60 @@ mod tests {
         assert!(!constant_time_eq(&a, &c));
     }
 
+    #[test]
+    fn log_mode_change_records_audit_entry() {
+        let mut log = AuditLog::new();
+        let key = [0xAAu8; KEY_SIZE];
+
+        assert!(log.is_empty(), "audit log must start empty");
+
+        log_mode_change(
+            SecurityMode::Daily,
+            SecurityMode::Sentinel,
+            &mut log,
+            &key,
+            12345,
+        );
+
+        assert_eq!(
+            log.len(),
+            1,
+            "log_mode_change must append exactly one entry"
+        );
+        let (older, newer) = log.recent(1);
+        let entry = if newer.is_empty() {
+            &older[0]
+        } else {
+            &newer[0]
+        };
+        assert_eq!(entry.event_type, AuditEventType::ModeChange);
+        assert_eq!(entry.timestamp, 12345);
+        assert_eq!(entry.detail(), b"Daily->Sentinel");
+    }
+
+    #[test]
+    fn log_panic_trigger_records_audit_entry() {
+        let mut log = AuditLog::new();
+        let key = [0xAAu8; KEY_SIZE];
+
+        log_panic_trigger(PanicActivation::PttTripleClick, &mut log, &key, 99);
+
+        assert_eq!(
+            log.len(),
+            1,
+            "log_panic_trigger must append exactly one entry"
+        );
+        let (older, newer) = log.recent(1);
+        let entry = if newer.is_empty() {
+            &older[0]
+        } else {
+            &newer[0]
+        };
+        assert_eq!(entry.event_type, AuditEventType::PanicTrigger);
+        assert_eq!(entry.timestamp, 99);
+        assert_eq!(entry.detail(), b"PTT triple-click");
+    }
+
     // -----------------------------------------------------------------------
     // Threat response tests (Phase 10 Wave 3)
     // -----------------------------------------------------------------------
@@ -1502,6 +1584,42 @@ mod tests {
             fw.mode(),
             FirewallMode::Daily,
             "firewall must remain in Daily mode"
+        );
+    }
+
+    #[test]
+    fn evaluate_threat_score_equals_threshold_is_critical() {
+        // WHY: the critical branch compares `threat_score >= critical_threshold`,
+        // so the threshold value is inclusive of "critical", and the critical
+        // check must short-circuit ahead of the Sentinel-restrict branch even
+        // while Sentinel mode is active.
+        use crate::ccci_logger::{CcciFirewall, FirewallMode};
+
+        let mut fw = CcciFirewall::new(FirewallMode::Daily);
+        let mut pm = PowerManager::new();
+        pm.apply_mode(crate::power::PowerMode::Full);
+
+        let response = evaluate_threat(
+            SecurityMode::Sentinel,
+            80, // score == threshold
+            80, // threshold
+            &mut fw,
+            &mut pm,
+        );
+
+        assert_eq!(
+            response,
+            ThreatResponse::ModemPowerCut,
+            "score exactly equal to critical_threshold must be classified critical"
+        );
+        assert_eq!(
+            fw.mode(),
+            FirewallMode::Panic,
+            "firewall must switch to Panic, not Sentinel, when the score meets the threshold exactly"
+        );
+        assert!(
+            pm.is_modem_pmic_killed(),
+            "modem must be PMIC-killed at the exact threshold"
         );
     }
 

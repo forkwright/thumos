@@ -1595,6 +1595,31 @@ mod tests {
     }
 
     #[test]
+    fn aes256_cbc_corrupted_padding_byte_fails() {
+        setup_test_rng();
+        let key = [0u8; KEY_SIZE];
+        // WHY: a plaintext of exactly one block forces PKCS#7 to append a
+        // full padding block (16 bytes, each valued 0x10).
+        let plaintext = b"exactly16bytes!!";
+        let ciphertext = aes256_cbc_encrypt(&key, plaintext);
+        assert!(ciphertext.is_ok());
+        let mut ciphertext = ciphertext.unwrap_or_default();
+
+        // WHY: CBC decryption computes P[n] = D(C[n]) XOR C[n-1], so
+        // flipping a bit in the last byte of the first ciphertext block
+        // (chained into the final padding block) flips the same bit,
+        // deterministically, in the final block's last decrypted byte --
+        // independent of key. 0x10 (padding length 16) XOR 0x01 = 0x11
+        // (17), which exceeds the 16-byte block size, so PKCS#7 unpadding
+        // must reject it.
+        let flip_index = AES_BLOCK_SIZE + AES_BLOCK_SIZE - 1;
+        ciphertext[flip_index] ^= 0x01;
+
+        let result = aes256_cbc_decrypt(&key, &ciphertext);
+        assert_eq!(result, Err(CryptoError::InvalidPadding));
+    }
+
+    #[test]
     fn aes256_cbc_empty_plaintext_fails() {
         let key = [0u8; KEY_SIZE];
         let result = aes256_cbc_encrypt(&key, b"");
@@ -1607,6 +1632,18 @@ mod tests {
         // Too short for IV + one block.
         let result = aes256_cbc_decrypt(&key, &[0u8; 16]);
         assert_eq!(result, Err(CryptoError::CiphertextTooShort));
+    }
+
+    #[test]
+    fn aes256_cbc_non_block_multiple_length_fails() {
+        let key = [0u8; KEY_SIZE];
+        // WHY: data.len() == 33 clears the CiphertextTooShort floor (IV +
+        // one block = 32) but the ciphertext portion (33 - 16 = 17 bytes)
+        // is not a multiple of AES_BLOCK_SIZE, hitting the
+        // InvalidCiphertextLength guard in cbc_decrypt.
+        let data = [0u8; AES_BLOCK_SIZE * 2 + 1];
+        let result = aes256_cbc_decrypt(&key, &data);
+        assert_eq!(result, Err(CryptoError::InvalidCiphertextLength));
     }
 
     // -- Megolm session tests --
