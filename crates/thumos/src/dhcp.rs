@@ -192,6 +192,12 @@ impl DhcpClient {
             Some(Err(())) => {
                 // Clear interface IP addresses.
                 stack.iface_mut().update_ip_addrs(|addrs| addrs.clear());
+                // WHY (finding 1): the Configured arm above adds a default
+                // gateway route via set_default_gateway when the DHCP
+                // server provides one; Deconfigured must symmetrically
+                // remove it, or a stale gateway route survives lease
+                // expiry / a NAK with no IP address behind it.
+                stack.iface_mut().routes_mut().remove_default_ipv4_route();
                 self.configured = false;
                 DhcpEvent::Deconfigured
             }
@@ -276,5 +282,44 @@ mod tests {
         assert_eq!(config.address.prefix_len(), 24);
         assert_eq!(config.gateway, Some(Ipv4Address::new(192, 168, 1, 1)));
         assert_eq!(config.dns_servers.len(), 2);
+    }
+
+    #[test]
+    fn dhcp_error_from_net_error_maps_every_variant() {
+        // Done-when (finding 20): every NetError variant must map to a
+        // well-defined DhcpError, including InvalidHandle -- which has no
+        // direct DhcpError counterpart and collapses to SocketSetFull.
+        assert_eq!(
+            DhcpError::from(NetError::SocketSetFull),
+            DhcpError::SocketSetFull
+        );
+        assert_eq!(
+            DhcpError::from(NetError::RouteTableFull),
+            DhcpError::RouteTableFull
+        );
+        assert_eq!(
+            DhcpError::from(NetError::InvalidHandle),
+            DhcpError::SocketSetFull,
+            "InvalidHandle has no DhcpError counterpart and must collapse to SocketSetFull"
+        );
+    }
+
+    #[test]
+    fn dhcp_client_new_fails_when_socket_set_is_full() {
+        // Done-when (finding 20): DhcpClient::new must surface
+        // DhcpError::SocketSetFull rather than panicking or silently
+        // succeeding when the stack's socket set is already at capacity.
+        let mut stack = make_stack();
+        for _ in 0..MAX_SOCKETS {
+            stack.add_tcp_socket().ok().unwrap(); // ok: test
+        }
+        assert_eq!(stack.socket_count(), MAX_SOCKETS);
+
+        let result = DhcpClient::new(&mut stack);
+        assert_eq!(
+            result.err(),
+            Some(DhcpError::SocketSetFull),
+            "DhcpClient::new must fail with SocketSetFull once MAX_SOCKETS is reached"
+        );
     }
 }

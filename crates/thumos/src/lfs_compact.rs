@@ -267,7 +267,12 @@ fn pick_candidate(
         }
     }
 
-    best.ok_or(LfsError::NoFreeSegments)
+    // WHY (finding 5): distinct from "no free segments" (the filesystem is
+    // completely full) -- this means no segment qualifies as a compaction
+    // candidate (every segment is either free already or is the writer's
+    // active segment), which can legitimately happen when compaction is
+    // triggered but nothing is actually reclaimable yet.
+    best.ok_or(LfsError::NoCompactionCandidate)
 }
 
 /// Collect all (inode_id, block_number) pairs from the imap.

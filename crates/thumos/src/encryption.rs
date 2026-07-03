@@ -134,7 +134,15 @@ impl BlockDevice for EncryptedBlockDevice<'_> {
     /// Returns [`BlockError`] if the underlying device read fails or the
     /// sector range is invalid.
     fn read_sectors(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
-        let expected_len = count as usize * SECTOR_SIZE;
+        // WHY (finding 3): count is caller-controlled and SECTOR_SIZE is a
+        // compile-time constant -- on a 32-bit target (usize == u32) count
+        // * SECTOR_SIZE can wrap, letting an oversized buf.len() slip past
+        // this check instead of being rejected. checked_mul rejects the
+        // wrap instead of silently admitting it.
+        let count_usize = usize::try_from(count).map_err(|_| BlockError::InvalidArgument)?;
+        let expected_len = count_usize
+            .checked_mul(SECTOR_SIZE)
+            .ok_or(BlockError::InvalidArgument)?;
         if buf.len() != expected_len {
             return Err(BlockError::InvalidArgument);
         }
@@ -200,7 +208,13 @@ impl BlockDevice for EncryptedBlockDevice<'_> {
     /// Returns [`BlockError`] if the underlying device I/O fails or the
     /// sector range is invalid.
     fn write_sectors(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
-        let expected_len = count as usize * SECTOR_SIZE;
+        // WHY (finding 3): same overflow guard as read_sectors -- count is
+        // caller-controlled and SECTOR_SIZE is a compile-time constant; on
+        // a 32-bit target (usize == u32) count * SECTOR_SIZE can wrap.
+        let count_usize = usize::try_from(count).map_err(|_| BlockError::InvalidArgument)?;
+        let expected_len = count_usize
+            .checked_mul(SECTOR_SIZE)
+            .ok_or(BlockError::InvalidArgument)?;
         if buf.len() != expected_len {
             return Err(BlockError::InvalidArgument);
         }
@@ -278,9 +292,19 @@ impl BlockDevice for EncryptedBlockDevice<'_> {
 /// encryption layer.
 impl From<SecurityError> for BlockError {
     fn from(e: SecurityError) -> Self {
+        // WHY (finding 4): the old `_ => IoError` catch-all collapsed
+        // ZeroIterations, HkdfOutputTooLong, and InvalidBlockSize --
+        // caller/parameter validation failures, not I/O faults -- into the
+        // same opaque IoError as a genuine CipherError. Map each variant by
+        // its actual failure class: malformed/caller-controlled input maps
+        // to InvalidArgument, and only a true cipher-operation failure maps
+        // to IoError.
         match e {
-            SecurityError::InvalidKeyLength => BlockError::InvalidArgument,
-            _ => BlockError::IoError,
+            SecurityError::InvalidKeyLength
+            | SecurityError::ZeroIterations
+            | SecurityError::HkdfOutputTooLong
+            | SecurityError::InvalidBlockSize => BlockError::InvalidArgument,
+            SecurityError::CipherError => BlockError::IoError,
         }
     }
 }
@@ -495,6 +519,37 @@ mod tests {
         let enc = EncryptedBlockDevice::new(&mut dev, key);
         let mut buf = vec![0u8; SECTOR_SIZE];
         let result = enc.read_sectors(TEST_SECTORS, 1, &mut buf);
+        assert_eq!(result, Err(BlockError::OutOfBounds));
+    }
+
+    #[test]
+    fn write_sectors_length_mismatch_returns_error() {
+        // Done-when (finding 21): a buffer whose length doesn't match
+        // count * SECTOR_SIZE must be rejected before any write happens.
+        let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
+        let key = sample_xts_key();
+        let mut enc = EncryptedBlockDevice::new(&mut dev, key);
+
+        let short_buf = vec![0u8; SECTOR_SIZE - 1];
+        let result = enc.write_sectors(0, 1, &short_buf);
+        assert_eq!(result, Err(BlockError::InvalidArgument));
+
+        let long_buf = vec![0u8; SECTOR_SIZE + 1];
+        let result = enc.write_sectors(0, 1, &long_buf);
+        assert_eq!(result, Err(BlockError::InvalidArgument));
+    }
+
+    #[test]
+    fn write_sectors_out_of_bounds_returns_error() {
+        // Done-when (finding 21): a write past the device's sector count
+        // must be rejected, mirroring the existing read_sectors OOB
+        // coverage.
+        let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
+        let key = sample_xts_key();
+        let mut enc = EncryptedBlockDevice::new(&mut dev, key);
+
+        let buf = vec![0u8; SECTOR_SIZE];
+        let result = enc.write_sectors(TEST_SECTORS, 1, &buf);
         assert_eq!(result, Err(BlockError::OutOfBounds));
     }
 

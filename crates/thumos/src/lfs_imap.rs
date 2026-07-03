@@ -36,6 +36,11 @@ pub enum LfsError {
     /// A checkpoint's imap + segment-bitmap payload exceeds the slot's
     /// reserved capacity.
     CheckpointOverflow,
+    /// No segment is eligible for compaction (every segment is free or is
+    /// the writer's active segment) -- distinct from `NoFreeSegments`,
+    /// which means the filesystem is out of free segments entirely
+    /// (finding 5).
+    NoCompactionCandidate,
 }
 
 impl core::fmt::Display for LfsError {
@@ -49,6 +54,7 @@ impl core::fmt::Display for LfsError {
             Self::CheckpointOverflow => {
                 write!(f, "checkpoint payload exceeds reserved slot capacity")
             }
+            Self::NoCompactionCandidate => write!(f, "no segment eligible for compaction"),
         }
     }
 }

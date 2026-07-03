@@ -26,14 +26,22 @@ pub(crate) fn parse_final_result(line: &[u8]) -> Option<AtResponse> {
         return Some(AtResponse::Error);
     }
     if let Some(rest) = strip_prefix(line, b"+CME ERROR: ") {
-        if let Some(code) = parse_u32(rest) {
-            return Some(AtResponse::CmeError(code));
-        }
+        // WHY (finding 13): a modem in verbose CME error mode (AT+CMEE=2,
+        // 3GPP TS 27.007 section 9.2) reports a text message here instead
+        // of a numeric code (e.g. "+CME ERROR: SIM not inserted"). Falling
+        // through unclassified left the caller's response loop treating
+        // the line as informational and eventually timing out, hiding a
+        // real modem-reported error behind a misleading Timeout.
+        return Some(match parse_u32(rest) {
+            Some(code) => AtResponse::CmeError(code),
+            None => AtResponse::Error,
+        });
     }
     if let Some(rest) = strip_prefix(line, b"+CMS ERROR: ") {
-        if let Some(code) = parse_u32(rest) {
-            return Some(AtResponse::CmsError(code));
-        }
+        return Some(match parse_u32(rest) {
+            Some(code) => AtResponse::CmsError(code),
+            None => AtResponse::Error,
+        });
     }
     None
 }
@@ -424,11 +432,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_final_result_malformed_cme_code_returns_none() {
+    fn parse_final_result_verbose_cme_error_classifies_as_generic_error() {
+        // finding 13: a verbose (text) CME/CMS error -- e.g. AT+CMEE=2
+        // mode -- must still classify as a final result (AtResponse::Error)
+        // rather than falling through unclassified, which left the
+        // caller's response loop treating it as an info line until it
+        // eventually timed out.
         assert_eq!(
             parse_final_result(b"+CME ERROR: x"),
-            None,
-            "a non-numeric CME error code must not classify as any final result"
+            Some(AtResponse::Error),
+            "a non-numeric CME error code must classify as a generic Error, not fall through to None"
+        );
+        assert_eq!(
+            parse_final_result(b"+CME ERROR: SIM not inserted"),
+            Some(AtResponse::Error),
+            "a verbose CME ERROR message must classify as a generic Error, not time out unclassified"
+        );
+        assert_eq!(
+            parse_final_result(b"+CMS ERROR: SMS storage full"),
+            Some(AtResponse::Error),
+            "a verbose CMS ERROR message must classify as a generic Error, not time out unclassified"
         );
     }
 

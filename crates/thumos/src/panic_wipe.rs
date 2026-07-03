@@ -34,6 +34,7 @@ extern crate alloc;
 
 use core::fmt;
 
+use crate::irq;
 use crate::key_manager::KeyManager;
 use crate::page;
 
@@ -203,8 +204,24 @@ impl fmt::Display for DistressBeacon {
 pub struct WipeResult {
     /// Number of targets that completed successfully.
     pub targets_completed: usize,
+    /// Whether the primary encryption keys were zeroized in memory.
+    /// WHY (SECURITY, finding 14, info): tracked separately from
+    /// `failed_targets`'s entry for `WipeTarget::Keys`, which reflects
+    /// ONLY the on-disk key-file overwrite (defense-in-depth, currently
+    /// always fails per #324/#129) -- conflating the two under one bit
+    /// would let a reader mistake "Keys in failed_targets" for "the
+    /// encryption keys are still recoverable" when the in-memory keys
+    /// (the actual protection) are already destroyed. Set inside the
+    /// IRQ-masked critical section in Step 1 (finding 15).
+    pub keys_zeroized_in_memory: bool,
     /// Number of targets that failed.
     pub targets_failed: usize,
+    /// Which targets failed, in plan order (up to `PANIC_WIPE_TARGET_COUNT`
+    /// slots; unused slots are `None`). WHY (SECURITY, finding 9): the
+    /// caller needs to know WHICH category of sensitive data survived an
+    /// incomplete wipe, not just how many -- a bare count cannot
+    /// distinguish "WiFi credentials intact" from "message store intact".
+    pub failed_targets: [Option<WipeTarget>; PANIC_WIPE_TARGET_COUNT],
     /// Whether memory scrub was performed.
     pub memory_scrubbed: bool,
     /// Whether the distress beacon was emitted.
@@ -215,9 +232,20 @@ impl fmt::Display for WipeResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "WipeResult(completed={}, failed={}, scrubbed={}, beacon={})",
+            "WipeResult(completed={}, failed={}, scrubbed={}, beacon={}",
             self.targets_completed, self.targets_failed, self.memory_scrubbed, self.beacon_emitted,
-        )
+        )?;
+        if self.targets_failed > 0 {
+            write!(f, ", failed_targets=[")?;
+            for (i, target) in self.failed_targets.iter().flatten().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{target}")?;
+            }
+            write!(f, "]")?;
+        }
+        write!(f, ")")
     }
 }
 
@@ -276,34 +304,51 @@ pub(crate) unsafe fn execute_panic_wipe(
 
     let mut completed: usize = 0;
     let mut failed: usize = 0;
+    let mut failed_targets: [Option<WipeTarget>; PANIC_WIPE_TARGET_COUNT] =
+        [None; PANIC_WIPE_TARGET_COUNT];
 
     // Step 1: Zeroize keys from memory — this is the critical action
-    // that makes all encrypted data unrecoverable.
-    key_manager.zeroize_all();
+    // that makes all encrypted data unrecoverable. WHY (SECURITY, finding
+    // 15): wrapped in a stop-the-world IRQ-masked critical section so no
+    // timer/scheduler-tick or other IRQ handler can preempt between "wipe
+    // triggered" and "keys destroyed" -- without this, an interrupt firing
+    // mid-zeroize could switch away to code that still observes the live
+    // keys for one or more scheduling quanta.
+    let keys_zeroized_in_memory = {
+        let _irq_guard = irq::IrqGuard::new();
+        key_manager.zeroize_all();
+        true
+    };
 
     for target in plan.targets() {
-        match target {
-            WipeTarget::Keys => {
-                // Already zeroized above; mark as complete.
-                // The filesystem key files are defense-in-depth.
-                if dry_run || wipe_target_path(target.path()) {
-                    completed = completed.saturating_add(1);
-                } else {
-                    failed = failed.saturating_add(1);
-                }
+        // WHY (SECURITY, finding 9): every target's on-disk tally comes
+        // from the same wipe_target_path() check -- WipeTarget::Keys' own
+        // in-memory zeroization already happened unconditionally in Step 1
+        // above and is tracked separately via `keys_zeroized_in_memory`
+        // (finding 14), so a failure recorded here must not be read as
+        // "the encryption keys are still recoverable".
+        if dry_run || wipe_target_path(target.path()) {
+            completed = completed.saturating_add(1);
+        } else {
+            // WHY (SECURITY, finding 9): record WHICH target failed, not
+            // just a bare count -- an operator needs to know whether it
+            // was WiFi credentials or the message store that survived an
+            // incomplete wipe.
+            if let Some(slot) = failed_targets.get_mut(failed) {
+                *slot = Some(*target);
             }
-            _ => {
-                if dry_run || wipe_target_path(target.path()) {
-                    completed = completed.saturating_add(1);
-                } else {
-                    failed = failed.saturating_add(1);
-                }
-            }
+            failed = failed.saturating_add(1);
         }
     }
 
-    // Step 2: Emit distress beacon.
+    // Step 2: Build the distress beacon payload. WHY (SECURITY, finding
+    // 10): emit_distress_beacon only constructs the in-memory payload --
+    // the actual mesh/LoRa transmission is not yet wired (same class as
+    // #129's wipe_target_path stub), so this function never hands the
+    // beacon to a radio driver. beacon_emitted below must report false
+    // rather than claiming a distress signal was actually transmitted.
     let _beacon = emit_distress_beacon(triggered_at, !key_manager.has_keys());
+    let beacon_emitted = false;
 
     // Step 3: Memory scrub.
     let memory_scrubbed = if dry_run {
@@ -317,9 +362,11 @@ pub(crate) unsafe fn execute_panic_wipe(
 
     WipeResult {
         targets_completed: completed,
+        keys_zeroized_in_memory,
         targets_failed: failed,
+        failed_targets,
         memory_scrubbed,
-        beacon_emitted: true,
+        beacon_emitted,
     }
 }
 
@@ -489,7 +536,10 @@ mod tests {
         );
         assert_eq!(result.targets_completed, PANIC_WIPE_TARGET_COUNT);
         assert_eq!(result.targets_failed, 0);
-        assert!(result.beacon_emitted);
+        assert!(
+            !result.beacon_emitted,
+            "beacon_emitted must be false until mesh transmission is actually wired (finding 10)"
+        );
     }
 
     #[test]
@@ -501,6 +551,27 @@ mod tests {
         assert!(
             result.memory_scrubbed,
             "dry-run must report memory as scrubbed"
+        );
+    }
+
+    #[test]
+    fn execute_panic_wipe_restores_irq_state_after_key_zeroization() {
+        // SECURITY (finding 15): the key-zeroization step in Step 1 runs
+        // inside an IrqGuard so no IRQ/scheduler-tick can preempt between
+        // "wipe triggered" and "keys destroyed". Verify the guard is
+        // correctly scoped: IRQ delivery must be back in its normal
+        // (enabled) state once execute_panic_wipe returns, not left
+        // masked.
+        crate::irq::reset_mock();
+        assert!(crate::irq::mock_enabled(), "starts unmasked");
+
+        let mut km = key_manager_with_derived_keys();
+        // SAFETY: dry_run = true performs no destructive I/O.
+        let _result = unsafe { execute_panic_wipe(&mut km, 6000, true) };
+
+        assert!(
+            crate::irq::mock_enabled(),
+            "IRQ delivery must be restored (guard dropped) after the wipe completes"
         );
     }
 
@@ -538,6 +609,29 @@ mod tests {
         assert!(beacon.keys_zeroized);
     }
 
+    #[test]
+    fn keys_zeroized_in_memory_is_tracked_separately_from_file_tally() {
+        // SECURITY (finding 14, info): WipeTarget::Keys' entry in
+        // failed_targets reflects ONLY the on-disk key-file overwrite
+        // (currently always fails: #324/#129's wipe_target_path stub).
+        // The in-memory zeroization in Step 1 is unconditional and
+        // infallible, and must be visible independent of that filesystem
+        // tally so a reader cannot mistake "Keys in failed_targets" for
+        // "the encryption keys are still recoverable".
+        let mut km = key_manager_with_derived_keys();
+        // SAFETY: this is the last action in this test.
+        let result = unsafe { execute_panic_wipe(&mut km, 5000, false) };
+
+        assert!(
+            result.keys_zeroized_in_memory,
+            "in-memory key zeroization must be reported true independent of the file tally"
+        );
+        assert!(
+            result.failed_targets.contains(&Some(WipeTarget::Keys)),
+            "the key-FILE overwrite is still expected to fail while wipe_target_path is a stub"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Target paths
     // -----------------------------------------------------------------------
@@ -560,6 +654,22 @@ mod tests {
                 "{target} path must be under /data/: {path}"
             );
         }
+    }
+
+    #[test]
+    fn beacon_emitted_reports_false_while_transmission_is_unwired() {
+        // SECURITY (finding 10): emit_distress_beacon only builds the
+        // payload in memory -- execute_panic_wipe never hands it to a
+        // mesh/radio driver, so reporting beacon_emitted=true would tell
+        // the operator a distress signal went out over LoRa when nothing
+        // was actually transmitted.
+        let mut km = key_manager_with_derived_keys();
+        // SAFETY: dry_run = true performs no destructive I/O.
+        let result = unsafe { execute_panic_wipe(&mut km, 4000, true) };
+        assert!(
+            !result.beacon_emitted,
+            "beacon_emitted must be false until mesh transmission is actually wired"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -588,7 +698,9 @@ mod tests {
 
         let result = WipeResult {
             targets_completed: 5,
+            keys_zeroized_in_memory: true,
             targets_failed: 1,
+            failed_targets: [None; PANIC_WIPE_TARGET_COUNT],
             memory_scrubbed: true,
             beacon_emitted: true,
         };
@@ -608,6 +720,38 @@ mod tests {
         // targets it never actually overwrote.
         assert!(!wipe_target_path("/data/keys"));
         assert!(!wipe_target_path("/data/contacts"));
+    }
+
+    #[test]
+    fn execute_wipe_records_which_targets_failed() {
+        // SECURITY (finding 9): a bare failure count cannot tell an
+        // operator WHICH category of sensitive data survived an
+        // incomplete panic wipe. With the LFS wipe backend absent (#129),
+        // every filesystem target fails, so failed_targets must name each
+        // one individually.
+        let mut km = key_manager_with_derived_keys();
+        // SAFETY: this is the last action in this test.
+        let result = unsafe { execute_panic_wipe(&mut km, 3000, false) };
+
+        assert_eq!(result.targets_failed, PANIC_WIPE_TARGET_COUNT);
+        let named_count = result.failed_targets.iter().flatten().count();
+        assert_eq!(
+            named_count, PANIC_WIPE_TARGET_COUNT,
+            "every failed target must be individually named, not just counted"
+        );
+        for expected in [
+            WipeTarget::Keys,
+            WipeTarget::Contacts,
+            WipeTarget::Messages,
+            WipeTarget::CallHistory,
+            WipeTarget::WifiCredentials,
+            WipeTarget::BluetoothPairings,
+        ] {
+            assert!(
+                result.failed_targets.contains(&Some(expected)),
+                "{expected} must appear in failed_targets"
+            );
+        }
     }
 
     #[test]

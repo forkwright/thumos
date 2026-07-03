@@ -238,10 +238,20 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
             _ => return Err(ElfError::InvalidSegment),
         };
 
-        if segments.count < 16 {
-            segments.segments[segments.count] = (vaddr, memsz, filesz, file_offset);
-            segments.count += 1;
+        // WHY (finding 2): the fixed-capacity `segments` array holds at
+        // most 16 PT_LOAD descriptors -- a 17th+ segment was previously
+        // dropped silently here while `total_pages` above still counted
+        // its page budget, so `load()` would report success while never
+        // writing that segment's bytes to memory. Reject the image
+        // outright instead; this coexists with the #327 budget check above
+        // and the finding-49 entry-in-segment check below, which still run
+        // against whatever segments were recorded before this one is
+        // rejected.
+        if segments.count >= 16 {
+            return Err(ElfError::InvalidSegment);
         }
+        segments.segments[segments.count] = (vaddr, memsz, filesz, file_offset);
+        segments.count += 1;
     }
 
     // WHY (finding 49): e_entry is a fully attacker-controlled u32 header
@@ -548,6 +558,37 @@ mod tests {
         buf[72..76].copy_from_slice(&0x0200_0000u32.to_le_bytes());
 
         assert_eq!(validate(&buf).unwrap_err(), ElfError::InvalidSegment);
+    }
+
+    /// finding 2: a 17th PT_LOAD segment must be rejected, not silently
+    /// dropped from the fixed 16-slot `segments` array while `total_pages`
+    /// still counted its budget -- the old behavior let `load()` report
+    /// success while never writing that segment's bytes to memory.
+    #[test]
+    fn parse_rejects_more_than_sixteen_pt_load_segments() {
+        const N: usize = 17;
+        let mut buf = [0u8; ELF32_EHDR_SIZE + N * ELF32_PHDR_SIZE];
+        let h = make_valid_ehdr();
+        buf[..ELF32_EHDR_SIZE].copy_from_slice(&h);
+        // e_phnum (offset 44, u16 LE): 17 program headers.
+        buf[44] = 17;
+        buf[45] = 0;
+
+        for i in 0..N {
+            let off = ELF32_EHDR_SIZE + i * ELF32_PHDR_SIZE;
+            // p_type = PT_LOAD (1).
+            buf[off..off + 4].copy_from_slice(&1u32.to_le_bytes());
+            // p_vaddr: inside the allowed load region.
+            buf[off + 8..off + 12].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+            // p_memsz: 1 page, well under the MAX_ELF_PAGES budget even x17.
+            buf[off + 20..off + 24].copy_from_slice(&0x1000u32.to_le_bytes());
+        }
+
+        assert_eq!(
+            validate(&buf).unwrap_err(),
+            ElfError::InvalidSegment,
+            "a 17th PT_LOAD segment must be rejected, not silently dropped"
+        );
     }
 
     #[test]

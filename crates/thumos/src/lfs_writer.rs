@@ -286,6 +286,23 @@ impl LfsWriter {
         seg_mgr: &mut LfsSegmentManager,
         reserve_ok: bool,
     ) -> Result<(), LfsError> {
+        // WHY (finding 6): allocate the replacement segment BEFORE writing
+        // the header or advancing the sequence. The old order wrote the
+        // header (marking this segment sealed on disk) and incremented
+        // self.sequence first, then allocated -- if allocation failed, the
+        // caller saw NoFreeSegments but the writer had already mutated
+        // on-disk and in-memory state, so a retry re-wrote the same header
+        // with an already-advanced sequence number and incremented it
+        // again, drifting the persisted sequence away from what recovery
+        // expects. Allocating first means a failed seal leaves this
+        // writer's sequence/current_segment/write_position untouched.
+        let new_seg = if reserve_ok {
+            seg_mgr.allocate_for_compaction()
+        } else {
+            seg_mgr.allocate()
+        }
+        .ok_or(LfsError::NoFreeSegments)?;
+
         // The number of data blocks written is write_position - 1 (block 0 is header).
         let data_block_count = self.write_position.saturating_sub(1);
 
@@ -298,19 +315,14 @@ impl LfsWriter {
 
         let header_block = seg_mgr.segment_start_block(self.current_segment);
         let buf = header.to_block();
-        cache.write(dev, header_block, &buf)?;
+        if let Err(e) = cache.write(dev, header_block, &buf) {
+            // Roll back the allocation so a header-write failure does not
+            // leak the newly allocated segment as permanently used.
+            seg_mgr.free(new_seg);
+            return Err(LfsError::from(e));
+        }
 
         self.sequence += 1;
-
-        // Allocate a new segment for the next writes. The compaction path
-        // may take the reserved last-free segment; ordinary writers may
-        // not (#329).
-        let new_seg = if reserve_ok {
-            seg_mgr.allocate_for_compaction()
-        } else {
-            seg_mgr.allocate()
-        }
-        .ok_or(LfsError::NoFreeSegments)?;
         self.current_segment = new_seg;
         self.write_position = 1; // Skip header block.
 
