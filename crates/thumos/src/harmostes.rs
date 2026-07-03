@@ -115,6 +115,8 @@ pub enum MatrixError {
     RoomCapacityReached,
     /// The outbox has reached [`MAX_OUTBOX_MESSAGES`] pending messages (#365).
     OutboxFull,
+    /// A Matrix identifier (room/event) failed format validation (#373).
+    InvalidId(crate::matrix_ids::MatrixIdError),
 }
 
 impl fmt::Display for MatrixError {
@@ -133,7 +135,14 @@ impl fmt::Display for MatrixError {
             Self::SyncDisabled => write!(f, "sync disabled in current security mode"),
             Self::RoomCapacityReached => write!(f, "room capacity reached"),
             Self::OutboxFull => write!(f, "outbox capacity reached"),
+            Self::InvalidId(e) => write!(f, "invalid Matrix identifier: {e}"),
         }
+    }
+}
+
+impl From<crate::matrix_ids::MatrixIdError> for MatrixError {
+    fn from(e: crate::matrix_ids::MatrixIdError) -> Self {
+        Self::InvalidId(e)
     }
 }
 
@@ -168,6 +177,13 @@ pub struct SyncResult {
     /// because an over-capacity room cannot be persisted regardless, so
     /// there is nothing a retry could recover.
     pub rooms_over_capacity: u32,
+    /// Number of rooms whose events were dropped because the room-id JSON key
+    /// failed identifier validation (#373). Non-zero means an adversarial or
+    /// buggy homeserver sent a malformed room key; that room's events are
+    /// skipped (they could never be stored), but the sync token still advances
+    /// safely — mirroring the `rooms_over_capacity` rationale (#358), because
+    /// aborting the batch would permanently wedge sync on the bad key.
+    pub rooms_malformed: u32,
     /// The next batch token (opaque, stored for incremental sync).
     pub next_batch: String,
 }
@@ -176,10 +192,11 @@ impl fmt::Display for SyncResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "SyncResult({} messages, {} rooms updated, {} over capacity)",
+            "SyncResult({} messages, {} rooms updated, {} over capacity, {} malformed)",
             self.new_messages.len(),
             self.rooms_updated,
             self.rooms_over_capacity,
+            self.rooms_malformed,
         )
     }
 }
@@ -236,15 +253,19 @@ pub struct Room {
 
 impl Room {
     /// Create a new room with the given ID and display name.
-    #[must_use]
-    fn new(room_id: String, display_name: String, is_dm: bool) -> Self {
-        Self {
-            room_id: room_id.into(),
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::InvalidId`] if `room_id` is not a well-formed
+    /// Matrix room identifier (#373).
+    fn new(room_id: &str, display_name: String, is_dm: bool) -> Result<Self, MatrixError> {
+        Ok(Self {
+            room_id: MatrixRoomId::new(room_id)?,
             display_name,
             is_dm,
             messages: Vec::new(),
             unread_count: 0,
-        }
+        })
     }
 
     /// Add a message to this room's cache, evicting the oldest if at capacity.
@@ -571,6 +592,7 @@ impl MatrixClient {
             new_messages: Vec::new(),
             rooms_updated: 0,
             rooms_over_capacity: 0,
+            rooms_malformed: 0,
             next_batch: String::from(next_batch),
         };
 
@@ -610,6 +632,14 @@ impl MatrixClient {
                     result.rooms_over_capacity = result.rooms_over_capacity.saturating_add(1);
                     continue;
                 }
+                // WHY(#373): a malformed room-id JSON key cannot be stored
+                // (validation rejects it). The sync token was already advanced,
+                // so propagating the Err would permanently wedge sync on this
+                // key — skip and count, exactly like the over-capacity path.
+                Err(MatrixError::InvalidId(_)) => {
+                    result.rooms_malformed = result.rooms_malformed.saturating_add(1);
+                    continue;
+                }
                 Err(e) => return Err(e),
             };
 
@@ -619,7 +649,9 @@ impl MatrixClient {
                 let msg = parse_timeline_event(event, room_id, &self.crypto);
                 if let Some(msg) = msg {
                     let incoming = IncomingMessage {
-                        room_id: String::from(room_id.as_str()).into(),
+                        // WHY(#373): reuse the already-validated room id stored
+                        // on the room, avoiding a redundant fallible re-parse.
+                        room_id: self.rooms[room_idx].room_id.clone(),
                         event_id: msg.event_id.clone(),
                         sender: msg.sender.clone(),
                         body: msg.body.clone(),
@@ -811,10 +843,14 @@ impl MatrixClient {
             return Err(MatrixError::OutboxFull);
         }
 
+        // WHY(#373): validate before build_send_request, which interpolates
+        // room_id into the HTTP request path — a CRLF-bearing id would be a
+        // header/path injection.
+        let validated_room = MatrixRoomId::new(room_id)?;
         let (req, txn_id) = self.build_send_request(room_id, body)?;
 
         self.outbox.push(PendingMessage {
-            room_id: String::from(room_id).into(),
+            room_id: validated_room,
             body: String::from(body),
             txn_id,
         });
@@ -844,11 +880,14 @@ impl MatrixClient {
             return Err(MatrixError::OutboxFull);
         }
 
+        // WHY(#373): reject a malformed room id before it can be sent from the
+        // outbox (build_send_request interpolates it into the HTTP path).
+        let validated_room = MatrixRoomId::new(room_id)?;
         let txn_id = self.next_txn_id;
         self.next_txn_id = self.next_txn_id.saturating_add(1);
 
         self.outbox.push(PendingMessage {
-            room_id: String::from(room_id).into(),
+            room_id: validated_room,
             body: String::from(body),
             txn_id,
         });
@@ -922,11 +961,8 @@ impl MatrixClient {
             if self.rooms.len() >= MAX_ROOMS {
                 return Err(MatrixError::RoomCapacityReached);
             }
-            self.rooms.push(Room::new(
-                String::from(room_id),
-                String::from(room_id), // Display name defaults to room ID.
-                false,
-            ));
+            self.rooms
+                .push(Room::new(room_id, String::from(room_id), false)?);
         }
 
         Ok(())
@@ -961,11 +997,7 @@ impl MatrixClient {
         if self.rooms.len() >= MAX_ROOMS {
             return Err(MatrixError::RoomCapacityReached);
         }
-        self.rooms.push(Room::new(
-            String::from(room_id),
-            String::from(room_id),
-            false,
-        ));
+        self.rooms.push(Room::new(room_id, String::from(room_id), false)?);
         Ok(self.rooms.len() - 1)
     }
 }
@@ -1127,7 +1159,9 @@ fn parse_timeline_event(
     };
 
     Some(MatrixMessage {
-        event_id: String::from(event_id).into(),
+        // WHY(#373): a malformed event id skips this event rather than
+        // aborting the whole sync (parse_timeline_event returns Option).
+        event_id: MatrixEventId::new(event_id).ok()?,
         sender: String::from(sender),
         body,
         timestamp: if timestamp >= 0 {
@@ -1948,11 +1982,8 @@ mod tests {
 
     #[test]
     fn message_cache_evicts_oldest() {
-        let mut room = Room::new(
-            String::from("!evict:example.com"),
-            String::from("Test Room"),
-            false,
-        );
+        let mut room = Room::new("!evict:example.com", String::from("Test Room"), false)
+            .expect("valid test room id");
 
         // Fill to capacity.
         for i in 0..MAX_MESSAGES_PER_ROOM {
@@ -1960,7 +1991,7 @@ mod tests {
                 event_id: {
                     let mut id = String::from("$msg");
                     push_u32(&mut id, i as u32);
-                    id.into()
+                    MatrixEventId::new(&id).expect("valid test event id")
                 },
                 sender: String::from("@test:example.com"),
                 body: String::from("msg"),
@@ -1972,7 +2003,7 @@ mod tests {
 
         // Add one more — oldest should be evicted.
         room.add_message(MatrixMessage {
-            event_id: String::from("$new").into(),
+            event_id: MatrixEventId::new("$new").expect("valid test event id"),
             sender: String::from("@test:example.com"),
             body: String::from("newest"),
             timestamp: MAX_MESSAGES_PER_ROOM as u64,

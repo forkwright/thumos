@@ -266,6 +266,8 @@ pub enum NousError {
         /// The entity's current preset level.
         current: &'static str,
     },
+    /// The entity's Matrix user id failed format validation (#373).
+    InvalidMatrixId(crate::matrix_ids::MatrixIdError),
 }
 
 impl fmt::Display for NousError {
@@ -291,6 +293,7 @@ impl fmt::Display for NousError {
                     "{entity} requires {required} capability, has {current}"
                 )
             }
+            Self::InvalidMatrixId(e) => write!(f, "invalid Matrix user id: {e}"),
         }
     }
 }
@@ -319,6 +322,8 @@ impl NousEntity {
     /// # Errors
     ///
     /// Returns [`NousError::NameTooLong`] if `name` exceeds [`MAX_NAME_LEN`].
+    /// Returns [`NousError::InvalidMatrixId`] if `matrix_id` is not a
+    /// well-formed Matrix user identifier (#373).
     pub(crate) fn new(
         name: &str,
         matrix_id: String,
@@ -337,7 +342,9 @@ impl NousEntity {
         Ok(Self {
             name: name_buf,
             name_len: name_bytes.len() as u8,
-            matrix_id: matrix_id.into(),
+            // WHY(#373): validate the Matrix user id rather than trusting the
+            // caller; a malformed id surfaces as NousError::InvalidMatrixId.
+            matrix_id: MatrixUserId::new(&matrix_id).map_err(NousError::InvalidMatrixId)?,
             capability_preset: preset,
         })
     }
@@ -397,62 +404,45 @@ impl Eq for NousEntity {}
 // ---------------------------------------------------------------------------
 
 /// Create the default Syn entity (primary general-purpose assistant).
-pub(crate) fn default_syn() -> NousEntity {
-    // Syn is always valid — name is 3 bytes, well under MAX_NAME_LEN.
+///
+/// # Errors
+///
+/// Returns [`NousError`] if the trusted default identifiers ever fail
+/// validation — unreachable for the compile-time constants below, but the
+/// fallible signature keeps the no-panic contract without an infallible
+/// identifier constructor (#373).
+pub(crate) fn default_syn() -> Result<NousEntity, NousError> {
     NousEntity::new(
         "Syn",
         String::from("@syn:thumos.lan"),
         CapabilityPreset::Advisor,
     )
-    .unwrap_or_else(|_| {
-        // This path is unreachable for "Syn" but satisfies no-panic contract.
-        let mut name = [0u8; MAX_NAME_LEN];
-        name[0] = b'?';
-        NousEntity {
-            name,
-            name_len: 1,
-            matrix_id: String::from("@syn:thumos.lan").into(),
-            capability_preset: CapabilityPreset::Off,
-        }
-    })
 }
 
 /// Create the default Phrouros entity (security/field operations).
-pub(crate) fn default_phrouros() -> NousEntity {
+///
+/// # Errors
+///
+/// See [`default_syn`].
+pub(crate) fn default_phrouros() -> Result<NousEntity, NousError> {
     NousEntity::new(
         "Phrouros",
         String::from("@phrouros:thumos.lan"),
         CapabilityPreset::Observer,
     )
-    .unwrap_or_else(|_| {
-        let mut name = [0u8; MAX_NAME_LEN];
-        name[0] = b'?';
-        NousEntity {
-            name,
-            name_len: 1,
-            matrix_id: String::from("@phrouros:thumos.lan").into(),
-            capability_preset: CapabilityPreset::Off,
-        }
-    })
 }
 
 /// Create the default Paideia entity (learning/research).
-pub(crate) fn default_paideia() -> NousEntity {
+///
+/// # Errors
+///
+/// See [`default_syn`].
+pub(crate) fn default_paideia() -> Result<NousEntity, NousError> {
     NousEntity::new(
         "Paideia",
         String::from("@paideia:thumos.lan"),
         CapabilityPreset::Assistant,
     )
-    .unwrap_or_else(|_| {
-        let mut name = [0u8; MAX_NAME_LEN];
-        name[0] = b'?';
-        NousEntity {
-            name,
-            name_len: 1,
-            matrix_id: String::from("@paideia:thumos.lan").into(),
-            capability_preset: CapabilityPreset::Off,
-        }
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -477,11 +467,14 @@ impl NousManager {
     /// Syn is the default active entity (index 0).
     #[must_use]
     pub(crate) fn new() -> Self {
-        let entities = alloc::vec![
-            default_syn(),
-            default_phrouros(),
-            default_paideia(),
-        ];
+        // WHY(#373): the defaults are trusted compile-time constants that
+        // always validate; `flatten` keeps each successfully-built entity and
+        // drops the unreachable error case, preserving the no-panic contract
+        // without an infallible identifier constructor.
+        let entities = [default_syn(), default_phrouros(), default_paideia()]
+            .into_iter()
+            .flatten()
+            .collect();
         Self {
             entities,
             active_entity: 0,
@@ -912,7 +905,7 @@ mod tests {
 
     #[test]
     fn entity_display() {
-        let entity = default_syn();
+        let entity = default_syn().expect("default syn valid");
         let display = alloc::format!("{entity}");
         assert!(display.contains("Syn"), "display must contain name");
         assert!(
@@ -927,11 +920,11 @@ mod tests {
 
     #[test]
     fn entity_equality() {
-        let a = default_syn();
-        let b = default_syn();
+        let a = default_syn().expect("default syn valid");
+        let b = default_syn().expect("default syn valid");
         assert_eq!(a, b, "identical entities must be equal");
 
-        let c = default_phrouros();
+        let c = default_phrouros().expect("default phrouros valid");
         assert_ne!(a, c, "different entities must not be equal");
     }
 
@@ -939,18 +932,18 @@ mod tests {
 
     #[test]
     fn default_entities_valid() {
-        let syn = default_syn();
+        let syn = default_syn().expect("default syn valid");
         assert_eq!(syn.name_str(), "Syn");
         assert_eq!(syn.capability_preset, CapabilityPreset::Advisor);
         assert!(syn.can_propose());
         assert!(syn.can_auto_execute());
 
-        let phrouros = default_phrouros();
+        let phrouros = default_phrouros().expect("default phrouros valid");
         assert_eq!(phrouros.name_str(), "Phrouros");
         assert_eq!(phrouros.capability_preset, CapabilityPreset::Observer);
         assert!(!phrouros.can_propose());
 
-        let paideia = default_paideia();
+        let paideia = default_paideia().expect("default paideia valid");
         assert_eq!(paideia.name_str(), "Paideia");
         assert_eq!(paideia.capability_preset, CapabilityPreset::Assistant);
         assert!(paideia.can_propose());

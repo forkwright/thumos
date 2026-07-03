@@ -131,6 +131,9 @@ pub enum CryptoError {
     /// A homeserver-supplied device key failed Ed25519 self-signature
     /// verification (audit #230).
     UntrustedDeviceKey,
+    /// The room id supplied for session creation is not a well-formed Matrix
+    /// room identifier (#373).
+    InvalidRoomId(crate::matrix_ids::MatrixIdError),
 }
 
 impl From<csprng::CsprngError> for CryptoError {
@@ -171,6 +174,7 @@ impl fmt::Display for CryptoError {
             Self::UntrustedDeviceKey => {
                 write!(f, "device key failed Ed25519 self-signature verification")
             }
+            Self::InvalidRoomId(e) => write!(f, "invalid room identifier: {e}"),
         }
     }
 }
@@ -548,12 +552,18 @@ impl MatrixCrypto {
     ///
     /// # Errors
     ///
+    /// Returns [`CryptoError::InvalidRoomId`] if `room_id` is not a well-formed
+    /// Matrix room identifier (#373).
     /// Returns [`CryptoError::SessionCapacityReached`] if the outbound
     /// session list is at capacity and no existing session was replaced.
     pub(crate) fn create_outbound_megolm(
         &mut self,
         room_id: &str,
     ) -> Result<&MegolmSession, CryptoError> {
+        // WHY(#373): validate the room id before spending entropy or storing a
+        // session keyed on it.
+        let validated_room = MatrixRoomId::new(room_id).map_err(CryptoError::InvalidRoomId)?;
+
         // Generate fresh session key and ID.
         let mut session_key = [0u8; KEY_SIZE];
         csprng::kernel_random_bytes(&mut session_key)?;
@@ -564,7 +574,7 @@ impl MatrixCrypto {
             session_id,
             session_key,
             message_index: 0,
-            room_id: String::from(room_id).into(),
+            room_id: validated_room,
         };
 
         // Replace existing session for this room, or add new one.
@@ -1454,7 +1464,7 @@ mod tests {
                 session_id: [0u8; KEY_SIZE],
                 session_key: [0u8; KEY_SIZE],
                 message_index: 0,
-                room_id: String::new().into(),
+                room_id: MatrixRoomId::new("!fallback:test").expect("valid test room id"),
             });
 
         // Get mutable reference to the outbound session.
@@ -1909,7 +1919,7 @@ mod tests {
             session_id: [0x42; KEY_SIZE],
             session_key: [0xFF; KEY_SIZE],
             message_index: 0,
-            room_id: String::from("!room:example.com").into(),
+            room_id: MatrixRoomId::new("!room:example.com").expect("valid test room id"),
         };
 
         let result = crypto.add_inbound_megolm(session);
