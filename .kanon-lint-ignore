@@ -126,6 +126,9 @@ MANIFEST/no-license:fuzz/Cargo.toml
 MANIFEST/no-msrv:fuzz/Cargo.toml
 MANIFEST/no-deny-toml:fuzz/Cargo.toml
 MANIFEST/no-rustfmt:fuzz/Cargo.toml
+# WHY: fuzz/corpus/ holds binary fuzzer-input samples (raw protocol bytes),
+# which are intentionally not valid UTF-8 and cannot be canonical-clean-linted.
+WORKTREE/canonical-clean:fuzz/corpus/**
 
 # =============================================================================
 # crates/thumos/ — bare-metal kernel binary, excluded from workspace
