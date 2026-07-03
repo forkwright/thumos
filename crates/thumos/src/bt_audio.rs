@@ -406,7 +406,15 @@ impl<H: BtHwOps> A2dpProfile<H> {
 
     /// Resume a suspended audio stream.
     ///
-    /// Transitions from Connected back to Streaming.
+    /// Sends AVDTP Start to the peer. Mirrors the initial connect-to-
+    /// streaming transition: this does NOT advance the state to
+    /// Streaming by itself -- call `advance_signaling(AVDTP_SIGNAL_START)`
+    /// when the peer's Start response arrives, exactly as after the
+    /// initial Start sent during signaling (see the `AVDTP_SIGNAL_OPEN`
+    /// arm of `advance_signaling`). Keeping Streaming gated behind the
+    /// same single peer-ACK path avoids a second path that granted it on
+    /// local send alone, inconsistent with every other transition into
+    /// Streaming.
     ///
     /// # Errors
     ///
@@ -422,7 +430,6 @@ impl<H: BtHwOps> A2dpProfile<H> {
         let msg = AvdtpMessage::start(label, self.remote_seid);
         self.hw.send_command(&msg).map_err(BtAudioError::from)?;
 
-        self.state = A2dpState::Streaming;
         Ok(())
     }
 
@@ -669,9 +676,22 @@ mod tests {
         assert!(result.is_ok(), "suspend must succeed");
         assert_eq!(profile.state(), A2dpState::Connected);
 
-        // Resume.
+        // Resume: sends Start but does not itself grant Streaming --
+        // that requires the peer's ACK via advance_signaling(), exactly
+        // like the initial connect-to-streaming transition.
         let result = profile.resume();
         assert!(result.is_ok(), "resume must succeed");
+        assert_eq!(
+            profile.state(),
+            A2dpState::Connected,
+            "resume() alone must not grant Streaming without a peer ACK"
+        );
+
+        let result = profile.advance_signaling(AVDTP_SIGNAL_START);
+        assert!(
+            result.is_ok(),
+            "advancing past the peer's Start ACK must succeed"
+        );
         assert_eq!(profile.state(), A2dpState::Streaming);
     }
 

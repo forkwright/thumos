@@ -221,9 +221,12 @@ fn validate_checksum(sentence: &[u8]) -> Result<(), GpsError> {
         checksum ^= b;
     }
 
-    // Parse the expected checksum (two hex chars after *).
+    // Parse the expected checksum (two hex chars after *). Invalid hex
+    // digits mean the sentence is malformed, not that a computed
+    // checksum merely disagreed with the claimed value -- those are
+    // distinct failure classes.
     let expected =
-        parse_hex_byte(sentence[star + 1], sentence[star + 2]).ok_or(GpsError::ChecksumMismatch)?;
+        parse_hex_byte(sentence[star + 1], sentence[star + 2]).ok_or(GpsError::ParseError)?;
 
     if checksum == expected {
         Ok(())
@@ -962,6 +965,20 @@ mod tests {
             validate_checksum(sentence),
             Err(GpsError::ChecksumMismatch),
             "corrupted checksum must be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_checksum_rejects_non_hex_digits_as_parse_error() {
+        // "ZZ" are not valid hex digits -- this is a malformed sentence,
+        // not a checksum that was computed and disagreed. Distinct from
+        // validate_checksum_rejects_bad_checksum's well-formed-but-wrong-
+        // value case.
+        let sentence = b"$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*ZZ";
+        assert_eq!(
+            validate_checksum(sentence),
+            Err(GpsError::ParseError),
+            "non-hex checksum digits must be ParseError, not ChecksumMismatch"
         );
     }
 

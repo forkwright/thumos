@@ -61,6 +61,26 @@ pub(crate) const EOPNOTSUPP: u32 = 0u32.wrapping_sub(95);
 /// Address already in use.
 pub(crate) const EADDRINUSE: u32 = 0u32.wrapping_sub(98);
 
+/// Address not available (an unaddressable remote/local endpoint, e.g. a
+/// zero port or unspecified address smoltcp's connect()/send() refused).
+pub(crate) const EADDRNOTAVAIL: u32 = 0u32.wrapping_sub(99);
+
+/// Resource temporarily unavailable (no datagram currently queued).
+pub(crate) const EAGAIN: u32 = 0u32.wrapping_sub(11);
+
+/// Message too long (a received datagram exceeded the caller's buffer
+/// and was dropped rather than truncated-and-delivered).
+pub(crate) const EMSGSIZE: u32 = 0u32.wrapping_sub(90);
+
+/// Destination address required (no valid peer address for a datagram send).
+pub(crate) const EDESTADDRREQ: u32 = 0u32.wrapping_sub(89);
+
+/// No buffer space available.
+pub(crate) const ENOBUFS: u32 = 0u32.wrapping_sub(105);
+
+/// Transport endpoint is already connected.
+pub(crate) const EISCONN: u32 = 0u32.wrapping_sub(106);
+
 // -- fd kind encoding (same bit-field scheme as pipe.rs) --
 
 /// FD kind mask: low 8 bits of flags identify the fd type.
@@ -407,13 +427,17 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
         None => return fd::EBADF,
     };
 
-    // Check port not already in use by another socket.
+    // Check port not already in use by another socket of the SAME
+    // transport. TCP and UDP have independent port spaces (e.g. a
+    // resolver legitimately binds UDP/53 and TCP/53 simultaneously) --
+    // comparing bound_port alone made a UDP bind falsely conflict with an
+    // unrelated TCP bind on the same port number.
     for (i, slot) in sock_table.iter().enumerate() {
         if i == fd_idx {
             continue;
         }
         if let Some(other) = slot {
-            if other.bound_port == port {
+            if other.bound_port == port && other.socket_type == socket_type {
                 return EADDRINUSE;
             }
         }
@@ -591,8 +615,17 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
                 tcp_socket.connect(cx, remote, local_port)
             };
 
-            if connect_result.is_err() {
-                return ECONNREFUSED;
+            if let Err(err) = connect_result {
+                // WHY: smoltcp's ConnectError distinguishes two genuinely
+                // different failures; collapsing both into ECONNREFUSED
+                // told userspace "the peer refused" even when the local
+                // socket was already open (EISCONN) or the endpoint was
+                // never addressable in the first place (EADDRNOTAVAIL) --
+                // neither of which involved the peer at all.
+                return match err {
+                    tcp::ConnectError::InvalidState => EISCONN,
+                    tcp::ConnectError::Unaddressable => EADDRNOTAVAIL,
+                };
             }
 
             // Update bound_port in socket info.
@@ -602,8 +635,15 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
             }
         }
         SocketType::Udp => {
-            // UDP connect just sets the default peer address.
-            // No network I/O needed.
+            // WHY: a UDP "connect" only records the default peer address
+            // for subsequent send/recv -- smoltcp performs no handshake
+            // and never validates it. Port 0 is not a routable endpoint;
+            // reject it explicitly rather than silently caching an
+            // unroutable peer that every later send_slice()/recv_slice()
+            // would then act on.
+            if peer_port == 0 {
+                return fd::EINVAL;
+            }
         }
     }
 
@@ -735,7 +775,12 @@ pub(crate) fn sys_sendto(
 
             match udp_socket.send_slice(data, dest) {
                 Ok(()) => len,
-                Err(_) => fd::EINVAL,
+                // WHY: smoltcp's udp::SendError distinguishes "no valid
+                // destination" from "the tx buffer has no room for this
+                // datagram"; collapsing both into EINVAL hid which one
+                // actually happened.
+                Err(udp::SendError::Unaddressable) => EDESTADDRREQ,
+                Err(udp::SendError::BufferFull) => ENOBUFS,
             }
         }
     }
@@ -855,7 +900,16 @@ pub(crate) fn sys_recvfrom(
                     }
                     n as u32
                 }
-                Err(_) => 0,
+                // WHY: collapsing every recv error to a bare 0 (the TCP
+                // arm's legitimate EOF sentinel) masked genuine UDP
+                // failures as an empty read. Exhausted means "nothing
+                // queued yet" (would-block, not an error); Truncated means
+                // a datagram WAS received and then silently dropped
+                // because it didn't fit -- that must not read as "0 bytes
+                // received", or the caller can't tell a real truncation
+                // from an empty socket.
+                Err(udp::RecvError::Exhausted) => EAGAIN,
+                Err(udp::RecvError::Truncated) => EMSGSIZE,
             }
         }
     }
@@ -1088,6 +1142,54 @@ mod tests {
         assert_eq!(info.bound_port, 8080);
     }
 
+    /// Pointer-dependent test: only runs on 32-bit targets.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn udp_bind_does_not_conflict_with_tcp_bind_on_same_port() {
+        unsafe {
+            setup_test_network();
+        }
+        let tcp_fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+        let udp_fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        assert!(tcp_fd < MAX_FDS as u32 && udp_fd < MAX_FDS as u32);
+
+        static mut TCP_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let tcp_addr = unsafe { &mut *core::ptr::addr_of_mut!(TCP_ADDR) };
+        *tcp_addr = SockaddrIn::new(53, Ipv4Address::new(0, 0, 0, 0));
+        let tcp_bind = sys_bind(
+            tcp_fd,
+            tcp_addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(tcp_bind, 0, "TCP bind to port 53 must succeed");
+
+        static mut UDP_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let udp_addr = unsafe { &mut *core::ptr::addr_of_mut!(UDP_ADDR) };
+        *udp_addr = SockaddrIn::new(53, Ipv4Address::new(0, 0, 0, 0));
+        let udp_bind = sys_bind(
+            udp_fd,
+            udp_addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(
+            udp_bind, 0,
+            "UDP bind to the same port number as an existing TCP bind must succeed: \
+             TCP and UDP have independent port spaces"
+        );
+    }
+
     #[test]
     fn bind_rejects_kernel_range_addr_ptr() {
         // No socket setup needed: validate_user_buffer runs before the
@@ -1098,6 +1200,37 @@ mod tests {
             result,
             fd::EFAULT,
             "kernel-range addr_ptr must return EFAULT"
+        );
+    }
+
+    /// Pointer-dependent test: only runs on 32-bit targets.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn udp_connect_rejects_peer_port_zero() {
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
+        static mut ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
+        *addr = SockaddrIn::new(0, Ipv4Address::new(93, 184, 216, 34));
+        let result = sys_connect(
+            fd,
+            addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(
+            result,
+            fd::EINVAL,
+            "UDP connect to peer port 0 must be rejected as an unroutable endpoint"
         );
     }
 
@@ -1186,6 +1319,44 @@ mod tests {
         );
     }
 
+    /// Pointer-dependent test: only runs on 32-bit targets.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn tcp_connect_twice_returns_eisconn_not_econnrefused() {
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
+        static mut ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
+        *addr = SockaddrIn::new(80, Ipv4Address::new(93, 184, 216, 34));
+
+        let first = sys_connect(
+            fd,
+            addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(first, 0, "first connect() must succeed");
+
+        let second = sys_connect(
+            fd,
+            addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(
+            second, EISCONN,
+            "connect() on an already-open TCP socket must return EISCONN, not ECONNREFUSED"
+        );
+    }
+
     #[test]
     fn bind_sets_local_port() {
         // SAFETY: test-only; setup_test_network resets global state.
@@ -1202,6 +1373,66 @@ mod tests {
         let info = sock_table[fd as usize].as_ref().expect("socket info");
         assert_eq!(info.bound_port, 0, "socket should start unbound");
         assert_eq!(info.socket_type, SocketType::Udp);
+    }
+
+    /// Pointer-dependent test: only runs on 32-bit targets.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn udp_sendto_unaddressable_dest_returns_edestaddrreq() {
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
+        static mut DEST: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let dest = unsafe { &mut *core::ptr::addr_of_mut!(DEST) };
+        // Port 0 on an EXPLICIT sendto destination bypasses sys_connect()
+        // entirely (that guard only covers connect()), reaching smoltcp's
+        // own udp::SendError::Unaddressable check directly.
+        *dest = SockaddrIn::new(0, Ipv4Address::new(93, 184, 216, 34));
+
+        let data = b"x";
+        let result = sys_sendto(
+            fd,
+            data.as_ptr() as u32,
+            data.len() as u32,
+            0,
+            dest as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(
+            result, EDESTADDRREQ,
+            "an unaddressable UDP destination must return EDESTADDRREQ, not the old generic EINVAL"
+        );
+    }
+
+    /// Pointer-dependent test: only runs on 32-bit targets.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn udp_recvfrom_with_no_data_returns_eagain_not_zero() {
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
+        static mut BUF: [u8; 16] = [0u8; 16];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+
+        let result = sys_recvfrom(fd, buf.as_mut_ptr() as u32, buf.len() as u32, 0, 0, 0);
+        assert_eq!(
+            result, EAGAIN,
+            "recv on a UDP socket with nothing queued must return EAGAIN, not the old \
+             generic 0 (indistinguishable from a legitimate zero-byte datagram)"
+        );
     }
 
     #[test]

@@ -1148,29 +1148,45 @@ impl Filesystem for Lfs {
             name: String::from(name),
         });
 
-        // Write the updated directory data block.
-        let dir_block = Self::write_dir_block(
+        // Write the updated directory data block. On failure, the new
+        // inode above is already durable in the imap with no directory
+        // entry pointing to it -- roll back the imap insert so a failed
+        // create() never leaks storage (mirror of the dangling-reference
+        // guard in unlink(): that guard avoids a namespace entry
+        // outliving its imap entry; this guard avoids an imap entry
+        // outliving its namespace entry).
+        let dir_block = match Self::write_dir_block(
             dev.as_mut(),
             &mut cache,
             writer,
             &mut self.segments,
             &entries,
-        )?;
+        ) {
+            Ok(block) => block,
+            Err(e) => {
+                self.imap.remove(new_inode_id);
+                return Err(e);
+            }
+        };
 
         // Update parent inode to point to the new directory data block.
         parent.direct[0] = dir_block;
         parent.size = entries.iter().map(|e| e.record_len as u64).sum();
 
-        writer
-            .write_inode(
-                dev.as_mut(),
-                &mut cache,
-                &mut self.imap,
-                &mut self.segments,
-                dir_inode,
-                &parent,
-            )
-            .map_err(|_| VfsError::IoError)?;
+        match writer.write_inode(
+            dev.as_mut(),
+            &mut cache,
+            &mut self.imap,
+            &mut self.segments,
+            dir_inode,
+            &parent,
+        ) {
+            Ok(_) => {}
+            Err(_) => {
+                self.imap.remove(new_inode_id);
+                return Err(VfsError::IoError);
+            }
+        }
 
         drop(cache);
         drop(dev);
@@ -2058,6 +2074,43 @@ mod tests {
         assert!(
             dir_entries.iter().any(|e| e.name == "victim"),
             "directory entry must remain after a failed unlink"
+        );
+    }
+
+    #[test]
+    fn create_failure_rolls_back_orphaned_imap_entry() {
+        use alloc::format;
+
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        // Fill the one-block directory to capacity (256 fixed-size
+        // entries; see create_past_one_block_capacity_fails_without_dropping_entries).
+        let mut created = 0usize;
+        loop {
+            let name = format!("file{:03}", created);
+            match fs.create(root, &name, InodeType::RegularFile) {
+                Ok(_) => created += 1,
+                Err(VfsError::NoSpace) => break,
+                Err(e) => panic!("unexpected error at entry {created}: {e:?}"),
+            }
+            if created > 300 {
+                panic!("directory did not report NoSpace within expected bounds");
+            }
+        }
+
+        // The 257th create() allocated (and durably wrote) a new inode
+        // via write_inode() before write_dir_block() rejected the entry
+        // for lack of room -- without a rollback, that inode is now an
+        // orphan: present in the imap, reachable FROM no directory.
+        let orphan_candidate = fs.next_inode - 1;
+        assert!(
+            fs.stat(orphan_candidate).is_err(),
+            "a create() that fails after write_inode() but before the directory entry \
+             lands must roll back the imap insert, not leak the inode"
         );
     }
 
