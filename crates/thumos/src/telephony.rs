@@ -1174,6 +1174,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cpin_sim_pin_required_surfaces_sim_not_ready() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // Step 1: AT
+        mock.queue_ok(); // Step 2: ATE0
+        mock.queue_ok(); // Step 3: AT+CFUN=1
+        // Step 4: AT+CPIN? -> +CPIN: SIM PIN -- the ordinary PIN-required
+        // case, distinct from the already-covered SIM PUK case.
+        mock.queue_info_ok(b"+CPIN: SIM PIN");
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert_eq!(
+            result,
+            Err(TelephonyError::SimNotReady),
+            "SIM PIN required must surface as SimNotReady"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Error(TelephonyError::SimNotReady)
+        );
+    }
+
+    #[test]
+    fn cpin_cme_error_preserves_code_not_sim_not_ready() {
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // Step 1: AT
+        mock.queue_ok(); // Step 2: ATE0
+        mock.queue_ok(); // Step 3: AT+CFUN=1
+        // Step 4: AT+CPIN? -> +CME ERROR (modem-level failure, not a SIM
+        // PIN/PUK state) -- must preserve the code, not collapse to
+        // SimNotReady (the same class of bug as issue #282 finding 18, but
+        // on the CME rather CMS error path).
+        mock.queue_response(b"+CME ERROR: 10");
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert_eq!(
+            result,
+            Err(TelephonyError::CmeError(10)),
+            "a +CME ERROR on AT+CPIN? must preserve its code, not collapse to SimNotReady"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Error(TelephonyError::CmeError(10))
+        );
+    }
+
     use super::*;
 
     /// Helper: create a mock transport pre-loaded for a full init sequence.
@@ -1355,6 +1403,35 @@ mod tests {
     }
 
     #[test]
+    fn poll_signal_emits_signal_update_when_interval_has_elapsed() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+        assert_eq!(tel.modem_state(), ModemState::Registered);
+
+        // RSSI 20 => -113 + (20*2) = -73 dBm (3 bars), distinct from init's
+        // "+CSQ: 18,99" (-77 dBm) so the assertion proves this poll's fresh
+        // data was used, not stale init-time state.
+        tel.transport.queue_info_ok(b"+CSQ: 20,1");
+        let commands_before = tel.transport.sent_commands.len();
+
+        let event = tel.poll_signal(SIGNAL_POLL_INTERVAL_MS);
+        assert_eq!(
+            event,
+            Some(TelephonyEvent::SignalUpdate {
+                bars: 3,
+                rssi_dbm: -73,
+            }),
+            "an elapsed-interval poll_signal must emit SignalUpdate with the freshly queried data"
+        );
+        assert_eq!(
+            tel.transport.sent_commands.len(),
+            commands_before + 1,
+            "poll_signal must issue AT+CSQ when the interval has elapsed"
+        );
+    }
+
+    #[test]
     fn ring_urc_transitions_to_incoming() {
         let mock = mock_for_init();
         let mut tel = Telephony::new(mock);
@@ -1369,6 +1446,42 @@ mod tests {
         assert!(
             matches!(tel.call_state(), CallState::Incoming { .. }),
             "call state must transition to Incoming on RING"
+        );
+    }
+
+    #[test]
+    fn poll_signal_returns_none_and_does_not_repoll_before_interval_elapsed() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+
+        // First elapsed-interval poll succeeds and advances last_signal_poll.
+        tel.transport.queue_info_ok(b"+CSQ: 20,1");
+        let first = tel.poll_signal(SIGNAL_POLL_INTERVAL_MS);
+        assert!(
+            first.is_some(),
+            "sanity: first elapsed-interval poll must succeed"
+        );
+
+        let commands_before = tel.transport.sent_commands.len();
+        let dbm_before = tel.signal_dbm();
+
+        // A second call before another full interval has elapsed must be
+        // throttled: no AT+CSQ reissued, no event emitted, no state mutated.
+        let second = tel.poll_signal(SIGNAL_POLL_INTERVAL_MS + 1);
+        assert_eq!(
+            second, None,
+            "poll_signal must return None when called before the interval has elapsed again"
+        );
+        assert_eq!(
+            tel.transport.sent_commands.len(),
+            commands_before,
+            "a throttled poll_signal call must not re-issue AT+CSQ"
+        );
+        assert_eq!(
+            tel.signal_dbm(),
+            dbm_before,
+            "a throttled poll_signal call must not mutate signal state"
         );
     }
 
@@ -1388,6 +1501,45 @@ mod tests {
             matches!(tel.call_state(), CallState::Idle),
             "call state must remain Idle"
         );
+    }
+
+    #[test]
+    fn ring_then_clip_populates_caller_id_on_incoming_call() {
+        let mock = mock_for_init();
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+
+        tel.transport.queue_urc(b"RING");
+        tel.poll();
+        assert!(
+            matches!(tel.call_state(), CallState::Incoming { .. }),
+            "RING must transition call state to Incoming before CLIP arrives"
+        );
+
+        tel.transport.queue_urc(b"+CLIP: \"+15551234567\",145");
+        let event = tel.poll();
+
+        let expected_number = b"+15551234567";
+        match tel.call_state() {
+            CallState::Incoming { number, len } => {
+                assert_eq!(
+                    &number[..usize::from(*len)],
+                    expected_number,
+                    "CLIP after a prior RING must populate the incoming call's caller ID"
+                );
+            }
+            other => panic!("expected Incoming state with caller ID, got: {other}"),
+        }
+        match event {
+            Some(TelephonyEvent::IncomingCall { number, number_len }) => {
+                assert_eq!(
+                    &number[..usize::from(number_len)],
+                    expected_number,
+                    "CLIP after RING must emit an IncomingCall event carrying the caller ID"
+                );
+            }
+            other => panic!("expected IncomingCall event with caller ID, got: {other:?}"),
+        }
     }
 
     #[test]
@@ -1676,6 +1828,65 @@ mod tests {
             tel.modem_state(),
             ModemState::Error(TelephonyError::ModemError),
             "modem_state must record Error, not remain stuck at Initializing"
+        );
+    }
+
+    #[test]
+    fn initialize_fails_fast_on_early_step_at_command_errors() {
+        // Step 1: AT -> ERROR must abort before any later step is attempted.
+        let mut mock = MockModemTransport::new();
+        mock.queue_response(b"ERROR");
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert_eq!(
+            result,
+            Err(TelephonyError::ModemError),
+            "step 1 AT failure must fail initialize()"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Error(TelephonyError::ModemError),
+            "modem_state must record Error on step 1 failure"
+        );
+        assert_eq!(
+            tel.transport.sent_commands.len(),
+            1,
+            "a step 1 failure must abort before step 2 (ATE0) is sent"
+        );
+
+        // Step 2: ATE0 -> ERROR must abort before step 3 is attempted.
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // Step 1: AT
+        mock.queue_response(b"ERROR"); // Step 2: ATE0
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert_eq!(
+            result,
+            Err(TelephonyError::ModemError),
+            "step 2 ATE0 failure must fail initialize()"
+        );
+        assert_eq!(
+            tel.transport.sent_commands.len(),
+            2,
+            "a step 2 failure must abort before step 3 (AT+CFUN=1) is sent"
+        );
+
+        // Step 3: AT+CFUN=1 -> ERROR must abort before step 4 is attempted.
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // Step 1: AT
+        mock.queue_ok(); // Step 2: ATE0
+        mock.queue_response(b"ERROR"); // Step 3: AT+CFUN=1
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert_eq!(
+            result,
+            Err(TelephonyError::ModemError),
+            "step 3 AT+CFUN=1 failure must fail initialize()"
+        );
+        assert_eq!(
+            tel.transport.sent_commands.len(),
+            3,
+            "a step 3 failure must abort before step 4 (AT+CPIN?) is sent"
         );
     }
 

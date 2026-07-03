@@ -1470,6 +1470,53 @@ mod tests {
         }
     }
 
+    /// fork() must NOT let the child inherit a signal that was pending in the
+    /// parent at fork time: signal HANDLERS are inherited but the pending mask
+    /// is cleared (process.rs fork(), `s.pending = 0`), matching POSIX
+    /// fork() semantics.
+    #[test]
+    fn fork_clears_child_pending_signal_mask() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap_or_default();
+            let mut parent_signal_state = SignalState::new();
+            parent_signal_state.set_pending(crate::signal::Signal::Sigusr1);
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Running,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: parent_signal_state,
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            let child_pid = fork().unwrap_or_default();
+
+            let child_pending = get_pending_mask(child_pid);
+            let parent_pending = get_pending_mask(0);
+            assert_eq!(
+                child_pending, 0,
+                "child must start with a clean pending-signal mask even though the parent had SIGUSR1 pending at fork time"
+            );
+            assert_ne!(
+                parent_pending, 0,
+                "fork must not clear the PARENT's own pending-signal mask"
+            );
+        }
+    }
+
     #[test]
     fn fork_strips_privileged_capabilities() {
         // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
@@ -2332,6 +2379,71 @@ mod tests {
                 "process must return to Running after clear_wake_tick"
             );
             assert_eq!(p.wake_tick, 0, "wake_tick must be reset to 0");
+        }
+    }
+
+    /// schedule()'s first pass wakes a Sleeping process once its wake_tick has
+    /// elapsed (`now >= wake_tick`), transitioning it to Ready; a process whose
+    /// wake_tick has NOT yet elapsed must stay Sleeping. exceptions::ticks()
+    /// is only ever written FROM the real timer IRQ handler, so it reads 0 for
+    /// the life of the host test binary -- wake_tick 0 is therefore already due.
+    #[test]
+    fn schedule_wakes_sleeping_process_past_wake_tick() {
+        // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
+        // test execution ensures no concurrent access to PROCS or CURRENT.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+
+            let pt0 = mmu::alloc_addr_space().unwrap_or_default();
+            procs[0] = Some(Process {
+                pid: 0,
+                state: State::Sleeping,
+                ctx: Context::zero(),
+                parent: None,
+                exit_status: 0,
+                page_table_phys: pt0,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: 0,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+
+            let pt1 = mmu::alloc_addr_space().unwrap_or_default();
+            procs[1] = Some(Process {
+                pid: 1,
+                state: State::Sleeping,
+                ctx: Context::zero(),
+                parent: Some(0),
+                exit_status: 0,
+                page_table_phys: pt1,
+                stack_base: 0,
+                stack_pages: 0,
+                heap_break: DEFAULT_HEAP_BREAK,
+                mappings: [None; MAX_MAPPINGS],
+                signal_state: SignalState::new(),
+                uid: 0,
+                wake_tick: u64::MAX,
+                capabilities: crate::capability::Capabilities::ALL,
+            });
+            CURRENT = 0;
+
+            schedule();
+
+            assert_eq!(
+                get_state(0),
+                Some(State::Ready),
+                "a Sleeping process whose wake_tick has elapsed must transition to Ready"
+            );
+            assert_eq!(
+                get_state(1),
+                Some(State::Sleeping),
+                "a Sleeping process whose wake_tick has NOT elapsed must remain Sleeping"
+            );
         }
     }
     // -----------------------------------------------------------------------

@@ -520,6 +520,86 @@ mod tests {
         assert!(sig.iter().all(|&b| b == 0xBB), "signature must be all 0xBB");
     }
 
+    /// Test that a genuinely valid combined image (payload + Ed25519
+    /// signature under the embedded boot key) verifies via
+    /// [`verify_combined_image`].
+    #[test]
+    fn combined_image_valid_signature_passes() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        // NOTE: RFC 8032 section 7.1 Test Vector 1 secret key (seed) -- the
+        // private half of BOOT_PUBLIC_KEY. Cross-verified against the
+        // vendored ed25519-dalek crate's own RFC-8032-derived fixture and by
+        // independently recomputing the derived public key.
+        let seed: [u8; 32] = [
+            0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec,
+            0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03,
+            0x1c, 0xae, 0x7f, 0x60,
+        ];
+        let signing_key = SigningKey::from_bytes(&seed);
+        assert_eq!(
+            signing_key.verifying_key().to_bytes(),
+            BOOT_PUBLIC_KEY,
+            "seed must derive the embedded boot public key"
+        );
+
+        let payload = [0x5Au8; 16];
+        let signature = signing_key.sign(&payload).to_bytes();
+
+        let mut image = [0u8; 16 + SIGNATURE_LEN];
+        image[..16].copy_from_slice(&payload);
+        image[16..].copy_from_slice(&signature);
+
+        assert_eq!(
+            verify_combined_image(&image),
+            Ok(()),
+            "combined image with a valid boot-key signature must verify"
+        );
+    }
+
+    /// Test that tampering a single payload byte after signing breaks
+    /// [`verify_combined_image`] (the signature no longer covers the
+    /// modified bytes).
+    #[test]
+    fn combined_image_tampered_payload_fails() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        // NOTE: same RFC 8032 Test Vector 1 seed as
+        // combined_image_valid_signature_passes.
+        let seed: [u8; 32] = [
+            0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec,
+            0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03,
+            0x1c, 0xae, 0x7f, 0x60,
+        ];
+        let signing_key = SigningKey::from_bytes(&seed);
+
+        let payload = [0x5Au8; 16];
+        let signature = signing_key.sign(&payload).to_bytes();
+
+        let mut image = [0u8; 16 + SIGNATURE_LEN];
+        image[..16].copy_from_slice(&payload);
+        image[16..].copy_from_slice(&signature);
+        image[0] ^= 0x01; // tamper one payload byte after signing
+
+        assert_eq!(
+            verify_combined_image(&image),
+            Err(SecureBootError::InvalidSignature),
+            "tampered payload byte must fail signature verification"
+        );
+    }
+
+    /// Test that an image shorter than MIN_IMAGE_SIZE is rejected by
+    /// [`verify_combined_image`] before any signature verification.
+    #[test]
+    fn combined_image_too_short_fails() {
+        let short = [0u8; 64]; // exactly 64 bytes, need 65+
+        assert_eq!(
+            verify_combined_image(&short),
+            Err(SecureBootError::ImageTooShort),
+            "combined image of exactly 64 bytes must fail (need at least 65)"
+        );
+    }
+
     /// Test Display impl for SecureBootError.
     #[test]
     fn error_display() {

@@ -1770,6 +1770,40 @@ mod tests {
     }
 
     #[test]
+    fn firewall_apply_mode_preserves_counters_across_transition() {
+        let mut fw = CcciFirewall::new(FirewallMode::Daily);
+
+        // Accumulate counters in Daily mode: ControlTx/SystemTx are
+        // allowlisted (allow), MdLogRx is not (drop).
+        fw.evaluate(CcciChannel::ControlTx as u32);
+        fw.evaluate(CcciChannel::SystemTx as u32);
+        fw.evaluate(CcciChannel::MdLogRx as u32);
+        assert_eq!(fw.allow_count(), 2);
+        assert_eq!(fw.drop_count(), 1);
+
+        // WHY: apply_mode rebuilds mode + allowlist_len only -- drop_count
+        // and allow_count must survive the transition, not reset alongside
+        // the allowlist.
+        fw.apply_mode(FirewallMode::Panic);
+        assert_eq!(fw.mode(), FirewallMode::Panic);
+        assert_eq!(
+            fw.allowlist_len(),
+            0,
+            "Panic must still rebuild an empty allowlist"
+        );
+        assert_eq!(
+            fw.allow_count(),
+            2,
+            "apply_mode must not reset allow_count across a mode transition"
+        );
+        assert_eq!(
+            fw.drop_count(),
+            1,
+            "apply_mode must not reset drop_count across a mode transition"
+        );
+    }
+
+    #[test]
     fn firewall_counters_accumulate() {
         let mut fw = CcciFirewall::new(FirewallMode::Sentinel);
 

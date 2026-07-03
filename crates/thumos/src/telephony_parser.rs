@@ -355,6 +355,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_creg_response_extracts_stat_ignoring_trailing_fields() {
+        assert_eq!(
+            parse_creg_response(b"+CREG: 5"),
+            Some(RegStatus::RegisteredRoaming),
+            "stat=5 must parse as RegisteredRoaming"
+        );
+        assert_eq!(
+            parse_creg_response(b"+CREG: 2,\"1FFE\",\"CE12\""),
+            Some(RegStatus::Searching),
+            "stat must be extracted from the leading field even with trailing lac/ci fields present"
+        );
+        assert_eq!(
+            parse_creg_response(b"+CREG: 9"),
+            Some(RegStatus::Unknown),
+            "an unrecognized stat code must map to RegStatus::Unknown rather than None"
+        );
+        assert_eq!(
+            parse_creg_response(b"+CSQ: 1"),
+            None,
+            "a line without the +CREG prefix must not parse"
+        );
+    }
+
+    #[test]
     fn parse_cops_response_extracts_operator() {
         let line = b"+COPS: 0,0,\"T-Mobile\"";
         let mut name = [0u8; MAX_OPERATOR_LEN];
@@ -438,6 +462,57 @@ mod tests {
         assert_eq!(
             len, None,
             "a caller ID containing AT-command bytes outside the dial charset must be rejected, not stored"
+        );
+    }
+
+    #[test]
+    fn parse_urc_dispatches_line_to_matching_urc_variant() {
+        assert_eq!(
+            parse_urc(b"RING"),
+            Some(Urc::Ring),
+            "RING must dispatch to Urc::Ring"
+        );
+        assert_eq!(
+            parse_urc(b"NO CARRIER"),
+            Some(Urc::NoCarrier),
+            "NO CARRIER must dispatch to Urc::NoCarrier"
+        );
+        assert_eq!(
+            parse_urc(b"BUSY"),
+            Some(Urc::Busy),
+            "BUSY must dispatch to Urc::Busy"
+        );
+        assert_eq!(
+            parse_urc(b"+CSQ: 18,99"),
+            Some(Urc::Csq { rssi: 18, ber: 99 }),
+            "+CSQ line must dispatch to Urc::Csq carrying the parsed rssi/ber"
+        );
+        assert_eq!(
+            parse_urc(b"+CREG: 1"),
+            Some(Urc::Creg {
+                stat: RegStatus::RegisteredHome
+            }),
+            "+CREG line must dispatch to Urc::Creg carrying the parsed stat"
+        );
+        let mut number = [0u8; MAX_NUMBER_LEN];
+        number[..12].copy_from_slice(b"+15551234567");
+        assert_eq!(
+            parse_urc(b"+CLIP: \"+15551234567\",145"),
+            Some(Urc::Clip {
+                number,
+                number_len: 12
+            }),
+            "+CLIP line must dispatch to Urc::Clip carrying the parsed number"
+        );
+        assert_eq!(
+            parse_urc(b"+CLIP: \"AT+CFUN=0\",145"),
+            None,
+            "a +CLIP line whose number fails charset validation must dispatch to None, not a partial Urc::Clip"
+        );
+        assert_eq!(
+            parse_urc(b"+CGATT: 1"),
+            None,
+            "a line matching no known URC prefix must dispatch to None"
         );
     }
 }
