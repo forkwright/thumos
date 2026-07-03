@@ -1116,6 +1116,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_cpio_rejects_filesize_exceeding_remaining_archive() {
+        let mut archive = build_cpio_entry("init", b"#!/bin/sh", 0o100755);
+        // Claim a filesize far larger than any data actually present in
+        // the archive -- data_end = data_start + filesize must be
+        // rejected before the out-of-bounds slice &data[data_start..data_end]
+        // is taken.
+        archive[54..62].copy_from_slice(b"7FFFFFFF");
+        archive.extend(build_cpio_trailer());
+
+        let fs = RamFs::from_cpio(&archive);
+
+        // WHY: an oversized filesize aborts the parse (same fail-closed
+        // convention as the zero-namesize / non-UTF-8-name cases above)
+        // instead of reading past the archive buffer.
+        assert_eq!(fs.find("init"), None);
+        assert_eq!(fs.count(), 0);
+    }
+
+    #[test]
     fn parse_cpio_creates_directories() {
         let mut archive = Vec::new();
         // Directory entry

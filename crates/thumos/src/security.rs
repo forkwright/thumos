@@ -905,6 +905,21 @@ mod tests {
     }
 
     #[test]
+    fn hkdf_extract_empty_salt_equals_zero_filled_salt() {
+        // RFC 5869 §2.2: an empty salt is defined as equivalent to a salt
+        // of HashLen zero bytes -- hkdf_extract's doc comment states this
+        // explicitly. Verify the two salts actually produce the same PRK
+        // via the underlying hkdf crate.
+        let ikm = [0x0bu8; 22];
+        let empty_salt_prk = hkdf_extract(&[], &ikm);
+        let zero_salt_prk = hkdf_extract(&[0u8; SHA256_DIGEST_LEN], &ikm);
+        assert_eq!(
+            empty_salt_prk, zero_salt_prk,
+            "an empty salt must be equivalent to a HashLen zero-filled salt (RFC 5869 §2.2)"
+        );
+    }
+
+    #[test]
     fn hkdf_different_info_produces_different_keys() {
         let ikm = [0xAAu8; 32];
         let salt = [0xBBu8; 16];

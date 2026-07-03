@@ -903,6 +903,22 @@ mod tests {
         assert_eq!(time.year, 2011, "year must be 2011");
     }
 
+    #[test]
+    fn parse_rmc_void_status_returns_no_fix() {
+        // status field 'V' (void) must be rejected even though every
+        // other field is well-formed and passes checksum validation.
+        // Build with a computed checksum so the void-status branch is
+        // reached rather than a checksum ParseError.
+        let sentence =
+            nmea_sentence(b"GPRMC,092750.000,V,5321.6802,N,00630.3372,W,0.02,31.66,280511,,,A");
+        let result = parse_rmc(&sentence);
+        assert_eq!(
+            result,
+            Err(GpsError::NoFix),
+            "RMC status 'V' (void) must return NoFix"
+        );
+    }
+
     // -- GGA no-fix error --
 
     #[test]
@@ -913,6 +929,43 @@ mod tests {
             result,
             Err(GpsError::NoFix),
             "GGA with fix quality 0 must return NoFix error"
+        );
+    }
+
+    /// Build a valid-checksum NMEA sentence "$<body>*<XX>" (no CRLF) for
+    /// tests that need to get past validate_checksum() before reaching a
+    /// deeper parse branch.
+    fn nmea_sentence(body: &[u8]) -> Vec<u8> {
+        let checksum = body.iter().fold(0u8, |acc, &b| acc ^ b);
+        let mut sentence = Vec::new();
+        sentence.push(b'$');
+        sentence.extend_from_slice(body);
+        sentence.push(b'*');
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        sentence.push(HEX[(checksum >> 4) as usize]);
+        sentence.push(HEX[(checksum & 0xF) as usize]);
+        sentence
+    }
+
+    #[test]
+    fn parse_gga_rejects_fewer_than_ten_fields() {
+        let sentence = nmea_sentence(b"GPGGA,1,2,3");
+        let result = parse_gga(&sentence);
+        assert_eq!(
+            result,
+            Err(GpsError::ParseError),
+            "a GGA sentence with fewer than 10 fields must be ParseError"
+        );
+    }
+
+    #[test]
+    fn parse_rmc_rejects_fewer_than_ten_fields() {
+        let sentence = nmea_sentence(b"GPRMC,1,A,2");
+        let result = parse_rmc(&sentence);
+        assert_eq!(
+            result,
+            Err(GpsError::ParseError),
+            "an RMC sentence with fewer than 10 fields must be ParseError"
         );
     }
 
@@ -954,6 +1007,30 @@ mod tests {
 
         let second = buf.take_sentence();
         assert!(second.is_some(), "second sentence must be extractable");
+    }
+
+    #[test]
+    fn sentence_buffer_feed_truncates_and_preserves_newest_bytes() {
+        let mut buf = SentenceBuffer::new();
+
+        // Push a long run of un-terminated filler bytes past capacity,
+        // then a complete valid sentence. If feed() truncated the newest
+        // bytes instead of the oldest, the trailing sentence would be lost.
+        let filler = [b'X'; 300];
+        buf.feed(&filler);
+        assert_eq!(
+            buf.len(),
+            MAX_SENTENCE_LEN,
+            "feed() must truncate to MAX_SENTENCE_LEN once SENTENCE_BUF_CAPACITY is exceeded"
+        );
+
+        buf.feed(b"$GPGGA,1,2,N,3,E,1,4,1.0,10.0,M,0,M,,*53\r\n");
+        let sentence = buf.take_sentence();
+        assert!(
+            sentence.is_some(),
+            "a sentence fed after overflow-truncation must still be extractable, \
+             proving the truncation discarded the oldest bytes, not the newest"
+        );
     }
 
     // -- Checksum validation --
@@ -1062,6 +1139,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_time_date_applies_1900_century_for_year_70_and_above() {
+        // NMEA's two-digit year maps to 1900+year for year_short >= 70,
+        // not 2000+year -- only the < 70 branch was exercised elsewhere
+        // (parse_rmc_extracts_time uses year_short=11).
+        let result = parse_time_date(b"092750", b"280599");
+        assert_eq!(
+            result,
+            Ok(GpsTime {
+                year: 1999,
+                month: 5,
+                day: 28,
+                hour: 9,
+                minute: 27,
+                second: 50,
+            }),
+            "year_short=99 must map to 1999, not 2099"
+        );
+    }
+
     // -- GpsTime epoch conversion --
 
     #[test]
@@ -1135,6 +1232,28 @@ mod tests {
         assert!(
             receiver.time().is_none(),
             "shutdown must clear the last known time"
+        );
+    }
+
+    #[test]
+    fn poll_reads_hw_data_and_updates_position_end_to_end() {
+        let mut hw = MockGpsHw::new();
+        hw.data_queue =
+            b"$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76\r\n".to_vec();
+        let mut receiver = GpsReceiver::new(hw);
+        receiver.init().expect("init must succeed");
+        assert_eq!(receiver.state(), GpsState::Searching);
+
+        receiver.poll();
+
+        assert_eq!(
+            receiver.state(),
+            GpsState::FixAcquired,
+            "poll() must drive the full read -> buffer -> parse -> state pipeline"
+        );
+        assert!(
+            receiver.position().is_some(),
+            "poll() must populate the position fix from hardware data end-to-end"
         );
     }
 }

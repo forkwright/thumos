@@ -859,6 +859,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn skip_dns_name_rejects_excessive_label_count() {
+        // 128 single-byte labels: one past the MAX_LABELS=127 ceiling this
+        // loop enforces -- must be rejected, not looped without bound.
+        let mut data = Vec::new();
+        for _ in 0..128 {
+            data.push(1u8);
+            data.push(b'a');
+        }
+        data.push(0); // Terminal zero (unreachable if the guard fires first).
+
+        let result = skip_dns_name(&data, 0);
+        assert_eq!(
+            result,
+            Err(DnsError::MalformedResponse),
+            "a name exceeding MAX_LABELS must be rejected"
+        );
+    }
+
     // -- Resolver integration tests --
 
     #[test]
@@ -1007,6 +1026,32 @@ mod tests {
             result,
             Err(DnsError::NoRecords),
             "zero answer count must return NoRecords"
+        );
+    }
+
+    #[test]
+    fn parse_response_rejects_rdata_length_exceeding_packet() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0001u16.to_be_bytes()); // ID
+        data.extend_from_slice(&0x8180u16.to_be_bytes()); // QR=1, RA=1
+        data.extend_from_slice(&0u16.to_be_bytes()); // QDCOUNT
+        data.extend_from_slice(&1u16.to_be_bytes()); // ANCOUNT
+        data.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+        data.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
+
+        // Answer: root name, A record, RDLENGTH claims 4 bytes but only 2 remain.
+        data.push(0); // root name
+        data.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
+        data.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        data.extend_from_slice(&300u32.to_be_bytes()); // TTL
+        data.extend_from_slice(&4u16.to_be_bytes()); // RDLENGTH = 4
+        data.extend_from_slice(&[1, 2]); // only 2 bytes of RDATA present -- truncated
+
+        let result = parse_dns_response(&data, 0x0001);
+        assert_eq!(
+            result,
+            Err(DnsError::MalformedResponse),
+            "RDLENGTH exceeding the remaining packet bytes must be rejected, not read out of bounds"
         );
     }
 

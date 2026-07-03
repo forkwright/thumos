@@ -853,6 +853,21 @@ mod tests {
         assert!(matches!(state, ProvisionState::Error(_)));
     }
 
+    #[test]
+    fn finalize_in_error_state_returns_the_stored_error() {
+        let mut prov = Provisioner::new();
+        let state = prov.receive_chunk(b"BAD_MAGIC_HEADER_DATA_PLUS_PADDING__");
+        assert_eq!(*state, ProvisionState::Error(ProvisionError::InvalidMagic));
+
+        let result = prov.finalize();
+        assert_eq!(
+            result,
+            Err(ProvisionError::InvalidMagic),
+            "finalize() in the Error state must return the exact stored error, \
+             not Incomplete or a different variant"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Reset
     // -----------------------------------------------------------------------
