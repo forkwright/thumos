@@ -69,6 +69,10 @@ pub enum SmsError {
     NumberTooLong,
     /// Message text too long for single-segment SMS.
     MessageTooLong,
+    /// The inbox was already at capacity ([`MAX_INBOX_MESSAGES`]); the
+    /// oldest buffered message was dropped to make room for the new
+    /// one, which is still enqueued.
+    InboxOverflow,
 }
 
 impl core::fmt::Display for SmsError {
@@ -83,6 +87,7 @@ impl core::fmt::Display for SmsError {
             Self::TransportError => write!(f, "transport error"),
             Self::NumberTooLong => write!(f, "phone number too long"),
             Self::MessageTooLong => write!(f, "message too long"),
+            Self::InboxOverflow => write!(f, "inbox overflow, oldest message dropped"),
         }
     }
 }
@@ -95,6 +100,10 @@ const MAX_GSM7_SEPTETS: usize = 160;
 
 /// Maximum phone number length stored in `SmsMessage.sender`.
 const MAX_SENDER_LEN: usize = 32;
+
+/// Maximum number of messages retained in the inbox before the oldest
+/// is dropped to make room (unbounded SMS flood protection).
+const MAX_INBOX_MESSAGES: usize = 256;
 
 // ---------------------------------------------------------------------------
 // BCD address encoding (ported from klesis/src/pdu.rs)
@@ -148,7 +157,15 @@ fn encode_bcd_address(number: &str) -> Result<Vec<u8>, SmsError> {
 ///
 /// `len_digits` is the number of significant digits. `type_byte` is the
 /// type-of-address octet. `bcd` contains the packed BCD bytes.
-fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> String {
+///
+/// # Errors
+///
+/// Returns [`SmsError::PduDecode`] if any significant nibble is outside
+/// `0..=9` -- a network-supplied PDU that claims a BCD digit of 0xA-0xE
+/// has no valid decimal-digit meaning and must not be rendered as a
+/// non-digit character in the sender field (same class as the klesis
+/// BCD fix).
+fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Result<String, SmsError> {
     let mut number = String::new();
     if type_byte == 0x91 {
         number.push('+');
@@ -161,14 +178,20 @@ fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> String {
 
         let lo_digit_index = idx * 2;
         if lo_digit_index < digit_count {
+            if lo > 9 {
+                return Err(SmsError::PduDecode);
+            }
             number.push(char::from(b'0' + lo));
         }
         let hi_digit_index = idx * 2 + 1;
         if hi_digit_index < digit_count && hi != 0x0F {
+            if hi > 9 {
+                return Err(SmsError::PduDecode);
+            }
             number.push(char::from(b'0' + hi));
         }
     }
-    number
+    Ok(number)
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +476,7 @@ impl SmsManager {
         let oa_type = cur.read_byte()?;
         let oa_bcd_bytes = usize::from(oa_len_digits.div_ceil(2));
         let oa_bcd = cur.read_slice(oa_bcd_bytes)?;
-        let sender_str = decode_bcd_address(oa_len_digits, oa_type, oa_bcd);
+        let sender_str = decode_bcd_address(oa_len_digits, oa_type, oa_bcd)?;
 
         // Build sender field.
         let mut sender = [0u8; MAX_SENDER_LEN];
@@ -526,8 +549,27 @@ impl SmsManager {
     }
 
     /// Add a message to the inbox (used by `handle_incoming`).
-    pub(crate) fn receive(&mut self, msg: SmsMessage) {
+    ///
+    /// Drops the oldest message if the buffer is already at
+    /// [`MAX_INBOX_MESSAGES`] capacity, bounding heap growth under an
+    /// SMS flood.
+    ///
+    /// # Errors
+    ///
+    /// - [`SmsError::InboxOverflow`] if the inbox was already at capacity
+    ///   (the oldest buffered message was dropped to make room for `msg`,
+    ///   which is still enqueued)
+    pub(crate) fn receive(&mut self, msg: SmsMessage) -> Result<(), SmsError> {
+        let overflowed = self.inbox.len() >= MAX_INBOX_MESSAGES;
+        if overflowed {
+            // Drop oldest message to make room.
+            self.inbox.remove(0);
+        }
         self.inbox.push(msg);
+        if overflowed {
+            return Err(SmsError::InboxOverflow);
+        }
+        Ok(())
     }
 }
 
@@ -833,15 +875,63 @@ mod tests {
     }
 
     #[test]
-    fn mark_read_updates_flag() {
+    fn receive_caps_inbox_and_drops_oldest_under_flood() {
         let mut manager = SmsManager::new();
-        manager.receive(SmsMessage {
+        for i in 0..MAX_INBOX_MESSAGES {
+            let result = manager.receive(SmsMessage {
+                sender: [0u8; MAX_SENDER_LEN],
+                sender_len: 0,
+                body: String::from("m"),
+                timestamp: i as u64,
+                read: false,
+            });
+            assert!(result.is_ok(), "inbox has room until MAX_INBOX_MESSAGES");
+        }
+        assert_eq!(manager.inbox().len(), MAX_INBOX_MESSAGES);
+
+        // One more message over capacity must drop the oldest, not grow
+        // the inbox unbounded (the pre-fix behavior under an SMS flood).
+        let result = manager.receive(SmsMessage {
             sender: [0u8; MAX_SENDER_LEN],
             sender_len: 0,
-            body: String::from("test"),
-            timestamp: 0,
+            body: String::from("overflow"),
+            timestamp: MAX_INBOX_MESSAGES as u64,
             read: false,
         });
+        assert_eq!(
+            result,
+            Err(SmsError::InboxOverflow),
+            "push into a full inbox must surface InboxOverflow"
+        );
+        assert_eq!(
+            manager.inbox().len(),
+            MAX_INBOX_MESSAGES,
+            "inbox must stay capped at MAX_INBOX_MESSAGES, not grow unbounded under flood"
+        );
+        assert_eq!(
+            manager.inbox()[0].timestamp,
+            1,
+            "the oldest message must have been dropped to make room"
+        );
+        assert_eq!(
+            manager.inbox().last().map(|m| m.timestamp),
+            Some(MAX_INBOX_MESSAGES as u64),
+            "the newly received message must be enqueued"
+        );
+    }
+
+    #[test]
+    fn mark_read_updates_flag() {
+        let mut manager = SmsManager::new();
+        manager
+            .receive(SmsMessage {
+                sender: [0u8; MAX_SENDER_LEN],
+                sender_len: 0,
+                body: String::from("test"),
+                timestamp: 0,
+                read: false,
+            })
+            .ok();
         assert!(!manager.inbox()[0].read, "message must start unread");
         manager.mark_read(0);
         assert!(
@@ -853,20 +943,24 @@ mod tests {
     #[test]
     fn delete_removes_message() {
         let mut manager = SmsManager::new();
-        manager.receive(SmsMessage {
-            sender: [0u8; MAX_SENDER_LEN],
-            sender_len: 0,
-            body: String::from("msg1"),
-            timestamp: 0,
-            read: false,
-        });
-        manager.receive(SmsMessage {
-            sender: [0u8; MAX_SENDER_LEN],
-            sender_len: 0,
-            body: String::from("msg2"),
-            timestamp: 0,
-            read: false,
-        });
+        manager
+            .receive(SmsMessage {
+                sender: [0u8; MAX_SENDER_LEN],
+                sender_len: 0,
+                body: String::from("msg1"),
+                timestamp: 0,
+                read: false,
+            })
+            .ok();
+        manager
+            .receive(SmsMessage {
+                sender: [0u8; MAX_SENDER_LEN],
+                sender_len: 0,
+                body: String::from("msg2"),
+                timestamp: 0,
+                read: false,
+            })
+            .ok();
         assert_eq!(manager.inbox().len(), 2);
         manager.delete(0);
         assert_eq!(manager.inbox().len(), 1);
@@ -893,8 +987,23 @@ mod tests {
         let bcd = bcd.unwrap_or_default();
         let decoded = decode_bcd_address(bcd[0], bcd[1], &bcd[2..]);
         assert_eq!(
-            decoded, "+15551234567",
+            decoded,
+            Ok(String::from("+15551234567")),
             "BCD round-trip must preserve number"
+        );
+    }
+
+    #[test]
+    fn decode_bcd_address_rejects_non_decimal_nibble() {
+        // Low nibble 0xA (10) has no decimal-digit meaning; before the
+        // fix this silently emitted ':' (b'0' + 10) into the sender
+        // field instead of being rejected.
+        let bcd = [0x1Au8];
+        let decoded = decode_bcd_address(2, 0x81, &bcd);
+        assert_eq!(
+            decoded,
+            Err(SmsError::PduDecode),
+            "a BCD nibble outside 0-9 must be rejected, not rendered as a non-digit character"
         );
     }
 

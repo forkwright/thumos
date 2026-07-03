@@ -254,9 +254,21 @@ pub(crate) fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DotE
     packet.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
     packet.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
 
-    // QNAME: encode hostname as DNS labels.
+    // QNAME: encode hostname as DNS labels. RFC 1035 section 3.1 caps the
+    // total encoded name -- every length-prefix octet plus every label
+    // octet plus the terminating zero -- at 255 octets; the per-label
+    // <= 63 check alone does not bound the SUM across many short labels
+    // (mirrors dns.rs's build_dns_query, fixed in an earlier batch).
+    const DNS_MAX_NAME_LEN: usize = 255;
+    let mut qname_len: usize = 0;
     for label in hostname.split('.') {
         if label.is_empty() || label.len() > 63 {
+            return Err(DotError::InvalidName);
+        }
+        qname_len = qname_len
+            .checked_add(1 + label.len())
+            .ok_or(DotError::InvalidName)?;
+        if qname_len >= DNS_MAX_NAME_LEN {
             return Err(DotError::InvalidName);
         }
         packet.push(label.len() as u8);
@@ -295,8 +307,20 @@ pub(crate) fn build_dns_query_typed(
     packet.extend_from_slice(&0u16.to_be_bytes());
     packet.extend_from_slice(&0u16.to_be_bytes());
 
+    // RFC 1035 section 3.1: total encoded QNAME (length-prefix octets +
+    // label octets + terminating zero) is capped at 255 octets; the
+    // per-label <= 63 check alone does not bound the sum (mirrors
+    // build_dns_query above).
+    const DNS_MAX_NAME_LEN: usize = 255;
+    let mut qname_len: usize = 0;
     for label in hostname.split('.') {
         if label.is_empty() || label.len() > 63 {
+            return Err(DotError::InvalidName);
+        }
+        qname_len = qname_len
+            .checked_add(1 + label.len())
+            .ok_or(DotError::InvalidName)?;
+        if qname_len >= DNS_MAX_NAME_LEN {
             return Err(DotError::InvalidName);
         }
         packet.push(label.len() as u8);
@@ -698,6 +722,22 @@ mod tests {
     }
 
     #[test]
+    fn build_query_rejects_oversized_total_name() {
+        // Five 63-byte labels: each individually legal (<= 63 bytes), but
+        // the total encoded QNAME (5 * (1 + 63) + 1 = 321 bytes) blows
+        // past the RFC 1035 section 3.1 255-byte ceiling. Only the
+        // per-label check existed before; this must be caught too.
+        let label = "a".repeat(63);
+        let hostname = alloc::format!("{label}.{label}.{label}.{label}.{label}");
+        let result = build_dns_query(&hostname, 0x0001);
+        assert_eq!(
+            result,
+            Err(DotError::InvalidName),
+            "a total QNAME over 255 bytes must return InvalidName even when every label is individually legal"
+        );
+    }
+
+    #[test]
     fn build_query_typed_uses_record_type() {
         let result = build_dns_query_typed("example.com", 0xABCD, 28); // AAAA = 28
         assert!(result.is_ok(), "typed query must succeed");
@@ -708,6 +748,18 @@ mod tests {
         let qtype_offset = DNS_HEADER_SIZE + 13;
         let qtype = u16::from_be_bytes([packet[qtype_offset], packet[qtype_offset + 1]]);
         assert_eq!(qtype, 28, "QTYPE must be AAAA (28)");
+    }
+
+    #[test]
+    fn build_query_typed_rejects_oversized_total_name() {
+        let label = "a".repeat(63);
+        let hostname = alloc::format!("{label}.{label}.{label}.{label}.{label}");
+        let result = build_dns_query_typed(&hostname, 0x0001, 28);
+        assert_eq!(
+            result,
+            Err(DotError::InvalidName),
+            "build_dns_query_typed must enforce the same 255-byte QNAME ceiling as build_dns_query"
+        );
     }
 
     // -- Pin verification tests -----------------------------------------------

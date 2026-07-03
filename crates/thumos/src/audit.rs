@@ -306,6 +306,13 @@ pub(crate) struct AuditLog {
     count: usize,
     /// HMAC of the most recently appended entry (chains the next append).
     last_hmac: [u8; SHA256_DIGEST_LEN],
+    /// HMAC that chains into the current oldest live entry. Equal to
+    /// `GENESIS_HMAC` until the ring first wraps; from then on it holds
+    /// the HMAC of the entry evicted to make room for the current
+    /// oldest entry, captured by `log_event` at eviction time, so
+    /// `verify_chain` can validate the oldest live entry after wrap
+    /// instead of trusting it unchecked.
+    root_hmac: [u8; SHA256_DIGEST_LEN],
 }
 
 impl AuditLog {
@@ -332,6 +339,7 @@ impl AuditLog {
             head: 0,
             count: 0,
             last_hmac: GENESIS_HMAC,
+            root_hmac: GENESIS_HMAC,
         }
     }
 
@@ -384,7 +392,13 @@ impl AuditLog {
         let hmac = security::hmac_sha256(hmac_key, &serialized[..len]);
         entry.hmac = hmac;
 
-        // Write into the ring buffer.
+        // Write into the ring buffer. If the ring is already full, this
+        // write evicts the current oldest entry; capture its HMAC as the
+        // new chain root so verify_chain can still validate the new
+        // oldest entry (which chained from the evicted one) after wrap.
+        if self.count == MAX_ENTRIES {
+            self.root_hmac = self.entries[self.head].hmac;
+        }
         self.entries[self.head] = entry;
         self.head = (self.head + 1) % MAX_ENTRIES;
         if self.count < MAX_ENTRIES {
@@ -401,15 +415,15 @@ impl AuditLog {
     /// from (content || previous HMAC) and comparing against the stored
     /// HMAC.  Any mismatch indicates tampering.
     ///
-    /// # Important
+    /// # Ring buffer wrap
     ///
-    /// After a ring buffer wrap, the chain's genesis HMAC (all zeros) is
-    /// lost because the oldest entry was overwritten.  In this case,
-    /// verification starts from the oldest live entry using the HMAC of
-    /// the entry *before* it (which is the overwritten slot's HMAC, now
-    /// unknown).  To handle this, when the buffer has wrapped, we trust
-    /// the oldest entry's HMAC as the chain root and verify from the
-    /// second-oldest forward.
+    /// After a ring buffer wrap, the true genesis HMAC (all zeros) is no
+    /// longer the chain root for the oldest live entry -- that entry
+    /// chained from whatever occupied its slot before eviction.
+    /// `log_event` captures the evicted entry's HMAC into `root_hmac`
+    /// before overwriting it, so verification always has a real
+    /// (non-trusted) root to check the oldest live entry against; no
+    /// entry is ever skipped or trusted unchecked.
     ///
     /// # Errors
     ///
@@ -431,17 +445,17 @@ impl AuditLog {
 
         // Determine the previous HMAC for the first entry in the chain.
         // If the buffer has not wrapped, the genesis HMAC is all zeros.
-        // If wrapped, we trust the oldest entry's stored HMAC and start
-        // verification from the second entry.
-        let (verify_start, mut prev_hmac) = if wrapped {
-            // Trust the oldest entry's HMAC as chain root after wrap.
-            let oldest = &self.entries[start];
-            (1, oldest.hmac)
+        // If wrapped, `root_hmac` holds the HMAC of the entry that was
+        // evicted to make room for the current oldest live entry
+        // (captured in `log_event`), so every live entry -- including
+        // the oldest -- is verified below; none are trusted unchecked.
+        let mut prev_hmac = if wrapped {
+            self.root_hmac
         } else {
-            (0, GENESIS_HMAC)
+            GENESIS_HMAC
         };
 
-        for i in verify_start..self.count {
+        for i in 0..self.count {
             let idx = (start + i) % MAX_ENTRIES;
             let entry = &self.entries[idx];
 
@@ -692,6 +706,39 @@ mod tests {
         assert!(
             result.is_ok(),
             "chain must verify after multiple wraps: {result:?}"
+        );
+    }
+
+    #[test]
+    fn chain_detects_oldest_entry_tamper_after_wrap() {
+        let mut log = AuditLog::new();
+
+        // Fill the buffer completely, then wrap once so the oldest live
+        // entry (at ring index `log.head`) chained from an entry that
+        // was evicted, not from the genesis HMAC.
+        for i in 0..MAX_ENTRIES {
+            log_one(
+                &mut log,
+                AuditEventType::PacketDeny,
+                i as u32,
+                b"fill",
+                i as u64 * 10,
+            );
+        }
+        log_one(&mut log, AuditEventType::AuthFail, 9999, b"overflow", 99999);
+        assert!(log.has_wrapped());
+
+        // Tamper with the new oldest live entry (index `log.head`) --
+        // exactly the entry the pre-fix code trusted unconditionally
+        // instead of verifying.
+        let oldest_idx = log.head;
+        log.entries[oldest_idx].detail[0] ^= 0xFF;
+
+        let result = log.verify_chain(&TEST_KEY);
+        assert_eq!(
+            result,
+            Err(AuditError::ChainTampered),
+            "tampering the oldest live entry after a ring-buffer wrap must be detected, not trusted (pre-fix: this returned Ok)"
         );
     }
 
