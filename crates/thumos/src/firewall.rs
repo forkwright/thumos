@@ -266,10 +266,12 @@ impl Firewall {
 
     /// Evaluate an inbound (RX) packet against the firewall rules.
     ///
-    /// Parses the raw IPv4 packet, checks DNS blocklist for outbound DNS
-    /// queries, then evaluates rules in order. If no rule matches, the
-    /// default inbound policy (deny) applies. Parse failures are denied
-    /// (fail-closed).
+    /// Parses the raw IPv4 packet, checks the DNS blocklist for any packet
+    /// destined to port 53 (the check is direction-agnostic -- it runs
+    /// identically in [`Self::evaluate_tx`], so an inbound packet is
+    /// covered too, not just outbound queries), then evaluates rules in
+    /// order. If no rule matches, the default inbound policy (deny)
+    /// applies. Parse failures are denied (fail-closed).
     pub(crate) fn evaluate_rx(&mut self, packet: &[u8]) -> Action {
         let action = self.classify(packet, Direction::Inbound);
         self.record(action);
@@ -278,7 +280,8 @@ impl Firewall {
 
     /// Evaluate an outbound (TX) packet against the firewall rules.
     ///
-    /// DNS queries to blocked domains are denied before rule evaluation.
+    /// DNS queries to blocked domains are denied before rule evaluation
+    /// (the same direction-agnostic check [`Self::evaluate_rx`] runs).
     /// If no rule matches, the default outbound policy (allow) applies.
     /// Parse failures are denied (fail-closed).
     pub(crate) fn evaluate_tx(&mut self, packet: &[u8]) -> Action {
@@ -294,9 +297,20 @@ impl Firewall {
     /// `"doubleclick.net"`). Matching is case-insensitive.
     pub(crate) fn is_dns_blocked(&self, hostname: &str) -> bool {
         let lower = hostname.to_ascii_lowercase();
+        self.is_dns_blocked_lowercased(&lower)
+    }
+
+    /// Same as [`Self::is_dns_blocked`], for a caller that already holds a
+    /// lowercased hostname.
+    ///
+    /// `check_dns_blocklist` (the per-packet hot path) builds its domain
+    /// via `extract_query_domain`, which lowercases while it decodes --
+    /// routing through here instead of `is_dns_blocked` avoids a second
+    /// heap-allocated `to_ascii_lowercase()` on every DNS-destined packet.
+    fn is_dns_blocked_lowercased(&self, lowercased_hostname: &str) -> bool {
         self.dns_blocklist
             .iter()
-            .any(|suffix| domain_matches_suffix(&lower, suffix))
+            .any(|suffix| domain_matches_suffix(lowercased_hostname, suffix))
     }
 
     /// Return a reference to the firewall statistics.
@@ -412,7 +426,7 @@ impl Firewall {
         };
 
         let domain = extract_query_domain(dns_payload)?;
-        Some(self.is_dns_blocked(&domain))
+        Some(self.is_dns_blocked_lowercased(&domain))
     }
 
     /// Update statistics based on the action taken.
@@ -581,7 +595,11 @@ fn extract_query_domain(data: &[u8]) -> Option<String> {
         if !domain.is_empty() {
             domain.push('.');
         }
-        domain.push_str(label);
+        // Lowercase while building: the only consumer is
+        // check_dns_blocklist, which compares directly against the
+        // (already-lowercased) blocklist via is_dns_blocked_lowercased --
+        // doing it here avoids a second per-packet allocation.
+        domain.extend(label.chars().map(|c| c.to_ascii_lowercase()));
 
         pos = label_end;
     }
@@ -869,6 +887,22 @@ mod tests {
         assert!(
             fw.is_dns_blocked("analytics.google.com"),
             "analytics.google.com must be blocked"
+        );
+    }
+
+    #[test]
+    fn is_dns_blocked_lowercased_matches_public_api_for_lowercase_input() {
+        let mut fw = Firewall::new();
+        fw.add_dns_block("doubleclick.net");
+
+        assert!(
+            fw.is_dns_blocked_lowercased("sub.doubleclick.net"),
+            "a lowercase subdomain of a blocklisted suffix must match through the fast path"
+        );
+        assert_eq!(
+            fw.is_dns_blocked_lowercased("sub.doubleclick.net"),
+            fw.is_dns_blocked("sub.doubleclick.net"),
+            "the pre-lowercased fast path must agree with the public case-insensitive API"
         );
     }
 

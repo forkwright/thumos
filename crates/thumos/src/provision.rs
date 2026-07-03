@@ -321,6 +321,17 @@ impl Provisioner {
             self.state = ProvisionState::Receiving;
         }
 
+        // Reject growth beyond the maximum possible message size (header +
+        // max payload + checksum + signature) BEFORE extending the
+        // buffer, not after -- RECV_BUF_CAPACITY exists precisely to cap
+        // this but was never wired in, leaving the buffer to grow without
+        // bound if a caller ever hands receive_chunk() a chunk (or a run
+        // of chunks) larger than any well-formed bundle could need.
+        if self.buffer.len().saturating_add(data.len()) > RECV_BUF_CAPACITY {
+            self.state = ProvisionState::Error(ProvisionError::PayloadTooLarge);
+            return &self.state;
+        }
+
         self.buffer.extend_from_slice(data);
 
         // Try to parse the header if we haven't yet.
@@ -710,6 +721,29 @@ mod tests {
         assert_eq!(
             *state,
             ProvisionState::Error(ProvisionError::PayloadTooLarge)
+        );
+    }
+
+    #[test]
+    fn receive_chunk_rejects_growth_beyond_recv_buf_capacity() {
+        // A single over-sized chunk, larger than any well-formed bundle
+        // could ever need (RECV_BUF_CAPACITY = header + max payload +
+        // checksum + signature). Content is irrelevant -- the cap must
+        // reject growth BEFORE parsing a header, not rely on the
+        // payload_len check (which only fires once a header is present).
+        let mut oversized = Vec::new();
+        oversized.resize(RECV_BUF_CAPACITY + 1, 0u8);
+
+        let mut prov = Provisioner::new();
+        let state = prov.receive_chunk(&oversized);
+        assert_eq!(
+            *state,
+            ProvisionState::Error(ProvisionError::PayloadTooLarge),
+            "a chunk larger than RECV_BUF_CAPACITY must be rejected before buffering"
+        );
+        assert!(
+            prov.buffer.is_empty(),
+            "the oversized chunk must never be appended to the receive buffer"
         );
     }
 
