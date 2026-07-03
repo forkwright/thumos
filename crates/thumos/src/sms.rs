@@ -52,6 +52,11 @@ pub enum SmsError {
     Gsm7Encode(u32),
     /// PDU data is truncated or malformed.
     PduDecode,
+    /// The PDU is well-formed but uses an unsupported data coding scheme
+    /// (DCS); only GSM-7 (0x00) is supported. Carries the offending DCS
+    /// byte. Distinct from [`Self::PduDecode`] -- the bytes decoded fine,
+    /// the encoding is simply not implemented.
+    UnsupportedDcs(u8),
     /// Modem returned an error during send.
     ModemError,
     /// Modem returned a CME error.
@@ -71,6 +76,7 @@ impl core::fmt::Display for SmsError {
         match self {
             Self::Gsm7Encode(cp) => write!(f, "cannot encode U+{cp:04X} in GSM-7"),
             Self::PduDecode => write!(f, "PDU decode error"),
+            Self::UnsupportedDcs(dcs) => write!(f, "unsupported DCS {dcs:#04x}"),
             Self::ModemError => write!(f, "modem error"),
             Self::CmeError(code) => write!(f, "CME error {code}"),
             Self::CmsError(code) => write!(f, "CMS error {code}"),
@@ -339,6 +345,7 @@ impl SmsManager {
             .map_err(|_| SmsError::TransportError)?;
         let mut line_buf = [0u8; MAX_LINE_LEN];
         // Drain response lines until OK/ERROR.
+        let mut cmgf_confirmed = false;
         for _ in 0..16 {
             let n = transport
                 .recv_line(&mut line_buf, 2000)
@@ -346,12 +353,21 @@ impl SmsManager {
             let line = &line_buf[..n];
             if let Some(result) = crate::telephony::parse_final_result(line) {
                 match result {
-                    AtResponse::Ok => break,
+                    AtResponse::Ok => {
+                        cmgf_confirmed = true;
+                        break;
+                    }
                     AtResponse::Error => return Err(SmsError::ModemError),
                     AtResponse::CmeError(code) => return Err(SmsError::CmeError(code)),
                     AtResponse::CmsError(code) => return Err(SmsError::CmsError(code)),
                 }
             }
+        }
+        // WHY: mirror the '>' prompt and final-result loops below -- a mode-set
+        // that never returns OK/ERROR within the drain window is a transport
+        // failure, not a green light to transmit the PDU.
+        if !cmgf_confirmed {
+            return Err(SmsError::TransportError);
         }
 
         // Send AT+CMGS=<tpdu_len> followed by the PDU.
@@ -415,6 +431,8 @@ impl SmsManager {
     /// # Errors
     ///
     /// - [`SmsError::PduDecode`] -- PDU is truncated or malformed.
+    /// - [`SmsError::UnsupportedDcs`] -- PDU is well-formed but uses a data
+    ///   coding scheme other than GSM-7 (0x00).
     #[must_use]
     pub(crate) fn handle_incoming(pdu_data: &[u8]) -> Result<SmsMessage, SmsError> {
         let mut cur = PduCursor::new(pdu_data);
@@ -449,7 +467,10 @@ impl SmsManager {
         // DCS: only GSM-7 (0x00) supported in this kernel build.
         let dcs = cur.read_byte()?;
         if dcs != 0x00 {
-            return Err(SmsError::PduDecode);
+            // WHY: the PDU decoded cleanly; the coding scheme is simply
+            // unsupported. Conflating this with PduDecode (malformed PDU)
+            // hides that the message was well-formed but used, e.g., UCS-2.
+            return Err(SmsError::UnsupportedDcs(dcs));
         }
 
         // SCTS: 7 bytes (timestamp, partially decoded).
@@ -655,6 +676,9 @@ mod tests {
         // any DCS whose bits 3:2 were 0b00, letting compressed-GSM-7 (0x20,
         // 0x30), message-waiting-indication (0xC0), and other non-GSM-7
         // schemes reach the septet decoder. Only DCS 0x00 is supported.
+        // These bytes are well-formed PDUs with an unsupported coding
+        // scheme, so they must surface as UnsupportedDcs (carrying the
+        // offending byte), NOT PduDecode (which means malformed PDU).
         let base: [u8; 24] = [
             0x00, // SCA len
             0x00, // first octet (MTI=0)
@@ -673,10 +697,23 @@ mod tests {
             pdu[10] = adversarial_dcs;
             let result = SmsManager::handle_incoming(&pdu);
             assert!(
-                matches!(result, Err(SmsError::PduDecode)),
-                "DCS {adversarial_dcs:#04x} must be rejected, not admitted as GSM-7"
+                matches!(result, Err(SmsError::UnsupportedDcs(d)) if d == adversarial_dcs),
+                "DCS {adversarial_dcs:#04x} must surface as UnsupportedDcs carrying the offending byte, not conflated with a malformed PDU"
             );
         }
+    }
+
+    #[test]
+    fn handle_incoming_truncated_pdu_is_pdudecode_not_unsupported_dcs() {
+        // Distinctness: a genuinely malformed (truncated) PDU must still be
+        // PduDecode, proving the unsupported-DCS variant did not swallow
+        // the malformed-PDU case.
+        let truncated: [u8; 2] = [0x00, 0x00]; // SCA len 0 + first octet, then nothing
+        let result = SmsManager::handle_incoming(&truncated);
+        assert!(
+            matches!(result, Err(SmsError::PduDecode)),
+            "a truncated PDU must remain PduDecode, distinct from UnsupportedDcs"
+        );
     }
 
     #[test]
@@ -693,6 +730,31 @@ mod tests {
             result,
             Err(SmsError::CmsError(330)),
             "a +CMS ERROR final result on SMS submit must surface the code immediately, not TransportError after exhausting the wait loop"
+        );
+    }
+
+    #[test]
+    fn send_returns_error_when_cmgf_never_confirmed() {
+        use crate::telephony_mock::MockModemTransport;
+
+        let mut mock = MockModemTransport::new();
+        // AT+CMGF=0 never returns OK/ERROR: 16 non-final lines exhaust the
+        // drain loop, which must fail closed instead of proceeding to CMGS.
+        for _ in 0..16 {
+            mock.queue_response(b"");
+        }
+
+        let result = SmsManager::send(&mut mock, "+15551234567", "Hi");
+
+        assert_eq!(
+            result,
+            Err(SmsError::TransportError),
+            "an AT+CMGF=0 that never returns OK/ERROR must fail closed, not fall through to PDU transmission"
+        );
+        assert_eq!(
+            mock.sent_commands.len(),
+            1,
+            "only AT+CMGF=0 must have been sent; CMGS must not be reached"
         );
     }
 

@@ -35,10 +35,6 @@ use crate::net::NetworkStack;
 /// Maximum number of entries in the DNS cache.
 pub(crate) const MAX_CACHE_ENTRIES: usize = 64;
 
-/// Default TTL (seconds) for cache entries when the DNS response does
-/// not include a TTL or the response is synthesized.
-const DEFAULT_TTL_SECS: u32 = 300;
-
 /// DNS query/response port.
 const DNS_PORT: u16 = 53;
 
@@ -389,9 +385,14 @@ fn parse_dns_response(data: &[u8], expected_txid: u16) -> Result<(Ipv4Address, u
 
 /// Skip a DNS name in wire format (handles compression pointers).
 fn skip_dns_name(data: &[u8], mut offset: usize) -> Result<usize, DnsError> {
-    // Guard against infinite loops from malformed compression pointers.
-    let mut jumps = 0;
-    let max_jumps = 64;
+    // WHY: this counts regular labels traversed, NOT compression-pointer
+    // jumps — a pointer ends the loop immediately (see below), so it can
+    // never accumulate here. RFC 1035 §3.1 caps a name at 255 octets;
+    // the minimal label encoding (1-octet length + 1-octet content)
+    // allows up to 127 labels before the terminating zero, so the cap
+    // must be at least that high or legal hostnames get rejected.
+    let mut labels = 0;
+    const MAX_LABELS: u32 = 127;
 
     loop {
         if offset >= data.len() {
@@ -413,8 +414,8 @@ fn skip_dns_name(data: &[u8], mut offset: usize) -> Result<usize, DnsError> {
 
         // Regular label.
         offset += 1 + len as usize;
-        jumps += 1;
-        if jumps > max_jumps {
+        labels += 1;
+        if labels > MAX_LABELS {
             return Err(DnsError::MalformedResponse);
         }
     }
@@ -547,9 +548,13 @@ impl DnsResolver {
         expected_txid: u16,
     ) -> Result<IpAddress, DnsError> {
         let (addr, ttl) = parse_dns_response(data, expected_txid)?;
-        let ttl = if ttl == 0 { DEFAULT_TTL_SECS } else { ttl };
         let ip = IpAddress::Ipv4(addr);
-        self.cache.insert(hostname, ip, ttl);
+        // WHY: TTL=0 is an explicit "do not cache" signal (RFC 1035 §3.2.1 /
+        // RFC 2181 §8) — storing it under a fallback TTL would resurrect a
+        // record the authoritative server marked non-cacheable.
+        if ttl > 0 {
+            self.cache.insert(hostname, ip, ttl);
+        }
         Ok(ip)
     }
 
@@ -785,6 +790,25 @@ mod tests {
         assert_eq!(result, Err(DnsError::MalformedResponse));
     }
 
+    #[test]
+    fn skip_dns_name_allows_many_short_labels() {
+        // 100 single-byte labels: over the old (wrong) 64-hop cap but well
+        // under the RFC 1035 §3.1 255-octet/127-label ceiling — must parse.
+        let mut data = Vec::new();
+        for _ in 0..100 {
+            data.push(1u8);
+            data.push(b'a');
+        }
+        data.push(0); // Terminal zero.
+
+        let result = skip_dns_name(&data, 0);
+        assert_eq!(
+            result,
+            Ok(data.len()),
+            "a 100-label name within the RFC 1035 name-length limit must not be rejected"
+        );
+    }
+
     // -- Resolver integration tests --
 
     #[test]
@@ -825,6 +849,48 @@ mod tests {
             resolver.cache().len(),
             1,
             "processed response must be cached"
+        );
+    }
+
+    #[test]
+    fn resolver_does_not_cache_ttl_zero_response() {
+        // Regression: TTL=0 is an explicit "do not cache" signal (RFC 1035
+        // §3.2.1 / RFC 2181 §8) — the resolved address must still be
+        // returned, but the record must not be stored under a fallback TTL.
+        let mut resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
+
+        let mut response = Vec::new();
+        response.extend_from_slice(&0x0002u16.to_be_bytes()); // ID = 2
+        response.extend_from_slice(&0x8180u16.to_be_bytes()); // Flags
+        response.extend_from_slice(&0u16.to_be_bytes()); // QDCOUNT = 0 (simplified)
+        response.extend_from_slice(&1u16.to_be_bytes()); // ANCOUNT = 1
+        response.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
+        response.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
+
+        // Answer: inline name "nottl.com".
+        response.push(5);
+        response.extend_from_slice(b"nottl");
+        response.push(3);
+        response.extend_from_slice(b"com");
+        response.push(0);
+        response.extend_from_slice(&DNS_TYPE_A.to_be_bytes());
+        response.extend_from_slice(&DNS_CLASS_IN.to_be_bytes());
+        response.extend_from_slice(&0u32.to_be_bytes()); // TTL = 0
+        response.extend_from_slice(&4u16.to_be_bytes()); // RDLENGTH
+        response.extend_from_slice(&[5, 6, 7, 8]);
+
+        let result = resolver.process_response("nottl.com", &response, 0x0002);
+        let addr = result.expect("process_response must succeed for a TTL=0 response");
+        assert_eq!(
+            addr,
+            IpAddress::Ipv4(Ipv4Address::new(5, 6, 7, 8)),
+            "TTL=0 response must still resolve"
+        );
+
+        assert_eq!(
+            resolver.cache().len(),
+            0,
+            "TTL=0 record must not be cached (RFC 2181 §8)"
         );
     }
 

@@ -346,6 +346,15 @@ fn parse_nmea_coord(value: &[u8], deg_digits: usize) -> Result<i64, GpsError> {
     // microdegrees = (degrees + minutes / 60) * 1_000_000
     //              = degrees * 1_000_000 + (minutes_int * 10000 + frac_val) * 1_000_000 / (60 * 10000)
     let minutes_scaled = minutes_int * 10000 + frac_val;
+
+    // INVARIANT: NMEA minutes must be in [0, 60); minutes_scaled is minutes
+    // in units of 1/10000, so the bound is 60 * 10000 = 600_000. A GPS source
+    // reporting >= 60 minutes is malformed and must not silently wrap into
+    // the next degree.
+    if minutes_scaled >= 600_000 {
+        return Err(GpsError::ParseError);
+    }
+
     let microdeg = degrees * 1_000_000 + minutes_scaled * 1_000_000 / 600_000;
 
     Ok(microdeg)
@@ -784,10 +793,17 @@ impl<H: GpsHwOps> GpsReceiver<H> {
     }
 
     /// Shut down the GPS receiver.
+    ///
+    /// Clears the last known position/time fix and any partially
+    /// accumulated NMEA bytes so a subsequent `init()` does not resume
+    /// with stale data left over from before shutdown.
     #[must_use]
     pub(crate) fn shutdown(&mut self) -> Result<(), GpsError> {
         self.hw.power_off()?;
         self.state = GpsState::Off;
+        self.last_position = None;
+        self.last_time = None;
+        self.sentence_buf = SentenceBuffer::new();
         Ok(())
     }
 }
@@ -1008,6 +1024,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_lat_rejects_minutes_of_60_or_more() {
+        let value = b"5360.0000"; // 60.0 minutes is invalid; NMEA minutes must be < 60
+        let result = parse_lat(value, b"N");
+        assert_eq!(
+            result,
+            Err(GpsError::ParseError),
+            "minutes >= 60 must be rejected as invalid NMEA"
+        );
+    }
+
+    #[test]
+    fn parse_lat_accepts_minutes_just_under_60() {
+        let value = b"5359.9999";
+        let result = parse_lat(value, b"N");
+        assert!(
+            result.is_ok(),
+            "minutes just under 60 must be accepted, got {result:?}"
+        );
+    }
+
     // -- GpsTime epoch conversion --
 
     #[test]
@@ -1057,6 +1094,30 @@ mod tests {
             result,
             Err(GpsError::InvalidState),
             "init while already initialized must return InvalidState"
+        );
+    }
+
+    #[test]
+    fn shutdown_clears_stale_position_and_time() {
+        let hw = MockGpsHw::new();
+        let mut receiver = GpsReceiver::new(hw);
+        receiver.init().expect("init must succeed");
+        receiver.process_sentence(
+            b"$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76",
+        );
+        assert!(
+            receiver.position().is_some(),
+            "position must be set after processing a valid GGA sentence"
+        );
+
+        receiver.shutdown().expect("shutdown must succeed");
+        assert!(
+            receiver.position().is_none(),
+            "shutdown must clear the last known position"
+        );
+        assert!(
+            receiver.time().is_none(),
+            "shutdown must clear the last known time"
         );
     }
 }
