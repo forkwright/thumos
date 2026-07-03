@@ -44,10 +44,17 @@ const MAX_TOUCH_POINTS: usize = 10;
 // ── Display boundary constants ────────────────────────────────────────────────
 
 /// Maximum valid X coordinate (display width − 1).
-pub(crate) const X_MAX: u16 = 240;
+///
+/// WHY 239, not 240 (#348): the AGM M7 panel is 240×320, so valid pixel
+/// indices are `0..=239`. `validate_touch` uses strict-greater, so a value
+/// of 240 here would admit `x == 240` — one pixel off-screen.
+pub(crate) const X_MAX: u16 = 239;
 
 /// Maximum valid Y coordinate (display height − 1).
-pub(crate) const Y_MAX: u16 = 320;
+///
+/// WHY 319, not 320 (#348): valid pixel indices on the 240×320 panel are
+/// `0..=319`; 320 would admit `y == 320`, one pixel off-screen.
+pub(crate) const Y_MAX: u16 = 319;
 
 /// Maximum valid tracking ID.
 pub(crate) const TRACKING_ID_MAX: u8 = 9;
@@ -456,6 +463,43 @@ mod tests {
         assert!(
             validate_touch(raw).is_none(),
             "Y coordinate above Y_MAX must be rejected"
+        );
+    }
+
+    #[test]
+    fn validate_touch_rejects_off_screen_display_dimensions() {
+        // #348: on the 240x320 panel valid indices are 0..=239 / 0..=319.
+        // The exact display dimensions (240, 320) are one pixel off-screen
+        // and must be rejected; the true max indices (239, 319) accepted.
+        assert!(
+            validate_touch(RawTouch {
+                x: 240,
+                y: 100,
+                pressure: 128,
+                tracking_id: 0
+            })
+            .is_none(),
+            "x == display width (240) is off-screen and must be rejected"
+        );
+        assert!(
+            validate_touch(RawTouch {
+                x: 100,
+                y: 320,
+                pressure: 128,
+                tracking_id: 0
+            })
+            .is_none(),
+            "y == display height (320) is off-screen and must be rejected"
+        );
+        assert!(
+            validate_touch(RawTouch {
+                x: 239,
+                y: 319,
+                pressure: 128,
+                tracking_id: 0
+            })
+            .is_some(),
+            "the true max valid indices (239, 319) must be accepted"
         );
     }
 
