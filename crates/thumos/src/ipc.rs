@@ -115,6 +115,15 @@ impl Inbox {
     pub(crate) fn is_full(&self) -> bool {
         self.count >= INBOX_SIZE
     }
+
+    /// Clear all pending messages, resetting the inbox to empty.
+    ///
+    /// WHY (finding 45): called from process exit teardown so PID reuse
+    /// cannot leak a prior occupant's undelivered messages into the next
+    /// process assigned the same inbox slot.
+    pub(crate) fn clear(&mut self) {
+        *self = Self::new();
+    }
 }
 
 /// Number of inbox slots, matching the maximum number of processes.
@@ -232,6 +241,27 @@ pub(crate) fn has_messages() -> bool {
     }
 }
 
+/// Clear a process's inbox, discarding any pending messages.
+///
+/// WHY (finding 45): call this during process exit teardown, before the
+/// PID's process-table slot can be reused by `spawn`/`fork`, so a future
+/// process assigned the same PID does not inherit messages left behind by
+/// the previous occupant of that inbox slot. A no-op if `pid` is out of
+/// range (defensive: exit teardown must not itself be able to fail).
+pub(crate) fn clear_inbox(pid: Pid) {
+    let Ok(idx) = validate_pid(pid) else {
+        return;
+    };
+    // SAFETY: INBOXES is a static array indexed by PID. addr_of_mut! avoids
+    // creating an intermediate reference to the static mut. INBOXES_LOCK
+    // masks IRQ delivery for the access (#322/#331 class).
+    let _guard = INBOXES_LOCK.lock();
+    unsafe {
+        let inboxes = &mut *core::ptr::addr_of_mut!(INBOXES);
+        inboxes[idx].clear();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -329,5 +359,41 @@ mod tests {
         );
         assert_eq!(msg.payload().len(), MSG_MAX_SIZE);
         assert!(msg.payload().iter().all(|&b| b == 0xAB));
+    }
+
+    #[test]
+    fn inbox_clear_resets_to_empty() {
+        let mut inbox = Inbox::new();
+        for i in 0..3 {
+            assert!(inbox.push(Message::new(i as u32, b"leftover")));
+        }
+        assert!(!inbox.is_empty());
+
+        inbox.clear();
+
+        assert!(inbox.is_empty());
+        assert!(!inbox.is_full());
+        assert!(inbox.pop().is_none());
+    }
+
+    #[test]
+    fn clear_inbox_discards_pending_messages_for_pid() {
+        // WHY (finding 45): PID-reuse regression -- seed pid 2's inbox,
+        // clear it, and confirm the stale messages are gone by refilling
+        // it to capacity again (a full inbox after clear would reject a
+        // send before INBOX_SIZE was reached if any stale message survived).
+        for _ in 0..INBOX_SIZE {
+            assert_eq!(send(2, Message::new(1, b"stale")), Ok(()));
+        }
+        assert_eq!(
+            send(2, Message::new(1, b"stale")),
+            Err(IpcSendError::InboxFull)
+        );
+
+        clear_inbox(2);
+
+        for _ in 0..INBOX_SIZE {
+            assert_eq!(send(2, Message::new(1, b"fresh")), Ok(()));
+        }
     }
 }

@@ -831,6 +831,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dvfs_multi_step_scaling_chain_walks_down_then_up_through_every_opp() {
+        let mut gov = CpuGovernor::new();
+        assert_eq!(gov.current_freq(), CpuFreq::Mhz1500);
+
+        // Sustained low load steps down through every OPP, one step per
+        // tick, because the rolling window starts at zero (already below
+        // the new sample) so the average tracks the new sample immediately.
+        assert_eq!(gov.apply_dvfs(10), CpuFreq::Mhz1200);
+        assert_eq!(gov.apply_dvfs(10), CpuFreq::Mhz900);
+        assert_eq!(gov.apply_dvfs(10), CpuFreq::Mhz600);
+        assert_eq!(
+            gov.apply_dvfs(10),
+            CpuFreq::Mhz600,
+            "must not step below the minimum OPP"
+        );
+
+        // Sustained high load must first flush the stale low-load window
+        // (LOAD_HISTORY_LEN ticks) before the rolling average clears the
+        // >70 step-up threshold, then walk back up through every OPP.
+        for _ in 0..LOAD_HISTORY_LEN {
+            gov.apply_dvfs(90);
+        }
+        assert_eq!(
+            gov.current_freq(),
+            CpuFreq::Mhz900,
+            "after the window flushes to sustained high load, must have stepped up once"
+        );
+        assert_eq!(gov.apply_dvfs(90), CpuFreq::Mhz1200);
+        assert_eq!(gov.apply_dvfs(90), CpuFreq::Mhz1500);
+        assert_eq!(
+            gov.apply_dvfs(90),
+            CpuFreq::Mhz1500,
+            "must not step above the maximum OPP"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Original PowerManager tests (radio kill switches)
     // -----------------------------------------------------------------------

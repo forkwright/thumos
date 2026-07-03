@@ -75,6 +75,17 @@ pub(crate) fn combine_tick_halves(hi1: u32, lo: u32, hi2: u32) -> Option<u64> {
     }
 }
 
+/// Host-test mirror of the production tick-increment carry logic in
+/// `exceptions::irq_handler_rust`'s timer-tick branch. Given the current
+/// hi/lo halves, returns the incremented pair, carrying into `hi` when
+/// `lo` wraps. Kept in lockstep with the write in `irq_handler_rust` so the
+/// carry-on-overflow path (previously untested) has host-test coverage.
+pub(crate) fn advance_tick_halves(hi: u32, lo: u32) -> (u32, u32) {
+    let (new_lo, carried) = lo.overflowing_add(1);
+    let new_hi = if carried { hi.wrapping_add(1) } else { hi };
+    (new_hi, new_lo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +102,15 @@ mod tests {
         // occurred mid-read) -- the reader must retry, not return a torn
         // combination of the pre- and post-carry halves.
         assert_eq!(combine_tick_halves(0, 0xFFFF_FFFF, 1), None);
+    }
+
+    #[test]
+    fn advance_tick_halves_increments_lo_without_carry() {
+        assert_eq!(advance_tick_halves(0, 41), (0, 42));
+    }
+
+    #[test]
+    fn advance_tick_halves_carries_into_hi_on_lo_wraparound() {
+        assert_eq!(advance_tick_halves(0, u32::MAX), (1, 0));
     }
 }

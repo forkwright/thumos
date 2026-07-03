@@ -128,4 +128,50 @@ mod tests {
         assert_eq!(KERNEL_END, 0x4010_0000);
         assert_eq!(DISPLAY_WIDTH * DISPLAY_HEIGHT * 2, 153_600); // RGB565 framebuffer size
     }
+
+    #[test]
+    fn parse_cmdline_sets_tick_rate_and_security_flags() {
+        parse_cmdline("tick_ms=25 verbose=0 console=0 panic=5");
+
+        // SAFETY: single-threaded test (nextest process-isolates per test);
+        // addr_of!().read() avoids a shared reference to the static mut.
+        let (tick, verbose, console, panic) = unsafe {
+            (
+                core::ptr::addr_of!(TICK_MS).read(),
+                core::ptr::addr_of!(VERBOSE_BOOT).read(),
+                core::ptr::addr_of!(DEBUG_CONSOLE).read(),
+                core::ptr::addr_of!(PANIC_TIMEOUT).read(),
+            )
+        };
+        assert_eq!(tick, 25);
+        assert!(!verbose);
+        assert!(!console);
+        assert_eq!(panic, 5);
+    }
+
+    #[test]
+    fn parse_cmdline_clamps_tick_ms_to_valid_range() {
+        parse_cmdline("tick_ms=500");
+        // SAFETY: single-threaded test; addr_of!().read() avoids a static-mut ref.
+        let tick_hi = unsafe { core::ptr::addr_of!(TICK_MS).read() };
+        assert_eq!(tick_hi, 100, "tick_ms must clamp to the 100ms ceiling");
+
+        parse_cmdline("tick_ms=0");
+        // SAFETY: single-threaded test; addr_of!().read() avoids a static-mut ref.
+        let tick_lo = unsafe { core::ptr::addr_of!(TICK_MS).read() };
+        assert_eq!(tick_lo, 1, "tick_ms must clamp to the 1ms floor");
+    }
+
+    #[test]
+    fn parse_cmdline_ignores_unknown_and_malformed_params() {
+        // SAFETY: single-threaded test; addr_of!().read() avoids a static-mut ref.
+        let before = unsafe { core::ptr::addr_of!(PANIC_TIMEOUT).read() };
+        parse_cmdline("bogus=1 no_equals_sign panic=notanumber");
+        // SAFETY: single-threaded test; addr_of!().read() avoids a static-mut ref.
+        let after = unsafe { core::ptr::addr_of!(PANIC_TIMEOUT).read() };
+        assert_eq!(
+            after, before,
+            "malformed panic= value must be ignored, not applied"
+        );
+    }
 }

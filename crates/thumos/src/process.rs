@@ -601,6 +601,10 @@ pub(crate) fn exit_cleanup(status: i32) {
         // defensively so every Dead-transition path shares the same
         // invariant (#364).
         crate::futex::free_waiters_for_pid(u32::from(CURRENT));
+        // WHY (finding 45): clear this PID's inbox at exit teardown so a
+        // future process that reuses the slot does not inherit messages
+        // left behind by the previous occupant (PID-reuse leak).
+        ipc::clear_inbox(CURRENT);
     }
 }
 
