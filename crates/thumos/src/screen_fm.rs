@@ -20,9 +20,6 @@
     reason = "FM radio screen created in Phase 07 Wave 8, kinit wiring pending"
 )]
 
-extern crate alloc;
-use alloc::string::String;
-
 use crate::fm_radio::{self, FmState};
 use crate::ui::{
     self, color, Key, Screen, ScreenAction,
@@ -129,14 +126,6 @@ impl FmScreen {
         self.volume = volume;
     }
 
-    /// Format the current frequency as a display string.
-    ///
-    /// Returns a string like "98.5" or "107.9".
-    fn format_frequency(&self) -> String {
-        let (mhz, frac) = fm_radio::freq_to_display(self.frequency_khz);
-        alloc::format!("{mhz}.{frac}")
-    }
-
     /// Map RSSI to signal bar count (0-5).
     ///
     /// RSSI ranges from about -100 dBm (no signal) to -30 dBm (strong).
@@ -171,7 +160,10 @@ impl FmScreen {
 
     /// Draw the large frequency display (scaled 2x).
     fn draw_frequency(&self, fb: &mut [u16]) {
-        let freq_str = self.format_frequency();
+        let mut freq_buf = [0u8; 8];
+        let freq_len = format_freq_into(self.frequency_khz, &mut freq_buf);
+        // INVARIANT: format_freq_into only ever writes ASCII digits and '.'.
+        let freq_str = core::str::from_utf8(&freq_buf[..freq_len]).unwrap_or("--.-");
         let w = SCREEN_WIDTH;
 
         // Draw at 2x scale by drawing each character doubled.
@@ -228,7 +220,6 @@ impl FmScreen {
         for i in 0..PRESET_COUNT {
             let slot_x = PADDING_X + (i as u16) * (CHAR_WIDTH * 5 + 4);
             let label_num = (i + 1) as u8;
-            let label_char = (b'0' + label_num) as char;
 
             // Highlight active preset.
             let fg = if self.active_preset == Some(i) {
@@ -237,20 +228,24 @@ impl FmScreen {
                 color::WHITE
             };
 
-            // Slot number.
-            let label = alloc::format!("{label_char}:");
-            ui::draw_str(fb, w, slot_x, PRESET_FREQ_Y, &label, fg, color::BLACK);
+            // Slot number (e.g. "1:").
+            let label_buf = [b'0' + label_num, b':'];
+            // INVARIANT: label_buf is always an ASCII digit followed by ':'.
+            let label = core::str::from_utf8(&label_buf).unwrap_or("?:");
+            ui::draw_str(fb, w, slot_x, PRESET_FREQ_Y, label, fg, color::BLACK);
 
             // Preset frequency (if set).
             if i < self.preset_count as usize && self.presets[i] > 0 {
-                let (mhz, frac) = fm_radio::freq_to_display(self.presets[i]);
-                let freq_text = alloc::format!("{mhz}.{frac}");
+                let mut freq_buf = [0u8; 8];
+                let freq_len = format_freq_into(self.presets[i], &mut freq_buf);
+                // INVARIANT: format_freq_into only ever writes ASCII digits and '.'.
+                let freq_text = core::str::from_utf8(&freq_buf[..freq_len]).unwrap_or("--.-");
                 ui::draw_str(
                     fb,
                     w,
                     slot_x + 2 * CHAR_WIDTH,
                     PRESET_FREQ_Y,
-                    &freq_text,
+                    freq_text,
                     fg,
                     color::BLACK,
                 );
@@ -316,9 +311,15 @@ impl Screen for FmScreen {
                 // Draw signal bars.
                 self.draw_signal_bars(fb);
 
-                // Draw status line.
-                let vol_text = alloc::format!("Vol: {}", self.volume);
-                ui::draw_str(fb, w, PADDING_X, STATUS_Y, &vol_text, color::WHITE, color::BLACK);
+                // Draw status line: "Vol: N" (N is 0-15, one or two digits).
+                let mut vol_buf = [0u8; 10];
+                vol_buf[..5].copy_from_slice(b"Vol: ");
+                let mut vol_digits = [0u8; 3];
+                let digit_len = format_u8_into(self.volume, &mut vol_digits);
+                vol_buf[5..5 + digit_len].copy_from_slice(&vol_digits[..digit_len]);
+                // INVARIANT: vol_buf is always "Vol: " (ASCII) followed by ASCII digits.
+                let vol_text = core::str::from_utf8(&vol_buf[..5 + digit_len]).unwrap_or("Vol: ?");
+                ui::draw_str(fb, w, PADDING_X, STATUS_Y, vol_text, color::WHITE, color::BLACK);
 
                 // Draw seek arrows.
                 let arrows = "<< SEEK >>";
@@ -411,6 +412,61 @@ impl Screen for FmScreen {
 }
 
 // ---------------------------------------------------------------------------
+// Formatting helpers (no_std, no heap allocation)
+// ---------------------------------------------------------------------------
+
+/// Format a frequency in kHz as "MHZ.FRAC" (e.g. "98.5") into a stack buffer.
+///
+/// Returns the number of bytes written. FM broadcast frequencies are always
+/// within `fm_radio`'s tunable band (87.5-108.0 MHz), so mhz is always two
+/// or three digits and one fractional digit always follows; an 8-byte
+/// buffer is always sufficient.
+fn format_freq_into(freq_khz: u32, buf: &mut [u8; 8]) -> usize {
+    let (mhz, frac) = fm_radio::freq_to_display(freq_khz);
+    let mut pos = 0;
+
+    // INVARIANT: fm_radio::tune bounds freq_khz to FM_FREQ_MIN_KHZ..=
+    // FM_FREQ_MAX_KHZ (87_500..=108_000), so mhz is always in 87..=108 and
+    // each extracted digit fits in u8.
+    if mhz >= 100 {
+        buf[pos] = b'0' + (mhz / 100) as u8;
+        pos += 1;
+    }
+    if mhz >= 10 {
+        buf[pos] = b'0' + ((mhz / 10) % 10) as u8;
+        pos += 1;
+    }
+    buf[pos] = b'0' + (mhz % 10) as u8;
+    pos += 1;
+
+    buf[pos] = b'.';
+    pos += 1;
+
+    // INVARIANT: frac = (freq_khz % 1000) / 100 is always a single digit.
+    buf[pos] = b'0' + (frac % 10) as u8;
+    pos += 1;
+
+    pos
+}
+
+/// Format a u8 as decimal digits into a byte buffer. Returns bytes written.
+fn format_u8_into(val: u8, buf: &mut [u8; 3]) -> usize {
+    if val >= 100 {
+        buf[0] = b'0' + val / 100;
+        buf[1] = b'0' + (val / 10) % 10;
+        buf[2] = b'0' + val % 10;
+        3
+    } else if val >= 10 {
+        buf[0] = b'0' + val / 10;
+        buf[1] = b'0' + val % 10;
+        2
+    } else {
+        buf[0] = b'0' + val;
+        1
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -421,18 +477,28 @@ mod tests {
 
     #[test]
     fn frequency_display_formats_correctly() {
-        let mut screen = FmScreen::new();
-        screen.frequency_khz = 98_500;
-        let display = screen.format_frequency();
-        assert_eq!(display, "98.5", "98500 kHz must display as 98.5");
+        let mut buf = [0u8; 8];
 
-        screen.frequency_khz = 107_900;
-        let display = screen.format_frequency();
-        assert_eq!(display, "107.9", "107900 kHz must display as 107.9");
+        let len = format_freq_into(98_500, &mut buf);
+        assert_eq!(
+            core::str::from_utf8(&buf[..len]).unwrap_or(""),
+            "98.5",
+            "98500 kHz must display as 98.5"
+        );
 
-        screen.frequency_khz = 88_000;
-        let display = screen.format_frequency();
-        assert_eq!(display, "88.0", "88000 kHz must display as 88.0");
+        let len = format_freq_into(107_900, &mut buf);
+        assert_eq!(
+            core::str::from_utf8(&buf[..len]).unwrap_or(""),
+            "107.9",
+            "107900 kHz must display as 107.9"
+        );
+
+        let len = format_freq_into(88_000, &mut buf);
+        assert_eq!(
+            core::str::from_utf8(&buf[..len]).unwrap_or(""),
+            "88.0",
+            "88000 kHz must display as 88.0"
+        );
     }
 
     #[test]
@@ -553,6 +619,43 @@ mod tests {
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "FM screen in Tuned state must render visible content");
+    }
+
+    #[test]
+    fn draw_tuned_with_presets_does_not_panic() {
+        // Exercises the no-alloc preset-frequency formatting path in
+        // draw_presets() (issue #392), not just the empty "---" slots.
+        let mut screen = FmScreen::new();
+        screen.fm_state = FmState::Tuned {
+            frequency_khz: 98_500,
+        };
+        screen.frequency_khz = 98_500;
+        screen.rssi = -60;
+        screen.preset_count = 3;
+        screen.presets[0] = 88_000;
+        screen.presets[1] = 98_500;
+        screen.presets[2] = 107_900;
+        let mut fb = [0u16; CONTENT_PIXELS];
+        screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(any_set, "FM screen with presets must render visible content");
+    }
+
+    #[test]
+    fn format_u8_into_covers_one_two_and_three_digit_values() {
+        let mut buf = [0u8; 3];
+
+        let len = format_u8_into(0, &mut buf);
+        assert_eq!(core::str::from_utf8(&buf[..len]).unwrap_or(""), "0");
+
+        let len = format_u8_into(9, &mut buf);
+        assert_eq!(core::str::from_utf8(&buf[..len]).unwrap_or(""), "9");
+
+        let len = format_u8_into(15, &mut buf);
+        assert_eq!(core::str::from_utf8(&buf[..len]).unwrap_or(""), "15");
+
+        let len = format_u8_into(255, &mut buf);
+        assert_eq!(core::str::from_utf8(&buf[..len]).unwrap_or(""), "255");
     }
 
     #[test]
