@@ -124,6 +124,14 @@ pub extern "C" fn irq_handler_rust() {
         return;
     }
 
+    // WHY: EOI must be written in the CURRENT execution context, before any
+    // interrupt-specific work below that can abandon this context via
+    // process::switch_to(). GICv2 requires GICC_EOIR to deactivate the
+    // interrupt; skipping it after a scheduler switch leaves the interrupt
+    // permanently active and blocks all further IRQ delivery at every
+    // priority (GICC_PMR = 0xFF) (#341).
+    gic::end_of_interrupt(irq);
+
     if irq == timer::TIMER_IRQ {
         // Timer tick
         // SAFETY: TICK_COUNT is only written from this IRQ handler, which
@@ -191,8 +199,6 @@ pub extern "C" fn irq_handler_rust() {
         let _ = process::check_pending_signal(); // WHY: signal delivery failure is non-actionable in IRQ context; will retry on next tick
 
     }
-
-    gic::end_of_interrupt(irq);
 }
 
 /// Data abort handler  -  print fault info and hang.
