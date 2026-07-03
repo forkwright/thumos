@@ -38,9 +38,6 @@ pub(crate) enum WipeError {
 
     #[snafu(display("failed to generate random fill for {path}: {source}"))]
     Random { path: String, source: MemoryError },
-
-    #[snafu(display("size conversion failed for {path}: {message}"))]
-    Size { path: String, message: String },
 }
 
 // ----- Types ----------------------------------------------------------------
@@ -167,7 +164,11 @@ impl WipeEngine {
 fn wipe_path(path: &Path, method: WipeMethod, chunk_size: usize) -> Result<u64, WipeError> {
     let path_str = path.display().to_string();
 
-    let file = match std::fs::OpenOptions::new().write(true).open(path) {
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             log::warn!("wipe target not found (skipping): {path_str}");
@@ -181,13 +182,15 @@ fn wipe_path(path: &Path, method: WipeMethod, chunk_size: usize) -> Result<u64, 
         }
     };
 
-    let len = file
-        .metadata()
-        .map_err(|e| WipeError::Open {
-            path: path_str.clone(),
-            source: e,
-        })?
-        .len();
+    // WHY(#214): metadata().len() reports 0 for block-device special files
+    // (POSIX stat st_size == 0), so the emergency full-device wipe of
+    // /dev/mmcblk0 would write nothing yet be counted a success. Seeking to
+    // the end returns the true size for both block devices and regular
+    // files; wipe_file seeks back to 0 before writing.
+    let len = file.seek(SeekFrom::End(0)).map_err(|e| WipeError::Open {
+        path: path_str.clone(),
+        source: e,
+    })?;
 
     wipe_file(file, len, method, &path_str, chunk_size)
 }
@@ -210,15 +213,18 @@ fn wipe_file(
     // WHY: heap allocation rather than stack array — chunk_size is now
     // runtime-configurable (see crate::config::Config).
     let mut chunk = vec![0u8; chunk_size];
+    // usize -> u64 is lossless on every supported target (32/64-bit); the
+    // unwrap_or fallback is unreachable and only satisfies the no-as-cast rule.
+    let chunk_size_u64 = u64::try_from(chunk_size).unwrap_or(u64::MAX);
 
     while written < len {
         let remaining = len.saturating_sub(written);
-        let chunk_len = usize::try_from(remaining)
-            .map_err(|_| WipeError::Size {
-                path: path.to_owned(),
-                message: "remaining bytes exceed usize".to_owned(),
-            })?
-            .min(chunk_size);
+        // WHY(#242): cap to chunk_size BEFORE narrowing to usize. On the
+        // 32-bit armv7 target usize::try_from(remaining) fails when
+        // remaining > u32::MAX (a >4 GiB eMMC), aborting the emergency wipe
+        // before a single byte is written. Taking the min on u64 first
+        // guarantees the result always fits usize.
+        let chunk_len = usize::try_from(remaining.min(chunk_size_u64)).unwrap_or(chunk_size);
         let buf = &mut chunk[..chunk_len];
 
         match method {
@@ -243,11 +249,8 @@ fn wipe_file(
             source: e,
         })?;
 
-        written =
-            written.saturating_add(u64::try_from(chunk_len).map_err(|_| WipeError::Size {
-                path: path.to_owned(),
-                message: "chunk length conversion failed".to_owned(),
-            })?);
+        // chunk_len <= chunk_size; usize -> u64 widening is lossless.
+        written = written.saturating_add(u64::try_from(chunk_len).unwrap_or(u64::MAX));
     }
 
     file.sync_all().map_err(|e| WipeError::Sync {
@@ -490,5 +493,52 @@ mod tests {
             wiped, original,
             "wiped content must no longer match the original fixture content after a Random-method wipe"
         );
+    }
+
+    #[test]
+    fn real_wipe_uses_full_file_length_across_chunks() {
+        // #214/#242: the wipe length is taken from the target's real size
+        // (seek-to-end) and the overwrite loop runs to completion across
+        // multiple chunks, writing every byte. The 32-bit >4 GiB truncation
+        // and block-device (stat st_size == 0) edges are not host-
+        // reproducible; this covers the shared regular-file path both fixes
+        // route through.
+        let original = vec![0xABu8; CHUNK_SIZE * 3 + 11];
+        let fixture = TempFile::with_contents("full_len", &original);
+
+        let plan = vec![WipeAction {
+            path: fixture.path.clone(),
+            method: WipeMethod::Zero,
+            priority: 1,
+        }];
+        let mut engine = WipeEngine::new(false);
+        let result = engine.execute(&plan);
+
+        let wiped = std::fs::read(&fixture.path).expect("read wiped fixture");
+        assert_eq!(result.actions_completed, 1);
+        assert_eq!(
+            result.bytes_wiped,
+            original.len() as u64,
+            "every byte of the multi-chunk file must be wiped, not aborted early"
+        );
+        assert_eq!(wiped.len(), original.len(), "file length must be preserved");
+        assert!(wiped.iter().all(|&b| b == 0), "all bytes must be zeroed");
+    }
+
+    #[test]
+    fn real_wipe_zero_length_file_completes_without_error() {
+        // #214: a genuinely zero-length regular file has nothing to
+        // overwrite; the wipe must complete cleanly (0 bytes) rather than
+        // error.
+        let fixture = TempFile::with_contents("empty", &[]);
+        let plan = vec![WipeAction {
+            path: fixture.path.clone(),
+            method: WipeMethod::Zero,
+            priority: 1,
+        }];
+        let mut engine = WipeEngine::new(false);
+        let result = engine.execute(&plan);
+        assert_eq!(result.actions_failed, 0, "empty-file wipe must not fail");
+        assert_eq!(result.bytes_wiped, 0, "an empty file wipes zero bytes");
     }
 }
