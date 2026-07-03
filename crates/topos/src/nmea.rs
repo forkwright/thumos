@@ -287,6 +287,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_gga_returns_error_when_too_few_fields() {
+        let body = "GPGGA,092750.000,5321.6802,N";
+        let checksum = compute_checksum(body);
+        let sentence = format!("${body}*{checksum:02X}");
+        let result = parse_gga(&sentence);
+        assert!(
+            matches!(result, Err(Error::Parse { .. })),
+            "GGA sentence with fewer than 10 fields must return Error::Parse"
+        );
+    }
+
+    #[test]
     fn parse_rmc_extracts_position_speed_and_course() {
         let sentence = "$GPRMC,092750.000,A,5321.6802,N,00630.3372,W,0.02,31.66,280511,,,A*43";
         let fix = parse_rmc(sentence).expect("valid RMC sentence should parse");
@@ -310,6 +322,18 @@ mod tests {
         assert!(
             parse_rmc(sentence).is_err(),
             "RMC with status V (void) must return an error"
+        );
+    }
+
+    #[test]
+    fn parse_rmc_returns_error_when_too_few_fields() {
+        let body = "GPRMC,092750.000,A,5321.6802,N";
+        let checksum = compute_checksum(body);
+        let sentence = format!("${body}*{checksum:02X}");
+        let result = parse_rmc(&sentence);
+        assert!(
+            matches!(result, Err(Error::Parse { .. })),
+            "RMC sentence with fewer than 10 fields must return Error::Parse"
         );
     }
 

@@ -179,6 +179,13 @@ pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
         }
         chars_produced += 1;
     }
+    if pending_ext {
+        return Err(crate::error::Error::PduDecode {
+            offset: data.len(),
+            message: "GSM-7 data ends with a dangling ESC septet (truncated extension char)"
+                .to_owned(),
+        });
+    }
     Ok(out)
 }
 
@@ -222,6 +229,20 @@ mod tests {
         assert!(
             decoded.is_empty(),
             "decoding zero septets must produce empty string"
+        );
+    }
+
+    #[test]
+    fn decode_rejects_trailing_esc_without_extension_code() {
+        // WHY: a lone ESC (0x1B) as the final septet has no following
+        // extension code; decode must error rather than silently drop it
+        // and undercount the output.
+        let encoded = encode("{").unwrap_or_default(); // ESC (0x1B) + ext code
+        // Decode only the first septet (the ESC), starving the extension code.
+        let result = decode(&encoded, 1);
+        assert!(
+            result.is_err(),
+            "a dangling ESC septet at the end of input must be rejected"
         );
     }
 

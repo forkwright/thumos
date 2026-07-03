@@ -83,7 +83,13 @@ pub(crate) struct SmsSubmit {
 /// `len_digits` is the number of significant digits (FROM the TP-OA/TP-DA
 /// length octet). `type_byte` is the type-of-address octet. `bcd` is the
 /// packed BCD byte slice (`ceil(len_digits` / 2) bytes).
-fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Address {
+///
+/// # Errors
+///
+/// Returns [`crate::error::Error::PduDecode`] when a digit nibble falls
+/// outside the valid BCD digit range 0-9 (excluding the 0xF odd-length
+/// filler nibble).
+fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Result<Address> {
     let type_of_address = match type_byte {
         0x91 => AddressType::International,
         0x81 => AddressType::National,
@@ -103,19 +109,31 @@ fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Address {
         // Low nibble always present when we have a BCD byte.
         let lo_digit_index = idx * 2;
         if lo_digit_index < digit_count {
+            if lo > 9 {
+                return Err(crate::error::Error::PduDecode {
+                    offset: idx,
+                    message: format!("invalid BCD nibble in originating address: 0x{lo:X}"),
+                });
+            }
             number.push(char::from(b'0' + lo));
         }
         // High nibble may be a filler 0xF for odd-digit numbers.
         let hi_digit_index = idx * 2 + 1;
         if hi_digit_index < digit_count && hi != 0x0F {
+            if hi > 9 {
+                return Err(crate::error::Error::PduDecode {
+                    offset: idx,
+                    message: format!("invalid BCD nibble in originating address: 0x{hi:X}"),
+                });
+            }
             number.push(char::from(b'0' + hi));
         }
     }
 
-    Address {
+    Ok(Address {
         number,
         type_of_address,
-    }
+    })
 }
 
 /// Encode an [`Address`] INTO the PDU wire format.
@@ -323,6 +341,16 @@ const WAP_PUSH_PORT_OMA_CP: u16 = 2948;
 /// Alternative WAP Push destination port used by some implementations.
 const WAP_PUSH_PORT_ALT: u16 = 49999;
 
+/// Maximum accepted hex-string length for a single SMS-DELIVER PDU.
+///
+/// SECURITY: `pdu_hex` originates from modem-controlled storage (`AT+CMGR`
+/// response) and is otherwise unbounded before reaching `hex_decode`.
+/// 3GPP TS 23.040 keeps a single SMS-DELIVER TPDU well under 200 octets
+/// (SMSC prefix + header + address + 140-byte max user data); this cap is
+/// generous headroom against a malicious/malfunctioning modem flooding
+/// `decode_deliver` with an oversized hex string.
+const MAX_PDU_HEX_LEN: usize = 1024;
+
 /// UDH Information Element Identifier for application port addressing (16-bit).
 /// 3GPP TS 23.040 § 9.2.3.24.4.
 const UDH_IEI_APP_PORT_16BIT: u8 = 0x05;
@@ -431,6 +459,14 @@ const fn gsm7_udh_septets(udh_octets: usize) -> usize {
     reason = "udl/udhl/udhi/oa are canonical 3GPP TS 23.040 SMS field abbreviations; renaming would break spec fidelity"
 )]
 pub(crate) fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
+    if pdu_hex.len() > MAX_PDU_HEX_LEN {
+        return Err(crate::error::Error::InvalidHex {
+            message: format!(
+                "PDU hex string exceeds maximum length ({MAX_PDU_HEX_LEN} chars, got {})",
+                pdu_hex.len()
+            ),
+        });
+    }
     let raw = hex_decode(pdu_hex)?;
     let mut cur = Cursor::new(&raw);
 
@@ -454,7 +490,7 @@ pub(crate) fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
     let oa_type = cur.read_byte()?;
     let oa_bcd_bytes = usize::from(oa_len_digits.div_ceil(2));
     let oa_bcd = cur.read_slice(oa_bcd_bytes)?;
-    let sender = decode_bcd_address(oa_len_digits, oa_type, oa_bcd);
+    let sender = decode_bcd_address(oa_len_digits, oa_type, oa_bcd)?;
 
     // PID: check for silent SMS / SIM toolkit attack.
     let pid = cur.read_byte()?;
@@ -568,7 +604,17 @@ pub(crate) fn encode_submit(msg: &SmsSubmit) -> Result<String> {
 
 fn dcs_to_encoding(dcs: u8, offset: usize) -> Result<DataEncoding> {
     // NOTE: per 3GPP TS 23.038 § 4, bits 3-2 of DCS (for general GROUP 0x0X)
-    // indicate the character SET: 00=GSM7, 01=8-bit data, 10=UCS-2.
+    // indicate the character SET: 00=GSM7, 01=8-bit data, 10=UCS-2. Bit 5
+    // (0x20) is the compression flag; this decoder does not implement
+    // GSM-7 compression, so a set compression bit must be rejected rather
+    // than silently decoded as uncompressed GSM-7.
+    const DCS_COMPRESSED_BIT: u8 = 0x20;
+    if dcs & DCS_COMPRESSED_BIT != 0 {
+        return Err(crate::error::Error::PduDecode {
+            offset,
+            message: format!("compressed GSM-7 DCS not supported (DCS=0x{dcs:02X})"),
+        });
+    }
     let class_bits = (dcs >> 2) & 0x03;
     match class_bits {
         0b00 => Ok(DataEncoding::Gsm7Bit),
@@ -603,10 +649,19 @@ fn decode_user_data(cur: &mut Cursor<'_>, udl: usize, encoding: DataEncoding) ->
                     pair.first().copied().unwrap_or_default(),
                     pair.get(1).copied().unwrap_or_default(),
                 ]);
-                // WHY: SMS UCS-2 is BMP-only; surrogate pairs are technically
-                // possible but rare and outside our current scope.
-                let ch =
-                    char::from_u32(u32::from(code_unit)).unwrap_or(char::REPLACEMENT_CHARACTER);
+                // WHY: SMS UCS-2 is BMP-only; a lone surrogate code unit
+                // (0xD800-0xDFFF) has no valid Unicode scalar value. Reject
+                // it rather than silently substituting U+FFFD, which would
+                // return Ok(SmsDeliver) with garbled text and hide the
+                // malformed-input signal from the caller.
+                let ch = char::from_u32(u32::from(code_unit)).ok_or_else(|| {
+                    crate::error::Error::PduDecode {
+                        offset: cur.pos,
+                        message: format!(
+                            "UCS-2 user data contains lone surrogate 0x{code_unit:04X}"
+                        ),
+                    }
+                })?;
                 s.push(ch);
             }
             s
@@ -716,7 +771,8 @@ mod tests {
             "second byte must be type-of-address 0x91 (international)"
         );
         // Decode back: len_digits=10, type=0x91, bcd = encoded[2..]
-        let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..]);
+        let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..])
+            .expect("decode must succeed for valid BCD digits");
         assert_eq!(
             decoded.number, "+1234567890",
             "decoded number must match original"
@@ -740,7 +796,8 @@ mod tests {
             11,
             "first byte must be digit count (11)"
         );
-        let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..]);
+        let decoded = decode_bcd_address(encoded[0], encoded[1], &encoded[2..])
+            .expect("decode must succeed for valid BCD digits");
         assert_eq!(
             decoded.number, "+12345678901",
             "decoded number must match 11-digit original including trailing filler nibble"
@@ -757,6 +814,18 @@ mod tests {
         assert!(
             result.is_err(),
             "a non-digit byte ('*') in the address must be rejected, not silently corrupted"
+        );
+    }
+
+    #[test]
+    fn decode_bcd_address_rejects_invalid_nibble() {
+        // Nibble 0xA is not a valid decimal BCD digit (only 0-9 and the
+        // 0xF odd-length filler are legal in a phone-number digit field).
+        let bcd = [0x1A]; // lo=0xA (invalid), hi=1
+        let result = decode_bcd_address(2, 0x91, &bcd);
+        assert!(
+            result.is_err(),
+            "an invalid BCD nibble must be rejected, not silently turned into a non-digit char"
         );
     }
 
@@ -795,6 +864,22 @@ mod tests {
         assert_eq!(
             sms.user_data.text, "Hello",
             "GSM-7 packed bytes must decode to 'Hello'"
+        );
+    }
+
+    #[test]
+    fn decode_scts_negative_timezone() {
+        // WHY: the known-PDU vector above only exercises a zero-offset
+        // timezone byte; this covers the negative-offset branch (sign bit
+        // set) that decode_scts's tz parsing never gets to run otherwise.
+        let scts: [u8; 7] = [
+            0x32, 0x10, 0x51, 0x21, 0x03, 0x00, // 2023-01-15 12:30:00
+            0x0A, // tz: 20 quarters (5h), sign bit set -> negative
+        ];
+        let ts = decode_scts(scts);
+        assert_eq!(
+            ts, "2023-01-15 12:30:00-05:00",
+            "negative timezone byte must produce a '-05:00' offset, got: {ts}"
         );
     }
 
@@ -874,6 +959,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn decode_deliver_ucs2_rejects_lone_surrogate() {
+        // WHY: a lone UCS-2 surrogate code unit (0xD800-0xDFFF) has no valid
+        // Unicode scalar value; decode must reject it instead of silently
+        // substituting U+FFFD and returning Ok with garbled text.
+        // PDU: DCS=0x08 (UCS-2), UDL=2 bytes, UD=0xD800 (lone high surrogate).
+        let pdu = "00000A91214365870900083210512103000002D800";
+        let result = decode_deliver(pdu);
+        assert!(
+            result.is_err(),
+            "a lone UCS-2 surrogate code unit must be rejected, not replaced with U+FFFD"
+        );
+    }
+
     // ── Edge cases ────────────────────────────────────────────────────────────
 
     #[test]
@@ -950,11 +1049,38 @@ mod tests {
     }
 
     #[test]
+    fn decode_deliver_rejects_oversized_hex() {
+        // WHY: MAX_PDU_HEX_LEN bounds a modem-controlled PDU hex string
+        // against a malicious/malfunctioning modem sending far more than
+        // any real SMS-DELIVER TPDU could require.
+        let oversized = "AA".repeat(600); // 1200 hex chars > MAX_PDU_HEX_LEN
+        let result = decode_deliver(&oversized);
+        assert!(
+            result.is_err(),
+            "a PDU hex string longer than MAX_PDU_HEX_LEN must be rejected"
+        );
+    }
+
+    #[test]
     fn hex_decode_invalid_char_returns_error() {
         let result = hex_decode("GG");
         assert!(
             result.is_err(),
             "non-hex character 'G' must return an error"
+        );
+    }
+
+    // ── DCS classification ───────────────────────────────────────────────────
+
+    #[test]
+    fn dcs_to_encoding_rejects_8bit_data_class() {
+        // class_bits = 0b01 (8-bit data) is not implemented; must be
+        // rejected rather than silently misclassified.
+        let dcs = 0b0000_0100u8; // bits 3-2 = 01, compression bit clear
+        let result = dcs_to_encoding(dcs, 0);
+        assert!(
+            result.is_err(),
+            "DCS class 0b01 (8-bit data) must be rejected"
         );
     }
 
@@ -1197,5 +1323,18 @@ mod tests {
         assert!(is_wap_push_port(49999), "port 49999 must be WAP Push");
         assert!(!is_wap_push_port(80), "port 80 must not be WAP Push");
         assert!(!is_wap_push_port(0), "port 0 must not be WAP Push");
+    }
+
+    #[test]
+    fn dcs_to_encoding_rejects_compressed_gsm7() {
+        // Bit 5 (0x20) set = compressed GSM-7, which this decoder does not
+        // implement; must be rejected rather than silently treated as
+        // uncompressed GSM-7.
+        let dcs = 0b0010_0000u8; // compression bit set, class_bits = 00
+        let result = dcs_to_encoding(dcs, 0);
+        assert!(
+            result.is_err(),
+            "compressed GSM-7 DCS must be rejected, not misclassified as uncompressed"
+        );
     }
 }

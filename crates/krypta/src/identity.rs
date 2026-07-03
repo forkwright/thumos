@@ -1,6 +1,7 @@
 //! Ed25519 identity key pairs for signing and authentication.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use snafu::ResultExt as _;
 use x25519_dalek::StaticSecret;
 
 use crate::error::{InvalidKeySnafu, InvalidSignatureSnafu, KeyGenerationSnafu, Result};
@@ -84,7 +85,7 @@ impl IdentityKeyPair {
     /// Returns [`Error::KeyGeneration`] if key generation or parsing fails.
     pub(crate) fn generate() -> Result<Self> {
         let mut private_key_bytes = [0u8; PRIVATE_KEY_LEN];
-        getrandom::fill(&mut private_key_bytes).map_err(|_| KeyGenerationSnafu.build())?;
+        getrandom::fill(&mut private_key_bytes).context(KeyGenerationSnafu)?;
         let key_pair = SigningKey::from_bytes(&private_key_bytes);
         let public_key_bytes = key_pair.verifying_key().to_bytes();
         Ok(Self {

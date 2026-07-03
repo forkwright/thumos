@@ -134,18 +134,24 @@ impl<T: ModemTransport> AtSession<T> {
         }
     }
 
-    /// Block until the next unsolicited result code (URC) arrives.
+    /// Poll for the next unsolicited result code (URC).
     ///
     /// Reads lines FROM the transport and attempts to parse each one as a
-    /// known URC. Non-URC lines (blank lines, unrecognised text) are skipped.
+    /// known URC. Non-URC lines (blank lines, unrecognised text) are
+    /// skipped. This does NOT block waiting for bytes to arrive: a
+    /// transport that currently has no data (`recv` returning `0`)
+    /// surfaces immediately as [`crate::error::Error::NotReady`] -- callers
+    /// running a scheduler/poll loop must retry the call, not assume it
+    /// parks until a URC shows up.
     ///
     /// # Errors
     ///
-    /// - [`crate::error::Error::Ccci`] / [`crate::error::Error::NotReady`]
-    ///   on transport failure.
+    /// - [`crate::error::Error::NotReady`] when the transport currently has
+    ///   no data available (transient; retry).
+    /// - [`crate::error::Error::Ccci`] on a hard transport failure.
     /// - [`crate::error::Error::Parse`] on malformed line data.
-    /// - [`crate::error::Error::UnexpectedResponse`] when the transport
-    ///   returns only empty data with no URC.
+    /// - [`crate::error::Error::UnexpectedResponse`] when `MAX_ATTEMPTS`
+    ///   unmatched lines are read without finding a URC.
     pub(crate) fn wait_urc(&mut self) -> Result<Urc> {
         // Limit iterations so callers are not surprised by silent loops during
         // tests; real drivers would add a deadline here.
@@ -352,6 +358,39 @@ mod tests {
                 ci: None,
             },
             "URC must be Creg(RegisteredHome)"
+        );
+    }
+
+    #[test]
+    fn wait_urc_detects_cmti() {
+        let transport = MockTransport::with_response(b"+CMTI: \"SM\",3\r\n");
+        let mut session = AtSession::new(transport);
+        let urc = session.wait_urc().unwrap_or_default();
+        assert_eq!(
+            urc,
+            Urc::Cmti {
+                storage: "SM".to_owned(),
+                index: 3,
+            },
+            "URC must be Cmti(SM,3)"
+        );
+    }
+
+    #[test]
+    fn wait_urc_exhausts_max_attempts() {
+        // WHY: MAX_ATTEMPTS bounds wait_urc against a modem that never
+        // emits a recognised URC line, mirroring send_command's
+        // MAX_INFO_LINES guard.
+        let mut data = Vec::new();
+        for _ in 0..1024 {
+            data.extend_from_slice(b"\r\n");
+        }
+        let transport = MockTransport::with_response(&data);
+        let mut session = AtSession::new(transport);
+        let result = session.wait_urc();
+        assert!(
+            result.is_err(),
+            "wait_urc must error after MAX_ATTEMPTS unmatched lines, not loop forever"
         );
     }
 

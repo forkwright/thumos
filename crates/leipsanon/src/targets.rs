@@ -264,4 +264,28 @@ mod tests {
             "key actions in Everything plan must retain priority 1"
         );
     }
+
+    #[test]
+    fn plan_priorities_are_ascending_for_every_level() {
+        // WHY: `plan`'s doc comment (see above) contracts the returned list
+        // is ordered by ascending priority; WipeEngine::execute relies on
+        // this to wipe keys before anything else. The contract was
+        // previously unverified — a future level that pushed actions out of
+        // priority order would silently break it.
+        let levels = [
+            WipeLevel::Keys,
+            WipeLevel::Contacts,
+            WipeLevel::Messages,
+            WipeLevel::UserData,
+            WipeLevel::Everything,
+        ];
+        for level in levels {
+            let p = plan(level);
+            let priorities: Vec<u8> = p.iter().map(|a| a.priority).collect();
+            assert!(
+                priorities.is_sorted(),
+                "plan({level:?}) must be ordered by ascending priority, got {priorities:?}"
+            );
+        }
+    }
 }
