@@ -114,6 +114,11 @@ pub enum ProvisionError {
     SignatureInvalid,
     /// Postcard deserialization failed.
     DeserializeError,
+    /// Postcard serialization failed while encoding a [`ProvisionBundle`]
+    /// into the wire format. Carries the underlying [`postcard::Error`] as
+    /// cause (distinct from [`Self::DeserializeError`] -- encoding and
+    /// decoding are different failure modes).
+    SerializeError(postcard::Error),
     /// Not enough data received yet (still accumulating).
     Incomplete,
     /// The provisioner is in an error state and must be reset.
@@ -128,6 +133,9 @@ impl fmt::Display for ProvisionError {
             Self::ChecksumMismatch => write!(f, "provision checksum mismatch"),
             Self::SignatureInvalid => write!(f, "provision bundle signature invalid"),
             Self::DeserializeError => write!(f, "provision bundle deserialization failed"),
+            Self::SerializeError(cause) => {
+                write!(f, "provision bundle serialization failed: {cause}")
+            }
             Self::Incomplete => write!(f, "provision data incomplete"),
             Self::PreviousError => write!(f, "provisioner in error state, reset required"),
         }
@@ -454,13 +462,13 @@ impl fmt::Display for Provisioner {
 /// # Errors
 ///
 /// Returns [`ProvisionError::PayloadTooLarge`] if the serialized payload
-/// exceeds [`MAX_PAYLOAD_SIZE`], or [`ProvisionError::DeserializeError`] if
+/// exceeds [`MAX_PAYLOAD_SIZE`], or [`ProvisionError::SerializeError`] if
 /// postcard serialization fails.
 pub(crate) fn encode_bundle(
     bundle: &ProvisionBundle,
     signature: &[u8; SIGNATURE_LEN],
 ) -> Result<Vec<u8>, ProvisionError> {
-    let payload = postcard::to_allocvec(bundle).map_err(|_| ProvisionError::DeserializeError)?;
+    let payload = postcard::to_allocvec(bundle).map_err(ProvisionError::SerializeError)?;
 
     if payload.len() > MAX_PAYLOAD_SIZE {
         return Err(ProvisionError::PayloadTooLarge);
@@ -853,6 +861,24 @@ mod tests {
         let err = ProvisionError::InvalidMagic;
         let s = alloc::format!("{err}");
         assert!(s.contains("magic"));
+    }
+
+    #[test]
+    fn display_provision_error_serialize_error_includes_cause() {
+        // WHY: encode_bundle previously mapped a postcard::to_allocvec
+        // failure onto ProvisionError::DeserializeError (wrong variant --
+        // encode failure is not deserialize failure) and discarded the
+        // underlying postcard::Error. SerializeError carries the cause and
+        // renders it in Display, and is a distinct variant from
+        // DeserializeError.
+        let err = ProvisionError::SerializeError(postcard::Error::SerializeBufferFull);
+        let s = alloc::format!("{err}");
+        assert!(s.contains("serialization"));
+        assert_ne!(
+            err,
+            ProvisionError::DeserializeError,
+            "a serialize failure must not be indistinguishable from a deserialize failure"
+        );
     }
 
     #[test]

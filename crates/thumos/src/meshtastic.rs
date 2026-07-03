@@ -471,12 +471,23 @@ impl MeshtasticTransport {
     ///
     /// Used internally by the serial receive loop (future) and for
     /// testing. Drops the oldest message if the buffer is full.
-    pub(crate) fn push_inbox(&mut self, message: MeshMessage) {
-        if self.inbox.len() >= MAX_INBOX_MESSAGES {
+    ///
+    /// # Errors
+    ///
+    /// - [`MeshError::InboxOverflow`] if the inbox was already at capacity
+    ///   (the oldest buffered message was dropped to make room for
+    ///   `message`, which is still enqueued)
+    pub(crate) fn push_inbox(&mut self, message: MeshMessage) -> Result<(), MeshError> {
+        let overflowed = self.inbox.len() >= MAX_INBOX_MESSAGES;
+        if overflowed {
             // Drop oldest message to make room.
             self.inbox.remove(0);
         }
         self.inbox.push(message);
+        if overflowed {
+            return Err(MeshError::InboxOverflow);
+        }
+        Ok(())
     }
 
     /// Clear all buffered inbox messages.
@@ -774,7 +785,9 @@ mod tests {
         let mut transport = MeshtasticTransport::new();
         let msg = MeshMessage::new(0x1234, 0x5678, "hello".to_string(), 1000, 1, 0)
             .unwrap_or_else(|_| unreachable!());
-        transport.push_inbox(msg);
+        transport
+            .push_inbox(msg)
+            .unwrap_or_else(|_| unreachable!("fresh inbox has room"));
         assert_eq!(transport.inbox_count(), 1);
         assert_eq!(transport.inbox()[0].body, "hello");
     }
@@ -784,11 +797,41 @@ mod tests {
         let mut transport = MeshtasticTransport::new();
         let msg = MeshMessage::new(0x1234, 0x5678, "hello".to_string(), 1000, 1, 0)
             .unwrap_or_else(|_| unreachable!());
-        transport.push_inbox(msg);
+        transport
+            .push_inbox(msg)
+            .unwrap_or_else(|_| unreachable!("fresh inbox has room"));
         assert_eq!(transport.inbox_count(), 1);
 
         transport.clear_inbox();
         assert_eq!(transport.inbox_count(), 0);
+    }
+
+    #[test]
+    fn push_inbox_returns_overflow_error_when_full() {
+        let mut transport = MeshtasticTransport::new();
+        for _ in 0..MAX_INBOX_MESSAGES {
+            let msg = MeshMessage::new(0x1234, 0x5678, "filler".to_string(), 1000, 1, 0)
+                .unwrap_or_else(|_| unreachable!());
+            transport
+                .push_inbox(msg)
+                .unwrap_or_else(|_| unreachable!("inbox has room until MAX_INBOX_MESSAGES"));
+        }
+        assert_eq!(transport.inbox_count(), MAX_INBOX_MESSAGES);
+
+        let overflow_msg = MeshMessage::new(0x1234, 0x5678, "overflow".to_string(), 2000, 1, 0)
+            .unwrap_or_else(|_| unreachable!());
+        let result = transport.push_inbox(overflow_msg);
+
+        assert_eq!(
+            result,
+            Err(MeshError::InboxOverflow),
+            "push into a full inbox must surface InboxOverflow"
+        );
+        // WHY: overflow is non-fatal -- the newest message still lands and
+        // the oldest was evicted to make room, matching InboxOverflow's own
+        // doc ("oldest was dropped").
+        assert_eq!(transport.inbox_count(), MAX_INBOX_MESSAGES);
+        assert_eq!(transport.inbox()[MAX_INBOX_MESSAGES - 1].body, "overflow");
     }
 
     // --- Node tracking tests ---

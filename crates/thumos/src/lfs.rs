@@ -600,30 +600,43 @@ impl Lfs {
     }
 
     /// Convert a `DiskInode` to an `InodeStat`.
-    fn inode_to_stat(inode_id: u32, inode: &DiskInode) -> InodeStat {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VfsError::IoError`] if `inode.inode_type` is not a
+    /// recognized on-disk type value.
+    fn inode_to_stat(inode_id: u32, inode: &DiskInode) -> Result<InodeStat, VfsError> {
         let inode_type = match inode.inode_type {
             INODE_TYPE_FILE => InodeType::RegularFile,
             INODE_TYPE_DIR => InodeType::Directory,
-            _ => InodeType::RegularFile, // fallback
+            // WHY: an unrecognized on-disk type is corruption -- guessing
+            // RegularFile here would misreport a corrupt inode's type to
+            // every caller of stat() instead of surfacing the fault.
+            _ => return Err(VfsError::IoError),
         };
 
         // Count allocated blocks (non-zero direct pointers).
         let block_count = inode.direct.iter().filter(|&&p| p != 0).count() as u32;
 
-        InodeStat {
+        Ok(InodeStat {
             inode_id,
             inode_type,
             size: inode.size,
             link_count: u32::from(inode.link_count),
             block_count,
-        }
+        })
     }
 
     /// Parse directory entries from a data block.
     ///
     /// Returns all valid entries found in the block. Entries with
     /// `inode_id == 0` or `record_len == 0` are skipped (sentinel/padding).
-    fn parse_dir_entries(buf: &[u8; BLOCK_SIZE]) -> Vec<DiskDirEntry> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VfsError::IoError`] if an entry's `name_len` would read
+    /// past that entry's own `record_len`, or past the end of the block.
+    fn parse_dir_entries(buf: &[u8; BLOCK_SIZE]) -> Result<Vec<DiskDirEntry>, VfsError> {
         let mut entries = Vec::new();
         let mut offset = 0;
 
@@ -648,23 +661,39 @@ impl Lfs {
 
             // Skip deleted entries (inode_id == 0).
             if inode_id != 0 && name_len > 0 {
+                // WARNING: name_len and record_len are on-disk fields --
+                // treat them as untrusted. name_len must be bounded by
+                // this entry's own record_len before it is used to slice
+                // `buf`; otherwise the name reads past this entry's
+                // reserved span into the next entry's header/name bytes
+                // (a buffer over-read across the record boundary, not
+                // caught by a bare `name_end <= BLOCK_SIZE` check). Fail
+                // closed on corruption rather than silently truncate.
+                let name_capacity = (record_len as usize)
+                    .checked_sub(DIR_ENTRY_HEADER_SIZE)
+                    .ok_or(VfsError::IoError)?;
+                if name_len as usize > name_capacity {
+                    return Err(VfsError::IoError);
+                }
+
                 let name_start = offset + DIR_ENTRY_HEADER_SIZE;
                 let name_end = name_start + name_len as usize;
-                if name_end <= BLOCK_SIZE {
-                    let name = String::from_utf8_lossy(&buf[name_start..name_end]);
-                    entries.push(DiskDirEntry {
-                        inode_id,
-                        name_len,
-                        record_len,
-                        name: String::from(name.as_ref()),
-                    });
+                if name_end > BLOCK_SIZE {
+                    return Err(VfsError::IoError);
                 }
+                let name = String::from_utf8_lossy(&buf[name_start..name_end]);
+                entries.push(DiskDirEntry {
+                    inode_id,
+                    name_len,
+                    record_len,
+                    name: String::from(name.as_ref()),
+                });
             }
 
             offset += record_len as usize;
         }
 
-        entries
+        Ok(entries)
     }
 
     /// Read all directory entries for a directory inode.
@@ -695,7 +724,7 @@ impl Lfs {
                 .read(dev.as_mut(), block_num, &mut buf)
                 .map_err(|_| VfsError::IoError)?;
 
-            let entries = Self::parse_dir_entries(&buf);
+            let entries = Self::parse_dir_entries(&buf)?;
             all_entries.extend(entries);
         }
 
@@ -794,9 +823,32 @@ impl Lfs {
 
         let block_num = writer
             .write_data_block(dev, cache, seg_mgr, &buf)
-            .map_err(|_| VfsError::IoError)?;
+            .map_err(Self::map_write_data_block_err)?;
 
         Ok(block_num)
+    }
+
+    /// Map an [`LfsError`] from a `write_data_block` call to the
+    /// [`VfsError`] the caller expects.
+    ///
+    /// WHY a shared helper: call sites previously collapsed every
+    /// `write_data_block` failure to one hardcoded `VfsError` variant --
+    /// some sites always reported `NoSpace`, others always reported
+    /// `IoError` -- which misreported the other failure mode at each
+    /// site: a genuine disk-full condition ([`LfsError::NoFreeSegments`])
+    /// surfaced as a generic I/O error at one call site, while a genuine
+    /// device I/O fault surfaced as "no space left on device" at
+    /// another. This maps each `LfsError` variant once so every call
+    /// site reports the correct condition.
+    fn map_write_data_block_err(err: LfsError) -> VfsError {
+        match err {
+            LfsError::NoFreeSegments => VfsError::NoSpace,
+            LfsError::BlockIo(_)
+            | LfsError::Corrupt
+            | LfsError::InvalidSuperblock
+            | LfsError::InodeNotFound
+            | LfsError::CheckpointOverflow => VfsError::IoError,
+        }
     }
 
     /// Allocate the next inode number.
@@ -829,7 +881,7 @@ impl Filesystem for Lfs {
     /// Returns [`VfsError::IoError`] if the block read fails.
     fn stat(&self, inode_id: u32) -> Result<InodeStat, VfsError> {
         let inode = self.load_inode(inode_id)?;
-        Ok(Self::inode_to_stat(inode_id, &inode))
+        Self::inode_to_stat(inode_id, &inode)
     }
 
     /// Look up a child entry by name within a directory.
@@ -982,7 +1034,7 @@ impl Filesystem for Lfs {
             // Write the data block to the log.
             let new_block = writer
                 .write_data_block(dev.as_mut(), &mut cache, &mut self.segments, &block_buf)
-                .map_err(|_| VfsError::NoSpace)?;
+                .map_err(Self::map_write_data_block_err)?;
 
             inode.direct[block_index] = new_block;
             bytes_written += chunk;
@@ -1245,13 +1297,15 @@ impl Filesystem for Lfs {
 
         let mut entries = Vec::with_capacity(disk_entries.len());
         for de in &disk_entries {
-            // Determine the inode type by loading the child inode.
-            let child_type = match self.load_inode(de.inode_id) {
-                Ok(child) => match child.inode_type {
-                    INODE_TYPE_DIR => InodeType::Directory,
-                    _ => InodeType::RegularFile,
-                },
-                Err(_) => InodeType::RegularFile, // fallback if child can't be loaded
+            // WHY: a failed child load or an unrecognized on-disk type
+            // is on-disk corruption; propagate it per this method's
+            // documented error contract instead of silently reporting
+            // the entry as a regular file.
+            let child = self.load_inode(de.inode_id)?;
+            let child_type = match child.inode_type {
+                INODE_TYPE_DIR => InodeType::Directory,
+                INODE_TYPE_FILE => InodeType::RegularFile,
+                _ => return Err(VfsError::IoError),
             };
 
             entries.push(DirEntry {
@@ -1318,7 +1372,7 @@ impl Filesystem for Lfs {
                     let zeroed = [0u8; BLOCK_SIZE];
                     let block_num = writer
                         .write_data_block(dev.as_mut(), &mut cache, &mut self.segments, &zeroed)
-                        .map_err(|_| VfsError::NoSpace)?;
+                        .map_err(Self::map_write_data_block_err)?;
                     inode.direct[i] = block_num;
                 }
             }
@@ -1493,6 +1547,33 @@ mod tests {
     }
 
     #[test]
+    fn readdir_propagates_child_inode_load_failure_instead_of_faking_regular_file() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "orphan.txt", InodeType::RegularFile)
+            .expect("create file");
+
+        // Corrupt the imap so the child inode can no longer be loaded,
+        // while the directory entry itself (which still names the
+        // child) is untouched. Before the fix, readdir() swallowed
+        // this load failure and reported the entry as InodeType::
+        // RegularFile regardless of the real (unknown) type.
+        fs.imap.remove(file_id);
+
+        let result = fs.readdir(root);
+        assert_eq!(
+            result,
+            Err(VfsError::NotFound),
+            "a child inode that can no longer be loaded must surface as an error, not be silently reported as a regular file"
+        );
+    }
+
+    #[test]
     fn format_then_mount_round_trips() {
         let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
@@ -1515,6 +1596,23 @@ mod tests {
         let fs = mount(Box::new(dev)).expect("mount");
         let result = fs.stat(999);
         assert_eq!(result, Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn inode_to_stat_rejects_unrecognized_on_disk_type() {
+        let inode = DiskInode {
+            inode_type: 99, // neither INODE_TYPE_FILE nor INODE_TYPE_DIR
+            link_count: 1,
+            size: 0,
+            direct: [0u64; DIRECT_BLOCK_COUNT],
+            indirect: 0,
+        };
+
+        // Before the fix, an unrecognized on-disk type silently fell
+        // through to InodeType::RegularFile instead of being reported
+        // as corruption.
+        let result = Lfs::inode_to_stat(1, &inode);
+        assert_eq!(result, Err(VfsError::IoError));
     }
 
     #[test]
@@ -1943,7 +2041,7 @@ mod tests {
         let result = fs.unlink(0, "victim");
         assert_eq!(
             result,
-            Err(VfsError::IoError),
+            Err(VfsError::NoSpace),
             "the directory rewrite should fail: no free segment remains to seal into"
         );
 
@@ -2089,6 +2187,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_dir_entries_rejects_name_len_exceeding_record_len() {
+        let mut buf = [0u8; BLOCK_SIZE];
+
+        // A single crafted entry: record_len reserves only 4 bytes for
+        // the name (12 - DIR_ENTRY_HEADER_SIZE), but name_len claims 20.
+        // name_start(8) + name_len(20) = 28, well within BLOCK_SIZE, so
+        // the old bare `name_end <= BLOCK_SIZE` check would have let
+        // this read 16 bytes past the entry's own record boundary --
+        // into whatever bytes follow (the next entry's header/name).
+        buf[0..4].copy_from_slice(&1u32.to_le_bytes()); // inode_id
+        buf[4..6].copy_from_slice(&20u16.to_le_bytes()); // name_len
+        buf[6..8].copy_from_slice(&12u16.to_le_bytes()); // record_len
+
+        let result = Lfs::parse_dir_entries(&buf);
+        assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "name_len exceeding the entry's own record_len must be rejected as corruption, not read past the record boundary"
+        );
+    }
+
+    #[test]
+    fn parse_dir_entries_rejects_record_len_shorter_than_header() {
+        let mut buf = [0u8; BLOCK_SIZE];
+
+        // record_len (4) is shorter than DIR_ENTRY_HEADER_SIZE (8) -- the
+        // entry cannot even fit its own header, let alone a name.
+        buf[0..4].copy_from_slice(&1u32.to_le_bytes()); // inode_id
+        buf[4..6].copy_from_slice(&1u16.to_le_bytes()); // name_len
+        buf[6..8].copy_from_slice(&4u16.to_le_bytes()); // record_len
+
+        let result = Lfs::parse_dir_entries(&buf);
+        assert!(matches!(result, Err(VfsError::IoError)));
+    }
+
+    #[test]
     fn disk_inode_round_trips() {
         let inode = DiskInode {
             inode_type: INODE_TYPE_FILE,
@@ -2109,5 +2242,36 @@ mod tests {
         assert_eq!(restored.direct[1], 20);
         assert_eq!(restored.direct[2], 30);
         assert_eq!(restored.indirect, 99);
+    }
+
+    #[test]
+    fn map_write_data_block_err_distinguishes_no_space_from_io_error() {
+        assert_eq!(
+            Lfs::map_write_data_block_err(LfsError::NoFreeSegments),
+            VfsError::NoSpace,
+            "disk-full must map to NoSpace, not a generic I/O error"
+        );
+
+        assert_eq!(
+            Lfs::map_write_data_block_err(LfsError::BlockIo(block::BlockError::IoError)),
+            VfsError::IoError,
+            "a genuine device I/O fault must map to IoError, not NoSpace"
+        );
+        assert_eq!(
+            Lfs::map_write_data_block_err(LfsError::Corrupt),
+            VfsError::IoError
+        );
+        assert_eq!(
+            Lfs::map_write_data_block_err(LfsError::InvalidSuperblock),
+            VfsError::IoError
+        );
+        assert_eq!(
+            Lfs::map_write_data_block_err(LfsError::InodeNotFound),
+            VfsError::IoError
+        );
+        assert_eq!(
+            Lfs::map_write_data_block_err(LfsError::CheckpointOverflow),
+            VfsError::IoError
+        );
     }
 }
