@@ -368,7 +368,7 @@ pub(crate) fn write_block(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use alloc::vec;
 
     use super::*;
@@ -463,9 +463,9 @@ mod tests {
 
     /// A block device mock that returns [`BlockError::IoError`] on reads/writes
     /// to specific sectors, and [`BlockError::DeviceNotReady`] when not initialized.
-    struct FailingBlockDevice {
+    pub(crate) struct FailingBlockDevice {
         /// Whether the device has been "initialized".
-        ready: bool,
+        pub(crate) ready: bool,
         /// Sector that triggers an `IoError` (all others succeed like `MemBlockDevice`).
         fail_sector: u64,
         /// Total sector count.
@@ -475,7 +475,7 @@ mod tests {
     }
 
     impl FailingBlockDevice {
-        fn new(sector_count: u64, fail_sector: u64) -> Self {
+        pub(crate) fn new(sector_count: u64, fail_sector: u64) -> Self {
             let size = sector_count as usize * SECTOR_SIZE;
             Self {
                 ready: false,

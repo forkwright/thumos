@@ -455,7 +455,13 @@ pub(crate) fn detect_imsi_catcher_with_config(
                     reselection_count = reselection_count.saturating_add(1);
                 }
 
+                // #355: a cell the device has actively connected to is a
+                // known handover target for future SuddenTowerChange checks,
+                // the same as one seen via NeighborSeen -- real devices
+                // routinely hand back to a previously-served cell without
+                // the serving cell re-announcing it as a neighbour.
                 seen_tower_ids.insert(tower.id());
+                known_neighbor_ids.insert(tower.id());
                 prev_serving = Some(tower);
             }
 
@@ -634,6 +640,36 @@ mod tests {
                 .iter()
                 .any(|a| matches!(a, ImsiCatcherAlert::SuddenTowerChange { .. })),
             "handover to a previously-announced neighbour should not raise SuddenTowerChange"
+        );
+    }
+
+    #[test]
+    fn imsi_catcher_no_sudden_change_on_handover_back_to_previously_connected_cell() {
+        // #355: Connected(A) must register A as a known neighbour, so a
+        // later HandoverTo(A) -- returning to a cell the device previously
+        // served on, without an intervening NeighborSeen(A) -- must not
+        // raise SuddenTowerChange. Real devices hand back to
+        // previously-served cells during normal mobility.
+        let first_cell = tower(1, -70, CellTechnology::Lte);
+        let second_cell = tower(2, -72, CellTechnology::Lte);
+        let events = [
+            CellEvent::Connected(first_cell.clone()),
+            // Reselection to another serving cell (Connected, not a
+            // HandoverTo -- the latter to a never-known tower would raise
+            // its own SuddenTowerChange and confound this test).
+            CellEvent::Connected(second_cell),
+            // Hand back to first_cell, which was only ever Connected, never
+            // explicitly announced via NeighborSeen. Pre-#355 this raised a
+            // false SuddenTowerChange because Connected did not register the
+            // cell as a known neighbour.
+            CellEvent::HandoverTo(first_cell),
+        ];
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            !alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::SuddenTowerChange { .. })),
+            "handover back to a previously-Connected cell must not raise SuddenTowerChange"
         );
     }
 

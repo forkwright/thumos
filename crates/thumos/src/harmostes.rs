@@ -1541,6 +1541,100 @@ mod tests {
     }
 
     #[test]
+    fn build_encrypted_send_request_produces_megolm_encrypted_request() {
+        // #377: build_encrypted_send_request had zero direct test coverage --
+        // only the underlying build_megolm_request was exercised indirectly
+        // via flush_outbox_attempts_all. Cover the public entry point itself.
+        let mut client = matrix_client_with_test_credentials();
+        let room_id = "!enc-room:matrix.example.com";
+
+        let result = client.build_encrypted_send_request(room_id, "secret message");
+        assert!(result.is_ok(), "encrypted send request build must succeed");
+
+        let (req, txn_id) = result.ok().unwrap_or_else(|| {
+            // Fallback that never executes -- satisfies no-unwrap lint.
+            let r = HttpRequest::new(
+                http_client::HttpMethod::Get,
+                String::new(),
+                String::new(),
+            );
+            (r, 0)
+        });
+
+        assert_eq!(txn_id, TXN_ID_START);
+        assert!(req.path.contains(room_id));
+        assert!(
+            req.path.contains("/send/m.room.encrypted/"),
+            "encrypted send must PUT to the m.room.encrypted path, got {}",
+            req.path
+        );
+
+        let body_bytes = req.body.as_ref().map(|b| b.as_slice()).unwrap_or(&[]);
+        let body_str = core::str::from_utf8(body_bytes).unwrap_or("");
+        assert!(
+            body_str.contains("\"ciphertext\""),
+            "encrypted body must carry a ciphertext field, got {body_str}"
+        );
+        assert!(
+            body_str.contains("m.megolm.v1.aes-sha2"),
+            "encrypted body must declare the Megolm algorithm"
+        );
+        assert!(
+            !body_str.contains("secret message"),
+            "the plaintext body must never appear verbatim in the encrypted request"
+        );
+    }
+
+    #[test]
+    fn build_encrypted_send_request_creates_outbound_session_when_none_exists() {
+        // #377: the first encrypted send for a room must auto-create an
+        // outbound Megolm session; a second send for the same room must
+        // reuse it rather than creating another.
+        let mut client = matrix_client_with_test_credentials();
+        let room_id = "!fresh-room:matrix.example.com";
+
+        assert!(
+            client.crypto().find_outbound_megolm(room_id).is_none(),
+            "no outbound session should exist before the first encrypted send"
+        );
+
+        assert!(client.build_encrypted_send_request(room_id, "first").is_ok());
+        let session_id_after_first = client
+            .crypto()
+            .find_outbound_megolm(room_id)
+            .map(|s| s.session_id);
+        assert!(
+            session_id_after_first.is_some(),
+            "an outbound session must exist after the first encrypted send"
+        );
+
+        assert!(client.build_encrypted_send_request(room_id, "second").is_ok());
+        let session_id_after_second = client
+            .crypto()
+            .find_outbound_megolm(room_id)
+            .map(|s| s.session_id);
+        assert_eq!(
+            session_id_after_first, session_id_after_second,
+            "a second encrypted send for the same room must reuse the existing session"
+        );
+    }
+
+    #[test]
+    fn build_encrypted_send_request_propagates_crypto_failure_without_panicking() {
+        // #377: an empty body drives encrypt_megolm's CryptoError::EmptyPlaintext
+        // path. build_encrypted_send_request must surface it as an Err, not
+        // panic and not silently fall back to plaintext (audit #370).
+        let mut client = matrix_client_with_test_credentials();
+        let room_id = "!empty-body-room:matrix.example.com";
+
+        let result = client.build_encrypted_send_request(room_id, "");
+        assert!(
+            matches!(result, Err(MatrixError::ServerError { .. })),
+            "empty-plaintext crypto failure must surface as MatrixError::ServerError, got {result:?}"
+        );
+    }
+
+    #[test]
     fn should_sync_respects_interval() {
         let mut client = matrix_client_with_test_credentials();
 
