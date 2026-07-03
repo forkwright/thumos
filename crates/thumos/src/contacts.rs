@@ -118,7 +118,12 @@ impl Contact {
             default_transport: MessageTransport::Sms,
         };
         let name_bytes = name.as_bytes();
-        let name_copy_len = name_bytes.len().min(MAX_NAME_LEN);
+        // WHY: byte-length truncation can split a multi-byte UTF-8 char,
+        // producing invalid UTF-8 that name_str() then silently maps to ""
+        // for the ENTIRE name. utf8_truncate_len backs off to the last full
+        // codepoint boundary -- the same fix already applied to calendar
+        // event titles and alarm labels for the identical class of bug (#359).
+        let name_copy_len = crate::heorte::utf8_truncate_len(name_bytes, MAX_NAME_LEN);
         c.name[..name_copy_len].copy_from_slice(&name_bytes[..name_copy_len]);
         c.name_len = name_copy_len as u8;
 
@@ -499,6 +504,22 @@ mod tests {
         assert_eq!(
             contact.name_len as usize, MAX_NAME_LEN,
             "name must be truncated to MAX_NAME_LEN"
+        );
+    }
+
+    #[test]
+    fn contact_new_truncates_on_char_boundary() {
+        let mut name = "A".repeat(63);
+        name.push('\u{e9}'); // 2-byte UTF-8 char straddles the 64-byte truncation point
+        let contact = Contact::new(&name, "123").unwrap_or_else(|_| unreachable!());
+        assert!(
+            core::str::from_utf8(&contact.name[..contact.name_len as usize]).is_ok(),
+            "truncated name bytes must remain valid UTF-8"
+        );
+        assert_eq!(
+            contact.name_str(),
+            "A".repeat(63),
+            "truncation must back off to the char boundary, not split the multi-byte char"
         );
     }
 

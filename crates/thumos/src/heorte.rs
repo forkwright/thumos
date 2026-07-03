@@ -129,7 +129,16 @@ impl CalendarEvent {
     }
 
     /// Whether this event is active (happening now) at the given epoch.
+    ///
+    /// A zero-duration event (`duration_min == 0`) is active exactly at
+    /// `start_epoch` -- with the general half-open range this always
+    /// evaluated `current_epoch < start_epoch` (since `end_epoch()` equals
+    /// `start_epoch` when duration is 0), so a zero-duration event could
+    /// never report active at any epoch, including its own start.
     pub(crate) fn is_active(&self, current_epoch: u64) -> bool {
+        if self.duration_min == 0 {
+            return current_epoch == self.start_epoch;
+        }
         current_epoch >= self.start_epoch && current_epoch < self.end_epoch()
     }
 
@@ -282,6 +291,7 @@ impl HeorteManager {
         for alarm in &mut self.alarms {
             if alarm.should_fire(current_epoch) {
                 firing.push(alarm.id);
+                alarm.last_fired_minute = Some(current_epoch / SECS_PER_MIN);
                 // Auto-disable one-shot alarms.
                 if alarm.repeat_days == 0 {
                     alarm.enabled = false;
@@ -369,6 +379,11 @@ fn civil_from_days(days: u64) -> (u16, u8, u8) {
 
 /// Format date as "YYYY-MM-DD" into a fixed buffer.
 pub(crate) fn format_date(year: u16, month: u8, day: u8) -> [u8; 10] {
+    // WHY: the "YYYY" field is 4 digits; decompose_epoch saturates year to
+    // u16::MAX (65535) for an adversarial epoch (#366), and year/1000 for
+    // an unclamped year > 9999 (e.g. 65) produces a byte past b'9', i.e.
+    // non-digit ASCII (b'0' + 65 = 'q'). Clamp before the digit math.
+    let year = year.min(9999);
     [
         b'0' + (year / 1000) as u8,
         b'0' + ((year / 100) % 10) as u8,
@@ -522,6 +537,17 @@ mod tests {
     }
 
     #[test]
+    fn event_zero_duration_is_active_at_exact_start() {
+        let event = CalendarEvent::new(1, b"Instant", 5000, 0, false);
+        assert!(
+            event.is_active(5000),
+            "zero-duration event must be active exactly at start_epoch"
+        );
+        assert!(!event.is_active(5001));
+        assert!(!event.is_active(4999));
+    }
+
+    #[test]
     fn check_alarms_auto_disables_oneshot() {
         let mut mgr = HeorteManager::new();
         mgr.add_alarm(6, 30, b"Once", true, 0);
@@ -535,6 +561,28 @@ mod tests {
         // Checking again must not fire.
         let firing2 = mgr.check_alarms(23400);
         assert!(firing2.is_empty(), "disabled alarm must not fire again");
+    }
+
+    #[test]
+    fn check_alarms_repeat_does_not_refire_within_same_minute() {
+        let mut mgr = HeorteManager::new();
+        mgr.add_alarm(6, 30, b"Repeat", true, day_mask::DAILY);
+
+        let firing = mgr.check_alarms(23400);
+        assert_eq!(firing.len(), 1, "alarm must fire once");
+
+        let firing2 = mgr.check_alarms(23400);
+        assert!(
+            firing2.is_empty(),
+            "repeat alarm must not re-fire within the same minute"
+        );
+
+        let firing3 = mgr.check_alarms(23400 + SECS_PER_DAY);
+        assert_eq!(
+            firing3.len(),
+            1,
+            "repeat alarm must fire again the next day"
+        );
     }
 
     #[test]
@@ -573,6 +621,18 @@ mod tests {
         );
         assert!((1..=12).contains(&month), "month must stay in valid range");
         assert!((1..=31).contains(&day), "day must stay in valid range");
+    }
+
+    #[test]
+    fn format_date_year_overflow_stays_ascii_digits() {
+        let buf = format_date(u16::MAX, 1, 1);
+        for &b in &buf {
+            assert!(
+                b == b'-' || b.is_ascii_digit(),
+                "format_date byte {b} is not ASCII digit or dash for an overflowing year"
+            );
+        }
+        assert_eq!(&buf[..4], b"9999", "year must clamp to 9999");
     }
 
     #[test]

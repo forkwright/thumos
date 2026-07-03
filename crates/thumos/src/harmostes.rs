@@ -78,6 +78,14 @@ const MAX_MESSAGES_PER_ROOM: usize = 100;
 /// MAX_MESSAGES_PER_ROOM already bound room/timeline memory.
 const MAX_OUTBOX_MESSAGES: usize = 256;
 
+/// Maximum bytes of a non-JSON server error body surfaced verbatim in
+/// [`MatrixError::ServerError`]'s `message` by `parse_error_response`.
+/// Bounds worst-case memory from an adversarial or misconfigured
+/// homeserver/proxy sending an oversized plaintext/HTML error page, the
+/// same way the other MAX_* constants in this module bound room/outbox
+/// memory on a 1 GB device.
+const MAX_ERROR_BODY_LEN: usize = 512;
+
 /// Transaction ID counter starting value.
 const TXN_ID_START: u32 = 1;
 
@@ -438,6 +446,25 @@ impl MatrixClient {
     #[must_use]
     pub(crate) fn room_messages(&self, room_id: &str) -> Option<&[MatrixMessage]> {
         self.find_room(room_id).map(|r| r.messages.as_slice())
+    }
+
+    /// Mark all of a room's messages as read, resetting its unread counter
+    /// to 0.
+    ///
+    /// [`Room::unread_count`] is documented as "unread messages since last
+    /// read marker", but [`Room::add_message`] only ever increments it --
+    /// there was previously no way to advance that read marker, so the
+    /// count could only grow for the client's lifetime.
+    ///
+    /// Returns `true` if `room_id` was found and reset, `false` otherwise.
+    pub(crate) fn mark_room_read(&mut self, room_id: &str) -> bool {
+        match self.rooms.iter_mut().find(|r| r.room_id == room_id) {
+            Some(room) => {
+                room.unread_count = 0;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Return the homeserver hostname.
@@ -1223,10 +1250,11 @@ fn crypto_error(e: CryptoError) -> MatrixError {
 
 /// Parse a Matrix error response body into a [`MatrixError::ServerError`].
 fn parse_error_response(response: &HttpResponse) -> MatrixError {
-    let (errcode, message) = response
-        .body_as_str()
-        .and_then(|s| JsonParser::parse(s.as_bytes()).ok())
-        .map(|root| {
+    let body_str = response.body_as_str();
+
+    let (errcode, message) = body_str
+        .and_then(|s| JsonParser::parse(s.as_bytes()).ok().map(|root| (s, root)))
+        .map(|(_, root)| {
             let errcode = root
                 .get("errcode")
                 .and_then(|v| v.as_str())
@@ -1238,10 +1266,17 @@ fn parse_error_response(response: &HttpResponse) -> MatrixError {
             (String::from(errcode), String::from(message))
         })
         .unwrap_or_else(|| {
-            (
-                String::from("M_UNKNOWN"),
-                String::from("non-JSON error response"),
-            )
+            // WHY: preserve the server's raw error text instead of discarding
+            // it -- a non-JSON error body previously became the generic
+            // "non-JSON error response", losing the server's actual text.
+            let message = match body_str {
+                Some(s) if !s.is_empty() => {
+                    let len = crate::heorte::utf8_truncate_len(s.as_bytes(), MAX_ERROR_BODY_LEN);
+                    String::from(&s[..len])
+                }
+                _ => String::from("non-JSON error response"),
+            };
+            (String::from("M_UNKNOWN"), message)
         });
 
     MatrixError::ServerError {
@@ -1419,6 +1454,37 @@ mod tests {
         assert_eq!(room.messages[0].sender, "@alice:matrix.example.com");
         assert_eq!(room.messages[1].body, "world");
         assert_eq!(room.unread_count, 2);
+    }
+
+    #[test]
+    fn mark_room_read_resets_unread_count() {
+        let mut client = matrix_client_with_test_credentials();
+        let room_id = "!test:matrix.example.com";
+
+        let sync_json = build_sync_response(
+            "batch_2",
+            room_id,
+            &[(
+                "$evt1",
+                "@alice:matrix.example.com",
+                "hello",
+                1_700_000_001_000,
+            )],
+        );
+        let response = mock_response(200, &sync_json);
+        let _ = client.sync(&response, 100);
+
+        assert_eq!(client.rooms()[0].unread_count, 1);
+        assert!(
+            client.mark_room_read(room_id),
+            "must find and reset a tracked room"
+        );
+        assert_eq!(client.rooms()[0].unread_count, 0);
+
+        assert!(
+            !client.mark_room_read("!nonexistent:example.com"),
+            "marking an untracked room read must return false"
+        );
     }
 
     #[test]
@@ -1876,6 +1942,38 @@ mod tests {
                 // Use assert! to avoid panic! lint.
                 assert!(false, "expected ServerError, got {other:?}");
             }
+        }
+    }
+
+    #[test]
+    fn parse_error_response_preserves_non_json_body_text() {
+        let response = mock_response(502, "upstream timeout: gateway unavailable");
+        let err = parse_error_response(&response);
+        match err {
+            MatrixError::ServerError { message, .. } => {
+                assert!(
+                    message.contains("upstream timeout"),
+                    "raw non-JSON body text must be preserved, got: {message}"
+                );
+            }
+            other => assert!(false, "expected ServerError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_error_response_truncates_oversized_non_json_body() {
+        let huge_body = "x".repeat(MAX_ERROR_BODY_LEN * 2);
+        let response = mock_response(500, &huge_body);
+        let err = parse_error_response(&response);
+        match err {
+            MatrixError::ServerError { message, .. } => {
+                assert!(
+                    message.len() <= MAX_ERROR_BODY_LEN,
+                    "surfaced error body must be bounded, got {} bytes",
+                    message.len()
+                );
+            }
+            other => assert!(false, "expected ServerError, got {other:?}"),
         }
     }
 

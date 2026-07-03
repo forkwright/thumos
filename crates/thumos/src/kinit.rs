@@ -193,64 +193,58 @@ impl BootState {
         }
     }
 
-    /// Count of successfully initialized subsystems.
+    /// The per-subsystem OK flags backing [`Self::ok_count`] and
+    /// [`Self::total_subsystems`]. Single source of truth: add a newly
+    /// tracked subsystem's flag here and both the numerator (`ok_count`)
+    /// and denominator (`total_subsystems`) update together automatically
+    /// -- the boot summary's "N / total" denominator was previously a
+    /// hand-maintained literal independent of this list, and had already
+    /// drifted once (17 -> 18 when csprng_ok was added). The array length
+    /// in the return type is compiler-checked against this literal, so the
+    /// two can no longer silently diverge.
+    const fn subsystem_flags(&self) -> [bool; 18] {
+        [
+            self.mmu_ok,
+            self.heap_ok,
+            self.gic_ok,
+            self.timer_ok,
+            self.csprng_ok,
+            self.emmc_ok,
+            self.display_ok,
+            self.secure_boot_ok,
+            self.passphrase_ok,
+            self.encryption_ok,
+            self.audit_ok,
+            self.security_mode_ok,
+            self.usb_ok,
+            self.modem_ok,
+            self.input_ok,
+            self.network_ok,
+            self.bluetooth_ok,
+            self.gps_ok,
+        ]
+    }
+
+    /// Count of successfully initialized subsystems, out of
+    /// [`Self::total_subsystems`].
     pub(crate) const fn ok_count(&self) -> u8 {
+        let flags = self.subsystem_flags();
         let mut n = 0;
-        if self.mmu_ok {
-            n += 1;
-        }
-        if self.heap_ok {
-            n += 1;
-        }
-        if self.gic_ok {
-            n += 1;
-        }
-        if self.timer_ok {
-            n += 1;
-        }
-        if self.csprng_ok {
-            n += 1;
-        }
-        if self.emmc_ok {
-            n += 1;
-        }
-        if self.display_ok {
-            n += 1;
-        }
-        if self.secure_boot_ok {
-            n += 1;
-        }
-        if self.passphrase_ok {
-            n += 1;
-        }
-        if self.encryption_ok {
-            n += 1;
-        }
-        if self.audit_ok {
-            n += 1;
-        }
-        if self.security_mode_ok {
-            n += 1;
-        }
-        if self.usb_ok {
-            n += 1;
-        }
-        if self.modem_ok {
-            n += 1;
-        }
-        if self.input_ok {
-            n += 1;
-        }
-        if self.network_ok {
-            n += 1;
-        }
-        if self.bluetooth_ok {
-            n += 1;
-        }
-        if self.gps_ok {
-            n += 1;
+        let mut i = 0;
+        while i < flags.len() {
+            if flags[i] {
+                n += 1;
+            }
+            i += 1;
         }
         n
+    }
+
+    /// Total number of subsystems tracked by [`Self::ok_count`]. Derived
+    /// from the same flag array `ok_count` iterates, so this denominator
+    /// can never drift from the numerator it describes.
+    pub(crate) const fn total_subsystems(&self) -> u8 {
+        self.subsystem_flags().len() as u8
     }
 
     /// Record the production network readiness result from a real device.
@@ -1003,7 +997,12 @@ pub unsafe fn run() -> ! {
         "[init] Boot complete at {} ms\r\n",
         crate::timer::elapsed_ms()
     );
-    let _ = write!(serial, "       {} / 18 subsystems OK\r\n", state.ok_count());
+    let _ = write!(
+        serial,
+        "       {} / {} subsystems OK\r\n",
+        state.ok_count(),
+        state.total_subsystems()
+    );
     if !state.csprng_ok {
         let _ = serial
             .write_str("       NOTE: CSPRNG unseeded, radio identity randomization disabled\r\n");
@@ -1386,6 +1385,21 @@ mod tests {
         state.bluetooth_ok = true;
         state.gps_ok = true;
         assert_eq!(state.ok_count(), 18, "all 18 subsystems OK");
+    }
+
+    #[test]
+    fn boot_state_total_subsystems_matches_ok_count_denominator() {
+        let mut state = BootState::new();
+        assert_eq!(state.total_subsystems(), 18);
+
+        state.mmu_ok = true;
+        state.heap_ok = true;
+        assert_eq!(
+            state.total_subsystems(),
+            18,
+            "total_subsystems must not change as flags flip"
+        );
+        assert!(state.ok_count() <= state.total_subsystems());
     }
 
     #[test]
