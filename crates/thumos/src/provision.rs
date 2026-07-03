@@ -547,8 +547,8 @@ mod tests {
     /// Create a test bundle with deterministic data.
     fn provision_bundle_with_cross_signing() -> ProvisionBundle {
         ProvisionBundle {
-            user_id: String::from("@cody:matrix.example.com").into(),
-            device_id: String::from("THMSTESTDEV01").into(),
+            user_id: MatrixUserId::new("@cody:matrix.example.com").expect("valid test user id"),
+            device_id: MatrixDeviceId::new("THMSTESTDEV01").expect("valid test device id"),
             access_token: String::from("syt_test_provision_token_1234"),
             homeserver: String::from("matrix.example.com"),
             ed25519_key: [0xAA; 32],
@@ -560,8 +560,8 @@ mod tests {
     /// Create a test bundle without cross-signing key.
     fn provision_bundle_without_cross_signing() -> ProvisionBundle {
         ProvisionBundle {
-            user_id: String::from("@test:example.org").into(),
-            device_id: String::from("DEVNOCSIGN").into(),
+            user_id: MatrixUserId::new("@test:example.org").expect("valid test user id"),
+            device_id: MatrixDeviceId::new("DEVNOCSIGN").expect("valid test device id"),
             access_token: String::from("syt_no_cross_sign"),
             homeserver: String::from("example.org"),
             ed25519_key: [0x11; 32],
