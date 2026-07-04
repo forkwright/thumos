@@ -621,4 +621,158 @@ mod tests {
         let restored = DiskInode::read_from(&buf, 0).expect("parse relocated inode 1");
         assert_eq!(restored.size, 10);
     }
+
+    #[test]
+    fn compact_picks_the_fewest_live_blocks_among_multiple_candidates() {
+        // Done-when (finding 27): when more than one sealed segment is a
+        // compaction candidate, pick_candidate must select the one with
+        // the FEWEST live blocks, not merely the first one scanned. Sets
+        // up three distinct candidate segments with live counts 2, 1, and
+        // 0 and verifies the all-garbage segment (0 live) is the one
+        // reclaimed, while the other two are left completely untouched.
+        let mut dev = block_device_for_compact();
+        let mut cache = BlockCache::new();
+        let mut imap = LfsImap::new();
+        // Segments of 4 blocks (1 header + 3 data slots) so a segment can
+        // hold more than one live inode, letting live counts differ.
+        let mut seg_mgr = LfsSegmentManager::new(8, 4);
+        seg_mgr.mark_used(0);
+
+        let mut writer = LfsWriter::new(&mut seg_mgr).expect("create writer");
+        let seg1 = writer.current_segment();
+
+        // Segment 1: two live inodes (live_count = 2), sealed without
+        // filling its third slot.
+        let inode1 = new_file_inode(10);
+        let inode2 = new_file_inode(20);
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 1, &inode1)
+            .expect("write inode 1");
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 2, &inode2)
+            .expect("write inode 2");
+        writer
+            .seal_segment(&mut dev, &mut cache, &mut seg_mgr)
+            .expect("seal segment 1");
+
+        // Segment 2: one live inode (live_count = 1).
+        let seg2 = writer.current_segment();
+        assert_ne!(seg2, seg1, "writer must have moved to a new segment");
+        let inode3 = new_file_inode(30);
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 3, &inode3)
+            .expect("write inode 3");
+        writer
+            .seal_segment(&mut dev, &mut cache, &mut seg_mgr)
+            .expect("seal segment 2");
+
+        // Segment 3: one inode written and then sealed, so it starts with
+        // one live block.
+        let seg3 = writer.current_segment();
+        assert_ne!(seg3, seg2, "writer must have moved to a new segment");
+        let inode4_v1 = new_file_inode(40);
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 4, &inode4_v1)
+            .expect("write inode 4 v1");
+        writer
+            .seal_segment(&mut dev, &mut cache, &mut seg_mgr)
+            .expect("seal segment 3");
+
+        // Overwrite inode 4 from the NEW (writer's current) segment, so
+        // segment 3's only live block becomes garbage: segment 3 now has
+        // live_count = 0, the fewest of the three candidates.
+        let inode4_v2 = new_file_inode(41);
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 4, &inode4_v2)
+            .expect("write inode 4 v2");
+
+        let block1_before = imap.get(1).expect("inode 1 in imap");
+        let block2_before = imap.get(2).expect("inode 2 in imap");
+        let block3_before = imap.get(3).expect("inode 3 in imap");
+
+        let copied =
+            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
+                .expect("compact");
+
+        assert_eq!(
+            copied, 0,
+            "the all-garbage segment (segment 3) has nothing live to relocate"
+        );
+        assert!(
+            seg_mgr.is_free(seg3),
+            "segment 3 (0 live blocks, the fewest) must be the one reclaimed"
+        );
+        assert!(
+            !seg_mgr.is_free(seg1),
+            "segment 1 (2 live blocks) must NOT have been reclaimed"
+        );
+        assert!(
+            !seg_mgr.is_free(seg2),
+            "segment 2 (1 live block) must NOT have been reclaimed"
+        );
+
+        // Segments 1 and 2's inodes must be completely untouched (same
+        // addresses as before compaction).
+        assert_eq!(imap.get(1), Some(block1_before));
+        assert_eq!(imap.get(2), Some(block2_before));
+        assert_eq!(imap.get(3), Some(block3_before));
+    }
+
+    #[test]
+    fn needs_compaction_triggers_below_threshold() {
+        // Done-when (finding 29): compaction must trigger once free
+        // segments drop below COMPACT_THRESHOLD_PERCENT of total, and
+        // must NOT trigger while comfortably above it. No existing test
+        // in this module calls needs_compaction at all.
+        let mut seg_mgr = LfsSegmentManager::new(100, 8);
+        seg_mgr.mark_used(0);
+        // 99 segments free (far above the 10% = 10 threshold).
+        assert!(
+            !needs_compaction(&seg_mgr),
+            "far above the free-segment threshold must not trigger compaction"
+        );
+
+        // Drain down to just below the threshold (9 free, threshold 10).
+        while seg_mgr.free_count() > 9 {
+            seg_mgr.allocate_for_compaction();
+        }
+        assert_eq!(seg_mgr.free_count(), 9);
+        assert!(
+            needs_compaction(&seg_mgr),
+            "free_count below the 10% threshold must trigger compaction"
+        );
+    }
+
+    #[test]
+    fn needs_compaction_requires_at_least_one_free_segment_floor() {
+        // A small filesystem where 10% of total rounds down to 0 must
+        // still require at least 1 free segment (the `.max(1)` floor), not
+        // treat "0 free required" as never needing compaction.
+        let mut seg_mgr = LfsSegmentManager::new(4, 8);
+        seg_mgr.mark_used(0);
+        // 3 segments free; threshold floors to 1, so this must not
+        // trigger yet.
+        assert!(
+            !needs_compaction(&seg_mgr),
+            "3 free segments (above the floor of 1) must not trigger compaction"
+        );
+
+        // Drain all free segments (bypassing the compaction-reserve floor
+        // via allocate_for_compaction) down to zero.
+        while seg_mgr.allocate_for_compaction().is_some() {}
+        assert_eq!(seg_mgr.free_count(), 0);
+        assert!(
+            needs_compaction(&seg_mgr),
+            "zero free segments must trigger compaction even when 10% of total rounds to 0"
+        );
+    }
+
+    #[test]
+    fn needs_compaction_zero_segments_is_false() {
+        let seg_mgr = LfsSegmentManager::new(0, 8);
+        assert!(
+            !needs_compaction(&seg_mgr),
+            "a filesystem with zero segments must not report needing compaction"
+        );
+    }
 }

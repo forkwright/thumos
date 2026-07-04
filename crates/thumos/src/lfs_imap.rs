@@ -452,4 +452,44 @@ mod tests {
             "overflowing block_count must be rejected, not wrap into a tiny allocation"
         );
     }
+
+    #[test]
+    fn save_and_load_from_disk_round_trips_across_multiple_blocks() {
+        // Done-when (finding 30): an imap large enough to span more than
+        // one 4 KiB block must still round-trip correctly through
+        // save_to_disk / load_from_disk -- the existing
+        // save_and_load_from_disk_round_trips test only has 50 entries
+        // (604 bytes), which fits in a single block and never exercises
+        // the multi-block write/read loop.
+        let mut dev = MemBlockDevice::new(65536).expect("create device"); // 32 MiB
+        let mut cache = BlockCache::new();
+
+        let mut imap = LfsImap::new();
+        const ENTRY_COUNT: u32 = 1000;
+        for i in 0..ENTRY_COUNT {
+            imap.insert(i, u64::from(i) * 7 + 1000);
+        }
+
+        let start_block = 100;
+        let block_count = imap
+            .save_to_disk(&mut dev, &mut cache, start_block)
+            .expect("save should succeed");
+        assert!(
+            block_count > 1,
+            "test fixture must actually span multiple blocks, got {block_count}"
+        );
+
+        let mut cache2 = BlockCache::new();
+        let restored = LfsImap::load_from_disk(&mut dev, &mut cache2, start_block, block_count)
+            .expect("load should succeed");
+
+        assert_eq!(restored.len(), ENTRY_COUNT as usize);
+        for i in 0..ENTRY_COUNT {
+            assert_eq!(
+                restored.get(i),
+                Some(u64::from(i) * 7 + 1000),
+                "inode {i} mismatch across multi-block round-trip"
+            );
+        }
+    }
 }

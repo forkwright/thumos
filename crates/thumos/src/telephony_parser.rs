@@ -538,4 +538,56 @@ mod tests {
             "a line matching no known URC prefix must dispatch to None"
         );
     }
+
+    #[test]
+    fn parse_u8_rejects_overflowing_value() {
+        // Done-when (finding 42): a decimal field within u8 range must
+        // parse normally, but a value exceeding u8::MAX (255) must be
+        // rejected via the checked_mul/checked_add overflow guards, not
+        // silently wrap. parse_u8 is private but has no direct test at
+        // all -- existing coverage is only indirect, via in-range fields
+        // in parse_csq_response/parse_creg_response/parse_final_result.
+        assert_eq!(parse_u8(b"255"), Some(255), "255 (u8::MAX) must parse");
+        assert_eq!(
+            parse_u8(b"256"),
+            None,
+            "256 (one past u8::MAX) must be rejected, not wrap to 0"
+        );
+        assert_eq!(
+            parse_u8(b"999"),
+            None,
+            "a value far exceeding u8::MAX must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_u32_rejects_overflowing_value() {
+        assert_eq!(
+            parse_u32(b"4294967295"),
+            Some(u32::MAX),
+            "u32::MAX must parse"
+        );
+        assert_eq!(
+            parse_u32(b"4294967296"),
+            None,
+            "one past u32::MAX must be rejected, not wrap to 0"
+        );
+        assert_eq!(
+            parse_u32(b"99999999999999999999"),
+            None,
+            "a value far exceeding u32::MAX must be rejected"
+        );
+    }
+
+    #[test]
+    fn csq_response_with_overflowing_rssi_field_is_rejected() {
+        // Integration-level check: an over-range AT field must propagate
+        // the parse_u8 overflow rejection all the way up through the
+        // public parser, not just at the private helper.
+        assert_eq!(
+            parse_csq_response(b"+CSQ: 999,0"),
+            None,
+            "an out-of-range rssi field must reject the whole +CSQ line"
+        );
+    }
 }
