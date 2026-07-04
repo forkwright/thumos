@@ -120,20 +120,36 @@ impl Default for CallScreenState {
 // Call duration formatting
 // ---------------------------------------------------------------------------
 
-/// Format a call duration in seconds as "MM:SS".
+/// Format a call duration in seconds as "MM:SS" (or "MMM:SS" once the
+/// call passes 99 minutes).
 ///
-/// Returns a fixed-size buffer and valid length (always 5 for "MM:SS").
+/// Returns a fixed-size buffer and valid length: 5 for "MM:SS" (under
+/// 100 minutes), 6 for "MMM:SS" (100-999 minutes). Minutes beyond 999
+/// (16+ hours) saturate at 999 rather than wrap the display back to
+/// "00:00" -- which previously made an in-progress long call look like
+/// it had just connected.
 pub(crate) fn format_duration(total_seconds: u64) -> ([u8; 8], usize) {
-    let minutes = (total_seconds / 60) % 100; // cap at 99 min display
+    let minutes = (total_seconds / 60).min(999);
     let seconds = total_seconds % 60;
 
     let mut buf = [0u8; 8];
-    buf[0] = b'0' + (minutes / 10) as u8;
-    buf[1] = b'0' + (minutes % 10) as u8;
-    buf[2] = b':';
-    buf[3] = b'0' + (seconds / 10) as u8;
-    buf[4] = b'0' + (seconds % 10) as u8;
-    (buf, 5)
+
+    if minutes < 100 {
+        buf[0] = b'0' + (minutes / 10) as u8;
+        buf[1] = b'0' + (minutes % 10) as u8;
+        buf[2] = b':';
+        buf[3] = b'0' + (seconds / 10) as u8;
+        buf[4] = b'0' + (seconds % 10) as u8;
+        (buf, 5)
+    } else {
+        buf[0] = b'0' + (minutes / 100) as u8;
+        buf[1] = b'0' + (minutes / 10 % 10) as u8;
+        buf[2] = b'0' + (minutes % 10) as u8;
+        buf[3] = b':';
+        buf[4] = b'0' + (seconds / 10) as u8;
+        buf[5] = b'0' + (seconds % 10) as u8;
+        (buf, 6)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +451,28 @@ mod tests {
         let (buf, len) = format_duration(59);
         let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
         assert_eq!(s, "00:59", "59 seconds must format as 00:59");
+    }
+
+    #[test]
+    fn timer_past_99_minutes_grows_instead_of_wrapping() {
+        // 6000 seconds = 100 minutes exactly -- must NOT wrap to "00:00".
+        let (buf, len) = format_duration(6000);
+        let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
+        assert_eq!(s, "100:00", "100 minutes must not wrap to 00:00");
+
+        // One second before the wrap point: still 2-digit minutes.
+        let (buf, len) = format_duration(5999);
+        let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
+        assert_eq!(s, "99:59", "5999 seconds is 99:59, the last 2-digit value");
+
+        // Absurdly long call: must saturate, not overflow the buffer.
+        let (buf, len) = format_duration(3_600_030);
+        let s = core::str::from_utf8(&buf[..len]).unwrap_or("");
+        assert_eq!(
+            s, "999:30",
+            "duration must saturate at 999 minutes, never overflow the \
+             display buffer"
+        );
     }
 
     #[test]

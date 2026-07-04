@@ -178,8 +178,11 @@ impl ChatMessage {
     fn line_count(&self) -> usize {
         // Header line ("Sender:").
         let mut lines = 1;
-        // Body lines (word-wrapped).
-        let body_len = self.body.len();
+        // Body lines (word-wrapped). WHY chars not bytes: CHARS_PER_LINE
+        // is a character-cell budget for the fixed-width font, not a
+        // byte budget -- using body.len() (UTF-8 byte length) inflated
+        // the line estimate for any multi-byte body text.
+        let body_len = self.body.chars().count();
         if body_len > 0 {
             lines += body_len.div_ceil(CHARS_PER_LINE);
         }
@@ -526,7 +529,12 @@ fn format_card_header(entity_name: &str) -> String {
 
 /// Truncate a string to at most `max_len` characters.
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    // WHY: gate on character count, not UTF-8 byte length -- max_len is
+    // a character budget (the loop below counts by chars), so a
+    // byte-length guard incorrectly truncated short multi-byte strings
+    // whose byte length exceeded max_len even though their character
+    // count did not.
+    if s.chars().count() <= max_len {
         String::from(s)
     } else {
         let mut result = String::with_capacity(max_len);
@@ -1171,6 +1179,21 @@ mod tests {
     }
 
     #[test]
+    fn chat_message_line_count_counts_chars_not_bytes_for_multibyte_body() {
+        // 20 two-byte UTF-8 characters: 20 chars (fits on one
+        // CHARS_PER_LINE-wide line) but 40 bytes -- a byte-length-based
+        // estimate would wrongly count this as 2 wrapped lines.
+        let body: String = core::iter::repeat_n('á', 20).collect();
+        let msg = ChatMessage::from_user(body, 0);
+        assert_eq!(
+            msg.line_count(),
+            2,
+            "1 header line + 1 body line -- byte length must not inflate \
+             the wrapped-line estimate for multi-byte UTF-8 text"
+        );
+    }
+
+    #[test]
     fn chat_message_display() {
         let msg = ChatMessage::from_user(String::from("Hello world"), 0);
         let display = alloc::format!("{msg}");
@@ -1207,6 +1230,20 @@ mod tests {
         let result = truncate_str("Hello World", 6);
         assert!(result.len() <= 6);
         assert!(result.ends_with('~'));
+    }
+
+    #[test]
+    fn truncate_str_short_multibyte_not_truncated() {
+        // 3 CJK characters = 9 UTF-8 bytes but only 3 characters. A
+        // byte-length guard would wrongly truncate this at max_len=3
+        // even though the character count is exactly at budget.
+        let s = "日本語";
+        let result = truncate_str(s, 3);
+        assert_eq!(
+            result, s,
+            "a string within the character budget must not be truncated, \
+             even when its UTF-8 byte length exceeds max_len"
+        );
     }
 
     #[test]

@@ -331,6 +331,13 @@ impl Mt6357Codec {
     ///
     /// The caller must ensure `offset` is a valid MT6357 register offset.
     unsafe fn pmic_set_bits(offset: u16, bits: u32) {
+        // WHY: mask IRQ delivery around the read-modify-write -- an
+        // interrupt firing between the read and the write here could
+        // itself touch the same PMIC register, and this write would
+        // clobber whatever change the interrupt made (the same
+        // preemption-corruption class crate::irq::IrqGuard exists for,
+        // see irq.rs's #322/#331 module docs).
+        let _irq_guard = crate::irq::IrqGuard::new();
         // SAFETY: caller guarantees valid register offset.
         unsafe {
             let current = Self::pmic_read(offset);
@@ -344,6 +351,8 @@ impl Mt6357Codec {
     ///
     /// The caller must ensure `offset` is a valid MT6357 register offset.
     unsafe fn pmic_clear_bits(offset: u16, bits: u32) {
+        // WHY: IRQ-safe RMW -- see pmic_set_bits.
+        let _irq_guard = crate::irq::IrqGuard::new();
         // SAFETY: caller guarantees valid register offset.
         unsafe {
             let current = Self::pmic_read(offset);
@@ -612,6 +621,7 @@ impl AudioCodecOps for Mt6357Codec {
 ///
 /// Records all operations in order for test verification.  Controllable
 /// failure injection via the `fail_*` flags.
+// kanon:ignore RUST/struct-too-many-fields -- test-only mock: one state flag + one fail-injection flag per codec hardware operation; each field targets a distinct operation's failure path
 #[cfg(test)]
 pub struct MockCodec {
     /// Whether the codec is powered on.
@@ -638,6 +648,10 @@ pub struct MockCodec {
     pub fail_enable_mic_bias: Option<AudioError>,
     /// If set, `set_output` returns this error (#390).
     pub fail_set_output: Option<AudioError>,
+    /// If set, `disable_dac` returns this error.
+    pub fail_disable_dac: Option<AudioError>,
+    /// If set, `power_off` returns this error.
+    pub fail_power_off: Option<AudioError>,
 }
 
 #[cfg(test)]
@@ -657,6 +671,8 @@ impl MockCodec {
             fail_enable_adc: None,
             fail_enable_mic_bias: None,
             fail_set_output: None,
+            fail_disable_dac: None,
+            fail_power_off: None,
         }
     }
 }
@@ -676,6 +692,11 @@ impl AudioCodecOps for MockCodec {
     }
 
     fn power_off(&mut self) -> Result<(), AudioError> {
+        if let Some(err) = self.fail_power_off {
+            self.operations
+                .push(alloc::string::String::from("power_off:FAIL"));
+            return Err(err);
+        }
         self.powered = false;
         self.dac_enabled = false;
         self.adc_enabled = false;
@@ -717,6 +738,11 @@ impl AudioCodecOps for MockCodec {
     }
 
     fn disable_dac(&mut self) -> Result<(), AudioError> {
+        if let Some(err) = self.fail_disable_dac {
+            self.operations
+                .push(alloc::string::String::from("disable_dac:FAIL"));
+            return Err(err);
+        }
         self.dac_enabled = false;
         self.operations
             .push(alloc::string::String::from("disable_dac"));

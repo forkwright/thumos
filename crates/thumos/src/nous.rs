@@ -305,7 +305,12 @@ pub struct NousEntity {
     /// Entity name stored in a fixed-size buffer.
     pub name: [u8; MAX_NAME_LEN],
     /// Number of valid bytes in `name`.
-    pub name_len: u8,
+    ///
+    /// WARNING: kept private (not `pub`) and only ever set from `new()`,
+    /// bounded by `MAX_NAME_LEN`. A `pub` field here would let external
+    /// code set it past the backing buffer's length, causing an
+    /// out-of-bounds slice panic in `name_str()`/`PartialEq`.
+    name_len: u8,
     /// Matrix user ID (e.g., "@syn:thumos.lan").
     pub matrix_id: MatrixUserId,
     /// Capability preset governing what this entity can do.
@@ -348,10 +353,14 @@ impl NousEntity {
     /// Return the entity name as a string slice.
     #[must_use]
     pub(crate) fn name_str(&self) -> &str {
-        // SAFETY: name is always written from a valid &str in new().
-        // name_len is set from the source string's byte length and
-        // never modified afterward, so the slice is always valid UTF-8.
-        core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("?")
+        // INVARIANT: name_len is private and only ever set in new(),
+        // bounded by MAX_NAME_LEN -- this clamp is defense-in-depth
+        // against that invariant regressing, not a normal-path branch.
+        let len = (self.name_len as usize).min(MAX_NAME_LEN);
+        // SAFETY: name is always written from a valid &str in new(), and
+        // len is clamped to the buffer length above, so the slice is
+        // always valid UTF-8 within bounds.
+        core::str::from_utf8(&self.name[..len]).unwrap_or("?")
     }
 
     /// Whether this entity can propose actions at its current preset.
@@ -387,7 +396,9 @@ impl fmt::Display for NousEntity {
 
 impl PartialEq for NousEntity {
     fn eq(&self, other: &Self) -> bool {
-        self.name[..self.name_len as usize] == other.name[..other.name_len as usize]
+        let self_len = (self.name_len as usize).min(MAX_NAME_LEN);
+        let other_len = (other.name_len as usize).min(MAX_NAME_LEN);
+        self.name[..self_len] == other.name[..other_len]
             && self.matrix_id == other.matrix_id
             && self.capability_preset == other.capability_preset
     }
@@ -865,6 +876,36 @@ mod tests {
             CapabilityPreset::Off,
         );
         assert!(result.is_ok(), "exactly MAX_NAME_LEN must succeed");
+    }
+
+    #[test]
+    fn name_len_past_buffer_does_not_panic_on_read_or_eq() {
+        // name_len is private specifically so external code cannot set it
+        // past MAX_NAME_LEN; this test pokes the field directly (allowed
+        // -- `tests` is a descendant module of `nous`) to prove the read
+        // path stays fail-closed even if that invariant is ever violated
+        // again, rather than panicking on an out-of-bounds slice index.
+        let mut entity = NousEntity::new(
+            "Bot",
+            String::from("@bot:thumos.lan"),
+            CapabilityPreset::Off,
+        )
+        .unwrap_or_else(|_| unreachable!());
+        entity.name_len = 200;
+
+        let other = NousEntity::new(
+            "Bot",
+            String::from("@bot:thumos.lan"),
+            CapabilityPreset::Off,
+        )
+        .unwrap_or_else(|_| unreachable!());
+
+        let name = entity.name_str();
+        assert!(
+            name.len() <= MAX_NAME_LEN,
+            "name_str must clamp to MAX_NAME_LEN instead of reading past the buffer"
+        );
+        let _ = entity == other; // must not panic
     }
 
     #[test]
