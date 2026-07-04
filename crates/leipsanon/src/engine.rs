@@ -6,6 +6,8 @@
 
 use std::io::{self, Seek as _, SeekFrom, Write as _};
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use snafu::Snafu;
@@ -23,6 +25,20 @@ use crate::targets::{WipeAction, WipeMethod};
 /// runtime-tunable entry point is [`Config::chunk_size`].
 pub(crate) const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
 
+/// Upper bound on how long [`wipe_file`] waits FOR a single target's
+/// overwrite-and-sync to finish before giving up on it.
+///
+/// WHY(#280): `write_all`/`sync_all` on a `std::fs::File` have no OS-level
+/// cancellation available to this crate (no io_uring / async-I/O
+/// dependency) — a wedged block device can block either call
+/// indefinitely. The work runs on a detached worker thread; this is the
+/// deadline the ENGINE waits FOR before moving on, bounding how long one
+/// stuck target can stall the rest of the wipe plan. It does NOT stop the
+/// worker thread itself, which keeps running in the background — genuine
+/// syscall cancellation would need an async-I/O runtime this crate does
+/// not depend on (see `wipe_file`'s doc comment).
+const WIPE_TARGET_TIMEOUT: Duration = Duration::from_secs(60);
+
 // ----- Errors ---------------------------------------------------------------
 
 #[derive(Debug, Snafu)]
@@ -38,6 +54,11 @@ pub(crate) enum WipeError {
 
     #[snafu(display("failed to generate random fill for {path}: {source}"))]
     Random { path: String, source: MemoryError },
+
+    #[snafu(display(
+        "wipe of {path} exceeded the {timeout:?} bound; abandoning the wait (worker continues in the background)"
+    ))]
+    Timeout { path: String, timeout: Duration },
 }
 
 // ----- Types ----------------------------------------------------------------
@@ -49,6 +70,12 @@ pub(crate) struct WipeResult {
     pub(crate) actions_completed: usize,
     /// Number of actions that encountered an I/O error.
     pub(crate) actions_failed: usize,
+    /// Number of actions whose target path did not exist on the filesystem.
+    /// Distinct FROM `actions_completed` — a missing target was never
+    /// destroyed BY this run, so counting it as a completed wipe would let
+    /// a caller believe a panic-wipe succeeded when the data may simply be
+    /// at a different (unwiped) path (#280).
+    pub(crate) actions_missing: usize,
     /// Number of PRIORITY-1 (key-wipe) actions that failed. Destroying key
     /// material is what actually renders encrypted data unrecoverable, so
     /// this must be checked independently of `actions_failed` — a caller
@@ -112,12 +139,14 @@ impl WipeEngine {
     /// sorted by ascending priority (as returned by [`crate::targets::plan`]).
     ///
     /// In dry-run mode all actions are counted as completed with zero bytes
-    /// wiped. In real mode, actions on paths that do not exist are silently
-    /// skipped (not counted as failures).
+    /// wiped. In real mode, actions on paths that do not exist are counted
+    /// in `actions_missing` — NOT as completed and NOT as failed, because a
+    /// missing target was never destroyed by this run (#280).
     pub(crate) fn execute(&mut self, plan: &[WipeAction]) -> WipeResult {
         let start = Instant::now();
         let mut completed: usize = 0;
         let mut failed: usize = 0;
+        let mut missing: usize = 0;
         let mut critical_failed: usize = 0;
         let mut bytes_wiped: u64 = 0;
 
@@ -132,10 +161,17 @@ impl WipeEngine {
                 completed = completed.saturating_add(1);
             } else {
                 match wipe_path(&action.path, action.method, self.chunk_size) {
-                    Ok(bytes) => {
+                    Ok(Some(bytes)) => {
                         log::info!("wiped {} bytes FROM {}", bytes, action.path.display());
                         completed = completed.saturating_add(1);
                         bytes_wiped = bytes_wiped.saturating_add(bytes);
+                    }
+                    Ok(None) => {
+                        log::warn!(
+                            "wipe target missing FROM {} (not counted as wiped)",
+                            action.path.display()
+                        );
+                        missing = missing.saturating_add(1);
                     }
                     Err(ref e) => {
                         log::error!("wipe failed for {}: {}", action.path.display(), e);
@@ -151,6 +187,7 @@ impl WipeEngine {
         WipeResult {
             actions_completed: completed,
             actions_failed: failed,
+            actions_missing: missing,
             critical_failures: critical_failed,
             bytes_wiped,
             elapsed: start.elapsed(),
@@ -160,8 +197,11 @@ impl WipeEngine {
 
 // ----- Free functions -------------------------------------------------------
 
-/// Wipe `path` using `method`. Returns bytes written. Missing paths return 0.
-fn wipe_path(path: &Path, method: WipeMethod, chunk_size: usize) -> Result<u64, WipeError> {
+/// Wipe `path` using `method`. Returns `Ok(Some(bytes))` when the target
+/// existed and was wiped, or `Ok(None)` when `path` does not exist — a
+/// missing target has nothing to destroy, so it is NOT reported as bytes
+/// written (#280).
+fn wipe_path(path: &Path, method: WipeMethod, chunk_size: usize) -> Result<Option<u64>, WipeError> {
     let path_str = path.display().to_string();
 
     let mut file = match std::fs::OpenOptions::new()
@@ -172,7 +212,7 @@ fn wipe_path(path: &Path, method: WipeMethod, chunk_size: usize) -> Result<u64, 
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             log::warn!("wipe target not found (skipping): {path_str}");
-            return Ok(0);
+            return Ok(None);
         }
         Err(e) => {
             return Err(WipeError::Open {
@@ -192,12 +232,62 @@ fn wipe_path(path: &Path, method: WipeMethod, chunk_size: usize) -> Result<u64, 
         source: e,
     })?;
 
-    wipe_file(file, len, method, &path_str, chunk_size)
+    wipe_file(file, len, method, &path_str, chunk_size).map(Some)
+}
+
+/// Run `f` on a detached worker thread, waiting up to `timeout` FOR it to
+/// finish. Returns `None` if the deadline elapses first.
+///
+/// WHY(#280): this is the seam that lets [`wipe_file`] bound a blocking
+/// `write_all`/`sync_all` without needing an async-I/O runtime. The
+/// worker is NOT force-stopped on timeout — Rust/std has no mechanism to
+/// cancel an in-flight blocking syscall — it keeps running in the
+/// background and its eventual result (if any) is dropped along with the
+/// disconnected channel. This bounds how long the CALLER waits, not how
+/// long the underlying I/O actually takes.
+fn run_with_timeout<T, F>(timeout: Duration, f: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(f()); // WHY: send fails only if the receiver already timed out and dropped rx; the worker result is then unobservable by design, nothing to recover.
+    });
+    rx.recv_timeout(timeout).ok()
 }
 
 /// Overwrite `file` (of known `len`) using `method`, then sync.
+///
+/// Bounded by [`WIPE_TARGET_TIMEOUT`] via [`run_with_timeout`]: if the
+/// worker has not finished by the deadline this returns
+/// [`WipeError::Timeout`] rather than blocking the wipe engine
+/// indefinitely on one stuck target (#280). See `run_with_timeout`'s doc
+/// comment for why the worker itself cannot be force-cancelled.
 fn wipe_file(
     mut file: std::fs::File,
+    len: u64,
+    method: WipeMethod,
+    path: &str,
+    chunk_size: usize,
+) -> Result<u64, WipeError> {
+    let path_owned = path.to_owned();
+    run_with_timeout(WIPE_TARGET_TIMEOUT, move || {
+        wipe_file_blocking(&mut file, len, method, &path_owned, chunk_size)
+    })
+    .unwrap_or_else(|| {
+        Err(WipeError::Timeout {
+            path: path.to_owned(),
+            timeout: WIPE_TARGET_TIMEOUT,
+        })
+    })
+}
+
+/// The actual overwrite-and-sync loop, run on [`wipe_file`]'s worker
+/// thread. Split out so [`run_with_timeout`] can be unit-tested against a
+/// plain closure without needing real (potentially slow) file I/O.
+fn wipe_file_blocking(
+    file: &mut std::fs::File,
     len: u64,
     method: WipeMethod,
     path: &str,
@@ -349,6 +439,44 @@ mod tests {
             engine.chunk_size(),
             CHUNK_SIZE,
             "default engine must use DEFAULT_CHUNK_SIZE"
+        );
+    }
+
+    #[test]
+    fn wipe_target_timeout_is_positive() {
+        assert!(
+            WIPE_TARGET_TIMEOUT > Duration::from_secs(0),
+            "WIPE_TARGET_TIMEOUT must be a real bound, not disabled/zero (#280)"
+        );
+    }
+
+    #[test]
+    fn run_with_timeout_returns_none_when_worker_exceeds_deadline() {
+        // WHY(#280): this is the seam wipe_file uses to bound a blocking
+        // write_all/sync_all — the caller must not block past the deadline
+        // even though the worker itself keeps running in the background.
+        // The worker blocks on a channel we hold open so it deterministically
+        // outlives the deadline WITHOUT a wall-clock sleep; dropping block_tx
+        // after the assertion lets the worker exit cleanly (no leaked thread).
+        let (block_tx, block_rx) = std::sync::mpsc::channel::<()>();
+        let result = run_with_timeout(Duration::from_millis(20), move || {
+            block_rx.recv().ok();
+            42u32
+        });
+        assert_eq!(
+            result, None,
+            "a worker slower than the deadline must yield None, not block the caller"
+        );
+        drop(block_tx);
+    }
+
+    #[test]
+    fn run_with_timeout_returns_result_when_worker_finishes_in_time() {
+        let result = run_with_timeout(Duration::from_secs(1), || 7u32);
+        assert_eq!(
+            result,
+            Some(7),
+            "a worker finishing within the deadline must return its result"
         );
     }
 
@@ -543,11 +671,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_wipe_target_counts_as_completed_with_zero_bytes() {
-        // WHY: locks in the documented `execute` contract (see its doc
-        // comment) that a wipe target absent FROM the filesystem is treated
-        // as a benign no-op — not a failure, and counted as completed with
-        // zero bytes wiped — rather than surfacing as an I/O error.
+    fn missing_wipe_target_counts_as_missing_not_completed() {
+        // WHY(#280): a wipe target absent FROM the filesystem must NOT be
+        // reported as a completed wipe — the panic-wipe contract is that
+        // `actions_completed` means data was actually destroyed. A missing
+        // target is counted in `actions_missing` instead, distinct FROM
+        // both success and I/O failure.
         let missing = std::env::temp_dir().join(format!(
             "leipsanon_missing_wipe_target_{}_{}",
             std::process::id(),
@@ -561,12 +690,16 @@ mod tests {
         let mut engine = WipeEngine::new(false);
         let result = engine.execute(&plan);
         assert_eq!(
-            result.actions_completed, 1,
-            "a missing wipe target must still be counted as completed"
+            result.actions_completed, 0,
+            "a missing wipe target must NOT be counted as completed"
+        );
+        assert_eq!(
+            result.actions_missing, 1,
+            "a missing wipe target must be counted in actions_missing"
         );
         assert_eq!(
             result.actions_failed, 0,
-            "a missing wipe target must not be counted as a failure"
+            "a missing wipe target is not an I/O failure either"
         );
         assert_eq!(
             result.bytes_wiped, 0,

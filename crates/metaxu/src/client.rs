@@ -30,6 +30,8 @@ mod tests {
     }
 
     impl BridgeTransport for InMemoryRuntime {
+        type Error = crate::Error;
+
         fn exchange(&mut self, request_frame: &[u8]) -> Result<Vec<u8>> {
             let request = decode_request(request_frame)?;
             let response = match &request {
@@ -52,7 +54,7 @@ mod tests {
     }
 
     #[test]
-    fn sms_request_round_trips_through_in_memory_runtime() -> Result<()> {
+    fn sms_request_round_trips_through_in_memory_runtime() -> Result<(), crate::Error> {
         let request_id = Ulid::from_bytes([1; 16]);
         let request = TaskRequest::SendSms {
             request_id,
@@ -115,6 +117,8 @@ mod tests {
     struct MismatchedResponseRuntime;
 
     impl BridgeTransport for MismatchedResponseRuntime {
+        type Error = crate::Error;
+
         fn exchange(&mut self, request_frame: &[u8]) -> Result<Vec<u8>> {
             let _request = decode_request(request_frame)?;
             let response = TaskResponse::accepted(Ulid::from_bytes([99; 16]), DeviceAction::None);

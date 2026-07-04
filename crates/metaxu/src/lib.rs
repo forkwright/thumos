@@ -12,7 +12,7 @@ mod error;
 mod protocol;
 mod transport;
 
-use snafu::OptionExt as _;
+use snafu::{OptionExt as _, ResultExt as _};
 
 pub use client::BridgeClient; // kanon:ignore RUST/pub-visibility -- public API
 pub use error::{Error, Result};
@@ -45,11 +45,12 @@ where
     ///
     /// Returns [`Error::MissingCapability`] when local preflight does not find
     /// a grant claim for the required capability, [`Error::Transport`] for
-    /// transport failures,
+    /// transport failures (wrapping `T::Error` so the concrete transport
+    /// cause is preserved rather than stringified),
     /// [`Error::Decode`] for malformed responses, and
     /// [`Error::ResponseRequestMismatch`] when the runtime answers another
     /// request id.
-    pub fn submit(&mut self, request: &TaskRequest) -> Result<TaskResponse> {
+    pub fn submit(&mut self, request: &TaskRequest) -> Result<TaskResponse, T::Error> {
         request
             .has_required_capability()
             .then_some(())
@@ -59,9 +60,12 @@ where
             })?;
 
         let request_id = request.request_id();
-        let request_frame = encode_request(request)?;
-        let response_frame = self.transport.exchange(&request_frame)?;
-        let response = decode_response(&response_frame)?;
+        let request_frame = encode_request(request).map_err(|err| err.widen())?;
+        let response_frame = self
+            .transport
+            .exchange(&request_frame)
+            .context(error::TransportSnafu)?;
+        let response = decode_response(&response_frame).map_err(|err| err.widen())?;
 
         (response.request_id == request_id).then_some(()).context(
             error::ResponseRequestMismatchSnafu {
