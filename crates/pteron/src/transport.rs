@@ -43,6 +43,26 @@ const STP_FUNC_BT: u8 = 0;
 /// decode share this tighter bound instead of the raw protocol maximum.
 pub(crate) const RING_BUF_SIZE: usize = 2048;
 
+/// Maximum size of an HCI command's parameter block.
+///
+/// WHY: HCI bounds command parameters to a single `u8` length field (see
+/// `encode_command`'s INVARIANT in `hci.rs`), so 255 bytes is the true
+/// protocol ceiling regardless of which [`HciCommand`] variant is encoded.
+const MAX_HCI_COMMAND_PARAMS_LEN: usize = 255;
+
+/// Maximum size of an H4-framed HCI command: type(1) + opcode(2) +
+/// `param_len`(1) + up to [`MAX_HCI_COMMAND_PARAMS_LEN`] parameter bytes.
+const MAX_HCI_COMMAND_LEN: usize = 4 + MAX_HCI_COMMAND_PARAMS_LEN;
+
+/// Maximum size of an STP-framed HCI command (delimiter + header + the
+/// largest possible HCI command payload).
+///
+/// WHY: [`BtHciTransport::send_command`] only ever frames [`HciCommand`]
+/// values, whose encoded size is bounded well under [`RING_BUF_SIZE`]; a
+/// fixed-size stack buffer of this length replaces a second per-call heap
+/// allocation that used to size itself dynamically to the command length.
+const MAX_COMMAND_FRAME_LEN: usize = STP_DELIMITER_LEN + STP_HEADER_LEN + MAX_HCI_COMMAND_LEN;
+
 /// Default address-rotation interval: 15 minutes in seconds, matching BLE spec
 /// recommendation.
 ///
@@ -416,17 +436,30 @@ pub(crate) const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
     BdAddr::from_bytes([b0, b1, b2, b3, b4, b5])
 }
 
-/// Generate a Resolvable Private Address (RPA) preamble.
+/// Generate an address with RPA type bits SET (two MSBs = 0b01).
 ///
-/// RPA bit format: two MSBs of byte 5 (the address MSB) are 0b01.
-/// The lower 22 bits are a random prand; the upper 24 bits (bytes 0-2 in
-/// display ORDER) would normally be the hash(IRK, prand) in a full
-/// implementation.  This function returns the address with the prand portion
-/// SET and the hash portion filled FROM `entropy`, sufficient for address
-/// rotation without a full IRK implementation.
+/// SECURITY GAP (too large for a mechanical fix; tracked separately): this
+/// does NOT compute a spec-conformant Resolvable Private Address. Per BT
+/// Core Spec Vol 6, Part B §1.3.2.2, an RPA's lower 24 bits MUST equal
+/// `ah(IRK, prand)` — an AES-128 hash of the upper 22-bit prand under the
+/// bonded peer's Identity Resolving Key — so a bonded peer can resolve the
+/// address back to our identity. This function fills BOTH the prand region
+/// AND the hash region FROM raw `entropy`, with no relation to any IRK. The
+/// result:
+/// - is NOT resolvable by any bonded peer (defeats reconnection, bonded
+///   auto-connect, and directed-advertising use cases that rely on RPA
+///   resolution), and
+/// - is NOT a valid RPA per spec, while still asserting via the type bits
+///   that it is one — worse than an NRPA for any caller that branches on
+///   the address-type bits and assumes resolvability.
 ///
-/// WHY: used when bonding is established; allows the bonded peer to resolve
-/// the address via their stored IRK while remaining opaque to others.
+/// A conformant implementation needs an `ah()` AES-128 primitive (this
+/// crate has no AES dependency and no raw-ECB usage pattern anywhere), an
+/// IRK generation/storage seam (zeroized, persistent across our own address
+/// rotations), and an SMP (Security Manager Protocol) bonding flow to
+/// exchange IRKs with peers (this crate has no L2CAP/SMP layer at all —
+/// HCI/STP transport only). None of those seams exist yet; do not treat
+/// this function's output as a real RPA.
 pub(crate) const fn generate_rpa(entropy: &[u8; 6]) -> BdAddr {
     let [mut b0, b1, b2, b3, b4, b5] = *entropy;
     // Force two MSBs to 0b01 in the most-significant byte (index 0 = display MSB)
@@ -527,10 +560,18 @@ impl BtHciTransport {
     /// When advancing to `ResetCompleteEventDelivered`, this method injects the
     /// Hardware Error event `{0x04, 0x10, 0x01, 0x00}` INTO the RX ring buffer
     /// so that callers see the same event that real hardware would produce.
+    /// The transition only completes once that injection succeeds — a state
+    /// named `ResetCompleteEventDelivered` must never be reachable without the
+    /// event actually landing in the RX path.
     ///
     /// # Errors
     ///
     /// Returns [`Error::UnexpectedResetState`] if the transition is not valid.
+    ///
+    /// Returns [`Error::BufferOverflow`] if the RX ring buffer has no room for
+    /// the Hardware Error event; `rstflag` remains
+    /// [`RstFlag::ResetCompleteEventPending`] so the caller can retry the
+    /// transition once the RX buffer drains.
     pub(crate) fn advance_reset(&mut self) -> Result<RstFlag> {
         let next = match self.rstflag {
             RstFlag::Normal => RstFlag::ResetStart,
@@ -539,7 +580,16 @@ impl BtHciTransport {
                 // Inject HCI Hardware Error event INTO RX path per DRIVER-INTERFACES.md §4.4.
                 // Event: H4=0x04, code=0x10, param_len=0x01, hw_code=0x00
                 let hw_error_event: [u8; 4] = [0x04, 0x10, 0x01, 0x00];
-                let _ = self.rx.push(&hw_error_event); // WHY: best-effort RX injection; ring buffer may be full during reset storm.
+                // WHY: ResetCompleteEventDelivered is a contract that the event
+                // reached RX; on injection failure stay in
+                // ResetCompleteEventPending and surface the error instead of
+                // silently losing the event, so the caller can retry.
+                if !self.rx.push(&hw_error_event) {
+                    return Err(Error::BufferOverflow {
+                        need: hw_error_event.len(),
+                        have: RING_BUF_SIZE - self.rx.len(),
+                    });
+                }
                 RstFlag::ResetCompleteEventDelivered
             }
             RstFlag::ResetCompleteEventDelivered => RstFlag::Normal,
@@ -570,8 +620,10 @@ impl BtHciTransport {
     /// enough space for the encoded frame.
     pub(crate) fn send_command(&mut self, cmd: &HciCommand) -> Result<usize> {
         let hci_bytes = encode_command(cmd);
-        let frame_size = STP_DELIMITER_LEN + STP_HEADER_LEN + hci_bytes.len();
-        let mut frame_buf = vec![0u8; frame_size];
+        // WHY: HCI command frames are bounded by MAX_COMMAND_FRAME_LEN, so a
+        // fixed-size stack buffer replaces the second per-call heap
+        // allocation this used to require (`vec![0u8; frame_size]`).
+        let mut frame_buf = [0u8; MAX_COMMAND_FRAME_LEN];
         let written = stp_encode(self.tx_seq, &hci_bytes, &mut frame_buf)?;
         if !self.tx.push(&frame_buf[..written]) {
             return Err(Error::BufferOverflow {
@@ -960,11 +1012,12 @@ mod tests {
     }
 
     #[test]
-    fn reset_state3_advances_even_when_rx_injection_fails() -> Result<()> {
+    fn reset_state3_does_not_advance_when_rx_injection_fails() -> Result<()> {
         let mut transport = BtHciTransport::new();
         // WHY: fill the RX ring to capacity so the Hardware Error event
         // injection at state 3 has no room to land, exercising the
-        // documented best-effort-injection failure path.
+        // failure path that must surface an error instead of silently
+        // advancing past a state whose name promises delivery.
         let filler = vec![0u8; RING_BUF_SIZE - 1];
         assert!(
             transport.rx.push(&filler),
@@ -973,12 +1026,16 @@ mod tests {
 
         transport.advance_reset()?;
         transport.advance_reset()?;
-        let s3 = transport.advance_reset()?;
+        let result = transport.advance_reset();
 
+        assert!(
+            matches!(result, Err(Error::BufferOverflow { .. })),
+            "injection failure must surface as an error, not a silent state advance"
+        );
         assert_eq!(
-            s3,
-            RstFlag::ResetCompleteEventDelivered,
-            "reset state machine must still advance even when best-effort RX injection fails"
+            transport.rstflag(),
+            RstFlag::ResetCompleteEventPending,
+            "rstflag must remain ResetCompleteEventPending so a retry can occur once RX drains"
         );
         Ok(())
     }
@@ -1159,6 +1216,34 @@ mod tests {
         assert_eq!(
             own_addr_type, OWN_ADDR_TYPE_RANDOM,
             "LE_Set_Scan_Parameters must always use Own_Address_Type = 0x01 (Random)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn send_command_round_trips_through_fixed_frame_buffer() -> Result<()> {
+        // WHY: send_command frames the STP header into a fixed-size stack
+        // buffer (MAX_COMMAND_FRAME_LEN) instead of a second per-call heap
+        // allocation; this proves that refactor still produces a correct,
+        // decodable STP frame for a command near the larger end of the
+        // HciCommand payload range (SetEventMask's 8-byte mask).
+        let mut transport = BtHciTransport::new();
+        let cmd = HciCommand::SetEventMask { mask: [0xFF; 8] };
+        transport.send_command(&cmd)?;
+
+        let mut raw = vec![0u8; RING_BUF_SIZE];
+        let drained = transport.drain_tx(&mut raw);
+        assert!(drained > 0, "TX buffer must contain the encoded frame");
+
+        let (payload, frame_len) = stp_decode(&raw[..drained])?;
+        assert_eq!(
+            frame_len, drained,
+            "decoded frame length must match the drained byte count"
+        );
+        assert_eq!(
+            payload.len(),
+            4 + 8,
+            "SetEventMask HCI payload must be H4+opcode+param_len(4 bytes) + 8 mask bytes"
         );
         Ok(())
     }
