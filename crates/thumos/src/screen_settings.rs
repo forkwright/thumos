@@ -423,8 +423,14 @@ impl Screen for WifiSettingsScreen {
         // SSID (only if connected).
         ui::draw_str(fb, w, PADDING_X, y, "SSID:", color::DARK_GREY, color::BLACK);
         if self.state.connected && self.state.ssid_len > 0 {
-            let ssid_str =
-                core::str::from_utf8(&self.state.ssid[..self.state.ssid_len]).unwrap_or("<binary>");
+            // WHY: clamp before slicing -- ssid_len comes from the WiFi
+            // driver's state snapshot and is not validated against the
+            // 32-byte ssid buffer at the source; a malformed/corrupted
+            // driver report with ssid_len > ssid.len() would otherwise
+            // panic this OOB slice (#397). Fail-closed: render "<binary>"
+            // like an invalid-UTF8 SSID, rather than trusting the length.
+            let len = self.state.ssid_len.min(self.state.ssid.len());
+            let ssid_str = core::str::from_utf8(&self.state.ssid[..len]).unwrap_or("<binary>");
             ui::draw_str(
                 fb,
                 w,
@@ -864,6 +870,32 @@ mod tests {
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "wifi connected screen must render visible content");
+    }
+
+    #[test]
+    fn wifi_screen_clamps_oob_ssid_len_without_panicking() {
+        // ssid_len comes from a WiFi driver state snapshot that is not
+        // itself validated against the 32-byte ssid buffer -- a corrupted
+        // or malformed driver report with ssid_len > ssid.len() must not
+        // panic the draw path (#397).
+        let mut screen = WifiSettingsScreen::new();
+        let mut ssid = [0u8; 32];
+        ssid[..7].copy_from_slice(b"TestNet");
+        screen.update_state(WifiSettingsState {
+            connected: true,
+            ssid,
+            ssid_len: usize::MAX,
+            signal_percent: 85,
+            ip_addr: [192, 168, 0, 42],
+            scanning: false,
+        });
+        let mut fb = [0u16; CONTENT_PIXELS];
+        screen.draw(&mut fb); // must not panic
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(
+            any_set,
+            "wifi screen must still render with a clamped OOB ssid_len"
+        );
     }
 
     #[test]

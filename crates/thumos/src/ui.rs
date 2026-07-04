@@ -392,14 +392,22 @@ pub(crate) fn draw_str_centered(
     fg: u16,
     bg: u16,
 ) {
-    let text_width = s.len() as u16 * CHAR_WIDTH;
+    let text_width = str_pixel_width(s);
     let x = region_x.saturating_add(region_width.saturating_sub(text_width) / 2);
     draw_str(fb, fb_width, x, y, s, fg, bg);
 }
 
 /// Return the pixel width of a string rendered with this font.
+///
+/// WHY chars not bytes: `draw_str` renders one glyph per *character*
+/// (`s.chars().enumerate()`), so the width budget must be a character
+/// count -- using the UTF-8 byte length overestimates the rendered width
+/// for multi-byte content (e.g., an accented contact name), mis-centering
+/// or mis-aligning text that draw_str_centered/status_bar/softkey
+/// right-alignment all depend on (#397).
 pub(crate) fn str_pixel_width(s: &str) -> u16 {
-    (s.len() as u16).saturating_mul(CHAR_WIDTH)
+    let char_count = u16::try_from(s.chars().count()).unwrap_or(u16::MAX);
+    char_count.saturating_mul(CHAR_WIDTH)
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,6 +1024,31 @@ mod tests {
     }
 
     #[test]
+    fn draw_char_silently_skips_non_ascii_without_panicking() {
+        // draw_char intentionally has no glyph for codepoints outside the
+        // printable-ASCII font table (FONT_FIRST..=FONT_LAST, 0x20..=0x7E)
+        // -- FONT_DATA only covers that range. Pin the documented
+        // behavior: an out-of-range codepoint (e.g., U+00E9) is silently
+        // skipped (no panic, no pixels touched), rather than panicking on
+        // an out-of-bounds FONT_DATA index (#397, info).
+        let mut fb = [0u16; 8 * 16];
+        draw_char(&mut fb, 8, 0, 0, '\u{00e9}', color::WHITE, color::BLACK);
+        assert!(
+            fb.iter().all(|&px| px == 0),
+            "an out-of-font-range codepoint must leave the framebuffer \
+             untouched, not panic"
+        );
+
+        // A codepoint within range still renders normally.
+        let mut fb2 = [0u16; 8 * 16];
+        draw_char(&mut fb2, 8, 0, 0, 'A', color::WHITE, color::BLACK);
+        assert!(
+            fb2.iter().any(|&px| px != 0),
+            "an in-range ASCII codepoint must still render"
+        );
+    }
+
+    #[test]
     fn fill_rect_clips_to_bounds() {
         let mut fb = [0u16; 10 * 10];
         // Fill that extends past bounds must not panic.
@@ -1034,6 +1067,62 @@ mod tests {
     fn str_pixel_width_matches_char_count() {
         assert_eq!(str_pixel_width("Hello"), 40, "5 chars * 8px = 40");
         assert_eq!(str_pixel_width(""), 0, "empty string = 0 width");
+    }
+
+    #[test]
+    fn str_pixel_width_counts_chars_not_bytes_for_multibyte_utf8() {
+        // 4 characters, the last a 2-byte codepoint -- 5 UTF-8 bytes
+        // total. A byte-length-based width overestimates by one
+        // CHAR_WIDTH, mis-centering any string with multi-byte content
+        // (#397).
+        assert_eq!(
+            str_pixel_width("caf\u{00e9}"),
+            4 * CHAR_WIDTH,
+            "width must reflect 4 characters, not 5 UTF-8 bytes"
+        );
+    }
+
+    #[test]
+    fn draw_str_centered_centers_by_char_count_for_multibyte_utf8() {
+        // Regression for #397: draw_str_centered previously used the
+        // UTF-8 byte length to compute centering, which would shift a
+        // multi-byte string off-center relative to an equal-character
+        // ASCII string.
+        let mut fb_multibyte = [0u16; 240 * 16];
+        draw_str_centered(
+            &mut fb_multibyte,
+            240,
+            0,
+            240,
+            0,
+            "caf\u{00e9}",
+            color::WHITE,
+            color::BLACK,
+        );
+
+        let mut fb_ascii = [0u16; 240 * 16];
+        draw_str_centered(
+            &mut fb_ascii,
+            240,
+            0,
+            240,
+            0,
+            "cafe",
+            color::WHITE,
+            color::BLACK,
+        );
+
+        // Both are 4 characters, so both must start at the same column --
+        // find the first set pixel column in each and compare.
+        let first_set_col = |fb: &[u16]| -> Option<usize> {
+            (0..240).find(|&x| (0..16).any(|y| fb[y * 240 + x] != 0))
+        };
+        assert_eq!(
+            first_set_col(&fb_multibyte),
+            first_set_col(&fb_ascii),
+            "a 4-char multi-byte string must center identically to a \
+             4-char ASCII string"
+        );
     }
 
     #[test]

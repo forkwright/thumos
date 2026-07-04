@@ -299,7 +299,15 @@ impl NousChatScreen {
 
         self.messages.push(msg);
 
-        if has_proposal {
+        // WHY: a still-unresolved Pending proposal must not be silently
+        // displaced by a newer arrival -- previously this unconditionally
+        // repointed pending_proposal_msg_idx at the newest message, so the
+        // user's chance to confirm/cancel the FIRST pending action was
+        // lost with no record of its outcome (neither confirmed nor
+        // cancelled). The new proposal is still appended to history, but
+        // does not become "the" actionable proposal until the current one
+        // resolves (#397).
+        if has_proposal && self.pending_proposal != Some(ProposalState::Pending) {
             self.pending_proposal = Some(ProposalState::Pending);
             self.pending_proposal_msg_idx = Some(self.messages.len().saturating_sub(1));
         }
@@ -566,6 +574,37 @@ fn to_uppercase_truncated(s: &str, max_len: usize) -> String {
     result
 }
 
+/// Return the byte offset ending the next [`CHARS_PER_LINE`]-character
+/// chunk of `body` starting at byte offset `start`.
+///
+/// `start` must be a valid char boundary (0, or a value this function
+/// previously returned). Chunks by CHARACTER count, not byte count, and
+/// always returns a valid char boundary, so `&body[start..end]` is always
+/// valid UTF-8 -- even when a multi-byte codepoint would straddle a
+/// fixed-byte-offset cut (#397).
+fn next_body_line_end(body: &str, start: usize) -> usize {
+    body[start..]
+        .char_indices()
+        .nth(CHARS_PER_LINE)
+        .map_or(body.len(), |(idx, _)| start + idx)
+}
+
+/// Return the suffix of `s` containing at most the last `max_chars`
+/// characters, always landing on a UTF-8 char boundary.
+///
+/// WHY char-based: `s.len() - max_chars` (a byte-length computation) can
+/// land mid-codepoint for multi-byte UTF-8 content, and direct string
+/// indexing panics on an invalid char boundary -- unlike a fallible
+/// `from_utf8` (#397).
+fn last_n_chars(s: &str, max_chars: usize) -> &str {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        return s;
+    }
+    let skip = char_count - max_chars;
+    s.char_indices().nth(skip).map_or("", |(idx, _)| &s[idx..])
+}
+
 // ---------------------------------------------------------------------------
 // Screen trait implementation
 // ---------------------------------------------------------------------------
@@ -663,13 +702,19 @@ impl Screen for NousChatScreen {
                     MessageOrigin::User => USER_MSG_COLOR,
                 };
 
-                let body_bytes = msg.body.as_bytes();
+                // WHY: chunk by CHARACTER count via next_body_line_end,
+                // not a raw byte offset -- msg.body is untrusted (nous
+                // entity content over Matrix), and slicing at a fixed
+                // byte offset could land mid-codepoint for multi-byte
+                // UTF-8; the previous `.unwrap_or("")` on that invalid
+                // slice then silently rendered the WHOLE chunk --
+                // including any valid ASCII sharing that byte window --
+                // as an empty line (#397).
                 let mut offset = 0;
-                while offset < body_bytes.len() {
-                    let line_end = (offset + CHARS_PER_LINE).min(body_bytes.len());
+                while offset < msg.body.len() {
+                    let line_end = next_body_line_end(&msg.body, offset);
                     if render_y < msg_area_start + msg_area_height {
-                        let line_str =
-                            core::str::from_utf8(&body_bytes[offset..line_end]).unwrap_or("");
+                        let line_str = &msg.body[offset..line_end];
                         ui::draw_str(
                             fb,
                             w,
@@ -724,13 +769,10 @@ impl Screen for NousChatScreen {
                 color::BLACK,
             );
         } else {
-            // Show last CHARS_PER_LINE characters of input.
-            let display_start = if self.input_buffer.len() > CHARS_PER_LINE {
-                self.input_buffer.len() - CHARS_PER_LINE
-            } else {
-                0
-            };
-            let display_text = &self.input_buffer[display_start..];
+            // Show last CHARS_PER_LINE characters of input. See
+            // last_n_chars for why this must be char-based, not
+            // byte-based (#397).
+            let display_text = last_n_chars(&self.input_buffer, CHARS_PER_LINE);
             ui::draw_str(
                 fb,
                 w,
@@ -931,6 +973,41 @@ mod tests {
         let action = screen.pending_action();
         assert!(action.is_some());
         assert_eq!(action.map(|a| a.action.as_str()), Some("open_dialer"),);
+    }
+
+    #[test]
+    fn second_proposal_does_not_displace_unresolved_pending() {
+        let mut screen = NousChatScreen::new();
+        let body1 = String::from(
+            "```thumos-action\n{\"thumos_action\": \"open_dialer\", \"params\": {}, \"description\": \"First\"}\n```",
+        );
+        screen.push_message(ChatMessage::from_nous("Syn", body1, 1000));
+        assert_eq!(screen.pending_proposal(), Some(ProposalState::Pending));
+        let first_idx = screen.pending_proposal_msg_idx;
+
+        // A second proposal arrives before the user resolves the first.
+        let body2 = String::from(
+            "```thumos-action\n{\"thumos_action\": \"start_timer\", \"params\": {}, \"description\": \"Second\"}\n```",
+        );
+        screen.push_message(ChatMessage::from_nous("Syn", body2, 1001));
+
+        assert_eq!(screen.message_count(), 2, "both messages must be recorded");
+        assert_eq!(
+            screen.pending_proposal(),
+            Some(ProposalState::Pending),
+            "the FIRST proposal must remain pending, not silently dropped"
+        );
+        assert_eq!(
+            screen.pending_proposal_msg_idx, first_idx,
+            "the pending pointer must still reference the first \
+             (unresolved) proposal"
+        );
+        assert_eq!(
+            screen.pending_action().map(|a| a.description.as_str()),
+            Some("First"),
+            "the actionable proposal must still be the first one until it \
+             is resolved"
+        );
     }
 
     #[test]
@@ -1269,5 +1346,51 @@ mod tests {
     fn format_msg_header_output() {
         let header = format_msg_header("Syn");
         assert_eq!(header, "Syn:");
+    }
+
+    #[test]
+    fn next_body_line_end_is_char_boundary_safe_for_multibyte_utf8() {
+        // 28 ASCII bytes + a 2-byte codepoint + more ASCII. CHARS_PER_LINE
+        // counts *characters*; a raw byte-offset slice at CHARS_PER_LINE
+        // bytes would land mid-codepoint here (28 ASCII bytes + only the
+        // first byte of the 2-byte char), producing an invalid UTF-8
+        // slice (#397).
+        let mut body = "A".repeat(28);
+        body.push('\u{00e9}');
+        body.push_str(&"B".repeat(40));
+
+        let end = next_body_line_end(&body, 0);
+        assert!(
+            body.is_char_boundary(end),
+            "returned offset must land on a UTF-8 char boundary"
+        );
+        assert_eq!(
+            end,
+            28 + '\u{00e9}'.len_utf8(),
+            "must count CHARS_PER_LINE characters, not bytes"
+        );
+    }
+
+    #[test]
+    fn next_body_line_end_returns_body_len_when_shorter_than_chars_per_line() {
+        let body = "short";
+        assert_eq!(next_body_line_end(body, 0), body.len());
+    }
+
+    #[test]
+    fn last_n_chars_is_char_boundary_safe_for_multibyte_utf8() {
+        // 34 two-byte characters (68 bytes). A raw "last CHARS_PER_LINE
+        // bytes" cut (byte 68-29=39, odd) would land mid-codepoint and
+        // panic on direct string indexing (#397). last_n_chars must
+        // return exactly the last CHARS_PER_LINE characters instead.
+        let s: String = core::iter::repeat_n('\u{00e9}', 34).collect();
+        let result = last_n_chars(&s, CHARS_PER_LINE);
+        assert_eq!(result.chars().count(), CHARS_PER_LINE);
+        assert!(s.ends_with(result));
+    }
+
+    #[test]
+    fn last_n_chars_returns_whole_string_when_shorter_than_budget() {
+        assert_eq!(last_n_chars("hi", CHARS_PER_LINE), "hi");
     }
 }
