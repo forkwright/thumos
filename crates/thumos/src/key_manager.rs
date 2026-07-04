@@ -539,4 +539,51 @@ mod tests {
             "same primary key must produce same audit key"
         );
     }
+
+    #[test]
+    fn derive_from_passphrase_production_entry_point() {
+        // Done-when (finding 25): exercise the actual production entry
+        // point -- 100k PBKDF2 iterations, the fixed on-disk salt -- not
+        // just the low-iteration derive_test_primary helper every other
+        // test in this module uses for speed.
+        let key1 = KeyManager::derive_from_passphrase(b"production entry point test")
+            .expect("derive_from_passphrase must succeed");
+        assert!(!key1.is_zero(), "derived primary key must not be all zeros");
+
+        let key2 = KeyManager::derive_from_passphrase(b"production entry point test")
+            .expect("derive_from_passphrase must succeed");
+        assert_eq!(
+            key1.as_bytes(),
+            key2.as_bytes(),
+            "the production entry point must be deterministic for the same passphrase"
+        );
+    }
+
+    #[test]
+    fn set_sleep_tier_short_preserves_keys() {
+        // Done-when (finding 26): set_sleep_tier's non-Long branch must
+        // leave loaded keys untouched -- only a transition TO Long
+        // triggers zeroize_all. The existing long_sleep_zeroizes_keys
+        // test only exercises the Long branch.
+        let primary = derive_test_primary(b"short tier preserves keys");
+        let mut km = KeyManager::new();
+        km.derive_partition_keys(&primary)
+            .expect("derive_partition_keys failed");
+        assert!(km.has_keys());
+
+        let data_before = *km.data_key().expect("data key missing").as_bytes();
+
+        km.set_sleep_tier(SleepTier::Short);
+
+        assert!(
+            km.has_keys(),
+            "transitioning to Short must not zeroize keys"
+        );
+        assert_eq!(km.sleep_tier(), SleepTier::Short);
+        assert_eq!(
+            km.data_key().expect("data key missing").as_bytes(),
+            &data_before,
+            "data key must be unchanged by a non-Long sleep-tier transition"
+        );
+    }
 }

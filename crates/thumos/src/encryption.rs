@@ -607,4 +607,59 @@ mod tests {
             "display must contain type name"
         );
     }
+
+    #[test]
+    fn partial_block_write_preserves_untouched_neighbor_sectors() {
+        // Done-when (finding 22): a partial-block write (fewer than
+        // SECTORS_PER_BLOCK sectors) must read-modify-write -- sectors in
+        // the same 4 KiB block that were NOT part of this write must
+        // retain their prior plaintext content, not be zeroed or
+        // corrupted by the encrypt/decrypt round-trip.
+        let mut dev = MemBlockDevice::new(TEST_SECTORS).expect("create device");
+        let key = sample_xts_key();
+
+        // Fill the whole first block with a known pattern.
+        let full_block = [0x11u8; BLOCK_SIZE];
+        {
+            let mut enc = EncryptedBlockDevice::new(&mut dev, key);
+            enc.write_sectors(0, SECTORS_PER_BLOCK as u32, &full_block)
+                .expect("full block write failed");
+        }
+
+        // Overwrite only sectors 2-3 (partial, within the block) with a
+        // different pattern.
+        let partial_data = vec![0x22u8; 2 * SECTOR_SIZE];
+        {
+            let mut enc = EncryptedBlockDevice::new(&mut dev, key);
+            enc.write_sectors(2, 2, &partial_data)
+                .expect("partial write failed");
+        }
+
+        // Read back the whole block and verify neighbor sectors are
+        // untouched.
+        let mut readback = [0u8; BLOCK_SIZE];
+        {
+            let enc = EncryptedBlockDevice::new(&mut dev, key);
+            enc.read_sectors(0, SECTORS_PER_BLOCK as u32, &mut readback)
+                .expect("full block read failed");
+        }
+
+        // Sectors 0-1 (before the partial write) must be untouched.
+        assert!(
+            readback[..2 * SECTOR_SIZE].iter().all(|&b| b == 0x11),
+            "sectors before the partial write must retain original data"
+        );
+        // Sectors 2-3 (the partial write) must have the new pattern.
+        assert!(
+            readback[2 * SECTOR_SIZE..4 * SECTOR_SIZE]
+                .iter()
+                .all(|&b| b == 0x22),
+            "written sectors must reflect the new data"
+        );
+        // Sectors 4-7 (after the partial write) must be untouched.
+        assert!(
+            readback[4 * SECTOR_SIZE..].iter().all(|&b| b == 0x11),
+            "sectors after the partial write must retain original data"
+        );
+    }
 }

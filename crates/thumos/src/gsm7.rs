@@ -277,4 +277,41 @@ mod tests {
         let count = count_gsm7_septets("Hi").unwrap_or(0);
         assert_eq!(count, 2, "'Hi' must count as 2 septets");
     }
+
+    #[test]
+    fn encode_gsm7_rejects_non_gsm7_char() {
+        // Done-when (finding 23): a character with no GSM-7
+        // representation (e.g. CJK) must be rejected via
+        // SmsError::Gsm7Encode, not silently dropped or substituted.
+        let result = encode_gsm7("中"); // CJK character, not in GSM-7
+        assert!(
+            matches!(result, Err(SmsError::Gsm7Encode(_))),
+            "a non-GSM-7 character must be rejected as Gsm7Encode"
+        );
+    }
+
+    #[test]
+    fn count_gsm7_septets_rejects_non_gsm7_char() {
+        // Done-when (finding 23): count_gsm7_septets must reject the same
+        // way encode_gsm7 does, not silently miscount.
+        let result = count_gsm7_septets("中");
+        assert!(
+            matches!(result, Err(SmsError::Gsm7Encode(_))),
+            "count_gsm7_septets must reject a non-GSM-7 character"
+        );
+    }
+
+    #[test]
+    fn decode_gsm7_rejects_truncated_pdu() {
+        // Done-when (finding 24): asking decode_gsm7 for more septets
+        // than the packed buffer actually contains must return
+        // SmsError::PduDecode, not panic or silently produce garbage/
+        // short output.
+        let encoded = encode_gsm7("Hi").unwrap_or_default(); // 2 septets, 2 bytes
+        let result = decode_gsm7(&encoded, 100);
+        assert!(
+            matches!(result, Err(SmsError::PduDecode)),
+            "a truncated PDU must be rejected as PduDecode"
+        );
+    }
 }

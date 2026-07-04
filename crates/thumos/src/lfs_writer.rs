@@ -658,4 +658,89 @@ mod tests {
             "writer should have moved to a new segment after fill"
         );
     }
+
+    #[test]
+    fn write_checkpoint_odd_sequence_routes_to_slot_b() {
+        // Done-when (finding 32): an ODD checkpoint_sequence must land in
+        // slot B (checkpoint_slots.1), mirroring the existing
+        // checkpoint_round_trips test which only exercises the even
+        // (slot A) path.
+        let mut dev = block_device_for_writer();
+        let mut cache = BlockCache::new();
+        let mut imap = LfsImap::new();
+        let mut seg_mgr = LfsSegmentManager::new(8, 256);
+        seg_mgr.mark_used(0);
+
+        let mut writer = LfsWriter::new(&mut seg_mgr).expect("create writer");
+
+        let inode = new_file_inode(7);
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 0, &inode)
+            .expect("write inode 0");
+
+        let checkpoint_slots = (1u64, 2u64); // slot A at block 1, slot B at block 2
+        let checkpoint_seq = 3u64; // odd -> slot B
+
+        writer
+            .write_checkpoint(
+                &mut dev,
+                &mut cache,
+                &imap,
+                &seg_mgr,
+                checkpoint_slots,
+                checkpoint_seq,
+                1, // next_inode
+            )
+            .expect("write checkpoint");
+
+        cache.flush(&mut dev).expect("flush");
+
+        // Reading slot B (block 2) must find the checkpoint we just wrote.
+        let mut cache2 = BlockCache::new();
+        let header = lfs_checkpoint::read_checkpoint(&mut dev, &mut cache2, 2)
+            .expect("read checkpoint from slot B");
+        assert_eq!(header.magic, CHECKPOINT_MAGIC);
+        assert_eq!(header.sequence, checkpoint_seq);
+        assert_eq!(header.next_inode, 1);
+
+        // Slot A (block 1) must NOT have been written -- reading it as a
+        // checkpoint must fail (no valid magic there).
+        let mut cache3 = BlockCache::new();
+        let slot_a_result = lfs_checkpoint::read_checkpoint(&mut dev, &mut cache3, 1);
+        assert!(
+            slot_a_result.is_err(),
+            "an odd sequence must not touch slot A"
+        );
+    }
+
+    #[test]
+    fn with_sequence_resumes_from_the_given_sequence_number() {
+        // Done-when (finding 33): LfsWriter::with_sequence is the
+        // checkpoint-resume constructor -- it must start the writer's
+        // sequence counter at the CALLER-SUPPLIED value (e.g. loaded from
+        // a checkpoint header), not the fixed sequence=1 that
+        // LfsWriter::new always uses. No existing test calls
+        // with_sequence at all.
+        let mut seg_mgr = LfsSegmentManager::new(8, 256);
+        seg_mgr.mark_used(0);
+
+        let mut writer = LfsWriter::with_sequence(&mut seg_mgr, 42).expect("create writer");
+        assert_eq!(
+            writer.sequence(),
+            42,
+            "with_sequence must start at the supplied sequence number"
+        );
+
+        let mut dev = block_device_for_writer();
+        let mut cache = BlockCache::new();
+        // Sealing must advance from the resumed sequence, not from 1.
+        writer
+            .seal_segment(&mut dev, &mut cache, &mut seg_mgr)
+            .expect("seal");
+        assert_eq!(
+            writer.sequence(),
+            43,
+            "sealing must increment the resumed sequence, not reset it"
+        );
+    }
 }

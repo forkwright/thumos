@@ -779,4 +779,31 @@ mod tests {
             "every target, including keys' filesystem copy, must be reported failed/unverified"
         );
     }
+
+    #[test]
+    fn execute_wipe_real_run_reports_memory_scrub_and_beacon_state() {
+        // Done-when (finding 40): the REAL (non-dry-run) path's own
+        // memory_scrubbed and beacon_emitted fields are untested by the
+        // existing real-run tests (execute_wipe_records_which_targets_failed,
+        // keys_zeroized_in_memory_is_tracked_separately_from_file_tally,
+        // execute_wipe_real_run_reports_filesystem_targets_as_failed all
+        // check targets/keys but never these two fields on a
+        // dry_run=false call).
+        let mut km = key_manager_with_derived_keys();
+        // SAFETY: this is the last action in this test -- nothing reads
+        // page/heap-backed memory afterward.
+        let result = unsafe { execute_panic_wipe(&mut km, 7000, false) };
+
+        // No test in this file ever calls page::init(), so the usable
+        // page range is empty in this process and the real scrub has
+        // nothing to zero.
+        assert!(
+            !result.memory_scrubbed,
+            "memory_scrubbed must be false: the usable page range is empty in this test process"
+        );
+        assert!(
+            !result.beacon_emitted,
+            "beacon_emitted must be false on the real path too -- mesh transmission is still unwired"
+        );
+    }
 }

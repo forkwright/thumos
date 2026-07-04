@@ -434,4 +434,34 @@ mod tests {
         mgr.mark_used(5);
         assert!(!mgr.is_free(5));
     }
+
+    #[test]
+    fn deserialize_rejects_header_too_short() {
+        // Done-when (finding 31): fewer than 8 header bytes
+        // (segment_count + segment_size, 4 bytes each) must be rejected
+        // as Corrupt before any bitmap parsing is attempted.
+        let result = LfsSegmentManager::deserialize(&[0u8; 4], 8, 256);
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "fewer than 8 header bytes must be rejected as Corrupt"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_truncated_bitmap_data() {
+        // A correct 8-byte header but a bitmap payload shorter than the
+        // segment_count implies must be rejected as Corrupt, not read
+        // past the buffer.
+        let mgr = LfsSegmentManager::new(64, 256); // needs 8 bitmap bytes
+        let mut data = mgr.serialize();
+        // Truncate the bitmap portion so fewer bytes remain than
+        // byte_count requires (64 segments = 8 bitmap bytes; leave only 2).
+        data.truncate(8 + 2);
+
+        let result = LfsSegmentManager::deserialize(&data, 64, 256);
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "a bitmap shorter than segment_count requires must be rejected as Corrupt"
+        );
+    }
 }

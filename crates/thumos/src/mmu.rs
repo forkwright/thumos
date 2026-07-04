@@ -1108,4 +1108,241 @@ mod tests {
             "outer drop restores IRQ delivery"
         );
     }
+
+    #[test]
+    fn prot_to_l2_flags_translates_the_non_wx_permission_combinations() {
+        // Done-when (finding 35): batch-1 added the W^X-specific cases
+        // (write+exec denial, exec-without-write). This covers every
+        // remaining POSIX-to-ARM AP/XN translation those didn't:
+        // read-only, read+write (no exec), no permissions at all, and
+        // exec-only (no read/write).
+        let ap_mask = page_flags::AP_FULL | page_flags::AP_READ_ONLY | page_flags::AP_KERNEL_ONLY;
+
+        // Read-only: AP_READ_ONLY, not executable (no PROT_EXEC requested).
+        let ro = prot_to_l2_flags(prot::PROT_READ);
+        assert_eq!(
+            ro & ap_mask,
+            page_flags::AP_READ_ONLY,
+            "read-only must set AP_READ_ONLY"
+        );
+        assert_eq!(
+            ro & page_flags::XN,
+            page_flags::XN,
+            "read-only (no exec) must set XN"
+        );
+
+        // Read+write, no exec: AP_FULL, XN set (write forces XN regardless).
+        let rw = prot_to_l2_flags(prot::PROT_READ | prot::PROT_WRITE);
+        assert_eq!(
+            rw & page_flags::AP_FULL,
+            page_flags::AP_FULL,
+            "read+write must set AP_FULL"
+        );
+        assert_eq!(
+            rw & page_flags::XN,
+            page_flags::XN,
+            "write without exec must still set XN"
+        );
+
+        // No permissions requested at all: AP_KERNEL_ONLY (no PL0 access), XN set.
+        let none = prot_to_l2_flags(0);
+        assert_eq!(
+            none & ap_mask,
+            page_flags::AP_KERNEL_ONLY,
+            "no permissions must set AP_KERNEL_ONLY"
+        );
+        assert_eq!(
+            none & page_flags::XN,
+            page_flags::XN,
+            "no permissions must set XN"
+        );
+
+        // Exec-only (no read, no write requested): AP_KERNEL_ONLY (neither
+        // write nor read branch taken), but XN must NOT be set since exec
+        // was requested and write was not.
+        let exec_only = prot_to_l2_flags(prot::PROT_EXEC);
+        assert_eq!(
+            exec_only & ap_mask,
+            page_flags::AP_KERNEL_ONLY,
+            "exec-only (no read/write) must set AP_KERNEL_ONLY"
+        );
+        assert_eq!(
+            exec_only & page_flags::XN,
+            0,
+            "exec-only must remain executable (XN unset)"
+        );
+    }
+
+    #[test]
+    fn map_page_fails_closed_when_l2_pool_is_exhausted() {
+        // Done-when (finding 36): if alloc_l2_table() cannot supply a new
+        // L2 table (pool exhausted), map_page must fail closed (return
+        // false), not silently install a partial/garbage mapping.
+        reset();
+        reset_l2_pool();
+        let l1 = alloc_addr_space().unwrap_or_default();
+        let attrs = page_flags::SMALL_PAGE | page_flags::AP_FULL;
+        unsafe {
+            // Exhaust the L2 pool by mapping L2_POOL_SIZE distinct 1 MB
+            // regions (each consumes one pool slot) without ever
+            // unmapping. Region 0 is deliberately skipped so it can be
+            // used below as the "one more" attempt after exhaustion.
+            for region in 0..L2_POOL_SIZE {
+                let virt = (region + 1) << 20;
+                assert!(
+                    map_page(l1, virt, 0x5000_0000, attrs),
+                    "map must succeed while the pool still has capacity"
+                );
+            }
+            assert!(alloc_l2_table().is_none(), "pool must be fully exhausted");
+
+            let virt_new = 0usize; // region 0, not yet touched above
+            assert!(
+                !map_page(l1, virt_new, 0x5000_0000, attrs),
+                "map_page must fail closed (false) when the L2 pool is exhausted"
+            );
+
+            free_addr_space(l1);
+        }
+    }
+
+    #[test]
+    fn map_page_fails_closed_over_an_existing_section_mapping() {
+        // A virtual address already covered by an L1 SECTION descriptor
+        // (1 MB granularity, e.g. the kernel identity map) must never be
+        // overlaid with a page-granularity mapping -- map_page must
+        // refuse, not corrupt the L1 entry.
+        reset();
+        unsafe {
+            init_and_enable(); // populates the kernel L1 with SECTION descriptors
+            let table_phys = table_base();
+            // 0x400 MB is the start of the DRAM identity-mapped region:
+            // a SECTION descriptor, not a page table.
+            let virt = 0x400usize << 20;
+            let attrs = page_flags::SMALL_PAGE | page_flags::AP_FULL;
+            assert!(
+                !map_page(table_phys, virt, 0x5000_0000, attrs),
+                "map_page must fail closed over an existing section mapping"
+            );
+        }
+    }
+
+    #[test]
+    fn update_page_prot_fails_closed_when_no_l2_table_is_installed() {
+        // Done-when (finding 36): update_page_prot on a virtual address
+        // whose L1 index has never had an L2 table installed must fail
+        // closed. No existing test calls update_page_prot at all.
+        reset();
+        let l1 = alloc_addr_space().unwrap_or_default();
+        unsafe {
+            let virt = 0x3000_0000usize;
+            assert!(
+                !update_page_prot(l1, virt, page_flags::SMALL_PAGE | page_flags::AP_READ_ONLY),
+                "update_page_prot must fail closed when no L2 table is installed"
+            );
+            free_addr_space(l1);
+        }
+    }
+
+    #[test]
+    fn update_page_prot_fails_closed_on_an_unmapped_page_within_an_installed_l2_table() {
+        // An L2 table can be installed (via a sibling mapping in the same
+        // 1 MB region) while the SPECIFIC page being updated is still
+        // unmapped -- update_page_prot must fail closed for that page too.
+        reset();
+        reset_l2_pool();
+        let l1 = alloc_addr_space().unwrap_or_default();
+        let attrs = page_flags::SMALL_PAGE | page_flags::AP_FULL;
+        unsafe {
+            let mapped_virt = 0x2000_0000usize;
+            let unmapped_virt = mapped_virt + 0x1000; // same 1 MB region, next page
+            assert!(map_page(l1, mapped_virt, 0x5000_0000, attrs));
+
+            assert!(
+                !update_page_prot(
+                    l1,
+                    unmapped_virt,
+                    page_flags::SMALL_PAGE | page_flags::AP_READ_ONLY
+                ),
+                "update_page_prot must fail closed on an unmapped page even though the L2 table exists"
+            );
+
+            free_addr_space(l1);
+        }
+    }
+
+    #[test]
+    fn update_page_prot_succeeds_and_preserves_the_physical_frame() {
+        // Success path: update_page_prot must change only the attribute
+        // bits, never the physical frame address.
+        reset();
+        reset_l2_pool();
+        let l1 = alloc_addr_space().unwrap_or_default();
+        let virt = 0x2100_0000usize;
+        let phys = 0x5000_0000usize;
+        unsafe {
+            assert!(map_page(
+                l1,
+                virt,
+                phys,
+                page_flags::SMALL_PAGE | page_flags::AP_FULL
+            ));
+            assert!(update_page_prot(
+                l1,
+                virt,
+                page_flags::SMALL_PAGE | page_flags::AP_READ_ONLY
+            ));
+            assert_eq!(
+                read_l2_phys(l1, virt),
+                Some(phys),
+                "update_page_prot must preserve the mapped physical frame"
+            );
+            free_addr_space(l1);
+        }
+    }
+
+    #[test]
+    fn alloc_l2_table_pool_exhaustion_and_reuse() {
+        // Done-when (finding 37): the L2 table pool's OWN
+        // allocate/exhaust/free/reuse cycle, exercised directly via
+        // alloc_l2_table/free_l2_table -- mirroring the dedicated
+        // alloc_addr_space_pool_exhaustion / free_addr_space_allows_reuse
+        // coverage that already exists for the address-space pool; the L2
+        // pool itself only ever received this exercise INDIRECTLY (via
+        // map_page/unmap_page) until now.
+        reset_l2_pool();
+        let mut addrs = [0usize; L2_POOL_SIZE];
+        for slot in &mut addrs {
+            *slot = alloc_l2_table().expect("pool must have capacity for L2_POOL_SIZE allocations");
+        }
+
+        let overflow = alloc_l2_table();
+        assert!(
+            overflow.is_none(),
+            "the (L2_POOL_SIZE + 1)th allocation must return None"
+        );
+
+        // Free one slot and confirm it becomes available for reuse at the
+        // SAME address.
+        let freed = addrs[0];
+        assert!(
+            unsafe { free_l2_table(freed) },
+            "freeing a previously allocated slot must report true"
+        );
+        let reused = alloc_l2_table().expect("freed slot must be available for reuse");
+        assert_eq!(
+            reused, freed,
+            "reused allocation must return the just-freed address"
+        );
+
+        // Clean up the rest.
+        for &addr in addrs.iter().skip(1) {
+            unsafe {
+                free_l2_table(addr);
+            }
+        }
+        unsafe {
+            free_l2_table(reused);
+        }
+    }
 }
