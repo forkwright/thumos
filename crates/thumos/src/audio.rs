@@ -332,11 +332,15 @@ impl<C: AudioCodecOps> AudioManager<C> {
     ///
     /// ## Lifecycle
     ///
-    /// 1. Remove the session.
-    /// 2. If the closed session was the highest priority, resume the
-    ///    next-highest-priority session (most recently opened at that level).
+    /// 1. If this is the last session (refcount -> 0), power down mic,
+    ///    disable the DAC, and power off the codec BEFORE removing the
+    ///    session from the list -- a hardware failure here leaves the
+    ///    session tracked so `codec_powered`/`mic_powered` still match
+    ///    reality and the close can be retried.
+    /// 2. Otherwise, remove the session; if it was the highest priority,
+    ///    resume the next-highest-priority session (most recently opened
+    ///    at that level).
     /// 3. If no voice call sessions remain, power down mic.
-    /// 4. If no sessions remain (refcount -> 0), power down codec.
     ///
     /// # Errors
     ///
@@ -349,17 +353,24 @@ impl<C: AudioCodecOps> AudioManager<C> {
             .position(|s| s.id == id)
             .ok_or(AudioError::SessionNotFound)?;
 
-        let closed = self.sessions.remove(pos);
-
-        if self.sessions.is_empty() {
-            // Last session closed — power down everything.
+        if self.sessions.len() == 1 {
+            // WHY: power down everything BEFORE removing the session
+            // from the list (mirrors the #390 commit-point pattern) --
+            // if any hardware teardown call fails, the session must
+            // stay tracked so codec_powered/mic_powered keep describing
+            // reality and a retry is possible. Removing first would
+            // strand a still-powered codec with no session left to
+            // close it.
             self.power_down_mic()?;
             self.codec.disable_dac()?;
             self.codec.power_off()?;
             self.codec_powered = false;
+            self.sessions.remove(pos);
             self.debug_check_single_active_invariant();
             return Ok(());
         }
+
+        let closed = self.sessions.remove(pos);
 
         // If the closed session was active and preempting others, resume
         // the highest-priority preempted session.
@@ -412,10 +423,15 @@ impl<C: AudioCodecOps> AudioManager<C> {
     ///
     /// - [`AudioError::VolumeError`] -- codec volume write failed.
     pub(crate) fn set_volume(&mut self, level: u8) -> Result<(), AudioError> {
-        self.volume = level.min(15);
+        // WHY: write the hardware first, then update the cached field --
+        // previously self.volume was updated unconditionally before the
+        // hardware write, so a failed write left the cached value
+        // diverged from the codec's actual (unchanged) volume.
+        let clamped = level.min(15);
         if self.codec_powered {
-            self.codec.set_volume(self.volume)?;
+            self.codec.set_volume(clamped)?;
         }
+        self.volume = clamped;
         Ok(())
     }
 
@@ -500,9 +516,13 @@ impl<C: AudioCodecOps> AudioManager<C> {
                 .rposition(|s| !s.active && s.priority == priority);
 
             if let Some(idx) = resume_idx {
-                self.sessions[idx].active = true;
+                // WHY: confirm the hardware route BEFORE marking the
+                // session active -- otherwise a set_output failure left
+                // the session flagged active while the codec never
+                // actually switched to its route.
                 let route = self.sessions[idx].route;
                 self.codec.set_output(route)?;
+                self.sessions[idx].active = true;
                 self.active_route = route;
             }
         }
@@ -564,6 +584,31 @@ mod tests {
     }
 
     #[test]
+    fn set_volume_leaves_field_unchanged_when_hardware_write_fails() {
+        let mut mgr = make_manager();
+        mgr.open_session(SessionKind::Music, AudioRoute::Speaker)
+            .ok();
+        let original = mgr.volume;
+
+        // Desync the mock codec's internal powered flag so its
+        // set_volume call fails while the manager still believes the
+        // codec is on (mirrors a hardware write glitch).
+        mgr.codec_mut().powered = false;
+
+        let result = mgr.set_volume(3);
+        assert!(
+            result.is_err(),
+            "set_volume must propagate the hardware failure"
+        );
+        assert_eq!(
+            mgr.volume, original,
+            "the cached volume field must not change when the hardware \
+             write fails -- it would otherwise diverge from the actual \
+             (unwritten) hardware volume"
+        );
+    }
+
+    #[test]
     fn close_last_session_powers_down_codec() {
         let mut mgr = make_manager();
         let id = mgr
@@ -581,6 +626,72 @@ mod tests {
             0,
             "no sessions must remain after close"
         );
+    }
+
+    #[test]
+    fn close_last_session_keeps_session_tracked_when_disable_dac_fails() {
+        let mut mgr = make_manager();
+        let id = mgr
+            .open_session(SessionKind::Music, AudioRoute::Speaker)
+            .unwrap_or(0);
+
+        mgr.codec_mut().fail_disable_dac = Some(AudioError::HardwareError);
+
+        let result = mgr.close_session(id);
+        assert!(
+            result.is_err(),
+            "close_session must propagate the disable_dac failure"
+        );
+        assert_eq!(
+            mgr.session_count(),
+            1,
+            "the session must stay tracked when hardware teardown fails -- \
+             removing it first would strand a still-powered codec with no \
+             session left to retry the close"
+        );
+        assert!(
+            mgr.is_codec_powered(),
+            "codec_powered must still be true -- it matches reality, the \
+             codec never actually powered off"
+        );
+
+        // Recovery: clear the injected failure and retry the close.
+        mgr.codec_mut().fail_disable_dac = None;
+        let result = mgr.close_session(id);
+        assert!(
+            result.is_ok(),
+            "close_session must succeed once the hardware call stops failing"
+        );
+        assert_eq!(mgr.session_count(), 0);
+        assert!(!mgr.is_codec_powered());
+    }
+
+    #[test]
+    fn close_last_session_keeps_session_tracked_when_power_off_fails() {
+        let mut mgr = make_manager();
+        let id = mgr
+            .open_session(SessionKind::Music, AudioRoute::Speaker)
+            .unwrap_or(0);
+
+        mgr.codec_mut().fail_power_off = Some(AudioError::HardwareError);
+
+        let result = mgr.close_session(id);
+        assert!(
+            result.is_err(),
+            "close_session must propagate the power_off failure"
+        );
+        assert_eq!(
+            mgr.session_count(),
+            1,
+            "the session must stay tracked when power_off fails"
+        );
+        assert!(mgr.is_codec_powered());
+
+        mgr.codec_mut().fail_power_off = None;
+        let result = mgr.close_session(id);
+        assert!(result.is_ok());
+        assert_eq!(mgr.session_count(), 0);
+        assert!(!mgr.is_codec_powered());
     }
 
     #[test]
@@ -635,6 +746,33 @@ mod tests {
         assert!(
             music.map_or(false, |s| s.active),
             "music must resume after alarm closes"
+        );
+    }
+
+    #[test]
+    fn resume_highest_priority_does_not_mark_active_when_route_fails() {
+        let mut mgr = make_manager();
+
+        let music_id = mgr
+            .open_session(SessionKind::Music, AudioRoute::Speaker)
+            .unwrap_or(0);
+        let alarm_id = mgr
+            .open_session(SessionKind::Alarm, AudioRoute::Speaker)
+            .unwrap_or(0);
+
+        // Make the resume's set_output fail.
+        mgr.codec_mut().fail_set_output = Some(AudioError::HardwareError);
+
+        let result = mgr.close_session(alarm_id);
+        assert!(
+            result.is_err(),
+            "close_session must propagate the resume failure"
+        );
+
+        let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
+        assert!(
+            !music.map_or(true, |s| s.active),
+            "music must NOT be marked active when the resume's set_output failed"
         );
     }
 

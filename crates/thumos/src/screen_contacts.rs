@@ -599,7 +599,13 @@ impl ContactsScreen {
             }
             Key::Lsk => {
                 // SAVE — the caller reads add_name/add_number and calls
-                // ContactManager::add(). We return to list view.
+                // ContactManager::add(). Reject an empty name or number
+                // instead of transitioning to list view with nothing to
+                // save -- silently discarding the just-entered fields
+                // would look like data loss with no feedback.
+                if self.add_name_len == 0 || self.add_number_len == 0 {
+                    return ScreenAction::None;
+                }
                 self.view = ContactView::List;
                 ScreenAction::None
             }
@@ -779,6 +785,38 @@ mod tests {
         let mut screen = ContactsScreen::new();
         screen.on_key(Key::Lsk);
         assert_eq!(screen.view, ContactView::Add);
+    }
+
+    #[test]
+    fn save_with_empty_fields_stays_in_add_view() {
+        let mut screen = ContactsScreen::new();
+        screen.on_key(Key::Lsk); // open Add view from List
+        assert_eq!(screen.view, ContactView::Add);
+
+        // Attempt to SAVE with both fields empty.
+        screen.on_key(Key::Lsk);
+        assert_eq!(
+            screen.view,
+            ContactView::Add,
+            "SAVE with an empty name/number must not leave the Add view"
+        );
+    }
+
+    #[test]
+    fn save_with_name_and_number_returns_to_list() {
+        let mut screen = ContactsScreen::new();
+        screen.on_key(Key::Lsk); // open Add view, add_field starts at Name
+
+        screen.on_key(Key::Num1); // name = "1"
+        screen.on_key(Key::Down); // switch to Number field
+        screen.on_key(Key::Num2); // number = "2"
+
+        screen.on_key(Key::Lsk); // SAVE
+        assert_eq!(
+            screen.view,
+            ContactView::List,
+            "SAVE with non-empty name and number must return to list view"
+        );
     }
 
     #[test]

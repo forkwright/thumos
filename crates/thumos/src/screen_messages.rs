@@ -167,6 +167,15 @@ const CONTENT_START_Y: u16 = TITLE_Y + CHAR_HEIGHT + 8;
 /// Maximum recipient number length in compose mode.
 const MAX_RECIPIENT_LEN: usize = 20;
 
+/// Y offset where the wrapped message body begins in Detail view.
+const DETAIL_BODY_Y_START: u16 = CONTENT_START_Y + CHAR_HEIGHT;
+
+/// Number of word-wrapped body lines visible at once in Detail view.
+/// Shared by `draw_detail` (render window) and `on_key_detail` (scroll
+/// clamp) so `detail_scroll` can never run past the rendered content.
+const DETAIL_MAX_VISIBLE_LINES: usize =
+    ((CONTENT_HEIGHT - DETAIL_BODY_Y_START) / CHAR_HEIGHT) as usize;
+
 // ---------------------------------------------------------------------------
 // Message entry (inbox snapshot)
 // ---------------------------------------------------------------------------
@@ -604,15 +613,13 @@ impl MessagesScreen {
         // MAX_BODY_DISPLAY_LEN (char-boundary-safe) before wrapping so a
         // multi-megabyte whitespace-free attacker-controlled body cannot
         // drive an unbounded per-tick allocation in word_wrap (#393).
-        let body_y_start = CONTENT_START_Y + CHAR_HEIGHT;
         let body_display = truncate_body_for_display(&msg.body);
         let lines = word_wrap(body_display, CHARS_PER_LINE);
-        let max_visible_lines = ((CONTENT_HEIGHT - body_y_start) / CHAR_HEIGHT) as usize;
         let start_line = self.detail_scroll;
-        let end_line = (start_line + max_visible_lines).min(lines.len());
+        let end_line = (start_line + DETAIL_MAX_VISIBLE_LINES).min(lines.len());
 
         for (i, line_idx) in (start_line..end_line).enumerate() {
-            let y = body_y_start + i as u16 * CHAR_HEIGHT;
+            let y = DETAIL_BODY_Y_START + i as u16 * CHAR_HEIGHT;
             ui::draw_str(fb, w, 4, y, &lines[line_idx], color::WHITE, color::BLACK);
         }
     }
@@ -727,6 +734,18 @@ impl MessagesScreen {
 
     // --- Detail input ---
 
+    /// Number of word-wrapped lines for the selected message's body,
+    /// using the same wrap parameters `draw_detail` renders with. Used
+    /// to clamp `detail_scroll` so scrolling can never run past the last
+    /// line of content -- previously `detail_scroll` had no upper bound
+    /// at all, so scrolling past the end of a message just rendered a
+    /// blank view.
+    fn detail_line_count(&self) -> usize {
+        self.messages.get(self.selected).map_or(0, |msg| {
+            word_wrap(truncate_body_for_display(&msg.body), CHARS_PER_LINE).len()
+        })
+    }
+
     fn on_key_detail(&mut self, key: Key) -> ScreenAction {
         match key {
             Key::Up => {
@@ -736,7 +755,12 @@ impl MessagesScreen {
                 ScreenAction::None
             }
             Key::Down => {
-                self.detail_scroll += 1;
+                let max_scroll = self
+                    .detail_line_count()
+                    .saturating_sub(DETAIL_MAX_VISIBLE_LINES);
+                if self.detail_scroll < max_scroll {
+                    self.detail_scroll += 1;
+                }
                 ScreenAction::None
             }
             Key::Lsk => {
@@ -779,8 +803,17 @@ impl MessagesScreen {
                 ScreenAction::None
             }
             Key::Lsk => {
-                // SEND action -- the caller handles actual sending.
-                // Return Navigate to trigger send flow.
+                // SEND -- transition back to Inbox WITHOUT resetting
+                // compose state (mirrors the contacts-screen SAVE
+                // pattern): the caller reads compose_to_str()/
+                // compose_body/compose_transport() right after this call
+                // to perform the actual transport send. Contrast with
+                // Rsk/End (cancel) below, which resets immediately so
+                // there is nothing left to send. Previously this arm
+                // left `self.view` untouched and returned
+                // ScreenAction::None unconditionally, so SEND was a
+                // silent no-op that never left the compose form.
+                self.view = MessageView::Inbox;
                 ScreenAction::None
             }
             Key::Rsk | Key::End => {
@@ -898,6 +931,12 @@ fn format_transport_label(badge: &str, name: &str) -> String {
 /// Splits text into lines of at most `width` characters. Breaks at
 /// whitespace when possible; forces a break mid-word if a single word
 /// exceeds the line width.
+///
+/// `width` is a character-cell budget for the fixed-width bitmap font,
+/// not a byte budget -- lengths are tracked in characters throughout so
+/// multi-byte UTF-8 text (accented Latin, CJK, etc.) wraps at the same
+/// character count as ASCII text, instead of wrapping early based on its
+/// larger UTF-8 byte length.
 fn word_wrap(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return Vec::new();
@@ -905,39 +944,50 @@ fn word_wrap(text: &str, width: usize) -> Vec<String> {
 
     let mut lines: Vec<String> = Vec::new();
     let mut current_line = String::new();
+    let mut current_chars = 0usize;
 
     for word in text.split_whitespace() {
+        let word_chars = word.chars().count();
         if current_line.is_empty() {
             // First word on the line.
-            if word.len() > width {
+            if word_chars > width {
                 // Break long word across lines.
                 let mut remaining = word;
-                while remaining.len() > width {
-                    let (chunk, rest) = split_at_char_boundary(remaining, width);
+                let mut remaining_chars = word_chars;
+                while remaining_chars > width {
+                    let (chunk, rest) = split_at_char_count(remaining, width);
                     lines.push(String::from(chunk));
                     remaining = rest;
+                    remaining_chars = remaining.chars().count();
                 }
                 current_line.push_str(remaining);
+                current_chars = remaining_chars;
             } else {
                 current_line.push_str(word);
+                current_chars = word_chars;
             }
-        } else if current_line.len() + 1 + word.len() <= width {
+        } else if current_chars + 1 + word_chars <= width {
             // Word fits on the current line.
             current_line.push(' ');
             current_line.push_str(word);
+            current_chars += 1 + word_chars;
         } else {
             // Word doesn't fit; start a new line.
             lines.push(core::mem::take(&mut current_line));
-            if word.len() > width {
+            if word_chars > width {
                 let mut remaining = word;
-                while remaining.len() > width {
-                    let (chunk, rest) = split_at_char_boundary(remaining, width);
+                let mut remaining_chars = word_chars;
+                while remaining_chars > width {
+                    let (chunk, rest) = split_at_char_count(remaining, width);
                     lines.push(String::from(chunk));
                     remaining = rest;
+                    remaining_chars = remaining.chars().count();
                 }
                 current_line.push_str(remaining);
+                current_chars = remaining_chars;
             } else {
                 current_line.push_str(word);
+                current_chars = word_chars;
             }
         }
     }
@@ -961,6 +1011,17 @@ fn split_at_char_boundary(s: &str, pos: usize) -> (&str, &str) {
         split_pos -= 1;
     }
     (&s[..split_pos], &s[split_pos..])
+}
+
+/// Split a string after `char_count` characters (not bytes).
+///
+/// Returns the whole string as the prefix (with an empty remainder) if
+/// it has fewer than `char_count` characters.
+fn split_at_char_count(s: &str, char_count: usize) -> (&str, &str) {
+    match s.char_indices().nth(char_count) {
+        Some((byte_idx, _)) => (&s[..byte_idx], &s[byte_idx..]),
+        None => (s, ""),
+    }
 }
 
 /// Truncate `body` to at most [`MAX_BODY_DISPLAY_LEN`] bytes (char-boundary
@@ -1185,6 +1246,22 @@ mod tests {
     }
 
     #[test]
+    fn word_wrap_counts_chars_not_bytes_for_multibyte_utf8() {
+        // "café über" is 9 *characters* (café=4, space=1, über=4) but 11
+        // *bytes* (é and ü are each 2 bytes in UTF-8). A byte-length-based
+        // wrap forces these onto separate lines at width=9; a
+        // char-count-based wrap must keep them on one line.
+        let lines = word_wrap("café über", 9);
+        assert_eq!(
+            lines.len(),
+            1,
+            "9 characters must fit on one line at width 9, even though \
+             the UTF-8 byte length is 11"
+        );
+        assert_eq!(lines[0], "café über");
+    }
+
+    #[test]
     fn truncate_str_short() {
         assert_eq!(truncate_str("hello", 10), "hello");
     }
@@ -1393,6 +1470,40 @@ mod tests {
     }
 
     #[test]
+    fn detail_scroll_down_clamps_to_content() {
+        let mut screen = MessagesScreen::new();
+        // A body long enough to require multiple wrapped pages.
+        let body: String = core::iter::repeat_n("word ", 200).collect();
+        screen.set_messages(alloc::vec![MessageEntry::from_sms(
+            String::from("Alice"),
+            body,
+            0,
+            true,
+        )]);
+        screen.on_key(Key::Ok); // open Detail view
+        assert_eq!(screen.view, MessageView::Detail);
+
+        let max_scroll = screen
+            .detail_line_count()
+            .saturating_sub(DETAIL_MAX_VISIBLE_LINES);
+        assert!(
+            max_scroll > 0,
+            "test body must produce more lines than a single page"
+        );
+
+        // Scroll well past the end.
+        for _ in 0..(max_scroll + 50) {
+            screen.on_key(Key::Down);
+        }
+
+        assert_eq!(
+            screen.detail_scroll, max_scroll,
+            "detail_scroll must clamp at the last full page, not run past \
+             the content"
+        );
+    }
+
+    #[test]
     fn compose_transport_resets_on_cancel() {
         let mut screen = MessagesScreen::new();
         screen.enter_compose();
@@ -1410,6 +1521,34 @@ mod tests {
             MessageTransport::Sms,
             "transport must reset to Sms when compose is re-entered"
         );
+    }
+
+    #[test]
+    fn send_transitions_to_inbox_without_clearing_fields() {
+        let mut screen = MessagesScreen::new();
+        screen.enter_compose();
+        assert_eq!(screen.view, MessageView::Compose);
+
+        screen.on_key(Key::Num5); // recipient digit -> compose_to = "5"
+        screen.on_key(Key::Up); // switch to Body field
+        screen.on_key(Key::Num1); // body char -> compose_body = "1"
+
+        let action = screen.on_key(Key::Lsk); // SEND
+        assert_eq!(action, ScreenAction::None);
+        assert_eq!(
+            screen.view,
+            MessageView::Inbox,
+            "SEND must return to Inbox -- previously it left `view` \
+             untouched, so pressing SEND was a silent no-op that never \
+             left the compose form"
+        );
+        assert_eq!(
+            screen.compose_to_str(),
+            "5",
+            "SEND must not clear compose fields -- the caller reads them \
+             right after this call to perform the actual transport send"
+        );
+        assert_eq!(screen.compose_body, "1");
     }
 
     #[test]
