@@ -51,7 +51,7 @@ pub(crate) const RING_BUF_SIZE: usize = 2048;
 const MAX_HCI_COMMAND_PARAMS_LEN: usize = 255;
 
 /// Maximum size of an H4-framed HCI command: type(1) + opcode(2) +
-/// param_len(1) + up to [`MAX_HCI_COMMAND_PARAMS_LEN`] parameter bytes.
+/// `param_len`(1) + up to [`MAX_HCI_COMMAND_PARAMS_LEN`] parameter bytes.
 const MAX_HCI_COMMAND_LEN: usize = 4 + MAX_HCI_COMMAND_PARAMS_LEN;
 
 /// Maximum size of an STP-framed HCI command (delimiter + header + the

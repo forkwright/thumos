@@ -29,7 +29,7 @@ pub(crate) const CHUNK_SIZE: usize = DEFAULT_CHUNK_SIZE;
 /// overwrite-and-sync to finish before giving up on it.
 ///
 /// WHY(#280): `write_all`/`sync_all` on a `std::fs::File` have no OS-level
-/// cancellation available to this crate (no io_uring / async-I/O
+/// cancellation available to this crate (no `io_uring` / async-I/O
 /// dependency) — a wedged block device can block either call
 /// indefinitely. The work runs on a detached worker thread; this is the
 /// deadline the ENGINE waits FOR before moving on, bounding how long one

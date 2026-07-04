@@ -110,7 +110,7 @@ impl Error<core::convert::Infallible> {
     // blanket `From<Error<Infallible>> for Error<E>` impl would conflict
     // with core's reflexive `impl<T> From<T> for T` at `E = Infallible`
     // (E0119), so this is an inherent method instead of a trait impl.
-    pub(crate) fn widen<E>(self) -> Error<E>
+    pub(crate) const fn widen<E>(self) -> Error<E>
     where
         E: std::error::Error + 'static,
     {

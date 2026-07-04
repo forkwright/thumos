@@ -60,12 +60,12 @@ where
             })?;
 
         let request_id = request.request_id();
-        let request_frame = encode_request(request).map_err(|err| err.widen())?;
+        let request_frame = encode_request(request).map_err(error::Error::widen)?;
         let response_frame = self
             .transport
             .exchange(&request_frame)
             .context(error::TransportSnafu)?;
-        let response = decode_response(&response_frame).map_err(|err| err.widen())?;
+        let response = decode_response(&response_frame).map_err(error::Error::widen)?;
 
         (response.request_id == request_id).then_some(()).context(
             error::ResponseRequestMismatchSnafu {
