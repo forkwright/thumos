@@ -1102,6 +1102,45 @@ mod tests {
     }
 
     #[test]
+    fn remove_entity_silently_shifts_active_when_removing_a_non_last_active_entity() {
+        // WHY: pins a genuine, currently-uncovered edge case in
+        // remove_entity's active-index adjustment. The existing branches
+        // (`entities.is_empty()`, `active_entity >= entities.len()`,
+        // `active_entity > index`) cover removing the active entity when
+        // it is the LAST one, or removing a non-active entity BEFORE the
+        // active one -- but not removing the ACTIVE entity itself from a
+        // non-last position. There, active_entity is left unchanged, but
+        // because Vec::remove shifts every later element down by one,
+        // that same numeric index now refers to a DIFFERENT entity --
+        // the active entity silently becomes whichever one used to sit
+        // immediately after the removed one, with no explicit selection
+        // by the caller (a silent capability-preset substitution, since
+        // each entity carries its own trust level) (#397).
+        let mut mgr = NousManager::new();
+        // Syn (Advisor) at 0, Phrouros (Observer) at 1, Paideia (Assistant) at 2.
+        mgr.switch(1).unwrap_or_else(|_| unreachable!()); // active = Phrouros
+        assert_eq!(mgr.active().map(|e| e.name_str()), Some("Phrouros"));
+
+        let removed = mgr.remove_entity(1); // remove the ACTIVE entity, non-last
+        assert_eq!(
+            removed.map(|e| String::from(e.name_str())),
+            Ok(String::from("Phrouros")),
+        );
+
+        // Current behavior: active_entity index (1) is left unchanged,
+        // but now refers to Paideia (which shifted down from index 2 to
+        // index 1) -- a different entity with a different capability
+        // preset, silently substituted for the one the caller had
+        // selected.
+        assert_eq!(
+            mgr.active().map(|e| e.name_str()),
+            Some("Paideia"),
+            "current behavior: the active pointer silently follows \
+             whatever entity shifted into the removed active entity's slot"
+        );
+    }
+
+    #[test]
     fn manager_remove_invalid_index() {
         let mut mgr = NousManager::new();
         let err = mgr.remove_entity(99);

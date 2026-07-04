@@ -561,6 +561,15 @@ impl AudioCodecOps for Mt6357Codec {
         if !self.powered {
             return Err(AudioError::CodecNotPowered);
         }
+        // WHY: enforce the documented precondition -- AudioError::AdcNotEnabled
+        // exists specifically for "mic bias requires ADC to be enabled", but
+        // no implementation actually checked it, so a caller reaching the
+        // codec directly (bypassing AudioManager's enable_adc-then-
+        // enable_mic_bias ordering) could power the mic bias FET preamp
+        // with the ADC never enabled (#397).
+        if !self.adc_enabled {
+            return Err(AudioError::AdcNotEnabled);
+        }
         if self.mic_bias {
             return Ok(());
         }
@@ -650,6 +659,10 @@ pub struct MockCodec {
     pub fail_set_output: Option<AudioError>,
     /// If set, `disable_dac` returns this error.
     pub fail_disable_dac: Option<AudioError>,
+    /// If set, `disable_adc` returns this error (#397) -- exercises the
+    /// power_down_mic partial-teardown path (disable_mic_bias succeeds,
+    /// disable_adc fails).
+    pub fail_disable_adc: Option<AudioError>,
     /// If set, `power_off` returns this error.
     pub fail_power_off: Option<AudioError>,
 }
@@ -672,6 +685,7 @@ impl MockCodec {
             fail_enable_mic_bias: None,
             fail_set_output: None,
             fail_disable_dac: None,
+            fail_disable_adc: None,
             fail_power_off: None,
         }
     }
@@ -750,6 +764,11 @@ impl AudioCodecOps for MockCodec {
     }
 
     fn disable_adc(&mut self) -> Result<(), AudioError> {
+        if let Some(err) = self.fail_disable_adc {
+            self.operations
+                .push(alloc::string::String::from("disable_adc:FAIL"));
+            return Err(err);
+        }
         self.adc_enabled = false;
         self.operations
             .push(alloc::string::String::from("disable_adc"));
@@ -786,6 +805,12 @@ impl AudioCodecOps for MockCodec {
     fn enable_mic_bias(&mut self) -> Result<(), AudioError> {
         if !self.powered {
             return Err(AudioError::CodecNotPowered);
+        }
+        // WHY: mirror the real Mt6357Codec's ADC-enabled precondition
+        // (#397) so a test exercising this invariant at the MockCodec
+        // level actually observes the enforced behavior.
+        if !self.adc_enabled {
+            return Err(AudioError::AdcNotEnabled);
         }
         if let Some(err) = self.fail_enable_mic_bias {
             self.operations
@@ -1024,6 +1049,35 @@ mod tests {
             Err(AudioError::CodecNotPowered),
             "enable_mic_bias without power must return CodecNotPowered"
         );
+    }
+
+    #[test]
+    fn mic_bias_requires_adc_enabled() {
+        let mut codec = MockCodec::new();
+        codec.power_on().ok();
+
+        // ADC not enabled yet.
+        let result = codec.enable_mic_bias();
+        assert_eq!(
+            result,
+            Err(AudioError::AdcNotEnabled),
+            "enable_mic_bias without ADC enabled must return \
+             AdcNotEnabled (#397)"
+        );
+        assert!(
+            !codec.is_mic_bias_enabled(),
+            "mic bias must not be marked enabled when the ADC \
+             precondition fails"
+        );
+
+        // Enable ADC, then mic bias must succeed.
+        codec.enable_adc().ok();
+        let result = codec.enable_mic_bias();
+        assert!(
+            result.is_ok(),
+            "enable_mic_bias must succeed once ADC is enabled"
+        );
+        assert!(codec.is_mic_bias_enabled());
     }
 
     #[test]

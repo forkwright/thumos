@@ -788,6 +788,36 @@ mod tests {
     }
 
     #[test]
+    fn accept_falls_back_to_raw_digits_when_no_candidates_match() {
+        // 99999 has no dictionary match: every letter of a candidate
+        // word's first 5 characters would have to fall in {w,x,y,z} (key
+        // 9), which no word in DICTIONARY satisfies (#397).
+        let mut input = T9Input::new();
+        for _ in 0..5 {
+            input.press_key(9);
+        }
+        assert_eq!(
+            input.candidate_count(),
+            0,
+            "99999 must have no dictionary candidates"
+        );
+
+        let word = input.accept();
+        assert_eq!(
+            word, "99999",
+            "accept() must fall back to the raw digit string when there \
+             are no candidates"
+        );
+        assert_eq!(input.committed_text(), "99999");
+        assert_eq!(
+            input.key_count(),
+            0,
+            "key sequence must be cleared after accept, even on the \
+             fallback path"
+        );
+    }
+
+    #[test]
     fn toggle_mode_cycles() {
         let mut input = T9Input::new();
         assert_eq!(input.mode(), T9Mode::Predictive);

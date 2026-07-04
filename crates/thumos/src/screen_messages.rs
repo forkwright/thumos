@@ -306,6 +306,14 @@ impl MessagesScreen {
         if self.selected >= self.messages.len() && !self.messages.is_empty() {
             self.selected = self.messages.len() - 1;
         }
+        // Clamp scroll_offset to the (possibly re-clamped) selection --
+        // otherwise a scroll_offset left pointing past the shrunk list's
+        // end makes draw_inbox's `(scroll_offset..scroll_offset+visible)
+        // .min(len)` window empty, so the inbox renders blank even though
+        // messages still exist (#397).
+        if self.scroll_offset > self.selected {
+            self.scroll_offset = self.selected;
+        }
     }
 
     /// Return the number of messages.
@@ -1124,6 +1132,38 @@ mod tests {
     }
 
     #[test]
+    fn split_at_char_boundary_backs_off_to_valid_boundary() {
+        // Each character is 2 bytes (U+00E9): char boundaries are at 0,
+        // 2, 4. Splitting at an odd byte offset must back off to the
+        // boundary at or before it, not split mid-codepoint (#397 --
+        // direct coverage of split_at_char_boundary itself, previously
+        // only exercised indirectly via truncate_body_for_display).
+        let s = "\u{00e9}\u{00e9}";
+        let (prefix, suffix) = split_at_char_boundary(s, 3);
+        assert_eq!(
+            prefix, "\u{00e9}",
+            "must back off to the boundary at byte 2, not 3"
+        );
+        assert_eq!(suffix, "\u{00e9}");
+    }
+
+    #[test]
+    fn split_at_char_boundary_pos_past_end_clamps_to_len() {
+        let s = "hi";
+        let (prefix, suffix) = split_at_char_boundary(s, 100);
+        assert_eq!(prefix, "hi");
+        assert_eq!(suffix, "");
+    }
+
+    #[test]
+    fn split_at_char_boundary_pos_zero() {
+        let s = "hi";
+        let (prefix, suffix) = split_at_char_boundary(s, 0);
+        assert_eq!(prefix, "");
+        assert_eq!(suffix, "hi");
+    }
+
+    #[test]
     fn draw_detail_bounds_word_wrap_allocation_for_huge_body() {
         let mut screen = MessagesScreen::new();
         // 1 MB whitespace-free body — worst case for word_wrap's per-line
@@ -1500,6 +1540,52 @@ mod tests {
             screen.detail_scroll, max_scroll,
             "detail_scroll must clamp at the last full page, not run past \
              the content"
+        );
+    }
+
+    #[test]
+    fn set_messages_clamps_scroll_offset_when_list_shrinks() {
+        // WHY: previously set_messages only clamped `selected`, not
+        // `scroll_offset` -- if the list shrinks while scrolled deep in,
+        // scroll_offset can be left pointing past the new (shorter)
+        // list's end, making draw_inbox's visible window
+        // `(scroll_offset..scroll_offset+visible).min(len)` empty even
+        // though messages still exist (#397).
+        let mut screen = MessagesScreen::new();
+        let long_messages: Vec<MessageEntry> = (0..20)
+            .map(|i| {
+                MessageEntry::from_sms(
+                    alloc::format!("+1555000{i:04}"),
+                    alloc::format!("message {i}"),
+                    i as u64,
+                    true,
+                )
+            })
+            .collect();
+        screen.set_messages(long_messages);
+        for _ in 0..15 {
+            screen.on_key(Key::Down);
+        }
+        assert!(
+            screen.scroll_offset > 0,
+            "scrolling down must advance scroll_offset"
+        );
+
+        // Shrink the list drastically while still scrolled.
+        screen.set_messages(make_test_messages()); // 3 messages
+        assert!(
+            screen.scroll_offset <= screen.selected_index(),
+            "scroll_offset must be clamped to the re-clamped selection \
+             after the list shrinks"
+        );
+
+        let mut fb = [0u16; CONTENT_PIXELS];
+        screen.draw(&mut fb);
+        let any_set = fb.iter().any(|&px| px != 0);
+        assert!(
+            any_set,
+            "inbox must still render visible content after shrinking \
+             while scrolled"
         );
     }
 

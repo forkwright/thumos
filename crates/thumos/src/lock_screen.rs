@@ -1019,6 +1019,34 @@ mod tests {
     }
 
     #[test]
+    fn wrong_pin_via_on_key_reports_wrong_pin_not_success_or_duress() {
+        // Security-critical: drive a WRONG (neither real nor duress) PIN
+        // through the actual UI key-dispatch path (on_key), not
+        // submit_pin directly, and confirm both observable channels
+        // report failure -- not success and not a duress false-positive
+        // (#397).
+        let mut screen = make_screen();
+        screen.set_mode(LockMode::PinUnlock);
+
+        for &byte in b"000000" {
+            screen.on_key(digit_key(byte));
+        }
+        let action = screen.on_key(Key::Ok);
+
+        assert_eq!(
+            screen.last_result,
+            Some(UnlockResult::WrongPin),
+            "a wrong (non-duress) PIN entered via on_key must record WrongPin"
+        );
+        assert!(
+            matches!(action, ScreenAction::None),
+            "a wrong PIN must not surface ScreenAction::Duress or any \
+             navigation action"
+        );
+        assert_eq!(screen.attempts(), 1);
+    }
+
+    #[test]
     fn on_key_forwards_a_real_tick_so_unlock_recovers_after_throttle() {
         // Regression test for #388: on_key previously called
         // submit_pin(0)/submit_passphrase(0) unconditionally. Since

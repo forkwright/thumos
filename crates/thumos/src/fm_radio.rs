@@ -497,6 +497,15 @@ impl<H: FmHwOps> FmRadio<H> {
         // Try hardware seek.
         match self.hw.seek_up() {
             Ok(freq) => {
+                // WHY: freq is hardware-returned and untrusted -- a
+                // glitched or malfunctioning combo-chip firmware could
+                // report a frequency outside the FM band, and storing it
+                // unchecked would let an out-of-band value flow into
+                // state, presets, and display code that all assume Tuned
+                // frequencies stay in-band (#397).
+                if !(FM_FREQ_MIN_KHZ..=FM_FREQ_MAX_KHZ).contains(&freq) {
+                    return Err(FmError::FrequencyOutOfRange);
+                }
                 self.state = FmState::Tuned {
                     frequency_khz: freq,
                 };
@@ -540,6 +549,11 @@ impl<H: FmHwOps> FmRadio<H> {
 
         match self.hw.seek_down() {
             Ok(freq) => {
+                // WHY: same untrusted-hardware-value guard as seek_up --
+                // see its comment (#397).
+                if !(FM_FREQ_MIN_KHZ..=FM_FREQ_MAX_KHZ).contains(&freq) {
+                    return Err(FmError::FrequencyOutOfRange);
+                }
                 self.state = FmState::Tuned {
                     frequency_khz: freq,
                 };
@@ -849,6 +863,54 @@ mod tests {
     }
 
     #[test]
+    fn seek_up_rejects_out_of_range_hardware_frequency() {
+        let mut hw = MockFmHw::new();
+        hw.seek_up_result = Some(50_000); // below FM_FREQ_MIN_KHZ
+        let mut radio = FmRadio::new(hw);
+        radio.power_on().ok();
+        radio.tune(90_000).ok();
+
+        let result = radio.seek_up();
+        assert_eq!(
+            result,
+            Err(FmError::FrequencyOutOfRange),
+            "seek_up must reject an out-of-band hardware-returned \
+             frequency (#397)"
+        );
+        assert_eq!(
+            radio.state(),
+            FmState::Tuned {
+                frequency_khz: 90_000
+            },
+            "state must be unchanged when the hardware result is rejected"
+        );
+    }
+
+    #[test]
+    fn seek_down_rejects_out_of_range_hardware_frequency() {
+        let mut hw = MockFmHw::new();
+        hw.seek_down_result = Some(200_000); // above FM_FREQ_MAX_KHZ
+        let mut radio = FmRadio::new(hw);
+        radio.power_on().ok();
+        radio.tune(90_000).ok();
+
+        let result = radio.seek_down();
+        assert_eq!(
+            result,
+            Err(FmError::FrequencyOutOfRange),
+            "seek_down must reject an out-of-band hardware-returned \
+             frequency (#397)"
+        );
+        assert_eq!(
+            radio.state(),
+            FmState::Tuned {
+                frequency_khz: 90_000
+            },
+            "state must be unchanged when the hardware result is rejected"
+        );
+    }
+
+    #[test]
     fn volume_control() {
         let mut radio = make_radio();
         assert_eq!(radio.volume(), FM_DEFAULT_VOLUME);
@@ -985,6 +1047,36 @@ mod tests {
             radio.preset_count(),
             4,
             "preset_count must reflect the highest used index + 1"
+        );
+    }
+
+    #[test]
+    fn recall_preset_uninitialized_non_contiguous_slot_returns_wrong_variant() {
+        // WHY: pins a mismatch between recall_preset's documented
+        // contract ("InvalidPreset -- slot index out of range or not
+        // set") and its actual behavior. preset_count only tracks the
+        // highest EVER-saved index + 1, not which individual slots were
+        // populated, so saving directly to slot 3 (skipping 0-2, as in
+        // preset_non_contiguous_index above) leaves slots 0-2 within the
+        // `index < preset_count` range yet never actually written (still
+        // 0). recall_preset falls through to the frequency-range check
+        // and returns FrequencyOutOfRange (0 is not in the FM band)
+        // instead of the documented InvalidPreset (#397 finding 32 --
+        // NOT fixed here; this pins current behavior for a follow-up).
+        let mut radio = make_radio();
+        radio.power_on().ok();
+        radio.tune(92_300).ok();
+        radio.save_preset(3).ok(); // non-contiguous; slots 0-2 stay unset
+        assert_eq!(radio.preset_count(), 4);
+
+        let result = radio.recall_preset(1); // never explicitly saved
+        assert_eq!(
+            result,
+            Err(FmError::FrequencyOutOfRange),
+            "current behavior: an unset-but-in-range slot surfaces \
+             FrequencyOutOfRange, not the documented \
+             InvalidPreset(\"...or not set\") -- a mismatch worth a \
+             follow-up fix, not asserted here as correct"
         );
     }
 
