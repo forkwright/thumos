@@ -451,4 +451,128 @@ mod tests {
             "outer drop restores IRQ delivery"
         );
     }
+
+    #[test]
+    fn init_computes_bitmap_boundaries_from_unaligned_inputs() {
+        // Done-when (finding 38): kernel_end must round UP to the next
+        // page boundary (so a kernel ending mid-page never bleeds into
+        // the free pool) and ram_end must round DOWN to a page boundary;
+        // init must then mark exactly [start_page, end_page) free and
+        // every other page allocated.
+        //
+        // WHY calling page::init() here (unlike this file's other tests,
+        // which deliberately avoid it to prevent intra-file races): this
+        // is the ONLY test in this module touching PAGE_BITMAP/
+        // FREE_PAGES, so there is no race within this file -- the same
+        // accepted pattern process.rs's tests already use for
+        // page::init() with fabricated (never-dereferenced) addresses.
+        const RAM_START: usize = 0x1000_0000;
+        // kernel_end lands inside page index 1 (not aligned) -> must
+        // round UP to page index 2.
+        const KERNEL_END: usize = RAM_START + 4660;
+        // ram_end lands just past page index 10's start (not aligned) ->
+        // must round DOWN to page index 10.
+        const RAM_END: usize = RAM_START + 10 * PAGE_SIZE + 5;
+
+        // SAFETY: test-only; RAM_START/RAM_END/KERNEL_END are never
+        // dereferenced by init() -- it only computes page-index
+        // bookkeeping.
+        unsafe {
+            init(RAM_START, RAM_END, KERNEL_END);
+
+            // addr_of!().read() avoids a shared reference to the static mut.
+            let first = core::ptr::addr_of!(FIRST_PAGE).read();
+            let usable_start = core::ptr::addr_of!(USABLE_START_PAGE).read();
+            let usable_end = core::ptr::addr_of!(USABLE_END_PAGE).read();
+            let free = core::ptr::addr_of!(FREE_PAGES).read();
+            assert_eq!(first, RAM_START);
+            assert_eq!(usable_start, 2, "kernel_end must round UP to page index 2");
+            assert_eq!(usable_end, 10, "ram_end must round DOWN to page index 10");
+            assert_eq!(free, 8, "8 usable pages (index 2..10) must be free");
+
+            let bitmap = &*core::ptr::addr_of!(PAGE_BITMAP);
+            let is_allocated = |page: usize| bitmap[page / 32] & (1 << (page % 32)) != 0;
+
+            assert!(
+                is_allocated(0),
+                "page 0 (below usable start) must be allocated"
+            );
+            assert!(
+                is_allocated(1),
+                "page 1 (below usable start) must be allocated"
+            );
+            for page in 2..10 {
+                assert!(
+                    !is_allocated(page),
+                    "page {page} (within the usable range) must be free"
+                );
+            }
+            assert!(
+                is_allocated(10),
+                "page 10 (at usable end, exclusive) must be allocated"
+            );
+            assert!(
+                is_allocated(11),
+                "page 11 (past usable end) must be allocated"
+            );
+        }
+    }
+
+    #[test]
+    fn alloc_and_free_round_trip_yields_distinct_pages_and_rejects_double_free() {
+        // Done-when (finding 39): alloc_page/try_free_page/free_count
+        // have zero coverage in this module (the file's other tests only
+        // exercise zero_page/zero_page_range/PAGE_LOCK to avoid
+        // page::init() races). This is the second (and only other) test
+        // here to call page::init(); like
+        // init_computes_bitmap_boundaries_from_unaligned_inputs it is the
+        // only test touching PAGE_BITMAP/FREE_PAGES via this specific
+        // call, and process.rs's tests already independently call
+        // page::init() with fabricated addresses, so this does not
+        // introduce a new class of risk.
+        const RAM_START: usize = 0x2000_0000;
+        const RAM_END: usize = RAM_START + 4 * PAGE_SIZE;
+        const KERNEL_END: usize = RAM_START; // entire range usable
+
+        // SAFETY: test-only; fabricated addresses are never dereferenced
+        // by the allocator's bookkeeping in a `#[cfg(test)]` build (the
+        // zero-on-free memory scrub is `#[cfg(not(test))]`-gated; see
+        // try_free_page's own WHY comment).
+        unsafe {
+            init(RAM_START, RAM_END, KERNEL_END);
+            assert_eq!(free_count(), 4, "4 whole pages must be free after init");
+
+            let a = alloc_page().expect("first allocation must succeed");
+            let b = alloc_page().expect("second allocation must succeed");
+            assert_ne!(a, b, "two allocations must never return the same page");
+            assert_eq!(
+                free_count(),
+                2,
+                "free_count must drop by 2 after 2 allocations"
+            );
+
+            assert!(try_free_page(a), "freeing an allocated page must succeed");
+            assert_eq!(free_count(), 3, "free_count must rise by 1 after freeing");
+
+            // Double-free of the same address must be rejected, not
+            // double-increment free_count.
+            assert!(
+                !try_free_page(a),
+                "double-freeing the same page must be rejected"
+            );
+            assert_eq!(
+                free_count(),
+                3,
+                "a rejected double-free must not change free_count"
+            );
+
+            // The freed page must be handed out again on the next
+            // allocation (bitmap correctly reflects the free bit).
+            let c = alloc_page().expect("third allocation must succeed");
+            assert_eq!(c, a, "the freed page must be reusable");
+
+            try_free_page(b);
+            try_free_page(c);
+        }
+    }
 }

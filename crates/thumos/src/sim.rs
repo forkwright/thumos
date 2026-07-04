@@ -628,4 +628,64 @@ mod tests {
             "must not recognize READY as SIM PIN"
         );
     }
+
+    #[test]
+    fn query_operator_extracts_name_from_valid_response() {
+        // Done-when (finding 41): SimManager::query_operator has zero
+        // existing coverage in this module.
+        let mut transport = MockModemTransport::new();
+        transport.queue_info_ok(b"+COPS: 0,0,\"Vodafone\"");
+
+        let mut name = [0u8; 32];
+        let result = SimManager::query_operator(&mut transport, &mut name);
+        assert_eq!(result, Ok(8), "operator name length must be 8");
+        assert_eq!(&name[..8], b"Vodafone", "operator name must be Vodafone");
+    }
+
+    #[test]
+    fn query_operator_ok_with_no_info_line_returns_zero() {
+        let mut transport = MockModemTransport::new();
+        transport.queue_ok();
+
+        let mut name = [0u8; 32];
+        let result = SimManager::query_operator(&mut transport, &mut name);
+        assert_eq!(
+            result,
+            Ok(0),
+            "an OK with no info line must return length 0"
+        );
+    }
+
+    #[test]
+    fn query_operator_maps_at_error_branches() {
+        // Done-when (finding 41): every AT error-branch mapping in
+        // query_operator -- CmeError, CmsError (which collapses to the
+        // SAME TelephonyError::CmeError variant, not a distinct one), and
+        // the bare generic Error -> ModemError.
+        let mut name = [0u8; 32];
+
+        let mut transport = MockModemTransport::new();
+        transport.queue_response(b"+CME ERROR: 10");
+        assert_eq!(
+            SimManager::query_operator(&mut transport, &mut name),
+            Err(TelephonyError::CmeError(10)),
+            "a +CME ERROR must map to TelephonyError::CmeError with its code"
+        );
+
+        let mut transport = MockModemTransport::new();
+        transport.queue_response(b"+CMS ERROR: 302");
+        assert_eq!(
+            SimManager::query_operator(&mut transport, &mut name),
+            Err(TelephonyError::CmeError(302)),
+            "a +CMS ERROR must ALSO map to TelephonyError::CmeError (no distinct CmsError variant)"
+        );
+
+        let mut transport = MockModemTransport::new();
+        transport.queue_response(b"ERROR");
+        assert_eq!(
+            SimManager::query_operator(&mut transport, &mut name),
+            Err(TelephonyError::ModemError),
+            "a bare ERROR must map to TelephonyError::ModemError"
+        );
+    }
 }

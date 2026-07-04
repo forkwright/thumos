@@ -551,4 +551,59 @@ mod tests {
         assert_eq!(msg, "audit log full", "LogFull display must match");
         assert_eq!(err, MicAuditError::LogFull, "LogFull must be Eq");
     }
+
+    #[test]
+    fn eviction_of_an_active_session_does_not_corrupt_active_tracking() {
+        // Done-when (finding 34): when the entry being evicted (the
+        // oldest, at capacity) is a session that is STILL ACTIVE (never
+        // ended), the active-session bookkeeping (is_mic_active /
+        // active_sessions) must reflect the eviction correctly, not
+        // retain a dangling reference to the evicted entry or miscount.
+        // eviction_at_capacity checks the log stays capped and the
+        // evicted entry is gone, but never checks active-session
+        // bookkeeping around an eviction where the victim was active.
+        let mut log = MicAuditLog::new();
+        for i in 0..MAX_ENTRIES {
+            log.log_start(SessionKind::VoiceCall, b"active", i as u64 * 10);
+        }
+        assert_eq!(log.len(), MAX_ENTRIES);
+        assert!(
+            log.is_mic_active(),
+            "all sessions are active before eviction"
+        );
+        assert_eq!(
+            log.active_sessions().len(),
+            MAX_ENTRIES,
+            "every entry must be active before the evicting call"
+        );
+
+        let victim_id = log.entries()[0].id;
+
+        // This log_start evicts the oldest entry -- which is itself an
+        // active (never-ended) session -- to make room.
+        let new_id = log.log_start(SessionKind::VoiceCall, b"newest", 999_999);
+
+        assert_eq!(
+            log.len(),
+            MAX_ENTRIES,
+            "log must stay capped at MAX_ENTRIES"
+        );
+        assert!(
+            log.is_mic_active(),
+            "mic must still read active: the new entry is active even though the victim was evicted"
+        );
+        assert_eq!(
+            log.active_sessions().len(),
+            MAX_ENTRIES,
+            "active-session count must reflect exactly MAX_ENTRIES live entries, not double-count or leak the evicted one"
+        );
+        assert!(
+            !log.entries().iter().any(|e| e.id == victim_id),
+            "the evicted victim's id must no longer appear anywhere in the log"
+        );
+        assert!(
+            log.entries().iter().any(|e| e.id == new_id),
+            "the newly started session must be present"
+        );
+    }
 }
