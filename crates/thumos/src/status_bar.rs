@@ -204,7 +204,12 @@ const fn battery_text(pct: u8) -> &'static str {
         20..=29 => "2x%",
         10..=19 => "1x%",
         1..=9 => "x%",
-        _ => "0%",
+        0 => "0%",
+        // WHY: pct is a u8, so anything left here is 101-255 -- an
+        // invalid reading, not a genuinely empty battery. Mapping it to
+        // "0%" (the prior catch-all) was misleading: it looked like a
+        // dying battery instead of a corrupt/out-of-range sensor value.
+        _ => "ERR",
     }
 }
 
@@ -225,6 +230,21 @@ mod tests {
         KernelStatusBar::draw(&mut fb, &state);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "status bar default state must render pixels");
+    }
+
+    #[test]
+    fn battery_text_invalid_above_100_shows_error_not_zero() {
+        assert_eq!(
+            battery_text(101),
+            "ERR",
+            "values above 100% are invalid and must not display as 0%"
+        );
+        assert_eq!(battery_text(255), "ERR", "u8::MAX must not display as 0%");
+        assert_eq!(
+            battery_text(0),
+            "0%",
+            "0 is a genuinely empty battery, distinct from an invalid reading"
+        );
     }
 
     #[test]

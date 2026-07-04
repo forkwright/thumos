@@ -667,10 +667,18 @@ impl UiManager {
     /// Navigate to a new screen, pushing the current screen onto the
     /// back-navigation stack.
     pub(crate) fn navigate(&mut self, screen: ScreenId) {
-        // Cap the history to prevent unbounded growth.
-        if self.history.len() < MAX_HISTORY {
-            self.history.push(self.active_screen);
+        // WHY: drop the OLDEST entry (not the newest) once history is
+        // full. Previously, once MAX_HISTORY was reached, the push below
+        // was skipped entirely while the navigation still proceeded --
+        // so the screen being navigated FROM was never recorded, and a
+        // subsequent back() skipped past it to a stale, no-longer-
+        // adjacent screen. Shifting out the oldest entry keeps back()
+        // always returning to the immediately-previous screen; only the
+        // tail of very old history is bounded away.
+        if self.history.len() >= MAX_HISTORY {
+            self.history.remove(0);
         }
+        self.history.push(self.active_screen);
         self.active_screen = screen;
     }
 
@@ -875,6 +883,50 @@ mod tests {
             mgr.active_screen(),
             ScreenId::Home,
             "back on empty history must stay at Home"
+        );
+    }
+
+    #[test]
+    fn navigate_past_max_history_drops_oldest_not_newest() {
+        let mut mgr = UiManager::new();
+        let screens = [
+            ScreenId::Dialer,
+            ScreenId::Messages,
+            ScreenId::Contacts,
+            ScreenId::Settings,
+            ScreenId::Search,
+            ScreenId::Calendar,
+            ScreenId::InCall,
+            ScreenId::Timer,
+            ScreenId::Stopwatch,
+            ScreenId::Alarms,
+            ScreenId::FmRadio,
+            ScreenId::WifiSettings,
+            ScreenId::BtSettings,
+            ScreenId::Privacy,
+            ScreenId::RadioControl,
+            ScreenId::About,
+            ScreenId::Battery, // 17th navigate -- overflows MAX_HISTORY (16)
+        ];
+        for &s in &screens {
+            mgr.navigate(s);
+        }
+
+        assert_eq!(
+            mgr.history_len(),
+            MAX_HISTORY,
+            "history must stay capped at MAX_HISTORY, not grow unbounded"
+        );
+
+        // The screen immediately before the last navigate (About) must
+        // still be what back() returns to -- not a stale entry from
+        // before the overflow.
+        mgr.back();
+        assert_eq!(
+            mgr.active_screen(),
+            ScreenId::About,
+            "back() after overflowing history must return to the \
+             immediately-previous screen, not skip past it"
         );
     }
 

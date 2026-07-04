@@ -422,6 +422,14 @@ impl<T: LcmControl + LcmBacklight> LcmDriver for T {}
 /// Maximum iterations to poll for DSI command completion.
 const DSI_POLL_TIMEOUT: u32 = 100_000;
 
+/// Maximum total DCS long-write payload (1 command byte + data bytes).
+///
+/// The CMDQ has 16 slots of 4 bytes each; slot 0 holds the long-write
+/// header, leaving 15 slots (60 bytes) for the payload. Writing more
+/// than this walks the packing loop in `dcs_write_long` past slot 15
+/// and corrupts whatever DSI MMIO register follows `CMDQ_DATA`.
+const MAX_DCS_LONG_PAYLOAD_LEN: usize = 15 * 4;
+
 /// Busy-wait delay using the ARM generic timer.
 ///
 /// Spins on the counter until `ms` milliseconds have elapsed. This is
@@ -516,18 +524,32 @@ unsafe fn dcs_write_cmd1(cmd: u8, data: u8) -> Result<(), DsiTimeout> {
 /// The total payload is `1 (cmd) + data.len()` bytes, packed into CMDQ
 /// slots in little-endian order.
 ///
+/// # Errors
+///
+/// Returns [`DsiTimeout`] if the total payload (`1 + data.len()`)
+/// exceeds [`MAX_DCS_LONG_PAYLOAD_LEN`], or if the underlying DSI
+/// transfer times out.
+///
 /// # Safety
 ///
-/// DSI0 must be configured. `data.len()` must be <= 60 bytes
-/// (limited by the 16-entry × 4-byte CMDQ minus header overhead).
+/// DSI0 must be configured. `1 + data.len()` must be <=
+/// [`MAX_DCS_LONG_PAYLOAD_LEN`] -- enforced below, not merely a caller
+/// contract.
 unsafe fn dcs_write_long(cmd: u8, data: &[u8]) -> Result<(), DsiTimeout> {
+    // WHY: bound the payload BEFORE touching any hardware register.
+    // Without this check, a data slice larger than the CMDQ's capacity
+    // walks the packing loop below past slot 15 and writes into
+    // whatever DSI MMIO register follows CMDQ_DATA in the address
+    // space -- a memory-safety issue, not just a logic error.
+    let payload_len = 1 + data.len();
+    if payload_len > MAX_DCS_LONG_PAYLOAD_LEN {
+        return Err(DsiTimeout);
+    }
+
     // SAFETY: DSI0 registers (START, CMDQ_SIZE, CMDQ_DATA) are valid MMIO registers within the DSI0 address space at 0x1400_D000. Volatile access is required for hardware registers.
     unsafe {
         dsi_wait_idle()?;
         mmio::write32(dsi::START, 0);
-
-        // Total payload length: cmd byte + data bytes
-        let payload_len = 1 + data.len();
 
         // WHY: CMDQ slot 0 holds the long-write header:
         //   bits [7:0]   = data type (0x39 = DCS long write)
@@ -1310,6 +1332,21 @@ mod tests {
             dsi::CMDQ_SIZE,
             DSI0_BASE + 0x060,
             "CMDQ_SIZE must be at DSI0 + 0x060"
+        );
+    }
+
+    #[test]
+    fn dcs_write_long_rejects_oversized_payload_before_touching_hardware() {
+        // The accept path dereferences real MMIO addresses and cannot run
+        // off-target, but the bounds check must reject an oversized
+        // payload BEFORE any MMIO access -- which is exactly what makes
+        // this reachable as a host test.
+        let oversized = [0u8; 60]; // payload_len = 1 (cmd) + 60 = 61 > 60 max
+        let result = unsafe { dcs_write_long(0x00, &oversized) };
+        assert!(
+            result.is_err(),
+            "a DCS long-write payload past CMDQ capacity must be rejected, \
+             not walk the packing loop past the 16-slot region"
         );
     }
 

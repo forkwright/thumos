@@ -504,16 +504,26 @@ impl LockScreen {
         }
         self.throttle_until_tick = current_tick.saturating_add(u64::from(delay));
 
-        // After 5 wrong: force long-sleep (zeroize session keys).
-        if self.attempts >= FORCE_LONG_SLEEP_THRESHOLD {
-            self.long_sleep_forced = true;
-            self.mode = LockMode::Locked;
-        }
-
+        // WHY: read the escalation-decision value (self.mode) BEFORE
+        // mutating it below. This attempt was entered under the CURRENT
+        // mode, so it must be reported (and audit-logged by
+        // log_auth_event) as WrongPin/WrongPassphrase matching what was
+        // actually typed -- not relabeled just because this same
+        // failure also escalates the mode for the NEXT attempt.
+        // Computing `result` after the mode flip caused the 5th failed
+        // PIN to report WrongPassphrase (and audit-log "wrong
+        // passphrase") even though a PIN was entered.
         let result = match self.mode {
             LockMode::PinUnlock => UnlockResult::WrongPin,
             LockMode::BootPassphrase | LockMode::Locked => UnlockResult::WrongPassphrase,
         };
+
+        // After 5 wrong: force long-sleep (zeroize session keys) for the
+        // NEXT attempt. Does not change how THIS attempt is reported.
+        if self.attempts >= FORCE_LONG_SLEEP_THRESHOLD {
+            self.long_sleep_forced = true;
+            self.mode = LockMode::Locked;
+        }
 
         self.last_result = Some(result);
         self.clear_input();
@@ -1110,6 +1120,34 @@ mod tests {
             screen.mode(),
             LockMode::Locked,
             "mode must transition to Locked after 5 wrong"
+        );
+    }
+
+    #[test]
+    fn fifth_wrong_pin_reports_wrong_pin_not_wrong_passphrase() {
+        let mut screen = make_screen();
+        screen.set_mode(LockMode::PinUnlock);
+
+        let mut result = UnlockResult::Success;
+        for i in 0..5 {
+            for &byte in b"999999" {
+                screen.push_pin_digit(byte);
+            }
+            result = screen.submit_pin(100 + (i as u64) * 100);
+        }
+
+        assert_eq!(
+            result,
+            UnlockResult::WrongPin,
+            "the 5th failed PIN attempt must report WrongPin, matching \
+             what was actually entered -- the mode escalation to Locked \
+             (for the NEXT attempt) must not retroactively relabel this \
+             attempt's result as WrongPassphrase"
+        );
+        assert_eq!(
+            screen.mode(),
+            LockMode::Locked,
+            "mode must still escalate to Locked after the 5th failure"
         );
     }
 

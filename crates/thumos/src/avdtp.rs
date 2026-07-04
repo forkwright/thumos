@@ -111,7 +111,7 @@ impl AvdtpMessage {
         int_seid: u8,
         header: &SbcFrameHeader,
     ) -> Vec<u8> {
-        let mut msg = Vec::with_capacity(12);
+        let mut msg = Vec::with_capacity(14);
         msg.push(Self::header_byte(transaction_label, AVDTP_MSG_TYPE_COMMAND));
         msg.push(AVDTP_SIGNAL_SET_CONFIGURATION);
         msg.push((acp_seid & 0x3F) << 2); // ACP SEID
@@ -226,5 +226,20 @@ mod tests {
         //         msg_type=command (bits 1:0=00) => 0x30
         assert_eq!(msg[0], 0x30, "header byte must encode label and types");
         assert_eq!(msg[1], AVDTP_SIGNAL_DISCOVER, "signal must be Discover");
+    }
+
+    #[test]
+    fn set_configuration_message_has_expected_length() {
+        let header = SbcFrameHeader::default_a2dp();
+        let msg = AvdtpMessage::set_configuration(1, 0x02, 0x01, &header);
+        assert_eq!(
+            msg.len(),
+            14,
+            "set_configuration must produce exactly 14 bytes: 4 \
+             (header+signal+2 SEIDs) + 2 (media-transport cat/len) + 2 \
+             (media-codec cat/len) + 2 (media-type/codec-type) + 4 (SBC \
+             info element) -- Vec::with_capacity must match this exactly \
+             to avoid a mid-build reallocation"
+        );
     }
 }
