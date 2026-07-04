@@ -472,6 +472,17 @@ impl<C: AudioCodecOps> AudioManager<C> {
     }
 
     /// Return a mutable reference to the underlying codec.
+    ///
+    /// WHY test-only: production code must reach the codec ONLY through
+    /// the auditable session lifecycle (open_session/close_session/
+    /// set_route/set_volume) -- this raw accessor bypasses that entirely,
+    /// letting a caller flip enable_mic_bias()/enable_adc() with no
+    /// AudioSession ever recorded, defeating the "all mic activity is
+    /// auditable via the session log" invariant documented at the top of
+    /// this module. Grepped: every call site in the tree is this file's
+    /// own `#[cfg(test)] mod tests` (fault injection on MockCodec); no
+    /// production caller exists (#397).
+    #[cfg(test)]
     pub(crate) fn codec_mut(&mut self) -> &mut C {
         &mut self.codec
     }
@@ -1251,5 +1262,57 @@ mod tests {
             1,
             "the failed session must not be recorded"
         );
+    }
+
+    #[test]
+    fn power_down_mic_partial_failure_leaves_mic_powered_true_though_bias_already_off() {
+        // WHY: pins a genuine gap -- power_down_mic calls
+        // disable_mic_bias() then disable_adc(), each with `?`. If
+        // disable_mic_bias() succeeds but disable_adc() fails, the method
+        // returns before self.mic_powered is set false, so
+        // mgr.is_mic_powered() keeps reporting true even though the
+        // hardware mic bias is ALREADY off (only the ADC failed to power
+        // down) -- a state/reality divergence in the exact invariant this
+        // module's docs call "auditable via the session log" (#397).
+        let mut mgr = make_manager();
+        let call_id = mgr
+            .open_session(SessionKind::VoiceCall, AudioRoute::Earpiece)
+            .unwrap_or(0);
+        assert!(
+            mgr.is_mic_powered(),
+            "mic must be powered during voice call"
+        );
+
+        mgr.codec_mut().fail_disable_adc = Some(AudioError::HardwareError);
+
+        let result = mgr.close_session(call_id);
+        assert!(
+            result.is_err(),
+            "close_session must propagate the disable_adc failure"
+        );
+        assert!(
+            !mgr.codec().is_mic_bias_enabled(),
+            "mic bias hardware must already be off -- disable_mic_bias \
+             succeeded before disable_adc failed"
+        );
+        assert!(
+            mgr.is_mic_powered(),
+            "mgr.is_mic_powered() stays true because the `?` on the \
+             failed disable_adc short-circuits before self.mic_powered is \
+             set false -- this pins the current divergence, not asserted \
+             here as desired behavior"
+        );
+
+        // Recovery: clear the fault and retry -- disable_mic_bias is
+        // idempotent (MockCodec always succeeds and sets false), so the
+        // retry only needs disable_adc to succeed this time.
+        mgr.codec_mut().fail_disable_adc = None;
+        let result = mgr.close_session(call_id);
+        assert!(
+            result.is_ok(),
+            "retry must succeed once disable_adc recovers"
+        );
+        assert!(!mgr.is_mic_powered());
+        assert_eq!(mgr.session_count(), 0);
     }
 }
