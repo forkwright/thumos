@@ -20,7 +20,15 @@ pub(crate) static mut UART_BAUD: u32 = 921_600;
 pub(crate) static mut VERBOSE_BOOT: bool = true;
 
 /// Enable kernel debug console on UART.
-pub(crate) static mut DEBUG_CONSOLE: bool = true;
+///
+/// WARNING: defaults `false` (issue #372) -- the console is a dev-only
+/// UART shell with no authentication. The former `console=` cmdline arm
+/// that let a boot-args attacker force this to `true` has been deleted;
+/// flipping this back to `true` is now a deliberate, reviewable source
+/// edit, not a runtime toggle. See `kinit`'s `debug_console_gate` for the
+/// full gate (this flag is one layer of three, alongside the
+/// `debug-console` compile-time feature and the physical-presence check).
+pub(crate) static mut DEBUG_CONSOLE: bool = false;
 
 /// Panic behavior: 0 = halt, N = reboot after N seconds.
 pub(crate) static mut PANIC_TIMEOUT: u32 = 0;
@@ -98,11 +106,12 @@ pub(crate) fn parse_cmdline(cmdline: &str) {
                 "verbose" => unsafe {
                     VERBOSE_BOOT = value != "0";
                 },
-                // SAFETY: parse_cmdline is called once during early boot before
-                // any concurrent access to these static mut config globals.
-                "console" => unsafe {
-                    DEBUG_CONSOLE = value != "0";
-                },
+                // WHY (issue #372): the `console=` key is deliberately NOT
+                // handled -- it falls through to the `_` (ignored) arm
+                // below. A boot-args attacker must not be able to force
+                // the debug console on; `DEBUG_CONSOLE` is now a
+                // compile-time-fixed default (see its doc comment) with no
+                // runtime cmdline path.
                 "tick_ms" => {
                     if let Ok(v) = value.parse::<u32>() {
                         // SAFETY: parse_cmdline is called once during early boot before
@@ -131,7 +140,7 @@ mod tests {
 
     #[test]
     fn parse_cmdline_sets_tick_rate_and_security_flags() {
-        parse_cmdline("tick_ms=25 verbose=0 console=0 panic=5");
+        parse_cmdline("tick_ms=25 verbose=0 console=1 panic=5");
 
         // SAFETY: single-threaded test (nextest process-isolates per test);
         // addr_of!().read() avoids a shared reference to the static mut.
@@ -145,7 +154,12 @@ mod tests {
         };
         assert_eq!(tick, 25);
         assert!(!verbose);
-        assert!(!console);
+        // WHY (issue #372): `console=` is deliberately a no-op (see
+        // parse_cmdline) -- a boot-args attacker must not be able to force
+        // the debug console on. `console=1` here proves that: DEBUG_CONSOLE
+        // stays at its compile-time default (false) regardless of cmdline
+        // input.
+        assert!(!console, "console= must not be settable from the cmdline");
         assert_eq!(panic, 5);
     }
 
