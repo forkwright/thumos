@@ -110,6 +110,11 @@ mod http_client;
 mod ipc;
 mod irq;
 mod json_mini;
+// WHY (#420): post-boot service loop + persisted KernelState. Test-gated
+// like kinit -- it consumes kinit::BootState and device::DeviceRegistry,
+// both cfg(not(test)).
+#[cfg(not(test))]
+mod kardia;
 mod kconfig;
 mod key_manager;
 #[cfg(not(test))]
@@ -134,6 +139,7 @@ mod provision;
 #[cfg(all(not(test), feature = "qemu"))]
 mod qemu;
 mod ramfs;
+mod reflex;
 mod sbc;
 mod screen_alarm;
 mod screen_calendar;

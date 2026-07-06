@@ -167,12 +167,12 @@ static mut CURRENT: Pid = 0;
 /// during init would abandon the boot mid-sequence -- a timing-dependent
 /// hang (the tick lands at a non-deterministic point). Boot enables
 /// scheduling via `enable_scheduling()` once userspace has been spawned and
-/// the boot context becomes the idle loop.
+/// the boot context becomes the kardia service loop (PID 0's body).
 static SCHEDULING_ENABLED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 /// Enable scheduler context switches. Called exactly once from `kinit`, after
-/// userspace spawn, before the boot context enters the idle loop.
+/// userspace spawn, before the boot context enters the kardia service loop.
 pub(crate) fn enable_scheduling() {
     SCHEDULING_ENABLED.store(true, core::sync::atomic::Ordering::Release);
 }

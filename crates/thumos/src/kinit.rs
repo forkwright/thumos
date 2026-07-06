@@ -1271,15 +1271,13 @@ pub unsafe fn run() -> ! {
     process::enable_scheduling();
 
     // -----------------------------------------------------------------------
-    // QEMU milestone: full boot sequence attempted -- exit via semihosting
+    // QEMU milestone: full boot sequence attempted
     // -----------------------------------------------------------------------
-    // WHY(qemu): CI asserts on this marker and on exit code 0; without an
-    // explicit exit the idle loop below runs until the runner timeout.
+    // WHY(qemu): CI asserts on this marker. The semihosting exit 0 moved
+    // into the service loop (kardia::QEMU_TICK_CAP), so a green run proves
+    // the loop serviced real ticks, not merely that boot reached its end.
     #[cfg(feature = "qemu")]
-    {
-        let _ = serial.write_str("THUMOS-QEMU: boot-complete\r\n");
-        crate::qemu::request_exit(0);
-    }
+    let _ = serial.write_str("THUMOS-QEMU: boot-complete\r\n");
 
     // -----------------------------------------------------------------------
     // Debug console or idle
@@ -1298,20 +1296,17 @@ pub unsafe fn run() -> ! {
             console.prompt();
         }
     } else {
-        // No console  -  just idle
-        let _ = serial.write_str("[init] No debug console this boot; idling\r\n");
+        let _ = serial.write_str("[init] No debug console this boot; entering service loop\r\n");
     }
 
-    // NOTE: in a real implementation, UART RX would be interrupt-driven.
-    // For now, we poll (when a console is active) or just idle. This gets
-    // replaced when the UART driver has proper RX interrupt support.
-    loop {
-        // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
-        // No memory is accessed; the CPU enters a low-power wait state.
-        unsafe {
-            core::arch::asm!("wfe");
-        }
-    }
+    // WHY (#420): boot -> service handoff. The fn-scope state kinit built
+    // moves into KernelState and the boot context (PID 0) becomes the
+    // kernel service loop. Scheduling was enabled above, at the same point
+    // as before -- the loop never calls process::schedule() itself;
+    // userspace runs by the timer IRQ preempting PID 0 and round-robining
+    // back.
+    let kernel = crate::kardia::KernelState::new(state, devices, pm, mode_mgr);
+    crate::kardia::service_loop(kernel, serial)
 }
 
 // ---------------------------------------------------------------------------
