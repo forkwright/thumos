@@ -11,7 +11,7 @@ source_docs = [
 ]
 
 [architecture]
-summary = "Sovereign Rust mobile OS for the AGM M7: one bare-metal kernel plus userspace crates for input, radios, telephony, security, crypto, UI, and radio tools."
+summary = "Rust mobile OS for the AGM M7: one bare-metal kernel plus userspace crates for input, radios, telephony, security, crypto, UI, and radio tools."
 layers = [
   "kernel",
   "input",

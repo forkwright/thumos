@@ -452,7 +452,7 @@ pub unsafe fn run() -> ! {
     let _ = serial.write_str("\r\n");
     let _ = serial.write_str("================================\r\n");
     let _ = serial.write_str("  THUMOS v0.1.0\r\n");
-    let _ = serial.write_str("  Sovereign OS for MT6739\r\n");
+    let _ = serial.write_str("  Rust OS for the AGM M7 (MT6739)\r\n");
     let _ = serial.write_str("================================\r\n");
     let _ = serial.write_str("\r\n");
 

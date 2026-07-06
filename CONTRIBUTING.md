@@ -1,6 +1,6 @@
 # Contributing to Thumos
 
-Thumos is a sovereign, privacy-first Rust mobile OS targeting the AGM M7 (MediaTek MT6739). It is hardware-adjacent and embedded - contributions are welcome from external researchers, radio hackers, and anyone interested in a Rust-from-kernel-to-UI mobile stack.
+Thumos is a privacy-first Rust mobile OS targeting the AGM M7 (MediaTek MT6739). It is hardware-adjacent and embedded - contributions are welcome from external researchers, radio hackers, and anyone interested in a Rust-from-kernel-to-UI mobile stack.
 
 The repo uses the self-hosted kanon forge as the authoritative PR surface. GitHub stays bidirectionally mirrored for external discoverability, but PRs live on the forge.
 

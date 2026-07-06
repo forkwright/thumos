@@ -13,7 +13,7 @@ description = "Domain vocabulary for thumos."
 
 [[terms]]
 term = "thumos"
-definition = "Spirited force; the sovereign mobile OS and kernel crate."
+definition = "Spirited force; the mobile OS and kernel crate."
 canonical = true
 
 [[terms]]

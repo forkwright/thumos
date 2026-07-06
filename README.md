@@ -1,16 +1,16 @@
 # Thumos
 
-Sovereign mobile OS for the AGM M7. Privacy-first, counter-surveillance, hardware-optimized.
+A privacy-first mobile OS for the AGM M7 (MediaTek MT6739), written in Rust from the kernel up.
 
 ## What it is
 
-A custom Rust OS for the AGM M7 (MT6739, 1GB RAM, 240x320 QVGA, IP68) that gives the user complete sovereignty over their device. Full Rust from kernel to UI. Secure communication, counter-surveillance, proactive defense. No backdoors, no telemetry, no trust in infrastructure you don't control.
+A custom Rust OS for the AGM M7 (MT6739, 1 GB RAM, 240x320 QVGA, IP68). Full Rust from kernel to UI - no C the project authors, no Linux underneath (the MT6739's modem/WiFi/BT/GPS vendor blobs are binary-only and cannot be replaced). The feature surface targets secure communication and counter-surveillance: on-device radio intelligence (IMSI-catcher scoring, silent-SMS detection, 2G refusal), hardware-identifier protection at the register level (WiFi/BT MAC randomization, IMEI/IMSI containment), encrypted storage, and a modem firewalled at the CCCI driver boundary.
 
-> **Current status:** The repository contains a broad compiled and tested software surface, but hardware validation and several boot/userspace wiring paths remain open.
+> **Maturity:** a broad compiled-and-tested software surface with an **executable boot** - the kernel boots end-to-end under emulation (see [Status](#status)). Hardware validation and boot/userspace wiring remain open. A named capability is a compiled/tested surface unless a boot or userspace call path reaches it.
 
 ## Name
 
-**Thumos** (θυμός): the spirited part of Plato's tripartite soul. Not reason, not appetite. The part that gets angry at injustice and fights back. The force that makes you resist when submission would be easier.
+**Thumos** (θυμός): the spirited part of Plato's tripartite soul - not reason, not appetite, but the part that resists.
 
 ## Target hardware
 
@@ -33,33 +33,28 @@ sema (radio tools) + aither (WiFi) + pteron (BT) + topos (GPS)
 klesis (AT commands, CCCI transport, SMS PDU) + krypta (Signal protocol)
 kelyphos (WMT combo chip STP framing) + haphe (input routing)
 ──────────────────────────────────────────────
-thumos kernel (MMU, slab allocator, scheduler, IPC, signals, 45 syscalls)
+thumos kernel (MMU, slab allocator, scheduler, IPC, signals, syscalls,
+               boot → kardia service loop)
 MT6739 hardware (modem on separate core, firewalled at CCCI driver level)
 ```
 
 ## Status
 
-**Phase 11: System Qualification** (canonical tracker last updated 2026-04-20; phase status updated 2026-04-12). Hardware validation is pending on an AGM M7 factory firmware flash. Phase 10 names a compiled/tested code catalog, not a claim that every named capability is boot-wired, reachable from userspace, or hardware-ready.
+The kernel **boots end-to-end under QEMU** (`qemu-system-arm -machine virt`, armv7a): MMU and caches, GIC, the scheduler, the first timer interrupt, the CSPRNG, every subsystem's init step (each degrading cleanly where the emulated board lacks the hardware), the boot→service handoff, and a cooperative service loop running as PID 0 off the 100 Hz timer. **CI runs this on every push** and asserts the loop services real ticks - the first executable proof the boot path works, independent of the physical device. Hardware validation on an AGM M7 remains pending.
 
-14 crates (13 userspace workspace members plus the `thumos` kernel binary, excluded from the main workspace for bare-metal builds), 2,313 tests (1,618 kernel + 695 workspace), ~102K LOC (81K kernel, 21K userspace), 107 kernel modules. The kernel has implemented and tested core surfaces including MMU, allocator, GIC/timer, scheduler, IPC, signals, 45 syscalls, VFS with LFS/ramfs/devfs, block cache, CSPRNG, capabilities, DVFS, watchdog, telephony parsing/containment, security modes, lock screen, audit log, panic wipe, measured boot primitives, encryption primitives, and several UI/radio/messaging modules. Named higher-level capabilities such as multi-screen UI routing, calendar/alarm runtime ownership, wall-clock trust selection, Bluetooth/GPS userspace control, BT audio, Matrix/voice assistant flows, and mesh/inbox integrations remain compiled surfaces unless a boot or userspace call path is listed in the wiring audit. The userspace workspace also includes `metaxu`, the thin-client protocol surface for Aletheia bridge tasks; it does not embed a live Aletheia runtime.
+The system is a bare-metal kernel binary plus a set of userspace crates (input, radios, telephony, security, crypto, UI, radio tools); the kernel is excluded from the Cargo workspace so it can cross-compile to bare metal (`armv7a-none-eabi`). CI gates every push on three things: the kernel's host test suite (i686, with a u32-faithful ABI), the bare-metal cross-compile, and the QEMU boot above. The kernel implements and unit-tests the core of an OS - memory management and allocation, interrupts and scheduling, IPC and signals, syscalls, a VFS over persistent and in-memory filesystems, a CSPRNG, capabilities, power management, a watchdog - under the security, radio, telephony, and UI surfaces the userspace crates build on.
 
-_Phase, test split, LOC, and module totals are aligned to the internal project state record. Crate count was verified with `ls -d crates/*/ | wc -l` on 2026-05-26. A cheap source grep (`rg "#\[test\]" crates/ | wc -l`) reports 2,208 annotated test functions, so the canonical test inventory remains the source of truth without a full cargo listing._
+Higher-level capabilities - multi-screen UI routing, Bluetooth/GPS userspace control, BT audio, Matrix and voice flows, mesh and inbox integration - are compiled surfaces **not yet wired to the service loop**. Wiring them onto the loop is tracked work (the boot-wiring epic). `metaxu` is the thin-client protocol surface for Aletheia bridge tasks; it does not embed a live Aletheia runtime.
 
 ### Known gaps
 
-The Phase 10 / Phase 11 status above describes compiled and tested surfaces, not end-to-end readiness. The following work is open and is not yet wired end-to-end on hardware:
+thumos is pre-hardware. What is proven is the boot path under emulation and the unit-tested subsystem surfaces; the open work:
 
-Network reality check: boot checks the WiFi hardware boundary through a
-fail-closed smoltcp adapter, reports production networking unavailable when the
-MT6739 data path is absent, and keeps DHCP/DNS/socket smoke coverage on a
-firewall-backed loopback path. Real WiFi packet I/O is not boot-ready until
-WMT/STP frame TX/RX, scan, and association are implemented on hardware.
-
-- Aletheia live runtime integration  -  phase-1 decision recorded in [docs/ALETHEIA-BRIDGE.md](docs/ALETHEIA-BRIDGE.md) and `metaxu`; live transport, grant verification, and UI wiring remain future work
-- [#142](https://github.com/forkwright/thumos/issues/142)  -  boot-time security subsystems are success-without-work placeholders
-- Userspace image packaging remains incomplete: boot reports missing `/init` or `/shell` entries instead of spawning kernel-owned idle placeholders.
-- [#145](https://github.com/forkwright/thumos/issues/145)  -  advertised kernel features compiled but unwired: current baseline is 8 crate-level `dead_code` expectations plus 48 item-level suppressions; see [kernel wiring audit](docs/KERNEL-WIRING-AUDIT.md)
-- [#146](https://github.com/forkwright/thumos/issues/146)  -  remaining direct `ring` dependency is isolated to `krypta` protocol crypto
+- **Hardware validation** on a physical AGM M7 - the frontier. QEMU exercises the boot path, not the MT6739's binary-only modem/WiFi/BT/GPS blobs.
+- **Boot-wiring**: implemented capabilities are not all reachable from the boot/service loop or from userspace yet; the wiring lands incrementally. See the [kernel wiring audit](docs/KERNEL-WIRING-AUDIT.md).
+- **Real radio I/O**: WiFi packet TX/RX, scan, and association over WMT/STP are hardware work; boot degrades to a fail-closed loopback path when the data path is absent.
+- **Userspace image packaging**: boot reports missing `/init` and `/shell` instead of spawning them.
+- **Aletheia live runtime** ([docs/ALETHEIA-BRIDGE.md](docs/ALETHEIA-BRIDGE.md), `metaxu`): live transport, grant verification, and UI wiring are future work.
 
 ## Related
 
