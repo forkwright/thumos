@@ -51,14 +51,31 @@ pub(crate) const KERNEL_RESERVED: usize = 0xF_8000;
 /// Kernel end address (load + reserved).
 pub(crate) const KERNEL_END: usize = KERNEL_LOAD + KERNEL_RESERVED;
 
-/// UART0 base address.
+/// UART0 base address (MT6739 ttyMT0, MTK 8250-style register map).
+#[cfg(not(feature = "qemu"))]
 pub(crate) const UART0_BASE: usize = 0x1100_2000;
 
-/// GIC distributor base address.
+/// UART0 base address (PL011 on QEMU `-machine virt`).
+/// NOTE: consumed by uart_pl011.rs, which main.rs swaps in under the qemu
+/// feature -- the register map differs, not just the base.
+#[cfg(feature = "qemu")]
+pub(crate) const UART0_BASE: usize = 0x0900_0000;
+
+/// GIC distributor base address (MT6739 device tree, intc node).
+#[cfg(not(feature = "qemu"))]
 pub(crate) const GICD_BASE: usize = 0x0C00_0000;
 
-/// GIC CPU interface base address.
+/// GIC distributor base address (QEMU `-machine virt`, GICv2).
+#[cfg(feature = "qemu")]
+pub(crate) const GICD_BASE: usize = 0x0800_0000;
+
+/// GIC CPU interface base address (MT6739).
+#[cfg(not(feature = "qemu"))]
 pub(crate) const GICC_BASE: usize = 0x0C00_2000;
+
+/// GIC CPU interface base address (QEMU `-machine virt`, GICv2).
+#[cfg(feature = "qemu")]
+pub(crate) const GICC_BASE: usize = 0x0801_0000;
 
 /// Display framebuffer base (set by LK bootloader).
 pub(crate) const FB_BASE: usize = 0x77EE_0000;
