@@ -151,6 +151,10 @@ pub(crate) struct Process {
     /// policy-defined subset (default: ALL minus MODEM and AUDIT).
     /// See `capability::Capabilities` for bit definitions (REQ-09).
     pub capabilities: u32,
+    /// Per-process fd table (#267): fd number -> shared open-file
+    /// description. Owned by the PCB so its lifetime is the process's
+    /// lifetime by construction -- no stale-table window on slot reuse.
+    pub fds: crate::fd::FdTable,
 }
 
 /// Process table.
@@ -212,6 +216,7 @@ pub unsafe fn init() {
             wake_tick: 0,
             // kinit (PID 0) has all capabilities (REQ-09).
             capabilities: crate::capability::Capabilities::ALL,
+            fds: crate::fd::FdTable::new(),
         };
         let procs = &mut *addr_of_mut!(PROCS);
         procs[0] = Some(proc0);
@@ -291,6 +296,7 @@ pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
             wake_tick: 0,
             // Spawned processes receive the default fork policy (REQ-09).
             capabilities: crate::capability::Capabilities::FORK_DEFAULT,
+            fds: crate::fd::FdTable::new(),
         };
 
         procs[slot] = Some(proc);
@@ -429,6 +435,11 @@ pub(crate) fn fork() -> Option<Pid> {
         });
         let child_caps = parent_caps & crate::capability::Capabilities::FORK_DEFAULT;
 
+        // #267: the child gets a COPY of the parent's fd table -- the same
+        // OFD references with refcounts bumped -- NOT a shared index space.
+        let child_fds =
+            parent_ref.map_or_else(crate::fd::FdTable::new, |p| crate::fd::fork_table(&p.fds));
+
         let child = Process {
             pid: child_pid,
             state: State::Ready,
@@ -444,6 +455,7 @@ pub(crate) fn fork() -> Option<Pid> {
             uid: parent_uid,
             wake_tick: 0,
             capabilities: child_caps,
+            fds: child_fds,
         };
 
         procs[slot] = Some(child);
@@ -561,6 +573,9 @@ pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
         let procs = &mut *addr_of_mut!(PROCS);
         if let Some(ref mut proc) = procs[usize::from(faulting_pid)] {
             proc.state = State::Dead;
+            // #267: a faulted process never reaches exit_cleanup -- release
+            // its fds here so OFDs (and pipe/socket ends) do not leak.
+            crate::fd::close_all(&mut proc.fds);
         }
         // WHY: ipc::send stamps msg.from = current_pid(); temporarily set CURRENT
         // to faulting_pid so the message arrives with the correct sender identity.
@@ -600,6 +615,10 @@ pub(crate) fn exit_cleanup(status: i32) {
         if let Some(ref mut proc) = procs[cur] {
             proc.exit_status = status;
             proc.state = State::Dead;
+
+            // #267: close-on-exit is mandatory -- drop every fd reference,
+            // releasing shared OFDs (and pipe/socket ends) at refcount zero.
+            crate::fd::close_all(&mut proc.fds);
 
             // Reclaim page table (but never free the kernel's global L1)
             let pt = proc.page_table_phys;
@@ -822,6 +841,23 @@ unsafe fn restore_context(ctx: &Context) {
 // WHY: syscall handlers need to read/modify the current process's heap break,
 // page table, and mappings. These functions centralize access to the process
 // table so syscall.rs doesn't need to manipulate PROCS directly.
+
+/// Run `f` on the CURRENT process's fd table (#267). Returns None (fail
+/// closed) when the current PCB slot is absent -- fd syscalls map that to
+/// EBADF, matching the current_uid() posture (#282).
+///
+/// INVARIANT: `f` must not re-enter process:: accessors -- PROCS is
+/// mutably borrowed for the duration of the closure.
+pub(crate) fn with_current_fds<R>(f: impl FnOnce(&mut crate::fd::FdTable) -> R) -> Option<R> {
+    // SAFETY: current process PCB pointer is valid; set by the scheduler on
+    // context switch. Mutation via addr_of_mut! avoids an intermediate
+    // reference to the static mut; called from syscall context (single-core).
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::from(CURRENT);
+        procs[cur].as_mut().map(|p| f(&mut p.fds))
+    }
+}
 
 /// Get the current process's page table physical address.
 /// Returns 0 if the current process is not found (should not happen).
@@ -1095,6 +1131,8 @@ pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
         // SIGKILL always terminates — handler cannot override.
         if sig == Signal::Sigkill {
             proc.state = State::Dead;
+            // #267: every Dead transition drains the fd table.
+            crate::fd::close_all(&mut proc.fds);
             // WHY: a process killed while blocked in sys_futex_wait would
             // otherwise leave its waiter slot permanently occupied — nothing
             // wakes a dead process, and sys_futex_wake only frees a slot on
@@ -1110,6 +1148,8 @@ pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
             SignalAction::Default => match sig.default_action() {
                 crate::signal::DefaultAction::Terminate => {
                     proc.state = State::Dead;
+                    // #267: every Dead transition drains the fd table.
+                    crate::fd::close_all(&mut proc.fds);
                     // WHY: see the SIGKILL branch above (#364).
                     crate::futex::free_waiters_for_pid(u32::from(pid));
                 }
@@ -1353,7 +1393,47 @@ pub(crate) unsafe fn reset_for_test() {
             uid: 0,
             wake_tick: 0,
             capabilities: crate::capability::Capabilities::ALL,
+            fds: crate::fd::FdTable::new(),
         });
+    }
+}
+
+/// Point CURRENT at `pid` so fd-isolation tests can act as another process.
+///
+/// # Safety
+///
+/// Test-only; single-threaded test execution.
+#[cfg(test)]
+pub(crate) unsafe fn set_current_for_test(pid: Pid) {
+    // SAFETY: single-threaded test execution.
+    unsafe {
+        CURRENT = pid;
+    }
+}
+
+/// Test-only PCB builder: kinit-like defaults (pid 0, Running, root uid, ALL
+/// capabilities, empty fd table) over `page_table_phys`. Tests override only
+/// the fields they exercise via struct-update syntax
+/// (`Process { pid: 1, parent: Some(0), ..test_process(pt) }`), collapsing the
+/// otherwise-identical 14-field literal at every test site (#267).
+#[cfg(test)]
+pub(crate) fn test_process(page_table_phys: usize) -> Process {
+    Process {
+        pid: 0,
+        state: State::Running,
+        ctx: Context::zero(),
+        parent: None,
+        exit_status: 0,
+        page_table_phys,
+        stack_base: 0,
+        stack_pages: 0,
+        heap_break: DEFAULT_HEAP_BREAK,
+        mappings: [None; MAX_MAPPINGS],
+        signal_state: SignalState::new(),
+        uid: 0,
+        wake_tick: 0,
+        capabilities: crate::capability::Capabilities::ALL,
+        fds: crate::fd::FdTable::new(),
     }
 }
 
@@ -1394,22 +1474,7 @@ mod tests {
             // Construct a minimal process 0
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -1429,22 +1494,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -1469,22 +1519,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -1509,20 +1544,8 @@ mod tests {
             let mut parent_signal_state = SignalState::new();
             parent_signal_state.set_pending(crate::signal::Signal::Sigusr1);
             procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
                 signal_state: parent_signal_state,
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
+                ..test_process(pt)
             });
             CURRENT = 0;
 
@@ -1549,22 +1572,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -1603,22 +1611,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -1652,22 +1645,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             // Shrink the free pool to exactly 2 pages so the 4-page stack
@@ -1704,22 +1682,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             // Shrink the free pool to exactly 2 pages so the 4-page child
@@ -1754,22 +1717,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -1790,22 +1738,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             assert_eq!(
@@ -1830,22 +1763,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             for _ in 0..(MAX_PROCS - 1) {
@@ -1891,22 +1809,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -1930,22 +1833,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -1982,40 +1870,14 @@ mod tests {
 
             // Process 0: kinit supervisor
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt0,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt0));
 
             // Process 1: faulting process
             let pt1 = mmu::alloc_addr_space().unwrap();
             procs[1] = Some(Process {
                 pid: 1,
-                state: State::Running,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt1,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
+                ..test_process(pt1)
             });
             CURRENT = 0;
 
@@ -2045,38 +1907,12 @@ mod tests {
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
 
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt0,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt0));
             let pt1 = mmu::alloc_addr_space().unwrap();
             procs[1] = Some(Process {
                 pid: 1,
-                state: State::Running,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt1,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
+                ..test_process(pt1)
             });
             CURRENT = 0;
 
@@ -2108,38 +1944,12 @@ mod tests {
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
 
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt0,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt0));
             let pt1 = mmu::alloc_addr_space().unwrap();
             procs[1] = Some(Process {
                 pid: 1,
-                state: State::Running,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt1,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
+                ..test_process(pt1)
             });
             CURRENT = 0;
 
@@ -2168,22 +1978,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -2214,22 +2009,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             // Simulate one mmap'd page.
@@ -2283,22 +2063,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
             assert_eq!(current_uid(), Some(0), "kinit (PID 0) must have UID 0");
         }
@@ -2331,22 +2096,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let target_tick: u64 = 12345;
@@ -2374,22 +2124,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             set_wake_tick(9999);
@@ -2421,38 +2156,17 @@ mod tests {
 
             let pt0 = mmu::alloc_addr_space().unwrap_or_default();
             procs[0] = Some(Process {
-                pid: 0,
                 state: State::Sleeping,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt0,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
+                ..test_process(pt0)
             });
 
             let pt1 = mmu::alloc_addr_space().unwrap_or_default();
             procs[1] = Some(Process {
                 pid: 1,
                 state: State::Sleeping,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt1,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
                 wake_tick: u64::MAX,
-                capabilities: crate::capability::Capabilities::ALL,
+                ..test_process(pt1)
             });
             CURRENT = 0;
 
@@ -2483,22 +2197,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let handler_addr: u32 = 0x4020_0000;
@@ -2529,22 +2228,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             // Target a non-zero PID (#269 guards PID 0 against deliver_signal_to).
@@ -2580,22 +2264,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -2633,22 +2302,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let result = check_pending_signal();
@@ -2663,22 +2317,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             // Target a non-zero PID (#269 guards PID 0 against deliver_signal_to).
@@ -2704,22 +2343,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             // Target a non-zero PID (#269 guards PID 0 against deliver_signal_to).
@@ -2778,20 +2402,10 @@ mod tests {
             let mut ctx = Context::zero();
             ctx.sp = sp;
             procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
                 ctx,
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
                 stack_base,
                 stack_pages: STACK_PAGES,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
+                ..test_process(pt)
             });
             CURRENT = 0;
             (stack_base, sp)
@@ -2926,22 +2540,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             const EPERM: u32 = 0u32.wrapping_sub(1);
@@ -2962,22 +2561,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             let child_pid = fork().unwrap_or_default();
@@ -3010,22 +2594,7 @@ mod tests {
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
             const EPERM: u32 = 0u32.wrapping_sub(1);
@@ -3049,40 +2618,22 @@ mod tests {
             let pt1 = mmu::alloc_addr_space().unwrap();
             procs[1] = Some(Process {
                 pid: 1,
-                state: State::Running,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt1,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
                 uid: 1,
-                wake_tick: 0,
                 // No KILL bit -- mirrors capability::tests::kill_requires_cap_kill's
                 // "process without KILL cap" fixture.
                 capabilities: crate::capability::Capabilities::CRYPTO
                     | crate::capability::Capabilities::RADIO,
+                ..test_process(pt1)
             });
 
             let pt2 = mmu::alloc_addr_space().unwrap();
             procs[2] = Some(Process {
                 pid: 2,
-                state: State::Running,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt2,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
                 uid: 2,
-                wake_tick: 0,
                 capabilities: crate::capability::Capabilities::FORK_DEFAULT,
+                ..test_process(pt2)
             });
             CURRENT = 1;
 
@@ -3114,37 +2665,19 @@ mod tests {
             let pt1 = mmu::alloc_addr_space().unwrap();
             procs[1] = Some(Process {
                 pid: 1,
-                state: State::Running,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt1,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
                 uid: 1,
-                wake_tick: 0,
                 capabilities: crate::capability::Capabilities::KILL,
+                ..test_process(pt1)
             });
 
             let pt2 = mmu::alloc_addr_space().unwrap();
             procs[2] = Some(Process {
                 pid: 2,
-                state: State::Running,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt2,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
                 uid: 2,
-                wake_tick: 0,
                 capabilities: crate::capability::Capabilities::FORK_DEFAULT,
+                ..test_process(pt2)
             });
             CURRENT = 1;
 
@@ -3173,40 +2706,16 @@ mod tests {
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
 
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt0,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt0));
 
             let pt1 = mmu::alloc_addr_space().unwrap();
             procs[1] = Some(Process {
                 pid: 1,
-                state: State::Running,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt1,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
                 uid: 1,
-                wake_tick: 0,
                 // Generic fork-default userspace process: no CAP_IPC_INIT.
                 capabilities: crate::capability::Capabilities::FORK_DEFAULT,
+                ..test_process(pt1)
             });
             CURRENT = 1;
 
@@ -3234,39 +2743,15 @@ mod tests {
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
 
             let pt0 = mmu::alloc_addr_space().unwrap();
-            procs[0] = Some(Process {
-                pid: 0,
-                state: State::Running,
-                ctx: Context::zero(),
-                parent: None,
-                exit_status: 0,
-                page_table_phys: pt0,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
-                uid: 0,
-                wake_tick: 0,
-                capabilities: crate::capability::Capabilities::ALL,
-            });
+            procs[0] = Some(test_process(pt0));
 
             let pt1 = mmu::alloc_addr_space().unwrap();
             procs[1] = Some(Process {
                 pid: 1,
-                state: State::Running,
-                ctx: Context::zero(),
                 parent: Some(0),
-                exit_status: 0,
-                page_table_phys: pt1,
-                stack_base: 0,
-                stack_pages: 0,
-                heap_break: DEFAULT_HEAP_BREAK,
-                mappings: [None; MAX_MAPPINGS],
-                signal_state: SignalState::new(),
                 uid: 1,
-                wake_tick: 0,
                 capabilities: crate::capability::Capabilities::IPC_INIT,
+                ..test_process(pt1)
             });
             CURRENT = 1;
 
