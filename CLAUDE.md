@@ -12,7 +12,7 @@ Thumos is a custom Rust mobile OS targeting the AGM M7 (MT6739).
 
 - GitHub: `forkwright/thumos` (private)
 - Target: AGM M7 (MediaTek MT6739, Android 8.1 stock)
-- Goal: sovereign, privacy-first OS with counter-surveillance capabilities
+- Goal: privacy-first OS with counter-surveillance capabilities
 
 ## Architecture
 

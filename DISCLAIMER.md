@@ -67,7 +67,7 @@ This limitation applies even if the authors have been advised of the possibility
 
 ## Governing principle
 
-This software is a tool. Tools do not act; people do. The authors provide the tool for legitimate purposes including personal sovereignty, security research, and education. You, the user, own what you do with it.
+This software is a tool. Tools do not act; people do. The authors provide the tool for legitimate purposes including personal privacy, security research, and education. You, the user, own what you do with it.
 
 If you are not prepared to accept responsibility for your use of this software, do not use it.
 
