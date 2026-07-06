@@ -26,8 +26,7 @@
 use crate::lock_screen::constant_time_eq;
 use crate::security::{self, SHA256_DIGEST_LEN};
 use crate::ui::{
-    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
-    ScreenId, color,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------

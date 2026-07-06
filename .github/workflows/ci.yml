@@ -106,8 +106,12 @@ jobs:
       - name: Kernel host tests (i686)
         working-directory: crates/thumos
         run: cargo nextest run --bin thumos --target i686-unknown-linux-gnu --build-jobs 8 --test-threads 8
-      - name: Kernel cross-compile (armv7a)
+      - name: Kernel cross-compile (armv7a) + zero-warning gate (#431)
         working-directory: crates/thumos
+        # WHY (#431): the zero-warning gate (-D warnings) lives in
+        # crates/thumos/.cargo/config.toml's armv7a rustflags (always-on, dev +
+        # CI, and it does not clobber the linker-script flag the way an env
+        # RUSTFLAGS would). This step just builds; a new warning fails it.
         run: cargo build --release --target armv7a-none-eabi --jobs 8
       - name: Trust-anchor build guard (#233)
         working-directory: crates/thumos

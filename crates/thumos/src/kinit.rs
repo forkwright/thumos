@@ -13,7 +13,9 @@ extern crate alloc;
 
 use core::fmt::Write;
 use core::slice;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
+#[cfg(not(feature = "qemu"))]
+use core::sync::atomic::Ordering;
 
 #[cfg(not(feature = "qemu"))]
 use crate::ccci::CcciDriver;
@@ -24,9 +26,11 @@ use crate::csprng;
 use crate::device::DeviceRegistry;
 #[cfg(not(feature = "qemu"))]
 use crate::device::{self, DeviceRegistry};
+#[cfg(not(feature = "qemu"))]
 use crate::dhcp::{DhcpClient, DhcpEvent};
 #[cfg(not(feature = "qemu"))]
 use crate::display::{DisplayDriver, Gc9306};
+#[cfg(not(feature = "qemu"))]
 use crate::dns::{DnsResolver, LAN_DNS, MULLVAD_DNS};
 use crate::elf;
 use crate::exceptions;
@@ -37,9 +41,9 @@ use crate::kconfig;
 #[cfg(not(feature = "qemu"))]
 use crate::mmio;
 use crate::mmu;
-use crate::net::{
-    self, FirewallDevice, LoopbackDevice, NetworkReadiness, NetworkStack, WifiDevice,
-};
+use crate::net::{self, NetworkReadiness, WifiDevice};
+#[cfg(not(feature = "qemu"))]
+use crate::net::{FirewallDevice, LoopbackDevice, NetworkStack};
 use crate::page;
 use crate::power::PowerManager;
 use crate::process;

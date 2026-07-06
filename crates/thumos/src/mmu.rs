@@ -43,7 +43,7 @@ mod flags {
     pub(crate) const NORMAL_WB_WA: u32 = (0b001 << 12) | (1 << 3) | (1 << 2);
     /// Device memory, strongly ordered.
     /// TEX[2:0] = 0b000, C = 0, B = 1 (for device/shared).
-    pub(crate) const DEVICE: u32 = (1 << 2);
+    pub(crate) const DEVICE: u32 = 1 << 2;
     /// Execute never (XN, bit 4).
     pub(crate) const XN: u32 = 1 << 4;
 }
@@ -563,7 +563,7 @@ unsafe fn program_translation() {}
 
 /// Return the physical address of the L1 page table.
 pub fn table_base() -> usize {
-    unsafe { core::ptr::addr_of!(L1) as usize }
+    core::ptr::addr_of!(L1) as usize
 }
 
 // --- Per-process address space pool ---

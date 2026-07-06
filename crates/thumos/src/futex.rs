@@ -279,8 +279,7 @@ mod tests {
         // function-local static lands inside that window (see fd.rs tests
         // for the same pattern).
         static mut WORD: u32 = 42;
-        // SAFETY: test-only static; single-threaded per test.
-        let addr = unsafe { core::ptr::addr_of!(WORD) as u32 };
+        let addr = core::ptr::addr_of!(WORD) as u32;
 
         // val != *addr → should return EAGAIN immediately without blocking.
         let result = sys_futex_wait(addr, 99);
@@ -378,8 +377,7 @@ mod tests {
         // WHY function-local `static mut`: mirrors futex_wait_returns_eagain_on_mismatch
         // -- lands inside the validated user-address window on this host binary.
         static mut WORD: u32 = 42;
-        // SAFETY: test-only static; single-threaded per test.
-        let addr = unsafe { core::ptr::addr_of!(WORD) as u32 };
+        let addr = core::ptr::addr_of!(WORD) as u32;
 
         // *addr == val, so this would normally proceed to register a
         // waiter -- but the table is full.

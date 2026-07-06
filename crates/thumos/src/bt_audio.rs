@@ -41,13 +41,15 @@ use crate::avdtp::{
     AVDTP_SIGNAL_OPEN, AVDTP_SIGNAL_SET_CONFIGURATION, AVDTP_SIGNAL_START, AvdtpMessage,
 };
 use crate::bluetooth::{BtError, BtHwOps, hci_acl_data};
+// WHY cfg(test): the avdtp/sbc glob re-exports are used only by this
+// module's tests (via super::*); unused in the shipped build.
+#[cfg(test)]
+pub(crate) use crate::avdtp::*;
 use crate::sbc::{
     SBC_FREQ_44100, SBC_FREQ_48000, SBC_MAX_FRAME_SIZE, SbcEncoder, SbcFrameHeader, StubSbcEncoder,
 };
 
 // Re-export SBC and AVDTP types so external callers can still use crate::bt_audio::*.
-pub(crate) use crate::avdtp::*;
-pub(crate) use crate::sbc::*;
 
 // ---------------------------------------------------------------------------
 // Error type
