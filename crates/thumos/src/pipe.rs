@@ -15,7 +15,7 @@
 //! rest of the kernel's fixed-size-table pattern. 8 concurrent pipes is
 //! sufficient for an early BusyBox shell (pipelines have at most 2-3 stages).
 
-use crate::fd::{EMFILE, FdTable};
+use crate::fd::EMFILE;
 // Signal is only used in the #[cfg(not(test))] SIGPIPE delivery block.
 // Keep the import unconditional to avoid dead_code noise; the compiler will
 // drop it in test builds since Signal types are not exported from test-only paths.
@@ -247,34 +247,53 @@ pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
         None => return EMFILE,
     };
 
-    // Allocate two fd slots.
-    // SAFETY: FD_TABLE is a global static; addr_of_mut! avoids an intermediate
-    // reference. Single-core cooperative kernel ensures exclusive access.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(crate::fd::FD_TABLE) };
-
-    let read_fd = alloc_pipe_fd(table, pipe_idx, FD_END_READ);
-    let write_fd = alloc_pipe_fd(table, pipe_idx, FD_END_WRITE);
-
-    let (read_fd, write_fd) = match (read_fd, write_fd) {
-        (Some(r), Some(w)) => (r as u32, w as u32),
-        (Some(r), None) => {
-            table.close(r);
-            // SAFETY: we just created the slot and no write end was allocated yet.
-            unsafe {
-                let pool = &mut *core::ptr::addr_of_mut!(PIPE_POOL);
-                pool[pipe_idx] = None;
-            }
-            return EMFILE;
-        }
-        _ => {
-            // SAFETY: we just created the slot; no fds were allocated.
-            unsafe {
-                let pool = &mut *core::ptr::addr_of_mut!(PIPE_POOL);
-                pool[pipe_idx] = None;
-            }
-            return EMFILE;
+    // Two-level alloc (#267): one OFD per pipe end (refs=1 each), then
+    // install both ends in the CURRENT process's fd table.
+    let free_pipe_slot = || {
+        // SAFETY: we just created the slot; rollback is idempotent even if
+        // ofd_unref teardown already released it.
+        unsafe {
+            let pool = &mut *core::ptr::addr_of_mut!(PIPE_POOL);
+            pool[pipe_idx] = None;
         }
     };
+
+    let read_desc = crate::fd::FileDescriptor::new(&[], pipe_flags(pipe_idx, FD_END_READ));
+    let write_desc = crate::fd::FileDescriptor::new(&[], pipe_flags(pipe_idx, FD_END_WRITE));
+
+    let Some(read_ofd) = crate::fd::ofd_alloc(read_desc) else {
+        free_pipe_slot();
+        return EMFILE;
+    };
+    let Some(write_ofd) = crate::fd::ofd_alloc(write_desc) else {
+        crate::fd::ofd_unref(read_ofd);
+        free_pipe_slot();
+        return EMFILE;
+    };
+
+    let installed = crate::process::with_current_fds(|t| {
+        let r = t.alloc(crate::fd::FdEntry {
+            ofd: read_ofd,
+            cloexec: false,
+        })?;
+        let Some(w) = t.alloc(crate::fd::FdEntry {
+            ofd: write_ofd,
+            cloexec: false,
+        }) else {
+            t.take(r);
+            return None;
+        };
+        Some((r, w))
+    })
+    .flatten();
+
+    let Some((read_fd, write_fd)) = installed else {
+        crate::fd::ofd_unref(read_ofd);
+        crate::fd::ofd_unref(write_ofd);
+        free_pipe_slot();
+        return EMFILE;
+    };
+    let (read_fd, write_fd) = (read_fd as u32, write_fd as u32);
 
     // Write the two fd numbers to userspace.
     // SAFETY: fds_ptr is validated non-null above. We write 8 bytes (two
@@ -292,19 +311,6 @@ pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     }
 
     0
-}
-
-/// Allocate a pipe fd in the table.
-fn alloc_pipe_fd(table: &mut FdTable, pipe_idx: usize, end: u32) -> Option<usize> {
-    // We create a FileDescriptor with null data and encode the pipe identity in flags.
-    // SAFETY: data_ptr is null but we never call .data() on a pipe fd — pipe reads
-    // and writes are intercepted by sys_pipe_read/write before reaching the generic
-    // file path. The null pointer is never dereferenced.
-    let fake_data: &[u8] = &[];
-    let mut fd = crate::fd::FileDescriptor::new(fake_data, pipe_flags(pipe_idx, end));
-    // Offset is unused for pipes but zero is consistent.
-    fd.offset = 0;
-    table.alloc(fd)
 }
 
 /// SYS_read on a pipe fd.
@@ -451,11 +457,10 @@ mod tests {
 
     #[test]
     fn pipe_creates_two_fds() {
-        // Reset global fd table and pipe pool.
+        // Reset the pipe pool and establish a fresh current process (#267).
         reset_pool();
         unsafe {
-            let table = &mut *core::ptr::addr_of_mut!(crate::fd::FD_TABLE);
-            *table = crate::fd::FdTable::new();
+            crate::fd::reset_fd_state_for_test();
         }
 
         let mut fds = [0u32; 2];
@@ -473,8 +478,7 @@ mod tests {
     fn pipe_writes_fds_to_unaligned_userspace_pointer() {
         reset_pool();
         unsafe {
-            let table = &mut *core::ptr::addr_of_mut!(crate::fd::FD_TABLE);
-            *table = crate::fd::FdTable::new();
+            crate::fd::reset_fd_state_for_test();
         }
 
         // Deliberately misaligned: offset 1 byte into the buffer, so a
@@ -625,6 +629,63 @@ mod tests {
         assert!(
             alloc_pipe_slot(2).is_some(),
             "a different process must not be starved by another process's cap"
+        );
+    }
+
+    /// PIPE-DUP-CLOSE: teardown fires at OFD refcount ZERO, not at the
+    /// first close of the write end. Dup'ing the write end must delay EOF
+    /// until every write-end reference is closed (#267).
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn dup_of_pipe_write_end_delays_eof_until_last_close() {
+        reset_pool();
+        // SAFETY: test-only; establishes a fresh current process for
+        // sys_pipe/sys_dup/sys_close to install fds into.
+        unsafe {
+            crate::fd::reset_fd_state_for_test();
+        }
+
+        static mut FDS: [u32; 2] = [0, 0];
+        // SAFETY: test-only static; single-threaded per test.
+        let fds_ptr = unsafe { core::ptr::addr_of_mut!(FDS) as u32 };
+        assert_eq!(sys_pipe(fds_ptr), 0, "pipe() should succeed");
+        // SAFETY: test-only static; single-threaded per test.
+        let (read_fd, write_fd) = unsafe {
+            let fds = &*core::ptr::addr_of!(FDS);
+            (fds[0], fds[1])
+        };
+
+        // Dup the write end: two fds now reference the SAME OFD (refs=2).
+        let write_dup = crate::fd::sys_dup(write_fd);
+        assert!(
+            write_dup < crate::fd::MAX_FDS as u32,
+            "dup of the write end must succeed"
+        );
+
+        let flags = crate::fd::current_fd_flags(read_fd as usize).expect("read fd must resolve");
+        let pipe_idx = pipe_idx_from_flags(flags);
+
+        // Close the ORIGINAL write fd; the dup still holds a reference, so
+        // the reader must NOT see EOF yet -- teardown fires at refcount
+        // ZERO, not at the first close of the write end.
+        assert_eq!(crate::fd::sys_close(write_fd), 0);
+
+        static mut BUF: [u8; 8] = [0u8; 8];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        assert_eq!(
+            sys_pipe_read(pipe_idx, buf.as_mut_ptr() as u32, 8),
+            EAGAIN,
+            "the reader must not see EOF while the dup keeps the write end alive"
+        );
+
+        // Close the dup too -- the write-end refcount now reaches zero and
+        // the pipe's write-closed flag is set; the reader must observe EOF.
+        assert_eq!(crate::fd::sys_close(write_dup), 0);
+        assert_eq!(
+            sys_pipe_read(pipe_idx, buf.as_mut_ptr() as u32, 8),
+            0,
+            "EOF must appear only after the LAST write-end reference closes"
         );
     }
 }

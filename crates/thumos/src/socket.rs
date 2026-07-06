@@ -372,23 +372,28 @@ pub(crate) fn sys_socket(domain: u32, sock_type: u32, _protocol: u32) -> u32 {
         peer_addr: None,
     };
 
-    // Allocate an fd with socket kind flags.
+    // Allocate the OFD first (its index is the socket's kernel-global key),
+    // then install it in the CURRENT process's fd table (#267). SOCKET_TABLE
+    // is keyed by OFD index -- matching on_socket_fd_closed, which ofd_unref
+    // calls with the OFD index at refcount zero -- so per-process fd numbers
+    // can never collide across processes.
     let fd_entry = FileDescriptor::new(&[], socket_flags());
-    // SAFETY: FD_TABLE is a static mut; single-core cooperative kernel.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(fd::FD_TABLE) };
-    let fd_num = match table.alloc(fd_entry) {
-        Some(n) => n,
-        None => {
-            // Clean up the smoltcp socket since we can't allocate an fd.
-            stack.remove_socket(handle);
-            return fd::EMFILE;
-        }
+    let Some(ofd_idx) = fd::ofd_alloc(fd_entry) else {
+        stack.remove_socket(handle);
+        return fd::ENFILE;
+    };
+    let Some(fd_num) = fd::install_current_fd(ofd_idx) else {
+        // Absent PCB or per-process table full: unwind BOTH the OFD and the
+        // smoltcp socket (fail closed -- never orphan either). No SOCKET_TABLE
+        // entry exists yet, so ofd_unref's socket teardown no-ops.
+        fd::ofd_unref(ofd_idx);
+        stack.remove_socket(handle);
+        return fd::EMFILE;
     };
 
-    // Store socket info in the parallel table.
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
-    sock_table[fd_num] = Some(info);
+    sock_table[usize::from(ofd_idx)] = Some(info);
 
     fd_num as u32
 }
@@ -431,21 +436,27 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     }
 
     // Check fd is a socket.
-    // SAFETY: FD_TABLE is a static mut; single-core cooperative kernel.
-    let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
-    let flags = match table.get(fd_idx) {
-        Some(e) => e.flags,
+    // Resolve the fd through the CURRENT process (#267): a process may only
+    // name a socket it owns, and the OFD index -- not the fd number -- keys
+    // SOCKET_TABLE, so per-process fd numbers can never collide across
+    // processes.
+    let flags = match fd::current_fd_flags(fd_idx) {
+        Some(f) => f,
         None => return fd::EBADF,
     };
     if !is_socket_fd(flags) {
         return fd::EBADF;
     }
+    let ofd_idx = match fd::resolve_fd(fd_idx) {
+        Some(o) => usize::from(o),
+        None => return fd::EBADF,
+    };
 
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
 
     // Validate socket exists and get its type and handle.
-    let (socket_type, socket_handle) = match &sock_table[fd_idx] {
+    let (socket_type, socket_handle) = match &sock_table[ofd_idx] {
         Some(i) => (i.socket_type, i.socket_handle),
         None => return fd::EBADF,
     };
@@ -456,7 +467,7 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     // comparing bound_port alone made a UDP bind falsely conflict with an
     // unrelated TCP bind on the same port number.
     for (i, slot) in sock_table.iter().enumerate() {
-        if i == fd_idx {
+        if i == ofd_idx {
             continue;
         }
         if let Some(other) = slot {
@@ -499,7 +510,7 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     }
 
     // Update bound_port in socket info.
-    if let Some(ref mut info) = sock_table[fd_idx] {
+    if let Some(ref mut info) = sock_table[ofd_idx] {
         info.bound_port = port;
     }
     0
@@ -564,21 +575,27 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     let peer_port = sockaddr.port();
 
     // Check fd is a socket.
-    // SAFETY: FD_TABLE is a static mut; single-core cooperative kernel.
-    let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
-    let flags = match table.get(fd_idx) {
-        Some(e) => e.flags,
+    // Resolve the fd through the CURRENT process (#267): a process may only
+    // name a socket it owns, and the OFD index -- not the fd number -- keys
+    // SOCKET_TABLE, so per-process fd numbers can never collide across
+    // processes.
+    let flags = match fd::current_fd_flags(fd_idx) {
+        Some(f) => f,
         None => return fd::EBADF,
     };
     if !is_socket_fd(flags) {
         return fd::EBADF;
     }
+    let ofd_idx = match fd::resolve_fd(fd_idx) {
+        Some(o) => usize::from(o),
+        None => return fd::EBADF,
+    };
 
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
 
     // Extract socket type and handle to avoid holding the borrow.
-    let (socket_type, socket_handle, current_bound_port) = match &sock_table[fd_idx] {
+    let (socket_type, socket_handle, current_bound_port) = match &sock_table[ofd_idx] {
         Some(i) => (i.socket_type, i.socket_handle, i.bound_port),
         None => return fd::EBADF,
     };
@@ -653,7 +670,7 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
 
             // Update bound_port in socket info.
             let sock_table = unsafe { get_socket_table() };
-            if let Some(ref mut info) = sock_table[fd_idx] {
+            if let Some(ref mut info) = sock_table[ofd_idx] {
                 info.bound_port = local_port;
             }
         }
@@ -672,7 +689,7 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
 
     // Update connected state and peer address.
     let sock_table = unsafe { get_socket_table() };
-    if let Some(ref mut info) = sock_table[fd_idx] {
+    if let Some(ref mut info) = sock_table[ofd_idx] {
         info.connected = true;
         info.peer_addr = Some((peer_ip, peer_port));
     }
@@ -715,19 +732,25 @@ pub(crate) fn sys_sendto(
     }
 
     // Check fd is a socket.
-    // SAFETY: FD_TABLE is a static mut; single-core cooperative kernel.
-    let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
-    let flags = match table.get(fd_idx) {
-        Some(e) => e.flags,
+    // Resolve the fd through the CURRENT process (#267): a process may only
+    // name a socket it owns, and the OFD index -- not the fd number -- keys
+    // SOCKET_TABLE, so per-process fd numbers can never collide across
+    // processes.
+    let flags = match fd::current_fd_flags(fd_idx) {
+        Some(f) => f,
         None => return fd::EBADF,
     };
     if !is_socket_fd(flags) {
         return fd::EBADF;
     }
+    let ofd_idx = match fd::resolve_fd(fd_idx) {
+        Some(o) => usize::from(o),
+        None => return fd::EBADF,
+    };
 
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
-    let info = match &sock_table[fd_idx] {
+    let info = match &sock_table[ofd_idx] {
         Some(i) => i,
         None => return fd::EBADF,
     };
@@ -791,7 +814,7 @@ pub(crate) fn sys_sendto(
                 }
                 // Update bound_port in info. Need mutable access.
                 let sock_table_mut = unsafe { get_socket_table() };
-                if let Some(ref mut i) = sock_table_mut[fd_idx] {
+                if let Some(ref mut i) = sock_table_mut[ofd_idx] {
                     i.bound_port = local_port;
                 }
             }
@@ -846,19 +869,25 @@ pub(crate) fn sys_recvfrom(
     }
 
     // Check fd is a socket.
-    // SAFETY: FD_TABLE is a static mut; single-core cooperative kernel.
-    let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
-    let flags = match table.get(fd_idx) {
-        Some(e) => e.flags,
+    // Resolve the fd through the CURRENT process (#267): a process may only
+    // name a socket it owns, and the OFD index -- not the fd number -- keys
+    // SOCKET_TABLE, so per-process fd numbers can never collide across
+    // processes.
+    let flags = match fd::current_fd_flags(fd_idx) {
+        Some(f) => f,
         None => return fd::EBADF,
     };
     if !is_socket_fd(flags) {
         return fd::EBADF;
     }
+    let ofd_idx = match fd::resolve_fd(fd_idx) {
+        Some(o) => usize::from(o),
+        None => return fd::EBADF,
+    };
 
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
-    let info = match &sock_table[fd_idx] {
+    let info = match &sock_table[ofd_idx] {
         Some(i) => i,
         None => return fd::EBADF,
     };
@@ -938,15 +967,17 @@ pub(crate) fn sys_recvfrom(
     }
 }
 
-/// Close a socket fd: remove the smoltcp socket and clear metadata.
+/// Release a socket's network resources at OFD refcount zero (#267).
 ///
-/// Called from the close dispatch in syscall.rs when a socket fd is being
-/// closed. The fd entry itself is already removed by fd::sys_close; this
-/// function handles the network-side cleanup.
-pub(crate) fn on_socket_fd_closed(fd_idx: usize) {
+/// Called from `fd::ofd_unref` when the LAST fd referencing this open-file
+/// description is closed; `ofd_idx` is the OFD index that keys SOCKET_TABLE.
+/// WHY at refcount zero, not per close: with dup/fork several fds may share
+/// one socket OFD, so the smoltcp socket must be released only when the last
+/// of them closes.
+pub(crate) fn on_socket_fd_closed(ofd_idx: usize) {
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
-    let info = match sock_table[fd_idx].take() {
+    let info = match sock_table[ofd_idx].take() {
         Some(i) => i,
         None => return,
     };
@@ -965,18 +996,17 @@ pub(crate) fn on_socket_fd_closed(fd_idx: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fd::{FD_TABLE, FdTable};
 
     /// Reset global state for test isolation.
     ///
     /// # Safety
     ///
-    /// Test-only. Resets FD_TABLE, SOCKET_TABLE, and NETWORK_STACK.
+    /// Test-only. Resets the process fd table + shared OFD table (#267),
+    /// SOCKET_TABLE, and NETWORK_STACK.
     unsafe fn setup_test_network() {
         unsafe {
-            // Reset fd table.
-            let table = &mut *core::ptr::addr_of_mut!(FD_TABLE);
-            *table = FdTable::new();
+            // Reset the process fd table and the shared OFD table (#267).
+            crate::fd::reset_fd_state_for_test();
 
             // Reset socket table.
             let sock_table = &mut *core::ptr::addr_of_mut!(SOCKET_TABLE);
@@ -1174,8 +1204,9 @@ mod tests {
         let initial_count = stack.socket_count();
         assert!(initial_count > 0);
 
-        // Close the fd.
-        on_socket_fd_closed(fd as usize);
+        // Close the fd -- teardown (on_socket_fd_closed) fires automatically
+        // inside ofd_unref when the OFD's refcount reaches zero (#267); it is
+        // not a separate manual step.
         let result = fd::sys_close(fd);
         assert_eq!(result, 0);
 
@@ -1774,5 +1805,90 @@ mod tests {
         assert_eq!(addr.sin_port, 80u16.to_be());
         let expected_addr = u32::from_be_bytes([192, 168, 1, 1]);
         assert_eq!(addr.sin_addr, expected_addr);
+    }
+
+    /// A no-op process entry point for `process::spawn` in tests -- never
+    /// actually invoked, only referenced as a function pointer to populate
+    /// the new PCB's context.
+    #[cfg(target_pointer_width = "32")]
+    fn isolation_test_entry() -> ! {
+        loop {}
+    }
+
+    /// ISOLATION (CRITICAL): a different process must not be able to name
+    /// proc0's socket by fd number. SOCKET_TABLE is keyed by OFD index, not
+    /// raw fd number, and every socket syscall resolves the fd through the
+    /// CURRENT process's own table first -- a process whose table lacks
+    /// this fd slot fails closed with EBADF before SOCKET_TABLE is ever
+    /// consulted (#267 -- this is the security core the two-level fd model
+    /// exists to close for sockets).
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn socket_isolation_cross_process_ops_return_ebadf() {
+        // SAFETY: test-only; setup_test_network resets global state.
+        unsafe {
+            setup_test_network();
+        }
+
+        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
+        static mut ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
+        *addr = SockaddrIn::new(9001, Ipv4Address::new(0, 0, 0, 0));
+        let bind_result = sys_bind(
+            fd,
+            addr as *const SockaddrIn as u32,
+            core::mem::size_of::<SockaddrIn>() as u32,
+        );
+        assert_eq!(bind_result, 0, "proc0 must be able to bind its own socket");
+
+        // A freshly spawned process gets its OWN, empty fd table.
+        let other_pid = crate::process::spawn(isolation_test_entry).expect("spawn must succeed");
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(other_pid);
+        }
+
+        let data = b"x";
+        assert_eq!(
+            sys_sendto(fd, data.as_ptr() as u32, 1, 0, 0, 0),
+            fd::EBADF,
+            "a different process must not be able to sendto proc0's socket fd number"
+        );
+
+        static mut RECV_BUF: [u8; 4] = [0u8; 4];
+        // SAFETY: test-only static; single-threaded per test.
+        let recv_buf = unsafe { &mut *core::ptr::addr_of_mut!(RECV_BUF) };
+        assert_eq!(
+            sys_recvfrom(fd, recv_buf.as_mut_ptr() as u32, 4, 0, 0, 0),
+            fd::EBADF,
+            "a different process must not be able to recvfrom proc0's socket fd number"
+        );
+
+        static mut ADDR2: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let addr2 = unsafe { &mut *core::ptr::addr_of_mut!(ADDR2) };
+        *addr2 = SockaddrIn::new(9002, Ipv4Address::new(0, 0, 0, 0));
+        assert_eq!(
+            sys_bind(
+                fd,
+                addr2 as *const SockaddrIn as u32,
+                core::mem::size_of::<SockaddrIn>() as u32,
+            ),
+            fd::EBADF,
+            "a different process must not be able to bind proc0's socket fd number"
+        );
     }
 }

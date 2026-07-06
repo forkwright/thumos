@@ -1,16 +1,24 @@
-//! File descriptor table and VFS-backed syscall implementations.
+//! Two-level file descriptor model and VFS-backed syscall implementations
+//! (#267).
 //!
-//! Each open file descriptor holds a reference to a mounted filesystem
-//! (via mount index), an inode within that filesystem, a read/write
-//! offset, and flags. The table is a fixed-size array per process, with
-//! methods to allocate, look up, and release entries.
+//! Level 1 is a per-process fd table (`FdTable` on `process::Process::fds`):
+//! fd number -> `FdEntry { ofd, cloexec }`. Level 2 is the system-wide
+//! `OFD_TABLE` of refcounted open-file descriptions (`OpenFile { desc, refs }`),
+//! where `FileDescriptor` (mount index, inode, offset, status flags) is the
+//! shared description. `dup()`/`fork()` share one OFD - one byte offset, one
+//! set of status flags, per POSIX - while a fresh `open()` creates a new one.
+//!
+//! Isolation is structural: every fd syscall resolves fd numbers through the
+//! CURRENT process (`process::with_current_fds` -> `resolve_fd`), so a process
+//! can never name another process's OFDs - there is no global fd namespace.
 //!
 //! All data access goes through `Filesystem::read()`/`Filesystem::write()`
 //! via the mount table. No raw pointers to file data are stored.
 //!
-//! WHY fixed-size: avoids heap allocation in the fd table itself, keeps
-//! the structure predictable for a bare-metal kernel. 256 entries is
-//! sufficient for a BusyBox shell + init + concurrent processes.
+//! WHY fixed-size: avoids heap allocation in the fd tables, keeps the
+//! structures predictable for a bare-metal kernel. 256 per-process fds and
+//! 256 system-wide OFDs suffice for a BusyBox shell + init + concurrent
+//! processes.
 
 extern crate alloc;
 
@@ -37,6 +45,8 @@ pub(crate) const EBADF: u32 = 0u32.wrapping_sub(9);
 pub(crate) const ENOENT: u32 = 0u32.wrapping_sub(2);
 /// Too many open files.
 pub(crate) const EMFILE: u32 = 0u32.wrapping_sub(24);
+/// Too many open files in system (OFD table full).
+pub(crate) const ENFILE: u32 = 0u32.wrapping_sub(23);
 /// Invalid argument.
 pub(crate) const EINVAL: u32 = 0u32.wrapping_sub(22);
 /// Bad address.
@@ -64,15 +74,25 @@ pub(crate) const ENOTTY: u32 = 0u32.wrapping_sub(25);
 
 /// Duplicate fd to lowest available >= arg.
 pub(crate) const F_DUPFD: u32 = 0;
+/// Get per-fd flags (FD_CLOEXEC).
+pub(crate) const F_GETFD: u32 = 1;
+/// Set per-fd flags (FD_CLOEXEC).
+pub(crate) const F_SETFD: u32 = 2;
 /// Get file descriptor flags.
 pub(crate) const F_GETFL: u32 = 3;
 /// Set file descriptor flags.
 pub(crate) const F_SETFL: u32 = 4;
+/// The only defined per-fd flag: close-on-exec.
+pub(crate) const FD_CLOEXEC: u32 = 1;
 
 // -- open flag constants --
 
 /// Append mode flag.
 pub(crate) const O_APPEND: u32 = 0x400;
+/// Close-on-exec open flag (Linux ARM 0o2000000). Recorded on the per-fd
+/// entry and stripped from the OFD status flags at open (POSIX: it is an
+/// fd flag, not a file-status flag).
+pub(crate) const O_CLOEXEC: u32 = 0o2000000;
 /// Mask for access mode bits (O_RDONLY | O_WRONLY | O_RDWR).
 /// WHY: these bits are immutable after open; F_SETFL must not modify them.
 pub(crate) const O_ACCMODE: u32 = 0o3;
@@ -105,16 +125,18 @@ pub struct StatBuf {
     pub file_type: u32,
 }
 
-/// A single open file descriptor.
+/// An open-file description payload: file identity, offset, and status flags.
+///
+/// This is the shared level-2 state stored inside `OpenFile` (#267): a `dup()`
+/// or `fork()` shares one `FileDescriptor` (hence one offset and one set of
+/// status flags), while a fresh `open()` creates a new one. Close-on-exec is
+/// NOT here - it is a per-fd flag on `FdEntry` (two dups may disagree on it).
 ///
 /// References a file via mount table index and inode ID. No raw pointers
 /// to file data are stored; all access goes through the VFS.
 ///
-/// For pipe file descriptors, the pipe identity is encoded in `flags`
-/// (see `pipe.rs` for the encoding). `mount_idx` and `inode_id` are
-/// unused for pipes.
-///
-/// TODO(#84)[deliberate-prudent]: close-on-exec flag (O_CLOEXEC) -- not tracked in current FileDescriptor
+/// For pipe/socket descriptions, the kind identity is encoded in `flags`
+/// (see `pipe.rs`/`socket.rs`). `mount_idx` and `inode_id` are unused there.
 #[derive(Clone, Copy)]
 pub struct FileDescriptor {
     /// Index into the global MountTable identifying the filesystem.
@@ -173,15 +195,31 @@ impl FileDescriptor {
     }
 }
 
-/// Per-process file descriptor table.
+/// One per-process fd slot: the OFD it names plus the per-fd FD_CLOEXEC
+/// flag.
+///
+/// INVARIANT: `cloexec` lives on the fd entry, never on the shared OFD --
+/// POSIX scopes close-on-exec to the descriptor, so two dups of one OFD
+/// may disagree on it.
+#[derive(Clone, Copy)]
+pub(crate) struct FdEntry {
+    /// Index into `OFD_TABLE`.
+    pub ofd: u16,
+    /// Close this fd on successful execve.
+    pub cloexec: bool,
+}
+
+/// Per-process file descriptor table: fd number -> open-file description.
+/// Lives on `process::Process::fds`, so its lifetime is the process's
+/// lifetime by construction (#267).
 pub(crate) struct FdTable {
-    entries: [Option<FileDescriptor>; MAX_FDS],
+    entries: [Option<FdEntry>; MAX_FDS],
 }
 
 impl FdTable {
     /// Create an empty fd table.
     pub(crate) const fn new() -> Self {
-        const NONE: Option<FileDescriptor> = None;
+        const NONE: Option<FdEntry> = None;
         Self {
             entries: [NONE; MAX_FDS],
         }
@@ -189,80 +227,239 @@ impl FdTable {
 
     /// Allocate the lowest available file descriptor slot.
     /// Returns the fd number, or None if the table is full.
-    pub(crate) fn alloc(&mut self, fd: FileDescriptor) -> Option<usize> {
+    pub(crate) fn alloc(&mut self, entry: FdEntry) -> Option<usize> {
         for (i, slot) in self.entries.iter_mut().enumerate() {
             if slot.is_none() {
-                *slot = Some(fd);
+                *slot = Some(entry);
                 return Some(i);
             }
         }
         None
     }
 
-    /// Allocate a specific fd slot, closing any existing entry.
-    /// Returns true on success, false if the slot index is out of range.
-    pub(crate) fn alloc_at(&mut self, index: usize, fd: FileDescriptor) -> bool {
+    /// Allocate a specific fd slot. Returns false if out of range.
+    ///
+    /// INVARIANT: the caller must `take()` the slot first and unref the
+    /// displaced entry's OFD -- overwriting a live entry leaks a reference.
+    pub(crate) fn alloc_at(&mut self, index: usize, entry: FdEntry) -> bool {
         if index >= MAX_FDS {
             return false;
         }
-        self.entries[index] = Some(fd);
+        self.entries[index] = Some(entry);
         true
     }
 
-    /// Allocate the lowest available file descriptor slot >= `min_fd`.
-    ///
-    /// Used by `F_DUPFD` to duplicate an fd to a slot at or above a
-    /// caller-specified minimum. Returns the fd number, or None if no
-    /// slot is available at or above `min_fd`.
-    pub(crate) fn alloc_from(&mut self, min_fd: usize, fd: FileDescriptor) -> Option<usize> {
+    /// Allocate the lowest available file descriptor slot >= `min_fd`
+    /// (F_DUPFD). Returns the fd number, or None if no slot is available.
+    pub(crate) fn alloc_from(&mut self, min_fd: usize, entry: FdEntry) -> Option<usize> {
         if min_fd >= MAX_FDS {
             return None;
         }
         for (i, slot) in self.entries[min_fd..].iter_mut().enumerate() {
             if slot.is_none() {
-                *slot = Some(fd);
+                *slot = Some(entry);
                 return Some(min_fd + i);
             }
         }
         None
     }
 
-    /// Get a reference to a file descriptor by index.
-    pub(crate) fn get(&self, index: usize) -> Option<&FileDescriptor> {
+    /// Get an fd entry by index (Copy).
+    pub(crate) fn get(&self, index: usize) -> Option<FdEntry> {
         if index >= MAX_FDS {
             return None;
         }
-        self.entries[index].as_ref()
+        self.entries[index]
     }
 
-    /// Get a mutable reference to a file descriptor by index.
-    pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut FileDescriptor> {
+    /// Get a mutable reference to an fd entry by index.
+    pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut FdEntry> {
         if index >= MAX_FDS {
             return None;
         }
         self.entries[index].as_mut()
     }
 
-    /// Close a file descriptor. Returns true if it was open.
-    pub(crate) fn close(&mut self, index: usize) -> bool {
+    /// Remove an fd entry, returning it so the caller can unref its OFD.
+    /// WHY take-not-close: forcing the entry through the caller makes a
+    /// silently-dropped OFD reference unrepresentable.
+    pub(crate) fn take(&mut self, index: usize) -> Option<FdEntry> {
         if index >= MAX_FDS {
-            return false;
+            return None;
         }
-        self.entries[index].take().is_some()
+        self.entries[index].take()
     }
 }
 
-/// Global file descriptor table.
+/// A shared open-file description (OFD): the second level of the two-level
+/// fd model (#267). `dup()` and `fork()` share one `OpenFile` -- one byte
+/// offset, one set of status flags -- while a fresh `open()` of the same
+/// file creates a new one.
+pub(crate) struct OpenFile {
+    /// File identity, offset, and status flags.
+    pub desc: FileDescriptor,
+    /// Number of per-process fd entries referencing this OFD.
+    refs: u32,
+}
+
+/// System-wide maximum of simultaneously open file descriptions.
+pub(crate) const MAX_OFDS: usize = 256;
+
+/// System-wide open-file-description table.
 ///
-/// WHY global instead of per-process: the Process struct does not currently
-/// support generic fields without significant refactoring (fixed-size array
-/// in a static table). A global table indexed by PID would be ideal, but
-/// for the initial bring-up a single global table is sufficient since only
-/// one process uses filesystem syscalls at a time in the cooperative scheduler.
+/// WHY fixed-size static: no heap in core kernel tables; single-core
+/// cooperative kernel ensures exclusive access during syscall handling.
+/// Per-process fd tables (`process::Process::fds`) reference slots here by
+/// index, so a process can only ever name OFDs installed in its OWN table
+/// -- the cross-process fd hole (#267) is closed structurally, not by a
+/// per-call ownership check.
+static mut OFD_TABLE: [Option<OpenFile>; MAX_OFDS] = {
+    const NONE: Option<OpenFile> = None;
+    [NONE; MAX_OFDS]
+};
+
+/// Allocate an OFD slot with refcount 1. None when the system-wide table
+/// is full (callers map to ENFILE).
+pub(crate) fn ofd_alloc(desc: FileDescriptor) -> Option<u16> {
+    // SAFETY: OFD_TABLE is a static mut; single-core cooperative kernel.
+    let ofds = unsafe { &mut *core::ptr::addr_of_mut!(OFD_TABLE) };
+    for (i, slot) in ofds.iter_mut().enumerate() {
+        if slot.is_none() {
+            *slot = Some(OpenFile { desc, refs: 1 });
+            return u16::try_from(i).ok();
+        }
+    }
+    None
+}
+
+/// Install an already-allocated OFD into the CURRENT process's fd table at
+/// the lowest free fd. For non-VFS openers (sockets today). Returns the fd
+/// number, or None (absent PCB or per-process table full) -- the caller then
+/// unrefs the OFD to avoid orphaning it (fail closed).
+pub(crate) fn install_current_fd(ofd: u16) -> Option<usize> {
+    crate::process::with_current_fds(|t| {
+        t.alloc(FdEntry {
+            ofd,
+            cloexec: false,
+        })
+    })
+    .flatten()
+}
+
+/// Add one reference to an OFD (dup/fork).
+pub(crate) fn ofd_ref(idx: u16) {
+    // SAFETY: OFD_TABLE is a static mut; single-core cooperative kernel.
+    let ofds = unsafe { &mut *core::ptr::addr_of_mut!(OFD_TABLE) };
+    if let Some(ofd) = ofds.get_mut(usize::from(idx)).and_then(Option::as_mut) {
+        ofd.refs = ofd.refs.saturating_add(1);
+    }
+}
+
+/// Drop one reference to an OFD; at zero, free the slot and run kind
+/// teardown (pipe EOF accounting, socket release).
 ///
-/// TODO(#32)[deliberate-prudent]: migrate to per-process fd tables when Process struct supports it.
-/// TODO(#84)[deliberate-prudent]: per-process fd tables -- current global table doesn't support concurrent processes
-pub(crate) static mut FD_TABLE: FdTable = FdTable::new();
+/// WHY teardown here and not in sys_close: with dup and fork a close no
+/// longer implies the description is dead -- pipe close-notification and
+/// socket release are correct only at refcount zero.
+pub(crate) fn ofd_unref(idx: u16) {
+    // SAFETY: OFD_TABLE is a static mut; single-core cooperative kernel.
+    let ofds = unsafe { &mut *core::ptr::addr_of_mut!(OFD_TABLE) };
+    let Some(slot) = ofds.get_mut(usize::from(idx)) else {
+        return;
+    };
+    let Some(ofd) = slot.as_mut() else {
+        return;
+    };
+    ofd.refs = ofd.refs.saturating_sub(1);
+    if ofd.refs == 0 {
+        let desc = ofd.desc;
+        *slot = None;
+        if crate::pipe::is_pipe_fd(desc.flags) {
+            crate::pipe::on_pipe_fd_closed(
+                crate::pipe::pipe_idx_from_flags(desc.flags),
+                crate::pipe::is_write_end(desc.flags),
+            );
+        }
+        if crate::socket::is_socket_fd(desc.flags) {
+            crate::socket::on_socket_fd_closed(usize::from(idx));
+        }
+    }
+}
+
+/// Resolve an fd number through the CURRENT process's table to its OFD
+/// index. None (fail closed) for an unmapped fd or an absent PCB.
+pub(crate) fn resolve_fd(fd: usize) -> Option<u16> {
+    crate::process::with_current_fds(|t| t.get(fd).map(|e| e.ofd)).flatten()
+}
+
+/// Status flags of the current process's fd, for kind dispatch in
+/// syscall.rs (pipe/socket routing and the fd-1 UART fallback).
+pub(crate) fn current_fd_flags(fd: usize) -> Option<u32> {
+    let idx = resolve_fd(fd)?;
+    // SAFETY: OFD_TABLE is a static mut; single-core cooperative kernel.
+    let ofds = unsafe { &*core::ptr::addr_of!(OFD_TABLE) };
+    ofds.get(usize::from(idx))?.as_ref().map(|o| o.desc.flags)
+}
+
+/// fork() (#267): copy a parent fd table for the child, bumping each
+/// entry's OFD refcount. Each fd entry is one reference, so a dup'd pair
+/// in the parent bumps its OFD twice -- exactly matching the two entries
+/// the child receives.
+pub(crate) fn fork_table(parent: &FdTable) -> FdTable {
+    let mut child = FdTable::new();
+    for (i, slot) in parent.entries.iter().enumerate() {
+        if let Some(entry) = slot {
+            ofd_ref(entry.ofd);
+            child.entries[i] = Some(*entry);
+        }
+    }
+    child
+}
+
+/// exit/fault (#267): close every fd -- drain the table, unref each OFD.
+/// Idempotent: a drained table is a no-op.
+pub(crate) fn close_all(table: &mut FdTable) {
+    for slot in table.entries.iter_mut() {
+        if let Some(entry) = slot.take() {
+            ofd_unref(entry.ofd);
+        }
+    }
+}
+
+/// execve (#267): close every fd with FD_CLOEXEC set. Called only after
+/// the last execve failure point (POSIX: fds close on SUCCESSFUL exec).
+pub(crate) fn close_cloexec(table: &mut FdTable) {
+    for slot in table.entries.iter_mut() {
+        if slot.map(|e| e.cloexec).unwrap_or(false) {
+            if let Some(entry) = slot.take() {
+                ofd_unref(entry.ofd);
+            }
+        }
+    }
+}
+
+/// Test-only: refcount of an OFD slot (None when free).
+#[cfg(test)]
+pub(crate) fn ofd_refs(idx: u16) -> Option<u32> {
+    // SAFETY: single-threaded test execution.
+    let ofds = unsafe { &*core::ptr::addr_of!(OFD_TABLE) };
+    ofds.get(usize::from(idx))?.as_ref().map(|o| o.refs)
+}
+
+/// Test-only: reset the process table (PROCS[0] owns the per-process fd
+/// table) and the shared OFD table. Shared by fd/pipe/socket/syscall tests
+/// so the reset logic exists exactly once.
+#[cfg(test)]
+pub(crate) unsafe fn reset_fd_state_for_test() {
+    // SAFETY: test-only, single-threaded.
+    unsafe {
+        crate::process::reset_for_test();
+        let ofds = &mut *core::ptr::addr_of_mut!(OFD_TABLE);
+        for slot in ofds.iter_mut() {
+            *slot = None;
+        }
+    }
+}
 
 /// Global mount table for VFS dispatch.
 ///
@@ -594,15 +791,24 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
         Err(VfsError::TooManyLinks) => return EMLINK,
     };
 
-    let fd = FileDescriptor::from_vfs(mount_idx as u8, inode_id, flags);
+    // O_CLOEXEC is a per-fd flag: record it on the fd entry and strip it
+    // from the stored status flags (POSIX).
+    let cloexec = flags & O_CLOEXEC != 0;
+    let desc = FileDescriptor::from_vfs(mount_idx as u8, inode_id, flags & !O_CLOEXEC);
 
-    // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
-    // reference. Single-core kernel with cooperative scheduling ensures
-    // exclusive access during syscall handling.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-    match table.alloc(fd) {
+    let Some(ofd) = ofd_alloc(desc) else {
+        return ENFILE;
+    };
+    let installed =
+        crate::process::with_current_fds(|t| t.alloc(FdEntry { ofd, cloexec })).flatten();
+    match installed {
         Some(n) => n as u32,
-        None => EMFILE,
+        None => {
+            // Absent PCB or per-process table full: roll the OFD back --
+            // never leave an orphaned description (fail closed).
+            ofd_unref(ofd);
+            EMFILE
+        }
     }
 }
 
@@ -622,20 +828,24 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
-    // Validated ahead of the FD_TABLE/mount-table lookups below (an
-    // early-reject, rather than right at the deref) so a bad buf_ptr is
-    // rejected regardless of fd/mount state.
+    // Validated ahead of the fd/mount-table lookups below (an early-reject,
+    // rather than right at the deref) so a bad buf_ptr is rejected regardless
+    // of fd/mount state.
     if !validate_user_buffer(buf_ptr as usize, count) {
         return EFAULT;
     }
 
-    // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
-    // reference. Single-core kernel with cooperative scheduling ensures
-    // exclusive access during syscall handling.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-    let entry = match table.get_mut(fd_idx) {
-        Some(e) => e,
-        None => return EBADF,
+    // Two-level lookup (#267): fd -> current process's table -> shared OFD.
+    let Some(ofd_idx) = resolve_fd(fd_idx) else {
+        return EBADF;
+    };
+    // SAFETY: OFD_TABLE is a static mut; single-core cooperative kernel.
+    let entry = {
+        let ofds = unsafe { &*core::ptr::addr_of!(OFD_TABLE) };
+        match ofds[usize::from(ofd_idx)].as_ref() {
+            Some(o) => o.desc,
+            None => return EBADF,
+        }
     };
 
     let mount_idx = entry.mount_idx as usize;
@@ -656,18 +866,17 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     };
 
     // SAFETY: buf_ptr + count validated by validate_user_buffer above
-    // (before the FD_TABLE/mount-table lookups) to lie within
-    // user-accessible DRAM.
+    // (before the fd/mount-table lookups) to lie within user-accessible DRAM.
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count) };
 
     match fs.read_mut(inode_id, offset, dst) {
         Ok(n) => {
-            // Update offset in the fd entry. The fd was validated above, so
-            // this is expected to be Some; guard defensively instead of
+            // Update the SHARED offset on the OFD so dup'd and forked
+            // descriptors advance together. Guard defensively instead of
             // panicking (expect_used is denied in kernel code).
-            if let Some(entry) = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) }.get_mut(fd_idx)
-            {
-                entry.offset += n;
+            let ofds = unsafe { &mut *core::ptr::addr_of_mut!(OFD_TABLE) };
+            if let Some(o) = ofds[usize::from(ofd_idx)].as_mut() {
+                o.desc.offset += n;
             }
             n as u32
         }
@@ -691,19 +900,24 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
-    // Validated ahead of the FD_TABLE/mount-table lookups below (an
-    // early-reject, rather than right at the deref) so a bad buf_ptr is
-    // rejected regardless of fd/mount state.
+    // Validated ahead of the fd/mount-table lookups below (an early-reject,
+    // rather than right at the deref) so a bad buf_ptr is rejected regardless
+    // of fd/mount state.
     if !validate_user_buffer(buf_ptr as usize, count) {
         return EFAULT;
     }
 
-    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
-    // reference. Single-core cooperative kernel ensures exclusive access.
-    let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
-    let entry = match table.get(fd_idx) {
-        Some(e) => *e,
-        None => return EBADF,
+    // Two-level lookup (#267): fd -> current process's table -> shared OFD.
+    let Some(ofd_idx) = resolve_fd(fd_idx) else {
+        return EBADF;
+    };
+    // SAFETY: OFD_TABLE is a static mut; single-core cooperative kernel.
+    let entry = {
+        let ofds = unsafe { &*core::ptr::addr_of!(OFD_TABLE) };
+        match ofds[usize::from(ofd_idx)].as_ref() {
+            Some(o) => o.desc,
+            None => return EBADF,
+        }
     };
 
     let mount_idx = entry.mount_idx as usize;
@@ -722,16 +936,16 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     };
 
     // SAFETY: buf_ptr + count validated by validate_user_buffer above
-    // (before the FD_TABLE/mount-table lookups) to lie within
-    // user-accessible DRAM.
+    // (before the fd/mount-table lookups) to lie within user-accessible DRAM.
     let src = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, count) };
 
     match fs.write(inode_id, offset, src) {
         Ok(n) => {
-            // Update offset in the fd entry
-            let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-            if let Some(e) = table.get_mut(fd_idx) {
-                e.offset += n;
+            // Update the SHARED offset on the OFD so dup'd and forked
+            // descriptors advance together.
+            let ofds = unsafe { &mut *core::ptr::addr_of_mut!(OFD_TABLE) };
+            if let Some(o) = ofds[usize::from(ofd_idx)].as_mut() {
+                o.desc.offset += n;
             }
             n as u32
         }
@@ -748,10 +962,16 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 /// 0 on success, EBADF if fd is not open.
 pub(crate) fn sys_close(fd: u32) -> u32 {
     let fd_idx = fd as usize;
-    // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an intermediate
-    // reference. Single-core kernel ensures exclusive access during syscall.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-    if table.close(fd_idx) { 0 } else { EBADF }
+    let taken = crate::process::with_current_fds(|t| t.take(fd_idx)).flatten();
+    match taken {
+        Some(entry) => {
+            // Pipe/socket teardown fires inside ofd_unref, only at
+            // refcount zero -- a dup'd descriptor keeps the OFD alive.
+            ofd_unref(entry.ofd);
+            0
+        }
+        None => EBADF,
+    }
 }
 
 /// SYS_stat: get file status by path.
@@ -845,11 +1065,18 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
         return EFAULT;
     }
 
-    // SAFETY: FD_TABLE is a static mut.
-    let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
-    let entry = match table.get(fd_idx) {
-        Some(e) => *e,
-        None => return EBADF,
+    // Two-level lookup (#267): fd -> current process's table -> shared OFD.
+    // A process can only fstat an fd installed in its OWN table.
+    let Some(ofd_idx) = resolve_fd(fd_idx) else {
+        return EBADF;
+    };
+    // SAFETY: OFD_TABLE is a static mut; single-core cooperative kernel.
+    let entry = {
+        let ofds = unsafe { &*core::ptr::addr_of!(OFD_TABLE) };
+        match ofds[usize::from(ofd_idx)].as_ref() {
+            Some(o) => o.desc,
+            None => return EBADF,
+        }
     };
 
     // Validated once the fd is confirmed to exist — every return path below
@@ -933,10 +1160,13 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
 pub(crate) fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
     let fd_idx = fd as usize;
 
-    // SAFETY: FD_TABLE is a static mut.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-    let entry = match table.get_mut(fd_idx) {
-        Some(e) => e,
+    let Some(ofd_idx) = resolve_fd(fd_idx) else {
+        return EBADF;
+    };
+    // SAFETY: OFD_TABLE is a static mut; single-core cooperative kernel.
+    let ofds = unsafe { &mut *core::ptr::addr_of_mut!(OFD_TABLE) };
+    let entry = match ofds[usize::from(ofd_idx)].as_mut() {
+        Some(o) => &mut o.desc,
         None => return EBADF,
     };
 
@@ -989,17 +1219,26 @@ pub(crate) fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
 /// New (lowest available) fd number on success, negative error code on failure.
 pub(crate) fn sys_dup(fd: u32) -> u32 {
     let fd_idx = fd as usize;
-    // SAFETY: FD_TABLE is a static mut.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-
-    let entry = match table.get(fd_idx) {
-        Some(e) => *e,
-        None => return EBADF,
-    };
-
-    match table.alloc(entry) {
-        Some(n) => n as u32,
-        None => EMFILE,
+    // POSIX: the dup shares the OFD but never inherits FD_CLOEXEC.
+    let result = crate::process::with_current_fds(|t| {
+        let Some(entry) = t.get(fd_idx) else {
+            return Err(EBADF);
+        };
+        match t.alloc(FdEntry {
+            ofd: entry.ofd,
+            cloexec: false,
+        }) {
+            Some(n) => {
+                ofd_ref(entry.ofd);
+                Ok(n)
+            }
+            None => Err(EMFILE),
+        }
+    });
+    match result {
+        Some(Ok(n)) => n as u32,
+        Some(Err(e)) => e,
+        None => EBADF,
     }
 }
 
@@ -1019,24 +1258,39 @@ pub(crate) fn sys_dup2(oldfd: u32, newfd: u32) -> u32 {
         return EBADF;
     }
 
-    // SAFETY: FD_TABLE is a static mut.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-
-    let entry = match table.get(old_idx) {
-        Some(e) => *e,
-        None => return EBADF,
-    };
-
-    if old_idx == new_idx {
-        return newfd;
-    }
-
-    let _ = table.close(new_idx); // WHY: dup2 must close target fd before reuse; failure means it was already closed
-
-    if table.alloc_at(new_idx, entry) {
-        newfd
-    } else {
-        EBADF
+    let result = crate::process::with_current_fds(|t| {
+        let Some(entry) = t.get(old_idx) else {
+            return Err(EBADF);
+        };
+        if old_idx == new_idx {
+            return Ok((newfd, None));
+        }
+        // dup2 closes the target first; its OFD is unreffed AFTER the new
+        // entry is installed and reffed, so a shared-OFD displacement can
+        // never dip the refcount to zero mid-flight (old_idx holds a ref).
+        let displaced = t.take(new_idx);
+        // POSIX: the dup never inherits FD_CLOEXEC.
+        if !t.alloc_at(
+            new_idx,
+            FdEntry {
+                ofd: entry.ofd,
+                cloexec: false,
+            },
+        ) {
+            return Err(EBADF);
+        }
+        ofd_ref(entry.ofd);
+        Ok((newfd, displaced))
+    });
+    match result {
+        Some(Ok((n, displaced))) => {
+            if let Some(d) = displaced {
+                ofd_unref(d.ofd);
+            }
+            n
+        }
+        Some(Err(e)) => e,
+        None => EBADF,
     }
 }
 
@@ -1059,26 +1313,48 @@ pub(crate) fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
     let fd_idx = fd as usize;
 
     match cmd {
-        F_GETFL => {
-            // SAFETY: FD_TABLE is a static mut; addr_of! avoids an
-            // intermediate reference. Single-core cooperative kernel.
-            let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
-            match table.get(fd_idx) {
-                Some(e) => e.flags,
-                None => EBADF,
+        // F_GETFD/F_SETFD operate on the PER-FD flag (FD_CLOEXEC, #267),
+        // not the shared OFD status flags.
+        F_GETFD => {
+            let r = crate::process::with_current_fds(|t| {
+                t.get(fd_idx)
+                    .map(|e| if e.cloexec { FD_CLOEXEC } else { 0 })
+            });
+            match r {
+                Some(Some(v)) => v,
+                _ => EBADF,
             }
         }
+        F_SETFD => {
+            let r = crate::process::with_current_fds(|t| {
+                t.get_mut(fd_idx).map(|e| {
+                    e.cloexec = arg & FD_CLOEXEC != 0;
+                })
+            });
+            match r {
+                Some(Some(())) => 0,
+                _ => EBADF,
+            }
+        }
+        F_GETFL => match current_fd_flags(fd_idx) {
+            Some(flags) => flags,
+            None => EBADF,
+        },
         F_SETFL => {
-            // SAFETY: FD_TABLE is a static mut; addr_of_mut! avoids an
-            // intermediate reference.
-            let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-            match table.get_mut(fd_idx) {
-                Some(e) => {
-                    // Preserve immutable access-mode bits; merge only
-                    // modifiable bits (O_APPEND).
-                    let preserved = e.flags & O_ACCMODE;
-                    let modifiable = arg & O_APPEND;
-                    e.flags = preserved | modifiable;
+            let Some(ofd_idx) = resolve_fd(fd_idx) else {
+                return EBADF;
+            };
+            // SAFETY: OFD_TABLE is a static mut; single-core cooperative
+            // kernel. Status flags live on the OFD: F_SETFL through one
+            // dup is visible through the other (POSIX).
+            let ofds = unsafe { &mut *core::ptr::addr_of_mut!(OFD_TABLE) };
+            match ofds[usize::from(ofd_idx)].as_mut() {
+                Some(o) => {
+                    // WHY replace-only-O_APPEND: the old `& O_ACCMODE`
+                    // preservation wiped the pipe/socket kind encoding
+                    // (and O_ACCMODE aliases FD_KIND_PIPE); keeping every
+                    // non-O_APPEND bit preserves both access mode and kind.
+                    o.desc.flags = (o.desc.flags & !O_APPEND) | (arg & O_APPEND);
                     0
                 }
                 None => EBADF,
@@ -1086,15 +1362,28 @@ pub(crate) fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
         }
         F_DUPFD => {
             let min_fd = arg as usize;
-            // SAFETY: FD_TABLE is a static mut.
-            let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-            let entry = match table.get(fd_idx) {
-                Some(e) => *e,
-                None => return EBADF,
-            };
-            match table.alloc_from(min_fd, entry) {
-                Some(n) => n as u32,
-                None => EMFILE,
+            let result = crate::process::with_current_fds(|t| {
+                let Some(entry) = t.get(fd_idx) else {
+                    return Err(EBADF);
+                };
+                match t.alloc_from(
+                    min_fd,
+                    FdEntry {
+                        ofd: entry.ofd,
+                        cloexec: false,
+                    },
+                ) {
+                    Some(n) => {
+                        ofd_ref(entry.ofd);
+                        Ok(n)
+                    }
+                    None => Err(EMFILE),
+                }
+            });
+            match result {
+                Some(Ok(n)) => n as u32,
+                Some(Err(e)) => e,
+                None => EBADF,
             }
         }
         _ => EINVAL,
@@ -1116,11 +1405,9 @@ pub(crate) fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
 pub(crate) fn sys_ioctl(fd: u32, _request: u32, _arg: u32) -> u32 {
     let fd_idx = fd as usize;
 
-    // Validate fd exists before returning ENOTTY.
-    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
-    // reference.
-    let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
-    match table.get(fd_idx) {
+    // Validate the fd exists in the CURRENT process's table before returning
+    // ENOTTY (#267): a process can only ioctl an fd it actually owns.
+    match resolve_fd(fd_idx) {
         Some(_) => ENOTTY,
         None => EBADF,
     }
@@ -1434,12 +1721,11 @@ mod tests {
         // return EINVAL (issue #282 finding 7).
         let mut fd_entry = FileDescriptor::from_vfs(0, 0, 0);
         fd_entry.offset = 0x8000_0000; // 2^31
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-        let fd = table.alloc(fd_entry).expect("fd alloc must succeed");
+        let fd = install_test_fd(fd_entry);
 
         // Seek back by exactly 2^31 (raw bit pattern 0x8000_0000 == -2^31 when
         // reinterpreted as i32) -- the true result is position 0.
-        let new_pos = sys_lseek(fd as u32, 0x8000_0000, SEEK_CUR);
+        let new_pos = sys_lseek(fd, 0x8000_0000, SEEK_CUR);
         assert_eq!(
             new_pos, 0,
             "SEEK_CUR must not misreport a valid position as EINVAL from i32 truncation"
@@ -1458,18 +1744,17 @@ mod tests {
         // EINVAL, not wrap or silently succeed (issue #282 finding 12).
         let mut fd_entry = FileDescriptor::from_vfs(0, 0, 0);
         fd_entry.offset = 100;
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-        let fd = table.alloc(fd_entry).expect("fd alloc must succeed");
+        let fd = install_test_fd(fd_entry);
 
         let negative_offset = 0u32.wrapping_sub(200); // -200 two's complement
-        let result = sys_lseek(fd as u32, negative_offset, SEEK_CUR);
+        let result = sys_lseek(fd, negative_offset, SEEK_CUR);
         assert_eq!(
             result, EINVAL,
             "SEEK_CUR producing a negative file position must return EINVAL"
         );
 
         // A rejected seek must not mutate the stored offset.
-        let unchanged = sys_lseek(fd as u32, 0, SEEK_CUR);
+        let unchanged = sys_lseek(fd, 0, SEEK_CUR);
         assert_eq!(
             unchanged, 100,
             "a rejected SEEK_CUR must not mutate the stored file offset"
@@ -1483,12 +1768,13 @@ mod tests {
     ///
     /// # Safety
     ///
-    /// Test-only. Resets FD_TABLE and MOUNT_TABLE to clean state.
+    /// Test-only. Resets the process fd table, the OFD table (#267), and the
+    /// mount table to a clean state.
     unsafe fn setup_test_vfs() {
         unsafe {
-            // Reset fd table
-            let table = &mut *core::ptr::addr_of_mut!(FD_TABLE);
-            *table = FdTable::new();
+            // Reset the process table (PROCS[0] owns the per-process fd
+            // table) and the shared OFD table (#267).
+            reset_fd_state_for_test();
 
             // Reset mount table
             let mut mt = MountTable::new();
@@ -1512,36 +1798,64 @@ mod tests {
         }
     }
 
+    /// Test helper: install `desc` as a fresh OFD in the CURRENT process and
+    /// return its fd number. Collapses the old `FD_TABLE.alloc(FileDescriptor)`
+    /// pattern onto the two-level path (#267); requires the current process to
+    /// exist (call `setup_test_vfs` / `reset_fd_state_for_test` first).
+    fn install_test_fd(desc: FileDescriptor) -> u32 {
+        let ofd = ofd_alloc(desc).expect("OFD alloc must succeed");
+        crate::process::with_current_fds(|t| {
+            t.alloc(FdEntry {
+                ofd,
+                cloexec: false,
+            })
+        })
+        .flatten()
+        .expect("fd install must succeed") as u32
+    }
+
     // -- FdTable unit tests --
 
     #[test]
     fn alloc_returns_lowest_available() {
         let mut table = FdTable::new();
-        let fd0 = table.alloc(FileDescriptor::from_vfs(0, 1, 0));
-        let fd1 = table.alloc(FileDescriptor::from_vfs(0, 2, 0));
+        let fd0 = table.alloc(FdEntry {
+            ofd: 1,
+            cloexec: false,
+        });
+        let fd1 = table.alloc(FdEntry {
+            ofd: 2,
+            cloexec: false,
+        });
         assert_eq!(fd0, Some(0));
         assert_eq!(fd1, Some(1));
     }
 
     #[test]
-    fn close_frees_slot_for_reuse() {
+    fn take_frees_slot_for_reuse() {
         let mut table = FdTable::new();
-        let fd0 = table.alloc(FileDescriptor::from_vfs(0, 1, 0));
+        let fd0 = table.alloc(FdEntry {
+            ofd: 1,
+            cloexec: false,
+        });
         assert_eq!(fd0, Some(0));
 
-        assert!(table.close(0));
+        assert!(table.take(0).is_some());
 
         // Next alloc should reuse slot 0
-        let fd_reused = table.alloc(FileDescriptor::from_vfs(0, 1, 0));
+        let fd_reused = table.alloc(FdEntry {
+            ofd: 1,
+            cloexec: false,
+        });
         assert_eq!(fd_reused, Some(0));
     }
 
     #[test]
-    fn close_invalid_fd_returns_false() {
+    fn take_invalid_fd_returns_none() {
         let mut table = FdTable::new();
-        assert!(!table.close(0));
-        assert!(!table.close(MAX_FDS));
-        assert!(!table.close(999));
+        assert!(table.take(0).is_none());
+        assert!(table.take(MAX_FDS).is_none());
+        assert!(table.take(999).is_none());
     }
 
     #[test]
@@ -1555,22 +1869,45 @@ mod tests {
     fn alloc_at_overwrites_existing() {
         let mut table = FdTable::new();
 
-        table.alloc(FileDescriptor::from_vfs(0, 1, 0)); // fd 0
-        assert!(table.alloc_at(0, FileDescriptor::from_vfs(0, 2, 0)));
+        table.alloc(FdEntry {
+            ofd: 1,
+            cloexec: false,
+        }); // fd 0
+        assert!(table.alloc_at(
+            0,
+            FdEntry {
+                ofd: 2,
+                cloexec: false,
+            }
+        ));
 
         let entry = table.get(0);
         assert!(entry.is_some());
-        assert_eq!(entry.map(|e| e.inode_id), Some(2));
+        assert_eq!(entry.map(|e| e.ofd), Some(2));
     }
 
     #[test]
     fn table_full_returns_none() {
         let mut table = FdTable::new();
         for _ in 0..MAX_FDS {
-            assert!(table.alloc(FileDescriptor::from_vfs(0, 1, 0)).is_some());
+            assert!(
+                table
+                    .alloc(FdEntry {
+                        ofd: 1,
+                        cloexec: false,
+                    })
+                    .is_some()
+            );
         }
         // Table is full
-        assert!(table.alloc(FileDescriptor::from_vfs(0, 1, 0)).is_none());
+        assert!(
+            table
+                .alloc(FdEntry {
+                    ofd: 1,
+                    cloexec: false,
+                })
+                .is_none()
+        );
     }
 
     // -- VFS-backed syscall tests --
@@ -1764,9 +2101,12 @@ mod tests {
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
     // host-safe buffer helpers or leak-on-test heap allocations.
+    // WHY: the two-level model shares one OFD -- and hence one byte offset
+    // -- between an fd and its dup (POSIX); this asserts that shared-offset
+    // behavior, not a private per-fd offset.
     #[cfg(target_pointer_width = "32")]
     #[test]
-    fn dup_creates_independent_fd() {
+    fn dup_shares_offset_with_original() {
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -1778,19 +2118,25 @@ mod tests {
         let fd1 = sys_dup(fd0);
         assert_eq!(fd1, 1, "dup should return lowest available fd");
 
-        // Read from fd0 — should not affect fd1's offset
+        // Read from fd0 — the dup SHARES the OFD, so fd1's offset advances too.
         static mut BUF: [u8; 5] = [0u8; 5];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
-        let _ = sys_read(fd0, buf.as_mut_ptr() as u32, 5);
+        let n = sys_read(fd0, buf.as_mut_ptr() as u32, 5);
+        assert_eq!(n, 5);
+        assert_eq!(&*buf, b"Hello");
 
-        // fd1 should still read from offset 0
-        static mut BUF2: [u8; 5] = [0u8; 5];
+        // fd1 must continue from the offset fd0 just advanced to (5), not
+        // restart from 0.
+        static mut BUF2: [u8; 7] = [0u8; 7];
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
-        let bytes = sys_read(fd1, buf2.as_mut_ptr() as u32, 5);
-        assert_eq!(bytes, 5);
-        assert_eq!(&*buf2, b"Hello");
+        let bytes = sys_read(fd1, buf2.as_mut_ptr() as u32, 7);
+        assert_eq!(
+            bytes, 7,
+            "dup must share the original's OFD, hence its advanced offset"
+        );
+        assert_eq!(&*buf2, b", thumo");
     }
 
     // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
@@ -1928,24 +2274,25 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn fstat_propagates_real_stat_error_instead_of_fabricating_success() {
+        // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
-            let table = &mut *core::ptr::addr_of_mut!(FD_TABLE);
-            let bogus = FileDescriptor::from_vfs(0, 9_999, 0);
-            let fd = table.alloc(bogus).expect("test fd alloc must succeed");
-
-            static mut STAT: StatBuf = StatBuf {
-                size: 0,
-                file_type: 0,
-            };
-            let stat = &mut *core::ptr::addr_of_mut!(STAT);
-            let result = sys_fstat(fd as u32, stat as *mut StatBuf as u32);
-
-            assert_ne!(
-                result, 0,
-                "fstat must propagate a real VFS stat error, not fabricate success (#249)"
-            );
         }
+        let bogus = FileDescriptor::from_vfs(0, 9_999, 0);
+        let fd = install_test_fd(bogus);
+
+        static mut STAT: StatBuf = StatBuf {
+            size: 0,
+            file_type: 0,
+        };
+        // SAFETY: test-only static; single-threaded per test.
+        let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
+        let result = sys_fstat(fd, stat as *mut StatBuf as u32);
+
+        assert_ne!(
+            result, 0,
+            "fstat must propagate a real VFS stat error, not fabricate success (#249)"
+        );
     }
 
     // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
@@ -2194,10 +2541,7 @@ mod tests {
         }
 
         // Open a file via internal APIs (avoids pointer truncation).
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-        let fd_num = table
-            .alloc(FileDescriptor::from_vfs(0, 1, O_APPEND))
-            .expect("alloc fd") as u32;
+        let fd_num = install_test_fd(FileDescriptor::from_vfs(0, 1, O_APPEND));
 
         let result = sys_fcntl(fd_num, F_GETFL, 0);
         assert_eq!(result, O_APPEND, "F_GETFL must return the fd's flags");
@@ -2209,10 +2553,7 @@ mod tests {
             setup_test_vfs();
         }
 
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-        let fd_num = table
-            .alloc(FileDescriptor::from_vfs(0, 1, 0))
-            .expect("alloc fd") as u32;
+        let fd_num = install_test_fd(FileDescriptor::from_vfs(0, 1, 0));
 
         // Set O_APPEND
         let set_result = sys_fcntl(fd_num, F_SETFL, O_APPEND);
@@ -2234,10 +2575,7 @@ mod tests {
         }
 
         // Open with access mode bits set (O_RDWR = 2)
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-        let fd_num = table
-            .alloc(FileDescriptor::from_vfs(0, 1, 2)) // O_RDWR
-            .expect("alloc fd") as u32;
+        let fd_num = install_test_fd(FileDescriptor::from_vfs(0, 1, 2)); // O_RDWR
 
         // Set O_APPEND — access mode must be preserved
         sys_fcntl(fd_num, F_SETFL, O_APPEND);
@@ -2257,10 +2595,7 @@ mod tests {
         }
 
         // Allocate fd 0
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-        let fd_num = table
-            .alloc(FileDescriptor::from_vfs(0, 1, 0))
-            .expect("alloc fd") as u32;
+        let fd_num = install_test_fd(FileDescriptor::from_vfs(0, 1, 0));
         assert_eq!(fd_num, 0);
 
         // F_DUPFD with arg=5 — new fd must be >= 5
@@ -2270,17 +2605,14 @@ mod tests {
             "F_DUPFD(5) returned {new_fd}, expected >= 5"
         );
 
-        // Verify the new fd points to the same inode
-        let table = unsafe { &*core::ptr::addr_of!(FD_TABLE) };
-        let orig = table.get(fd_num as usize).expect("original fd");
-        let duped = table.get(new_fd as usize).expect("duped fd");
+        // Verify the new fd shares the SAME OFD -- F_DUPFD is a dup, not a
+        // copy (POSIX): both fd numbers must resolve to one open-file
+        // description.
+        let orig_ofd = resolve_fd(fd_num as usize).expect("original fd");
+        let duped_ofd = resolve_fd(new_fd as usize).expect("duped fd");
         assert_eq!(
-            orig.inode_id, duped.inode_id,
-            "duped fd must reference same inode"
-        );
-        assert_eq!(
-            orig.mount_idx, duped.mount_idx,
-            "duped fd must reference same mount"
+            orig_ofd, duped_ofd,
+            "F_DUPFD must share the same OFD as the original fd"
         );
     }
 
@@ -2291,9 +2623,8 @@ mod tests {
         }
 
         // Fill fd table
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
         for _ in 0..MAX_FDS {
-            table.alloc(FileDescriptor::from_vfs(0, 1, 0));
+            install_test_fd(FileDescriptor::from_vfs(0, 1, 0));
         }
 
         // F_DUPFD should fail with EMFILE
@@ -2307,8 +2638,7 @@ mod tests {
             setup_test_vfs();
         }
 
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-        table.alloc(FileDescriptor::from_vfs(0, 1, 0));
+        install_test_fd(FileDescriptor::from_vfs(0, 1, 0));
 
         let result = sys_fcntl(0, 99, 0);
         assert_eq!(result, EINVAL, "unknown fcntl command must return EINVAL");
@@ -2334,10 +2664,7 @@ mod tests {
         }
 
         // Allocate a regular file fd
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-        let fd_num = table
-            .alloc(FileDescriptor::from_vfs(0, 1, 0))
-            .expect("alloc fd") as u32;
+        let fd_num = install_test_fd(FileDescriptor::from_vfs(0, 1, 0));
 
         let result = sys_ioctl(fd_num, 0, 0);
         assert_eq!(result, ENOTTY, "ioctl on a file fd must return ENOTTY");
@@ -2360,10 +2687,7 @@ mod tests {
         }
 
         // Open a devfs file via internal APIs — devfs is mount index 1
-        let table = unsafe { &mut *core::ptr::addr_of_mut!(FD_TABLE) };
-        let fd_num = table
-            .alloc(FileDescriptor::from_vfs(1, 0, 0))
-            .expect("alloc fd") as u32;
+        let fd_num = install_test_fd(FileDescriptor::from_vfs(1, 0, 0));
 
         let result = sys_ioctl(fd_num, 0x5401, 0); // TCGETS
         assert_eq!(result, ENOTTY, "ioctl on devfs fd must return ENOTTY");
@@ -2415,16 +2739,31 @@ mod tests {
         let mut table = FdTable::new();
         // Fill fds 0-4
         for _ in 0..5 {
-            table.alloc(FileDescriptor::from_vfs(0, 1, 0));
+            table.alloc(FdEntry {
+                ofd: 1,
+                cloexec: false,
+            });
         }
-        let fd = table.alloc_from(3, FileDescriptor::from_vfs(0, 2, 0));
+        let fd = table.alloc_from(
+            3,
+            FdEntry {
+                ofd: 2,
+                cloexec: false,
+            },
+        );
         assert_eq!(fd, Some(5), "alloc_from(3) with 0-4 taken should return 5");
     }
 
     #[test]
     fn alloc_from_uses_exact_min_if_available() {
         let mut table = FdTable::new();
-        let fd = table.alloc_from(10, FileDescriptor::from_vfs(0, 1, 0));
+        let fd = table.alloc_from(
+            10,
+            FdEntry {
+                ofd: 1,
+                cloexec: false,
+            },
+        );
         assert_eq!(
             fd,
             Some(10),
@@ -2435,7 +2774,13 @@ mod tests {
     #[test]
     fn alloc_from_max_fds_returns_none() {
         let mut table = FdTable::new();
-        let fd = table.alloc_from(MAX_FDS, FileDescriptor::from_vfs(0, 1, 0));
+        let fd = table.alloc_from(
+            MAX_FDS,
+            FdEntry {
+                ofd: 1,
+                cloexec: false,
+            },
+        );
         assert_eq!(fd, None, "alloc_from(MAX_FDS) must return None");
     }
 
@@ -2445,8 +2790,6 @@ mod tests {
         unsafe {
             let mt_opt = &mut *core::ptr::addr_of_mut!(MOUNT_TABLE);
             *mt_opt = None;
-            let table = &mut *core::ptr::addr_of_mut!(FD_TABLE);
-            *table = FdTable::new();
 
             init_vfs(None, None);
 
@@ -2534,14 +2877,12 @@ mod tests {
 
     #[test]
     fn sys_fstat_rejects_kernel_range_stat_buf_ptr() {
-        // SAFETY: test-only; FD_TABLE reset/alloc is a plain array write.
-        let fd = unsafe {
-            let table = &mut *core::ptr::addr_of_mut!(FD_TABLE);
-            *table = FdTable::new();
-            table
-                .alloc(FileDescriptor::from_vfs(0, 1, 0))
-                .expect("alloc fd") as u32
-        };
+        // SAFETY: test-only; establishes a fresh current process and clears
+        // the shared OFD table.
+        unsafe {
+            reset_fd_state_for_test();
+        }
+        let fd = install_test_fd(FileDescriptor::from_vfs(0, 1, 0));
 
         let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
         let result = sys_fstat(fd, kernel_ptr);
@@ -2577,5 +2918,471 @@ mod tests {
         let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
         let result = sys_chdir(kernel_ptr, 4);
         assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
+    }
+
+    // -- Two-level fd table isolation and lifecycle tests (#267) --
+
+    /// A no-op process entry point for `process::spawn` in tests -- never
+    /// actually invoked (the test never context-switches into it), only
+    /// referenced as a function pointer to populate the new PCB's context.
+    #[cfg(target_pointer_width = "32")]
+    fn isolation_test_entry() -> ! {
+        loop {}
+    }
+
+    /// ISOLATION: a different process must not be able to name proc0's fd
+    /// by number. The two-level model resolves every fd through the
+    /// CURRENT process's own table, so a process whose table lacks that
+    /// slot fails closed with EBADF -- there is no global fd namespace.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn fd_isolation_cross_process_ops_return_ebadf() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        let path = b"/test.txt";
+        let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(fd, 0, "proc0 opens fd 0");
+
+        // A freshly spawned process gets its OWN, empty fd table -- it does
+        // not inherit proc0's fds (unlike fork).
+        let other_pid = crate::process::spawn(isolation_test_entry).expect("spawn must succeed");
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(other_pid);
+        }
+
+        static mut BUF: [u8; 8] = [0u8; 8];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        assert_eq!(
+            sys_read(fd, buf.as_mut_ptr() as u32, 8),
+            EBADF,
+            "a different process must not be able to read proc0's fd number"
+        );
+        assert_eq!(
+            sys_write(fd, buf.as_ptr() as u32, 8),
+            EBADF,
+            "a different process must not be able to write proc0's fd number"
+        );
+        assert_eq!(
+            sys_dup(fd),
+            EBADF,
+            "a different process must not be able to dup proc0's fd number"
+        );
+        assert_eq!(
+            sys_close(fd),
+            EBADF,
+            "a different process must not be able to close proc0's fd number"
+        );
+    }
+
+    /// FORK-SHARES-OFFSET: fork() copies the fd table, but the copied entry
+    /// still names the SAME OFD as the parent -- one shared byte offset, per
+    /// POSIX. A close in the parent must not affect the child's reference
+    /// (the OFD lives until the LAST reference is gone).
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn fork_shares_ofd_offset_advances_together() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        let path = b"/test.txt"; // "Hello, thumos!" (14 bytes)
+        let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(fd, 0);
+
+        // Parent reads 5 bytes ("Hello") before forking.
+        static mut BUF: [u8; 5] = [0u8; 5];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        assert_eq!(sys_read(fd, buf.as_mut_ptr() as u32, 5), 5);
+        assert_eq!(&*buf, b"Hello");
+
+        let child_pid = crate::process::fork().expect("fork must succeed");
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(child_pid);
+        }
+
+        // Child's fd 0 shares the SAME OFD -- offset continues at 5, not 0.
+        static mut BUF2: [u8; 7] = [0u8; 7];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
+        let n2 = sys_read(fd, buf2.as_mut_ptr() as u32, 7);
+        assert_eq!(
+            n2, 7,
+            "child's inherited fd must continue at the parent's advanced offset"
+        );
+        assert_eq!(&*buf2, b", thumo");
+
+        // Parent closes its copy of fd 0; the OFD stays alive because the
+        // child still holds a reference.
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(0);
+        }
+        assert_eq!(sys_close(fd), 0);
+
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(child_pid);
+        }
+        static mut BUF3: [u8; 2] = [0u8; 2];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf3 = unsafe { &mut *core::ptr::addr_of_mut!(BUF3) };
+        let n3 = sys_read(fd, buf3.as_mut_ptr() as u32, 2);
+        assert_eq!(
+            n3, 2,
+            "child's fd must still work after the parent's close (shared OFD ref held)"
+        );
+        assert_eq!(&*buf3, b"s!");
+    }
+
+    /// OPEN-AFTER-FORK-INDEPENDENT: a fresh open() in the child (even of the
+    /// SAME path) allocates a brand-new OFD at offset 0 -- it does not
+    /// alias the parent's inherited, already-advanced descriptor.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn fork_then_open_is_independent_ofd() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        let path = b"/test.txt";
+        let parent_fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(parent_fd, 0);
+
+        // Parent advances its offset by reading 5 bytes.
+        static mut BUF: [u8; 5] = [0u8; 5];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        assert_eq!(sys_read(parent_fd, buf.as_mut_ptr() as u32, 5), 5);
+
+        let child_pid = crate::process::fork().expect("fork must succeed");
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(child_pid);
+        }
+
+        // Child opens the SAME path fresh -- a brand-new OFD at offset 0,
+        // not the parent's shared, already-advanced descriptor.
+        let child_fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(
+            child_fd, 1,
+            "child's fresh open lands on its own next-free slot (inherited fd 0 is taken)"
+        );
+
+        static mut BUF2: [u8; 5] = [0u8; 5];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
+        let n = sys_read(child_fd, buf2.as_mut_ptr() as u32, 5);
+        assert_eq!(n, 5, "child's fresh open must start at offset 0");
+        assert_eq!(
+            &*buf2, b"Hello",
+            "child's independent open reads from the start of the file"
+        );
+
+        // Parent's shared fd must be unaffected by the child's independent open.
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(0);
+        }
+        static mut BUF3: [u8; 2] = [0u8; 2];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf3 = unsafe { &mut *core::ptr::addr_of_mut!(BUF3) };
+        assert_eq!(sys_read(parent_fd, buf3.as_mut_ptr() as u32, 2), 2);
+        assert_eq!(
+            &*buf3, b", ",
+            "parent's own OFD offset must still be at 5, unaffected by the child's independent open"
+        );
+    }
+
+    /// CLOSE-ON-EXEC: `close_cloexec` sweeps ONLY fds marked FD_CLOEXEC
+    /// (whether set at open() via O_CLOEXEC or later via F_SETFD) and
+    /// leaves plain fds untouched; a dup of a cloexec fd never inherits the
+    /// flag (POSIX).
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn close_cloexec_sweeps_only_cloexec_fds_dup_clears_flag() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        let path = b"/test.txt";
+
+        // fd 0: plain open, no O_CLOEXEC.
+        let plain_fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(plain_fd, 0);
+
+        // fd 1: opened with O_CLOEXEC directly.
+        let cloexec_fd = sys_open(path.as_ptr() as u32, path.len() as u32, O_CLOEXEC);
+        assert_eq!(cloexec_fd, 1);
+        assert_eq!(sys_fcntl(cloexec_fd, F_GETFD, 0), FD_CLOEXEC);
+
+        // fd 2: opened plain, THEN marked FD_CLOEXEC via F_SETFD.
+        let setfd_cloexec_fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(setfd_cloexec_fd, 2);
+        assert_eq!(sys_fcntl(setfd_cloexec_fd, F_SETFD, FD_CLOEXEC), 0);
+        assert_eq!(sys_fcntl(setfd_cloexec_fd, F_GETFD, 0), FD_CLOEXEC);
+
+        // A dup of a cloexec fd must NOT inherit FD_CLOEXEC.
+        let duped = sys_dup(cloexec_fd);
+        assert_eq!(
+            sys_fcntl(duped, F_GETFD, 0),
+            0,
+            "dup must never inherit FD_CLOEXEC"
+        );
+
+        // Sweep: only the two cloexec-marked fds close; the plain fd and
+        // the cloexec-clear dup survive.
+        let swept = crate::process::with_current_fds(close_cloexec);
+        assert!(swept.is_some(), "current process must exist");
+
+        static mut BUF: [u8; 4] = [0u8; 4];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        assert_eq!(
+            sys_read(cloexec_fd, buf.as_mut_ptr() as u32, 4),
+            EBADF,
+            "an O_CLOEXEC-opened fd must close on the sweep"
+        );
+        assert_eq!(
+            sys_read(setfd_cloexec_fd, buf.as_mut_ptr() as u32, 4),
+            EBADF,
+            "an F_SETFD(FD_CLOEXEC)-marked fd must close on the sweep"
+        );
+        assert_eq!(
+            sys_read(plain_fd, buf.as_mut_ptr() as u32, 4),
+            4,
+            "a plain fd (no cloexec) must survive the sweep"
+        );
+        assert_eq!(
+            sys_read(duped, buf.as_mut_ptr() as u32, 4),
+            4,
+            "a dup with FD_CLOEXEC cleared must survive the sweep"
+        );
+    }
+
+    /// CLOSE-ON-EXIT-FREES-OFD: the exit/fault teardown path (`close_all`)
+    /// drains every fd in the current process's table and unrefs its OFD,
+    /// freeing the slot.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn close_all_frees_both_ofds_on_exit() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        let path = b"/test.txt";
+        let fd0 = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        let fd1 = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(fd0, 0);
+        assert_eq!(fd1, 1);
+
+        let ofd0 = resolve_fd(fd0 as usize).expect("fd0 resolves");
+        let ofd1 = resolve_fd(fd1 as usize).expect("fd1 resolves");
+        assert_eq!(ofd_refs(ofd0), Some(1));
+        assert_eq!(ofd_refs(ofd1), Some(1));
+
+        let drained = crate::process::with_current_fds(close_all);
+        assert!(drained.is_some(), "current process must exist");
+
+        assert_eq!(
+            ofd_refs(ofd0),
+            None,
+            "exit-path close_all must free the first OFD"
+        );
+        assert_eq!(
+            ofd_refs(ofd1),
+            None,
+            "exit-path close_all must free the second OFD"
+        );
+
+        static mut BUF: [u8; 1] = [0u8; 1];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        assert_eq!(
+            sys_read(fd0, buf.as_mut_ptr() as u32, 1),
+            EBADF,
+            "a closed fd must be unusable after close_all"
+        );
+    }
+
+    /// DUP-SHARES-OFD: reading via the DUP advances the ORIGINAL's shared
+    /// offset (the reverse direction from `dup_shares_offset_with_original`
+    /// above), and F_SETFL(O_APPEND) through one fd is visible through the
+    /// other -- both fds name one OFD's status flags, not a private copy.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn dup_shares_ofd_offset_and_status_flags() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        let path = b"/test.txt"; // "Hello, thumos!" (14 bytes)
+        let fd0 = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(fd0, 0);
+        let fd1 = sys_dup(fd0);
+        assert_eq!(fd1, 1);
+
+        // Reading via the dup must advance the ORIGINAL's shared offset.
+        static mut BUF: [u8; 5] = [0u8; 5];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        assert_eq!(sys_read(fd1, buf.as_mut_ptr() as u32, 5), 5);
+        assert_eq!(&*buf, b"Hello");
+
+        static mut BUF2: [u8; 2] = [0u8; 2];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
+        let n = sys_read(fd0, buf2.as_mut_ptr() as u32, 2);
+        assert_eq!(
+            n, 2,
+            "read via the original must continue from the dup's advanced offset"
+        );
+        assert_eq!(&*buf2, b", ");
+
+        // F_SETFL through one fd is visible through the other (shared OFD
+        // status flags).
+        assert_eq!(sys_fcntl(fd1, F_SETFL, O_APPEND), 0);
+        assert_eq!(
+            sys_fcntl(fd0, F_GETFL, 0) & O_APPEND,
+            O_APPEND,
+            "O_APPEND set via the dup must be visible through the original"
+        );
+    }
+
+    /// REFCOUNT-FREE-AT-ZERO: an OFD's slot is freed only when its refcount
+    /// reaches zero -- not at the first close -- and a subsequent open
+    /// reuses the freed slot.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn ofd_refcount_frees_slot_only_at_zero_and_slot_is_reused() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        let path = b"/test.txt";
+        let fd0 = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(fd0, 0);
+        let ofd = resolve_fd(fd0 as usize).expect("fd0 resolves");
+        assert_eq!(
+            ofd_refs(ofd),
+            Some(1),
+            "a fresh open holds exactly one reference"
+        );
+
+        // WHY fork before dup: fork_table bumps the OFD refcount ONCE PER
+        // COPIED FD ENTRY (a dup'd pair in the parent would earn the child
+        // two bumps at once, not one), so forking a single-entry table
+        // first isolates each +1 step: open (1) -> fork (2) -> dup-in-child (3).
+        let child_pid = crate::process::fork().expect("fork must succeed");
+        assert_eq!(
+            ofd_refs(ofd),
+            Some(2),
+            "fork must add exactly one reference for the single inherited entry"
+        );
+
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(child_pid);
+        }
+        let child_dup = sys_dup(fd0);
+        assert_eq!(child_dup, 1);
+        assert_eq!(
+            ofd_refs(ofd),
+            Some(3),
+            "a dup in the child must add exactly one more reference"
+        );
+
+        // Close all three holders; the slot must stay alive until the LAST one.
+        assert_eq!(sys_close(child_dup), 0);
+        assert_eq!(
+            ofd_refs(ofd),
+            Some(2),
+            "closing one of three references must not free the OFD"
+        );
+        assert_eq!(sys_close(fd0), 0, "close the child's inherited copy of fd0");
+        assert_eq!(
+            ofd_refs(ofd),
+            Some(1),
+            "closing the second of three references must not free the OFD"
+        );
+
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(0);
+        }
+        assert_eq!(
+            sys_close(fd0),
+            0,
+            "close the parent's original fd0 -- the last reference"
+        );
+        assert_eq!(
+            ofd_refs(ofd),
+            None,
+            "the OFD must free only when the LAST reference closes"
+        );
+
+        // A later open must be able to reuse the freed OFD slot.
+        let fd_new = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
+        assert_eq!(
+            fd_new, 0,
+            "parent's fd table is fully drained; the new open reuses fd 0"
+        );
+        let ofd_new = resolve_fd(fd_new as usize).expect("new fd resolves");
+        assert_eq!(
+            ofd_new, ofd,
+            "the freed OFD slot must be reused by the next open"
+        );
+        assert_eq!(ofd_refs(ofd_new), Some(1));
+    }
+
+    /// DUP2-UNREF-DISPLACED: dup2 onto an already-open target fd unrefs the
+    /// DISPLACED OFD (never leaks it), and dup2(fd, fd) is a documented
+    /// no-op that leaves the refcount untouched.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn dup2_unrefs_displaced_target_and_self_dup_is_noop() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        let path_a = b"/test.txt";
+        let path_b = b"/binary.bin";
+        let fd0 = sys_open(path_a.as_ptr() as u32, path_a.len() as u32, 0);
+        let fd1 = sys_open(path_b.as_ptr() as u32, path_b.len() as u32, 0);
+        assert_eq!(fd0, 0);
+        assert_eq!(fd1, 1);
+
+        let ofd0 = resolve_fd(fd0 as usize).expect("fd0 resolves");
+        let ofd1 = resolve_fd(fd1 as usize).expect("fd1 resolves");
+        assert_eq!(ofd_refs(ofd1), Some(1));
+
+        // dup2(fd0, fd1) displaces fd1's original target -- its OFD must free.
+        let result = sys_dup2(fd0, fd1);
+        assert_eq!(result, 1);
+        assert_eq!(
+            ofd_refs(ofd1),
+            None,
+            "dup2 must unref the displaced target's OFD"
+        );
+        assert_eq!(ofd_refs(ofd0), Some(2), "fd1 now shares fd0's OFD");
+        assert_eq!(
+            resolve_fd(fd1 as usize),
+            Some(ofd0),
+            "fd1 must now resolve to fd0's OFD"
+        );
+
+        // dup2(fd, fd) is a documented no-op -- refcount must be untouched.
+        let self_dup = sys_dup2(fd0, fd0);
+        assert_eq!(self_dup, fd0);
+        assert_eq!(
+            ofd_refs(ofd0),
+            Some(2),
+            "dup2(fd, fd) must not change the refcount"
+        );
     }
 }
