@@ -62,8 +62,13 @@ EOF
 fi
 
 # -machine virt  : generic ARM virtual platform with PL011 UART at 0x09000000,
-#                  memory at 0x40000000. The kernel link script (link.ld)
-#                  loads .text at 0x40000000, matching this layout.
+#                  GICv2 at 0x08000000/0x08010000, RAM at 0x40000000. The
+#                  kernel link script (link.ld) loads .text at 0x40008000,
+#                  inside that RAM window.
+# -m 1024M       : match kconfig::RAM_END (RAM_START + 1 GB) so the page
+#                  allocator's whole range is backed by real RAM -- a frame
+#                  handed out beyond the emulated RAM size would data-abort
+#                  on first touch.
 # -cpu cortex-a7 : matches thumos target CPU (MT6739 is quad Cortex-A53 but
 #                  the kernel is built for armv7a-none-eabi, so we pick a
 #                  compatible v7-A core QEMU supports in 32-bit mode).
@@ -82,7 +87,7 @@ exec timeout --kill-after=5 "${TIMEOUT_SECS}" \
   qemu-system-arm \
     -machine virt \
     -cpu cortex-a7 \
-    -m 256M \
+    -m 1024M \
     -nographic \
     -semihosting-config enable=on,target=native \
     -kernel "${BINARY}" \

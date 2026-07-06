@@ -41,6 +41,15 @@ compile_error!(
     "debug-console and production are mutually exclusive (issue #372): the dev-only kernel UART shell must never ship. Build with --features debug-console (no --features production) for a bring-up/dev image, or --features production (no --features debug-console) for the ship/flash artifact."
 );
 
+// WHY: the qemu feature remaps peripheral base addresses and no-ops SoC-only
+// MMIO -- structurally incompatible with a shippable image. Fails an
+// --all-features build loudly instead of producing a kernel that cannot run
+// on the phone.
+#[cfg(all(feature = "qemu", feature = "production"))]
+compile_error!(
+    "qemu and production are mutually exclusive: the QEMU bring-up harness remaps MT6739 peripheral addresses and must never ship."
+);
+
 // WHY (issue #372): also gated `not(test)` — the console's command methods
 // (cmd_mem/cmd_ps/…) read kernel state via `crate::heap`/`page`/`process`,
 // several of which are themselves `#[cfg(not(test))]`, so the module cannot
@@ -120,6 +129,10 @@ mod pipe;
 mod power;
 mod process;
 mod provision;
+// WHY(qemu): semihosting exit codes + early host-console writes for the
+// QEMU runner (see scripts/qemu-runner.sh).
+#[cfg(all(not(test), feature = "qemu"))]
+mod qemu;
 mod ramfs;
 mod sbc;
 mod screen_alarm;
@@ -161,7 +174,12 @@ mod timer;
 #[cfg(test)]
 #[path = "timer_stub.rs"]
 mod timer;
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "qemu")))]
+mod uart;
+// WHY(qemu): virt has a PL011 at kconfig::UART0_BASE, not the MTK 8250-style
+// UART; same module surface, different register map (see uart_pl011.rs).
+#[cfg(all(not(test), feature = "qemu"))]
+#[path = "uart_pl011.rs"]
 mod uart;
 mod ui;
 // WHY(host-test): syscall's stdout (fd 1) and unknown-syscall debug paths
@@ -172,7 +190,12 @@ mod ui;
 mod uart;
 mod usb;
 mod vfs;
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "qemu")))]
+mod watchdog;
+// WHY(qemu): virt models no MT6739 WDT; a no-op stub keeps the timer-IRQ
+// pet path and kinit call sites identical without touching MMIO.
+#[cfg(all(not(test), feature = "qemu"))]
+#[path = "watchdog_qemu.rs"]
 mod watchdog;
 mod wifi;
 
@@ -187,7 +210,19 @@ core::arch::global_asm!(
     ".global _start",
     ".arm",
     "_start:",
-    "    cpsid   if",               // Disable interrupts
+    "    cpsid   if", // Disable interrupts
+    // WHY: banked-mode stacks. Reset leaves SP_irq/SP_abt/SP_und UNKNOWN;
+    // the first timer IRQ (or any abort) pushes {r0-r12,lr} through them
+    // (exceptions.rs asm wrappers), so without this setup the first tick
+    // corrupts memory or double-faults silently. Latent on every target --
+    // QEMU bring-up is simply the first place the timer IRQ has ever fired.
+    "    msr     cpsr_c, #0xD2", // IRQ mode (I+F masked)
+    "    ldr     sp, =__irq_stack_top",
+    "    msr     cpsr_c, #0xD7", // ABT mode (I+F masked)
+    "    ldr     sp, =__abt_stack_top",
+    "    msr     cpsr_c, #0xDB", // UND mode (I+F masked)
+    "    ldr     sp, =__und_stack_top",
+    "    msr     cpsr_c, #0xD3",    // back to SVC (I+F masked)
     "    ldr     sp, =__stack_top", // Set stack pointer
     "    ldr     r0, =__bss_start", // Zero BSS
     "    ldr     r1, =__bss_end",
@@ -204,6 +239,10 @@ core::arch::global_asm!(
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main() -> ! {
+    // WHY(qemu): earliest possible liveness marker -- proves _start ran and
+    // semihosting works even when the UART path is broken.
+    #[cfg(feature = "qemu")]
+    qemu::write0(c"thumos-qemu: kernel_main reached\n");
     // WHY: delegate everything to kinit::run() which handles the full
     // boot sequence with fault isolation and driver integration.
     // SAFETY: called exactly once from the boot stub (_start) on the boot
@@ -245,6 +284,11 @@ fn panic(info: &PanicInfo) -> ! {
     if kinit::DISPLAY_AVAILABLE.load(core::sync::atomic::Ordering::Relaxed) {
         serial.write_str("(display: red screen rendered)\r\n").ok();
     }
+
+    // WHY(qemu): report exit code 1 via semihosting so a panic fails the
+    // run immediately instead of hanging to the runner timeout.
+    #[cfg(feature = "qemu")]
+    qemu::request_exit(1);
 
     loop {
         // SAFETY: WFE is a hint instruction available in all ARM privilege levels.

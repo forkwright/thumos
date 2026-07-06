@@ -162,6 +162,26 @@ static mut PROCS: [Option<Process>; MAX_PROCS] = {
 /// Currently running process ID.
 static mut CURRENT: Pid = 0;
 
+/// Whether the scheduler may context-switch. WHY: `kinit` runs in the bare
+/// boot context (not a scheduled process), so a timer-IRQ context switch
+/// during init would abandon the boot mid-sequence -- a timing-dependent
+/// hang (the tick lands at a non-deterministic point). Boot enables
+/// scheduling via `enable_scheduling()` once userspace has been spawned and
+/// the boot context becomes the idle loop.
+static SCHEDULING_ENABLED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Enable scheduler context switches. Called exactly once from `kinit`, after
+/// userspace spawn, before the boot context enters the idle loop.
+pub(crate) fn enable_scheduling() {
+    SCHEDULING_ENABLED.store(true, core::sync::atomic::Ordering::Release);
+}
+
+/// Whether the scheduler may context-switch (false throughout `kinit`).
+pub(crate) fn scheduling_enabled() -> bool {
+    SCHEDULING_ENABLED.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// Stack size per process: 16 KB (4 pages).
 const STACK_PAGES: usize = 4;
 

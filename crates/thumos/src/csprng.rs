@@ -156,6 +156,22 @@ impl EntropyPool {
     fn is_seeded(&self) -> bool {
         self.entropy_bits >= SEED_ENTROPY_BITS
     }
+
+    /// Deterministically seed the pool for QEMU bring-up (feature `qemu`).
+    ///
+    /// WHY(qemu): a deterministic emulator has no hardware entropy source --
+    /// timer-jitter is the entire entropy model, and QEMU's CP15 counter
+    /// advances predictably, so `add_timer_sample` never credits
+    /// `SEED_ENTROPY_BITS` and `init`'s seed loop cannot make progress. This
+    /// fills the pool from a fixed vector and marks it seeded so the boot
+    /// proceeds. NOT cryptographically secure; compiled ONLY under
+    /// `--features qemu`, which is mutually exclusive with `production`
+    /// (main.rs compile_error!) and so can never reach a shippable image.
+    #[cfg(feature = "qemu")]
+    fn seed_deterministic_qemu(&mut self) {
+        self.pool = *b"thumos-qemu-deterministic-seed!!";
+        self.entropy_bits = SEED_ENTROPY_BITS;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +294,16 @@ pub unsafe fn init() -> bool {
     // registers; no state is mutated.
     #[cfg(not(test))]
     let deadline_start = crate::timer::elapsed_ms();
+
+    // WHY(qemu): deterministic emulator has no hardware entropy; inject a
+    // fixed seed so is_seeded() passes on the first check below and boot
+    // proceeds instead of spinning on jitter that never accumulates.
+    // SAFETY: ENTROPY is written only from the timer IRQ handler; this runs
+    // before IRQs deliver entropy and is non-reentrant on single-core ARMv7.
+    #[cfg(feature = "qemu")]
+    unsafe {
+        (*core::ptr::addr_of_mut!(ENTROPY)).seed_deterministic_qemu();
+    }
 
     // Spin until the entropy pool has accumulated a full seed estimate,
     // or until CSPRNG_INIT_TIMEOUT_MS elapses.

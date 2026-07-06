@@ -15,12 +15,17 @@ use core::fmt::Write;
 use core::slice;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(not(feature = "qemu"))]
 use crate::ccci::CcciDriver;
 #[cfg(feature = "debug-console")]
 use crate::console::Console;
 use crate::csprng;
+#[cfg(feature = "qemu")]
+use crate::device::DeviceRegistry;
+#[cfg(not(feature = "qemu"))]
 use crate::device::{self, DeviceRegistry};
 use crate::dhcp::{DhcpClient, DhcpEvent};
+#[cfg(not(feature = "qemu"))]
 use crate::display::{DisplayDriver, Gc9306};
 use crate::dns::{DnsResolver, LAN_DNS, MULLVAD_DNS};
 use crate::elf;
@@ -29,6 +34,7 @@ use crate::fd;
 use crate::gic;
 use crate::heap;
 use crate::kconfig;
+#[cfg(not(feature = "qemu"))]
 use crate::mmio;
 use crate::mmu;
 use crate::net::{
@@ -43,6 +49,7 @@ use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
 use crate::status_bar::{KernelStatusBar, StatusBarState};
 use crate::uart::Uart;
 use crate::ui::{self, UiManager};
+#[cfg(not(feature = "qemu"))]
 use crate::usb::UsbController;
 use crate::watchdog;
 
@@ -54,9 +61,17 @@ use crate::watchdog;
 pub(crate) static DISPLAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 /// USB ACM serial link established.
+#[cfg_attr(
+    feature = "qemu",
+    expect(dead_code, reason = "set by the USB init step, which is qemu-gated")
+)]
 pub(crate) static USB_SERIAL_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 /// Modem CCCI link established.
+#[cfg_attr(
+    feature = "qemu",
+    expect(dead_code, reason = "set by the CCCI init step, which is qemu-gated")
+)]
 pub(crate) static MODEM_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
@@ -265,6 +280,13 @@ impl BootState {
 // ---------------------------------------------------------------------------
 
 /// Maximum time (ms) to wait for modem boot before declaring failure.
+#[cfg_attr(
+    feature = "qemu",
+    expect(
+        dead_code,
+        reason = "consumed by the CCCI init step, which is qemu-gated"
+    )
+)]
 const MODEM_BOOT_TIMEOUT_MS: u64 = 10_000;
 
 /// Framebuffer RGB565 colour: solid red (panic indicator).
@@ -547,7 +569,12 @@ pub unsafe fn run() -> ! {
     unsafe {
         watchdog::init();
     }
+    #[cfg(not(feature = "qemu"))]
     let _ = serial.write_str("       WDT armed (5s timeout)\r\n");
+    // WHY(qemu): watchdog is a no-op stub (watchdog_qemu.rs); say so rather
+    // than log a hardware claim that is not true under the emulator.
+    #[cfg(feature = "qemu")]
+    let _ = serial.write_str("       WDT skipped (qemu: no MT6739 WDT model)\r\n");
 
     // -----------------------------------------------------------------------
     // Step 6: Device registry
@@ -565,6 +592,12 @@ pub unsafe fn run() -> ! {
     // Step 7: eMMC block device
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] eMMC (MSDC0)\r\n");
+    // WHY(qemu): virt models no MSDC controller at 0x1123_0000; the first
+    // register access would data-abort. emmc_ok stays false, so the
+    // filesystem step degrades to the ramfs root (existing path).
+    #[cfg(feature = "qemu")]
+    let _ = serial.write_str("       Skipped (qemu: no MSDC model)\r\n");
+    #[cfg(not(feature = "qemu"))]
     {
         let mut emmc = crate::emmc::MsdcController::new();
         match unsafe { emmc.init() } {
@@ -687,6 +720,12 @@ pub unsafe fn run() -> ! {
     // Step 8: Display pipeline (DDP → GC9306)
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Display (GC9306 240x320)\r\n");
+    // WHY(qemu): virt models no MT6739 DDP/DSI pipeline at 0x1400_0000; the
+    // init writes would data-abort. display_ok stays false, so boot degrades
+    // to serial-only (existing path) and the panic handler never touches FB.
+    #[cfg(feature = "qemu")]
+    let _ = serial.write_str("       Skipped (qemu: no DDP/DSI model)\r\n");
+    #[cfg(not(feature = "qemu"))]
     {
         let gc9306 = Gc9306::new();
         let mut display = DisplayDriver::new(gc9306);
@@ -727,6 +766,12 @@ pub unsafe fn run() -> ! {
     // (Step 6) and has no dependency on display/USB/modem, so moving it
     // earlier is safe.
     let _ = serial.write_str("[init] GPIO keypad\r\n");
+    // WHY(qemu): virt models no MT6739 KPD block at 0x1001_0000; the enable
+    // write would data-abort. input_ok stays false, so passphrase entry
+    // reports its skip path (existing behavior).
+    #[cfg(feature = "qemu")]
+    let _ = serial.write_str("       Skipped (qemu: no KPD model)\r\n");
+    #[cfg(not(feature = "qemu"))]
     {
         // NOTE: Full keypad driver is in crates/haphe. Here we enable the
         // KPD hardware so interrupt-driven scanning can start.
@@ -865,6 +910,11 @@ pub unsafe fn run() -> ! {
     // Step 9: USB ACM serial (primary debug console)
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] USB ACM serial\r\n");
+    // WHY(qemu): virt models no MUSB controller at 0x1121_0000; the init
+    // would data-abort. usb_ok stays false (existing degradation path).
+    #[cfg(feature = "qemu")]
+    let _ = serial.write_str("       Skipped (qemu: no MUSB model)\r\n");
+    #[cfg(not(feature = "qemu"))]
     {
         let mut usb = UsbController::new();
         // SAFETY: usb.init() programs the MUSB MMIO registers at their known
@@ -887,6 +937,13 @@ pub unsafe fn run() -> ! {
     // Step 10: CCCI modem boot (fault-tolerant with timeout)
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] CCCI modem\r\n");
+    // WHY(qemu): virt models no CCCI/CLDMA block at 0x200F_0000 (nor the MD
+    // boot registers at 0x2000_xxxx); boot_modem would data-abort. modem_ok
+    // stays false -- phone functions disabled (existing degradation path).
+    #[cfg(feature = "qemu")]
+    let _ = serial
+        .write_str("       Skipped (qemu: no CCCI/CLDMA model); phone functions disabled\r\n");
+    #[cfg(not(feature = "qemu"))]
     {
         let mut ccci = CcciDriver::new();
         let boot_start = crate::timer::elapsed_ms();
@@ -956,6 +1013,14 @@ pub unsafe fn run() -> ! {
     }
 
     let _ = serial.write_str("[init] Network loopback smoke (DHCP + DNS)\r\n");
+    // WHY(qemu): the DHCP poll loop below is bounded by an elapsed_ms()
+    // deadline + a wfe-gated yield, neither of which terminates under QEMU
+    // (#461); and a loopback DHCP/DNS self-test verifies nothing under an
+    // emulator with no network model. Skipped under qemu; production path
+    // unchanged.
+    #[cfg(feature = "qemu")]
+    let _ = serial.write_str("       Skipped (qemu: no network model -- #461)\r\n");
+    #[cfg(not(feature = "qemu"))]
     {
         // WHY: In production, the WiFi driver provides the Device impl.
         // Until WiFi hardware init is wired in, we use LoopbackDevice to
@@ -1078,11 +1143,8 @@ pub unsafe fn run() -> ! {
     // Boot status summary
     // -----------------------------------------------------------------------
     let _ = serial.write_str("\r\n");
-    let _ = write!(
-        serial,
-        "[init] Boot complete at {} ms\r\n",
-        crate::timer::elapsed_ms()
-    );
+    let boot_ms = crate::timer::elapsed_ms();
+    let _ = write!(serial, "[init] Boot complete at {boot_ms} ms\r\n");
     let _ = write!(
         serial,
         "       {} / {} subsystems OK\r\n",
@@ -1199,6 +1261,24 @@ pub unsafe fn run() -> ! {
                 state.userspace_entries_missing
             );
         }
+    }
+
+    // Boot is complete; the boot context now becomes the idle loop. Enable
+    // scheduler context switches so the timer IRQ can run spawned userspace
+    // (scheduling is gated OFF throughout kinit -- see
+    // process::scheduling_enabled -- because the boot context is not a
+    // scheduled process and a mid-init switch would abandon it).
+    process::enable_scheduling();
+
+    // -----------------------------------------------------------------------
+    // QEMU milestone: full boot sequence attempted -- exit via semihosting
+    // -----------------------------------------------------------------------
+    // WHY(qemu): CI asserts on this marker and on exit code 0; without an
+    // explicit exit the idle loop below runs until the runner timeout.
+    #[cfg(feature = "qemu")]
+    {
+        let _ = serial.write_str("THUMOS-QEMU: boot-complete\r\n");
+        crate::qemu::request_exit(0);
     }
 
     // -----------------------------------------------------------------------
