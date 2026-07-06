@@ -6,6 +6,23 @@ edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/forkwright/thumos"
 
+[features]
+# WHY (issue #372): dev-only kernel debug console (UART shell). Deliberately
+# absent from `default` -- a shipped/production build must not merely
+# *default* to excluding it, it must be structurally incapable of
+# containing it (see main.rs's `mod console` cfg gate + the
+# debug-console/production compile_error! there).
+debug-console = []
+# WHY (issue #372): marks a build as the shippable/flashable artifact.
+# Mutually exclusive with `debug-console` -- main.rs `compile_error!`s if
+# both are set, so an `--all-features` invocation (which enables both at
+# once) fails to compile instead of silently producing a console-carrying
+# release binary. The ship/bring-up build should pass `--features
+# production` (see design notes: CONTRIBUTING.md / ARCHITECTURE.md /
+# AGENTS.md / ci.yml kernel job need a companion update, out of scope for
+# this crate-local edit set).
+production = []
+
 [dependencies]
 aes = { version = "0.8", default-features = false }
 # WHY: Megolm needs AES-256-CBC (audit #231). Use the audited RustCrypto `cbc`

@@ -16,6 +16,7 @@ use core::slice;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::ccci::CcciDriver;
+#[cfg(feature = "debug-console")]
 use crate::console::Console;
 use crate::csprng;
 use crate::device::{self, DeviceRegistry};
@@ -353,6 +354,58 @@ fn plan_userspace_spawn_from_vfs(path: &str) -> UserspaceSpawnPlan<'static> {
         Some(elf_data) => UserspaceSpawnPlan::Elf(elf_data),
         None => UserspaceSpawnPlan::Missing,
     }
+}
+
+/// Decide whether the dev-only debug console should start this boot
+/// (issue #372 hardening layers, defense-in-depth beyond the
+/// `debug-console` compile-time feature that makes the console
+/// structurally absent from any build that lacks it).
+///
+/// Fails closed: any unmet condition returns `false`.
+#[cfg(feature = "debug-console")]
+fn debug_console_gate(serial: &mut Uart, mode_mgr: &crate::security_mode::ModeManager) -> bool {
+    // WHY: `kconfig::DEBUG_CONSOLE`'s cmdline arm was deleted (issue #372 --
+    // a boot-args attacker must not be able to force the console on) and its
+    // default flipped to `false`. Reaching a live console now requires BOTH
+    // `--features debug-console` at build time (this function only exists
+    // under that cfg) AND a deliberate source edit flipping
+    // `kconfig::DEBUG_CONSOLE`'s default back to `true` -- neither can
+    // happen by accident via a build flag alone (e.g. `--all-features`),
+    // and the latter is reviewable in a diff.
+    // SAFETY: DEBUG_CONSOLE is a compile-time-fixed default; nothing writes
+    // it after boot now that the cmdline arm is gone.
+    if !unsafe { kconfig::DEBUG_CONSOLE } {
+        return false;
+    }
+
+    // WARNING (defense-in-depth): refuse to start under Sentinel/Panic.
+    // NOTE: `mode_mgr` is freshly `ModeManager::default()`-constructed at
+    // Step 8f and nothing between there and here transitions it, so this
+    // currently always evaluates to Daily -- see the Step 8f WHY comment
+    // above. Kept as the structural check point so it becomes load-bearing
+    // the moment mode state is threaded through boot instead of re-derived
+    // fresh every time (e.g. a mode persisted across a warm restart).
+    if mode_mgr.mode() != crate::security_mode::SecurityMode::Daily {
+        let _ = serial.write_str("[init] Debug console refused: security mode is not Daily\r\n");
+        return false;
+    }
+
+    // WARNING (defense-in-depth): the console must not auto-start. Require
+    // an explicit entry sequence typed over UART before the interactive
+    // prompt appears, so merely compiling and booting a debug-console build
+    // does not hand a shell to whoever has a serial cable.
+    //
+    // TODO(#459)[deliberate-prudent]: `Console::wait_for_physical_presence` depends on
+    // `Uart::getc`, whose RX "data ready" bit position is unverified
+    // against the MT6739 TRM (see uart.rs) -- confirm on real hardware.
+    let _ =
+        serial.write_str("[init] Debug console armed -- awaiting physical-presence sequence\r\n");
+    if !Console::wait_for_physical_presence(serial) {
+        let _ = serial.write_str("[init] Debug console presence sequence not received\r\n");
+        return false;
+    }
+
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -781,6 +834,11 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Security mode (Daily)\r\n");
     let mut pm = PowerManager::new();
+    // WHY: hoisted to function scope (was block-local) so the
+    // debug-console hardening gate near the end of boot (issue #372) can
+    // read the live security mode via this same `ModeManager` instance,
+    // rather than re-deriving a second, independent one.
+    let mode_mgr = crate::security_mode::ModeManager::default();
     {
         // WHY (finding 46): the radio policy must be established here,
         // BEFORE USB ACM (Step 9) and the CCCI modem (Step 10) bring
@@ -798,7 +856,6 @@ pub unsafe fn run() -> ! {
         // NOTE: BFU (Before First Unlock) timer wiring is separate,
         // unrelated work -- not part of this radio-policy fix.
         // let bfu = BfuTimer::new(SecurityMode::Daily);
-        let mode_mgr = crate::security_mode::ModeManager::default();
         crate::power::apply_mode_policy(&mode_mgr.effective_policy(), &mut pm);
         state.security_mode_ok = true;
         let _ = serial.write_str("       Security mode: Daily policy applied\r\n");
@@ -1147,32 +1204,32 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Debug console or idle
     // -----------------------------------------------------------------------
-    // SAFETY: DEBUG_CONSOLE is a compile-time or boot-time constant; reading it
-    // is safe here as it is never written after boot.
-    if unsafe { kconfig::DEBUG_CONSOLE } {
+    #[cfg(feature = "debug-console")]
+    let start_console = debug_console_gate(&mut serial, &mode_mgr);
+    #[cfg(not(feature = "debug-console"))]
+    let start_console = false;
+
+    if start_console {
         let _ = serial.write_str("[init] Starting debug console\r\n");
         let _ = serial.write_str("       Type 'help' for commands\r\n\r\n");
-        let mut console = Console::new();
-        console.prompt();
-
-        // NOTE: in a real implementation, UART RX would be interrupt-driven.
-        // For now, we poll. This gets replaced when the UART driver has
-        // proper RX interrupt support.
-        loop {
-            // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
-            // No memory is accessed; the CPU enters a low-power wait state.
-            unsafe {
-                core::arch::asm!("wfe");
-            }
+        #[cfg(feature = "debug-console")]
+        {
+            let mut console = Console::new();
+            console.prompt();
         }
     } else {
         // No console  -  just idle
-        loop {
-            // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
-            // No memory is accessed; the CPU enters a low-power wait state.
-            unsafe {
-                core::arch::asm!("wfe");
-            }
+        let _ = serial.write_str("[init] No debug console this boot; idling\r\n");
+    }
+
+    // NOTE: in a real implementation, UART RX would be interrupt-driven.
+    // For now, we poll (when a console is active) or just idle. This gets
+    // replaced when the UART driver has proper RX interrupt support.
+    loop {
+        // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
+        // No memory is accessed; the CPU enters a low-power wait state.
+        unsafe {
+            core::arch::asm!("wfe");
         }
     }
 }
