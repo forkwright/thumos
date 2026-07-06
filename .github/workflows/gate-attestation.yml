@@ -17,17 +17,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Pass trusted automation PRs
-        if: ${{ github.actor == 'dependabot[bot]' || github.actor == 'release-please[bot]' }}
-        run: echo "Gate attestation waived for trusted automation actor."
+        # WHY head_ref, not github.actor: release-please runs as
+        # github-actions[bot] (not release-please[bot]), and its checks are
+        # suppressed until a human re-triggers CI -- at which point
+        # github.actor becomes that human and an actor-based waiver misses.
+        # The head branch name is stable regardless of who triggers the run.
+        if: ${{ startsWith(github.head_ref, 'dependabot/') || startsWith(github.head_ref, 'release-please--') }}
+        run: echo "Gate attestation waived for trusted automation branch."
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'release-please[bot]' }}
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') && !startsWith(github.head_ref, 'release-please--') }}
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Verify Gate-Passed trailer
-        if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'release-please[bot]' }}
+        if: ${{ !startsWith(github.head_ref, 'dependabot/') && !startsWith(github.head_ref, 'release-please--') }}
         run: |
           commits=$(git log --format="%H" "origin/${{ github.base_ref }}..HEAD")
           if [ -z "$commits" ]; then
