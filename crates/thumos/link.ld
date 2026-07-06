@@ -28,7 +28,10 @@ SECTIONS
     }
 
     . = ALIGN(4096);
-    __stack_top = . + 0x10000;
+    __stack_top = . + 0x10000;                  /* SVC boot stack (64 KB) */
+    __irq_stack_top = __stack_top + 0x1000;     /* IRQ banked stack (4 KB) */
+    __abt_stack_top = __irq_stack_top + 0x1000; /* ABT banked stack (4 KB) */
+    __und_stack_top = __abt_stack_top + 0x1000; /* UND banked stack (4 KB) */
 
     /DISCARD/ : {
         *(.comment)
@@ -36,3 +39,8 @@ SECTIONS
         *(.ARM.exidx*)
     }
 }
+
+/* Kernel image + all stacks must stay inside the reserved window ending at
+   kconfig::KERNEL_END (0x40100000): page::init hands out frames from there
+   up, so an oversized image would be silently overwritten by allocations. */
+ASSERT(__und_stack_top <= 0x40100000, "kernel image + stacks exceed KERNEL_RESERVED; grow kconfig::KERNEL_RESERVED/KERNEL_END and the memguard map together")

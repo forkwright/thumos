@@ -7,11 +7,10 @@
 //! These addresses come FROM the MT6739 device tree (intc node).
 //! The GIC handles all hardware interrupts and routes them to cores.
 
-/// GIC Distributor base address.
-const GICD_BASE: usize = 0x0C00_0000;
-
-/// GIC CPU Interface base address.
-const GICC_BASE: usize = 0x0C00_2000;
+// NOTE: GIC base addresses live in kconfig (single source of truth); the
+// qemu feature remaps them to the virt board's GICv2. The register-level
+// driver below is plain architectural GICv2 and works unchanged on both.
+use crate::kconfig::{GICC_BASE, GICD_BASE};
 
 // Distributor registers
 mod gicd {

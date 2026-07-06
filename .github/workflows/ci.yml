@@ -109,3 +109,19 @@ jobs:
       - name: Kernel cross-compile (armv7a)
         working-directory: crates/thumos
         run: cargo build --release --target armv7a-none-eabi --jobs 8
+      - name: Install qemu-system-arm
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+      - name: Kernel QEMU boot (real kinit -> boot-complete)
+        working-directory: crates/thumos
+        # WHY: the `qemu` feature retargets peripheral addresses to the QEMU
+        # `virt` board (UART/GIC) and boots the REAL kinit under
+        # qemu-system-arm, exiting via semihosting (0 = boot-complete). This
+        # is the "does the kernel boot" check -- verified in emulation without
+        # the physical MT6739. Failure modes are coded semihosting exits
+        # (1=panic, 2/3/4=aborts) or 124=hang (runner timeout).
+        run: |
+          set -euo pipefail
+          cargo build --release --target armv7a-none-eabi --features qemu --jobs 8
+          THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee boot.log
+          grep -q 'THUMOS v0.1.0' boot.log
+          grep -q 'THUMOS-QEMU: boot-complete' boot.log

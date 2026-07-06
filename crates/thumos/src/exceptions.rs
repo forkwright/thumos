@@ -217,19 +217,25 @@ pub extern "C" fn irq_handler_rust() {
         let now = ticks();
         power::check_backlight_timeout(now);
 
-        // Run scheduler
-        let next = process::schedule();
-        if next != process::current_pid() {
-            // SAFETY: next is a valid PID returned by schedule(), which only
-            // returns PIDs for processes in the READY state.
-            unsafe {
-                process::switch_to(next);
+        // Run scheduler -- only once boot has enabled scheduling. WHY: during
+        // kinit the boot runs in the bare boot context (not a scheduled
+        // process), so a context switch here would abandon the boot
+        // mid-init; process::enable_scheduling() is called once at the end of
+        // kinit, after userspace spawn.
+        if process::scheduling_enabled() {
+            let next = process::schedule();
+            if next != process::current_pid() {
+                // SAFETY: next is a valid PID returned by schedule(), which only
+                // returns PIDs for processes in the READY state.
+                unsafe {
+                    process::switch_to(next);
+                }
+            } else {
+                // REQ-19a: idle — no other runnable process, enter WFI.
+                // WHY: wfi suspends the core until the next interrupt, reducing
+                // power consumption in the idle path without affecting correctness.
+                power::idle();
             }
-        } else {
-            // REQ-19a: idle — no other runnable process, enter WFI.
-            // WHY: wfi suspends the core until the next interrupt, reducing
-            // power consumption in the idle path without affecting correctness.
-            power::idle();
         }
 
         // Check for pending signals on the current process.
@@ -257,6 +263,10 @@ pub extern "C" fn data_abort_handler_rust() {
     let _ = write!(serial, "\r\n!!! DATA ABORT !!!\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
     let _ = write!(serial, "DFAR: {dfar:#010x} (fault address)\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
     let _ = write!(serial, "DFSR: {dfsr:#010x} (fault status)\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
+    // WHY(qemu): distinct exit code lets CI tell a data abort from a panic
+    // or a hang; the asm wrapper otherwise parks in `b .` until timeout.
+    #[cfg(feature = "qemu")]
+    crate::qemu::request_exit(2);
 }
 
 /// Prefetch abort handler.
@@ -275,6 +285,9 @@ pub extern "C" fn prefetch_abort_handler_rust() {
     let _ = write!(serial, "\r\n!!! PREFETCH ABORT !!!\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
     let _ = write!(serial, "IFAR: {ifar:#010x}\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
     let _ = write!(serial, "IFSR: {ifsr:#010x}\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
+    // WHY(qemu): distinct exit code for CI (3 = prefetch abort).
+    #[cfg(feature = "qemu")]
+    crate::qemu::request_exit(3);
 }
 
 /// Undefined instruction handler.
@@ -284,6 +297,9 @@ pub extern "C" fn undefined_handler_rust() {
     serial
         .write_str("\r\n!!! UNDEFINED INSTRUCTION !!!\r\n")
         .ok();
+    // WHY(qemu): distinct exit code for CI (4 = undefined instruction).
+    #[cfg(feature = "qemu")]
+    crate::qemu::request_exit(4);
 }
 
 /// SVC handler (placeholder for future syscall implementation).
