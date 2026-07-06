@@ -2,7 +2,13 @@
 target = "armv7a-none-eabi"
 
 [target.armv7a-none-eabi]
-rustflags = ["-C", "link-arg=-Tlink.ld"]
+# WHY (#431): -D warnings holds the SHIPPED kernel to zero warnings, always-on
+# (dev + CI), scoped to armv7a so the i686 host-test target is unaffected.
+# unsafe_code is `allow` (a bare-metal kernel is inherently unsafe; the
+# discipline is per-block SAFETY comments + kanon) and dead_code is a
+# crate-level `expect` (the tracked compiled-but-unwired surface, #145/#420);
+# every OTHER warning class is denied. cargo caps dependency lints to allow.
+rustflags = ["-C", "link-arg=-Tlink.ld", "-D", "warnings"]
 # WHY: `cargo run` and `cargo test` for the bare-metal kernel target dispatch
 # each built binary through the QEMU runner so kernel code can be exercised
 # in an emulated ARM environment. The runner translates QEMU's semihosting

@@ -2705,7 +2705,7 @@ mod tests {
         // Create a file through VFS, open it, write through sys_write
         let mt = unsafe { get_mount_table_mut() }.expect("mount table");
         let fs = mt.get_mut(0).expect("root fs");
-        let file_id = fs
+        let _file_id = fs
             .create(0, "writable.txt", InodeType::RegularFile)
             .expect("create");
         drop(fs);

@@ -33,7 +33,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::csprng;
-use crate::security::{SHA1_DIGEST_LEN, hmac_sha1, pbkdf2_hmac_sha1, prf_384};
+use crate::security::{hmac_sha1, pbkdf2_hmac_sha1, prf_384};
 
 // ---------------------------------------------------------------------------
 // MT6739 WiFi hardware constants

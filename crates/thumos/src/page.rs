@@ -248,13 +248,7 @@ pub unsafe fn try_free_page(addr: usize) -> bool {
         // under test changes nothing the bitmap-level free tests observe.
         #[cfg(not(test))]
         {
-            #[expect(
-                unsafe_code,
-                reason = "zeroing a page immediately before freeing it, per this function's own SAFETY analysis above"
-            )]
-            unsafe {
-                zero_page(addr);
-            }
+            zero_page(addr);
         }
         bitmap[word] &= !(1 << bit);
         FREE_PAGES += 1;

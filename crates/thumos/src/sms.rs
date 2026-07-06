@@ -35,7 +35,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::telephony::{AtResponse, MAX_LINE_LEN, ModemTransport, TelephonyError};
+use crate::telephony::{AtResponse, MAX_LINE_LEN, ModemTransport};
 
 // Re-export GSM-7 codec so callers can still use crate::sms::*.
 pub(crate) use crate::gsm7::*;

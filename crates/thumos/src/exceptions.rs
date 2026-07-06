@@ -56,7 +56,7 @@ pub unsafe fn init() {
     unsafe {
         core::arch::asm!(
             "mcr p15, 0, {}, c12, c0, 0", // VBAR
-            in(reg) (vector_table as usize),
+            in(reg) (vector_table as *const () as usize),
         );
 
         // Enable IRQs (clear I bit in CPSR)

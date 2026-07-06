@@ -45,8 +45,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::ui::{
-    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
-    ScreenId, color,
+    self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
 
 // ---------------------------------------------------------------------------
@@ -233,7 +232,7 @@ impl MessageEntry {
 
 /// Current view state of the messages screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MessageView {
+pub(crate) enum MessageView {
     /// Inbox list view.
     Inbox,
     /// Full message detail view.
