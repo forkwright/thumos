@@ -100,26 +100,26 @@ pub(crate) enum BootStep {
     DeviceRegistry = 6,
     /// eMMC block device.
     Emmc = 7,
-    /// Filesystem (LFS on eMMC).
-    Filesystem = 8,
     /// Display pipeline (DDP).
-    Display = 9,
+    Display = 8,
+    /// GPIO keypad scanning (relocated before the passphrase gate, #344).
+    GpioInput = 9,
     /// Measured boot signature verification (Ed25519).
     SecureBoot = 10,
+    /// Filesystem (LFS on eMMC) -- trust-gated on SecureBoot (#217).
+    Filesystem = 11,
     /// Passphrase entry and key derivation.
-    Passphrase = 11,
+    Passphrase = 12,
     /// Encrypted filesystem mount.
-    Encryption = 12,
+    Encryption = 13,
     /// Tamper-evident audit log initialization.
-    AuditLog = 13,
+    AuditLog = 14,
     /// Security mode manager (Daily/Sentinel/Panic).
-    SecurityMode = 14,
+    SecurityMode = 15,
     /// USB ACM serial console.
-    UsbSerial = 15,
+    UsbSerial = 16,
     /// CCCI modem link.
-    CcciModem = 16,
-    /// GPIO keypad scanning.
-    GpioInput = 17,
+    CcciModem = 17,
     /// Power manager.
     PowerManager = 18,
     /// Network configuration (DHCP + DNS resolver).
@@ -289,11 +289,8 @@ impl BootState {
 )]
 const MODEM_BOOT_TIMEOUT_MS: u64 = 10_000;
 
-/// Framebuffer RGB565 colour: solid red (panic indicator).
-#[expect(
-    dead_code,
-    reason = "used by tests; main.rs panic handler uses literal"
-)]
+/// Framebuffer RGB565 colour: solid red (panic and secure-boot-halt
+/// indicator). main.rs's panic handler uses the literal directly.
 const PANIC_RED_RGB565: u16 = 0xF800;
 
 /// Number of RGB565 pixels in the hardware framebuffer.
@@ -319,6 +316,49 @@ pub(crate) unsafe fn fill_framebuffer(fb_addr: usize, width: u32, height: u32, c
         // ptr.add(i) stays within that region because i < total_pixels.
         unsafe {
             core::ptr::write_volatile(ptr.add(i), color);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Secure-boot halt (#217)
+// ---------------------------------------------------------------------------
+
+/// Fail-closed boot halt (#217): a boot partition was present and its image
+/// failed verification. Renders the tamper indicator when the display came
+/// up, then parks the boot context forever WITHOUT enabling scheduling --
+/// no passphrase entry, no decrypt, no mount, no userspace can ever run
+/// (`process::enable_scheduling()` is only reached at the end of `run`).
+///
+/// WHY IRQs stay enabled: the timer ISR keeps petting the 5 s watchdog, so
+/// the halt is a stable, visible state instead of a WDT reboot loop.
+///
+/// WHY(qemu): exit code 6 (distinct from 0=ok / 1=panic / 5=loop-stall) so
+/// a runner sees a secure-boot halt as its own diagnostic; unreachable
+/// today because qemu presents no boot medium.
+fn halt_boot(serial: &mut Uart, display_ok: bool) -> ! {
+    if display_ok {
+        // SAFETY: display_ok is only true after display.init() succeeded,
+        // so FB_BASE is a valid, mapped framebuffer of at least
+        // DISPLAY_WIDTH * DISPLAY_HEIGHT * 2 bytes (RGB565).
+        unsafe {
+            fill_framebuffer(
+                kconfig::FB_BASE,
+                kconfig::DISPLAY_WIDTH,
+                kconfig::DISPLAY_HEIGHT,
+                PANIC_RED_RGB565,
+            );
+        }
+    }
+    let _ = serial
+        .write_str("  CRIT Boot halted: image trust could not be established (fail-closed)\r\n");
+    #[cfg(feature = "qemu")]
+    crate::qemu::request_exit(6);
+    loop {
+        // SAFETY: WFI is a hint instruction; no memory is accessed. The CPU
+        // sleeps until the next interrupt (the timer tick pets the WDT).
+        unsafe {
+            core::arch::asm!("wfi");
         }
     }
 }
@@ -402,7 +442,7 @@ fn debug_console_gate(serial: &mut Uart, mode_mgr: &crate::security_mode::ModeMa
 
     // WARNING (defense-in-depth): refuse to start under Sentinel/Panic.
     // NOTE: `mode_mgr` is freshly `ModeManager::default()`-constructed at
-    // Step 8f and nothing between there and here transitions it, so this
+    // Step 8g and nothing between there and here transitions it, so this
     // currently always evaluates to Daily -- see the Step 8f WHY comment
     // above. Kept as the structural check point so it becomes load-bearing
     // the moment mode state is threaded through boot instead of re-derived
@@ -453,6 +493,19 @@ pub unsafe fn run() -> ! {
     let _ = serial.write_str("================================\r\n");
     let _ = serial.write_str("  THUMOS v0.1.0\r\n");
     let _ = serial.write_str("  Rust OS for the AGM M7 (MT6739)\r\n");
+    // WHY (#233): every boot names its trust anchor -- a dev-keyed image can
+    // never be mistaken for a production-trusted one, on the serial log or
+    // via `strings` on the flashed binary (the stamp lives in rodata).
+    let _ = write!(
+        serial,
+        "  {}{}\r\n",
+        crate::secure_boot::BOOT_TRUST_STAMP,
+        if crate::secure_boot::BOOT_KEY_IS_PRODUCTION {
+            ""
+        } else {
+            " (NOT PRODUCTION-TRUSTED)"
+        }
+    );
     let _ = serial.write_str("================================\r\n");
     let _ = serial.write_str("\r\n");
 
@@ -614,14 +667,146 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 7b: Filesystem
+    // Step 8: Display pipeline (DDP → GC9306)
+    // -----------------------------------------------------------------------
+    let _ = serial.write_str("[init] Display (GC9306 240x320)\r\n");
+    // WHY(qemu): virt models no MT6739 DDP/DSI pipeline at 0x1400_0000; the
+    // init writes would data-abort. display_ok stays false, so boot degrades
+    // to serial-only (existing path) and the panic handler never touches FB.
+    #[cfg(feature = "qemu")]
+    let _ = serial.write_str("       Skipped (qemu: no DDP/DSI model)\r\n");
+    #[cfg(not(feature = "qemu"))]
+    {
+        let gc9306 = Gc9306::new();
+        let mut display = DisplayDriver::new(gc9306);
+        // NOTE: FB_BASE FROM kconfig  -  SET by LK bootloader in stock firmware.
+        // Phase 04+ allocates FROM page allocator instead.
+        // SAFETY: FB_BASE is a framebuffer physical address provided by the LK
+        // bootloader and identity-mapped as device memory in the MMU init.
+        unsafe {
+            display.init(kconfig::FB_BASE);
+        }
+        if display.state() != crate::display::DisplayState::Uninitialized {
+            let _ = serial.write_str("       Display pipeline active\r\n");
+            let _ = write!(
+                serial,
+                "       Framebuffer @ {:#010x}\r\n",
+                kconfig::FB_BASE
+            );
+            devices.activate("gc9306-lcm");
+            devices.activate("disp-ovl0");
+            devices.activate("disp-rdma0");
+            state.display_ok = true;
+            DISPLAY_AVAILABLE.store(true, Ordering::Release);
+        } else {
+            let _ = serial.write_str("  WARN Display init incomplete\r\n");
+            let _ = serial.write_str("       Falling back to USB serial console only\r\n");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 8a: GPIO keypad scanning
+    // -----------------------------------------------------------------------
+    // WHY relocated here (was Step 11, after CCCI modem): passphrase entry
+    // (Step 8c) gates on `state.input_ok`, which this step sets. The keypad
+    // must be initialized before the passphrase gate is evaluated, or the
+    // gate condition is always false and passphrase entry (and the
+    // encrypted-filesystem mount that depends on it) is silently skipped on
+    // every boot (#344). This step only depends on the device registry
+    // (Step 6) and has no dependency on display/USB/modem, so moving it
+    // earlier is safe.
+    let _ = serial.write_str("[init] GPIO keypad\r\n");
+    // WHY(qemu): virt models no MT6739 KPD block at 0x1001_0000; the enable
+    // write would data-abort. input_ok stays false, so passphrase entry
+    // reports its skip path (existing behavior).
+    #[cfg(feature = "qemu")]
+    let _ = serial.write_str("       Skipped (qemu: no KPD model)\r\n");
+    #[cfg(not(feature = "qemu"))]
+    {
+        // NOTE: Full keypad driver is in crates/haphe. Here we enable the
+        // KPD hardware so interrupt-driven scanning can start.
+        let kpd_base = device::MT6739_KPD;
+        // SAFETY: KPD_EN and KPD_DEBOUNCE are device MMIO registers at known
+        // offsets from the MT6739_KPD base address (0x1001_0000), which is
+        // identity-mapped as device memory. Writing these registers enables the
+        // hardware keypad scanner with 16 ms debounce.
+        unsafe {
+            // Enable KPD module (bit 0 of KPD_EN).
+            mmio::write32(kpd_base + device::KPD_EN, 1);
+            // Set debounce to 16 ms (hardware units).
+            mmio::write32(kpd_base + device::KPD_DEBOUNCE, 16);
+        }
+        devices.activate("mtk-kpd");
+        state.input_ok = true;
+        let _ = serial.write_str("       Keypad scanning enabled\r\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 8b: Measured boot (Ed25519 signature verification)
+    // -----------------------------------------------------------------------
+    let _ = serial.write_str("[init] Secure boot verification\r\n");
+    {
+        // WHY: verification is unconditional and fail-closed (#217) -- it
+        // must run and halt on failure regardless of display availability.
+        // Display availability only controls *how* a failure is reported
+        // (rendered vs UART-only); gating the verification call itself on
+        // state.display_ok let a display-init failure silently bypass the
+        // kernel's only measured-boot gate (#361).
+        //
+        // WHY Absent today: qemu models no MSDC, and an eMMC that failed
+        // init exposes no partitions -- no boot medium means nothing to
+        // verify AND nothing persistent to mount, so the boot continues
+        // DEGRADED with secure_boot_ok false and every downstream trust
+        // gate locked (the inverse of the old "PENDING but proceed open"
+        // posture). TODO(#217): wire the live-eMMC boot-partition read
+        // (GPT-locate `boot` + memory-bounded verify + signing tool) so a
+        // phone boot presents Present(image) here; until then a live-eMMC
+        // phone boot is also degraded-LOCKED, never degraded-open.
+        let source = crate::secure_boot::BootImageSource::Absent;
+        match crate::secure_boot::evaluate_boot_image(&source) {
+            crate::secure_boot::SecureBootDecision::Proceed { verified: true } => {
+                // INVARIANT (#217 + security review): secure_boot_ok is set
+                // ONLY when the image verified AND the anchor is a production
+                // key. A dev/default build (BOOT_KEY_IS_PRODUCTION false)
+                // carries the deliberately-public committed dev key, so a
+                // valid dev signature must NOT establish trust on a device --
+                // else the public dev seed is a universal forge key. Such a
+                // build boots degraded-LOCKED, like the no-medium path.
+                if crate::secure_boot::BOOT_KEY_IS_PRODUCTION {
+                    state.secure_boot_ok = true;
+                    let _ = serial.write_str("       Secure boot: VERIFIED\r\n");
+                } else {
+                    let _ = serial.write_str(
+                        "       Secure boot: DEGRADED (dev anchor -- not production-trusted; persistent data stays locked)\r\n",
+                    );
+                }
+            }
+            crate::secure_boot::SecureBootDecision::Proceed { verified: false } => {
+                let _ = serial.write_str(
+                    "       Secure boot: DEGRADED (no boot medium -- trust not established; persistent data stays locked)\r\n",
+                );
+            }
+            crate::secure_boot::SecureBootDecision::Halt(e) => {
+                let _ = write!(serial, "  CRIT Secure boot verification failed: {e}\r\n");
+                halt_boot(&mut serial, state.display_ok);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 8c: Filesystem (LFS) -- trust-gated (#217)
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Filesystem (LFS)\r\n");
     // Captures the mounted LFS so it can back the VFS root below instead
     // of a fresh, volatile ramfs (#343). Stays `None` on any path that
     // does not end with a durably mounted filesystem.
     let mut lfs_root: Option<alloc::boxed::Box<dyn crate::vfs::Filesystem>> = None;
-    if state.emmc_ok {
+    // WHY (#217): persistent storage mounts ONLY on a verified boot --
+    // secure_boot.rs's contract is that the filesystem mounts AFTER the
+    // trust gate so a tampered kernel cannot reach encrypted data. A
+    // verification FAILURE has already halted above; this gate covers the
+    // no-boot-medium degrade, where nothing persistent may be touched.
+    if state.emmc_ok && state.secure_boot_ok {
         use crate::block::MsdcBlockDevice;
         use crate::lfs;
         use crate::lfs_imap::LfsError;
@@ -704,130 +889,36 @@ pub unsafe fn run() -> ! {
                 let _ = write!(serial, "  WARN Block device init failed: {:?}\r\n", e);
             }
         }
+    } else if state.emmc_ok {
+        let _ = serial.write_str("       Skipped (secure boot not established -- fail-closed)\r\n");
     } else {
         let _ = serial.write_str("       Skipped (no eMMC)\r\n");
     }
 
     // Initialize the VFS mount table, backed by the mounted LFS when one
-    // is available so writes survive a reboot; falls back to a fresh
-    // ramfs root otherwise (#343).
+    // is available so writes survive a reboot; falls back to a fresh ramfs
+    // root otherwise (#343). With the trust gate above, a persistent root --
+    // and therefore userspace loaded from persistent storage -- is only
+    // reachable on a verified boot; the ramfs fallback is image-resident and
+    // shares the kernel's own trust domain.
     // SAFETY: called once during boot, before any filesystem syscalls.
     unsafe {
         crate::fd::init_vfs(None, lfs_root);
     }
 
     // -----------------------------------------------------------------------
-    // Step 8: Display pipeline (DDP → GC9306)
-    // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Display (GC9306 240x320)\r\n");
-    // WHY(qemu): virt models no MT6739 DDP/DSI pipeline at 0x1400_0000; the
-    // init writes would data-abort. display_ok stays false, so boot degrades
-    // to serial-only (existing path) and the panic handler never touches FB.
-    #[cfg(feature = "qemu")]
-    let _ = serial.write_str("       Skipped (qemu: no DDP/DSI model)\r\n");
-    #[cfg(not(feature = "qemu"))]
-    {
-        let gc9306 = Gc9306::new();
-        let mut display = DisplayDriver::new(gc9306);
-        // NOTE: FB_BASE FROM kconfig  -  SET by LK bootloader in stock firmware.
-        // Phase 04+ allocates FROM page allocator instead.
-        // SAFETY: FB_BASE is a framebuffer physical address provided by the LK
-        // bootloader and identity-mapped as device memory in the MMU init.
-        unsafe {
-            display.init(kconfig::FB_BASE);
-        }
-        if display.state() != crate::display::DisplayState::Uninitialized {
-            let _ = serial.write_str("       Display pipeline active\r\n");
-            let _ = write!(
-                serial,
-                "       Framebuffer @ {:#010x}\r\n",
-                kconfig::FB_BASE
-            );
-            devices.activate("gc9306-lcm");
-            devices.activate("disp-ovl0");
-            devices.activate("disp-rdma0");
-            state.display_ok = true;
-            DISPLAY_AVAILABLE.store(true, Ordering::Release);
-        } else {
-            let _ = serial.write_str("  WARN Display init incomplete\r\n");
-            let _ = serial.write_str("       Falling back to USB serial console only\r\n");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 8a: GPIO keypad scanning
-    // -----------------------------------------------------------------------
-    // WHY relocated here (was Step 11, after CCCI modem): passphrase entry
-    // (Step 8c) gates on `state.input_ok`, which this step sets. The keypad
-    // must be initialized before the passphrase gate is evaluated, or the
-    // gate condition is always false and passphrase entry (and the
-    // encrypted-filesystem mount that depends on it) is silently skipped on
-    // every boot (#344). This step only depends on the device registry
-    // (Step 6) and has no dependency on display/USB/modem, so moving it
-    // earlier is safe.
-    let _ = serial.write_str("[init] GPIO keypad\r\n");
-    // WHY(qemu): virt models no MT6739 KPD block at 0x1001_0000; the enable
-    // write would data-abort. input_ok stays false, so passphrase entry
-    // reports its skip path (existing behavior).
-    #[cfg(feature = "qemu")]
-    let _ = serial.write_str("       Skipped (qemu: no KPD model)\r\n");
-    #[cfg(not(feature = "qemu"))]
-    {
-        // NOTE: Full keypad driver is in crates/haphe. Here we enable the
-        // KPD hardware so interrupt-driven scanning can start.
-        let kpd_base = device::MT6739_KPD;
-        // SAFETY: KPD_EN and KPD_DEBOUNCE are device MMIO registers at known
-        // offsets from the MT6739_KPD base address (0x1001_0000), which is
-        // identity-mapped as device memory. Writing these registers enables the
-        // hardware keypad scanner with 16 ms debounce.
-        unsafe {
-            // Enable KPD module (bit 0 of KPD_EN).
-            mmio::write32(kpd_base + device::KPD_EN, 1);
-            // Set debounce to 16 ms (hardware units).
-            mmio::write32(kpd_base + device::KPD_DEBOUNCE, 16);
-        }
-        devices.activate("mtk-kpd");
-        state.input_ok = true;
-        let _ = serial.write_str("       Keypad scanning enabled\r\n");
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 8b: Measured boot (Ed25519 signature verification)
-    // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Secure boot verification\r\n");
-    {
-        // WHY: verification is unconditional and fail-closed — it must run
-        // and halt on failure regardless of display availability. Display
-        // availability only controls *how* a failure is reported (rendered
-        // vs UART-only); gating the verification call itself on
-        // state.display_ok let a display-init failure silently bypass the
-        // kernel's only measured-boot gate (#361).
-        //
-        // NOTE: In production, the kernel image is read from a known
-        // partition offset.  Here we log the verification step and mark
-        // it as pending.  The actual image read + verify_combined_image()
-        // call is wired when the boot partition layout is finalized.
-        //
-        // let image = read_kernel_image_from_partition();
-        // match crate::secure_boot::verify_combined_image(&image) {
-        //     Ok(()) => { state.secure_boot_ok = true; }
-        //     Err(e) => {
-        //         if state.display_ok {
-        //             render_secure_boot_error(fb, e);
-        //         } else {
-        //             let _ = write!(serial, "  CRIT Secure boot verification failed: {e}\r\n");
-        //         }
-        //         halt(); // halt regardless of display state
-        //     }
-        // }
-        let _ = serial.write_str("       Secure boot: PENDING (awaiting boot partition)\r\n");
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 8c: Passphrase entry and key derivation
+    // Step 8d: Passphrase entry and key derivation
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Passphrase entry\r\n");
-    if state.display_ok && state.input_ok {
+    // WHY (#217, fail-closed): key derivation must never run on an
+    // unverified image -- a tampered kernel could exfiltrate the
+    // passphrase. The trust root is checked FIRST, before hardware
+    // availability.
+    if !state.secure_boot_ok {
+        let _ = serial.write_str(
+            "  WARN Passphrase entry refused (secure boot not established -- fail-closed)\r\n",
+        );
+    } else if state.display_ok && state.input_ok {
         // WHY: passphrase must be entered before any encrypted data is
         // accessed.  The lock screen renders on the display and accepts
         // keypad input.  On success, the primary key is derived and
@@ -844,10 +935,14 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 8d: Encrypted filesystem mount
+    // Step 8e: Encrypted filesystem mount
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Encrypted filesystem\r\n");
-    if state.passphrase_ok && state.emmc_ok {
+    // WHY (#217, defense-in-depth): passphrase_ok is already unreachable
+    // without secure_boot_ok (Step 8d), but the decrypt gate re-checks the
+    // trust root explicitly so a future refactor of passphrase entry cannot
+    // silently reopen it.
+    if state.secure_boot_ok && state.passphrase_ok && state.emmc_ok {
         // WHY: after passphrase derives the data key, wrap the eMMC block
         // device in EncryptedBlockDevice for transparent AES-XTS encryption.
         //
@@ -861,10 +956,10 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 8e: Audit log initialization
+    // Step 8f: Audit log initialization
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Audit log\r\n");
-    {
+    if state.secure_boot_ok {
         // WHY: the audit log needs the audit HMAC key from key_manager.
         // Initialize early so all subsequent boot steps can emit events.
         //
@@ -872,10 +967,16 @@ pub unsafe fn run() -> ! {
         // let audit_key = key_manager.audit_key().as_bytes();
         // AUDIT_LOG.init(audit_key);
         let _ = serial.write_str("       Audit log: PENDING (awaiting audit key)\r\n");
+    } else {
+        // WHY (#217): the audit HMAC key derives from the passphrase key
+        // hierarchy, which stays locked without an established trust root.
+        let _ = serial.write_str(
+            "  WARN Audit log deferred (secure boot not established -- fail-closed)\r\n",
+        );
     }
 
     // -----------------------------------------------------------------------
-    // Step 8f: Security mode manager
+    // Step 8g: Security mode manager
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Security mode (Daily)\r\n");
     let mut pm = PowerManager::new();
@@ -894,7 +995,7 @@ pub unsafe fn run() -> ! {
         // policy/reality mismatch for any later mode-transition or
         // threat-response code that reads PowerManager state as ground
         // truth). A full passphrase-derived pin_hash is not available yet
-        // (Step 8c is pending the boot input loop -- finding 48), so
+        // (Step 8d is pending the boot input loop -- finding 48), so
         // ModeManager::default() is used: unprovisioned, but still Daily
         // mode, which is the correct policy to apply at this point.
         //
@@ -1188,7 +1289,19 @@ pub unsafe fn run() -> ! {
     // Step 14: Spawn packaged userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Spawning userspace processes\r\n");
-    {
+    if !state.secure_boot_ok {
+        // WHY (#217, fail-closed + security review): userspace must NEVER run
+        // on a boot whose trust was not cryptographically established.
+        // Persistent-storage userspace is already gated transitively (the VFS
+        // root is LFS-backed only on a verified boot), but the operator
+        // decision names userspace explicitly, and a future baked-in
+        // initramfs would otherwise spawn from an image-resident ramfs on an
+        // unverified boot. This is the explicit gate, not an accident of an
+        // empty root.
+        let _ = serial.write_str(
+            "  WARN Userspace spawn refused (secure boot not established -- fail-closed)\r\n",
+        );
+    } else {
         // Attempt to load and spawn two processes: /init and /shell.
         // If an entry is absent from the mounted root ramfs, report the
         // packaging gap instead of spawning a kernel-owned placeholder.
@@ -1634,12 +1747,14 @@ mod tests {
 
     #[test]
     fn modem_failure_does_not_block_input() {
-        // WHY: modem failure must not prevent keypad FROM working.
+        // WHY: modem failure must not prevent keypad FROM working. The
+        // keypad initializes BEFORE the modem (relocated in #344 so the
+        // passphrase gate can see input_ok).
         let step_modem = BootStep::CcciModem as u8;
         let step_input = BootStep::GpioInput as u8;
         assert!(
-            step_input > step_modem,
-            "GPIO init comes after modem in sequence"
+            step_modem > step_input,
+            "GPIO init comes before modem in sequence"
         );
 
         let mut state = BootState::new();
@@ -1720,6 +1835,10 @@ mod tests {
             "SecureBoot must run after Display (errors need display)"
         );
         assert!(
+            BootStep::Filesystem.depends_on(BootStep::SecureBoot),
+            "Filesystem mount must run after SecureBoot (#217: a tampered image must never reach user data)"
+        );
+        assert!(
             BootStep::Passphrase.depends_on(BootStep::SecureBoot),
             "Passphrase entry must run after SecureBoot verification"
         );
@@ -1744,11 +1863,13 @@ mod tests {
 
     #[test]
     fn security_boot_steps_are_contiguous() {
-        // WHY: the five security steps must be consecutive with no gaps.
+        // WHY (#217): the trust chain is consecutive with no gaps --
+        // verify, then mount, then derive keys, then decrypt, then audit.
         assert_eq!(BootStep::SecureBoot as u8, 10);
-        assert_eq!(BootStep::Passphrase as u8, 11);
-        assert_eq!(BootStep::Encryption as u8, 12);
-        assert_eq!(BootStep::AuditLog as u8, 13);
-        assert_eq!(BootStep::SecurityMode as u8, 14);
+        assert_eq!(BootStep::Filesystem as u8, 11);
+        assert_eq!(BootStep::Passphrase as u8, 12);
+        assert_eq!(BootStep::Encryption as u8, 13);
+        assert_eq!(BootStep::AuditLog as u8, 14);
+        assert_eq!(BootStep::SecurityMode as u8, 15);
     }
 }

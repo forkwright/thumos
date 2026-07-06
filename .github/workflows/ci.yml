@@ -109,6 +109,24 @@ jobs:
       - name: Kernel cross-compile (armv7a)
         working-directory: crates/thumos
         run: cargo build --release --target armv7a-none-eabi --jobs 8
+      - name: Trust-anchor build guard (#233)
+        working-directory: crates/thumos
+        # WHY: a production image must FAIL to build without a provisioned
+        # key, must REFUSE the committed (deliberately public) dev key, and
+        # must BUILD with a real key -- proven here with an ephemeral one.
+        # Dev/qemu/host builds keep building keylessly (the steps above).
+        run: |
+          set -uo pipefail
+          if cargo check --release --target armv7a-none-eabi --features production 2>keyless-err.log; then
+            echo 'FAIL: production build succeeded without THUMOS_BOOT_KEY_PUB'; exit 1
+          fi
+          grep -q 'THUMOS_BOOT_KEY_PUB' keyless-err.log || { echo 'FAIL: keyless production error lacks provisioning message'; cat keyless-err.log; exit 1; }
+          if THUMOS_BOOT_KEY_PUB=keys/dev/boot-dev.pub cargo check --release --target armv7a-none-eabi --features production 2>devkey-err.log; then
+            echo 'FAIL: production build accepted the dev key'; exit 1
+          fi
+          openssl genpkey -algorithm ed25519 -out /tmp/ci-boot.pem
+          openssl pkey -in /tmp/ci-boot.pem -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n' > /tmp/ci-boot.pub
+          THUMOS_BOOT_KEY_PUB=/tmp/ci-boot.pub cargo check --release --target armv7a-none-eabi --features production
       - name: Install qemu-system-arm
         run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
       - name: Kernel QEMU boot + service loop (real kinit -> boot-complete -> loop)
@@ -133,3 +151,8 @@ jobs:
           grep -q 'THUMOS v0.1.0' boot.log || { echo 'FAIL: missing banner'; exit 1; }
           grep -q 'THUMOS-QEMU: boot-complete' boot.log || { echo 'FAIL: boot did not complete'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' boot.log || { echo 'FAIL: service loop never serviced a tick'; exit 1; }
+          # Fail-closed (#217): the qemu boot uses the dev anchor with no boot
+          # medium, so trust is never established -- assert it degraded-LOCKED
+          # (a fail-open regression would drop these lines).
+          grep -q 'Secure boot: DEGRADED' boot.log || { echo 'FAIL: untrusted boot did not report degraded (fail-closed regression)'; exit 1; }
+          grep -q 'Userspace spawn refused' boot.log || { echo 'FAIL: userspace not refused on an untrusted boot (fail-OPEN regression)'; exit 1; }
