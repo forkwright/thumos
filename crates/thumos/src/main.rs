@@ -6,9 +6,20 @@
 
 #![no_std]
 #![cfg_attr(not(test), no_main)]
+// WHY (#431): the kernel carries a large compiled-and-tested surface that is
+// not yet boot-wired (radio/messaging/UI subsystems built ahead of the boot
+// path). That is a deliberate, tracked state (#145 wiring audit, #420
+// boot-wiring), not cruft, so dead_code is expected crate-wide rather than
+// annotated at ~715 sites. WHY expect not allow: the wiring waves progressively
+// consume the surface, and once it is fully wired this expectation goes
+// unfulfilled and prompts its own removal. All OTHER warning classes stay live
+// under the -D warnings gate.
+#![expect(dead_code, reason = "compiled-but-unwired surface, tracked #145/#420")]
 extern crate alloc;
 
+#[cfg(not(test))]
 use core::fmt::Write;
+#[cfg(not(test))]
 use core::panic::PanicInfo;
 
 mod audio;

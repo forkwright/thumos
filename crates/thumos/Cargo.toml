@@ -74,10 +74,13 @@ xts-mode = { version = "0.5", default-features = false }
 ed25519-dalek = { version = "2", default-features = false }
 
 # WHY: the kernel crate is excluded from the workspace (bare-metal target)
-# but must still enforce the same lint quality floor. These match the
-# workspace lints in the root Cargo.toml.
+# but still enforces the same lint floor -- EXCEPT unsafe_code. A bare-metal
+# kernel is inherently unsafe (MMIO, global_asm!, raw register access);
+# `unsafe_code = "warn"` fired ~484 non-actionable warnings (one per unsafe
+# block) and blocked a `-D warnings` gate. The real safety discipline is the
+# per-block `// SAFETY:` comments, enforced by kanon RUST/unsafe-needs-safety.
 [lints.rust]
-unsafe_code = "warn"
+unsafe_code = "allow"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

@@ -36,7 +36,10 @@ use subtle::ConstantTimeEq;
 
 use crate::audit::{AuditEventType, AuditLog};
 use crate::key_manager::KeyManager;
-use crate::power::{PowerManager, PowerState, Radio};
+use crate::power::PowerManager;
+// WHY cfg(test): PowerState/Radio are named only in this module's tests.
+#[cfg(test)]
+use crate::power::{PowerState, Radio};
 use crate::security::{KEY_SIZE, SleepTier};
 
 // ---------------------------------------------------------------------------

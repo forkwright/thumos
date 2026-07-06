@@ -646,8 +646,7 @@ mod tests {
         }
 
         static mut FDS: [u32; 2] = [0, 0];
-        // SAFETY: test-only static; single-threaded per test.
-        let fds_ptr = unsafe { core::ptr::addr_of_mut!(FDS) as u32 };
+        let fds_ptr = core::ptr::addr_of_mut!(FDS) as u32;
         assert_eq!(sys_pipe(fds_ptr), 0, "pipe() should succeed");
         // SAFETY: test-only static; single-threaded per test.
         let (read_fd, write_fd) = unsafe {

@@ -27,6 +27,7 @@ use crate::capability;
 use crate::fd;
 use crate::futex;
 use crate::ipc;
+#[cfg(test)]
 use crate::kconfig;
 use crate::memguard::validate_user_buffer;
 use crate::mmu;
@@ -441,9 +442,7 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             // runnable_count() and any Sleeping-aware scheduler logic see
             // this process as blocked for the sleep window, not spuriously
             // Running.
-            let Ok(ms) = u64::try_from(arg0) else {
-                return EINVAL;
-            };
+            let ms = u64::from(arg0);
             const TICK_MS: u64 = 10;
             let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
             let wake_tick = crate::exceptions::ticks().saturating_add(ticks_needed);
@@ -504,9 +503,7 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         // ---- Process management ----
         Syscall::Fork => match process::fork() {
             Some(child_pid) => {
-                let Ok(pid_u32) = u32::try_from(child_pid) else {
-                    return EINVAL;
-                };
+                let pid_u32 = u32::from(child_pid);
                 pid_u32
             }
             None => u32::MAX,
@@ -642,7 +639,7 @@ fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
             // SAFETY: validate_user_buffer confirmed [ptr, ptr+len) is within
             // user-accessible DRAM.
             let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
-            let mut serial = Uart::new();
+            let serial = Uart::new();
             for &byte in slice {
                 serial.putc(byte);
             }

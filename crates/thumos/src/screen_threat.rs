@@ -724,8 +724,6 @@ mod tests {
 
     #[test]
     fn alert_type_display() {
-        use alloc::format;
-
         assert_eq!(ThreatAlertType::ImsiCatcher.to_string(), "IMSI_CATCHER");
         assert_eq!(ThreatAlertType::BleTracker.to_string(), "BLE_TRACKER");
         assert_eq!(ThreatAlertType::DeauthAttack.to_string(), "DEAUTH_ATTACK");
@@ -819,8 +817,6 @@ mod tests {
 
     #[test]
     fn threat_level_display() {
-        use alloc::format;
-
         assert_eq!(ThreatLevel::Low.to_string(), "LOW");
         assert_eq!(ThreatLevel::Medium.to_string(), "MEDIUM");
         assert_eq!(ThreatLevel::High.to_string(), "HIGH");
@@ -829,8 +825,6 @@ mod tests {
 
     #[test]
     fn firewall_mode_display() {
-        use alloc::format;
-
         assert_eq!(FirewallMode::Open.to_string(), "OPEN");
         assert_eq!(FirewallMode::Restricted.to_string(), "RESTRICTED");
         assert_eq!(FirewallMode::Blocked.to_string(), "BLOCKED");

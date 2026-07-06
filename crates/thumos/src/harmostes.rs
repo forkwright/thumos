@@ -1349,7 +1349,6 @@ fn push_u32(s: &mut String, val: u32) {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
 
     use super::*;
 
