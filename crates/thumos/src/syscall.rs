@@ -542,7 +542,10 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         // WHY: wired to VFS via fd module. All file operations go through
         // the mount table and Filesystem trait dispatch.
         Syscall::Open => fd::sys_open(arg0, arg1, arg2),
-        Syscall::Close => sys_close_with_pipe(arg0),
+        // WHY plain sys_close (#267): pipe/socket teardown now fires inside
+        // fd::ofd_unref at refcount zero, so a dup'd descriptor no longer
+        // tears down its pipe/socket on first close.
+        Syscall::Close => fd::sys_close(arg0),
         Syscall::Read => sys_read_with_pipe(arg0, arg1, arg2),
         Syscall::Stat => fd::sys_stat(arg0, arg1, arg2),
         Syscall::Fstat => fd::sys_fstat(arg0, arg1),
@@ -594,14 +597,9 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
 /// SYS_read: dispatch to pipe or ramfs based on fd kind.
 fn sys_read_with_pipe(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
-    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
-    // reference. Read-only here to inspect flags.
-    let flags = {
-        let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
-        match table.get(fd_idx) {
-            Some(e) => e.flags,
-            None => return fd::EBADF,
-        }
+    let flags = match fd::current_fd_flags(fd_idx) {
+        Some(f) => f,
+        None => return fd::EBADF,
     };
 
     if pipe::is_pipe_fd(flags) {
@@ -612,39 +610,6 @@ fn sys_read_with_pipe(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     }
 }
 
-/// SYS_close: notify pipe/socket subsystem when a special fd is closed.
-fn sys_close_with_pipe(fd: u32) -> u32 {
-    let fd_idx = fd as usize;
-    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
-    // reference. Read-only here to inspect flags before close.
-    let flags = {
-        let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
-        match table.get(fd_idx) {
-            Some(e) => e.flags,
-            None => return fd::EBADF,
-        }
-    };
-
-    // Close the fd entry first (removes it from the table).
-    let result = fd::sys_close(fd);
-
-    if result == 0 {
-        // If this was a pipe fd, notify the pipe subsystem.
-        if pipe::is_pipe_fd(flags) {
-            let pipe_idx = pipe::pipe_idx_from_flags(flags);
-            let is_write = pipe::is_write_end(flags);
-            pipe::on_pipe_fd_closed(pipe_idx, is_write);
-        }
-
-        // If this was a socket fd, clean up the smoltcp socket.
-        if socket::is_socket_fd(flags) {
-            socket::on_socket_fd_closed(fd_idx);
-        }
-    }
-
-    result
-}
-
 /// SYS_write: dispatch to pipe, UART (stdout), or VFS file based on fd kind.
 ///
 /// - Pipe fd: dispatch to pipe::sys_pipe_write.
@@ -653,12 +618,7 @@ fn sys_close_with_pipe(fd: u32) -> u32 {
 ///   UART serial (legacy behavior).
 fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
-    // SAFETY: FD_TABLE is a static mut; addr_of! avoids an intermediate
-    // reference. Read-only here to inspect flags.
-    let flags = {
-        let table = unsafe { &*core::ptr::addr_of!(fd::FD_TABLE) };
-        table.get(fd_idx).map(|e| e.flags)
-    };
+    let flags = fd::current_fd_flags(fd_idx);
 
     match flags {
         Some(flags) if pipe::is_pipe_fd(flags) => {
@@ -722,7 +682,7 @@ const ENOEXEC: u32 = 0u32.wrapping_sub(8);
 /// # Preserved across exec
 ///
 /// - PID (same process, new image)
-/// - File descriptors (global FD_TABLE is not cleared; O_CLOEXEC is future work)
+/// - File descriptors without FD_CLOEXEC (close-on-exec fds are closed, #267)
 ///
 /// # envp
 ///
@@ -929,6 +889,11 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     unsafe {
         ((argv_array_base + argc * 4) as *mut u32).write(0);
     }
+
+    // --- Step 5b: close-on-exec (#267) ---
+    // Placed after the LAST failure return so a failed execve leaves the fd
+    // table untouched (POSIX: fds close only on successful exec).
+    let _ = process::with_current_fds(fd::close_cloexec); // WHY: None only if no current process exists during syscall handling, which cannot happen — the sweep has nothing to report on success either way.
 
     // --- Step 6: reset signal handlers (POSIX exec semantics) ---
     // WHY: POSIX requires exec to reset all signal dispositions to SIG_DFL and
@@ -2047,8 +2012,7 @@ mod tests {
     #[test]
     fn write_dispatch_respects_dup2_redirected_stdout() {
         unsafe {
-            let table = &mut *core::ptr::addr_of_mut!(fd::FD_TABLE);
-            *table = fd::FdTable::new();
+            fd::reset_fd_state_for_test();
 
             static mut FDS: [u32; 2] = [0, 0];
             let fds_ptr = core::ptr::addr_of_mut!(FDS) as u32;
