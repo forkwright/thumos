@@ -64,6 +64,15 @@ smoltcp = { version = "0.12", default-features = false, features = [
 ] }
 xts-mode = { version = "0.5", default-features = false }
 
+# WHY (#233): build.rs sources the boot trust anchor (env-provisioned under
+# `production`, the committed deliberately-public dev key otherwise), refuses
+# the forgeable RFC 8032 test keys / off-curve bytes / dev-key-under-
+# production at build time, and emits boot_key.rs into OUT_DIR. ed25519-dalek
+# validates point decompression host-side with the same crate the kernel
+# verifies with.
+[build-dependencies]
+ed25519-dalek = { version = "2", default-features = false }
+
 # WHY: the kernel crate is excluded from the workspace (bare-metal target)
 # but must still enforce the same lint quality floor. These match the
 # workspace lints in the root Cargo.toml.
