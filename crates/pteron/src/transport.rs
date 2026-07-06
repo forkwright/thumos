@@ -710,15 +710,19 @@ impl BtHciTransport {
 
     /// Set a pre-generated random address by sending `HCI_LE_Set_Random_Address`.
     ///
-    /// The HCI command bytes are placed INTO the TX ring buffer via [`send_raw`].
+    /// The HCI command bytes are STP-framed into a fixed-size stack buffer
+    /// and placed INTO the TX ring buffer.
     ///
     /// # Errors
     ///
     /// Returns [`Error::BufferOverflow`] if the TX ring buffer is full.
     pub(crate) fn set_random_address(&mut self, addr: BdAddr) -> Result<usize> {
         let pkt = build_le_set_random_address_cmd(&addr);
-        let frame_size = STP_DELIMITER_LEN + STP_HEADER_LEN + pkt.len();
-        let mut frame_buf = vec![0u8; frame_size];
+        // WHY: HCI_LE_Set_Random_Address is a fixed 10-byte command, well
+        // under MAX_COMMAND_FRAME_LEN -- a fixed-size stack buffer replaces
+        // the second per-call heap allocation this used to require
+        // (`vec![0u8; frame_size]`), matching send_command's framing.
+        let mut frame_buf = [0u8; MAX_COMMAND_FRAME_LEN];
         let written = stp_encode(self.tx_seq, &pkt, &mut frame_buf)?;
         if !self.tx.push(&frame_buf[..written]) {
             return Err(Error::BufferOverflow {
@@ -1274,5 +1278,39 @@ mod tests {
             0xAA,
             "last address byte in HCI packet must be the MSB (0xAA)"
         );
+    }
+
+    #[test]
+    fn set_random_address_round_trips_through_fixed_frame_buffer() -> Result<()> {
+        // WHY: set_random_address now frames the STP header into a
+        // fixed-size stack buffer (MAX_COMMAND_FRAME_LEN), the same
+        // pattern send_command uses, instead of a second per-call heap
+        // allocation (`vec![0u8; frame_size]`); this proves that refactor
+        // still produces a correct, decodable STP frame (#456).
+        let mut transport = BtHciTransport::new();
+        let addr = BdAddr::from_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        transport.set_random_address(addr)?;
+
+        let mut raw = vec![0u8; RING_BUF_SIZE];
+        let drained = transport.drain_tx(&mut raw);
+        assert!(drained > 0, "TX buffer must contain the encoded frame");
+
+        let (payload, frame_len) = stp_decode(&raw[..drained])?;
+        assert_eq!(
+            frame_len, drained,
+            "decoded frame length must match the drained byte count"
+        );
+        assert_eq!(
+            payload.len(),
+            10,
+            "HCI_LE_Set_Random_Address HCI payload must be 10 bytes \
+             (H4 + opcode + param_len + 6-byte address)"
+        );
+        assert_eq!(
+            payload.get(9).copied().ok_or(Error::RxUnderrun)?,
+            0xAA,
+            "last address byte in the framed payload must be the MSB (0xAA)"
+        );
+        Ok(())
     }
 }
