@@ -268,10 +268,20 @@ impl NousChatScreen {
     }
 
     /// Update the cached entity info from a nous manager.
+    ///
+    /// If no entity is currently selected (#453), the cache reflects that
+    /// explicitly rather than keeping a stale prior selection's name and
+    /// capability label.
     pub(crate) fn sync_from_manager(&mut self, manager: &NousManager) {
-        if let Some(entity) = manager.active() {
-            self.active_entity_name = String::from(entity.name_str());
-            self.active_preset_label = entity.capability_label();
+        match manager.active() {
+            Some(entity) => {
+                self.active_entity_name = String::from(entity.name_str());
+                self.active_preset_label = entity.capability_label();
+            }
+            None => {
+                self.active_entity_name = String::from("(none)");
+                self.active_preset_label = CapabilityPreset::Off.label();
+            }
         }
     }
 
@@ -1242,6 +1252,18 @@ mod tests {
         screen.sync_from_manager(&mgr);
         assert_eq!(screen.active_entity_name, "Syn");
         assert_eq!(screen.active_preset_label, "ADVISOR");
+    }
+
+    #[test]
+    fn sync_from_manager_no_active_entity() {
+        let mut screen = NousChatScreen::new();
+        let mut mgr = NousManager::new();
+        // WHY: discard the removed entity -- only the deselect side
+        // effect on the manager's active selection matters here (#453).
+        let _ = mgr.remove_entity(0); // removes the active entity (Syn)
+        screen.sync_from_manager(&mgr);
+        assert_eq!(screen.active_entity_name, "(none)");
+        assert_eq!(screen.active_preset_label, "OFF");
     }
 
     #[test]

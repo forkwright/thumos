@@ -354,8 +354,9 @@ impl FmHwOps for MockFmHw {
 pub struct FmRadio<H: FmHwOps> {
     /// Current FM state.
     state: FmState,
-    /// Preset frequencies in kHz (6 slots).
-    presets: [u32; FM_PRESET_COUNT],
+    /// Preset frequencies in kHz (6 slots). `None` marks an unset slot,
+    /// distinguishing 'never saved' from a saved frequency (#452).
+    presets: [Option<u32>; FM_PRESET_COUNT],
     /// Number of populated preset slots.
     preset_count: u8,
     /// Current volume level (0-15).
@@ -370,7 +371,7 @@ impl<H: FmHwOps> FmRadio<H> {
     pub fn new(hw: H) -> Self {
         Self {
             state: FmState::Off,
-            presets: [0u32; FM_PRESET_COUNT],
+            presets: [None; FM_PRESET_COUNT],
             preset_count: 0,
             volume: FM_DEFAULT_VOLUME,
             hw,
@@ -398,9 +399,9 @@ impl<H: FmHwOps> FmRadio<H> {
         }
     }
 
-    /// Return the preset frequencies.
+    /// Return the preset frequencies. `None` marks an unset slot.
     #[must_use]
-    pub fn presets(&self) -> &[u32] {
+    pub fn presets(&self) -> &[Option<u32>] {
         &self.presets[..self.preset_count as usize]
     }
 
@@ -594,7 +595,7 @@ impl<H: FmHwOps> FmRadio<H> {
             _ => return Err(FmError::InvalidState),
         };
 
-        self.presets[index] = freq;
+        self.presets[index] = Some(freq);
         if index >= self.preset_count as usize {
             self.preset_count = (index + 1) as u8;
         }
@@ -616,7 +617,14 @@ impl<H: FmHwOps> FmRadio<H> {
             return Err(FmError::InvalidPreset);
         }
 
-        let freq = self.presets[index];
+        // WHY(#452): preset_count only tracks the highest EVER-saved index
+        // + 1, not which individual slots were populated, so a slot within
+        // the `index < preset_count` range can still be unset if it was
+        // skipped by a non-contiguous save_preset call. Per-slot occupancy
+        // (Option<u32>) lets that case return InvalidPreset as documented,
+        // instead of falling through to a frequency-range check against an
+        // arbitrary default value.
+        let freq = self.presets[index].ok_or(FmError::InvalidPreset)?;
         if !(FM_FREQ_MIN_KHZ..=FM_FREQ_MAX_KHZ).contains(&freq) {
             return Err(FmError::FrequencyOutOfRange);
         }
@@ -1051,18 +1059,17 @@ mod tests {
     }
 
     #[test]
-    fn recall_preset_uninitialized_non_contiguous_slot_returns_wrong_variant() {
-        // WHY: pins a mismatch between recall_preset's documented
-        // contract ("InvalidPreset -- slot index out of range or not
-        // set") and its actual behavior. preset_count only tracks the
-        // highest EVER-saved index + 1, not which individual slots were
-        // populated, so saving directly to slot 3 (skipping 0-2, as in
-        // preset_non_contiguous_index above) leaves slots 0-2 within the
-        // `index < preset_count` range yet never actually written (still
-        // 0). recall_preset falls through to the frequency-range check
-        // and returns FrequencyOutOfRange (0 is not in the FM band)
-        // instead of the documented InvalidPreset (#397 finding 32 --
-        // NOT fixed here; this pins current behavior for a follow-up).
+    fn recall_preset_uninitialized_non_contiguous_slot_returns_invalid_preset() {
+        // WHY(#452): recall_preset's documented contract is
+        // "InvalidPreset -- slot index out of range or not set".
+        // preset_count only tracks the highest EVER-saved index + 1, not
+        // which individual slots were populated, so saving directly to
+        // slot 3 (skipping 0-2, as in preset_non_contiguous_index above)
+        // leaves slots 0-2 within the `index < preset_count` range yet
+        // never actually written. Per-slot occupancy (Option<u32>) now
+        // lets recall_preset distinguish that from a genuinely saved
+        // frequency and return InvalidPreset as documented, fixing the
+        // FrequencyOutOfRange mismatch this test used to pin.
         let mut radio = make_radio();
         radio.power_on().ok();
         radio.tune(92_300).ok();
@@ -1072,11 +1079,9 @@ mod tests {
         let result = radio.recall_preset(1); // never explicitly saved
         assert_eq!(
             result,
-            Err(FmError::FrequencyOutOfRange),
-            "current behavior: an unset-but-in-range slot surfaces \
-             FrequencyOutOfRange, not the documented \
-             InvalidPreset(\"...or not set\") -- a mismatch worth a \
-             follow-up fix, not asserted here as correct"
+            Err(FmError::InvalidPreset),
+            "an unset-but-in-range slot must return the documented \
+             InvalidPreset, not FrequencyOutOfRange"
         );
     }
 

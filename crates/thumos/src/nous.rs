@@ -464,8 +464,9 @@ pub(crate) fn default_paideia() -> Result<NousEntity, NousError> {
 pub(crate) struct NousManager {
     /// Registered nous entities.
     entities: Vec<NousEntity>,
-    /// Index of the currently active entity.
-    active_entity: usize,
+    /// Index of the currently active entity, or `None` if no entity is
+    /// currently selected (#453).
+    active_entity: Option<usize>,
 }
 
 impl NousManager {
@@ -484,7 +485,7 @@ impl NousManager {
             .collect();
         Self {
             entities,
-            active_entity: 0,
+            active_entity: Some(0),
         }
     }
 
@@ -495,7 +496,7 @@ impl NousManager {
     pub(crate) fn empty() -> Self {
         Self {
             entities: Vec::new(),
-            active_entity: 0,
+            active_entity: None,
         }
     }
 
@@ -504,19 +505,21 @@ impl NousManager {
     /// Returns `None` if no entities are registered.
     #[must_use]
     pub(crate) fn active(&self) -> Option<&NousEntity> {
-        self.entities.get(self.active_entity)
+        self.entities.get(self.active_entity?)
     }
 
     /// Return a mutable reference to the currently active entity.
     ///
     /// Returns `None` if no entities are registered.
     pub(crate) fn active_mut(&mut self) -> Option<&mut NousEntity> {
-        self.entities.get_mut(self.active_entity)
+        self.entities.get_mut(self.active_entity?)
     }
 
     /// Return the index of the currently active entity.
+    ///
+    /// Returns `None` if no entity is currently selected (#453).
     #[must_use]
-    pub(crate) fn active_index(&self) -> usize {
+    pub(crate) fn active_index(&self) -> Option<usize> {
         self.active_entity
     }
 
@@ -551,17 +554,22 @@ impl NousManager {
                 count: self.entities.len(),
             });
         }
-        self.active_entity = index;
+        self.active_entity = Some(index);
         Ok(())
     }
 
     /// Cycle to the next entity (wraps around).
     ///
-    /// Does nothing if no entities are registered.
+    /// Does nothing if no entities are registered. If no entity is
+    /// currently selected, selects the first entity (#453).
     pub(crate) fn cycle_next(&mut self) {
-        if !self.entities.is_empty() {
-            self.active_entity = (self.active_entity + 1) % self.entities.len();
+        if self.entities.is_empty() {
+            return;
         }
+        self.active_entity = Some(match self.active_entity {
+            Some(idx) => (idx + 1) % self.entities.len(),
+            None => 0,
+        });
     }
 
     /// Add a new entity to the manager.
@@ -589,8 +597,12 @@ impl NousManager {
 
     /// Remove an entity by index.
     ///
-    /// Adjusts the active entity index if needed. Cannot remove the last
-    /// entity (the manager must always have at least one, or be empty).
+    /// If the removed entity was the currently active one, the active
+    /// selection is cleared (`None`) regardless of its position -- fail-
+    /// closed, so no privileged action is ever silently attributed to
+    /// whichever entity shifted into the vacated slot (#453). Otherwise
+    /// the active index shifts down to keep pointing at the same
+    /// surviving entity.
     ///
     /// # Errors
     ///
@@ -605,13 +617,19 @@ impl NousManager {
 
         let removed = self.entities.remove(index);
 
-        // Adjust active entity if needed.
-        if self.entities.is_empty() {
-            self.active_entity = 0;
-        } else if self.active_entity >= self.entities.len() {
-            self.active_entity = self.entities.len() - 1;
-        } else if self.active_entity > index {
-            self.active_entity -= 1;
+        // WHY(#453): deselect outright when the removed entity was the
+        // active one (fail-closed) instead of leaving the numeric index
+        // unchanged to silently point at whatever entity shifted down
+        // into the vacated slot; otherwise shift the index down by one
+        // to keep tracking the same surviving entity.
+        match self.active_entity {
+            Some(active) if active == index => self.active_entity = None,
+            Some(active) if active > index => self.active_entity = Some(active - 1),
+            _ => {
+                // WHY: nothing selected (None), or the active entity sits
+                // BEFORE the removed one (active < index) — the active index
+                // still points at the same surviving entity; no adjustment.
+            }
         }
 
         Ok(removed)
@@ -977,7 +995,7 @@ mod tests {
     fn manager_defaults() {
         let mgr = NousManager::new();
         assert_eq!(mgr.entity_count(), 3, "must have 3 default entities");
-        assert_eq!(mgr.active_index(), 0, "Syn must be active by default");
+        assert_eq!(mgr.active_index(), Some(0), "Syn must be active by default");
 
         let active = mgr.active();
         assert!(active.is_some());
@@ -1025,23 +1043,23 @@ mod tests {
     #[test]
     fn manager_cycle_next() {
         let mut mgr = NousManager::new();
-        assert_eq!(mgr.active_index(), 0);
+        assert_eq!(mgr.active_index(), Some(0));
 
         mgr.cycle_next();
-        assert_eq!(mgr.active_index(), 1);
+        assert_eq!(mgr.active_index(), Some(1));
 
         mgr.cycle_next();
-        assert_eq!(mgr.active_index(), 2);
+        assert_eq!(mgr.active_index(), Some(2));
 
         mgr.cycle_next();
-        assert_eq!(mgr.active_index(), 0, "must wrap around");
+        assert_eq!(mgr.active_index(), Some(0), "must wrap around");
     }
 
     #[test]
     fn manager_cycle_next_empty() {
         let mut mgr = NousManager::empty();
         mgr.cycle_next(); // Must not panic.
-        assert_eq!(mgr.active_index(), 0);
+        assert_eq!(mgr.active_index(), None);
     }
 
     #[test]
@@ -1091,31 +1109,26 @@ mod tests {
         let mut mgr = NousManager::new();
         // Switch to last entity (index 2 = Paideia).
         mgr.switch(2).unwrap_or_else(|_| unreachable!());
-        assert_eq!(mgr.active_index(), 2);
+        assert_eq!(mgr.active_index(), Some(2));
 
-        // Remove entity at index 2.
+        // Remove entity at index 2 (the active entity, and the last one).
         let _ = mgr.remove_entity(2);
-        assert!(
-            mgr.active_index() < mgr.entity_count(),
-            "active index must be clamped after removal"
+        assert_eq!(
+            mgr.active_index(),
+            None,
+            "removing the active entity must deselect, not silently \
+             clamp to a different entity (#453)"
         );
     }
 
     #[test]
-    fn remove_entity_silently_shifts_active_when_removing_a_non_last_active_entity() {
-        // WHY: pins a genuine, currently-uncovered edge case in
-        // remove_entity's active-index adjustment. The existing branches
-        // (`entities.is_empty()`, `active_entity >= entities.len()`,
-        // `active_entity > index`) cover removing the active entity when
-        // it is the LAST one, or removing a non-active entity BEFORE the
-        // active one -- but not removing the ACTIVE entity itself from a
-        // non-last position. There, active_entity is left unchanged, but
-        // because Vec::remove shifts every later element down by one,
-        // that same numeric index now refers to a DIFFERENT entity --
-        // the active entity silently becomes whichever one used to sit
-        // immediately after the removed one, with no explicit selection
-        // by the caller (a silent capability-preset substitution, since
-        // each entity carries its own trust level) (#397).
+    fn remove_entity_deselects_when_removing_a_non_last_active_entity() {
+        // WHY(#453): removing the currently-active entity must clear the
+        // selection (fail-closed) rather than leaving active_entity's
+        // numeric index unchanged and letting it silently refer to
+        // whatever entity Vec::remove shifted down into that slot --
+        // that would substitute a different entity's capability preset
+        // for a selection the caller never made.
         let mut mgr = NousManager::new();
         // Syn (Advisor) at 0, Phrouros (Observer) at 1, Paideia (Assistant) at 2.
         mgr.switch(1).unwrap_or_else(|_| unreachable!()); // active = Phrouros
@@ -1127,17 +1140,13 @@ mod tests {
             Ok(String::from("Phrouros")),
         );
 
-        // Current behavior: active_entity index (1) is left unchanged,
-        // but now refers to Paideia (which shifted down from index 2 to
-        // index 1) -- a different entity with a different capability
-        // preset, silently substituted for the one the caller had
-        // selected.
         assert_eq!(
             mgr.active().map(|e| e.name_str()),
-            Some("Paideia"),
-            "current behavior: the active pointer silently follows \
-             whatever entity shifted into the removed active entity's slot"
+            None,
+            "removing the active entity must deselect -- no entity is \
+             active until one is explicitly selected"
         );
+        assert_eq!(mgr.active_index(), None);
     }
 
     #[test]
