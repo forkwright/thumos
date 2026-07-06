@@ -40,7 +40,7 @@ use core::fmt;
 use ed25519_dalek::{Signature, VerifyingKey};
 
 // ---------------------------------------------------------------------------
-// Public key — placeholder (replaced at build time with real key)
+// Public key — provisioned at build time by build.rs (#233)
 // ---------------------------------------------------------------------------
 
 /// Ed25519 public key size in bytes.
@@ -52,21 +52,13 @@ pub(crate) const SIGNATURE_LEN: usize = 64;
 /// Minimum image size: at least 1 byte of payload + 64-byte signature.
 const MIN_IMAGE_SIZE: usize = SIGNATURE_LEN + 1;
 
-/// Embedded Ed25519 public key for kernel signature verification.
-///
-/// TODO(#233)[deliberate-prudent]: this is the RFC 8032 section 7.1 Test 1 public key, NOT a
-/// real trust anchor. It must be replaced with the production boot key
-/// injected by the offline signing infrastructure before any release
-/// build. The corresponding private key is stored on a Titan security key
-/// or air-gapped machine and never touches the device.
-///
-/// WARNING: the previous value here was a corrupted copy of this vector
-/// (11 trailing bytes wrong) — an off-curve point that no Ed25519 verifier
-/// can decompress. Restored to the genuine RFC 8032 Test 1 public key.
-const BOOT_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [
-    0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
-    0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a,
-];
+// WHY (#233): the trust anchor is never a source-committed production key.
+// build.rs sources it (THUMOS_BOOT_KEY_PUB under `--features production`;
+// the committed, deliberately-public dev key otherwise), refuses the
+// forgeable RFC 8032 placeholder and off-curve bytes, and generates
+// BOOT_PUBLIC_KEY / BOOT_KEY_IS_PRODUCTION / BOOT_TRUST_STAMP (plus, for
+// dev-key builds, the test-only signing seed).
+include!(concat!(env!("OUT_DIR"), "/boot_key.rs"));
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -241,6 +233,69 @@ pub(crate) fn split_image(image: &[u8]) -> Result<(&[u8], [u8; SIGNATURE_LEN]), 
 pub(crate) fn verify_combined_image(image: &[u8]) -> Result<(), SecureBootError> {
     let (payload, sig) = split_image(image)?;
     verify_kernel_signature(payload, &sig)
+}
+
+// ===========================================================================
+// Boot gate (#217) — fail-closed decision over the boot-image source
+// ===========================================================================
+
+/// Where the boot image came from, as established by kinit's secure-boot
+/// step.
+///
+/// INVARIANT (#217): `Absent` means no boot medium exists — nothing to
+/// verify AND nothing persistent to mount — so the boot may continue
+/// DEGRADED with every trust-gated step locked. It must never stand in for
+/// "a boot partition exists but could not be read or verified": that is the
+/// fail-closed HALT class, expressed as `Present` with a failing
+/// verification.
+pub(crate) enum BootImageSource<'a> {
+    /// The combined image (payload || Ed25519 signature) read from the boot
+    /// partition.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "constructed by the eMMC boot-partition read wiring (#217 follow-on); the gate consumes it today"
+        )
+    )]
+    Present(&'a [u8]),
+    /// No boot medium: qemu (no MSDC model) or an eMMC that failed init, so
+    /// no partition is readable and no persistent data is mountable.
+    Absent,
+}
+
+/// Outcome of the secure-boot gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum SecureBootDecision {
+    /// Continue booting. `verified` is the sole input to
+    /// `BootState::secure_boot_ok` and is true only on cryptographic
+    /// success.
+    Proceed {
+        /// True only when the boot image verified against the embedded key.
+        verified: bool,
+    },
+    /// A boot partition exists and its image failed verification (or could
+    /// not be parsed): the kernel must HALT before any decrypt / mount /
+    /// userspace step.
+    Halt(SecureBootError),
+}
+
+/// Evaluate the fail-closed secure-boot gate (#217).
+///
+/// - `Present` + valid signature: proceed, trusted.
+/// - `Present` + anything else: halt (fail closed).
+/// - `Absent` (no boot medium): proceed UNTRUSTED — secure_boot_ok stays
+///   false and every downstream trust gate (LFS mount, passphrase,
+///   encrypted mount, audit key, persistent userspace) stays locked.
+pub(crate) fn evaluate_boot_image(source: &BootImageSource<'_>) -> SecureBootDecision {
+    match source {
+        BootImageSource::Present(image) => match verify_combined_image(image) {
+            Ok(()) => SecureBootDecision::Proceed { verified: true },
+            Err(e) => SecureBootDecision::Halt(e),
+        },
+        BootImageSource::Absent => SecureBootDecision::Proceed { verified: false },
+    }
 }
 
 // ===========================================================================
@@ -527,15 +582,12 @@ mod tests {
     fn combined_image_valid_signature_passes() {
         use ed25519_dalek::{Signer, SigningKey};
 
-        // NOTE: RFC 8032 section 7.1 Test Vector 1 secret key (seed) -- the
-        // private half of BOOT_PUBLIC_KEY. Cross-verified against the
-        // vendored ed25519-dalek crate's own RFC-8032-derived fixture and by
-        // independently recomputing the derived public key.
-        let seed: [u8; 32] = [
-            0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec,
-            0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03,
-            0x1c, 0xae, 0x7f, 0x60,
-        ];
+        // NOTE (#233): the committed dev seed (keys/dev/boot-dev.seed),
+        // emitted by build.rs only when the build's trust anchor is the dev
+        // key. Host tests always build without THUMOS_BOOT_KEY_PUB, so the
+        // seed is present; a key-overridden test build fails here loudly
+        // rather than silently skipping the boot-key round-trip.
+        let seed = BOOT_KEY_DEV_SEED.expect("boot-key tests require the dev trust anchor");
         let signing_key = SigningKey::from_bytes(&seed);
         assert_eq!(
             signing_key.verifying_key().to_bytes(),
@@ -564,13 +616,9 @@ mod tests {
     fn combined_image_tampered_payload_fails() {
         use ed25519_dalek::{Signer, SigningKey};
 
-        // NOTE: same RFC 8032 Test Vector 1 seed as
+        // NOTE (#233): same committed dev seed as
         // combined_image_valid_signature_passes.
-        let seed: [u8; 32] = [
-            0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec,
-            0x2c, 0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03,
-            0x1c, 0xae, 0x7f, 0x60,
-        ];
+        let seed = BOOT_KEY_DEV_SEED.expect("boot-key tests require the dev trust anchor");
         let signing_key = SigningKey::from_bytes(&seed);
 
         let payload = [0x5Au8; 16];
@@ -617,5 +665,72 @@ mod tests {
 
         let msg = SecureBootError::WrongPublicKey.to_string();
         assert!(msg.contains("does not match"), "WrongPublicKey display");
+    }
+
+    // -- #217 fail-closed boot gate --
+
+    fn signed_dev_image(payload: &[u8]) -> alloc::vec::Vec<u8> {
+        use ed25519_dalek::{Signer, SigningKey};
+        let seed = BOOT_KEY_DEV_SEED.expect("boot-key tests require the dev trust anchor");
+        let signing_key = SigningKey::from_bytes(&seed);
+        let mut image = alloc::vec::Vec::from(payload);
+        image.extend_from_slice(&signing_key.sign(payload).to_bytes());
+        image
+    }
+
+    #[test]
+    fn gate_verified_image_proceeds_trusted() {
+        let image = signed_dev_image(&[0xA5u8; 32]);
+        assert_eq!(
+            evaluate_boot_image(&BootImageSource::Present(&image)),
+            SecureBootDecision::Proceed { verified: true },
+            "a validly signed present image must proceed trusted"
+        );
+    }
+
+    #[test]
+    fn gate_tampered_image_halts() {
+        let mut image = signed_dev_image(&[0xA5u8; 32]);
+        image[0] ^= 0x01;
+        assert_eq!(
+            evaluate_boot_image(&BootImageSource::Present(&image)),
+            SecureBootDecision::Halt(SecureBootError::InvalidSignature),
+            "a tampered present image must halt, never degrade"
+        );
+    }
+
+    #[test]
+    fn gate_unparseable_image_halts() {
+        // WHY: present-but-unparseable is the fail-closed HALT class -- it
+        // must never be conflated with the no-boot-medium degrade.
+        let short = [0u8; 64];
+        assert_eq!(
+            evaluate_boot_image(&BootImageSource::Present(&short)),
+            SecureBootDecision::Halt(SecureBootError::ImageTooShort),
+            "an unparseable present image must halt, never degrade"
+        );
+    }
+
+    #[test]
+    fn gate_absent_medium_degrades_untrusted() {
+        assert_eq!(
+            evaluate_boot_image(&BootImageSource::Absent),
+            SecureBootDecision::Proceed { verified: false },
+            "no boot medium must proceed degraded-locked, not halt"
+        );
+    }
+
+    #[test]
+    fn trust_stamp_marks_dev_anchor() {
+        // WHY (#233): host tests always build with the dev anchor; the
+        // stamp and the production flag must say so.
+        assert!(
+            !BOOT_KEY_IS_PRODUCTION,
+            "host tests must never be production-stamped"
+        );
+        assert!(
+            BOOT_TRUST_STAMP.starts_with("THUMOS-BOOT-TRUST:DEV:"),
+            "dev builds must carry the DEV trust stamp"
+        );
     }
 }
