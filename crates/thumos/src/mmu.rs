@@ -65,6 +65,9 @@ pub(crate) mod page_flags {
     pub(crate) const AP_READ_ONLY: u32 = 0b10 << 4;
     /// AP[1:0] = 0b01 (bits [5:4]): PL1-only (no PL0 access).
     pub(crate) const AP_KERNEL_ONLY: u32 = 0b01 << 4;
+    /// AP[2:0] = 0b101 (APX bit 9 set, AP[1:0]=0b01): PL1 READ-ONLY, no PL0.
+    /// WHY (#417): kernel `.text` is mapped read-only + executable for W^X.
+    pub(crate) const AP_KERNEL_RO: u32 = (0b01 << 4) | (1 << 9);
     /// Execute-never for small pages (XN, bit 0).
     pub(crate) const XN: u32 = 1;
     /// Shareable (bit 10).
@@ -78,6 +81,10 @@ pub(crate) mod page_flags {
 pub(crate) struct L2Table {
     pub entries: [u32; 256],
 }
+
+/// Dedicated L2 table for the kernel's 1 MB region at 0x4000_0000, mapped with
+/// W^X page permissions (#417). Permanent (not drawn from the userspace pool).
+static mut KERNEL_L2: L2Table = L2Table { entries: [0; 256] };
 
 /// Pool of L2 page tables for userspace mappings.
 /// WHY: 64 tables supports up to ~64 MB of page-mapped address space
@@ -392,6 +399,61 @@ pub enum MemoryType {
     Device,
 }
 
+/// The W^X access-permission + execute bits for a kernel page at virtual
+/// address `va`, given the page-aligned image boundaries (#417). Pure, so the
+/// W^X policy is host-testable without the MMU:
+/// - `.text` (`[text_start, etext)`): read-only + executable.
+/// - `.rodata` (`[etext, erodata)`): read-only + execute-never.
+/// - everything else (pre-image gap, data, bss, stacks): writable +
+///   execute-never.
+///
+/// INVARIANT: an executable page (XN unset) is always read-only, so no page is
+/// ever both writable and executable.
+fn wx_page_attrs(va: usize, text_start: usize, etext: usize, erodata: usize) -> u32 {
+    if va >= text_start && va < etext {
+        page_flags::AP_KERNEL_RO
+    } else if va >= etext && va < erodata {
+        page_flags::AP_KERNEL_RO | page_flags::XN
+    } else {
+        page_flags::AP_KERNEL_ONLY | page_flags::XN
+    }
+}
+
+/// Fill the kernel L2 table with W^X page permissions (#417).
+///
+/// link.ld page-aligns the image boundaries so each 4 KB page of the kernel's
+/// 1 MB region falls entirely in one region (see [`wx_page_attrs`]). Gated to
+/// the real target: the linker symbols do not exist in the i686 host-test link
+/// (the wx policy itself is unit-tested via `wx_page_attrs`).
+///
+/// # Safety
+/// Called once during early boot on `KERNEL_L2`, interrupts disabled, before
+/// the MMU is enabled.
+#[cfg(not(test))]
+unsafe fn map_kernel_wx() {
+    unsafe extern "C" {
+        static __text_start: u8;
+        static __etext: u8;
+        static __erodata: u8;
+    }
+    let text_start = core::ptr::addr_of!(__text_start) as usize;
+    let etext = core::ptr::addr_of!(__etext) as usize;
+    let erodata = core::ptr::addr_of!(__erodata) as usize;
+    const KERNEL_BASE: usize = 0x4000_0000;
+    const PAGE: usize = 4096;
+    // SAFETY: KERNEL_L2 is a static mut written once here during early boot
+    // with interrupts disabled and no concurrent access.
+    let l2 = unsafe { &mut *core::ptr::addr_of_mut!(KERNEL_L2) };
+    for (i, entry) in l2.entries.iter_mut().enumerate() {
+        let va = KERNEL_BASE + i * PAGE;
+        *entry = u32::try_from(va).unwrap_or_default()
+            | page_flags::SMALL_PAGE
+            | page_flags::SHAREABLE
+            | page_flags::NORMAL_WB_WA
+            | wx_page_attrs(va, text_start, etext, erodata);
+    }
+}
+
 /// Map a 1 MB section in the L1 page table.
 ///
 /// `virt_mb` and `phys_mb` are megabyte-aligned addresses divided by 1 MB.
@@ -399,8 +461,12 @@ pub enum MemoryType {
 fn map_section(virt_mb: usize, phys_mb: usize, mem_type: MemoryType) {
     let base = (u32::try_from(phys_mb).unwrap_or_default()) << 20;
     let attrs = match mem_type {
+        // WHY (#417): RAM sections are execute-never. The one executable RAM
+        // region -- the kernel `.text` -- is mapped separately via the kernel
+        // L2 table (map_kernel_wx); all flat DRAM here is data/heap and must
+        // not be executable (W^X defense-in-depth).
         MemoryType::Ram => {
-            flags::SECTION | flags::AP_PL1_ONLY | flags::SHAREABLE | flags::NORMAL_WB_WA
+            flags::SECTION | flags::AP_PL1_ONLY | flags::SHAREABLE | flags::NORMAL_WB_WA | flags::XN
         }
         MemoryType::Device => flags::SECTION | flags::AP_PL1_ONLY | flags::DEVICE | flags::XN,
     };
@@ -447,8 +513,31 @@ pub unsafe fn init_and_enable() {
         map_section(mb, mb, MemoryType::Device);
     }
 
-    // DRAM: 0x4000_0000 - 0x7FFF_FFFF (1 GB)
-    for mb in 0x400..0x800 {
+    // Kernel image region (0x4000_0000 - 0x4010_0000): W^X via the kernel L2
+    // table (#417) -- .text read-only+executable, .rodata read-only+XN,
+    // data/bss/stacks writable+XN. The rest of DRAM below is flat RAM sections,
+    // now execute-never.
+    // On the real target the kernel image is W^X-mapped via its L2 table;
+    // under host test the linker symbols do not exist, so map mb 0x400 as a
+    // flat RAM section (the wx policy is unit-tested via wx_page_attrs).
+    #[cfg(not(test))]
+    {
+        // SAFETY: KERNEL_L2 is filled once here during early boot with
+        // interrupts disabled, before the MMU is enabled; L1[0x400] then
+        // points at it as a coarse page table (domain 0, checked by DACR per
+        // #323).
+        unsafe {
+            map_kernel_wx();
+        }
+        table.entries[0x400] = u32::try_from(core::ptr::addr_of!(KERNEL_L2) as usize)
+            .unwrap_or_default()
+            | page_flags::L1_PAGE_TABLE;
+    }
+    #[cfg(test)]
+    map_section(0x400, 0x400, MemoryType::Ram);
+
+    // DRAM beyond the kernel image: 0x4010_0000 - 0x7FFF_FFFF, RAM + XN.
+    for mb in 0x401..0x800 {
         map_section(mb, mb, MemoryType::Ram);
     }
 
@@ -1343,6 +1432,42 @@ mod tests {
         }
         unsafe {
             free_l2_table(reused);
+        }
+    }
+
+    #[test]
+    fn wx_page_attrs_is_write_xor_execute() {
+        // Synthetic page-aligned image bounds within the kernel 1 MB region.
+        let (text_start, etext, erodata) = (0x4000_8000usize, 0x4004_0000, 0x4005_0000);
+        let is_xn = |a: u32| a & page_flags::XN != 0;
+
+        // .text: executable (not XN) and read-only (AP_KERNEL_RO exactly).
+        let text = wx_page_attrs(0x4000_8000, text_start, etext, erodata);
+        assert!(!is_xn(text), ".text must be executable");
+        assert_eq!(text, page_flags::AP_KERNEL_RO, ".text must be read-only");
+
+        // .rodata: read-only + execute-never.
+        let ro = wx_page_attrs(0x4004_2000, text_start, etext, erodata);
+        assert_eq!(ro, page_flags::AP_KERNEL_RO | page_flags::XN);
+
+        // pre-image gap, and everything at/after erodata: writable + XN.
+        for va in [0x4000_0000usize, 0x4005_0000, 0x400F_F000] {
+            let data = wx_page_attrs(va, text_start, etext, erodata);
+            assert_eq!(data, page_flags::AP_KERNEL_ONLY | page_flags::XN);
+        }
+
+        // INVARIANT across the whole 1 MB region: an executable page is never
+        // writable (W^X). Only .text is executable, and it is read-only.
+        for i in 0..256usize {
+            let va = 0x4000_0000 + i * 4096;
+            let a = wx_page_attrs(va, text_start, etext, erodata);
+            if !is_xn(a) {
+                assert_eq!(
+                    a,
+                    page_flags::AP_KERNEL_RO,
+                    "executable page must be read-only"
+                );
+            }
         }
     }
 }
