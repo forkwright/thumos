@@ -230,12 +230,13 @@ pub extern "C" fn irq_handler_rust() {
                 unsafe {
                     process::switch_to(next);
                 }
-            } else {
-                // REQ-19a: idle — no other runnable process, enter WFI.
-                // WHY: wfi suspends the core until the next interrupt, reducing
-                // power consumption in the idle path without affecting correctness.
-                power::idle();
             }
+            // WHY (REQ-19a, #420): the idle WFI moved to the PID-0 service
+            // loop (kardia.rs). A WFI here ran INSIDE the IRQ handler,
+            // stalling return-from-IRQ until the NEXT interrupt pended; the
+            // interrupted context (the service loop) is the correct idle
+            // point and issues power::idle() itself when no tick work
+            // remains.
         }
 
         // Check for pending signals on the current process.
