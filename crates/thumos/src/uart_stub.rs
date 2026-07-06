@@ -21,6 +21,11 @@ impl Uart {
 
     /// Discard a single byte.
     pub(crate) fn putc(&self, _byte: u8) {}
+
+    /// Host-test RX stub: no real UART, so no bytes are ever available.
+    pub(crate) fn getc(&self) -> Option<u8> {
+        None
+    }
 }
 
 impl fmt::Write for Uart {

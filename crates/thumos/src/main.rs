@@ -27,7 +27,29 @@ mod capability;
 mod ccci;
 mod ccci_logger;
 mod clock;
-#[cfg(not(test))]
+
+// WHY (issue #372): `debug-console` and `production` are structurally
+// mutually exclusive -- the dev-only kernel shell (unauthenticated UART
+// command execution, no capability check) must never be compiled into a
+// shippable/production image. A CI grep on a diff cannot catch a future
+// `--all-features` invocation (security.yml's cargo-deny job already runs
+// one, though today scoped to the workspace, which excludes this crate);
+// this compile_error! does, because --all-features enables both features
+// at once regardless of workspace membership.
+#[cfg(all(feature = "debug-console", feature = "production"))]
+compile_error!(
+    "debug-console and production are mutually exclusive (issue #372): the dev-only kernel UART shell must never ship. Build with --features debug-console (no --features production) for a bring-up/dev image, or --features production (no --features debug-console) for the ship/flash artifact."
+);
+
+// WHY (issue #372): also gated `not(test)` — the console's command methods
+// (cmd_mem/cmd_ps/…) read kernel state via `crate::heap`/`page`/`process`,
+// several of which are themselves `#[cfg(not(test))]`, so the module cannot
+// compile under the host-test cfg. Making the console host-testable (to
+// resurrect the #337 receive_byte tests + the new presence test) needs
+// heap/page/process host stubs — tracked separately; out of #372's
+// structural-gate scope. The armv7a `--features debug-console` build proves
+// the console compiles for its real target.
+#[cfg(all(feature = "debug-console", not(test)))]
 mod console;
 mod contacts;
 mod csprng;

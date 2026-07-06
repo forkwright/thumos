@@ -8,6 +8,8 @@
 //! - 0x00: RBR/THR (receive buffer / transmit holding)
 //! - 0x04: IER (interrupt enable)
 //! - 0x14: LSR (line status)
+//!   - bit 0: DR (receiver data ready) -- TODO(#459)[deliberate-prudent]: unverified against the
+//!     MT6739 TRM, see `Uart::getc`
 //!   - bit 5: THRE (transmit holding register empty)
 //!   - bit 6: TEMT (transmitter empty)
 
@@ -19,11 +21,21 @@ const UART0_BASE: usize = 0x1100_2000;
 /// Transmit holding register OFFSET.
 const THR: usize = 0x00;
 
+/// Receive buffer register OFFSET.
+/// NOTE: shares the THR offset, per the standard 16550-style register
+/// layout this module's TX side already follows (RBR on read, THR on
+/// write) -- see the module doc's register map.
+const RBR: usize = 0x00;
+
 /// Line status register OFFSET.
 const LSR: usize = 0x14;
 
 /// LSR bit: transmit holding register empty.
 const LSR_THRE: u32 = 1 << 5;
+
+/// LSR bit: receiver data ready.
+/// TODO(#459)[deliberate-prudent]: unverified against the MT6739 TRM -- see `Uart::getc`.
+const LSR_DR: u32 = 1 << 0;
 
 /// Bound on `putc`'s TX-ready poll, in iterations (not wall-clock time --
 /// see `putc`'s doc comment). Generous enough to never trip under normal
@@ -85,6 +97,29 @@ impl Uart {
     pub(crate) fn write_str_raw(&self, s: &str) {
         for byte in s.bytes() {
             self.putc(byte);
+        }
+    }
+
+    /// Non-blocking receive: returns the next byte if the RX FIFO has one
+    /// ready, `None` otherwise.
+    ///
+    /// TODO(#459)[deliberate-prudent]: `LSR_DR` (bit 0, "data ready") is the standard 16550-style
+    /// position and matches this module's existing THR/LSR offset layout,
+    /// but has not been independently confirmed against the MT6739 TRM for
+    /// this UART instance -- verify on real hardware before any boot-path
+    /// behavior depends on RX timing (issue #372,
+    /// `console::wait_for_physical_presence`).
+    pub(crate) fn getc(&self) -> Option<u8> {
+        // SAFETY: MMIO register access at known physical address. The UART
+        // is already initialized by the bootloader.
+        unsafe {
+            let lsr = (self.base + LSR) as *const u32;
+            if core::ptr::read_volatile(lsr) & LSR_DR == 0 {
+                return None;
+            }
+            let rbr = (self.base + RBR) as *const u32;
+            let raw = core::ptr::read_volatile(rbr) & 0xFF;
+            u8::try_from(raw).ok()
         }
     }
 }
