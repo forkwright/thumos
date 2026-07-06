@@ -7,15 +7,25 @@ SECTIONS
 {
     . = 0x40008000;
 
+    /* WHY (#417): page-aligned section boundaries so the MMU can map the
+       kernel image with W^X permissions per 4 KB page -- .text executable
+       but read-only, .rodata read-only + execute-never, data/bss writable +
+       execute-never. See mmu::map_kernel_wx. */
+    . = ALIGN(4096);
+    __text_start = .;
     .text : {
         *(.text.boot)
         *(.text .text.*)
     }
 
+    . = ALIGN(4096);
+    __etext = .;
     .rodata : ALIGN(4) {
         *(.rodata .rodata.*)
     }
 
+    . = ALIGN(4096);
+    __erodata = .;
     .data : ALIGN(4) {
         *(.data .data.*)
     }
