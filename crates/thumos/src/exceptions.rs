@@ -134,10 +134,11 @@ core::arch::global_asm!(
     "    pop     {{r0-r12, lr}}",
     "    b       .",
     "svc_handler_asm:",
-    "    push    {{r0-r12, lr}}",
-    "    bl      svc_handler_rust",
-    "    pop     {{r0-r12, lr}}",
-    "    movs    pc, lr",
+    "    push    {{r0-r12, lr}}",   // frame: sp -> [r0..r12, lr]
+    "    mov     r0, sp",           // WHY(#474): pass frame ptr to the handler so
+    "    bl      svc_handler_rust", //          it can write the return into r0
+    "    pop     {{r0-r12, lr}}",   // restore r1-r12 + the handler's r0 (= result)
+    "    movs    pc, lr",           // return to caller (restores CPSR from SPSR)
 );
 
 unsafe extern "C" {
@@ -303,11 +304,30 @@ pub extern "C" fn undefined_handler_rust() {
     crate::qemu::request_exit(4);
 }
 
-/// SVC handler (placeholder for future syscall implementation).
+/// Register frame `svc_handler_asm` pushes (`push {r0-r12, lr}`): r0-r12 then
+/// the SVC-mode return address (the instruction after `svc`).
+#[repr(C)]
+pub(crate) struct SvcFrame {
+    r: [u32; 13],
+    lr: u32,
+}
+
+/// SVC (supervisor call) handler -- the userspace -> kernel syscall entry
+/// (#474).
+///
+/// ABI (thumos, ARM-EABI style): `r7` = syscall number, `r0`-`r3` = args,
+/// return value in `r0`. `svc_handler_asm` pushed `{r0-r12, lr}` and passes
+/// the frame pointer here so the return value is written back into the saved
+/// `r0` slot (which the wrapper's `pop` then restores into the caller's r0).
+/// r1-r12 are preserved (left as the caller's saved values). A syscall that
+/// switches context (Exit/Yield) does not return through here -- `dispatch`
+/// hands off via `process::{exit_with_status,switch_to}`.
 #[unsafe(no_mangle)]
-pub extern "C" fn svc_handler_rust() {
-    // NOTE: in a full implementation, extract SVC number FROM the instruction
-    // at the return address (lr - 4), and read r0-r3 FROM the saved context
-    // on the stack. For now this is a placeholder that will be properly
-    // wired when we have userspace processes making SVC calls.
+pub(crate) extern "C" fn svc_handler_rust(frame: *mut SvcFrame) {
+    // SAFETY: `frame` is the {r0-r12, lr} block svc_handler_asm just pushed on
+    // the SVC stack; it is valid for this call and unaliased (SVC is
+    // non-reentrant on this single core).
+    let f = unsafe { &mut *frame };
+    let ret = crate::syscall::dispatch(f.r[7], f.r[0], f.r[1], f.r[2], f.r[3]);
+    f.r[0] = ret;
 }
