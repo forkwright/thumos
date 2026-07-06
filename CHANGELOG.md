@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7](https://github.com/forkwright/thumos/compare/v0.1.6...v0.1.7) (2026-07-06)
+
+
+### Features
+
+* **thumos:** two-level per-process FD table ([#267](https://github.com/forkwright/thumos/issues/267), closes [#84](https://github.com/forkwright/thumos/issues/84) [#32](https://github.com/forkwright/thumos/issues/32)) ([#470](https://github.com/forkwright/thumos/issues/470)) ([228fef2](https://github.com/forkwright/thumos/commit/228fef2210ee712b8e4a3f464e6eeba3474ee691))
+* **thumos:** W^X kernel memory via L2 page mapping ([#417](https://github.com/forkwright/thumos/issues/417), closes [#18](https://github.com/forkwright/thumos/issues/18) wave) ([#473](https://github.com/forkwright/thumos/issues/473)) ([ed65feb](https://github.com/forkwright/thumos/commit/ed65febc57efb2193e9161f18112e26f66188b45))
+
 ## [0.1.6](https://github.com/forkwright/thumos/compare/v0.1.5...v0.1.6) (2026-07-06)
 
 
