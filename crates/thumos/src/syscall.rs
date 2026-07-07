@@ -337,26 +337,6 @@ impl Syscall {
     ];
 }
 
-/// Low-power wait-for-event hint, used by the tick-busy-wait sleep path.
-///
-/// On ARM this issues the `wfe` hint so the CPU parks until the next event
-/// (e.g. the timer IRQ). On the host test target there is no such instruction
-/// and no interrupt source, so it is a no-op.
-#[cfg(target_arch = "arm")]
-#[inline(always)]
-fn wait_for_event() {
-    // SAFETY: WFE is a hint instruction available in all ARM privilege levels.
-    // No memory is accessed; the CPU waits for the next event.
-    unsafe {
-        core::arch::asm!("wfe");
-    }
-}
-
-/// Host-test no-op counterpart to the ARM `wfe` hint.
-#[cfg(not(target_arch = "arm"))]
-#[inline(always)]
-fn wait_for_event() {}
-
 /// Syscall dispatch. Called FROM the SVC handler in `exceptions.rs`.
 ///
 /// # Arguments
@@ -453,11 +433,25 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             const TICK_MS: u64 = 10;
             let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
             let wake_tick = crate::exceptions::ticks().saturating_add(ticks_needed);
+            // Mark Sleeping and YIELD (#465/#477, mirrors sys_nanosleep): the
+            // old busy-wait hard-hung a userspace caller (SVC runs IRQ-masked,
+            // so ticks() froze and the kernel spun forever). The scheduler wakes
+            // the process at wake_tick; a later switch resumes it with r0=0.
             process::set_wake_tick(wake_tick);
-            while crate::exceptions::ticks() < wake_tick {
-                wait_for_event();
+            let next = process::schedule();
+            if next != process::current_pid() {
+                // WHY(#465): deposit the return value (0) before switching away.
+                process::set_trap_return(0);
+                // SAFETY: `next` is a valid Ready PID from schedule().
+                unsafe {
+                    process::switch_to(next);
+                }
+            } else {
+                // No other process to yield to (or a zero-length sleep the
+                // scheduler re-woke at once): the sleep is a no-op -- restore
+                // Running rather than linger mis-marked Sleeping.
+                process::clear_wake_tick();
             }
-            process::clear_wake_tick();
             0
         }
         Syscall::Send => {

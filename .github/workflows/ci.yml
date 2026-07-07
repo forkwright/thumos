@@ -220,3 +220,21 @@ jobs:
           grep -q 'KERNEL UNDEFINED INSTRUCTION' kfault.log || { echo 'FAIL kfault: missing kernel-fault banner'; exit 1; }
           ! grep -q 'THUMOS-QEMU: service-loop ticks=' kfault.log || { echo 'FAIL kfault: service loop ran past a KERNEL fault (fault was masked)'; exit 1; }
           ! grep -q 'USERFAULT:' kfault.log || { echo 'FAIL kfault: a PL1 fault took the USER kill branch (mode check broken)'; exit 1; }
+      - name: Userspace sleep really yields (#477, no busy-wait deadlock)
+        working-directory: crates/thumos
+        # WHY: a userspace nanosleep/Sleep must YIELD (switch away, resume after
+        # the interval), not busy-wait. The old busy-wait ran IRQ-masked in the
+        # SVC trap, so ticks() froze and the WHOLE kernel hung. The sleep /init
+        # variant sleeps 30ms between "sleeping" and "woke": a real yield lets
+        # the service loop run meanwhile and /init resume ("woke" + exit 0); a
+        # busy-wait hangs the kernel -> runner timeout (124), no "woke".
+        run: |
+          set -uo pipefail
+          THUMOS_INIT_VARIANT=sleep cargo build --release --target armv7a-none-eabi --features qemu --jobs 8
+          src=0
+          THUMOS_INIT_VARIANT=sleep THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee sleep.log || src=$?
+          echo "=== sleep probe: runner rc=$src (want 0) ==="
+          test "$src" -eq 0 || { echo "FAIL sleep: kernel did not survive a userspace sleep (rc=$src; 124=hang -> busy-wait deadlock regression)"; exit 1; }
+          grep -q 'init: sleeping' sleep.log || { echo 'FAIL sleep: /init did not reach the sleep'; exit 1; }
+          grep -q 'init: woke' sleep.log || { echo 'FAIL sleep: /init never resumed from sleep (busy-wait deadlock or lost wake)'; exit 1; }
+          grep -q 'THUMOS-QEMU: service-loop ticks=' sleep.log || { echo 'FAIL sleep: service loop did not run (kernel hung during the sleep)'; exit 1; }

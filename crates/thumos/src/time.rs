@@ -149,25 +149,6 @@ fn monotonic_secs() -> u64 {
     timer::counter() / freq
 }
 
-/// Low-power wait-for-event hint, used by the nanosleep tick-busy-wait.
-///
-/// On ARM this issues the `wfe` hint so the CPU parks until the next timer
-/// IRQ. On the host test target there is no such instruction and no interrupt
-/// source, so it is a no-op.
-#[cfg(target_arch = "arm")]
-#[inline(always)]
-fn wait_for_event() {
-    // SAFETY: WFE is a hint instruction available at EL1; no memory is accessed.
-    unsafe {
-        core::arch::asm!("wfe");
-    }
-}
-
-/// Host-test no-op counterpart to the ARM `wfe` hint.
-#[cfg(not(target_arch = "arm"))]
-#[inline(always)]
-fn wait_for_event() {}
-
 /// Convert a raw timer counter value to a (seconds, nanoseconds) pair.
 fn counter_to_timespec(count: u64, freq: u64) -> (u32, u32) {
     if freq == 0 {
@@ -296,25 +277,32 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     let now_ticks = exceptions::ticks();
     let wake_tick = now_ticks.saturating_add(ticks_needed);
 
-    // Record wake time in PCB and mark process as sleeping.
-    // SAFETY: set_wake_tick operates on the static PROCS table via addr_of_mut!,
-    // which is the established pattern for all process mutations in this kernel.
+    // Mark the process Sleeping (set_wake_tick does this) and YIELD to the
+    // scheduler -- the futex-wait pattern (#465/#477). The scheduler wakes a
+    // Sleeping process once now >= wake_tick, and a later switch resumes it in
+    // userspace at the instruction after the `svc` with r0=0 (set_trap_return
+    // below). The old busy-wait `while ticks() < wake_tick` hard-hung a
+    // userspace caller: the SVC trap runs IRQ-masked, so ticks() never advanced
+    // and the whole kernel spun forever.
+    // SAFETY: set_wake_tick mutates PROCS via addr_of_mut! (the established
+    // pattern) from syscall context (single-threaded, IRQs masked under SVC).
     process::set_wake_tick(wake_tick);
-
-    // TODO(#477)[deliberate-prudent]: busy-wait, not a real sleep. wake_tick is set and the
-    // scheduler already wakes Sleeping processes, but this loop spins instead
-    // of switching away. Under the SVC trap (IRQs masked) `ticks()` never
-    // advances here, so a userspace nanosleep hard-hangs. The #465 trap-frame
-    // switch now makes the correct fix reachable (mark Sleeping, set_trap_return
-    // (0), switch_to(schedule()), return -- the futex-wait pattern); #477 lands
-    // it with a sleeping-userspace QEMU test. Not reached today: no userspace
-    // program calls nanosleep yet.
-    while exceptions::ticks() < wake_tick {
-        wait_for_event();
+    let next = process::schedule();
+    if next != process::current_pid() {
+        // WHY(#465): deposit the wake-time return value (0) into the live trap
+        // frame before switching away, so the woken process's saved frame
+        // returns 0 from nanosleep.
+        process::set_trap_return(0);
+        // SAFETY: `next` is a valid Ready PID returned by schedule().
+        unsafe {
+            process::switch_to(next);
+        }
+    } else {
+        // No other process to yield to (degenerate: PID 0 is always Ready for a
+        // real userspace caller, so a switch normally occurs) -- restore Running
+        // rather than linger mis-marked Sleeping.
+        process::clear_wake_tick();
     }
-
-    // Clear the sleeping state now that we've woken.
-    process::clear_wake_tick();
     0
 }
 
