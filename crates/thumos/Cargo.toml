@@ -30,6 +30,11 @@ production = []
 # MT6739 build is unchanged without it. Mutually exclusive with `production`
 # (see main.rs compile_error!).
 qemu = []
+# WHY (#487 fault-handling): CI fault-injection harness -- executes a deliberate
+# PL1 `udf` after boot-complete so CI permanently pins the kernel-fault-HALTS
+# branch (qemu exit 4, no service-loop resume). Only meaningful with `qemu`;
+# mutually exclusive with `production` (main.rs compile_error!).
+kfault-probe = []
 
 [dependencies]
 aes = { version = "0.8", default-features = false }
