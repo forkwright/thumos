@@ -61,6 +61,13 @@ compile_error!(
     "qemu and production are mutually exclusive: the QEMU bring-up harness remaps MT6739 peripheral addresses and must never ship."
 );
 
+// WHY (#487 fault-handling): the kfault-probe injects a deliberate kernel fault
+// for CI; a production image must never contain one.
+#[cfg(all(feature = "kfault-probe", feature = "production"))]
+compile_error!(
+    "kfault-probe is a CI fault-injection harness; a production image must not contain a deliberate kernel fault."
+);
+
 // WHY (issue #372): also gated `not(test)` — the console's command methods
 // (cmd_mem/cmd_ps/…) read kernel state via `crate::heap`/`page`/`process`,
 // several of which are themselves `#[cfg(not(test))]`, so the module cannot

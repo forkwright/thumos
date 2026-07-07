@@ -54,6 +54,62 @@ pub enum FaultKind {
     UndefinedInstruction,
 }
 
+/// Disposition of a CPU fault, decided from the trap frame's saved CPSR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultDisposition {
+    /// Fault came from User mode (PL0): kill the process; the kernel and every
+    /// other process continue.
+    KillUser,
+    /// Fault came from any PL1 mode: a kernel bug -- halt, never recover.
+    KernelHalt,
+}
+
+/// CPSR mode field mask (ARM ARM B1.3.1, M[4:0]).
+const CPSR_MODE_MASK: u32 = 0x1F;
+/// User mode (PL0) CPSR mode value.
+const CPSR_MODE_USER: u32 = 0x10;
+
+/// Kill-vs-halt decision for a fault, from the SAVED CPSR in the trap frame.
+///
+/// ONLY User mode (0x10) is killable: scheduled processes run at User
+/// (spawn_user/exec) or System (PID 0 + spawn kernel threads), and System-mode
+/// code is kernel code in the kernel address space, so its faults are kernel
+/// bugs. A saved exception mode (SVC/IRQ/ABT/UND/FIQ) means a HANDLER faulted
+/// -- also a kernel bug; ABT/UND halting here is what bounds recursion if the
+/// kill path itself faults. Fail-closed: anything unrecognized halts.
+pub(crate) fn fault_disposition(saved_cpsr: u32) -> FaultDisposition {
+    if saved_cpsr & CPSR_MODE_MASK == CPSR_MODE_USER {
+        FaultDisposition::KillUser
+    } else {
+        FaultDisposition::KernelHalt
+    }
+}
+
+/// Exit status for a fault-killed process: 128 + POSIX signal number
+/// (SIGSEGV=11 for aborts -> 139, SIGILL=4 for undef -> 132), so a wait-based
+/// supervisor can distinguish fault kills from voluntary exits.
+pub(crate) fn fault_exit_status(kind: FaultKind) -> i32 {
+    match kind {
+        FaultKind::DataAbort { .. } | FaultKind::PrefetchAbort { .. } => 139,
+        FaultKind::UndefinedInstruction => 132,
+    }
+}
+
+/// Kill the CURRENT process for `kind`, from abort/undef trap context: notify
+/// PID 0 (Dead + fd drain + IPC, via notify_fault), then run the exit path
+/// (exit_current: resource teardown + trap-frame swap to the successor). On
+/// return the trap frame holds the successor's context and the stub epilogue
+/// exception-returns into it -- the same unwind contract as the Exit syscall.
+///
+/// INVARIANT: exit_current frees the victim's L1 while TTBR0 still points at
+/// it; safe because free_addr_space only clears a pool bit (tables are zeroed
+/// at ALLOC, not free) and nothing allocates before switch_to's TTBR0 +
+/// TLBIALL -- the exact pattern the Exit-syscall path already relies on.
+pub(crate) fn fault_exit_current(kind: FaultKind) {
+    notify_fault(current_pid(), kind);
+    let _ = exit_current(fault_exit_status(kind)); // WHY: exit_current returns the SVC-return-value convention (u32, not a Result); the abort path has no syscall caller to return it to
+}
+
 /// Full trap-frame CPU context, captured at exception entry (#465).
 ///
 /// WARNING: THIS LAYOUT IS ABI. The exception stubs in `exceptions.rs` build
@@ -660,6 +716,34 @@ pub(crate) fn waitpid(child_pid: Pid) -> Option<i32> {
         procs[idx] = None; // reap (#218/#224)
         Some(status)
     }
+}
+
+/// Reap every Dead child of the CURRENT process, returning each PCB slot to the
+/// free pool; returns the count reaped.
+///
+/// WHY (#491 review): a fault-killed process is marked Dead by the abort
+/// handler (fault_exit_current), but its PCB slot is only reclaimed by waitpid,
+/// which is otherwise reachable only via the SVC Waitpid syscall. The kardia
+/// service loop (PID 0, the parent of every spawned process) calls this each
+/// tick so a fault-killed slot does not leak -- without it the process table
+/// monotonically exhausts at MAX_PROCS after repeated user faults, and every
+/// subsequent spawn/fork silently fails while the kernel still appears alive.
+/// Scan-based (not fault-inbox-driven) so it reaps every Dead child even if the
+/// fault notification was dropped on a full inbox, and without consuming any
+/// non-fault IPC a userspace process may have sent PID 0.
+pub(crate) fn reap_dead_children() -> usize {
+    let mut reaped = 0;
+    for pid in 0..MAX_PROCS {
+        // waitpid reaps only a Dead child of CURRENT; live/non-child PIDs (and
+        // PID 0 itself, whose parent is None) return None and are skipped.
+        // MAX_PROCS (16) fits Pid (u8), so the cast is total.
+        if let Ok(p) = Pid::try_from(pid) {
+            if waitpid(p).is_some() {
+                reaped += 1;
+            }
+        }
+    }
+    reaped
 }
 
 /// Notify kinit (PID 0) that process `faulting_pid` has faulted.
@@ -1747,6 +1831,174 @@ mod tests {
                 mmu::read_l2_entry(pt, 0x1100_0000).is_none(),
                 "MMIO must not be a user-accessible page table"
             );
+        }
+    }
+
+    #[test]
+    fn fault_disposition_kills_only_user_mode() {
+        // The killable set is EXACTLY User (0x10). System (0x1F) is PID 0 +
+        // spawn() kernel threads; SVC/IRQ/ABT/UND/FIQ mean a handler faulted.
+        // ABT/UND halting is the recursion breaker: if the kill path itself
+        // faults, the nested trap's saved mode is ABT/UND.
+        assert_eq!(fault_disposition(0x10), FaultDisposition::KillUser);
+        // The decision masks to M[4:0] -- flag/IT/E/T bits are ignored.
+        assert_eq!(fault_disposition(0x6000_0010), FaultDisposition::KillUser);
+        assert_eq!(fault_disposition(0x0000_0030), FaultDisposition::KillUser); // User + Thumb
+        for cpsr in [0x1Fu32, 0x13, 0x12, 0x17, 0x1B, 0x11, 0x16, 0x1A, 0x00] {
+            assert_eq!(
+                fault_disposition(cpsr),
+                FaultDisposition::KernelHalt,
+                "saved mode {cpsr:#x} is not User -- must halt, never recover a kernel fault"
+            );
+        }
+    }
+
+    #[test]
+    fn fault_exit_status_uses_posix_signal_convention() {
+        assert_eq!(
+            fault_exit_status(FaultKind::DataAbort {
+                fault_addr: 0,
+                fault_status: 0
+            }),
+            139
+        );
+        assert_eq!(
+            fault_exit_status(FaultKind::PrefetchAbort {
+                fault_addr: 0,
+                fault_status: 0
+            }),
+            139
+        );
+        assert_eq!(fault_exit_status(FaultKind::UndefinedInstruction), 132);
+    }
+
+    #[test]
+    fn fault_exit_current_kills_notifies_and_swaps_to_successor() {
+        fn fault_test_entry() -> ! {
+            loop {}
+        }
+        // The composed abort-path kill the ARM stubs rely on, end to end: Dead +
+        // fault status + resource teardown + PID-0 IPC + frame swap.
+        // SAFETY: test-only; reset_all reinitialises global state; nextest runs
+        // each test in its own process.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            procs[0] = Some(test_process(mmu::alloc_addr_space().unwrap()));
+            let pid0_ctx = Context {
+                r: [3; 13],
+                sp: 0x4300_0000,
+                lr: 0x1,
+                pc: 0x4000_9000,
+                cpsr: 0x1F,
+            };
+            procs[0].as_mut().unwrap().ctx = pid0_ctx;
+            let pid = spawn(fault_test_entry).expect("spawn victim");
+            let free_before_kill = page::free_count();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            procs[usize::from(pid)].as_mut().unwrap().state = State::Running;
+            procs[0].as_mut().unwrap().state = State::Ready;
+            CURRENT = pid;
+
+            let mut frame = Context {
+                cpsr: 0x10,
+                ..Context::zero()
+            };
+            trap_enter(&mut frame as *mut Context);
+            fault_exit_current(FaultKind::DataAbort {
+                fault_addr: 0xDEAD_0000,
+                fault_status: 0x80D,
+            });
+
+            let procs = &*core::ptr::addr_of!(PROCS);
+            let victim = procs[usize::from(pid)].as_ref().unwrap();
+            assert_eq!(victim.state, State::Dead, "faulter must die");
+            assert_eq!(
+                victim.exit_status, 139,
+                "fault kill must carry the SIGSEGV-style status"
+            );
+            assert_eq!(victim.page_table_phys, 0, "address space must be reclaimed");
+            assert_eq!(
+                page::free_count(),
+                free_before_kill + STACK_PAGES,
+                "victim stack pages must return to the pool"
+            );
+            assert_eq!(
+                frame, pid0_ctx,
+                "trap frame must hold the successor (PID 0)"
+            );
+            let current = CURRENT;
+            assert_eq!(current, 0, "PID 0 must be the successor");
+            assert!(
+                trap_switched(),
+                "the stub epilogue must see a swapped frame"
+            );
+            let msg = ipc::recv().expect("PID 0 must receive the fault notification");
+            assert_eq!(msg.tag, 1, "DataAbort IPC tag");
+            assert_eq!(msg.payload()[0], pid, "payload names the faulting PID");
+            trap_leave();
+        }
+    }
+
+    #[test]
+    fn reap_dead_children_frees_only_dead_children_of_current() {
+        // #491 review: the fix for the PCB-slot leak. reap_dead_children (run by
+        // PID 0's service loop) must free a Dead child's slot, leave a Running
+        // child alone, and never touch PID 0 itself.
+        // SAFETY: test-only; reset_all reinitialises global state; single-threaded.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            procs[0] = Some(test_process(mmu::alloc_addr_space().unwrap()));
+            CURRENT = 0;
+            // A Dead child (fault-killed) + a Running child, both of PID 0.
+            let dead = Process {
+                pid: 1,
+                parent: Some(0),
+                state: State::Dead,
+                exit_status: 139,
+                ..test_process(mmu::alloc_addr_space().unwrap())
+            };
+            let running = Process {
+                pid: 2,
+                parent: Some(0),
+                state: State::Running,
+                ..test_process(mmu::alloc_addr_space().unwrap())
+            };
+            procs[1] = Some(dead);
+            procs[2] = Some(running);
+
+            let reaped = reap_dead_children();
+
+            let procs = &*core::ptr::addr_of!(PROCS);
+            assert_eq!(reaped, 1, "exactly the one Dead child is reaped");
+            assert!(procs[1].is_none(), "the Dead child's slot must be freed");
+            assert!(procs[2].is_some(), "the Running child must be left alone");
+            assert!(procs[0].is_some(), "PID 0 must never be reaped");
+        }
+    }
+
+    #[test]
+    fn reap_dead_children_ignores_a_dead_non_child() {
+        // A Dead process that is NOT a child of CURRENT must not be reaped by
+        // CURRENT (only the direct parent reaps).
+        // SAFETY: test-only; single-threaded.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            procs[0] = Some(test_process(mmu::alloc_addr_space().unwrap()));
+            CURRENT = 0;
+            let orphan = Process {
+                pid: 3,
+                parent: Some(2), // not a child of CURRENT (0)
+                state: State::Dead,
+                ..test_process(mmu::alloc_addr_space().unwrap())
+            };
+            procs[3] = Some(orphan);
+
+            assert_eq!(reap_dead_children(), 0, "a non-child Dead is not reaped");
+            let procs = &*core::ptr::addr_of!(PROCS);
+            assert!(procs[3].is_some(), "the non-child Dead slot is untouched");
         }
     }
 

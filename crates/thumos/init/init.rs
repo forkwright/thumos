@@ -1,14 +1,13 @@
 //! thumos /init (#474): minimal userspace bring-up program.
 //!
-//! Built by build.rs to a static armv7a ELF linked at 0x40100000
-//! (kconfig::KERNEL_END), wrapped in a newc CPIO, and embedded into the
+//! Built by build.rs to a static armv7a ELF linked at 0x7FF00000
+//! (kconfig::USER_TEXT_BASE), wrapped in a newc CPIO, and embedded into the
 //! kernel image. kinit spawns it from the boot root ramfs.
 //!
-//! WHY privileged: spawn currently runs this at PL1 (System mode) in the
-//! kernel address space -- true PL0 usermode isolation (own page table, W^X
-//! user pages, exception-return) is deferred (elf.rs Wave 4+). This proves the
-//! spawn -> schedule -> SVC -> dispatch path end to end, not a security
-//! boundary.
+//! Runs UNPRIVILEGED: spawn_user runs this at PL0 (User mode) in its own
+//! address space with the image mapped W^X (#482), so a kernel-memory access
+//! faults. Proves the spawn -> schedule -> SVC -> dispatch path AND the
+//! isolation boundary (see the #487 probe variants below).
 #![no_std]
 #![no_main]
 
@@ -69,6 +68,29 @@ unsafe fn sys_exit(code: u32) -> ! {
 /// correctly-isolated kernel it faults (never returns to the caller).
 #[inline(always)]
 unsafe fn isolation_probe() {
+    // WHY (#491 review): emit a per-variant marker BEFORE the illegal op so CI
+    // can tell the probes apart -- kread and kwrite otherwise produce identical
+    // kind=data-abort output, so a cfg copy-paste swap would be invisible. A
+    // successful write here also confirms /init reached PL0 and can syscall.
+    #[cfg(any(
+        thumos_init_kread,
+        thumos_init_kwrite,
+        thumos_init_kexec,
+        thumos_init_cp15
+    ))]
+    // SAFETY: the marker literal lives in the loaded image (PL0-readable); the
+    // write is a normal syscall that returns before the illegal op below.
+    unsafe {
+        #[cfg(thumos_init_kread)]
+        let marker: &[u8] = b"PROBE: kread\n";
+        #[cfg(thumos_init_kwrite)]
+        let marker: &[u8] = b"PROBE: kwrite\n";
+        #[cfg(thumos_init_kexec)]
+        let marker: &[u8] = b"PROBE: kexec\n";
+        #[cfg(thumos_init_cp15)]
+        let marker: &[u8] = b"PROBE: cp15\n";
+        sys_write(1, marker.as_ptr(), u32::try_from(marker.len()).unwrap_or(0));
+    }
     // Kernel load address (0x4000_8000) -- PL1-only in every process page
     // table (#482), so a PL0 read data-aborts (qemu exit 2).
     #[cfg(thumos_init_kread)]

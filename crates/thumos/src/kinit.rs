@@ -1424,6 +1424,17 @@ pub unsafe fn run() -> ! {
     #[cfg(feature = "qemu")]
     let _ = serial.write_str("THUMOS-QEMU: boot-complete\r\n");
 
+    // Deliberate PL1 fault probe (#487 fault-handling): CI asserts the KERNEL
+    // branch halts (qemu exit 4) and the service loop never runs past it.
+    // Structurally excluded from production (main.rs compile_error!).
+    #[cfg(all(feature = "kfault-probe", target_arch = "arm"))]
+    {
+        let _ = serial.write_str("THUMOS-QEMU: kernel-fault probe (udf at PL1)\r\n");
+        // SAFETY: `udf #0` is a permanently-undefined encoding; the undef
+        // handler takes the KERNEL halt branch (System mode) and never returns.
+        unsafe { core::arch::asm!("udf #0") };
+    }
+
     // -----------------------------------------------------------------------
     // Debug console or idle
     // -----------------------------------------------------------------------
