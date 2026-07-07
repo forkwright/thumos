@@ -264,3 +264,29 @@ jobs:
           ! grep -q 'USERFAULT:' fork.log || { echo 'FAIL fork: a process faulted (bad child frame, bad mapping, or parent stack freed by the child exit)'; exit 1; }
           grep -q 'init: hello from userspace' fork.log || { echo 'FAIL fork: parent did not continue past the harness'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' fork.log || { echo 'FAIL fork: kernel did not survive'; exit 1; }
+      - name: QEMU exec correctness + PL0 (#489)
+        working-directory: crates/thumos
+        # WHY: PL0 execve must REPLACE the caller's image with a new one that
+        # runs at PL0. /init execs /init2: 'init: exec-ing /init2' (execve
+        # called) then 'init2: reached via exec' (the NEW image's _start ran ->
+        # exec succeeded, the live page table was remapped + ACTIVE_FRAME
+        # installed, the #489 linchpin). /init2 then does a privileged cp15 read
+        # that UNDEF-faults AT PL0 (kind=undefined-instruction, pid=1) -- proving
+        # the exec'd image is unprivileged; 'init2: PRIVILEGED' would mean it ran
+        # at PL1 (mode-drop broken). The OLD image is gone: no 'hello from
+        # userspace' (the default /init tail) appears. The kernel survives the
+        # fault (ticks). 'exec FAILED' = execve returned an error.
+        run: |
+          set -uo pipefail
+          THUMOS_INIT_VARIANT=exec cargo build --release --target armv7a-none-eabi --features qemu --jobs 8
+          erc=0
+          THUMOS_INIT_VARIANT=exec THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee exec.log || erc=$?
+          echo "=== exec: runner rc=$erc (want 0) ==="
+          test "$erc" -eq 0 || { echo "FAIL exec: kernel did not survive (rc=$erc; 124=hang 2/3=abort)"; exit 1; }
+          grep -q 'init: exec-ing /init2' exec.log || { echo 'FAIL exec: /init never called execve'; exit 1; }
+          grep -q 'init2: reached via exec' exec.log || { echo 'FAIL exec: the new image never ran (remap or ACTIVE_FRAME install broken -- exec did not transfer control)'; exit 1; }
+          ! grep -q 'init: exec FAILED' exec.log || { echo 'FAIL exec: execve returned an error'; exit 1; }
+          grep -Eq 'USERFAULT: pid=1 kind=undefined-instruction .*killed' exec.log || { echo 'FAIL exec: the exec-d image did not UNDEF on its cp15 probe (PL0 proof missing)'; exit 1; }
+          ! grep -q 'init2: PRIVILEGED' exec.log || { echo 'FAIL exec: the exec-d image ran at PL1 (mode drop across exec broken -- SECURITY)'; exit 1; }
+          ! grep -q 'init: hello from userspace' exec.log || { echo 'FAIL exec: the OLD image kept running after exec (control not transferred)'; exit 1; }
+          grep -q 'THUMOS-QEMU: service-loop ticks=' exec.log || { echo 'FAIL exec: kernel did not survive the exec-d process fault'; exit 1; }

@@ -405,14 +405,14 @@ unsafe fn map_user_image(pt: usize, loaded: &crate::elf::LoadedElf) -> bool {
     true
 }
 
-/// Map each of the `STACK_PAGES` contiguous stack frames from `stack_base`
-/// PL0 read/write + execute-never at its identity VA (#482).
+/// Map `pages` contiguous stack frames from `stack_base` PL0 read/write +
+/// execute-never at their identity VAs (#482/#489).
 ///
 /// # Safety
 /// `pt` is a caller-owned process L1; `stack_base` begins a contiguous run.
-unsafe fn map_user_stack(pt: usize, stack_base: usize) -> bool {
+unsafe fn map_user_stack(pt: usize, stack_base: usize, pages: usize) -> bool {
     let attrs = mmu::prot_to_l2_flags(mmu::prot::PROT_READ | mmu::prot::PROT_WRITE);
-    for i in 0..STACK_PAGES {
+    for i in 0..pages {
         let va = stack_base + i * page::PAGE_SIZE;
         // SAFETY: pt caller-owned; va is a contiguous stack frame in DRAM.
         unsafe {
@@ -422,6 +422,26 @@ unsafe fn map_user_stack(pt: usize, stack_base: usize) -> bool {
         }
     }
     true
+}
+
+/// Drop the PL0 grant on `pages` frames from `base` in `pt`: rewrite each L2
+/// entry back to the identity KERNEL_DEFAULT_PAGE (PL1-only, #489). NOT
+/// unmap_page (zeroing an entry inside a shattered identity MB would fault the
+/// kernel on its next access there), and NOT reset_shattered_section for a
+/// stack (old and new exec stacks can share an allocator MB, so a whole-MB
+/// reset would revoke the new stack's grants). The caller flushes the TLB.
+///
+/// # Safety
+/// `pt` is a caller-owned L1; each VA was granted via map_user_stack/image.
+unsafe fn revoke_user_pages(pt: usize, base: usize, pages: usize) {
+    for i in 0..pages {
+        let va = base + i * page::PAGE_SIZE;
+        // SAFETY: the entry exists (was granted); update preserves the identity
+        // phys and demotes attrs to PL1-only.
+        unsafe {
+            mmu::update_page_prot(pt, va, mmu::KERNEL_DEFAULT_PAGE);
+        }
+    }
 }
 
 /// Create a PL0 (User mode) process from a loaded ELF image (#482).
@@ -453,7 +473,7 @@ pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
         };
         let stack_top = stack_base + page::PAGE_SIZE * STACK_PAGES;
 
-        if !map_user_image(new_pt, loaded) || !map_user_stack(new_pt, stack_base) {
+        if !map_user_image(new_pt, loaded) || !map_user_stack(new_pt, stack_base, STACK_PAGES) {
             // free_addr_space also reclaims the L2 tables the shatters allocated
             // (the shared KERNEL_L2 is skipped -- free_l2_table no-ops on
             // non-pool addresses).
@@ -1617,89 +1637,136 @@ pub unsafe fn reset_signal_state() {
 /// # Safety
 ///
 /// Must be called from syscall context after the new stack pages have been
-/// allocated and `entry_point` is the validated ELF entry address.
+/// allocated and `loaded` is the validated + loaded ELF image.
+///
+/// Returns `false` if the new image/stack could not be mapped (L2-pool
+/// exhaustion). The old image is already gone by then, so the caller MUST kill
+/// the process (it is unrecoverable); the PCB is left consistent for
+/// exit_cleanup's page-table walk.
+#[must_use]
 pub unsafe fn exec_replace_context(
-    entry_point: usize,
+    loaded: &crate::elf::LoadedElf,
     stack_top: usize,
     new_stack_base: usize,
     new_stack_pages: usize,
-) {
+) -> bool {
     // SAFETY: addr_of_mut! avoids an intermediate reference to the static mut.
     // Called from execve syscall with interrupts disabled (SVC mode, ARMv7).
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::from(CURRENT);
-        if let Some(ref mut proc) = procs[cur] {
-            // WHY cpsr 0x10 (User mode, IRQs enabled): execve transfers control
-            // to an unprivileged userspace binary. Contrast with spawn() which
-            // uses 0x1F (System mode) for kernel-internal threads. The full
-            // register file is reset -- exec starts a fresh image, not a
-            // continuation.
-            // SAFETY: ARMv7 target has 32-bit usize; try_from cannot fail
-            // in production. On 64-bit test hosts the addresses are
-            // test-controlled and verified to fit via the test setup.
-            proc.ctx = Context::initial(
-                u32::try_from(entry_point).unwrap_or(0u32),
-                u32::try_from(stack_top).unwrap_or(0u32),
-                0x10,
-            );
-            // Free the old stack (replaced by exec).
-            let old_base = proc.stack_base;
-            let old_pages = proc.stack_pages;
-            proc.stack_base = new_stack_base;
-            proc.stack_pages = new_stack_pages;
-            let pt = proc.page_table_phys;
-            // WHY (#478): free by the L2-mapped PHYSICAL frame, not by identity
-            // arithmetic on the VA. A forked child's stack_base is the parent's
-            // VA (same VA, different phys), so freeing old_base + i*PAGE by
-            // identity would free the PARENT's live stack frame (cross-process
-            // corruption via fork+exec) and leak the child's real frames.
-            // read_l2_phys resolves the real frame for both the identity
-            // (spawn_user) and VA!=phys (forked) cases; unmap + flush before
-            // freeing also unmaps each old-stack L2 entry (the arithmetic loop
-            // left them mapped -- #478). WHY(after PCB update): a fault during
-            // free must not leave the PCB pointing at freed memory.
-            for i in 0..old_pages {
-                let vaddr = old_base + i * page::PAGE_SIZE;
+        let Some(proc) = procs[cur].as_mut() else {
+            return false;
+        };
+        let pt = proc.page_table_phys;
+        let old_base = proc.stack_base;
+        let old_pages = proc.stack_pages;
+        let old_heap_break = proc.heap_break;
+        let old_mappings = proc.mappings;
+
+        // WHY (#489): the destructive + mapping phase runs under the KERNEL L1.
+        // exec mutates the LIVE process table, and every free zeroes a frame
+        // through the current TTBR0 (page.rs zero-on-free); a forked-then-exec'd
+        // process user-remaps allocator-range VAs, so a raw phys write could
+        // alias another mapping. The kernel L1 maps all DRAM identity with no
+        // user remaps, so phys == VA for every access here. Page-table WRITES
+        // (revoke/map) target L2 pool tables, which are kernel statics mapped in
+        // every space, so they are valid under the kernel L1 too. IRQs are
+        // masked (SVC), so this is atomic.
+        mmu::switch_addr_space(mmu::table_base());
+
+        // 1. Revoke the old image's PL0 windows: reset the whole USER_TEXT MB's
+        //    L2 entries to identity KERNEL_DEFAULT (keeps the L2 table), so no
+        //    stale PL0 image window survives and map_user_image re-maps into the
+        //    SAME L2 (no fresh alloc -> infallible). A live PL0 caller always has
+        //    a shattered image MB, so false here is an invariant break.
+        let image_was_mapped = mmu::reset_shattered_section(pt, crate::kconfig::USER_TEXT_BASE);
+        debug_assert!(
+            image_was_mapped,
+            "exec: caller's image MB must be shattered"
+        );
+
+        // 2. Revoke + free the old stack (revoke BEFORE free so no stale PL0-RW
+        //    window outlives the frame's return to the allocator). Free by the
+        //    L2-mapped PHYSICAL frame (a forked child's stack VA != its phys).
+        revoke_user_pages(pt, old_base, old_pages);
+        for i in 0..old_pages {
+            let vaddr = old_base + i * page::PAGE_SIZE;
+            if let Some(phys) = mmu::read_l2_phys(pt, vaddr) {
+                mmu::unmap_page(pt, vaddr);
+                page::free_page(phys);
+            }
+        }
+
+        // 3. Free the old mmap regions + grown heap (their VAs are below RAM,
+        //    non-identity -- read_l2_phys resolves the real frame). #225.
+        for mapping in old_mappings.iter().flatten() {
+            for i in 0..mapping.pages {
+                let vaddr = mapping.start + i * page::PAGE_SIZE;
                 if let Some(phys) = mmu::read_l2_phys(pt, vaddr) {
                     mmu::unmap_page(pt, vaddr);
-                    mmu::flush_tlb_page(vaddr);
                     page::free_page(phys);
                 }
             }
-
-            // WHY (#225): the page table is REUSED across exec (same
-            // page_table_phys), so the previous image's mmap regions and grown
-            // heap pages are still mapped at their old virtual addresses. Unmap
-            // and free each one before resetting the tracking state below, or
-            // the physical frames leak permanently and the new image can read
-            // the previous image's residual contents at the same VAs.
-            for mapping in proc.mappings.iter().flatten() {
-                for i in 0..mapping.pages {
-                    let vaddr = mapping.start + i * page::PAGE_SIZE;
-                    if let Some(phys) = mmu::read_l2_phys(pt, vaddr) {
-                        mmu::unmap_page(pt, vaddr);
-                        mmu::flush_tlb_page(vaddr);
-                        page::free_page(phys);
-                    }
-                }
-            }
-            let old_heap_break = proc.heap_break;
-            let mut heap_vaddr = DEFAULT_HEAP_BREAK;
-            while heap_vaddr < old_heap_break {
-                if let Some(phys) = mmu::read_l2_phys(pt, heap_vaddr) {
-                    mmu::unmap_page(pt, heap_vaddr);
-                    mmu::flush_tlb_page(heap_vaddr);
-                    page::free_page(phys);
-                }
-                heap_vaddr += page::PAGE_SIZE;
-            }
-
-            // Reset heap break to default for the new image.
-            proc.heap_break = DEFAULT_HEAP_BREAK;
-            // Clear all tracked mmap mappings — the new image has a fresh VA space.
-            proc.mappings = [None; MAX_MAPPINGS];
         }
+        let mut heap_vaddr = DEFAULT_HEAP_BREAK;
+        while heap_vaddr < old_heap_break {
+            if let Some(phys) = mmu::read_l2_phys(pt, heap_vaddr) {
+                mmu::unmap_page(pt, heap_vaddr);
+                page::free_page(phys);
+            }
+            heap_vaddr += page::PAGE_SIZE;
+        }
+
+        // 4. Map the new image (W^X per segment) + the new stack (RW+XN). The
+        //    new image bytes were already written to identity DRAM by
+        //    elf::load; argv was written to the new stack frames PL1. Mapping
+        //    grants PL0 without moving content. map_user_image reuses the image
+        //    L2 (infallible); only map_user_stack's fresh-MB shatter can fail
+        //    (L2-pool exhaustion). `&` runs BOTH regardless.
+        let remap_ok =
+            map_user_image(pt, loaded) & map_user_stack(pt, new_stack_base, new_stack_pages);
+
+        // 5. Back to the process table (switch_addr_space does TTBR0 + TLBIALL),
+        //    then flush the branch predictor too (the executable image at
+        //    USER_TEXT changed identity). (I-cache maintenance for the new code
+        //    is TODO(#498) -- invisible in QEMU, needed on real hardware.)
+        mmu::switch_addr_space(pt);
+        mmu::flush_tlb_all();
+
+        // Update the PCB's memory layout REGARDLESS of remap_ok: the old stack /
+        // mmap / heap were freed above and are gone from the table, so if the
+        // remap failed and the caller kills the process, exit_cleanup's
+        // page-table walk must free the NEW (partial) mappings, not re-free the
+        // old ones. The new stack's unmapped tail (on a partial map) leaks -- an
+        // accepted cost of the rare exec-time OOM (fail-before-destroy for the
+        // stack L2 is TODO(#499)).
+        proc.stack_base = new_stack_base;
+        proc.stack_pages = new_stack_pages;
+        proc.heap_break = DEFAULT_HEAP_BREAK;
+        proc.mappings = [None; MAX_MAPPINGS];
+
+        if !remap_ok {
+            // The old image was already destroyed by elf::load -- the process is
+            // unrecoverable. sys_execve kills it (exit_current).
+            return false;
+        }
+
+        // 6. Install the new context -- into the PCB AND the live trap frame.
+        //    THE linchpin (#489): the SVC epilogue exception-returns into
+        //    ACTIVE_FRAME, not proc.ctx; without the frame write exec "returns"
+        //    0 into the OLD image at the instruction after `svc` (now overwritten
+        //    -> wild PL0 execution). FRAME_SWITCHED stays false (exec does not
+        //    switch_to), so dispatch's return 0 is the correct fresh-image r0.
+        proc.ctx = Context::initial(
+            u32::try_from(loaded.entry).unwrap_or(0u32),
+            u32::try_from(stack_top).unwrap_or(0u32),
+            0x10,
+        );
+        if let Some(frame) = ACTIVE_FRAME.as_mut() {
+            *frame = proc.ctx;
+        }
+        true
     }
 }
 
@@ -2439,7 +2506,14 @@ mod tests {
             // Exec the child onto a fresh stack.
             CURRENT = cpid;
             let new_stack = page::alloc_contiguous(2).unwrap();
-            exec_replace_context(0x7FF0_0000, new_stack + 2 * page::PAGE_SIZE, new_stack, 2);
+            let new_image =
+                crate::elf::LoadedElf::for_test(0x7FF0_0000, &[(0x7FF0_0000, 0x100, 0x5)]);
+            assert!(exec_replace_context(
+                &new_image,
+                new_stack + 2 * page::PAGE_SIZE,
+                new_stack,
+                2
+            ));
 
             // The parent's live stack frame must NOT be freed (the critical bug).
             // Asserting still-allocated (returns true) catches a wrongly-freed
@@ -2999,12 +3073,36 @@ mod tests {
             assert!(mmu::map_page(pt, DEFAULT_HEAP_BREAK, heap_phys, l2_attrs));
             set_heap_break(DEFAULT_HEAP_BREAK + page::PAGE_SIZE);
 
+            // A real exec caller has a shattered image MB with the image mapped
+            // (exec_replace_context asserts it). map_page shatters USER_TEXT's MB;
+            // this frame stays allocated across exec (the empty new image maps
+            // nothing, reset only DEMOTES the MB), so alloc it BEFORE the baseline
+            // and it does not skew the freed-frame delta measured below.
+            let img_phys = page::alloc_page().unwrap();
+            assert!(mmu::map_page(
+                pt,
+                crate::kconfig::USER_TEXT_BASE,
+                img_phys,
+                l2_attrs
+            ));
+
             // Capture the baseline AFTER allocating the new stack so the delta
             // measures exactly the frames exec frees, not the new stack alloc.
             let new_stack_phys = page::alloc_page().unwrap();
             let free_before = page::free_count();
 
-            exec_replace_context(0x1000, new_stack_phys + page::PAGE_SIZE, new_stack_phys, 1);
+            // Empty image (no segments): this test exercises the mmap/heap
+            // FREE path (Step 3), which runs regardless of whether the remap
+            // (Step 4) succeeds. On this synthetic bare table the new stack MB is
+            // not a shatterable section, so the remap returns false -- that is
+            // fine here; the full remap is proven by the QEMU exec /init variant.
+            let new_image = crate::elf::LoadedElf::for_test(0x1000, &[]);
+            let _remapped = exec_replace_context(
+                &new_image,
+                new_stack_phys + page::PAGE_SIZE,
+                new_stack_phys,
+                1,
+            );
 
             let free_after = page::free_count();
             assert_eq!(

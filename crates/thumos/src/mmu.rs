@@ -537,6 +537,33 @@ pub unsafe fn flush_tlb_page(virt_addr: usize) {
 #[cfg(not(target_arch = "arm"))]
 pub unsafe fn flush_tlb_page(_virt_addr: usize) {}
 
+/// Invalidate the ENTIRE unified TLB + branch predictor (#489).
+///
+/// Used by exec, which rewrites whole MBs of the LIVE table
+/// (reset_shattered_section + map_user_image + map_user_stack) -- a per-page
+/// TLBIMVA loop over 256+ changed entries is the wrong tool. BPIALL is needed
+/// because the executable image at USER_TEXT changed identity.
+///
+/// # Safety
+/// Call with IRQs masked, after all table writes, before returning to PL0.
+#[cfg(target_arch = "arm")]
+pub unsafe fn flush_tlb_all() {
+    // SAFETY: privileged CP15 maintenance; barriers order it before the return.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {z}, c8, c7, 0", // TLBIALL
+            "mcr p15, 0, {z}, c7, c5, 6", // BPIALL
+            "dsb sy",
+            "isb sy",
+            z = in(reg) 0u32,
+        );
+    }
+}
+
+/// No-op full-TLB flush for non-ARM builds.
+#[cfg(not(target_arch = "arm"))]
+pub unsafe fn flush_tlb_all() {}
+
 /// Reset the L2 table pool (test helper only).
 #[cfg(test)]
 pub(crate) fn reset_l2_pool() {

@@ -753,35 +753,18 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
             | crate::elf::ElfError::InvalidSegment,
         ) => return ENOEXEC,
     };
-    let entry_point = loaded.entry;
 
     // --- Step 4: allocate new stack ---
     // WHY 4 pages (16 KB): matches spawn() stack size; sufficient for musl
     // libc start-up (argc/argv + environ + aux vectors + initial stack frame).
     const EXEC_STACK_PAGES: usize = 4;
-    // WHY array-tracked (#251): page::alloc_page() is a bitmap scanner with
-    // no contiguity guarantee; an OOM rollback that assumes
-    // `new_stack_base + j * PAGE_SIZE` names the j-th allocated page can free
-    // an unrelated live page. Recording each returned address makes the
-    // rollback exact regardless of fragmentation.
-    let mut exec_stack_pages: [usize; EXEC_STACK_PAGES] = [0; EXEC_STACK_PAGES];
-    for i in 0..EXEC_STACK_PAGES {
-        match page::alloc_page() {
-            Some(phys) => exec_stack_pages[i] = phys,
-            None => {
-                // OOM: free exactly the pages allocated so far, then abort.
-                for j in 0..i {
-                    // SAFETY: pages were returned by alloc_page() in this loop;
-                    // they have not been mapped or used yet.
-                    unsafe {
-                        page::free_page(exec_stack_pages[j]);
-                    }
-                }
-                return ENOMEM;
-            }
-        }
-    }
-    let new_stack_base = exec_stack_pages[0];
+    // WHY contiguous (#489): the new stack must be a single run -- new_stack_top
+    // arithmetic and exec_replace_context's map_user_stack both assume
+    // `new_stack_base + i * PAGE_SIZE` names the i-th frame (the old alloc_page
+    // loop did NOT guarantee that). One free_contiguous rolls it back.
+    let Some(new_stack_base) = page::alloc_contiguous(EXEC_STACK_PAGES) else {
+        return ENOMEM;
+    };
     let new_stack_top = new_stack_base + EXEC_STACK_PAGES * page::PAGE_SIZE;
 
     // --- Step 5: build argc/argv on the new stack ---
@@ -902,14 +885,18 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         process::reset_signal_state();
     }
 
-    // --- Step 7: update PCB ---
-    // exec_replace_context frees old stack pages, resets heap_break and the
-    // mmap mapping table, and updates ctx.lr/sp/cpsr for the exception return.
-    // SAFETY: new_stack_base and EXEC_STACK_PAGES identify the freshly
-    // allocated stack verified above. entry_point is the ELF e_entry field
-    // validated by elf::load.
-    unsafe {
-        process::exec_replace_context(entry_point, sp, new_stack_base, EXEC_STACK_PAGES);
+    // --- Step 7: remap the address space + install the new context ---
+    // exec_replace_context revokes+frees the old image/stack/mmap/heap, maps the
+    // new image + stack, flushes, and installs the fresh ctx into the PCB AND
+    // the live trap frame (so the SVC epilogue returns into the new image).
+    // SAFETY: new_stack_base + EXEC_STACK_PAGES identify the freshly allocated
+    // contiguous stack; loaded is validated + written by elf::load above.
+    let remapped =
+        unsafe { process::exec_replace_context(&loaded, sp, new_stack_base, EXEC_STACK_PAGES) };
+    if !remapped {
+        // The old image is already overwritten -- the process cannot continue.
+        // Kill it (exit_current schedules away and never returns to this image).
+        process::exit_current(137);
     }
 
     0

@@ -156,15 +156,17 @@ fn main() {
 /// elf::load parses without a nested cargo build or workspace membership.
 /// -Ttext places all PT_LOAD >= KERNEL_END so the identity-mapping loader
 /// writes them into the sanctioned user-DRAM window [KERNEL_END, RAM_END).
-fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
-    let init_src = manifest_dir.join("init/init.rs");
-    let init_ld = manifest_dir.join("init/init.ld");
-    println!("cargo:rerun-if-changed={}", init_src.display());
-    println!("cargo:rerun-if-changed={}", init_ld.display());
-    let init_elf = out_dir.join("init.elf");
-
-    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
-    // kanon:ignore RUST/no-direct-process-command -- build script compiles the /init userspace binary; the rule targets runtime/kernel code and there is no build-time compiler wrapper to route through
+/// Compile one userspace program (init.rs / init2.rs) to a static armv7a ELF
+/// linked by init.ld (#474/#489). `variant_cfg` optionally adds a
+/// `thumos_init_<variant>` cfg.
+fn compile_init_binary(
+    rustc: &str,
+    src: &Path,
+    init_ld: &Path,
+    out_elf: &Path,
+    variant_cfg: Option<&str>,
+) {
+    // kanon:ignore RUST/no-direct-process-command -- build script compiles the userspace binaries; the rule targets runtime/kernel code and there is no build-time compiler wrapper to route through
     let mut cmd = std::process::Command::new(rustc);
     cmd.args([
         "--edition",
@@ -182,51 +184,88 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     ])
     .arg("-C")
     .arg(format!("link-arg=-T{}", init_ld.display()))
-    // WHY 0x100: the armv7a default max-page-size (64 KB) pads the ELF file
-    // to a 0x10000 first-segment offset (~66 KB of zeros). from_cpio copies
-    // the whole ELF into ONE heap Vec; a 0x100 page size drops the file-offset
-    // padding to 256 B, keeping this tiny /init small (#475's contiguous alloc
-    // covers a larger image regardless).
+    // WHY 0x100: the armv7a default max-page-size (64 KB) pads the ELF file to a
+    // 0x10000 first-segment offset (~66 KB of zeros); a 0x100 page size drops it
+    // to 256 B, keeping the image small.
     .arg("-C")
     .arg("link-arg=-z")
     .arg("-C")
     .arg("link-arg=max-page-size=0x100")
-    // WHY (#487): declare the isolation-probe cfgs so a direct rustc compile
-    // does not warn on them as unexpected.
+    // WHY (#487): declare the probe cfgs so a direct rustc compile does not warn.
     .arg("--check-cfg")
-    .arg("cfg(thumos_init_kread, thumos_init_kwrite, thumos_init_kexec, thumos_init_cp15, thumos_init_sleep, thumos_init_fork)");
+    .arg("cfg(thumos_init_kread, thumos_init_kwrite, thumos_init_kexec, thumos_init_cp15, thumos_init_sleep, thumos_init_fork, thumos_init_exec)");
+    if let Some(cfg) = variant_cfg {
+        cmd.arg("--cfg").arg(cfg);
+    }
+    match cmd.arg("-o").arg(out_elf).arg(src).status() {
+        Ok(s) if s.success() => {}
+        Ok(s) => die(&format!(
+            "#474: rustc failed to build {}: {s}",
+            src.display()
+        )),
+        Err(e) => die(&format!(
+            "#474: cannot invoke rustc for {}: {e}",
+            src.display()
+        )),
+    }
+}
+
+fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
+    let init_src = manifest_dir.join("init/init.rs");
+    let init_ld = manifest_dir.join("init/init.ld");
+    println!("cargo:rerun-if-changed={}", init_src.display());
+    println!("cargo:rerun-if-changed={}", init_ld.display());
+    let init_elf = out_dir.join("init.elf");
+
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
 
     // WHY (#487): THUMOS_INIT_VARIANT selects an /init probe variant so CI can
-    // permanently prove PL0 isolation. Each variant compiles a different
-    // `_start` body via `--cfg thumos_init_<variant>` (see init/init.rs);
-    // build.rs re-runs when the env changes. Unset = the normal write+exit
-    // /init. The variant name is validated against the known set so a typo
-    // fails the build loudly instead of silently building the default.
+    // permanently prove PL0 isolation / fault handling / fork / exec. Each
+    // variant compiles a different `_start` body via `--cfg thumos_init_<v>`
+    // (see init/init.rs); build.rs re-runs when the env changes. Unset = the
+    // normal write+exit /init. The name is validated so a typo fails the build.
     println!("cargo:rerun-if-env-changed=THUMOS_INIT_VARIANT");
-    if let Ok(variant) = env::var("THUMOS_INIT_VARIANT") {
-        if !variant.is_empty() {
-            if !["kread", "kwrite", "kexec", "cp15", "sleep", "fork"].contains(&variant.as_str()) {
+    let variant_cfg = match env::var("THUMOS_INIT_VARIANT") {
+        Ok(v) if !v.is_empty() => {
+            if !["kread", "kwrite", "kexec", "cp15", "sleep", "fork", "exec"].contains(&v.as_str())
+            {
                 die(&format!(
-                    "#487: unknown THUMOS_INIT_VARIANT '{variant}' (expected kread|kwrite|kexec|cp15|sleep|fork)"
+                    "#487: unknown THUMOS_INIT_VARIANT '{v}' (expected kread|kwrite|kexec|cp15|sleep|fork|exec)"
                 ));
             }
-            cmd.arg("--cfg").arg(format!("thumos_init_{variant}"));
+            Some(format!("thumos_init_{v}"))
         }
-    }
+        _ => None,
+    };
 
-    let status = cmd.arg("-o").arg(&init_elf).arg(&init_src).status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => die(&format!("#474: rustc failed to build /init ({s})")),
-        Err(e) => die(&format!("#474: cannot invoke rustc for /init: {e}")),
-    }
+    compile_init_binary(
+        &rustc,
+        &init_src,
+        &init_ld,
+        &init_elf,
+        variant_cfg.as_deref(),
+    );
+
+    // #489: a SECOND userspace program the exec /init variant execs. Always
+    // embedded (tiny; unused unless /init execs it -- kinit only spawns /init
+    // and /shell by name). NOT named "shell": kinit auto-spawns /shell, which
+    // would clobber /init's same-VA image.
+    let init2_src = manifest_dir.join("init/init2.rs");
+    println!("cargo:rerun-if-changed={}", init2_src.display());
+    let init2_elf = out_dir.join("init2.elf");
+    compile_init_binary(&rustc, &init2_src, &init_ld, &init2_elf, None);
 
     let elf = match fs::read(&init_elf) {
         Ok(b) => b,
         Err(e) => die(&format!("#474: cannot read built /init ELF: {e}")),
     };
+    let elf2 = match fs::read(&init2_elf) {
+        Ok(b) => b,
+        Err(e) => die(&format!("#489: cannot read built /init2 ELF: {e}")),
+    };
 
     let mut archive = cpio_newc_entry("init", &elf, 0o100_755);
+    archive.extend_from_slice(&cpio_newc_entry("init2", &elf2, 0o100_755));
     archive.extend_from_slice(&cpio_newc_entry("TRAILER!!!", &[], 0));
     if let Err(e) = fs::write(out_dir.join("initramfs.cpio"), &archive) {
         die(&format!("#474: cannot write initramfs.cpio: {e}"));
