@@ -262,17 +262,20 @@ impl SlabAllocator {
                 unsafe { self.classes[idx].alloc_obj(page_fn) }
             }
             None => {
-                // Large allocation: fall back to the page allocator directly.
-                // Allocate enough whole pages to cover the request.
+                // Large allocation: back it with whole pages from the page
+                // allocator.
                 let pages = (size + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
-                if pages > 1 {
-                    // Multi-page large allocs are not supported without a
-                    // contiguous page allocator. Return null.
-                    return ptr::null_mut();
-                }
-                // SAFETY: large_alloc_fn returns a page from an initialized
-                // page allocator.
-                let addr = unsafe { large_alloc_fn() };
+                let addr = if pages == 1 {
+                    // SAFETY: large_alloc_fn returns a page from an initialized
+                    // page allocator (injected so the single-page path stays
+                    // host-fakeable).
+                    unsafe { large_alloc_fn() }
+                } else {
+                    // WHY (#475): multi-page requests need a contiguous run;
+                    // the injected single-page fn cannot express that, so go
+                    // direct to the page allocator's contiguous path.
+                    page::alloc_contiguous(pages)
+                };
                 match addr {
                     Some(a) => {
                         self.large_alloc_count += 1;
@@ -308,10 +311,19 @@ impl SlabAllocator {
                 unsafe { self.classes[idx].dealloc_obj(ptr) };
             }
             None => {
-                // SAFETY: ptr was returned by alloc_inner for a large
-                // allocation, so it is a page-aligned address previously
-                // returned by the page allocator.
-                unsafe { large_free_fn(ptr as usize) };
+                // ptr was returned by alloc_inner's large path, so it is a
+                // page-aligned base of `pages` whole pages.
+                let pages = (size + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
+                if pages == 1 {
+                    // SAFETY: single-page large alloc came from large_alloc_fn.
+                    unsafe { large_free_fn(ptr as usize) };
+                } else {
+                    // WHY (#475): free the contiguous run alloc_contiguous
+                    // handed out. The bool return is a validated no-op on a bad
+                    // address (not an error to propagate).
+                    // SAFETY: ptr/pages name the run from alloc_contiguous.
+                    unsafe { page::free_contiguous(ptr as usize, pages) };
+                }
                 self.large_free_count += 1;
             }
         }
@@ -788,5 +800,42 @@ mod tests {
             crate::irq::mock_enabled(),
             "outer drop restores IRQ delivery"
         );
+    }
+
+    #[test]
+    fn large_multi_page_alloc_writes_reads_and_round_trips() {
+        // #475: a >4 KB (2-page) allocation must succeed via the contiguous
+        // page path, be writable/readable across its whole span, and
+        // round-trip. Back the page allocator with a REAL host-aligned buffer
+        // so the returned addresses are dereferenceable (fabricated addresses
+        // would SIGSEGV). The multi-page path goes direct to
+        // page::alloc_contiguous, so the injected fakes are unused here.
+        #[repr(align(4096))]
+        struct Pool([u8; 64 * 4096]);
+        static mut POOL: Pool = Pool([0; 64 * 4096]);
+        // SAFETY: single-threaded test (nextest runs it in its own process);
+        // POOL is a real, page-aligned, host-backed buffer.
+        unsafe {
+            let base = core::ptr::addr_of_mut!(POOL) as usize;
+            page::init(base, base + 64 * page::PAGE_SIZE, base);
+            let mut sa = make_allocator();
+
+            let layout = Layout::from_size_align(6000, 8).unwrap(); // 2 pages
+            let ptr = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
+            assert!(!ptr.is_null(), "multi-page large alloc must succeed");
+            assert_eq!(ptr as usize % page::PAGE_SIZE, 0, "must be page-aligned");
+
+            // Writable + readable across the full 2-page span (proves the run
+            // is real contiguous backing, not a single page).
+            core::ptr::write_bytes(ptr, 0xAB, 6000);
+            assert_eq!(*ptr, 0xAB, "first byte");
+            assert_eq!(*ptr.add(5999), 0xAB, "last byte of the 2-page span");
+
+            sa.dealloc_inner(ptr, layout, fake_free_page);
+            // The run is returned to the pool: a second identical alloc works.
+            let ptr2 = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
+            assert!(!ptr2.is_null(), "pages must be reusable after free");
+            sa.dealloc_inner(ptr2, layout, fake_free_page);
+        }
     }
 }
