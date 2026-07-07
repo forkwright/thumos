@@ -37,6 +37,26 @@ unsafe fn sys_write(fd: u32, buf: *const u8, len: u32) -> u32 {
     ret
 }
 
+/// sleep(ms): suspend this process for at least `ms` milliseconds (#477 harness).
+///
+/// # Safety
+/// Yields to the scheduler; the kernel resumes this process after the interval.
+#[cfg(thumos_init_sleep)]
+#[inline(always)]
+unsafe fn sys_sleep(ms: u32) {
+    // SAFETY: issues SVC #7 (Sleep) per the thumos ABI; the kernel marks this
+    // process Sleeping, switches away, and resumes it after `ms` elapses.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 7u32,
+            in("r0") ms,
+            lateout("r0") _,
+            options(nostack),
+        );
+    }
+}
+
 /// exit(code): terminate this process; never returns.
 ///
 /// # Safety
@@ -135,6 +155,18 @@ pub extern "C" fn _start() -> ! {
         // #487: no-op unless an isolation-probe variant is compiled, in which
         // case this faults at PL0 before the write.
         isolation_probe();
+        // #477 sleep harness: sleep, then continue. If the kernel's sleep is a
+        // real yield, /init suspends (the service loop runs meanwhile) and
+        // resumes to print "woke"; a broken busy-wait sleep runs IRQ-masked and
+        // hard-hangs the whole kernel (runner timeout), so "woke" never prints.
+        #[cfg(thumos_init_sleep)]
+        {
+            let s = b"init: sleeping\n";
+            sys_write(1, s.as_ptr(), u32::try_from(s.len()).unwrap_or(0));
+            sys_sleep(30); // 30 ms = 3 scheduler ticks
+            let w = b"init: woke\n";
+            sys_write(1, w.as_ptr(), u32::try_from(w.len()).unwrap_or(0));
+        }
         sys_write(1, msg.as_ptr(), u32::try_from(msg.len()).unwrap_or(0));
         sys_exit(0);
     }
