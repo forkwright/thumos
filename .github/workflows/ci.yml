@@ -171,24 +171,44 @@ jobs:
           grep -q 'image-resident initramfs signature verified' boot.log || { echo 'FAIL: initramfs signature was not verified (measured-userspace regression)'; exit 1; }
           grep -q '/init spawned' boot.log || { echo 'FAIL: /init did not spawn from the verified initramfs'; exit 1; }
           grep -q 'init: hello from userspace' boot.log || { echo 'FAIL: userspace /init did not run + syscall (PL0->dispatch->UART)'; exit 1; }
-          # PL0 isolation proof (#487/#482): boot /init probe variants that each
-          # attempt an operation illegal at PL0. A correctly-isolated kernel
-          # faults with the exact qemu abort exit code and never prints "hello",
-          # so any regression that lets PL0 touch kernel memory / run a
-          # privileged instruction (which would instead run + print hello +
-          # exit 0) fails CI. kread: read kernel 0x40008000 -> data abort (2);
-          # kwrite: write kernel 0x40008000 -> data abort (2); kexec: execute
-          # kernel .text -> prefetch abort (3); cp15: read SCTLR (privileged) ->
-          # undefined instruction (4). cp15 is the linchpin: it SUCCEEDS at PL1,
-          # so a broken mode-drop would run + print hello + exit 0 (a red).
-          for probe in kread:2 kwrite:2 kexec:3 cp15:4; do
-            variant="${probe%%:*}"; want="${probe##*:}"
+          # PL0 isolation + graceful user-fault kill (#487 + fault handling):
+          # each probe variant attempts one PL0-illegal op. A correct kernel
+          # (a) faults it -- 'hello' never prints, (b) KILLS only the faulting
+          # process -- a USERFAULT marker names the kind, and (c) SURVIVES --
+          # the service loop still reaches its tick cap and exits 0. Fails
+          # closed on every axis: broken isolation runs the probe + prints hello
+          # (red on hello-absent AND the missing marker); a handler that still
+          # halts exits 2/3/4 != 0 (red); a kernel that dies after the kill
+          # never prints ticks= (red). cp15 stays the linchpin: it SUCCEEDS at
+          # PL1, so a broken mode-drop is a visible red, not a silent pass.
+          # kread/kwrite: kernel 0x40008000 R/W -> data-abort; kexec: exec
+          # kernel .text -> prefetch-abort; cp15: SCTLR read -> undefined-instruction.
+          for probe in kread:data-abort kwrite:data-abort kexec:prefetch-abort cp15:undefined-instruction; do
+            variant="${probe%%:*}"; kind="${probe##*:}"
             THUMOS_INIT_VARIANT="$variant" cargo build --release --target armv7a-none-eabi --features qemu --jobs 8
             prc=0
             THUMOS_INIT_VARIANT="$variant" THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee "probe-$variant.log" || prc=$?
-            echo "=== isolation probe '$variant': runner rc=$prc (want $want) ==="
-            test "$prc" -eq "$want" || { echo "FAIL isolation[$variant]: PL0 op did not fault as expected (rc=$prc want=$want) -- isolation regression"; exit 1; }
+            echo "=== isolation probe '$variant': runner rc=$prc (want 0: kernel survives the kill) ==="
+            test "$prc" -eq 0 || { echo "FAIL isolation[$variant]: kernel did not survive the PL0 fault (rc=$prc; 2/3/4=halted-in-handler 5=loop-stall 1=panic 124=hang)"; exit 1; }
             grep -q '/init spawned PL0' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /init did not spawn PL0 (cannot test isolation)"; exit 1; }
+            grep -Eq "USERFAULT: pid=[0-9]+ kind=$kind" "probe-$variant.log" || { echo "FAIL isolation[$variant]: no USERFAULT $kind kill marker -- PL0 op did not fault (ISOLATION BROKEN) or the kill path broke"; exit 1; }
             ! grep -q 'init: hello from userspace' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /init reached the write -- the PL0 op did NOT fault (ISOLATION BROKEN)"; exit 1; }
+            grep -q 'THUMOS-QEMU: service-loop ticks=' "probe-$variant.log" || { echo "FAIL isolation[$variant]: service loop never resumed after the kill (kernel did not survive)"; exit 1; }
           done
-          echo "PL0 isolation verified: kernel read + kernel exec + privileged instruction all fault at PL0"
+          echo "PL0 isolation + graceful kill verified: every PL0-illegal op faults, the process is killed, the kernel survives"
+      - name: Kernel-fault halts (PL1 fault must NEVER be recovered)
+        working-directory: crates/thumos
+        # WHY: the other half of the safety property. A deliberate PL1 `udf`
+        # after boot-complete must take the KERNEL branch: qemu exit 4, no
+        # service-loop resume. If fault handling ever wrongly "recovers" a
+        # kernel fault, the boot continues to ticks=/exit 0 and this reds.
+        run: |
+          set -uo pipefail
+          cargo build --release --target armv7a-none-eabi --features qemu,kfault-probe --jobs 8
+          krc=0
+          THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee kfault.log || krc=$?
+          echo "=== kernel-fault probe: runner rc=$krc (want 4) ==="
+          test "$krc" -eq 4 || { echo "FAIL kfault: PL1 udf did not halt with exit 4 (rc=$krc) -- a kernel fault must NEVER be gracefully recovered"; exit 1; }
+          grep -q 'KERNEL UNDEFINED INSTRUCTION' kfault.log || { echo 'FAIL kfault: missing kernel-fault banner'; exit 1; }
+          ! grep -q 'THUMOS-QEMU: service-loop ticks=' kfault.log || { echo 'FAIL kfault: service loop ran past a KERNEL fault (fault was masked)'; exit 1; }
+          ! grep -q 'USERFAULT:' kfault.log || { echo 'FAIL kfault: a PL1 fault took the USER kill branch (mode check broken)'; exit 1; }

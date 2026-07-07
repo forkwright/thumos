@@ -1,8 +1,9 @@
 //! ARM exception vector table and interrupt handler.
 //!
-//! The ARM Cortex-A53 has 7 exception vectors at fixed offsets.
-//! We place the vector table at a known address and install handlers
-//! for IRQ (FROM GIC) and data/prefetch abort (for debugging).
+//! The ARMv7-A (Cortex-A7) has 7 exception vectors at fixed offsets. We place
+//! the vector table at a known address and install handlers for IRQ (FROM GIC),
+//! SVC (syscalls), and the abort/undef traps. Abort/undef traps from PL0 kill
+//! the faulting process; from PL1 they halt the kernel (see handle_fault).
 //!
 //! Vector table layout (ARM ARM B1.8):
 //! Offset 0x00: Reset
@@ -138,22 +139,87 @@ core::arch::global_asm!(
     "    ldmia   sp, {{r0-r12}}",
     "    add     sp, sp, #68",
     "    movs    pc, lr", // exception return: CPSR := SPSR
-    // Abort handlers: print info and hang
+    // Abort/undef wrappers (graceful user-fault kill): same full-frame contract
+    // as IRQ/SVC (#465). Build a process::Context on the banked ABT/UND stack,
+    // pass it to the Rust handler, which either KILLS a PL0 faulter (frame
+    // swapped to the successor via process::switch_to; this epilogue
+    // exception-returns into it) or HALTS on a PL1 fault (the handler diverges;
+    // this epilogue is never reached). Saved pc = the FAULTING instruction (ARM
+    // ARM B1.8.3 Table B1-7 link offsets: data abort lr-8, prefetch abort lr-4,
+    // undef lr-4 ARM / lr-2 Thumb); pc is diagnostic-only on both paths -- a
+    // fault frame is never resumed.
+    // INVARIANT: this epilogue's `ldm {r13,r14}^` user-bank restore is correct
+    // ONLY because it is reached solely on the kill path, where the frame holds
+    // a scheduled process's context (mode 0x10 or 0x1F -- both use the user
+    // bank). A PL1 fault (including one from SVC/IRQ/ABT/UND mode, whose banked
+    // sp/lr this frame does NOT capture) halts in Rust and never returns here.
     "data_abort_handler_asm:",
-    "    push    {{r0-r12, lr}}",
+    "    sub     lr, lr, #8", // pc = faulting instruction (DA: lr = pc+8)
+    "    sub     sp, sp, #68",
+    "    stmia   sp, {{r0-r12}}",
+    "    str     lr, [sp, #60]", // pc
+    "    mrs     r0, spsr",
+    "    str     r0, [sp, #64]", // cpsr (= SPSR: the faulter's mode)
+    "    add     r0, sp, #52",
+    "    stmia   r0, {{r13, r14}}^", // banked user sp @52, lr @56
+    "    nop",                       // ldm/stm(user) hazard barrier
+    "    mov     r0, sp",            // frame ptr -> handler
     "    bl      data_abort_handler_rust",
-    "    pop     {{r0-r12, lr}}",
-    "    b       .",
+    "    add     r0, sp, #52", // kill path only: frame = successor
+    "    ldmia   r0, {{r13, r14}}^",
+    "    nop", // hazard barrier
+    "    ldr     r0, [sp, #64]",
+    "    msr     spsr_cxsf, r0",
+    "    ldr     lr, [sp, #60]",
+    "    ldmia   sp, {{r0-r12}}",
+    "    add     sp, sp, #68",
+    "    movs    pc, lr", // exception return: CPSR := SPSR
     "prefetch_abort_handler_asm:",
-    "    push    {{r0-r12, lr}}",
+    "    sub     lr, lr, #4", // pc = faulting instruction (PA: lr = pc+4)
+    "    sub     sp, sp, #68",
+    "    stmia   sp, {{r0-r12}}",
+    "    str     lr, [sp, #60]",
+    "    mrs     r0, spsr",
+    "    str     r0, [sp, #64]",
+    "    add     r0, sp, #52",
+    "    stmia   r0, {{r13, r14}}^",
+    "    nop",
+    "    mov     r0, sp",
     "    bl      prefetch_abort_handler_rust",
-    "    pop     {{r0-r12, lr}}",
-    "    b       .",
+    "    add     r0, sp, #52",
+    "    ldmia   r0, {{r13, r14}}^",
+    "    nop",
+    "    ldr     r0, [sp, #64]",
+    "    msr     spsr_cxsf, r0",
+    "    ldr     lr, [sp, #60]",
+    "    ldmia   sp, {{r0-r12}}",
+    "    add     sp, sp, #68",
+    "    movs    pc, lr",
     "undefined_handler_asm:",
-    "    push    {{r0-r12, lr}}",
+    // UNDEF's link offset is STATE-dependent (ARM pc+4, Thumb pc+2), so adjust
+    // pc using SPSR.T after saving the registers (r0 is already captured).
+    "    sub     sp, sp, #68",
+    "    stmia   sp, {{r0-r12}}",
+    "    mrs     r0, spsr",
+    "    str     r0, [sp, #64]", // cpsr
+    "    tst     r0, #0x20",     // SPSR.T (Thumb)?
+    "    subeq   lr, lr, #4",    // ARM:   pc = lr - 4
+    "    subne   lr, lr, #2",    // Thumb: pc = lr - 2
+    "    str     lr, [sp, #60]", // pc = faulting instruction
+    "    add     r0, sp, #52",
+    "    stmia   r0, {{r13, r14}}^",
+    "    nop",
+    "    mov     r0, sp",
     "    bl      undefined_handler_rust",
-    "    pop     {{r0-r12, lr}}",
-    "    b       .",
+    "    add     r0, sp, #52",
+    "    ldmia   r0, {{r13, r14}}^",
+    "    nop",
+    "    ldr     r0, [sp, #64]",
+    "    msr     spsr_cxsf, r0",
+    "    ldr     lr, [sp, #60]",
+    "    ldmia   sp, {{r0-r12}}",
+    "    add     sp, sp, #68",
+    "    movs    pc, lr",
     // SVC (syscall) wrapper (#465/#474): identical full-frame handling to IRQ,
     // EXCEPT no `sub lr, #4` -- SVC lr already points at the instruction after
     // `svc`. The frame lets a syscall that switches away (Yield/Exit/futex)
@@ -299,59 +365,152 @@ fn irq_handler_body() {
     }
 }
 
-/// Data abort handler  -  print fault info and hang.
+/// Data abort trap: a PL0 fault kills the process, a PL1 fault halts. See
+/// [`handle_fault`].
 #[unsafe(no_mangle)]
-pub extern "C" fn data_abort_handler_rust() {
-    let mut serial = Uart::new();
+pub(crate) extern "C" fn data_abort_handler_rust(frame: *mut process::Context) {
     let dfar: u32;
     let dfsr: u32;
-    // SAFETY: CP15 system register access is a privileged operation. DFAR (c6, c0, 0)
-    // holds the faulting address and DFSR (c5, c0, 0) holds the fault status. Both
-    // are read-only in this context and are valid after a data abort exception.
+    // SAFETY: CP15 access is privileged. DFAR (c6, c0, 0) holds the faulting
+    // address, DFSR (c5, c0, 0) the fault status; both valid after a data abort.
     unsafe {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 0", out(reg) dfar); // DFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 0", out(reg) dfsr); // DFSR
     }
-    let _ = write!(serial, "\r\n!!! DATA ABORT !!!\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
-    let _ = write!(serial, "DFAR: {dfar:#010x} (fault address)\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
-    let _ = write!(serial, "DFSR: {dfsr:#010x} (fault status)\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
-    // WHY(qemu): distinct exit code lets CI tell a data abort from a panic
-    // or a hang; the asm wrapper otherwise parks in `b .` until timeout.
-    #[cfg(feature = "qemu")]
-    crate::qemu::request_exit(2);
+    handle_fault(
+        frame,
+        process::FaultKind::DataAbort {
+            fault_addr: dfar,
+            fault_status: dfsr,
+        },
+        2,
+    );
 }
 
-/// Prefetch abort handler.
+/// Prefetch abort trap: a PL0 fault kills the process, a PL1 fault halts.
 #[unsafe(no_mangle)]
-pub extern "C" fn prefetch_abort_handler_rust() {
-    let mut serial = Uart::new();
+pub(crate) extern "C" fn prefetch_abort_handler_rust(frame: *mut process::Context) {
     let ifar: u32;
     let ifsr: u32;
-    // SAFETY: CP15 system register access is a privileged operation. IFAR (c6, c0, 2)
-    // holds the faulting instruction address and IFSR (c5, c0, 1) holds the fault
-    // status. Both are read-only in this context and are valid after a prefetch abort.
+    // SAFETY: CP15 access is privileged. IFAR (c6, c0, 2) holds the faulting
+    // fetch address, IFSR (c5, c0, 1) the status; both valid after a prefetch abort.
     unsafe {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 2", out(reg) ifar); // IFAR
         core::arch::asm!("mrc p15, 0, {}, c5, c0, 1", out(reg) ifsr); // IFSR
     }
-    let _ = write!(serial, "\r\n!!! PREFETCH ABORT !!!\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
-    let _ = write!(serial, "IFAR: {ifar:#010x}\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
-    let _ = write!(serial, "IFSR: {ifsr:#010x}\r\n"); // WHY: best-effort serial write in exception handler; cannot recover from UART failure
-    // WHY(qemu): distinct exit code for CI (3 = prefetch abort).
-    #[cfg(feature = "qemu")]
-    crate::qemu::request_exit(3);
+    handle_fault(
+        frame,
+        process::FaultKind::PrefetchAbort {
+            fault_addr: ifar,
+            fault_status: ifsr,
+        },
+        3,
+    );
 }
 
-/// Undefined instruction handler.
+/// Undefined-instruction trap: a PL0 fault kills the process, a PL1 fault halts.
 #[unsafe(no_mangle)]
-pub extern "C" fn undefined_handler_rust() {
+pub(crate) extern "C" fn undefined_handler_rust(frame: *mut process::Context) {
+    handle_fault(frame, process::FaultKind::UndefinedInstruction, 4);
+}
+
+/// Shared fault-trap body for the abort/undef handlers.
+///
+/// Disposition comes from the SAVED CPSR mode in the trap frame
+/// (`process::fault_disposition`, host-tested):
+/// - PL0 (User): print the `USERFAULT` kill marker, kill via
+///   `process::fault_exit_current` (Dead + PID-0 IPC + teardown + frame swap to
+///   the successor) and RETURN -- the stub epilogue exception-returns into the
+///   successor. The kernel and every other process continue.
+/// - PL1 (everything else): a kernel bug. Print the fault state and halt: qemu
+///   exits with the per-kind CI code; hardware parks with IRQs masked so the
+///   un-petted watchdog resets. NEVER returns -- continuing past a kernel fault
+///   would mask corruption of unknown extent.
+fn handle_fault(frame: *mut process::Context, kind: process::FaultKind, qemu_exit_code: u32) {
+    // SAFETY: `frame` is the Context the stub built on the ABT/UND stack --
+    // valid and unaliased for this call (traps never nest: entry masks I, and no
+    // handler re-enables it).
+    unsafe { process::trap_enter(frame) };
+    // SAFETY: same frame liveness; copy the saved state for reporting.
+    let saved = unsafe { *frame };
     let mut serial = Uart::new();
-    serial
-        .write_str("\r\n!!! UNDEFINED INSTRUCTION !!!\r\n")
-        .ok();
-    // WHY(qemu): distinct exit code for CI (4 = undefined instruction).
-    #[cfg(feature = "qemu")]
-    crate::qemu::request_exit(4);
+    match process::fault_disposition(saved.cpsr) {
+        process::FaultDisposition::KillUser => {
+            let pid = process::current_pid();
+            // WHY: machine-parseable kill marker -- the CI isolation matrix
+            // asserts `USERFAULT: pid=N kind=<kind>` per probe. Best-effort
+            // serial write; cannot recover from UART failure.
+            let _ = match kind {
+                process::FaultKind::DataAbort {
+                    fault_addr,
+                    fault_status,
+                } => write!(
+                    serial,
+                    "USERFAULT: pid={pid} kind=data-abort addr={fault_addr:#010x} status={fault_status:#010x} killed\r\n"
+                ),
+                process::FaultKind::PrefetchAbort {
+                    fault_addr,
+                    fault_status,
+                } => write!(
+                    serial,
+                    "USERFAULT: pid={pid} kind=prefetch-abort addr={fault_addr:#010x} status={fault_status:#010x} killed\r\n"
+                ),
+                process::FaultKind::UndefinedInstruction => write!(
+                    serial,
+                    "USERFAULT: pid={pid} kind=undefined-instruction pc={:#010x} killed\r\n",
+                    saved.pc
+                ),
+            };
+            process::fault_exit_current(kind);
+            process::trap_leave();
+            // Returning re-enters the stub epilogue, which exception-returns
+            // into the successor's frame.
+        }
+        process::FaultDisposition::KernelHalt => {
+            let name = match kind {
+                process::FaultKind::DataAbort { .. } => "DATA ABORT",
+                process::FaultKind::PrefetchAbort { .. } => "PREFETCH ABORT",
+                process::FaultKind::UndefinedInstruction => "UNDEFINED INSTRUCTION",
+            };
+            let _ = write!(serial, "\r\n!!! KERNEL {name} !!!\r\n"); // WHY: best-effort serial write in exception handler
+            let _ = write!(
+                serial,
+                "PC:   {:#010x} (faulting instruction)\r\n",
+                saved.pc
+            ); // WHY: best-effort serial write
+            let _ = write!(serial, "CPSR: {:#010x} (faulting mode)\r\n", saved.cpsr); // WHY: best-effort serial write
+            match kind {
+                process::FaultKind::DataAbort {
+                    fault_addr,
+                    fault_status,
+                } => {
+                    let _ = write!(serial, "DFAR: {fault_addr:#010x} (fault address)\r\n"); // WHY: best-effort serial write
+                    let _ = write!(serial, "DFSR: {fault_status:#010x} (fault status)\r\n"); // WHY: best-effort serial write
+                }
+                process::FaultKind::PrefetchAbort {
+                    fault_addr,
+                    fault_status,
+                } => {
+                    let _ = write!(serial, "IFAR: {fault_addr:#010x}\r\n"); // WHY: best-effort serial write
+                    let _ = write!(serial, "IFSR: {fault_status:#010x}\r\n"); // WHY: best-effort serial write
+                }
+                process::FaultKind::UndefinedInstruction => {}
+            }
+            // WHY(qemu): distinct exit codes let CI tell a KERNEL data abort (2)
+            // / prefetch abort (3) / undef (4) from a panic (1) or hang.
+            #[cfg(feature = "qemu")]
+            crate::qemu::request_exit(qemu_exit_code);
+            #[cfg(not(feature = "qemu"))]
+            let _ = qemu_exit_code;
+            // INVARIANT: never continue past a PL1 fault. Park with IRQs masked
+            // (exception entry set CPSR.I); the timer IRQ can no longer pet the
+            // watchdog, so hardware resets -- the same end-state as the previous
+            // `b .` stubs.
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    }
 }
 
 /// SVC (supervisor call) handler -- the userspace -> kernel syscall entry

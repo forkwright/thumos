@@ -1,14 +1,13 @@
 //! thumos /init (#474): minimal userspace bring-up program.
 //!
-//! Built by build.rs to a static armv7a ELF linked at 0x40100000
-//! (kconfig::KERNEL_END), wrapped in a newc CPIO, and embedded into the
+//! Built by build.rs to a static armv7a ELF linked at 0x7FF00000
+//! (kconfig::USER_TEXT_BASE), wrapped in a newc CPIO, and embedded into the
 //! kernel image. kinit spawns it from the boot root ramfs.
 //!
-//! WHY privileged: spawn currently runs this at PL1 (System mode) in the
-//! kernel address space -- true PL0 usermode isolation (own page table, W^X
-//! user pages, exception-return) is deferred (elf.rs Wave 4+). This proves the
-//! spawn -> schedule -> SVC -> dispatch path end to end, not a security
-//! boundary.
+//! Runs UNPRIVILEGED: spawn_user runs this at PL0 (User mode) in its own
+//! address space with the image mapped W^X (#482), so a kernel-memory access
+//! faults. Proves the spawn -> schedule -> SVC -> dispatch path AND the
+//! isolation boundary (see the #487 probe variants below).
 #![no_std]
 #![no_main]
 
