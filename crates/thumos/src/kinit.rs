@@ -1311,16 +1311,16 @@ pub unsafe fn run() -> ! {
     // Step 14: Spawn packaged userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Spawning userspace processes\r\n");
-    // WHY(#474 qemu): the QEMU bring-up harness has no eMMC, so secure boot is
-    // never established (secure_boot_ok=false) and there is no LFS root --
-    // userspace comes ONLY from the image-resident initramfs, compiled into the
-    // kernel image and sharing its exact trust domain (no external medium to
-    // spawn from). The harness spawns it to exercise the userspace path end to
-    // end. The production gate is UNCHANGED: a non-qemu build still refuses
-    // spawn on an unverified boot. qemu and production are mutually exclusive
-    // (main.rs compile_error!), so this can never relax a shipped image.
-    let spawn_allowed = state.secure_boot_ok || cfg!(feature = "qemu");
-    if !spawn_allowed {
+    // WHY(#474/#480): the /init toolchain (build → embed → mount → the #465
+    // preemptive scheduler) is complete and the image-resident initramfs is
+    // mounted as the boot root, but spawning it still respects the #217
+    // fail-closed gate below -- userspace must NOT run on a boot whose trust
+    // was not cryptographically established, and that includes image-resident
+    // userspace (an operator-security-reviewed decision). Letting a verified
+    // image-resident initramfs spawn (so the qemu bring-up boot can exercise
+    // /init end to end) is a security-policy change tracked in #480; until it
+    // lands, the qemu boot correctly refuses spawn (secure_boot_ok=false).
+    if !state.secure_boot_ok {
         // WHY (#217, fail-closed + security review): userspace must NEVER run
         // on a boot whose trust was not cryptographically established.
         // Persistent-storage userspace is already gated transitively (the VFS
