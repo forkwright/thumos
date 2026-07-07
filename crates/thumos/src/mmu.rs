@@ -332,6 +332,64 @@ pub(crate) unsafe fn read_l2_entry(l1_phys: usize, virt_addr: usize) -> Option<u
     }
 }
 
+/// True if a small-page L2 descriptor grants ANY PL0 access (#478).
+///
+/// A small-page descriptor is bits[1:0] = 0b1X, where bit 1 marks the small
+/// page and bit 0 is the XN flag -- so an executable page is 0b10 and an
+/// execute-never (data/stack) page is 0b11. Checking `bit 1 set` (not `== 0b10`)
+/// therefore catches BOTH; a large-page (0b01) or fault (0b00) entry is
+/// rejected. ARM AP[1:0] at bits [5:4]: PL0 has access iff AP[1:0] >= 0b10
+/// (0b10 user-RO, 0b11 user-RW); 0b01 is PL1-only in both APX variants
+/// (`AP_KERNEL_ONLY`, `AP_KERNEL_RO`). So this selects exactly the pages a PL0
+/// process can touch -- image, stack, heap/mmap -- and rejects sections and
+/// every kernel-only entry (the shared `KERNEL_L2` at L1[0x400] carries no user
+/// AP, so it is skipped).
+pub(crate) fn l2_entry_is_user(entry: u32) -> bool {
+    entry & 0b10 != 0 && (entry >> 4) & 0b11 >= 0b10
+}
+
+/// Visit every PL0-accessible small page in `l1_phys`, calling `f(va, phys,
+/// attrs)` per page where `attrs` is the full low-12 descriptor bits
+/// (type+XN, C/B, AP, TEX, APX, S). Early-aborts (returns false) when `f`
+/// returns false; returns true after a full walk (#478).
+///
+/// A PL0 process's ENTIRE user-visible memory is, by construction, exactly the
+/// set of user-AP L2 entries in its own L1 -- so enumerating the page table is
+/// complete (fork needs no ELF), and passing `attrs` straight to `map_page`
+/// reconstructs each descriptor bit-for-bit (same W^X, XN, AP, memory type).
+///
+/// # Safety
+/// `l1_phys` must be a valid L1 table; its L2 tables live in kernel statics
+/// mapped in every address space.
+pub(crate) unsafe fn for_each_user_page(
+    l1_phys: usize,
+    mut f: impl FnMut(usize, usize, u32) -> bool,
+) -> bool {
+    // SAFETY: caller guarantees l1_phys is a valid L1; every read below is
+    // bounds-checked by the fixed 4096/256 loop extents.
+    unsafe {
+        let l1 = l1_phys as *const u32;
+        for l1_idx in 0..4096usize {
+            let l1_val = l1.add(l1_idx).read_volatile();
+            if l1_val & 0b11 != page_flags::L1_PAGE_TABLE {
+                continue;
+            }
+            let l2 = (l1_val & 0xFFFF_FC00) as *const u32;
+            for l2_idx in 0..256usize {
+                let entry = l2.add(l2_idx).read_volatile();
+                if !l2_entry_is_user(entry) {
+                    continue;
+                }
+                let va = (l1_idx << 20) | (l2_idx << 12);
+                if !f(va, (entry & 0xFFFF_F000) as usize, entry & 0xFFF) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
 /// Unmap a single 4 KB page from a process's address space.
 ///
 /// Zeroes the L2 entry for the given virtual address. If clearing that
@@ -817,9 +875,14 @@ pub fn alloc_addr_space() -> Option<usize> {
 /// space's L1 entries -- page-mapped mmap/heap/stack regions the process
 /// never individually unmapped before exit -- so a process that exits
 /// without tearing down its own mappings cannot permanently strand pool
-/// slots (#330). Cloned kernel identity-map entries are section descriptors
-/// (`flags::SECTION`, bits [1:0] = 0b10), never `page_flags::L1_PAGE_TABLE`
-/// (0b01), so this walk never touches or frees the kernel's own mappings.
+/// slots (#330). Cloned kernel identity-map entries are section descriptors,
+/// so the walk skips them. The ONE cloned kernel entry that IS an
+/// `L1_PAGE_TABLE` -- the shared `KERNEL_L2` at L1[0x400] (#417 W^X) -- is
+/// visited by this walk, but `free_l2_table` rejects it: it only frees an
+/// address that matches an `L2_TABLES` pool slot, and `KERNEL_L2` is a separate
+/// static, never a pool member. So the kernel's own mappings are never freed --
+/// safety here rests on that pool-membership check, not on the descriptor type
+/// alone.
 ///
 /// Returns `true` if `phys_addr` matched an allocated pool slot and was
 /// freed, `false` if it matched no slot -- WHY (finding 8): the caller can
@@ -1664,6 +1727,70 @@ mod tests {
                     "executable page must be read-only"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn l2_entry_is_user_covers_xn_data_and_rejects_kernel_only() {
+        // #478 regression: a small-page descriptor is bits[1:0]=0b1X (bit 0 =
+        // XN), so an execute-never DATA/stack page is 0b11 -- NOT 0b10. The
+        // enumerator must catch it, or a fork would silently skip every user
+        // data/stack page (the bug this test pins).
+        // User RX (.text): SMALL_PAGE | AP_READ_ONLY, XN clear -> bits 0b10.
+        assert!(l2_entry_is_user(
+            page_flags::SMALL_PAGE | page_flags::AP_READ_ONLY
+        ));
+        // User RW+XN (.data/stack): SMALL_PAGE | XN | AP_FULL -> bits 0b11.
+        assert!(l2_entry_is_user(
+            page_flags::SMALL_PAGE | page_flags::XN | page_flags::AP_FULL
+        ));
+        // Real attrs from prot_to_l2_flags must all count as user.
+        for prot in [
+            prot::PROT_READ | prot::PROT_EXEC,
+            prot::PROT_READ,
+            prot::PROT_READ | prot::PROT_WRITE,
+        ] {
+            assert!(l2_entry_is_user(prot_to_l2_flags(prot)), "prot {prot:#x}");
+        }
+        // Kernel-only (PL1 RW, PL0 none) and the shatter default: NOT user.
+        assert!(!l2_entry_is_user(
+            page_flags::SMALL_PAGE | page_flags::XN | page_flags::AP_KERNEL_ONLY
+        ));
+        assert!(!l2_entry_is_user(KERNEL_DEFAULT_PAGE));
+        // Large page (0b01) and fault (0b00): not small pages -> NOT user.
+        assert!(!l2_entry_is_user(0b01 | page_flags::AP_FULL));
+        assert!(!l2_entry_is_user(0));
+    }
+
+    #[test]
+    fn for_each_user_page_visits_user_pages_and_skips_kernel_only() {
+        // #478: enumerate exactly the PL0-accessible pages of a table.
+        reset();
+        unsafe {
+            init_and_enable();
+            let pt = alloc_addr_space().unwrap();
+            clone_addr_space(table_base(), pt);
+            let mb = 0x503usize << 20;
+            assert!(shatter_section(pt, mb)); // fills 256 KERNEL_DEFAULT (PL1-only)
+            let user_va = mb + 7 * 0x1000;
+            assert!(map_page(
+                pt,
+                user_va,
+                user_va,
+                prot_to_l2_flags(prot::PROT_READ | prot::PROT_WRITE)
+            ));
+
+            let mut visited = alloc::vec::Vec::new();
+            for_each_user_page(pt, |va, phys, _attrs| {
+                visited.push((va, phys));
+                true
+            });
+            assert_eq!(
+                visited,
+                alloc::vec![(user_va, user_va)],
+                "only the one granted user page is visited; the 255 KERNEL_DEFAULT entries are skipped"
+            );
+            free_addr_space(pt);
         }
     }
 }

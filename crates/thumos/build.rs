@@ -194,7 +194,7 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     // WHY (#487): declare the isolation-probe cfgs so a direct rustc compile
     // does not warn on them as unexpected.
     .arg("--check-cfg")
-    .arg("cfg(thumos_init_kread, thumos_init_kwrite, thumos_init_kexec, thumos_init_cp15, thumos_init_sleep)");
+    .arg("cfg(thumos_init_kread, thumos_init_kwrite, thumos_init_kexec, thumos_init_cp15, thumos_init_sleep, thumos_init_fork)");
 
     // WHY (#487): THUMOS_INIT_VARIANT selects an /init probe variant so CI can
     // permanently prove PL0 isolation. Each variant compiles a different
@@ -205,9 +205,9 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     println!("cargo:rerun-if-env-changed=THUMOS_INIT_VARIANT");
     if let Ok(variant) = env::var("THUMOS_INIT_VARIANT") {
         if !variant.is_empty() {
-            if !["kread", "kwrite", "kexec", "cp15", "sleep"].contains(&variant.as_str()) {
+            if !["kread", "kwrite", "kexec", "cp15", "sleep", "fork"].contains(&variant.as_str()) {
                 die(&format!(
-                    "#487: unknown THUMOS_INIT_VARIANT '{variant}' (expected kread|kwrite|kexec|cp15|sleep)"
+                    "#487: unknown THUMOS_INIT_VARIANT '{variant}' (expected kread|kwrite|kexec|cp15|sleep|fork)"
                 ));
             }
             cmd.arg("--cfg").arg(format!("thumos_init_{variant}"));

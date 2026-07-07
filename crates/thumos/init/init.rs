@@ -41,7 +41,7 @@ unsafe fn sys_write(fd: u32, buf: *const u8, len: u32) -> u32 {
 ///
 /// # Safety
 /// Yields to the scheduler; the kernel resumes this process after the interval.
-#[cfg(thumos_init_sleep)]
+#[cfg(any(thumos_init_sleep, thumos_init_fork))]
 #[inline(always)]
 unsafe fn sys_sleep(ms: u32) {
     // SAFETY: issues SVC #7 (Sleep) per the thumos ABI; the kernel marks this
@@ -74,6 +74,42 @@ unsafe fn sys_exit(code: u32) -> ! {
         );
     }
 }
+
+/// fork() -> child pid in the parent, 0 in the child, u32::MAX on failure.
+///
+/// # Safety
+/// Creates a child process; both branches return here (the #478 ctx seed).
+#[cfg(thumos_init_fork)]
+#[inline(always)]
+unsafe fn sys_fork() -> u32 {
+    let ret;
+    // SAFETY: SVC #10 (Fork) per the thumos ABI.
+    unsafe {
+        core::arch::asm!("svc #0", in("r7") 10u32, lateout("r0") ret, options(nostack));
+    }
+    ret
+}
+
+/// waitpid(pid) -> exit status, or u32::MAX while the child is not yet Dead
+/// (non-blocking).
+///
+/// # Safety
+/// Reads a child's exit status; reaps its slot when Dead.
+#[cfg(thumos_init_fork)]
+#[inline(always)]
+unsafe fn sys_waitpid(pid: u32) -> u32 {
+    let ret;
+    // SAFETY: SVC #12 (Waitpid) per the thumos ABI.
+    unsafe {
+        core::arch::asm!("svc #0", in("r7") 12u32, inlateout("r0") pid => ret, options(nostack));
+    }
+    ret
+}
+
+/// .data isolation canary (#478): a user-RW image page. The child mutates its
+/// OWN copy; a shared-page fork would leak the mutation into the parent.
+#[cfg(thumos_init_fork)]
+static mut FORK_DATA_CANARY: u32 = 0x0000_5EED;
 
 /// ELF entry point (e_entry). The kernel transmutes the loaded entry to
 /// PL0 isolation probe (#487): under a `thumos_init_<variant>` cfg (set by
@@ -166,6 +202,48 @@ pub extern "C" fn _start() -> ! {
             sys_sleep(30); // 30 ms = 3 scheduler ticks
             let w = b"init: woke\n";
             sys_write(1, w.as_ptr(), u32::try_from(w.len()).unwrap_or(0));
+        }
+        // #478 fork harness: fork, both branches write a DISTINCT marker (proving
+        // the r0 split + the child resuming at the fork return), the child
+        // mutates two canaries the parent then checks (a shared-page fork leaks
+        // them = isolation BROKEN), the child exits and the parent waitpids it.
+        #[cfg(thumos_init_fork)]
+        {
+            let mut stack_canary: u32 = 0xA5A5_5A5A;
+            core::ptr::write_volatile(&mut stack_canary, 0xA5A5_5A5A);
+            let pid = sys_fork();
+            if pid == 0 {
+                // CHILD: resumes HERE (the fork return) iff the ctx seed is
+                // right; mutates its OWN canary copies.
+                core::ptr::write_volatile(&mut stack_canary, 0xDEAD_DEAD);
+                core::ptr::write_volatile(core::ptr::addr_of_mut!(FORK_DATA_CANARY), 0xDEAD_DEAD);
+                let m = b"init: fork child\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(7);
+            }
+            if pid == u32::MAX {
+                let m = b"init: fork FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            let m = b"init: fork parent\n";
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+            // Reap: waitpid is non-blocking (u32::MAX until Dead); sleep yields
+            // so the Ready child runs.
+            loop {
+                if sys_waitpid(pid) != u32::MAX {
+                    break;
+                }
+                sys_sleep(10);
+            }
+            let ok = core::ptr::read_volatile(&stack_canary) == 0xA5A5_5A5A
+                && core::ptr::read_volatile(core::ptr::addr_of!(FORK_DATA_CANARY)) == 0x0000_5EED;
+            let m: &[u8] = if ok {
+                b"init: fork isolation intact\n"
+            } else {
+                b"init: fork isolation BROKEN\n"
+            };
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
         }
         sys_write(1, msg.as_ptr(), u32::try_from(msg.len()).unwrap_or(0));
         sys_exit(0);

@@ -487,11 +487,161 @@ pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
     }
 }
 
-/// Create a child process by cloning the current process's address space.
-/// Returns Some(child_pid) to the parent on success, or None on OOM.
+/// Free every PL0-mapped frame of `pt` back to the allocator (#478).
+///
+/// `try_free_page`'s own validation makes this exact: a spawn_user image at
+/// USER_TEXT_BASE lies OUTSIDE the allocator range (kinit passes USER_TEXT_BASE
+/// as the upper bound) and is rejected as a no-op, while fork-copied image
+/// pages, stack backing, and heap/mmap frames are allocator pages freed exactly
+/// once. Ownership derives from the page table, not a separate record.
+///
+/// # Safety
+/// `pt` is a valid L1; the current TTBR0 must be the KERNEL table (try_free_page
+/// zeroes the frame through the live TTBR0, so a user-remapped VA would alias).
+unsafe fn free_user_pages(pt: usize) {
+    // SAFETY: caller guarantees pt valid + kernel TTBR0; try_free_page validates
+    // each frame (out-of-range / not-allocated = no-op false).
+    unsafe {
+        mmu::for_each_user_page(pt, |_va, phys, _attrs| {
+            let _ = page::try_free_page(phys); // WHY: bool no-op on a non-allocator/already-free frame; fire-and-forget by design
+            true
+        });
+    }
+}
+
+/// Deep-copy every PL0 page of `parent_pt` into `child_pt`: a fresh frame, the
+/// parent's content copied, mapped at the SAME VA with the SAME attributes
+/// (#478). Returns false (with exact rollback) on OOM, a non-DRAM user page, or
+/// L2-pool exhaustion.
+///
+/// Runs under the KERNEL address space: fork executes with the parent's TTBR0
+/// live, where an allocator page's physical address can alias a VA the parent
+/// (a forked ancestor) user-remapped -- a raw phys write through such a VA would
+/// corrupt live memory. The kernel L1 maps all DRAM identity with no user
+/// remaps, so phys == VA holds for every access here, including the zero-on-free
+/// inside the rollback. IRQs are masked for the whole SVC, so the window is
+/// atomic.
+///
+/// # Safety
+/// Trap context (IRQs masked); `parent_pt` valid + live; `child_pt` a fresh
+/// kernel-clone not yet live in TTBR0.
+unsafe fn fork_copy_phase(parent_pt: usize, child_pt: usize) -> bool {
+    // SAFETY: see the doc invariants; all page-table/frame ops are validated.
+    unsafe {
+        mmu::switch_addr_space(mmu::table_base());
+        let ok = mmu::for_each_user_page(parent_pt, |va, parent_phys, attrs| {
+            // Fail closed: only DRAM-backed user pages are copyable. A
+            // device-mapped user page has no copy semantics -- refuse the whole
+            // fork rather than share or skip it.
+            if !(crate::kconfig::RAM_START..crate::kconfig::RAM_END).contains(&parent_phys) {
+                return false;
+            }
+            let Some(child_page) = page::alloc_page() else {
+                return false;
+            };
+            // WHY(arm-only): host "phys" values are bitmap fictions, never valid
+            // host pointers (same gating as the #208 stack copy). On ARM both
+            // sides are identity DRAM under the kernel L1.
+            #[cfg(target_arch = "arm")]
+            core::ptr::copy_nonoverlapping(
+                parent_phys as *const u8,
+                child_page as *mut u8,
+                page::PAGE_SIZE,
+            );
+            if !mmu::shatter_section(child_pt, va)
+                || !mmu::map_page(child_pt, va, child_page, attrs)
+            {
+                // Not yet recorded in child_pt's L2 -- free inline; the walk
+                // rollback below covers the pages already mapped.
+                page::free_page(child_page);
+                return false;
+            }
+            true
+        });
+        if !ok {
+            // Exact rollback needs no tracking array: every allocated page was
+            // mapped into child_pt immediately, so the child's own L2 entries
+            // ARE the allocation record. Still under the kernel map.
+            free_user_pages(child_pt);
+        }
+        mmu::switch_addr_space(parent_pt);
+        ok
+    }
+}
+
+/// The PL0 (userspace) fork path (#478): a fresh isolated address space with the
+/// parent's user pages DEEP-COPIED (fresh frames, content copied, same VA + same
+/// W^X attrs). Never shares the parent's L2 tables.
+///
+/// # Safety
+/// Trap context; `procs`/`slot`/`parent_pid` valid; `parent_pt` is the parent's
+/// live L1; `child_ctx` seeded from the trap frame with r0 = 0.
+unsafe fn fork_pl0(
+    procs: &mut [Option<Process>; MAX_PROCS],
+    slot: usize,
+    child_pid: Pid,
+    parent_pid: Pid,
+    parent_pt: usize,
+    child_ctx: Context,
+) -> Option<Pid> {
+    // SAFETY: delegated to fork_copy_phase / mmu; procs indexing is bounded.
+    unsafe {
+        // A PL0 process must own its L1 (spawn_user gives it one); a User-mode
+        // frame without a per-process table is an invariant break.
+        if parent_pt == 0 || parent_pt == mmu::table_base() {
+            return None;
+        }
+        let child_pt = mmu::alloc_addr_space()?;
+        // KERNEL entries only, like spawn_user -- NOT the parent's user L2
+        // pointers (which the shallow clone would alias).
+        mmu::clone_addr_space(mmu::table_base(), child_pt);
+        if !fork_copy_phase(parent_pt, child_pt) {
+            mmu::free_addr_space(child_pt); // reclaims the child's shatter L2s
+            return None;
+        }
+        let parent_ref = procs[usize::from(parent_pid)].as_ref();
+        // stack_base/stack_pages are the STACK VA RANGE (== the parent's -- same
+        // VA, different phys); the backing frames live only in the child's L2
+        // entries and are freed by exit_cleanup's table walk, never by identity.
+        let child = Process {
+            pid: child_pid,
+            state: State::Ready,
+            ctx: child_ctx,
+            parent: Some(parent_pid),
+            exit_status: 0,
+            page_table_phys: child_pt,
+            stack_base: parent_ref.map_or(0, |p| p.stack_base),
+            stack_pages: parent_ref.map_or(0, |p| p.stack_pages),
+            heap_break: parent_ref.map_or(DEFAULT_HEAP_BREAK, |p| p.heap_break),
+            mappings: parent_ref.map_or([None; MAX_MAPPINGS], |p| p.mappings),
+            signal_state: parent_ref.map_or(SignalState::new(), |p| {
+                let mut s = p.signal_state;
+                s.pending = 0; // POSIX: child starts with a clean pending mask
+                s
+            }),
+            uid: parent_ref.map_or(1, |p| p.uid),
+            wake_tick: 0,
+            capabilities: parent_ref.map_or(crate::capability::Capabilities::FORK_DEFAULT, |p| {
+                p.capabilities
+            }) & crate::capability::Capabilities::FORK_DEFAULT,
+            fds: parent_ref.map_or_else(crate::fd::FdTable::new, |p| crate::fd::fork_table(&p.fds)),
+        };
+        procs[slot] = Some(child);
+        Some(child_pid)
+    }
+}
+
+/// Create a child process (POSIX fork).
+///
+/// A PL0 (userspace) parent gets a fresh ISOLATED address space with its user
+/// pages deep-copied (#478, fork_pl0). A PL1 parent (PID 0 / spawn kernel
+/// threads / host tests) takes the legacy path: shallow L1 clone + fresh
+/// translated stack (correct because kernel threads share the kernel identity
+/// map and their stacks are sections, not L2 mappings).
 ///
 /// NOTE: unlike POSIX fork(), both parent and child continue FROM the next
-/// scheduler tick. The child inherits the parent's saved context exactly.
+/// scheduler tick; the child resumes at the fork return (its ctx is seeded from
+/// the live trap frame) with r0 = 0, the parent with r0 = child_pid.
 pub(crate) fn fork() -> Option<Pid> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. addr_of_mut! avoids intermediate references to static mut.
@@ -499,32 +649,32 @@ pub(crate) fn fork() -> Option<Pid> {
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
 
-        // WHY(#478): fork is not yet supported for PL0 (userspace) processes.
-        // A correct PL0 fork needs a fresh isolated address space with the
-        // parent's user pages DEEP-COPIED. The current clone_addr_space is a
-        // SHALLOW L1 copy, so the child would share the parent's shattered L2
-        // tables (aliasing its physical pages), and at child exit
-        // free_addr_space would free the PARENT's L2-pool slots while the
-        // identity stack-free would free the parent's live stack -- corrupting
-        // the parent. Fail CLOSED (dispatch surfaces the error) rather than
-        // corrupt, until the deep-copy fork lands (full design on #478). PL1
-        // forks (PID 0 / spawn kernel threads / host tests) share the kernel
-        // identity map and are unaffected -- their stacks are sections, not L2
-        // mappings, so the shallow clone is correct for them.
-        if trap_from_user() {
-            return None;
-        }
-
         // Find a free process slot
         let slot = procs.iter().position(|p| p.is_none())?;
         let child_pid = slot as Pid;
         let parent_pid = CURRENT;
 
-        // Get parent's page table
-        let parent_pt = procs[usize::from(parent_pid)]
-            .as_ref()
-            .map(|p| p.page_table_phys)
-            .unwrap_or(0);
+        let parent_ref0 = procs[usize::from(parent_pid)].as_ref();
+        let parent_pt = parent_ref0.map_or(0, |p| p.page_table_phys);
+        let parent_pcb_ctx = parent_ref0.map(|p| p.ctx).unwrap_or_else(Context::zero);
+
+        // #478: seed the child from the LIVE trap frame (the in-flight fork
+        // SVC), not the PCB's stale switch-OUT snapshot; the child resumes at
+        // the fork return with r0 = 0. The parent's r0 (= child_pid) is written
+        // by svc_handler_rust after dispatch returns -- fork never switch_to's,
+        // so FRAME_SWITCHED stays false. The saved cpsr mode is the path
+        // selector: User (0x10) => PL0 deep-copy, else legacy PL1.
+        let mut child_ctx = active_frame_ctx_or(parent_pcb_ctx);
+        child_ctx.r[0] = 0;
+
+        if child_ctx.cpsr & CPSR_MODE_MASK == CPSR_MODE_USER {
+            return fork_pl0(procs, slot, child_pid, parent_pid, parent_pt, child_ctx);
+        }
+
+        // === PL1 legacy path (PID 0 / spawn kernel threads / host tests) ===
+        // Kernel threads share the kernel identity map; their stacks are 1 MB
+        // sections, invisible to the user-page walk, so a shallow clone + fresh
+        // translated stack is correct for them.
 
         // Allocate child address space
         let child_pt = mmu::alloc_addr_space()?;
@@ -562,9 +712,10 @@ pub(crate) fn fork() -> Option<Pid> {
         }
         let stack_base = child_stack_pages_alloc[0];
 
-        // Inherit parent context and memory layout (child resumes FROM same saved state)
+        // Inherit parent memory layout (child_ctx is already seeded from the
+        // trap frame above -- for a real PL1 fork, i.e. host tests, no frame is
+        // installed, so child_ctx == the parent's PCB ctx).
         let parent_ref = procs[usize::from(parent_pid)].as_ref();
-        let parent_ctx = parent_ref.map(|p| p.ctx).unwrap_or_else(Context::zero);
         let parent_break = parent_ref.map_or(DEFAULT_HEAP_BREAK, |p| p.heap_break);
 
         // WHY(#208): the child MUST run on its OWN freshly-allocated stack, not
@@ -581,9 +732,8 @@ pub(crate) fn fork() -> Option<Pid> {
         // physical pages, matching how spawn() sets up kernel-thread stacks.
         let parent_stack_base = parent_ref.map_or(0, |p| p.stack_base);
         let parent_stack_pages = parent_ref.map_or(0, |p| p.stack_pages);
-        let mut child_ctx = parent_ctx;
         child_ctx.sp = translate_stack_pointer(
-            parent_ctx.sp,
+            child_ctx.sp,
             parent_stack_base,
             parent_stack_pages,
             stack_base,
@@ -837,6 +987,15 @@ pub(crate) fn exit_cleanup(status: i32) {
     // context switch. Page table and stack pages are reclaimed only after
     // marking the process Dead; mmu::free_addr_space validates its input.
     unsafe {
+        // WHY (#478): every free below may zero the frame through the CURRENT
+        // TTBR0 (page.rs zero-on-free); a forked child's table user-remaps
+        // allocator-range VAs, so a raw phys write could alias another
+        // process's memory. The kernel L1 maps all DRAM identity with no user
+        // remaps, so we tear down under it; switch_to installs the successor's
+        // table afterward, and only kernel memory is touched in between. (This
+        // supersedes fault_exit_current's freed-L1-while-live note -- we no
+        // longer run teardown on the dying process's own table.)
+        mmu::switch_addr_space(mmu::table_base());
         let cur = usize::from(CURRENT);
         let procs = &mut *addr_of_mut!(PROCS);
         if let Some(ref mut proc) = procs[cur] {
@@ -847,19 +1006,34 @@ pub(crate) fn exit_cleanup(status: i32) {
             // releasing shared OFDs (and pipe/socket ends) at refcount zero.
             crate::fd::close_all(&mut proc.fds);
 
-            // Reclaim page table (but never free the kernel's global L1)
             let pt = proc.page_table_phys;
-            if pt != 0 && pt != mmu::table_base() {
+            let own_table = pt != 0 && pt != mmu::table_base();
+            // WHY (#478): a PL0 process's memory is exactly what its table maps
+            // PL0 -- image copies, stack backing, heap/mmap frames. The table
+            // is the ownership record; walk it to free those frames (also
+            // retires the old exit leak of heap/mmap frames, which
+            // free_addr_space reclaimed the L2 TABLES of but not their backing).
+            // A stack that is L2-backed (a PL0 process, incl. a forked child
+            // whose stack VA's identity phys belongs to an ANCESTOR) must NOT
+            // be freed by the identity loop below -- the walk already freed its
+            // real frames.
+            let stack_l2_backed = own_table
+                && mmu::read_l2_entry(pt, proc.stack_base).is_some_and(mmu::l2_entry_is_user);
+            if own_table {
+                free_user_pages(pt);
                 mmu::free_addr_space(pt);
             }
             proc.page_table_phys = 0;
 
-            // Free stack pages
+            // Free stack pages -- identity-stack (PL1) processes only. A PL0
+            // stack's frames were freed by the walk above.
             let base = proc.stack_base;
             let pages = proc.stack_pages;
             proc.stack_pages = 0;
-            for i in 0..pages {
-                page::free_page(base + i * page::PAGE_SIZE);
+            if !stack_l2_backed {
+                for i in 0..pages {
+                    page::free_page(base + i * page::PAGE_SIZE);
+                }
             }
         }
         // WHY: a self-exiting process cannot itself be blocked in
@@ -1012,17 +1186,14 @@ pub(crate) fn trap_switched() -> bool {
     unsafe { FRAME_SWITCHED }
 }
 
-/// True if the in-flight trap frame is a User-mode (PL0) trap. False outside
-/// trap context (host tests, where no frame is installed) or on a PL1 trap.
-/// Used to gate PL0-unsupported operations (e.g. fork, #478).
-pub(crate) fn trap_from_user() -> bool {
-    // SAFETY: ACTIVE_FRAME is null or the valid in-flight frame; a by-value
-    // read of its cpsr does not alias.
-    unsafe {
-        ACTIVE_FRAME
-            .as_ref()
-            .is_some_and(|f| f.cpsr & CPSR_MODE_MASK == CPSR_MODE_USER)
-    }
+/// The in-flight trap frame's register file, or `fallback` outside trap context
+/// (#478). On ARM, fork is only reachable through the SVC trap, where
+/// `trap_enter` published the frame; the fallback serves host tests that call
+/// `fork()` without installing a mock frame.
+fn active_frame_ctx_or(fallback: Context) -> Context {
+    // SAFETY: ACTIVE_FRAME is null or the valid, unaliased in-flight frame; the
+    // by-value copy does not alias.
+    unsafe { ACTIVE_FRAME.as_ref().map_or(fallback, |f| *f) }
 }
 
 /// Deposit a syscall return value into the CURRENT process's live frame BEFORE
@@ -1477,10 +1648,24 @@ pub unsafe fn exec_replace_context(
             let old_pages = proc.stack_pages;
             proc.stack_base = new_stack_base;
             proc.stack_pages = new_stack_pages;
-            // WHY: free old pages AFTER updating PCB so that any fault during
-            // free does not leave the PCB pointing at freed memory.
+            let pt = proc.page_table_phys;
+            // WHY (#478): free by the L2-mapped PHYSICAL frame, not by identity
+            // arithmetic on the VA. A forked child's stack_base is the parent's
+            // VA (same VA, different phys), so freeing old_base + i*PAGE by
+            // identity would free the PARENT's live stack frame (cross-process
+            // corruption via fork+exec) and leak the child's real frames.
+            // read_l2_phys resolves the real frame for both the identity
+            // (spawn_user) and VA!=phys (forked) cases; unmap + flush before
+            // freeing also unmaps each old-stack L2 entry (the arithmetic loop
+            // left them mapped -- #478). WHY(after PCB update): a fault during
+            // free must not leave the PCB pointing at freed memory.
             for i in 0..old_pages {
-                page::free_page(old_base + i * page::PAGE_SIZE);
+                let vaddr = old_base + i * page::PAGE_SIZE;
+                if let Some(phys) = mmu::read_l2_phys(pt, vaddr) {
+                    mmu::unmap_page(pt, vaddr);
+                    mmu::flush_tlb_page(vaddr);
+                    page::free_page(phys);
+                }
             }
 
             // WHY (#225): the page table is REUSED across exec (same
@@ -1489,7 +1674,6 @@ pub unsafe fn exec_replace_context(
             // and free each one before resetting the tracking state below, or
             // the physical frames leak permanently and the new image can read
             // the previous image's residual contents at the same VAs.
-            let pt = proc.page_table_phys;
             for mapping in proc.mappings.iter().flatten() {
                 for i in 0..mapping.pages {
                     let vaddr = mapping.start + i * page::PAGE_SIZE;
@@ -2053,36 +2237,222 @@ mod tests {
     }
 
     #[test]
-    fn fork_fails_closed_for_a_pl0_caller() {
-        // #478: a PL0 (User-mode) fork must be REFUSED (deny, not corrupt) until
-        // deep-copy fork lands -- a shallow clone would share the parent's L2
-        // tables and corrupt it on child exit. A PL1 fork (no frame / non-User
-        // saved mode) still succeeds (the other fork tests).
+    fn fork_pl0_deep_copies_user_pages_fresh_frames_same_attrs() {
+        // #478: a PL0 fork gives the child its OWN address space with the
+        // parent's user pages DEEP-COPIED -- fresh frames (distinct phys), the
+        // SAME VAs, the SAME W^X attrs -- never sharing the parent's L2 tables.
+        // The child's ctx is seeded from the trap frame with r0 = 0.
         // SAFETY: test-only; single-threaded; reset_all reinitialises state.
         unsafe {
             reset_all();
-            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
-            procs[0] = Some(test_process(mmu::alloc_addr_space().unwrap()));
-            CURRENT = 0;
+            mmu::init_and_enable();
+            // A PL0 parent like spawn_user builds: .text RX + .data RW + stack.
+            let loaded = crate::elf::LoadedElf::for_test(
+                0x7FF0_0000,
+                &[(0x7FF0_0000, 0x100, 0x5), (0x7FF0_1000, 0x100, 0x6)],
+            );
+            let ppid = spawn_user(&loaded).expect("spawn PL0 parent");
+            CURRENT = ppid;
+            let parent_pt = {
+                let procs = &*core::ptr::addr_of!(PROCS);
+                procs[usize::from(ppid)].as_ref().unwrap().page_table_phys
+            };
+
+            // Install a User-mode trap frame with distinctive registers.
+            let mut frame = Context {
+                r: [9; 13],
+                sp: 0x7F00_0000,
+                lr: 0xC0DE,
+                pc: 0x7FF0_0010,
+                cpsr: 0x10,
+            };
+            trap_enter(&mut frame as *mut Context);
+            let child_pid = fork().expect("PL0 fork must deep-copy");
+            trap_leave();
+
+            let procs = &*core::ptr::addr_of!(PROCS);
+            let child = procs[usize::from(child_pid)].as_ref().unwrap();
+            // Child resumes at the fork return (frame) with r0 = 0.
+            assert_eq!(child.ctx.pc, 0x7FF0_0010, "child resumes at the fork site");
+            assert_eq!(child.ctx.r[0], 0, "child returns 0 from fork");
+            let child_pt = child.page_table_phys;
+            assert_ne!(child_pt, parent_pt, "child has its OWN address space");
+
+            for va in [0x7FF0_0000usize, 0x7FF0_1000] {
+                let pe = mmu::read_l2_entry(parent_pt, va).unwrap();
+                let ce = mmu::read_l2_entry(child_pt, va).unwrap();
+                assert_eq!(pe & 0xFFF, ce & 0xFFF, "same attrs at {va:#x}");
+                assert_ne!(
+                    pe & 0xFFFF_F000,
+                    ce & 0xFFFF_F000,
+                    "child page {va:#x} must be a DIFFERENT frame (deep copy)"
+                );
+            }
+            // MMIO stays PL1-only in the child (never a user page table).
+            assert!(mmu::read_l2_entry(child_pt, 0x1100_0000).is_none());
+        }
+    }
+
+    #[test]
+    fn fork_pl0_oom_rolls_back_exactly() {
+        // #478: a PL0 fork that OOMs mid-copy must leave the allocator + address
+        // space pools exactly as before -- no leaked child frames or L2s.
+        // SAFETY: test-only; single-threaded.
+        unsafe {
+            reset_all();
+            mmu::init_and_enable();
+            let loaded = crate::elf::LoadedElf::for_test(
+                0x7FF0_0000,
+                &[(0x7FF0_0000, 0x100, 0x5), (0x7FF0_1000, 0x100, 0x6)],
+            );
+            let ppid = spawn_user(&loaded).expect("spawn PL0 parent");
+            CURRENT = ppid;
             let free_before = page::free_count();
 
-            // Install a User-mode (PL0) trap frame, as the SVC stub would for a
-            // userspace fork syscall.
+            // Drain the page pool so the copy phase OOMs after 0..n pages.
+            let mut hog = alloc::vec::Vec::new();
+            while let Some(p) = page::alloc_page() {
+                hog.push(p);
+            }
             let mut frame = Context {
                 cpsr: 0x10,
                 ..Context::zero()
             };
             trap_enter(&mut frame as *mut Context);
-            assert!(fork().is_none(), "a PL0 fork must fail closed");
+            assert!(fork().is_none(), "fork must fail closed on OOM");
             trap_leave();
 
-            // No process slot consumed, no pages/address spaces leaked.
-            let procs = &*core::ptr::addr_of!(PROCS);
-            assert!(procs[1].is_none(), "no child slot allocated on refusal");
+            for p in hog {
+                page::free_page(p);
+            }
             assert_eq!(
                 page::free_count(),
                 free_before,
-                "a refused fork must allocate nothing"
+                "a rolled-back fork must leak no frames"
+            );
+        }
+    }
+
+    #[test]
+    fn fork_pl0_child_exit_frees_own_frames_not_parents() {
+        // #478 (review): a forked child's exit must free the child's OWN
+        // deep-copied frames (via exit_cleanup's page-table WALK), never the
+        // parent's -- the child's stack_base is the parent's VA, so an
+        // identity free would free the parent's live stack.
+        // SAFETY: test-only; single-threaded.
+        unsafe {
+            reset_all();
+            mmu::init_and_enable();
+            let loaded = crate::elf::LoadedElf::for_test(
+                0x7FF0_0000,
+                &[(0x7FF0_0000, 0x100, 0x5), (0x7FF0_1000, 0x100, 0x6)],
+            );
+            let ppid = spawn_user(&loaded).expect("spawn PL0 parent");
+            CURRENT = ppid;
+            let (parent_pt, parent_stack_base) = {
+                let procs = &*core::ptr::addr_of!(PROCS);
+                let p = procs[usize::from(ppid)].as_ref().unwrap();
+                (p.page_table_phys, p.stack_base)
+            };
+            // The parent's real stack frame (identity == its L2 mapping).
+            let parent_stack_frame = mmu::read_l2_phys(parent_pt, parent_stack_base).unwrap();
+
+            let mut frame = Context {
+                cpsr: 0x10,
+                ..Context::zero()
+            };
+            trap_enter(&mut frame as *mut Context);
+            let cpid = fork().expect("PL0 fork");
+            trap_leave();
+
+            let free_before_exit = page::free_count();
+            // Count the child's deep-copied frames (image + stack pages).
+            let child_pt = {
+                let procs = &*core::ptr::addr_of!(PROCS);
+                procs[usize::from(cpid)].as_ref().unwrap().page_table_phys
+            };
+            let mut child_frames = 0usize;
+            mmu::for_each_user_page(child_pt, |_v, _p, _a| {
+                child_frames += 1;
+                true
+            });
+            assert!(child_frames > 0);
+
+            CURRENT = cpid;
+            exit_cleanup(0);
+
+            // The child's frames are returned; the parent's stack frame is NOT.
+            assert_eq!(
+                page::free_count(),
+                free_before_exit + child_frames,
+                "child exit frees exactly its own deep-copied frames"
+            );
+            // try_free_page returns true iff the frame was still ALLOCATED (and
+            // frees it); asserting true confirms the child exit did NOT free the
+            // parent's frame -- a wrongly-freed frame would already be free
+            // (returns false) and fail here.
+            assert!(
+                page::try_free_page(parent_stack_frame),
+                "parent's live stack frame must NOT have been freed by the child exit"
+            );
+        }
+    }
+
+    #[test]
+    fn exec_replace_frees_forked_childs_real_stack_not_parents() {
+        // #478 CRITICAL (review): exec on a forked child must free the child's
+        // REAL stack frames (resolved via the page table), not the parent's
+        // live frame at the shared stack VA.
+        // SAFETY: test-only; single-threaded.
+        unsafe {
+            reset_all();
+            mmu::init_and_enable();
+            let loaded = crate::elf::LoadedElf::for_test(
+                0x7FF0_0000,
+                &[(0x7FF0_0000, 0x100, 0x5), (0x7FF0_1000, 0x100, 0x6)],
+            );
+            let ppid = spawn_user(&loaded).expect("spawn PL0 parent");
+            CURRENT = ppid;
+            let (parent_pt, parent_stack_base) = {
+                let procs = &*core::ptr::addr_of!(PROCS);
+                let p = procs[usize::from(ppid)].as_ref().unwrap();
+                (p.page_table_phys, p.stack_base)
+            };
+            let parent_stack_frame = mmu::read_l2_phys(parent_pt, parent_stack_base).unwrap();
+
+            let mut frame = Context {
+                cpsr: 0x10,
+                ..Context::zero()
+            };
+            trap_enter(&mut frame as *mut Context);
+            let cpid = fork().expect("PL0 fork");
+            trap_leave();
+
+            // The child's real stack frame (a fresh deep-copied page).
+            let child_pt = {
+                let procs = &*core::ptr::addr_of!(PROCS);
+                procs[usize::from(cpid)].as_ref().unwrap().page_table_phys
+            };
+            let child_stack_frame = mmu::read_l2_phys(child_pt, parent_stack_base).unwrap();
+            assert_ne!(child_stack_frame, parent_stack_frame, "distinct frames");
+
+            // Exec the child onto a fresh stack.
+            CURRENT = cpid;
+            let new_stack = page::alloc_contiguous(2).unwrap();
+            exec_replace_context(0x7FF0_0000, new_stack + 2 * page::PAGE_SIZE, new_stack, 2);
+
+            // The parent's live stack frame must NOT be freed (the critical bug).
+            // Asserting still-allocated (returns true) catches a wrongly-freed
+            // parent frame (which would already be free -> false).
+            assert!(
+                page::try_free_page(parent_stack_frame),
+                "the parent's live stack frame must NOT be freed by the child's exec"
+            );
+            // The child's OLD stack frame WAS freed by exec, so it is now free --
+            // try_free_page returns false (already free), not true (was allocated).
+            assert!(
+                !page::try_free_page(child_stack_frame),
+                "the child's old stack frame must be freed by exec (no leak)"
             );
         }
     }

@@ -238,3 +238,29 @@ jobs:
           grep -q 'init: sleeping' sleep.log || { echo 'FAIL sleep: /init did not reach the sleep'; exit 1; }
           grep -q 'init: woke' sleep.log || { echo 'FAIL sleep: /init never resumed from sleep (busy-wait deadlock or lost wake)'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' sleep.log || { echo 'FAIL sleep: service loop did not run (kernel hung during the sleep)'; exit 1; }
+      - name: QEMU fork correctness + isolation (#478)
+        working-directory: crates/thumos
+        # WHY: a PL0 fork must give the child its OWN deep-copied memory. /init
+        # forks; the parent and child write DISTINCT markers (proving the r0
+        # split -- child gets 0, parent gets the child pid -- and that the child
+        # resumed at the fork return via the seeded trap frame); the child
+        # mutates a stack canary + a .data canary and the parent then checks its
+        # OWN copies are untouched (a shared-page fork leaks the mutation ->
+        # 'isolation BROKEN' + likely parent corruption/USERFAULT); the child
+        # exits(7) and the parent waitpids it (proving exit_cleanup freed the
+        # CHILD's frames, not the parent's -- else the parent's stack faults).
+        run: |
+          set -uo pipefail
+          THUMOS_INIT_VARIANT=fork cargo build --release --target armv7a-none-eabi --features qemu --jobs 8
+          frc=0
+          THUMOS_INIT_VARIANT=fork THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee fork.log || frc=$?
+          echo "=== fork: runner rc=$frc (want 0) ==="
+          test "$frc" -eq 0 || { echo "FAIL fork: kernel did not survive (rc=$frc; 124=hang 2/3/4=abort)"; exit 1; }
+          grep -q 'init: fork parent' fork.log || { echo 'FAIL fork: no parent branch (fork did not return the child pid)'; exit 1; }
+          grep -q 'init: fork child' fork.log || { echo 'FAIL fork: no child branch (child did not resume at the fork return with r0=0 -- the #478 ctx seed)'; exit 1; }
+          grep -q 'init: fork isolation intact' fork.log || { echo 'FAIL fork: child writes reached the parent (SHARED PAGES -- deep copy broken)'; exit 1; }
+          ! grep -q 'init: fork isolation BROKEN' fork.log || { echo 'FAIL fork: explicit isolation break'; exit 1; }
+          ! grep -q 'init: fork FAILED' fork.log || { echo 'FAIL fork: fork returned an error'; exit 1; }
+          ! grep -q 'USERFAULT:' fork.log || { echo 'FAIL fork: a process faulted (bad child frame, bad mapping, or parent stack freed by the child exit)'; exit 1; }
+          grep -q 'init: hello from userspace' fork.log || { echo 'FAIL fork: parent did not continue past the harness'; exit 1; }
+          grep -q 'THUMOS-QEMU: service-loop ticks=' fork.log || { echo 'FAIL fork: kernel did not survive'; exit 1; }
