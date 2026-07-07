@@ -38,10 +38,18 @@ SECTIONS
     }
 
     . = ALIGN(4096);
-    __stack_top = . + 0x10000;                  /* SVC boot stack (64 KB) */
+    /* WHY(#465): the kernel proper (kinit + the kardia service loop = PID 0)
+       runs in SYSTEM mode on __stack_top, so every schedulable context shares
+       the user/system register bank -- this lets the exception stubs capture
+       and restore the interrupted sp/lr with a single user-bank ldm/stm ^,
+       with no SPSR-mode decoding. SVC is now a transient trap mode with its
+       own stack (like IRQ/ABT/UND): every syscall unwinds the SVC stack before
+       the next process resumes, so one 16 KB stack serves all processes. */
+    __stack_top = . + 0x10000;                  /* SYS boot / PID-0 stack (64 KB) */
     __irq_stack_top = __stack_top + 0x1000;     /* IRQ banked stack (4 KB) */
     __abt_stack_top = __irq_stack_top + 0x1000; /* ABT banked stack (4 KB) */
     __und_stack_top = __abt_stack_top + 0x1000; /* UND banked stack (4 KB) */
+    __svc_stack_top = __und_stack_top + 0x4000; /* SVC syscall stack (16 KB) */
 
     /DISCARD/ : {
         *(.comment)
@@ -53,4 +61,4 @@ SECTIONS
 /* Kernel image + all stacks must stay inside the reserved window ending at
    kconfig::KERNEL_END (0x40100000): page::init hands out frames from there
    up, so an oversized image would be silently overwritten by allocations. */
-ASSERT(__und_stack_top <= 0x40100000, "kernel image + stacks exceed KERNEL_RESERVED; grow kconfig::KERNEL_RESERVED/KERNEL_END and the memguard map together")
+ASSERT(__svc_stack_top <= 0x40100000, "kernel image + stacks exceed KERNEL_RESERVED; grow kconfig::KERNEL_RESERVED/KERNEL_END and the memguard map together")

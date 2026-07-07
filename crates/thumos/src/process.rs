@@ -5,9 +5,13 @@
 //! ready process and context-switches to it on each timer tick, swapping
 //! TTBR0 so each process has an independent virtual address space.
 //!
-//! On ARMv7, context switch saves/restores r4-r11 (callee-saved),
-//! sp, lr, and cpsr. Registers r0-r3, r12, lr, pc, cpsr are saved
-//! by the exception entry/exit code.
+//! On ARMv7 (#465), a context switch is a FULL trap-frame swap: the exception
+//! stub (exceptions.rs) captures the interrupted register file (r0-r12, banked
+//! sp/lr, resume pc, cpsr) into a `Context` on the handler stack, `switch_to`
+//! copies that into the current PCB and loads the next process's `Context`
+//! into the frame, and the stub epilogue exception-returns into it. This works
+//! preemptively (from the timer IRQ, anywhere in a process) and cooperatively
+//! (Yield/Exit/futex from an SVC trap) through one mechanism.
 
 use core::ptr::addr_of_mut;
 
@@ -50,39 +54,59 @@ pub enum FaultKind {
     UndefinedInstruction,
 }
 
-/// Saved CPU context for context switching.
-/// Only callee-saved registers need explicit saving  -  the IRQ entry
-/// stub already saves r0-r3, r12, lr on the IRQ stack.
+/// Full trap-frame CPU context, captured at exception entry (#465).
+///
+/// WARNING: THIS LAYOUT IS ABI. The exception stubs in `exceptions.rs` build
+/// this exact 68-byte frame on the handler stack and index it by the byte
+/// offsets asserted below -- changing a field's size/order without updating the
+/// asm silently corrupts every context switch. A preemptive switch must
+/// capture the WHOLE interrupted register file (r0-r12, banked sp/lr, resume
+/// pc, cpsr), not just callee-saved registers, because the interrupt can land
+/// anywhere.
 #[repr(C)]
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq, Eq, Debug))]
 pub struct Context {
-    pub r4: u32,
-    pub r5: u32,
-    pub r6: u32,
-    pub r7: u32,
-    pub r8: u32,
-    pub r9: u32,
-    pub r10: u32,
-    pub r11: u32,
+    /// r0-r12 (offsets 0..=48).
+    pub r: [u32; 13],
+    /// Banked user/system sp (offset 52).
     pub sp: u32,
+    /// Banked user/system lr (offset 56).
     pub lr: u32,
+    /// Resume address (offset 60).
+    pub pc: u32,
+    /// Saved CPSR = SPSR at exception entry (offset 64).
     pub cpsr: u32,
 }
+
+const _: () = assert!(core::mem::size_of::<Context>() == 68);
+const _: () = assert!(core::mem::offset_of!(Context, sp) == 52);
+const _: () = assert!(core::mem::offset_of!(Context, lr) == 56);
+const _: () = assert!(core::mem::offset_of!(Context, pc) == 60);
+const _: () = assert!(core::mem::offset_of!(Context, cpsr) == 64);
 
 impl Context {
     const fn zero() -> Self {
         Self {
-            r4: 0,
-            r5: 0,
-            r6: 0,
-            r7: 0,
-            r8: 0,
-            r9: 0,
-            r10: 0,
-            r11: 0,
+            r: [0; 13],
             sp: 0,
             lr: 0,
+            pc: 0,
             cpsr: 0,
+        }
+    }
+
+    /// Build the initial context for a fresh process entered at `entry` with
+    /// stack top `sp`, in CPU mode `mode` (0x1F System for spawn, 0x10 User for
+    /// exec). Derives Thumb state from the entry LSB (T-bit) so a Thumb image
+    /// is entered correctly even though build.rs currently emits ARM.
+    fn initial(entry: u32, sp: u32, mode: u32) -> Self {
+        Self {
+            r: [0; 13],
+            sp,
+            lr: 0,
+            pc: entry & !1,
+            cpsr: mode | ((entry & 1) << 5),
         }
     }
 }
@@ -263,21 +287,9 @@ pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
         let stack_base = stack_pages_alloc[0];
         let stack_top = stack_base + page::PAGE_SIZE * STACK_PAGES;
 
-        // Set up initial context
-        // WHY: "return address" is the entry point; first context switch lands here.
-        let ctx = Context {
-            r4: 0,
-            r5: 0,
-            r6: 0,
-            r7: 0,
-            r8: 0,
-            r9: 0,
-            r10: 0,
-            r11: 0,
-            sp: stack_top as u32,
-            lr: entry_point as u32,
-            cpsr: 0x1F, // NOTE: system mode, IRQs enabled
-        };
+        // Set up initial context. First context switch exception-returns to
+        // `entry` in System mode (0x1F, PL1, IRQs enabled) on the fresh stack.
+        let ctx = Context::initial(entry_point as u32, stack_top as u32, 0x1F);
 
         let parent_pid = CURRENT;
         let proc = Process {
@@ -647,29 +659,37 @@ pub(crate) fn exit_cleanup(status: i32) {
     }
 }
 
-/// Exit the current process with a given status code.
-/// Tears down the address space and stack, then halts this process.
-pub(crate) fn exit_with_status(status: i32) -> ! {
+/// Exit the current process from SYSCALL context (#465): tear it down, switch
+/// the trap frame to the next process, and RETURN so the SVC stub's exception
+/// return resumes the successor. Returns the (ignored) syscall return value.
+///
+/// WHY not `-> !` + wfi: the SVC handler runs with IRQs masked, so an in-handler
+/// wfi loop never takes the timer IRQ -- it would deadlock. Exit must UNWIND
+/// the SVC stack (like Yield) so the frame swap takes effect.
+pub(crate) fn exit_current(status: i32) -> u32 {
     exit_cleanup(status);
+    let next = schedule();
+    if next != current_pid() {
+        // SAFETY: trap context; the now-Dead PCB harmlessly absorbs the
+        // frame save, and the successor's context loads into the trap frame.
+        unsafe { switch_to(next) };
+        return 0;
+    }
+    // Unreachable by design: PID 0 (the service loop) never exits and is Ready
+    // whenever it is not CURRENT, so a non-PID-0 exit always finds a successor.
+    // Defensive fallback: restore the kernel address space, unmask IRQs so the
+    // timer keeps running, and park.
     #[cfg(target_arch = "arm")]
-    // SAFETY: process has been marked Dead and its resources freed by
-    // exit_cleanup. Switching to the kernel address space and spinning on
-    // wfi is safe; this path never returns.
+    // SAFETY: the process is Dead and freed; parking with IRQs live is safe.
     unsafe {
         mmu::switch_addr_space(mmu::table_base());
+        core::arch::asm!("cpsie i");
         loop {
             core::arch::asm!("wfi");
         }
     }
-    // WHY: non-ARM test builds diverge via unreachable! since ARM wfi is unavailable
     #[cfg(not(target_arch = "arm"))]
-    unreachable!("exit_with_status called in non-ARM build")
-}
-
-/// Mark the current process as dead and yield to the scheduler.
-/// Thin wrapper over exit_with_status for the zero-status case.
-pub(crate) fn exit() -> ! {
-    exit_with_status(0)
+    0
 }
 
 /// Get the current process ID.
@@ -736,17 +756,75 @@ pub(crate) fn schedule() -> Pid {
     }
 }
 
-/// Perform a context switch FROM current process to `next_pid`.
-/// Also switches TTBR0 so the next process gets its own address space.
+/// The trap frame the exception stub built on the handler stack for the
+/// in-flight exception, or null outside trap context (e.g. host tests).
+///
+/// WHY a single static is sound: exceptions never nest. ARM masks CPSR.I on
+/// every exception entry, and no handler re-enables it (the only `cpsie` sites
+/// are boot init and `IrqGuard`, which restores prior state), so at most one
+/// trap frame is ever live.
+static mut ACTIVE_FRAME: *mut Context = core::ptr::null_mut();
+
+/// Set true by `switch_to` when it swaps the active frame to another process,
+/// so the SVC handler knows not to clobber the successor's r0 with a return
+/// value meant for the (switched-away) caller.
+static mut FRAME_SWITCHED: bool = false;
+
+/// Publish the in-flight trap frame. Called by the exception handlers before
+/// dispatching; cleared by `trap_leave` after.
 ///
 /// # Safety
+/// `frame` must be the valid, unaliased Context the stub built for this trap.
+pub(crate) unsafe fn trap_enter(frame: *mut Context) {
+    // SAFETY: single-writer during a non-nesting trap.
+    unsafe {
+        ACTIVE_FRAME = frame;
+        FRAME_SWITCHED = false;
+    }
+}
+
+/// Clear the in-flight trap frame after the handler returns.
+pub(crate) fn trap_leave() {
+    // SAFETY: single-writer during a non-nesting trap.
+    unsafe { ACTIVE_FRAME = core::ptr::null_mut() }
+}
+
+/// Did the current trap switch to a different process? If so the stub epilogue
+/// will exception-return into the successor, and the SVC handler must not write
+/// a return value into the (now successor's) frame.
+pub(crate) fn trap_switched() -> bool {
+    // SAFETY: read of a single word written only within this trap.
+    unsafe { FRAME_SWITCHED }
+}
+
+/// Deposit a syscall return value into the CURRENT process's live frame BEFORE
+/// switching away, so that when this process is later resumed (its saved frame
+/// exception-returns to the instruction after `svc`) it observes `val` in r0.
+/// No-op outside trap context (host tests), where there is no frame.
+pub(crate) fn set_trap_return(val: u32) {
+    // SAFETY: ACTIVE_FRAME is either null or the valid in-flight frame.
+    unsafe {
+        if let Some(frame) = ACTIVE_FRAME.as_mut() {
+            frame.r[0] = val;
+        }
+    }
+}
+
+/// Switch the active trap frame FROM the current process to `next_pid`: copy
+/// the interrupted register file into the current PCB, load the next process's
+/// saved context into the frame, and switch TTBR0. Control transfers when the
+/// exception stub's epilogue reloads the frame and exception-returns, so
+/// callers MUST unwind promptly after this (do not spin/WFI).
 ///
-/// Must be called FROM the timer IRQ handler (in IRQ mode with
-/// interrupts disabled).
+/// Serves BOTH the preemptive (timer IRQ) and cooperative (Yield/Exit/futex,
+/// from SVC) paths -- both enter through an exception stub that established
+/// ACTIVE_FRAME.
+///
+/// # Safety
+/// Must be called from trap context (ACTIVE_FRAME live) with interrupts masked.
 pub unsafe fn switch_to(next_pid: Pid) {
-    // SAFETY: register state was saved by the exception handler. Stack pointer
-    // is valid for the target process. Called from the timer IRQ handler with
-    // interrupts disabled; no concurrent access to PROCS or CURRENT.
+    // SAFETY: trap context; PROCS/CURRENT are accessed with interrupts masked
+    // and no concurrent access on this single core.
     unsafe {
         let cur_pid = usize::from(CURRENT);
         let next = usize::from(next_pid);
@@ -755,86 +833,34 @@ pub unsafe fn switch_to(next_pid: Pid) {
             return;
         }
 
-        // Save current context
+        let frame = ACTIVE_FRAME;
         let procs = &mut *addr_of_mut!(PROCS);
+
+        // Save the interrupted register file into the current PCB.
         if let Some(ref mut cur_proc) = procs[cur_pid] {
-            save_context(&mut cur_proc.ctx);
+            if !frame.is_null() {
+                cur_proc.ctx = *frame;
+            }
             if cur_proc.state == State::Running {
                 cur_proc.state = State::Ready;
             }
         }
 
-        // Switch address space then restore next context
+        // Load the next process's context into the frame; the stub epilogue
+        // exception-returns into it.
         if let Some(ref mut next_proc) = procs[next] {
             next_proc.state = State::Running;
             CURRENT = next_pid;
-            // WHY: switch TTBR0 before executing any instruction in the new process
+            // WHY: switch TTBR0 before the epilogue restores the new context.
             if next_proc.page_table_phys != 0 {
                 mmu::switch_addr_space(next_proc.page_table_phys);
             }
-            restore_context(&next_proc.ctx);
+            if !frame.is_null() {
+                *frame = next_proc.ctx;
+                FRAME_SWITCHED = true;
+            }
         }
     }
-}
-
-/// Save callee-saved registers INTO the context struct.
-#[inline(always)]
-unsafe fn save_context(ctx: &mut Context) {
-    #[cfg(target_arch = "arm")]
-    // SAFETY: register state was saved by the exception handler. ctx points to
-    // the current process's Context within PROCS, which is valid for the
-    // duration of the IRQ handler. Offsets match the #[repr(C)] Context layout.
-    unsafe {
-        core::arch::asm!(
-            "str r4, [{ctx}, #0]",
-            "str r5, [{ctx}, #4]",
-            "str r6, [{ctx}, #8]",
-            "str r7, [{ctx}, #12]",
-            "str r8, [{ctx}, #16]",
-            "str r9, [{ctx}, #20]",
-            "str r10, [{ctx}, #24]",
-            "str r11, [{ctx}, #28]",
-            "str sp, [{ctx}, #32]",
-            "str lr, [{ctx}, #36]",
-            "mrs {tmp}, cpsr",
-            "str {tmp}, [{ctx}, #40]",
-            ctx = in(reg) ctx as *mut Context,
-            tmp = out(reg) _,
-        );
-    }
-    // WHY: suppress unused-variable warning on non-ARM hosts
-    #[cfg(not(target_arch = "arm"))]
-    let _ = ctx;
-}
-
-/// Restore callee-saved registers FROM the context struct.
-#[inline(always)]
-unsafe fn restore_context(ctx: &Context) {
-    #[cfg(target_arch = "arm")]
-    // SAFETY: register state was saved by the exception handler. Stack pointer
-    // is valid for the target process. ctx points to the next process's Context
-    // within PROCS; address space has already been switched via TTBR0.
-    unsafe {
-        core::arch::asm!(
-            "ldr r4, [{ctx}, #0]",
-            "ldr r5, [{ctx}, #4]",
-            "ldr r6, [{ctx}, #8]",
-            "ldr r7, [{ctx}, #12]",
-            "ldr r8, [{ctx}, #16]",
-            "ldr r9, [{ctx}, #20]",
-            "ldr r10, [{ctx}, #24]",
-            "ldr r11, [{ctx}, #28]",
-            "ldr sp, [{ctx}, #32]",
-            "ldr lr, [{ctx}, #36]",
-            "ldr {tmp}, [{ctx}, #40]",
-            "msr cpsr_c, {tmp}",
-            ctx = in(reg) ctx as *const Context,
-            tmp = out(reg) _,
-        );
-    }
-    // WHY: suppress unused-variable warning on non-ARM hosts
-    #[cfg(not(target_arch = "arm"))]
-    let _ = ctx;
 }
 
 // --- Memory management accessors ---
@@ -1206,15 +1232,18 @@ pub unsafe fn exec_replace_context(
         let cur = usize::from(CURRENT);
         if let Some(ref mut proc) = procs[cur] {
             // WHY cpsr 0x10 (User mode, IRQs enabled): execve transfers control
-            // to an unprivileged userspace binary. User mode (0x10) is the correct
-            // CPSR for the new image. Contrast with spawn() which uses 0x1F (System
-            // mode) for kernel-internal threads.
+            // to an unprivileged userspace binary. Contrast with spawn() which
+            // uses 0x1F (System mode) for kernel-internal threads. The full
+            // register file is reset -- exec starts a fresh image, not a
+            // continuation.
             // SAFETY: ARMv7 target has 32-bit usize; try_from cannot fail
             // in production. On 64-bit test hosts the addresses are
             // test-controlled and verified to fit via the test setup.
-            proc.ctx.lr = u32::try_from(entry_point).unwrap_or(0u32);
-            proc.ctx.sp = u32::try_from(stack_top).unwrap_or(0u32);
-            proc.ctx.cpsr = 0x10; // User mode, IRQs enabled
+            proc.ctx = Context::initial(
+                u32::try_from(entry_point).unwrap_or(0u32),
+                u32::try_from(stack_top).unwrap_or(0u32),
+                0x10,
+            );
             // Free the old stack (replaced by exec).
             let old_base = proc.stack_base;
             let old_pages = proc.stack_pages;
@@ -1463,6 +1492,102 @@ mod tests {
         // Reset IPC inboxes by re-initialising as process 0 and draining
         // (no direct reset API; we just reconstruct process 0 and let
         // tests ignore stale messages  -  each test calls reset_all fresh)
+    }
+
+    // WHY (#465): first host coverage of the preemptive switch data path -- the
+    // frame swap that switch_to performs on behalf of the exception stubs.
+    // Previously untestable (the cooperative save/restore was pure asm).
+    #[test]
+    fn switch_to_swaps_full_trap_frame() {
+        // SAFETY: test-only; reset_all reinitialises global state; single-threaded.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt0 = mmu::alloc_addr_space().unwrap();
+            let pt1 = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(test_process(pt0));
+            procs[1] = Some(Process {
+                pid: 1,
+                parent: Some(0),
+                ..test_process(pt1)
+            });
+            procs[0].as_mut().unwrap().state = State::Running;
+            procs[1].as_mut().unwrap().state = State::Ready;
+            // PID 1's saved context: what switch_to must load into the frame.
+            let next_ctx = Context {
+                r: [11; 13],
+                sp: 0x4020_0000,
+                lr: 0xBEEF,
+                pc: 0x4010_0000,
+                cpsr: 0x1F,
+            };
+            procs[1].as_mut().unwrap().ctx = next_ctx;
+            CURRENT = 0;
+
+            // The interrupted frame the exception stub would have built for PID 0.
+            let mut frame = Context {
+                r: [7; 13],
+                sp: 0x4008_0000,
+                lr: 0xCAFE,
+                pc: 0x4009_0000,
+                cpsr: 0x1F,
+            };
+            let interrupted = frame;
+
+            trap_enter(&mut frame as *mut Context);
+            assert!(!trap_switched(), "trap_enter must reset the swapped flag");
+            switch_to(1);
+
+            // The frame now holds PID 1's context (the stub returns into it).
+            assert_eq!(frame, next_ctx, "frame must load the next process ctx");
+            // PID 0's PCB captured the interrupted register file verbatim.
+            assert_eq!(
+                procs[0].as_ref().unwrap().ctx,
+                interrupted,
+                "current PCB must save the interrupted frame"
+            );
+            let current = CURRENT;
+            assert_eq!(current, 1);
+            assert_eq!(procs[0].as_ref().unwrap().state, State::Ready);
+            assert_eq!(procs[1].as_ref().unwrap().state, State::Running);
+            assert!(trap_switched(), "switch must set the swapped flag");
+            trap_leave();
+        }
+    }
+
+    #[test]
+    fn set_trap_return_writes_active_frame_and_noops_when_null() {
+        // SAFETY: test-only; nextest runs each test in its own process, so
+        // ACTIVE_FRAME starts null.
+        unsafe {
+            reset_all();
+            trap_leave(); // ensure no active frame
+            set_trap_return(42); // must be a harmless no-op with no frame
+
+            let mut frame = Context::zero();
+            trap_enter(&mut frame as *mut Context);
+            set_trap_return(0xABC);
+            assert_eq!(frame.r[0], 0xABC, "return value deposited into frame r0");
+            trap_leave();
+        }
+    }
+
+    #[test]
+    fn switch_to_same_pid_is_noop() {
+        // SAFETY: test-only; single-threaded.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            procs[0] = Some(test_process(mmu::alloc_addr_space().unwrap()));
+            CURRENT = 0;
+            let mut frame = Context::zero();
+            frame.r[0] = 0x1234;
+            trap_enter(&mut frame as *mut Context);
+            switch_to(0);
+            assert!(!trap_switched(), "self-switch must not flag a swap");
+            assert_eq!(frame.r[0], 0x1234, "self-switch must not touch the frame");
+            trap_leave();
+        }
     }
 
     #[test]
