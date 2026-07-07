@@ -1071,6 +1071,19 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         return MAP_FAILED;
     }
 
+    // WHY (#478): reject a mapping with NO PL0 access (no PROT_READ and no
+    // PROT_WRITE -- i.e. PROT_NONE or exec-only, both AP[1:0]=0b01, which is
+    // PL0-inaccessible and indistinguishable from a shattered MB's
+    // KERNEL_DEFAULT fill). Such a page cannot be told apart from kernel-owned
+    // scaffolding, so fork's page-table enumeration (mmu::l2_entry_is_user)
+    // would silently omit it from the deep copy AND from teardown. Denying it
+    // keeps the invariant "every user page has AP >= 0b10", so enumeration is
+    // complete. PROT_NONE guard-page support needs membership-based
+    // enumeration -- TODO(#496).
+    if prot_flags & (mmu::prot::PROT_READ | mmu::prot::PROT_WRITE) == 0 {
+        return MAP_FAILED;
+    }
+
     // Round length up to page boundary
     let page_count = (length + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
 
@@ -1246,6 +1259,15 @@ fn sys_mprotect(arg0: u32, arg1: u32, arg2: u32) -> u32 {
         return EINVAL;
     }
 
+    // WHY (#478): reject a new protection with NO PL0 access (PROT_NONE /
+    // exec-only). Same reason as sys_mmap -- an AP[1:0]=0b01 user page is
+    // indistinguishable from kernel scaffolding, so fork's enumeration would
+    // drop it. Keeping every user page at AP >= 0b10 makes the deep copy
+    // complete.
+    if new_prot & (mmu::prot::PROT_READ | mmu::prot::PROT_WRITE) == 0 {
+        return EINVAL;
+    }
+
     // Find the mapping
     let Some(mapping) = process::find_mapping(addr) else {
         return EINVAL;
@@ -1260,7 +1282,13 @@ fn sys_mprotect(arg0: u32, arg1: u32, arg2: u32) -> u32 {
         // page-aligned within the mapping returned by find_mapping().
         // flush_tlb_page invalidates the TLB entry after the protection bits change.
         unsafe {
-            mmu::update_page_prot(pt, vaddr, l2_attrs);
+            // WHY (#478): propagate update_page_prot's failure instead of
+            // swallowing it -- a page in the mapping's VA range with no L2 entry
+            // means the mapping/table are inconsistent; return EFAULT rather
+            // than silently reporting success on a partial protection change.
+            if !mmu::update_page_prot(pt, vaddr, l2_attrs) {
+                return EFAULT;
+            }
             mmu::flush_tlb_page(vaddr);
         }
     }
