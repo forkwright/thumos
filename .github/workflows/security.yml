@@ -73,3 +73,29 @@ jobs:
         # .cargo/audit.toml, which mirrors deny.toml's [[advisories.ignore]]
         # entries — no silent --ignore flags here.
         run: cargo audit --deny unmaintained --deny unsound --deny yanked
+
+  osv-scanner:
+    name: osv-scanner
+    # WHY (direct CLI, not the reusable workflow): the org/repo Actions policy
+    # rejects external reusable workflows (google/osv-scanner-action/...), which
+    # startup-failed the whole Security workflow. Invoking the pinned CLI as a
+    # normal run step needs only the default read-only token and no external
+    # reusable-workflow permission. fail-on-vuln is the CLI default.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Install osv-scanner (pinned + checksum-verified)
+        env:
+          OSV_VERSION: v2.4.0
+          OSV_SHA256: 15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64" -o osv-scanner
+          echo "${OSV_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+      - name: Scan Cargo.lock (fail on vulnerability)
+        run: ./osv-scanner --lockfile=./Cargo.lock --config=./osv-scanner.toml
