@@ -14,16 +14,25 @@ SECTIONS
 {
     . = 0x7FF00000;
 
+    /* WHY (#482) ALIGN(4096) at each permission-class boundary: spawn_user maps
+       the image per-segment with W^X user page permissions (.text RX,
+       .rodata RO+XN, .data/.bss RW+XN). A 4 KB page must therefore fall
+       entirely in ONE permission class -- page-aligning the section starts
+       guarantees no page carries both executable and writable content.
+       max-page-size=0x100 (build.rs) keeps the FILE offsets compact regardless,
+       so the image stays small; #475's contiguous alloc covers it either way. */
     .text : {
         *(.text.boot)
         *(.text .text.*)
     }
 
-    .rodata : ALIGN(4) {
+    . = ALIGN(4096);
+    .rodata : {
         *(.rodata .rodata.*)
     }
 
-    .data : ALIGN(4) {
+    . = ALIGN(4096);
+    .data : {
         *(.data .data.*)
     }
 

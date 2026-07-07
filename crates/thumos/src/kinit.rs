@@ -1347,14 +1347,14 @@ pub unsafe fn run() -> ! {
         match plan_userspace_spawn_from_vfs("/init") {
             UserspaceSpawnPlan::Elf(elf_data) => match elf::load(elf_data) {
                 Ok(loaded) => {
-                    if let Some(pid) = process::spawn(
-                        // SAFETY: loaded.entry is the ELF entry point validated
-                        // by elf::load() to be within a loaded PT_LOAD segment.
-                        // The identity-mapped physical address is a callable
-                        // no-return function per the ELF ABI contract.
-                        unsafe { core::mem::transmute::<usize, fn() -> !>(loaded.entry) },
-                    ) {
-                        let _ = write!(serial, "       /init spawned (PID {})\r\n", pid);
+                    // WHY(#482): spawn_user runs /init UNPRIVILEGED (PL0, User
+                    // mode 0x10) in its own address space -- the ELF mapped
+                    // per-segment W^X and the stack RW+XN, with kernel memory
+                    // PL1-only so a user access to it faults. No transmute: the
+                    // entry is an address the new process resumes at via the
+                    // #465 exception-return, not a kernel fn pointer.
+                    if let Some(pid) = process::spawn_user(&loaded) {
+                        let _ = write!(serial, "       /init spawned PL0 (PID {})\r\n", pid);
                         state.processes_spawned += 1;
                     } else {
                         let _ = serial.write_str("  WARN /init spawn failed\r\n");
@@ -1375,14 +1375,9 @@ pub unsafe fn run() -> ! {
         match plan_userspace_spawn_from_vfs("/shell") {
             UserspaceSpawnPlan::Elf(elf_data) => match elf::load(elf_data) {
                 Ok(loaded) => {
-                    if let Some(pid) = process::spawn(
-                        // SAFETY: loaded.entry is the ELF entry point validated
-                        // by elf::load() to be within a loaded PT_LOAD segment.
-                        // The identity-mapped physical address is a callable
-                        // no-return function per the ELF ABI contract.
-                        unsafe { core::mem::transmute::<usize, fn() -> !>(loaded.entry) },
-                    ) {
-                        let _ = write!(serial, "       /shell spawned (PID {})\r\n", pid);
+                    // WHY(#482): /shell runs PL0 in its own isolated space too.
+                    if let Some(pid) = process::spawn_user(&loaded) {
+                        let _ = write!(serial, "       /shell spawned PL0 (PID {})\r\n", pid);
                         state.processes_spawned += 1;
                     } else {
                         let _ = serial.write_str("  WARN /shell spawn failed\r\n");
