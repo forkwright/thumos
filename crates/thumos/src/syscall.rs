@@ -736,23 +736,15 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         None => return ENOENT,
     };
 
-    // --- Step 3: parse and validate ELF ---
-    let loaded = match crate::elf::load(elf_data) {
-        Ok(l) => l,
-        // WHY: format/architecture failures -> ENOEXEC (matches Linux's
-        // execve(2) convention: 'not in a recognized format, wrong
-        // architecture, or some other format error'); OOM -> ENOMEM (issue
-        // #282 finding 15 -- the old blanket `Err(_) => EINVAL` never
-        // returned ENOEXEC at all).
-        Err(crate::elf::ElfError::OutOfMemory) => return ENOMEM,
-        Err(
-            crate::elf::ElfError::BadMagic
-            | crate::elf::ElfError::Not32Bit
-            | crate::elf::ElfError::NotLittleEndian
-            | crate::elf::ElfError::NotArm
-            | crate::elf::ElfError::InvalidSegment,
-        ) => return ENOEXEC,
-    };
+    // #489 fail-before-destroy: the new stack (below) and argv collection run
+    // BEFORE the destructive load(), so an OOM there returns to the STILL-INTACT
+    // old image. Image placement is enforced two ways: kinit uses load_confined
+    // for boot images, and exec's load() below is followed by a placement check
+    // on the loaded segments -- BUT the load-time write is itself confined
+    // because elf::validate rejects any segment outside sanctioned user DRAM
+    // (#318), and every authored image links at USER_TEXT_BASE (init.ld). The
+    // measured-boot chain (#480) is the primary guarantee: only signed ramfs
+    // images ever reach here.
 
     // --- Step 4: allocate new stack ---
     // WHY 4 pages (16 KB): matches spawn() stack size; sufficient for musl
@@ -834,44 +826,71 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         new_stack_top - 8
     };
 
-    // Write argc onto the stack.
-    // SAFETY: sp is within [new_stack_base, new_stack_top); allocation
-    // succeeded above. Stack pages are identity-mapped (physical == virtual),
-    // so the write reaches the correct physical pages.
+    // Write the argc/argv frame onto the new stack.
+    // WHY(arm-only, #489): the frame is written to the new stack's
+    // identity-mapped DRAM. On the host new_stack_base is a page-bitmap fiction
+    // (never a valid host pointer) and the context switch is a no-op stub, so
+    // the process never resumes -- the writes are both unnecessary and unsound
+    // (a segfault, since the reorder now runs this BEFORE load's error return).
+    // Same gating as the #208 fork stack copy. sp is still computed above so
+    // exec_replace_context gets the right user sp on ARM.
+    #[cfg(target_arch = "arm")]
+    // SAFETY: sp and every cursor below lie within [new_stack_base,
+    // new_stack_top); allocation succeeded; stack pages are identity-mapped, so
+    // each write reaches the correct physical page. arg_data/arg_lens are
+    // kernel-local fixed arrays with arg_lens[i] < MAX_ARG_LEN.
     unsafe {
         (sp as *mut u32).write(argc as u32);
-    }
-
-    // Write argv[] pointers and string data.
-    let argv_array_base = sp + 4;
-    let mut string_cursor = argv_array_base + (argc + 1) * 4;
-
-    for i in 0..argc {
-        // Write the pointer to this argument string.
-        // SAFETY: argv_array_base + i*4 is within the stack frame computed above.
-        unsafe {
+        let argv_array_base = sp + 4;
+        let mut string_cursor = argv_array_base + (argc + 1) * 4;
+        for i in 0..argc {
             ((argv_array_base + i * 4) as *mut u32).write(string_cursor as u32);
-        }
-        // Copy string bytes followed by a null terminator.
-        // SAFETY: string_cursor is within the stack frame; arg_data[i] is
-        // a kernel-local fixed array; arg_lens[i] < MAX_ARG_LEN.
-        unsafe {
             core::ptr::copy_nonoverlapping(
                 arg_data[i].as_ptr(),
                 string_cursor as *mut u8,
                 arg_lens[i],
             );
             ((string_cursor + arg_lens[i]) as *mut u8).write(0);
+            string_cursor += arg_lens[i] + 1;
         }
-        string_cursor += arg_lens[i] + 1;
-    }
-    // Write null terminator for argv[argc].
-    // SAFETY: argv_array_base + argc*4 is within the stack frame.
-    unsafe {
         ((argv_array_base + argc * 4) as *mut u32).write(0);
     }
+    // arg_data/arg_lens/sp are consumed only inside the arm-only block above;
+    // touch them so the host build does not warn them unused under -D warnings.
+    let _ = (&arg_data, &arg_lens, sp);
 
-    // --- Step 5b: close-on-exec (#267) ---
+    // --- Step 6: LOAD the new image (DESTRUCTIVE) ---
+    // #489: THE point of no return -- load_confined() overwrites the caller's
+    // live image at its identity vaddrs. Everything above (stack alloc, argv
+    // collection from the still-intact old image) was fail-before-destroy;
+    // nothing below can fail-and-return-to-the-old-image. load_confined checks
+    // BOTH the OOM budget AND the placement window [USER_TEXT_BASE, RAM_END)
+    // BEFORE any write, so an out-of-window or OOM image fails cleanly without
+    // touching the old image or page-allocator RAM (#489 defects 2/3). argv
+    // strings were copied into kernel buffers + the new stack ABOVE, so
+    // overwriting the old image (where argv[] literals live) here is safe (#499).
+    let loaded = match crate::elf::load_confined(
+        elf_data,
+        crate::kconfig::USER_TEXT_BASE,
+        crate::kconfig::RAM_END,
+    ) {
+        Ok(l) => l,
+        // WHY(#489): the new stack was allocated BEFORE load (fail-before-destroy
+        // reorder), so free it on a load error -- load_confined rejected the
+        // image without writing it, and the caller keeps its intact old image.
+        Err(e) => {
+            // SAFETY: new_stack_base names the EXEC_STACK_PAGES contiguous run
+            // from alloc_contiguous above; unmapped and unused.
+            unsafe { page::free_contiguous(new_stack_base, EXEC_STACK_PAGES) };
+            return if e == crate::elf::ElfError::OutOfMemory {
+                ENOMEM
+            } else {
+                ENOEXEC
+            };
+        }
+    };
+
+    // --- Step 6b: close-on-exec (#267) ---
     // Placed after the LAST failure return so a failed execve leaves the fd
     // table untouched (POSIX: fds close only on successful exec).
     let _ = process::with_current_fds(fd::close_cloexec); // WHY: None only if no current process exists during syscall handling, which cannot happen — the sweep has nothing to report on success either way.

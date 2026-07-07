@@ -1734,23 +1734,31 @@ pub unsafe fn exec_replace_context(
         mmu::switch_addr_space(pt);
         mmu::flush_tlb_all();
 
-        // Update the PCB's memory layout REGARDLESS of remap_ok: the old stack /
-        // mmap / heap were freed above and are gone from the table, so if the
-        // remap failed and the caller kills the process, exit_cleanup's
-        // page-table walk must free the NEW (partial) mappings, not re-free the
-        // old ones. The new stack's unmapped tail (on a partial map) leaks -- an
-        // accepted cost of the rare exec-time OOM (fail-before-destroy for the
-        // stack L2 is TODO(#499)).
-        proc.stack_base = new_stack_base;
-        proc.stack_pages = new_stack_pages;
+        // The old stack / mmap / heap were freed above and are gone from the
+        // table; the heap/mmap tracking is reset for the new image.
         proc.heap_break = DEFAULT_HEAP_BREAK;
         proc.mappings = [None; MAX_MAPPINGS];
 
         if !remap_ok {
-            // The old image was already destroyed by elf::load -- the process is
-            // unrecoverable. sys_execve kills it (exit_current).
+            // The old image is already destroyed (elf::load) -- the process is
+            // unrecoverable. Free the ENTIRE new stack here: for a fresh exec
+            // stack the frame IS its identity VA, so free_page(va) reclaims each
+            // frame whether or not map_user_stack got to map it (a partial map
+            // would otherwise leak the unmapped tail -- the walk in exit_cleanup
+            // only sees MAPPED pages). unmap first so exit_cleanup's walk cannot
+            // double-free, and zero stack_pages so its stack loop skips it.
+            for i in 0..new_stack_pages {
+                let va = new_stack_base + i * page::PAGE_SIZE;
+                mmu::unmap_page(pt, va);
+                page::free_page(va);
+            }
+            proc.stack_base = 0;
+            proc.stack_pages = 0;
+            // sys_execve kills the process (exit_current).
             return false;
         }
+        proc.stack_base = new_stack_base;
+        proc.stack_pages = new_stack_pages;
 
         // 6. Install the new context -- into the PCB AND the live trap frame.
         //    THE linchpin (#489): the SVC epilogue exception-returns into
@@ -3091,24 +3099,27 @@ mod tests {
             let new_stack_phys = page::alloc_page().unwrap();
             let free_before = page::free_count();
 
-            // Empty image (no segments): this test exercises the mmap/heap
-            // FREE path (Step 3), which runs regardless of whether the remap
-            // (Step 4) succeeds. On this synthetic bare table the new stack MB is
-            // not a shatterable section, so the remap returns false -- that is
-            // fine here; the full remap is proven by the QEMU exec /init variant.
+            // Empty image (no segments): this test exercises the mmap/heap FREE
+            // path, which runs regardless of whether the remap succeeds. On this
+            // synthetic bare table the new stack MB is not a shatterable section,
+            // so map_user_stack fails, remap returns false, and the failure path
+            // ALSO frees the whole new stack (1 page) -- so exec frees the 1 mmap
+            // + 1 heap + 1 new-stack page = 3. The full success remap is proven
+            // by the QEMU exec /init variant.
             let new_image = crate::elf::LoadedElf::for_test(0x1000, &[]);
-            let _remapped = exec_replace_context(
+            let remapped = exec_replace_context(
                 &new_image,
                 new_stack_phys + page::PAGE_SIZE,
                 new_stack_phys,
                 1,
             );
+            assert!(!remapped, "bare-table remap cannot shatter the stack MB");
 
             let free_after = page::free_count();
             assert_eq!(
                 free_after,
-                free_before + 2,
-                "exec must free exactly the 1 mmap page + 1 heap page from the old image"
+                free_before + 3,
+                "exec frees the 1 mmap + 1 heap (old image) + 1 new-stack (failure path) page"
             );
 
             let procs_ro = &*core::ptr::addr_of!(PROCS);
