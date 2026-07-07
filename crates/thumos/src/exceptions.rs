@@ -110,13 +110,34 @@ core::arch::global_asm!(
     "    b   .", // Not used
     "    b   irq_handler_asm",
     "    b   .", // FIQ: not used
-    // IRQ handler wrapper: save context, call Rust, restore
+    // IRQ handler wrapper (#465): build a full process::Context trap frame on
+    // the IRQ stack (r0-r12 @0..48, banked sp @52, lr @56, pc @60, cpsr @64),
+    // hand its pointer to the Rust handler (which may swap it to another
+    // process via switch_to), then exception-return into the resulting frame.
+    // INVARIANT: interrupted code is ALWAYS in the user/system bank (0x10/0x1F)
+    // -- _start runs the kernel in SYS, spawn/exec never set another mode -- so
+    // ldm/stm {r13,r14}^ names the interrupted sp/lr unconditionally.
     "irq_handler_asm:",
-    "    sub     lr, lr, #4",       // Adjust return address
-    "    push    {{r0-r12, lr}}",   // Save registers
-    "    bl      irq_handler_rust", // Call Rust handler
-    "    pop     {{r0-r12, lr}}",   // Restore registers
-    "    movs    pc, lr",           // Return FROM IRQ (restores CPSR)
+    "    sub     lr, lr, #4",     // resume pc = interrupted instruction
+    "    sub     sp, sp, #68",    // Context frame
+    "    stmia   sp, {{r0-r12}}", // r[0..=12] @ 0..48
+    "    str     lr, [sp, #60]",  // pc
+    "    mrs     r0, spsr",
+    "    str     r0, [sp, #64]", // cpsr (= SPSR at entry)
+    "    add     r0, sp, #52",
+    "    stmia   r0, {{r13, r14}}^", // banked user sp @52, lr @56
+    "    nop",                       // ARM ldm/stm(user) hazard barrier
+    "    mov     r0, sp",            // frame ptr -> handler
+    "    bl      irq_handler_rust",
+    "    add     r0, sp, #52",
+    "    ldmia   r0, {{r13, r14}}^", // next process's banked sp/lr
+    "    nop",                       // hazard barrier (next reads sp)
+    "    ldr     r0, [sp, #64]",
+    "    msr     spsr_cxsf, r0", // full SPSR: flags + mode + masks
+    "    ldr     lr, [sp, #60]", // pc -> lr
+    "    ldmia   sp, {{r0-r12}}",
+    "    add     sp, sp, #68",
+    "    movs    pc, lr", // exception return: CPSR := SPSR
     // Abort handlers: print info and hang
     "data_abort_handler_asm:",
     "    push    {{r0-r12, lr}}",
@@ -133,21 +154,50 @@ core::arch::global_asm!(
     "    bl      undefined_handler_rust",
     "    pop     {{r0-r12, lr}}",
     "    b       .",
+    // SVC (syscall) wrapper (#465/#474): identical full-frame handling to IRQ,
+    // EXCEPT no `sub lr, #4` -- SVC lr already points at the instruction after
+    // `svc`. The frame lets a syscall that switches away (Yield/Exit/futex)
+    // resume its caller later exactly where it left off.
     "svc_handler_asm:",
-    "    push    {{r0-r12, lr}}",   // frame: sp -> [r0..r12, lr]
-    "    mov     r0, sp",           // WHY(#474): pass frame ptr to the handler so
-    "    bl      svc_handler_rust", //          it can write the return into r0
-    "    pop     {{r0-r12, lr}}",   // restore r1-r12 + the handler's r0 (= result)
-    "    movs    pc, lr",           // return to caller (restores CPSR from SPSR)
+    "    sub     sp, sp, #68", // Context frame on the SVC stack
+    "    stmia   sp, {{r0-r12}}",
+    "    str     lr, [sp, #60]", // pc = instruction after svc
+    "    mrs     r0, spsr",
+    "    str     r0, [sp, #64]",
+    "    add     r0, sp, #52",
+    "    stmia   r0, {{r13, r14}}^", // banked user sp/lr
+    "    nop",                       // hazard barrier
+    "    mov     r0, sp",            // frame ptr -> handler
+    "    bl      svc_handler_rust",
+    "    add     r0, sp, #52",
+    "    ldmia   r0, {{r13, r14}}^",
+    "    nop", // hazard barrier
+    "    ldr     r0, [sp, #64]",
+    "    msr     spsr_cxsf, r0",
+    "    ldr     lr, [sp, #60]",
+    "    ldmia   sp, {{r0-r12}}",
+    "    add     sp, sp, #68",
+    "    movs    pc, lr", // exception return: CPSR := SPSR
 );
 
 unsafe extern "C" {
     fn vector_table();
 }
 
-/// IRQ handler called FROM assembly wrapper.
+/// IRQ handler called FROM the assembly wrapper with the interrupted process's
+/// trap frame (#465). A timer tick may `switch_to` another process, which swaps
+/// `*frame` in place; the stub epilogue then exception-returns into it.
 #[unsafe(no_mangle)]
-pub extern "C" fn irq_handler_rust() {
+pub extern "C" fn irq_handler_rust(frame: *mut process::Context) {
+    // SAFETY: `frame` is the Context the stub built on the IRQ stack -- valid
+    // and unaliased for this call (traps never nest: entry masks I, and no
+    // handler re-enables it).
+    unsafe { process::trap_enter(frame) };
+    irq_handler_body();
+    process::trap_leave();
+}
+
+fn irq_handler_body() {
     let irq = gic::acknowledge();
 
     if irq == gic::SPURIOUS {
@@ -304,30 +354,29 @@ pub extern "C" fn undefined_handler_rust() {
     crate::qemu::request_exit(4);
 }
 
-/// Register frame `svc_handler_asm` pushes (`push {r0-r12, lr}`): r0-r12 then
-/// the SVC-mode return address (the instruction after `svc`).
-#[repr(C)]
-pub(crate) struct SvcFrame {
-    r: [u32; 13],
-    lr: u32,
-}
-
 /// SVC (supervisor call) handler -- the userspace -> kernel syscall entry
-/// (#474).
+/// (#474), now over the shared full trap frame (#465).
 ///
 /// ABI (thumos, ARM-EABI style): `r7` = syscall number, `r0`-`r3` = args,
-/// return value in `r0`. `svc_handler_asm` pushed `{r0-r12, lr}` and passes
-/// the frame pointer here so the return value is written back into the saved
-/// `r0` slot (which the wrapper's `pop` then restores into the caller's r0).
-/// r1-r12 are preserved (left as the caller's saved values). A syscall that
-/// switches context (Exit/Yield) does not return through here -- `dispatch`
-/// hands off via `process::{exit_with_status,switch_to}`.
+/// return value in `r0`. `svc_handler_asm` built a `process::Context` frame and
+/// passes its pointer here; the return value is written into the frame's saved
+/// r0, which the stub epilogue restores. A syscall that switches away
+/// (Yield/Exit/futex/sleep) swaps the frame to the successor via
+/// `process::switch_to`; in that case the frame now holds the SUCCESSOR's
+/// context, so writing the return value would clobber its live r0 -- the guard
+/// on `trap_switched()` skips it (the switched-away caller's return value was
+/// deposited pre-swap by `process::set_trap_return`).
 #[unsafe(no_mangle)]
-pub(crate) extern "C" fn svc_handler_rust(frame: *mut SvcFrame) {
-    // SAFETY: `frame` is the {r0-r12, lr} block svc_handler_asm just pushed on
-    // the SVC stack; it is valid for this call and unaliased (SVC is
-    // non-reentrant on this single core).
+pub(crate) extern "C" fn svc_handler_rust(frame: *mut process::Context) {
+    // SAFETY: `frame` is the Context svc_handler_asm built on the SVC stack;
+    // valid and unaliased for this call (traps never nest).
+    unsafe { process::trap_enter(frame) };
     let f = unsafe { &mut *frame };
     let ret = crate::syscall::dispatch(f.r[7], f.r[0], f.r[1], f.r[2], f.r[3]);
-    f.r[0] = ret;
+    if !process::trap_switched() {
+        // SAFETY: no switch occurred, so `frame` still holds this caller's
+        // context; depositing the return value is correct.
+        unsafe { (*frame).r[0] = ret };
+    }
+    process::trap_leave();
 }

@@ -239,7 +239,14 @@ core::arch::global_asm!(
     "    ldr     sp, =__abt_stack_top",
     "    msr     cpsr_c, #0xDB", // UND mode (I+F masked)
     "    ldr     sp, =__und_stack_top",
-    "    msr     cpsr_c, #0xD3",    // back to SVC (I+F masked)
+    "    msr     cpsr_c, #0xD3", // SVC mode (I+F masked) -- transient trap mode
+    "    ldr     sp, =__svc_stack_top",
+    // WHY(#465): enter SYSTEM mode for the kernel proper. kinit and the kardia
+    // service loop (PID 0) run here, sharing the user/system register bank with
+    // spawned processes, so the exception stubs capture/restore the interrupted
+    // sp/lr uniformly (see exceptions.rs). System is PL1, so CP15/MMU/GIC and
+    // cpsid/cpsie stay legal.
+    "    msr     cpsr_c, #0xDF",    // SYSTEM mode (I+F masked)
     "    ldr     sp, =__stack_top", // Set stack pointer
     "    ldr     r0, =__bss_start", // Zero BSS
     "    ldr     r1, =__bss_end",

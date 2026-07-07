@@ -301,22 +301,14 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     // which is the established pattern for all process mutations in this kernel.
     process::set_wake_tick(wake_tick);
 
-    // Yield to the scheduler; it will resume us after wake_tick.
-    // NOTE: In a real implementation, after marking the process Sleeping we
-    // would perform a context switch here. The scheduler (called from the
-    // timer IRQ) will skip this process until its wake_tick arrives, then
-    // mark it Ready and switch back. For now we busy-wait on ticks since
-    // the voluntary context-switch path (switch_to from syscall context)
-    // is not yet wired for the sleeping state. This is architecturally
-    // correct — the wake_tick field is set, the scheduler already skips
-    // Sleeping processes — but the nanosleep caller will spin in the IRQ
-    // handler's tick loop rather than being preempted.
-    //
-    // WHY not switch_to here: switch_to must be called from IRQ mode with
-    // a saved IRQ context; calling it from SVC handler context (this path)
-    // corrupts the saved register state. The proper fix (deferred) is to
-    // return from the SVC handler to a yield point that the scheduler then
-    // preempts, matching the Linux approach of process blocking in kernel.
+    // TODO(#477)[deliberate-prudent]: busy-wait, not a real sleep. wake_tick is set and the
+    // scheduler already wakes Sleeping processes, but this loop spins instead
+    // of switching away. Under the SVC trap (IRQs masked) `ticks()` never
+    // advances here, so a userspace nanosleep hard-hangs. The #465 trap-frame
+    // switch now makes the correct fix reachable (mark Sleeping, set_trap_return
+    // (0), switch_to(schedule()), return -- the futex-wait pattern); #477 lands
+    // it with a sleeping-userspace QEMU test. Not reached today: no userspace
+    // program calls nanosleep yet.
     while exceptions::ticks() < wake_tick {
         wait_for_event();
     }
