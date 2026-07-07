@@ -191,11 +191,19 @@ jobs:
             echo "=== isolation probe '$variant': runner rc=$prc (want 0: kernel survives the kill) ==="
             test "$prc" -eq 0 || { echo "FAIL isolation[$variant]: kernel did not survive the PL0 fault (rc=$prc; 2/3/4=halted-in-handler 5=loop-stall 1=panic 124=hang)"; exit 1; }
             grep -q '/init spawned PL0' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /init did not spawn PL0 (cannot test isolation)"; exit 1; }
-            grep -Eq "USERFAULT: pid=[0-9]+ kind=$kind" "probe-$variant.log" || { echo "FAIL isolation[$variant]: no USERFAULT $kind kill marker -- PL0 op did not fault (ISOLATION BROKEN) or the kill path broke"; exit 1; }
+            grep -q "PROBE: $variant" "probe-$variant.log" || { echo "FAIL isolation[$variant]: the wrong probe variant was built (no 'PROBE: $variant' marker -- a cfg mixup)"; exit 1; }
+            grep -Eq "USERFAULT: pid=[0-9]+ kind=$kind .*killed" "probe-$variant.log" || { echo "FAIL isolation[$variant]: no USERFAULT $kind kill marker -- PL0 op did not fault (ISOLATION BROKEN) or the kill path broke"; exit 1; }
+            # Exactly ONE kill: a re-fault loop (kill path itself faulting) would
+            # print the marker repeatedly. Exactly one proves a clean single kill.
+            ufc=$(grep -c 'USERFAULT:' "probe-$variant.log")
+            test "$ufc" -eq 1 || { echo "FAIL isolation[$variant]: expected exactly 1 USERFAULT, got $ufc (a re-fault loop or double kill)"; exit 1; }
+            # The reaped half: PID 0 must reclaim the fault-killed PCB slot, else
+            # the process table leaks and exhausts at MAX_PROCS over uptime.
+            grep -q 'kardia: reaped .* fault-killed' "probe-$variant.log" || { echo "FAIL isolation[$variant]: fault-killed process was not reaped (PCB-slot leak -- table exhausts at MAX_PROCS)"; exit 1; }
             ! grep -q 'init: hello from userspace' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /init reached the write -- the PL0 op did NOT fault (ISOLATION BROKEN)"; exit 1; }
             grep -q 'THUMOS-QEMU: service-loop ticks=' "probe-$variant.log" || { echo "FAIL isolation[$variant]: service loop never resumed after the kill (kernel did not survive)"; exit 1; }
           done
-          echo "PL0 isolation + graceful kill verified: every PL0-illegal op faults, the process is killed, the kernel survives"
+          echo "PL0 isolation + graceful kill + reap verified: every PL0-illegal op faults, the process is killed AND reaped, the kernel survives"
       - name: Kernel-fault halts (PL1 fault must NEVER be recovered)
         working-directory: crates/thumos
         # WHY: the other half of the safety property. A deliberate PL1 `udf`

@@ -427,9 +427,15 @@ pub(crate) extern "C" fn undefined_handler_rust(frame: *mut process::Context) {
 ///   un-petted watchdog resets. NEVER returns -- continuing past a kernel fault
 ///   would mask corruption of unknown extent.
 fn handle_fault(frame: *mut process::Context, kind: process::FaultKind, qemu_exit_code: u32) {
-    // SAFETY: `frame` is the Context the stub built on the ABT/UND stack --
-    // valid and unaliased for this call (traps never nest: entry masks I, and no
-    // handler re-enables it).
+    // SAFETY: `frame` is the Context the stub built on the ABT/UND stack, valid
+    // and unaliased for this call. ACTIVE_FRAME holds one frame at a time: an
+    // IRQ cannot preempt this handler (entry masks CPSR.I). A SYNCHRONOUS
+    // re-fault from within this handler's own code IS architecturally possible
+    // (aborts/undef are not I-gated) -- but it is made safe, not by
+    // non-nesting, but because such a re-fault's saved mode is a privileged
+    // mode (ABT/UND/SVC/...), never User 0x10, so fault_disposition routes it to
+    // KernelHalt, which parks without resuming or recursing further -- bounding
+    // the depth at one level.
     unsafe { process::trap_enter(frame) };
     // SAFETY: same frame liveness; copy the saved state for reporting.
     let saved = unsafe { *frame };

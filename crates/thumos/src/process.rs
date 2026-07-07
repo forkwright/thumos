@@ -718,6 +718,34 @@ pub(crate) fn waitpid(child_pid: Pid) -> Option<i32> {
     }
 }
 
+/// Reap every Dead child of the CURRENT process, returning each PCB slot to the
+/// free pool; returns the count reaped.
+///
+/// WHY (#491 review): a fault-killed process is marked Dead by the abort
+/// handler (fault_exit_current), but its PCB slot is only reclaimed by waitpid,
+/// which is otherwise reachable only via the SVC Waitpid syscall. The kardia
+/// service loop (PID 0, the parent of every spawned process) calls this each
+/// tick so a fault-killed slot does not leak -- without it the process table
+/// monotonically exhausts at MAX_PROCS after repeated user faults, and every
+/// subsequent spawn/fork silently fails while the kernel still appears alive.
+/// Scan-based (not fault-inbox-driven) so it reaps every Dead child even if the
+/// fault notification was dropped on a full inbox, and without consuming any
+/// non-fault IPC a userspace process may have sent PID 0.
+pub(crate) fn reap_dead_children() -> usize {
+    let mut reaped = 0;
+    for pid in 0..MAX_PROCS {
+        // waitpid reaps only a Dead child of CURRENT; live/non-child PIDs (and
+        // PID 0 itself, whose parent is None) return None and are skipped.
+        // MAX_PROCS (16) fits Pid (u8), so the cast is total.
+        if let Ok(p) = Pid::try_from(pid) {
+            if waitpid(p).is_some() {
+                reaped += 1;
+            }
+        }
+    }
+    reaped
+}
+
 /// Notify kinit (PID 0) that process `faulting_pid` has faulted.
 /// Marks the faulting process Dead and delivers a fault message to PID 0's inbox.
 ///
@@ -1909,6 +1937,68 @@ mod tests {
             assert_eq!(msg.tag, 1, "DataAbort IPC tag");
             assert_eq!(msg.payload()[0], pid, "payload names the faulting PID");
             trap_leave();
+        }
+    }
+
+    #[test]
+    fn reap_dead_children_frees_only_dead_children_of_current() {
+        // #491 review: the fix for the PCB-slot leak. reap_dead_children (run by
+        // PID 0's service loop) must free a Dead child's slot, leave a Running
+        // child alone, and never touch PID 0 itself.
+        // SAFETY: test-only; reset_all reinitialises global state; single-threaded.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            procs[0] = Some(test_process(mmu::alloc_addr_space().unwrap()));
+            CURRENT = 0;
+            // A Dead child (fault-killed) + a Running child, both of PID 0.
+            let dead = Process {
+                pid: 1,
+                parent: Some(0),
+                state: State::Dead,
+                exit_status: 139,
+                ..test_process(mmu::alloc_addr_space().unwrap())
+            };
+            let running = Process {
+                pid: 2,
+                parent: Some(0),
+                state: State::Running,
+                ..test_process(mmu::alloc_addr_space().unwrap())
+            };
+            procs[1] = Some(dead);
+            procs[2] = Some(running);
+
+            let reaped = reap_dead_children();
+
+            let procs = &*core::ptr::addr_of!(PROCS);
+            assert_eq!(reaped, 1, "exactly the one Dead child is reaped");
+            assert!(procs[1].is_none(), "the Dead child's slot must be freed");
+            assert!(procs[2].is_some(), "the Running child must be left alone");
+            assert!(procs[0].is_some(), "PID 0 must never be reaped");
+        }
+    }
+
+    #[test]
+    fn reap_dead_children_ignores_a_dead_non_child() {
+        // A Dead process that is NOT a child of CURRENT must not be reaped by
+        // CURRENT (only the direct parent reaps).
+        // SAFETY: test-only; single-threaded.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            procs[0] = Some(test_process(mmu::alloc_addr_space().unwrap()));
+            CURRENT = 0;
+            let orphan = Process {
+                pid: 3,
+                parent: Some(2), // not a child of CURRENT (0)
+                state: State::Dead,
+                ..test_process(mmu::alloc_addr_space().unwrap())
+            };
+            procs[3] = Some(orphan);
+
+            assert_eq!(reap_dead_children(), 0, "a non-child Dead is not reaped");
+            let procs = &*core::ptr::addr_of!(PROCS);
+            assert!(procs[3].is_some(), "the non-child Dead slot is untouched");
         }
     }
 

@@ -68,6 +68,29 @@ unsafe fn sys_exit(code: u32) -> ! {
 /// correctly-isolated kernel it faults (never returns to the caller).
 #[inline(always)]
 unsafe fn isolation_probe() {
+    // WHY (#491 review): emit a per-variant marker BEFORE the illegal op so CI
+    // can tell the probes apart -- kread and kwrite otherwise produce identical
+    // kind=data-abort output, so a cfg copy-paste swap would be invisible. A
+    // successful write here also confirms /init reached PL0 and can syscall.
+    #[cfg(any(
+        thumos_init_kread,
+        thumos_init_kwrite,
+        thumos_init_kexec,
+        thumos_init_cp15
+    ))]
+    // SAFETY: the marker literal lives in the loaded image (PL0-readable); the
+    // write is a normal syscall that returns before the illegal op below.
+    unsafe {
+        #[cfg(thumos_init_kread)]
+        let marker: &[u8] = b"PROBE: kread\n";
+        #[cfg(thumos_init_kwrite)]
+        let marker: &[u8] = b"PROBE: kwrite\n";
+        #[cfg(thumos_init_kexec)]
+        let marker: &[u8] = b"PROBE: kexec\n";
+        #[cfg(thumos_init_cp15)]
+        let marker: &[u8] = b"PROBE: cp15\n";
+        sys_write(1, marker.as_ptr(), u32::try_from(marker.len()).unwrap_or(0));
+    }
     // Kernel load address (0x4000_8000) -- PL1-only in every process page
     // table (#482), so a PL0 read data-aborts (qemu exit 2).
     #[cfg(thumos_init_kread)]

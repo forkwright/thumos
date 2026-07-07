@@ -9,15 +9,12 @@
 //! scheduler round-robins away from PID 0 and back; the loop itself never
 //! calls `process::schedule()`.
 //!
-//! WARNING (coexistence is UNVERIFIED): the "timer IRQ preempts PID 0 and
-//! round-robins back" model is correct by construction, but has zero runtime
-//! coverage -- `process::switch_to`'s taken branch is `cfg(target_arch=arm)`
-//! asm (a no-op on host tests) and no userspace ELF has ever run (`/init`
-//! and `/shell` are missing from the ramfs). The qemu tick-cap below
-//! exercises only the solo-PID-0 path. TODO(#420)[deliberate-prudent]: once a userspace ELF
-//! exists in the qemu ramfs, add a two-process qemu soak that forces
-//! `schedule() -> switch_to() -> round-robin back to PID 0` before phone
-//! bring-up depends on preemption.
+//! Coexistence is VERIFIED (#482/#487 + fault handling): the qemu isolation
+//! matrix boots a real PL0 `/init`, so the timer IRQ preempts PID 0 into
+//! userspace, `process::switch_to`'s taken branch runs, the process faults, the
+//! kernel kills + reaps it, and control round-robins back to this loop (which
+//! then services ticks to the cap). That is the two-process preempt-and-return
+//! soak TODO(#420) asked for, now permanent in CI.
 //!
 //! WHY WFI (not WFE) for the phone idle (#461): WFE has no configured event
 //! source (no SEV/SEVONPEND) and parks forever under qemu-virt; WFI wakes on
@@ -209,6 +206,18 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
             // with the latest `now` -- poll(now) interfaces are time-based, so
             // catch-up replay is unnecessary.
             last_tick = now;
+            // WHY (#491 review): PID 0 is the parent of every spawned process,
+            // so it reaps fault-killed (and exited) children each tick --
+            // otherwise a fault-killed PCB slot leaks and the process table
+            // exhausts at MAX_PROCS after repeated user faults. The marker is
+            // the reaped-half witness the CI isolation matrix asserts.
+            let reaped = crate::process::reap_dead_children();
+            if reaped > 0 {
+                let _ = write!(
+                    serial,
+                    "kardia: reaped {reaped} fault-killed process(es)\r\n"
+                ); // WHY: best-effort diagnostic + CI marker
+            }
             // TODO(#400)[deliberate-prudent]: poll_input() -> key events -> active-screen dispatch.
             if kernel.poll_all(now) {
                 kernel.render_if_dirty();
