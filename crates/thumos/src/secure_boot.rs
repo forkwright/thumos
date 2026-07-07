@@ -144,6 +144,23 @@ pub(crate) fn verify_kernel_signature(
     }
 }
 
+/// Verify that an image-resident userspace payload (the boot initramfs) was
+/// signed by the embedded boot anchor (#480).
+///
+/// WHY: establishes `userspace_image_verified` so a cryptographically-verified
+/// image-resident userspace may spawn even when no boot MEDIUM was verified
+/// (`secure_boot_ok == false`, e.g. the eMMC-less QEMU boot). This FULFILLS the
+/// #217 requirement that userspace runs only when trust is cryptographically
+/// established -- for the image-resident case -- rather than weakening it: the
+/// blanket refusal existed only because no verification mechanism did. build.rs
+/// signs the initramfs with the dev seed, so this verifies under the dev/qemu
+/// anchor; under a production anchor the dev signature does NOT verify, so a
+/// production image correctly falls back to the eMMC secure-boot gate.
+#[must_use]
+pub(crate) fn verify_userspace_image(image: &[u8], signature: &[u8; SIGNATURE_LEN]) -> bool {
+    verify_kernel_signature(image, signature).is_ok()
+}
+
 /// Verify the Ed25519 signature of a kernel image using a caller-supplied
 /// public key. This allows testing with test keypairs while keeping the
 /// same verification logic.
@@ -578,6 +595,38 @@ mod tests {
     /// Test that a genuinely valid combined image (payload + Ed25519
     /// signature under the embedded boot key) verifies via
     /// [`verify_combined_image`].
+    #[test]
+    fn verify_userspace_image_accepts_boot_anchor_signature_and_rejects_tampering() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        // #480: an initramfs signed by the boot anchor verifies; any tamper to
+        // the image OR the signature is rejected (so a swapped userspace image
+        // cannot establish userspace_image_verified).
+        let seed = BOOT_KEY_DEV_SEED.expect("dev anchor required for #480 test");
+        let signing_key = SigningKey::from_bytes(&seed);
+        let image = *b"thumos initramfs bytes (stand-in)";
+        let sig = signing_key.sign(&image).to_bytes();
+
+        assert!(
+            verify_userspace_image(&image, &sig),
+            "boot-anchor-signed image must verify"
+        );
+
+        let mut tampered_image = image;
+        tampered_image[0] ^= 0xFF;
+        assert!(
+            !verify_userspace_image(&tampered_image, &sig),
+            "a tampered image must not verify under the original signature"
+        );
+
+        let mut tampered_sig = sig;
+        tampered_sig[0] ^= 0xFF;
+        assert!(
+            !verify_userspace_image(&image, &tampered_sig),
+            "a tampered signature must not verify"
+        );
+    }
+
     #[test]
     fn combined_image_valid_signature_passes() {
         use ed25519_dalek::{Signer, SigningKey};

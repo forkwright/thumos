@@ -1311,28 +1311,34 @@ pub unsafe fn run() -> ! {
     // Step 14: Spawn packaged userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Spawning userspace processes\r\n");
-    // WHY(#474/#480): the /init toolchain (build → embed → mount → the #465
-    // preemptive scheduler) is complete and the image-resident initramfs is
-    // mounted as the boot root, but spawning it still respects the #217
-    // fail-closed gate below -- userspace must NOT run on a boot whose trust
-    // was not cryptographically established, and that includes image-resident
-    // userspace (an operator-security-reviewed decision). Letting a verified
-    // image-resident initramfs spawn (so the qemu bring-up boot can exercise
-    // /init end to end) is a security-policy change tracked in #480; until it
-    // lands, the qemu boot correctly refuses spawn (secure_boot_ok=false).
-    if !state.secure_boot_ok {
-        // WHY (#217, fail-closed + security review): userspace must NEVER run
-        // on a boot whose trust was not cryptographically established.
-        // Persistent-storage userspace is already gated transitively (the VFS
-        // root is LFS-backed only on a verified boot), but the operator
-        // decision names userspace explicitly, and a future baked-in
-        // initramfs would otherwise spawn from an image-resident ramfs on an
-        // unverified boot. This is the explicit gate, not an accident of an
-        // empty root.
+    // WHY (#217 + #480): userspace may run only when trust is cryptographically
+    // established -- EITHER a verified boot medium (secure_boot_ok, the
+    // persistent-storage/LFS path) OR a cryptographically-verified
+    // image-resident initramfs. The initramfs is signed by the boot anchor
+    // (build.rs, dev seed) and verified here against BOOT_PUBLIC_KEY; a valid
+    // signature means this userspace shares the kernel's own signed trust
+    // domain, which satisfies #217's requirement for the image-resident case
+    // (the prior blanket refusal existed only because no verification mechanism
+    // did). A production image's initramfs carries a dev signature that does
+    // NOT verify under the production anchor, so it correctly falls back to the
+    // eMMC secure-boot gate. secure_boot_ok stays false here (no medium), so
+    // every OTHER trust-dependent step (passphrase, audit, persistent decrypt)
+    // remains fail-closed.
+    static INITRAMFS_SIG: &[u8; 64] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/initramfs_sig.bin"));
+    let userspace_image_verified =
+        crate::secure_boot::verify_userspace_image(INITRAMFS, INITRAMFS_SIG);
+    if !(state.secure_boot_ok || userspace_image_verified) {
+        // Fail-closed: no verified medium AND no verified image-resident image.
         let _ = serial.write_str(
-            "  WARN Userspace spawn refused (secure boot not established -- fail-closed)\r\n",
+            "  WARN Userspace spawn refused (no verified boot medium or image -- fail-closed)\r\n",
         );
     } else {
+        if userspace_image_verified && !state.secure_boot_ok {
+            let _ = serial.write_str(
+                "       Userspace: image-resident initramfs signature verified (boot anchor)\r\n",
+            );
+        }
         // Attempt to load and spawn two processes: /init and /shell.
         // If an entry is absent from the mounted root ramfs, report the
         // packaging gap instead of spawning a kernel-owned placeholder.

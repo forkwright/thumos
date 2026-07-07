@@ -155,8 +155,19 @@ jobs:
           grep -q 'THUMOS v0.1.0' boot.log || { echo 'FAIL: missing banner'; exit 1; }
           grep -q 'THUMOS-QEMU: boot-complete' boot.log || { echo 'FAIL: boot did not complete'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' boot.log || { echo 'FAIL: service loop never serviced a tick'; exit 1; }
-          # Fail-closed (#217): the qemu boot uses the dev anchor with no boot
-          # medium, so trust is never established -- assert it degraded-LOCKED
-          # (a fail-open regression would drop these lines).
+          # Fail-closed (#217): the qemu boot has NO boot medium, so medium
+          # trust is never established -- assert it degraded-LOCKED and that
+          # every MEDIUM-trust-dependent step stays refused (a fail-OPEN
+          # regression would drop these lines).
           grep -q 'Secure boot: DEGRADED' boot.log || { echo 'FAIL: untrusted boot did not report degraded (fail-closed regression)'; exit 1; }
-          grep -q 'Userspace spawn refused' boot.log || { echo 'FAIL: userspace not refused on an untrusted boot (fail-OPEN regression)'; exit 1; }
+          grep -q 'Passphrase entry refused' boot.log || { echo 'FAIL: passphrase not refused on an untrusted boot (fail-OPEN regression)'; exit 1; }
+          grep -q 'Audit log deferred' boot.log || { echo 'FAIL: audit not deferred on an untrusted boot (fail-OPEN regression)'; exit 1; }
+          # Measured userspace (#480): the image-resident initramfs is signed by
+          # the boot anchor, so userspace_image_verified is set and /init spawns
+          # + runs through the REAL gate (no bypass) even though the MEDIUM is
+          # degraded. Assert the crypto verification fired AND userspace actually
+          # executed a syscall (its svc Write reached the UART) -- if the
+          # signature check regressed, /init would be refused and these drop.
+          grep -q 'image-resident initramfs signature verified' boot.log || { echo 'FAIL: initramfs signature was not verified (measured-userspace regression)'; exit 1; }
+          grep -q '/init spawned' boot.log || { echo 'FAIL: /init did not spawn from the verified initramfs'; exit 1; }
+          grep -q 'init: hello from userspace' boot.log || { echo 'FAIL: userspace /init did not run + syscall (PL0->dispatch->UART)'; exit 1; }
