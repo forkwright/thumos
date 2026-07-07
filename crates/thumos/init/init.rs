@@ -111,6 +111,31 @@ unsafe fn sys_waitpid(pid: u32) -> u32 {
 #[cfg(thumos_init_fork)]
 static mut FORK_DATA_CANARY: u32 = 0x0000_5EED;
 
+/// execve(path, argv, envp) -> only returns (u32 errno) on FAILURE (#489); on
+/// success the process image is replaced and never returns here.
+///
+/// # Safety
+/// Replaces this process's image with the program at `path`.
+#[cfg(thumos_init_exec)]
+#[inline(always)]
+unsafe fn sys_execve(path: *const u8, argv: u32, envp: u32) -> u32 {
+    let ret;
+    // SAFETY: SVC #11 (Execve) per the thumos ABI.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 11u32,
+            // Pointer in, errno out -- passed directly (no int cast); asm allows
+            // differing in/out types on one register.
+            inlateout("r0") path => ret,
+            in("r1") argv,
+            in("r2") envp,
+            options(nostack),
+        );
+    }
+    ret
+}
+
 /// ELF entry point (e_entry). The kernel transmutes the loaded entry to
 /// PL0 isolation probe (#487): under a `thumos_init_<variant>` cfg (set by
 /// build.rs from THUMOS_INIT_VARIANT), attempt a kernel-memory or privileged
@@ -191,6 +216,20 @@ pub extern "C" fn _start() -> ! {
         // #487: no-op unless an isolation-probe variant is compiled, in which
         // case this faults at PL0 before the write.
         isolation_probe();
+        // #489 exec harness: exec /init2. On success this process is replaced by
+        // /init2 (which runs at PL0 and never returns here); on failure execve
+        // returns an errno. NULL argv (argv-across-exec is a separate refinement,
+        // #499).
+        #[cfg(thumos_init_exec)]
+        {
+            let m = b"init: exec-ing /init2\n";
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+            sys_execve(b"/init2\0".as_ptr(), 0, 0);
+            // Only reached if execve FAILED (it does not return on success).
+            let f = b"init: exec FAILED\n";
+            sys_write(1, f.as_ptr(), u32::try_from(f.len()).unwrap_or(0));
+            sys_exit(1);
+        }
         // #477 sleep harness: sleep, then continue. If the kernel's sleep is a
         // real yield, /init suspends (the service loop runs meanwhile) and
         // resumes to print "woke"; a broken busy-wait sleep runs IRQ-masked and

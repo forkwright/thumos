@@ -1345,25 +1345,27 @@ pub unsafe fn run() -> ! {
 
         // WHY: process 1  -  init daemon (PID 1, supervisor)
         match plan_userspace_spawn_from_vfs("/init") {
-            UserspaceSpawnPlan::Elf(elf_data) => match elf::load(elf_data) {
-                Ok(loaded) => {
-                    // WHY(#482): spawn_user runs /init UNPRIVILEGED (PL0, User
-                    // mode 0x10) in its own address space -- the ELF mapped
-                    // per-segment W^X and the stack RW+XN, with kernel memory
-                    // PL1-only so a user access to it faults. No transmute: the
-                    // entry is an address the new process resumes at via the
-                    // #465 exception-return, not a kernel fn pointer.
-                    if let Some(pid) = process::spawn_user(&loaded) {
-                        let _ = write!(serial, "       /init spawned PL0 (PID {})\r\n", pid);
-                        state.processes_spawned += 1;
-                    } else {
-                        let _ = serial.write_str("  WARN /init spawn failed\r\n");
+            UserspaceSpawnPlan::Elf(elf_data) => {
+                match elf::load_confined(elf_data, kconfig::USER_TEXT_BASE, kconfig::RAM_END) {
+                    Ok(loaded) => {
+                        // WHY(#482): spawn_user runs /init UNPRIVILEGED (PL0, User
+                        // mode 0x10) in its own address space -- the ELF mapped
+                        // per-segment W^X and the stack RW+XN, with kernel memory
+                        // PL1-only so a user access to it faults. No transmute: the
+                        // entry is an address the new process resumes at via the
+                        // #465 exception-return, not a kernel fn pointer.
+                        if let Some(pid) = process::spawn_user(&loaded) {
+                            let _ = write!(serial, "       /init spawned PL0 (PID {})\r\n", pid);
+                            state.processes_spawned += 1;
+                        } else {
+                            let _ = serial.write_str("  WARN /init spawn failed\r\n");
+                        }
+                    }
+                    Err(e) => {
+                        let _ = write!(serial, "  WARN /init ELF load failed: {:?}\r\n", e);
                     }
                 }
-                Err(e) => {
-                    let _ = write!(serial, "  WARN /init ELF load failed: {:?}\r\n", e);
-                }
-            },
+            }
             UserspaceSpawnPlan::Missing => {
                 let _ =
                     serial.write_str("  WARN /init missing from root ramfs; no init spawned\r\n");
@@ -1373,20 +1375,22 @@ pub unsafe fn run() -> ! {
 
         // WHY: process 2  -  shell (PID 2, user interface)
         match plan_userspace_spawn_from_vfs("/shell") {
-            UserspaceSpawnPlan::Elf(elf_data) => match elf::load(elf_data) {
-                Ok(loaded) => {
-                    // WHY(#482): /shell runs PL0 in its own isolated space too.
-                    if let Some(pid) = process::spawn_user(&loaded) {
-                        let _ = write!(serial, "       /shell spawned PL0 (PID {})\r\n", pid);
-                        state.processes_spawned += 1;
-                    } else {
-                        let _ = serial.write_str("  WARN /shell spawn failed\r\n");
+            UserspaceSpawnPlan::Elf(elf_data) => {
+                match elf::load_confined(elf_data, kconfig::USER_TEXT_BASE, kconfig::RAM_END) {
+                    Ok(loaded) => {
+                        // WHY(#482): /shell runs PL0 in its own isolated space too.
+                        if let Some(pid) = process::spawn_user(&loaded) {
+                            let _ = write!(serial, "       /shell spawned PL0 (PID {})\r\n", pid);
+                            state.processes_spawned += 1;
+                        } else {
+                            let _ = serial.write_str("  WARN /shell spawn failed\r\n");
+                        }
+                    }
+                    Err(e) => {
+                        let _ = write!(serial, "  WARN /shell ELF load failed: {:?}\r\n", e);
                     }
                 }
-                Err(e) => {
-                    let _ = write!(serial, "  WARN /shell ELF load failed: {:?}\r\n", e);
-                }
-            },
+            }
             UserspaceSpawnPlan::Missing => {
                 let _ =
                     serial.write_str("  WARN /shell missing from root ramfs; no shell spawned\r\n");

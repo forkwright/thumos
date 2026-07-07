@@ -354,8 +354,29 @@ struct ValidatedElf {
 ///
 /// The loaded code will execute with kernel privileges until we implement
 /// user/kernel memory separation (Wave 4+).
+/// Load an ELF image (no placement restriction) -- for host tests that write
+/// to real host addresses. Kernel spawn paths use `load_confined`.
 pub(crate) fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
+    load_impl(data, None)
+}
+
+/// `load()`, but reject any PT_LOAD segment outside `[lo, hi)` -- the reserved
+/// user-image window (#489) -- BEFORE writing a byte. A single `validate()`
+/// pass gates both the format and the placement, so a boot/exec image can never
+/// write into page-allocator RAM or escape the exec revocation surface, and
+/// fail-before-destroy holds (the check precedes every write). Every authored
+/// image links at USER_TEXT_BASE (init.ld).
+pub(crate) fn load_confined(data: &[u8], lo: usize, hi: usize) -> Result<LoadedElf, ElfError> {
+    load_impl(data, Some((lo, hi)))
+}
+
+fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf, ElfError> {
     let (entry, validated) = validate(data)?;
+
+    // #489: enforce the placement window BEFORE any write (fail-before-destroy).
+    // A single validate() feeds both this and the write loop -- no second
+    // validate pass (a distinct `peek()` here corrupted the parse on the exec
+    // path, so placement is folded into load itself).
 
     // WHY (#328): a single up-front budget check replaces the old per-page
     // page::alloc_page() reservation. That reservation's returned address
@@ -372,6 +393,21 @@ pub(crate) fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
 
     for idx in 0..validated.count {
         let (vaddr, memsz, filesz, file_offset, _flags) = validated.segments[idx];
+
+        // #489: enforce the placement window BEFORE writing THIS segment
+        // (fail-before-destroy). Folded into the write loop -- the identical
+        // read the write uses -- because a SEPARATE pre-pass over
+        // validated.segments mis-read the packed-derived tuples on the exec
+        // path. INVARIANT: for an in-window image (every authored image) no
+        // segment ever trips this, so the loop writes uninterrupted; a rejected
+        // out-of-window image stops at its FIRST bad segment, having written
+        // only prior in-window ones (all within sanctioned user DRAM per #318).
+        if let Some((lo, hi)) = placement {
+            // vaddr + memsz cannot overflow: validate() proved it via #318.
+            if vaddr < lo || vaddr + memsz > hi {
+                return Err(ElfError::InvalidSegment);
+            }
+        }
 
         // WHY: identical to the checked computation validate() already
         // performed for this same memsz while building validated.total_pages
@@ -787,6 +823,59 @@ mod tests {
             free_before,
             "a successful load must not permanently consume any page from the allocator (#328)"
         );
+    }
+
+    #[test]
+    fn load_confined_rejects_out_of_window_placement_before_writing() {
+        // #489: load_confined must reject a segment outside [lo, hi) -- the
+        // reserved user-image window -- and it must do so BEFORE writing a byte
+        // (fail-before-destroy), so a boot/exec image can never write into
+        // page-allocator RAM or escape the exec revocation surface.
+        static mut BUF: [u8; 16] = [0xEE; 16];
+        let vaddr = core::ptr::addr_of_mut!(BUF) as *mut u8 as usize;
+
+        let mut data = [0u8; ELF32_EHDR_SIZE + ELF32_PHDR_SIZE + 4];
+        let h = make_valid_ehdr();
+        data[..ELF32_EHDR_SIZE].copy_from_slice(&h);
+        data[44] = 1; // e_phnum = 1
+        data[24..28].copy_from_slice(&(vaddr as u32).to_le_bytes()); // e_entry
+        data[52..56].copy_from_slice(&1u32.to_le_bytes()); // p_type = PT_LOAD
+        let file_offset = (ELF32_EHDR_SIZE + ELF32_PHDR_SIZE) as u32;
+        data[56..60].copy_from_slice(&file_offset.to_le_bytes()); // p_offset
+        data[60..64].copy_from_slice(&(vaddr as u32).to_le_bytes()); // p_vaddr
+        data[68..72].copy_from_slice(&4u32.to_le_bytes()); // p_filesz
+        data[72..76].copy_from_slice(&4u32.to_le_bytes()); // p_memsz
+        data[ELF32_EHDR_SIZE + ELF32_PHDR_SIZE..].copy_from_slice(b"TEST");
+
+        // Free pool large enough that the OOM check passes and the placement
+        // check (in the write loop) is reached.
+        // SAFETY: test-only page-allocator state; single-threaded per test.
+        unsafe {
+            page::init(
+                0x4000_0000,
+                0x4000_0000 + 8 * page::PAGE_SIZE,
+                0x4000_0000 + 4 * page::PAGE_SIZE,
+            );
+        }
+
+        // SAFETY: read the test-only static (addr_of! + read copies it).
+        let before = unsafe { core::ptr::addr_of!(BUF).read() };
+        // A window that EXCLUDES the segment's real address -> reject.
+        let lo = vaddr.wrapping_add(0x1_0000);
+        let hi = lo.wrapping_add(0x1_0000);
+        let r = load_confined(&data, lo, hi);
+        assert!(
+            matches!(r, Err(ElfError::InvalidSegment)),
+            "an out-of-window segment must be rejected, got {r:?} (vaddr={vaddr:#x} lo={lo:#x} hi={hi:#x})"
+        );
+        // SAFETY: read the test-only static; the reject must have skipped the
+        // write, so its bytes are unchanged.
+        let after = unsafe { core::ptr::addr_of!(BUF).read() };
+        assert_eq!(after, before, "reject must not have written the segment");
+
+        // The SAME image loads when the window includes it (plain load / a
+        // window that contains vaddr) -- proving the gate is placement, not format.
+        assert!(load_confined(&data, vaddr, vaddr.wrapping_add(0x1000)).is_ok());
     }
 
     /// #328: when the free pool is smaller than the segment budget, load()
