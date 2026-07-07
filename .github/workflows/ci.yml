@@ -171,3 +171,24 @@ jobs:
           grep -q 'image-resident initramfs signature verified' boot.log || { echo 'FAIL: initramfs signature was not verified (measured-userspace regression)'; exit 1; }
           grep -q '/init spawned' boot.log || { echo 'FAIL: /init did not spawn from the verified initramfs'; exit 1; }
           grep -q 'init: hello from userspace' boot.log || { echo 'FAIL: userspace /init did not run + syscall (PL0->dispatch->UART)'; exit 1; }
+          # PL0 isolation proof (#487/#482): boot /init probe variants that each
+          # attempt an operation illegal at PL0. A correctly-isolated kernel
+          # faults with the exact qemu abort exit code and never prints "hello",
+          # so any regression that lets PL0 touch kernel memory / run a
+          # privileged instruction (which would instead run + print hello +
+          # exit 0) fails CI. kread: read kernel 0x40008000 -> data abort (2);
+          # kwrite: write kernel 0x40008000 -> data abort (2); kexec: execute
+          # kernel .text -> prefetch abort (3); cp15: read SCTLR (privileged) ->
+          # undefined instruction (4). cp15 is the linchpin: it SUCCEEDS at PL1,
+          # so a broken mode-drop would run + print hello + exit 0 (a red).
+          for probe in kread:2 kwrite:2 kexec:3 cp15:4; do
+            variant="${probe%%:*}"; want="${probe##*:}"
+            THUMOS_INIT_VARIANT="$variant" cargo build --release --target armv7a-none-eabi --features qemu --jobs 8
+            prc=0
+            THUMOS_INIT_VARIANT="$variant" THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee "probe-$variant.log" || prc=$?
+            echo "=== isolation probe '$variant': runner rc=$prc (want $want) ==="
+            test "$prc" -eq "$want" || { echo "FAIL isolation[$variant]: PL0 op did not fault as expected (rc=$prc want=$want) -- isolation regression"; exit 1; }
+            grep -q '/init spawned PL0' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /init did not spawn PL0 (cannot test isolation)"; exit 1; }
+            ! grep -q 'init: hello from userspace' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /init reached the write -- the PL0 op did NOT fault (ISOLATION BROKEN)"; exit 1; }
+          done
+          echo "PL0 isolation verified: kernel read + kernel exec + privileged instruction all fault at PL0"

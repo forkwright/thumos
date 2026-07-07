@@ -57,6 +57,52 @@ unsafe fn sys_exit(code: u32) -> ! {
 }
 
 /// ELF entry point (e_entry). The kernel transmutes the loaded entry to
+/// PL0 isolation probe (#487): under a `thumos_init_<variant>` cfg (set by
+/// build.rs from THUMOS_INIT_VARIANT), attempt a kernel-memory or privileged
+/// operation that MUST fault at PL0 -- BEFORE the normal write, so a working
+/// isolation boundary faults and "hello from userspace" never prints. CI
+/// asserts the exact qemu abort exit code per variant. The default build (no
+/// cfg) is a no-op, so /init behaves normally.
+///
+/// # Safety
+/// Each probe deliberately performs an operation that is illegal at PL0; on a
+/// correctly-isolated kernel it faults (never returns to the caller).
+#[inline(always)]
+unsafe fn isolation_probe() {
+    // Kernel load address (0x4000_8000) -- PL1-only in every process page
+    // table (#482), so a PL0 read data-aborts (qemu exit 2).
+    #[cfg(thumos_init_kread)]
+    // SAFETY: the read is expected to fault at PL0; it never completes.
+    unsafe {
+        core::ptr::read_volatile(0x4000_8000 as *const u32);
+    }
+    // A PL0 WRITE to kernel memory (the more dangerous capability) must also
+    // data-abort (exit 2). With the ARM AP model a page is all-or-nothing for
+    // PL0, so this shares the read's fault, but it exercises the write fault
+    // path specifically -- the capability an isolation break would most want.
+    #[cfg(thumos_init_kwrite)]
+    // SAFETY: the write is expected to fault at PL0; it never completes.
+    unsafe {
+        core::ptr::write_volatile(0x4000_8000 as *mut u32, 0);
+    }
+    // Kernel .text (PL1-RX) -- a PL0 instruction fetch prefetch-aborts (exit 3).
+    #[cfg(thumos_init_kexec)]
+    // SAFETY: transmuting a kernel address to a fn and calling it is expected
+    // to prefetch-abort at PL0; it never returns.
+    unsafe {
+        let f: extern "C" fn() = core::mem::transmute(0x4000_8000usize);
+        f();
+    }
+    // CP15 read (SCTLR) is privileged -- undefined instruction at PL0 (exit 4).
+    // Proves the mode drop directly: at PL1 this succeeds, so a broken drop
+    // would fall through to exit 0 (a visible red).
+    #[cfg(thumos_init_cp15)]
+    // SAFETY: mrc p15 at PL0 traps as UNDEF; it never completes.
+    unsafe {
+        core::arch::asm!("mrc p15, 0, {}, c1, c0, 0", out(reg) _);
+    }
+}
+
 /// `fn() -> !` and calls it on the kernel-allocated process stack.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -64,6 +110,9 @@ pub extern "C" fn _start() -> ! {
     // SAFETY: `msg` is a .rodata literal in the loaded image (VA >= 0x40100000);
     // sys_exit terminates the process so control never falls through.
     unsafe {
+        // #487: no-op unless an isolation-probe variant is compiled, in which
+        // case this faults at PL0 before the write.
+        isolation_probe();
         sys_write(1, msg.as_ptr(), u32::try_from(msg.len()).unwrap_or(0));
         sys_exit(0);
     }
