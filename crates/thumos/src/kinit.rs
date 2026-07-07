@@ -528,10 +528,17 @@ pub unsafe fn run() -> ! {
     // Step 1: Page allocator
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Page allocator\r\n");
-    // SAFETY: called once after MMU init. RAM_START/RAM_END/KERNEL_END are valid
-    // physical addresses from kconfig for the MT6739 DRAM layout.
+    // SAFETY: called once after MMU init. RAM_START/USER_TEXT_BASE/KERNEL_END
+    // are valid physical addresses from kconfig for the MT6739 DRAM layout.
+    // WHY USER_TEXT_BASE (not RAM_END) as the upper bound: the top 1 MB is the
+    // executable userspace text region (#474), reserved for spawned ELFs and
+    // kept out of the allocator so kernel pages never collide with userspace.
     unsafe {
-        page::init(kconfig::RAM_START, kconfig::RAM_END, kconfig::KERNEL_END);
+        page::init(
+            kconfig::RAM_START,
+            kconfig::USER_TEXT_BASE,
+            kconfig::KERNEL_END,
+        );
     }
     let _ = write!(
         serial,
@@ -905,9 +912,20 @@ pub unsafe fn run() -> ! {
     // and therefore userspace loaded from persistent storage -- is only
     // reachable on a verified boot; the ramfs fallback is image-resident and
     // shares the kernel's own trust domain.
+    // WHY(#474): with no LFS-backed root (QEMU / unverified eMMC) the boot root
+    // would be an empty ramfs and /init unfindable. Mount the image-resident
+    // initramfs -- the /init ELF wrapped in a newc CPIO, built by build.rs into
+    // the kernel image -- as the root so plan_userspace_spawn_from_vfs("/init")
+    // resolves. A verified boot uses the LFS root instead (initramfs ignored).
+    static INITRAMFS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/initramfs.cpio"));
+    let boot_cpio = if lfs_root.is_none() {
+        Some(INITRAMFS)
+    } else {
+        None
+    };
     // SAFETY: called once during boot, before any filesystem syscalls.
     unsafe {
-        crate::fd::init_vfs(None, lfs_root);
+        crate::fd::init_vfs(boot_cpio, lfs_root);
     }
 
     // -----------------------------------------------------------------------
@@ -1293,6 +1311,15 @@ pub unsafe fn run() -> ! {
     // Step 14: Spawn packaged userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
     let _ = serial.write_str("[init] Spawning userspace processes\r\n");
+    // WHY(#474/#480): the /init toolchain (build → embed → mount → the #465
+    // preemptive scheduler) is complete and the image-resident initramfs is
+    // mounted as the boot root, but spawning it still respects the #217
+    // fail-closed gate below -- userspace must NOT run on a boot whose trust
+    // was not cryptographically established, and that includes image-resident
+    // userspace (an operator-security-reviewed decision). Letting a verified
+    // image-resident initramfs spawn (so the qemu bring-up boot can exercise
+    // /init end to end) is a security-policy change tracked in #480; until it
+    // lands, the qemu boot correctly refuses spawn (secure_boot_ok=false).
     if !state.secure_boot_ok {
         // WHY (#217, fail-closed + security review): userspace must NEVER run
         // on a boot whose trust was not cryptographically established.

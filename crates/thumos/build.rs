@@ -143,6 +143,108 @@ fn main() {
     if let Err(e) = fs::write(out_dir.join("boot_key.rs"), rendered) {
         die(&format!("#233: cannot write boot_key.rs: {e}"));
     }
+
+    generate_initramfs(&manifest_dir, &out_dir);
+}
+
+/// Compile the userspace /init (#474) to a static armv7a ELF linked at
+/// 0x40100000 (kconfig::KERNEL_END) and wrap it in a newc CPIO the kernel
+/// embeds and mounts as the image-resident boot root ramfs.
+///
+/// WHY rustc-direct (not a sub-crate): /init is one no_std no_main file, so a
+/// raw rustc invocation for armv7a-none-eabi produces the ET_EXEC ELF
+/// elf::load parses without a nested cargo build or workspace membership.
+/// -Ttext places all PT_LOAD >= KERNEL_END so the identity-mapping loader
+/// writes them into the sanctioned user-DRAM window [KERNEL_END, RAM_END).
+fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
+    let init_src = manifest_dir.join("init/init.rs");
+    let init_ld = manifest_dir.join("init/init.ld");
+    println!("cargo:rerun-if-changed={}", init_src.display());
+    println!("cargo:rerun-if-changed={}", init_ld.display());
+    let init_elf = out_dir.join("init.elf");
+
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    // kanon:ignore RUST/no-direct-process-command -- build script compiles the /init userspace binary; the rule targets runtime/kernel code and there is no build-time compiler wrapper to route through
+    let status = std::process::Command::new(rustc)
+        .args([
+            "--edition",
+            "2024",
+            "--target",
+            "armv7a-none-eabi",
+            "--crate-type",
+            "bin",
+            "-C",
+            "panic=abort",
+            "-C",
+            "opt-level=s",
+            "-C",
+            "relocation-model=static",
+        ])
+        .arg("-C")
+        .arg(format!("link-arg=-T{}", init_ld.display()))
+        // WHY 0x100: the armv7a default max-page-size (64 KB) pads the ELF file
+        // to a 0x10000 first-segment offset (~66 KB of zeros). from_cpio copies
+        // the whole ELF into ONE heap Vec, and the slab's large-alloc path
+        // (slab.rs) refuses multi-page (>4 KB) requests, so the image must stay
+        // under a single 4 KB page. A 0x100 page size drops the file-offset
+        // padding to 256 B, keeping this tiny /init well under one page. (A
+        // larger userspace needs multi-page/contiguous alloc support -- #475.)
+        .arg("-C")
+        .arg("link-arg=-z")
+        .arg("-C")
+        .arg("link-arg=max-page-size=0x100")
+        .arg("-o")
+        .arg(&init_elf)
+        .arg(&init_src)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => die(&format!("#474: rustc failed to build /init ({s})")),
+        Err(e) => die(&format!("#474: cannot invoke rustc for /init: {e}")),
+    }
+
+    let elf = match fs::read(&init_elf) {
+        Ok(b) => b,
+        Err(e) => die(&format!("#474: cannot read built /init ELF: {e}")),
+    };
+
+    let mut archive = cpio_newc_entry("init", &elf, 0o100_755);
+    archive.extend_from_slice(&cpio_newc_entry("TRAILER!!!", &[], 0));
+    if let Err(e) = fs::write(out_dir.join("initramfs.cpio"), &archive) {
+        die(&format!("#474: cannot write initramfs.cpio: {e}"));
+    }
+}
+
+/// One newc (070701) CPIO entry, byte-identical to the kernel's tested
+/// `build_cpio_entry` (kinit tests) so ramfs::from_cpio parses it: 110-byte
+/// header, name+NUL padded to 4, data padded to 4.
+fn cpio_newc_entry(name: &str, data: &[u8], mode: u32) -> Vec<u8> {
+    let mut e = Vec::new();
+    let namesize = name.len() + 1;
+    e.extend_from_slice(b"070701");
+    e.extend_from_slice(b"00000001"); // ino
+    e.extend_from_slice(format!("{mode:08X}").as_bytes());
+    e.extend_from_slice(b"00000000"); // uid
+    e.extend_from_slice(b"00000000"); // gid
+    e.extend_from_slice(b"00000001"); // nlink
+    e.extend_from_slice(b"00000000"); // mtime
+    e.extend_from_slice(format!("{:08X}", data.len()).as_bytes());
+    e.extend_from_slice(b"00000000"); // devmajor
+    e.extend_from_slice(b"00000000"); // devminor
+    e.extend_from_slice(b"00000000"); // rdevmajor
+    e.extend_from_slice(b"00000000"); // rdevminor
+    e.extend_from_slice(format!("{namesize:08X}").as_bytes());
+    e.extend_from_slice(b"00000000"); // check
+    e.extend_from_slice(name.as_bytes());
+    e.push(0);
+    while e.len() % 4 != 0 {
+        e.push(0);
+    }
+    e.extend_from_slice(data);
+    while e.len() % 4 != 0 {
+        e.push(0);
+    }
+    e
 }
 
 fn render_boot_key_rs(

@@ -389,13 +389,20 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             let Ok(status) = i32::try_from(arg0) else {
                 return EINVAL;
             };
-            process::exit_with_status(status);
+            // WHY(#465): exit unwinds the SVC handler (switch_to swaps the trap
+            // frame to the successor, then this returns); it no longer diverges
+            // into an in-handler wfi loop, which would deadlock with IRQs masked.
+            process::exit_current(status)
         }
         Syscall::Write => sys_write_dispatch(arg0, arg1, arg2),
         Syscall::Yield => {
             // NOTE: voluntary yield  -  reschedule immediately
             let next = process::schedule();
             if next != process::current_pid() {
+                // WHY(#465): deposit this call's return value (0) into the live
+                // trap frame BEFORE switching away, so when the scheduler later
+                // resumes this process its saved frame returns 0 from `svc`.
+                process::set_trap_return(0);
                 // SAFETY: next is a valid PID returned by schedule(), which only
                 // returns PIDs for processes in the READY state.
                 unsafe {

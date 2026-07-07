@@ -397,6 +397,10 @@ pub enum MemoryType {
     Ram,
     /// Device/MMIO registers (non-cacheable, strongly ordered).
     Device,
+    /// Executable userspace text region (#474): normal RAM WITHOUT
+    /// execute-never so spawned userspace ELFs can run. All other RAM is XN
+    /// (W^X, #417).
+    UserText,
 }
 
 /// The W^X access-permission + execute bits for a kernel page at virtual
@@ -469,6 +473,12 @@ fn map_section(virt_mb: usize, phys_mb: usize, mem_type: MemoryType) {
             flags::SECTION | flags::AP_PL1_ONLY | flags::SHAREABLE | flags::NORMAL_WB_WA | flags::XN
         }
         MemoryType::Device => flags::SECTION | flags::AP_PL1_ONLY | flags::DEVICE | flags::XN,
+        // WHY (#474): identical to Ram but WITHOUT XN -- the one executable RAM
+        // section, holding spawned userspace code. PL1-only (privileged /init;
+        // PL0 isolation is Wave 4+).
+        MemoryType::UserText => {
+            flags::SECTION | flags::AP_PL1_ONLY | flags::SHAREABLE | flags::NORMAL_WB_WA
+        }
     };
     unsafe {
         let table = &mut *core::ptr::addr_of_mut!(L1);
@@ -536,10 +546,16 @@ pub unsafe fn init_and_enable() {
     #[cfg(test)]
     map_section(0x400, 0x400, MemoryType::Ram);
 
-    // DRAM beyond the kernel image: 0x4010_0000 - 0x7FFF_FFFF, RAM + XN.
-    for mb in 0x401..0x800 {
+    // DRAM beyond the kernel image, below the userspace text region:
+    // 0x4010_0000 - 0x7FEF_FFFF, RAM + XN (kernel heap + page allocator, #417).
+    for mb in 0x401..0x7FF {
         map_section(mb, mb, MemoryType::Ram);
     }
+    // Userspace text region (#474): the top 1 MB (0x7FF0_0000) is executable
+    // RAM so spawned userspace ELFs run. Excluded from the page allocator
+    // (kinit passes USER_TEXT_BASE as its upper bound) so it never holds kernel
+    // data. WHY 0x7FF: USER_TEXT_BASE (0x7FF0_0000) >> 20.
+    map_section(0x7FF, 0x7FF, MemoryType::UserText);
 
     // Program CP15 and enable address translation.
     // WHY(host-test): the L1 table is populated above on every target, but the

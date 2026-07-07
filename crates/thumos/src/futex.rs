@@ -134,6 +134,10 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
             // Yield to the scheduler immediately so we don't busy-loop.
             let next = crate::process::schedule();
             if next != crate::process::current_pid() {
+                // WHY(#465): deposit the wake-time return value (0) into the
+                // live trap frame before switching away, so when FUTEX_WAKE
+                // later reschedules this process its saved frame returns 0.
+                crate::process::set_trap_return(0);
                 crate::process::switch_to(next);
             }
         }

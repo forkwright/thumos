@@ -51,6 +51,15 @@ pub(crate) const KERNEL_RESERVED: usize = 0xF_8000;
 /// Kernel end address (load + reserved).
 pub(crate) const KERNEL_END: usize = KERNEL_LOAD + KERNEL_RESERVED;
 
+/// Userspace text region base (#474): the top 1 MB of DRAM
+/// (0x7FF0_0000..0x8000_0000). Mapped EXECUTABLE (all other DRAM is
+/// execute-never per W^X #417) and EXCLUDED from the page allocator (kinit
+/// passes this as the allocator's upper bound), so spawned userspace ELFs run
+/// here without colliding with kernel page allocations. A single shared region
+/// suffices while userspace runs privileged in the kernel address space;
+/// per-process user address spaces + PL0 isolation are Wave 4+.
+pub(crate) const USER_TEXT_BASE: usize = 0x7FF0_0000;
+
 /// UART0 base address (MT6739 ttyMT0, MTK 8250-style register map).
 #[cfg(not(feature = "qemu"))]
 pub(crate) const UART0_BASE: usize = 0x1100_2000;
