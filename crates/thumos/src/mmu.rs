@@ -235,6 +235,103 @@ pub unsafe fn map_page(l1_phys: usize, virt_addr: usize, phys_addr: usize, l2_at
     }
 }
 
+/// Kernel-default L2 small-page descriptor (value 0x45F): PL1 read/write, PL0
+/// NO access, execute-never (#482). Fills a shattered identity MB so a PL0
+/// process gets nothing in that MB by default; specific pages are then granted
+/// via `map_page`.
+pub(crate) const KERNEL_DEFAULT_PAGE: u32 = page_flags::SMALL_PAGE
+    | page_flags::SHAREABLE
+    | page_flags::NORMAL_WB_WA
+    | page_flags::AP_KERNEL_ONLY
+    | page_flags::XN;
+
+/// Convert the 1 MB SECTION covering `virt_addr` in `l1_phys` into a FULLY
+/// POPULATED identity L2 table (256 entries, each `KERNEL_DEFAULT_PAGE`), so
+/// individual pages can then be granted PL0 access via `map_page` (#482).
+///
+/// INVARIANT (load-bearing): ALL 256 entries are written. A sparse shatter
+/// would leave neighbor pages unmapped for the KERNEL too -- it would
+/// data-abort mid-syscall on the first access to any other page in this MB
+/// through the process TTBR0 (kernel heap and other processes' stacks share
+/// allocator MBs), an intermittent layout-dependent lockup.
+///
+/// Idempotent: returns true unchanged if the L1 slot is already a page table.
+/// Fails closed (false) on an empty/unexpected descriptor or L2-pool
+/// exhaustion. Callers pass DRAM addresses only (never device MBs).
+///
+/// # Safety
+///
+/// `l1_phys` must be a valid process L1 table. If it is LIVE in TTBR0 (exec),
+/// the caller must flush the TLB afterward; at spawn the table is not yet live.
+pub(crate) unsafe fn shatter_section(l1_phys: usize, virt_addr: usize) -> bool {
+    let l1_index = virt_addr >> 20;
+    unsafe {
+        let l1_entry_ptr = (l1_phys as *mut u32).add(l1_index);
+        let l1_val = l1_entry_ptr.read_volatile();
+        if l1_val & 0b11 == page_flags::L1_PAGE_TABLE {
+            return true;
+        }
+        if l1_val & 0b11 != flags::SECTION {
+            return false;
+        }
+        let Some(l2_phys) = alloc_l2_table() else {
+            return false;
+        };
+        let base = l1_val & 0xFFF0_0000;
+        let l2 = l2_phys as *mut u32;
+        for i in 0..256u32 {
+            l2.add(i as usize)
+                .write_volatile((base + (i << 12)) | KERNEL_DEFAULT_PAGE);
+        }
+        l1_entry_ptr.write_volatile((l2_phys as u32) | page_flags::L1_PAGE_TABLE);
+        true
+    }
+}
+
+/// Rewrite every entry of an already-shattered identity MB back to
+/// `KERNEL_DEFAULT_PAGE`, dropping all PL0 grants in that MB (#482, used by exec
+/// to revoke the old image's user windows). Returns false if not shattered.
+///
+/// # Safety
+///
+/// Same as `shatter_section`; on a LIVE table the caller must flush the TLB.
+pub(crate) unsafe fn reset_shattered_section(l1_phys: usize, virt_addr: usize) -> bool {
+    let l1_index = virt_addr >> 20;
+    unsafe {
+        let l1_val = (l1_phys as *const u32).add(l1_index).read_volatile();
+        if l1_val & 0b11 != page_flags::L1_PAGE_TABLE {
+            return false;
+        }
+        let l2_phys = (l1_val & 0xFFFF_FC00) as usize;
+        let base = (virt_addr & 0xFFF0_0000) as u32;
+        let l2 = l2_phys as *mut u32;
+        for i in 0..256u32 {
+            l2.add(i as usize)
+                .write_volatile((base + (i << 12)) | KERNEL_DEFAULT_PAGE);
+        }
+        true
+    }
+}
+
+/// Read the raw L2 small-page descriptor for `virt_addr`, or None if the L1
+/// slot is not a page table. Test/diagnostic seam for asserting AP/XN bits.
+///
+/// # Safety
+///
+/// `l1_phys` must be a valid L1 table; `virt_addr` page-aligned.
+pub(crate) unsafe fn read_l2_entry(l1_phys: usize, virt_addr: usize) -> Option<u32> {
+    let l1_index = virt_addr >> 20;
+    let l2_index = (virt_addr >> 12) & 0xFF;
+    unsafe {
+        let l1_val = (l1_phys as *const u32).add(l1_index).read_volatile();
+        if l1_val & 0b11 != page_flags::L1_PAGE_TABLE {
+            return None;
+        }
+        let l2_phys = (l1_val & 0xFFFF_FC00) as usize;
+        Some((l2_phys as *const u32).add(l2_index).read_volatile())
+    }
+}
+
 /// Unmap a single 4 KB page from a process's address space.
 ///
 /// Zeroes the L2 entry for the given virtual address. If clearing that
@@ -1328,6 +1425,97 @@ mod tests {
             assert!(
                 !map_page(table_phys, virt, 0x5000_0000, attrs),
                 "map_page must fail closed over an existing section mapping"
+            );
+        }
+    }
+
+    #[test]
+    fn shatter_populates_all_256_kernel_default_entries() {
+        // #482 INVARIANT (the load-bearing regression): shatter converts a
+        // SECTION to a FULLY POPULATED identity L2 -- ALL 256 entries =
+        // KERNEL_DEFAULT_PAGE (PL1-RW, PL0-none, XN). A sparse shatter would
+        // lock up the kernel mid-syscall on a neighbor-page access.
+        reset();
+        unsafe {
+            init_and_enable();
+            let dst = alloc_addr_space().unwrap();
+            clone_addr_space(table_base(), dst);
+            let mb = 0x503usize << 20; // a DRAM section MB in the clone
+            assert!(
+                shatter_section(dst, mb),
+                "shatter of a DRAM section must succeed"
+            );
+            for i in 0..256usize {
+                let va = mb + i * 0x1000;
+                let entry = read_l2_entry(dst, va).expect("every entry must exist");
+                assert_eq!(
+                    entry,
+                    (va as u32) | KERNEL_DEFAULT_PAGE,
+                    "entry {i} must be identity KERNEL_DEFAULT_PAGE"
+                );
+                assert_eq!(
+                    entry & (0b11 << 4),
+                    page_flags::AP_KERNEL_ONLY,
+                    "AP must be PL1-only"
+                );
+                assert_eq!(entry & (1 << 9), 0, "APX must be 0");
+                assert_ne!(entry & page_flags::XN, 0, "XN must be set");
+            }
+            free_addr_space(dst);
+        }
+    }
+
+    #[test]
+    fn shatter_is_idempotent_and_map_page_grants_pl0_over_shattered_mb() {
+        reset();
+        unsafe {
+            init_and_enable();
+            let dst = alloc_addr_space().unwrap();
+            clone_addr_space(table_base(), dst);
+            let mb = 0x503usize << 20;
+            assert!(shatter_section(dst, mb));
+            // A shattered MB is a page table, so map_page can now overlay a
+            // user grant (it refused when the MB was a section).
+            let user_page = mb + 5 * 0x1000;
+            let user_attrs = prot_to_l2_flags(prot::PROT_READ | prot::PROT_WRITE);
+            assert!(
+                map_page(dst, user_page, user_page, user_attrs),
+                "map_page must overlay a shattered MB"
+            );
+            // Re-shatter is idempotent and must NOT wipe the user grant.
+            assert!(shatter_section(dst, mb), "re-shatter is idempotent");
+            assert_eq!(
+                read_l2_entry(dst, user_page).unwrap(),
+                (user_page as u32) | user_attrs,
+                "the user grant must survive a re-shatter"
+            );
+            free_addr_space(dst);
+        }
+    }
+
+    #[test]
+    fn user_page_attrs_grant_pl0_and_are_write_xor_execute() {
+        // #482: user segment permissions via prot_to_l2_flags -- text RX,
+        // rodata RO+XN, data/stack RW+XN; W|X degrades to RW+XN (W^X); and each
+        // user attr grants PL0 (AP[1:0] in {0b10, 0b11}) while KERNEL_DEFAULT
+        // denies it (AP[1:0]=0b01).
+        let text = prot_to_l2_flags(prot::PROT_READ | prot::PROT_EXEC);
+        let rodata = prot_to_l2_flags(prot::PROT_READ);
+        let data = prot_to_l2_flags(prot::PROT_READ | prot::PROT_WRITE);
+        let wx = prot_to_l2_flags(prot::PROT_READ | prot::PROT_WRITE | prot::PROT_EXEC);
+        assert_eq!(text & page_flags::XN, 0, "text must be executable");
+        assert_ne!(rodata & page_flags::XN, 0, "rodata must be execute-never");
+        assert_ne!(data & page_flags::XN, 0, "data must be execute-never");
+        assert_eq!(wx, data, "W|X must degrade to RW+XN (W^X)");
+        assert_eq!(
+            KERNEL_DEFAULT_PAGE & (0b11 << 4),
+            page_flags::AP_KERNEL_ONLY
+        );
+        for a in [text, rodata, data] {
+            let ap = (a >> 4) & 0b11;
+            assert!(
+                ap == 0b10 || ap == 0b11,
+                "user page must grant PL0 (ap={ap:#b})"
             );
         }
     }
