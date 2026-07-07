@@ -165,38 +165,56 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
 
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
     // kanon:ignore RUST/no-direct-process-command -- build script compiles the /init userspace binary; the rule targets runtime/kernel code and there is no build-time compiler wrapper to route through
-    let status = std::process::Command::new(rustc)
-        .args([
-            "--edition",
-            "2024",
-            "--target",
-            "armv7a-none-eabi",
-            "--crate-type",
-            "bin",
-            "-C",
-            "panic=abort",
-            "-C",
-            "opt-level=s",
-            "-C",
-            "relocation-model=static",
-        ])
-        .arg("-C")
-        .arg(format!("link-arg=-T{}", init_ld.display()))
-        // WHY 0x100: the armv7a default max-page-size (64 KB) pads the ELF file
-        // to a 0x10000 first-segment offset (~66 KB of zeros). from_cpio copies
-        // the whole ELF into ONE heap Vec, and the slab's large-alloc path
-        // (slab.rs) refuses multi-page (>4 KB) requests, so the image must stay
-        // under a single 4 KB page. A 0x100 page size drops the file-offset
-        // padding to 256 B, keeping this tiny /init well under one page. (A
-        // larger userspace needs multi-page/contiguous alloc support -- #475.)
-        .arg("-C")
-        .arg("link-arg=-z")
-        .arg("-C")
-        .arg("link-arg=max-page-size=0x100")
-        .arg("-o")
-        .arg(&init_elf)
-        .arg(&init_src)
-        .status();
+    let mut cmd = std::process::Command::new(rustc);
+    cmd.args([
+        "--edition",
+        "2024",
+        "--target",
+        "armv7a-none-eabi",
+        "--crate-type",
+        "bin",
+        "-C",
+        "panic=abort",
+        "-C",
+        "opt-level=s",
+        "-C",
+        "relocation-model=static",
+    ])
+    .arg("-C")
+    .arg(format!("link-arg=-T{}", init_ld.display()))
+    // WHY 0x100: the armv7a default max-page-size (64 KB) pads the ELF file
+    // to a 0x10000 first-segment offset (~66 KB of zeros). from_cpio copies
+    // the whole ELF into ONE heap Vec; a 0x100 page size drops the file-offset
+    // padding to 256 B, keeping this tiny /init small (#475's contiguous alloc
+    // covers a larger image regardless).
+    .arg("-C")
+    .arg("link-arg=-z")
+    .arg("-C")
+    .arg("link-arg=max-page-size=0x100")
+    // WHY (#487): declare the isolation-probe cfgs so a direct rustc compile
+    // does not warn on them as unexpected.
+    .arg("--check-cfg")
+    .arg("cfg(thumos_init_kread, thumos_init_kwrite, thumos_init_kexec, thumos_init_cp15)");
+
+    // WHY (#487): THUMOS_INIT_VARIANT selects an /init probe variant so CI can
+    // permanently prove PL0 isolation. Each variant compiles a different
+    // `_start` body via `--cfg thumos_init_<variant>` (see init/init.rs);
+    // build.rs re-runs when the env changes. Unset = the normal write+exit
+    // /init. The variant name is validated against the known set so a typo
+    // fails the build loudly instead of silently building the default.
+    println!("cargo:rerun-if-env-changed=THUMOS_INIT_VARIANT");
+    if let Ok(variant) = env::var("THUMOS_INIT_VARIANT") {
+        if !variant.is_empty() {
+            if !["kread", "kwrite", "kexec", "cp15"].contains(&variant.as_str()) {
+                die(&format!(
+                    "#487: unknown THUMOS_INIT_VARIANT '{variant}' (expected kread|kwrite|kexec|cp15)"
+                ));
+            }
+            cmd.arg("--cfg").arg(format!("thumos_init_{variant}"));
+        }
+    }
+
+    let status = cmd.arg("-o").arg(&init_elf).arg(&init_src).status();
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => die(&format!("#474: rustc failed to build /init ({s})")),
