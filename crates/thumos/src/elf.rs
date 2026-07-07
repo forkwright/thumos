@@ -26,6 +26,29 @@ const EM_ARM: u16 = 40;
 /// Program header type: loadable segment
 const PT_LOAD: u32 = 1;
 
+/// PT_LOAD segment permission flags (ELF32 program header `p_flags`).
+const PF_X: u32 = 0x1;
+const PF_W: u32 = 0x2;
+const PF_R: u32 = 0x4;
+
+/// Translate ELF `p_flags` to POSIX prot bits for `mmu::prot_to_l2_flags`
+/// (#482), so a spawned process's segments get W^X user page permissions
+/// (text RX, rodata RO, data/bss RW+XN; a W|X segment degrades to RW+XN
+/// because `prot_to_l2_flags` forces XN whenever PROT_WRITE is set).
+pub(crate) fn flags_to_prot(p_flags: u32) -> u32 {
+    let mut prot = 0;
+    if p_flags & PF_R != 0 {
+        prot |= crate::mmu::prot::PROT_READ;
+    }
+    if p_flags & PF_W != 0 {
+        prot |= crate::mmu::prot::PROT_WRITE;
+    }
+    if p_flags & PF_X != 0 {
+        prot |= crate::mmu::prot::PROT_EXEC;
+    }
+    prot
+}
+
 /// ELF32 header.
 ///
 /// Mirrors the ELF32 specification layout; splitting would break #[repr(C,
@@ -90,6 +113,35 @@ pub(crate) struct LoadedElf {
     /// Number of pages written (#328: no longer a count of
     /// `page::alloc_page()` reservations — see `load()`'s doc comment).
     pub pages_used: usize,
+    /// `(vaddr, memsz, p_flags)` per PT_LOAD segment (#482), so `spawn_user`
+    /// can map each segment PL0-accessible with W^X permissions derived from
+    /// `p_flags`. Identity-mapped, so vaddr is both the link and load address.
+    segments: [(usize, usize, u32); 16],
+    /// Number of valid entries in `segments`.
+    seg_count: usize,
+}
+
+impl LoadedElf {
+    /// The loaded PT_LOAD segments as `(vaddr, memsz, p_flags)` (#482).
+    pub(crate) fn segments(&self) -> &[(usize, usize, u32)] {
+        &self.segments[..self.seg_count]
+    }
+
+    /// Construct a `LoadedElf` from parts for tests (no ELF parsing), so
+    /// `process::spawn_user` can be host-tested against known segment layouts.
+    #[cfg(test)]
+    pub(crate) fn for_test(entry: usize, segments: &[(usize, usize, u32)]) -> Self {
+        let mut segs = [(0usize, 0usize, 0u32); 16];
+        for (i, s) in segments.iter().enumerate().take(16) {
+            segs[i] = *s;
+        }
+        Self {
+            entry,
+            pages_used: 0,
+            segments: segs,
+            seg_count: segments.len().min(16),
+        }
+    }
 }
 
 /// Error FROM ELF loading.
@@ -149,7 +201,7 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
     let phentsize = ehdr.e_phentsize as usize;
 
     let mut segments = ValidatedElf {
-        segments: [(0, 0, 0, 0); 16],
+        segments: [(0, 0, 0, 0, 0); 16],
         count: 0,
         total_pages: 0,
     };
@@ -201,6 +253,7 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
         let memsz = phdr.p_memsz as usize;
         let filesz = phdr.p_filesz as usize;
         let file_offset = phdr.p_offset as usize;
+        let seg_flags = phdr.p_flags;
 
         // WHY (#316): file_offset/filesz are attacker-controlled; checked_add
         // rejects a wrap instead of letting it bypass this guard.
@@ -250,7 +303,7 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
         if segments.count >= 16 {
             return Err(ElfError::InvalidSegment);
         }
-        segments.segments[segments.count] = (vaddr, memsz, filesz, file_offset);
+        segments.segments[segments.count] = (vaddr, memsz, filesz, file_offset, seg_flags);
         segments.count += 1;
     }
 
@@ -263,7 +316,7 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
     // not merely a crash. Require entry to fall within a segment that was
     // actually loaded before it is ever handed back to a caller.
     let entry_in_loaded_segment = (0..segments.count).any(|i| {
-        let (vaddr, memsz, _, _) = segments.segments[i];
+        let (vaddr, memsz, _, _, _) = segments.segments[i];
         entry >= vaddr && entry < vaddr.saturating_add(memsz)
     });
     if !entry_in_loaded_segment {
@@ -276,8 +329,8 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
 /// Validated ELF segment descriptors (output of header validation).
 #[derive(Debug)]
 struct ValidatedElf {
-    /// `(vaddr, memsz, filesz, file_offset)` for each PT_LOAD segment.
-    segments: [(usize, usize, usize, usize); 16],
+    /// `(vaddr, memsz, filesz, file_offset, p_flags)` for each PT_LOAD segment.
+    segments: [(usize, usize, usize, usize, u32); 16],
     /// Number of valid entries in `segments`.
     count: usize,
     /// Sum of each segment's page count (`ceil(memsz / PAGE_SIZE)`),
@@ -318,7 +371,7 @@ pub(crate) fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
     let mut pages_used = 0;
 
     for idx in 0..validated.count {
-        let (vaddr, memsz, filesz, file_offset) = validated.segments[idx];
+        let (vaddr, memsz, filesz, file_offset, _flags) = validated.segments[idx];
 
         // WHY: identical to the checked computation validate() already
         // performed for this same memsz while building validated.total_pages
@@ -369,7 +422,19 @@ pub(crate) fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
         }
     }
 
-    Ok(LoadedElf { entry, pages_used })
+    // Carry per-segment (vaddr, memsz, p_flags) so spawn_user can map each
+    // segment PL0-accessible with W^X permissions (#482).
+    let mut segments = [(0usize, 0usize, 0u32); 16];
+    for i in 0..validated.count {
+        let (vaddr, memsz, _, _, flags) = validated.segments[i];
+        segments[i] = (vaddr, memsz, flags);
+    }
+    Ok(LoadedElf {
+        entry,
+        pages_used,
+        segments,
+        seg_count: validated.count,
+    })
 }
 
 // ---------------------------------------------------------------------------

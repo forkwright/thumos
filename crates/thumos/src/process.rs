@@ -316,6 +316,121 @@ pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
     }
 }
 
+/// Map a loaded ELF's PT_LOAD segments PL0-accessible at their identity VAs in
+/// process page table `pt`, with W^X page permissions from each segment's ELF
+/// flags (#482): text RX, rodata RO+XN, data/bss RW+XN. Fails closed on an
+/// unaligned segment vaddr (a page would carry two permission classes) or
+/// L2-pool exhaustion.
+///
+/// # Safety
+/// `pt` must be a caller-owned process L1 not currently live in TTBR0.
+unsafe fn map_user_image(pt: usize, loaded: &crate::elf::LoadedElf) -> bool {
+    for &(vaddr, memsz, flags) in loaded.segments() {
+        // INVARIANT: init.ld ALIGN(4096) page-aligns each permission class, so
+        // a segment vaddr must be page-aligned; reject a foreign image that
+        // violates it rather than granting a mixed-permission page.
+        if vaddr % page::PAGE_SIZE != 0 {
+            return false;
+        }
+        let attrs = mmu::prot_to_l2_flags(crate::elf::flags_to_prot(flags));
+        let pages = memsz.div_ceil(page::PAGE_SIZE);
+        for p in 0..pages {
+            let va = vaddr + p * page::PAGE_SIZE;
+            // SAFETY: pt is caller-owned; va is identity DRAM validated by
+            // elf::validate (#318). Shatter the MB to a fully-populated L2,
+            // then grant PL0 to this page.
+            unsafe {
+                if !mmu::shatter_section(pt, va) || !mmu::map_page(pt, va, va, attrs) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Map each of the `STACK_PAGES` contiguous stack frames from `stack_base`
+/// PL0 read/write + execute-never at its identity VA (#482).
+///
+/// # Safety
+/// `pt` is a caller-owned process L1; `stack_base` begins a contiguous run.
+unsafe fn map_user_stack(pt: usize, stack_base: usize) -> bool {
+    let attrs = mmu::prot_to_l2_flags(mmu::prot::PROT_READ | mmu::prot::PROT_WRITE);
+    for i in 0..STACK_PAGES {
+        let va = stack_base + i * page::PAGE_SIZE;
+        // SAFETY: pt caller-owned; va is a contiguous stack frame in DRAM.
+        unsafe {
+            if !mmu::shatter_section(pt, va) || !mmu::map_page(pt, va, va, attrs) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Create a PL0 (User mode) process from a loaded ELF image (#482).
+///
+/// Like [`spawn`], but enters at cpsr 0x10 (User/PL0) and grants the process
+/// PL0 access to EXACTLY its own image (per-segment W^X) and stack -- nothing
+/// else. Kernel .text/.data/stacks and device MMIO stay mapped PL1-only via the
+/// kernel-L1 clone (#323), so the kernel still runs when the process traps
+/// (svc/IRQ) while the process data/prefetch-aborts on any access to kernel
+/// memory. The #465 trap frame carries the per-process cpsr, so switching
+/// between PID 0 (System) and a PL0 process needs no asm change.
+pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
+    // SAFETY: PROCS/CURRENT via the established addr_of_mut! pattern; single
+    // core, no concurrent access at spawn.
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let slot = procs.iter().position(|p| p.is_none())?;
+        let pid = slot as Pid;
+
+        let new_pt = mmu::alloc_addr_space()?;
+        mmu::clone_addr_space(mmu::table_base(), new_pt);
+
+        // Stack: a CONTIGUOUS run (#475) so stack_top arithmetic and
+        // exit_cleanup's free loop (base + i*PAGE_SIZE) hold, and the PL0 stack
+        // has no unmapped hole SP could descend into.
+        let Some(stack_base) = page::alloc_contiguous(STACK_PAGES) else {
+            mmu::free_addr_space(new_pt);
+            return None;
+        };
+        let stack_top = stack_base + page::PAGE_SIZE * STACK_PAGES;
+
+        if !map_user_image(new_pt, loaded) || !map_user_stack(new_pt, stack_base) {
+            // free_addr_space also reclaims the L2 tables the shatters allocated
+            // (the shared KERNEL_L2 is skipped -- free_l2_table no-ops on
+            // non-pool addresses).
+            page::free_contiguous(stack_base, STACK_PAGES);
+            mmu::free_addr_space(new_pt);
+            return None;
+        }
+
+        // 0x10 = User mode (PL0), IRQs enabled; T-bit from the entry LSB.
+        let ctx = Context::initial(loaded.entry as u32, stack_top as u32, 0x10);
+
+        let proc = Process {
+            pid,
+            state: State::Ready,
+            ctx,
+            parent: Some(CURRENT),
+            exit_status: 0,
+            page_table_phys: new_pt,
+            stack_base,
+            stack_pages: STACK_PAGES,
+            heap_break: DEFAULT_HEAP_BREAK,
+            mappings: [None; MAX_MAPPINGS],
+            signal_state: SignalState::new(),
+            uid: 1,
+            wake_tick: 0,
+            capabilities: crate::capability::Capabilities::FORK_DEFAULT,
+            fds: crate::fd::FdTable::new(),
+        };
+        procs[slot] = Some(proc);
+        Some(pid)
+    }
+}
+
 /// Create a child process by cloning the current process's address space.
 /// Returns Some(child_pid) to the parent on success, or None on OOM.
 ///
@@ -1587,6 +1702,51 @@ mod tests {
             assert!(!trap_switched(), "self-switch must not flag a swap");
             assert_eq!(frame.r[0], 0x1234, "self-switch must not touch the frame");
             trap_leave();
+        }
+    }
+
+    #[test]
+    fn spawn_user_builds_pl0_context_and_isolated_space() {
+        // #482: spawn_user must build a PL0 (User mode, cpsr 0x10) process in
+        // its OWN address space, with the image mapped W^X user-accessible,
+        // the stack user-RW+XN, and kernel MMIO still PL1-only (PL0 faults).
+        // SAFETY: test-only; single-threaded (nextest process-per-test).
+        unsafe {
+            reset_all();
+            mmu::init_and_enable(); // populate the kernel L1 with SECTION descriptors
+
+            // .text RX (p_flags R|X = 0x5), .data RW (R|W = 0x6), at the
+            // page-aligned user VAs init.ld produces.
+            let loaded = crate::elf::LoadedElf::for_test(
+                0x7FF0_0000,
+                &[(0x7FF0_0000, 0x100, 0x5), (0x7FF0_1000, 0x100, 0x6)],
+            );
+            let pid = spawn_user(&loaded).expect("spawn_user must succeed");
+
+            let procs = &*core::ptr::addr_of!(PROCS);
+            let proc = procs[usize::from(pid)].as_ref().expect("pid must be live");
+            assert_eq!(proc.ctx.cpsr, 0x10, "must enter at PL0 (User mode)");
+            assert_eq!(proc.ctx.pc, 0x7FF0_0000, "entry pc");
+            let pt = proc.page_table_phys;
+            assert_ne!(pt, mmu::table_base(), "must have its own address space");
+
+            // .text page: user RX (0x46E); .data page: user RW+XN (0x47F).
+            assert_eq!(
+                mmu::read_l2_entry(pt, 0x7FF0_0000).unwrap(),
+                0x7FF0_0000u32 | 0x46E,
+                ".text must be user read-execute"
+            );
+            assert_eq!(
+                mmu::read_l2_entry(pt, 0x7FF0_1000).unwrap(),
+                0x7FF0_1000u32 | 0x47F,
+                ".data must be user read-write + execute-never"
+            );
+            // Device MMIO stays a PL1-only SECTION (never a user page table) --
+            // a PL0 access to it faults. (Extends the #323 regression.)
+            assert!(
+                mmu::read_l2_entry(pt, 0x1100_0000).is_none(),
+                "MMIO must not be a user-accessible page table"
+            );
         }
     }
 
