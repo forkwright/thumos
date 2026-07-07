@@ -256,6 +256,111 @@ pub unsafe fn try_free_page(addr: usize) -> bool {
     }
 }
 
+/// Allocate `n` physically-contiguous free pages, returning the base address
+/// or `None` if no run of `n` free pages exists.
+///
+/// WHY (#475): the slab's large-allocation path and per-process page-table
+/// mappings need runs larger than one page, but `alloc_page` gives no
+/// contiguity guarantee (it returns the lowest free frame). A first-fit scan of
+/// the free bitmap returns the lowest run of `n`, skipping fully-allocated
+/// words. `n == 1` delegates to `alloc_page`.
+pub(crate) fn alloc_contiguous(n: usize) -> Option<usize> {
+    if n == 0 {
+        return None;
+    }
+    if n == 1 {
+        return alloc_page();
+    }
+    // WHY (#331): serializes with every other PAGE_BITMAP/FREE_PAGES accessor.
+    let _g = PAGE_LOCK.lock();
+    // SAFETY: every bitmap index below is bounds-checked by the enclosing
+    // iteration over `bitmap`; FREE_PAGES is decremented by exactly the `n`
+    // bits set.
+    unsafe {
+        if FREE_PAGES < n {
+            return None;
+        }
+        let bitmap = &mut *addr_of_mut!(PAGE_BITMAP);
+        let mut run = 0usize;
+        let mut run_start = 0usize;
+        for word_idx in 0..bitmap.len() {
+            // A fully-allocated word breaks any in-progress run; skip its bits.
+            if bitmap[word_idx] == 0xFFFF_FFFF {
+                run = 0;
+                continue;
+            }
+            for bit in 0..32 {
+                if (bitmap[word_idx] >> bit) & 1 == 1 {
+                    run = 0;
+                    continue;
+                }
+                if run == 0 {
+                    run_start = word_idx * 32 + bit;
+                }
+                run += 1;
+                if run == n {
+                    for p in run_start..run_start + n {
+                        bitmap[p / 32] |= 1 << (p % 32);
+                    }
+                    FREE_PAGES -= n;
+                    return Some(FIRST_PAGE + run_start * PAGE_SIZE);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Free `n` physically-contiguous pages previously returned by
+/// `alloc_contiguous`. Returns `false` (no state change) if the range is
+/// misaligned, out of range, or not fully allocated (double-free guard). `n ==
+/// 1` delegates to `try_free_page`.
+///
+/// # Safety
+///
+/// `addr`/`n` must name a run previously returned by `alloc_contiguous` and not
+/// since freed.
+pub unsafe fn free_contiguous(addr: usize, n: usize) -> bool {
+    if n == 0 {
+        return false;
+    }
+    if n == 1 {
+        // SAFETY: delegated to the validated single-page path.
+        return unsafe { try_free_page(addr) };
+    }
+    let _g = PAGE_LOCK.lock();
+    // SAFETY: the run is fully validated (range + currently-allocated) before
+    // any bit is cleared, so an invalid free is an all-or-nothing no-op.
+    unsafe {
+        if addr < FIRST_PAGE {
+            return false;
+        }
+        let offset = addr - FIRST_PAGE;
+        if offset % PAGE_SIZE != 0 {
+            return false;
+        }
+        let start = offset / PAGE_SIZE;
+        let bitmap = &mut *addr_of_mut!(PAGE_BITMAP);
+        for p in start..start + n {
+            let word = p / 32;
+            if word >= bitmap.len() || bitmap[word] & (1 << (p % 32)) == 0 {
+                return false;
+            }
+        }
+        for p in start..start + n {
+            // Scrub before return to the pool (#334); device-only (see
+            // try_free_page's cfg(not(test)) rationale).
+            #[cfg(not(test))]
+            {
+                zero_page(FIRST_PAGE + p * PAGE_SIZE);
+            }
+            bitmap[p / 32] &= !(1 << (p % 32));
+        }
+        FREE_PAGES += n;
+        true
+    }
+}
+
 /// Free a physical page back to the allocator, ignoring the outcome.
 ///
 /// Fire-and-forget wrapper over [`try_free_page`] for callers that free pages
@@ -567,6 +672,81 @@ mod tests {
 
             try_free_page(b);
             try_free_page(c);
+        }
+    }
+
+    #[test]
+    fn contiguous_alloc_free_round_trip() {
+        // #475: alloc_contiguous(3) must return a page-aligned base whose 3
+        // pages are contiguous + marked allocated, and free_contiguous must
+        // restore them (with a double-free guard).
+        const RAM_START: usize = 0x2000_0000;
+        const RAM_END: usize = RAM_START + 16 * PAGE_SIZE;
+        // SAFETY: test-only fabricated addresses; init() only bookkeeps and the
+        // cfg(test) build skips the scrub deref, so they are never dereferenced.
+        unsafe {
+            init(RAM_START, RAM_END, RAM_START);
+            assert_eq!(core::ptr::addr_of!(FREE_PAGES).read(), 16);
+
+            let base = alloc_contiguous(3).expect("3-run in a fresh 16-page pool");
+            assert_eq!(base % PAGE_SIZE, 0, "base must be page-aligned");
+            assert!(base >= RAM_START && base + 3 * PAGE_SIZE <= RAM_END);
+            assert_eq!(
+                core::ptr::addr_of!(FREE_PAGES).read(),
+                13,
+                "3 pages consumed"
+            );
+
+            let bitmap = &*core::ptr::addr_of!(PAGE_BITMAP);
+            let start = (base - RAM_START) / PAGE_SIZE;
+            for p in start..start + 3 {
+                assert!(
+                    bitmap[p / 32] & (1 << (p % 32)) != 0,
+                    "page {p} of the run must be allocated"
+                );
+            }
+
+            assert!(free_contiguous(base, 3), "freeing the run must succeed");
+            assert_eq!(
+                core::ptr::addr_of!(FREE_PAGES).read(),
+                16,
+                "all pages returned"
+            );
+            assert!(
+                !free_contiguous(base, 3),
+                "double-free of the run must be rejected"
+            );
+            assert_eq!(core::ptr::addr_of!(FREE_PAGES).read(), 16);
+        }
+    }
+
+    #[test]
+    fn contiguous_alloc_respects_fragmentation_and_exhaustion() {
+        // #475: a run larger than the pool fails; and a pool with enough FREE
+        // pages but no contiguous run of the requested size also fails.
+        const RAM_START: usize = 0x3000_0000;
+        const RAM_END: usize = RAM_START + 8 * PAGE_SIZE;
+        // SAFETY: test-only fabricated addresses, never dereferenced.
+        unsafe {
+            init(RAM_START, RAM_END, RAM_START);
+            assert!(alloc_contiguous(9).is_none(), "no 9-run in an 8-page pool");
+            // Allocate all 8, then free only the even pages: 4 free, none
+            // adjacent.
+            for _ in 0..8 {
+                alloc_page().expect("pool has 8 pages");
+            }
+            for p in [0usize, 2, 4, 6] {
+                assert!(try_free_page(RAM_START + p * PAGE_SIZE));
+            }
+            assert_eq!(core::ptr::addr_of!(FREE_PAGES).read(), 4);
+            assert!(
+                alloc_contiguous(2).is_none(),
+                "4 free pages but no 2-run (fragmentation)"
+            );
+            assert!(
+                alloc_contiguous(1).is_some(),
+                "a single page still allocates (delegates to alloc_page)"
+            );
         }
     }
 }
