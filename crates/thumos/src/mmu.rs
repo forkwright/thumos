@@ -875,9 +875,14 @@ pub fn alloc_addr_space() -> Option<usize> {
 /// space's L1 entries -- page-mapped mmap/heap/stack regions the process
 /// never individually unmapped before exit -- so a process that exits
 /// without tearing down its own mappings cannot permanently strand pool
-/// slots (#330). Cloned kernel identity-map entries are section descriptors
-/// (`flags::SECTION`, bits [1:0] = 0b10), never `page_flags::L1_PAGE_TABLE`
-/// (0b01), so this walk never touches or frees the kernel's own mappings.
+/// slots (#330). Cloned kernel identity-map entries are section descriptors,
+/// so the walk skips them. The ONE cloned kernel entry that IS an
+/// `L1_PAGE_TABLE` -- the shared `KERNEL_L2` at L1[0x400] (#417 W^X) -- is
+/// visited by this walk, but `free_l2_table` rejects it: it only frees an
+/// address that matches an `L2_TABLES` pool slot, and `KERNEL_L2` is a separate
+/// static, never a pool member. So the kernel's own mappings are never freed --
+/// safety here rests on that pool-membership check, not on the descriptor type
+/// alone.
 ///
 /// Returns `true` if `phys_addr` matched an allocated pool slot and was
 /// freed, `false` if it matched no slot -- WHY (finding 8): the caller can

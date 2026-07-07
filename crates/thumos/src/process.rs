@@ -1186,19 +1186,6 @@ pub(crate) fn trap_switched() -> bool {
     unsafe { FRAME_SWITCHED }
 }
 
-/// True if the in-flight trap frame is a User-mode (PL0) trap. False outside
-/// trap context (host tests, where no frame is installed) or on a PL1 trap.
-/// Used to gate PL0-unsupported operations (e.g. fork, #478).
-pub(crate) fn trap_from_user() -> bool {
-    // SAFETY: ACTIVE_FRAME is null or the valid in-flight frame; a by-value
-    // read of its cpsr does not alias.
-    unsafe {
-        ACTIVE_FRAME
-            .as_ref()
-            .is_some_and(|f| f.cpsr & CPSR_MODE_MASK == CPSR_MODE_USER)
-    }
-}
-
 /// The in-flight trap frame's register file, or `fallback` outside trap context
 /// (#478). On ARM, fork is only reachable through the SVC trap, where
 /// `trap_enter` published the frame; the fallback serves host tests that call
@@ -1661,10 +1648,24 @@ pub unsafe fn exec_replace_context(
             let old_pages = proc.stack_pages;
             proc.stack_base = new_stack_base;
             proc.stack_pages = new_stack_pages;
-            // WHY: free old pages AFTER updating PCB so that any fault during
-            // free does not leave the PCB pointing at freed memory.
+            let pt = proc.page_table_phys;
+            // WHY (#478): free by the L2-mapped PHYSICAL frame, not by identity
+            // arithmetic on the VA. A forked child's stack_base is the parent's
+            // VA (same VA, different phys), so freeing old_base + i*PAGE by
+            // identity would free the PARENT's live stack frame (cross-process
+            // corruption via fork+exec) and leak the child's real frames.
+            // read_l2_phys resolves the real frame for both the identity
+            // (spawn_user) and VA!=phys (forked) cases; unmap + flush before
+            // freeing also unmaps each old-stack L2 entry (the arithmetic loop
+            // left them mapped -- #478). WHY(after PCB update): a fault during
+            // free must not leave the PCB pointing at freed memory.
             for i in 0..old_pages {
-                page::free_page(old_base + i * page::PAGE_SIZE);
+                let vaddr = old_base + i * page::PAGE_SIZE;
+                if let Some(phys) = mmu::read_l2_phys(pt, vaddr) {
+                    mmu::unmap_page(pt, vaddr);
+                    mmu::flush_tlb_page(vaddr);
+                    page::free_page(phys);
+                }
             }
 
             // WHY (#225): the page table is REUSED across exec (same
@@ -1673,7 +1674,6 @@ pub unsafe fn exec_replace_context(
             // and free each one before resetting the tracking state below, or
             // the physical frames leak permanently and the new image can read
             // the previous image's residual contents at the same VAs.
-            let pt = proc.page_table_phys;
             for mapping in proc.mappings.iter().flatten() {
                 for i in 0..mapping.pages {
                     let vaddr = mapping.start + i * page::PAGE_SIZE;
@@ -2329,6 +2329,130 @@ mod tests {
                 page::free_count(),
                 free_before,
                 "a rolled-back fork must leak no frames"
+            );
+        }
+    }
+
+    #[test]
+    fn fork_pl0_child_exit_frees_own_frames_not_parents() {
+        // #478 (review): a forked child's exit must free the child's OWN
+        // deep-copied frames (via exit_cleanup's page-table WALK), never the
+        // parent's -- the child's stack_base is the parent's VA, so an
+        // identity free would free the parent's live stack.
+        // SAFETY: test-only; single-threaded.
+        unsafe {
+            reset_all();
+            mmu::init_and_enable();
+            let loaded = crate::elf::LoadedElf::for_test(
+                0x7FF0_0000,
+                &[(0x7FF0_0000, 0x100, 0x5), (0x7FF0_1000, 0x100, 0x6)],
+            );
+            let ppid = spawn_user(&loaded).expect("spawn PL0 parent");
+            CURRENT = ppid;
+            let (parent_pt, parent_stack_base) = {
+                let procs = &*core::ptr::addr_of!(PROCS);
+                let p = procs[usize::from(ppid)].as_ref().unwrap();
+                (p.page_table_phys, p.stack_base)
+            };
+            // The parent's real stack frame (identity == its L2 mapping).
+            let parent_stack_frame = mmu::read_l2_phys(parent_pt, parent_stack_base).unwrap();
+
+            let mut frame = Context {
+                cpsr: 0x10,
+                ..Context::zero()
+            };
+            trap_enter(&mut frame as *mut Context);
+            let cpid = fork().expect("PL0 fork");
+            trap_leave();
+
+            let free_before_exit = page::free_count();
+            // Count the child's deep-copied frames (image + stack pages).
+            let child_pt = {
+                let procs = &*core::ptr::addr_of!(PROCS);
+                procs[usize::from(cpid)].as_ref().unwrap().page_table_phys
+            };
+            let mut child_frames = 0usize;
+            mmu::for_each_user_page(child_pt, |_v, _p, _a| {
+                child_frames += 1;
+                true
+            });
+            assert!(child_frames > 0);
+
+            CURRENT = cpid;
+            exit_cleanup(0);
+
+            // The child's frames are returned; the parent's stack frame is NOT.
+            assert_eq!(
+                page::free_count(),
+                free_before_exit + child_frames,
+                "child exit frees exactly its own deep-copied frames"
+            );
+            // try_free_page returns true iff the frame was still ALLOCATED (and
+            // frees it); asserting true confirms the child exit did NOT free the
+            // parent's frame -- a wrongly-freed frame would already be free
+            // (returns false) and fail here.
+            assert!(
+                page::try_free_page(parent_stack_frame),
+                "parent's live stack frame must NOT have been freed by the child exit"
+            );
+        }
+    }
+
+    #[test]
+    fn exec_replace_frees_forked_childs_real_stack_not_parents() {
+        // #478 CRITICAL (review): exec on a forked child must free the child's
+        // REAL stack frames (resolved via the page table), not the parent's
+        // live frame at the shared stack VA.
+        // SAFETY: test-only; single-threaded.
+        unsafe {
+            reset_all();
+            mmu::init_and_enable();
+            let loaded = crate::elf::LoadedElf::for_test(
+                0x7FF0_0000,
+                &[(0x7FF0_0000, 0x100, 0x5), (0x7FF0_1000, 0x100, 0x6)],
+            );
+            let ppid = spawn_user(&loaded).expect("spawn PL0 parent");
+            CURRENT = ppid;
+            let (parent_pt, parent_stack_base) = {
+                let procs = &*core::ptr::addr_of!(PROCS);
+                let p = procs[usize::from(ppid)].as_ref().unwrap();
+                (p.page_table_phys, p.stack_base)
+            };
+            let parent_stack_frame = mmu::read_l2_phys(parent_pt, parent_stack_base).unwrap();
+
+            let mut frame = Context {
+                cpsr: 0x10,
+                ..Context::zero()
+            };
+            trap_enter(&mut frame as *mut Context);
+            let cpid = fork().expect("PL0 fork");
+            trap_leave();
+
+            // The child's real stack frame (a fresh deep-copied page).
+            let child_pt = {
+                let procs = &*core::ptr::addr_of!(PROCS);
+                procs[usize::from(cpid)].as_ref().unwrap().page_table_phys
+            };
+            let child_stack_frame = mmu::read_l2_phys(child_pt, parent_stack_base).unwrap();
+            assert_ne!(child_stack_frame, parent_stack_frame, "distinct frames");
+
+            // Exec the child onto a fresh stack.
+            CURRENT = cpid;
+            let new_stack = page::alloc_contiguous(2).unwrap();
+            exec_replace_context(0x7FF0_0000, new_stack + 2 * page::PAGE_SIZE, new_stack, 2);
+
+            // The parent's live stack frame must NOT be freed (the critical bug).
+            // Asserting still-allocated (returns true) catches a wrongly-freed
+            // parent frame (which would already be free -> false).
+            assert!(
+                page::try_free_page(parent_stack_frame),
+                "the parent's live stack frame must NOT be freed by the child's exec"
+            );
+            // The child's OLD stack frame WAS freed by exec, so it is now free --
+            // try_free_page returns false (already free), not true (was allocated).
+            assert!(
+                !page::try_free_page(child_stack_frame),
+                "the child's old stack frame must be freed by exec (no leak)"
             );
         }
     }
