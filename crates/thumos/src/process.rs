@@ -499,6 +499,22 @@ pub(crate) fn fork() -> Option<Pid> {
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
 
+        // WHY(#478): fork is not yet supported for PL0 (userspace) processes.
+        // A correct PL0 fork needs a fresh isolated address space with the
+        // parent's user pages DEEP-COPIED. The current clone_addr_space is a
+        // SHALLOW L1 copy, so the child would share the parent's shattered L2
+        // tables (aliasing its physical pages), and at child exit
+        // free_addr_space would free the PARENT's L2-pool slots while the
+        // identity stack-free would free the parent's live stack -- corrupting
+        // the parent. Fail CLOSED (dispatch surfaces the error) rather than
+        // corrupt, until the deep-copy fork lands (full design on #478). PL1
+        // forks (PID 0 / spawn kernel threads / host tests) share the kernel
+        // identity map and are unaffected -- their stacks are sections, not L2
+        // mappings, so the shallow clone is correct for them.
+        if trap_from_user() {
+            return None;
+        }
+
         // Find a free process slot
         let slot = procs.iter().position(|p| p.is_none())?;
         let child_pid = slot as Pid;
@@ -994,6 +1010,19 @@ pub(crate) fn trap_leave() {
 pub(crate) fn trap_switched() -> bool {
     // SAFETY: read of a single word written only within this trap.
     unsafe { FRAME_SWITCHED }
+}
+
+/// True if the in-flight trap frame is a User-mode (PL0) trap. False outside
+/// trap context (host tests, where no frame is installed) or on a PL1 trap.
+/// Used to gate PL0-unsupported operations (e.g. fork, #478).
+pub(crate) fn trap_from_user() -> bool {
+    // SAFETY: ACTIVE_FRAME is null or the valid in-flight frame; a by-value
+    // read of its cpsr does not alias.
+    unsafe {
+        ACTIVE_FRAME
+            .as_ref()
+            .is_some_and(|f| f.cpsr & CPSR_MODE_MASK == CPSR_MODE_USER)
+    }
 }
 
 /// Deposit a syscall return value into the CURRENT process's live frame BEFORE
@@ -2019,6 +2048,41 @@ mod tests {
             assert!(
                 procs[usize::from(child_pid)].is_some(),
                 "child slot must be populated"
+            );
+        }
+    }
+
+    #[test]
+    fn fork_fails_closed_for_a_pl0_caller() {
+        // #478: a PL0 (User-mode) fork must be REFUSED (deny, not corrupt) until
+        // deep-copy fork lands -- a shallow clone would share the parent's L2
+        // tables and corrupt it on child exit. A PL1 fork (no frame / non-User
+        // saved mode) still succeeds (the other fork tests).
+        // SAFETY: test-only; single-threaded; reset_all reinitialises state.
+        unsafe {
+            reset_all();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            procs[0] = Some(test_process(mmu::alloc_addr_space().unwrap()));
+            CURRENT = 0;
+            let free_before = page::free_count();
+
+            // Install a User-mode (PL0) trap frame, as the SVC stub would for a
+            // userspace fork syscall.
+            let mut frame = Context {
+                cpsr: 0x10,
+                ..Context::zero()
+            };
+            trap_enter(&mut frame as *mut Context);
+            assert!(fork().is_none(), "a PL0 fork must fail closed");
+            trap_leave();
+
+            // No process slot consumed, no pages/address spaces leaked.
+            let procs = &*core::ptr::addr_of!(PROCS);
+            assert!(procs[1].is_none(), "no child slot allocated on refusal");
+            assert_eq!(
+                page::free_count(),
+                free_before,
+                "a refused fork must allocate nothing"
             );
         }
     }
