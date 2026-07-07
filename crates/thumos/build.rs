@@ -24,7 +24,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 
 /// Ed25519 public key / seed length in bytes.
 const KEY_LEN: usize = 32;
@@ -212,6 +212,20 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     archive.extend_from_slice(&cpio_newc_entry("TRAILER!!!", &[], 0));
     if let Err(e) = fs::write(out_dir.join("initramfs.cpio"), &archive) {
         die(&format!("#474: cannot write initramfs.cpio: {e}"));
+    }
+
+    // WHY (#480): sign the initramfs with the dev seed so the kernel can
+    // establish `userspace_image_verified` and spawn this image-resident
+    // userspace even on a boot with no verified medium (secure_boot_ok=false,
+    // e.g. the eMMC-less QEMU boot). The signature verifies under the dev/qemu
+    // anchor (BOOT_PUBLIC_KEY = the committed dev key); under a production
+    // anchor it does NOT verify (build.rs has no production seal), so a
+    // production image correctly falls back to the eMMC secure-boot gate. The
+    // real signing infrastructure signs the production initramfs offline.
+    let seed = read_hex_key(&manifest_dir.join("keys/dev/boot-dev.seed"));
+    let signature = SigningKey::from_bytes(&seed).sign(&archive);
+    if let Err(e) = fs::write(out_dir.join("initramfs_sig.bin"), signature.to_bytes()) {
+        die(&format!("#480: cannot write initramfs_sig.bin: {e}"));
     }
 }
 
