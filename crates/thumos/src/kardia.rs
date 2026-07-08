@@ -35,10 +35,12 @@ use crate::bt_audio::A2dpProfile;
 use crate::clock::ClockManager;
 use crate::device::DeviceRegistry;
 use crate::exceptions;
+use crate::heorte::HeorteManager;
 use crate::kinit::BootState;
 use crate::mic_audit::MicAuditLog;
 use crate::power::PowerManager;
 use crate::reflex;
+use crate::screen_calendar::CalendarScreen;
 use crate::screen_dialer::DialerScreen;
 use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
 use crate::screen_messages::MessagesScreen;
@@ -135,6 +137,9 @@ pub(crate) struct KernelState {
     search: SearchScreen,
     dialer: DialerScreen,
     settings: SettingsMenuScreen,
+    /// Calendar screen (#400): renders the agenda fed by `heorte`. Reachable via
+    /// the screen stack; content comes from the heorte manager each render.
+    calendar: CalendarScreen,
     /// Cursor into the qemu synthetic-input script. Real keypad decode is
     /// hardware-gated + net-new (no KPD model on -machine virt, no decoder
     /// in-tree); #400 input dispatch is CI-verified via a scripted key sequence
@@ -172,6 +177,10 @@ pub(crate) struct KernelState {
     /// RF/HCI link is hardware-gated, so only the local profile state machine +
     /// SBC framing run in emulation).
     bt_audio: A2dpProfile<BootBtHw>,
+    /// Calendar/alarm/timer/stopwatch manager (#400): holds scheduled events +
+    /// alarms; the loop checks alarms once per second and the calendar screen
+    /// renders its agenda. Pure tick-based logic (no hardware).
+    heorte: HeorteManager,
     /// Render target: the hardware framebuffer (FB_BASE) on device, a synthetic
     /// heap buffer under qemu (the virt machine models no display), or None when
     /// no display path exists. Wiring the render loop through this makes the UI
@@ -215,11 +224,13 @@ impl KernelState {
             route: RouteManager::new(),
             mic_audit: MicAuditLog::new(),
             bt_audio: A2dpProfile::new(BootBtHw::new()),
+            heorte: HeorteManager::new(),
             home: HomeScreen::new(),
             messages: MessagesScreen::new(),
             search: SearchScreen::new(),
             dialer: DialerScreen::new(),
             settings: SettingsMenuScreen::new(),
+            calendar: CalendarScreen::new(),
             fb,
             last_second: 0,
             #[cfg(feature = "qemu")]
@@ -237,6 +248,7 @@ impl KernelState {
             ScreenId::Search => &mut self.search,
             ScreenId::Dialer => &mut self.dialer,
             ScreenId::Settings => &mut self.settings,
+            ScreenId::Calendar => &mut self.calendar,
             _ => &mut self.home,
         }
     }
@@ -306,6 +318,12 @@ impl KernelState {
             let now_ms = now * TICK_MS;
             self.clock.evaluate(now_ms);
             self.wall_clock = self.clock.get_wall_clock(now_ms);
+            // #400: check scheduled alarms against the fresh wall time + advance
+            // the countdown timer. The firing IDs / expiry have no sink yet
+            // (notification routing is a follow-on); the calls still advance
+            // one-shot auto-disable + timer countdown state.
+            self.heorte.check_alarms(self.wall_clock);
+            self.heorte.timer_mut().update(now_ms);
             return true;
         }
         false
@@ -339,6 +357,10 @@ impl KernelState {
         // Computed before the fb borrow: status_network() reads &self as a whole
         // (returns a Copy), which cannot coexist with the &mut self.fb below.
         let network = self.status_network();
+        // #400: feed the calendar screen's agenda from the heorte manager before
+        // the fb borrow (both disjoint from self.fb). Cheap for the small event
+        // set; keeps the screen current whenever it is the active render target.
+        self.calendar.update(&self.heorte, self.wall_clock);
         let fb = self.fb.as_deref_mut()?;
         let status = StatusBarState {
             network,
@@ -364,6 +386,7 @@ impl KernelState {
             ScreenId::Search => &self.search,
             ScreenId::Dialer => &self.dialer,
             ScreenId::Settings => &self.settings,
+            ScreenId::Calendar => &self.calendar,
             _ => &self.home,
         };
         self.ui
@@ -469,6 +492,33 @@ impl KernelState {
         (rat, self.status_network())
     }
 
+    /// Boot-time heorte smoke (#400, qemu): seed a calendar event + an alarm,
+    /// check alarms, arm the countdown timer + stopwatch, and feed the calendar
+    /// screen from the manager. Returns (event count, alarm count, calendar
+    /// agenda rows, timer armed) for the CI witness -- proves HeorteManager +
+    /// its Timer/Stopwatch are instantiated + hold state and the calendar screen
+    /// renders that state (rows > 0). Pure tick logic; no hardware.
+    #[cfg(feature = "qemu")]
+    pub(crate) fn heorte_boot_smoke(&mut self) -> (usize, usize, usize, bool) {
+        let now_ms = self.wall_clock * 1000;
+        self.heorte
+            .add_event(b"Boot check", self.wall_clock + 3600, 30, false);
+        self.heorte.add_alarm(7, 30, b"Wake", true, 0);
+        self.heorte.check_alarms(self.wall_clock);
+        // Arm the countdown timer (60 s) + start the stopwatch (heorte_timer.rs).
+        self.heorte.timer_mut().set_duration(60);
+        self.heorte.timer_mut().start(now_ms);
+        self.heorte.stopwatch_mut().start(now_ms);
+        let timer_armed = !self.heorte.timer().expired();
+        self.calendar.update(&self.heorte, self.wall_clock);
+        (
+            self.heorte.events().len(),
+            self.heorte.alarms().len(),
+            self.calendar.row_count(),
+            timer_armed,
+        )
+    }
+
     /// Execute pending reflex fast-path events in privileged (loop) context.
     pub(crate) fn handle_reflex(&mut self, pending: reflex::Pending, serial: &mut Uart) {
         if pending.panic_wipe {
@@ -557,6 +607,9 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // #404: status-bar network label derived from the parsed +CREG <AcT>
         // (EUtran can only come from the parse path), not a constant.
         let (rat, netrat_net) = kernel.netrat_boot_smoke();
+        // #400: heorte manager (+ its Timer/Stopwatch) instantiated + holds
+        // seeded events/alarms, and the calendar screen renders that state.
+        let (heorte_events, heorte_alarms, calendar_rows, timer_armed) = kernel.heorte_boot_smoke();
 
         // Emit each witness line atomically (emit_marker masks IRQs per line)
         // so userspace /init cannot split a `kardia:` line mid-write (#513).
@@ -591,6 +644,12 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         emit_marker(
             &mut serial,
             format_args!("kardia: netrat rat={rat:?} net={netrat_net:?}\r\n"),
+        );
+        emit_marker(
+            &mut serial,
+            format_args!(
+                "kardia: heorte events={heorte_events} alarms={heorte_alarms} calendar_rows={calendar_rows} timer_armed={timer_armed}\r\n"
+            ),
         );
     }
     let mut last_tick = exceptions::ticks();
