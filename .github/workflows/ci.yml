@@ -212,6 +212,10 @@ jobs:
           # ringtone audio session -- the "phone rings" path across the wired
           # telephony (#398) + audio (#399) stacks.
           grep -qE 'kardia: incoming call -> ringtone sessions=[1-9]' boot.log || { echo 'FAIL #398: incoming call did not open a ringtone session (telephony->audio integration broken)'; exit 1; }
+          # #398 SIM/SMS: the SIM ICCID was queried over the modem transport
+          # (iccid_len>0) and a known incoming SMS PDU decoded into the inbox
+          # (sms_inbox>0) -- both managers functional against the wired transport.
+          grep -qE 'kardia: sim iccid_len=[1-9][0-9]* sms_inbox=[1-9]' boot.log || { echo 'FAIL #398: SIM/SMS not wired (ICCID not queried or SMS not decoded)'; exit 1; }
           # PL0 isolation + graceful user-fault kill (#487 + fault handling):
           # each probe variant attempts one PL0-illegal op. A correct kernel
           # (a) faults it -- 'hello' never prints, (b) KILLS only the faulting

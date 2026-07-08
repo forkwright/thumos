@@ -84,6 +84,8 @@ impl MockModemTransport {
         mock.queue_ok(); // 8: AT+CLIP=1
         mock.queue_info_ok(b"+CSQ: 18,99"); // 9: AT+CSQ
         mock.queue_info_ok(b"+CREG: 1"); // 10: AT+CREG? (registered home)
+        // A queued ICCID response for the boot-time SimManager query (#398).
+        mock.queue_info_ok(b"+ICCID: 8901410321111851072");
         // A queued RING URC so a booted qemu kernel exercises the incoming-call
         // -> ringtone-audio integration path (#398): poll() surfaces it as an
         // IncomingCall event after init.
