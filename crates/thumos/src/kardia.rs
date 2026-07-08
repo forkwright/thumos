@@ -43,7 +43,7 @@ use crate::screen_messages::MessagesScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
 use crate::security_mode::ModeManager;
-use crate::status_bar::{KernelStatusBar, StatusBarState};
+use crate::status_bar::{KernelStatusBar, NetworkService, StatusBarState};
 use crate::telephony::{BootModemTransport, Telephony};
 use crate::uart::Uart;
 use crate::ui::{Screen, ScreenId, UiManager};
@@ -275,6 +275,18 @@ impl KernelState {
         false
     }
 
+    /// The cellular network service shown in the status bar (#404), derived from
+    /// the wired telephony registration. The device is LTE-only (the boot COPS
+    /// selects `,,,7`), so a registered modem is `Lte`; unregistered or no modem
+    /// is `NoService`. The RAT distinction (Edge/ThreeG) awaits +CREG `<AcT>`
+    /// parsing -- a follow-on.
+    fn status_network(&self) -> NetworkService {
+        match self.telephony.as_ref() {
+            Some(t) if t.is_registered() => NetworkService::Lte,
+            _ => NetworkService::NoService,
+        }
+    }
+
     /// Render the active screen to the framebuffer (#400). Called when the frame
     /// is dirty (and once at loop entry for the initial frame). No-op when there
     /// is no render target.
@@ -283,9 +295,14 @@ impl KernelState {
     /// manager (#404), and the wall-clock epoch from the ClockManager trust
     /// hierarchy (#402) -- both formerly hardcoded.
     pub(crate) fn render_if_dirty(&mut self) -> Option<usize> {
+        // Computed before the fb borrow: status_network() reads &self as a whole
+        // (returns a Copy), which cannot coexist with the &mut self.fb below.
+        let network = self.status_network();
         let fb = self.fb.as_deref_mut()?;
         let status = StatusBarState {
+            network,
             battery_pct: 0,
+            mode_char: self.mode.mode_char(),
             mode_badge: Some(self.mode.status_badge()),
             mode_badge_color: Some(self.mode.status_badge_color()),
             threat_high: !self.boot.modem_ok,
@@ -406,6 +423,15 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         let _ = write!(
             serial,
             "kardia: audio ready sessions={sessions} mic_entries={mic_entries}\r\n"
+        );
+        // #404 CI witness: the status bar's cellular field is now driven by the
+        // wired telephony registration (was hardcoded), and the mode char by the
+        // security-mode manager. A registered mock modem shows Lte.
+        let _ = write!(
+            serial,
+            "kardia: statusbar net={:?} mode={}\r\n",
+            kernel.status_network(),
+            kernel.mode.mode_char()
         );
     }
     let mut last_tick = exceptions::ticks();
