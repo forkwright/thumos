@@ -66,6 +66,26 @@ impl MockModemTransport {
         self.queue_response(info);
         self.queue_response(b"OK");
     }
+
+    /// A mock pre-seeded with the full successful 10-step `Telephony::initialize`
+    /// AT sequence (#398): registers home on a LTE-only network with a READY
+    /// SIM. Lets a qemu kernel bring up a real, initialized Telephony stack
+    /// (the non-test analogue of the test-only `mock_for_init`).
+    #[cfg(feature = "qemu")]
+    pub(crate) fn seeded_for_boot() -> Self {
+        let mut mock = Self::new();
+        mock.queue_ok(); // 1: AT
+        mock.queue_ok(); // 2: ATE0
+        mock.queue_ok(); // 3: AT+CFUN=1
+        mock.queue_info_ok(b"+CPIN: READY"); // 4: AT+CPIN?
+        mock.queue_ok(); // 5: AT+COPS=0,,,7 (LTE only / refuse 2G)
+        mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\""); // 6: AT+COPS?
+        mock.queue_ok(); // 7: AT+CREG=1
+        mock.queue_ok(); // 8: AT+CLIP=1
+        mock.queue_info_ok(b"+CSQ: 18,99"); // 9: AT+CSQ
+        mock.queue_info_ok(b"+CREG: 1"); // 10: AT+CREG? (registered home)
+        mock
+    }
 }
 
 impl ModemTransport for MockModemTransport {

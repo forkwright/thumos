@@ -454,6 +454,16 @@ fn send_with_info<T: ModemTransport>(
 // Telephony subsystem
 // ---------------------------------------------------------------------------
 
+/// The modem transport the booted kernel wires into its Telephony stack (#398).
+/// A build-time choice so `KernelState` (a concrete struct) can hold a
+/// `Telephony<BootModemTransport>` without going generic: the seeded mock under
+/// qemu (no CCCI/CLDMA model on -machine virt), the real CCCI transport on
+/// device.
+#[cfg(any(feature = "qemu", test))]
+pub(crate) type BootModemTransport = crate::telephony_mock::MockModemTransport;
+#[cfg(not(any(feature = "qemu", test)))]
+pub(crate) type BootModemTransport = CcciModemTransport;
+
 /// Telephony subsystem: manages modem state and voice calls.
 pub struct Telephony<T: ModemTransport> {
     // kanon:ignore RUST/struct-too-many-fields -- cohesive modem state: radio + signal + registration + call + operator fields track one hardware subsystem
