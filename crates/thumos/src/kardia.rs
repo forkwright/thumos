@@ -43,6 +43,8 @@ use crate::screen_messages::MessagesScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
 use crate::security_mode::ModeManager;
+use crate::sim::SimManager;
+use crate::sms::SmsManager;
 use crate::status_bar::{KernelStatusBar, NetworkService, StatusBarState};
 use crate::telephony::{BootModemTransport, Telephony};
 use crate::uart::Uart;
@@ -146,6 +148,12 @@ pub(crate) struct KernelState {
     /// available (a device boot where the CCCI link/AT layer did not come up).
     /// Under qemu it is a seeded mock stack; the loop drains its URCs each tick.
     telephony: Option<Telephony<BootModemTransport>>,
+    /// SIM state manager (#398): PIN/ICCID/signal, queried over the modem
+    /// transport Telephony owns (via `transport_mut`).
+    sim: SimManager,
+    /// SMS manager (#398): incoming PDU decode + inbox, outgoing send over the
+    /// modem transport.
+    sms: SmsManager,
     /// Audio session manager (#399): priority-preemptive sessions over the
     /// codec (NullCodec under qemu, real MT6357 on device). Event-driven -- no
     /// tick source; sessions open on ring/media/alarm events.
@@ -192,6 +200,8 @@ impl KernelState {
             },
             wall_clock: BOOT_WALL_EPOCH,
             telephony,
+            sim: SimManager::new(),
+            sms: SmsManager::new(),
             audio: AudioManager::new(BootCodec::new()),
             route: RouteManager::new(),
             mic_audit: MicAuditLog::new(),
@@ -374,6 +384,30 @@ impl KernelState {
         (sessions, mic_entries)
     }
 
+    /// Boot-time SIM/SMS smoke (#398, qemu): query the SIM ICCID over the modem
+    /// transport (mock-seeded response), then decode + file a known incoming SMS
+    /// PDU. Returns (ICCID byte length, inbox message count) for the CI witness,
+    /// exercising both managers against the wired modem transport.
+    #[cfg(feature = "qemu")]
+    pub(crate) fn sim_sms_boot_smoke(&mut self) -> (usize, usize) {
+        // SIM: query the ICCID over Telephony's owned transport.
+        let iccid_len = if let Some(t) = self.telephony.as_mut() {
+            self.sim.query_iccid(t.transport_mut()).ok();
+            self.sim.sim_info().iccid_len as usize
+        } else {
+            0
+        };
+        // SMS: decode a known SMS-DELIVER PDU ("Hello" from +1234567890) + file it.
+        const PDU: &[u8] = &[
+            0x00, 0x00, 0x0A, 0x91, 0x21, 0x43, 0x65, 0x87, 0x09, 0x00, 0x00, 0x32, 0x10, 0x51,
+            0x21, 0x03, 0x00, 0x00, 0x05, 0xC8, 0x32, 0x9B, 0xFD, 0x06,
+        ];
+        if let Ok(msg) = SmsManager::handle_incoming(PDU) {
+            self.sms.receive(msg).ok();
+        }
+        (iccid_len, self.sms.inbox().len())
+    }
+
     /// Execute pending reflex fast-path events in privileged (loop) context.
     pub(crate) fn handle_reflex(&mut self, pending: reflex::Pending, serial: &mut Uart) {
         if pending.panic_wipe {
@@ -448,6 +482,14 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
             "kardia: statusbar net={:?} mode={}\r\n",
             kernel.status_network(),
             kernel.mode.mode_char()
+        );
+        // #398 CI witness: SIM + SMS managers are wired + functional -- the SIM
+        // ICCID was queried over the modem transport (iccid_len>0) and a known
+        // incoming SMS PDU decoded into the inbox (sms_inbox=1).
+        let (iccid_len, sms_inbox) = kernel.sim_sms_boot_smoke();
+        let _ = write!(
+            serial,
+            "kardia: sim iccid_len={iccid_len} sms_inbox={sms_inbox}\r\n"
         );
     }
     let mut last_tick = exceptions::ticks();

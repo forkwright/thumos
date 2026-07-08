@@ -583,6 +583,14 @@ impl<T: ModemTransport> Telephony<T> {
         )
     }
 
+    /// The owned modem transport, for `SimManager`/`SmsManager` AT queries that
+    /// operate over the same physical modem link (#398). Single-threaded loop
+    /// context serializes access; there is one physical modem, so the SIM/SMS
+    /// managers borrow Telephony's transport rather than owning a second.
+    pub(crate) fn transport_mut(&mut self) -> &mut T {
+        &mut self.transport
+    }
+
     // -----------------------------------------------------------------------
     // Modem initialization
     // -----------------------------------------------------------------------
