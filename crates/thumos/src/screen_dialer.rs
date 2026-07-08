@@ -11,12 +11,6 @@
 //! Rendering approach ported from `crates/eidolon/src/widgets/dialer.rs`,
 //! adapted for the kernel's `u16` RGB565 framebuffer format.
 
-// WHY: dialer screen created in Phase 07 Wave 3, kinit wiring pending.
-#![expect(
-    dead_code,
-    reason = "Dialer screen created in Phase 07 Wave 3, kinit wiring pending"
-)]
-
 use crate::ui::{
     self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
     ScreenId, color,
