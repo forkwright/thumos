@@ -136,8 +136,11 @@ pub enum Urc {
     Busy,
     /// Signal quality report (+CSQ: rssi,ber).
     Csq { rssi: u8, ber: u8 },
-    /// Network registration status changed (+CREG: stat).
-    Creg { stat: RegStatus },
+    /// Network registration status changed (+CREG: stat[,...,AcT]).
+    Creg {
+        stat: RegStatus,
+        act: Option<RadioAccessTech>,
+    },
     /// Caller ID (+CLIP: "number",type).
     Clip {
         number: [u8; MAX_NUMBER_LEN],
@@ -187,6 +190,82 @@ impl core::fmt::Display for RegStatus {
             Self::RegisteredRoaming => write!(f, "registered (roaming)"),
         }
     }
+}
+
+/// Radio access technology, parsed from the `+CREG` `<AcT>` field (3GPP TS
+/// 27.007 §7.2). Distinguishes the technology a registration actually landed
+/// on -- the status bar renders it (2G/3G/LTE) and the threat model reads it
+/// (a GSM/UTRAN registration is a downgrade signal even when LTE-only
+/// selection was requested via `AT+COPS=0,,,7`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RadioAccessTech {
+    /// GSM (`<AcT>`=0).
+    Gsm,
+    /// GSM Compact (`<AcT>`=1).
+    GsmCompact,
+    /// UTRAN / UMTS (`<AcT>`=2).
+    Utran,
+    /// GSM with EGPRS -- EDGE (`<AcT>`=3).
+    GsmEgprs,
+    /// UTRAN with HSDPA (`<AcT>`=4).
+    UtranHsdpa,
+    /// UTRAN with HSUPA (`<AcT>`=5).
+    UtranHsupa,
+    /// UTRAN with HSDPA and HSUPA (`<AcT>`=6).
+    UtranHsdpaHsupa,
+    /// E-UTRAN -- LTE (`<AcT>`=7).
+    EUtran,
+    /// E-UTRAN in NB-S1 mode -- LTE (NB-IoT) (`<AcT>`=8).
+    EUtranNbS1,
+}
+
+impl RadioAccessTech {
+    /// Map a raw `+CREG` `<AcT>` code to a radio access technology.
+    ///
+    /// Returns `None` for a code outside the defined 0-8 range rather than a
+    /// wrong technology -- an unknown RAT must not masquerade as a known one.
+    #[must_use]
+    pub const fn from_act(val: u8) -> Option<Self> {
+        Some(match val {
+            0 => Self::Gsm,
+            1 => Self::GsmCompact,
+            2 => Self::Utran,
+            3 => Self::GsmEgprs,
+            4 => Self::UtranHsdpa,
+            5 => Self::UtranHsupa,
+            6 => Self::UtranHsdpaHsupa,
+            7 => Self::EUtran,
+            8 => Self::EUtranNbS1,
+            _ => return None,
+        })
+    }
+
+    /// The cellular generation this technology belongs to. GSM/EGPRS map to
+    /// 2G, the UTRAN family to 3G, and E-UTRAN to 4G/LTE.
+    #[must_use]
+    pub const fn generation(self) -> RatGeneration {
+        match self {
+            Self::Gsm | Self::GsmCompact | Self::GsmEgprs => RatGeneration::TwoG,
+            Self::Utran | Self::UtranHsdpa | Self::UtranHsupa | Self::UtranHsdpaHsupa => {
+                RatGeneration::ThreeG
+            }
+            Self::EUtran | Self::EUtranNbS1 => RatGeneration::FourG,
+        }
+    }
+}
+
+/// Cellular generation of a [`RadioAccessTech`] -- the coarse 2G/3G/4G tier the
+/// status bar and threat model reason about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RatGeneration {
+    /// 2G (GSM / GPRS / EDGE).
+    TwoG,
+    /// 3G (UTRAN / UMTS / HSPA).
+    ThreeG,
+    /// 4G (LTE / E-UTRAN).
+    FourG,
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +573,11 @@ pub struct Telephony<T: ModemTransport> {
     /// Whether `AT+CLIP=1` (caller-ID subscription) succeeded during init.
     /// `false` means incoming calls will not carry caller ID.
     clip_enabled: bool,
+    /// Radio access technology of the current registration, from the `+CREG`
+    /// `<AcT>` field. `None` when unregistered or when the modem reports no
+    /// `<AcT>` (short-form `+CREG`); a registered URC without `<AcT>` keeps the
+    /// last known value.
+    current_rat: Option<RadioAccessTech>,
     /// Hardware transport.
     transport: T,
     /// Last signal poll tick (ms).
@@ -535,6 +619,7 @@ impl<T: ModemTransport> Telephony<T> {
             lte_only: false,
             creg_urc_enabled: false,
             clip_enabled: false,
+            current_rat: None,
             transport,
             last_signal_poll: 0,
             init_step: 0,
@@ -581,6 +666,13 @@ impl<T: ModemTransport> Telephony<T> {
             self.reg_status,
             RegStatus::RegisteredHome | RegStatus::RegisteredRoaming
         )
+    }
+
+    /// Radio access technology of the current registration (`+CREG` `<AcT>`),
+    /// or `None` when unregistered or the modem never reported one.
+    #[must_use]
+    pub fn rat(&self) -> Option<RadioAccessTech> {
+        self.current_rat
     }
 
     /// The owned modem transport, for `SimManager`/`SmsManager` AT queries that
@@ -746,9 +838,9 @@ impl<T: ModemTransport> Telephony<T> {
         let creg_query = send_with_info(&mut self.transport, "AT+CREG?", 5000);
         if let Ok((AtResponse::Ok, ref info_line, info_len)) = creg_query
             && info_len > 0
-            && let Some(stat) = parse_creg_response(&info_line[..info_len])
+            && let Some((stat, act)) = parse_creg_response(&info_line[..info_len])
         {
-            self.apply_reg_status(stat);
+            self.apply_reg_status(stat, act);
         }
         self.init_step = 10;
 
@@ -997,7 +1089,7 @@ impl<T: ModemTransport> Telephony<T> {
     /// `+CREG` URC arriving outside `Ready`/`Registered` (e.g. during
     /// `Off`/`Initializing`/`Error`) updates `reg_status` but does not
     /// clobber the modem's lifecycle state.
-    fn apply_reg_status(&mut self, stat: RegStatus) {
+    fn apply_reg_status(&mut self, stat: RegStatus, act: Option<RadioAccessTech>) {
         self.reg_status = stat;
         if matches!(self.modem_state, ModemState::Ready | ModemState::Registered) {
             self.modem_state = if self.is_registered() {
@@ -1006,6 +1098,15 @@ impl<T: ModemTransport> Telephony<T> {
                 ModemState::Ready
             };
         }
+        // Track the radio access technology alongside registration. When
+        // registered, a fresh `<AcT>` updates it and an absent one keeps the
+        // last known value (a short-form `+CREG` URC omits `<AcT>`). Losing
+        // registration clears it -- an unregistered modem has no RAT.
+        self.current_rat = if self.is_registered() {
+            act.or(self.current_rat)
+        } else {
+            None
+        };
     }
 
     /// Handle a parsed URC and update internal state.
@@ -1062,8 +1163,8 @@ impl<T: ModemTransport> Telephony<T> {
                     rssi_dbm: dbm,
                 })
             }
-            Urc::Creg { stat } => {
-                self.apply_reg_status(stat);
+            Urc::Creg { stat, act } => {
+                self.apply_reg_status(stat, act);
                 Some(TelephonyEvent::RegistrationUpdate { status: stat })
             }
         }
@@ -2001,6 +2102,105 @@ mod tests {
             tel.modem_state(),
             ModemState::Registered,
             "modem_state must promote from Ready to Registered on +CREG: 5"
+        );
+    }
+
+    #[test]
+    fn radio_access_tech_maps_act_codes_to_generations() {
+        use RatGeneration::{FourG, ThreeG, TwoG};
+        let cases = [
+            (0u8, RadioAccessTech::Gsm, TwoG),
+            (1, RadioAccessTech::GsmCompact, TwoG),
+            (2, RadioAccessTech::Utran, ThreeG),
+            (3, RadioAccessTech::GsmEgprs, TwoG),
+            (4, RadioAccessTech::UtranHsdpa, ThreeG),
+            (5, RadioAccessTech::UtranHsupa, ThreeG),
+            (6, RadioAccessTech::UtranHsdpaHsupa, ThreeG),
+            (7, RadioAccessTech::EUtran, FourG),
+            (8, RadioAccessTech::EUtranNbS1, FourG),
+        ];
+        for (code, rat, generation) in cases {
+            assert_eq!(
+                RadioAccessTech::from_act(code),
+                Some(rat),
+                "AcT code {code} must map to the expected radio access technology"
+            );
+            assert_eq!(
+                rat.generation(),
+                generation,
+                "{rat:?} must report the expected cellular generation"
+            );
+        }
+        assert_eq!(
+            RadioAccessTech::from_act(9),
+            None,
+            "an AcT code outside 0-8 must yield no technology"
+        );
+    }
+
+    /// A mock seeded through the full init sequence whose `AT+CREG?` response
+    /// carries the given `<AcT>`, for exercising the RAT seed path.
+    fn mock_for_init_with_creg(creg_line: &[u8]) -> MockModemTransport {
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok();
+        mock.queue_ok();
+        mock.queue_ok();
+        mock.queue_info_ok(b"+CPIN: READY");
+        mock.queue_ok();
+        mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\"");
+        mock.queue_ok();
+        mock.queue_ok();
+        mock.queue_info_ok(b"+CSQ: 18,99");
+        mock.queue_info_ok(creg_line);
+        mock
+    }
+
+    #[test]
+    fn rat_is_seeded_from_creg_query_at_init() {
+        let mock = mock_for_init_with_creg(b"+CREG: 1,\"1A2B\",\"0100CE01\",7");
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+        assert!(tel.is_registered(), "must be registered (stat=1)");
+        assert_eq!(
+            tel.rat(),
+            Some(RadioAccessTech::EUtran),
+            "the boot AT+CREG? <AcT>=7 must seed the RAT to E-UTRAN"
+        );
+    }
+
+    #[test]
+    fn rat_tracks_urc_updates_and_clears_on_deregistration() {
+        // Init registered on LTE.
+        let mock = mock_for_init_with_creg(b"+CREG: 1,\"1A2B\",\"0100CE01\",7");
+        let mut tel = Telephony::new(mock);
+        tel.initialize().ok();
+        assert_eq!(tel.rat(), Some(RadioAccessTech::EUtran), "seeded LTE");
+
+        // A URC reporting a UTRAN registration updates the RAT.
+        tel.transport.queue_urc(b"+CREG: 1,\"1A2B\",\"0100CE01\",2");
+        tel.poll();
+        assert_eq!(
+            tel.rat(),
+            Some(RadioAccessTech::Utran),
+            "a +CREG URC carrying <AcT>=2 must update the RAT to UTRAN (3G)"
+        );
+
+        // A registered URC without an <AcT> keeps the last known RAT.
+        tel.transport.queue_urc(b"+CREG: 1");
+        tel.poll();
+        assert_eq!(
+            tel.rat(),
+            Some(RadioAccessTech::Utran),
+            "a short-form +CREG URC (no <AcT>) must keep the last known RAT"
+        );
+
+        // Losing registration clears the RAT.
+        tel.transport.queue_urc(b"+CREG: 0");
+        tel.poll();
+        assert_eq!(
+            tel.rat(),
+            None,
+            "deregistration (+CREG: 0) must clear the RAT -- no technology without a registration"
         );
     }
 }
