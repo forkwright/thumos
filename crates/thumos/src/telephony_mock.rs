@@ -96,6 +96,12 @@ impl MockModemTransport {
         mock.queue_info_ok(b"+CPIN: READY");
         mock.queue_info_ok(b"+CSQ: 18,99");
         mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\"");
+        // Post-init responses for the boot-time SMS-send smoke (#398): the
+        // AT+CMGS PDU-mode send sequence -- AT+CMGF=0 -> OK, AT+CMGS=<len> -> '>'
+        // prompt, then PDU+Ctrl-Z -> +CMGS reference + OK.
+        mock.queue_response(b"OK");
+        mock.queue_response(b">");
+        mock.queue_info_ok(b"+CMGS: 42");
         // A queued RING URC so a booted qemu kernel exercises the incoming-call
         // -> ringtone-audio integration path (#398): poll() surfaces it as an
         // IncomingCall event after init.
