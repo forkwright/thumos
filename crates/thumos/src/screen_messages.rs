@@ -34,12 +34,6 @@
 //! snapshot of message metadata via [`MessageEntry`] to avoid lifetime
 //! issues with kernel globals.
 
-// WHY: messages screen created in Phase 07 Wave 5, kinit wiring pending.
-#![expect(
-    dead_code,
-    reason = "Messages screen created in Phase 07 Wave 5, kinit wiring pending"
-)]
-
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;

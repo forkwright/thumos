@@ -32,11 +32,15 @@ use crate::exceptions;
 use crate::kinit::BootState;
 use crate::power::PowerManager;
 use crate::reflex;
+use crate::screen_dialer::DialerScreen;
 use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
+use crate::screen_messages::MessagesScreen;
+use crate::screen_search::SearchScreen;
+use crate::screen_settings::SettingsMenuScreen;
 use crate::security_mode::ModeManager;
 use crate::status_bar::{KernelStatusBar, StatusBarState};
 use crate::uart::Uart;
-use crate::ui::UiManager;
+use crate::ui::{Screen, ScreenId, UiManager};
 
 /// Timer ticks per wall-clock second (exceptions.rs TICK_MS = 10).
 const TICKS_PER_SECOND: u64 = 100;
@@ -100,6 +104,21 @@ pub(crate) struct KernelState {
     ui: UiManager,
     /// The home screen, re-stated + drawn each dirty tick.
     home: HomeScreen,
+    /// The screens reachable from Home (#400). Each is dependency-free to
+    /// construct; subsystem wirings later feed their content (#398 dialer,
+    /// #402 clock into home, etc.). Screens not held here fall back to Home in
+    /// the dispatch match until their subsystem PR adds the field + arm.
+    messages: MessagesScreen,
+    search: SearchScreen,
+    dialer: DialerScreen,
+    settings: SettingsMenuScreen,
+    /// Cursor into the qemu synthetic-input script. Real keypad decode is
+    /// hardware-gated + net-new (no KPD model on -machine virt, no decoder
+    /// in-tree); #400 input dispatch is CI-verified via a scripted key sequence
+    /// under qemu, exercising the exact on_key -> ScreenAction -> apply_action
+    /// -> navigation path the real keypad will drive.
+    #[cfg(feature = "qemu")]
+    input_cursor: usize,
     /// Render target: the hardware framebuffer (FB_BASE) on device, a synthetic
     /// heap buffer under qemu (the virt machine models no display), or None when
     /// no display path exists. Wiring the render loop through this makes the UI
@@ -128,9 +147,54 @@ impl KernelState {
             mode,
             ui: UiManager::new(),
             home: HomeScreen::new(),
+            messages: MessagesScreen::new(),
+            search: SearchScreen::new(),
+            dialer: DialerScreen::new(),
+            settings: SettingsMenuScreen::new(),
             fb,
             last_second: 0,
+            #[cfg(feature = "qemu")]
+            input_cursor: 0,
         }
+    }
+
+    /// The active screen as a `&mut dyn Screen`, for input dispatch (#400).
+    /// Screens not yet wired as fields fall back to Home (their subsystem PR
+    /// adds the field + arm); the qemu input script only navigates to wired
+    /// screens, so the fallback is never exercised in CI.
+    fn active_screen_mut(&mut self) -> &mut dyn Screen {
+        match self.ui.active_screen() {
+            ScreenId::Messages => &mut self.messages,
+            ScreenId::Search => &mut self.search,
+            ScreenId::Dialer => &mut self.dialer,
+            ScreenId::Settings => &mut self.settings,
+            _ => &mut self.home,
+        }
+    }
+
+    /// Drain one synthetic key (qemu) and dispatch it through the active
+    /// screen's `on_key` -> `ScreenAction` -> `UiManager::apply_action`
+    /// navigation path (#400). Returns `Some((from, to))` when navigation
+    /// changed the active screen, so the caller can log + re-render. On device
+    /// this is a no-op until the keypad driver lands (hardware-gated).
+    pub(crate) fn poll_input(&mut self) -> Option<(ScreenId, ScreenId)> {
+        #[cfg(feature = "qemu")]
+        {
+            // A scripted round trip proving the dispatch pipeline end-to-end:
+            // Home --Rsk--> Search --End--> Home. Rsk/End are the standard
+            // navigate/back keys (HomeScreen::on_key, SearchScreen::on_key).
+            const NAV_SCRIPT: [crate::ui::Key; 2] = [crate::ui::Key::Rsk, crate::ui::Key::End];
+            let key = *NAV_SCRIPT.get(self.input_cursor)?;
+            self.input_cursor += 1;
+            let from = self.ui.active_screen();
+            let action = self.active_screen_mut().on_key(key);
+            self.ui.apply_action(action);
+            let to = self.ui.active_screen();
+            if from != to {
+                return Some((from, to));
+            }
+        }
+        None
     }
 
     /// Poll every persisted subsystem once for tick `now`. Returns true when
@@ -172,9 +236,19 @@ impl KernelState {
             mode: OperatingMode::from(self.mode.mode()),
             unread_count: 0,
         });
-        // Disjoint field borrows: fb (self.fb), self.ui, self.home.
+        // Dispatch to the ACTIVE screen (#400): the loop renders whatever the
+        // navigation stack has selected, not just Home. Inlined (not
+        // active_screen_mut) because fb already holds a &mut borrow of self.fb;
+        // this immutable match over disjoint screen fields coexists with it.
+        let screen: &dyn Screen = match self.ui.active_screen() {
+            ScreenId::Messages => &self.messages,
+            ScreenId::Search => &self.search,
+            ScreenId::Dialer => &self.dialer,
+            ScreenId::Settings => &self.settings,
+            _ => &self.home,
+        };
         self.ui
-            .render(&self.home, |s| KernelStatusBar::draw(s, &status), fb);
+            .render(screen, |s| KernelStatusBar::draw(s, &status), fb);
         // Returns the painted (non-blank) pixel count so the caller (which owns
         // serial) can emit the #400 CI witness. The render path was DEAD under
         // qemu until now (display_ok is always false on -machine virt); a
@@ -197,6 +271,19 @@ impl KernelState {
             let _ = serial.write_str("[kardia] REFLEX incoming-ring\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write
             // TODO(#398)[deliberate-prudent]: ring UI + audio route via persisted telephony.
         }
+    }
+}
+
+/// Name a `ScreenId` for the #400 qemu navigation CI marker.
+#[cfg(feature = "qemu")]
+fn screen_id_name(id: ScreenId) -> &'static str {
+    match id {
+        ScreenId::Home => "Home",
+        ScreenId::Search => "Search",
+        ScreenId::Messages => "Messages",
+        ScreenId::Dialer => "Dialer",
+        ScreenId::Settings => "Settings",
+        _ => "Other",
     }
 }
 
@@ -262,8 +349,19 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
                     "kardia: reaped {reaped} fault-killed process(es)\r\n"
                 ); // WHY: best-effort diagnostic + CI marker
             }
-            // TODO(#400)[deliberate-prudent]: poll_input() -> key events -> active-screen dispatch.
-            if kernel.poll_all(now) {
+            // #400: drive input each tick through the active screen's on_key ->
+            // ScreenAction -> navigation path; a navigation change re-renders.
+            let nav = kernel.poll_input();
+            #[cfg(feature = "qemu")]
+            if let Some((from, to)) = nav {
+                let _ = write!(
+                    serial,
+                    "kardia: nav {} -> {}\r\n",
+                    screen_id_name(from),
+                    screen_id_name(to)
+                ); // WHY: #400 CI witness -- proves synthetic input drove navigation
+            }
+            if kernel.poll_all(now) || nav.is_some() {
                 #[cfg(feature = "qemu")]
                 if let Some(px) = kernel.render_if_dirty() {
                     let _ = write!(serial, "kardia: frame rendered painted_px={px}\r\n"); // WHY: #400 CI witness
