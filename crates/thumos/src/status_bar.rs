@@ -43,7 +43,6 @@ pub enum NetworkService {
     #[expect(dead_code, reason = "requires modem registration state wiring")]
     ThreeG,
     /// 4G LTE.
-    #[expect(dead_code, reason = "requires modem registration state wiring")]
     Lte,
 }
 

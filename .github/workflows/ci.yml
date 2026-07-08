@@ -203,6 +203,10 @@ jobs:
           # arbitrating a route) and recorded a mic-access audit entry (mic_entries=1)
           # -- exercising the session state machine with the NullCodec (no MT6357 I/O).
           grep -qE 'kardia: audio ready sessions=[1-9][0-9]* mic_entries=[1-9][0-9]*' boot.log || { echo 'FAIL #399: audio session manager / mic audit not wired (no session opened or mic not logged)'; exit 1; }
+          # #404 status bar: the cellular field is now driven by the wired
+          # telephony registration (was hardcoded) + the mode char by the
+          # security-mode manager. A registered mock modem shows Lte.
+          grep -q 'kardia: statusbar net=Lte' boot.log || { echo 'FAIL #404: status bar network not driven by telephony registration (modem-state bridge broken)'; exit 1; }
           # PL0 isolation + graceful user-fault kill (#487 + fault handling):
           # each probe variant attempts one PL0-illegal op. A correct kernel
           # (a) faults it -- 'hello' never prints, (b) KILLS only the faulting
