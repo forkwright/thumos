@@ -430,10 +430,11 @@ impl KernelState {
     /// transport. All SIM queries are `ModemTransport`-abstracted, so the mock
     /// exercises them fully under qemu; only the returned values are hardware.
     #[cfg(feature = "qemu")]
-    pub(crate) fn sim_sms_boot_smoke(&mut self) -> (usize, usize, bool, u8, usize) {
-        // SIM: query ICCID + PIN status + signal + operator over Telephony's
-        // owned transport, in the order the mock queues the responses.
-        let (iccid_len, sim_ready, signal_bars, operator_len) =
+    pub(crate) fn sim_sms_boot_smoke(&mut self) -> (usize, usize, bool, u8, usize, bool) {
+        // SIM + SMS-send: query ICCID + PIN status + signal + operator and send
+        // an outgoing SMS over Telephony's owned transport, in the order the mock
+        // queues the responses.
+        let (iccid_len, sim_ready, signal_bars, operator_len, sms_sent) =
             if let Some(t) = self.telephony.as_mut() {
                 self.sim.query_iccid(t.transport_mut()).ok();
                 // PIN status (AT+CPIN?): READY => no PIN required => ready.
@@ -444,16 +445,20 @@ impl KernelState {
                 let mut op_name = [0u8; 32];
                 let op_len = SimManager::query_operator(t.transport_mut(), &mut op_name)
                     .unwrap_or(0) as usize;
+                // SMS send: GSM-7 encode + AT+CMGS PDU-mode transmit.
+                let sent = SmsManager::send(t.transport_mut(), "+1234567890", "Boot check").is_ok();
                 (
                     self.sim.sim_info().iccid_len as usize,
                     ready,
                     self.sim.signal_info().bars,
                     op_len,
+                    sent,
                 )
             } else {
-                (0, false, 0, 0)
+                (0, false, 0, 0, false)
             };
-        // SMS: decode a known SMS-DELIVER PDU ("Hello" from +1234567890) + file it.
+        // SMS receive: decode a known SMS-DELIVER PDU ("Hello" from +1234567890)
+        // + file it.
         const PDU: &[u8] = &[
             0x00, 0x00, 0x0A, 0x91, 0x21, 0x43, 0x65, 0x87, 0x09, 0x00, 0x00, 0x32, 0x10, 0x51,
             0x21, 0x03, 0x00, 0x00, 0x05, 0xC8, 0x32, 0x9B, 0xFD, 0x06,
@@ -467,6 +472,7 @@ impl KernelState {
             sim_ready,
             signal_bars,
             operator_len,
+            sms_sent,
         )
     }
 
@@ -599,7 +605,7 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // #398: SIM + SMS wired -- ICCID / PIN status / signal / operator queried
         // over the modem transport + a known incoming SMS PDU decoded into the
         // inbox.
-        let (iccid_len, sms_inbox, sim_ready, signal_bars, operator_len) =
+        let (iccid_len, sms_inbox, sim_ready, signal_bars, operator_len, sms_sent) =
             kernel.sim_sms_boot_smoke();
         // #401: BT A2DP profile wired + its SBC/config state machine runs
         // (44.1 kHz stereo). RF/HCI is hardware-gated.
@@ -634,7 +640,7 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         emit_marker(
             &mut serial,
             format_args!(
-                "kardia: sim iccid_len={iccid_len} sms_inbox={sms_inbox} sim_ready={sim_ready} signal_bars={signal_bars} operator_len={operator_len}\r\n"
+                "kardia: sim iccid_len={iccid_len} sms_inbox={sms_inbox} sim_ready={sim_ready} signal_bars={signal_bars} operator_len={operator_len} sms_sent={sms_sent}\r\n"
             ),
         );
         emit_marker(
