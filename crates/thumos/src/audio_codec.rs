@@ -855,6 +855,109 @@ impl AudioCodecOps for MockCodec {
     }
 }
 
+/// A no-op audio codec for qemu (#399). The MT6357 PMIC/PWRAP MMIO is unmodeled
+/// on -machine virt, so the real `Mt6357Codec`'s register writes would
+/// data-abort. `NullCodec` tracks the power/enable/route state the AudioManager
+/// session logic reads, but touches no hardware -- so the session / priority /
+/// route state machine runs in emulation. Distinct from the test-only
+/// `MockCodec` (which carries fail-injection knobs).
+#[cfg(any(feature = "qemu", test))]
+pub(crate) struct NullCodec {
+    powered: bool,
+    dac_enabled: bool,
+    adc_enabled: bool,
+    mic_bias: bool,
+    volume: u8,
+    route: AudioRoute,
+}
+
+#[cfg(any(feature = "qemu", test))]
+impl NullCodec {
+    pub(crate) fn new() -> Self {
+        Self {
+            powered: false,
+            dac_enabled: false,
+            adc_enabled: false,
+            mic_bias: false,
+            volume: 0,
+            route: AudioRoute::Speaker,
+        }
+    }
+}
+
+#[cfg(any(feature = "qemu", test))]
+impl AudioCodecOps for NullCodec {
+    fn power_on(&mut self) -> Result<(), AudioError> {
+        self.powered = true;
+        Ok(())
+    }
+    fn power_off(&mut self) -> Result<(), AudioError> {
+        self.powered = false;
+        self.dac_enabled = false;
+        self.adc_enabled = false;
+        self.mic_bias = false;
+        Ok(())
+    }
+    fn enable_dac(&mut self) -> Result<(), AudioError> {
+        self.dac_enabled = true;
+        Ok(())
+    }
+    fn enable_adc(&mut self) -> Result<(), AudioError> {
+        self.adc_enabled = true;
+        Ok(())
+    }
+    fn disable_dac(&mut self) -> Result<(), AudioError> {
+        self.dac_enabled = false;
+        Ok(())
+    }
+    fn disable_adc(&mut self) -> Result<(), AudioError> {
+        self.adc_enabled = false;
+        Ok(())
+    }
+    fn set_output(&mut self, route: AudioRoute) -> Result<(), AudioError> {
+        self.route = route;
+        Ok(())
+    }
+    fn set_volume(&mut self, level: u8) -> Result<(), AudioError> {
+        self.volume = level;
+        Ok(())
+    }
+    fn enable_mic_bias(&mut self) -> Result<(), AudioError> {
+        self.mic_bias = true;
+        Ok(())
+    }
+    fn disable_mic_bias(&mut self) -> Result<(), AudioError> {
+        self.mic_bias = false;
+        Ok(())
+    }
+    fn is_powered(&self) -> bool {
+        self.powered
+    }
+    fn is_dac_enabled(&self) -> bool {
+        self.dac_enabled
+    }
+    fn is_adc_enabled(&self) -> bool {
+        self.adc_enabled
+    }
+    fn is_mic_bias_enabled(&self) -> bool {
+        self.mic_bias
+    }
+    fn volume(&self) -> u8 {
+        self.volume
+    }
+    fn current_route(&self) -> AudioRoute {
+        self.route
+    }
+}
+
+/// The codec the booted kernel wires into its AudioManager (#399): the no-op
+/// `NullCodec` under qemu/test (no PMIC model on -machine virt), the real
+/// `Mt6357Codec` on device.
+#[cfg(any(feature = "qemu", test))]
+pub(crate) type BootCodec = NullCodec;
+#[cfg(not(any(feature = "qemu", test)))]
+pub(crate) type BootCodec = Mt6357Codec;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
