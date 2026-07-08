@@ -191,6 +191,12 @@ jobs:
           # display. Assert a real ~2025 epoch (not 0/1970), proving the wiring.
           grep -q 'kardia: clock src=manual' boot.log || { echo 'FAIL #402: ClockManager not wired/seeded (no manual source)'; exit 1; }
           wall=$(grep -oE 'clock src=manual wall=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+$'); test "${wall:-0}" -gt 1700000000 || { echo "FAIL #402: wall clock is not a real epoch (wall=${wall:-0}) -- ClockManager not driving time"; exit 1; }
+          # #398 telephony: a seeded mock modem transport backs a LIVE Telephony
+          # stack (structurally impossible before -- zero production callers). The
+          # full 10-step AT initialize() ran and the modem reached Registered,
+          # proving the AT/call state machines are exercised in emulation without
+          # real modem hardware (the CCCI wire protocol is hardware-gated).
+          grep -q 'kardia: modem ready state=Registered' boot.log || { echo 'FAIL #398: Telephony did not initialize to Registered (AT state machine / mock wiring broken)'; exit 1; }
           # PL0 isolation + graceful user-fault kill (#487 + fault handling):
           # each probe variant attempts one PL0-illegal op. A correct kernel
           # (a) faults it -- 'hello' never prints, (b) KILLS only the faulting

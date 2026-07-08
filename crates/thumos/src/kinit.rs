@@ -1447,7 +1447,42 @@ pub unsafe fn run() -> ! {
     } else {
         None
     };
-    let kernel = crate::kardia::KernelState::new(state, devices, pm, mode_mgr, fb);
+    // #398: bring up the AT/call telephony stack on the modem transport. Under
+    // qemu a seeded mock runs the real 10-step init + state machines; on device
+    // the CCCI transport (init succeeds only once its wire protocol lands --
+    // hardware-gated) -- the WIRING is present either way.
+    #[cfg(feature = "qemu")]
+    let telephony = {
+        let mut t = crate::telephony::Telephony::new(
+            crate::telephony_mock::MockModemTransport::seeded_for_boot(),
+        );
+        match t.initialize() {
+            Ok(()) => {
+                let _ = write!(
+                    serial,
+                    "kardia: modem ready state={:?}\r\n",
+                    t.modem_state()
+                );
+                Some(t)
+            }
+            Err(e) => {
+                let _ = write!(serial, "kardia: modem init FAILED {e:?}\r\n");
+                None
+            }
+        }
+    };
+    #[cfg(all(not(feature = "qemu"), not(test)))]
+    let telephony = if state.modem_ok {
+        let mut t = crate::telephony::Telephony::new(crate::telephony::CcciModemTransport::new());
+        t.initialize().ok().map(|()| t)
+    } else {
+        None
+    };
+    // Host tests compile kinit::run but never execute it; CcciModemTransport is
+    // cfg(not(test)), so under test there is no modem to construct.
+    #[cfg(all(not(feature = "qemu"), test))]
+    let telephony: Option<crate::telephony::Telephony<crate::telephony::BootModemTransport>> = None;
+    let kernel = crate::kardia::KernelState::new(state, devices, pm, mode_mgr, fb, telephony);
     crate::kardia::service_loop(kernel, serial)
 }
 
