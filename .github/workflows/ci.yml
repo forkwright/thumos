@@ -171,6 +171,13 @@ jobs:
           grep -q 'image-resident initramfs signature verified' boot.log || { echo 'FAIL: initramfs signature was not verified (measured-userspace regression)'; exit 1; }
           grep -q '/init spawned' boot.log || { echo 'FAIL: /init did not spawn from the verified initramfs'; exit 1; }
           grep -q 'init: hello from userspace' boot.log || { echo 'FAIL: userspace /init did not run + syscall (PL0->dispatch->UART)'; exit 1; }
+          # #400 render foundation: the kardia service loop paints the home
+          # frame through the real screen-dispatch path (not a boot-time one-shot),
+          # into a synthetic framebuffer under qemu (virt models no display). The
+          # painted-pixel count proves the render EXECUTED and produced content --
+          # the UI render path was entirely dead under qemu before this.
+          grep -q 'kardia: frame rendered painted_px=' boot.log || { echo 'FAIL #400: service loop never rendered a frame (render path dead)'; exit 1; }
+          px=$(grep -oE 'painted_px=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+'); test "${px:-0}" -gt 0 || { echo "FAIL #400: rendered frame is BLANK (painted_px=${px:-0}) -- screen draw produced nothing"; exit 1; }
           # PL0 isolation + graceful user-fault kill (#487 + fault handling):
           # each probe variant attempts one PL0-illegal op. A correct kernel
           # (a) faults it -- 'hello' never prints, (b) KILLS only the faulting

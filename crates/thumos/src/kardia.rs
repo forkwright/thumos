@@ -32,8 +32,11 @@ use crate::exceptions;
 use crate::kinit::BootState;
 use crate::power::PowerManager;
 use crate::reflex;
+use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
 use crate::security_mode::ModeManager;
+use crate::status_bar::{KernelStatusBar, StatusBarState};
 use crate::uart::Uart;
+use crate::ui::UiManager;
 
 /// Timer ticks per wall-clock second (exceptions.rs TICK_MS = 10).
 const TICKS_PER_SECOND: u64 = 100;
@@ -92,28 +95,40 @@ pub(crate) struct KernelState {
         reason = "radio-policy service steps land with the security-mode wiring (#404)"
     )]
     pub(crate) power: PowerManager,
-    #[expect(
-        dead_code,
-        reason = "duress/panic mode transitions land with the security-mode wiring (#404)"
-    )]
     pub(crate) mode: ModeManager,
+    /// UI manager: owns the active-screen selection + navigation stack (#400).
+    ui: UiManager,
+    /// The home screen, re-stated + drawn each dirty tick.
+    home: HomeScreen,
+    /// Render target: the hardware framebuffer (FB_BASE) on device, a synthetic
+    /// heap buffer under qemu (the virt machine models no display), or None when
+    /// no display path exists. Wiring the render loop through this makes the UI
+    /// surface CI-verifiable in emulation for the first time (#400).
+    fb: Option<&'static mut [u16]>,
     /// Last whole second observed, for once-per-second dirty marking.
     last_second: u64,
 }
 
 impl KernelState {
-    /// Take ownership of the boot-built subsystem state.
+    /// Take ownership of the boot-built subsystem state. `fb` is the render
+    /// target the caller resolved (hardware framebuffer, qemu synthetic buffer,
+    /// or None); the UI manager + home screen are constructed here (both are
+    /// dependency-free).
     pub(crate) fn new(
         boot: BootState,
         devices: DeviceRegistry,
         power: PowerManager,
         mode: ModeManager,
+        fb: Option<&'static mut [u16]>,
     ) -> Self {
         Self {
             boot,
             devices,
             power,
             mode,
+            ui: UiManager::new(),
+            home: HomeScreen::new(),
+            fb,
             last_second: 0,
         }
     }
@@ -135,16 +150,37 @@ impl KernelState {
         false
     }
 
-    /// Render the active screen when marked dirty.
+    /// Render the active screen to the framebuffer (#400). Called when the frame
+    /// is dirty (and once at loop entry for the initial frame). No-op when there
+    /// is no render target.
     ///
-    /// TODO(#400)[deliberate-prudent]: screen-registry dispatch + framebuffer render; until then
-    /// this is the seam where the frame is produced. Rendering is skipped when
-    /// no display was brought up.
-    pub(crate) fn render_if_dirty(&mut self) {
-        if !self.boot.display_ok {
-            return;
-        }
-        // TODO(#400)[deliberate-prudent]: dispatch to the active screen's draw().
+    /// The status badge + operating mode are read LIVE from the security-mode
+    /// manager (#404) rather than hardcoded. The wall-clock epoch is still 0
+    /// until ClockManager is wired (#402).
+    pub(crate) fn render_if_dirty(&mut self) -> Option<usize> {
+        let fb = self.fb.as_deref_mut()?;
+        let status = StatusBarState {
+            battery_pct: 0,
+            mode_badge: Some(self.mode.status_badge()),
+            mode_badge_color: Some(self.mode.status_badge_color()),
+            threat_high: !self.boot.modem_ok,
+            ..StatusBarState::default()
+        };
+        self.home.update_state(HomeScreenState {
+            epoch_secs: 0,
+            carrier: "",
+            mode: OperatingMode::from(self.mode.mode()),
+            unread_count: 0,
+        });
+        // Disjoint field borrows: fb (self.fb), self.ui, self.home.
+        self.ui
+            .render(&self.home, |s| KernelStatusBar::draw(s, &status), fb);
+        // Returns the painted (non-blank) pixel count so the caller (which owns
+        // serial) can emit the #400 CI witness. The render path was DEAD under
+        // qemu until now (display_ok is always false on -machine virt); a
+        // non-zero count proves the frame rendered CONTENT, not just that the
+        // loop ticked. On device the count is unused (the caller drops it).
+        Some(fb.iter().filter(|&&px| px != 0).count())
     }
 
     /// Execute pending reflex fast-path events in privileged (loop) context.
@@ -171,6 +207,14 @@ impl KernelState {
 /// at any instruction outside an `IrqSpinlock` critical section.
 pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
     let _ = serial.write_str("[kardia] service loop running\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write
+    // #400: paint the initial home frame immediately, rather than waiting for
+    // the first once-per-second dirty tick.
+    #[cfg(feature = "qemu")]
+    if let Some(px) = kernel.render_if_dirty() {
+        let _ = write!(serial, "kardia: frame rendered painted_px={px}\r\n"); // WHY: #400 CI witness -- proves the render path executed + produced content under qemu
+    }
+    #[cfg(not(feature = "qemu"))]
+    kernel.render_if_dirty();
     let mut last_tick = exceptions::ticks();
     #[cfg(feature = "qemu")]
     let mut serviced: u32 = 0;
@@ -220,6 +264,11 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
             }
             // TODO(#400)[deliberate-prudent]: poll_input() -> key events -> active-screen dispatch.
             if kernel.poll_all(now) {
+                #[cfg(feature = "qemu")]
+                if let Some(px) = kernel.render_if_dirty() {
+                    let _ = write!(serial, "kardia: frame rendered painted_px={px}\r\n"); // WHY: #400 CI witness
+                }
+                #[cfg(not(feature = "qemu"))]
                 kernel.render_if_dirty();
             }
             #[cfg(feature = "qemu")]
