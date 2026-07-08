@@ -227,6 +227,11 @@ jobs:
           # parsed into RadioAccessTech::EUtran -- a value only the parse path can
           # produce -- driving net=Lte.
           grep -qF 'kardia: netrat rat=Some(EUtran) net=Lte' boot.log || { echo 'FAIL #404: network label not derived from parsed +CREG <AcT> (RAT parsing broken)'; exit 1; }
+          # #400 heorte: the calendar/alarm manager is instantiated + holds
+          # seeded state (events>0, alarms>0), and the calendar screen rendered
+          # that state into agenda rows (calendar_rows>0) -- the heorte->screen
+          # path is live.
+          grep -qE 'kardia: heorte events=[1-9][0-9]* alarms=[1-9][0-9]* calendar_rows=[1-9][0-9]* timer_armed=true' boot.log || { echo 'FAIL #400: heorte manager not wired (events/alarms/calendar/timer)'; exit 1; }
           # PL0 isolation + graceful user-fault kill (#487 + fault handling):
           # each probe variant attempts one PL0-illegal op. A correct kernel
           # (a) faults it -- 'hello' never prints, (b) KILLS only the faulting
