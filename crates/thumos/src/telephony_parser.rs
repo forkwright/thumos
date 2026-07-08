@@ -9,7 +9,7 @@
 
 // Items in this module are re-exported from telephony.rs.
 
-use crate::telephony::{AtResponse, MAX_NUMBER_LEN, RegStatus, Urc};
+use crate::telephony::{AtResponse, MAX_NUMBER_LEN, RadioAccessTech, RegStatus, Urc};
 
 // ---------------------------------------------------------------------------
 // AT response parsing (no_std, no nom)
@@ -57,15 +57,34 @@ pub(crate) fn parse_csq_response(line: &[u8]) -> Option<(u8, u8)> {
     Some((rssi, ber))
 }
 
-/// Parse a +CREG response/URC line: "+CREG: <stat>[,<lac>,<ci>]"
+/// Parse a +CREG URC line: "+CREG: <stat>[,<lac>,<ci>[,<AcT>]]"
 ///
-/// We only extract the stat field for telephony purposes.
-pub(crate) fn parse_creg_response(line: &[u8]) -> Option<RegStatus> {
+/// Extracts the registration status (field 0) and, when present, the radio
+/// access technology from the `<AcT>` field (field 3, 3GPP TS 27.007 §7.2).
+/// An absent, empty, or out-of-range `<AcT>` yields `None` for the RAT rather
+/// than a wrong technology.
+pub(crate) fn parse_creg_response(line: &[u8]) -> Option<(RegStatus, Option<RadioAccessTech>)> {
     let rest = strip_prefix(line, b"+CREG: ")?;
-    // stat is the first field, possibly followed by comma and more fields.
-    let end = memchr(b',', rest).unwrap_or(rest.len());
-    let stat = parse_u8(&rest[..end])?;
-    Some(RegStatus::from(stat))
+    let stat = RegStatus::from(parse_u8(nth_field(rest, 0)?)?);
+    let act = nth_field(rest, 3)
+        .filter(|field| !field.is_empty())
+        .and_then(parse_u8)
+        .and_then(RadioAccessTech::from_act);
+    Some((stat, act))
+}
+
+/// Return the Nth (0-indexed) comma-separated field of `input`, or `None` when
+/// fewer than `n + 1` fields are present. Fields are returned verbatim (quotes
+/// on `<lac>`/`<ci>` are left intact -- the caller parses only the fields it
+/// needs).
+fn nth_field(input: &[u8], n: usize) -> Option<&[u8]> {
+    let mut field = input;
+    for _ in 0..n {
+        let comma = memchr(b',', field)?;
+        field = &field[comma + 1..];
+    }
+    let end = memchr(b',', field).unwrap_or(field.len());
+    Some(&field[..end])
 }
 
 /// Parse a +COPS? response line: "+COPS: <mode>,<format>,\"<operator>\""
@@ -196,8 +215,8 @@ pub(crate) fn parse_urc(line: &[u8]) -> Option<Urc> {
     if let Some((rssi, ber)) = parse_csq_response(line) {
         return Some(Urc::Csq { rssi, ber });
     }
-    if let Some(stat) = parse_creg_response(line) {
-        return Some(Urc::Creg { stat });
+    if let Some((stat, act)) = parse_creg_response(line) {
+        return Some(Urc::Creg { stat, act });
     }
     if starts_with(line, b"+CLIP: ") {
         let mut number = [0u8; MAX_NUMBER_LEN];
@@ -366,23 +385,52 @@ mod tests {
     fn parse_creg_response_extracts_stat_ignoring_trailing_fields() {
         assert_eq!(
             parse_creg_response(b"+CREG: 5"),
-            Some(RegStatus::RegisteredRoaming),
-            "stat=5 must parse as RegisteredRoaming"
+            Some((RegStatus::RegisteredRoaming, None)),
+            "stat=5 must parse as RegisteredRoaming with no AcT reported"
         );
         assert_eq!(
             parse_creg_response(b"+CREG: 2,\"1FFE\",\"CE12\""),
-            Some(RegStatus::Searching),
+            Some((RegStatus::Searching, None)),
             "stat must be extracted from the leading field even with trailing lac/ci fields present"
         );
         assert_eq!(
             parse_creg_response(b"+CREG: 9"),
-            Some(RegStatus::Unknown),
+            Some((RegStatus::Unknown, None)),
             "an unrecognized stat code must map to RegStatus::Unknown rather than None"
         );
         assert_eq!(
             parse_creg_response(b"+CSQ: 1"),
             None,
             "a line without the +CREG prefix must not parse"
+        );
+    }
+
+    #[test]
+    fn parse_creg_response_extracts_access_technology() {
+        assert_eq!(
+            parse_creg_response(b"+CREG: 1,\"1A2B\",\"0100CE01\",7"),
+            Some((RegStatus::RegisteredHome, Some(RadioAccessTech::EUtran))),
+            "AcT=7 must parse as E-UTRAN (LTE) alongside stat=1"
+        );
+        assert_eq!(
+            parse_creg_response(b"+CREG: 5,\"1A2B\",\"0100CE01\",2"),
+            Some((RegStatus::RegisteredRoaming, Some(RadioAccessTech::Utran))),
+            "AcT=2 must parse as UTRAN (3G) while roaming"
+        );
+        assert_eq!(
+            parse_creg_response(b"+CREG: 1,\"1A2B\",\"0100CE01\",3"),
+            Some((RegStatus::RegisteredHome, Some(RadioAccessTech::GsmEgprs))),
+            "AcT=3 must parse as GSM+EGPRS (EDGE, a 2G technology)"
+        );
+        assert_eq!(
+            parse_creg_response(b"+CREG: 1,\"1A2B\",\"0100CE01\",99"),
+            Some((RegStatus::RegisteredHome, None)),
+            "an out-of-range AcT must yield no RAT rather than a wrong one"
+        );
+        assert_eq!(
+            parse_creg_response(b"+CREG: 1,,,7"),
+            Some((RegStatus::RegisteredHome, Some(RadioAccessTech::EUtran))),
+            "AcT must parse from field 3 even when lac/ci are empty"
         );
     }
 
@@ -513,9 +561,18 @@ mod tests {
         assert_eq!(
             parse_urc(b"+CREG: 1"),
             Some(Urc::Creg {
-                stat: RegStatus::RegisteredHome
+                stat: RegStatus::RegisteredHome,
+                act: None
             }),
             "+CREG line must dispatch to Urc::Creg carrying the parsed stat"
+        );
+        assert_eq!(
+            parse_urc(b"+CREG: 1,\"1A2B\",\"0100CE01\",7"),
+            Some(Urc::Creg {
+                stat: RegStatus::RegisteredHome,
+                act: Some(RadioAccessTech::EUtran)
+            }),
+            "+CREG URC with an <AcT> field must dispatch carrying the parsed RAT"
         );
         let mut number = [0u8; MAX_NUMBER_LEN];
         number[..12].copy_from_slice(b"+15551234567");

@@ -48,7 +48,9 @@ use crate::security_mode::ModeManager;
 use crate::sim::SimManager;
 use crate::sms::SmsManager;
 use crate::status_bar::{KernelStatusBar, NetworkService, StatusBarState};
-use crate::telephony::{BootModemTransport, Telephony};
+#[cfg(feature = "qemu")]
+use crate::telephony::RadioAccessTech;
+use crate::telephony::{BootModemTransport, RatGeneration, Telephony};
 use crate::uart::Uart;
 use crate::ui::{Screen, ScreenId, UiManager};
 
@@ -310,13 +312,18 @@ impl KernelState {
     }
 
     /// The cellular network service shown in the status bar (#404), derived from
-    /// the wired telephony registration. The device is LTE-only (the boot COPS
-    /// selects `,,,7`), so a registered modem is `Lte`; unregistered or no modem
-    /// is `NoService`. The RAT distinction (Edge/ThreeG) awaits +CREG `<AcT>`
-    /// parsing -- a follow-on.
+    /// the wired telephony registration + its radio access technology. The RAT
+    /// comes from the `+CREG` `<AcT>` field: 2G shows `Edge`, 3G `ThreeG`, 4G
+    /// `Lte`. A registered modem that reports no `<AcT>` falls back to `Lte`
+    /// (the device requests LTE-only via `AT+COPS=0,,,7`); unregistered or no
+    /// modem is `NoService`.
     fn status_network(&self) -> NetworkService {
         match self.telephony.as_ref() {
-            Some(t) if t.is_registered() => NetworkService::Lte,
+            Some(t) if t.is_registered() => match t.rat().map(|rat| rat.generation()) {
+                Some(RatGeneration::TwoG) => NetworkService::Edge,
+                Some(RatGeneration::ThreeG) => NetworkService::ThreeG,
+                Some(RatGeneration::FourG) | None => NetworkService::Lte,
+            },
             _ => NetworkService::NoService,
         }
     }
@@ -427,6 +434,17 @@ impl KernelState {
         (self.bt_audio.sample_rate(), self.bt_audio.channels())
     }
 
+    /// Boot-time RAT smoke (#404, qemu): report the radio access technology the
+    /// wired modem registered on -- parsed from the seeded `+CREG` `<AcT>` --
+    /// and the status-bar network label it drives. Proves the label is derived
+    /// from a real parsed `<AcT>` (only the parse path yields `EUtran`), not a
+    /// constant `Lte`.
+    #[cfg(feature = "qemu")]
+    pub(crate) fn netrat_boot_smoke(&self) -> (Option<RadioAccessTech>, NetworkService) {
+        let rat = self.telephony.as_ref().and_then(Telephony::rat);
+        (rat, self.status_network())
+    }
+
     /// Execute pending reflex fast-path events in privileged (loop) context.
     pub(crate) fn handle_reflex(&mut self, pending: reflex::Pending, serial: &mut Uart) {
         if pending.panic_wipe {
@@ -457,6 +475,19 @@ fn screen_id_name(id: ScreenId) -> &'static str {
     }
 }
 
+/// Emit one CI-witness line atomically under an IRQ mask.
+///
+/// WHY (#513): userspace `/init` preempts this PID-0 loop and shares the single
+/// UART, so an unmasked multi-byte `write!` can be split mid-line by a timer IRQ
+/// -> scheduler -> userspace write, corrupting the `kardia:` marker the CI greps
+/// match. Masking IRQs for the one line keeps it intact; the line is short and
+/// the UART write is non-blocking, so the masked section is bounded.
+#[cfg(feature = "qemu")]
+fn emit_marker(serial: &mut Uart, args: core::fmt::Arguments) {
+    let _guard = crate::irq::IrqGuard::new();
+    serial.write_fmt(args).ok();
+}
+
 /// The kernel service loop -- PID 0's body. Never returns (on the phone).
 ///
 /// INVARIANT: entered with scheduling already enabled (kinit calls
@@ -466,56 +497,72 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
     let _ = serial.write_str("[kardia] service loop running\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write
     // #400: paint the initial home frame immediately, rather than waiting for
     // the first once-per-second dirty tick.
-    #[cfg(feature = "qemu")]
-    if let Some(px) = kernel.render_if_dirty() {
-        let _ = write!(serial, "kardia: frame rendered painted_px={px}\r\n"); // WHY: #400 CI witness -- proves the render path executed + produced content under qemu
-    }
     #[cfg(not(feature = "qemu"))]
     kernel.render_if_dirty();
-    // #402 CI witness: the trust-hierarchy clock is wired + seeded (source off
-    // None to Manual, a real ~2025 epoch, driving the home-screen display).
-    // Advancement over wall-clock seconds is a get_wall_clock property (unit
-    // tested); the qemu boot (50 serviced ticks < 1 s) proves the WIRING.
+    // Loop-entry CI witnesses (#398-#404). Do the real work FIRST, unmasked:
+    // paint the initial home frame + run each boot-smoke, capturing values.
+    // Then emit the whole marker burst under an IRQ mask (below) -- userspace
+    // /init preempts this PID-0 loop and shares the single UART, so an unmasked
+    // burst can be split mid-line (the #513 flake: `init: hello from userspace`
+    // interleaved into a `kardia: netrat` line, breaking the grep).
     #[cfg(feature = "qemu")]
     {
-        let _ = write!(
-            serial,
-            "kardia: clock src={} wall={}\r\n",
-            kernel.clock.current_source(),
-            kernel.wall_clock
-        );
-        // #399 CI witness: the audio session manager + route + mic audit are
-        // wired + functional -- a VoiceCall session opened (sessions=1) and a
-        // mic-access entry was recorded (mic_entries=1), all structurally
-        // impossible before (zero production callers).
+        // #400: paint the initial home frame immediately (not waiting for the
+        // first once-per-second dirty tick).
+        let painted = kernel.render_if_dirty();
+        // #402: trust-hierarchy clock wired + seeded (source None -> Manual, a
+        // real ~2025 epoch driving the home display). Per-second advancement is
+        // a get_wall_clock property (unit tested); the boot proves the WIRING.
+        let clock_src = kernel.clock.current_source();
+        let wall = kernel.wall_clock;
+        // #399: audio session manager + route + mic audit wired -- a VoiceCall
+        // session opens + a mic-access entry is recorded (impossible before).
         let (sessions, mic_entries) = kernel.audio_boot_smoke();
-        let _ = write!(
-            serial,
-            "kardia: audio ready sessions={sessions} mic_entries={mic_entries}\r\n"
-        );
-        // #404 CI witness: the status bar's cellular field is now driven by the
-        // wired telephony registration (was hardcoded), and the mode char by the
-        // security-mode manager. A registered mock modem shows Lte.
-        let _ = write!(
-            serial,
-            "kardia: statusbar net={:?} mode={}\r\n",
-            kernel.status_network(),
-            kernel.mode.mode_char()
-        );
-        // #398 CI witness: SIM + SMS managers are wired + functional -- the SIM
-        // ICCID was queried over the modem transport (iccid_len>0) and a known
-        // incoming SMS PDU decoded into the inbox (sms_inbox=1).
+        // #404: status-bar cellular field driven by the wired telephony
+        // registration (was hardcoded); mode char by the security-mode manager.
+        let net = kernel.status_network();
+        let mode_char = kernel.mode.mode_char();
+        // #398: SIM + SMS wired -- ICCID queried over the modem transport + a
+        // known incoming SMS PDU decoded into the inbox.
         let (iccid_len, sms_inbox) = kernel.sim_sms_boot_smoke();
-        let _ = write!(
-            serial,
-            "kardia: sim iccid_len={iccid_len} sms_inbox={sms_inbox}\r\n"
-        );
-        // #401 CI witness: the BT A2DP profile is wired + its SBC/config state
-        // machine runs (configured to 44.1 kHz stereo). RF/HCI is hardware-gated.
+        // #401: BT A2DP profile wired + its SBC/config state machine runs
+        // (44.1 kHz stereo). RF/HCI is hardware-gated.
         let (bt_rate, bt_ch) = kernel.bt_audio_boot_smoke();
-        let _ = write!(
-            serial,
-            "kardia: bt_audio sample_rate={bt_rate} channels={bt_ch}\r\n"
+        // #404: status-bar network label derived from the parsed +CREG <AcT>
+        // (EUtran can only come from the parse path), not a constant.
+        let (rat, netrat_net) = kernel.netrat_boot_smoke();
+
+        // Emit each witness line atomically (emit_marker masks IRQs per line)
+        // so userspace /init cannot split a `kardia:` line mid-write (#513).
+        if let Some(px) = painted {
+            emit_marker(
+                &mut serial,
+                format_args!("kardia: frame rendered painted_px={px}\r\n"),
+            );
+        }
+        emit_marker(
+            &mut serial,
+            format_args!("kardia: clock src={clock_src} wall={wall}\r\n"),
+        );
+        emit_marker(
+            &mut serial,
+            format_args!("kardia: audio ready sessions={sessions} mic_entries={mic_entries}\r\n"),
+        );
+        emit_marker(
+            &mut serial,
+            format_args!("kardia: statusbar net={net:?} mode={mode_char}\r\n"),
+        );
+        emit_marker(
+            &mut serial,
+            format_args!("kardia: sim iccid_len={iccid_len} sms_inbox={sms_inbox}\r\n"),
+        );
+        emit_marker(
+            &mut serial,
+            format_args!("kardia: bt_audio sample_rate={bt_rate} channels={bt_ch}\r\n"),
+        );
+        emit_marker(
+            &mut serial,
+            format_args!("kardia: netrat rat={rat:?} net={netrat_net:?}\r\n"),
         );
     }
     let mut last_tick = exceptions::ticks();
@@ -574,27 +621,36 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
             let nav = kernel.poll_input();
             #[cfg(feature = "qemu")]
             if let Some((from, to)) = nav {
-                let _ = write!(
-                    serial,
-                    "kardia: nav {} -> {}\r\n",
-                    screen_id_name(from),
-                    screen_id_name(to)
-                ); // WHY: #400 CI witness -- proves synthetic input drove navigation
+                // WHY: #400 CI witness -- proves synthetic input drove navigation.
+                emit_marker(
+                    &mut serial,
+                    format_args!(
+                        "kardia: nav {} -> {}\r\n",
+                        screen_id_name(from),
+                        screen_id_name(to)
+                    ),
+                );
             }
             let ticked = kernel.poll_all(now);
             #[cfg(feature = "qemu")]
             if !ring_logged && kernel.audio.session_count() > 0 {
                 ring_logged = true;
-                let _ = write!(
-                    serial,
-                    "kardia: incoming call -> ringtone sessions={}\r\n",
-                    kernel.audio.session_count()
+                emit_marker(
+                    &mut serial,
+                    format_args!(
+                        "kardia: incoming call -> ringtone sessions={}\r\n",
+                        kernel.audio.session_count()
+                    ),
                 );
             }
             if ticked || nav.is_some() {
                 #[cfg(feature = "qemu")]
                 if let Some(px) = kernel.render_if_dirty() {
-                    let _ = write!(serial, "kardia: frame rendered painted_px={px}\r\n"); // WHY: #400 CI witness
+                    // WHY: #400 CI witness.
+                    emit_marker(
+                        &mut serial,
+                        format_args!("kardia: frame rendered painted_px={px}\r\n"),
+                    );
                 }
                 #[cfg(not(feature = "qemu"))]
                 kernel.render_if_dirty();
