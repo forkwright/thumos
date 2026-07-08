@@ -108,7 +108,6 @@ pub enum Action {
     /// Drop the packet.
     Deny,
     /// Forward the packet and log the event.
-    #[expect(dead_code, reason = "log action reserved for audit-policy rules")]
     Log,
 }
 
@@ -278,7 +277,6 @@ impl Firewall {
     ///
     /// Rules are evaluated in order and the first match wins, so prepending
     /// gives the new rule highest priority.
-    #[expect(dead_code, reason = "dynamic firewall rules await policy wiring")]
     pub(crate) fn add_rule(&mut self, rule: FilterRule) {
         self.rules.insert(0, rule);
     }
@@ -370,10 +368,6 @@ impl Firewall {
     }
 
     /// Return a reference to the firewall statistics.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "runtime firewall metrics UI pending")
-    )]
     pub(crate) fn stats(&self) -> &FirewallStats {
         &self.stats
     }

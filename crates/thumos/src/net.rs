@@ -397,6 +397,14 @@ impl<H: WifiHwOps> Device for WifiDevice<H> {
 /// Ethernet frames. This wrapper strips the Ethernet header for IPv4 frames,
 /// leaves non-IPv4 traffic untouched, and preserves the existing `Device`
 /// contract for boot smoke tests and future WiFi-backed devices.
+/// Boot network device behind the firewall wrapper (#403). `LoopbackDevice`
+/// until the WiFi data path lands (#129) -- the same build-time alias pattern as
+/// `telephony::BootModemTransport`, so swapping in a real NIC is a one-line
+/// change. INVARIANT (kardia `KernelState`): this device must stay
+/// synchronous/polled; if a future NIC becomes IRQ-fed, its ISR must hand frames
+/// through an `IrqSpinlock`/reflex ring rather than mutating the device directly.
+pub(crate) type BootNetDevice = LoopbackDevice;
+
 pub(crate) struct FirewallDevice<D> {
     device: D,
     firewall: Firewall,
@@ -422,10 +430,9 @@ impl<D> FirewallDevice<D> {
         &self.firewall
     }
 
-    /// Borrow the firewall mutably (test-only: lets a test install an
-    /// explicit allow rule so a loopback RX frame reaches the socket
-    /// layer instead of being dropped by the default-deny inbound policy).
-    #[cfg(test)]
+    /// Borrow the firewall mutably: the production runtime-policy + audit-drain
+    /// accessor (#403). The service loop installs rules through it
+    /// (`add_rule`) and drains its pending packet events into the audit log.
     pub(crate) fn firewall_mut(&mut self) -> &mut Firewall {
         &mut self.firewall
     }
