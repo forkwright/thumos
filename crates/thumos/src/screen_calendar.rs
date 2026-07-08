@@ -113,6 +113,13 @@ impl CalendarScreen {
         }
     }
 
+    /// Number of agenda rows currently built (day headers + events). Zero when
+    /// there are no upcoming events. Used by the #400 boot smoke to witness that
+    /// the screen rendered the heorte manager's seeded state.
+    pub(crate) fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
     /// Update the screen with a fresh set of events and the current epoch.
     ///
     /// Rebuilds the agenda row list. Called each render cycle or when
