@@ -27,6 +27,7 @@
 
 use core::fmt::Write;
 
+use crate::clock::ClockManager;
 use crate::device::DeviceRegistry;
 use crate::exceptions;
 use crate::kinit::BootState;
@@ -44,6 +45,17 @@ use crate::ui::{Screen, ScreenId, UiManager};
 
 /// Timer ticks per wall-clock second (exceptions.rs TICK_MS = 10).
 const TICKS_PER_SECOND: u64 = 100;
+
+/// Milliseconds per timer tick (exceptions.rs TICK_MS). `ticks * TICK_MS` is the
+/// monotonic ms the ClockManager needs -- via the IRQ tick counter, which
+/// advances under qemu-virt (unlike CNTPCT, #461).
+const TICK_MS: u64 = 10;
+
+/// Boot wall-clock epoch (2025-01-01 UTC) -- matches time::REALTIME_OFFSET_SECS.
+/// Seeds ClockManager as a Manual (lowest-trust) source until a trusted source
+/// (GPS #129 / NTP / modem RTC #398) lands; on device the modem RTC replaces
+/// this at boot.
+const BOOT_WALL_EPOCH: u64 = 1_735_603_200;
 
 /// QEMU CI cap: serviced ticks before a clean semihosting-exit 0. Proves the
 /// service loop RUNS -- ticks advance and the loop body executes repeatedly
@@ -119,6 +131,12 @@ pub(crate) struct KernelState {
     /// -> navigation path the real keypad will drive.
     #[cfg(feature = "qemu")]
     input_cursor: usize,
+    /// Wall clock (#402): the trust-hierarchy time source (GPS > NTP > modem
+    /// RTC > Manual). Seeded Manual at boot; the loop evaluates it each second.
+    clock: ClockManager,
+    /// Last computed wall-clock epoch (seconds), fed to the home-screen display
+    /// each render. Replaces the previously-hardcoded 0.
+    wall_clock: u64,
     /// Render target: the hardware framebuffer (FB_BASE) on device, a synthetic
     /// heap buffer under qemu (the virt machine models no display), or None when
     /// no display path exists. Wiring the render loop through this makes the UI
@@ -146,6 +164,14 @@ impl KernelState {
             power,
             mode,
             ui: UiManager::new(),
+            clock: {
+                // Seed Manual at boot (tick_ms 0) so QEMU + a fresh device have
+                // a wall clock before any trusted source is available.
+                let mut c = ClockManager::new();
+                c.set_manual(BOOT_WALL_EPOCH, 0);
+                c
+            },
+            wall_clock: BOOT_WALL_EPOCH,
             home: HomeScreen::new(),
             messages: MessagesScreen::new(),
             search: SearchScreen::new(),
@@ -209,6 +235,12 @@ impl KernelState {
         let second = now / TICKS_PER_SECOND;
         if second != self.last_second {
             self.last_second = second;
+            // #402: advance the trust-hierarchy clock and cache the wall time
+            // for the render. now_ms via the IRQ tick counter (advances under
+            // qemu, #461). evaluate() re-checks source validity/staleness.
+            let now_ms = now * TICK_MS;
+            self.clock.evaluate(now_ms);
+            self.wall_clock = self.clock.get_wall_clock(now_ms);
             return true;
         }
         false
@@ -219,8 +251,8 @@ impl KernelState {
     /// is no render target.
     ///
     /// The status badge + operating mode are read LIVE from the security-mode
-    /// manager (#404) rather than hardcoded. The wall-clock epoch is still 0
-    /// until ClockManager is wired (#402).
+    /// manager (#404), and the wall-clock epoch from the ClockManager trust
+    /// hierarchy (#402) -- both formerly hardcoded.
     pub(crate) fn render_if_dirty(&mut self) -> Option<usize> {
         let fb = self.fb.as_deref_mut()?;
         let status = StatusBarState {
@@ -231,7 +263,7 @@ impl KernelState {
             ..StatusBarState::default()
         };
         self.home.update_state(HomeScreenState {
-            epoch_secs: 0,
+            epoch_secs: self.wall_clock,
             carrier: "",
             mode: OperatingMode::from(self.mode.mode()),
             unread_count: 0,
@@ -302,6 +334,19 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
     }
     #[cfg(not(feature = "qemu"))]
     kernel.render_if_dirty();
+    // #402 CI witness: the trust-hierarchy clock is wired + seeded (source off
+    // None to Manual, a real ~2025 epoch, driving the home-screen display).
+    // Advancement over wall-clock seconds is a get_wall_clock property (unit
+    // tested); the qemu boot (50 serviced ticks < 1 s) proves the WIRING.
+    #[cfg(feature = "qemu")]
+    {
+        let _ = write!(
+            serial,
+            "kardia: clock src={} wall={}\r\n",
+            kernel.clock.current_source(),
+            kernel.wall_clock
+        );
+    }
     let mut last_tick = exceptions::ticks();
     #[cfg(feature = "qemu")]
     let mut serviced: u32 = 0;
@@ -361,7 +406,8 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
                     screen_id_name(to)
                 ); // WHY: #400 CI witness -- proves synthetic input drove navigation
             }
-            if kernel.poll_all(now) || nav.is_some() {
+            let ticked = kernel.poll_all(now);
+            if ticked || nav.is_some() {
                 #[cfg(feature = "qemu")]
                 if let Some(px) = kernel.render_if_dirty() {
                     let _ = write!(serial, "kardia: frame rendered painted_px={px}\r\n"); // WHY: #400 CI witness
