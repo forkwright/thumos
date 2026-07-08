@@ -37,10 +37,8 @@ pub enum NetworkService {
     #[default]
     NoService,
     /// 2G (GSM/EDGE).
-    #[expect(dead_code, reason = "requires modem registration state wiring")]
     Edge,
     /// 3G (WCDMA/HSPA).
-    #[expect(dead_code, reason = "requires modem registration state wiring")]
     ThreeG,
     /// 4G LTE.
     Lte,
