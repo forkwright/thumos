@@ -40,6 +40,7 @@ use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
 use crate::security_mode::ModeManager;
 use crate::status_bar::{KernelStatusBar, StatusBarState};
+use crate::telephony::{BootModemTransport, Telephony};
 use crate::uart::Uart;
 use crate::ui::{Screen, ScreenId, UiManager};
 
@@ -137,6 +138,10 @@ pub(crate) struct KernelState {
     /// Last computed wall-clock epoch (seconds), fed to the home-screen display
     /// each render. Replaces the previously-hardcoded 0.
     wall_clock: u64,
+    /// The AT/call telephony stack (#398), or None when no initialized modem is
+    /// available (a device boot where the CCCI link/AT layer did not come up).
+    /// Under qemu it is a seeded mock stack; the loop drains its URCs each tick.
+    telephony: Option<Telephony<BootModemTransport>>,
     /// Render target: the hardware framebuffer (FB_BASE) on device, a synthetic
     /// heap buffer under qemu (the virt machine models no display), or None when
     /// no display path exists. Wiring the render loop through this makes the UI
@@ -157,6 +162,7 @@ impl KernelState {
         power: PowerManager,
         mode: ModeManager,
         fb: Option<&'static mut [u16]>,
+        telephony: Option<Telephony<BootModemTransport>>,
     ) -> Self {
         Self {
             boot,
@@ -172,6 +178,7 @@ impl KernelState {
                 c
             },
             wall_clock: BOOT_WALL_EPOCH,
+            telephony,
             home: HomeScreen::new(),
             messages: MessagesScreen::new(),
             search: SearchScreen::new(),
@@ -230,6 +237,12 @@ impl KernelState {
     /// only; anything slower belongs in a budgeted state machine inside its
     /// subsystem.
     pub(crate) fn poll_all(&mut self, now: u64) -> bool {
+        // #398: drain modem URCs (RING/CLIP/CREG/CSQ) each tick, non-blocking.
+        // Event handling (ring -> UI/audio, registration -> status bar) lands
+        // with those wirings; draining keeps the AT state machine current.
+        if let Some(t) = self.telephony.as_mut() {
+            while t.poll().is_some() {}
+        }
         // NOTE(foundation): the home clock (once per second) is the only
         // persisted render input; each subsystem wiring adds its step here.
         let second = now / TICKS_PER_SECOND;

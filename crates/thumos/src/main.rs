@@ -185,7 +185,10 @@ mod status_bar;
 mod syscall;
 mod t9;
 mod telephony;
-#[cfg(test)]
+// WHY (#398): the mock modem transport backs a live Telephony stack under qemu
+// (no CCCI/CLDMA model on -machine virt), so the AT/call/SIM/SMS state machines
+// are CI-exercisable without real modem hardware -- not just in unit tests.
+#[cfg(any(test, feature = "qemu"))]
 mod telephony_mock;
 mod telephony_parser;
 mod time;
