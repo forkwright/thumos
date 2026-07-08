@@ -84,6 +84,10 @@ impl MockModemTransport {
         mock.queue_ok(); // 8: AT+CLIP=1
         mock.queue_info_ok(b"+CSQ: 18,99"); // 9: AT+CSQ
         mock.queue_info_ok(b"+CREG: 1"); // 10: AT+CREG? (registered home)
+        // A queued RING URC so a booted qemu kernel exercises the incoming-call
+        // -> ringtone-audio integration path (#398): poll() surfaces it as an
+        // IncomingCall event after init.
+        mock.queue_urc(b"RING");
         mock
     }
 }
