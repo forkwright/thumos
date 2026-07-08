@@ -178,6 +178,14 @@ jobs:
           # the UI render path was entirely dead under qemu before this.
           grep -q 'kardia: frame rendered painted_px=' boot.log || { echo 'FAIL #400: service loop never rendered a frame (render path dead)'; exit 1; }
           px=$(grep -oE 'painted_px=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+'); test "${px:-0}" -gt 0 || { echo "FAIL #400: rendered frame is BLANK (painted_px=${px:-0}) -- screen draw produced nothing"; exit 1; }
+          # #400 input + navigation: a scripted synthetic key sequence drives the
+          # active screen's on_key -> ScreenAction -> apply_action -> navigation
+          # path (real keypad decode is hardware-gated). A round trip
+          # Home --Rsk--> Search --End--> Home proves input dispatch AND the
+          # screen stack (back-navigation) work end-to-end, and the render
+          # follows the active screen (a distinct painted_px for Search).
+          grep -q 'kardia: nav Home -> Search' boot.log || { echo 'FAIL #400: synthetic input did not navigate Home->Search (input dispatch / on_key broken)'; exit 1; }
+          grep -q 'kardia: nav Search -> Home' boot.log || { echo 'FAIL #400: back-navigation did not return to Home (screen stack broken)'; exit 1; }
           # PL0 isolation + graceful user-fault kill (#487 + fault handling):
           # each probe variant attempts one PL0-illegal op. A correct kernel
           # (a) faults it -- 'hello' never prints, (b) KILLS only the faulting

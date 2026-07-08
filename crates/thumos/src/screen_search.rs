@@ -13,12 +13,6 @@
 //! - Up/Down navigates the list, OK selects, numpad keys filter
 //! - LSK: "CLEAR" (clears filter), RSK: "BACK"
 
-// WHY: search screen created in Phase 07 Wave 6, kinit wiring pending.
-#![expect(
-    dead_code,
-    reason = "Search screen created in Phase 07 Wave 6, kinit wiring pending"
-)]
-
 use crate::ui::{
     self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction,
     ScreenId, color,
