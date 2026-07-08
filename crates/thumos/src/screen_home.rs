@@ -53,11 +53,21 @@ pub enum OperatingMode {
     #[default]
     Daily,
     /// Heightened awareness mode.
-    #[expect(dead_code, reason = "requires security mode manager state wiring")]
     Sentinel,
     /// Emergency mode.
-    #[expect(dead_code, reason = "requires security mode manager state wiring")]
     Panic,
+}
+
+impl From<crate::security_mode::SecurityMode> for OperatingMode {
+    /// Bridge the runtime security-mode manager into the home-screen display
+    /// mode (#404): the badge/color follow the live ModeManager, not a hardcode.
+    fn from(m: crate::security_mode::SecurityMode) -> Self {
+        match m {
+            crate::security_mode::SecurityMode::Daily => Self::Daily,
+            crate::security_mode::SecurityMode::Sentinel => Self::Sentinel,
+            crate::security_mode::SecurityMode::Panic => Self::Panic,
+        }
+    }
 }
 
 impl OperatingMode {

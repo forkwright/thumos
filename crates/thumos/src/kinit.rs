@@ -12,7 +12,6 @@
 extern crate alloc;
 
 use core::fmt::Write;
-use core::slice;
 use core::sync::atomic::AtomicBool;
 #[cfg(not(feature = "qemu"))]
 use core::sync::atomic::Ordering;
@@ -49,10 +48,8 @@ use crate::power::PowerManager;
 use crate::process;
 #[cfg(test)]
 use crate::ramfs::RamFs;
-use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
-use crate::status_bar::{KernelStatusBar, StatusBarState};
 use crate::uart::Uart;
-use crate::ui::{self, UiManager};
+use crate::ui;
 #[cfg(not(feature = "qemu"))]
 use crate::usb::UsbController;
 use crate::watchdog;
@@ -372,29 +369,6 @@ fn halt_boot(serial: &mut Uart, display_ok: bool) -> ! {
 // ---------------------------------------------------------------------------
 
 /// Render the first user-visible home frame after boot-time hardware init.
-fn render_initial_home_frame(fb: &mut [u16], state: &BootState) {
-    let mut home = HomeScreen::new();
-    home.update_state(HomeScreenState {
-        epoch_secs: 0,
-        carrier: "",
-        mode: OperatingMode::Daily,
-        unread_count: 0,
-    });
-
-    let status = StatusBarState {
-        battery_pct: 0,
-        mode_badge: Some("DAILY"),
-        mode_badge_color: Some(ui::color::WHITE),
-        threat_high: !state.modem_ok,
-        ..StatusBarState::default()
-    };
-
-    UiManager::new().render(
-        &home,
-        |status_fb| KernelStatusBar::draw(status_fb, &status),
-        fb,
-    );
-}
 
 // ---------------------------------------------------------------------------
 // Init helpers  -  each returns Ok/Err for fault isolation
@@ -1293,19 +1267,10 @@ pub unsafe fn run() -> ! {
     }
     let _ = serial.write_str("\r\n");
 
-    // -----------------------------------------------------------------------
-    // Step 13d: Initial UI home frame
-    // -----------------------------------------------------------------------
-    if state.display_ok {
-        let _ = serial.write_str("[init] Rendering home UI\r\n");
-        // SAFETY: state.display_ok is only set after display.init(FB_BASE)
-        // succeeds. That maps FB_BASE as a writable RGB565 framebuffer of
-        // SCREEN_WIDTH * SCREEN_HEIGHT pixels for the GC9306 panel.
-        let fb =
-            unsafe { slice::from_raw_parts_mut(kconfig::FB_BASE as *mut u16, FRAMEBUFFER_PIXELS) };
-        render_initial_home_frame(fb, &state);
-        let _ = serial.write_str("       Home/status frame rendered\r\n");
-    }
+    // WHY (#400): the home frame is no longer rendered once here at boot -- the
+    // kardia service loop owns rendering now (render_if_dirty paints the initial
+    // frame at loop entry, then on every dirty tick), through the same
+    // screen-dispatch path the running UI uses.
 
     // -----------------------------------------------------------------------
     // Step 14: Spawn packaged userspace processes FROM mounted root ramfs
@@ -1465,7 +1430,24 @@ pub unsafe fn run() -> ! {
     // as before -- the loop never calls process::schedule() itself;
     // userspace runs by the timer IRQ preempting PID 0 and round-robining
     // back.
-    let kernel = crate::kardia::KernelState::new(state, devices, pm, mode_mgr);
+    // #400: resolve the render target the service loop paints each frame into.
+    // On device this is the hardware framebuffer FB_BASE (only when the display
+    // came up). Under qemu, where -machine virt models no display, a synthetic
+    // heap buffer -- so render_if_dirty actually runs and the UI surface is
+    // CI-verifiable in emulation (the render path was dead under qemu before).
+    #[cfg(feature = "qemu")]
+    let fb: Option<&'static mut [u16]> = Some(alloc::vec![0u16; FRAMEBUFFER_PIXELS].leak());
+    #[cfg(not(feature = "qemu"))]
+    let fb: Option<&'static mut [u16]> = if state.display_ok {
+        // SAFETY: display_ok is set only after display.init(FB_BASE) mapped
+        // FB_BASE as a writable RGB565 framebuffer of FRAMEBUFFER_PIXELS pixels.
+        Some(unsafe {
+            core::slice::from_raw_parts_mut(kconfig::FB_BASE as *mut u16, FRAMEBUFFER_PIXELS)
+        })
+    } else {
+        None
+    };
+    let kernel = crate::kardia::KernelState::new(state, devices, pm, mode_mgr, fb);
     crate::kardia::service_loop(kernel, serial)
 }
 
