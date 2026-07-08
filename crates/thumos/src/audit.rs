@@ -104,6 +104,8 @@ pub enum AuditEventType {
     ModemAnomaly,
     /// Modem traffic event logged by CCCI firewall.
     ModemTraffic,
+    /// Firewall packet forwarded and logged by a `Log`-actioned rule (#403).
+    PacketLog,
 }
 
 impl fmt::Display for AuditEventType {
@@ -120,6 +122,7 @@ impl fmt::Display for AuditEventType {
             Self::DuressAttempt => write!(f, "DURESS_ATTEMPT"),
             Self::ModemAnomaly => write!(f, "MODEM_ANOMALY"),
             Self::ModemTraffic => write!(f, "MODEM_TRAFFIC"),
+            Self::PacketLog => write!(f, "PACKET_LOG"),
         }
     }
 }
@@ -248,6 +251,9 @@ const fn event_type_discriminant(event: AuditEventType) -> u8 {
         AuditEventType::DuressAttempt => 8,
         AuditEventType::ModemAnomaly => 9,
         AuditEventType::ModemTraffic => 10,
+        // WHY append-only: discriminants are stable wire/HMAC identifiers -- a
+        // new variant takes the next integer; existing values never change.
+        AuditEventType::PacketLog => 11,
     }
 }
 
@@ -759,6 +765,7 @@ mod tests {
             AuditEventType::DuressAttempt,
             AuditEventType::ModemAnomaly,
             AuditEventType::ModemTraffic,
+            AuditEventType::PacketLog,
         ];
 
         for (i, &et) in event_types.iter().enumerate() {
