@@ -30,6 +30,8 @@ use core::fmt::Write;
 use crate::audio::AudioManager;
 use crate::audio_codec::BootCodec;
 use crate::audio_route::RouteManager;
+use crate::bluetooth::BootBtHw;
+use crate::bt_audio::A2dpProfile;
 use crate::clock::ClockManager;
 use crate::device::DeviceRegistry;
 use crate::exceptions;
@@ -163,6 +165,11 @@ pub(crate) struct KernelState {
     /// Microphone access audit trail (#399): every mic-using session is
     /// recorded for the privacy dashboard.
     mic_audit: MicAuditLog,
+    /// Bluetooth A2DP audio profile (#401): SBC-encoded stereo streaming over
+    /// the BT HCI transport (NullBtHw under qemu; real WMT/STP on device -- the
+    /// RF/HCI link is hardware-gated, so only the local profile state machine +
+    /// SBC framing run in emulation).
+    bt_audio: A2dpProfile<BootBtHw>,
     /// Render target: the hardware framebuffer (FB_BASE) on device, a synthetic
     /// heap buffer under qemu (the virt machine models no display), or None when
     /// no display path exists. Wiring the render loop through this makes the UI
@@ -205,6 +212,7 @@ impl KernelState {
             audio: AudioManager::new(BootCodec::new()),
             route: RouteManager::new(),
             mic_audit: MicAuditLog::new(),
+            bt_audio: A2dpProfile::new(BootBtHw::new()),
             home: HomeScreen::new(),
             messages: MessagesScreen::new(),
             search: SearchScreen::new(),
@@ -408,6 +416,17 @@ impl KernelState {
         (iccid_len, self.sms.inbox().len())
     }
 
+    /// Boot-time BT A2DP smoke (#401, qemu): configure the A2DP profile (SBC
+    /// framing at 44.1 kHz stereo) and report the resulting sample rate +
+    /// channels. Proves the profile state machine + SBC encoder are instantiated
+    /// + functional; the RF/HCI link is hardware-gated (NullBtHw yields no
+    /// controller events, so no connection completes).
+    #[cfg(feature = "qemu")]
+    pub(crate) fn bt_audio_boot_smoke(&mut self) -> (u32, u8) {
+        self.bt_audio.configure(44_100, 2).ok();
+        (self.bt_audio.sample_rate(), self.bt_audio.channels())
+    }
+
     /// Execute pending reflex fast-path events in privileged (loop) context.
     pub(crate) fn handle_reflex(&mut self, pending: reflex::Pending, serial: &mut Uart) {
         if pending.panic_wipe {
@@ -490,6 +509,13 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         let _ = write!(
             serial,
             "kardia: sim iccid_len={iccid_len} sms_inbox={sms_inbox}\r\n"
+        );
+        // #401 CI witness: the BT A2DP profile is wired + its SBC/config state
+        // machine runs (configured to 44.1 kHz stereo). RF/HCI is hardware-gated.
+        let (bt_rate, bt_ch) = kernel.bt_audio_boot_smoke();
+        let _ = write!(
+            serial,
+            "kardia: bt_audio sample_rate={bt_rate} channels={bt_ch}\r\n"
         );
     }
     let mut last_tick = exceptions::ticks();

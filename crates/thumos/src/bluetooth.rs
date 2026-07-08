@@ -443,6 +443,47 @@ impl BtHwOps for BtHw {
     }
 }
 
+/// A no-op BT HCI transport for qemu (#401). The MT6739 WMT/CONSYS combo-chip
+/// MMIO is unmodeled on -machine virt, so the real `BtHw` STP transport would
+/// data-abort. `NullBtHw` lets the A2DP profile's local state machine + SBC
+/// framing run in emulation; it acknowledges commands without a controller
+/// (recv_event yields nothing, so no connection ever completes).
+#[cfg(any(feature = "qemu", test))]
+pub(crate) struct NullBtHw;
+
+#[cfg(any(feature = "qemu", test))]
+impl NullBtHw {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(any(feature = "qemu", test))]
+impl BtHwOps for NullBtHw {
+    fn send_command(&mut self, _data: &[u8]) -> Result<(), BtError> {
+        Ok(())
+    }
+    fn send_acl_data(&mut self, _data: &[u8]) -> Result<(), BtError> {
+        Ok(())
+    }
+    fn recv_event(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+    fn power_on(&mut self) -> Result<(), BtError> {
+        Ok(())
+    }
+    fn power_off(&mut self) -> Result<(), BtError> {
+        Ok(())
+    }
+}
+
+/// The BT HCI transport the booted kernel wires into its A2DP profile (#401):
+/// the no-op `NullBtHw` under qemu/test, the real `BtHw` on device.
+#[cfg(any(feature = "qemu", test))]
+pub(crate) type BootBtHw = NullBtHw;
+#[cfg(not(any(feature = "qemu", test)))]
+pub(crate) type BootBtHw = BtHw;
+
 // ---------------------------------------------------------------------------
 // BT adapter (combines state machine + hardware + scan results)
 // ---------------------------------------------------------------------------
