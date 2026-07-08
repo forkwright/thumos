@@ -254,10 +254,26 @@ impl KernelState {
     /// subsystem.
     pub(crate) fn poll_all(&mut self, now: u64) -> bool {
         // #398: drain modem URCs (RING/CLIP/CREG/CSQ) each tick, non-blocking.
-        // Event handling (ring -> UI/audio, registration -> status bar) lands
-        // with those wirings; draining keeps the AT state machine current.
+        // An incoming call opens a ringtone audio session -- the phone-rings
+        // integration across the wired telephony (#398) + audio (#399) stacks.
+        let mut incoming_call = false;
         if let Some(t) = self.telephony.as_mut() {
-            while t.poll().is_some() {}
+            while let Some(ev) = t.poll() {
+                if matches!(ev, crate::telephony::TelephonyEvent::IncomingCall { .. }) {
+                    incoming_call = true;
+                }
+            }
+        }
+        if incoming_call {
+            // telephony borrow released above; open the ringtone on the audio
+            // manager (Idempotent-ish: a second RING while ringing is a no-op
+            // preempt at the same priority).
+            let route = self
+                .route
+                .default_route_for(crate::audio_route::SessionKind::Ringtone);
+            self.audio
+                .open_session(crate::audio_route::SessionKind::Ringtone, route)
+                .ok();
         }
         // NOTE(foundation): the home clock (once per second) is the only
         // persisted render input; each subsystem wiring adds its step here.
@@ -439,6 +455,10 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
     let mut serviced: u32 = 0;
     #[cfg(feature = "qemu")]
     let mut wakes: u32 = 0;
+    // #398: emit the ring->audio CI witness once, when the seeded RING URC has
+    // driven the loop to open a ringtone session.
+    #[cfg(feature = "qemu")]
+    let mut ring_logged = false;
     loop {
         #[cfg(feature = "qemu")]
         {
@@ -494,6 +514,15 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
                 ); // WHY: #400 CI witness -- proves synthetic input drove navigation
             }
             let ticked = kernel.poll_all(now);
+            #[cfg(feature = "qemu")]
+            if !ring_logged && kernel.audio.session_count() > 0 {
+                ring_logged = true;
+                let _ = write!(
+                    serial,
+                    "kardia: incoming call -> ringtone sessions={}\r\n",
+                    kernel.audio.session_count()
+                );
+            }
             if ticked || nav.is_some() {
                 #[cfg(feature = "qemu")]
                 if let Some(px) = kernel.render_if_dirty() {

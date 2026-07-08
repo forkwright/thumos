@@ -207,6 +207,11 @@ jobs:
           # telephony registration (was hardcoded) + the mode char by the
           # security-mode manager. A registered mock modem shows Lte.
           grep -q 'kardia: statusbar net=Lte' boot.log || { echo 'FAIL #404: status bar network not driven by telephony registration (modem-state bridge broken)'; exit 1; }
+          # #398 ring->audio integration: a seeded RING URC, surfaced by
+          # telephony poll() as an IncomingCall, drives the loop to open a
+          # ringtone audio session -- the "phone rings" path across the wired
+          # telephony (#398) + audio (#399) stacks.
+          grep -qE 'kardia: incoming call -> ringtone sessions=[1-9]' boot.log || { echo 'FAIL #398: incoming call did not open a ringtone session (telephony->audio integration broken)'; exit 1; }
           # PL0 isolation + graceful user-fault kill (#487 + fault handling):
           # each probe variant attempts one PL0-illegal op. A correct kernel
           # (a) faults it -- 'hello' never prints, (b) KILLS only the faulting
