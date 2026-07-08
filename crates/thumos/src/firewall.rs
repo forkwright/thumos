@@ -25,10 +25,11 @@
 
 extern crate alloc;
 
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::audit::{AuditEventType, AuditLog};
+use crate::audit::{AuditEventType, AuditLog, DETAIL_LEN};
 use crate::security::KEY_SIZE;
 
 // ---------------------------------------------------------------------------
@@ -67,6 +68,12 @@ const DNS_HEADER_LEN: usize = 12;
 
 /// Maximum number of labels to follow when decoding a DNS QNAME.
 const MAX_LABELS: usize = 128;
+
+/// Bound on firewall packet events pending an audit commit between loop drains
+/// (#403). One drain per 10 ms tick; a deny flood tail-drops here (counted in
+/// `events_dropped`) rather than growing unbounded -- mirrors the loopback
+/// queue cap (net.rs `LOOPBACK_QUEUE_CAPACITY`).
+const EVENT_QUEUE_CAP: usize = 32;
 
 /// Surveillance domains blocked by default.
 ///
@@ -113,6 +120,18 @@ pub enum Direction {
     Inbound,
     /// Traffic leaving toward an external interface.
     Outbound,
+}
+
+/// A firewall decision pending an audit commit (#403). Recorded by the
+/// evaluate path; drained into the audit log by the service loop (which owns
+/// the log + HMAC key + monotonic time). Only `Log` and `Deny` actions are
+/// queued -- `Allow` produces no audit record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PacketEvent {
+    /// Direction the evaluated packet was travelling.
+    pub(crate) direction: Direction,
+    /// The action the firewall took (`Log` or `Deny`).
+    pub(crate) action: Action,
 }
 
 /// Layer-4 protocol selector for a [`FilterRule`].
@@ -220,6 +239,12 @@ pub(crate) struct Firewall {
     default_inbound: Action,
     /// Default action for outbound packets when no rule matches.
     default_outbound: Action,
+    /// Packet events (`Log`/`Deny`) pending an audit commit (#403), drained by
+    /// the service loop each tick. Bounded at [`EVENT_QUEUE_CAP`].
+    events: VecDeque<PacketEvent>,
+    /// Count of packet events tail-dropped because the queue was full between
+    /// drains -- surfaces silent audit loss instead of hiding it.
+    events_dropped: u64,
 }
 
 /// Extracted packet header fields used for rule matching.
@@ -244,6 +269,8 @@ impl Firewall {
             stats: FirewallStats::default(),
             default_inbound: Action::Deny,
             default_outbound: Action::Allow,
+            events: VecDeque::new(),
+            events_dropped: 0,
         }
     }
 
@@ -275,6 +302,7 @@ impl Firewall {
     pub(crate) fn evaluate_rx(&mut self, packet: &[u8]) -> Action {
         let action = self.classify(packet, Direction::Inbound);
         self.record(action);
+        self.note_event(Direction::Inbound, action);
         action
     }
 
@@ -287,7 +315,35 @@ impl Firewall {
     pub(crate) fn evaluate_tx(&mut self, packet: &[u8]) -> Action {
         let action = self.classify(packet, Direction::Outbound);
         self.record(action);
+        self.note_event(Direction::Outbound, action);
         action
+    }
+
+    /// Queue a `Log`/`Deny` decision for the loop to commit to the audit log
+    /// (#403). `Allow` produces no record. Tail-drops (counting the loss) when
+    /// the queue is full, so a packet flood cannot grow it unbounded between
+    /// drains.
+    fn note_event(&mut self, direction: Direction, action: Action) {
+        if !matches!(action, Action::Log | Action::Deny) {
+            return;
+        }
+        if self.events.len() >= EVENT_QUEUE_CAP {
+            self.events_dropped = self.events_dropped.saturating_add(1);
+            return;
+        }
+        self.events.push_back(PacketEvent { direction, action });
+    }
+
+    /// Number of installed filter rules -- the #403 witness that a runtime
+    /// policy update reached the rule set via [`Self::add_rule`].
+    pub(crate) fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
+
+    /// Count of packet events tail-dropped because the audit queue filled
+    /// between loop drains.
+    pub(crate) fn events_dropped(&self) -> u64 {
+        self.events_dropped
     }
 
     /// Check whether a hostname matches any entry in the DNS blocklist.
@@ -442,28 +498,110 @@ impl Firewall {
 // Audit integration
 // ---------------------------------------------------------------------------
 
-/// Log a firewall packet deny event to the audit log.
+/// Drain the firewall's pending packet events into the audit log (#403).
 ///
-/// Called when [`Firewall::evaluate_rx`] or [`Firewall::evaluate_tx`]
-/// denies a packet. The `direction` indicates whether the packet was
-/// inbound or outbound.
-#[expect(
-    dead_code,
-    reason = "audit key plumbing is not available at net device hook yet"
-)]
-pub(crate) fn log_packet_deny(
-    direction: Direction,
+/// The evaluate path records `Log`/`Deny` decisions on `fw`; the service loop
+/// calls this each tick to commit them, since it (not the firewall, which is
+/// buried inside smoltcp's device trait) owns the audit log + HMAC key + a
+/// monotonic timestamp. Returns the number of audit entries appended.
+///
+/// `Log` events commit one entry each (they come from operator-chosen rules,
+/// so their volume is policy-bounded). `Deny` events are COALESCED per
+/// direction into a single count-carrying entry per drain window, so an
+/// inbound-packet flood cannot churn the bounded audit ring and evict real
+/// security events.
+///
+/// Fails closed: when `audit_key` is all-zero (key not yet provisioned),
+/// [`AuditLog::log_event`] returns [`crate::audit::AuditError::NoKey`], the
+/// events are dropped, and 0 is returned.
+pub(crate) fn flush_packet_audit(
+    fw: &mut Firewall,
     audit_log: &mut AuditLog,
     audit_key: &[u8; KEY_SIZE],
     timestamp: u64,
-) {
-    let detail = match direction {
-        Direction::Inbound => b"inbound packet denied" as &[u8],
-        Direction::Outbound => b"outbound packet denied",
+) -> usize {
+    let mut appended = 0usize;
+    let mut inbound_denied = 0u32;
+    let mut outbound_denied = 0u32;
+
+    while let Some(event) = fw.events.pop_front() {
+        match event.action {
+            Action::Log => {
+                let detail: &[u8] = match event.direction {
+                    Direction::Inbound => b"inbound packet logged",
+                    Direction::Outbound => b"outbound packet logged",
+                };
+                if audit_log
+                    .log_event(AuditEventType::PacketLog, 0, detail, timestamp, audit_key)
+                    .is_ok()
+                {
+                    appended += 1;
+                }
+            }
+            Action::Deny => match event.direction {
+                Direction::Inbound => inbound_denied += 1,
+                Direction::Outbound => outbound_denied += 1,
+            },
+            // Allow is never queued (note_event filters it); defensive no-op.
+            Action::Allow => {}
+        }
+    }
+
+    for (count, direction) in [
+        (inbound_denied, Direction::Inbound),
+        (outbound_denied, Direction::Outbound),
+    ] {
+        if count == 0 {
+            continue;
+        }
+        let mut buf = [0u8; DETAIL_LEN];
+        let len = format_deny_detail(count, direction, &mut buf);
+        if audit_log
+            .log_event(
+                AuditEventType::PacketDeny,
+                0,
+                &buf[..len],
+                timestamp,
+                audit_key,
+            )
+            .is_ok()
+        {
+            appended += 1;
+        }
+    }
+
+    appended
+}
+
+/// Format `"<count> <inbound|outbound> packet(s) denied"` into `buf`, returning
+/// the byte length written. A small no_std decimal formatter in the style of
+/// the `format_*_into` helpers in `lock_screen`/`screen_fm`.
+fn format_deny_detail(count: u32, direction: Direction, buf: &mut [u8; DETAIL_LEN]) -> usize {
+    let mut digits = [0u8; 10];
+    let mut n = count;
+    let mut ndigits = 0usize;
+    if n == 0 {
+        digits[0] = b'0';
+        ndigits = 1;
+    } else {
+        while n > 0 {
+            digits[ndigits] = b'0' + (n % 10) as u8;
+            n /= 10;
+            ndigits += 1;
+        }
+    }
+    let mut pos = 0usize;
+    for i in (0..ndigits).rev() {
+        buf[pos] = digits[i];
+        pos += 1;
+    }
+    let suffix: &[u8] = match direction {
+        Direction::Inbound => b" inbound packet(s) denied",
+        Direction::Outbound => b" outbound packet(s) denied",
     };
-    audit_log
-        .log_event(AuditEventType::PacketDeny, 0, detail, timestamp, audit_key)
-        .ok();
+    let copy = suffix.len().min(DETAIL_LEN - pos);
+    buf[pos..pos + copy].copy_from_slice(&suffix[..copy]);
+    pos + copy
 }
 
 // ---------------------------------------------------------------------------
@@ -1276,6 +1414,97 @@ mod tests {
             1,
             "Log action must count as allowed"
         );
+    }
+
+    // -- #403 audit plumbing --
+
+    /// Non-zero HMAC key for audit-flush tests.
+    const FW_TEST_KEY: [u8; KEY_SIZE] = [7u8; KEY_SIZE];
+
+    #[test]
+    fn log_rule_queues_and_flushes_one_audit_entry() {
+        let mut fw = Firewall::new();
+        fw.add_rule(FilterRule {
+            direction: Direction::Outbound,
+            protocol: None,
+            src_addr: None,
+            dst_addr: None,
+            dst_port: Some(443),
+            action: Action::Log,
+        });
+        let pkt = make_ip_tcp([10, 0, 0, 1], [1, 2, 3, 4], 49152, 443);
+        assert_eq!(
+            fw.evaluate_tx(&pkt),
+            Action::Log,
+            "outbound 443 must match the Log rule"
+        );
+
+        let mut audit = AuditLog::new();
+        let appended = flush_packet_audit(&mut fw, &mut audit, &FW_TEST_KEY, 1000);
+        assert_eq!(appended, 1, "one Log event must commit one audit entry");
+        assert_eq!(audit.len(), 1, "audit log holds the PacketLog entry");
+        assert!(
+            audit.verify_chain(&FW_TEST_KEY).is_ok(),
+            "the audit chain must verify over the PacketLog entry"
+        );
+        assert_eq!(
+            flush_packet_audit(&mut fw, &mut audit, &FW_TEST_KEY, 2000),
+            0,
+            "a second flush with a drained queue appends nothing"
+        );
+    }
+
+    #[test]
+    fn deny_events_coalesce_per_direction() {
+        let mut fw = Firewall::new(); // default inbound = Deny
+        let pkt = make_ip_tcp([1, 2, 3, 4], [10, 0, 0, 1], 54321, 80);
+        for _ in 0..3 {
+            assert_eq!(fw.evaluate_rx(&pkt), Action::Deny);
+        }
+
+        let mut audit = AuditLog::new();
+        let appended = flush_packet_audit(&mut fw, &mut audit, &FW_TEST_KEY, 1000);
+        assert_eq!(
+            appended, 1,
+            "three inbound denies must coalesce into one audit entry"
+        );
+        assert_eq!(audit.len(), 1, "one coalesced PacketDeny entry");
+    }
+
+    #[test]
+    fn event_queue_tail_drops_at_cap() {
+        let mut fw = Firewall::new();
+        let pkt = make_ip_tcp([1, 2, 3, 4], [10, 0, 0, 1], 54321, 80);
+        let overflow = 5;
+        for _ in 0..(EVENT_QUEUE_CAP + overflow) {
+            fw.evaluate_rx(&pkt); // each denied -> queued
+        }
+        assert_eq!(
+            fw.events_dropped(),
+            overflow as u64,
+            "events beyond the cap must tail-drop, counted"
+        );
+    }
+
+    #[test]
+    fn flush_fails_closed_without_key() {
+        let mut fw = Firewall::new();
+        fw.add_rule(FilterRule {
+            direction: Direction::Outbound,
+            protocol: None,
+            src_addr: None,
+            dst_addr: None,
+            dst_port: Some(443),
+            action: Action::Log,
+        });
+        let pkt = make_ip_tcp([10, 0, 0, 1], [1, 2, 3, 4], 49152, 443);
+        assert_eq!(fw.evaluate_tx(&pkt), Action::Log);
+
+        let mut audit = AuditLog::new();
+        let zero_key = [0u8; KEY_SIZE];
+        let appended = flush_packet_audit(&mut fw, &mut audit, &zero_key, 1000);
+        assert_eq!(appended, 0, "an all-zero key must append nothing (NoKey)");
+        assert_eq!(audit.len(), 0, "no entry lands when the key is absent");
     }
 
     #[test]
