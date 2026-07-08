@@ -19,11 +19,9 @@
 //!
 //! ## Integration
 //!
-//! Used by the telephony subsystem during modem initialization and
-//! periodic signal polling. Boot integration deferred to Phase 07 kinit wiring.
-
-// WHY: SIM management API not yet wired to upper layers (kinit integration pending).
-#![expect(dead_code, reason = "SIM management API not yet wired to kinit")]
+//! Wired into the kernel at boot: `kardia::KernelState` holds a `SimManager`
+//! and the qemu boot smoke exercises ICCID / PIN status / signal / operator
+//! queries over the modem transport (#398).
 
 extern crate alloc;
 

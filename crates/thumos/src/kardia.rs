@@ -399,19 +399,37 @@ impl KernelState {
         (sessions, mic_entries)
     }
 
-    /// Boot-time SIM/SMS smoke (#398, qemu): query the SIM ICCID over the modem
-    /// transport (mock-seeded response), then decode + file a known incoming SMS
-    /// PDU. Returns (ICCID byte length, inbox message count) for the CI witness,
-    /// exercising both managers against the wired modem transport.
+    /// Boot-time SIM/SMS smoke (#398, qemu): exercise the SIM-management API over
+    /// the modem transport (mock-seeded) -- ICCID query, PIN status, signal
+    /// strength, operator name -- then decode + file a known incoming SMS PDU.
+    /// Returns (ICCID len, inbox count, SIM ready, signal bars, operator name
+    /// len) for the CI witness, exercising both managers against the wired
+    /// transport. All SIM queries are `ModemTransport`-abstracted, so the mock
+    /// exercises them fully under qemu; only the returned values are hardware.
     #[cfg(feature = "qemu")]
-    pub(crate) fn sim_sms_boot_smoke(&mut self) -> (usize, usize) {
-        // SIM: query the ICCID over Telephony's owned transport.
-        let iccid_len = if let Some(t) = self.telephony.as_mut() {
-            self.sim.query_iccid(t.transport_mut()).ok();
-            self.sim.sim_info().iccid_len as usize
-        } else {
-            0
-        };
+    pub(crate) fn sim_sms_boot_smoke(&mut self) -> (usize, usize, bool, u8, usize) {
+        // SIM: query ICCID + PIN status + signal + operator over Telephony's
+        // owned transport, in the order the mock queues the responses.
+        let (iccid_len, sim_ready, signal_bars, operator_len) =
+            if let Some(t) = self.telephony.as_mut() {
+                self.sim.query_iccid(t.transport_mut()).ok();
+                // PIN status (AT+CPIN?): READY => no PIN required => ready.
+                let ready = self.sim.check_pin(t.transport_mut()).unwrap_or(false);
+                // Signal (AT+CSQ): first poll fires immediately (last tick is None).
+                self.sim.poll_signal(t.transport_mut(), 0);
+                // Operator name (AT+COPS?).
+                let mut op_name = [0u8; 32];
+                let op_len = SimManager::query_operator(t.transport_mut(), &mut op_name)
+                    .unwrap_or(0) as usize;
+                (
+                    self.sim.sim_info().iccid_len as usize,
+                    ready,
+                    self.sim.signal_info().bars,
+                    op_len,
+                )
+            } else {
+                (0, false, 0, 0)
+            };
         // SMS: decode a known SMS-DELIVER PDU ("Hello" from +1234567890) + file it.
         const PDU: &[u8] = &[
             0x00, 0x00, 0x0A, 0x91, 0x21, 0x43, 0x65, 0x87, 0x09, 0x00, 0x00, 0x32, 0x10, 0x51,
@@ -420,7 +438,13 @@ impl KernelState {
         if let Ok(msg) = SmsManager::handle_incoming(PDU) {
             self.sms.receive(msg).ok();
         }
-        (iccid_len, self.sms.inbox().len())
+        (
+            iccid_len,
+            self.sms.inbox().len(),
+            sim_ready,
+            signal_bars,
+            operator_len,
+        )
     }
 
     /// Boot-time BT A2DP smoke (#401, qemu): configure the A2DP profile (SBC
@@ -522,9 +546,11 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // registration (was hardcoded); mode char by the security-mode manager.
         let net = kernel.status_network();
         let mode_char = kernel.mode.mode_char();
-        // #398: SIM + SMS wired -- ICCID queried over the modem transport + a
-        // known incoming SMS PDU decoded into the inbox.
-        let (iccid_len, sms_inbox) = kernel.sim_sms_boot_smoke();
+        // #398: SIM + SMS wired -- ICCID / PIN status / signal / operator queried
+        // over the modem transport + a known incoming SMS PDU decoded into the
+        // inbox.
+        let (iccid_len, sms_inbox, sim_ready, signal_bars, operator_len) =
+            kernel.sim_sms_boot_smoke();
         // #401: BT A2DP profile wired + its SBC/config state machine runs
         // (44.1 kHz stereo). RF/HCI is hardware-gated.
         let (bt_rate, bt_ch) = kernel.bt_audio_boot_smoke();
@@ -554,7 +580,9 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         );
         emit_marker(
             &mut serial,
-            format_args!("kardia: sim iccid_len={iccid_len} sms_inbox={sms_inbox}\r\n"),
+            format_args!(
+                "kardia: sim iccid_len={iccid_len} sms_inbox={sms_inbox} sim_ready={sim_ready} signal_bars={signal_bars} operator_len={operator_len}\r\n"
+            ),
         );
         emit_marker(
             &mut serial,

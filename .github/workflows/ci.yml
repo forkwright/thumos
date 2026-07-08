@@ -212,10 +212,13 @@ jobs:
           # ringtone audio session -- the "phone rings" path across the wired
           # telephony (#398) + audio (#399) stacks.
           grep -qE 'kardia: incoming call -> ringtone sessions=[1-9]' boot.log || { echo 'FAIL #398: incoming call did not open a ringtone session (telephony->audio integration broken)'; exit 1; }
-          # #398 SIM/SMS: the SIM ICCID was queried over the modem transport
-          # (iccid_len>0) and a known incoming SMS PDU decoded into the inbox
-          # (sms_inbox>0) -- both managers functional against the wired transport.
-          grep -qE 'kardia: sim iccid_len=[1-9][0-9]* sms_inbox=[1-9]' boot.log || { echo 'FAIL #398: SIM/SMS not wired (ICCID not queried or SMS not decoded)'; exit 1; }
+          # #398 SIM/SMS: the SIM-management API is exercised over the modem
+          # transport -- ICCID queried (iccid_len>0), PIN status READ
+          # (sim_ready=true), signal strength decoded (signal_bars>0), operator
+          # name queried (operator_len>0) -- and a known incoming SMS PDU decoded
+          # into the inbox (sms_inbox>0). Both managers functional against the
+          # wired transport.
+          grep -qE 'kardia: sim iccid_len=[1-9][0-9]* sms_inbox=[1-9] sim_ready=true signal_bars=[1-9] operator_len=[1-9]' boot.log || { echo 'FAIL #398: SIM management not fully wired (ICCID/PIN/signal/operator/SMS)'; exit 1; }
           # #401 BT A2DP: the A2dpProfile is instantiated + its SBC/config state
           # machine runs (configured 44.1 kHz stereo). RF/HCI is hardware-gated.
           grep -q 'kardia: bt_audio sample_rate=44100 channels=2' boot.log || { echo 'FAIL #401: A2DP profile not wired / config state machine broken'; exit 1; }
