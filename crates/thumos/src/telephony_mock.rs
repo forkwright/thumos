@@ -89,6 +89,13 @@ impl MockModemTransport {
         mock.queue_info_ok(b"+CREG: 1,\"1A2B\",\"0100CE01\",7");
         // A queued ICCID response for the boot-time SimManager query (#398).
         mock.queue_info_ok(b"+ICCID: 8901410321111851072");
+        // Post-init responses for the boot-time SIM-management smoke (#398), in
+        // the order sim_sms_boot_smoke queries them over the same transport:
+        // check_pin (AT+CPIN?), poll_signal->query_signal (AT+CSQ), and
+        // query_operator (AT+COPS?).
+        mock.queue_info_ok(b"+CPIN: READY");
+        mock.queue_info_ok(b"+CSQ: 18,99");
+        mock.queue_info_ok(b"+COPS: 0,0,\"T-Mobile\"");
         // A queued RING URC so a booted qemu kernel exercises the incoming-call
         // -> ringtone-audio integration path (#398): poll() surfaces it as an
         // IncomingCall event after init.
