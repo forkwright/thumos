@@ -41,7 +41,9 @@ use crate::kconfig;
 use crate::mmio;
 use crate::mmu;
 use crate::net::{self, NetworkReadiness, WifiDevice};
-#[cfg(not(feature = "qemu"))]
+// #403: the net stack is built on both targets (loop-persistent), so these are
+// no longer qemu-gated. DhcpClient/DnsResolver stay gated -- used only in the
+// non-qemu DHCP/DNS self-test below.
 use crate::net::{FirewallDevice, LoopbackDevice, NetworkStack};
 use crate::page;
 use crate::power::PowerManager;
@@ -1110,38 +1112,50 @@ pub unsafe fn run() -> ! {
     }
 
     let _ = serial.write_str("[init] Network loopback smoke (DHCP + DNS)\r\n");
-    // WHY(qemu): the DHCP poll loop below is bounded by an elapsed_ms()
-    // deadline + a wfe-gated yield, neither of which terminates under QEMU
-    // (#461); and a loopback DHCP/DNS self-test verifies nothing under an
-    // emulator with no network model. Skipped under qemu; production path
-    // unchanged.
+    // #403: the net stack is now LOOP-PERSISTENT -- built here on BOTH targets
+    // and handed to KernelState, so its firewall is the single loop-owned
+    // instance (runtime policy + audit at the drop-site). Until WiFi hardware
+    // init lands (#129), the device is LoopbackDevice; it must stay
+    // synchronous/polled to satisfy the KernelState IRQ-safety invariant.
+    // #461: smoltcp time comes from the IRQ tick counter (exceptions::uptime_ms),
+    // never CNTPCT (timer::elapsed_ms) -- it advances under qemu-virt and must be
+    // monotonic across the stack's whole life (this boot smoke -> service loop).
+    //
+    // `mut` is used by the DHCP smoke (non-qemu) + the service loop after the
+    // move; under qemu the smoke is skipped, so the binding is move-only here.
+    #[cfg_attr(feature = "qemu", allow(unused_mut))]
+    let mut net = {
+        let device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
+        let mac = net::randomized_local_ethernet_address();
+        let now = net::instant_from_millis(crate::exceptions::uptime_ms() as i64);
+        NetworkStack::new(device, mac, now)
+    };
+    // WHY(qemu): the DHCP poll loop below is bounded by an elapsed_ms() deadline
+    // + a wfe-gated yield, neither of which terminates under QEMU (#461); and a
+    // loopback DHCP/DNS self-test verifies nothing under an emulator with no
+    // network model. The self-test is skipped under qemu, but the stack itself
+    // still persists into the loop.
     #[cfg(feature = "qemu")]
     let _ = serial.write_str("       Skipped (qemu: no network model -- #461)\r\n");
     #[cfg(not(feature = "qemu"))]
     {
-        // WHY: In production, the WiFi driver provides the Device impl.
-        // Until WiFi hardware init is wired in, we use LoopbackDevice to
-        // prove the DHCP+DNS integration path works end-to-end. Loopback
-        // success is tracked separately and must not mark production
-        // connectivity ready.
-        let device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
-        let mac = net::randomized_local_ethernet_address();
-        let now = net::instant_from_millis(crate::timer::elapsed_ms() as i64);
-        let mut stack = NetworkStack::new(device, mac, now);
         let _ = serial.write_str("       Firewall DNS blocklist active\r\n");
 
-        // Start DHCP client.
-        match DhcpClient::new(&mut stack) {
+        // Start DHCP client on the persistent stack.
+        match DhcpClient::new(&mut net) {
             Ok(mut dhcp) => {
                 let _ = serial.write_str("       DHCP client started\r\n");
 
-                // Poll for DHCP configuration with timeout.
+                // Poll for DHCP configuration with timeout. The DEADLINE stays
+                // on elapsed_ms (a device-only wall-clock bound, not fed to
+                // smoltcp); the smoltcp timestamp uses uptime_ms (#461, and
+                // monotone with the service loop).
                 let dhcp_start = crate::timer::elapsed_ms();
                 let mut configured = false;
                 while crate::timer::elapsed_ms() - dhcp_start < crate::dhcp::DHCP_TIMEOUT_MS {
-                    let now = net::instant_from_millis(crate::timer::elapsed_ms() as i64);
-                    stack.poll(now);
-                    match dhcp.poll(&mut stack) {
+                    let now = net::instant_from_millis(crate::exceptions::uptime_ms() as i64);
+                    net.poll(now);
+                    match dhcp.poll(&mut net) {
                         DhcpEvent::Configured(config) => {
                             let _ = write!(
                                 serial,
@@ -1482,7 +1496,21 @@ pub unsafe fn run() -> ! {
     // cfg(not(test)), so under test there is no modem to construct.
     #[cfg(all(not(feature = "qemu"), test))]
     let telephony: Option<crate::telephony::Telephony<crate::telephony::BootModemTransport>> = None;
-    let kernel = crate::kardia::KernelState::new(state, devices, pm, mode_mgr, fb, telephony);
+    // #403: interim SESSION audit key -- CSPRNG-seeded, volatile (RAM-only,
+    // zeroized on drop). The persistent, passphrase-derived audit key (Step 8f)
+    // stays PENDING/deferred; this key derives nothing and unlocks nothing -- it
+    // only gives the loop-owned firewall audit chain HMAC integrity for THIS
+    // boot. Fails closed: an all-zero key (CSPRNG unavailable) makes log_event
+    // return NoKey, so no audit entry is forged without integrity.
+    let mut audit_key = [0u8; crate::security::KEY_SIZE];
+    if state.csprng_ok {
+        crate::csprng::kernel_random_bytes(&mut audit_key).ok();
+        let _ = serial
+            .write_str("       Audit trail: interim session key (persistent key PENDING #217)\r\n");
+    }
+    let kernel = crate::kardia::KernelState::new(
+        state, devices, pm, mode_mgr, fb, telephony, net, audit_key,
+    );
     crate::kardia::service_loop(kernel, serial)
 }
 

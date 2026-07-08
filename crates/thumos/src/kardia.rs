@@ -30,14 +30,17 @@ use core::fmt::Write;
 use crate::audio::AudioManager;
 use crate::audio_codec::BootCodec;
 use crate::audio_route::RouteManager;
+use crate::audit::AuditLog;
 use crate::bluetooth::BootBtHw;
 use crate::bt_audio::A2dpProfile;
 use crate::clock::ClockManager;
 use crate::device::DeviceRegistry;
 use crate::exceptions;
 use crate::heorte::HeorteManager;
+use crate::key_manager::SecureKey;
 use crate::kinit::BootState;
 use crate::mic_audit::MicAuditLog;
+use crate::net::{BootNetDevice, FirewallDevice, NetworkStack};
 use crate::power::PowerManager;
 use crate::reflex;
 use crate::screen_calendar::CalendarScreen;
@@ -46,6 +49,7 @@ use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
 use crate::screen_messages::MessagesScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
+use crate::security::KEY_SIZE;
 use crate::security_mode::ModeManager;
 use crate::sim::SimManager;
 use crate::sms::SmsManager;
@@ -181,6 +185,24 @@ pub(crate) struct KernelState {
     /// alarms; the loop checks alarms once per second and the calendar screen
     /// renders its agenda. Pure tick-based logic (no hardware).
     heorte: HeorteManager,
+    /// Loop-persistent network stack (#403): the SINGLE kernel firewall lives
+    /// inside this device wrapper, taking runtime policy via `add_rule` and
+    /// emitting Log/Deny audit events at the packet drop-site.
+    ///
+    /// INVARIANT-SAFE as a bare field: the device is synchronous/polled (the
+    /// loopback in-memory queue today; a polled WiFi adapter later) and is
+    /// mutated only from loop context. If a future NIC becomes IRQ-fed (#129),
+    /// its ISR MUST deposit frames into an `IrqSpinlock`/reflex ring that the
+    /// loop drains -- this field never becomes IRQ-touched.
+    net: NetworkStack<FirewallDevice<BootNetDevice>>,
+    /// Tamper-evident kernel audit trail (#403): HMAC-chain log, loop-owned.
+    /// Firewall Log/Deny events drain into it each tick.
+    audit: AuditLog,
+    /// Interim session audit HMAC key (#403): CSPRNG-seeded in kinit, volatile
+    /// (RAM-only, zeroized on drop). All-zero when the CSPRNG was unavailable --
+    /// `log_event` then fails closed (`NoKey`). Replaced by the key-hierarchy
+    /// audit key when the passphrase flow lands (#217).
+    audit_key: SecureKey<KEY_SIZE>,
     /// Render target: the hardware framebuffer (FB_BASE) on device, a synthetic
     /// heap buffer under qemu (the virt machine models no display), or None when
     /// no display path exists. Wiring the render loop through this makes the UI
@@ -202,12 +224,17 @@ impl KernelState {
         mode: ModeManager,
         fb: Option<&'static mut [u16]>,
         telephony: Option<Telephony<BootModemTransport>>,
+        net: NetworkStack<FirewallDevice<BootNetDevice>>,
+        audit_key: [u8; KEY_SIZE],
     ) -> Self {
         Self {
             boot,
             devices,
             power,
             mode,
+            net,
+            audit: AuditLog::new(),
+            audit_key: SecureKey::new(audit_key),
             ui: UiManager::new(),
             clock: {
                 // Seed Manual at boot (tick_ms 0) so QEMU + a fresh device have
@@ -307,15 +334,33 @@ impl KernelState {
                 .open_session(crate::audio_route::SessionKind::Ringtone, route)
                 .ok();
         }
+        // now_ms via the IRQ tick counter (advances under qemu, #461).
+        let now_ms = now * TICK_MS;
+        // #403: drive the loop-persistent net stack + commit firewall Log/Deny
+        // events to the audit trail every tick. poll() with zero configured
+        // sockets is O(1), and the drain is a no-op when the event queue is
+        // empty; the firewall evaluation itself is clock-free.
+        self.net
+            .poll(crate::net::instant_from_millis(now_ms as i64));
+        let Self {
+            net,
+            audit,
+            audit_key,
+            ..
+        } = self;
+        crate::firewall::flush_packet_audit(
+            net.device_mut().firewall_mut(),
+            audit,
+            audit_key.as_bytes(),
+            now_ms,
+        );
         // NOTE(foundation): the home clock (once per second) is the only
         // persisted render input; each subsystem wiring adds its step here.
         let second = now / TICKS_PER_SECOND;
         if second != self.last_second {
             self.last_second = second;
             // #402: advance the trust-hierarchy clock and cache the wall time
-            // for the render. now_ms via the IRQ tick counter (advances under
-            // qemu, #461). evaluate() re-checks source validity/staleness.
-            let now_ms = now * TICK_MS;
+            // for the render. evaluate() re-checks source validity/staleness.
             self.clock.evaluate(now_ms);
             self.wall_clock = self.clock.get_wall_clock(now_ms);
             // #400: check scheduled alarms against the fresh wall time + advance
@@ -397,6 +442,34 @@ impl KernelState {
         // non-zero count proves the frame rendered CONTENT, not just that the
         // loop ticked. On device the count is unused (the caller drops it).
         Some(fb.iter().filter(|&&px| px != 0).count())
+    }
+
+    /// Install the baseline firewall policy through the production `add_rule`
+    /// path at loop entry (#403). Runs on both targets -- this is the single
+    /// seam where runtime policy reaches the loop-persistent firewall's rule
+    /// set. Returns the resulting rule count.
+    ///
+    /// SECURITY INVARIANT: `Log` = allow + audit, so a `Log` rule is permitted
+    /// ONLY on flows the default policy already allows -- Outbound
+    /// (`default_outbound = Allow`). An Inbound `Log` rule would turn
+    /// default-deny into allow-with-audit and is forbidden here.
+    pub(crate) fn apply_firewall_policy(&mut self) -> usize {
+        use crate::firewall::{Action, Direction, FilterRule};
+        let fw = self.net.device_mut().firewall_mut();
+        // Audit all outbound DNS egress (port 53). Safe on three axes: outbound
+        // is already default-allowed, so this only ADDS an audit record; the DNS
+        // surveillance blocklist runs BEFORE rule evaluation, so this rule cannot
+        // bypass it; and no inbound rule is installed, so inbound stays
+        // default-deny.
+        fw.add_rule(FilterRule {
+            direction: Direction::Outbound,
+            protocol: None,
+            src_addr: None,
+            dst_addr: None,
+            dst_port: Some(53),
+            action: Action::Log,
+        });
+        fw.rule_count()
     }
 
     /// Boot-time audio smoke (#399, qemu): open a VoiceCall session -- which
@@ -498,6 +571,69 @@ impl KernelState {
         (rat, self.status_network())
     }
 
+    /// Boot-time firewall smoke (#403, qemu): exercise the loop-persistent
+    /// firewall end to end. Pushes one synthetic Ethernet(IPv4/TCP dst-port 53)
+    /// frame through the device: the TX drop-site matches the outbound `Log`
+    /// rule (allow + audit), the looped-back inbound copy hits default-deny at
+    /// the RX drop-site, and both events drain onto the HMAC audit chain via the
+    /// production path. Returns (rule count, packets_allowed, packets_denied,
+    /// audit entries appended, chain-verified) for the CI witness.
+    #[cfg(feature = "qemu")]
+    pub(crate) fn firewall_boot_smoke(&mut self) -> (usize, u64, u64, usize, bool) {
+        use smoltcp::phy::{Device as _, TxToken as _};
+        // 54-byte Ethernet(IPv4/TCP) frame, src 10.0.0.1:49152 -> 9.9.9.9:53,
+        // empty TCP payload (a control segment the DNS blocklist passes, so rule
+        // evaluation is reached). Inlined: the firewall.rs/net.rs frame builders
+        // are #[cfg(test)]-only.
+        const FRAME: [u8; 54] = [
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // eth dst
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x01, // eth src (locally administered)
+            0x08, 0x00, // ethertype IPv4
+            0x45, 0x00, 0x00, 0x28, // ver/ihl, dscp, total length 40
+            0x00, 0x00, 0x00, 0x00, 0x00, // id, flags/frag, ttl
+            0x06, // protocol TCP
+            0x00, 0x00, // header checksum
+            0x0a, 0x00, 0x00, 0x01, // src 10.0.0.1
+            0x09, 0x09, 0x09, 0x09, // dst 9.9.9.9
+            0xc0, 0x00, // tcp src port 49152
+            0x00, 0x35, // tcp dst port 53
+            0x00, 0x00, 0x00, 0x00, // seq
+            0x00, 0x00, 0x00, 0x00, // ack
+            0x50, 0x00, // data offset 5 (20-byte header), flags
+            0x00, 0x00, // window
+            0x00, 0x00, // checksum
+            0x00, 0x00, // urgent
+        ];
+        let now = crate::net::instant_from_millis(crate::exceptions::uptime_ms() as i64);
+        // TX drop-site: outbound eval matches the Log rule -> forwarded to the
+        // loopback queue + a PacketLog event queued.
+        if let Some(tx) = self.net.device_mut().transmit(now) {
+            tx.consume(FRAME.len(), |buf| buf.copy_from_slice(&FRAME));
+        }
+        // RX drop-site: the looped-back frame is inbound; no inbound rule matches
+        // -> default-deny consumes it (returns None) + a PacketDeny event queued.
+        let denied_rx = self.net.device_mut().receive(now).is_none();
+        // Production drain: commit both events to the HMAC audit chain.
+        let now_ms = crate::exceptions::uptime_ms();
+        let Self {
+            net,
+            audit,
+            audit_key,
+            ..
+        } = self;
+        let fw = net.device_mut().firewall_mut();
+        let appended = crate::firewall::flush_packet_audit(fw, audit, audit_key.as_bytes(), now_ms);
+        let stats = fw.stats().clone();
+        let chain_ok = denied_rx && audit.verify_chain(audit_key.as_bytes()).is_ok();
+        (
+            fw.rule_count(),
+            stats.packets_allowed,
+            stats.packets_denied,
+            appended,
+            chain_ok,
+        )
+    }
+
     /// Boot-time heorte smoke (#400, qemu): seed a calendar event + an alarm,
     /// check alarms, arm the countdown timer + stopwatch, and feed the calendar
     /// screen from the manager. Returns (event count, alarm count, calendar
@@ -575,6 +711,11 @@ fn emit_marker(serial: &mut Uart, args: core::fmt::Arguments) {
 /// at any instruction outside an `IrqSpinlock` critical section.
 pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
     let _ = serial.write_str("[kardia] service loop running\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write
+    // #403: install the runtime firewall policy through the production add_rule
+    // path on BOTH targets -- the seam that makes the loop-persistent firewall's
+    // rule set policy-driven (and the production caller that un-deads add_rule /
+    // Action::Log).
+    kernel.apply_firewall_policy();
     // #400: paint the initial home frame immediately, rather than waiting for
     // the first once-per-second dirty tick.
     #[cfg(not(feature = "qemu"))]
@@ -616,6 +757,10 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // #400: heorte manager (+ its Timer/Stopwatch) instantiated + holds
         // seeded events/alarms, and the calendar screen renders that state.
         let (heorte_events, heorte_alarms, calendar_rows, timer_armed) = kernel.heorte_boot_smoke();
+        // #403: the loop-persistent firewall took a runtime rule (add_rule),
+        // Log-audited an outbound packet + default-denied its looped-back copy,
+        // and both events landed on a verified HMAC audit chain.
+        let (fw_rules, fw_allowed, fw_denied, fw_audit, fw_chain) = kernel.firewall_boot_smoke();
 
         // Emit each witness line atomically (emit_marker masks IRQs per line)
         // so userspace /init cannot split a `kardia:` line mid-write (#513).
@@ -655,6 +800,13 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
             &mut serial,
             format_args!(
                 "kardia: heorte events={heorte_events} alarms={heorte_alarms} calendar_rows={calendar_rows} timer_armed={timer_armed}\r\n"
+            ),
+        );
+        let fw_chain_str = if fw_chain { "ok" } else { "err" };
+        emit_marker(
+            &mut serial,
+            format_args!(
+                "kardia: firewall rules={fw_rules} allowed={fw_allowed} denied={fw_denied} audit_events={fw_audit} chain={fw_chain_str}\r\n"
             ),
         );
     }
