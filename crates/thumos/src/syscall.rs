@@ -826,14 +826,31 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         new_stack_top - 8
     };
 
+    // #502: the argv-frame write below + the image load both write freshly-
+    // allocated allocator frames (the new stack, the image frame) through raw
+    // physical addresses. A forked child's TTBR0 user-remaps allocator-range
+    // VAs, so those writes must run under the identity kernel L1 (the #497
+    // zero-on-free aliasing class) -- otherwise argv/image bytes could land in
+    // another process's memory. argv was already collected into kernel buffers
+    // above (under the child's TTBR0, which maps the user argv pointers). The
+    // error path below restores `exec_child_pt` so the still-intact old image
+    // resumes; on success exec_replace_context installs the new table.
+    let exec_child_pt = process::current_page_table();
+    // SAFETY: table_base() is the kernel L1; IRQs are masked under SVC so the
+    // window is atomic; the caller's table is restored on the error path and by
+    // exec_replace_context on success. No-op on host.
+    unsafe {
+        mmu::switch_addr_space(mmu::table_base());
+    }
+
     // Write the argc/argv frame onto the new stack.
     // WHY(arm-only, #489): the frame is written to the new stack's
-    // identity-mapped DRAM. On the host new_stack_base is a page-bitmap fiction
-    // (never a valid host pointer) and the context switch is a no-op stub, so
-    // the process never resumes -- the writes are both unnecessary and unsound
-    // (a segfault, since the reorder now runs this BEFORE load's error return).
-    // Same gating as the #208 fork stack copy. sp is still computed above so
-    // exec_replace_context gets the right user sp on ARM.
+    // identity-mapped DRAM (now under the kernel L1). On the host new_stack_base
+    // is a page-bitmap fiction (never a valid host pointer) and the context
+    // switch is a no-op stub, so the process never resumes -- the writes are
+    // both unnecessary and unsound (a segfault, since the reorder now runs this
+    // BEFORE load's error return). Same gating as the #208 fork stack copy. sp
+    // is still computed above so exec_replace_context gets the right user sp.
     #[cfg(target_arch = "arm")]
     // SAFETY: sp and every cursor below lie within [new_stack_base,
     // new_stack_top); allocation succeeded; stack pages are identity-mapped, so
@@ -859,29 +876,38 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // touch them so the host build does not warn them unused under -D warnings.
     let _ = (&arg_data, &arg_lens, sp);
 
-    // --- Step 6: LOAD the new image (DESTRUCTIVE) ---
-    // #489: THE point of no return -- load_confined() overwrites the caller's
-    // live image at its identity vaddrs. Everything above (stack alloc, argv
-    // collection from the still-intact old image) was fail-before-destroy;
-    // nothing below can fail-and-return-to-the-old-image. load_confined checks
-    // BOTH the OOM budget AND the placement window [USER_TEXT_BASE, RAM_END)
-    // BEFORE any write, so an out-of-window or OOM image fails cleanly without
-    // touching the old image or page-allocator RAM (#489 defects 2/3). argv
-    // strings were copied into kernel buffers + the new stack ABOVE, so
-    // overwriting the old image (where argv[] literals live) here is safe (#499).
-    let loaded = match crate::elf::load_confined(
-        elf_data,
-        crate::kconfig::USER_TEXT_BASE,
-        crate::kconfig::RAM_END,
-    ) {
+    // --- Step 6: LOAD the new image into a fresh per-process frame (#502) ---
+    // NO LONGER destructive: load_confined writes the new image into a freshly-
+    // allocated image frame, NOT over the caller's live image (which stays at
+    // its own frame until exec_replace_context frees it). So the point of no
+    // return moves INTO exec_replace_context's free-old step; a load error here
+    // legitimately returns to the intact old image. load_confined validates OOM
+    // + placement BEFORE any write, so an out-of-window/OOM/gappy image fails
+    // cleanly.
+    // SAFETY: we switched to the kernel L1 above, satisfying load_confined's
+    // TTBR0 precondition (image write into the fresh frame is identity-safe).
+    let loaded = match unsafe {
+        crate::elf::load_confined(
+            elf_data,
+            crate::kconfig::USER_TEXT_BASE,
+            crate::kconfig::RAM_END,
+        )
+    } {
         Ok(l) => l,
-        // WHY(#489): the new stack was allocated BEFORE load (fail-before-destroy
-        // reorder), so free it on a load error -- load_confined rejected the
-        // image without writing it, and the caller keeps its intact old image.
+        // The new stack was allocated BEFORE load (fail-before-destroy); free it
+        // + restore the caller's table, then return the errno -- the caller
+        // keeps its intact old image. load_confined errors at/before its
+        // alloc_contiguous (the post-alloc write loop is infallible), so no
+        // image frame leaks here.
         Err(e) => {
             // SAFETY: new_stack_base names the EXEC_STACK_PAGES contiguous run
-            // from alloc_contiguous above; unmapped and unused.
-            unsafe { page::free_contiguous(new_stack_base, EXEC_STACK_PAGES) };
+            // from alloc_contiguous above; unmapped + unused. The free zeroes it
+            // under the kernel L1 (still live here); then restore the caller's
+            // table before returning to PL0.
+            unsafe {
+                page::free_contiguous(new_stack_base, EXEC_STACK_PAGES);
+                mmu::switch_addr_space(exec_child_pt);
+            }
             return if e == crate::elf::ElfError::OutOfMemory {
                 ENOMEM
             } else {

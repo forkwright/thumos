@@ -392,11 +392,17 @@ unsafe fn map_user_image(pt: usize, loaded: &crate::elf::LoadedElf) -> bool {
         let pages = memsz.div_ceil(page::PAGE_SIZE);
         for p in 0..pages {
             let va = vaddr + p * page::PAGE_SIZE;
-            // SAFETY: pt is caller-owned; va is identity DRAM validated by
-            // elf::validate (#318). Shatter the MB to a fully-populated L2,
-            // then grant PL0 to this page.
+            // #502: map va -> the process's OWN image frame, not identity.
+            // load_confined wrote the segment bytes to
+            // image_phys + (vaddr - image_lo); the mapping MUST use the same
+            // base (single source of truth) so the process reads what was
+            // written. va >= vaddr >= image_lo, so the offset never underflows.
+            let phys = loaded.image_phys + (va - loaded.image_lo);
+            // SAFETY: pt is caller-owned; phys is the freshly-allocated image
+            // frame (arm) or identity (host). Shatter the MB to a
+            // fully-populated L2, then grant PL0 to this page.
             unsafe {
-                if !mmu::shatter_section(pt, va) || !mmu::map_page(pt, va, va, attrs) {
+                if !mmu::shatter_section(pt, va) || !mmu::map_page(pt, va, phys, attrs) {
                     return false;
                 }
             }
@@ -477,6 +483,13 @@ pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
             // free_addr_space also reclaims the L2 tables the shatters allocated
             // (the shared KERNEL_L2 is skipped -- free_l2_table no-ops on
             // non-pool addresses).
+            // #502: on success the page table owns the image frame (freed at
+            // exit by the L2 walk); on THIS failure the mapping is incomplete,
+            // so free the frame load_confined allocated here (spawn_user runs
+            // under the kernel L1 via kinit, so the zero-on-free is identity).
+            if loaded.image_pages > 0 {
+                page::free_contiguous(loaded.image_phys, loaded.image_pages);
+            }
             page::free_contiguous(stack_base, STACK_PAGES);
             mmu::free_addr_space(new_pt);
             return None;
