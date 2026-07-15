@@ -392,11 +392,17 @@ unsafe fn map_user_image(pt: usize, loaded: &crate::elf::LoadedElf) -> bool {
         let pages = memsz.div_ceil(page::PAGE_SIZE);
         for p in 0..pages {
             let va = vaddr + p * page::PAGE_SIZE;
-            // SAFETY: pt is caller-owned; va is identity DRAM validated by
-            // elf::validate (#318). Shatter the MB to a fully-populated L2,
-            // then grant PL0 to this page.
+            // #502: map va -> the process's OWN image frame, not identity.
+            // load_confined wrote the segment bytes to
+            // image_phys + (vaddr - image_lo); the mapping MUST use the same
+            // base (single source of truth) so the process reads what was
+            // written. va >= vaddr >= image_lo, so the offset never underflows.
+            let phys = loaded.image_phys + (va - loaded.image_lo);
+            // SAFETY: pt is caller-owned; phys is the freshly-allocated image
+            // frame (arm) or identity (host). Shatter the MB to a
+            // fully-populated L2, then grant PL0 to this page.
             unsafe {
-                if !mmu::shatter_section(pt, va) || !mmu::map_page(pt, va, va, attrs) {
+                if !mmu::shatter_section(pt, va) || !mmu::map_page(pt, va, phys, attrs) {
                     return false;
                 }
             }
@@ -477,6 +483,13 @@ pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
             // free_addr_space also reclaims the L2 tables the shatters allocated
             // (the shared KERNEL_L2 is skipped -- free_l2_table no-ops on
             // non-pool addresses).
+            // #502: on success the page table owns the image frame (freed at
+            // exit by the L2 walk); on THIS failure the mapping is incomplete,
+            // so free the frame load_confined allocated here (spawn_user runs
+            // under the kernel L1 via kinit, so the zero-on-free is identity).
+            if loaded.image_pages > 0 {
+                page::free_contiguous(loaded.image_phys, loaded.image_pages);
+            }
             page::free_contiguous(stack_base, STACK_PAGES);
             mmu::free_addr_space(new_pt);
             return None;
@@ -1675,6 +1688,33 @@ pub unsafe fn exec_replace_context(
         // masked (SVC), so this is atomic.
         mmu::switch_addr_space(mmu::table_base());
 
+        // 0. (#502) Free the OLD image's per-process frame(s) BEFORE revoking the
+        //    L2. Post-#502 the old image lives at its OWN allocator frame(s) --
+        //    contiguous for a spawned process, alloc_page-scattered for a forked
+        //    one -- recorded ONLY in the USER_TEXT MB's L2. reset_shattered_section
+        //    (step 1) erases that record and map_user_image rewrites it, so
+        //    capture-and-free MUST precede the reset. Freeing by the ACTUAL L2
+        //    phys handles both layouts identically. try_free_page no-ops a
+        //    non-allocated / already-free frame. Under the kernel L1 (identity
+        //    zero-on-free) + IRQ-masked; the NEW image frame was already allocated
+        //    by load_confined (allocator-disjoint), so no free hits it.
+        //    INVARIANT: alloc+load-new strictly before free-old (holds -- load
+        //    ran in sys_execve before this call).
+        {
+            // The image window is exactly one 1 MB section (256 4 KB pages).
+            let image_end = crate::kconfig::USER_TEXT_BASE + 0x10_0000;
+            let mut va = crate::kconfig::USER_TEXT_BASE;
+            while va < image_end {
+                if let Some(entry) = mmu::read_l2_entry(pt, va)
+                    && mmu::l2_entry_is_user(entry)
+                    && let Some(phys) = mmu::read_l2_phys(pt, va)
+                {
+                    page::try_free_page(phys);
+                }
+                va += page::PAGE_SIZE;
+            }
+        }
+
         // 1. Revoke the old image's PL0 windows: reset the whole USER_TEXT MB's
         //    L2 entries to identity KERNEL_DEFAULT (keeps the L2 table), so no
         //    stale PL0 image window survives and map_user_image re-maps into the
@@ -1719,11 +1759,12 @@ pub unsafe fn exec_replace_context(
         }
 
         // 4. Map the new image (W^X per segment) + the new stack (RW+XN). The
-        //    new image bytes were already written to identity DRAM by
-        //    elf::load; argv was written to the new stack frames PL1. Mapping
-        //    grants PL0 without moving content. map_user_image reuses the image
-        //    L2 (infallible); only map_user_stack's fresh-MB shatter can fail
-        //    (L2-pool exhaustion). `&` runs BOTH regardless.
+        //    new image bytes were already written to the per-process image frame
+        //    (loaded.image_phys) by elf::load_confined (#502); argv was written
+        //    to the new stack frames under the kernel L1. Mapping grants PL0 and
+        //    points USER_TEXT_BASE at loaded.image_phys. map_user_image reuses
+        //    the image L2 (infallible); only map_user_stack's fresh-MB shatter
+        //    can fail (L2-pool exhaustion). `&` runs BOTH regardless.
         let remap_ok =
             map_user_image(pt, loaded) & map_user_stack(pt, new_stack_base, new_stack_pages);
 
@@ -3081,11 +3122,11 @@ mod tests {
             assert!(mmu::map_page(pt, DEFAULT_HEAP_BREAK, heap_phys, l2_attrs));
             set_heap_break(DEFAULT_HEAP_BREAK + page::PAGE_SIZE);
 
-            // A real exec caller has a shattered image MB with the image mapped
-            // (exec_replace_context asserts it). map_page shatters USER_TEXT's MB;
-            // this frame stays allocated across exec (the empty new image maps
-            // nothing, reset only DEMOTES the MB), so alloc it BEFORE the baseline
-            // and it does not skew the freed-frame delta measured below.
+            // A real exec caller has a shattered image MB with the OLD per-process
+            // image mapped (exec_replace_context asserts it). map_page shatters
+            // USER_TEXT's MB; this frame is the old image, which #502's exec
+            // teardown (the pre-reset L2 walk, step 0) FREES -- so it IS part of
+            // the freed-frame delta measured below.
             let img_phys = page::alloc_page().unwrap();
             assert!(mmu::map_page(
                 pt,
@@ -3099,13 +3140,14 @@ mod tests {
             let new_stack_phys = page::alloc_page().unwrap();
             let free_before = page::free_count();
 
-            // Empty image (no segments): this test exercises the mmap/heap FREE
-            // path, which runs regardless of whether the remap succeeds. On this
-            // synthetic bare table the new stack MB is not a shatterable section,
-            // so map_user_stack fails, remap returns false, and the failure path
-            // ALSO frees the whole new stack (1 page) -- so exec frees the 1 mmap
-            // + 1 heap + 1 new-stack page = 3. The full success remap is proven
-            // by the QEMU exec /init variant.
+            // Empty image (no segments): this test exercises the mmap/heap +
+            // old-image FREE path, which runs regardless of whether the remap
+            // succeeds. On this synthetic bare table the new stack MB is not a
+            // shatterable section, so map_user_stack fails, remap returns false,
+            // and the failure path ALSO frees the whole new stack (1 page) -- so
+            // exec frees the 1 mmap + 1 heap + 1 old-image (#502 step-0 walk) +
+            // 1 new-stack page = 4. The full success remap is proven by the QEMU
+            // exec /init variant.
             let new_image = crate::elf::LoadedElf::for_test(0x1000, &[]);
             let remapped = exec_replace_context(
                 &new_image,
@@ -3118,8 +3160,8 @@ mod tests {
             let free_after = page::free_count();
             assert_eq!(
                 free_after,
-                free_before + 3,
-                "exec frees the 1 mmap + 1 heap (old image) + 1 new-stack (failure path) page"
+                free_before + 4,
+                "exec frees 1 mmap + 1 heap + 1 old-image (#502 teardown) + 1 new-stack (failure path)"
             );
 
             let procs_ro = &*core::ptr::addr_of!(PROCS);

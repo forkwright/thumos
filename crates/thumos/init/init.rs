@@ -41,7 +41,7 @@ unsafe fn sys_write(fd: u32, buf: *const u8, len: u32) -> u32 {
 ///
 /// # Safety
 /// Yields to the scheduler; the kernel resumes this process after the interval.
-#[cfg(any(thumos_init_sleep, thumos_init_fork))]
+#[cfg(any(thumos_init_sleep, thumos_init_fork, thumos_init_forkexec))]
 #[inline(always)]
 unsafe fn sys_sleep(ms: u32) {
     // SAFETY: issues SVC #7 (Sleep) per the thumos ABI; the kernel marks this
@@ -79,7 +79,7 @@ unsafe fn sys_exit(code: u32) -> ! {
 ///
 /// # Safety
 /// Creates a child process; both branches return here (the #478 ctx seed).
-#[cfg(thumos_init_fork)]
+#[cfg(any(thumos_init_fork, thumos_init_forkexec))]
 #[inline(always)]
 unsafe fn sys_fork() -> u32 {
     let ret;
@@ -95,7 +95,7 @@ unsafe fn sys_fork() -> u32 {
 ///
 /// # Safety
 /// Reads a child's exit status; reaps its slot when Dead.
-#[cfg(thumos_init_fork)]
+#[cfg(any(thumos_init_fork, thumos_init_forkexec))]
 #[inline(always)]
 unsafe fn sys_waitpid(pid: u32) -> u32 {
     let ret;
@@ -111,12 +111,19 @@ unsafe fn sys_waitpid(pid: u32) -> u32 {
 #[cfg(thumos_init_fork)]
 static mut FORK_DATA_CANARY: u32 = 0x0000_5EED;
 
+/// #502 parent-integrity canary: a .data value the forkexec parent re-checks
+/// after the child's exec + exit. A wrong-owner free during the child's exec
+/// (per-process image mapping done wrong) would zero the parent's OWN image
+/// frame -- this catches that where a fork/exit count alone would not.
+#[cfg(thumos_init_forkexec)]
+static mut PARENT_CANARY: u32 = 0x600D_600D;
+
 /// execve(path, argv, envp) -> only returns (u32 errno) on FAILURE (#489); on
 /// success the process image is replaced and never returns here.
 ///
 /// # Safety
 /// Replaces this process's image with the program at `path`.
-#[cfg(thumos_init_exec)]
+#[cfg(any(thumos_init_exec, thumos_init_forkexec))]
 #[inline(always)]
 unsafe fn sys_execve(path: *const u8, argv: u32, envp: u32) -> u32 {
     let ret;
@@ -281,6 +288,49 @@ pub extern "C" fn _start() -> ! {
                 b"init: fork isolation intact\n"
             } else {
                 b"init: fork isolation BROKEN\n"
+            };
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+        }
+        // #502 forkexec harness: /init forks; the CHILD execs /init2 (which must
+        // run /init2's OWN image + print "init2: reached via exec", NOT re-run
+        // this /init image -- the identity-USER_TEXT fork bomb); the PARENT
+        // waitpids the child, then verifies its own .data survived the child's
+        // exec (a wrong-owner free during exec would zero the parent's frame).
+        #[cfg(thumos_init_forkexec)]
+        {
+            let s = b"forkexec: start\n";
+            sys_write(1, s.as_ptr(), u32::try_from(s.len()).unwrap_or(0));
+            core::ptr::write_volatile(core::ptr::addr_of_mut!(PARENT_CANARY), 0x600D_600D);
+            let pid = sys_fork();
+            if pid == 0 {
+                // CHILD: exec /init2. On success this image is replaced (never
+                // returns here); a #502 fork bomb would re-run THIS /init instead.
+                let m = b"forkexec: child exec-ing /init2\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_execve(b"/init2\0".as_ptr(), 0, 0);
+                let f = b"forkexec: child exec FAILED\n";
+                sys_write(1, f.as_ptr(), u32::try_from(f.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            if pid == u32::MAX {
+                let m = b"forkexec: fork FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            let m = b"forkexec: parent waiting\n";
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+            // Reap the child (non-blocking waitpid; sleep yields to the child).
+            loop {
+                if sys_waitpid(pid) != u32::MAX {
+                    break;
+                }
+                sys_sleep(10);
+            }
+            let ok = core::ptr::read_volatile(core::ptr::addr_of!(PARENT_CANARY)) == 0x600D_600D;
+            let m: &[u8] = if ok {
+                b"forkexec: parent integrity ok\n"
+            } else {
+                b"forkexec: parent integrity BROKEN\n"
             };
             sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
         }

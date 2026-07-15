@@ -115,10 +115,22 @@ pub(crate) struct LoadedElf {
     pub pages_used: usize,
     /// `(vaddr, memsz, p_flags)` per PT_LOAD segment (#482), so `spawn_user`
     /// can map each segment PL0-accessible with W^X permissions derived from
-    /// `p_flags`. Identity-mapped, so vaddr is both the link and load address.
+    /// `p_flags`. The link address is `vaddr`; the LOAD address is
+    /// `image_phys + (vaddr - image_lo)` (#502, no longer identity).
     segments: [(usize, usize, u32); 16],
     /// Number of valid entries in `segments`.
     seg_count: usize,
+    /// Physical base of the per-process image frame the segments were loaded
+    /// into (#502). `USER_TEXT_BASE` maps here (non-identity), so each process
+    /// gets its own image. On the host and for the unconfined `load()` this is
+    /// `image_lo` (identity), preserving host-test behaviour.
+    pub image_phys: usize,
+    /// Lowest segment `vaddr` -- the link-address base the image frame anchors
+    /// at. `image_phys` corresponds to `image_lo`.
+    pub image_lo: usize,
+    /// Contiguous page count of the image frame (`validated.total_pages`), for
+    /// freeing it on a map failure / exec teardown.
+    pub image_pages: usize,
 }
 
 impl LoadedElf {
@@ -135,11 +147,17 @@ impl LoadedElf {
         for (i, s) in segments.iter().enumerate().take(16) {
             segs[i] = *s;
         }
+        // Identity image (image_phys == image_lo) so map_user_image maps
+        // va -> va in host tests, matching the pre-#502 behaviour.
+        let image_lo = segments.iter().map(|s| s.0).min().unwrap_or(0);
         Self {
             entry,
             pages_used: 0,
             segments: segs,
             seg_count: segments.len().min(16),
+            image_phys: image_lo,
+            image_lo,
+            image_pages: 0,
         }
     }
 }
@@ -361,13 +379,78 @@ pub(crate) fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
 }
 
 /// `load()`, but reject any PT_LOAD segment outside `[lo, hi)` -- the reserved
-/// user-image window (#489) -- BEFORE writing a byte. A single `validate()`
-/// pass gates both the format and the placement, so a boot/exec image can never
-/// write into page-allocator RAM or escape the exec revocation surface, and
-/// fail-before-destroy holds (the check precedes every write). Every authored
-/// image links at USER_TEXT_BASE (init.ld).
-pub(crate) fn load_confined(data: &[u8], lo: usize, hi: usize) -> Result<LoadedElf, ElfError> {
+/// user-image window (#489) -- BEFORE writing a byte, and (#502) load into a
+/// freshly-allocated per-process image frame rather than the identity vaddr.
+/// A single `validate()` pass gates both format and placement, so a boot/exec
+/// image can never write into page-allocator RAM or escape the exec revocation
+/// surface, and fail-before-destroy holds. Every authored image links at
+/// USER_TEXT_BASE (init.ld). The returned `LoadedElf` carries the image frame
+/// base (`image_phys`/`image_lo`/`image_pages`) for `map_user_image` + teardown.
+///
+/// # Safety
+///
+/// The CURRENT TTBR0 must be the kernel L1 (`mmu::table_base()`). On arm this
+/// writes segment bytes to the freshly-allocated `image_phys` and reads the
+/// kernel-heap-backed `data` slice through raw physical addresses; a forked
+/// caller's TTBR0 user-remaps allocator-range VAs, so writing/reading under it
+/// could alias another process's memory (the #497 zero-on-free hazard class).
+/// kinit runs under the kernel L1; `sys_execve` switches to it before calling.
+pub(crate) unsafe fn load_confined(
+    data: &[u8],
+    lo: usize,
+    hi: usize,
+) -> Result<LoadedElf, ElfError> {
     load_impl(data, Some((lo, hi)))
+}
+
+/// #502 CONFINED-load pre-pass: validate every segment lands in `[lo, hi)`,
+/// prove the segments tile a gapless span (`span == total_pages`), and allocate
+/// the contiguous per-process image frame. Returns `(image_phys, image_lo)`.
+///
+/// WHY its own `#[inline(never)]` function: see the call site in `load_impl` --
+/// keeping this out of load_impl's frame is what prevents the armv7 exec-path
+/// codegen from corrupting the returned `ValidatedElf`.
+#[inline(never)]
+fn plan_confined_image(
+    validated: &ValidatedElf,
+    lo: usize,
+    hi: usize,
+) -> Result<(usize, usize), ElfError> {
+    let mut lo_img = usize::MAX;
+    let mut max_end = 0usize;
+    for idx in 0..validated.count {
+        let (vaddr, memsz, _, _, _) = validated.segments[idx];
+        // Fully inside [lo, hi). Rejecting here (before alloc/write) keeps
+        // fail-before-destroy AND makes the (vaddr - lo_img) offset in load_impl
+        // non-negative (vaddr >= lo_img). vaddr + memsz cannot overflow:
+        // validate() proved it via #318. Per-segment PAGE alignment is enforced
+        // by map_user_image (process.rs) -- a non-aligned image fails there
+        // cleanly (the image frame is freed on the spawn/exec map-failure path),
+        // so it is not re-checked here (which would also reject the host test's
+        // arbitrary-aligned static-buffer vaddr).
+        if vaddr < lo || vaddr + memsz > hi {
+            return Err(ElfError::InvalidSegment);
+        }
+        lo_img = lo_img.min(vaddr);
+        max_end = max_end.max(vaddr + memsz);
+    }
+    // INVARIANT (#502): span == Σ ceil(memsz/PAGE) (= total_pages) means, by
+    // pigeonhole, the segments tile the span with NO gaps and NO overlaps -- so
+    // the contiguous image frame maps exactly, every allocated page is mapped,
+    // and the L2 walk is a complete ownership record. validate() rejects a
+    // segmentless confined image (its entry must fall inside a loaded segment),
+    // so count >= 1 here.
+    let span_pages = (max_end - lo_img).div_ceil(page::PAGE_SIZE);
+    if span_pages != validated.total_pages {
+        return Err(ElfError::InvalidSegment);
+    }
+    // Allocate the contiguous per-process image frame (arm only; host
+    // load_confined writes to real host addresses at identity vaddr).
+    #[cfg(target_arch = "arm")]
+    let phys = page::alloc_contiguous(validated.total_pages).ok_or(ElfError::OutOfMemory)?;
+    #[cfg(not(target_arch = "arm"))]
+    let phys = lo_img;
+    Ok((phys, lo_img))
 }
 
 fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf, ElfError> {
@@ -389,25 +472,40 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
         return Err(ElfError::OutOfMemory);
     }
 
+    // #502: for a CONFINED image, validate placement + allocate a per-process
+    // image frame BEFORE any write (fail-before-destroy), then load INTO that
+    // frame instead of the identity vaddr, so every process gets its own image.
+    // This pre-pass REPLACES the old in-write-loop per-segment placement check.
+    let (image_phys, image_lo) = match placement {
+        // WHY a separate #[inline(never)] call (#502): folding this placement +
+        // allocation logic inline inflated load_impl's stack frame enough that,
+        // on the register-pressured exec path, armv7 codegen corrupted the
+        // `validated` segment array `validate()` had just returned (each
+        // segment's recorded memsz came back == its vaddr, overshooting the
+        // window and spuriously rejecting a valid image). Giving the pre-pass its
+        // own frame keeps load_impl shallow and `validated` intact.
+        Some((lo, hi)) => plan_confined_image(&validated, lo, hi)?,
+        // Unconfined load() (host tests): identity write to vaddr, no image frame.
+        None => (0, 0),
+    };
+
     let mut pages_used = 0;
 
     for idx in 0..validated.count {
         let (vaddr, memsz, filesz, file_offset, _flags) = validated.segments[idx];
 
-        // #489: enforce the placement window BEFORE writing THIS segment
-        // (fail-before-destroy). Folded into the write loop -- the identical
-        // read the write uses -- because a SEPARATE pre-pass over
-        // validated.segments mis-read the packed-derived tuples on the exec
-        // path. INVARIANT: for an in-window image (every authored image) no
-        // segment ever trips this, so the loop writes uninterrupted; a rejected
-        // out-of-window image stops at its FIRST bad segment, having written
-        // only prior in-window ones (all within sanctioned user DRAM per #318).
-        if let Some((lo, hi)) = placement {
-            // vaddr + memsz cannot overflow: validate() proved it via #318.
-            if vaddr < lo || vaddr + memsz > hi {
-                return Err(ElfError::InvalidSegment);
-            }
-        }
+        // #502: physical write target. A confined image writes into its
+        // per-process frame (arm: image_phys + (vaddr - image_lo)); host and the
+        // unconfined load() write identity vaddr. Placement was fully validated
+        // in the pre-pass above, so no per-segment check here.
+        #[cfg(target_arch = "arm")]
+        let seg_dest = if placement.is_some() {
+            image_phys + (vaddr - image_lo)
+        } else {
+            vaddr
+        };
+        #[cfg(not(target_arch = "arm"))]
+        let seg_dest = vaddr;
 
         // WHY: identical to the checked computation validate() already
         // performed for this same memsz while building validated.total_pages
@@ -417,11 +515,10 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
         for p in 0..num_pages {
             pages_used += 1;
 
-            // NOTE: identity-mapped, so we write directly to the
-            // page::PAGE_SIZE-aligned physical address vaddr + p*PAGE_SIZE.
-            // #318 validated [vaddr, vaddr+memsz) above, so this offset
-            // cannot leave that range or overflow.
-            let dest = vaddr + p * page::PAGE_SIZE;
+            // #502: write to the per-process image frame (or identity vaddr on
+            // host / unconfined). The pre-pass validated [vaddr, vaddr+memsz) is
+            // in-window, so seg_dest + p*PAGE stays within the allocated frame.
+            let dest = seg_dest + p * page::PAGE_SIZE;
             let dest_ptr = dest as *mut u8;
 
             // Copy file data INTO this page
@@ -446,10 +543,12 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
                 } else {
                     0 // BSS: zero-filled
                 };
-                // SAFETY: dest (vaddr) is identity-mapped DRAM within
-                // user-accessible RAM (validated by #318's
-                // validate_user_buffer check above). byte_offset -
-                // page_start < PAGE_SIZE, so the write stays within the
+                // SAFETY: dest is a page-aligned address in the per-process
+                // image frame (arm confined) -- a freshly alloc_contiguous'd
+                // frame the caller guarantees is identity-mapped under the LIVE
+                // kernel L1 (load_confined's `unsafe` precondition, #502) -- or
+                // an identity user vaddr (host / unconfined load()). byte_offset
+                // - page_start < PAGE_SIZE, so the write stays within the
                 // segment's declared page range.
                 unsafe {
                     dest_ptr.add(byte_offset - page_start).write(val);
@@ -470,6 +569,9 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
         pages_used,
         segments,
         seg_count: validated.count,
+        image_phys,
+        image_lo,
+        image_pages: validated.total_pages,
     })
 }
 
@@ -923,7 +1025,10 @@ mod tests {
         // A window that EXCLUDES the segment's real address -> reject.
         let lo = vaddr.wrapping_add(0x1_0000);
         let hi = lo.wrapping_add(0x1_0000);
-        let r = load_confined(&data, lo, hi);
+        // SAFETY: on host, load_confined writes identity to real host addresses
+        // (no per-process frame, no TTBR0) -- the arm kernel-L1 precondition is
+        // vacuous here.
+        let r = unsafe { load_confined(&data, lo, hi) };
         assert!(
             matches!(r, Err(ElfError::InvalidSegment)),
             "an out-of-window segment must be rejected, got {r:?} (vaddr={vaddr:#x} lo={lo:#x} hi={hi:#x})"
@@ -935,7 +1040,8 @@ mod tests {
 
         // The SAME image loads when the window includes it (plain load / a
         // window that contains vaddr) -- proving the gate is placement, not format.
-        assert!(load_confined(&data, vaddr, vaddr.wrapping_add(0x1000)).is_ok());
+        // SAFETY: as above -- host identity write, no TTBR0 precondition.
+        assert!(unsafe { load_confined(&data, vaddr, vaddr.wrapping_add(0x1000)) }.is_ok());
     }
 
     /// #328: when the free pool is smaller than the segment budget, load()

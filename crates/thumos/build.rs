@@ -193,7 +193,7 @@ fn compile_init_binary(
     .arg("link-arg=max-page-size=0x100")
     // WHY (#487): declare the probe cfgs so a direct rustc compile does not warn.
     .arg("--check-cfg")
-    .arg("cfg(thumos_init_kread, thumos_init_kwrite, thumos_init_kexec, thumos_init_cp15, thumos_init_sleep, thumos_init_fork, thumos_init_exec)");
+    .arg("cfg(thumos_init_kread, thumos_init_kwrite, thumos_init_kexec, thumos_init_cp15, thumos_init_sleep, thumos_init_fork, thumos_init_exec, thumos_init_forkexec)");
     if let Some(cfg) = variant_cfg {
         cmd.arg("--cfg").arg(cfg);
     }
@@ -227,10 +227,13 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     println!("cargo:rerun-if-env-changed=THUMOS_INIT_VARIANT");
     let variant_cfg = match env::var("THUMOS_INIT_VARIANT") {
         Ok(v) if !v.is_empty() => {
-            if !["kread", "kwrite", "kexec", "cp15", "sleep", "fork", "exec"].contains(&v.as_str())
+            if ![
+                "kread", "kwrite", "kexec", "cp15", "sleep", "fork", "exec", "forkexec",
+            ]
+            .contains(&v.as_str())
             {
                 die(&format!(
-                    "#487: unknown THUMOS_INIT_VARIANT '{v}' (expected kread|kwrite|kexec|cp15|sleep|fork|exec)"
+                    "#487: unknown THUMOS_INIT_VARIANT '{v}' (expected kread|kwrite|kexec|cp15|sleep|fork|exec|forkexec)"
                 ));
             }
             Some(format!("thumos_init_{v}"))
@@ -248,8 +251,12 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
 
     // #489: a SECOND userspace program the exec /init variant execs. Always
     // embedded (tiny; unused unless /init execs it -- kinit only spawns /init
-    // and /shell by name). NOT named "shell": kinit auto-spawns /shell, which
-    // would clobber /init's same-VA image.
+    // and /shell by name). NOT named "shell": kinit auto-spawns /shell, and this
+    // program deliberately UNDEF-faults on a cp15 probe (its PL0 proof), so
+    // auto-spawning it would fault at boot. NOTE (#502): the old reason -- that a
+    // /shell would "clobber /init's same-VA image" -- no longer holds now that
+    // every process loads into its OWN per-process image frame; a real /shell
+    // that coexists with /init is unblocked (tracked as a follow-up).
     let init2_src = manifest_dir.join("init/init2.rs");
     println!("cargo:rerun-if-changed={}", init2_src.display());
     let init2_elf = out_dir.join("init2.elf");
