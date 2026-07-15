@@ -973,7 +973,15 @@ fn sys_brk(new_break_raw: u32) -> u32 {
         for i in 0..pages_needed {
             let vaddr = current + i * page::PAGE_SIZE;
             let Some(phys) = page::alloc_page() else {
-                // OOM: roll back already-allocated pages for this brk call
+                // OOM: roll back already-allocated pages for this brk call.
+                // #497: free under the kernel L1 (zero-on-free aliasing), then
+                // restore the caller's table before returning. The loop has no
+                // early return, so the restore always runs.
+                // SAFETY: table_base() is the always-valid kernel L1; IRQs are
+                // masked under SVC; pt is restored below before the return.
+                unsafe {
+                    mmu::switch_addr_space(mmu::table_base());
+                }
                 for j in 0..i {
                     let rollback_vaddr = current + j * page::PAGE_SIZE;
                     // SAFETY: pt is the current process's valid L1 table and
@@ -981,7 +989,8 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                     // These pages were successfully mapped in earlier
                     // iterations; the physical frame is read before the L2
                     // entry is cleared so it can be returned to the page
-                    // allocator instead of leaking (#226).
+                    // allocator instead of leaking (#226); the free zeroes it
+                    // under the kernel L1 (#497).
                     unsafe {
                         let rollback_phys = mmu::read_l2_phys(pt, rollback_vaddr);
                         mmu::unmap_page(pt, rollback_vaddr);
@@ -990,6 +999,10 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                             page::free_page(rollback_phys);
                         }
                     }
+                }
+                // SAFETY: restore the caller's table before returning to PL0.
+                unsafe {
+                    mmu::switch_addr_space(pt);
                 }
                 let Ok(current_u32) = u32::try_from(current) else {
                     return EINVAL;
@@ -1002,10 +1015,15 @@ fn sys_brk(new_break_raw: u32) -> u32 {
             let ok = unsafe { mmu::map_page(pt, vaddr, phys, l2_attrs) };
             if !ok {
                 // Mapping failed (e.g., L2 pool exhausted) -- free the page
+                // under the kernel L1 (#497 zero-on-free aliasing), restoring
+                // the caller's table before returning.
                 // SAFETY: phys was just returned by alloc_page() and has not
-                // been mapped (map_page failed), so it is safe to free.
+                // been mapped (map_page failed), so it is safe to free; the
+                // kernel-L1 switch is atomic under SVC and pt is restored.
                 unsafe {
+                    mmu::switch_addr_space(mmu::table_base());
                     page::free_page(phys);
+                    mmu::switch_addr_space(pt);
                 }
                 let Ok(current_u32) = u32::try_from(current) else {
                     return EINVAL;
@@ -1015,16 +1033,28 @@ fn sys_brk(new_break_raw: u32) -> u32 {
         }
         process::set_heap_break(new_break);
     } else if new_break < current {
-        // Shrink: unmap and free pages from new break to current break
+        // Shrink: unmap and free pages from new break to current break.
+        // #497: page::free_page zeros the frame through the CURRENT TTBR0
+        // (page.rs zero-on-free); a forked process user-remaps allocator-range
+        // VAs, so a raw phys write could alias another process's memory. Free
+        // under the kernel L1 (identity, no user remaps), then restore the
+        // caller's table -- the fork_copy_phase / exit_cleanup bracket.
         let pages_to_free = (current - new_break) / page::PAGE_SIZE;
+        // SAFETY: table_base() is the always-valid kernel L1; IRQs are masked
+        // under SVC so the switch window is atomic; pt is restored below before
+        // returning to PL0. The loop has no early return, so the restore always
+        // runs.
+        unsafe {
+            mmu::switch_addr_space(mmu::table_base());
+        }
         for i in 0..pages_to_free {
             let vaddr = new_break + i * page::PAGE_SIZE;
             // SAFETY: pt is the current process's valid L1 table and vaddr is
-            // page-aligned within the currently mapped heap region. The
-            // physical frame is read before the L2 entry is cleared so it can
-            // be returned to the page allocator instead of leaking (#226);
-            // flush_tlb_page invalidates the TLB entry after the L2 entry is
-            // zeroed.
+            // page-aligned within the currently mapped heap region. read_l2_phys
+            // / unmap_page walk pt by physical address (TTBR0-independent). The
+            // physical frame is read before the L2 entry is cleared so it can be
+            // returned to the page allocator instead of leaking (#226); the free
+            // zeroes it under the kernel L1 (#497).
             unsafe {
                 let phys = mmu::read_l2_phys(pt, vaddr);
                 mmu::unmap_page(pt, vaddr);
@@ -1033,6 +1063,10 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                     page::free_page(phys);
                 }
             }
+        }
+        // SAFETY: restore the caller's table before returning to PL0.
+        unsafe {
+            mmu::switch_addr_space(pt);
         }
         process::set_heap_break(new_break);
     }
@@ -1135,10 +1169,17 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     for i in 0..page_count {
         let vaddr = candidate + i * page::PAGE_SIZE;
         let Some(phys) = page::alloc_page() else {
-            // OOM: roll back previously mapped pages, freeing their
-            // physical frames (not just unmapping) -- the old rollback
-            // only unmapped, permanently leaking every already-mapped
-            // frame (issue #282 finding 13, same class as #226/#328).
+            // OOM: roll back previously mapped pages, freeing their physical
+            // frames (not just unmapping) -- the old rollback only unmapped,
+            // permanently leaking every already-mapped frame (issue #282
+            // finding 13, same class as #226/#328). #497: free under the kernel
+            // L1 (zero-on-free aliasing), restoring the caller's table before
+            // the error return.
+            // SAFETY: table_base() is the always-valid kernel L1; IRQs are
+            // masked under SVC; pt is restored below before the return.
+            unsafe {
+                mmu::switch_addr_space(mmu::table_base());
+            }
             for j in 0..i {
                 let rollback_vaddr = candidate + j * page::PAGE_SIZE;
                 // SAFETY: pt is the current process's valid L1 table and
@@ -1155,6 +1196,10 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
                     }
                 }
             }
+            // SAFETY: restore the caller's table before returning to PL0.
+            unsafe {
+                mmu::switch_addr_space(pt);
+            }
             return MAP_FAILED;
         };
 
@@ -1162,6 +1207,14 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         // page-aligned within the anonymous mmap region, phys is freshly allocated.
         let ok = unsafe { mmu::map_page(pt, vaddr, phys, l2_attrs) };
         if !ok {
+            // map_page failed. #497: free the just-allocated frame + roll back
+            // every prior frame under the kernel L1 (zero-on-free aliasing),
+            // restoring the caller's table before the error return.
+            // SAFETY: table_base() is the always-valid kernel L1; IRQs are
+            // masked under SVC; pt is restored below before the return.
+            unsafe {
+                mmu::switch_addr_space(mmu::table_base());
+            }
             // SAFETY: phys was just returned by alloc_page() and has not been
             // mapped (map_page failed), so it is safe to free.
             unsafe {
@@ -1184,6 +1237,10 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
                     }
                 }
             }
+            // SAFETY: restore the caller's table before returning to PL0.
+            unsafe {
+                mmu::switch_addr_space(pt);
+            }
             return MAP_FAILED;
         }
     }
@@ -1195,8 +1252,15 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         prot: prot_flags,
     };
     if process::add_mapping(mapping).is_none() {
-        // Mapping table full -- roll back, freeing every physical frame
-        // mapped above (issue #282 finding 13).
+        // Mapping table full -- roll back, freeing every physical frame mapped
+        // above (issue #282 finding 13). #497: free under the kernel L1
+        // (zero-on-free aliasing), restoring the caller's table before the
+        // error return.
+        // SAFETY: table_base() is the always-valid kernel L1; IRQs are masked
+        // under SVC; pt is restored below before the return.
+        unsafe {
+            mmu::switch_addr_space(mmu::table_base());
+        }
         for i in 0..page_count {
             let vaddr = candidate + i * page::PAGE_SIZE;
             // SAFETY: pt is the current process's valid L1 table and vaddr
@@ -1211,6 +1275,10 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
                     page::free_page(rollback_phys);
                 }
             }
+        }
+        // SAFETY: restore the caller's table before returning to PL0.
+        unsafe {
+            mmu::switch_addr_space(pt);
         }
         return MAP_FAILED;
     }
@@ -1237,16 +1305,37 @@ fn sys_munmap(arg0: u32, arg1: u32) -> u32 {
         return EINVAL;
     };
 
-    // Unmap all pages in the region
+    // Unmap all pages in the region + free their backing frames.
+    // #497: page::free_page zeros a frame through the CURRENT TTBR0
+    // (zero-on-free); a forked process user-remaps allocator-range VAs, so free
+    // under the kernel L1 (identity, no user remaps), then restore the caller's
+    // table. Reading the phys before clearing each L2 entry also retires the
+    // frame leak -- munmap previously unmapped without ever freeing.
+    // SAFETY: table_base() is the always-valid kernel L1; IRQs are masked under
+    // SVC; pt is restored below before returning to PL0. The loop has no early
+    // return, so the restore always runs.
+    unsafe {
+        mmu::switch_addr_space(mmu::table_base());
+    }
     for i in 0..mapping.pages {
         let vaddr = mapping.start + i * page::PAGE_SIZE;
         // SAFETY: pt is the current process's valid L1 table, vaddr is
         // page-aligned within the mapping returned by remove_mapping().
-        // flush_tlb_page invalidates the TLB entry after the L2 entry is zeroed.
+        // read_l2_phys/unmap_page walk pt by physical address; the free zeroes
+        // the frame under the kernel L1. A None phys (page never faulted in)
+        // simply skips the free.
         unsafe {
+            let phys = mmu::read_l2_phys(pt, vaddr);
             mmu::unmap_page(pt, vaddr);
             mmu::flush_tlb_page(vaddr);
+            if let Some(phys) = phys {
+                page::free_page(phys);
+            }
         }
+    }
+    // SAFETY: restore the caller's table before returning to PL0.
+    unsafe {
+        mmu::switch_addr_space(pt);
     }
 
     0
@@ -1860,6 +1949,33 @@ mod tests {
             u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(),
         );
         assert_eq!(result, 0, "munmap must return 0 on success");
+    }
+
+    /// #497: munmap must return the mapping's backing frames to the allocator.
+    /// Previously it only unmapped, permanently leaking every mmap'd frame.
+    #[test]
+    fn munmap_frees_backing_frames() {
+        unsafe {
+            setup_mm();
+        }
+        let free_baseline = page::free_count();
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
+        let len = u32::try_from(2 * crate::page::PAGE_SIZE).unwrap_or_default();
+        let addr = sys_mmap(0, len, prot, flags_and_fd);
+        assert_ne!(addr, MAP_FAILED, "mmap must succeed");
+        assert_eq!(
+            page::free_count(),
+            free_baseline - 2,
+            "mmap of 2 pages must consume exactly 2 frames"
+        );
+        let result = sys_munmap(addr, len);
+        assert_eq!(result, 0, "munmap must return 0 on success");
+        assert_eq!(
+            page::free_count(),
+            free_baseline,
+            "munmap must return all backing frames to the allocator (#497 leak fix)"
+        );
     }
 
     #[test]
