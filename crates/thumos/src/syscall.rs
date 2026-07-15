@@ -826,14 +826,88 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         new_stack_top - 8
     };
 
-    // Write the argc/argv frame onto the new stack.
-    // WHY(arm-only, #489): the frame is written to the new stack's
-    // identity-mapped DRAM. On the host new_stack_base is a page-bitmap fiction
-    // (never a valid host pointer) and the context switch is a no-op stub, so
-    // the process never resumes -- the writes are both unnecessary and unsound
-    // (a segfault, since the reorder now runs this BEFORE load's error return).
-    // Same gating as the #208 fork stack copy. sp is still computed above so
-    // exec_replace_context gets the right user sp on ARM.
+    // --- Step 5b: LOAD the new image into a fresh per-process frame (#502) ---
+    // Loaded FIRST, on the CALLER's (child's) TTBR0 -- the table that was live
+    // when elf_data was resolved. load_confined reads elf_data (the ramfs image,
+    // identity-mapped) and writes the freshly-allocated per-process image frame
+    // (an allocator-range physical address no process user-remaps, so identity
+    // in every table). It is NON-destructive: it writes a fresh frame, never the
+    // caller's live image, so a load error legitimately returns to the still-
+    // intact old image. load_confined validates format/OOM/placement BEFORE any
+    // write, so an out-of-window / OOM / gappy image fails cleanly.
+    //
+    // WHY not under the kernel L1 (#502 correction): the load needs no raw-phys-
+    // free aliasing protection -- it only writes a fresh, unaliased frame -- so
+    // it stays on the caller's table exactly as the pre-#502 exec did. An earlier
+    // draft switched to table_base() BEFORE this load; running load_impl (which
+    // returns a large ValidatedElf by value) under the just-installed kernel L1
+    // corrupted that stack local and the load spuriously rejected every image.
+    // The kernel-L1 switch below covers only the argv-frame write + the frees in
+    // exec_replace_context (the #497 zero-on-free class), which genuinely need it.
+    // SAFETY: the caller's TTBR0 identity-maps the fresh image frame, satisfying
+    // load_confined's precondition.
+    let loaded = match unsafe {
+        crate::elf::load_confined(
+            elf_data,
+            crate::kconfig::USER_TEXT_BASE,
+            crate::kconfig::RAM_END,
+        )
+    } {
+        Ok(l) => l,
+        // Nothing destructive happened yet. Free the fresh new stack (still on the
+        // caller's table -- an allocator-range identity write) and return the
+        // errno; the caller keeps its intact old image. load_confined errors
+        // at/before its alloc_contiguous (the post-alloc write loop is
+        // infallible), so no image frame leaks here.
+        Err(e) => {
+            // SAFETY: new_stack_base names the EXEC_STACK_PAGES contiguous run
+            // from alloc_contiguous above; unmapped + unused. The free zeroes it
+            // through its allocator-range identity VA on the caller's table.
+            unsafe {
+                page::free_contiguous(new_stack_base, EXEC_STACK_PAGES);
+            }
+            return if e == crate::elf::ElfError::OutOfMemory {
+                ENOMEM
+            } else {
+                ENOEXEC
+            };
+        }
+    };
+
+    // --- Step 6b: close-on-exec (#267) ---
+    // Placed after the LAST failure return so a failed execve leaves the fd
+    // table untouched (POSIX: fds close only on successful exec).
+    let _ = process::with_current_fds(fd::close_cloexec); // WHY: None only if no current process exists during syscall handling, which cannot happen — the sweep has nothing to report on success either way.
+
+    // --- Step 6c: reset signal handlers (POSIX exec semantics) ---
+    // WHY: POSIX requires exec to reset all signal dispositions to SIG_DFL and
+    // clear pending signals that were set via a registered handler. The new
+    // image must not inherit any userspace-installed signal handlers.
+    // SAFETY: called from syscall context (SVC mode, IRQs disabled, single-core).
+    unsafe {
+        process::reset_signal_state();
+    }
+
+    // --- Step 6d: switch to the identity kernel L1 for the raw-phys writes ---
+    // The argv-frame write (into the new stack) and exec_replace_context's frees
+    // (old image/stack/mmap/heap) are raw-physical operations. A forked child's
+    // TTBR0 user-remaps its image VAs; the identity kernel L1 makes every
+    // allocator-range address name its own frame, closing the #497 zero-on-free
+    // aliasing class. From here on there is NO return to the caller -- on success
+    // exec_replace_context installs the new table; on failure it kills the
+    // process -- so no table-restore path is needed.
+    // SAFETY: table_base() is the kernel L1; IRQs are masked under SVC so the
+    // window is atomic. No-op on host.
+    unsafe {
+        mmu::switch_addr_space(mmu::table_base());
+    }
+
+    // Write the argc/argv frame onto the new stack (identity-mapped DRAM, now
+    // under the kernel L1).
+    // WHY(arm-only, #489): on the host new_stack_base is a page-bitmap fiction
+    // (never a valid host pointer) and the context switch is a no-op stub, so the
+    // process never resumes -- the writes are both unnecessary and unsound. sp is
+    // still computed above so exec_replace_context gets the right user sp.
     #[cfg(target_arch = "arm")]
     // SAFETY: sp and every cursor below lie within [new_stack_base,
     // new_stack_top); allocation succeeded; stack pages are identity-mapped, so
@@ -858,51 +932,6 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // arg_data/arg_lens/sp are consumed only inside the arm-only block above;
     // touch them so the host build does not warn them unused under -D warnings.
     let _ = (&arg_data, &arg_lens, sp);
-
-    // --- Step 6: LOAD the new image (DESTRUCTIVE) ---
-    // #489: THE point of no return -- load_confined() overwrites the caller's
-    // live image at its identity vaddrs. Everything above (stack alloc, argv
-    // collection from the still-intact old image) was fail-before-destroy;
-    // nothing below can fail-and-return-to-the-old-image. load_confined checks
-    // BOTH the OOM budget AND the placement window [USER_TEXT_BASE, RAM_END)
-    // BEFORE any write, so an out-of-window or OOM image fails cleanly without
-    // touching the old image or page-allocator RAM (#489 defects 2/3). argv
-    // strings were copied into kernel buffers + the new stack ABOVE, so
-    // overwriting the old image (where argv[] literals live) here is safe (#499).
-    let loaded = match crate::elf::load_confined(
-        elf_data,
-        crate::kconfig::USER_TEXT_BASE,
-        crate::kconfig::RAM_END,
-    ) {
-        Ok(l) => l,
-        // WHY(#489): the new stack was allocated BEFORE load (fail-before-destroy
-        // reorder), so free it on a load error -- load_confined rejected the
-        // image without writing it, and the caller keeps its intact old image.
-        Err(e) => {
-            // SAFETY: new_stack_base names the EXEC_STACK_PAGES contiguous run
-            // from alloc_contiguous above; unmapped and unused.
-            unsafe { page::free_contiguous(new_stack_base, EXEC_STACK_PAGES) };
-            return if e == crate::elf::ElfError::OutOfMemory {
-                ENOMEM
-            } else {
-                ENOEXEC
-            };
-        }
-    };
-
-    // --- Step 6b: close-on-exec (#267) ---
-    // Placed after the LAST failure return so a failed execve leaves the fd
-    // table untouched (POSIX: fds close only on successful exec).
-    let _ = process::with_current_fds(fd::close_cloexec); // WHY: None only if no current process exists during syscall handling, which cannot happen — the sweep has nothing to report on success either way.
-
-    // --- Step 6: reset signal handlers (POSIX exec semantics) ---
-    // WHY: POSIX requires exec to reset all signal dispositions to SIG_DFL and
-    // clear pending signals that were set via a registered handler. The new
-    // image must not inherit any userspace-installed signal handlers.
-    // SAFETY: called from syscall context (SVC mode, IRQs disabled, single-core).
-    unsafe {
-        process::reset_signal_state();
-    }
 
     // --- Step 7: remap the address space + install the new context ---
     // exec_replace_context revokes+frees the old image/stack/mmap/heap, maps the
