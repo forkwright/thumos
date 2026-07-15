@@ -251,8 +251,12 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
 
     // #489: a SECOND userspace program the exec /init variant execs. Always
     // embedded (tiny; unused unless /init execs it -- kinit only spawns /init
-    // and /shell by name). NOT named "shell": kinit auto-spawns /shell, which
-    // would clobber /init's same-VA image.
+    // and /shell by name). NOT named "shell": kinit auto-spawns /shell, and this
+    // program deliberately UNDEF-faults on a cp15 probe (its PL0 proof), so
+    // auto-spawning it would fault at boot. NOTE (#502): the old reason -- that a
+    // /shell would "clobber /init's same-VA image" -- no longer holds now that
+    // every process loads into its OWN per-process image frame; a real /shell
+    // that coexists with /init is unblocked (tracked as a follow-up).
     let init2_src = manifest_dir.join("init/init2.rs");
     println!("cargo:rerun-if-changed={}", init2_src.display());
     let init2_elf = out_dir.join("init2.elf");

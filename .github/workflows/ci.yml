@@ -359,3 +359,36 @@ jobs:
           ! grep -q 'init2: PRIVILEGED' exec.log || { echo 'FAIL exec: the exec-d image ran at PL1 (mode drop across exec broken -- SECURITY)'; exit 1; }
           ! grep -q 'init: hello from userspace' exec.log || { echo 'FAIL exec: the OLD image kept running after exec (control not transferred)'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' exec.log || { echo 'FAIL exec: kernel did not survive the exec-d process fault'; exit 1; }
+      - name: QEMU fork+exec composes -- per-process images (#502)
+        working-directory: crates/thumos
+        # WHY: the #502 keystone. Pre-#502 every userspace image loaded + mapped
+        # at the SAME identity USER_TEXT frame, so a forked child that exec'd a
+        # new program re-ran the PARENT's image instead (a fork bomb) and two
+        # spawned programs could not coexist. Now each process loads into its OWN
+        # per-process frame. /init forks; the CHILD execs /init2; the PARENT
+        # waitpids it and re-checks its own .data canary.
+        #   - 'init2: reached via exec' proves the child ran /init2's OWN image,
+        #     NOT a re-run of /init -- the fork bomb is dead.
+        #   - the exec marker appearing EXACTLY ONCE is the belt-and-suspenders
+        #     fork-bomb check (a re-run would fork+exec again, repeating it).
+        #   - 'forkexec: parent integrity ok' proves the child's exec (alloc of a
+        #     fresh image frame + teardown of the child's old one) never touched
+        #     the PARENT's separate image frame -- per-process isolation holds.
+        run: |
+          set -uo pipefail
+          THUMOS_INIT_VARIANT=forkexec cargo build --release --target armv7a-none-eabi --features qemu --jobs 8
+          ferc=0
+          THUMOS_INIT_VARIANT=forkexec THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee forkexec.log || ferc=$?
+          echo "=== forkexec: runner rc=$ferc (want 0) ==="
+          test "$ferc" -eq 0 || { echo "FAIL forkexec: kernel did not survive (rc=$ferc; 124=hang 2/3=abort)"; exit 1; }
+          grep -q 'forkexec: start' forkexec.log || { echo 'FAIL forkexec: harness never started'; exit 1; }
+          grep -q 'forkexec: parent waiting' forkexec.log || { echo 'FAIL forkexec: no parent branch (fork did not return the child pid)'; exit 1; }
+          ! grep -q 'forkexec: fork FAILED' forkexec.log || { echo 'FAIL forkexec: fork returned an error'; exit 1; }
+          ! grep -q 'forkexec: child exec FAILED' forkexec.log || { echo 'FAIL forkexec: the child execve returned an error (per-process image load broken)'; exit 1; }
+          grep -q 'init2: reached via exec' forkexec.log || { echo 'FAIL forkexec: the child never ran /init2 -- exec did not load the new per-process image'; exit 1; }
+          xc=$(grep -c 'forkexec: child exec-ing /init2' forkexec.log)
+          test "$xc" -eq 1 || { echo "FAIL forkexec: the exec marker appeared $xc times (want 1) -- a FORK BOMB re-ran /init instead of /init2 (#502 regressed)"; exit 1; }
+          grep -q 'forkexec: parent integrity ok' forkexec.log || { echo 'FAIL forkexec: parent .data was corrupted by the child exec (per-process image isolation broken)'; exit 1; }
+          ! grep -q 'forkexec: parent integrity BROKEN' forkexec.log || { echo 'FAIL forkexec: explicit parent-integrity break'; exit 1; }
+          ! grep -q 'init2: PRIVILEGED' forkexec.log || { echo 'FAIL forkexec: the exec-d child ran at PL1 (mode drop across exec broken -- SECURITY)'; exit 1; }
+          grep -q 'THUMOS-QEMU: service-loop ticks=' forkexec.log || { echo 'FAIL forkexec: kernel did not survive'; exit 1; }
