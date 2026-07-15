@@ -721,6 +721,66 @@ mod tests {
         assert_eq!(validated.count, 1, "one PT_LOAD segment expected");
     }
 
+    /// #501 regression: the exec-path mis-read (a segment's (vaddr, memsz)
+    /// coming back field-shifted, e.g. (0x7ff00000, 0x40) -> (0x0, 0x7ff00000))
+    /// came from a SEPARATE pre-pass that re-parsed via a second validate()
+    /// "peek", now removed -- placement is folded into load()'s single write
+    /// loop. Guard both halves of the Done-when: (1) reading validated.segments
+    /// in a standalone pre-pass yields the exact tuple values the write loop's
+    /// destructure yields (no field shift), and (2) a second validate() over
+    /// the same bytes is idempotent (the peek scenario). Two distinct segments
+    /// so any single-field shift is visible.
+    #[test]
+    fn validate_prepass_and_second_pass_read_segments_identically() {
+        let mut buf = [0u8; ELF32_EHDR_SIZE + 2 * ELF32_PHDR_SIZE];
+        buf[..ELF32_EHDR_SIZE].copy_from_slice(&make_valid_ehdr());
+        buf[44] = 2; // e_phnum = 2
+        buf[24..28].copy_from_slice(&0x4010_0000u32.to_le_bytes()); // e_entry in seg 0
+
+        // Segment 0: PT_LOAD, vaddr 0x40100000, memsz 0x1000.
+        let off0 = ELF32_EHDR_SIZE;
+        buf[off0..off0 + 4].copy_from_slice(&1u32.to_le_bytes());
+        buf[off0 + 8..off0 + 12].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+        buf[off0 + 20..off0 + 24].copy_from_slice(&0x1000u32.to_le_bytes());
+        // Segment 1: PT_LOAD, vaddr 0x40102000, memsz 0x2000 (distinct values).
+        let off1 = ELF32_EHDR_SIZE + ELF32_PHDR_SIZE;
+        buf[off1..off1 + 4].copy_from_slice(&1u32.to_le_bytes());
+        buf[off1 + 8..off1 + 12].copy_from_slice(&0x4010_2000u32.to_le_bytes());
+        buf[off1 + 20..off1 + 24].copy_from_slice(&0x2000u32.to_le_bytes());
+
+        let (_e1, v1) = validate(&buf).expect("first validate must succeed");
+        assert_eq!(v1.count, 2, "two PT_LOAD segments expected");
+
+        // (1) Standalone pre-pass: the tuple layout is
+        // (vaddr, memsz, filesz, file_offset, flags) -- the exact destructure
+        // load_impl's write loop uses. Confirm no field shift.
+        let (v0, m0, _, _, _) = v1.segments[0];
+        assert_eq!(
+            (v0, m0),
+            (0x4010_0000, 0x1000),
+            "segment 0 (vaddr, memsz) must read unshifted in a standalone pre-pass (#501)"
+        );
+        let (v1a, m1, _, _, _) = v1.segments[1];
+        assert_eq!(
+            (v1a, m1),
+            (0x4010_2000, 0x2000),
+            "segment 1 (vaddr, memsz) must read unshifted in a standalone pre-pass (#501)"
+        );
+
+        // (2) A second validate() (the root-cause peek) must be idempotent.
+        let (_e2, v2) = validate(&buf).expect("second validate must succeed");
+        assert_eq!(
+            v2.count, v1.count,
+            "segment count must match across validate passes"
+        );
+        for idx in 0..v1.count {
+            assert_eq!(
+                v1.segments[idx], v2.segments[idx],
+                "segment {idx} must read identically across validate passes (#501)"
+            );
+        }
+    }
+
     /// finding 49: e_entry outside every loaded PT_LOAD segment must be
     /// rejected -- kinit.rs and syscall.rs's sys_execve both transmute this
     /// address straight to a callable function pointer, so an unvalidated
