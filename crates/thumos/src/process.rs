@@ -1688,6 +1688,33 @@ pub unsafe fn exec_replace_context(
         // masked (SVC), so this is atomic.
         mmu::switch_addr_space(mmu::table_base());
 
+        // 0. (#502) Free the OLD image's per-process frame(s) BEFORE revoking the
+        //    L2. Post-#502 the old image lives at its OWN allocator frame(s) --
+        //    contiguous for a spawned process, alloc_page-scattered for a forked
+        //    one -- recorded ONLY in the USER_TEXT MB's L2. reset_shattered_section
+        //    (step 1) erases that record and map_user_image rewrites it, so
+        //    capture-and-free MUST precede the reset. Freeing by the ACTUAL L2
+        //    phys handles both layouts identically. try_free_page no-ops a
+        //    non-allocated / already-free frame. Under the kernel L1 (identity
+        //    zero-on-free) + IRQ-masked; the NEW image frame was already allocated
+        //    by load_confined (allocator-disjoint), so no free hits it.
+        //    INVARIANT: alloc+load-new strictly before free-old (holds -- load
+        //    ran in sys_execve before this call).
+        {
+            // The image window is exactly one 1 MB section (256 4 KB pages).
+            let image_end = crate::kconfig::USER_TEXT_BASE + 0x10_0000;
+            let mut va = crate::kconfig::USER_TEXT_BASE;
+            while va < image_end {
+                if let Some(entry) = mmu::read_l2_entry(pt, va)
+                    && mmu::l2_entry_is_user(entry)
+                    && let Some(phys) = mmu::read_l2_phys(pt, va)
+                {
+                    page::try_free_page(phys);
+                }
+                va += page::PAGE_SIZE;
+            }
+        }
+
         // 1. Revoke the old image's PL0 windows: reset the whole USER_TEXT MB's
         //    L2 entries to identity KERNEL_DEFAULT (keeps the L2 table), so no
         //    stale PL0 image window survives and map_user_image re-maps into the
@@ -1732,11 +1759,12 @@ pub unsafe fn exec_replace_context(
         }
 
         // 4. Map the new image (W^X per segment) + the new stack (RW+XN). The
-        //    new image bytes were already written to identity DRAM by
-        //    elf::load; argv was written to the new stack frames PL1. Mapping
-        //    grants PL0 without moving content. map_user_image reuses the image
-        //    L2 (infallible); only map_user_stack's fresh-MB shatter can fail
-        //    (L2-pool exhaustion). `&` runs BOTH regardless.
+        //    new image bytes were already written to the per-process image frame
+        //    (loaded.image_phys) by elf::load_confined (#502); argv was written
+        //    to the new stack frames under the kernel L1. Mapping grants PL0 and
+        //    points USER_TEXT_BASE at loaded.image_phys. map_user_image reuses
+        //    the image L2 (infallible); only map_user_stack's fresh-MB shatter
+        //    can fail (L2-pool exhaustion). `&` runs BOTH regardless.
         let remap_ok =
             map_user_image(pt, loaded) & map_user_stack(pt, new_stack_base, new_stack_pages);
 
