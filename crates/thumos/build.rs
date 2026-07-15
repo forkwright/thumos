@@ -256,11 +256,22 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     // auto-spawning it would fault at boot. NOTE (#502): the old reason -- that a
     // /shell would "clobber /init's same-VA image" -- no longer holds now that
     // every process loads into its OWN per-process image frame; a real /shell
-    // that coexists with /init is unblocked (tracked as a follow-up).
+    // that coexists with /init now ships (#526), packed as a third CPIO entry
+    // below and spawned by kinit as PID 2 (see init/shell.rs).
     let init2_src = manifest_dir.join("init/init2.rs");
     println!("cargo:rerun-if-changed={}", init2_src.display());
     let init2_elf = out_dir.join("init2.elf");
     compile_init_binary(&rustc, &init2_src, &init_ld, &init2_elf, None);
+
+    // #526: /shell -- a THIRD boot-resident program kinit spawns by name
+    // alongside /init to WITNESS per-process image frames (#502): two userspace
+    // images run from their own frames in one boot. Distinct from init2 (an
+    // exec-only target that UNDEF-faults); /shell prints a marker and exits
+    // cleanly. Compiled variant-agnostic (None), like init2.
+    let shell_src = manifest_dir.join("init/shell.rs");
+    println!("cargo:rerun-if-changed={}", shell_src.display());
+    let shell_elf = out_dir.join("shell.elf");
+    compile_init_binary(&rustc, &shell_src, &init_ld, &shell_elf, None);
 
     let elf = match fs::read(&init_elf) {
         Ok(b) => b,
@@ -270,9 +281,14 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
         Ok(b) => b,
         Err(e) => die(&format!("#489: cannot read built /init2 ELF: {e}")),
     };
+    let elf_shell = match fs::read(&shell_elf) {
+        Ok(b) => b,
+        Err(e) => die(&format!("#526: cannot read built /shell ELF: {e}")),
+    };
 
     let mut archive = cpio_newc_entry("init", &elf, 0o100_755);
     archive.extend_from_slice(&cpio_newc_entry("init2", &elf2, 0o100_755));
+    archive.extend_from_slice(&cpio_newc_entry("shell", &elf_shell, 0o100_755));
     archive.extend_from_slice(&cpio_newc_entry("TRAILER!!!", &[], 0));
     if let Err(e) = fs::write(out_dir.join("initramfs.cpio"), &archive) {
         die(&format!("#474: cannot write initramfs.cpio: {e}"));

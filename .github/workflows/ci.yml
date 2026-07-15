@@ -171,6 +171,16 @@ jobs:
           grep -q 'image-resident initramfs signature verified' boot.log || { echo 'FAIL: initramfs signature was not verified (measured-userspace regression)'; exit 1; }
           grep -q '/init spawned' boot.log || { echo 'FAIL: /init did not spawn from the verified initramfs'; exit 1; }
           grep -q 'init: hello from userspace' boot.log || { echo 'FAIL: userspace /init did not run + syscall (PL0->dispatch->UART)'; exit 1; }
+          # #526/#502: /init AND /shell coexist -- two userspace images running
+          # from their OWN per-process frames in one boot. Pre-#502 the second
+          # load clobbered the first's shared identity USER_TEXT frame, so one
+          # hello marker would print twice and the other never; the two -c==1
+          # counts below are that anti-clobber witness.
+          grep -q '/shell spawned PL0' boot.log || { echo 'FAIL #526: /shell did not spawn (absent from ramfs or spawn regressed)'; exit 1; }
+          grep -q 'shell: hello from userspace' boot.log || { echo 'FAIL #526: /shell did not run + syscall from its own frame'; exit 1; }
+          grep -q '2 userspace ELF processes running' boot.log || { echo 'FAIL #526: kinit did not report both userspace processes running'; exit 1; }
+          ic=$(grep -c 'init: hello from userspace' boot.log); test "$ic" -eq 1 || { echo "FAIL #526: 'init: hello' x$ic (want 1) -- per-process image-frame clobber regressed (#502)"; exit 1; }
+          sc=$(grep -c 'shell: hello from userspace' boot.log); test "$sc" -eq 1 || { echo "FAIL #526: 'shell: hello' x$sc (want 1) -- per-process image-frame clobber regressed (#502)"; exit 1; }
           # #400 render foundation: the kardia service loop paints the home
           # frame through the real screen-dispatch path (not a boot-time one-shot),
           # into a synthetic framebuffer under qemu (virt models no display). The
@@ -271,6 +281,9 @@ jobs:
             grep -q 'kardia: reaped .* fault-killed' "probe-$variant.log" || { echo "FAIL isolation[$variant]: fault-killed process was not reaped (PCB-slot leak -- table exhausts at MAX_PROCS)"; exit 1; }
             ! grep -q 'init: hello from userspace' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /init reached the write -- the PL0 op did NOT fault (ISOLATION BROKEN)"; exit 1; }
             grep -q 'THUMOS-QEMU: service-loop ticks=' "probe-$variant.log" || { echo "FAIL isolation[$variant]: service loop never resumed after the kill (kernel did not survive)"; exit 1; }
+            # #526: /init's fault-kill must be SURGICAL -- the coexisting /shell
+            # (PID 2, its own image frame) runs to completion regardless.
+            grep -q 'shell: hello from userspace' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /shell (PID 2) did not run -- killing /init took down its sibling (#526)"; exit 1; }
           done
           echo "PL0 isolation + graceful kill + reap verified: every PL0-illegal op faults, the process is killed AND reaped, the kernel survives"
       - name: Kernel-fault halts (PL1 fault must NEVER be recovered)
@@ -307,6 +320,7 @@ jobs:
           grep -q 'init: sleeping' sleep.log || { echo 'FAIL sleep: /init did not reach the sleep'; exit 1; }
           grep -q 'init: woke' sleep.log || { echo 'FAIL sleep: /init never resumed from sleep (busy-wait deadlock or lost wake)'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' sleep.log || { echo 'FAIL sleep: service loop did not run (kernel hung during the sleep)'; exit 1; }
+          grep -q 'shell: hello from userspace' sleep.log || { echo 'FAIL sleep: /shell (PID 2) did not run alongside the sleeping /init (#526 coexistence)'; exit 1; }
       - name: QEMU fork correctness + isolation (#478)
         working-directory: crates/thumos
         # WHY: a PL0 fork must give the child its OWN deep-copied memory. /init
@@ -333,6 +347,7 @@ jobs:
           ! grep -q 'USERFAULT:' fork.log || { echo 'FAIL fork: a process faulted (bad child frame, bad mapping, or parent stack freed by the child exit)'; exit 1; }
           grep -q 'init: hello from userspace' fork.log || { echo 'FAIL fork: parent did not continue past the harness'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' fork.log || { echo 'FAIL fork: kernel did not survive'; exit 1; }
+          grep -q 'shell: hello from userspace' fork.log || { echo 'FAIL fork: /shell (PID 2) did not run alongside the forking /init (#526 coexistence)'; exit 1; }
       - name: QEMU exec correctness + PL0 (#489)
         working-directory: crates/thumos
         # WHY: PL0 execve must REPLACE the caller's image with a new one that
@@ -359,6 +374,7 @@ jobs:
           ! grep -q 'init2: PRIVILEGED' exec.log || { echo 'FAIL exec: the exec-d image ran at PL1 (mode drop across exec broken -- SECURITY)'; exit 1; }
           ! grep -q 'init: hello from userspace' exec.log || { echo 'FAIL exec: the OLD image kept running after exec (control not transferred)'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' exec.log || { echo 'FAIL exec: kernel did not survive the exec-d process fault'; exit 1; }
+          grep -q 'shell: hello from userspace' exec.log || { echo 'FAIL exec: /shell (PID 2) did not run alongside the exec-ing /init (#526 coexistence)'; exit 1; }
       - name: QEMU fork+exec composes -- per-process images (#502)
         working-directory: crates/thumos
         # WHY: the #502 keystone. Pre-#502 every userspace image loaded + mapped
@@ -392,3 +408,4 @@ jobs:
           ! grep -q 'forkexec: parent integrity BROKEN' forkexec.log || { echo 'FAIL forkexec: explicit parent-integrity break'; exit 1; }
           ! grep -q 'init2: PRIVILEGED' forkexec.log || { echo 'FAIL forkexec: the exec-d child ran at PL1 (mode drop across exec broken -- SECURITY)'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' forkexec.log || { echo 'FAIL forkexec: kernel did not survive'; exit 1; }
+          grep -q 'shell: hello from userspace' forkexec.log || { echo 'FAIL forkexec: /shell (PID 2) did not run alongside the fork+exec /init (#526 coexistence)'; exit 1; }
