@@ -53,7 +53,6 @@ thumos is pre-hardware. What is proven is the boot path under emulation and the 
 - **Hardware validation** on a physical AGM M7 - the frontier. QEMU exercises the boot path, not the MT6739's binary-only modem/WiFi/BT/GPS blobs.
 - **Boot-wiring**: implemented capabilities are not all reachable from the boot/service loop or from userspace yet; the wiring lands incrementally. See the [kernel wiring audit](docs/KERNEL-WIRING-AUDIT.md).
 - **Real radio I/O**: WiFi packet TX/RX, scan, and association over WMT/STP are hardware work; boot degrades to a fail-closed loopback path when the data path is absent.
-- **Userspace image packaging**: boot reports missing `/init` and `/shell` instead of spawning them.
 - **Aletheia live runtime** ([docs/ALETHEIA-BRIDGE.md](docs/ALETHEIA-BRIDGE.md), `metaxu`): live transport, grant verification, and UI wiring are future work.
 
 ## Related
