@@ -3122,11 +3122,11 @@ mod tests {
             assert!(mmu::map_page(pt, DEFAULT_HEAP_BREAK, heap_phys, l2_attrs));
             set_heap_break(DEFAULT_HEAP_BREAK + page::PAGE_SIZE);
 
-            // A real exec caller has a shattered image MB with the image mapped
-            // (exec_replace_context asserts it). map_page shatters USER_TEXT's MB;
-            // this frame stays allocated across exec (the empty new image maps
-            // nothing, reset only DEMOTES the MB), so alloc it BEFORE the baseline
-            // and it does not skew the freed-frame delta measured below.
+            // A real exec caller has a shattered image MB with the OLD per-process
+            // image mapped (exec_replace_context asserts it). map_page shatters
+            // USER_TEXT's MB; this frame is the old image, which #502's exec
+            // teardown (the pre-reset L2 walk, step 0) FREES -- so it IS part of
+            // the freed-frame delta measured below.
             let img_phys = page::alloc_page().unwrap();
             assert!(mmu::map_page(
                 pt,
@@ -3140,13 +3140,14 @@ mod tests {
             let new_stack_phys = page::alloc_page().unwrap();
             let free_before = page::free_count();
 
-            // Empty image (no segments): this test exercises the mmap/heap FREE
-            // path, which runs regardless of whether the remap succeeds. On this
-            // synthetic bare table the new stack MB is not a shatterable section,
-            // so map_user_stack fails, remap returns false, and the failure path
-            // ALSO frees the whole new stack (1 page) -- so exec frees the 1 mmap
-            // + 1 heap + 1 new-stack page = 3. The full success remap is proven
-            // by the QEMU exec /init variant.
+            // Empty image (no segments): this test exercises the mmap/heap +
+            // old-image FREE path, which runs regardless of whether the remap
+            // succeeds. On this synthetic bare table the new stack MB is not a
+            // shatterable section, so map_user_stack fails, remap returns false,
+            // and the failure path ALSO frees the whole new stack (1 page) -- so
+            // exec frees the 1 mmap + 1 heap + 1 old-image (#502 step-0 walk) +
+            // 1 new-stack page = 4. The full success remap is proven by the QEMU
+            // exec /init variant.
             let new_image = crate::elf::LoadedElf::for_test(0x1000, &[]);
             let remapped = exec_replace_context(
                 &new_image,
@@ -3159,8 +3160,8 @@ mod tests {
             let free_after = page::free_count();
             assert_eq!(
                 free_after,
-                free_before + 3,
-                "exec frees the 1 mmap + 1 heap (old image) + 1 new-stack (failure path) page"
+                free_before + 4,
+                "exec frees 1 mmap + 1 heap + 1 old-image (#502 teardown) + 1 new-stack (failure path)"
             );
 
             let procs_ro = &*core::ptr::addr_of!(PROCS);

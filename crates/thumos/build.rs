@@ -193,7 +193,7 @@ fn compile_init_binary(
     .arg("link-arg=max-page-size=0x100")
     // WHY (#487): declare the probe cfgs so a direct rustc compile does not warn.
     .arg("--check-cfg")
-    .arg("cfg(thumos_init_kread, thumos_init_kwrite, thumos_init_kexec, thumos_init_cp15, thumos_init_sleep, thumos_init_fork, thumos_init_exec)");
+    .arg("cfg(thumos_init_kread, thumos_init_kwrite, thumos_init_kexec, thumos_init_cp15, thumos_init_sleep, thumos_init_fork, thumos_init_exec, thumos_init_forkexec)");
     if let Some(cfg) = variant_cfg {
         cmd.arg("--cfg").arg(cfg);
     }
@@ -227,10 +227,13 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     println!("cargo:rerun-if-env-changed=THUMOS_INIT_VARIANT");
     let variant_cfg = match env::var("THUMOS_INIT_VARIANT") {
         Ok(v) if !v.is_empty() => {
-            if !["kread", "kwrite", "kexec", "cp15", "sleep", "fork", "exec"].contains(&v.as_str())
+            if ![
+                "kread", "kwrite", "kexec", "cp15", "sleep", "fork", "exec", "forkexec",
+            ]
+            .contains(&v.as_str())
             {
                 die(&format!(
-                    "#487: unknown THUMOS_INIT_VARIANT '{v}' (expected kread|kwrite|kexec|cp15|sleep|fork|exec)"
+                    "#487: unknown THUMOS_INIT_VARIANT '{v}' (expected kread|kwrite|kexec|cp15|sleep|fork|exec|forkexec)"
                 ));
             }
             Some(format!("thumos_init_{v}"))

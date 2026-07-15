@@ -403,6 +403,56 @@ pub(crate) unsafe fn load_confined(
     load_impl(data, Some((lo, hi)))
 }
 
+/// #502 CONFINED-load pre-pass: validate every segment lands in `[lo, hi)`,
+/// prove the segments tile a gapless span (`span == total_pages`), and allocate
+/// the contiguous per-process image frame. Returns `(image_phys, image_lo)`.
+///
+/// WHY its own `#[inline(never)]` function: see the call site in `load_impl` --
+/// keeping this out of load_impl's frame is what prevents the armv7 exec-path
+/// codegen from corrupting the returned `ValidatedElf`.
+#[inline(never)]
+fn plan_confined_image(
+    validated: &ValidatedElf,
+    lo: usize,
+    hi: usize,
+) -> Result<(usize, usize), ElfError> {
+    let mut lo_img = usize::MAX;
+    let mut max_end = 0usize;
+    for idx in 0..validated.count {
+        let (vaddr, memsz, _, _, _) = validated.segments[idx];
+        // Fully inside [lo, hi). Rejecting here (before alloc/write) keeps
+        // fail-before-destroy AND makes the (vaddr - lo_img) offset in load_impl
+        // non-negative (vaddr >= lo_img). vaddr + memsz cannot overflow:
+        // validate() proved it via #318. Per-segment PAGE alignment is enforced
+        // by map_user_image (process.rs) -- a non-aligned image fails there
+        // cleanly (the image frame is freed on the spawn/exec map-failure path),
+        // so it is not re-checked here (which would also reject the host test's
+        // arbitrary-aligned static-buffer vaddr).
+        if vaddr < lo || vaddr + memsz > hi {
+            return Err(ElfError::InvalidSegment);
+        }
+        lo_img = lo_img.min(vaddr);
+        max_end = max_end.max(vaddr + memsz);
+    }
+    // INVARIANT (#502): span == Σ ceil(memsz/PAGE) (= total_pages) means, by
+    // pigeonhole, the segments tile the span with NO gaps and NO overlaps -- so
+    // the contiguous image frame maps exactly, every allocated page is mapped,
+    // and the L2 walk is a complete ownership record. validate() rejects a
+    // segmentless confined image (its entry must fall inside a loaded segment),
+    // so count >= 1 here.
+    let span_pages = (max_end - lo_img).div_ceil(page::PAGE_SIZE);
+    if span_pages != validated.total_pages {
+        return Err(ElfError::InvalidSegment);
+    }
+    // Allocate the contiguous per-process image frame (arm only; host
+    // load_confined writes to real host addresses at identity vaddr).
+    #[cfg(target_arch = "arm")]
+    let phys = page::alloc_contiguous(validated.total_pages).ok_or(ElfError::OutOfMemory)?;
+    #[cfg(not(target_arch = "arm"))]
+    let phys = lo_img;
+    Ok((phys, lo_img))
+}
+
 fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf, ElfError> {
     let (entry, validated) = validate(data)?;
 
@@ -427,45 +477,14 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
     // frame instead of the identity vaddr, so every process gets its own image.
     // This pre-pass REPLACES the old in-write-loop per-segment placement check.
     let (image_phys, image_lo) = match placement {
-        Some((lo, hi)) => {
-            let mut lo_img = usize::MAX;
-            let mut max_end = 0usize;
-            for idx in 0..validated.count {
-                let (vaddr, memsz, _, _, _) = validated.segments[idx];
-                // Fully inside [lo, hi). Rejecting here (before alloc/write)
-                // keeps fail-before-destroy AND makes the (vaddr - lo_img) offset
-                // below non-negative (vaddr >= lo_img). vaddr + memsz cannot
-                // overflow: validate() proved it via #318. Per-segment PAGE
-                // alignment is enforced by map_user_image (process.rs) -- a
-                // non-aligned image fails there cleanly (the image frame is
-                // freed on the spawn/exec map-failure path), so it is not
-                // re-checked here (which would also reject the host test's
-                // arbitrary-aligned static-buffer vaddr).
-                if vaddr < lo || vaddr + memsz > hi {
-                    return Err(ElfError::InvalidSegment);
-                }
-                lo_img = lo_img.min(vaddr);
-                max_end = max_end.max(vaddr + memsz);
-            }
-            // INVARIANT (#502): span == Σ ceil(memsz/PAGE) (= total_pages) means,
-            // by pigeonhole, the segments tile the span with NO gaps and NO
-            // overlaps -- so the contiguous image frame maps exactly, every
-            // allocated page is mapped, and the L2 walk is a complete ownership
-            // record. validate() rejects a segmentless confined image (its entry
-            // must fall inside a loaded segment), so count >= 1 here.
-            let span_pages = (max_end - lo_img).div_ceil(page::PAGE_SIZE);
-            if span_pages != validated.total_pages {
-                return Err(ElfError::InvalidSegment);
-            }
-            // Allocate the contiguous per-process image frame (arm only; host
-            // load_confined writes to real host addresses at identity vaddr).
-            #[cfg(target_arch = "arm")]
-            let phys =
-                page::alloc_contiguous(validated.total_pages).ok_or(ElfError::OutOfMemory)?;
-            #[cfg(not(target_arch = "arm"))]
-            let phys = lo_img;
-            (phys, lo_img)
-        }
+        // WHY a separate #[inline(never)] call (#502): folding this placement +
+        // allocation logic inline inflated load_impl's stack frame enough that,
+        // on the register-pressured exec path, armv7 codegen corrupted the
+        // `validated` segment array `validate()` had just returned (each
+        // segment's recorded memsz came back == its vaddr, overshooting the
+        // window and spuriously rejecting a valid image). Giving the pre-pass its
+        // own frame keeps load_impl shallow and `validated` intact.
+        Some((lo, hi)) => plan_confined_image(&validated, lo, hi)?,
         // Unconfined load() (host tests): identity write to vaddr, no image frame.
         None => (0, 0),
     };
