@@ -745,7 +745,17 @@ fn restart_supervised(path: &'static str) -> Option<crate::process::Pid> {
         )
     }
     .ok()?;
-    crate::process::spawn_user(&loaded)
+    let pid = crate::process::spawn_user(&loaded)?;
+    // #492: record the new pid BEFORE the guard drops -- spawn-then-register must
+    // be ATOMIC against preemption. The relaunched service is by definition one
+    // that crashes; if the timer IRQ landed between the spawn and this write, the
+    // scheduler could run it and its fault would resolve to no claim
+    // (service=None), so the crash would be audited but never counted against the
+    // budget -- silently ending supervision without ever reaching give-up. The
+    // early returns above leave the claim as the fault path already released it
+    // (None), which is correct: no relaunch happened.
+    crate::supervisor::set_current_pid(path, Some(pid));
+    Some(pid)
 }
 
 pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
@@ -922,8 +932,9 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
                 match crate::supervisor::decide(&report, now) {
                     crate::supervisor::Decision::None => {}
                     crate::supervisor::Decision::Restart(path) => {
+                        // restart_supervised records the new pid itself, inside its
+                        // IrqGuard -- spawn-then-register must be atomic (see there).
                         let new_pid = restart_supervised(path);
-                        crate::supervisor::set_current_pid(path, new_pid);
                         match new_pid {
                             Some(pid) => {
                                 let _ = write!(

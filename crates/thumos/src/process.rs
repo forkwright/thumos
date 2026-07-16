@@ -459,21 +459,55 @@ unsafe fn revoke_user_pages(pt: usize, base: usize, pages: usize) {
 /// (svc/IRQ) while the process data/prefetch-aborts on any access to kernel
 /// memory. The #465 trap frame carries the per-process cpsr, so switching
 /// between PID 0 (System) and a PL0 process needs no asm change.
+/// Free the image frame `load_confined` allocated for an ELF that will NOT be
+/// spawned (#502).
+///
+/// INVARIANT: the page table takes ownership of that frame only once
+/// `map_user_image` succeeds -- after which exit's L2 walk reclaims it. EVERY
+/// `spawn_user` failure return before that point must come through here, or the
+/// run is orphaned for the rest of the boot: there is no PCB and no page table
+/// left that could ever reclaim it.
+///
+/// WHY this matters now (#492): spawn_user used to be called only by kinit's
+/// one-shot boot spawns, where a full process table / exhausted address-space
+/// pool is not a realistic condition. The fault supervisor relaunches a
+/// crash-looping service through the same path repeatedly, so a leak per
+/// attempt is a real drain under pressure.
+///
+/// # Safety
+///
+/// `loaded.image_phys` must name the still-unmapped contiguous run
+/// `load_confined` allocated, and the caller must run under the identity kernel
+/// L1 (the zero-on-free writes through raw physical addresses).
+unsafe fn free_unspawned_image(loaded: &crate::elf::LoadedElf) {
+    if loaded.image_pages > 0 {
+        // SAFETY: per this function's contract.
+        unsafe { page::free_contiguous(loaded.image_phys, loaded.image_pages) };
+    }
+}
+
 pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
     // SAFETY: PROCS/CURRENT via the established addr_of_mut! pattern; single
     // core, no concurrent access at spawn.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let slot = procs.iter().position(|p| p.is_none())?;
+        let Some(slot) = procs.iter().position(|p| p.is_none()) else {
+            free_unspawned_image(loaded); // process table full
+            return None;
+        };
         let pid = slot as Pid;
 
-        let new_pt = mmu::alloc_addr_space()?;
+        let Some(new_pt) = mmu::alloc_addr_space() else {
+            free_unspawned_image(loaded); // address-space pool exhausted
+            return None;
+        };
         mmu::clone_addr_space(mmu::table_base(), new_pt);
 
         // Stack: a CONTIGUOUS run (#475) so stack_top arithmetic and
         // exit_cleanup's free loop (base + i*PAGE_SIZE) hold, and the PL0 stack
         // has no unmapped hole SP could descend into.
         let Some(stack_base) = page::alloc_contiguous(STACK_PAGES) else {
+            free_unspawned_image(loaded);
             mmu::free_addr_space(new_pt);
             return None;
         };
@@ -483,13 +517,7 @@ pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
             // free_addr_space also reclaims the L2 tables the shatters allocated
             // (the shared KERNEL_L2 is skipped -- free_l2_table no-ops on
             // non-pool addresses).
-            // #502: on success the page table owns the image frame (freed at
-            // exit by the L2 walk); on THIS failure the mapping is incomplete,
-            // so free the frame load_confined allocated here (spawn_user runs
-            // under the kernel L1 via kinit, so the zero-on-free is identity).
-            if loaded.image_pages > 0 {
-                page::free_contiguous(loaded.image_phys, loaded.image_pages);
-            }
+            free_unspawned_image(loaded);
             page::free_contiguous(stack_base, STACK_PAGES);
             mmu::free_addr_space(new_pt);
             return None;
@@ -1579,6 +1607,13 @@ pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
             // wakes a dead process, and sys_futex_wake only frees a slot on
             // a matching wake (#364).
             crate::futex::free_waiters_for_pid(u32::from(pid));
+            // #492: every Dead transition also releases the pid's supervised
+            // claim. A KILLED service files no fault report (so report_fault
+            // never releases it) and never runs exit_cleanup, so without this a
+            // stale claim would misattribute a later fault on the reused pid to
+            // this service -- the pid-reuse class the fault-time resolution and
+            // exit_cleanup's clear_pid close on the other two death paths.
+            crate::supervisor::clear_pid(pid);
             return 0;
         }
         match proc.signal_state.action(sig) {
@@ -1593,6 +1628,10 @@ pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
                     crate::fd::close_all(&mut proc.fds);
                     // WHY: see the SIGKILL branch above (#364).
                     crate::futex::free_waiters_for_pid(u32::from(pid));
+                    // #492: release the supervised claim -- see the SIGKILL
+                    // branch above (a default-Terminate is the same death path
+                    // for supervision purposes: no fault report, no exit_cleanup).
+                    crate::supervisor::clear_pid(pid);
                 }
                 crate::signal::DefaultAction::Ignore => {}
             },
@@ -3704,6 +3743,41 @@ mod tests {
             assert!(
                 !crate::futex::has_waiter_for_pid(u32::from(child_pid)),
                 "SIGKILL must free the dying process's futex waiter slot"
+            );
+        }
+    }
+
+    #[test]
+    fn sigkill_releases_the_dying_pids_supervised_claim() {
+        // #492: a KILLED service files no fault report and never runs
+        // exit_cleanup, so the signal path is the ONLY place that can release its
+        // supervised claim. Without this, the claim outlives the process and a
+        // later fault on the REUSED pid resolves to the dead service -- the
+        // pid-reuse misattribution the fault-time resolution + exit_cleanup's
+        // clear_pid close on the other two death paths.
+        // SAFETY: test-only; reset_all reinitialises global state; nextest runs
+        // each test in its own process.
+        unsafe {
+            reset_all();
+            crate::supervisor::reset();
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            let pt = mmu::alloc_addr_space().unwrap();
+            procs[0] = Some(test_process(pt));
+            CURRENT = 0;
+
+            let child_pid = fork().unwrap_or_default();
+            crate::supervisor::register("/svc", child_pid);
+
+            let ret = deliver_signal_to(child_pid, crate::signal::Signal::Sigkill);
+            assert_eq!(ret, 0, "SIGKILL delivery should succeed");
+
+            // The pid is now reusable: a fault on it must resolve to NOTHING.
+            crate::supervisor::report_fault(child_pid, 1, 0, 0);
+            let report = crate::supervisor::pop_report().expect("report");
+            assert_eq!(
+                report.service, None,
+                "SIGKILL must release the supervised claim, so a reused pid cannot \
+                 misattribute a later fault to the killed service"
             );
         }
     }
