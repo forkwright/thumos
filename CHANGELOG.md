@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8](https://github.com/forkwright/thumos/compare/v0.1.7...v0.1.8) (2026-07-16)
+
+
+### Features
+
+* **thumos:** bridge modem registration to the status bar ([#404](https://github.com/forkwright/thumos/issues/404), closes [#404](https://github.com/forkwright/thumos/issues/404)) ([#509](https://github.com/forkwright/thumos/issues/509)) ([88509f9](https://github.com/forkwright/thumos/commit/88509f98604286249cb31547411e24025b028bb6))
+* **thumos:** contiguous multi-page allocation ([#475](https://github.com/forkwright/thumos/issues/475), closes [#475](https://github.com/forkwright/thumos/issues/475)) ([#481](https://github.com/forkwright/thumos/issues/481)) ([755908c](https://github.com/forkwright/thumos/commit/755908c04eb8e04acb0d084890d9ac8989249259))
+* **thumos:** firewall packet-audit plumbing (PacketLog + event queue), CI-verified ([#403](https://github.com/forkwright/thumos/issues/403)) ([#520](https://github.com/forkwright/thumos/issues/520)) ([1a9c14d](https://github.com/forkwright/thumos/commit/1a9c14d67077898a981254b3795681da4f0d0f13))
+* **thumos:** incoming call -&gt; ringtone audio session, CI-verified ([#398](https://github.com/forkwright/thumos/issues/398)) ([#510](https://github.com/forkwright/thumos/issues/510)) ([6b17db2](https://github.com/forkwright/thumos/commit/6b17db2aed9b25333cdb374adcaaa6c2f6c69f68))
+* **thumos:** live UI render loop -- kardia paints the home frame, CI-verified ([#400](https://github.com/forkwright/thumos/issues/400)) ([#503](https://github.com/forkwright/thumos/issues/503)) ([9363cc6](https://github.com/forkwright/thumos/commit/9363cc653f5f39955b862f25f62969a504889d31))
+* **thumos:** loop-persistent firewall with runtime policy + audit trail (closes [#403](https://github.com/forkwright/thumos/issues/403)) ([#521](https://github.com/forkwright/thumos/issues/521)) ([2ce7381](https://github.com/forkwright/thumos/commit/2ce73815243e3576fa2cc45060f2eae344417ea7))
+* **thumos:** measured userspace -- verified image-resident initramfs may spawn ([#480](https://github.com/forkwright/thumos/issues/480), closes [#480](https://github.com/forkwright/thumos/issues/480)) ([#484](https://github.com/forkwright/thumos/issues/484)) ([9017aae](https://github.com/forkwright/thumos/commit/9017aaeec440222b65b357fbbd70fc5c7dcc50dc))
+* **thumos:** parse +CREG &lt;AcT&gt; into a radio access technology, CI-verified ([#404](https://github.com/forkwright/thumos/issues/404)) ([#513](https://github.com/forkwright/thumos/issues/513)) ([29e4899](https://github.com/forkwright/thumos/commit/29e489918b1627ed2969e372f6b51a5aa418a719))
+* **thumos:** PID-0 fault supervisor — consume + act on fault reports ([#492](https://github.com/forkwright/thumos/issues/492)) ([#530](https://github.com/forkwright/thumos/issues/530)) ([1238f13](https://github.com/forkwright/thumos/commit/1238f134b373bf5ddc77f0a59954620a2d93cf73))
+* **thumos:** PL0 per-process isolation -- /init runs unprivileged ([#482](https://github.com/forkwright/thumos/issues/482)) ([#486](https://github.com/forkwright/thumos/issues/486)) ([1f096e9](https://github.com/forkwright/thumos/commit/1f096e90423605d3226820bb0e512e8895dbec72))
+* **thumos:** PROT_NONE user pages via a USER_OWNED page tag ([#496](https://github.com/forkwright/thumos/issues/496)) ([#529](https://github.com/forkwright/thumos/issues/529)) ([43e03ac](https://github.com/forkwright/thumos/commit/43e03ace7483d7e9c0f9b4cb53135ee43df540d8))
+* **thumos:** ship /shell — the /init+/shell coexistence witness ([#526](https://github.com/forkwright/thumos/issues/526)) ([#527](https://github.com/forkwright/thumos/issues/527)) ([04e30a2](https://github.com/forkwright/thumos/commit/04e30a2fa34ca390bbc05d92923540b71a370f15))
+* **thumos:** UI input dispatch + screen-stack navigation, CI-verified ([#400](https://github.com/forkwright/thumos/issues/400)) ([#504](https://github.com/forkwright/thumos/issues/504)) ([9acb08a](https://github.com/forkwright/thumos/commit/9acb08ab32e07c40a4a9c6ce80bd226dff34187f))
+* **thumos:** wire outgoing SMS send over the modem transport, CI-verified (closes [#398](https://github.com/forkwright/thumos/issues/398)) ([#519](https://github.com/forkwright/thumos/issues/519)) ([a230e3f](https://github.com/forkwright/thumos/commit/a230e3fedea76f95311feebd6a56798270b4ed2a))
+* **thumos:** wire SIM + SMS managers over the modem transport, CI-verified ([#398](https://github.com/forkwright/thumos/issues/398)) ([#511](https://github.com/forkwright/thumos/issues/511)) ([3e401a7](https://github.com/forkwright/thumos/commit/3e401a7cc1bc5b700df0b1f0c26647054316a8b3))
+* **thumos:** wire the audio session manager + mic audit (NullCodec under qemu), CI-verified ([#399](https://github.com/forkwright/thumos/issues/399)) ([#508](https://github.com/forkwright/thumos/issues/508)) ([8ad8d4a](https://github.com/forkwright/thumos/commit/8ad8d4a0c3b7ae970cfe1cd81852a09ad6188552))
+* **thumos:** wire the BT A2DP audio profile (NullBtHw under qemu), CI-verified ([#401](https://github.com/forkwright/thumos/issues/401)) ([#512](https://github.com/forkwright/thumos/issues/512)) ([94ac009](https://github.com/forkwright/thumos/commit/94ac0097456713ce1108a4a9e7bcec12031b52eb))
+* **thumos:** wire the heorte calendar/alarm/timer manager, CI-verified (closes [#400](https://github.com/forkwright/thumos/issues/400)) ([#516](https://github.com/forkwright/thumos/issues/516)) ([ab1069e](https://github.com/forkwright/thumos/commit/ab1069ece3b823b92b775282e08c49be63476fa3))
+* **thumos:** wire the SIM-management API over the modem transport, CI-verified ([#398](https://github.com/forkwright/thumos/issues/398)) ([#515](https://github.com/forkwright/thumos/issues/515)) ([b4dfe41](https://github.com/forkwright/thumos/commit/b4dfe416e31eeff38eff797e63708d57f82fb2ae))
+* **thumos:** wire the telephony AT/call stack (mock-backed under qemu), CI-verified ([#398](https://github.com/forkwright/thumos/issues/398)) ([#507](https://github.com/forkwright/thumos/issues/507)) ([85bae35](https://github.com/forkwright/thumos/commit/85bae352ec185cd205d9b426c5a4f160d8c86af3))
+* **thumos:** wire the trust-hierarchy clock into the loop + home display ([#402](https://github.com/forkwright/thumos/issues/402)) ([#505](https://github.com/forkwright/thumos/issues/505)) ([a359de5](https://github.com/forkwright/thumos/commit/a359de56b8efc99f4ad5844d8d5339241a98d6e6))
+
+
+### Bug Fixes
+
+* **thumos:** fail-close fork for PL0 callers -- deny, not corrupt ([#478](https://github.com/forkwright/thumos/issues/478) interim) ([#494](https://github.com/forkwright/thumos/issues/494)) ([aa23b8c](https://github.com/forkwright/thumos/commit/aa23b8c573af0da85cd0923199a66a277b7de057))
+* **thumos:** free frames under the kernel L1 in brk/munmap/mmap (fork-aliasing, [#497](https://github.com/forkwright/thumos/issues/497)) ([#522](https://github.com/forkwright/thumos/issues/522)) ([3a9b94a](https://github.com/forkwright/thumos/commit/3a9b94a4047a812e1b009456c9bd565748bbd354))
+* **thumos:** per-process image mapping — fork+exec composes ([#502](https://github.com/forkwright/thumos/issues/502)) ([#525](https://github.com/forkwright/thumos/issues/525)) ([93a43ba](https://github.com/forkwright/thumos/commit/93a43baa2130f1a31e4a152d5519bfcfb4779b88))
+* **thumos:** userspace sleep really yields -- no busy-wait deadlock ([#477](https://github.com/forkwright/thumos/issues/477), closes [#477](https://github.com/forkwright/thumos/issues/477)) ([#493](https://github.com/forkwright/thumos/issues/493)) ([cc510fc](https://github.com/forkwright/thumos/commit/cc510fc17b568257164923b462f5383f37bcf881))
+
 ## [0.1.7](https://github.com/forkwright/thumos/compare/v0.1.6...v0.1.7) (2026-07-06)
 
 
