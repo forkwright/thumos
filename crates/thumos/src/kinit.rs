@@ -377,7 +377,7 @@ fn halt_boot(serial: &mut Uart, display_ok: bool) -> ! {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UserspaceSpawnPlan<'a> {
+pub(crate) enum UserspaceSpawnPlan<'a> {
     Elf(&'a [u8]),
     Missing,
 }
@@ -390,7 +390,7 @@ fn plan_userspace_spawn_from_ramfs<'a>(fs: &'a RamFs, path: &str) -> UserspaceSp
     }
 }
 
-fn plan_userspace_spawn_from_vfs(path: &str) -> UserspaceSpawnPlan<'static> {
+pub(crate) fn plan_userspace_spawn_from_vfs(path: &str) -> UserspaceSpawnPlan<'static> {
     // SAFETY: the VFS mount table is initialized before userspace spawn.
     match unsafe { fd::ramfs_find(path) } {
         Some(elf_data) => UserspaceSpawnPlan::Elf(elf_data),
@@ -1371,6 +1371,14 @@ pub unsafe fn run() -> ! {
                         if let Some(pid) = process::spawn_user(&loaded) {
                             let _ = write!(serial, "       /shell spawned PL0 (PID {})\r\n", pid);
                             state.processes_spawned += 1;
+                            // #492: /shell is a SUPERVISED service -- if it
+                            // CRASHES, PID 0 relaunches it (rate-limited). A clean
+                            // exit never triggers a restart: the supervisor keys on
+                            // fault reports, not on Dead state. /init is
+                            // deliberately NOT supervised -- the isolation-probe
+                            // variants fault it on purpose and CI asserts exactly
+                            // one USERFAULT, which supervising it would crash-loop.
+                            crate::supervisor::register("/shell", pid);
                         } else {
                             let _ = serial.write_str("  WARN /shell spawn failed\r\n");
                         }
@@ -1384,6 +1392,33 @@ pub unsafe fn run() -> ! {
                 let _ =
                     serial.write_str("  WARN /shell missing from root ramfs; no shell spawned\r\n");
                 state.userspace_entries_missing += 1;
+            }
+        }
+
+        // #492: the crash-loop witness, spawned + SUPERVISED only under the
+        // crashloop-probe feature (never in a normal boot). /crasher data-aborts
+        // on every launch, so PID 0's restart policy becomes observable in QEMU:
+        // restart up to the limit, then give up. This has to live in kinit rather
+        // than a THUMOS_INIT_VARIANT -- a variant only selects /init's `_start`
+        // body, whereas supervised registration is kinit behaviour.
+        #[cfg(feature = "crashloop-probe")]
+        if let UserspaceSpawnPlan::Elf(elf_data) = plan_userspace_spawn_from_vfs("/crasher") {
+            // SAFETY (#502): kinit runs under the kernel L1 (proc0's table,
+            // scheduling disabled), satisfying load_confined's TTBR0 precondition.
+            match unsafe { elf::load_confined(elf_data, kconfig::USER_TEXT_BASE, kconfig::RAM_END) }
+            {
+                Ok(loaded) => {
+                    if let Some(pid) = process::spawn_user(&loaded) {
+                        let _ = write!(serial, "       /crasher spawned PL0 (PID {})\r\n", pid);
+                        state.processes_spawned += 1;
+                        crate::supervisor::register("/crasher", pid);
+                    } else {
+                        let _ = serial.write_str("  WARN /crasher spawn failed\r\n");
+                    }
+                }
+                Err(e) => {
+                    let _ = write!(serial, "  WARN /crasher ELF load failed: {:?}\r\n", e);
+                }
             }
         }
 

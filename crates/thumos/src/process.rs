@@ -945,41 +945,37 @@ pub(crate) fn reap_dead_children() -> usize {
     reaped
 }
 
-/// Notify kinit (PID 0) that process `faulting_pid` has faulted.
-/// Marks the faulting process Dead and delivers a fault message to PID 0's inbox.
+/// Notify PID 0 that process `faulting_pid` has faulted.
 ///
-/// Payload layout (9 bytes): [pid:1, fault_addr:4 LE, fault_status:4 LE]
+/// Marks the faulting process Dead (releasing its fds) and pushes a
+/// [`crate::supervisor::FaultReport`] onto the dedicated fault ring, which the
+/// service loop drains once per tick: it audit-logs every report and applies the
+/// restart policy to a supervised service (#492).
+///
+/// WHY the ring and not PID 0's IPC inbox (#492): the old protocol
+/// `ipc::send(0, ..)`-ed a 9-byte payload that NOTHING ever drained, so reports
+/// accumulated until the inbox filled -- after which both the reports and any
+/// legitimate userspace `send(0, ..)` were rejected. Draining the inbox instead
+/// is not an option: `ipc::recv` pops the FRONT regardless of tag, so it would
+/// discard real user->PID0 IPC. A separate channel is what makes the drain safe,
+/// and it removes the `CURRENT`-swap this function needed only so `ipc::send`
+/// would stamp the faulting pid as the sender.
 pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
     let (tag, fault_addr, fault_status) = match kind {
         FaultKind::DataAbort {
             fault_addr,
             fault_status,
-        } => (1u32, fault_addr, fault_status),
+        } => (1u8, fault_addr, fault_status),
         FaultKind::PrefetchAbort {
             fault_addr,
             fault_status,
-        } => (2u32, fault_addr, fault_status),
-        FaultKind::UndefinedInstruction => (3u32, 0u32, 0u32),
+        } => (2u8, fault_addr, fault_status),
+        FaultKind::UndefinedInstruction => (3u8, 0u32, 0u32),
     };
 
-    let payload: [u8; 9] = [
-        faulting_pid,
-        (fault_addr & 0xFF) as u8,
-        ((fault_addr >> 8) & 0xFF) as u8,
-        ((fault_addr >> 16) & 0xFF) as u8,
-        ((fault_addr >> 24) & 0xFF) as u8,
-        (fault_status & 0xFF) as u8,
-        ((fault_status >> 8) & 0xFF) as u8,
-        ((fault_status >> 16) & 0xFF) as u8,
-        ((fault_status >> 24) & 0xFF) as u8,
-    ];
-
-    let msg = ipc::Message::new(tag, &payload);
-
-    // SAFETY: current process PCB pointer is valid; set by the scheduler on
-    // context switch. Temporarily mutating CURRENT to deliver the fault message
-    // with the faulting PID as sender; CURRENT is restored before returning.
-    let sent = unsafe {
+    // SAFETY: the PCB table is only mutated from kernel mode on this single-core
+    // kernel, and this runs in abort context with IRQs masked.
+    unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         if let Some(ref mut proc) = procs[usize::from(faulting_pid)] {
             proc.state = State::Dead;
@@ -987,35 +983,22 @@ pub(crate) fn notify_fault(faulting_pid: Pid, kind: FaultKind) {
             // its fds here so OFDs (and pipe/socket ends) do not leak.
             crate::fd::close_all(&mut proc.fds);
         }
-        // WHY: ipc::send stamps msg.from = current_pid(); temporarily set CURRENT
-        // to faulting_pid so the message arrives with the correct sender identity.
-        let saved = CURRENT;
-        CURRENT = faulting_pid;
-        let sent = ipc::send(0, msg).is_ok();
-        CURRENT = saved;
-        sent
-    };
-
-    // WHY: kinit (PID 0) is the userspace fault supervisor; a full inbox
-    // means this fault notification is silently lost and the Dead process
-    // (already marked above) is never reaped (#252). Surface the drop on
-    // UART, matching the CAPDEN diagnostic pattern in capability.rs.
-    if !sent {
-        use core::fmt::Write;
-
-        use crate::uart::Uart;
-        let mut serial = Uart::new();
-        write!(
-            serial,
-            "FAULTDROP pid={faulting_pid} tag={tag} kinit-inbox-full\r\n"
-        )
-        .ok();
     }
+
+    // A full ring drops the report (and says so on the UART); the scan-based
+    // reaper still reclaims the slot, so only the notification is lost.
+    crate::supervisor::report_fault(faulting_pid, tag, fault_addr, fault_status);
 }
 
 /// Perform exit teardown without the diverging `-> !` signature.
 /// Marks the process Dead, reclaims its page table, and frees stack pages.
 pub(crate) fn exit_cleanup(status: i32) {
+    // #492: this pid is about to be reusable -- drop any supervised claim on it,
+    // so a service that exits CLEANLY (and therefore files no fault report) does
+    // not leave a stale pid an unrelated process could inherit and alias into a
+    // spurious restart. A fault-exit reaches here too, but `report_fault` already
+    // released the claim in abort context, so this is a no-op on that path.
+    crate::supervisor::clear_pid(current_pid());
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. Page table and stack pages are reclaimed only after
     // marking the process Dead; mmu::free_addr_space validates its input.
@@ -2265,9 +2248,17 @@ mod tests {
                 trap_switched(),
                 "the stub epilogue must see a swapped frame"
             );
-            let msg = ipc::recv().expect("PID 0 must receive the fault notification");
-            assert_eq!(msg.tag, 1, "DataAbort IPC tag");
-            assert_eq!(msg.payload()[0], pid, "payload names the faulting PID");
+            // #492: the notification lands on the fault ring the service loop
+            // drains, carrying the full report (kind + addr + status).
+            let report =
+                crate::supervisor::pop_report().expect("PID 0 must receive the fault notification");
+            assert_eq!(report.kind, 1, "DataAbort is kind 1");
+            assert_eq!(report.pid, pid, "the report names the faulting PID");
+            assert_eq!(
+                report.fault_addr, 0xDEAD_0000,
+                "the report carries the addr"
+            );
+            assert_eq!(report.fault_status, 0x80D, "the report carries the status");
             trap_leave();
         }
     }
@@ -2996,11 +2987,15 @@ mod tests {
     }
 
     #[test]
-    fn notify_fault_sends_to_pid0() {
+    fn notify_fault_reports_to_the_fault_ring_not_the_ipc_inbox() {
+        // #492: the report goes on the dedicated fault ring the service loop
+        // drains -- NOT PID 0's IPC inbox, which nothing drained (so reports
+        // accumulated until it filled and legitimate user->PID0 IPC then failed).
         // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
         // test execution ensures no concurrent access to PROCS or CURRENT.
         unsafe {
             reset_all();
+            crate::supervisor::reset();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
 
             let pt0 = mmu::alloc_addr_space().unwrap();
@@ -3015,15 +3010,17 @@ mod tests {
 
             notify_fault(1, FaultKind::UndefinedInstruction);
 
-            // PID 0 receives the message; tag must be 3 (UndefinedInstruction)
+            let report = crate::supervisor::pop_report()
+                .expect("an UndefinedInstruction fault must reach the fault ring");
+            assert_eq!(report.pid, 1, "the report names the faulting PID");
+            assert_eq!(report.kind, 3, "UndefinedInstruction is kind 3");
+
+            // PID 0's IPC inbox must be untouched -- fault reports no longer
+            // compete with real userspace IPC for its 16 slots.
             CURRENT = 0;
-            let msg =
-                ipc::recv().expect("UndefinedInstruction fault must deliver a message to pid 0");
-            assert_eq!(msg.tag, 3, "UndefinedInstruction tag must be 3");
-            assert_eq!(
-                msg.payload()[0],
-                1u8,
-                "first payload byte must be faulting PID"
+            assert!(
+                ipc::recv().is_none(),
+                "a fault must not consume a PID 0 IPC inbox slot"
             );
         }
     }
