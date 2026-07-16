@@ -2143,16 +2143,19 @@ mod tests {
             let pt = proc.page_table_phys;
             assert_ne!(pt, mmu::table_base(), "must have its own address space");
 
-            // .text page: user RX (0x46E); .data page: user RW+XN (0x47F).
+            // .text page: user RX (0x46E); .data page: user RW+XN (0x47F). Both
+            // carry the #496 NG (USER_OWNED) tag at bit 11 (0x800), so enumeration
+            // sees them by ownership rather than by AP: 0x46E|0x800 = 0xC6E,
+            // 0x47F|0x800 = 0xC7F.
             assert_eq!(
                 mmu::read_l2_entry(pt, 0x7FF0_0000).unwrap(),
-                0x7FF0_0000u32 | 0x46E,
-                ".text must be user read-execute"
+                0x7FF0_0000u32 | 0xC6E,
+                ".text must be user read-execute + USER_OWNED-tagged"
             );
             assert_eq!(
                 mmu::read_l2_entry(pt, 0x7FF0_1000).unwrap(),
-                0x7FF0_1000u32 | 0x47F,
-                ".data must be user read-write + execute-never"
+                0x7FF0_1000u32 | 0xC7F,
+                ".data must be user read-write + execute-never + USER_OWNED-tagged"
             );
             // Device MMIO stays a PL1-only SECTION (never a user page table) --
             // a PL0 access to it faults. (Extends the #323 regression.)

@@ -409,3 +409,41 @@ jobs:
           ! grep -q 'init2: PRIVILEGED' forkexec.log || { echo 'FAIL forkexec: the exec-d child ran at PL1 (mode drop across exec broken -- SECURITY)'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' forkexec.log || { echo 'FAIL forkexec: kernel did not survive'; exit 1; }
           grep -q 'shell: hello from userspace' forkexec.log || { echo 'FAIL forkexec: /shell (PID 2) did not run alongside the fork+exec /init (#526 coexistence)'; exit 1; }
+      - name: QEMU PROT_NONE guard pages survive fork (#496)
+        working-directory: crates/thumos
+        # WHY: #496. A PROT_NONE page maps to AP[1:0]=0b01 -- byte-identical to a
+        # shattered MB's KERNEL_DEFAULT fill -- so the old AP-based enumeration
+        # (mmu::l2_entry_is_user) could not tell it from kernel scaffolding and
+        # would DROP it from fork's deep-copy and from teardown. mmap/mprotect
+        # therefore rejected PROT_NONE outright. Now every user page carries the
+        # nG (USER_OWNED) software tag and enumeration keys on that instead.
+        #
+        # /init mmaps a PROT_NONE guard, forks, and the CHILD reads it. The
+        # load-bearing assertion is the DFSR status:
+        #   status=0x0000000f -> PERMISSION fault: the child HAS its own copy of
+        #                        the guard, i.e. fork enumerated + deep-copied a
+        #                        PL0-inaccessible page. This is the fix.
+        #   status=0x00000007 -> TRANSLATION fault: the page was DROPPED from the
+        #                        deep-copy -- the exact #496 bug, regressed.
+        # The parent then reaps the child (SIGSEGV=139) and mprotects the guard
+        # NONE->READ and reads it, proving the frame survived and a live
+        # PROT_NONE->READ transition works.
+        run: |
+          set -uo pipefail
+          THUMOS_INIT_VARIANT=guard cargo build --release --target armv7a-none-eabi --features qemu --jobs 8
+          grc=0
+          THUMOS_INIT_VARIANT=guard THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee guard.log || grc=$?
+          echo "=== guard: runner rc=$grc (want 0) ==="
+          test "$grc" -eq 0 || { echo "FAIL guard: kernel did not survive (rc=$grc; 124=hang 2/3=abort)"; exit 1; }
+          grep -q 'init: guard mapped' guard.log || { echo 'FAIL #496: mmap(PROT_NONE) was rejected -- the guard-page gate regressed (or mmap cannot shatter its section)'; exit 1; }
+          ! grep -q 'init: guard mmap FAILED' guard.log || { echo 'FAIL #496: mmap(PROT_NONE) returned MAP_FAILED'; exit 1; }
+          ! grep -q 'init: guard fork FAILED' guard.log || { echo 'FAIL #496: fork failed in the guard harness'; exit 1; }
+          ! grep -q 'init: guard NOT enforced' guard.log || { echo 'FAIL #496: the child READ the PROT_NONE guard without faulting -- PL0 access was not denied (SECURITY)'; exit 1; }
+          grep -Eq 'USERFAULT: pid=[0-9]+ kind=data-abort addr=0x20000000 status=0x0000000f killed' guard.log || { echo 'FAIL #496: no PERMISSION data-abort at the guard VA -- the forked child did not get its own PROT_NONE page'; exit 1; }
+          ! grep -q 'USERFAULT.*addr=0x20000000 status=0x00000007' guard.log || { echo 'FAIL #496: TRANSLATION fault at the guard VA -- fork DROPPED the PROT_NONE page from the deep-copy (the #496 bug regressed)'; exit 1; }
+          gufc=$(grep -c 'USERFAULT:' guard.log)
+          test "$gufc" -eq 1 || { echo "FAIL #496: expected exactly 1 USERFAULT, got $gufc"; exit 1; }
+          grep -q 'init: guard child killed status=139' guard.log || { echo 'FAIL #496: the guard-faulting child did not exit SIGSEGV(139) / was not reaped by the parent'; exit 1; }
+          grep -q 'init: guard readable after mprotect' guard.log || { echo 'FAIL #496: mprotect(PROT_NONE -> PROT_READ) failed, or the guard frame did not survive'; exit 1; }
+          grep -q 'shell: hello from userspace' guard.log || { echo 'FAIL #496: /shell did not coexist (#526)'; exit 1; }
+          grep -q 'THUMOS-QEMU: service-loop ticks=' guard.log || { echo 'FAIL #496: kernel did not survive the guard fault'; exit 1; }
