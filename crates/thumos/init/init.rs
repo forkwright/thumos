@@ -41,7 +41,7 @@ unsafe fn sys_write(fd: u32, buf: *const u8, len: u32) -> u32 {
 ///
 /// # Safety
 /// Yields to the scheduler; the kernel resumes this process after the interval.
-#[cfg(any(thumos_init_sleep, thumos_init_fork, thumos_init_forkexec))]
+#[cfg(any(thumos_init_sleep, thumos_init_fork, thumos_init_forkexec, thumos_init_guard))]
 #[inline(always)]
 unsafe fn sys_sleep(ms: u32) {
     // SAFETY: issues SVC #7 (Sleep) per the thumos ABI; the kernel marks this
@@ -79,7 +79,7 @@ unsafe fn sys_exit(code: u32) -> ! {
 ///
 /// # Safety
 /// Creates a child process; both branches return here (the #478 ctx seed).
-#[cfg(any(thumos_init_fork, thumos_init_forkexec))]
+#[cfg(any(thumos_init_fork, thumos_init_forkexec, thumos_init_guard))]
 #[inline(always)]
 unsafe fn sys_fork() -> u32 {
     let ret;
@@ -95,7 +95,7 @@ unsafe fn sys_fork() -> u32 {
 ///
 /// # Safety
 /// Reads a child's exit status; reaps its slot when Dead.
-#[cfg(any(thumos_init_fork, thumos_init_forkexec))]
+#[cfg(any(thumos_init_fork, thumos_init_forkexec, thumos_init_guard))]
 #[inline(always)]
 unsafe fn sys_waitpid(pid: u32) -> u32 {
     let ret;
@@ -137,6 +137,51 @@ unsafe fn sys_execve(path: *const u8, argv: u32, envp: u32) -> u32 {
             inlateout("r0") path => ret,
             in("r1") argv,
             in("r2") envp,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// mmap(addr_hint, len, prot, flags) -> mapped address, or u32::MAX (MAP_FAILED).
+///
+/// # Safety
+/// Requests a new user mapping; the returned VA is valid only if != u32::MAX.
+#[cfg(thumos_init_guard)]
+#[inline(always)]
+unsafe fn sys_mmap(addr: u32, len: u32, prot: u32, flags: u32) -> u32 {
+    let ret;
+    // SAFETY: SVC #20 (Mmap) per the thumos ABI.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 20u32,
+            inlateout("r0") addr => ret,
+            in("r1") len,
+            in("r2") prot,
+            in("r3") flags,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// mprotect(addr, len, prot) -> 0 on success, else an errno.
+///
+/// # Safety
+/// Changes the protection of an existing user mapping.
+#[cfg(thumos_init_guard)]
+#[inline(always)]
+unsafe fn sys_mprotect(addr: u32, len: u32, prot: u32) -> u32 {
+    let ret;
+    // SAFETY: SVC #23 (Mprotect) per the thumos ABI.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 23u32,
+            inlateout("r0") addr => ret,
+            in("r1") len,
+            in("r2") prot,
             options(nostack),
         );
     }
@@ -332,6 +377,67 @@ pub extern "C" fn _start() -> ! {
             } else {
                 b"forkexec: parent integrity BROKEN\n"
             };
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+        }
+        // #496 guard harness: mmap a PROT_NONE guard page, fork, and prove the
+        // child got its OWN copy of the guard page -- a read faults with a
+        // PERMISSION status (the page EXISTS as PROT_NONE, so fork enumerated the
+        // PL0-inaccessible page), not a TRANSLATION status (which would mean fork
+        // dropped it). Then the parent lifts the guard to PROT_READ and reads it.
+        #[cfg(thumos_init_guard)]
+        {
+            // prot = PROT_NONE (0); flags = MAP_ANONYMOUS (0x20) | fd(-1) in the
+            // high 16 bits (0xFFFF). In a fresh /init the first mmap lands
+            // deterministically at MMAP_BASE.
+            let guard = sys_mmap(0, 4096, 0, 0xFFFF_0020);
+            if guard == u32::MAX {
+                let m = b"init: guard mmap FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            let m = b"init: guard mapped\n";
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+            // The guard VA as a pointer, converted once (mmap returned != MAX).
+            let guard_addr = usize::try_from(guard).unwrap_or(0) as *const u32;
+            let pid = sys_fork();
+            if pid == 0 {
+                // CHILD: touch the guard -> data-abort. A permission fault
+                // (DFSR status ...0f) proves fork COPIED the PROT_NONE page; a
+                // translation fault (...07) would mean it was dropped.
+                core::ptr::read_volatile(guard_addr);
+                // Only reached if the read did NOT fault -- guard not enforced.
+                let m = b"init: guard NOT enforced\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(2);
+            }
+            if pid == u32::MAX {
+                let m = b"init: guard fork FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            // PARENT: reap the guard-killed child (SIGSEGV -> status 139).
+            let status = loop {
+                let s = sys_waitpid(pid);
+                if s != u32::MAX {
+                    break s;
+                }
+                sys_sleep(10);
+            };
+            let m: &[u8] = if status == 139 {
+                b"init: guard child killed status=139\n"
+            } else {
+                b"init: guard child WRONG status\n"
+            };
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+            // PARENT: lift the guard to PROT_READ (=1) and read it -- the frame
+            // survived, and NONE->READ is a live mprotect on a PROT_NONE page.
+            if sys_mprotect(guard, 4096, 1) != 0 {
+                let m = b"init: guard mprotect FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            core::ptr::read_volatile(guard_addr);
+            let m = b"init: guard readable after mprotect\n";
             sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
         }
         sys_write(1, msg.as_ptr(), u32::try_from(msg.len()).unwrap_or(0));
