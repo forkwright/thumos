@@ -8,9 +8,13 @@ source_docs = [
 ]
 
 [state]
-summary = "Thumos has a broad compiled/tested Phase 10 code catalog, but Phase 11 hardware validation and several boot/userspace wiring paths remain open."
+summary = "Thumos has a broad compiled/tested Phase 10 code catalog and an emulation-verified userspace process model; Phase 11 hardware validation and several boot/userspace wiring paths remain open."
 current_phase = "Phase 11: System Qualification."
-updated = "2026-04-20"
+updated = "2026-07-16"
+
+[[recent]]
+date = "2026-07-16"
+item = "Userspace process model is emulation-verified: each process loads into its OWN image frame, so fork+exec compose and /init + /shell coexist; PROT_NONE guard pages survive fork; PID 0 drains a fault ring, audit-logs every fault, and restarts a supervised service with crash-loop rate limiting. Each behaviour is pinned by a QEMU boot witness in CI."
 
 [[recent]]
 date = "2026-04-12"
@@ -22,10 +26,15 @@ item = "Factory firmware mismatch identified as the hardware-validation blocker.
 
 [[open_threads]]
 name = "Hardware validation"
-issue = 0
-status = "Requires BROM session and flash of eight stock partitions before proof-of-life kernel testing."
+issue = 467
+status = "Needs a BROM session and a flash of the eight stock partitions before proof-of-life kernel testing. Live-eMMC boot-partition read + streaming verify is tracked in #467."
 
 [[open_threads]]
-name = "WPA PMK/PTK"
-issue = 72
-status = "PBKDF2-HMAC-SHA1 needed in kernel before real WiFi on hardware."
+name = "QEMU timing fidelity"
+issue = 461
+status = "elapsed_ms()/CNTPCT and wfe-wait behave differently under qemu-virt, so timeout-dependent paths are not faithfully exercised by the emulation harness every other CI witness depends on."
+
+[[open_threads]]
+name = "Dead boot-orchestration tests"
+issue = 528
+status = "kinit and kardia are cfg(not(test)), so their unit tests never compile or run -- spawn-planning and boot-step invariants are unguarded."
