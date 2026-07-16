@@ -447,3 +447,47 @@ jobs:
           grep -q 'init: guard readable after mprotect' guard.log || { echo 'FAIL #496: mprotect(PROT_NONE -> PROT_READ) failed, or the guard frame did not survive'; exit 1; }
           grep -q 'shell: hello from userspace' guard.log || { echo 'FAIL #496: /shell did not coexist (#526)'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' guard.log || { echo 'FAIL #496: kernel did not survive the guard fault'; exit 1; }
+      - name: QEMU PID-0 fault supervisor + crash-loop rate limit (#492)
+        working-directory: crates/thumos
+        # WHY: #492. notify_fault used to ipc::send its report to PID 0's inbox,
+        # which NOTHING drained -- so reports piled up until the inbox filled and
+        # legitimate user->PID0 IPC then failed too. PID 0 now drains a dedicated
+        # fault ring each tick: it audit-logs every report and RESTARTS a
+        # supervised service that crashed, rate-limited.
+        #
+        # The crashloop-probe feature makes kinit spawn + supervise /crasher, a
+        # program that data-aborts on EVERY launch. That turns the policy into an
+        # observable sequence: launch, restart x3, give up. The counts are the
+        # assertion -- 'crasher: start' proves the relaunched IMAGE actually ran
+        # (not merely that spawn returned a pid).
+        #
+        # The /shell assertions are the reconciliation with #526: /shell exits
+        # CLEANLY, and a clean exit must NEVER be restarted -- the supervisor keys
+        # on fault reports, never on PCB Dead state. /init is deliberately
+        # unsupervised (supervising it would crash-loop every isolation probe).
+        run: |
+          set -uo pipefail
+          cargo build --release --target armv7a-none-eabi --features qemu,crashloop-probe --jobs 8
+          crc=0
+          THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee crashloop.log || crc=$?
+          echo "=== crashloop: runner rc=$crc (want 0) ==="
+          test "$crc" -eq 0 || { echo "FAIL #492: kernel did not survive the crash loop (rc=$crc; 124=hang 2/3=abort)"; exit 1; }
+          ! grep -q 'crasher: NOT killed' crashloop.log || { echo 'FAIL #492: /crasher read kernel memory WITHOUT faulting (ISOLATION BROKEN)'; exit 1; }
+          ! grep -q 'supervisor FAILED to restart' crashloop.log || { echo 'FAIL #492: a relaunch failed (ramfs re-plan / load_confined under the kernel L1 broke)'; exit 1; }
+          starts=$(grep -c 'crasher: start' crashloop.log)
+          test "$starts" -eq 4 || { echo "FAIL #492: /crasher ran $starts times (want 4 = initial + 3 restarts) -- the restart policy or the relaunched image is wrong"; exit 1; }
+          restarts=$(grep -c 'kardia: supervisor restarted /crasher' crashloop.log)
+          test "$restarts" -eq 3 || { echo "FAIL #492: $restarts restarts (want 3 = MAX_RESTARTS)"; exit 1; }
+          audited=$(grep -c 'kardia: fault audited pid=' crashloop.log)
+          test "$audited" -eq 4 || { echo "FAIL #492: $audited faults audited (want 4) -- every report must reach the audit trail"; exit 1; }
+          grep -q 'kardia: supervisor giving up on /crasher after 3 restarts' crashloop.log || { echo 'FAIL #492: the crash loop was never rate-limited (no give-up)'; exit 1; }
+          # Give-up must be FINAL: a 5th launch means the limit did not hold.
+          faults=$(grep -c 'USERFAULT:.*kind=data-abort.*killed' crashloop.log)
+          test "$faults" -eq 4 || { echo "FAIL #492: $faults data-abort kills (want 4) -- a 5th means give-up did not stop the loop"; exit 1; }
+          # #526 reconciliation: a CLEAN exit is never a restart trigger.
+          ! grep -q 'supervisor restarted /shell' crashloop.log || { echo 'FAIL #492: /shell exited CLEANLY and was restarted -- the supervisor is keying on Dead state, not on fault reports'; exit 1; }
+          shells=$(grep -c 'shell: hello from userspace' crashloop.log)
+          test "$shells" -eq 1 || { echo "FAIL #492: /shell ran $shells times (want 1) -- a clean exit must not be relaunched"; exit 1; }
+          grep -q 'init: hello from userspace' crashloop.log || { echo 'FAIL #492: /init did not run (unsupervised, must be unaffected)'; exit 1; }
+          grep -q 'kardia: reaped' crashloop.log || { echo 'FAIL #492: the reaper stopped reclaiming slots (the supervisor must not replace it)'; exit 1; }
+          grep -q 'THUMOS-QEMU: service-loop ticks=' crashloop.log || { echo 'FAIL #492: kernel did not survive'; exit 1; }
