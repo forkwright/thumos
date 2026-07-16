@@ -1140,12 +1140,26 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         return MAP_FAILED;
     }
 
-    // #496: PROT_NONE (and exec-only) are now allowed. Such a page maps to
-    // AP[1:0]=0b01 -- byte-identical to a shattered MB's KERNEL_DEFAULT fill --
-    // but `prot_to_l2_flags` tags every user page with the software nG
-    // (USER_OWNED) bit, so `mmu::l2_entry_is_user` recognises it and fork's
-    // deep-copy + exit/exec teardown enumerate it. The page still gets a real
-    // zeroed frame; it just faults on any PL0 access (a guard page).
+    // #496: PROT_NONE is now allowed. Such a page maps to AP[1:0]=0b01 --
+    // byte-identical to a shattered MB's KERNEL_DEFAULT fill -- but
+    // `prot_to_l2_flags` tags every user page with the software nG (USER_OWNED)
+    // bit, so `mmu::l2_entry_is_user` recognises it and fork's deep-copy +
+    // exit/exec teardown enumerate it. The page still gets a real zeroed frame;
+    // it just faults on any PL0 access -- which is exactly a guard page.
+    //
+    // EXEC-ONLY is still refused, and deliberately so: ARMv7 AP governs PL0
+    // instruction fetch and data read TOGETHER (XN can only add a restriction,
+    // never grant execute where AP denies read), so "execute but not read" is
+    // INEXPRESSIBLE here -- prot_to_l2_flags would encode it as AP=0b01, i.e. a
+    // page with NO PL0 access at all. Accepting it would hand back success for a
+    // mapping that can never be executed (a silently-broken capability), and
+    // silently upgrading it to read+exec would grant a permission the caller did
+    // not ask for. Fail closed instead.
+    if prot_flags & (mmu::prot::PROT_READ | mmu::prot::PROT_WRITE) == 0
+        && prot_flags & mmu::prot::PROT_EXEC != 0
+    {
+        return MAP_FAILED;
+    }
 
     // Round length up to page boundary
     let page_count = (length + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
@@ -1393,10 +1407,20 @@ fn sys_mprotect(arg0: u32, arg1: u32, arg2: u32) -> u32 {
         return EINVAL;
     }
 
-    // #496: PROT_NONE (and exec-only) are now allowed -- the nG (USER_OWNED) tag
-    // on every user descriptor keeps such a page enumerable by fork/exit/exec
-    // even though its AP (0b01) matches a kernel fill. mprotect to PROT_NONE
-    // turns a live mapping into a guard page (faults on any PL0 access).
+    // #496: PROT_NONE is now allowed -- the nG (USER_OWNED) tag on every user
+    // descriptor keeps such a page enumerable by fork/exit/exec even though its
+    // AP (0b01) matches a kernel fill. mprotect to PROT_NONE turns a live mapping
+    // into a guard page (faults on any PL0 access).
+    //
+    // EXEC-ONLY stays refused: ARMv7 AP governs PL0 instruction fetch and data
+    // read together, so "execute but not read" is inexpressible -- it would
+    // encode as AP=0b01 (no PL0 access at all), i.e. a mapping that reports
+    // success but can never be executed. Same rationale as sys_mmap.
+    if new_prot & (mmu::prot::PROT_READ | mmu::prot::PROT_WRITE) == 0
+        && new_prot & mmu::prot::PROT_EXEC != 0
+    {
+        return EINVAL;
+    }
 
     // Find the mapping
     let Some(mapping) = process::find_mapping(addr) else {
@@ -2028,6 +2052,40 @@ mod tests {
         assert!(
             mmu::l2_entry_is_user(entry),
             "a PROT_NONE page must still enumerate as user-owned"
+        );
+    }
+
+    #[test]
+    fn mmap_and_mprotect_refuse_exec_only() {
+        // #496: ARMv7 AP governs PL0 instruction fetch and data read TOGETHER (XN
+        // only ever ADDS a restriction), so "execute but not read" is
+        // INEXPRESSIBLE: prot_to_l2_flags encodes PROT_EXEC-alone as AP=0b01 --
+        // a page with NO PL0 access at all. Accepting it would return success for
+        // a mapping that can never be executed (a silently-broken capability);
+        // silently upgrading it to read+exec would grant a permission the caller
+        // never requested. Fail closed. PROT_NONE, by contrast, is honest -- a
+        // guard page that faults BY DESIGN -- and stays allowed.
+        unsafe {
+            setup_mm();
+        }
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let len = u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
+        assert_eq!(
+            sys_mmap(0, len, mmu::prot::PROT_EXEC, flags_and_fd),
+            MAP_FAILED,
+            "exec-only mmap must be refused (inexpressible on ARMv7 AP)"
+        );
+        let addr = sys_mmap(0, len, mmu::prot::PROT_READ, flags_and_fd);
+        assert_ne!(addr, MAP_FAILED, "setup mmap must succeed");
+        assert_eq!(
+            sys_mprotect(addr, len, mmu::prot::PROT_EXEC),
+            EINVAL,
+            "exec-only mprotect must be refused"
+        );
+        assert_ne!(
+            sys_mmap(0, len, 0, flags_and_fd),
+            MAP_FAILED,
+            "PROT_NONE must still be allowed (#496)"
         );
     }
 

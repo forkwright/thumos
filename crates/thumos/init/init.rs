@@ -397,12 +397,14 @@ pub extern "C" fn _start() -> ! {
             }
             let m = b"init: guard mapped\n";
             sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+            // The guard VA as a pointer, converted once (mmap returned != MAX).
+            let guard_addr = usize::try_from(guard).unwrap_or(0) as *const u32;
             let pid = sys_fork();
             if pid == 0 {
                 // CHILD: touch the guard -> data-abort. A permission fault
                 // (DFSR status ...0f) proves fork COPIED the PROT_NONE page; a
                 // translation fault (...07) would mean it was dropped.
-                core::ptr::read_volatile(guard as usize as *const u32);
+                core::ptr::read_volatile(guard_addr);
                 // Only reached if the read did NOT fault -- guard not enforced.
                 let m = b"init: guard NOT enforced\n";
                 sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
@@ -434,7 +436,7 @@ pub extern "C" fn _start() -> ! {
                 sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
                 sys_exit(1);
             }
-            core::ptr::read_volatile(guard as usize as *const u32);
+            core::ptr::read_volatile(guard_addr);
             let m = b"init: guard readable after mprotect\n";
             sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
         }
