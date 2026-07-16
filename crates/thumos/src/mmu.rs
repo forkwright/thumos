@@ -74,6 +74,16 @@ pub(crate) mod page_flags {
     pub(crate) const SHAREABLE: u32 = 1 << 10;
     /// Normal memory for small pages: TEX[2:0]=0b001 (bits [8:6]), C=1 (bit 3), B=1 (bit 2).
     pub(crate) const NORMAL_WB_WA: u32 = (0b001 << 6) | (1 << 3) | (1 << 2);
+    /// Not-global (nG, bit 11), repurposed as a software USER_OWNED tag (#496).
+    /// Every user page (minted through `prot_to_l2_flags`) carries it; the kernel
+    /// fills (`KERNEL_DEFAULT_PAGE`, `wx_page_attrs`) never do. This lets
+    /// `l2_entry_is_user` recognise a PROT_NONE user page -- whose AP (0b01) is
+    /// byte-identical to a kernel fill -- so fork/exit/exec enumeration copies +
+    /// frees it. HW effect: nG makes the TLB entry ASID-tagged; harmless here
+    /// because CONTEXTIDR is pinned 0 (see `program_translation`) and every
+    /// address-space switch does TLBIALL, so `TLBIMVA(VA, ASID=0)` still hits
+    /// user entries.
+    pub(crate) const NG: u32 = 1 << 11;
 }
 
 /// L2 page table: 256 entries x 4 bytes = 1 KB, must be 1 KB aligned.
@@ -165,7 +175,14 @@ pub(crate) mod prot {
 /// WHY: userspace passes POSIX prot flags (PROT_READ|PROT_WRITE|PROT_EXEC),
 /// but the ARM MMU uses AP bits and XN to control access and execution.
 pub(crate) fn prot_to_l2_flags(prot_flags: u32) -> u32 {
-    let mut attrs = page_flags::SMALL_PAGE | page_flags::SHAREABLE | page_flags::NORMAL_WB_WA;
+    // #496: this function is the SOLE funnel for user L2 descriptors (image,
+    // stack, heap/brk, mmap, mprotect all route through it), so tagging nG
+    // (USER_OWNED) here -- unconditionally, every page it mints is a user page --
+    // marks exactly the user pages and nothing else. Enumeration keys on this tag,
+    // not AP, so a PROT_NONE page (AP 0b01) is no longer confused with a kernel
+    // fill.
+    let mut attrs =
+        page_flags::SMALL_PAGE | page_flags::SHAREABLE | page_flags::NORMAL_WB_WA | page_flags::NG;
 
     // Access permissions
     if prot_flags & prot::PROT_WRITE != 0 {
@@ -288,6 +305,32 @@ pub(crate) unsafe fn shatter_section(l1_phys: usize, virt_addr: usize) -> bool {
     }
 }
 
+/// Ensure the MB covering `virt_addr` in `l1_phys` can accept a `map_page` (#496).
+///
+/// `map_page` REFUSES to overlay a 1 MB SECTION descriptor, and the identity map
+/// covers the user windows (the mmap region, the heap) with sections -- so a
+/// syscall that maps a page there must shatter the section first, exactly as
+/// `map_user_image` / `map_user_stack` do at spawn.
+///
+/// Unlike `shatter_section`, an ABSENT L1 entry is not an error here: `map_page`
+/// allocates the L2 itself in that case. So this returns true for absent and for
+/// already-shattered entries, and only shatters an actual section.
+///
+/// # Safety
+///
+/// Same as `shatter_section`; on a LIVE table the caller must flush the TLB for
+/// the affected VA (the stale section entry would otherwise still resolve).
+pub(crate) unsafe fn ensure_page_mappable(l1_phys: usize, virt_addr: usize) -> bool {
+    let l1_index = virt_addr >> 20;
+    // SAFETY: the caller guarantees `l1_phys` is a valid L1 table.
+    let l1_val = unsafe { (l1_phys as *const u32).add(l1_index).read_volatile() };
+    if l1_val & 0b11 != flags::SECTION {
+        return true; // absent (map_page allocates) or already a page table
+    }
+    // SAFETY: the entry is a section; shatter it into a KERNEL_DEFAULT L2.
+    unsafe { shatter_section(l1_phys, virt_addr) }
+}
+
 /// Rewrite every entry of an already-shattered identity MB back to
 /// `KERNEL_DEFAULT_PAGE`, dropping all PL0 grants in that MB (#482, used by exec
 /// to revoke the old image's user windows). Returns false if not shattered.
@@ -332,20 +375,22 @@ pub(crate) unsafe fn read_l2_entry(l1_phys: usize, virt_addr: usize) -> Option<u
     }
 }
 
-/// True if a small-page L2 descriptor grants ANY PL0 access (#478).
+/// True if a small-page L2 descriptor is a USER-OWNED page (#478, #496).
 ///
-/// A small-page descriptor is bits[1:0] = 0b1X, where bit 1 marks the small
-/// page and bit 0 is the XN flag -- so an executable page is 0b10 and an
-/// execute-never (data/stack) page is 0b11. Checking `bit 1 set` (not `== 0b10`)
-/// therefore catches BOTH; a large-page (0b01) or fault (0b00) entry is
-/// rejected. ARM AP[1:0] at bits [5:4]: PL0 has access iff AP[1:0] >= 0b10
-/// (0b10 user-RO, 0b11 user-RW); 0b01 is PL1-only in both APX variants
-/// (`AP_KERNEL_ONLY`, `AP_KERNEL_RO`). So this selects exactly the pages a PL0
-/// process can touch -- image, stack, heap/mmap -- and rejects sections and
-/// every kernel-only entry (the shared `KERNEL_L2` at L1[0x400] carries no user
-/// AP, so it is skipped).
+/// A small-page descriptor is bits[1:0] = 0b1X (bit 1 marks the small page, bit
+/// 0 is XN), so `bit 1 set` catches an executable (0b10) or execute-never (0b11)
+/// page and rejects a large-page (0b01) or fault (0b00) entry. Ownership is then
+/// decided by the software `NG` (USER_OWNED) tag, NOT by AP: `prot_to_l2_flags`
+/// sets NG on every user page (image, stack, heap/mmap), while the kernel fills
+/// (`KERNEL_DEFAULT_PAGE`, `wx_page_attrs`, the shared `KERNEL_L2`) never do.
+///
+/// WHY NG and not AP (#496): a PROT_NONE user page maps to AP=0b01
+/// (`AP_KERNEL_ONLY`) -- byte-identical to a kernel fill -- so the old AP >= 0b10
+/// test dropped it from fork's deep-copy and from exit/exec teardown. Keying on
+/// the ownership tag enumerates PROT_NONE user pages while still rejecting every
+/// kernel entry.
 pub(crate) fn l2_entry_is_user(entry: u32) -> bool {
-    entry & 0b10 != 0 && (entry >> 4) & 0b11 >= 0b10
+    entry & page_flags::SMALL_PAGE != 0 && entry & page_flags::NG != 0
 }
 
 /// Visit every PL0-accessible small page in `l1_phys`, calling `f(va, phys,
@@ -780,6 +825,22 @@ unsafe fn program_translation() {
         core::arch::asm!(
             "mcr p15, 0, {val}, c3, c0, 0",
             val = in(reg) 1u32,  // NOTE: domain 0 = client access
+        );
+    }
+
+    // CONTEXTIDR = 0 (ASID 0). #496: user L2 descriptors carry the nG bit as a
+    // software USER_OWNED tag (page_flags::NG); nG makes the TLB entry ASID-tagged,
+    // so flush_tlb_page/TLBIMVA -- which passes a page-aligned VA whose ASID field
+    // is 0 -- only invalidates a user entry when that entry's ASID is also 0. With
+    // no ASID scheme (constant CONTEXTIDR + TLBIALL on every address-space switch)
+    // that just requires CONTEXTIDR to be 0. QEMU resets it to 0; this makes the
+    // invariant explicit and hardens hardware whose reset value is UNKNOWN per ARMv7.
+    // SAFETY: CP15 CONTEXTIDR (c13, c0, 1); privileged, once at boot before enable.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {zero}, c13, c0, 1",  // CONTEXTIDR = 0
+            "isb",
+            zero = in(reg) 0u32,
         );
     }
 
@@ -1576,6 +1637,58 @@ mod tests {
     }
 
     #[test]
+    fn ensure_page_mappable_shatters_a_section_and_tolerates_an_absent_entry() {
+        // #496: sys_mmap maps into a window the identity map covers with a 1 MB
+        // SECTION, and map_page refuses to overlay a section -- so mmap failed on
+        // every REAL table (it only ever worked against synthetic host tables
+        // whose L1 entries are absent). ensure_page_mappable is that missing step.
+        // Unlike shatter_section it treats an ABSENT entry as success, because
+        // map_page allocates the L2 itself in that case.
+        reset();
+        unsafe {
+            init_and_enable();
+            let dst = alloc_addr_space().unwrap();
+            clone_addr_space(table_base(), dst);
+            let attrs = prot_to_l2_flags(prot::PROT_READ);
+
+            // A cloned identity MB is a SECTION -> shattered, then mappable.
+            let section_mb = 0x505usize << 20;
+            assert!(
+                ensure_page_mappable(dst, section_mb),
+                "a section must be shattered"
+            );
+            let page = section_mb + 3 * 0x1000;
+            assert!(
+                map_page(dst, page, page, attrs),
+                "map_page must overlay the now-shattered MB"
+            );
+            // Idempotent: the MB is a page table now, and the grant survives.
+            assert!(
+                ensure_page_mappable(dst, section_mb),
+                "an already-shattered MB is a no-op"
+            );
+            assert_eq!(
+                read_l2_entry(dst, page).unwrap(),
+                (page as u32) | attrs,
+                "the user grant must survive"
+            );
+
+            // An ABSENT L1 entry is not an error -- map_page allocates the L2.
+            let absent_mb = 0x900usize << 20;
+            (dst as *mut u32).add(absent_mb >> 20).write_volatile(0);
+            assert!(
+                ensure_page_mappable(dst, absent_mb),
+                "an absent entry is not an error"
+            );
+            assert!(
+                map_page(dst, absent_mb, absent_mb, attrs),
+                "map_page allocates the L2 for an absent entry"
+            );
+            free_addr_space(dst);
+        }
+    }
+
+    #[test]
     fn user_page_attrs_grant_pl0_and_are_write_xor_execute() {
         // #482: user segment permissions via prot_to_l2_flags -- text RX,
         // rodata RO+XN, data/stack RW+XN; W|X degrades to RW+XN (W^X); and each
@@ -1763,19 +1876,32 @@ mod tests {
         // XN), so an execute-never DATA/stack page is 0b11 -- NOT 0b10. The
         // enumerator must catch it, or a fork would silently skip every user
         // data/stack page (the bug this test pins).
-        // User RX (.text): SMALL_PAGE | AP_READ_ONLY, XN clear -> bits 0b10.
+        // User RX (.text): SMALL_PAGE | AP_READ_ONLY | NG, XN clear -> bits 0b10.
         assert!(l2_entry_is_user(
-            page_flags::SMALL_PAGE | page_flags::AP_READ_ONLY
+            page_flags::SMALL_PAGE | page_flags::AP_READ_ONLY | page_flags::NG
         ));
-        // User RW+XN (.data/stack): SMALL_PAGE | XN | AP_FULL -> bits 0b11.
+        // User RW+XN (.data/stack): SMALL_PAGE | XN | AP_FULL | NG -> bits 0b11.
         assert!(l2_entry_is_user(
-            page_flags::SMALL_PAGE | page_flags::XN | page_flags::AP_FULL
+            page_flags::SMALL_PAGE | page_flags::XN | page_flags::AP_FULL | page_flags::NG
         ));
+        // #496: ownership is the NG tag, NOT the AP bits -- a PROT_NONE user page
+        // (AP 0b01, byte-identical in AP to a kernel fill) IS user, and an
+        // untagged PL0-accessible descriptor is NOT (nothing mints one).
+        assert!(
+            l2_entry_is_user(prot_to_l2_flags(0)),
+            "PROT_NONE user page must enumerate (#496)"
+        );
+        assert!(
+            !l2_entry_is_user(page_flags::SMALL_PAGE | page_flags::AP_FULL),
+            "untagged descriptor is not user-owned"
+        );
         // Real attrs from prot_to_l2_flags must all count as user.
         for prot in [
             prot::PROT_READ | prot::PROT_EXEC,
             prot::PROT_READ,
             prot::PROT_READ | prot::PROT_WRITE,
+            prot::PROT_EXEC,
+            0,
         ] {
             assert!(l2_entry_is_user(prot_to_l2_flags(prot)), "prot {prot:#x}");
         }

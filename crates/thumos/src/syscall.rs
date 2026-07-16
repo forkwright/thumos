@@ -1140,18 +1140,12 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
         return MAP_FAILED;
     }
 
-    // WHY (#478): reject a mapping with NO PL0 access (no PROT_READ and no
-    // PROT_WRITE -- i.e. PROT_NONE or exec-only, both AP[1:0]=0b01, which is
-    // PL0-inaccessible and indistinguishable from a shattered MB's
-    // KERNEL_DEFAULT fill). Such a page cannot be told apart from kernel-owned
-    // scaffolding, so fork's page-table enumeration (mmu::l2_entry_is_user)
-    // would silently omit it from the deep copy AND from teardown. Denying it
-    // keeps the invariant "every user page has AP >= 0b10", so enumeration is
-    // complete. PROT_NONE guard-page support needs membership-based
-    // enumeration -- TODO(#496).
-    if prot_flags & (mmu::prot::PROT_READ | mmu::prot::PROT_WRITE) == 0 {
-        return MAP_FAILED;
-    }
+    // #496: PROT_NONE (and exec-only) are now allowed. Such a page maps to
+    // AP[1:0]=0b01 -- byte-identical to a shattered MB's KERNEL_DEFAULT fill --
+    // but `prot_to_l2_flags` tags every user page with the software nG
+    // (USER_OWNED) bit, so `mmu::l2_entry_is_user` recognises it and fork's
+    // deep-copy + exit/exec teardown enumerate it. The page still gets a real
+    // zeroed frame; it just faults on any PL0 access (a guard page).
 
     // Round length up to page boundary
     let page_count = (length + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
@@ -1232,9 +1226,18 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
             return MAP_FAILED;
         };
 
+        // #496: the mmap window is identity SECTION-mapped in every real process
+        // L1, and map_page REFUSES to overlay a section -- so mmap failed for
+        // EVERY prot on a real table (it only ever worked against the synthetic
+        // tables in host tests). ensure_page_mappable shatters such a section
+        // first, exactly as map_user_image / map_user_stack do at spawn; it is
+        // idempotent (one L2 per MB, shared by the region's other pages and
+        // reclaimed at exit by free_addr_space) and a no-op for an absent entry.
         // SAFETY: pt is the current process's valid L1 table, vaddr is
         // page-aligned within the anonymous mmap region, phys is freshly allocated.
-        let ok = unsafe { mmu::map_page(pt, vaddr, phys, l2_attrs) };
+        let ok = unsafe {
+            mmu::ensure_page_mappable(pt, vaddr) && mmu::map_page(pt, vaddr, phys, l2_attrs)
+        };
         if !ok {
             // map_page failed. #497: free the just-allocated frame + roll back
             // every prior frame under the kernel L1 (zero-on-free aliasing),
@@ -1271,6 +1274,13 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
                 mmu::switch_addr_space(pt);
             }
             return MAP_FAILED;
+        }
+        // #496: this table is LIVE, and the MB was a section until the shatter
+        // above -- invalidate the stale section TLB entry so the access resolves
+        // through the freshly-installed page descriptor.
+        // SAFETY: vaddr is page-aligned in the current process's address space.
+        unsafe {
+            mmu::flush_tlb_page(vaddr);
         }
     }
 
@@ -1383,14 +1393,10 @@ fn sys_mprotect(arg0: u32, arg1: u32, arg2: u32) -> u32 {
         return EINVAL;
     }
 
-    // WHY (#478): reject a new protection with NO PL0 access (PROT_NONE /
-    // exec-only). Same reason as sys_mmap -- an AP[1:0]=0b01 user page is
-    // indistinguishable from kernel scaffolding, so fork's enumeration would
-    // drop it. Keeping every user page at AP >= 0b10 makes the deep copy
-    // complete.
-    if new_prot & (mmu::prot::PROT_READ | mmu::prot::PROT_WRITE) == 0 {
-        return EINVAL;
-    }
+    // #496: PROT_NONE (and exec-only) are now allowed -- the nG (USER_OWNED) tag
+    // on every user descriptor keeps such a page enumerable by fork/exit/exec
+    // even though its AP (0b01) matches a kernel fill. mprotect to PROT_NONE
+    // turns a live mapping into a guard page (faults on any PL0 access).
 
     // Find the mapping
     let Some(mapping) = process::find_mapping(addr) else {
@@ -1956,6 +1962,72 @@ mod tests {
         assert!(
             addr >= process::MMAP_BASE && addr < 0x3000_0000,
             "mmap address 0x{addr:08x} must be in user mmap range"
+        );
+    }
+
+    #[test]
+    fn mmap_prot_none_guard_page_succeeds_and_stays_enumerable() {
+        // #496: a PROT_NONE guard page used to be rejected (MAP_FAILED) because
+        // its AP (0b01) is byte-identical to a shattered MB's KERNEL_DEFAULT fill,
+        // so the old AP-based enumeration would have dropped it from fork's
+        // deep-copy AND from teardown. It is allowed now because
+        // prot_to_l2_flags tags every user page NG (USER_OWNED) -- which is what
+        // l2_entry_is_user keys on -- so the guard page stays enumerable while
+        // still denying PL0 access.
+        unsafe {
+            setup_mm();
+        }
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let result = sys_mmap(
+            0,
+            u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default(),
+            0, // PROT_NONE
+            flags_and_fd,
+        );
+        assert_ne!(result, MAP_FAILED, "PROT_NONE mmap must succeed (#496)");
+        let addr = result as usize;
+        let pt = process::current_page_table();
+        // SAFETY: pt is the current process's table and addr was just mapped.
+        let entry = unsafe { mmu::read_l2_entry(pt, addr) }.expect("guard page must be mapped");
+        assert!(
+            mmu::l2_entry_is_user(entry),
+            "guard page must enumerate as user-owned, else fork/exit silently drop it"
+        );
+        assert_eq!(
+            entry & (0b11 << 4),
+            mmu::page_flags::AP_KERNEL_ONLY,
+            "PROT_NONE must grant PL0 no access"
+        );
+    }
+
+    #[test]
+    fn mprotect_to_prot_none_succeeds_and_stays_enumerable() {
+        // #496: mprotect to PROT_NONE (turning a live mapping into a guard page)
+        // was rejected with EINVAL for the same enumeration reason.
+        unsafe {
+            setup_mm();
+        }
+        let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
+        let len = u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
+        let addr = sys_mmap(
+            0,
+            len,
+            mmu::prot::PROT_READ | mmu::prot::PROT_WRITE,
+            flags_and_fd,
+        );
+        assert_ne!(addr, MAP_FAILED, "setup mmap must succeed");
+        assert_eq!(
+            sys_mprotect(addr, len, 0),
+            0,
+            "mprotect to PROT_NONE must succeed (#496)"
+        );
+        let pt = process::current_page_table();
+        // SAFETY: pt is the current process's table and addr is a live mapping.
+        let entry =
+            unsafe { mmu::read_l2_entry(pt, addr as usize) }.expect("page must stay mapped");
+        assert!(
+            mmu::l2_entry_is_user(entry),
+            "a PROT_NONE page must still enumerate as user-owned"
         );
     }
 
