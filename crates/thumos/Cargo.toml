@@ -35,6 +35,13 @@ qemu = []
 # branch (qemu exit 4, no service-loop resume). Only meaningful with `qemu`;
 # mutually exclusive with `production` (main.rs compile_error!).
 kfault-probe = []
+# WHY (#492 fault supervision): CI crash-loop harness -- kinit spawns /crasher
+# (a program that data-aborts on every launch) and registers it SUPERVISED, so
+# CI can witness PID 0's restart policy end to end: restart x3, then give up.
+# A THUMOS_INIT_VARIANT cannot do this -- variants only select /init's `_start`
+# body, while supervised registration is kinit behaviour. Only meaningful with
+# `qemu`; mutually exclusive with `production` (main.rs compile_error!).
+crashloop-probe = []
 
 [dependencies]
 aes = { version = "0.8", default-features = false }

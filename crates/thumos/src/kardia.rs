@@ -709,6 +709,55 @@ fn emit_marker(serial: &mut Uart, args: core::fmt::Arguments) {
 /// INVARIANT: entered with scheduling already enabled (kinit calls
 /// `process::enable_scheduling()` first); everything here tolerates preemption
 /// at any instruction outside an `IrqSpinlock` critical section.
+/// Relaunch a supervised service from the boot ramfs (#492); returns its new pid.
+///
+/// A restart cannot be reconstructed from the dead PCB -- it retains no image
+/// identity (no path, no entry, no image frame) -- so it re-plans from the ramfs
+/// by name, exactly as kinit's original spawn did.
+///
+/// WHY the explicit kernel-L1 switch under an `IrqGuard`: `switch_to` SKIPS the
+/// TTBR0 write for PID 0 (its `page_table_phys` is 0), so the service loop runs
+/// under whatever table the last user process installed -- but
+/// `elf::load_confined` writes the fresh image frame through raw PHYSICAL
+/// addresses and requires the identity kernel L1 (the #497 aliasing class).
+/// Nothing needs restoring afterwards: the kernel table IS PID 0's canonical
+/// table, and the next `switch_to` installs the successor's. The guard keeps the
+/// load+spawn window atomic against preemption.
+fn restart_supervised(path: &'static str) -> Option<crate::process::Pid> {
+    let _irq = crate::irq::IrqGuard::new();
+    // SAFETY: table_base() is the always-valid identity kernel L1; PID 0 owns no
+    // table of its own, so there is nothing to restore.
+    unsafe {
+        crate::mmu::switch_addr_space(crate::mmu::table_base());
+    }
+    let crate::kinit::UserspaceSpawnPlan::Elf(elf_data) =
+        crate::kinit::plan_userspace_spawn_from_vfs(path)
+    else {
+        return None;
+    };
+    // SAFETY: the identity kernel L1 is live (switched above), satisfying
+    // load_confined's TTBR0 precondition.
+    let loaded = unsafe {
+        crate::elf::load_confined(
+            elf_data,
+            crate::kconfig::USER_TEXT_BASE,
+            crate::kconfig::RAM_END,
+        )
+    }
+    .ok()?;
+    let pid = crate::process::spawn_user(&loaded)?;
+    // #492: record the new pid BEFORE the guard drops -- spawn-then-register must
+    // be ATOMIC against preemption. The relaunched service is by definition one
+    // that crashes; if the timer IRQ landed between the spawn and this write, the
+    // scheduler could run it and its fault would resolve to no claim
+    // (service=None), so the crash would be audited but never counted against the
+    // budget -- silently ending supervision without ever reaching give-up. The
+    // early returns above leave the claim as the fault path already released it
+    // (None), which is correct: no relaunch happened.
+    crate::supervisor::set_current_pid(path, Some(pid));
+    Some(pid)
+}
+
 pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
     let _ = serial.write_str("[kardia] service loop running\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write
     // #403: install the runtime firewall policy through the production add_rule
@@ -854,6 +903,62 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
             // otherwise a fault-killed PCB slot leaks and the process table
             // exhausts at MAX_PROCS after repeated user faults. The marker is
             // the reaped-half witness the CI isolation matrix asserts.
+            // #492: drain the fault ring BEFORE the reaper frees any slot, so a
+            // drained report's pid cannot alias a slot this same pass reuses.
+            // Every report is audit-logged; a SUPERVISED service that crashed is
+            // relaunched, rate-limited. The supervisor keys on fault reports and
+            // never on PCB Dead state, so a service that exits CLEANLY (as /shell
+            // does today) is provably never relaunched.
+            while let Some(report) = crate::supervisor::pop_report() {
+                let (detail, detail_len) = crate::supervisor::audit_detail(&report);
+                {
+                    // Split the borrow: log_event needs &mut audit AND &audit_key.
+                    let KernelState {
+                        audit, audit_key, ..
+                    } = &mut kernel;
+                    let _ = audit.log_event(
+                        crate::audit::AuditEventType::UserFault,
+                        u32::from(report.pid),
+                        &detail[..detail_len],
+                        now,
+                        audit_key.as_bytes(),
+                    );
+                }
+                let _ = write!(
+                    serial,
+                    "kardia: fault audited pid={} kind={}\r\n",
+                    report.pid, report.kind
+                ); // WHY: best-effort diagnostic + the #492 audit witness
+                match crate::supervisor::decide(&report, now) {
+                    crate::supervisor::Decision::None => {}
+                    crate::supervisor::Decision::Restart(path) => {
+                        // restart_supervised records the new pid itself, inside its
+                        // IrqGuard -- spawn-then-register must be atomic (see there).
+                        let new_pid = restart_supervised(path);
+                        match new_pid {
+                            Some(pid) => {
+                                let _ = write!(
+                                    serial,
+                                    "kardia: supervisor restarted {path} (PID {pid})\r\n"
+                                );
+                            }
+                            None => {
+                                let _ = write!(
+                                    serial,
+                                    "kardia: supervisor FAILED to restart {path}\r\n"
+                                );
+                            }
+                        }
+                    }
+                    crate::supervisor::Decision::GiveUp(path) => {
+                        let _ = write!(
+                            serial,
+                            "kardia: supervisor giving up on {path} after {} restarts\r\n",
+                            crate::supervisor::max_restarts()
+                        );
+                    }
+                }
+            }
             let reaped = crate::process::reap_dead_children();
             if reaped > 0 {
                 let _ = write!(

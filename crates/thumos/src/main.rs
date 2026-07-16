@@ -68,6 +68,14 @@ compile_error!(
     "kfault-probe is a CI fault-injection harness; a production image must not contain a deliberate kernel fault."
 );
 
+// WHY (#492 fault supervision): crashloop-probe makes kinit spawn + supervise a
+// program that faults on every launch, purely so CI can witness the restart
+// policy. A production image must never boot a deliberate crash loop.
+#[cfg(all(feature = "crashloop-probe", feature = "production"))]
+compile_error!(
+    "crashloop-probe is a CI crash-loop harness; a production image must not spawn a deliberately faulting service."
+);
+
 // WHY (issue #372): also gated `not(test)` — the console's command methods
 // (cmd_mem/cmd_ps/…) read kernel state via `crate::heap`/`page`/`process`,
 // several of which are themselves `#[cfg(not(test))]`, so the module cannot
@@ -182,6 +190,10 @@ mod slab;
 mod sms;
 mod socket;
 mod status_bar;
+// NOTE (#492/#528): deliberately NOT cfg(not(test)) like kardia/kinit -- the
+// fault ring + restart policy are pure logic, and gating them out of the test
+// build would make their tests dead source (the #528 trap).
+mod supervisor;
 mod syscall;
 mod t9;
 mod telephony;

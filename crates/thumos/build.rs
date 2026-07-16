@@ -273,6 +273,15 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     let shell_elf = out_dir.join("shell.elf");
     compile_init_binary(&rustc, &shell_src, &init_ld, &shell_elf, None);
 
+    // #492: /crasher -- the fault-supervisor witness. Always embedded (tiny;
+    // inert unless spawned), but kinit only spawns + supervises it under the
+    // `crashloop-probe` feature, so it never runs in a normal boot. It faults on
+    // every launch, letting CI witness restart/restart/restart/give-up.
+    let crasher_src = manifest_dir.join("init/crasher.rs");
+    println!("cargo:rerun-if-changed={}", crasher_src.display());
+    let crasher_elf = out_dir.join("crasher.elf");
+    compile_init_binary(&rustc, &crasher_src, &init_ld, &crasher_elf, None);
+
     let elf = match fs::read(&init_elf) {
         Ok(b) => b,
         Err(e) => die(&format!("#474: cannot read built /init ELF: {e}")),
@@ -285,10 +294,15 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
         Ok(b) => b,
         Err(e) => die(&format!("#526: cannot read built /shell ELF: {e}")),
     };
+    let elf_crasher = match fs::read(&crasher_elf) {
+        Ok(b) => b,
+        Err(e) => die(&format!("#492: cannot read built /crasher ELF: {e}")),
+    };
 
     let mut archive = cpio_newc_entry("init", &elf, 0o100_755);
     archive.extend_from_slice(&cpio_newc_entry("init2", &elf2, 0o100_755));
     archive.extend_from_slice(&cpio_newc_entry("shell", &elf_shell, 0o100_755));
+    archive.extend_from_slice(&cpio_newc_entry("crasher", &elf_crasher, 0o100_755));
     archive.extend_from_slice(&cpio_newc_entry("TRAILER!!!", &[], 0));
     if let Err(e) = fs::write(out_dir.join("initramfs.cpio"), &archive) {
         die(&format!("#474: cannot write initramfs.cpio: {e}"));
