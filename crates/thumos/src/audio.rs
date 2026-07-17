@@ -42,7 +42,7 @@
 // WHY: audio manager API not yet wired to kinit (Wave 4 integration pending).
 #![expect(
     dead_code,
-    reason = "audio manager API created in Phase 07 Wave 4, kinit wiring pending"
+    reason = "audio manager API created in Phase 07 Wave 4, kinit wiring pending (#145)"
 )]
 
 extern crate alloc;

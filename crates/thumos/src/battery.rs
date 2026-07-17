@@ -27,7 +27,7 @@
 // WHY: battery monitor created in Phase 07 Wave 5, kinit wiring pending.
 #![expect(
     dead_code,
-    reason = "Battery monitor created in Phase 07 Wave 5, kinit wiring pending"
+    reason = "Battery monitor created in Phase 07 Wave 5, kinit wiring pending (#145)"
 )]
 
 // ---------------------------------------------------------------------------

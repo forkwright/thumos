@@ -31,7 +31,7 @@
 // WHY: FM radio driver not yet wired to kinit (Wave 8, kinit wiring pending).
 #![expect(
     dead_code,
-    reason = "FM radio driver created in Phase 07 Wave 8, kinit wiring pending"
+    reason = "FM radio driver created in Phase 07 Wave 8, kinit wiring pending (#518)"
 )]
 
 extern crate alloc;

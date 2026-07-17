@@ -18,7 +18,7 @@
 // WHY: settings screens created in Phase 07 Wave 6, kinit wiring pending.
 #![expect(
     dead_code,
-    reason = "Settings screens created in Phase 07 Wave 6, kinit wiring pending"
+    reason = "Settings screens created in Phase 07 Wave 6, kinit wiring pending (#145)"
 )]
 
 use crate::ui::{

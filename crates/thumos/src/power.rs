@@ -34,7 +34,7 @@
     feature = "qemu",
     expect(
         dead_code,
-        reason = "the ARMPLL write is qemu-gated; virt models no MT6739 CMU"
+        reason = "the ARMPLL write is qemu-gated; virt models no MT6739 CMU (#463)"
     )
 )]
 const ARMPLL_CON1: usize = 0x1000_C104;

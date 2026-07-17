@@ -38,7 +38,7 @@
 // WHY: audio codec API not yet wired to kinit (Wave 4 integration pending).
 #![expect(
     dead_code,
-    reason = "audio codec API created in Phase 07 Wave 4, kinit wiring pending"
+    reason = "audio codec API created in Phase 07 Wave 4, kinit wiring pending (#145)"
 )]
 
 extern crate alloc;
@@ -72,7 +72,7 @@ const AFE_DL_GAIN: u16 = 0x2010;
 /// ADC digital gain register offset.
 #[expect(
     dead_code,
-    reason = "register constant reserved for future gain control"
+    reason = "register constant reserved for future gain control (#145)"
 )]
 const AFE_UL_GAIN: u16 = 0x2014;
 

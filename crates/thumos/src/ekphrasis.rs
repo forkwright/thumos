@@ -40,7 +40,7 @@
 // WHY: ekphrasis created in Phase 09 Wave 6, audio pipeline integration pending.
 #![expect(
     dead_code,
-    reason = "Ekphrasis created in Phase 09 Wave 6, audio pipeline integration pending"
+    reason = "Ekphrasis created in Phase 09 Wave 6, audio pipeline integration pending (#145)"
 )]
 
 extern crate alloc;

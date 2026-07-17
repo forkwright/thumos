@@ -26,7 +26,7 @@
 // WHY: Matrix crypto created in Phase 09 Wave 3, full integration pending.
 #![expect(
     dead_code,
-    reason = "Matrix crypto created in Phase 09 Wave 3, full messaging integration pending"
+    reason = "Matrix crypto created in Phase 09 Wave 3, full messaging integration pending (#437)"
 )]
 
 extern crate alloc;

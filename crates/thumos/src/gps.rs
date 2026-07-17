@@ -26,7 +26,7 @@
 // WHY: hardware driver API not yet wired to upper layers (kinit integration pending).
 #![expect(
     dead_code,
-    reason = "GPS driver API wired in kinit but not yet called from userspace"
+    reason = "GPS driver API wired in kinit but not yet called from userspace (#145)"
 )]
 
 extern crate alloc;
