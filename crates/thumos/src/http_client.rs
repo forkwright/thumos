@@ -29,7 +29,7 @@
 // WHY: HTTP client created in Phase 09 Wave 1, integration pending in Wave 2.
 #![expect(
     dead_code,
-    reason = "HTTP client created in Phase 09 Wave 1, harmostes integration pending"
+    reason = "HTTP client created in Phase 09 Wave 1, harmostes integration pending (#145)"
 )]
 
 extern crate alloc;

@@ -31,7 +31,7 @@
 // implementation pending.
 #![expect(
     dead_code,
-    reason = "Briar transport stub created in Phase 09 Wave 7, BTP implementation pending"
+    reason = "Briar transport stub created in Phase 09 Wave 7, BTP implementation pending (#145)"
 )]
 
 extern crate alloc;

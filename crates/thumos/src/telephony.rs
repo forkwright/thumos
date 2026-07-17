@@ -29,7 +29,7 @@
 // WHY: hardware driver API not yet wired to upper layers (Wave 3 integration).
 #![expect(
     dead_code,
-    reason = "Telephony driver API not yet wired to kinit (Wave 3)"
+    reason = "Telephony driver API not yet wired to kinit (Wave 3) (#145)"
 )]
 
 // Re-export parser functions so external callers can still use crate::telephony::*.

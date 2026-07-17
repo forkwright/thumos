@@ -36,7 +36,7 @@
 // WHY: DNS-over-TLS created in Phase 08 Wave 7, integration pending.
 #![expect(
     dead_code,
-    reason = "DNS-over-TLS created in Phase 08 Wave 7, network integration pending"
+    reason = "DNS-over-TLS created in Phase 08 Wave 7, network integration pending (#442)"
 )]
 
 extern crate alloc;

@@ -66,14 +66,14 @@ pub(crate) static DISPLAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// USB ACM serial link established.
 #[cfg_attr(
     feature = "qemu",
-    expect(dead_code, reason = "set by the USB init step, which is qemu-gated")
+    expect(dead_code, reason = "set by the USB init step, which is qemu-gated (#463)")
 )]
 pub(crate) static USB_SERIAL_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 /// Modem CCCI link established.
 #[cfg_attr(
     feature = "qemu",
-    expect(dead_code, reason = "set by the CCCI init step, which is qemu-gated")
+    expect(dead_code, reason = "set by the CCCI init step, which is qemu-gated (#463)")
 )]
 pub(crate) static MODEM_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
@@ -85,7 +85,7 @@ pub(crate) static MODEM_AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// depends on all preceding steps HAVING been attempted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
-#[expect(dead_code, reason = "used by tests and future boot progress reporting")]
+#[expect(dead_code, reason = "used by tests and future boot progress reporting (test-fixture)")]
 pub(crate) enum BootStep {
     /// MMU and caches.
     Mmu = 0,
@@ -137,7 +137,7 @@ pub(crate) enum BootStep {
     Complete = 23,
 }
 
-#[expect(dead_code, reason = "used by tests and future boot progress reporting")]
+#[expect(dead_code, reason = "used by tests and future boot progress reporting (test-fixture)")]
 impl BootStep {
     /// Total number of boot steps.
     pub(crate) const COUNT: usize = 24;
@@ -287,7 +287,7 @@ impl BootState {
     feature = "qemu",
     expect(
         dead_code,
-        reason = "consumed by the CCCI init step, which is qemu-gated"
+        reason = "consumed by the CCCI init step, which is qemu-gated (#463)"
     )
 )]
 const MODEM_BOOT_TIMEOUT_MS: u64 = 10_000;

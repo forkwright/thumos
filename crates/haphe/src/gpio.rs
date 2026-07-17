@@ -30,28 +30,28 @@ const GPIO_DIR_BASE: usize = 0x000;
 /// GPIO data-out register base OFFSET.
 #[cfg_attr(
     test,
-    expect(dead_code, reason = "used only in hardware (non-test) build")
+    expect(dead_code, reason = "used only in hardware (non-test) build (#537)")
 )]
 const GPIO_DOUT_BASE: usize = 0x100;
 
 /// GPIO data-in register base OFFSET (always reads current pin level).
 #[cfg_attr(
     test,
-    expect(dead_code, reason = "used only in hardware (non-test) build")
+    expect(dead_code, reason = "used only in hardware (non-test) build (#537)")
 )]
 const GPIO_DIN_BASE: usize = 0x200;
 
 /// GPIO pull-enable register base OFFSET.
 #[cfg_attr(
     test,
-    expect(dead_code, reason = "used only in hardware (non-test) build")
+    expect(dead_code, reason = "used only in hardware (non-test) build (#537)")
 )]
 const GPIO_PULLEN_BASE: usize = 0x300;
 
 /// GPIO pull-SELECT register base OFFSET (0 = pull-down, 1 = pull-up).
 #[cfg_attr(
     test,
-    expect(dead_code, reason = "used only in hardware (non-test) build")
+    expect(dead_code, reason = "used only in hardware (non-test) build (#537)")
 )]
 const GPIO_PULLSEL_BASE: usize = 0x400;
 
@@ -73,7 +73,7 @@ pub(crate) const KEY_COUNT: usize = ROW_COUNT * COL_COUNT;
 /// low during scanning.
 #[cfg_attr(
     test,
-    expect(dead_code, reason = "used only in hardware (non-test) build")
+    expect(dead_code, reason = "used only in hardware (non-test) build (#537)")
 )]
 pub(crate) const ROW_PINS: [u8; ROW_COUNT] = [40, 41, 42, 43];
 
@@ -84,7 +84,7 @@ pub(crate) const ROW_PINS: [u8; ROW_COUNT] = [40, 41, 42, 43];
 /// key's column low.
 #[cfg_attr(
     test,
-    expect(dead_code, reason = "used only in hardware (non-test) build")
+    expect(dead_code, reason = "used only in hardware (non-test) build (#537)")
 )]
 pub(crate) const COL_PINS: [u8; COL_COUNT] = [44, 45, 46];
 

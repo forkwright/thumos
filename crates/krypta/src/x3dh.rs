@@ -50,7 +50,7 @@ pub(crate) struct SharedSecret {
         not(test),
         expect(
             dead_code,
-            reason = "crate-internal API — raw is unused in lib but accessed in tests and available to future consumers"
+            reason = "crate-internal API — raw is unused in lib but accessed in tests and held for future consumers"
         )
     )]
     pub(crate) raw: [u8; 32],

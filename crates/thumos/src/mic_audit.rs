@@ -33,7 +33,7 @@
 // WHY: mic audit log not yet wired to audio manager (Wave 8, wiring pending).
 #![expect(
     dead_code,
-    reason = "Mic audit log created in Phase 07 Wave 8, audio manager wiring pending"
+    reason = "Mic audit log created in Phase 07 Wave 8, audio manager wiring pending (#145)"
 )]
 
 extern crate alloc;

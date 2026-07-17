@@ -8,7 +8,7 @@
 // callers (supplicant, netif) will be added in subsequent phases.
 #![expect(
     dead_code,
-    reason = "hardware driver API not yet wired to upper layers"
+    reason = "hardware driver API not yet wired to upper layers (#537)"
 )]
 #![expect(
     clippy::redundant_pub_crate,

@@ -26,7 +26,7 @@
 // frame TX/RX, scan, and association are implemented on the target.
 #![expect(
     dead_code,
-    reason = "WiFi hardware data path not yet implemented on target"
+    reason = "WiFi hardware data path not yet implemented on target (#145)"
 )]
 
 extern crate alloc;

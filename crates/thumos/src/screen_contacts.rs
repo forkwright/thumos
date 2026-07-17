@@ -20,7 +20,7 @@
 // WHY: contacts screen created in Phase 07 Wave 5, kinit wiring pending.
 #![expect(
     dead_code,
-    reason = "Contacts screen created in Phase 07 Wave 5, kinit wiring pending"
+    reason = "Contacts screen created in Phase 07 Wave 5, kinit wiring pending (#145)"
 )]
 
 extern crate alloc;

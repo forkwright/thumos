@@ -20,7 +20,7 @@
 // WHY: privacy dashboard created in Phase 08 Wave 7, kinit wiring pending.
 #![expect(
     dead_code,
-    reason = "Privacy dashboard created in Phase 08 Wave 7, kinit wiring pending"
+    reason = "Privacy dashboard created in Phase 08 Wave 7, kinit wiring pending (#145)"
 )]
 
 use crate::lock_screen::constant_time_eq;
