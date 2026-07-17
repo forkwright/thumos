@@ -45,7 +45,7 @@ pub(crate) enum ParseError {
     not(test),
     expect(
         dead_code,
-        reason = "public API — version and total_length are unused in this crate but available to downstream consumers"
+        reason = "public API — version and total_length are unused in this crate but held for downstream consumers"
     )
 )]
 pub(crate) struct IpHeader {
@@ -67,7 +67,7 @@ pub(crate) struct IpHeader {
 #[derive(Debug, Clone)]
 #[expect(
     dead_code,
-    reason = "public API — seq and ack are unused in this crate but available to downstream consumers"
+    reason = "public API — seq and ack are unused in this crate but held for downstream consumers"
 )]
 pub(crate) struct TcpHeader {
     /// Source TCP port.
@@ -88,7 +88,7 @@ pub(crate) struct TcpHeader {
     not(test),
     expect(
         dead_code,
-        reason = "public API — length is unused in this crate but available to downstream consumers"
+        reason = "public API — length is unused in this crate but held for downstream consumers"
     )
 )]
 pub(crate) struct UdpHeader {

@@ -28,7 +28,7 @@
 // WHY: SMS API not yet wired to kinit event loop (Wave 4 integration).
 #![expect(
     dead_code,
-    reason = "SMS API created in Phase 07 Wave 3, kinit wiring pending"
+    reason = "SMS API created in Phase 07 Wave 3, kinit wiring pending (#145)"
 )]
 
 extern crate alloc;

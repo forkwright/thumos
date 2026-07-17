@@ -17,7 +17,7 @@
 // WHY: FM screen not yet wired to kinit (Wave 8, kinit wiring pending).
 #![expect(
     dead_code,
-    reason = "FM radio screen created in Phase 07 Wave 8, kinit wiring pending"
+    reason = "FM radio screen created in Phase 07 Wave 8, kinit wiring pending (#518)"
 )]
 
 use crate::fm_radio::{self, FmState};

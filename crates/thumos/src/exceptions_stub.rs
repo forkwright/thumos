@@ -42,7 +42,7 @@ pub(crate) fn uptime_ms() -> u64 {
 /// Test helper: set the tick counter to an absolute value.
 #[expect(
     dead_code,
-    reason = "settable-tick API for scheduler/time host tests; provided for the un-gating seam, not yet exercised by an un-gated test"
+    reason = "settable-tick API for scheduler/time host tests; provided for the un-gating seam, not yet exercised by an un-gated test (test-fixture)"
 )]
 pub(crate) fn set_ticks(value: u64) {
     TICKS.store(value, Ordering::Relaxed);
@@ -51,7 +51,7 @@ pub(crate) fn set_ticks(value: u64) {
 /// Test helper: advance the tick counter by `delta` ticks.
 #[expect(
     dead_code,
-    reason = "settable-tick API for scheduler/time host tests; provided for the un-gating seam, not yet exercised by an un-gated test"
+    reason = "settable-tick API for scheduler/time host tests; provided for the un-gating seam, not yet exercised by an un-gated test (test-fixture)"
 )]
 pub(crate) fn advance_ticks(delta: u64) {
     TICKS.fetch_add(delta, Ordering::Relaxed);

@@ -92,7 +92,7 @@ pub(crate) fn raise_incoming_ring() {
     all(feature = "qemu", not(test)),
     expect(
         dead_code,
-        reason = "the qemu idle busy-polls; peek is the phone masked-WFI re-check"
+        reason = "the qemu idle busy-polls; peek is the phone masked-WFI re-check (#463)"
     )
 )]
 pub(crate) fn peek_pending() -> bool {

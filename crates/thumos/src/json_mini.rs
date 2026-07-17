@@ -22,10 +22,10 @@
 //!   `\t`, `\uXXXX` (BMP only, no surrogate pair handling)
 //! - Maximum nesting depth of 32 to prevent stack overflow
 
-// WHY: JSON primitives created in Phase 09 Wave 1, harmostes integration pending.
+// WHY: JSON primitives created in Phase 09 Wave 1, harmostes integration pending (#145).
 #![expect(
     dead_code,
-    reason = "JSON primitives created in Phase 09 Wave 1, harmostes integration pending"
+    reason = "JSON primitives created in Phase 09 Wave 1, harmostes integration pending (#145)"
 )]
 
 extern crate alloc;

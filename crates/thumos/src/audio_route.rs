@@ -28,7 +28,7 @@
 // WHY: route manager API not yet wired to kinit (Wave 4 integration pending).
 #![expect(
     dead_code,
-    reason = "audio route API created in Phase 07 Wave 4, kinit wiring pending"
+    reason = "audio route API created in Phase 07 Wave 4, kinit wiring pending (#145)"
 )]
 
 extern crate alloc;

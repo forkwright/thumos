@@ -1,0 +1,16 @@
+[baseline]
+created = "2026-07-17"
+remove_after = "2026-10-15"
+reason = "kanon#2454 -- docs-sync AGENTS.md template hardcodes workflow/AGENTS-mcp-tools.md + crates/basanos/standards/AGENT-DOCS.md paths that don't exist in thumos (no vendored workflow/ or crates/basanos/standards/ dirs); kanon docs sync --apply reproduces the identical broken references on every regen, so this cannot be fixed thumos-side until the kanon template ships a fix. Remove once kanon#2454 lands and a fresh docs sync no longer emits these paths."
+
+[[baseline.entry]]
+rule = "WORKFLOW/defers-to"
+file = "AGENTS.md"
+line = 5
+hash = "300b39c74c925c4b15e61e0ed690946ed490cc75d37e12a27d863f84b16ec958"
+
+[[baseline.entry]]
+rule = "DOCS/stale-local-link"
+file = "AGENTS.md"
+line = 26
+hash = "2e8e336f5c4ca67863643094cebe9fa21cc11865288ba0fa19f1d39de68fb6d1"

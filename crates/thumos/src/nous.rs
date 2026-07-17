@@ -49,7 +49,7 @@
 // WHY: nous created in Phase 09 Wave 8, full Matrix room wiring pending.
 #![expect(
     dead_code,
-    reason = "Nous created in Phase 09 Wave 8, Matrix room wiring pending"
+    reason = "Nous created in Phase 09 Wave 8, Matrix room wiring pending (#145)"
 )]
 
 extern crate alloc;

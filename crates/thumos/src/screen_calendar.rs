@@ -18,7 +18,7 @@
 // frame and has no calendar route/input path.
 #![expect(
     dead_code,
-    reason = "Calendar screen is not wired into the kinit UI route"
+    reason = "Calendar screen is not wired into the kinit UI route (#145)"
 )]
 
 extern crate alloc;
