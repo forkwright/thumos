@@ -188,6 +188,29 @@ unsafe fn sys_mprotect(addr: u32, len: u32, prot: u32) -> u32 {
     ret
 }
 
+/// brk(new_break) -> the (possibly updated) program break. The kernel reports
+/// failure by returning the UNCHANGED break (Linux convention), never an
+/// errno.
+///
+/// # Safety
+/// Adjusts this process's heap break; pages at/above the new break are
+/// unmapped and freed.
+#[cfg(thumos_init_brk)]
+#[inline(always)]
+unsafe fn sys_brk(new_break: u32) -> u32 {
+    let ret;
+    // SAFETY: SVC #22 (Brk) per the thumos ABI.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 22u32,
+            inlateout("r0") new_break => ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
 /// ELF entry point (e_entry). The kernel transmutes the loaded entry to
 /// PL0 isolation probe (#487): under a `thumos_init_<variant>` cfg (set by
 /// build.rs from THUMOS_INIT_VARIANT), attempt a kernel-memory or privileged
@@ -438,6 +461,50 @@ pub extern "C" fn _start() -> ! {
             }
             core::ptr::read_volatile(guard_addr);
             let m = b"init: guard readable after mprotect\n";
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+        }
+        // #533 brk harness: grow the heap by two pages on a REAL process table
+        // -- a cloned identity map whose heap window (mb 0x100) is a 1 MB
+        // SECTION that map_page refuses to overlay, so brk growth failed on
+        // every real boot while host tests (absent-entry fixture) stayed
+        // green. sys_brk reports failure by returning the UNCHANGED break, so
+        // the return-value checks catch that directly; the canary then proves
+        // the new pages are genuinely PL0-writable (a missing or kernel-only
+        // grant data-aborts here -> USERFAULT, which CI reds on). Finally
+        // shrink back, proving the teardown half on the same table shape.
+        #[cfg(thumos_init_brk)]
+        {
+            let initial = sys_brk(0);
+            let grown = initial + 2 * 4096;
+            if initial == 0 || sys_brk(grown) != grown {
+                let m = b"init: brk grow FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            let m = b"init: brk grown\n";
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+            // The heap VA as a pointer, converted once (brk returned != 0).
+            // .add(1024) steps one u32 page (1024 * 4 = 4096 bytes). Both
+            // pages [initial, grown) were just mapped user-RW by the
+            // successful grow above; a broken grant faults here (by design).
+            let heap = usize::try_from(initial).unwrap_or(0) as *mut u32;
+            core::ptr::write_volatile(heap, 0xCAFE_0001);
+            core::ptr::write_volatile(heap.add(1024), 0xCAFE_0002);
+            let ok = core::ptr::read_volatile(heap) == 0xCAFE_0001
+                && core::ptr::read_volatile(heap.add(1024)) == 0xCAFE_0002;
+            if !ok {
+                let m = b"init: brk canary BROKEN\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            let m = b"init: brk canary ok\n";
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+            if sys_brk(initial) != initial {
+                let m = b"init: brk shrink FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            let m = b"init: brk shrunk\n";
             sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
         }
         sys_write(1, msg.as_ptr(), u32::try_from(msg.len()).unwrap_or(0));
