@@ -21,11 +21,20 @@ use alloc::vec::Vec;
 // WHY: central registry of all hardware base addresses. Individual driver
 // modules have local copies — these are the canonical source of truth for
 // cross-module reference and kinit boot validation.
+//
+// WHY cfg_attr(not(test)) on the expects below (#528): this module compiles
+// on the host test target now, where kinit_plan's address test references the
+// canonical consts -- a blanket expect(dead_code) would be UNFULFILLED there
+// (the const is no longer dead), while on armv7a the consts stay
+// reference-only and the expectation still applies.
 
 /// UART0 (ttyMT0) MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "canonical reference; driver uses local const (#463)"
+    )
 )]
 pub(crate) const MT6739_UART0: usize = 0x1100_2000;
 
@@ -37,16 +46,22 @@ pub(crate) const MT6739_UART0: usize = 0x1100_2000;
 pub(crate) const MT6739_UART1: usize = 0x1100_3000;
 
 /// MSDC0 eMMC controller MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "canonical reference; driver uses local const (#463)"
+    )
 )]
 pub(crate) const MT6739_MSDC0: usize = 0x1123_0000;
 
 /// MUSB OTG USB controller MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "canonical reference; driver uses local const (#463)"
+    )
 )]
 pub(crate) const MT6739_MUSB: usize = 0x1121_0000;
 
@@ -79,30 +94,42 @@ pub(crate) const MT6739_RDMA0: usize = 0x1400_8000;
 pub(crate) const MT6739_DSI0: usize = 0x1400_D000;
 
 /// CLDMA AP-side register base (modem DMA).
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "canonical reference; driver uses local const (#463)"
+    )
 )]
 pub(crate) const MT6739_CLDMA_AP: usize = 0x200F_0000;
 
 /// CCIF peer register base (modem mailbox).
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "canonical reference; driver uses local const (#463)"
+    )
 )]
 pub(crate) const MT6739_CCIF: usize = 0x2051_0000;
 
 /// GIC distributor MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "canonical reference; driver uses local const (#463)"
+    )
 )]
 pub(crate) const MT6739_GIC_DIST: usize = 0x0C00_0000;
 
 /// GIC CPU interface MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "canonical reference; driver uses local const (#463)"
+    )
 )]
 pub(crate) const MT6739_GIC_CPU: usize = 0x0C00_2000;
 
@@ -124,9 +151,12 @@ pub(crate) const MT6739_CONSYS: usize = 0x1800_0000;
 pub(crate) const MT6739_WLAN: usize = 0x180F_0000;
 
 /// Framebuffer physical address (set by LK bootloader).
-#[expect(
-    dead_code,
-    reason = "canonical reference; kconfig has matching const (#463)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "canonical reference; kconfig has matching const (#463)"
+    )
 )]
 pub(crate) const MT6739_FB: usize = 0x77EE_0000;
 

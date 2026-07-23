@@ -38,7 +38,7 @@ use crate::device::DeviceRegistry;
 use crate::exceptions;
 use crate::heorte::HeorteManager;
 use crate::key_manager::SecureKey;
-use crate::kinit::BootState;
+use crate::kinit_plan::BootState;
 use crate::mic_audit::MicAuditLog;
 use crate::net::{BootNetDevice, FirewallDevice, NetworkStack};
 use crate::power::PowerManager;
@@ -730,8 +730,8 @@ fn restart_supervised(path: &'static str) -> Option<crate::process::Pid> {
     unsafe {
         crate::mmu::switch_addr_space(crate::mmu::table_base());
     }
-    let crate::kinit::UserspaceSpawnPlan::Elf(elf_data) =
-        crate::kinit::plan_userspace_spawn_from_vfs(path)
+    let crate::kinit_plan::UserspaceSpawnPlan::Elf(elf_data) =
+        crate::kinit_plan::plan_userspace_spawn_from_vfs(path)
     else {
         return None;
     };
