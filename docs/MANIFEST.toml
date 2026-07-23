@@ -44,8 +44,8 @@ description = "AGM M7 hardware reference: SoC, CPU/GPU/modem/WiFi component iden
 path = "docs/KERNEL-BUILD.md"
 type = "operational"
 evergreen = false
-description = "MT6739 Linux 4.4 BSP kernel build runbook, compiled from kernel-wiite."
-last_tested = "2026-05-09"
+description = "Rust kernel build runbook: toolchain, armv7a image, QEMU boot witness, signing/attestation boundary."
+last_tested = "2026-07-23"
 
 [[doc]]
 path = "docs/kernel-config-stock"
