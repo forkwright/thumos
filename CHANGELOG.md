@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10](https://github.com/forkwright/thumos/compare/v0.1.9...v0.1.10) (2026-07-23)
+
+
+### Bug Fixes
+
+* **thumos:** extract kinit pure logic into host-testable kinit_plan ([#528](https://github.com/forkwright/thumos/issues/528)) ([#561](https://github.com/forkwright/thumos/issues/561)) ([976c071](https://github.com/forkwright/thumos/commit/976c071382415a8a56781bb2ae4336585b0b6b5c))
+* **thumos:** faithful mm syscall fixture + sys_brk section shatter ([#533](https://github.com/forkwright/thumos/issues/533)) ([#562](https://github.com/forkwright/thumos/issues/562)) ([7370303](https://github.com/forkwright/thumos/commit/73703032b8b14e1cc769b30011eb4ae2367008ff))
+
 ## [0.1.9](https://github.com/forkwright/thumos/compare/v0.1.8...v0.1.9) (2026-07-23)
 
 
