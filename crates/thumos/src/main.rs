@@ -89,7 +89,10 @@ mod console;
 mod contacts;
 mod csprng;
 mod devfs;
-#[cfg(not(test))]
+// WHY (#528): un-gated from cfg(not(test)) -- the registry is pure data
+// (alloc String/Vec, no MMIO at compile time), and the gate left its own 7
+// unit tests dead source under every build (the kinit trap). kinit_plan's
+// address test also reads the canonical MT6739_* consts from host tests now.
 mod device;
 mod dhcp;
 mod display;
@@ -137,14 +140,21 @@ mod ipc;
 mod irq;
 mod json_mini;
 // WHY (#420): post-boot service loop + persisted KernelState. Test-gated
-// like kinit -- it consumes kinit::BootState and device::DeviceRegistry,
-// both cfg(not(test)).
+// like kinit: it is the runtime continuation of the hardware boot path (MMU
+// address-space switch, IRQ guard, UART service loop). #528 audit: kardia
+// carries no #[cfg(test)] tests, so there is no dead-test trap to extract.
 #[cfg(not(test))]
 mod kardia;
 mod kconfig;
 mod key_manager;
+// WHY (#528): ONLY the hardware-init-bearing boot sequence (run(), the driver
+// init steps, halt/panic display) stays cfg(not(test)). kinit's pure planning
+// logic (BootStep ordering, BootState, userspace spawn planning) lives in
+// kinit_plan -- compiled on every target, so its unit tests actually run in
+// the i686 host-test step instead of being dead source under both cfgs.
 #[cfg(not(test))]
 mod kinit;
+mod kinit_plan;
 mod lock_screen;
 mod matrix_crypto;
 mod memguard;
