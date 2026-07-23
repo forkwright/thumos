@@ -447,6 +447,35 @@ jobs:
           grep -q 'init: guard readable after mprotect' guard.log || { echo 'FAIL #496: mprotect(PROT_NONE -> PROT_READ) failed, or the guard frame did not survive'; exit 1; }
           grep -q 'shell: hello from userspace' guard.log || { echo 'FAIL #496: /shell did not coexist (#526)'; exit 1; }
           grep -q 'THUMOS-QEMU: service-loop ticks=' guard.log || { echo 'FAIL #496: kernel did not survive the guard fault'; exit 1; }
+      - name: QEMU brk heap growth on a real page table (#533)
+        working-directory: crates/thumos
+        # WHY: #533. sys_brk growth maps into the heap window (mb 0x100), which
+        # every real process L1 covers with a 1 MB identity SECTION -- and
+        # map_page refuses to overlay a section, so brk growth failed on every
+        # real boot while host tests (absent-entry fixture) stayed green. Host
+        # tests are structurally incapable of catching this class; this
+        # witness is the only real-table proof for heap growth, mirroring the
+        # #496 guard witness for mmap. The /init brk variant grows the heap by
+        # two pages (sys_brk reports failure by returning the UNCHANGED break,
+        # so the return check catches the overlay refusal directly), writes +
+        # reads a canary in BOTH new pages at PL0 (a missing or kernel-only
+        # grant data-aborts -> USERFAULT red), then shrinks back.
+        run: |
+          set -uo pipefail
+          THUMOS_INIT_VARIANT=brk cargo build --release --target armv7a-none-eabi --features qemu --jobs 8
+          brc=0
+          THUMOS_INIT_VARIANT=brk THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee brk.log || brc=$?
+          echo "=== brk: runner rc=$brc (want 0) ==="
+          test "$brc" -eq 0 || { echo "FAIL #533: kernel did not survive (rc=$brc; 124=hang 2/3=abort)"; exit 1; }
+          grep -q 'init: brk grown' brk.log || { echo 'FAIL #533: brk grow did not advance the break on a real table (section-overlay bug)'; exit 1; }
+          ! grep -q 'init: brk grow FAILED' brk.log || { echo 'FAIL #533: sys_brk grow returned the unchanged break -- map_page could not overlay the heap section'; exit 1; }
+          grep -q 'init: brk canary ok' brk.log || { echo 'FAIL #533: heap canary readback failed -- the grown pages are not PL0-accessible'; exit 1; }
+          ! grep -q 'init: brk canary BROKEN' brk.log || { echo 'FAIL #533: explicit heap canary mismatch'; exit 1; }
+          ! grep -q 'USERFAULT:' brk.log || { echo 'FAIL #533: touching the grown heap faulted -- the user grant never landed'; exit 1; }
+          grep -q 'init: brk shrunk' brk.log || { echo 'FAIL #533: brk shrink back to the initial break failed'; exit 1; }
+          grep -q 'init: hello from userspace' brk.log || { echo 'FAIL #533: /init did not continue past the brk harness'; exit 1; }
+          grep -q 'shell: hello from userspace' brk.log || { echo 'FAIL #533: /shell (PID 2) did not coexist (#526)'; exit 1; }
+          grep -q 'THUMOS-QEMU: service-loop ticks=' brk.log || { echo 'FAIL #533: kernel did not survive the brk harness'; exit 1; }
       - name: QEMU PID-0 fault supervisor + crash-loop rate limit (#492)
         working-directory: crates/thumos
         # WHY: #492. notify_fault used to ipc::send its report to PID 0's inbox,
