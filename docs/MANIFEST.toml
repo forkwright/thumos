@@ -1,0 +1,76 @@
+# docs/MANIFEST.toml - documentation inventory for this repo.
+
+[[doc]]
+path = "docs/ALETHEIA-BRIDGE.md"
+type = "decision-record"
+evergreen = true
+description = "Accepted decision on the aletheia bridge integration (issue #141)."
+decided = "2026-05-26"
+
+[[doc]]
+path = "docs/ATTRIBUTION.md"
+type = "decision-record"
+evergreen = true
+description = "Threat-owner attribution by package from AGM M7 stock firmware decompilation."
+decided = "2026-03-18"
+
+[[doc]]
+path = "docs/DRIVER-INTERFACES.md"
+type = "spec"
+evergreen = true
+description = "MT6739 driver interface spec for all eight subsystems, cited to BSP kernel source."
+source = "kernel-wiite/drivers/misc/mediatek/, kernel-wiite/drivers/mmc/host/"
+
+[[doc]]
+path = "docs/full-props.txt"
+type = "decision-record"
+evergreen = true
+description = "AGM M7 stock Android 8.1 getprop dump, captured as a frozen SoC/config reference."
+decided = "2026-03-18"
+
+[[doc]]
+path = "docs/GC9306-INIT.md"
+type = "spec"
+evergreen = true
+description = "GC9306 QVGA TFT controller MIPI DCS init register sequence, derived from four sources."
+
+[[doc]]
+path = "docs/HARDWARE.md"
+type = "authored"
+evergreen = true
+description = "AGM M7 hardware reference: SoC, CPU/GPU/modem/WiFi component identity."
+
+[[doc]]
+path = "docs/KERNEL-BUILD.md"
+type = "operational"
+evergreen = false
+description = "MT6739 Linux 4.4 BSP kernel build runbook, compiled from kernel-wiite."
+last_tested = "2026-05-09"
+
+[[doc]]
+path = "docs/kernel-config-stock"
+type = "decision-record"
+evergreen = true
+description = "Stock Linux 4.4.95 kernel config for the AGM M7, frozen as-shipped reference."
+decided = "2026-04-11"
+
+[[doc]]
+path = "docs/KERNEL-WIRING-AUDIT.md"
+type = "decision-record"
+evergreen = true
+description = "Issue #145 reality check: advertised kernel capabilities not yet wired to hardware."
+decided = "2026-05-26"
+
+[[doc]]
+path = "docs/PROBE.md"
+type = "decision-record"
+evergreen = true
+description = "Read-only ADB hardware probe of the unmodified AGM M7 device."
+decided = "2026-03-18"
+
+[[doc]]
+path = "docs/SURVEILLANCE-AUDIT.md"
+type = "decision-record"
+evergreen = true
+description = "Read-only ADB audit of surveillance/telemetry systems in stock AGM M7 firmware."
+decided = "2026-03-18"
