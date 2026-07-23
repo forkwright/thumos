@@ -1039,9 +1039,19 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                 return current_u32;
             };
 
+            // #533: the heap window (mb 0x100) is identity SECTION-mapped in
+            // every real process L1, and map_page REFUSES to overlay a section
+            // -- so brk growth failed on every real table (it only ever worked
+            // against the synthetic absent-entry tables of the pre-#533 host
+            // fixture). ensure_page_mappable shatters such a section first,
+            // exactly as map_user_image / map_user_stack do at spawn and
+            // sys_mmap does since #496; it is idempotent (one L2 per MB) and a
+            // no-op for an absent entry.
             // SAFETY: pt is the current process's valid L1 table, vaddr is
             // page-aligned within the heap region, phys is freshly allocated.
-            let ok = unsafe { mmu::map_page(pt, vaddr, phys, l2_attrs) };
+            let ok = unsafe {
+                mmu::ensure_page_mappable(pt, vaddr) && mmu::map_page(pt, vaddr, phys, l2_attrs)
+            };
             if !ok {
                 // Mapping failed (e.g., L2 pool exhausted) -- free the page
                 // under the kernel L1 (#497 zero-on-free aliasing), restoring
@@ -1058,6 +1068,15 @@ fn sys_brk(new_break_raw: u32) -> u32 {
                     return EINVAL;
                 };
                 return current_u32;
+            }
+            // #533: this table is LIVE, and the MB was a section until the
+            // shatter above -- invalidate the stale section TLB entry so the
+            // heap access resolves through the freshly-installed page
+            // descriptor (same live-table obligation as sys_mmap).
+            // SAFETY: vaddr is page-aligned in the current process's address
+            // space.
+            unsafe {
+                mmu::flush_tlb_page(vaddr);
             }
         }
         process::set_heap_break(new_break);
@@ -1920,9 +1939,53 @@ mod tests {
     // ---- Memory management syscall tests ----
 
     /// Set up process 0 with a valid page table for memory management tests.
+    ///
+    /// WHY (#533): the table must have the shape a REAL spawn leaves behind --
+    /// `alloc_addr_space()` + `clone_addr_space(mmu::table_base(), pt)`
+    /// (process.rs's spawn/fork), i.e. a clone of the kernel identity map in
+    /// which the heap window (mb 0x100) and the mmap window (mb 0x200) are
+    /// 1 MB SECTIONS that `map_page` refuses to overlay. The old fixture
+    /// stopped at `reset_for_test`'s absent-entry table, so `map_page` only
+    /// ever took its "no mapping -> allocate an L2" branch: every
+    /// mmap/brk/mprotect test passed against an L1 shape no real process has,
+    /// while sys_mmap returned MAP_FAILED on every real boot (#496) and
+    /// sys_brk growth never worked at all. mmu.rs's own tests build the
+    /// faithful shape exactly this way.
     unsafe fn setup_mm() {
         unsafe {
             process::reset_for_test();
+            // Populate the kernel L1 with the identity sections (host: table
+            // writes only -- program_translation is an off-ARM no-op), then
+            // clone it into process 0's freshly allocated table, as spawn does.
+            mmu::init_and_enable();
+            let pt = process::current_page_table();
+            mmu::clone_addr_space(mmu::table_base(), pt);
+        }
+    }
+
+    /// #533 fixture-faithfulness guard: setup_mm() must produce a CLONED
+    /// IDENTITY table -- the heap and mmap windows covered by 1 MB SECTION
+    /// descriptors (bits[1:0]=0b10), not the absent entries the old synthetic
+    /// fixture had. A fixture regression fails THIS test with a clear message
+    /// instead of silently re-opening the mmap/brk test gap.
+    #[test]
+    fn fixture_table_is_a_cloned_identity_map_with_sections() {
+        unsafe {
+            setup_mm();
+        }
+        let pt = process::current_page_table();
+        assert_ne!(pt, 0, "process 0 must have a page table");
+        for (window, name) in [
+            (process::DEFAULT_HEAP_BREAK, "heap"),
+            (process::MMAP_BASE, "mmap"),
+        ] {
+            // SAFETY: pt is process 0's valid L1 table; the index is < 4096.
+            let entry = unsafe { (pt as *const u32).add(window >> 20).read_volatile() };
+            assert_eq!(
+                entry & 0b11,
+                0b10,
+                "the {name} window must be an identity SECTION in a faithful process table (#533) -- an absent entry would re-open the synthetic-fixture test gap"
+            );
         }
     }
 
