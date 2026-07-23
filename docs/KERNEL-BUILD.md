@@ -1,400 +1,224 @@
 # Kernel Build
 
-MT6739 Linux 4.4 BSP kernel for AGM M7, compiled from `kernel-wiite/` (cateajansmedya BSP).
+Canonical build and boot-witness runbook for the Thumos kernel: the bare-metal
+Rust kernel in `crates/thumos/`, targeting the AGM M7 (MT6739). No Linux, no
+vendor BSP tree, no cross-gcc, no dtc/mkbootimg tooling.
 
----
+Every command on this page is an existing repository mechanism exercised by
+hosted CI on every PR and push to `main` (`.github/workflows/ci.yml`, job
+`kernel`; the local gate equivalent is the `kernel build` stage of
+`.kanon-ci.toml`, run via `kanon gate`). If a command here drifts from CI, CI
+is authoritative — file an issue.
 
-## USB serial initramfs build - Stock config
+One caveat governs the whole page: these commands prove the kernel **under
+QEMU emulation only**. The physical device path is unproven — see
+[Hardware path: unproven](#hardware-path-unproven).
 
-**Status:** Built. `boot-v2.img` at `~/thumos/boot-v2.img`. Not yet flashed.
+## Toolchain setup
 
-### What changed from the first boot attempt
-
-| Item | First boot attempt | USB serial initramfs build |
-|------|-------|-------|
-| Base config | `hct6739_36_n1_defconfig` | `kernel-config-stock` (stock AGM M7 `/proc/config.gz` baseline) |
-| LCM driver | `hct_ili9881p_dsi_vdo_hdp_panda_55_hz` (wrong DSI placeholder) | `gc9306_dbi_c_qvgal` (correct DBI panel, stub  -  source absent from BSP) |
-| Initramfs | Shell only | Shell + USB serial gadget (ACM) |
-| CMDLINE | `console=ttyMT0` only | `console=ttyMT0,921600n1 vmalloc=496M` |
-| FPSGO | Disabled | Disabled (same root cause: undefined FBT game symbols) |
-
-### Why the first boot attempt didn't boot visibly
-
-The initial LCM driver (`hct_ili9881p`) is a 1080p DSI panel driver. Our target AGM M7 uses a
-240×320 DBI parallel-interface panel driven by GC9306. The wrong driver left the display
-controller unconfigured; the kernel booted but nothing was visible and there was no console.
-
-### GC9306 LCM driver status
-
-**Not found in any BSP tree** (`kernel-wiite`, `kernel-lumi`, `kernel-orangepi`).
-
-A stub driver was created at:
-```
-drivers/misc/mediatek/lcm/gc9306_dbi_c_qvgal/gc9306_dbi_c_qvgal.c
-```
-
-The stub sets DBI parallel interface, 240×320, RGB565, and logs a warning at boot.
-Display will not initialize. The actual GC9306 init sequence must come from
-the stock system partition (`/system/lib/hw/` or display HAL) in a future sprint.
-
-### Additional patches applied in the USB serial initramfs build
-
-#### CONFIG changes (on top of stock config)
-
-| Option | Stock | USB serial initramfs build | Reason |
-|--------|-------|-------|--------|
-| `CONFIG_CROSS_COMPILE` | `"arm-eabi-"` | `"arm-linux-gnueabihf-"` | Installed toolchain |
-| `CONFIG_HARDENED_USERCOPY` | `y` | disabled | `mm/slub.c` references `kmem_cache.red_left_pad` which is absent from this BSP's `slub_def.h` (kernel version skew) |
-| `CONFIG_MTK_FPSGO` | `y` | disabled | FBT game symbols (`min_boost_freq`, `cpufreq_notifier_fp`) undefined - same issue as the first boot attempt |
-| `CONFIG_USB_C_SWITCH` | `y` | disabled | `register_typec_switch_callback` defined only in Type-C chip drivers (MT6336/ANX7418), none of which are built; AGM M7 uses micro-USB |
-| `CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES` | `"mt6739"` | `"hct6739_36_n1"` | No `mt6739.dts` in BSP; `hct6739_36_n1.dts` is the only MT6739 DTS |
-
-#### New code patches (kernel-wiite in-tree edits)
-
-**drivers/usb/gadget/function/u_ether.c  -  missing rndis.h include**
-
-`u_ether.c` uses `sizeof(struct rndis_packet_msg_type)` but did not include `rndis.h`,
-causing an "incomplete type" compile error. Fixed by adding `#include "rndis.h"`.
-
-**drivers/misc/mediatek/lcm/mt65xx_lcm_list.h  -  gc9306 registration**
-
-Added `extern LCM_DRIVER gc9306_dbi_c_qvgal_lcm_drv` and the corresponding
-`#if defined(GC9306_DBI_C_QVGAL)` entry in `lcm_driver_list[]`.
-
-**drivers/misc/mediatek/imgsensor/src/common/v1/gc030amipi_raw/ (stub)**
-**drivers/misc/mediatek/imgsensor/src/common/v1/gc02m2_mipi_raw/ (stub)**
-
-Stock config requests sensors `gc030amipi_raw` and `gc02m2_mipi_raw` via
-`CONFIG_CUSTOM_KERNEL_IMGSENSOR`. Neither exists in this BSP (BSP has `gc030a_mipi_raw`
-with a different name, and `gc02m2` entirely absent). Stub `Makefile` + empty `.c`
-files created so the linker finds `built-in.o` objects.
-
-Also note: `Wno-error` flags added for:
-- `-Wno-error=builtin-declaration-mismatch` (crypto/xts.c: `free` name collision with GCC built-in)
-- `-Wno-error=incompatible-pointer-types` (mm/memcontrol.c: cgroup callback signature mismatch)
-- `-Wno-error=unused-function` (USB gadget MTP/accessory functions)
-
-### Configure
+From a clean checkout:
 
 ```bash
-cd ~/thumos/kernel-wiite
-cp ~/thumos/kernel-config-stock .config
-# Fix CROSS_COMPILE and disable incompatible options:
-sed -i 's/CONFIG_CROSS_COMPILE="arm-eabi-"/CONFIG_CROSS_COMPILE="arm-linux-gnueabihf-"/' .config
-sed -i 's/^CONFIG_HARDENED_USERCOPY=y/# CONFIG_HARDENED_USERCOPY is not set/' .config
-sed -i 's/^CONFIG_MTK_FPSGO=y/# CONFIG_MTK_FPSGO is not set/' .config
-sed -i 's/^CONFIG_USB_C_SWITCH=y/# CONFIG_USB_C_SWITCH is not set/' .config
-sed -i 's/CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES="mt6739"/CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE_NAMES="hct6739_36_n1"/' .config
-yes "" | make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- oldconfig
+# Rust 1.94 is pinned by rust-toolchain.toml at the repo root; rustup selects
+# it automatically for any cargo invocation inside this checkout.
+rustup target add armv7a-none-eabi i686-unknown-linux-gnu
+
+# Test runner used by CI. Its per-test process isolation is required by tests
+# that touch the kernel's static-mut globals.
+cargo install cargo-nextest --locked --version ^0.9
+
+# 32-bit crt objects for linking the i686 test binary (Debian/Ubuntu):
+sudo apt-get install gcc-multilib
+
+# QEMU boot witness:
+sudo dnf install qemu-system-arm      # Fedora
+sudo apt-get install qemu-system-arm  # Debian/Ubuntu
+brew install qemu                     # macOS
 ```
 
-### Build
+No other system packages are needed: `armv7a-none-eabi` is a bare-metal Rust
+target with no external linker or C toolchain dependency.
+
+## Repository layout
+
+- `crates/thumos/` — the kernel crate. Deliberately **excluded** from the
+  Cargo workspace (`exclude` in the root `Cargo.toml`) so it can cross-compile
+  to bare metal; workspace-wide invocations (`cargo check --workspace`,
+  `cargo nextest run --workspace`) do not touch it.
+- `crates/thumos/.cargo/config.toml` — pins the default target
+  (`armv7a-none-eabi`), the linker script (`link.ld`, kernel `.text` at
+  `0x40008000`), the always-on zero-warning gate (`-D warnings`, #431), and
+  the QEMU runner (`scripts/qemu-runner.sh`) for `cargo run` / `cargo test`.
+- `crates/thumos/build.rs` — compiles the userspace programs (`init/*.rs`)
+  into an image-resident initramfs CPIO, signs it, and embeds the boot trust
+  anchor. See [Signing and attestation boundary](#signing-and-attestation-boundary).
+- `scripts/qemu-runner.sh` — boots a built kernel under
+  `qemu-system-arm -machine virt` and translates the semihosting exit code
+  back to the caller. Documented in `scripts/README.md`.
+
+NOTE: cargo discovers `.cargo/config.toml` from the current working directory,
+not from `--manifest-path`. Run kernel cargo commands **from `crates/thumos/`**
+(exactly as CI does with `working-directory: crates/thumos`); from the repo
+root the target pin, linker script, zero-warning gate, and QEMU runner
+silently do not apply. The local gate's kernel stage compensates with an
+explicit `RUSTFLAGS` + `--manifest-path` (see `.kanon-ci.toml`) — prefer the
+directory-local form when running by hand.
+
+## Host unit tests (i686)
+
+Kernel unit tests run on 32-bit i686 because the kernel's syscall ABI uses
+u32 addresses; a 64-bit host truncates real pointers and crashes.
 
 ```bash
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
-  KCFLAGS="-march=armv7-a \
-    -Wno-error=address \
-    -Wno-error=array-compare \
-    -Wno-error=stringop-overread \
-    -Wno-error=dangling-pointer \
-    -Wno-error=int-to-pointer-cast \
-    -Wno-error=enum-int-mismatch \
-    -Wno-error=restrict \
-    -Wno-error=builtin-declaration-mismatch \
-    -Wno-error=incompatible-pointer-types \
-    -Wno-error=unused-function" \
-  DTC_FLAGS="-f" \
-  -j$(nproc) zImage dtbs
-
-cat arch/arm/boot/zImage arch/arm/boot/dts/hct6739_36_n1.dtb \
-  > arch/arm/boot/zImage-dtb
+cd crates/thumos
+cargo nextest run --bin thumos --target i686-unknown-linux-gnu
 ```
 
-Produces:
+CI adds `--build-jobs 8 --test-threads 8`; that is a resource cap on the CI
+box, not a requirement.
 
-| File | Size | Notes |
-|------|------|-------|
-| `arch/arm/boot/zImage` | ~7.5 MB | Compressed kernel |
-| `arch/arm/boot/dts/hct6739_36_n1.dtb` | ~62 KB | Device tree blob |
-| `arch/arm/boot/zImage-dtb` | ~7.5 MB | zImage + DTB appended |
-
-### Initramfs
-
-Static ARM BusyBox 1.36.1. Adds USB ACM gadget setup:
+## Producing the kernel image
 
 ```bash
-mkdir -p /tmp/initramfs-v2/{bin,dev,proc,sys,etc,tmp,mnt,root,lib/modules}
-cp /tmp/busybox-1.36.1/busybox /tmp/initramfs-v2/bin/
-cd /tmp/initramfs-v2/bin && ln -sf busybox sh && ln -sf busybox mount && \
-  ln -sf busybox ls && ln -sf busybox cat && ln -sf busybox echo && \
-  ln -sf busybox sleep && ln -sf busybox setsid
-# write /tmp/initramfs-v2/init (USB gadget + diagnostics + shell)
-chmod 755 /tmp/initramfs-v2/init
-cd /tmp/initramfs-v2 && find . | cpio -H newc -o | gzip > /tmp/ramdisk-v2.gz
+cd crates/thumos
+cargo build --release --target armv7a-none-eabi
 ```
 
-The `/init` script:
-1. Mounts proc/sysfs/devtmpfs/configfs
-2. Configures a USB ACM gadget (`/sys/kernel/config/usb_gadget/g1`) for serial console
-3. Spawns a shell on `/dev/ttyGS0` (USB serial, visible on host as `/dev/ttyUSBx`)
-4. Prints diagnostics (cpuinfo, meminfo, partitions, CCCI, framebuffer, input, modules)
-5. Falls through to an interactive shell on the UART console
+Output: `crates/thumos/target/armv7a-none-eabi/release/thumos` — a single
+static armv7a ELF, linked at `0x40008000` by `link.ld`. There is no separate
+ramdisk/DTB/boot-image assembly step: `build.rs` embeds the signed
+image-resident initramfs (`/init`, `/init2`, `/shell`, `/crasher`) and the
+boot trust anchor directly into the kernel image, and QEMU loads the ELF
+verbatim via `-kernel`. The always-on `-D warnings` rustflag makes this build
+the zero-warning gate (#431): any new warning fails it.
 
-### Boot Image
+Build features (declared in `crates/thumos/Cargo.toml`; mutually exclusive
+combinations `compile_error!` by design, so `--all-features` never
+accidentally produces a shippable-looking binary):
+
+| Feature | Purpose | Mutually exclusive with |
+|---------|---------|-------------------------|
+| *(default)* | Dev/bring-up build anchored to the committed, deliberately public dev key | — |
+| `production` | Shippable image; requires `THUMOS_BOOT_KEY_PUB` (see signing boundary below) | `debug-console`, `qemu`, probes |
+| `qemu` | QEMU `-machine virt` bring-up: remaps UART/GIC base addresses, swaps the MTK UART for a PL011, no-ops SoC-only MMIO, skips hardware init the virt board does not model | `production` |
+| `debug-console` | Dev-only kernel UART debug shell (#372) | `production` |
+| `kfault-probe` | CI fault-injection harness: deliberate PL1 `udf` after boot-complete (#487) | `production` |
+| `crashloop-probe` | CI crash-loop harness for the PID 0 restart policy (#492) | `production` |
+
+## QEMU boot witness
+
+Build the QEMU-configuration kernel and boot it through the runner:
 
 ```bash
-python3 /tmp/mkbootimg-tools/mkbootimg.py \
-  --kernel ~/thumos/kernel-wiite/arch/arm/boot/zImage-dtb \
-  --ramdisk /tmp/ramdisk-v2.gz \
-  --base 0x40000000 \
-  --kernel_offset 0x00008000 \
-  --ramdisk_offset 0x05000000 \
-  --second_offset 0x00f00000 \
-  --tags_offset 0x04000000 \
-  --pagesize 2048 \
-  --cmdline "bootopt=64S3,32S1,32S1 console=ttyMT0,921600n1 root=/dev/ram vmalloc=496M" \
-  -o ~/thumos/boot-v2.img
+cd crates/thumos
+cargo build --release --target armv7a-none-eabi --features qemu
+THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos | tee boot.log
 ```
 
-Output: `~/thumos/boot-v2.img` (~8.6 MB)
+The runner boots the ELF under `qemu-system-arm -machine virt -cpu cortex-a7
+-m 1024M -nographic` with ARM semihosting enabled; the kernel reports its
+outcome via the semihosting `SYS_EXIT` call, and a 60-second watchdog
+(`THUMOS_QEMU_TIMEOUT`) guards against a hung guest.
 
-Header:
-```
-Magic:         ANDROID!
-Page size:     2048
-Kernel addr:   0x40008000
-Ramdisk addr:  0x45000000
-Cmdline:       bootopt=64S3,32S1,32S1 console=ttyMT0,921600n1 root=/dev/ram vmalloc=496M
-```
-
-### Observations
-
-- **Stock CMDLINE** uses `console=ttyMT3` (not `ttyMT0`). The USB serial initramfs build uses `ttyMT0` for
-  compatibility with the BSP defconfig pattern. If no console output appears, try
-  `ttyMT3` in the next build.
-- **GC9306 DBI driver** will need to be reverse-engineered from the stock display HAL
-  or sourced from a different BSP that includes it (e.g., MT6739 Android 9 trees).
-- **Camera sensors**: `gc030amipi_raw` vs `gc030a_mipi_raw` naming divergence suggests
-  the stock firmware may use a downstream vendor BSP not aligned with this tree.
-- **vmalloc=496M** in cmdline matches stock config CMDLINE setting (`vmalloc=496M`).
-
----
-
-# First boot attempt (wrong LCM driver)
-
-## Environment
-
-- Host: Ubuntu 24.04, x86-64
-- Toolchain: `arm-linux-gnueabihf-gcc` 13.3.0 (Debian cross package)
-- Target: 32-bit ARMv7-A (`armv7-a-neon`), MT6739 / AGM M7
-
-```
-sudo apt install gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
-    bc bison flex libssl-dev libelf-dev cpio python3
-```
-
-## Configure
+Minimal local witness — the same greps CI asserts:
 
 ```bash
-cd ~/thumos/kernel-wiite
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- hct6739_36_n1_defconfig
+grep 'THUMOS v0.1.0' boot.log                     # boot banner
+grep 'THUMOS-QEMU: boot-complete' boot.log        # kinit reached boot-complete
+grep 'THUMOS-QEMU: service-loop ticks=' boot.log  # PID 0 serviced real ticks
 ```
 
-Post-defconfig `.config` tweaks applied by hand before building:
+Runner exit codes:
 
-| Option | Value | Reason |
-|--------|-------|--------|
-| `CONFIG_CROSS_COMPILE` | `"arm-linux-gnueabihf-"` | Matches installed toolchain |
-| `CONFIG_MTK_LCM` | `y` | Required; use placeholder LCM driver |
-| `CONFIG_CUSTOM_KERNEL_LCM` | `"hct_ili9881p_dsi_vdo_hdp_panda_55_hz"` | AGM M7 has nt35521 (absent from BSP); this placeholder satisfies the compile-time assertion in `mt65xx_lcm_list.c` |
-| `CONFIG_MTK_FPSGO` | `n` | `fpsgo_common.c` calls `fbt_notifier_push_benchmark_hint` unconditionally but that symbol is gated behind `CONFIG_MTK_FPSGO_FBT_GAME`; disabling FPSGO avoids the undefined-reference linker error |
+| Code | Meaning |
+|------|---------|
+| 0 | Service loop ran to its tick cap (pass) |
+| 1 | Kernel panic or non-zero guest exit |
+| 2/3/4 | Guest aborts (data/prefetch/undefined-instruction; 4 is the expected result of the `kfault-probe` harness) |
+| 5 | Service-loop stall (#461 tick-source class) |
+| 64 | Runner invoked without a binary argument |
+| 66 | Binary path does not exist |
+| 124 | Hung guest killed by the runner timeout |
+| 127 | `qemu-system-arm` not installed |
 
-## Build
+The CI kernel job asserts the full witness set on every PR, beyond the
+minimum above: fail-closed degraded boot with no boot medium (`Secure boot:
+DEGRADED`, passphrase refused, audit deferred — #217), measured userspace
+(`image-resident initramfs signature verified`; `/init` and `/shell` both
+running from their own per-process frames — #480/#526), UI render and
+input/navigation, clock, telephony/audio/SIM/SMS/Bluetooth state machines
+against mock transports, and the firewall policy+audit path. It also runs the
+dedicated probe harnesses — `THUMOS_INIT_VARIANT=kread|kwrite|kexec|cp15|sleep|fork|exec|forkexec|guard`
+and the `kfault-probe` / `crashloop-probe` features — each following the same
+build-then-runner pattern above. See the `kernel` job in
+`.github/workflows/ci.yml` for the exact invocations; do not copy them into
+new scripts.
+
+A lighter smoke check that needs no kernel runtime (boot stub + UART write +
+semihosting exit only) is documented in `scripts/README.md` (a convenience
+example; not wired into CI):
 
 ```bash
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
-  KCFLAGS="-march=armv7-a \
-    -Wno-error=address \
-    -Wno-error=array-compare \
-    -Wno-error=stringop-overread \
-    -Wno-error=dangling-pointer \
-    -Wno-error=int-to-pointer-cast \
-    -Wno-error=enum-int-mismatch \
-    -Wno-error=restrict" \
-  DTC_FLAGS="-f" \
-  -j$(nproc) zImage
+cd crates/thumos
+cargo run --example qemu_smoke --release   # prints "qemu_smoke: pass"
 ```
 
-Produces:
+## Signing and attestation boundary
 
-| File | Size | Notes |
-|------|------|-------|
-| `arch/arm/boot/zImage` | ~7.8 MB | Compressed kernel |
-| `arch/arm/boot/dts/hct6739_36_n1.dtb` | ~62 KB | Device tree blob |
-| `vmlinux` | ~172 MB | Unstripped ELF (debug) |
+Where trust enters the build — and what is deliberately **not** attested
+today:
 
-Append DTB manually (defconfig sets `CONFIG_BUILD_ARM_APPENDED_DTB_IMAGE=y` but the top-level `make zImage` target does not invoke the `zImage-dtb` rule):
+- **Boot trust anchor (Ed25519).** `crates/thumos/build.rs` (#233) embeds
+  exactly one public key into the image. A `--features production` build
+  requires `THUMOS_BOOT_KEY_PUB=<file>` naming a hex-encoded 32-byte public
+  key provisioned by the offline signing infrastructure (Titan security key /
+  air-gapped machine) and fails without it. Refused in every configuration:
+  the committed dev key under `production`, the RFC 8032 section 7.1
+  test-vector keys (private halves are published, hence forgeable anchors),
+  and any byte string that is not a decompressable curve point.
+- **Dev keypair is public by design** (`crates/thumos/keys/dev/`, AOSP
+  test-keys pattern): any developer can build and sign dev images, and host
+  tests round-trip sign→verify against the real embedded anchor. No
+  production key is ever committed (`keys/.gitignore` blocks `production/`
+  and `*.pem`).
+- **Image-resident initramfs.** `build.rs` compiles `init/*.rs` to static
+  armv7a ELFs, packs a newc CPIO, and signs it with the dev seed (#480) so
+  measured userspace works in dev/QEMU builds. Under a production anchor this
+  dev signature does not verify — the production initramfs is signed offline
+  by the signing infrastructure — and the image falls back to the eMMC
+  secure-boot gate (#217).
+- **Trust stamp.** Every image bakes a grep-able
+  `THUMOS-BOOT-TRUST:{PROD|DEV}:<key fingerprint>` into the boot banner, and
+  `secure_boot_ok` is only ever set when the anchor is a production key: a
+  dev-anchored image can never establish trust on real hardware.
+- **CI attestation, stated precisely.** The Gate Attestation workflow
+  (`.github/workflows/gate-attestation.yml`, Gate-Passed trailer / hybrid
+  full-gate build) attests the **workspace** fmt/check/clippy/nextest stages
+  only; per its own NOTE it does not attest the excluded kernel crate. The
+  kernel's executable witness is the `kernel` job of the CI workflow
+  described on this page — there is no cryptographic attestation of a
+  released boot image. Release attestation is broken and tracked in #536. Do
+  not present any current artifact as release-signed or release-attested.
 
-```bash
-cat arch/arm/boot/zImage arch/arm/boot/dts/hct6739_36_n1.dtb \
-  > arch/arm/boot/zImage-dtb
-```
+## Hardware path: unproven
 
-## Patches Applied
+Everything on this page proves the kernel **under QEMU `-machine virt`
+only**. This runbook does not upgrade the hardware status:
 
-All patches are in-tree edits; none are separate patch files.
-
-### scripts/dtc/Makefile  -  dtc yylloc multiple definition
-
-GCC 13 / GNU AS 2.44 rejects the `yylloc` symbol appearing in both `.lex.o` and `.tab.o`. Fix:
-
-```makefile
-HOSTCFLAGS_dtc-lexer.lex.o  := $(HOSTCFLAGS_DTC) -fcommon
-HOSTCFLAGS_dtc-parser.tab.o := $(HOSTCFLAGS_DTC) -fcommon
-```
-
-### arch/arm/  -  ARM assembly `#alloc`/`#execinstr` section flags
-
-GNU AS 2.44 rejects the historic `#alloc`, `#execinstr` section flag syntax in `.section` directives. Changed all 33 occurrences across `arch/arm/` to string form (`"a"` / `"ax"`).
-
-### arch/arm/Makefile  -  global MTK include paths + armv7-a march
-
-GCC 13 evaluates `cc-option(-march=armv7-a)` against `arm-linux-gnueabihf-gcc` whose default `-mfloat-abi=hard` causes the test to fail with a hard-float/soft-float ABI mismatch, making the Makefile fall back to `-march=armv5t`. GCC 13 then emits `.arch armv5t` in assembly output, overriding the `-Wa,-march=armv7-a` assembler flag and breaking DSB/ISB instructions.
-
-Fix: pass `KCFLAGS=-march=armv7-a` on the make command line so the last `-march` flag wins.
-
-Also added global `KBUILD_CFLAGS` include paths for MTK vendor drivers that are scattered across too many subdirectories to enumerate in individual Makefiles:
-
-```makefile
-MTK_PLATFORM := $(CONFIG_MTK_PLATFORM:"%"=%)
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/include/mt-plat
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(MTK_PLATFORM)/include
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/base/power/ppm_v3/src/mach/$(MTK_PLATFORM)
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/base/power/ppm_v2/src/mach/$(MTK_PLATFORM)
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/video/common/layering_rule_base/v1
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/uart/$(MTK_PLATFORM)
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM)
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/eccci
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(MTK_PLATFORM)
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/performance/fpsgo/fstb
-KBUILD_CFLAGS += -I$(srctree)/drivers/misc/mediatek/mmp
-```
-
-**Note:** `videox/` and `dispsys/` are intentionally NOT added globally. Adding them caused `videox/debug.h` to shadow `gen2/include/debug.h` for the WiFi driver, breaking the `DBGLOG`/`ASSERT` macros. These paths are added per-driver instead (see the gen2 Makefile change below).
-
-### drivers/misc/mediatek/connectivity/wlan/gen2/Makefile  -  absolute include paths
-
-The gen2 WiFi driver Makefile used `$(src)` for include paths, which resolves incorrectly when objects in subdirectories (hif/ahb/) are compiled from the parent Makefile. Replaced with absolute `$(srctree)` paths:
-
-```makefile
-GEN2_DIR := $(srctree)/drivers/misc/mediatek/connectivity/wlan/gen2
-ccflags-y += -I$(GEN2_DIR)/os -I$(GEN2_DIR)/os/linux/include \
-             -I$(GEN2_DIR)/os/linux/hif/ahb/include \
-             -I$(GEN2_DIR)/include -I$(GEN2_DIR)/include/nic \
-             -I$(GEN2_DIR)/include/mgmt
-```
-
-### drivers/misc/mediatek/video/mt6739/videox/Makefile  -  self-include path
-
-`videox/` was missing itself from its own include path. When dispsys headers (included by videox source files) in turn include other videox headers (e.g., `disp_drv_log.h` → `display_recorder.h`), the videox directory was not in the search path. Added:
-
-```makefile
--I$(srctree)/drivers/misc/mediatek/video/$(MTK_PLATFORM)/videox/
-```
-
-### drivers/misc/mediatek/video/mt6739/dispsys/Makefile  -  self-include path
-
-Same issue: dispsys files include each other via videox-mediated chains. Added:
-
-```makefile
--I$(srctree)/drivers/misc/mediatek/video/$(MTK_PLATFORM)/dispsys/
-```
-
-### arch/arm/boot/dts/cust.dtsi  -  stub (replaces DrvGen output)
-
-`DrvGen.py` requires Python 2 to generate `cust.dtsi` from `hct6739_36_n1.dws`. Python 2 is unavailable. Created a minimal stub:
-
-```c
-/* stub  -  GPIO/EINT bindings absent; hardware drivers won't probe */
-#include <dt-bindings/interrupt-controller/irq.h>
-#include <dt-bindings/interrupt-controller/arm-gic.h>
-```
-
-Hardware drivers that rely on DTS GPIO bindings will not probe on boot, but the kernel boots.
-
-### vendor/haocheng/drivers/hct_include/hct_project_all_config.h  -  stub
-
-`include/linux/hct_include` is a broken symlink to `../../../vendor/haocheng/drivers/hct_include`. Created the target directory and a stub header to satisfy `lcm_i2c.h`.
-
-## Initramfs
-
-Static ARM busybox 1.36.1 built and packed:
-
-```bash
-# Build busybox
-cd /tmp/busybox-1.36.1
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
-echo "CONFIG_STATIC=y" >> .config
-sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config  # tc broken with GCC 13
-make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j$(nproc)
-
-# Pack initramfs
-mkdir -p /tmp/initramfs/{bin,dev,proc,sys,etc,tmp,mnt,root}
-cp busybox /tmp/initramfs/bin/
-cd /tmp/initramfs/bin && ln -sf busybox sh
-cd /tmp/initramfs && find . | cpio -H newc -o | gzip > /tmp/initramfs.cpio.gz
-```
-
-Init script (`/init`) mounts proc/sysfs/devtmpfs, prints CPU info, checks for CCCI nodes, then drops to shell.
-
-## Boot Image
-
-```bash
-python3 /tmp/mkbootimg-tools/mkbootimg.py \
-  --kernel ~/thumos/kernel-wiite/arch/arm/boot/zImage-dtb \
-  --ramdisk /tmp/initramfs.cpio.gz \
-  --base 0x40000000 \
-  --kernel_offset 0x00008000 \
-  --ramdisk_offset 0x05000000 \
-  --second_offset 0x00f00000 \
-  --tags_offset 0x04000000 \
-  --pagesize 2048 \
-  --cmdline "bootopt=64S3,32S1,32S1 console=ttyMT0,921600n1 root=/dev/ram" \
-  -o ~/thumos/boot.img
-```
-
-Output: `~/thumos/boot.img` (~8.9 MB)
-
-Header verification:
-
-```
-Magic:         ANDROID!
-Page size:     2048
-Kernel addr:   0x40008000
-Ramdisk addr:  0x45000000
-Cmdline:       bootopt=64S3,32S1,32S1 console=ttyMT0,921600n1 root=/dev/ram
-```
-
-## Flash
-
-**Backup stock boot partition first.**
-
-```bash
-# Via adb (if rooted)
-adb shell dd if=/dev/block/platform/*/by-name/boot of=/sdcard/boot_stock.img
-
-# Flash validation image
-adb push ~/thumos/boot.img /sdcard/
-adb shell dd if=/sdcard/boot.img of=/dev/block/platform/*/by-name/boot
-
-# Or via fastboot if unlocked
-fastboot boot ~/thumos/boot.img   # test without flashing
-```
-
-## Known Limitations (first boot attempt - superseded by USB serial initramfs build)
-
-- **LCM**: `hct_ili9881p_dsi_vdo_hdp_panda_55_hz` is a placeholder. The AGM M7's actual panel (nt35521) driver is absent from this BSP. Display will not initialize; boot console only.
-- **GPIO/EINT**: `cust.dtsi` is a stub (no DrvGen output). Drivers that depend on GPIO bindings will not probe.
-- **FPSGO disabled**: Frame Performance Governor not built; no impact on validation.
-- **Modem (CCCI)**: CCCI driver built in (`CONFIG_MTK_ECCCI_DRIVER=y`). Device nodes should appear if modem firmware is present in partition.
-- **WiFi (gen2)**: Built in. Requires vendor firmware blob at runtime.
+- The Rust kernel has **never booted on the physical AGM M7 / MT6739**.
+  Hardware validation remains pending (see README and
+  `docs/KERNEL-WIRING-AUDIT.md` for the compiled-but-unwired surface).
+- The `qemu` feature exists precisely because the emulated board lacks the
+  hardware: it no-ops SoC-only MMIO (watchdog, DVFS, MCDI, DSI) and skips
+  eMMC, display (GC9306), keypad, USB, and CCCI/modem init. Those drivers
+  have no executed on-device path.
+- Repository tooling produces **no flashable device package** — no Android
+  boot image, no scatter-file integration. There is nothing on this
+  page to flash, and the QEMU image must not be flashed to a device.
+- The Linux 4.4 BSP build previously documented in this file was exploration
+  against a third-party vendor tree; those images were never flashed either.
+  That path is retired: it is not a fallback, and its steps (vendor
+  defconfigs, manual in-tree patches, mkbootimg) are not part of the current
+  build. The stock kernel config and hardware probe notes survive only as
+  frozen reference records (`docs/kernel-config-stock`, `docs/HARDWARE.md`,
+  `docs/PROBE.md`).
