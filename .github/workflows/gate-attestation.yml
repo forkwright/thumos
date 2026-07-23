@@ -1,3 +1,34 @@
+# WHY(kanon#2522): replaces the trailer-only passthrough
+# (forkwright/.github/.github/workflows/gate-attestation.yml@33dec36 — pure
+# trailer verify, no ai-attribution, no doc-only exemption) with the fleet
+# hybrid gate. A trailer-stamped PR takes the fast path; a trailer-less PR
+# falls through to a real fmt/check/clippy/nextest build; a docs-only PR is
+# exempt from that build; ai-attribution runs unconditionally via the
+# reusable workflow's own centralized job (no repo-local duplicate needed).
+#
+# fmt/check/clippy/nextest command strings mirror .kanon-ci.toml's stage
+# commands verbatim (the local `kanon gate --stamp` SSOT) so a Gate-Passed
+# trailer and a green full-gate-build attest the identical stages, per the
+# reusable workflow's own contract. --jobs 8 / --build-jobs 8 --test-threads 8
+# match .kanon-ci.toml's concurrency cap (OOM guard on the local gate box;
+# harmless headroom on the hosted runner).
+#
+# NOTE: the excluded bare-metal kernel crate (crates/thumos, `exclude`d from
+# [workspace]) is covered by neither this gate NOR .kanon-ci.toml's fmt/
+# check/clippy/nextest stages -- only by the separate, non-required "CI"
+# workflow's dedicated kernel job (i686 host tests + armv7a cross-compile +
+# QEMU boot). A Gate-Passed trailer does not attest the kernel crate at all;
+# that gap predates this adoption and is unchanged by it.
+#
+# system_packages empty: no native -sys dependency anywhere in the workspace
+# Cargo.toml tree (verified by grep). The kernel crate's own cross-compile
+# needs no apt package on the toolchain-provided armv7a target, and is out
+# of scope for this gate's fmt/check/clippy/nextest stages regardless (see
+# NOTE above).
+#
+# rust_toolchain input intentionally omitted (stays default ""): thumos
+# carries its own rust-toolchain.toml (channel "1.94"), auto-detected by
+# actions-rust-lang/setup-rust-toolchain inside the reusable workflow.
 name: Gate Attestation
 
 on:
@@ -7,52 +38,18 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  gate-attestation:
-    name: gate-attestation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Pass trusted automation PRs
-        # WHY head_ref, not github.actor: release-please runs as
-        # github-actions[bot] (not release-please[bot]), and its checks are
-        # suppressed until a human re-triggers CI -- at which point
-        # github.actor becomes that human and an actor-based waiver misses.
-        # The head branch name is stable regardless of who triggers the run.
-        if: ${{ startsWith(github.head_ref, 'dependabot/') || startsWith(github.head_ref, 'release-please--') }}
-        run: echo "Gate attestation waived for trusted automation branch."
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') && !startsWith(github.head_ref, 'release-please--') }}
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify Gate-Passed trailer
-        if: ${{ !startsWith(github.head_ref, 'dependabot/') && !startsWith(github.head_ref, 'release-please--') }}
-        run: |
-          commits=$(git log --format="%H" "origin/${{ github.base_ref }}..HEAD")
-          if [ -z "$commits" ]; then
-            echo "ERROR: No commits found in PR"
-            exit 1
-          fi
-
-          found=false
-          for sha in $commits; do
-            body=$(git log -1 --format="%b" "$sha")
-            if echo "$body" | grep -q "^Gate-Passed:"; then
-              version=$(echo "$body" | grep "^Gate-Passed:" | head -1)
-              echo "Found gate attestation: $version"
-              found=true
-              break
-            fi
-          done
-
-          if [ "$found" = false ]; then
-            echo "ERROR: No Gate-Passed trailer found in any PR commit."
-            echo "Run the local gate and commit with the trailer."
-            exit 1
-          fi
+  gate:
+    uses: forkwright/.github/.github/workflows/hybrid-gate.yml@main
+    with:
+      fmt_cmd: "cargo fmt --all -- --check"
+      check_cmd: "cargo check --workspace --all-targets --jobs 8"
+      clippy_cmd: "cargo clippy --workspace --all-targets --jobs 8 -- -D warnings"
+      nextest_cmd: "cargo nextest run --workspace --build-jobs 8 --test-threads 8"
+      doctest_cmd: ""
+      system_packages: ""
+      needs_fleet_repo_token: false
+      rust_cache_key: "gate-attestation"
+      ai_attribution_check: true
+      docs_only_exemption: true
+    secrets: inherit
