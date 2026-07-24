@@ -838,7 +838,7 @@ impl<T: ModemTransport> Telephony<T> {
         let creg_query = send_with_info(&mut self.transport, "AT+CREG?", 5000);
         if let Ok((AtResponse::Ok, ref info_line, info_len)) = creg_query
             && info_len > 0
-            && let Some((stat, act)) = parse_creg_response(&info_line[..info_len])
+            && let Some((stat, act)) = parse_creg_query_response(&info_line[..info_len])
         {
             self.apply_reg_status(stat, act);
         }
@@ -1364,8 +1364,8 @@ mod tests {
         mock.queue_ok();
         // Step 9: AT+CSQ -> +CSQ: 18,99 + OK
         mock.queue_info_ok(b"+CSQ: 18,99");
-        // Step 10: AT+CREG? -> +CREG: 1 (registered home) + OK
-        mock.queue_info_ok(b"+CREG: 1");
+        // Step 10: AT+CREG? -> +CREG: 0,1 (registered home) + OK
+        mock.queue_info_ok(b"+CREG: 0,1");
         mock
     }
 
@@ -1864,7 +1864,7 @@ mod tests {
         mock.queue_response(b"ERROR"); // AT+CREG=1 -> ERROR
         mock.queue_response(b"ERROR"); // AT+CLIP=1 -> ERROR
         mock.queue_info_ok(b"+CSQ: 18,99");
-        mock.queue_info_ok(b"+CREG: 0");
+        mock.queue_info_ok(b"+CREG: 0,0");
 
         let mut tel = Telephony::new(mock);
         let result = tel.initialize();
@@ -1904,8 +1904,8 @@ mod tests {
         mock.queue_ok();
         // Step 9: AT+CSQ -> +CSQ: 18,99 + OK
         mock.queue_info_ok(b"+CSQ: 18,99");
-        // Step 10: AT+CREG? -> +CREG: 1 (registered home) + OK
-        mock.queue_info_ok(b"+CREG: 1");
+        // Step 10: AT+CREG? -> +CREG: 0,1 (registered home) + OK
+        mock.queue_info_ok(b"+CREG: 0,1");
 
         let mut tel = Telephony::new(mock);
         let result = tel.initialize();
@@ -2023,7 +2023,7 @@ mod tests {
         mock.queue_ok(); // AT+CREG=1
         mock.queue_ok(); // AT+CLIP=1
         mock.queue_info_ok(b"+CSQ: 18,99");
-        mock.queue_info_ok(b"+CREG: 2"); // searching, not registered
+        mock.queue_info_ok(b"+CREG: 0,2"); // searching, not registered
 
         let mut tel = Telephony::new(mock);
         let result = tel.initialize();
@@ -2082,7 +2082,7 @@ mod tests {
         mock.queue_ok();
         mock.queue_ok();
         mock.queue_info_ok(b"+CSQ: 18,99");
-        mock.queue_info_ok(b"+CREG: 2"); // searching at init time
+        mock.queue_info_ok(b"+CREG: 0,2"); // searching at init time
 
         let mut tel = Telephony::new(mock);
         tel.initialize().ok();
@@ -2157,7 +2157,7 @@ mod tests {
 
     #[test]
     fn rat_is_seeded_from_creg_query_at_init() {
-        let mock = mock_for_init_with_creg(b"+CREG: 1,\"1A2B\",\"0100CE01\",7");
+        let mock = mock_for_init_with_creg(b"+CREG: 1,1,\"1A2B\",\"0100CE01\",7");
         let mut tel = Telephony::new(mock);
         tel.initialize().ok();
         assert!(tel.is_registered(), "must be registered (stat=1)");
@@ -2171,7 +2171,7 @@ mod tests {
     #[test]
     fn rat_tracks_urc_updates_and_clears_on_deregistration() {
         // Init registered on LTE.
-        let mock = mock_for_init_with_creg(b"+CREG: 1,\"1A2B\",\"0100CE01\",7");
+        let mock = mock_for_init_with_creg(b"+CREG: 1,1,\"1A2B\",\"0100CE01\",7");
         let mut tel = Telephony::new(mock);
         tel.initialize().ok();
         assert_eq!(tel.rat(), Some(RadioAccessTech::EUtran), "seeded LTE");

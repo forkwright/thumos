@@ -86,7 +86,7 @@ impl MockModemTransport {
         // 10: AT+CREG? (registered home on E-UTRAN/LTE, <AcT>=7) -- the <AcT>
         // field lets a booted qemu kernel exercise the RAT-parsing path so the
         // status bar's network label is RAT-derived, not hardcoded.
-        mock.queue_info_ok(b"+CREG: 1,\"1A2B\",\"0100CE01\",7");
+        mock.queue_info_ok(b"+CREG: 1,1,\"1A2B\",\"0100CE01\",7");
         // A queued ICCID response for the boot-time SimManager query (#398).
         mock.queue_info_ok(b"+ICCID: 8901410321111851072");
         // Post-init responses for the boot-time SIM-management smoke (#398), in

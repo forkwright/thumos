@@ -73,6 +73,26 @@ pub(crate) fn parse_creg_response(line: &[u8]) -> Option<(RegStatus, Option<Radi
     Some((stat, act))
 }
 
+/// Parse a +CREG QUERY response line (issue #514): "+CREG: <n>,<stat>[,<lac>,<ci>[,<AcT>]]"
+///
+/// The `AT+CREG?` query reply carries a leading `<n>` field (the URC-mode
+/// setting echoed back, 3GPP TS 27.007 §7.2) that the unsolicited `+CREG`
+/// URC does not -- every field [`parse_creg_response`] reads is shifted one
+/// position later here: `<stat>` is field 1 (not field 0) and `<AcT>` is
+/// field 4 (not field 3). Calling [`parse_creg_response`] on a query reply
+/// misreads `<n>` as `<stat>`.
+pub(crate) fn parse_creg_query_response(
+    line: &[u8],
+) -> Option<(RegStatus, Option<RadioAccessTech>)> {
+    let rest = strip_prefix(line, b"+CREG: ")?;
+    let stat = RegStatus::from(parse_u8(nth_field(rest, 1)?)?);
+    let act = nth_field(rest, 4)
+        .filter(|field| !field.is_empty())
+        .and_then(parse_u8)
+        .and_then(RadioAccessTech::from_act);
+    Some((stat, act))
+}
+
 /// Return the Nth (0-indexed) comma-separated field of `input`, or `None` when
 /// fewer than `n + 1` fields are present. Fields are returned verbatim (quotes
 /// on `<lac>`/`<ci>` are left intact -- the caller parses only the fields it
@@ -431,6 +451,23 @@ mod tests {
             parse_creg_response(b"+CREG: 1,,,7"),
             Some((RegStatus::RegisteredHome, Some(RadioAccessTech::EUtran))),
             "AcT must parse from field 3 even when lac/ci are empty"
+        );
+    }
+
+    #[test]
+    fn parse_creg_query_response_extracts_stat_and_access_technology() {
+        // issue #514: the AT+CREG? query reply carries a leading <n> field
+        // that the +CREG URC does not, so <stat> and <AcT> sit one field
+        // later than in parse_creg_response.
+        assert_eq!(
+            parse_creg_query_response(b"+CREG: 2,5,\"1A2B\",\"0100CE01\",7"),
+            Some((RegStatus::RegisteredRoaming, Some(RadioAccessTech::EUtran))),
+            "query stat=5 (field 1) and AcT=7 (field 4) must parse despite the leading <n> field"
+        );
+        assert_eq!(
+            parse_creg_query_response(b"+CREG: 0,5"),
+            Some((RegStatus::RegisteredRoaming, None)),
+            "a short-form query reply with no lac/ci/AcT must still extract stat from field 1"
         );
     }
 
