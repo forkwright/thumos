@@ -83,6 +83,15 @@ fi
 # test harness grows.
 TIMEOUT_SECS="${THUMOS_QEMU_TIMEOUT:-60}"
 
+# WHY (#532): THUMOS_QEMU_GDB=1 halts QEMU waiting for a debugger instead of
+# free-running — scripts/gdb-thumos.sh attaches to this port. Unset/0
+# (the default) leaves every existing invocation, including CI, unchanged.
+GDB_ARGS=()
+if [[ "${THUMOS_QEMU_GDB:-0}" == "1" ]]; then
+  GDB_PORT="${THUMOS_QEMU_GDB_PORT:-1234}"
+  GDB_ARGS=(-gdb "tcp::${GDB_PORT}" -S)
+fi
+
 exec timeout --kill-after=5 "${TIMEOUT_SECS}" \
   qemu-system-arm \
     -machine virt \
@@ -91,4 +100,5 @@ exec timeout --kill-after=5 "${TIMEOUT_SECS}" \
     -nographic \
     -semihosting-config enable=on,target=native \
     -kernel "${BINARY}" \
+    "${GDB_ARGS[@]}" \
     "$@"
