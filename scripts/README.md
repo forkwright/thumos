@@ -72,3 +72,41 @@ MMU). Once it is green, the follow-up is to convert the kernel crate's
 `#[cfg(test)]` unit tests to a `custom_test_frameworks` test runner that
 dispatches through this same script. That conversion touches every kernel
 module and is tracked in issue #124 (follow-up to #117).
+
+## gdb-thumos.sh
+
+GDB attach helper for the thumos kernel under QEMU (#532).
+
+`qemu-runner.sh` free-runs the guest by default; setting `THUMOS_QEMU_GDB=1`
+switches it to boot with a GDB stub instead, halted until a debugger attaches:
+
+```bash
+THUMOS_QEMU_GDB=1 scripts/qemu-runner.sh target/armv7a-none-eabi/release/thumos &
+scripts/gdb-thumos.sh target/armv7a-none-eabi/release/thumos
+```
+
+`gdb-thumos.sh` connects to that stub with symbols loaded from the given ELF,
+sets a breakpoint at `kinit::run`, and drops into an interactive GDB session.
+Override the port with `THUMOS_QEMU_GDB_PORT` (both scripts read the same
+variable; default `1234`) or a second positional argument.
+
+### Requirements
+
+- `gdb-multiarch` (preferred) or `arm-none-eabi-gdb`. If neither is on PATH,
+  the script prints an install diagnostic and exits `127`.
+
+```bash
+# Fedora
+sudo dnf install gdb-multiarch
+
+# Debian/Ubuntu
+sudo apt-get install gdb-multiarch
+```
+
+### Exit codes
+
+| Code | Meaning                                  |
+|------|-------------------------------------------|
+| 64   | Script called without an ELF argument.     |
+| 66   | ELF path does not exist.                   |
+| 127  | No ARM-capable gdb installed.              |
