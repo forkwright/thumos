@@ -8,6 +8,7 @@
 //! keypad, touch, modem, WiFi, BT, GPS, FM, USB, and eMMC.
 
 extern crate alloc;
+use crate::kconfig::{GICC_BASE, GICD_BASE};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -114,24 +115,10 @@ pub(crate) const MT6739_CLDMA_AP: usize = 0x200F_0000;
 pub(crate) const MT6739_CCIF: usize = 0x2051_0000;
 
 /// GIC distributor MMIO base.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "canonical reference; driver uses local const (#463)"
-    )
-)]
-pub(crate) const MT6739_GIC_DIST: usize = 0x0C00_0000;
+pub(crate) const MT6739_GIC_DIST: usize = GICD_BASE;
 
 /// GIC CPU interface MMIO base.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "canonical reference; driver uses local const (#463)"
-    )
-)]
-pub(crate) const MT6739_GIC_CPU: usize = 0x0C00_2000;
+pub(crate) const MT6739_GIC_CPU: usize = GICC_BASE;
 
 /// Keypad (KPD) controller MMIO base.
 pub(crate) const MT6739_KPD: usize = 0x1001_0000;
@@ -298,8 +285,8 @@ impl DeviceRegistry {
         self.register("msdc0", 0x1123_0000, 0); // eMMC controller
 
         // GIC
-        self.register("gic-dist", 0x0C00_0000, 0);
-        self.register("gic-cpu", 0x0C00_2000, 0);
+        self.register("gic-dist", MT6739_GIC_DIST, 0);
+        self.register("gic-cpu", MT6739_GIC_CPU, 0);
     }
 }
 
