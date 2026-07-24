@@ -154,6 +154,12 @@ build-then-runner pattern above. See the `kernel` job in
 `.github/workflows/ci.yml` for the exact invocations; do not copy them into
 new scripts.
 
+When the boot witness above fails or a kernel-state question needs more than
+grep-able boot-log lines, reach for the GDB workflow in `scripts/README.md`
+(`THUMOS_QEMU_GDB=1 scripts/qemu-runner.sh` + `scripts/gdb-thumos.sh`) first,
+before adding a UART probe — it attaches a real debugger with symbols against
+the same QEMU boot path used above, with no kernel code changes required.
+
 A lighter smoke check that needs no kernel runtime (boot stub + UART write +
 semihosting exit only) is documented in `scripts/README.md` (a convenience
 example; not wired into CI):
