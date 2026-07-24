@@ -646,17 +646,15 @@ pub(crate) trait GpsHwOps {
 }
 
 // ---------------------------------------------------------------------------
-// Real hardware implementation (non-test only)
+// Real hardware implementation
 // ---------------------------------------------------------------------------
 
 /// Real GPS hardware access via WMT STP on the MT6739 combo chip.
-#[cfg(not(test))]
 pub(crate) struct GpsHw {
     /// WMT combo-chip MMIO base address.
     consys_base: usize,
 }
 
-#[cfg(not(test))]
 impl GpsHw {
     /// Create a new GPS hardware handle.
     #[must_use]
@@ -667,7 +665,6 @@ impl GpsHw {
     }
 }
 
-#[cfg(not(test))]
 impl GpsHwOps for GpsHw {
     fn read_data(&mut self, _buf: &mut [u8]) -> usize {
         // TODO(#129)[deliberate-prudent]: implement WMT STP frame RX for GPS channel.
@@ -675,8 +672,10 @@ impl GpsHwOps for GpsHw {
     }
 
     fn power_on(&mut self) -> Result<(), GpsError> {
-        // TODO(#129)[deliberate-prudent]: send WMT power-on command for GPS subsystem.
-        Ok(())
+        // WHY (#542): fail closed until the WMT power-on command is actually
+        // sent and acknowledged (TODO #129) — returning Ok(()) here let boot
+        // believe a GPS radio was ready when nothing was ever powered on.
+        Err(GpsError::HardwareTimeout)
     }
 
     fn power_off(&mut self) -> Result<(), GpsError> {
@@ -1193,6 +1192,20 @@ mod tests {
             result,
             Err(GpsError::HardwareTimeout),
             "init with failing hardware must return HardwareTimeout"
+        );
+    }
+
+    #[test]
+    fn production_gps_hw_fails_closed_without_wmt_transport() {
+        let mut receiver = GpsReceiver::new(GpsHw::new());
+        assert!(
+            receiver.init().is_err(),
+            "GpsHw::power_on must fail closed until the WMT power command exists (#542)"
+        );
+        assert_eq!(
+            receiver.state(),
+            GpsState::Off,
+            "a failed power_on must leave the receiver Off, never Searching"
         );
     }
 
