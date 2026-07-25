@@ -248,11 +248,11 @@ impl BootState {
         reason = "consumed by the CCCI init step, which is qemu-gated (#463)"
     )
 )]
-const MODEM_BOOT_TIMEOUT_MS: u64 = 10_000;
+pub(crate) const MODEM_BOOT_TIMEOUT_MS: u64 = 10_000;
 
 /// Framebuffer RGB565 colour: solid red (panic and secure-boot-halt
-/// indicator). main.rs's panic handler uses the literal directly.
-const PANIC_RED_RGB565: u16 = 0xF800;
+/// indicator).
+pub(crate) const PANIC_RED_RGB565: u16 = 0xF800;
 
 // ---------------------------------------------------------------------------
 // Userspace spawn planning
