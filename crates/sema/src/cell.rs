@@ -424,7 +424,8 @@ pub(crate) fn detect_imsi_catcher_with_config(
     let rapid_threshold = config.rapid_reselection_threshold();
     // WHY: bounded to [MIN_RAPID_RESELECTION_WINDOW_SECS, MAX_RAPID_RESELECTION_WINDOW_SECS]
     // (10..=3600) by the accessor, so the cast to i64 is always exact.
-    let rapid_window = SignedDuration::from_secs(config.rapid_reselection_window_secs() as i64);
+    let rapid_window =
+        SignedDuration::from_secs(config.rapid_reselection_window_secs().cast_signed());
 
     let mut alerts = Vec::new();
     let mut seen_tower_ids: HashSet<(u16, u16, u32, u32)> = HashSet::new();
