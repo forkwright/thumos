@@ -55,6 +55,28 @@ pub(crate) const MIN_RAPID_RESELECTION_THRESHOLD: u32 = 1;
 /// Beyond 100 the signal effectively never fires; documented as a sanity bound.
 pub(crate) const MAX_RAPID_RESELECTION_THRESHOLD: u32 = 100;
 
+/// Default rapid-reselection observation-window duration, in seconds.
+///
+/// Source: [`DEFAULT_RAPID_RESELECTION_THRESHOLD`] counts reselections
+/// within a short window, not across an entire caller-supplied event slice.
+/// A coerced-reselection burst (an IMSI catcher forcing repeated tower
+/// changes to intercept traffic) resolves in seconds; ordinary
+/// mobility-driven handovers accumulate over minutes to hours. Five minutes
+/// bounds a burst without conflating it with a day of normal travel.
+pub(crate) const DEFAULT_RAPID_RESELECTION_WINDOW_SECS: u64 = 300;
+
+/// Minimum accepted rapid-reselection window, in seconds.
+///
+/// Below this the window approaches "same instant", making the threshold
+/// nearly unreachable even during a real attack.
+pub(crate) const MIN_RAPID_RESELECTION_WINDOW_SECS: u64 = 10;
+
+/// Maximum accepted rapid-reselection window, in seconds.
+///
+/// Beyond one hour the window stops distinguishing a burst from ordinary
+/// daily mobility.
+pub(crate) const MAX_RAPID_RESELECTION_WINDOW_SECS: u64 = 3600;
+
 // ── Threat-score weights ──────────────────────────────────────────────────────
 
 /// Default weight for a cipher-downgrade alert (A5/0, A5/1, A5/2).
@@ -98,12 +120,24 @@ pub(crate) struct Config {
     /// **Bounds:** `[MIN_BOUND_DBM, MIN_UNUSUALLY_STRONG_SIGNAL_DBM]`.
     pub(crate) unusually_strong_signal_dbm: i32,
 
-    /// Reselection count above which `RapidReselection` fires.
+    /// Reselection count that, met or exceeded within
+    /// `rapid_reselection_window_secs`, fires `RapidReselection`.
     ///
     /// **Affects:** sensitivity to coerced handovers vs. normal mobility.
     /// **Evidence:** baseline reselection-per-minute in the target area.
     /// **Bounds:** `[MIN_RAPID_RESELECTION_THRESHOLD, MAX_RAPID_RESELECTION_THRESHOLD]`.
     pub(crate) rapid_reselection_threshold: u32,
+
+    /// Duration, in seconds, of the sliding window within which
+    /// `rapid_reselection_threshold` reselections must fall for
+    /// `RapidReselection` to fire.
+    ///
+    /// **Affects:** whether reselections are judged as a burst (attack
+    /// signature) or ordinary mobility spread across the observation period.
+    /// **Evidence:** measured duration of a coerced-reselection burst vs.
+    /// baseline handover cadence in the deployment area.
+    /// **Bounds:** `[MIN_RAPID_RESELECTION_WINDOW_SECS, MAX_RAPID_RESELECTION_WINDOW_SECS]`.
+    pub(crate) rapid_reselection_window_secs: u64,
 
     /// Threat-score weight for a cipher-downgrade alert.
     pub(crate) weight_cipher_downgrade: u32,
@@ -123,6 +157,7 @@ impl Default for Config {
         Self {
             unusually_strong_signal_dbm: DEFAULT_UNUSUALLY_STRONG_SIGNAL_DBM,
             rapid_reselection_threshold: DEFAULT_RAPID_RESELECTION_THRESHOLD,
+            rapid_reselection_window_secs: DEFAULT_RAPID_RESELECTION_WINDOW_SECS,
             weight_cipher_downgrade: DEFAULT_WEIGHT_CIPHER_DOWNGRADE,
             weight_unusual_lac_cid: DEFAULT_WEIGHT_UNUSUAL_LAC_CID,
             weight_abnormal_signal: DEFAULT_WEIGHT_ABNORMAL_SIGNAL,
@@ -159,6 +194,18 @@ impl Config {
             MIN_RAPID_RESELECTION_THRESHOLD,
             MAX_RAPID_RESELECTION_THRESHOLD,
             "rapid_reselection_threshold",
+        )
+    }
+
+    /// Bounded rapid-reselection window duration, in seconds.
+    #[must_use]
+    pub(crate) fn rapid_reselection_window_secs(&self) -> u64 {
+        bounded_u64(
+            self.rapid_reselection_window_secs,
+            DEFAULT_RAPID_RESELECTION_WINDOW_SECS,
+            MIN_RAPID_RESELECTION_WINDOW_SECS,
+            MAX_RAPID_RESELECTION_WINDOW_SECS,
+            "rapid_reselection_window_secs",
         )
     }
 
@@ -212,6 +259,15 @@ fn bounded_u32(v: u32, default: u32, min: u32, max: u32, name: &str) -> u32 {
     }
 }
 
+fn bounded_u64(v: u64, default: u64, min: u64, max: u64, name: &str) -> u64 {
+    if (min..=max).contains(&v) {
+        v
+    } else {
+        log::warn!("{name}={v} out of range [{min}, {max}]; using default {default}");
+        default
+    }
+}
+
 fn bounded_weight(v: u32, default: u32, name: &str) -> u32 {
     if v <= MAX_SIGNAL_WEIGHT {
         v
@@ -236,6 +292,7 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.unusually_strong_signal_dbm, -50);
         assert_eq!(c.rapid_reselection_threshold, 3);
+        assert_eq!(c.rapid_reselection_window_secs, 300);
         assert_eq!(c.weight_cipher_downgrade, 40);
         assert_eq!(c.weight_unusual_lac_cid, 30);
         assert_eq!(c.weight_abnormal_signal, 20);
@@ -247,6 +304,7 @@ mod tests {
         let c = Config {
             unusually_strong_signal_dbm: -55,
             rapid_reselection_threshold: 5,
+            rapid_reselection_window_secs: 120,
             weight_cipher_downgrade: 50,
             weight_unusual_lac_cid: 25,
             weight_abnormal_signal: 15,
@@ -309,5 +367,38 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(c.weight_cipher_downgrade(), DEFAULT_WEIGHT_CIPHER_DOWNGRADE);
+    }
+
+    #[test]
+    fn window_accessor_rejects_below_floor() {
+        let c = Config {
+            rapid_reselection_window_secs: 1,
+            ..Config::default()
+        };
+        assert_eq!(
+            c.rapid_reselection_window_secs(),
+            DEFAULT_RAPID_RESELECTION_WINDOW_SECS
+        );
+    }
+
+    #[test]
+    fn window_accessor_rejects_above_ceiling() {
+        let c = Config {
+            rapid_reselection_window_secs: 100_000,
+            ..Config::default()
+        };
+        assert_eq!(
+            c.rapid_reselection_window_secs(),
+            DEFAULT_RAPID_RESELECTION_WINDOW_SECS
+        );
+    }
+
+    #[test]
+    fn window_accessor_passes_valid_value() {
+        let c = Config {
+            rapid_reselection_window_secs: 60,
+            ..Config::default()
+        };
+        assert_eq!(c.rapid_reselection_window_secs(), 60);
     }
 }
