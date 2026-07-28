@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11](https://github.com/forkwright/thumos/compare/v0.1.10...v0.1.11) (2026-07-28)
+
+
+### Bug Fixes
+
+* **device:** derive GIC base addresses from kconfig, not a local literal ([#463](https://github.com/forkwright/thumos/issues/463)) ([#564](https://github.com/forkwright/thumos/issues/564)) ([1db37a2](https://github.com/forkwright/thumos/commit/1db37a28eef30646532d445d46bbd06002dd1aef))
+* **sema:** bound rapid-reselection detection to a timestamp window ([#570](https://github.com/forkwright/thumos/issues/570)) ([874b59b](https://github.com/forkwright/thumos/commit/874b59b0ce56d26aa0e0b222835019f4e845fe29))
+* **thumos:** restore pub(crate) on kinit_plan consts dropped by [#561](https://github.com/forkwright/thumos/issues/561) ([#569](https://github.com/forkwright/thumos/issues/569)) ([3352cef](https://github.com/forkwright/thumos/commit/3352cef887cf8394226d23fb17e2bd7123d18bfc)), closes [#528](https://github.com/forkwright/thumos/issues/528)
+
 ## [0.1.10](https://github.com/forkwright/thumos/compare/v0.1.9...v0.1.10) (2026-07-23)
 
 
