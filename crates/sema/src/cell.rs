@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
@@ -97,11 +97,13 @@ pub(crate) enum ImsiCatcherAlert {
         /// The cipher algorithm that was negotiated.
         algorithm: CipherAlgorithm,
     },
-    /// Rapid cell reselection: the device has been forced to reselect cells
-    /// more than [`Config::rapid_reselection_threshold`] times within the
-    /// observation window.
+    /// Rapid cell reselection: [`Config::rapid_reselection_threshold`] or
+    /// more serving-cell changes fell within a single
+    /// [`Config::rapid_reselection_window_secs`]-second span.
     RapidReselection {
-        /// Number of reselections observed.
+        /// Largest number of reselections observed within any single
+        /// window-length span (not the raw total across the whole
+        /// caller-supplied event slice).
         count: u32,
     },
 }
@@ -403,11 +405,16 @@ pub(crate) fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert>
 /// - **Sudden tower change**: a `HandoverTo` event to a tower that was never previously
 ///   announced via `NeighborSeen`, suggesting an abnormal handover.
 /// - **Cipher downgrade**: a `CipherChange` event indicating A5/0, A5/1, or A5/2.
-/// - **Rapid reselection**: more than [`Config::rapid_reselection_threshold`]
-///   serving cell changes across `Connected` and `HandoverTo` events.
+/// - **Rapid reselection**: [`Config::rapid_reselection_threshold`] or more serving-cell
+///   changes (`Connected` and `HandoverTo` events with a changed tower id) falling
+///   within any single [`Config::rapid_reselection_window_secs`]-second span, evaluated
+///   with a timestamp-bounded sliding window rather than a raw count across the whole
+///   slice.
 ///
 /// Events are processed in order; `NeighborSeen` events accumulate a set of known
-/// neighbours used to evaluate subsequent handovers.
+/// neighbours used to evaluate subsequent handovers. Reselection timestamps are sorted
+/// independently of event order before the window scan, so out-of-order or
+/// reordered timestamps do not affect the result.
 #[must_use]
 pub(crate) fn detect_imsi_catcher_with_config(
     events: &[CellEvent],
@@ -415,12 +422,15 @@ pub(crate) fn detect_imsi_catcher_with_config(
 ) -> Vec<ImsiCatcherAlert> {
     let strong_signal_dbm = config.unusually_strong_signal_dbm();
     let rapid_threshold = config.rapid_reselection_threshold();
+    // WHY: bounded to [MIN_RAPID_RESELECTION_WINDOW_SECS, MAX_RAPID_RESELECTION_WINDOW_SECS]
+    // (10..=3600) by the accessor, so the cast to i64 is always exact.
+    let rapid_window = SignedDuration::from_secs(config.rapid_reselection_window_secs() as i64);
 
     let mut alerts = Vec::new();
     let mut seen_tower_ids: HashSet<(u16, u16, u32, u32)> = HashSet::new();
     let mut known_neighbor_ids: HashSet<(u16, u16, u32, u32)> = HashSet::new();
     let mut prev_serving: Option<&CellTower> = None;
-    let mut reselection_count: u32 = 0;
+    let mut reselection_timestamps: Vec<Timestamp> = Vec::new();
 
     for event in events {
         match event {
@@ -452,7 +462,7 @@ pub(crate) fn detect_imsi_catcher_with_config(
                 if let Some(prev) = prev_serving
                     && prev.id() != tower.id()
                 {
-                    reselection_count = reselection_count.saturating_add(1);
+                    reselection_timestamps.push(tower.timestamp);
                 }
 
                 // #355: a cell the device has actively connected to is a
@@ -494,7 +504,7 @@ pub(crate) fn detect_imsi_catcher_with_config(
                 }
 
                 // Handover always counts as a reselection.
-                reselection_count = reselection_count.saturating_add(1);
+                reselection_timestamps.push(tower.timestamp);
 
                 seen_tower_ids.insert(tower.id());
                 prev_serving = Some(tower);
@@ -516,19 +526,49 @@ pub(crate) fn detect_imsi_catcher_with_config(
         }
     }
 
-    // Check for rapid reselection after processing all events.
-    if reselection_count > rapid_threshold {
+    // Check for rapid reselection: the maximum number of reselections that
+    // fall within any single rapid_window-length span, not the raw total
+    // across the whole caller-supplied slice.
+    let max_in_window = max_reselections_in_window(&mut reselection_timestamps, rapid_window);
+    if max_in_window >= rapid_threshold {
         alerts.push(ImsiCatcherAlert::RapidReselection {
-            count: reselection_count,
+            count: max_in_window,
         });
     }
 
     alerts
 }
 
+/// Largest number of `timestamps` entries that fall within any single
+/// `window`-length span.
+///
+/// `timestamps` is sorted in place first, so callers may supply reselection
+/// events in any order — including reordered or out-of-order timestamps
+/// (e.g. clock skew across a buffered event log) — without affecting the
+/// result. Entries sharing an identical timestamp have zero elapsed duration
+/// between them and always share a window; a span exactly `window` long is
+/// treated as inside the window (inclusive boundary). An empty slice yields
+/// `0`.
+fn max_reselections_in_window(timestamps: &mut [Timestamp], window: SignedDuration) -> u32 {
+    timestamps.sort_unstable();
+
+    let mut max_count: u32 = 0;
+    let mut left = 0usize;
+    for right in 0..timestamps.len() {
+        while timestamps[right].duration_since(timestamps[left]) > window {
+            left += 1;
+        }
+        let count = (right - left + 1) as u32;
+        if count > max_count {
+            max_count = count;
+        }
+    }
+    max_count
+}
+
 #[cfg(test)]
 mod tests {
-    use jiff::Timestamp;
+    use jiff::{SignedDuration, Timestamp};
 
     use super::*;
 
@@ -536,8 +576,25 @@ mod tests {
         Timestamp::UNIX_EPOCH
     }
 
+    /// `ts()` offset by `secs` seconds (saturating; falls back to `ts()` on
+    /// the unreachable overflow path so tests never need `unwrap`/`expect`).
+    fn ts_offset(secs: i64) -> Timestamp {
+        Timestamp::UNIX_EPOCH
+            .saturating_add(SignedDuration::from_secs(secs))
+            .unwrap_or_else(|_| ts())
+    }
+
     fn tower(cid: u32, signal_dbm: i32, technology: CellTechnology) -> CellTower {
         CellTower::new(234, 30, 1234, cid, signal_dbm, technology, ts())
+    }
+
+    fn tower_at(
+        cid: u32,
+        signal_dbm: i32,
+        technology: CellTechnology,
+        timestamp: Timestamp,
+    ) -> CellTower {
+        CellTower::new(234, 30, 1234, cid, signal_dbm, technology, timestamp)
     }
 
     // ── Existing detection tests ─────────────────────────────────────────────
@@ -757,33 +814,34 @@ mod tests {
     // ── Rapid reselection detection ─────────────────────────────────────────
 
     #[test]
-    fn rapid_reselection_below_threshold_no_alert() {
-        // 3 reselections = at threshold, should NOT trigger (> threshold required).
+    fn rapid_reselection_three_at_threshold_triggers_alert() {
+        // WHY(#554): pins the inclusive `>= threshold` semantic. The doc says
+        // "3+ ... is suspicious" and the default threshold is 3, but the old
+        // `> threshold` comparison required 4 to fire. All three reselections
+        // share a timestamp (zero elapsed, trivially inside any window), so
+        // only the threshold boundary is under test here.
         let events = [
+            CellEvent::NeighborSeen(tower(2, -80, CellTechnology::Lte)),
+            CellEvent::NeighborSeen(tower(3, -80, CellTechnology::Lte)),
+            CellEvent::NeighborSeen(tower(4, -80, CellTechnology::Lte)),
             CellEvent::Connected(tower(1, -70, CellTechnology::Lte)),
             CellEvent::HandoverTo(tower(2, -72, CellTechnology::Lte)),
             CellEvent::HandoverTo(tower(3, -71, CellTechnology::Lte)),
             CellEvent::HandoverTo(tower(4, -73, CellTechnology::Lte)),
         ];
-        // Pre-announce towers as neighbours to avoid SuddenTowerChange noise.
-        let mut full_events = vec![
-            CellEvent::NeighborSeen(tower(2, -80, CellTechnology::Lte)),
-            CellEvent::NeighborSeen(tower(3, -80, CellTechnology::Lte)),
-            CellEvent::NeighborSeen(tower(4, -80, CellTechnology::Lte)),
-        ];
-        full_events.extend_from_slice(&events);
-        let alerts = detect_imsi_catcher(&full_events);
+        let alerts = detect_imsi_catcher(&events);
         assert!(
-            !alerts
+            alerts
                 .iter()
-                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { .. })),
-            "3 reselections (at threshold) must not trigger RapidReselection"
+                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { count: 3 })),
+            "3 reselections at the default threshold, all within the window, \
+             must trigger RapidReselection"
         );
     }
 
     #[test]
     fn rapid_reselection_above_threshold_triggers_alert() {
-        // 4 handovers = 4 reselections, above threshold of 3.
+        // 4 handovers = 4 reselections, all within the default window.
         let mut events: Vec<CellEvent> = Vec::new();
         // Pre-announce neighbours.
         for cid in 1..=5 {
@@ -805,6 +863,194 @@ mod tests {
                 .iter()
                 .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { count: 4 })),
             "4 reselections must trigger RapidReselection with count=4"
+        );
+    }
+
+    #[test]
+    fn rapid_reselection_spread_across_hours_no_alert() {
+        // WHY(#554): pins the elapsed-time semantic. Same 4 reselections as
+        // `rapid_reselection_above_threshold_triggers_alert`, but spread an
+        // hour apart each -- ordinary mobility, not a burst. The old code
+        // counted raw occurrences across the whole slice with no regard for
+        // elapsed time and would have fired here too; the corrected sliding
+        // window must not, since no single default (300s) window ever
+        // contains more than one reselection.
+        let mut events: Vec<CellEvent> = Vec::new();
+        for cid in 1..=5 {
+            events.push(CellEvent::NeighborSeen(tower(
+                cid,
+                -80,
+                CellTechnology::Lte,
+            )));
+        }
+        events.push(CellEvent::Connected(tower(1, -70, CellTechnology::Lte)));
+        events.push(CellEvent::HandoverTo(tower_at(
+            2,
+            -72,
+            CellTechnology::Lte,
+            ts_offset(3_600),
+        )));
+        events.push(CellEvent::HandoverTo(tower_at(
+            3,
+            -71,
+            CellTechnology::Lte,
+            ts_offset(7_200),
+        )));
+        events.push(CellEvent::HandoverTo(tower_at(
+            4,
+            -73,
+            CellTechnology::Lte,
+            ts_offset(10_800),
+        )));
+        events.push(CellEvent::HandoverTo(tower_at(
+            5,
+            -74,
+            CellTechnology::Lte,
+            ts_offset(14_400),
+        )));
+
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            !alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { .. })),
+            "4 reselections spread an hour apart must not trigger RapidReselection"
+        );
+    }
+
+    #[test]
+    fn rapid_reselection_four_events_straddling_window_boundary() {
+        // WHY(#554): pins sliding-window-max semantics distinctly from a raw
+        // total. 4 reselections total, but only 3 fall inside any single
+        // 300s window; the boundary-exact 300s gap (0 -> 300) counts as
+        // inside (inclusive boundary), while the 4th (at 450s) falls outside
+        // every window that contains the first three. Must fire with
+        // count=3, not the raw total of 4.
+        let mut events: Vec<CellEvent> = Vec::new();
+        for cid in 1..=5 {
+            events.push(CellEvent::NeighborSeen(tower(
+                cid,
+                -80,
+                CellTechnology::Lte,
+            )));
+        }
+        events.push(CellEvent::Connected(tower(1, -70, CellTechnology::Lte)));
+        events.push(CellEvent::HandoverTo(tower_at(
+            2,
+            -72,
+            CellTechnology::Lte,
+            ts_offset(0),
+        )));
+        events.push(CellEvent::HandoverTo(tower_at(
+            3,
+            -71,
+            CellTechnology::Lte,
+            ts_offset(150),
+        )));
+        events.push(CellEvent::HandoverTo(tower_at(
+            4,
+            -73,
+            CellTechnology::Lte,
+            ts_offset(300),
+        )));
+        events.push(CellEvent::HandoverTo(tower_at(
+            5,
+            -74,
+            CellTechnology::Lte,
+            ts_offset(450),
+        )));
+
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { count: 3 })),
+            "the windowed max must be 3 (boundary-inclusive), not the raw total of 4"
+        );
+    }
+
+    #[test]
+    fn rapid_reselection_reordered_timestamps_still_detected() {
+        // WHY(#554): pins robustness to out-of-order/reordered timestamps
+        // (e.g. clock skew across a buffered event log). Array order (which
+        // drives handover-chain bookkeeping) stays causal, but the
+        // timestamps attached to each event are not monotonically
+        // increasing with array position.
+        let mut events: Vec<CellEvent> = Vec::new();
+        for cid in 1..=4 {
+            events.push(CellEvent::NeighborSeen(tower(
+                cid,
+                -80,
+                CellTechnology::Lte,
+            )));
+        }
+        events.push(CellEvent::Connected(tower(1, -70, CellTechnology::Lte)));
+        events.push(CellEvent::HandoverTo(tower_at(
+            2,
+            -72,
+            CellTechnology::Lte,
+            ts_offset(200),
+        )));
+        events.push(CellEvent::HandoverTo(tower_at(
+            3,
+            -71,
+            CellTechnology::Lte,
+            ts_offset(0),
+        )));
+        events.push(CellEvent::HandoverTo(tower_at(
+            4,
+            -73,
+            CellTechnology::Lte,
+            ts_offset(100),
+        )));
+
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { count: 3 })),
+            "out-of-order timestamps within the window must still be detected as a burst"
+        );
+    }
+
+    #[test]
+    fn rapid_reselection_repeated_identical_tower_not_counted() {
+        // WHY(#554): a re-report of the same serving cell is not a
+        // reselection; the id-change guard must still hold once counting
+        // moved from a plain increment to timestamp collection.
+        let events = [
+            CellEvent::Connected(tower_at(1, -70, CellTechnology::Lte, ts_offset(0))),
+            CellEvent::Connected(tower_at(1, -70, CellTechnology::Lte, ts_offset(10))),
+            CellEvent::Connected(tower_at(1, -70, CellTechnology::Lte, ts_offset(20))),
+        ];
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            !alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { .. })),
+            "repeated reports of the same serving cell must not accumulate as reselections"
+        );
+    }
+
+    #[test]
+    fn rapid_reselection_ping_pong_between_two_towers_triggers_alert() {
+        // WHY(#554): oscillating between the same two towers is a distinct
+        // real-world burst signature and must still be detected -- each
+        // actual id change counts even though both ids have been seen
+        // before.
+        let events = [
+            CellEvent::NeighborSeen(tower(2, -80, CellTechnology::Lte)),
+            CellEvent::Connected(tower_at(1, -70, CellTechnology::Lte, ts_offset(0))),
+            CellEvent::HandoverTo(tower_at(2, -72, CellTechnology::Lte, ts_offset(30))),
+            CellEvent::HandoverTo(tower_at(1, -70, CellTechnology::Lte, ts_offset(60))),
+            CellEvent::HandoverTo(tower_at(2, -72, CellTechnology::Lte, ts_offset(90))),
+        ];
+        let alerts = detect_imsi_catcher(&events);
+        assert!(
+            alerts
+                .iter()
+                .any(|a| matches!(a, ImsiCatcherAlert::RapidReselection { count: 3 })),
+            "oscillating handovers between two towers must accumulate as reselections"
         );
     }
 
