@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12](https://github.com/forkwright/thumos/compare/v0.1.11...v0.1.12) (2026-07-29)
+
+
+### Bug Fixes
+
+* **release:** keep eidolon's haphe pin in step with the workspace version ([#572](https://github.com/forkwright/thumos/issues/572)) ([3bf8660](https://github.com/forkwright/thumos/commit/3bf8660022d902e98ee6f0186caa1acae9299272)), closes [#571](https://github.com/forkwright/thumos/issues/571)
+
 ## [0.1.11](https://github.com/forkwright/thumos/compare/v0.1.10...v0.1.11) (2026-07-28)
 
 
