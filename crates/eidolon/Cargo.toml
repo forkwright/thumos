@@ -10,7 +10,11 @@ repository.workspace = true
 [dependencies]
 embedded-graphics = { workspace = true }
 embedded-graphics-core = { workspace = true }
-haphe = { path = "../haphe", version = "0.1.3" }
+# WARNING: the version here duplicates `[workspace.package].version` and has
+# no other source of truth. release-please patches it via the `extra-files`
+# entry in release-please-config.json; if that entry is removed the pin goes
+# stale silently and stops resolving at the next minor bump (#571).
+haphe = { path = "../haphe", version = "0.1.11" }
 
 [lints]
 workspace = true
