@@ -28,6 +28,11 @@
           "type": "toml",
           "path": "crates/eidolon/Cargo.toml",
           "jsonpath": "$..[?(@.path)].version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(!@.source)].version"
         }
       ]
     }
