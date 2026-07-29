@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13](https://github.com/forkwright/thumos/compare/v0.1.12...v0.1.13) (2026-07-29)
+
+
+### Bug Fixes
+
+* **release:** keep Cargo.lock's local packages on the workspace version ([#575](https://github.com/forkwright/thumos/issues/575)) ([e1989d6](https://github.com/forkwright/thumos/commit/e1989d6cce779465cc5f5ea22c7f33dda3533b8d)), closes [#574](https://github.com/forkwright/thumos/issues/574)
+
 ## [0.1.12](https://github.com/forkwright/thumos/compare/v0.1.11...v0.1.12) (2026-07-29)
 
 
