@@ -23,6 +23,11 @@
           "type": "toml",
           "path": "Cargo.toml",
           "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/eidolon/Cargo.toml",
+          "jsonpath": "$..[?(@.path)].version"
         }
       ]
     }
