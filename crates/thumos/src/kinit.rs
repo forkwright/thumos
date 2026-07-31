@@ -16,7 +16,6 @@
 
 extern crate alloc;
 
-use core::fmt::Write;
 use core::sync::atomic::AtomicBool;
 #[cfg(not(feature = "qemu"))]
 use core::sync::atomic::Ordering;
@@ -58,6 +57,7 @@ use crate::page;
 use crate::power::PowerManager;
 use crate::process;
 use crate::uart::Uart;
+use crate::uart::boot_log;
 use crate::ui;
 #[cfg(not(feature = "qemu"))]
 use crate::usb::UsbController;
@@ -147,8 +147,7 @@ fn halt_boot(serial: &mut Uart, display_ok: bool) -> ! {
             );
         }
     }
-    let _ = serial
-        .write_str("  CRIT Boot halted: image trust could not be established (fail-closed)\r\n");
+    serial.log(" CRIT Boot halted: image trust could not be established (fail-closed)\r\n");
     #[cfg(feature = "qemu")]
     crate::qemu::request_exit(6);
     loop {
@@ -200,7 +199,7 @@ fn debug_console_gate(serial: &mut Uart, mode_mgr: &crate::security_mode::ModeMa
     // the moment mode state is threaded through boot instead of re-derived
     // fresh every time (e.g. a mode persisted across a warm restart).
     if mode_mgr.mode() != crate::security_mode::SecurityMode::Daily {
-        let _ = serial.write_str("[init] Debug console refused: security mode is not Daily\r\n");
+        serial.log("[init] Debug console refused: security mode is not Daily\r\n");
         return false;
     }
 
@@ -212,10 +211,9 @@ fn debug_console_gate(serial: &mut Uart, mode_mgr: &crate::security_mode::ModeMa
     // TODO(#459)[deliberate-prudent]: `Console::wait_for_physical_presence` depends on
     // `Uart::getc`, whose RX "data ready" bit position is unverified
     // against the MT6739 TRM (see uart.rs) -- confirm on real hardware.
-    let _ =
-        serial.write_str("[init] Debug console armed -- awaiting physical-presence sequence\r\n");
+    serial.log("[init] Debug console armed -- awaiting physical-presence sequence\r\n");
     if !Console::wait_for_physical_presence(serial) {
-        let _ = serial.write_str("[init] Debug console presence sequence not received\r\n");
+        serial.log("[init] Debug console presence sequence not received\r\n");
         return false;
     }
 
@@ -241,16 +239,16 @@ pub unsafe fn run() -> ! {
     let mut state = BootState::new();
 
     // Banner
-    let _ = serial.write_str("\r\n");
-    let _ = serial.write_str("================================\r\n");
-    let _ = serial.write_str("  THUMOS v0.1.0\r\n");
-    let _ = serial.write_str("  Rust OS for the AGM M7 (MT6739)\r\n");
+    serial.log("\r\n");
+    serial.log("================================\r\n");
+    serial.log(" THUMOS v0.1.0\r\n");
+    serial.log(" Rust OS for the AGM M7 (MT6739)\r\n");
     // WHY (#233): every boot names its trust anchor -- a dev-keyed image can
     // never be mistaken for a production-trusted one, on the serial log or
     // via `strings` on the flashed binary (the stamp lives in rodata).
-    let _ = write!(
+    boot_log!(
         serial,
-        "  {}{}\r\n",
+        " {}{}\r\n",
         crate::secure_boot::BOOT_TRUST_STAMP,
         if crate::secure_boot::BOOT_KEY_IS_PRODUCTION {
             ""
@@ -258,13 +256,13 @@ pub unsafe fn run() -> ! {
             " (NOT PRODUCTION-TRUSTED)"
         }
     );
-    let _ = serial.write_str("================================\r\n");
-    let _ = serial.write_str("\r\n");
+    serial.log("================================\r\n");
+    serial.log("\r\n");
 
     // -----------------------------------------------------------------------
     // Step 0: MMU + caches
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] MMU + caches\r\n");
+    serial.log("[init] MMU + caches\r\n");
     // SAFETY: called once during early boot with interrupts disabled before
     // any code that depends on virtual memory.
     unsafe {
@@ -275,7 +273,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 1: Page allocator
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Page allocator\r\n");
+    serial.log("[init] Page allocator\r\n");
     // SAFETY: called once after MMU init. RAM_START/USER_TEXT_BASE/KERNEL_END
     // are valid physical addresses from kconfig for the MT6739 DRAM layout.
     // WHY USER_TEXT_BASE (not RAM_END) as the upper bound: the top 1 MB is the
@@ -288,9 +286,9 @@ pub unsafe fn run() -> ! {
             kconfig::KERNEL_END,
         );
     }
-    let _ = write!(
+    boot_log!(
         serial,
-        "       {} pages free ({} MB)\r\n",
+        " {} pages free ({} MB)\r\n",
         page::free_count(),
         page::free_bytes() / 1024 / 1024
     );
@@ -298,24 +296,20 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 2: Kernel heap
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Kernel heap\r\n");
+    serial.log("[init] Kernel heap\r\n");
     // SAFETY: called once after page allocator init. heap::init() claims a
     // contiguous region from the page allocator for the kernel slab heap.
     unsafe {
         heap::init();
     }
     let (allocs, frees) = heap::stats();
-    let _ = write!(
-        serial,
-        "       slab: {} allocs, {} frees\r\n",
-        allocs, frees
-    );
+    boot_log!(serial, " slab: {} allocs, {} frees\r\n", allocs, frees);
     state.heap_ok = true;
 
     // -----------------------------------------------------------------------
     // Step 3: GIC
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] GIC\r\n");
+    serial.log("[init] GIC\r\n");
     // SAFETY: called once after heap init. gic::init() programs the GIC distributor
     // and CPU interface MMIO registers at their known physical addresses.
     unsafe {
@@ -326,7 +320,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 4: Process subsystem
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Process subsystem\r\n");
+    serial.log("[init] Process subsystem\r\n");
     // SAFETY: called once after GIC init. process::init() initializes the
     // global process table and scheduler state before any processes are spawned.
     unsafe {
@@ -336,16 +330,16 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 5: Exception handlers + timer
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Exceptions + timer\r\n");
+    serial.log("[init] Exceptions + timer\r\n");
     // SAFETY: called once after GIC and process init. exceptions::init() installs
     // the vector table and enables IRQ delivery; the GIC and process table must
     // already be initialized before interrupts are unmasked.
     unsafe {
         exceptions::init();
     }
-    let _ = write!(
+    boot_log!(
         serial,
-        "       Timer frequency: {} Hz\r\n",
+        " Timer frequency: {} Hz\r\n",
         crate::timer::frequency()
     );
     state.timer_ok = true;
@@ -354,7 +348,7 @@ pub unsafe fn run() -> ! {
     // Step 5b: CSPRNG (ChaCha20, seeded from timer entropy; fault-tolerant
     // with timeout)
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] CSPRNG (ChaCha20)\r\n");
+    serial.log("[init] CSPRNG (ChaCha20)\r\n");
     // SAFETY: called once after exceptions::init() (timer running, IRQs enabled).
     // csprng::init() spins on WFI until the entropy pool accumulates a full
     // SEED_ENTROPY_BITS estimate of timer-jitter entropy, then seeds the
@@ -363,18 +357,18 @@ pub unsafe fn run() -> ! {
     // Must complete before any radio driver init.
     state.csprng_ok = unsafe { csprng::init() };
     if state.csprng_ok {
-        let _ = serial.write_str("       CSPRNG ready\r\n");
+        serial.log(" CSPRNG ready\r\n");
     } else {
-        let _ = serial.write_str(
-            "  WARN CSPRNG timed out waiting for timer entropy -- random bytes unavailable\r\n",
+        serial.log(
+            " WARN CSPRNG timed out waiting for timer entropy -- random bytes unavailable\r\n",
         );
-        let _ = serial.write_str("       Radio identity randomization disabled\r\n");
+        serial.log(" Radio identity randomization disabled\r\n");
     }
 
     // -----------------------------------------------------------------------
     // Step 5c: Hardware watchdog (WDT)
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Watchdog (WDT, 5s)\r\n");
+    serial.log("[init] Watchdog (WDT, 5s)\r\n");
     // SAFETY: called once after MMU init (device MMIO is identity-mapped).
     // Configures the MT6739 WDT with a 5-second timeout. The scheduler tick
     // handler pets the watchdog on every timer interrupt (every 10 ms).
@@ -382,45 +376,41 @@ pub unsafe fn run() -> ! {
         watchdog::init();
     }
     #[cfg(not(feature = "qemu"))]
-    let _ = serial.write_str("       WDT armed (5s timeout)\r\n");
+    serial.log(" WDT armed (5s timeout)\r\n");
     // WHY(qemu): watchdog is a no-op stub (watchdog_qemu.rs); say so rather
     // than log a hardware claim that is not true under the emulator.
     #[cfg(feature = "qemu")]
-    let _ = serial.write_str("       WDT skipped (qemu: no MT6739 WDT model)\r\n");
+    serial.log(" WDT skipped (qemu: no MT6739 WDT model)\r\n");
 
     // -----------------------------------------------------------------------
     // Step 6: Device registry
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Device registry\r\n");
+    serial.log("[init] Device registry\r\n");
     let mut devices = DeviceRegistry::new();
     devices.register_mt6739_devices();
-    let _ = write!(
-        serial,
-        "       {} devices registered\r\n",
-        devices.list().len()
-    );
+    boot_log!(serial, " {} devices registered\r\n", devices.list().len());
 
     // -----------------------------------------------------------------------
     // Step 7: eMMC block device
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] eMMC (MSDC0)\r\n");
+    serial.log("[init] eMMC (MSDC0)\r\n");
     // WHY(qemu): virt models no MSDC controller at 0x1123_0000; the first
     // register access would data-abort. emmc_ok stays false, so the
     // filesystem step degrades to the ramfs root (existing path).
     #[cfg(feature = "qemu")]
-    let _ = serial.write_str("       Skipped (qemu: no MSDC model)\r\n");
+    serial.log(" Skipped (qemu: no MSDC model)\r\n");
     #[cfg(not(feature = "qemu"))]
     {
         let mut emmc = crate::emmc::MsdcController::new();
         match unsafe { emmc.init() } {
             Ok(()) => {
-                let _ = serial.write_str("       eMMC initialized OK\r\n");
+                serial.log(" eMMC initialized OK\r\n");
                 devices.activate("msdc0");
                 state.emmc_ok = true;
             }
             Err(e) => {
-                let _ = write!(serial, "  WARN eMMC init failed: {:?}\r\n", e);
-                let _ = serial.write_str("       Continuing without block storage\r\n");
+                boot_log!(serial, " WARN eMMC init failed: {:?}\r\n", e);
+                serial.log(" Continuing without block storage\r\n");
             }
         }
     }
@@ -428,12 +418,12 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 8: Display pipeline (DDP → GC9306)
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Display (GC9306 240x320)\r\n");
+    serial.log("[init] Display (GC9306 240x320)\r\n");
     // WHY(qemu): virt models no MT6739 DDP/DSI pipeline at 0x1400_0000; the
     // init writes would data-abort. display_ok stays false, so boot degrades
     // to serial-only (existing path) and the panic handler never touches FB.
     #[cfg(feature = "qemu")]
-    let _ = serial.write_str("       Skipped (qemu: no DDP/DSI model)\r\n");
+    serial.log(" Skipped (qemu: no DDP/DSI model)\r\n");
     #[cfg(not(feature = "qemu"))]
     {
         let gc9306 = Gc9306::new();
@@ -446,20 +436,16 @@ pub unsafe fn run() -> ! {
             display.init(kconfig::FB_BASE);
         }
         if display.state() != crate::display::DisplayState::Uninitialized {
-            let _ = serial.write_str("       Display pipeline active\r\n");
-            let _ = write!(
-                serial,
-                "       Framebuffer @ {:#010x}\r\n",
-                kconfig::FB_BASE
-            );
+            serial.log(" Display pipeline active\r\n");
+            boot_log!(serial, " Framebuffer @ {:#010x}\r\n", kconfig::FB_BASE);
             devices.activate("gc9306-lcm");
             devices.activate("disp-ovl0");
             devices.activate("disp-rdma0");
             state.display_ok = true;
             DISPLAY_AVAILABLE.store(true, Ordering::Release);
         } else {
-            let _ = serial.write_str("  WARN Display init incomplete\r\n");
-            let _ = serial.write_str("       Falling back to USB serial console only\r\n");
+            serial.log(" WARN Display init incomplete\r\n");
+            serial.log(" Falling back to USB serial console only\r\n");
         }
     }
 
@@ -474,12 +460,12 @@ pub unsafe fn run() -> ! {
     // every boot (#344). This step only depends on the device registry
     // (Step 6) and has no dependency on display/USB/modem, so moving it
     // earlier is safe.
-    let _ = serial.write_str("[init] GPIO keypad\r\n");
+    serial.log("[init] GPIO keypad\r\n");
     // WHY(qemu): virt models no MT6739 KPD block at 0x1001_0000; the enable
     // write would data-abort. input_ok stays false, so passphrase entry
     // reports its skip path (existing behavior).
     #[cfg(feature = "qemu")]
-    let _ = serial.write_str("       Skipped (qemu: no KPD model)\r\n");
+    serial.log(" Skipped (qemu: no KPD model)\r\n");
     #[cfg(not(feature = "qemu"))]
     {
         // NOTE: Full keypad driver is in crates/haphe. Here we enable the
@@ -497,13 +483,13 @@ pub unsafe fn run() -> ! {
         }
         devices.activate("mtk-kpd");
         state.input_ok = true;
-        let _ = serial.write_str("       Keypad scanning enabled\r\n");
+        serial.log(" Keypad scanning enabled\r\n");
     }
 
     // -----------------------------------------------------------------------
     // Step 8b: Measured boot (Ed25519 signature verification)
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Secure boot verification\r\n");
+    serial.log("[init] Secure boot verification\r\n");
     {
         // WHY: verification is unconditional and fail-closed (#217) -- it
         // must run and halt on failure regardless of display availability.
@@ -533,20 +519,16 @@ pub unsafe fn run() -> ! {
                 // build boots degraded-LOCKED, like the no-medium path.
                 if crate::secure_boot::BOOT_KEY_IS_PRODUCTION {
                     state.secure_boot_ok = true;
-                    let _ = serial.write_str("       Secure boot: VERIFIED\r\n");
+                    serial.log(" Secure boot: VERIFIED\r\n");
                 } else {
-                    let _ = serial.write_str(
-                        "       Secure boot: DEGRADED (dev anchor -- not production-trusted; persistent data stays locked)\r\n",
-                    );
+                    serial.log( " Secure boot: DEGRADED (dev anchor -- not production-trusted; persistent data stays locked)\r\n", );
                 }
             }
             crate::secure_boot::SecureBootDecision::Proceed { verified: false } => {
-                let _ = serial.write_str(
-                    "       Secure boot: DEGRADED (no boot medium -- trust not established; persistent data stays locked)\r\n",
-                );
+                serial.log( " Secure boot: DEGRADED (no boot medium -- trust not established; persistent data stays locked)\r\n", );
             }
             crate::secure_boot::SecureBootDecision::Halt(e) => {
-                let _ = write!(serial, "  CRIT Secure boot verification failed: {e}\r\n");
+                boot_log!(serial, " CRIT Secure boot verification failed: {e}\r\n");
                 halt_boot(&mut serial, state.display_ok);
             }
         }
@@ -555,7 +537,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 8c: Filesystem (LFS) -- trust-gated (#217)
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Filesystem (LFS)\r\n");
+    serial.log("[init] Filesystem (LFS)\r\n");
     // Captures the mounted LFS so it can back the VFS root below instead
     // of a fresh, volatile ramfs (#343). Stays `None` on any path that
     // does not end with a durably mounted filesystem.
@@ -583,7 +565,7 @@ pub unsafe fn run() -> ! {
                 // Try to mount existing LFS.
                 match lfs::mount(alloc::boxed::Box::new(blk_dev)) {
                     Ok(fs) => {
-                        let _ = serial.write_str("       LFS mounted OK\r\n");
+                        serial.log(" LFS mounted OK\r\n");
                         lfs_root = Some(alloc::boxed::Box::new(fs));
                     }
                     // A missing/invalid superblock means a genuine first
@@ -593,14 +575,13 @@ pub unsafe fn run() -> ! {
                     // would silently destroy user data on a bit flip or a
                     // transient I/O fault (#360).
                     Err(LfsError::InvalidSuperblock) => {
-                        let _ = serial
-                            .write_str("       LFS mount failed (no superblock), formatting\r\n");
+                        serial.log(" LFS mount failed (no superblock), formatting\r\n");
                         let mut fmt_dev = MsdcBlockDevice::new(sector_count);
                         // SAFETY: eMMC controller was initialized successfully in
                         // Step 7; fmt_dev.init() is called once here on a
                         // freshly constructed MsdcBlockDevice.
                         if unsafe { fmt_dev.init() }.is_ok() && lfs::format(&mut fmt_dev).is_ok() {
-                            let _ = serial.write_str("       LFS formatted OK\r\n");
+                            serial.log(" LFS formatted OK\r\n");
                             // Remount the freshly formatted device so the
                             // VFS root is backed by durable storage from
                             // this boot onward, not just after the NEXT
@@ -612,46 +593,46 @@ pub unsafe fn run() -> ! {
                             match unsafe { remount_dev.init() } {
                                 Ok(()) => match lfs::mount(alloc::boxed::Box::new(remount_dev)) {
                                     Ok(fs) => {
-                                        let _ = serial.write_str("       LFS remounted OK\r\n");
+                                        serial.log(" LFS remounted OK\r\n");
                                         lfs_root = Some(alloc::boxed::Box::new(fs));
                                     }
                                     Err(e) => {
-                                        let _ = write!(
+                                        boot_log!(
                                             serial,
-                                            "  WARN LFS remount after format failed: {:?}\r\n",
+                                            " WARN LFS remount after format failed: {:?}\r\n",
                                             e
                                         );
                                     }
                                 },
                                 Err(e) => {
-                                    let _ = write!(
+                                    boot_log!(
                                         serial,
-                                        "  WARN Block device re-init for remount failed: {:?}\r\n",
+                                        " WARN Block device re-init for remount failed: {:?}\r\n",
                                         e
                                     );
                                 }
                             }
                         } else {
-                            let _ = serial.write_str("  WARN LFS format failed\r\n");
+                            serial.log(" WARN LFS format failed\r\n");
                         }
                     }
                     Err(e) => {
-                        let _ = write!(
+                        boot_log!(
                             serial,
-                            "  CRIT LFS mount failed ({:?}) -- not reformatting, data at risk\r\n",
+                            " CRIT LFS mount failed ({:?}) -- not reformatting, data at risk\r\n",
                             e
                         );
                     }
                 }
             }
             Err(e) => {
-                let _ = write!(serial, "  WARN Block device init failed: {:?}\r\n", e);
+                boot_log!(serial, " WARN Block device init failed: {:?}\r\n", e);
             }
         }
     } else if state.emmc_ok {
-        let _ = serial.write_str("       Skipped (secure boot not established -- fail-closed)\r\n");
+        serial.log(" Skipped (secure boot not established -- fail-closed)\r\n");
     } else {
-        let _ = serial.write_str("       Skipped (no eMMC)\r\n");
+        serial.log(" Skipped (no eMMC)\r\n");
     }
 
     // Initialize the VFS mount table, backed by the mounted LFS when one
@@ -679,15 +660,14 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 8d: Passphrase entry and key derivation
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Passphrase entry\r\n");
+    serial.log("[init] Passphrase entry\r\n");
     // WHY (#217, fail-closed): key derivation must never run on an
     // unverified image -- a tampered kernel could exfiltrate the
     // passphrase. The trust root is checked FIRST, before hardware
     // availability.
     if !state.secure_boot_ok {
-        let _ = serial.write_str(
-            "  WARN Passphrase entry refused (secure boot not established -- fail-closed)\r\n",
-        );
+        serial
+            .log(" WARN Passphrase entry refused (secure boot not established -- fail-closed)\r\n");
     } else if state.display_ok && state.input_ok {
         // WHY: passphrase must be entered before any encrypted data is
         // accessed.  The lock screen renders on the display and accepts
@@ -699,15 +679,15 @@ pub unsafe fn run() -> ! {
         // crate::lock_screen::LockScreen and the result feeds into
         // key_manager::derive_from_passphrase().  Placeholder here
         // until the boot-time input loop is wired.
-        let _ = serial.write_str("       Passphrase: PENDING (awaiting boot input loop)\r\n");
+        serial.log(" Passphrase: PENDING (awaiting boot input loop)\r\n");
     } else {
-        let _ = serial.write_str("  WARN Passphrase entry skipped (no display/input)\r\n");
+        serial.log(" WARN Passphrase entry skipped (no display/input)\r\n");
     }
 
     // -----------------------------------------------------------------------
     // Step 8e: Encrypted filesystem mount
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Encrypted filesystem\r\n");
+    serial.log("[init] Encrypted filesystem\r\n");
     // WHY (#217, defense-in-depth): passphrase_ok is already unreachable
     // without secure_boot_ok (Step 8d), but the decrypt gate re-checks the
     // trust root explicitly so a future refactor of passphrase entry cannot
@@ -720,15 +700,15 @@ pub unsafe fn run() -> ! {
         // let data_key = key_manager.data_key().as_bytes().clone();
         // let enc_dev = EncryptedBlockDevice::new(&mut blk_dev, data_key);
         // lfs::mount(Box::new(enc_dev));
-        let _ = serial.write_str("       Encryption: PENDING (awaiting key derivation)\r\n");
+        serial.log(" Encryption: PENDING (awaiting key derivation)\r\n");
     } else {
-        let _ = serial.write_str("  WARN Encrypted mount skipped (no passphrase/eMMC)\r\n");
+        serial.log(" WARN Encrypted mount skipped (no passphrase/eMMC)\r\n");
     }
 
     // -----------------------------------------------------------------------
     // Step 8f: Audit log initialization
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Audit log\r\n");
+    serial.log("[init] Audit log\r\n");
     if state.secure_boot_ok {
         // WHY: the audit log needs the audit HMAC key from key_manager.
         // Initialize early so all subsequent boot steps can emit events.
@@ -736,19 +716,17 @@ pub unsafe fn run() -> ! {
         // NOTE: In production:
         // let audit_key = key_manager.audit_key().as_bytes();
         // AUDIT_LOG.init(audit_key);
-        let _ = serial.write_str("       Audit log: PENDING (awaiting audit key)\r\n");
+        serial.log(" Audit log: PENDING (awaiting audit key)\r\n");
     } else {
         // WHY (#217): the audit HMAC key derives from the passphrase key
         // hierarchy, which stays locked without an established trust root.
-        let _ = serial.write_str(
-            "  WARN Audit log deferred (secure boot not established -- fail-closed)\r\n",
-        );
+        serial.log(" WARN Audit log deferred (secure boot not established -- fail-closed)\r\n");
     }
 
     // -----------------------------------------------------------------------
     // Step 8g: Security mode manager
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Security mode (Daily)\r\n");
+    serial.log("[init] Security mode (Daily)\r\n");
     let mut pm = PowerManager::new();
     // WHY: hoisted to function scope (was block-local) so the
     // debug-console hardening gate near the end of boot (issue #372) can
@@ -774,17 +752,17 @@ pub unsafe fn run() -> ! {
         // let bfu = BfuTimer::new(SecurityMode::Daily);
         crate::power::apply_mode_policy(&mode_mgr.effective_policy(), &mut pm);
         state.security_mode_ok = true;
-        let _ = serial.write_str("       Security mode: Daily policy applied\r\n");
+        serial.log(" Security mode: Daily policy applied\r\n");
     }
 
     // -----------------------------------------------------------------------
     // Step 9: USB ACM serial (primary debug console)
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] USB ACM serial\r\n");
+    serial.log("[init] USB ACM serial\r\n");
     // WHY(qemu): virt models no MUSB controller at 0x1121_0000; the init
     // would data-abort. usb_ok stays false (existing degradation path).
     #[cfg(feature = "qemu")]
-    let _ = serial.write_str("       Skipped (qemu: no MUSB model)\r\n");
+    serial.log(" Skipped (qemu: no MUSB model)\r\n");
     #[cfg(not(feature = "qemu"))]
     {
         let mut usb = UsbController::new();
@@ -792,14 +770,14 @@ pub unsafe fn run() -> ! {
         // physical address (0x1121_0000). Called once after heap and GIC init.
         match unsafe { usb.init() } {
             Ok(()) => {
-                let _ = serial.write_str("       USB ACM gadget connected\r\n");
+                serial.log(" USB ACM gadget connected\r\n");
                 devices.activate("musb-hdrc");
                 state.usb_ok = true;
                 USB_SERIAL_AVAILABLE.store(true, Ordering::Release);
             }
             Err(e) => {
-                let _ = write!(serial, "  WARN USB init failed: {:?}\r\n", e);
-                let _ = serial.write_str("       Continuing without USB serial\r\n");
+                boot_log!(serial, " WARN USB init failed: {:?}\r\n", e);
+                serial.log(" Continuing without USB serial\r\n");
             }
         }
     }
@@ -807,13 +785,12 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 10: CCCI modem boot (fault-tolerant with timeout)
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] CCCI modem\r\n");
+    serial.log("[init] CCCI modem\r\n");
     // WHY(qemu): virt models no CCCI/CLDMA block at 0x200F_0000 (nor the MD
     // boot registers at 0x2000_xxxx); boot_modem would data-abort. modem_ok
     // stays false -- phone functions disabled (existing degradation path).
     #[cfg(feature = "qemu")]
-    let _ = serial
-        .write_str("       Skipped (qemu: no CCCI/CLDMA model); phone functions disabled\r\n");
+    serial.log(" Skipped (qemu: no CCCI/CLDMA model); phone functions disabled\r\n");
     #[cfg(not(feature = "qemu"))]
     {
         let mut ccci = CcciDriver::new();
@@ -827,20 +804,20 @@ pub unsafe fn run() -> ! {
 
         match boot_result {
             Ok(()) => {
-                let _ = write!(serial, "       Modem booted in {} ms\r\n", boot_elapsed);
+                boot_log!(serial, " Modem booted in {} ms\r\n", boot_elapsed);
                 devices.activate("ccci-cldma");
                 devices.activate("ccci-ccif");
                 state.modem_ok = true;
                 MODEM_AVAILABLE.store(true, Ordering::Release);
             }
             Err(e) => {
-                let _ = write!(serial, "  WARN Modem boot failed: {:?}\r\n", e);
-                let _ = serial.write_str("       Phone functions disabled\r\n");
+                boot_log!(serial, " WARN Modem boot failed: {:?}\r\n", e);
+                serial.log(" Phone functions disabled\r\n");
             }
         }
 
         if boot_elapsed > MODEM_BOOT_TIMEOUT_MS {
-            let _ = serial.write_str("  WARN Modem boot exceeded timeout\r\n");
+            serial.log(" WARN Modem boot exceeded timeout\r\n");
         }
     }
 
@@ -851,17 +828,17 @@ pub unsafe fn run() -> ! {
     // Daily-mode radio policy at Step 8f, before USB/modem bring-up -- do
     // not construct a second PowerManager here and silently discard that
     // policy state.
-    let _ = serial.write_str("[init] Power manager\r\n");
-    let _ = write!(
+    serial.log("[init] Power manager\r\n");
+    boot_log!(
         serial,
-        "       {} radios active per Daily policy (applied at security-mode init)\r\n",
+        " {} radios active per Daily policy (applied at security-mode init)\r\n",
         pm.active_count()
     );
 
     // -----------------------------------------------------------------------
     // Step 13: Network configuration (WiFi readiness + DHCP/DNS smoke)
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Network WiFi readiness\r\n");
+    serial.log("[init] Network WiFi readiness\r\n");
     {
         let wifi_device = WifiDevice::new(crate::wifi::WifiHw::new());
         let readiness =
@@ -870,20 +847,18 @@ pub unsafe fn run() -> ! {
 
         match readiness {
             NetworkReadiness::ProductionReady(_) => {
-                let _ = serial.write_str("       WiFi data path ready\r\n");
+                serial.log(" WiFi data path ready\r\n");
             }
             NetworkReadiness::HardwareUnavailable(_) => {
-                let _ = serial.write_str(
-                    "  WARN WiFi data path unavailable; production network disabled\r\n",
-                );
+                serial.log(" WARN WiFi data path unavailable; production network disabled\r\n");
             }
             NetworkReadiness::LoopbackSmokeOnly => {
-                let _ = serial.write_str("  WARN WiFi readiness returned loopback-only\r\n");
+                serial.log(" WARN WiFi readiness returned loopback-only\r\n");
             }
         }
     }
 
-    let _ = serial.write_str("[init] Network loopback smoke (DHCP + DNS)\r\n");
+    serial.log("[init] Network loopback smoke (DHCP + DNS)\r\n");
     // #403: the net stack is now LOOP-PERSISTENT -- built here on BOTH targets
     // and handed to KernelState, so its firewall is the single loop-owned
     // instance (runtime policy + audit at the drop-site). Until WiFi hardware
@@ -908,15 +883,15 @@ pub unsafe fn run() -> ! {
     // network model. The self-test is skipped under qemu, but the stack itself
     // still persists into the loop.
     #[cfg(feature = "qemu")]
-    let _ = serial.write_str("       Skipped (qemu: no network model -- #461)\r\n");
+    serial.log(" Skipped (qemu: no network model -- #461)\r\n");
     #[cfg(not(feature = "qemu"))]
     {
-        let _ = serial.write_str("       Firewall DNS blocklist active\r\n");
+        serial.log(" Firewall DNS blocklist active\r\n");
 
         // Start DHCP client on the persistent stack.
         match DhcpClient::new(&mut net) {
             Ok(mut dhcp) => {
-                let _ = serial.write_str("       DHCP client started\r\n");
+                serial.log(" DHCP client started\r\n");
 
                 // Poll for DHCP configuration with timeout. The DEADLINE stays
                 // on elapsed_ms (a device-only wall-clock bound, not fed to
@@ -929,14 +904,14 @@ pub unsafe fn run() -> ! {
                     net.poll(now);
                     match dhcp.poll(&mut net) {
                         DhcpEvent::Configured(config) => {
-                            let _ = write!(
+                            boot_log!(
                                 serial,
-                                "       DHCP: {} gw {:?}\r\n",
-                                config.address, config.gateway
+                                " DHCP: {} gw {:?}\r\n",
+                                config.address,
+                                config.gateway
                             );
                             if !config.dns_servers.is_empty() {
-                                let _ =
-                                    write!(serial, "       DHCP DNS: {:?}\r\n", config.dns_servers);
+                                boot_log!(serial, " DHCP DNS: {:?}\r\n", config.dns_servers);
                             }
                             configured = true;
                             break;
@@ -953,21 +928,22 @@ pub unsafe fn run() -> ! {
                 }
 
                 if !configured {
-                    let _ = serial.write_str("  WARN DHCP timeout, using link-local\r\n");
+                    serial.log(" WARN DHCP timeout, using link-local\r\n");
                 }
             }
             Err(e) => {
-                let _ = write!(serial, "  WARN DHCP init failed: {:?}\r\n", e);
+                boot_log!(serial, " WARN DHCP init failed: {:?}\r\n", e);
             }
         }
 
         // Initialize DNS resolver with split-horizon routing.
         let _resolver = DnsResolver::new(LAN_DNS, MULLVAD_DNS);
-        let _ = serial.write_str("       DNS resolver ready\r\n");
-        let _ = write!(
+        serial.log(" DNS resolver ready\r\n");
+        boot_log!(
             serial,
-            "       LAN DNS: {} / Internet DNS: {}\r\n",
-            LAN_DNS, MULLVAD_DNS
+            " LAN DNS: {} / Internet DNS: {}\r\n",
+            LAN_DNS,
+            MULLVAD_DNS
         );
         state.record_loopback_smoke(NetworkReadiness::from_device(
             net::NetworkDeviceKind::LoopbackSmoke,
@@ -978,26 +954,31 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 13b: Bluetooth adapter
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Bluetooth (BT HCI via WMT)\r\n");
+    serial.log("[init] Bluetooth (BT HCI via WMT)\r\n");
     {
         let bt_hw = crate::bluetooth::BtHw::new();
         let mut bt = crate::bluetooth::BtAdapter::new(bt_hw);
         let bt_tick = crate::timer::elapsed_ms();
         match bt.init(bt_tick) {
             Ok(()) => {
-                let _ = serial.write_str("       BT adapter ready\r\n");
+                serial.log(" BT adapter ready\r\n");
                 let addr = bt.random_address();
-                let _ = write!(
+                boot_log!(
                     serial,
-                    "       LE address: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}\r\n",
-                    addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]
+                    " LE address: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}\r\n",
+                    addr[0],
+                    addr[1],
+                    addr[2],
+                    addr[3],
+                    addr[4],
+                    addr[5]
                 );
                 devices.activate("bt0");
                 state.bluetooth_ok = true;
             }
             Err(e) => {
-                let _ = write!(serial, "  WARN BT init failed: {:?}\r\n", e);
-                let _ = serial.write_str("       Bluetooth disabled\r\n");
+                boot_log!(serial, " WARN BT init failed: {:?}\r\n", e);
+                serial.log(" Bluetooth disabled\r\n");
             }
         }
     }
@@ -1005,19 +986,19 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 13c: GPS receiver
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] GPS (via WMT)\r\n");
+    serial.log("[init] GPS (via WMT)\r\n");
     {
         let gps_hw = crate::gps::GpsHw::new();
         let mut gps = crate::gps::GpsReceiver::new(gps_hw);
         match gps.init() {
             Ok(()) => {
-                let _ = serial.write_str("       GPS receiver searching\r\n");
+                serial.log(" GPS receiver searching\r\n");
                 devices.activate("gps0");
                 state.gps_ok = true;
             }
             Err(e) => {
-                let _ = write!(serial, "  WARN GPS init failed: {:?}\r\n", e);
-                let _ = serial.write_str("       GPS disabled\r\n");
+                boot_log!(serial, " WARN GPS init failed: {:?}\r\n", e);
+                serial.log(" GPS disabled\r\n");
             }
         }
     }
@@ -1025,33 +1006,31 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Boot status summary
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("\r\n");
+    serial.log("\r\n");
     let boot_ms = crate::timer::elapsed_ms();
-    let _ = write!(serial, "[init] Boot complete at {boot_ms} ms\r\n");
-    let _ = write!(
+    boot_log!(serial, "[init] Boot complete at {boot_ms} ms\r\n");
+    boot_log!(
         serial,
-        "       {} / {} subsystems OK\r\n",
+        " {} / {} subsystems OK\r\n",
         state.ok_count(),
         state.total_subsystems()
     );
     if !state.csprng_ok {
-        let _ = serial
-            .write_str("       NOTE: CSPRNG unseeded, radio identity randomization disabled\r\n");
+        serial.log(" NOTE: CSPRNG unseeded, radio identity randomization disabled\r\n");
     }
     if !state.display_ok {
-        let _ = serial.write_str("       NOTE: display unavailable, USB serial only\r\n");
+        serial.log(" NOTE: display unavailable, USB serial only\r\n");
     }
     if !state.modem_ok {
-        let _ = serial.write_str("       NOTE: modem unavailable, no phone functions\r\n");
+        serial.log(" NOTE: modem unavailable, no phone functions\r\n");
     }
     if !state.network_ok {
-        let _ = serial.write_str("       NOTE: network unavailable, no connectivity\r\n");
+        serial.log(" NOTE: network unavailable, no connectivity\r\n");
     }
     if state.network_loopback_smoke_ok && !state.network_ok {
-        let _ =
-            serial.write_str("       NOTE: DHCP/DNS smoke used loopback only; WiFi not wired\r\n");
+        serial.log(" NOTE: DHCP/DNS smoke used loopback only; WiFi not wired\r\n");
     }
-    let _ = serial.write_str("\r\n");
+    serial.log("\r\n");
 
     // WHY (#400): the home frame is no longer rendered once here at boot -- the
     // kardia service loop owns rendering now (render_if_dirty paints the initial
@@ -1061,7 +1040,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     // Step 14: Spawn packaged userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
-    let _ = serial.write_str("[init] Spawning userspace processes\r\n");
+    serial.log("[init] Spawning userspace processes\r\n");
     // WHY (#217 + #480): userspace may run only when trust is cryptographically
     // established -- EITHER a verified boot medium (secure_boot_ok, the
     // persistent-storage/LFS path) OR a cryptographically-verified
@@ -1081,14 +1060,12 @@ pub unsafe fn run() -> ! {
         crate::secure_boot::verify_userspace_image(INITRAMFS, INITRAMFS_SIG);
     if !(state.secure_boot_ok || userspace_image_verified) {
         // Fail-closed: no verified medium AND no verified image-resident image.
-        let _ = serial.write_str(
-            "  WARN Userspace spawn refused (no verified boot medium or image -- fail-closed)\r\n",
+        serial.log(
+            " WARN Userspace spawn refused (no verified boot medium or image -- fail-closed)\r\n",
         );
     } else {
         if userspace_image_verified && !state.secure_boot_ok {
-            let _ = serial.write_str(
-                "       Userspace: image-resident initramfs signature verified (boot anchor)\r\n",
-            );
+            serial.log(" Userspace: image-resident initramfs signature verified (boot anchor)\r\n");
         }
         // Attempt to load and spawn two processes: /init and /shell.
         // If an entry is absent from the mounted root ramfs, report the
@@ -1111,20 +1088,19 @@ pub unsafe fn run() -> ! {
                         // entry is an address the new process resumes at via the
                         // #465 exception-return, not a kernel fn pointer.
                         if let Some(pid) = process::spawn_user(&loaded) {
-                            let _ = write!(serial, "       /init spawned PL0 (PID {})\r\n", pid);
+                            boot_log!(serial, " /init spawned PL0 (PID {})\r\n", pid);
                             state.processes_spawned += 1;
                         } else {
-                            let _ = serial.write_str("  WARN /init spawn failed\r\n");
+                            serial.log(" WARN /init spawn failed\r\n");
                         }
                     }
                     Err(e) => {
-                        let _ = write!(serial, "  WARN /init ELF load failed: {:?}\r\n", e);
+                        boot_log!(serial, " WARN /init ELF load failed: {:?}\r\n", e);
                     }
                 }
             }
             UserspaceSpawnPlan::Missing => {
-                let _ =
-                    serial.write_str("  WARN /init missing from root ramfs; no init spawned\r\n");
+                serial.log(" WARN /init missing from root ramfs; no init spawned\r\n");
                 state.userspace_entries_missing += 1;
             }
         }
@@ -1141,7 +1117,7 @@ pub unsafe fn run() -> ! {
                     Ok(loaded) => {
                         // WHY(#482): /shell runs PL0 in its own isolated space too.
                         if let Some(pid) = process::spawn_user(&loaded) {
-                            let _ = write!(serial, "       /shell spawned PL0 (PID {})\r\n", pid);
+                            boot_log!(serial, " /shell spawned PL0 (PID {})\r\n", pid);
                             state.processes_spawned += 1;
                             // #492: /shell is a SUPERVISED service -- if it
                             // CRASHES, PID 0 relaunches it (rate-limited). A clean
@@ -1152,17 +1128,16 @@ pub unsafe fn run() -> ! {
                             // one USERFAULT, which supervising it would crash-loop.
                             crate::supervisor::register("/shell", pid);
                         } else {
-                            let _ = serial.write_str("  WARN /shell spawn failed\r\n");
+                            serial.log(" WARN /shell spawn failed\r\n");
                         }
                     }
                     Err(e) => {
-                        let _ = write!(serial, "  WARN /shell ELF load failed: {:?}\r\n", e);
+                        boot_log!(serial, " WARN /shell ELF load failed: {:?}\r\n", e);
                     }
                 }
             }
             UserspaceSpawnPlan::Missing => {
-                let _ =
-                    serial.write_str("  WARN /shell missing from root ramfs; no shell spawned\r\n");
+                serial.log(" WARN /shell missing from root ramfs; no shell spawned\r\n");
                 state.userspace_entries_missing += 1;
             }
         }
@@ -1181,28 +1156,28 @@ pub unsafe fn run() -> ! {
             {
                 Ok(loaded) => {
                     if let Some(pid) = process::spawn_user(&loaded) {
-                        let _ = write!(serial, "       /crasher spawned PL0 (PID {})\r\n", pid);
+                        boot_log!(serial, " /crasher spawned PL0 (PID {})\r\n", pid);
                         state.processes_spawned += 1;
                         crate::supervisor::register("/crasher", pid);
                     } else {
-                        let _ = serial.write_str("  WARN /crasher spawn failed\r\n");
+                        serial.log(" WARN /crasher spawn failed\r\n");
                     }
                 }
                 Err(e) => {
-                    let _ = write!(serial, "  WARN /crasher ELF load failed: {:?}\r\n", e);
+                    boot_log!(serial, " WARN /crasher ELF load failed: {:?}\r\n", e);
                 }
             }
         }
 
-        let _ = write!(
+        boot_log!(
             serial,
-            "       {} userspace ELF processes running\r\n",
+            " {} userspace ELF processes running\r\n",
             state.processes_spawned
         );
         if state.userspace_entries_missing > 0 {
-            let _ = write!(
+            boot_log!(
                 serial,
-                "       {} userspace entries missing from root ramfs\r\n",
+                " {} userspace entries missing from root ramfs\r\n",
                 state.userspace_entries_missing
             );
         }
@@ -1222,14 +1197,14 @@ pub unsafe fn run() -> ! {
     // into the service loop (kardia::QEMU_TICK_CAP), so a green run proves
     // the loop serviced real ticks, not merely that boot reached its end.
     #[cfg(feature = "qemu")]
-    let _ = serial.write_str("THUMOS-QEMU: boot-complete\r\n");
+    serial.log("THUMOS-QEMU: boot-complete\r\n");
 
     // Deliberate PL1 fault probe (#487 fault-handling): CI asserts the KERNEL
     // branch halts (qemu exit 4) and the service loop never runs past it.
     // Structurally excluded from production (main.rs compile_error!).
     #[cfg(all(feature = "kfault-probe", target_arch = "arm"))]
     {
-        let _ = serial.write_str("THUMOS-QEMU: kernel-fault probe (udf at PL1)\r\n");
+        serial.log("THUMOS-QEMU: kernel-fault probe (udf at PL1)\r\n");
         // SAFETY: `udf #0` is a permanently-undefined encoding; the undef
         // handler takes the KERNEL halt branch (System mode) and never returns.
         unsafe { core::arch::asm!("udf #0") };
@@ -1244,15 +1219,15 @@ pub unsafe fn run() -> ! {
     let start_console = false;
 
     if start_console {
-        let _ = serial.write_str("[init] Starting debug console\r\n");
-        let _ = serial.write_str("       Type 'help' for commands\r\n\r\n");
+        serial.log("[init] Starting debug console\r\n");
+        serial.log(" Type 'help' for commands\r\n\r\n");
         #[cfg(feature = "debug-console")]
         {
             let mut console = Console::new();
             console.prompt();
         }
     } else {
-        let _ = serial.write_str("[init] No debug console this boot; entering service loop\r\n");
+        serial.log("[init] No debug console this boot; entering service loop\r\n");
     }
 
     // WHY (#420): boot -> service handoff. The fn-scope state kinit built
@@ -1289,7 +1264,7 @@ pub unsafe fn run() -> ! {
         );
         match t.initialize() {
             Ok(()) => {
-                let _ = write!(
+                boot_log!(
                     serial,
                     "kardia: modem ready state={:?}\r\n",
                     t.modem_state()
@@ -1297,7 +1272,7 @@ pub unsafe fn run() -> ! {
                 Some(t)
             }
             Err(e) => {
-                let _ = write!(serial, "kardia: modem init FAILED {e:?}\r\n");
+                boot_log!(serial, "kardia: modem init FAILED {e:?}\r\n");
                 None
             }
         }
@@ -1318,8 +1293,7 @@ pub unsafe fn run() -> ! {
     let mut audit_key = [0u8; crate::security::KEY_SIZE];
     if state.csprng_ok {
         crate::csprng::kernel_random_bytes(&mut audit_key).ok();
-        let _ = serial
-            .write_str("       Audit trail: interim session key (persistent key PENDING #217)\r\n");
+        serial.log(" Audit trail: interim session key (persistent key PENDING #217)\r\n");
     }
     let kernel = crate::kardia::KernelState::new(
         state, devices, pm, mode_mgr, fb, telephony, net, audit_key,

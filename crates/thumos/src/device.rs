@@ -8,9 +8,10 @@
 //! keypad, touch, modem, WiFi, BT, GPS, FM, USB, and eMMC.
 
 extern crate alloc;
-use crate::kconfig::{GICC_BASE, GICD_BASE};
 use alloc::string::String;
 use alloc::vec::Vec;
+
+use crate::kconfig::{GICC_BASE, GICD_BASE};
 
 // ---------------------------------------------------------------------------
 // MT6739 register base addresses

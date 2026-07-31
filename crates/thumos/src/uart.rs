@@ -100,6 +100,26 @@ impl Uart {
         }
     }
 
+    /// Write a string to the console as a boot log line.
+    ///
+    /// INVARIANT: `write_str_raw` polls a TX register and cannot report
+    /// failure, so `<Uart as fmt::Write>::write_str` returns `Ok` for every
+    /// input and the boot path has no console error to handle. This is the
+    /// single entry point that states that, so call sites neither discard a
+    /// `Result` that is always `Ok` nor imply an error path exists.
+    pub(crate) fn log(&self, s: &str) {
+        self.write_str_raw(s);
+    }
+
+    /// Formatted counterpart to [`Uart::log`]. Prefer the `boot_log!` macro.
+    pub(crate) fn log_fmt(&mut self, args: fmt::Arguments<'_>) {
+        // INVARIANT: per `Uart::log`, this type's `write_str` never returns
+        // `Err`, so `write_fmt` can only surface an error raised inside a
+        // `Display`/`Debug` impl in `args`. The boot path formats integers
+        // and driver error enums, none of which fail.
+        let _ = fmt::Write::write_fmt(self, args); // kanon:ignore RUST/no-silent-result-swallow
+    }
+
     /// Non-blocking receive: returns the next byte if the RX FIFO has one
     /// ready, `None` otherwise.
     ///
@@ -130,3 +150,16 @@ impl fmt::Write for Uart {
         Ok(())
     }
 }
+
+/// Write a formatted boot log line to a [`Uart`].
+///
+/// WHY: the boot path is the kernel's only progress channel and its writes
+/// cannot fail, so formatted output routes through [`Uart::log_fmt`] rather
+/// than `write!` plus a `Result` the call site must discard.
+macro_rules! boot_log {
+    ($uart:expr, $($arg:tt)*) => {
+        $uart.log_fmt(format_args!($($arg)*))
+    };
+}
+
+pub(crate) use boot_log;
