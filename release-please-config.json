@@ -33,6 +33,21 @@
           "type": "toml",
           "path": "Cargo.lock",
           "jsonpath": "$.package[?(!@.source)].version"
+        },
+        {
+          "type": "toml",
+          "path": "fuzz/Cargo.lock",
+          "jsonpath": "$.package[?(@.name == 'aither')].version"
+        },
+        {
+          "type": "toml",
+          "path": "fuzz/Cargo.lock",
+          "jsonpath": "$.package[?(@.name == 'asphaleia')].version"
+        },
+        {
+          "type": "toml",
+          "path": "fuzz/Cargo.lock",
+          "jsonpath": "$.package[?(@.name == 'klesis')].version"
         }
       ]
     }
