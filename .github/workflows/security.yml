@@ -51,7 +51,10 @@ jobs:
         # direction (unscanned lockfile, entry for a deleted one) reds here.
         run: scripts/check-lockfile-manifest.sh
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        # WHY: pinned off the 0.20 line — 0.20 changed the check-subcommand
+        # CLI (dropped `check --config`); scripts/security-scan.sh is verified
+        # against the 0.19 CLI. The 0.20 migration is tracked follow-up work.
+        run: cargo install cargo-deny --locked --version ^0.19
       - name: cargo deny (all graphs)
         # WHY (#547): advisories/licenses/bans/sources over EVERY graph in
         # the lockfile manifest (workspace, kernel, fuzz) — one script and
