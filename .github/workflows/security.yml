@@ -36,19 +36,30 @@ jobs:
     # not silent --ignore flags.
     name: cargo deny
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false # PROJECT: security hardening — never expose token to steps
-      - uses: EmbarkStudios/cargo-deny-action@6c8f9facfa5047ec02d8485b6bf52b587b7777d1 # v2.0.18
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          # WHY: run every check explicitly so a schema regression in one
-          # section can't silently disable the others. cargo-deny expects
-          # the check subcommand followed by space-separated check names;
-          # `arguments:` passes post-subcommand flags only.
-          command: check advisories licenses bans sources
-          arguments: --all-features
+          key: cargo-deny
+      - name: Lockfile manifest guard
+        # WHY (#547): an unclassified new Cargo.lock must fail the required
+        # gate. The manifest is the explicit scanned-set; drift in either
+        # direction (unscanned lockfile, entry for a deleted one) reds here.
+        run: scripts/check-lockfile-manifest.sh
+      - name: Install cargo-deny
+        # WHY: pinned off the 0.20 line — 0.20 changed the check-subcommand
+        # CLI (dropped `check --config`); scripts/security-scan.sh is verified
+        # against the 0.19 CLI. The 0.20 migration is tracked follow-up work.
+        run: cargo install cargo-deny --locked --version ^0.19
+      - name: cargo deny (all graphs)
+        # WHY (#547): advisories/licenses/bans/sources over EVERY graph in
+        # the lockfile manifest (workspace, kernel, fuzz) — one script and
+        # one deny.toml SSOT, findings attributed per-graph.
+        run: scripts/security-scan.sh deny
 
   cargo-audit:
     # WHY: cargo-deny's advisories check overlaps but uses a different code
@@ -67,12 +78,13 @@ jobs:
           key: cargo-audit
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version ^0.22
-      - name: cargo audit
+      - name: cargo audit (all graphs)
         # WHY: -D unmaintained,unsound,yanked escalates those categories
         # to errors (default is warning only). Suppressions go through
         # .cargo/audit.toml, which mirrors deny.toml's [[advisories.ignore]]
-        # entries — no silent --ignore flags here.
-        run: cargo audit --deny unmaintained --deny unsound --deny yanked
+        # entries — no silent --ignore flags here. Runs over every graph in
+        # the lockfile manifest, not just the workspace root (#547).
+        run: scripts/security-scan.sh audit
 
   osv-scanner:
     name: osv-scanner
@@ -97,5 +109,7 @@ jobs:
           curl -sSfL "https://github.com/google/osv-scanner/releases/download/${OSV_VERSION}/osv-scanner_linux_amd64" -o osv-scanner
           echo "${OSV_SHA256}  osv-scanner" | sha256sum -c -
           chmod +x osv-scanner
-      - name: Scan Cargo.lock (fail on vulnerability)
-        run: ./osv-scanner --lockfile=./Cargo.lock --config=./osv-scanner.toml
+      - name: Scan all Cargo.lock graphs (fail on vulnerability)
+        # WHY (#547): the kernel and fuzz lockfiles carry their own advisories
+        # surface; one script loops the manifest, per-graph attribution.
+        run: scripts/security-scan.sh osv ./osv-scanner
