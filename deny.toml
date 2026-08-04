@@ -1,8 +1,22 @@
 [graph]
 targets = []
-all-features = false
+# WHY: evaluate every feature branch of every graph — the previous workflow's
+# action passed --all-features; advisory chains that only exist behind a
+# non-default feature (e.g. fuzz graph's wit-* branch) are otherwise pruned
+# and invisibly skipped (#547).
+all-features = true
 
 [advisories]
+
+# WHY: escalate unmaintained/unsound/yanked from warn to deny (scope "all" =
+# deny for every crate), mirroring the cargo-audit job's
+# `--deny unmaintained --deny unsound --deny yanked` — the two tools must
+# enforce the same stated policy (SUPPLY-CHAIN.md), or a finding red in one
+# scanner passes the other (#547 witness run: an unsound advisory passed
+# cargo-deny as warn-only while cargo-audit correctly red it).
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
 
 # WHY: keep in sync with .cargo/audit.toml's [advisories.ignore] array.
 # cargo-audit does not read deny.toml, so any ignore lives in both files.
