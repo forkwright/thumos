@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aither"
-version = "0.1.5"
+version = "0.1.16"
 dependencies = [
  "getrandom 0.4.2",
  "hmac",
@@ -18,9 +18,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arbitrary"
@@ -30,7 +30,7 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
 name = "asphaleia"
-version = "0.1.5"
+version = "0.1.16"
 dependencies = [
  "log",
  "rustix",
@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "klesis"
-version = "0.1.5"
+version = "0.1.16"
 dependencies = [
  "log",
  "nom",
@@ -331,6 +331,16 @@ checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
 dependencies = [
  "digest",
  "hmac",
+]
+
+[[package]]
+name = "peirama"
+version = "0.0.0"
+dependencies = [
+ "aither",
+ "asphaleia",
+ "klesis",
+ "libfuzzer-sys",
 ]
 
 [[package]]
@@ -506,16 +516,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "thumos-fuzz"
-version = "0.0.0"
-dependencies = [
- "aither",
- "asphaleia",
- "klesis",
- "libfuzzer-sys",
 ]
 
 [[package]]

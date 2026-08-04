@@ -1,0 +1,11 @@
+# Lockfile scan manifest (issue #547) — every Cargo.lock tracked in this repo
+# MUST appear here, either as a scanned graph or as a documented exclusion.
+# scripts/check-lockfile-manifest.sh fails the Security workflow when
+# `git ls-files -- '*Cargo.lock'` and this manifest disagree, so a new
+# lockfile can never silently go unscanned.
+#
+# Format (pipe-separated): <lockfile path> | <graph label> | scanned
+#                          <lockfile path> | <graph label> | excluded: <reason>
+Cargo.lock | workspace | scanned
+crates/thumos/Cargo.lock | kernel | scanned
+fuzz/Cargo.lock | fuzz | scanned
