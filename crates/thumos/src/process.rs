@@ -1845,10 +1845,9 @@ pub unsafe fn exec_replace_context(
             if crate::elf::flags_to_prot(seg_flags) & mmu::prot::PROT_EXEC != 0 {
                 // SAFETY: pt is the live TTBR0; map_user_image already
                 // granted seg_va..+seg_memsz (remap_ok proved every segment
-                // mapped, or this line is unreached).
-                unsafe {
-                    mmu::sync_icache_range(seg_va, seg_memsz);
-                }
+                // mapped, or this line is unreached). Already inside this
+                // function's outer unsafe block -- no nested block needed.
+                mmu::sync_icache_range(seg_va, seg_memsz);
             }
         }
 
