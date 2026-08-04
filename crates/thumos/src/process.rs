@@ -609,6 +609,16 @@ unsafe fn fork_copy_phase(parent_pt: usize, child_pt: usize) -> bool {
                 child_page as *mut u8,
                 page::PAGE_SIZE,
             );
+            // #498: the D-side copy above can leave a stale I-cache line at
+            // child_page on real hardware for an executable page (XN unset).
+            // child_page is a kernel-identity VA under the table just
+            // switched to above, so it is valid to sync here. Calling
+            // unconditionally: sync_icache_range no-ops on non-ARM builds
+            // (child_page is a host bitmap fiction there, same as the
+            // gated copy above, but the no-op never dereferences it).
+            if attrs & mmu::page_flags::XN == 0 {
+                mmu::sync_icache_range(child_page, page::PAGE_SIZE);
+            }
             if !mmu::shatter_section(child_pt, va)
                 || !mmu::map_page(child_pt, va, child_page, attrs)
             {
@@ -1792,8 +1802,7 @@ pub unsafe fn exec_replace_context(
 
         // 5. Back to the process table (switch_addr_space does TTBR0 + TLBIALL),
         //    then flush the branch predictor too (the executable image at
-        //    USER_TEXT changed identity). (I-cache maintenance for the new code
-        //    is TODO(#498) -- invisible in QEMU, needed on real hardware.)
+        //    USER_TEXT changed identity).
         mmu::switch_addr_space(pt);
         mmu::flush_tlb_all();
 
@@ -1822,6 +1831,25 @@ pub unsafe fn exec_replace_context(
         }
         proc.stack_base = new_stack_base;
         proc.stack_pages = new_stack_pages;
+
+        // #498: sync the I-cache for the new image's executable segments now
+        // that `pt` is the live TTBR0 (switch_addr_space above) and
+        // map_user_image (step 4, remap_ok) has granted every segment --
+        // USER_TEXT_BASE resolves to loaded.image_phys (the frame
+        // elf::load_confined wrote) only under THIS table, so this is the
+        // first point in exec where the real execution VA is valid to hand
+        // to sync_icache_range. On real hardware this clears any I-cache
+        // line the OLD image left behind at the same VA. Calling
+        // unconditionally: sync_icache_range no-ops on non-ARM builds.
+        for &(seg_va, seg_memsz, seg_flags) in loaded.segments() {
+            if crate::elf::flags_to_prot(seg_flags) & mmu::prot::PROT_EXEC != 0 {
+                // SAFETY: pt is the live TTBR0; map_user_image already
+                // granted seg_va..+seg_memsz (remap_ok proved every segment
+                // mapped, or this line is unreached). Already inside this
+                // function's outer unsafe block -- no nested block needed.
+                mmu::sync_icache_range(seg_va, seg_memsz);
+            }
+        }
 
         // 6. Install the new context -- into the PCB AND the live trap frame.
         //    THE linchpin (#489): the SVC epilogue exception-returns into
