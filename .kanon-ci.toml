@@ -5,8 +5,11 @@
 # Forge CI pipeline for forkwright/thumos.
 #
 # Extends the hardcoded default Rust gate (fmt → check → clippy → nextest
-# → lint) with the excluded kernel crate's ARM cross-compile stage, and
-# pins per-stage build + test concurrency to 8. Without this cap, cargo
+# → lint) with the excluded kernel crate's full evidence chain (#546): ARM
+# cross-compile, trust-anchor build guard (#233), i686 host tests, and the
+# QEMU witness matrix — all as canonical scripts under scripts/ shared with
+# .github/workflows/ci.yml, never inline re-implementations. Per-stage build
+# + test concurrency stays pinned to 8. Without this cap, cargo
 # defaults to num_cpus (64 on this Threadripper) and parallel rustc +
 # nextest processes peak well over 100GB of RSS — enough to OOM menos
 # when any other fleet work is running. 8 is the budget that keeps a single
@@ -16,13 +19,16 @@
 # Keep the default stages in sync with
 # `crates/archeion/src/ci_config.rs::default_rust_gate` when the upstream
 # default changes. Thumos-specific differences should remain limited to the
-# kernel cross-compile stage and resource-budget flags.
+# kernel stages (which call the canonical scripts) and resource-budget flags.
 
 [pipeline]
 stages = [
     "cargo fmt",
     "cargo check",
     "kernel build",
+    "kernel trust anchor",
+    "kernel host tests",
+    "kernel qemu witnesses",
     "cargo clippy",
     "cargo nextest",
     "kanon lint",
@@ -36,9 +42,32 @@ timeout_secs = 300
 cmd = "cargo check --workspace --all-targets --jobs 8"
 timeout_secs = 900
 
+# WHY (#546): the canonical build is scripts/kernel-build.sh — crates/thumos/
+# .cargo/config.toml pins target + link script + the -D warnings gate (#431).
+# The previous inline stage passed RUSTFLAGS via env, which CLOBBERED the
+# config rustflags and silently dropped the zero-warning gate on this surface.
 [stages."kernel build"]
-cmd = "sh -c 'rustup target add armv7a-none-eabi && RUSTFLAGS=\"-C link-arg=-T$(pwd)/crates/thumos/link.ld\" cargo build --release --target armv7a-none-eabi --manifest-path crates/thumos/Cargo.toml --jobs 8'"
+cmd = "sh -c 'rustup target add armv7a-none-eabi && scripts/kernel-build.sh'"
 timeout_secs = 900
+
+# WHY (#233/#546): production must fail keyless, refuse the dev key, build
+# with an ephemeral key — same script ci.yml calls.
+[stages."kernel trust anchor"]
+cmd = "scripts/witness/trust-anchor.sh"
+timeout_secs = 900
+
+# WHY (#546): the kernel's i686 host suite was previously advisory-only on
+# this surface; the admission gate now runs the identical script as ci.yml.
+[stages."kernel host tests"]
+cmd = "sh -c 'rustup target add i686-unknown-linux-gnu && scripts/kernel-host-tests.sh'"
+timeout_secs = 1800
+
+# WHY (#546): the full QEMU witness matrix (boot + fault + sleep + fork +
+# exec + forkexec + guard + brk + crashloop) as one canonical runner — the
+# exact scripts ci.yml executes step-by-step.
+[stages."kernel qemu witnesses"]
+cmd = "scripts/witness-run-all.sh"
+timeout_secs = 3600
 
 [stages."cargo clippy"]
 cmd = "cargo clippy --workspace --all-targets --jobs 8 -- -D warnings"
