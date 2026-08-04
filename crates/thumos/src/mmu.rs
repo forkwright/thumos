@@ -609,6 +609,96 @@ pub unsafe fn flush_tlb_all() {
 #[cfg(not(target_arch = "arm"))]
 pub unsafe fn flush_tlb_all() {}
 
+/// D-cache line size in bytes, decoded from CTR (CP15 c0, c0, 1) DminLine
+/// (bits [19:16], ARM ARM B4.1.61): the smallest data/unified cache line is
+/// `2^DminLine` words, so its byte size is `4 << DminLine`. Pure so the
+/// encoding is host-testable without CP15 access.
+fn dcache_line_bytes_from_ctr(dminline: u32) -> usize {
+    4usize << (dminline & 0xF)
+}
+
+/// Read CTR and decode this core's D-cache line size in bytes.
+#[cfg(target_arch = "arm")]
+fn dcache_line_size() -> usize {
+    let ctr: u32;
+    // SAFETY: CTR (c0, c0, 1) is a read-only CP15 identification register,
+    // legal to read from PL1 unconditionally.
+    unsafe {
+        core::arch::asm!("mrc p15, 0, {0}, c0, c0, 1", out(reg) ctr);
+    }
+    dcache_line_bytes_from_ctr((ctr >> 16) & 0xF)
+}
+
+/// The cache-line-aligned `(first_line_addr, line_count)` covering
+/// `[va, va + len)` at `line_size` granularity: the start rounds DOWN and the
+/// end rounds UP to line boundaries, so every byte in the range is covered
+/// even when `va` starts mid-line or `len` doesn't end on a line boundary --
+/// missing the trailing line is exactly how the last dirty bytes of a
+/// freshly-written page would keep a stale I-cache line (#498). Pure so the
+/// walk is host-testable without CP15 access. `len == 0` visits no lines.
+fn icache_line_range(va: usize, len: usize, line_size: usize) -> (usize, usize) {
+    if len == 0 {
+        return (va, 0);
+    }
+    let start = va & !(line_size - 1);
+    let end = va + len;
+    let end_aligned = (end + line_size - 1) & !(line_size - 1);
+    (start, (end_aligned - start) / line_size)
+}
+
+/// Synchronize the I-cache with freshly D-side-written code before it is
+/// executed (ARM ARM B2.2.6 self-modifying-code sequence, #498): clean the
+/// D-cache to the Point of Unification over `[va, va+len)`, then invalidate
+/// the whole I-cache and branch predictor, with DSB/ISB ordering so a
+/// subsequent instruction fetch cannot observe a stale line.
+///
+/// QEMU TCG's caches are architecturally coherent, so this call has no
+/// observable effect under QEMU/CI -- it matters on real Cortex-A7 hardware
+/// (I-cache enabled at `init_and_enable`), where a D-side write (fork's page
+/// copy, an ELF load, an exec remap) is otherwise invisible to a stale
+/// I-cache line at the same address.
+///
+/// # Safety
+/// `va` must currently translate, under the active TTBR0, to the physical
+/// page(s) that were just written; `len` must not exceed the mapped region.
+#[cfg(target_arch = "arm")]
+pub unsafe fn sync_icache_range(va: usize, len: usize) {
+    let line_size = dcache_line_size();
+    let (start, line_count) = icache_line_range(va, len, line_size);
+    for i in 0..line_count {
+        let addr = start + i * line_size;
+        // SAFETY: DCCMVAU (Data Cache line Clean by MVA to PoU, c7 c11 1)
+        // writes this line back so the I-side/memory view agrees with it;
+        // `addr` was proven mapped by the caller's contract.
+        unsafe {
+            core::arch::asm!(
+                "mcr p15, 0, {addr}, c7, c11, 1", // DCCMVAU
+                addr = in(reg) addr as u32,
+            );
+        }
+    }
+    // SAFETY: privileged CP15 cache/branch-predictor maintenance. DSB orders
+    // the D-cache cleans above before the invalidate; ICIALLU (c7 c5 0) +
+    // BPIALL (c7 c5 6) invalidate the whole I-cache and branch predictor; the
+    // closing DSB/ISB make both effective before the next fetched
+    // instruction.
+    unsafe {
+        core::arch::asm!(
+            "dsb sy",
+            "mcr p15, 0, {z}, c7, c5, 0", // ICIALLU
+            "mcr p15, 0, {z}, c7, c5, 6", // BPIALL
+            "dsb sy",
+            "isb sy",
+            z = in(reg) 0u32,
+        );
+    }
+}
+
+/// No-op I-cache sync for non-ARM (host test) builds: host tests run with
+/// architecturally coherent caches, so there is nothing to synchronize.
+#[cfg(not(target_arch = "arm"))]
+pub unsafe fn sync_icache_range(_va: usize, _len: usize) {}
+
 /// Reset the L2 table pool (test helper only).
 #[cfg(test)]
 pub(crate) fn reset_l2_pool() {
@@ -1065,6 +1155,41 @@ mod tests {
 
     fn reset() {
         reset_addr_space_pool();
+    }
+
+    #[test]
+    fn dcache_line_bytes_from_ctr_decodes_word_count_to_bytes() {
+        // Cortex-A7: DminLine = 4 -> 16 words -> 64 bytes.
+        assert_eq!(dcache_line_bytes_from_ctr(4), 64);
+        // DminLine = 3 -> 8 words -> 32 bytes (another common ARMv7 line size).
+        assert_eq!(dcache_line_bytes_from_ctr(3), 32);
+    }
+
+    #[test]
+    fn icache_line_range_covers_a_line_aligned_exact_span() {
+        assert_eq!(icache_line_range(0x1000, 64, 32), (0x1000, 2));
+    }
+
+    #[test]
+    fn icache_line_range_rounds_up_for_a_trailing_partial_line() {
+        // #498: 33 bytes starting at a line boundary spills one byte into a
+        // second cache line -- a floor-only end computation would report
+        // just one line and leave that trailing byte's line un-cleaned,
+        // reproducing the exact staleness this function exists to prevent.
+        assert_eq!(icache_line_range(0x1000, 33, 32), (0x1000, 2));
+    }
+
+    #[test]
+    fn icache_line_range_rounds_down_for_a_mid_line_start() {
+        // A mid-line va must still walk from the START of that line, not
+        // from va itself, or the leading bytes of the line never get
+        // cleaned.
+        assert_eq!(icache_line_range(0x1004, 28, 32), (0x1000, 1));
+    }
+
+    #[test]
+    fn icache_line_range_empty_range_visits_no_lines() {
+        assert_eq!(icache_line_range(0x2000, 0, 32), (0x2000, 0));
     }
 
     #[test]
