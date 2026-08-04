@@ -492,7 +492,7 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
     let mut pages_used = 0;
 
     for idx in 0..validated.count {
-        let (vaddr, memsz, filesz, file_offset, _flags) = validated.segments[idx];
+        let (vaddr, memsz, filesz, file_offset, flags) = validated.segments[idx];
 
         // #502: physical write target. A confined image writes into its
         // per-process frame (arm: image_phys + (vaddr - image_lo)); host and the
@@ -553,6 +553,24 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
                 unsafe {
                     dest_ptr.add(byte_offset - page_start).write(val);
                 }
+            }
+        }
+
+        // #498: the D-side writes above can leave stale I-cache lines at
+        // seg_dest on real hardware for an executable segment (PF_X).
+        // seg_dest is a kernel-identity VA here -- load_confined's `unsafe`
+        // contract requires the current TTBR0 to be the kernel L1, and the
+        // unconfined load() (host tests) writes the identity vaddr directly
+        // -- so it is valid to sync at seg_dest for both paths. Calling
+        // unconditionally (mirroring flush_tlb_all/switch_addr_space): the
+        // arm/host split lives inside sync_icache_range itself, which is a
+        // no-op on non-ARM builds.
+        if flags & PF_X != 0 {
+            // SAFETY: see the comment above; seg_dest names memsz freshly
+            // D-side-written bytes of this segment, validly mapped under the
+            // active kernel-identity TTBR0.
+            unsafe {
+                crate::mmu::sync_icache_range(seg_dest, memsz);
             }
         }
     }
