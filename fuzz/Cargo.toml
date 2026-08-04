@@ -6,6 +6,9 @@ version = "0.0.0"
 publish = false
 edition = "2024"
 # WHY: cargo-fuzz requires nightly; this crate is never published.
+# WHY: first-party test crate takes the repo license (root workspace is
+# PolyForm Shield); cargo-deny warns on a missing license field (#547).
+license = "LicenseRef-PolyForm-Shield-1.0.0"
 
 [[bin]]
 name = "fuzz_eapol"
