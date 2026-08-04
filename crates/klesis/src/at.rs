@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 /// Raw AT response FROM the modem.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub(crate) enum Response {
+pub enum Response {
     /// Command succeeded.
     #[default]
     Ok,
@@ -35,7 +35,7 @@ pub(crate) enum Response {
 /// Unsolicited result codes FROM the modem.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub(crate) enum Urc {
+pub enum Urc {
     /// Incoming call.
     #[default]
     Ring,
@@ -82,7 +82,7 @@ pub(crate) enum Urc {
 /// Network registration status (3GPP TS 27.007 +CREG).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub(crate) enum RegStatus {
+pub enum RegStatus {
     /// Not registered, not searching.
     NotRegistered,
     /// Registered on home network.
@@ -112,7 +112,7 @@ impl From<u8> for RegStatus {
 
 /// Signal strength in dBm, converted FROM AT+CSQ RSSI value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SignalStrength {
+pub struct SignalStrength {
     /// Raw AT+CSQ RSSI value (0-31, 99=unknown).
     pub(crate) rssi_raw: u8,
     /// Signal strength in dBm.
@@ -151,7 +151,7 @@ impl From<u8> for SignalStrength {
 // (variable whitespace, optional fields, interleaved URCs).
 
 /// Parse a final result code (OK, ERROR, +CME ERROR, +CMS ERROR).
-pub(crate) fn parse_final_result(input: &str) -> IResult<&str, Response> {
+pub fn parse_final_result(input: &str) -> IResult<&str, Response> {
     alt((
         value(Response::Ok, tag("OK")),
         value(Response::Error, tag("ERROR")),
@@ -168,7 +168,7 @@ pub(crate) fn parse_final_result(input: &str) -> IResult<&str, Response> {
 }
 
 /// Parse a +CSQ response: +CSQ: <rssi>,<ber>
-pub(crate) fn parse_csq(input: &str) -> IResult<&str, (u8, u8)> {
+pub fn parse_csq(input: &str) -> IResult<&str, (u8, u8)> {
     preceded(
         tag("+CSQ: "),
         (
@@ -180,7 +180,7 @@ pub(crate) fn parse_csq(input: &str) -> IResult<&str, (u8, u8)> {
 }
 
 /// Parse a +CREG URC: +CREG: <stat>[,<lac>,<ci>]
-pub(crate) fn parse_creg(input: &str) -> IResult<&str, Urc> {
+pub fn parse_creg(input: &str) -> IResult<&str, Urc> {
     let (input, _) = tag("+CREG: ").parse(input)?;
     let (input, stat) = map_res(digit1, str::parse::<u8>).parse(input)?;
     let (input, lac_ci) = opt((
@@ -215,7 +215,7 @@ pub(crate) fn parse_creg(input: &str) -> IResult<&str, Urc> {
 }
 
 /// Parse a RING URC.
-pub(crate) fn parse_ring(input: &str) -> IResult<&str, Urc> {
+pub fn parse_ring(input: &str) -> IResult<&str, Urc> {
     value(Urc::Ring, tag("RING")).parse(input)
 }
 
@@ -229,7 +229,7 @@ pub(crate) fn parse_ring(input: &str) -> IResult<&str, Urc> {
 const MAX_CMTI_STORAGE_LEN: usize = 16;
 
 /// Parse a +CMTI URC: +CMTI: "<storage>",<index>
-pub(crate) fn parse_cmti(input: &str) -> IResult<&str, Urc> {
+pub fn parse_cmti(input: &str) -> IResult<&str, Urc> {
     let (input, _) = tag("+CMTI: ").parse(input)?;
     let (input, storage) = delimited(
         char('"'),

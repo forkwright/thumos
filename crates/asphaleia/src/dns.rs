@@ -12,7 +12,7 @@ use std::str;
 const DNS_HEADER_LEN: usize = 12;
 
 /// DNS port number.
-pub(crate) const DNS_PORT: u16 = 53;
+pub const DNS_PORT: u16 = 53;
 
 /// Maximum number of labels we will follow when decoding a QNAME.
 /// Prevents unbounded iteration on malformed packets.
@@ -38,14 +38,14 @@ pub struct DnsBlocklist {
 impl DnsBlocklist {
     /// Create an empty blocklist.
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a blocklist pre-populated with the surveillance domains identified
     /// in `docs/SURVEILLANCE-AUDIT.md` (Adups FOTA analysis).
     #[must_use]
-    pub(crate) fn with_surveillance_defaults() -> Self {
+    pub fn with_surveillance_defaults() -> Self {
         let mut bl = Self::new();
         for domain in [
             "app-measurement.com",
@@ -65,7 +65,7 @@ impl DnsBlocklist {
     /// Patterns are lower-cased on insertion. A pattern beginning with `*.`
     /// will match any subdomain of the suffix (e.g. `"*.doubleclick.net"`
     /// matches `"ad.doubleclick.net"` and `"googleads.g.doubleclick.net"`).
-    pub(crate) fn add(&mut self, pattern: &str) {
+    pub fn add(&mut self, pattern: &str) {
         self.patterns.push(pattern.to_ascii_lowercase());
     }
 
@@ -73,7 +73,7 @@ impl DnsBlocklist {
     ///
     /// `domain` is compared case-insensitively.
     #[must_use]
-    pub(crate) fn is_blocked(&self, domain: &str) -> bool {
+    pub fn is_blocked(&self, domain: &str) -> bool {
         let lower = domain.to_ascii_lowercase();
         self.patterns.iter().any(|pat| pattern_matches(pat, &lower))
     }
@@ -87,7 +87,7 @@ impl DnsBlocklist {
     /// truncated, malformed QDCOUNT) — this matches the crate's
     /// parse-failure-denies default (see `filter.rs`).
     #[must_use]
-    pub(crate) fn blocks_dns_payload(&self, data: &[u8]) -> bool {
+    pub fn blocks_dns_payload(&self, data: &[u8]) -> bool {
         // WHY: fail CLOSED. An undecodable query must not bypass the
         // blocklist — a malicious app could otherwise evade domain
         // blocking with a deliberately malformed query.
@@ -105,7 +105,7 @@ impl DnsBlocklist {
 /// compression pointer (which should not appear in query QNAMEs but can appear
 /// in malformed or spoofed packets).
 #[must_use]
-pub(crate) fn extract_query_domain(data: &[u8]) -> Option<String> {
+pub fn extract_query_domain(data: &[u8]) -> Option<String> {
     if data.len() < DNS_HEADER_LEN {
         return None;
     }

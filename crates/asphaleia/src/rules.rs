@@ -52,9 +52,9 @@ pub enum Action {
 #[derive(Debug, Clone, Copy)]
 pub struct AddressMatch {
     /// The reference address.
-    pub(crate) addr: Ipv4Addr,
+    pub addr: Ipv4Addr,
     /// The subnet mask (host-byte order).
-    pub(crate) mask: Ipv4Addr,
+    pub mask: Ipv4Addr,
 }
 
 /// Port selector for a [`Rule`].
@@ -76,32 +76,36 @@ pub enum PortMatch {
 #[derive(Debug, Clone)]
 pub struct Rule {
     /// Which direction of traffic this rule applies to.
-    pub(crate) direction: Direction,
+    pub direction: Direction,
     /// Which protocol this rule applies to.
-    pub(crate) protocol: Protocol,
+    pub protocol: Protocol,
     /// Source address constraint.
-    pub(crate) src_addr: AddressMatch,
+    pub src_addr: AddressMatch,
     /// Destination address constraint.
-    pub(crate) dst_addr: AddressMatch,
+    pub dst_addr: AddressMatch,
     /// Source port constraint. Ignored for ICMP.
-    pub(crate) src_port: PortMatch,
+    pub src_port: PortMatch,
     /// Destination port constraint. Ignored for ICMP.
-    pub(crate) dst_port: PortMatch,
+    pub dst_port: PortMatch,
     /// Action to take when this rule matches.
-    pub(crate) action: Action,
+    pub action: Action,
 }
 
 /// A packet's layer-3/4 attributes, extracted for rule evaluation.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PacketInfo {
-    pub(crate) direction: Direction,
-    pub(crate) protocol: Protocol,
-    pub(crate) src_addr: Ipv4Addr,
-    pub(crate) dst_addr: Ipv4Addr,
+pub struct PacketInfo {
+    /// Direction the packet is travelling (inbound to the device, outbound from it).
+    pub direction: Direction,
+    /// Layer-4 protocol (TCP, UDP, ICMP, or other).
+    pub protocol: Protocol,
+    /// Source IPv4 address.
+    pub src_addr: Ipv4Addr,
+    /// Destination IPv4 address.
+    pub dst_addr: Ipv4Addr,
     /// `None` for protocols that have no port concept (ICMP).
-    pub(crate) src_port: Option<u16>,
+    pub src_port: Option<u16>,
     /// `None` for protocols that have no port concept (ICMP).
-    pub(crate) dst_port: Option<u16>,
+    pub dst_port: Option<u16>,
 }
 
 /// An ordered list of [`Rule`]s with a deny-all default policy.
@@ -118,19 +122,19 @@ pub struct RuleSet {
 impl Action {
     /// Returns `true` if this action results in the packet being forwarded.
     #[must_use]
-    pub(crate) const fn is_allow(self) -> bool {
+    pub const fn is_allow(self) -> bool {
         matches!(self, Self::Allow | Self::LogAndAllow)
     }
 
     /// Returns `true` if this action results in the packet being dropped.
     #[must_use]
-    pub(crate) const fn is_deny(self) -> bool {
+    pub const fn is_deny(self) -> bool {
         matches!(self, Self::Deny | Self::LogAndDeny)
     }
 
     /// Returns `true` if this action produces a log entry.
     #[must_use]
-    pub(crate) const fn is_logged(self) -> bool {
+    pub const fn is_logged(self) -> bool {
         matches!(self, Self::LogAndAllow | Self::LogAndDeny)
     }
 }
@@ -138,7 +142,7 @@ impl Action {
 impl AddressMatch {
     /// Match any source or destination address (mask = `0.0.0.0`).
     #[must_use]
-    pub(crate) const fn any() -> Self {
+    pub const fn any() -> Self {
         Self {
             addr: Ipv4Addr::UNSPECIFIED,
             mask: Ipv4Addr::UNSPECIFIED,
@@ -147,7 +151,7 @@ impl AddressMatch {
 
     /// Match exactly one host (mask = `255.255.255.255`).
     #[must_use]
-    pub(crate) const fn host(addr: Ipv4Addr) -> Self {
+    pub const fn host(addr: Ipv4Addr) -> Self {
         Self {
             addr,
             mask: Ipv4Addr::BROADCAST,
@@ -160,7 +164,7 @@ impl AddressMatch {
     ///
     /// Panics if `prefix_len` is greater than 32.
     #[must_use]
-    pub(crate) fn subnet(addr: Ipv4Addr, prefix_len: u8) -> Self {
+    pub fn subnet(addr: Ipv4Addr, prefix_len: u8) -> Self {
         assert!(
             prefix_len <= 32,
             "prefix_len must be 0..=32, got {prefix_len}"
@@ -178,7 +182,7 @@ impl AddressMatch {
 
     /// Returns `true` if `addr` falls within this address/mask range.
     #[must_use]
-    pub(crate) fn matches(self, addr: Ipv4Addr) -> bool {
+    pub fn matches(self, addr: Ipv4Addr) -> bool {
         let mask = u32::from(self.mask);
         u32::from(addr) & mask == u32::from(self.addr) & mask
     }
@@ -187,7 +191,7 @@ impl AddressMatch {
 impl PortMatch {
     /// Returns `true` if `port` satisfies this selector.
     #[must_use]
-    pub(crate) const fn matches(self, port: u16) -> bool {
+    pub const fn matches(self, port: u16) -> bool {
         match self {
             Self::Any => true,
             Self::Single(p) => port == p,
@@ -199,19 +203,19 @@ impl PortMatch {
 impl RuleSet {
     /// Create an empty rule set.
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
     /// Append a rule. Rules are evaluated in insertion order.
-    pub(crate) fn add_rule(&mut self, rule: Rule) {
+    pub fn add_rule(&mut self, rule: Rule) {
         self.rules.push(rule);
     }
 
     /// Evaluate all rules against `info`. Returns the first matching rule's
     /// action, or [`Action::Deny`] if no rule matches (default-deny policy).
     #[must_use]
-    pub(crate) fn evaluate(&self, info: &PacketInfo) -> Action {
+    pub fn evaluate(&self, info: &PacketInfo) -> Action {
         for rule in &self.rules {
             if rule_matches(rule, info) {
                 return rule.action;

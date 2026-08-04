@@ -76,7 +76,7 @@ fn char_to_septet(c: char) -> Option<(bool, u8)> {
 ///
 /// Returns the packed bytes. The number of septets encoded equals the
 /// number of GSM characters (extension characters count as two septets).
-pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
+pub fn encode(text: &str) -> Result<Vec<u8>> {
     // First pass: collect the septet sequence.
     let mut septets: Vec<u8> = Vec::with_capacity(text.len());
     for c in text.chars() {
@@ -122,7 +122,7 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
     clippy::as_conversions,
     reason = "septet mask is 7-bit (0x7F); result is always 0-127 so fits u8 without truncation"
 )]
-pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
+pub fn decode(data: &[u8], num_chars: usize) -> Result<String> {
     if num_chars == 0 {
         return Ok(String::new());
     }
