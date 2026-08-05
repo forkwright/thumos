@@ -124,6 +124,11 @@ jobs:
         # script (#546); runner exit codes: 0=loop ran; 5=loop-stall (#461);
         # 1=panic; 2/3/4=aborts; 124=hang.
         run: scripts/witness/boot.sh
+      - name: Capability-reachability inventory check (#550)
+        # WHY (#550): the inventory is the SSOT for what is wired; reds when a
+        # module is unclassified, a witness is claimed but not asserted, or an
+        # asserted witness did not fire in the boot.log just produced above.
+        run: scripts/check-wiring-inventory.sh
       - name: Kernel-fault halts (PL1 fault must NEVER be recovered)
         run: scripts/witness/kfault.sh
       - name: Userspace sleep really yields (#477, no busy-wait deadlock)

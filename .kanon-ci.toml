@@ -29,6 +29,7 @@ stages = [
     "kernel trust anchor",
     "kernel host tests",
     "kernel qemu witnesses",
+    "wiring inventory",
     "cargo clippy",
     "cargo nextest",
     "kanon lint",
@@ -68,6 +69,13 @@ timeout_secs = 1800
 [stages."kernel qemu witnesses"]
 cmd = "scripts/witness-run-all.sh"
 timeout_secs = 3600
+
+# WHY (#550): the capability inventory is the SSOT for what is wired; reds
+# on unclassified modules, phantom entries, or a witness that did not fire
+# in the boot.log the witness stage just produced.
+[stages."wiring inventory"]
+cmd = "scripts/check-wiring-inventory.sh"
+timeout_secs = 300
 
 [stages."cargo clippy"]
 cmd = "cargo clippy --workspace --all-targets --jobs 8 -- -D warnings"

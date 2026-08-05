@@ -55,11 +55,11 @@ description = "Stock Linux 4.4.95 kernel config for the AGM M7, frozen as-shippe
 decided = "2026-04-11"
 
 [[doc]]
-path = "docs/KERNEL-WIRING-AUDIT.md"
+path = "docs/capability-inventory.toml"
 type = "decision-record"
 evergreen = true
-description = "Issue #145 reality check: advertised kernel capabilities not yet wired to hardware."
-decided = "2026-05-26"
+description = "Machine-checked capability-reachability inventory (#550); scripts/check-wiring-inventory.sh fails CI on drift."
+decided = "2026-08-04"
 
 [[doc]]
 path = "docs/PROBE.md"
