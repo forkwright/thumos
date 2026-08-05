@@ -229,12 +229,12 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
         Ok(v) if !v.is_empty() => {
             if ![
                 "kread", "kwrite", "kexec", "cp15", "sleep", "fork", "exec", "forkexec", "guard",
-                "brk",
+                "brk", "signal",
             ]
             .contains(&v.as_str())
             {
                 die(&format!(
-                    "#487: unknown THUMOS_INIT_VARIANT '{v}' (expected kread|kwrite|kexec|cp15|sleep|fork|exec|forkexec|guard|brk)"
+                    "#487: unknown THUMOS_INIT_VARIANT '{v}' (expected kread|kwrite|kexec|cp15|sleep|fork|exec|forkexec|guard|brk|signal)"
                 ));
             }
             Some(format!("thumos_init_{v}"))
