@@ -10,7 +10,7 @@
 //! ## Hardware path
 //!
 //! The MT6739 Bluetooth hardware is accessed through the WMT combo chip:
-//! - `MT6739_CONSYS = 0x1800_0000` (combo-chip base)
+//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, board::m7 #534)
 //! - Data path goes through WMT STP framing (kelyphos handles the transport)
 //!
 //! ## Integration
@@ -27,13 +27,6 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::csprng;
-
-// ---------------------------------------------------------------------------
-// MT6739 BT hardware constants
-// ---------------------------------------------------------------------------
-
-/// WMT combo-chip (CONSYS) MMIO base address.
-const MT6739_CONSYS: usize = 0x1800_0000;
 
 /// WMT STP channel identifier for Bluetooth.
 ///
@@ -396,24 +389,25 @@ pub(crate) trait BtHwOps {
 // ---------------------------------------------------------------------------
 
 /// Real BT hardware access via WMT STP on the MT6739 combo chip.
-#[cfg(not(test))]
+/// WHY not(qemu): virt has no combo chip -- the type must not exist there.
+#[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct BtHw {
     /// WMT combo-chip MMIO base address.
     consys_base: usize,
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 impl BtHw {
     /// Create a new BT hardware handle.
     #[must_use]
     pub(crate) const fn new() -> Self {
         Self {
-            consys_base: MT6739_CONSYS,
+            consys_base: crate::board::CONSYS_BASE,
         }
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 impl BtHwOps for BtHw {
     fn send_command(&mut self, _data: &[u8]) -> Result<(), BtError> {
         // TODO(#129)[deliberate-prudent]: implement WMT STP frame TX for BT channel.

@@ -113,6 +113,11 @@ jobs:
         # row, a witness name rots, a sensitive host-only row loses its
         # fidelity label, or a tests count drifts. Cheap, source-level.
         run: scripts/check-target-test-ledger.sh
+      - name: Board-seam invariant check (#534)
+        # WHY (#534): the two-board reality is structural, not prose — reds
+        # on any MT6739_* identifier outside board::m7 or any board-MMIO
+        # value re-declared as a const outside board/. Cheap, source-level.
+        run: scripts/check-board-seam.sh
       - name: Kernel cross-compile (armv7a) + zero-warning gate (#431)
         # WHY (#431): the zero-warning gate lives in crates/thumos/.cargo/
         # config.toml's rustflags; scripts/kernel-build.sh builds through it

@@ -10,7 +10,7 @@
 // NOTE: GIC base addresses live in kconfig (single source of truth); the
 // qemu feature remaps them to the virt board's GICv2. The register-level
 // driver below is plain architectural GICv2 and works unchanged on both.
-use crate::kconfig::{GICC_BASE, GICD_BASE};
+use crate::board::{GICC_BASE, GICD_BASE};
 
 // Distributor registers
 mod gicd {

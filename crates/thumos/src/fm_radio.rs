@@ -8,7 +8,7 @@
 //! ## Hardware path
 //!
 //! FM radio is accessed through the WMT STP transport on the combo chip:
-//! - `MT6739_CONSYS = 0x1800_0000` (combo-chip base)
+//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, board::m7 #534)
 //! - WMT channel 0x04 for FM radio commands
 //! - FM register block at offset `0x6000` within the combo chip
 //!
@@ -37,9 +37,6 @@ extern crate alloc;
 // ---------------------------------------------------------------------------
 // FM hardware constants
 // ---------------------------------------------------------------------------
-
-/// WMT combo-chip MMIO base address.
-const MT6739_CONSYS: usize = 0x1800_0000;
 
 /// WMT STP channel identifier for FM radio.
 const WMT_FM_CHANNEL: u8 = 0x04;
@@ -208,7 +205,7 @@ pub(crate) trait FmHwOps {
 // ---------------------------------------------------------------------------
 
 /// Real FM hardware access via WMT STP on the MT6739 combo chip.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct FmHw {
     /// WMT combo-chip MMIO base address.
     consys_base: usize,
@@ -216,19 +213,19 @@ pub(crate) struct FmHw {
     current_freq: u32,
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 impl FmHw {
     /// Create a new FM hardware handle.
     #[must_use]
     pub(crate) const fn new() -> Self {
         Self {
-            consys_base: MT6739_CONSYS,
+            consys_base: crate::board::CONSYS_BASE,
             current_freq: FM_DEFAULT_FREQ_KHZ,
         }
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 impl FmHwOps for FmHw {
     fn power_on(&mut self) -> Result<(), FmError> {
         // TODO(#129)[deliberate-prudent]: send WMT power-on command for FM subsystem.

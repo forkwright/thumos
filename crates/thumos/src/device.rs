@@ -6,153 +6,15 @@
 //!
 //! This is the framework that connects the kernel to UART, display,
 //! keypad, touch, modem, WiFi, BT, GPS, FM, USB, and eMMC.
+//!
+//! The DEVICE SET and every MMIO base address are board facts — they live
+//! in `crate::board` (#534): `board::m7::register_devices` populates the
+//! registry on the field board, `board::virt::register_devices` on the dev
+//! board. This file is the board-neutral framework only.
 
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
-
-use crate::kconfig::{GICC_BASE, GICD_BASE};
-
-// ---------------------------------------------------------------------------
-// MT6739 register base addresses
-// ---------------------------------------------------------------------------
-
-// NOTE: Hardcoded for Phase 03. Device-tree parsing replaces these in Phase 04+.
-// Source: `docs/PROBE.md`, `docs/DRIVER-INTERFACES.md`, MT6739 device tree.
-//
-// WHY: central registry of all hardware base addresses. Individual driver
-// modules have local copies — these are the canonical source of truth for
-// cross-module reference and kinit boot validation.
-//
-// WHY cfg_attr(not(test)) on the expects below (#528): this module compiles
-// on the host test target now, where kinit_plan's address test references the
-// canonical consts -- a blanket expect(dead_code) would be UNFULFILLED there
-// (the const is no longer dead), while on armv7a the consts stay
-// reference-only and the expectation still applies.
-
-/// UART0 (ttyMT0) MMIO base.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "canonical reference; driver uses local const (#463)"
-    )
-)]
-pub(crate) const MT6739_UART0: usize = 0x1100_2000;
-
-/// UART1 (ttyMT1) MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
-)]
-pub(crate) const MT6739_UART1: usize = 0x1100_3000;
-
-/// MSDC0 eMMC controller MMIO base.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "canonical reference; driver uses local const (#463)"
-    )
-)]
-pub(crate) const MT6739_MSDC0: usize = 0x1123_0000;
-
-/// MUSB OTG USB controller MMIO base.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "canonical reference; driver uses local const (#463)"
-    )
-)]
-pub(crate) const MT6739_MUSB: usize = 0x1121_0000;
-
-/// MMSYS configuration base (display pipeline).
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
-)]
-pub(crate) const MT6739_MMSYS: usize = 0x1400_0000;
-
-/// OVL0 (overlay engine) MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
-)]
-pub(crate) const MT6739_OVL0: usize = 0x1400_7000;
-
-/// RDMA0 (read DMA engine) MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
-)]
-pub(crate) const MT6739_RDMA0: usize = 0x1400_8000;
-
-/// DSI0 controller MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
-)]
-pub(crate) const MT6739_DSI0: usize = 0x1400_D000;
-
-/// CLDMA AP-side register base (modem DMA).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "canonical reference; driver uses local const (#463)"
-    )
-)]
-pub(crate) const MT6739_CLDMA_AP: usize = 0x200F_0000;
-
-/// CCIF peer register base (modem mailbox).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "canonical reference; driver uses local const (#463)"
-    )
-)]
-pub(crate) const MT6739_CCIF: usize = 0x2051_0000;
-
-/// GIC distributor MMIO base.
-pub(crate) const MT6739_GIC_DIST: usize = GICD_BASE;
-
-/// GIC CPU interface MMIO base.
-pub(crate) const MT6739_GIC_CPU: usize = GICC_BASE;
-
-/// Keypad (KPD) controller MMIO base.
-pub(crate) const MT6739_KPD: usize = 0x1001_0000;
-
-/// WMT combo-chip (CONSYS) MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
-)]
-pub(crate) const MT6739_CONSYS: usize = 0x1800_0000;
-
-/// WiFi MMIO base.
-#[expect(
-    dead_code,
-    reason = "canonical reference; driver uses local const (#463)"
-)]
-pub(crate) const MT6739_WLAN: usize = 0x180F_0000;
-
-/// Framebuffer physical address (set by LK bootloader).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "canonical reference; kconfig has matching const (#463)"
-    )
-)]
-pub(crate) const MT6739_FB: usize = 0x77EE_0000;
-
-/// KPD enable register offset.
-pub(crate) const KPD_EN: usize = 0x00;
-
-/// KPD debounce register offset.
-pub(crate) const KPD_DEBOUNCE: usize = 0x18;
 
 /// Device status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,44 +113,6 @@ impl DeviceRegistry {
     pub(crate) fn count_by_status(&self, status: DeviceStatus) -> usize {
         self.devices.iter().filter(|d| d.status == status).count()
     }
-
-    /// Register all MT6739 AGM M7 devices with known addresses.
-    /// Addresses from `docs/DRIVER-INTERFACES.md` and `docs/PROBE.md`.
-    pub(crate) fn register_mt6739_devices(&mut self) {
-        // UART
-        self.register("uart0", 0x1100_2000, 0);
-        self.register("uart1", 0x1100_3000, 0);
-
-        // Display
-        self.register("disp-ovl0", 0x1400_7000, 0);
-        self.register("disp-rdma0", 0x1400_8000, 0);
-        self.register("gc9306-lcm", 0x1100_A000, 0);
-
-        // Input
-        self.register("mtk-kpd", 0x1001_0000, 0); // Keypad
-        self.register("mtk-tpd", 0x0, 0); // Touch (I2C, addr TBD from teardown)
-
-        // Modem
-        self.register("ccci-cldma", 0x200F_0000, 0); // CLDMA AP base
-        self.register("ccci-ccif", 0x2051_0000, 0); // CCIF peer
-
-        // Connectivity
-        self.register("wmt-consys", 0x1800_0000, 0); // WMT combo chip
-        self.register("wlan0", 0x180F_0000, 0); // WiFi
-        self.register("bt0", 0x0, 0); // BT (via WMT STP)
-        self.register("gps0", 0x0, 0); // GPS (via WMT STP)
-        self.register("fm0", 0x0, 0); // FM (via WMT)
-
-        // USB
-        self.register("musb-hdrc", 0x1120_0000, 0); // USB controller
-
-        // Storage
-        self.register("msdc0", 0x1123_0000, 0); // eMMC controller
-
-        // GIC
-        self.register("gic-dist", MT6739_GIC_DIST, 0);
-        self.register("gic-cpu", MT6739_GIC_CPU, 0);
-    }
 }
 
 impl Default for DeviceRegistry {
@@ -372,21 +196,5 @@ mod tests {
         assert_eq!(registry.count_by_status(DeviceStatus::Registered), 1);
         assert_eq!(registry.count_by_status(DeviceStatus::Active), 1);
         assert_eq!(registry.count_by_status(DeviceStatus::PoweredOff), 0);
-    }
-
-    #[test]
-    fn register_mt6739_devices_populates_expected_device_set() {
-        let mut registry = DeviceRegistry::new();
-        registry.register_mt6739_devices();
-
-        assert_eq!(registry.list().len(), 18);
-        assert!(registry.find("uart0").is_some());
-        assert!(registry.find("ccci-cldma").is_some());
-        assert!(registry.find("gic-cpu").is_some());
-        assert_eq!(
-            registry.count_by_status(DeviceStatus::Registered),
-            18,
-            "all devices start in the Registered state"
-        );
     }
 }

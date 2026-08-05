@@ -12,7 +12,7 @@
 
 [[capability]]
 id = "kernel-core"
-modules = ["kinit", "kinit_plan", "kardia", "exceptions", "irq", "gic", "mmu", "slab", "page", "heap", "process", "fd", "signal", "elf", "futex", "ipc", "pipe", "socket", "supervisor", "syscall", "reflex", "mmio", "memguard"]
+modules = ["kinit", "kinit_plan", "kardia", "exceptions", "irq", "gic", "mmu", "slab", "page", "heap", "process", "fd", "signal", "elf", "futex", "ipc", "pipe", "socket", "supervisor", "syscall", "reflex", "mmio", "memguard", "board"]
 tier = "emulated-mock-proven"
 witness = ["THUMOS-QEMU: boot-complete", "THUMOS-QEMU: service-loop ticks=", "/init spawned", "shell: hello from userspace", "USERFAULT:"]
 notes = "PL0 isolation, graceful kill, fork/exec/brk/guard witnesses live in the per-probe scripts (kfault/sleep/fork/exec/forkexec/guard/brk/crashloop)."

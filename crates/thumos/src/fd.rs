@@ -1952,7 +1952,7 @@ mod tests {
         // WHY function-local `static mut`: sys_read now validates buf_ptr via
         // validate_user_buffer before dereferencing it. This binary's PIE
         // image (hence any `static`) loads inside
-        // [kconfig::KERNEL_END, kconfig::RAM_END) on this host toolchain;
+        // [board::KERNEL_END, board::RAM_END) on this host toolchain;
         // a stack array does not (verified: glibc places the per-test-thread
         // stack near the top of the 32-bit address space, above RAM_END).
         static mut BUF: [u8; 64] = [0u8; 64];
@@ -2806,35 +2806,35 @@ mod tests {
 
     #[test]
     fn sys_open_rejects_kernel_range_path_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_open(kernel_ptr, 4, 0);
         assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
     }
 
     #[test]
     fn sys_read_rejects_kernel_range_buf_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_read(99, kernel_ptr, 4);
         assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
     }
 
     #[test]
     fn sys_write_rejects_kernel_range_buf_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_write(99, kernel_ptr, 4);
         assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
     }
 
     #[test]
     fn sys_stat_rejects_kernel_range_path_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_stat(kernel_ptr, 4, IN_RANGE_UNBACKED_PTR);
         assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
     }
 
     #[test]
     fn sys_stat_rejects_kernel_range_stat_buf_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_stat(IN_RANGE_UNBACKED_PTR, 4, kernel_ptr);
         assert_eq!(
             result, EFAULT,
@@ -2851,7 +2851,7 @@ mod tests {
         }
         let fd = install_test_fd(FileDescriptor::from_vfs(0, 1, 0));
 
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_fstat(fd, kernel_ptr);
         assert_eq!(
             result, EFAULT,
@@ -2861,28 +2861,28 @@ mod tests {
 
     #[test]
     fn sys_getcwd_rejects_kernel_range_buf_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_getcwd(kernel_ptr, 32);
         assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
     }
 
     #[test]
     fn sys_mkdir_rejects_kernel_range_path_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_mkdir(kernel_ptr, 4);
         assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
     }
 
     #[test]
     fn sys_unlink_rejects_kernel_range_path_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_unlink(kernel_ptr, 4);
         assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
     }
 
     #[test]
     fn sys_chdir_rejects_kernel_range_path_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_chdir(kernel_ptr, 4);
         assert_eq!(result, EFAULT, "kernel-range path_ptr must return EFAULT");
     }

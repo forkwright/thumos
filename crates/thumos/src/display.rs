@@ -18,21 +18,6 @@ use crate::timer;
 // Constants: base addresses
 // ---------------------------------------------------------------------------
 
-/// MMSYS configuration base (MT6739 device tree).
-const MMSYS_CONFIG_BASE: usize = 0x1400_0000;
-
-/// OVL0 engine base.
-const OVL0_BASE: usize = 0x1400_7000;
-
-/// RDMA0 engine base.
-const RDMA0_BASE: usize = 0x1400_8000;
-
-/// DSI0 controller base.
-const DSI0_BASE: usize = 0x1400_D000;
-
-/// Display mutex base.
-const DISP_MUTEX_BASE: usize = 0x1400_1000;
-
 /// AGM M7 display width in pixels.
 const DISPLAY_WIDTH: u16 = 240;
 
@@ -51,26 +36,25 @@ const FB_ADDR_ALIGN: usize = 16;
 
 /// MMSYS register block.
 mod mmsys {
-    use super::MMSYS_CONFIG_BASE;
 
     /// Clock gate status 0.
-    pub(crate) const CG_CON0: usize = MMSYS_CONFIG_BASE + 0x100;
+    pub(crate) const CG_CON0: usize = crate::board::MMSYS_BASE + 0x100;
     /// Clock gate SET 0 (write 1 = disable clock).
-    pub(crate) const CG_SET0: usize = MMSYS_CONFIG_BASE + 0x104;
+    pub(crate) const CG_SET0: usize = crate::board::MMSYS_BASE + 0x104;
     /// Clock gate clear 0 (write 1 = enable clock).
-    pub(crate) const CG_CLR0: usize = MMSYS_CONFIG_BASE + 0x108;
+    pub(crate) const CG_CLR0: usize = crate::board::MMSYS_BASE + 0x108;
     /// Clock gate status 1.
-    pub(crate) const CG_CON1: usize = MMSYS_CONFIG_BASE + 0x110;
+    pub(crate) const CG_CON1: usize = crate::board::MMSYS_BASE + 0x110;
     /// Clock gate SET 1 (write 1 = disable clock).
-    pub(crate) const CG_SET1: usize = MMSYS_CONFIG_BASE + 0x114;
+    pub(crate) const CG_SET1: usize = crate::board::MMSYS_BASE + 0x114;
     /// Clock gate clear 1 (write 1 = enable clock).
-    pub(crate) const CG_CLR1: usize = MMSYS_CONFIG_BASE + 0x118;
+    pub(crate) const CG_CLR1: usize = crate::board::MMSYS_BASE + 0x118;
     /// Software reset 0 (active low  -  write 1 to release).
-    pub(crate) const SW0_RST_B: usize = MMSYS_CONFIG_BASE + 0x140;
+    pub(crate) const SW0_RST_B: usize = crate::board::MMSYS_BASE + 0x140;
     /// Software reset 1 (active low  -  write 1 to release).
-    pub(crate) const SW1_RST_B: usize = MMSYS_CONFIG_BASE + 0x144;
+    pub(crate) const SW1_RST_B: usize = crate::board::MMSYS_BASE + 0x144;
     /// LCM reset control (active low  -  write 1 to release).
-    pub(crate) const LCM_RST_B: usize = MMSYS_CONFIG_BASE + 0x150;
+    pub(crate) const LCM_RST_B: usize = crate::board::MMSYS_BASE + 0x150;
 
     // WHY: clock gate bits for display pipeline modules in CG_CLR0/CG_CLR1.
     // These enable the clocks for each module when written to the CLR register.
@@ -99,30 +83,29 @@ mod mmsys {
 
 /// OVL0 register block.
 mod ovl {
-    use super::OVL0_BASE;
 
     /// Status; bit 0 = running.
-    pub(crate) const STA: usize = OVL0_BASE;
+    pub(crate) const STA: usize = crate::board::OVL0_BASE;
     /// Interrupt enable.
-    pub(crate) const INTEN: usize = OVL0_BASE + 0x004;
+    pub(crate) const INTEN: usize = crate::board::OVL0_BASE + 0x004;
     /// Interrupt status.
-    pub(crate) const INTSTA: usize = OVL0_BASE + 0x008;
+    pub(crate) const INTSTA: usize = crate::board::OVL0_BASE + 0x008;
     /// Enable; bit 0 = OVL_EN, bit 8 = CK_ON.
-    pub(crate) const EN: usize = OVL0_BASE + 0x00C;
+    pub(crate) const EN: usize = crate::board::OVL0_BASE + 0x00C;
     /// Trigger; bit 0 = SW_TRIG.
-    pub(crate) const TRIG: usize = OVL0_BASE + 0x010;
+    pub(crate) const TRIG: usize = crate::board::OVL0_BASE + 0x010;
     /// Reset.
-    pub(crate) const RST: usize = OVL0_BASE + 0x014;
+    pub(crate) const RST: usize = crate::board::OVL0_BASE + 0x014;
     /// Region of interest size; bits [12:0] = W, bits [28:16] = H.
-    pub(crate) const ROI_SIZE: usize = OVL0_BASE + 0x020;
+    pub(crate) const ROI_SIZE: usize = crate::board::OVL0_BASE + 0x020;
     /// Datapath config.
-    pub(crate) const DATAPATH_CON: usize = OVL0_BASE + 0x024;
+    pub(crate) const DATAPATH_CON: usize = crate::board::OVL0_BASE + 0x024;
     /// Background colour RGBA.
-    pub(crate) const ROI_BGCLR: usize = OVL0_BASE + 0x028;
+    pub(crate) const ROI_BGCLR: usize = crate::board::OVL0_BASE + 0x028;
     /// Source enable; bits 0–3 = layer 0–3 enable.
-    pub(crate) const SRC_CON: usize = OVL0_BASE + 0x02C;
+    pub(crate) const SRC_CON: usize = crate::board::OVL0_BASE + 0x02C;
     /// Layer 0 control (alpha, flip, format).
-    pub(crate) const L0_CON: usize = OVL0_BASE + 0x030;
+    pub(crate) const L0_CON: usize = crate::board::OVL0_BASE + 0x030;
 
     /// OVL_EN bit.
     pub(crate) const EN_BIT: u32 = 1 << 0;
@@ -149,20 +132,19 @@ mod ovl {
 
 /// RDMA0 register block.
 mod rdma {
-    use super::RDMA0_BASE;
 
     /// Global control; bit 0 = ENGINE_EN, bit 1 = MODE_SEL (1=memory).
-    pub(crate) const GLOBAL_CON: usize = RDMA0_BASE;
+    pub(crate) const GLOBAL_CON: usize = crate::board::RDMA0_BASE;
     /// Output frame width.
-    pub(crate) const SIZE_CON_0: usize = RDMA0_BASE + 0x014;
+    pub(crate) const SIZE_CON_0: usize = crate::board::RDMA0_BASE + 0x014;
     /// Output frame height.
-    pub(crate) const SIZE_CON_1: usize = RDMA0_BASE + 0x018;
+    pub(crate) const SIZE_CON_1: usize = crate::board::RDMA0_BASE + 0x018;
     /// Memory mode control (format selection).
-    pub(crate) const MEM_CON: usize = RDMA0_BASE + 0x024;
+    pub(crate) const MEM_CON: usize = crate::board::RDMA0_BASE + 0x024;
     /// Memory source pitch (stride in bytes).
-    pub(crate) const MEM_SRC_PITCH: usize = RDMA0_BASE + 0x02C;
+    pub(crate) const MEM_SRC_PITCH: usize = crate::board::RDMA0_BASE + 0x02C;
     /// Framebuffer start address (physical).
-    pub(crate) const MEM_START_ADDR: usize = RDMA0_BASE + 0x0F0;
+    pub(crate) const MEM_START_ADDR: usize = crate::board::RDMA0_BASE + 0x0F0;
 
     /// ENGINE_EN bit.
     pub(crate) const ENGINE_EN: u32 = 1 << 0;
@@ -179,49 +161,48 @@ mod rdma {
 
 /// DSI0 register block.
 mod dsi {
-    use super::DSI0_BASE;
 
     /// DSI start control.
-    pub(crate) const START: usize = DSI0_BASE;
+    pub(crate) const START: usize = crate::board::DSI0_BASE;
     /// Interrupt enable.
-    pub(crate) const INTEN: usize = DSI0_BASE + 0x008;
+    pub(crate) const INTEN: usize = crate::board::DSI0_BASE + 0x008;
     /// Interrupt status.
-    pub(crate) const INTSTA: usize = DSI0_BASE + 0x00C;
+    pub(crate) const INTSTA: usize = crate::board::DSI0_BASE + 0x00C;
     /// Connection control.
-    pub(crate) const CON_CTRL: usize = DSI0_BASE + 0x010;
+    pub(crate) const CON_CTRL: usize = crate::board::DSI0_BASE + 0x010;
     /// Mode control (CMD vs VDO).
-    pub(crate) const MODE_CTRL: usize = DSI0_BASE + 0x014;
+    pub(crate) const MODE_CTRL: usize = crate::board::DSI0_BASE + 0x014;
     /// TX/RX control (lane count).
-    pub(crate) const TXRX_CTRL: usize = DSI0_BASE + 0x018;
+    pub(crate) const TXRX_CTRL: usize = crate::board::DSI0_BASE + 0x018;
     /// Packet size control.
-    pub(crate) const PSCTRL: usize = DSI0_BASE + 0x01C;
+    pub(crate) const PSCTRL: usize = crate::board::DSI0_BASE + 0x01C;
     /// Vertical sync active lines.
-    pub(crate) const VSA_NL: usize = DSI0_BASE + 0x020;
+    pub(crate) const VSA_NL: usize = crate::board::DSI0_BASE + 0x020;
     /// Vertical back porch lines.
-    pub(crate) const VBP_NL: usize = DSI0_BASE + 0x024;
+    pub(crate) const VBP_NL: usize = crate::board::DSI0_BASE + 0x024;
     /// Vertical front porch lines.
-    pub(crate) const VFP_NL: usize = DSI0_BASE + 0x028;
+    pub(crate) const VFP_NL: usize = crate::board::DSI0_BASE + 0x028;
     /// Vertical active lines.
-    pub(crate) const VACT_NL: usize = DSI0_BASE + 0x02C;
+    pub(crate) const VACT_NL: usize = crate::board::DSI0_BASE + 0x02C;
     /// Horizontal sync active word count.
-    pub(crate) const HSA_WC: usize = DSI0_BASE + 0x050;
+    pub(crate) const HSA_WC: usize = crate::board::DSI0_BASE + 0x050;
     /// Horizontal back porch word count.
-    pub(crate) const HBP_WC: usize = DSI0_BASE + 0x054;
+    pub(crate) const HBP_WC: usize = crate::board::DSI0_BASE + 0x054;
     /// Horizontal front porch word count.
-    pub(crate) const HFP_WC: usize = DSI0_BASE + 0x058;
+    pub(crate) const HFP_WC: usize = crate::board::DSI0_BASE + 0x058;
     /// PHY LC (clock lane) control.
-    pub(crate) const PHY_LCCON: usize = DSI0_BASE + 0x104;
+    pub(crate) const PHY_LCCON: usize = crate::board::DSI0_BASE + 0x104;
     /// PHY LD0 (data lane 0) control.
-    pub(crate) const PHY_LD0CON: usize = DSI0_BASE + 0x108;
+    pub(crate) const PHY_LD0CON: usize = crate::board::DSI0_BASE + 0x108;
 
     /// Command queue size register (number of entries).
-    pub(crate) const CMDQ_SIZE: usize = DSI0_BASE + 0x060;
+    pub(crate) const CMDQ_SIZE: usize = crate::board::DSI0_BASE + 0x060;
     /// Command queue data register 0 (first slot in the 128-entry queue).
     ///
     /// Each slot is 4 bytes. Slot N is at `CMDQ_DATA + N * 4`.
-    pub(crate) const CMDQ_DATA: usize = DSI0_BASE + 0x200;
+    pub(crate) const CMDQ_DATA: usize = crate::board::DSI0_BASE + 0x200;
     /// Rack (read-ack) register — write 1 to acknowledge completed command.
-    pub(crate) const RACK: usize = DSI0_BASE + 0x084;
+    pub(crate) const RACK: usize = crate::board::DSI0_BASE + 0x084;
 
     /// DSI_START bit.
     pub(crate) const START_BIT: u32 = 1;
@@ -262,14 +243,13 @@ mod dsi {
 
 /// Display mutex register block.
 mod disp_mutex {
-    use super::DISP_MUTEX_BASE;
 
     /// Mutex 0 enable.
-    pub(crate) const EN: usize = DISP_MUTEX_BASE + 0x020;
+    pub(crate) const EN: usize = crate::board::DISP_MUTEX_BASE + 0x020;
     /// Mutex 0 module membership.
-    pub(crate) const MOD: usize = DISP_MUTEX_BASE + 0x02C;
+    pub(crate) const MOD: usize = crate::board::DISP_MUTEX_BASE + 0x02C;
     /// Mutex 0 SOF source.
-    pub(crate) const SOF: usize = DISP_MUTEX_BASE + 0x030;
+    pub(crate) const SOF: usize = crate::board::DISP_MUTEX_BASE + 0x030;
 
     /// Mutex enable bit.
     pub(crate) const EN_BIT: u32 = 1;
@@ -1321,7 +1301,7 @@ mod tests {
     fn dsi_cmdq_data_at_expected_offset() {
         assert_eq!(
             dsi::CMDQ_DATA,
-            DSI0_BASE + 0x200,
+            crate::board::DSI0_BASE + 0x200,
             "CMDQ_DATA must be at DSI0 + 0x200"
         );
     }
@@ -1330,7 +1310,7 @@ mod tests {
     fn dsi_cmdq_size_at_expected_offset() {
         assert_eq!(
             dsi::CMDQ_SIZE,
-            DSI0_BASE + 0x060,
+            crate::board::DSI0_BASE + 0x060,
             "CMDQ_SIZE must be at DSI0 + 0x060"
         );
     }

@@ -13,7 +13,7 @@
 //!
 //! RGB565, 16-bit per pixel, matching the kernel's display driver and the eidolon
 //! crate's `Framebuffer`. The kernel renders into a flat `[u16]` buffer that maps
-//! directly to the hardware framebuffer at `kconfig::FB_BASE`.
+//! directly to the hardware framebuffer at `board::FB_BASE`.
 //!
 //! ## Font
 //!

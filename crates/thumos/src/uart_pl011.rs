@@ -8,7 +8,7 @@
 
 use core::fmt;
 
-use crate::kconfig::UART0_BASE;
+use crate::board::UART0_BASE;
 
 /// Data register OFFSET.
 const DR: usize = 0x00;
@@ -30,6 +30,33 @@ const UART_TX_TIMEOUT_SPINS: u32 = 1_000_000;
 /// UART driver for the QEMU virt PL011 console.
 pub(crate) struct Uart {
     base: usize,
+}
+
+/// Run `f` with IRQs masked, restoring the caller's previous mask state.
+///
+/// WHY: kernel thread-mode prints (the kinit handoff, the kardia service
+/// loop) run with IRQs live — a timer IRQ mid-print preempts into userspace,
+/// whose own writes (already atomic: SVC entry sets CPSR.I) then split the
+/// kernel's line. The 2026-08-05 boot witness caught exactly that:
+/// `kardia: modem ready state=` and its value landed on different lines.
+/// Masking for the byte loop keeps a kernel print contiguous without
+/// changing userspace (SVC/IRQ paths are atomic by hardware already).
+/// Nested calls are safe: the prior I-bit is restored, never force-enabled.
+#[inline(always)]
+fn irqs_masked<R>(f: impl FnOnce() -> R) -> R {
+    let saved: u32;
+    // SAFETY: privileged CPSR read; always available at PL1 on armv7a.
+    unsafe {
+        core::arch::asm!("mrs {}, cpsr", out(reg) saved, options(nomem, nostack, preserves_flags))
+    };
+    // SAFETY: mask IRQs for the critical section.
+    unsafe { core::arch::asm!("cpsid i", options(nomem, nostack, preserves_flags)) };
+    let r = f();
+    if saved & 0x80 == 0 {
+        // SAFETY: the caller had IRQs enabled; restore that state.
+        unsafe { core::arch::asm!("cpsie i", options(nomem, nostack, preserves_flags)) };
+    }
+    r
 }
 
 impl Uart {
@@ -64,9 +91,11 @@ impl Uart {
 
     /// Write a string to the UART.
     pub(crate) fn write_str_raw(&self, s: &str) {
-        for byte in s.bytes() {
-            self.putc(byte);
-        }
+        irqs_masked(|| {
+            for byte in s.bytes() {
+                self.putc(byte);
+            }
+        });
     }
 
     /// Non-blocking receive: returns the next byte if the RX FIFO has one

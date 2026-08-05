@@ -31,6 +31,7 @@ mod battery;
 mod bfu_timer;
 mod block;
 mod bluetooth;
+mod board;
 mod briar;
 mod bt_audio;
 mod cache;
@@ -90,16 +91,18 @@ mod csprng;
 mod devfs;
 // WHY (#528): un-gated from cfg(not(test)) -- the registry is pure data
 // (alloc String/Vec, no MMIO at compile time), and the gate left its own 7
-// unit tests dead source under every build (the kinit trap). kinit_plan's
-// address test also reads the canonical MT6739_* consts from host tests now.
+// unit tests dead source under every build (the kinit trap). The device SET
+// and addresses moved to board:: (#534); this is the board-neutral
+// framework.
 mod device;
 mod dhcp;
+#[cfg(not(feature = "qemu"))]
 mod display;
 mod dns;
 mod dns_tls;
 mod ekphrasis;
 mod elf;
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 mod emmc;
 mod encryption;
 #[cfg(not(test))]
@@ -227,7 +230,7 @@ mod timer;
 mod timer;
 #[cfg(all(not(test), not(feature = "qemu")))]
 mod uart;
-// WHY(qemu): virt has a PL011 at kconfig::UART0_BASE, not the MTK 8250-style
+// WHY(qemu): virt has a PL011 at board::UART0_BASE, not the MTK 8250-style
 // UART; same module surface, different register map (see uart_pl011.rs).
 #[cfg(all(not(test), feature = "qemu"))]
 #[path = "uart_pl011.rs"]
@@ -239,6 +242,7 @@ mod ui;
 #[cfg(test)]
 #[path = "uart_stub.rs"]
 mod uart;
+#[cfg(not(feature = "qemu"))]
 mod usb;
 mod vfs;
 #[cfg(all(not(test), not(feature = "qemu")))]
@@ -319,15 +323,19 @@ pub extern "C" fn kernel_main() -> ! {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     // Attempt visual panic indicator on display (if available).
+    // WHY not(qemu): as halt_boot -- DISPLAY_AVAILABLE is M7-only, and the
+    // framebuffer address exists only on that board (#534).
+    #[cfg(not(feature = "qemu"))]
     if kinit::DISPLAY_AVAILABLE.load(core::sync::atomic::Ordering::Acquire) {
         // SAFETY: DISPLAY_AVAILABLE is only set to true after display.init()
-        // succeeds, guaranteeing FB_BASE is a valid, mapped framebuffer of at
-        // least DISPLAY_WIDTH * DISPLAY_HEIGHT * 2 bytes (RGB565).
+        // succeeds, guaranteeing board::FB_BASE is a valid, mapped
+        // framebuffer of at least DISPLAY_WIDTH * DISPLAY_HEIGHT * 2 bytes
+        // (RGB565).
         unsafe {
             kinit::fill_framebuffer(
-                kconfig::FB_BASE,
-                kconfig::DISPLAY_WIDTH,
-                kconfig::DISPLAY_HEIGHT,
+                board::FB_BASE,
+                board::DISPLAY_WIDTH,
+                board::DISPLAY_HEIGHT,
                 0xF800, // NOTE: RGB565 pure red
             );
         }

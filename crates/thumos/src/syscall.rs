@@ -23,12 +23,12 @@
 
 use core::fmt::Write;
 
+#[cfg(test)]
+use crate::board;
 use crate::capability;
 use crate::fd;
 use crate::futex;
 use crate::ipc;
-#[cfg(test)]
-use crate::kconfig;
 use crate::memguard::validate_user_buffer;
 use crate::mmu;
 use crate::page;
@@ -849,8 +849,8 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     let loaded = match unsafe {
         crate::elf::load_confined(
             elf_data,
-            crate::kconfig::USER_TEXT_BASE,
-            crate::kconfig::RAM_END,
+            crate::board::USER_TEXT_BASE,
+            crate::board::RAM_END,
         )
     } {
         Ok(l) => l,
@@ -1824,8 +1824,8 @@ mod tests {
 
     #[test]
     fn validate_user_buffer_entire_user_range() {
-        let start = kconfig::KERNEL_END;
-        let len = kconfig::RAM_END - kconfig::KERNEL_END;
+        let start = board::KERNEL_END;
+        let len = board::RAM_END - board::KERNEL_END;
         assert!(
             validate_user_buffer(start, len),
             "full user DRAM range must be valid"
@@ -1859,11 +1859,11 @@ mod tests {
     #[test]
     fn validate_user_buffer_kernel_space() {
         assert!(
-            !validate_user_buffer(kconfig::KERNEL_LOAD, 4096),
+            !validate_user_buffer(board::KERNEL_LOAD, 4096),
             "kernel load address must fail validation"
         );
         assert!(
-            !validate_user_buffer(kconfig::KERNEL_LOAD + 0x1000, 256),
+            !validate_user_buffer(board::KERNEL_LOAD + 0x1000, 256),
             "pointer within kernel image must fail validation"
         );
     }
@@ -1907,7 +1907,7 @@ mod tests {
     #[test]
     fn validate_user_buffer_spans_into_kernel() {
         assert!(
-            !validate_user_buffer(kconfig::KERNEL_END - 1, 2),
+            !validate_user_buffer(board::KERNEL_END - 1, 2),
             "buffer spanning into kernel region must fail"
         );
     }
@@ -1915,7 +1915,7 @@ mod tests {
     #[test]
     fn validate_user_buffer_spans_past_ram_end() {
         assert!(
-            !validate_user_buffer(kconfig::RAM_END - 10, 20),
+            !validate_user_buffer(board::RAM_END - 10, 20),
             "buffer extending past RAM_END must fail"
         );
     }
@@ -1923,15 +1923,15 @@ mod tests {
     #[test]
     fn validate_user_buffer_boundary_exact() {
         assert!(
-            validate_user_buffer(kconfig::KERNEL_END, 1),
+            validate_user_buffer(board::KERNEL_END, 1),
             "first byte of user DRAM must be valid"
         );
         assert!(
-            !validate_user_buffer(kconfig::KERNEL_END - 1, 1),
+            !validate_user_buffer(board::KERNEL_END - 1, 1),
             "last byte of kernel region must fail"
         );
         assert!(
-            validate_user_buffer(kconfig::RAM_END - 1, 1),
+            validate_user_buffer(board::RAM_END - 1, 1),
             "last byte of DRAM must be valid"
         );
     }
@@ -2297,7 +2297,7 @@ mod tests {
 
         // Kernel-space pointer must also fail (below KERNEL_END).
         assert!(
-            !validate_user_buffer(kconfig::KERNEL_LOAD, 1),
+            !validate_user_buffer(board::KERNEL_LOAD, 1),
             "kernel-load address must fail validate_user_buffer"
         );
 
@@ -2309,7 +2309,7 @@ mod tests {
 
         // A valid user-DRAM pointer must pass (sanity: the positive case).
         assert!(
-            validate_user_buffer(kconfig::KERNEL_END + 0x1000, 1),
+            validate_user_buffer(board::KERNEL_END + 0x1000, 1),
             "pointer just above KERNEL_END must pass validate_user_buffer"
         );
 
@@ -2325,7 +2325,7 @@ mod tests {
     /// RAM_END into unmapped/device memory.
     #[test]
     fn execve_rejects_path_pointer_near_ram_end() {
-        let result = sys_execve((kconfig::RAM_END - 1) as u32, 0, 0);
+        let result = sys_execve((board::RAM_END - 1) as u32, 0, 0);
         assert_eq!(
             result, EFAULT,
             "execve must reject a path pointer within MAX_PATH bytes of RAM_END instead of scanning past it"
@@ -2573,7 +2573,7 @@ mod tests {
         // Sample 33 evenly-spaced addresses across the kernel image and
         // reserved region [0x4000_0000, KERNEL_END).
         let kernel_range_start: usize = 0x4000_0000;
-        let kernel_range_end: usize = kconfig::KERNEL_END;
+        let kernel_range_end: usize = board::KERNEL_END;
         let span = kernel_range_end - kernel_range_start;
         let step = span / 32;
 
@@ -2591,7 +2591,7 @@ mod tests {
         }
 
         // Exact boundary: one byte before user DRAM must fail.
-        let boundary = kconfig::KERNEL_END - 1;
+        let boundary = board::KERNEL_END - 1;
         assert!(
             !validate_user_buffer(boundary, 1),
             "last byte of kernel region 0x{boundary:08x} must be rejected"
@@ -2649,10 +2649,10 @@ mod tests {
     fn zero_length_accepted() {
         // Representative valid user addresses spanning the user DRAM range.
         let addrs: &[usize] = &[
-            kconfig::KERNEL_END,
-            kconfig::KERNEL_END + 0x1000,
+            board::KERNEL_END,
+            board::KERNEL_END + 0x1000,
             0x5000_0000,
-            kconfig::RAM_END - 1,
+            board::RAM_END - 1,
         ];
         for &addr in addrs {
             assert!(
