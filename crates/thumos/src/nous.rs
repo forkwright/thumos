@@ -12,20 +12,17 @@
 //! propose and auto-execute on the device. The [`NousManager`]
 //! tracks registered entities and the currently active one.
 //!
-//! # Capability model
+//! # Capability model (#552)
 //!
-//! [`CapabilityPreset`] defines a trust hierarchy from `Off` (no
-//! interaction) through `Autonomous` (full device authority). The
-//! preset governs two permission gates:
-//!
-//! - **Propose**: can the entity suggest actions (via
-//!   [`ActionProposal`][crate::ekphrasis::ActionProposal])?
-//! - **Auto-execute**: can the entity's proposals be applied
-//!   without explicit user confirmation?
-//!
-//! The hierarchy is intentionally coarse — fine-grained ACLs add
-//! complexity that doesn't serve a single-user device. Cody picks
-//! the preset per entity and can change it at any time.
+//! Individual capability grants are the sole authority, per the accepted
+//! trust model (`design-comms.md` "Trust model: capability map").
+//! [`CapabilityPreset`] presets are CONSTRUCTORS for [`CapabilitySet`]s —
+//! starting points the operator customizes, never ranks — and `Custom`
+//! maps are first-class. Four capabilities (keys, SIGINT, panic,
+//! security-disable) are kernel-NEVER: unrepresentable in a set on any
+//! preset or custom map, denied on any action path. Every action type
+//! binds to an exact required grant, a confirmation rule, and an audit
+//! receipt below every client.
 //!
 //! # Default entities
 //!
@@ -75,104 +72,256 @@ const MAX_NAME_LEN: usize = 32;
 const DEFAULT_HOMESERVER: &str = "thumos.lan";
 
 // ---------------------------------------------------------------------------
-// Capability preset
+// Capability model (#552): typed grants are the sole authority
 // ---------------------------------------------------------------------------
 
-/// Trust level for a nous entity, gating what actions it can take.
+/// A single grantable nous capability (design-comms.md "Trust model:
+/// capability map", verbatim). Individual grants are the ONLY authority --
+/// presets are constructors for sets of these, never ranks that subsume
+/// privileges implicitly.
 ///
-/// Ordered from least to most permissive. The ordering is significant:
-/// higher presets subsume the capabilities of lower ones.
+/// Defaults in the design table vary by model profile (cloud vs local);
+/// those are preset concerns. What matters here is that each capability is
+/// an independent bit the operator grants or revokes explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+#[non_exhaustive]
+pub(crate) enum NousCapability {
+    /// Time, approximate location, mode, battery, radio status.
+    ReadState,
+    /// Contact names and aliases (not numbers or IDs).
+    ReadContactsMetadata,
+    /// Full contact records including numbers and Matrix IDs.
+    ReadContactsFull,
+    /// Message sender/time/transport -- not content.
+    ReadMessageMetadata,
+    /// Full message text.
+    ReadMessageContent,
+    /// Calendar events, times, attendees.
+    ReadCalendar,
+    /// Security events and mode changes. Default-off on every profile
+    /// (design table), grantable only via Custom -- the design's
+    /// "what nous NEVER sees" list explains why this stays edge-class.
+    ReadAuditLog,
+    /// Create message text for the user to review and send.
+    DraftMessages,
+    /// Propose calendar events for the user to accept.
+    DraftCalendarEvents,
+    /// Send a drafted message after explicit user confirmation.
+    SendMessagesConfirmed,
+    /// Send messages without confirmation, per rules. Opt-in.
+    SendMessagesAutonomous,
+    /// Add/update contacts after explicit user confirmation.
+    ModifyContactsConfirmed,
+    /// Add/update contacts without confirmation.
+    ModifyContactsAutonomous,
+    /// Enter/exit modes (Sentinel, Covert, ...) after confirmation. Opt-in.
+    ToggleModeConfirmed,
+    /// Kill/restore radios after confirmation. Opt-in.
+    ToggleRadiosConfirmed,
+}
+
+/// A capability the kernel NEVER grants nous -- on any preset, any custom
+/// map, any runtime state (design-comms.md: the NEVER rows are "hardcoded
+/// off ... enforced by the kernel capability system, not by policy").
 ///
-/// # Safety model
+/// Deliberately NOT a [`NousCapability`]: [`CapabilitySet`] cannot
+/// represent one, so no preset constructor, custom edit, stale grant, or
+/// runtime path can ever produce it as a grant. This is the type-level
+/// half of the boundary; the syscall-level half lands with the nous
+/// process sandbox (#544's wiring).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+#[non_exhaustive]
+pub(crate) enum NeverCapability {
+    /// Passphrase, session keys, any crypto material.
+    ReadEncryptionKeys,
+    /// IMSI detections, spectrum data (nous may be TOLD "sentinel because
+    /// of a detection" -- never the detection details).
+    ReadSigintData,
+    /// Arm or execute panic mode.
+    TriggerPanic,
+    /// Turn off scanning, lower thresholds, or otherwise disable security
+    /// features.
+    DisableSecurityFeatures,
+}
+
+impl NeverCapability {
+    /// Why this capability is kernel-denied (design text, verbatim intent).
+    #[must_use]
+    pub(crate) const fn reason(self) -> &'static str {
+        match self {
+            Self::ReadEncryptionKeys => {
+                "passphrase/session keys/crypto material are NEVER visible to nous"
+            }
+            Self::ReadSigintData => "SIGINT detection details are NEVER visible to nous",
+            Self::TriggerPanic => "the panic trigger is NEVER reachable by nous",
+            Self::DisableSecurityFeatures => "security features are NEVER disableable by nous",
+        }
+    }
+}
+
+/// The capability set: the sole authorization authority (#552).
 ///
-/// - `Off` and `Observer` cannot propose any actions.
-/// - `Assistant` can propose but requires explicit confirmation for all.
-/// - `Advisor` can auto-execute low-risk actions (timers, alarms, etc.)
-///   but requires confirmation for high-risk (calls, messages, radio).
-/// - `Agent` can auto-execute most actions except destructive ones
-///   (wipe, mode changes, radio kill).
-/// - `Autonomous` can do everything including destructive actions.
-///   This is explicitly opt-in and should never be the default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+/// A bitset over the 15 grantable [`NousCapability`]s. [`NeverCapability`]
+/// has no bits -- it is unrepresentable by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[must_use]
+pub(crate) struct CapabilitySet {
+    bits: u32,
+}
+
+impl CapabilitySet {
+    /// The empty set -- nothing granted (the `Off` state).
+    pub(crate) const NONE: Self = Self { bits: 0 };
+
+    /// Whether `cap` is granted.
+    #[must_use]
+    pub(crate) const fn grants(&self, cap: NousCapability) -> bool {
+        self.bits & (1 << cap as u32) != 0
+    }
+
+    /// Grant `cap` (Custom editing is the only caller besides preset
+    /// constructors).
+    pub(crate) fn grant(&mut self, cap: NousCapability) {
+        self.bits |= 1 << cap as u32;
+    }
+
+    /// Revoke `cap` (stale-grant removal).
+    pub(crate) fn revoke(&mut self, cap: NousCapability) {
+        self.bits &= !(1 << cap as u32);
+    }
+
+    /// Whether any action-capable grant exists (draft/send/modify/toggle
+    /// classes) -- the new-model meaning of "can propose" (#552).
+    #[must_use]
+    pub(crate) const fn can_propose(&self) -> bool {
+        const ACTION_BITS: u32 = (1 << NousCapability::DraftMessages as u32)
+            | (1 << NousCapability::DraftCalendarEvents as u32)
+            | (1 << NousCapability::SendMessagesConfirmed as u32)
+            | (1 << NousCapability::SendMessagesAutonomous as u32)
+            | (1 << NousCapability::ModifyContactsConfirmed as u32)
+            | (1 << NousCapability::ModifyContactsAutonomous as u32)
+            | (1 << NousCapability::ToggleModeConfirmed as u32)
+            | (1 << NousCapability::ToggleRadiosConfirmed as u32);
+        self.bits & ACTION_BITS != 0
+    }
+
+    /// Whether any autonomous-class grant exists -- the new-model meaning
+    /// of "can auto-execute" (#552). Auto-execution is per-capability
+    /// (SendMessagesAutonomous, ModifyContactsAutonomous), never a rank.
+    #[must_use]
+    pub(crate) const fn can_auto_execute(&self) -> bool {
+        const AUTO_BITS: u32 = (1 << NousCapability::SendMessagesAutonomous as u32)
+            | (1 << NousCapability::ModifyContactsAutonomous as u32);
+        self.bits & AUTO_BITS != 0
+    }
+
+    /// Construct a set from a preset's bit pattern.
+    const fn from_bits(bits: u32) -> Self {
+        Self { bits }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Presets -- constructors for capability sets, never ranks (#552)
+// ---------------------------------------------------------------------------
+
+/// Trust preset for a nous entity (design-comms.md "Presets").
+///
+/// A preset is a CONSTRUCTOR for a [`CapabilitySet`] -- a starting point the
+/// operator customizes from, not a lock and not a rank. `Custom` marks a
+/// set that matches no preset exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[must_use]
 #[non_exhaustive]
 pub enum CapabilityPreset {
-    /// No interaction — entity is registered but inactive.
+    /// Nothing granted; nous disconnected.
     #[default]
     Off = 0,
-    /// Read-only — entity can observe state but not propose actions.
+    /// Read state only.
     Observer = 1,
-    /// Can propose actions; all require explicit user confirmation.
+    /// + read contacts metadata, draft messages.
     Assistant = 2,
-    /// Can propose actions; low-risk actions auto-execute.
+    /// + read messages (metadata and content), read calendar, draft
+    /// calendar events. Design-reading note (#552): the design table's
+    /// "Read messages" spans both message rows -- granting content without
+    /// metadata would be incoherent for an advisor.
     Advisor = 3,
-    /// Can execute most actions without confirmation.
+    /// + send messages with confirmation, modify contacts with confirmation.
     Agent = 4,
-    /// Full device authority. Dangerous; explicitly opted in.
+    /// + send messages autonomously per rules, modify contacts
+    /// autonomously. Reachable ONLY via an explicit opt-in confirmation --
+    /// never by cycling (#552).
     Autonomous = 5,
+    /// A custom set matching no preset exactly.
+    Custom = 6,
 }
 
 impl CapabilityPreset {
-    /// Whether this preset allows the entity to propose actions.
-    ///
-    /// `Off` and `Observer` cannot propose; all others can.
+    /// The capability set this preset constructs (design table, verbatim).
     #[must_use]
-    pub(crate) const fn can_propose(self) -> bool {
-        matches!(
-            self,
-            Self::Assistant | Self::Advisor | Self::Agent | Self::Autonomous
-        )
+    pub(crate) const fn grants(self) -> CapabilitySet {
+        const RS: u32 = 1 << NousCapability::ReadState as u32;
+        const RCM: u32 = 1 << NousCapability::ReadContactsMetadata as u32;
+        const RMM: u32 = 1 << NousCapability::ReadMessageMetadata as u32;
+        const RMC: u32 = 1 << NousCapability::ReadMessageContent as u32;
+        const RC: u32 = 1 << NousCapability::ReadCalendar as u32;
+        const DM: u32 = 1 << NousCapability::DraftMessages as u32;
+        const DCE: u32 = 1 << NousCapability::DraftCalendarEvents as u32;
+        const SMC: u32 = 1 << NousCapability::SendMessagesConfirmed as u32;
+        const SMA: u32 = 1 << NousCapability::SendMessagesAutonomous as u32;
+        const MCC: u32 = 1 << NousCapability::ModifyContactsConfirmed as u32;
+        const MCA: u32 = 1 << NousCapability::ModifyContactsAutonomous as u32;
+        match self {
+            Self::Off => CapabilitySet::NONE,
+            Self::Observer => CapabilitySet::from_bits(RS),
+            Self::Assistant => CapabilitySet::from_bits(RS | RCM | DM),
+            Self::Advisor => CapabilitySet::from_bits(RS | RCM | DM | RMM | RMC | RC | DCE),
+            Self::Agent => {
+                CapabilitySet::from_bits(RS | RCM | DM | RMM | RMC | RC | DCE | SMC | MCC)
+            }
+            Self::Autonomous => CapabilitySet::from_bits(
+                RS | RCM | DM | RMM | RMC | RC | DCE | SMC | MCC | SMA | MCA,
+            ),
+            // Custom is not a constructor; its set is whatever the operator
+            // built. Callers must hold the set, not reconstruct it.
+            Self::Custom => CapabilitySet::NONE,
+        }
     }
 
-    /// Whether this preset allows auto-execution of low-risk actions.
-    ///
-    /// Only `Advisor`, `Agent`, and `Autonomous` can auto-execute.
-    /// `Assistant` always requires confirmation.
+    /// The preset whose constructor produces `set`, or `Custom`.
     #[must_use]
-    pub(crate) const fn can_auto_execute(self) -> bool {
-        matches!(self, Self::Advisor | Self::Agent | Self::Autonomous)
+    pub(crate) fn of(set: &CapabilitySet) -> Self {
+        for preset in [
+            Self::Off,
+            Self::Observer,
+            Self::Assistant,
+            Self::Advisor,
+            Self::Agent,
+            Self::Autonomous,
+        ] {
+            if preset.grants() == *set {
+                return preset;
+            }
+        }
+        Self::Custom
     }
 
-    /// Whether this preset allows auto-execution of high-risk actions.
+    /// The next preset the settings UI may cycle to (#552).
     ///
-    /// Only `Agent` and `Autonomous` can auto-execute high-risk actions
-    /// (calls, messages, radio toggles).
+    /// Cycling NEVER reaches `Autonomous`: autonomous authority is an
+    /// explicit opt-in confirmation, not a dial step. `Custom` and
+    /// `Autonomous` cycle back to `Off` (re-entering the ladder re-selects
+    /// a preset constructor).
     #[must_use]
-    pub(crate) const fn can_auto_execute_high_risk(self) -> bool {
-        matches!(self, Self::Agent | Self::Autonomous)
-    }
-
-    /// Whether this preset allows destructive actions (wipe, panic mode).
-    ///
-    /// Only `Autonomous` can execute destructive actions.
-    #[must_use]
-    pub(crate) const fn can_execute_destructive(self) -> bool {
-        matches!(self, Self::Autonomous)
-    }
-
-    /// Return the next preset in the hierarchy (wraps around).
-    ///
-    /// Used for cycling through presets in the settings UI.
-    pub(crate) const fn next(self) -> Self {
+    pub(crate) const fn next_grantable(self) -> Self {
         match self {
             Self::Off => Self::Observer,
             Self::Observer => Self::Assistant,
             Self::Assistant => Self::Advisor,
             Self::Advisor => Self::Agent,
-            Self::Agent => Self::Autonomous,
-            Self::Autonomous => Self::Off,
-        }
-    }
-
-    /// Return the previous preset in the hierarchy (wraps around).
-    pub(crate) const fn prev(self) -> Self {
-        match self {
-            Self::Off => Self::Autonomous,
-            Self::Observer => Self::Off,
-            Self::Assistant => Self::Observer,
-            Self::Advisor => Self::Assistant,
-            Self::Agent => Self::Advisor,
-            Self::Autonomous => Self::Agent,
+            Self::Agent | Self::Autonomous | Self::Custom => Self::Off,
         }
     }
 
@@ -186,31 +335,31 @@ impl CapabilityPreset {
             Self::Advisor => "ADVISOR",
             Self::Agent => "AGENT",
             Self::Autonomous => "AUTONOMOUS",
+            Self::Custom => "CUSTOM",
         }
     }
 
-    /// Short description of what this preset allows.
+    /// Short description of what this preset's constructor grants.
     #[must_use]
     pub(crate) const fn description(self) -> &'static str {
         match self {
             Self::Off => "No interaction",
-            Self::Observer => "Read-only, no actions",
-            Self::Assistant => "Propose actions with confirmation",
-            Self::Advisor => "Auto-execute low-risk actions",
-            Self::Agent => "Execute most actions",
-            Self::Autonomous => "Full authority (dangerous)",
+            Self::Observer => "Read state only",
+            Self::Assistant => "+ contacts metadata, draft messages",
+            Self::Advisor => "+ read messages, calendar; draft events",
+            Self::Agent => "+ send/modify with confirmation",
+            Self::Autonomous => "+ autonomous send/modify (explicit opt-in)",
+            Self::Custom => "Custom capability map",
         }
     }
 
-    /// Numeric trust level (0-5) for comparison and serialization.
+    /// Numeric preset index (0-6) for serialization.
     #[must_use]
     pub(crate) const fn level(self) -> u8 {
         self as u8
     }
 
-    /// Construct a preset from a numeric trust level.
-    ///
-    /// Returns `None` for values outside 0-5.
+    /// Construct a preset from a numeric index; `None` outside 0-6.
     #[must_use]
     pub(crate) const fn from_level(level: u8) -> Option<Self> {
         match level {
@@ -220,6 +369,7 @@ impl CapabilityPreset {
             3 => Some(Self::Advisor),
             4 => Some(Self::Agent),
             5 => Some(Self::Autonomous),
+            6 => Some(Self::Custom),
             _ => None,
         }
     }
@@ -230,6 +380,157 @@ impl fmt::Display for CapabilityPreset {
         f.write_str(self.label())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Per-action binding (#552): action type -> required grant + confirmation
+// ---------------------------------------------------------------------------
+
+/// The confirmation rule bound to an action type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+#[non_exhaustive]
+pub(crate) enum ConfirmationRule {
+    /// Always require explicit user confirmation before executing.
+    Always,
+    /// Confirmation may be bypassed only when the matching autonomous
+    /// grant exists (every execution still receipts).
+    BypassableWithAutonomous,
+}
+
+/// The authorization requirement for one action type: the exact capability
+/// grant it needs and its confirmation rule (#552). Unknown action types
+/// have NO requirement entry and are denied fail-closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(crate) struct ActionRequirement {
+    /// The exact capability the action needs granted.
+    pub(crate) capability: NousCapability,
+    /// Its confirmation rule.
+    pub(crate) confirmation: ConfirmationRule,
+}
+
+/// The action binding table (#552). Every recognized action type maps to
+/// exactly one requirement; anything unlisted is denied.
+///
+/// Mapping notes (the design has no rows for these; flagged for operator
+/// review): `open_dialer`, `start_timer`, `set_alarm`, `open_feature` are
+/// low-risk device/UI actions bound to the draft class with Always-confirm;
+/// `scan_start` is an observation action bound to ReadState;
+/// `add_safe_network` modifies a security-adjacent allowlist and binds to
+/// the mode-confirmation class (Always-confirm, every time).
+#[must_use]
+pub(crate) fn action_requirement(action: &str) -> Option<ActionRequirement> {
+    use crate::ekphrasis::action_types as at;
+    let req = |capability, confirmation| {
+        Some(ActionRequirement {
+            capability,
+            confirmation,
+        })
+    };
+    match action {
+        at::DRAFT_SMS | at::DRAFT_MATRIX_MESSAGE => {
+            req(NousCapability::DraftMessages, ConfirmationRule::Always)
+        }
+        at::ADD_CALENDAR_EVENT => req(
+            NousCapability::DraftCalendarEvents,
+            ConfirmationRule::Always,
+        ),
+        at::TOGGLE_MODE => req(
+            NousCapability::ToggleModeConfirmed,
+            ConfirmationRule::Always,
+        ),
+        at::TOGGLE_RADIO => req(
+            NousCapability::ToggleRadiosConfirmed,
+            ConfirmationRule::Always,
+        ),
+        at::ADD_SAFE_NETWORK => req(
+            NousCapability::ToggleModeConfirmed,
+            ConfirmationRule::Always,
+        ),
+        at::OPEN_DIALER | at::START_TIMER | at::SET_ALARM | at::OPEN_FEATURE => {
+            req(NousCapability::DraftMessages, ConfirmationRule::Always)
+        }
+        at::SCAN_START => req(NousCapability::ReadState, ConfirmationRule::Always),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Audit receipts + authorization (#552)
+// ---------------------------------------------------------------------------
+
+/// Why an action was denied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+#[non_exhaustive]
+pub(crate) enum DenyReason {
+    /// The action type is not in the binding table (fail-closed).
+    UnknownAction,
+    /// The required capability is not granted.
+    MissingGrant,
+    /// The action targets a kernel-NEVER capability (panic/wipe,
+    /// security-disable, keys, SIGINT) -- unreachable on any grant state.
+    KernelNever,
+}
+
+/// The audit receipt emitted for EVERY authorization decision (#552):
+/// grants, confirmation requirements, and denials alike. The durable
+/// HMAC-chained audit wiring is the #544 path; this log is the kernel-side
+/// record below every client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuditReceipt {
+    /// Entity index the decision was for.
+    pub(crate) entity_index: usize,
+    /// The action type string (owned; the receipt must outlive the proposal).
+    pub(crate) action: String,
+    /// The capability the action required (when known).
+    pub(crate) required: Option<NousCapability>,
+    /// The decision, rendered ("granted", "requires_confirmation",
+    /// "denied:<reason>").
+    pub(crate) decision: String,
+}
+
+/// The authorization verdict for one proposal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+#[non_exhaustive]
+pub(crate) enum Authorization {
+    /// The action may execute now (a Confirmed-class action the operator
+    /// just confirmed, or an autonomous-class grant).
+    Granted,
+    /// The action needs explicit user confirmation first.
+    RequiresConfirmation,
+    /// The action is denied.
+    Denied {
+        /// Why.
+        reason: DenyReason,
+    },
+}
+
+/// Maximum receipts retained in the manager log (ring semantics; the
+/// drop counter keeps the loss visible).
+pub(crate) const MAX_RECEIPTS: usize = 64;
+
+/// Action strings that name kernel-NEVER territory. Any of these is denied
+/// regardless of grants -- the adversarial proof that no preset, custom
+/// map, or runtime path reaches panic/wipe/security-disable/keys/SIGINT
+/// (#552). Matching is defense-in-depth: these strings are not in the
+/// binding table, so they would already deny as UnknownAction; the
+/// KernelNever reason makes the boundary explicit in the receipt.
+const NEVER_ACTIONS: &[&str] = &[
+    "wipe",
+    "wipe_device",
+    "panic",
+    "panic_mode",
+    "trigger_panic",
+    "disable_scanning",
+    "disable_security",
+    "lower_threshold",
+    "read_keys",
+    "read_encryption_keys",
+    "read_sigint",
+    "sigint_dump",
+];
 
 // ---------------------------------------------------------------------------
 // Nous entity
@@ -313,8 +614,9 @@ pub struct NousEntity {
     name_len: u8,
     /// Matrix user ID (e.g., "@syn:thumos.lan").
     pub matrix_id: MatrixUserId,
-    /// Capability preset governing what this entity can do.
-    pub capability_preset: CapabilityPreset,
+    /// The capability set -- the SOLE authority over this entity's actions
+    /// (#552). Presets only ever construct this; they never rank it.
+    grants: CapabilitySet,
 }
 
 impl NousEntity {
@@ -346,7 +648,7 @@ impl NousEntity {
             // WHY(#373): validate the Matrix user id rather than trusting the
             // caller; a malformed id surfaces as NousError::InvalidMatrixId.
             matrix_id: MatrixUserId::new(&matrix_id).map_err(NousError::InvalidMatrixId)?,
-            capability_preset: preset,
+            grants: preset.grants(),
         })
     }
 
@@ -363,22 +665,61 @@ impl NousEntity {
         core::str::from_utf8(&self.name[..len]).unwrap_or("?")
     }
 
-    /// Whether this entity can propose actions at its current preset.
+    /// The entity's capability set (read-only view).
+    #[must_use]
+    pub(crate) const fn grants(&self) -> &CapabilitySet {
+        &self.grants
+    }
+
+    /// The preset matching this entity's current set, or `Custom` (#552).
+    #[must_use]
+    pub(crate) fn preset(&self) -> CapabilityPreset {
+        CapabilityPreset::of(&self.grants)
+    }
+
+    /// Replace the set from a preset constructor (discards custom edits).
+    ///
+    /// `Autonomous` must not be reachable through this setter's casual
+    /// callers -- see [`NousEntity::opt_in_autonomous`].
+    pub(crate) fn set_preset(&mut self, preset: CapabilityPreset) {
+        self.grants = preset.grants();
+    }
+
+    /// Grant one capability (Custom editing).
+    pub(crate) fn grant(&mut self, cap: NousCapability) {
+        self.grants.grant(cap);
+    }
+
+    /// Revoke one capability (stale-grant removal).
+    pub(crate) fn revoke(&mut self, cap: NousCapability) {
+        self.grants.revoke(cap);
+    }
+
+    /// The Autonomous opt-in (#552). Reachable ONLY with an explicit
+    /// `confirmed` flag from the settings UI's confirmation card -- never
+    /// by cycling presets. `confirmed = false` is a no-op (fail-closed).
+    pub(crate) fn opt_in_autonomous(&mut self, confirmed: bool) {
+        if confirmed {
+            self.grants = CapabilityPreset::Autonomous.grants();
+        }
+    }
+
+    /// Whether this entity can propose actions at its current grants.
     #[must_use]
     pub(crate) const fn can_propose(&self) -> bool {
-        self.capability_preset.can_propose()
+        self.grants.can_propose()
     }
 
-    /// Whether this entity can auto-execute low-risk actions.
+    /// Whether this entity holds any autonomous-class grant.
     #[must_use]
     pub(crate) const fn can_auto_execute(&self) -> bool {
-        self.capability_preset.can_auto_execute()
+        self.grants.can_auto_execute()
     }
 
-    /// Return the short display label for this entity's capability level.
+    /// Return the short display label for this entity's current set.
     #[must_use]
-    pub(crate) const fn capability_label(&self) -> &'static str {
-        self.capability_preset.label()
+    pub(crate) fn capability_label(&self) -> &'static str {
+        self.preset().label()
     }
 }
 
@@ -389,7 +730,7 @@ impl fmt::Display for NousEntity {
             "{} ({}) [{}]",
             self.name_str(),
             self.matrix_id,
-            self.capability_preset
+            self.preset()
         )
     }
 }
@@ -400,7 +741,7 @@ impl PartialEq for NousEntity {
         let other_len = (other.name_len as usize).min(MAX_NAME_LEN);
         self.name[..self_len] == other.name[..other_len]
             && self.matrix_id == other.matrix_id
-            && self.capability_preset == other.capability_preset
+            && self.grants == other.grants
     }
 }
 
@@ -467,6 +808,11 @@ pub(crate) struct NousManager {
     /// Index of the currently active entity, or `None` if no entity is
     /// currently selected (#453).
     active_entity: Option<usize>,
+    /// The audit receipt log (#552): every authorization decision, newest
+    /// last, ring-bounded at [`MAX_RECEIPTS`].
+    receipts: Vec<AuditReceipt>,
+    /// Receipts dropped by the ring bound (the loss is never silent).
+    dropped_receipts: u32,
 }
 
 impl NousManager {
@@ -486,6 +832,8 @@ impl NousManager {
         Self {
             entities,
             active_entity: Some(0),
+            receipts: Vec::new(),
+            dropped_receipts: 0,
         }
     }
 
@@ -497,6 +845,8 @@ impl NousManager {
         Self {
             entities: Vec::new(),
             active_entity: None,
+            receipts: Vec::new(),
+            dropped_receipts: 0,
         }
     }
 
@@ -540,6 +890,130 @@ impl NousManager {
     /// Return a slice of all registered entities.
     pub(crate) fn entities(&self) -> &[NousEntity] {
         &self.entities
+    }
+
+    /// Authorize one entity's action proposal against its capability set
+    /// (#552): exact required grant, confirmation rule, kernel-NEVER
+    /// boundary -- and an audit receipt for EVERY decision, including
+    /// denials.
+    ///
+    /// The `operator_confirmed` flag is the settings UI's explicit
+    /// confirmation for a Confirmed-class action (the confirm card's
+    /// result); it never bypasses a missing grant or a NEVER boundary.
+    pub(crate) fn authorize(
+        &mut self,
+        entity_index: usize,
+        proposal: &crate::ekphrasis::ActionProposal,
+        operator_confirmed: bool,
+    ) -> Authorization {
+        let action = proposal.action.as_str();
+
+        // 1. The kernel-NEVER boundary: unreachable on any grant state.
+        if NEVER_ACTIONS.contains(&action) {
+            return self.deny(entity_index, proposal, None, DenyReason::KernelNever);
+        }
+
+        // 2. Unknown action types deny fail-closed.
+        let Some(requirement) = action_requirement(action) else {
+            return self.deny(entity_index, proposal, None, DenyReason::UnknownAction);
+        };
+
+        // 3. The entity must exist and hold the exact grant.
+        let Some(entity) = self.entities.get(entity_index) else {
+            return self.deny(
+                entity_index,
+                proposal,
+                Some(requirement.capability),
+                DenyReason::MissingGrant,
+            );
+        };
+        if !entity.grants().grants(requirement.capability) {
+            return self.deny(
+                entity_index,
+                proposal,
+                Some(requirement.capability),
+                DenyReason::MissingGrant,
+            );
+        }
+
+        // 4. Confirmation rule.
+        let verdict = match requirement.confirmation {
+            ConfirmationRule::Always => {
+                if operator_confirmed {
+                    Authorization::Granted
+                } else {
+                    Authorization::RequiresConfirmation
+                }
+            }
+            ConfirmationRule::BypassableWithAutonomous => {
+                if operator_confirmed || entity.grants().can_auto_execute() {
+                    Authorization::Granted
+                } else {
+                    Authorization::RequiresConfirmation
+                }
+            }
+        };
+        let decision = match &verdict {
+            Authorization::Granted => "granted",
+            Authorization::RequiresConfirmation => "requires_confirmation",
+            Authorization::Denied { .. } => unreachable!("verdict is never Denied here"),
+        };
+        self.record(
+            entity_index,
+            proposal,
+            Some(requirement.capability),
+            decision,
+        );
+        verdict
+    }
+
+    /// Record a deny verdict with its receipt.
+    fn deny(
+        &mut self,
+        entity_index: usize,
+        proposal: &crate::ekphrasis::ActionProposal,
+        required: Option<NousCapability>,
+        reason: DenyReason,
+    ) -> Authorization {
+        let text = match reason {
+            DenyReason::UnknownAction => "denied:unknown_action",
+            DenyReason::MissingGrant => "denied:missing_grant",
+            DenyReason::KernelNever => "denied:kernel_never",
+        };
+        self.record(entity_index, proposal, required, text);
+        Authorization::Denied { reason }
+    }
+
+    /// Append a receipt to the ring-bounded log.
+    fn record(
+        &mut self,
+        entity_index: usize,
+        proposal: &crate::ekphrasis::ActionProposal,
+        required: Option<NousCapability>,
+        decision: &str,
+    ) {
+        if self.receipts.len() >= MAX_RECEIPTS {
+            self.receipts.remove(0);
+            self.dropped_receipts = self.dropped_receipts.saturating_add(1);
+        }
+        self.receipts.push(AuditReceipt {
+            entity_index,
+            action: proposal.action.clone(),
+            required,
+            decision: String::from(decision),
+        });
+    }
+
+    /// The audit receipt log (oldest first).
+    #[must_use]
+    pub(crate) fn receipts(&self) -> &[AuditReceipt] {
+        &self.receipts
+    }
+
+    /// Receipts dropped by the ring bound.
+    #[must_use]
+    pub(crate) const fn dropped_receipts(&self) -> u32 {
+        self.dropped_receipts
     }
 
     /// Switch the active entity to the given index.
@@ -647,7 +1121,7 @@ impl NousManager {
     ) -> Result<(), NousError> {
         match self.entities.get_mut(index) {
             Some(entity) => {
-                entity.capability_preset = preset;
+                entity.set_preset(preset);
                 Ok(())
             }
             None => Err(NousError::InvalidIndex {
@@ -684,17 +1158,16 @@ impl NousManager {
     /// Returns `false` if no entities are registered.
     #[must_use]
     pub(crate) fn active_can_propose(&self) -> bool {
-        self.active()
-            .is_some_and(|e| e.capability_preset.can_propose())
+        self.active().is_some_and(|e| e.grants().can_propose())
     }
 
-    /// Check whether the active entity can auto-execute actions.
+    /// Check whether the active entity can auto-execute actions (holds an
+    /// autonomous-class grant, #552).
     ///
     /// Returns `false` if no entities are registered.
     #[must_use]
     pub(crate) fn active_can_auto_execute(&self) -> bool {
-        self.active()
-            .is_some_and(|e| e.capability_preset.can_auto_execute())
+        self.active().is_some_and(|e| e.grants().can_auto_execute())
     }
 }
 
@@ -722,17 +1195,35 @@ mod tests {
     // --- CapabilityPreset tests ---
 
     #[test]
-    fn preset_ordering() {
-        assert!(CapabilityPreset::Off < CapabilityPreset::Observer);
-        assert!(CapabilityPreset::Observer < CapabilityPreset::Assistant);
-        assert!(CapabilityPreset::Assistant < CapabilityPreset::Advisor);
-        assert!(CapabilityPreset::Advisor < CapabilityPreset::Agent);
-        assert!(CapabilityPreset::Agent < CapabilityPreset::Autonomous);
+    fn preset_ladder_is_a_constructor_sequence_not_a_rank() {
+        // #552: the ladder's meaning is "each constructor adds grants to the
+        // previous set", NOT "higher rank subsumes privileges". Assert the
+        // set-inclusion chain and that Autonomous adds exactly the two
+        // autonomous grants to Agent's set.
+        let agent = CapabilityPreset::Agent.grants();
+        let autonomous = CapabilityPreset::Autonomous.grants();
+        let mut expected = agent;
+        expected.grant(NousCapability::SendMessagesAutonomous);
+        expected.grant(NousCapability::ModifyContactsAutonomous);
+        assert_eq!(
+            autonomous, expected,
+            "Autonomous = Agent + the two autonomous grants"
+        );
+
+        let observer = CapabilityPreset::Observer.grants();
+        let assistant = CapabilityPreset::Assistant.grants();
+        let mut expected2 = observer;
+        expected2.grant(NousCapability::ReadContactsMetadata);
+        expected2.grant(NousCapability::DraftMessages);
+        assert_eq!(
+            assistant, expected2,
+            "Assistant = Observer + the two documented grants"
+        );
     }
 
     #[test]
     fn preset_level_roundtrip() {
-        for level in 0..=5u8 {
+        for level in 0..=6u8 {
             let preset = CapabilityPreset::from_level(level);
             assert!(preset.is_some(), "level {level} must parse");
             assert_eq!(
@@ -741,103 +1232,354 @@ mod tests {
                 "level roundtrip for {level}"
             );
         }
-        assert!(CapabilityPreset::from_level(6).is_none());
+        assert!(CapabilityPreset::from_level(7).is_none());
         assert!(CapabilityPreset::from_level(255).is_none());
     }
 
     #[test]
     fn preset_propose_gating() {
-        assert!(!CapabilityPreset::Off.can_propose(), "Off must not propose");
         assert!(
-            !CapabilityPreset::Observer.can_propose(),
+            !CapabilityPreset::Off.grants().can_propose(),
+            "Off must not propose"
+        );
+        assert!(
+            !CapabilityPreset::Observer.grants().can_propose(),
             "Observer must not propose"
         );
         assert!(
-            CapabilityPreset::Assistant.can_propose(),
+            CapabilityPreset::Assistant.grants().can_propose(),
             "Assistant must propose"
         );
         assert!(
-            CapabilityPreset::Advisor.can_propose(),
+            CapabilityPreset::Advisor.grants().can_propose(),
             "Advisor must propose"
         );
-        assert!(CapabilityPreset::Agent.can_propose(), "Agent must propose");
         assert!(
-            CapabilityPreset::Autonomous.can_propose(),
+            CapabilityPreset::Agent.grants().can_propose(),
+            "Agent must propose"
+        );
+        assert!(
+            CapabilityPreset::Autonomous.grants().can_propose(),
             "Autonomous must propose"
         );
     }
 
     #[test]
     fn preset_auto_execute_gating() {
+        // #552: auto-execution is per-capability (autonomous grants), never
+        // a rank. Only sets holding an Autonomous-class grant qualify.
         assert!(
-            !CapabilityPreset::Off.can_auto_execute(),
+            !CapabilityPreset::Off.grants().can_auto_execute(),
             "Off must not auto-execute"
         );
         assert!(
-            !CapabilityPreset::Observer.can_auto_execute(),
+            !CapabilityPreset::Observer.grants().can_auto_execute(),
             "Observer must not auto-execute"
         );
         assert!(
-            !CapabilityPreset::Assistant.can_auto_execute(),
+            !CapabilityPreset::Assistant.grants().can_auto_execute(),
             "Assistant must not auto-execute"
         );
         assert!(
-            CapabilityPreset::Advisor.can_auto_execute(),
-            "Advisor must auto-execute"
+            !CapabilityPreset::Advisor.grants().can_auto_execute(),
+            "Advisor holds no autonomous grant"
         );
         assert!(
-            CapabilityPreset::Agent.can_auto_execute(),
-            "Agent must auto-execute"
+            !CapabilityPreset::Agent.grants().can_auto_execute(),
+            "Agent is confirmation-only, no autonomous grant"
         );
         assert!(
-            CapabilityPreset::Autonomous.can_auto_execute(),
-            "Autonomous must auto-execute"
+            CapabilityPreset::Autonomous.grants().can_auto_execute(),
+            "Autonomous holds the autonomous grants"
         );
     }
 
     #[test]
-    fn preset_high_risk_gating() {
-        assert!(!CapabilityPreset::Off.can_auto_execute_high_risk());
-        assert!(!CapabilityPreset::Observer.can_auto_execute_high_risk());
-        assert!(!CapabilityPreset::Assistant.can_auto_execute_high_risk());
-        assert!(!CapabilityPreset::Advisor.can_auto_execute_high_risk());
-        assert!(CapabilityPreset::Agent.can_auto_execute_high_risk());
-        assert!(CapabilityPreset::Autonomous.can_auto_execute_high_risk());
+    fn preset_constructors_match_the_design_table() {
+        // #552: presets are constructors for capability sets, verbatim from
+        // design-comms.md. Each assertion pins the EXACT grant set.
+        use NousCapability as C;
+        assert_eq!(CapabilityPreset::Off.grants(), CapabilitySet::NONE);
+        assert!(CapabilityPreset::Observer.grants().grants(C::ReadState));
+        assert!(!CapabilityPreset::Observer.grants().can_propose());
+
+        let a = CapabilityPreset::Assistant.grants();
+        assert!(
+            a.grants(C::ReadState)
+                && a.grants(C::ReadContactsMetadata)
+                && a.grants(C::DraftMessages)
+        );
+        assert!(!a.grants(C::ReadMessageContent));
+
+        let ad = CapabilityPreset::Advisor.grants();
+        assert!(ad.grants(C::ReadMessageMetadata) && ad.grants(C::ReadMessageContent));
+        assert!(ad.grants(C::ReadCalendar) && ad.grants(C::DraftCalendarEvents));
+        assert!(!ad.grants(C::SendMessagesConfirmed));
+
+        let ag = CapabilityPreset::Agent.grants();
+        assert!(ag.grants(C::SendMessagesConfirmed) && ag.grants(C::ModifyContactsConfirmed));
+        assert!(!ag.grants(C::SendMessagesAutonomous) && !ag.grants(C::ToggleModeConfirmed));
+
+        let au = CapabilityPreset::Autonomous.grants();
+        assert!(au.grants(C::SendMessagesAutonomous) && au.grants(C::ModifyContactsAutonomous));
+        assert!(
+            !au.grants(C::ReadAuditLog),
+            "autonomous never includes the audit log by default"
+        );
+        assert!(
+            !au.grants(C::ToggleModeConfirmed) && !au.grants(C::ToggleRadiosConfirmed),
+            "autonomous never includes mode/radio toggles by default (design: opt-in only)"
+        );
     }
 
     #[test]
-    fn preset_destructive_gating() {
-        assert!(!CapabilityPreset::Off.can_execute_destructive());
-        assert!(!CapabilityPreset::Observer.can_execute_destructive());
-        assert!(!CapabilityPreset::Assistant.can_execute_destructive());
-        assert!(!CapabilityPreset::Advisor.can_execute_destructive());
-        assert!(!CapabilityPreset::Agent.can_execute_destructive());
-        assert!(CapabilityPreset::Autonomous.can_execute_destructive());
-    }
-
-    #[test]
-    fn preset_next_cycles() {
-        let start = CapabilityPreset::Off;
-        let mut current = start;
-        let mut seen = alloc::vec::Vec::new();
-        for _ in 0..6 {
-            seen.push(current);
-            current = current.next();
+    fn no_preset_or_custom_can_represent_the_never_class() {
+        // #552 adversarial: the NEVER set is unrepresentable in CapabilitySet
+        // by construction (NeverCapability is a separate type with no bits).
+        // This test pins that every preset constructor yields a set that
+        // grants NOTHING outside the 15 documented capabilities -- the bit
+        // patterns are exact, so an accidental extra bit fails loudly.
+        for preset in [
+            CapabilityPreset::Off,
+            CapabilityPreset::Observer,
+            CapabilityPreset::Assistant,
+            CapabilityPreset::Advisor,
+            CapabilityPreset::Agent,
+            CapabilityPreset::Autonomous,
+        ] {
+            assert_eq!(
+                preset,
+                CapabilityPreset::of(&preset.grants()),
+                "every preset's set must round-trip through of()"
+            );
         }
-        assert_eq!(current, start, "next must wrap around to Off");
-        assert_eq!(seen.len(), 6, "must visit all 6 presets");
+        // A custom set with every grantable bit still cannot name a NEVER
+        // capability: the type system has no API for it. Pin the full set.
+        let mut all = CapabilitySet::NONE;
+        for cap in [
+            NousCapability::ReadState,
+            NousCapability::ReadContactsMetadata,
+            NousCapability::ReadContactsFull,
+            NousCapability::ReadMessageMetadata,
+            NousCapability::ReadMessageContent,
+            NousCapability::ReadCalendar,
+            NousCapability::ReadAuditLog,
+            NousCapability::DraftMessages,
+            NousCapability::DraftCalendarEvents,
+            NousCapability::SendMessagesConfirmed,
+            NousCapability::SendMessagesAutonomous,
+            NousCapability::ModifyContactsConfirmed,
+            NousCapability::ModifyContactsAutonomous,
+            NousCapability::ToggleModeConfirmed,
+            NousCapability::ToggleRadiosConfirmed,
+        ] {
+            all.grant(cap);
+        }
+        assert_eq!(
+            CapabilityPreset::of(&all),
+            CapabilityPreset::Custom,
+            "a fully-granted map is Custom, not any preset"
+        );
     }
 
     #[test]
-    fn preset_prev_cycles() {
-        let start = CapabilityPreset::Off;
-        let mut current = start;
-        let mut seen = alloc::vec::Vec::new();
-        for _ in 0..6 {
-            seen.push(current);
-            current = current.prev();
+    fn never_actions_deny_on_every_preset() {
+        // #552 adversarial: panic/wipe/security-disable/keys/SIGINT action
+        // strings deny on EVERY grant state, Autonomous included.
+        let mut mgr = NousManager::empty();
+        let mut all_grant = NousEntity::new(
+            "max",
+            "@max:thumos.lan".into(),
+            CapabilityPreset::Autonomous,
+        )
+        .expect("valid entity");
+        for cap in [
+            NousCapability::ToggleModeConfirmed,
+            NousCapability::ToggleRadiosConfirmed,
+            NousCapability::ReadAuditLog,
+        ] {
+            all_grant.grant(cap);
         }
-        assert_eq!(current, start, "prev must wrap around to Off");
+        mgr.add_entity(all_grant).expect("room for entity");
+        for action in [
+            "wipe",
+            "panic",
+            "trigger_panic",
+            "disable_scanning",
+            "read_encryption_keys",
+            "read_sigint",
+        ] {
+            let proposal = crate::ekphrasis::ActionProposal::new(
+                String::from(action),
+                Vec::new(),
+                String::from("adversarial probe"),
+            );
+            let verdict = mgr.authorize(0, &proposal, true);
+            assert!(
+                matches!(
+                    verdict,
+                    Authorization::Denied {
+                        reason: DenyReason::KernelNever
+                    }
+                ),
+                "{action} must deny kernel_never even on a max-grant entity"
+            );
+        }
+        // Every denial receipted.
+        assert_eq!(mgr.receipts().len(), 6);
+        assert!(
+            mgr.receipts()
+                .iter()
+                .all(|r| r.decision == "denied:kernel_never")
+        );
+    }
+
+    #[test]
+    fn unknown_actions_deny_fail_closed() {
+        let mut mgr = NousManager::new();
+        let proposal = crate::ekphrasis::ActionProposal::new(
+            String::from("exfiltrate_everything"),
+            Vec::new(),
+            String::from("unknown probe"),
+        );
+        let verdict = mgr.authorize(0, &proposal, true);
+        assert!(matches!(
+            verdict,
+            Authorization::Denied {
+                reason: DenyReason::UnknownAction
+            }
+        ));
+    }
+
+    #[test]
+    fn stale_grant_denies_after_revoke() {
+        // #552 adversarial: a revoked (stale) grant must not authorize.
+        let mut mgr = NousManager::new();
+        let proposal = crate::ekphrasis::ActionProposal::new(
+            String::from(crate::ekphrasis::action_types::DRAFT_SMS),
+            Vec::new(),
+            String::from("draft"),
+        );
+        // Syn is Advisor: has DraftMessages.
+        assert!(matches!(
+            mgr.authorize(0, &proposal, false),
+            Authorization::RequiresConfirmation
+        ));
+        mgr.active_mut()
+            .expect("active entity")
+            .revoke(NousCapability::DraftMessages);
+        assert!(
+            matches!(
+                mgr.authorize(0, &proposal, true),
+                Authorization::Denied {
+                    reason: DenyReason::MissingGrant
+                }
+            ),
+            "after revoke the same action must deny missing_grant"
+        );
+    }
+
+    #[test]
+    fn confirmation_discipline_per_rule() {
+        let mut mgr = NousManager::new();
+        let sms = crate::ekphrasis::ActionProposal::new(
+            String::from(crate::ekphrasis::action_types::DRAFT_SMS),
+            Vec::new(),
+            String::from("draft"),
+        );
+        // Always-rule: unconfirmed is never Granted, even with the grant.
+        assert!(matches!(
+            mgr.authorize(0, &sms, false),
+            Authorization::RequiresConfirmation
+        ));
+        assert!(matches!(
+            mgr.authorize(0, &sms, true),
+            Authorization::Granted
+        ));
+        // The grant alone never executes a Confirmed-class action.
+        assert!(
+            !mgr.active().expect("active").grants().can_auto_execute()
+                || !matches!(mgr.authorize(0, &sms, false), Authorization::Granted)
+        );
+    }
+
+    #[test]
+    fn every_decision_receipts() {
+        let mut mgr = NousManager::new();
+        let good = crate::ekphrasis::ActionProposal::new(
+            String::from(crate::ekphrasis::action_types::DRAFT_SMS),
+            Vec::new(),
+            String::from("draft"),
+        );
+        let bad = crate::ekphrasis::ActionProposal::new(
+            String::from("not_an_action"),
+            Vec::new(),
+            String::from("bad"),
+        );
+        let _ = mgr.authorize(0, &good, false);
+        let _ = mgr.authorize(0, &bad, true);
+        let _ = mgr.authorize(0, &good, true);
+        assert_eq!(
+            mgr.receipts().len(),
+            3,
+            "grant + deny + confirm all receipt"
+        );
+        assert_eq!(mgr.receipts()[0].decision, "requires_confirmation");
+        assert_eq!(mgr.receipts()[1].decision, "denied:unknown_action");
+        assert_eq!(mgr.receipts()[2].decision, "granted");
+        assert!(
+            mgr.receipts()
+                .iter()
+                .all(|r| r.required.is_some() || r.decision == "denied:unknown_action")
+        );
+    }
+
+    #[test]
+    fn cycling_never_reaches_autonomous() {
+        // #552: the settings dial cannot produce autonomous authority.
+        let mut p = CapabilityPreset::Off;
+        for _ in 0..12 {
+            assert_ne!(
+                p,
+                CapabilityPreset::Autonomous,
+                "cycling must never yield Autonomous"
+            );
+            p = p.next_grantable();
+        }
+        // The opt-in path requires the explicit confirmation flag.
+        let mut e = NousEntity::new("e", "@e:thumos.lan".into(), CapabilityPreset::Agent)
+            .expect("valid entity");
+        e.opt_in_autonomous(false);
+        assert_ne!(
+            e.preset(),
+            CapabilityPreset::Autonomous,
+            "unconfirmed opt-in is a no-op"
+        );
+        e.opt_in_autonomous(true);
+        assert_eq!(
+            e.preset(),
+            CapabilityPreset::Autonomous,
+            "confirmed opt-in grants"
+        );
+    }
+
+    #[test]
+    fn custom_edits_flip_label() {
+        let mut e = NousEntity::new("e", "@e:thumos.lan".into(), CapabilityPreset::Observer)
+            .expect("valid entity");
+        assert_eq!(e.capability_label(), "OBSERVER");
+        e.grant(NousCapability::ReadCalendar);
+        assert_eq!(
+            e.capability_label(),
+            "CUSTOM",
+            "a grant outside the preset makes it custom"
+        );
+        e.revoke(NousCapability::ReadCalendar);
+        assert_eq!(
+            e.capability_label(),
+            "OBSERVER",
+            "undoing the edit restores the preset label"
+        );
     }
 
     #[test]
@@ -864,7 +1606,7 @@ mod tests {
         let entity = entity.unwrap_or_else(|_| unreachable!());
         assert_eq!(entity.name_str(), "TestBot");
         assert_eq!(entity.matrix_id, "@testbot:thumos.lan");
-        assert_eq!(entity.capability_preset, CapabilityPreset::Assistant);
+        assert_eq!(entity.preset(), CapabilityPreset::Assistant);
     }
 
     #[test]
@@ -973,18 +1715,20 @@ mod tests {
     fn default_entities_valid() {
         let syn = default_syn().expect("default syn valid");
         assert_eq!(syn.name_str(), "Syn");
-        assert_eq!(syn.capability_preset, CapabilityPreset::Advisor);
+        assert_eq!(syn.preset(), CapabilityPreset::Advisor);
         assert!(syn.can_propose());
-        assert!(syn.can_auto_execute());
+        // #552: Advisor holds NO autonomous grant (autonomous authority is
+        // per-capability, opt-in) — it proposes with confirmation only.
+        assert!(!syn.can_auto_execute());
 
         let phrouros = default_phrouros().expect("default phrouros valid");
         assert_eq!(phrouros.name_str(), "Phrouros");
-        assert_eq!(phrouros.capability_preset, CapabilityPreset::Observer);
+        assert_eq!(phrouros.preset(), CapabilityPreset::Observer);
         assert!(!phrouros.can_propose());
 
         let paideia = default_paideia().expect("default paideia valid");
         assert_eq!(paideia.name_str(), "Paideia");
-        assert_eq!(paideia.capability_preset, CapabilityPreset::Assistant);
+        assert_eq!(paideia.preset(), CapabilityPreset::Assistant);
         assert!(paideia.can_propose());
         assert!(!paideia.can_auto_execute());
     }
@@ -1164,7 +1908,7 @@ mod tests {
         let mut mgr = NousManager::new();
         assert!(mgr.set_preset(0, CapabilityPreset::Agent).is_ok());
         assert_eq!(
-            mgr.entity(0).map(|e| e.capability_preset),
+            mgr.entity(0).map(|e| e.preset()),
             Some(CapabilityPreset::Agent),
         );
     }
@@ -1207,8 +1951,9 @@ mod tests {
     #[test]
     fn manager_active_can_auto_execute() {
         let mgr = NousManager::new();
-        // Syn is Advisor, which can auto-execute low-risk.
-        assert!(mgr.active_can_auto_execute());
+        // #552: Syn (Advisor) holds NO autonomous grant — auto-execution is
+        // per-capability (autonomous classes), never a preset rank.
+        assert!(!mgr.active_can_auto_execute());
     }
 
     #[test]

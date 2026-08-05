@@ -404,7 +404,7 @@ mechanism = "host"
 
 [[module]]
 name = "nous"
-tests = 38
+tests = 43
 mechanism = "host"
 
 [[module]]
