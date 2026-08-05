@@ -1,0 +1,141 @@
+# Capability reachability inventory (issue #550) — the machine-checked answer
+# to "is this capability real?" Tiers:
+#   compiled-only        — the Rust surface exists; nothing reachable from boot/loop
+#   kernel-wired         — reachable from boot or the service loop (module-graph
+#                          reachability from main/kinit/kardia), no executable witness
+#   emulated-mock-proven — a named witness marker asserted in the QEMU boot log
+#                          by scripts/witness/*.sh (emulation, not hardware)
+#   hardware-proven      — validated on the physical AGM M7 (none today;
+#                          hardware-gated entries carry hardware_reason instead)
+# scripts/check-wiring-inventory.sh enforces: every main.rs module classified,
+# every witness marker present in the witness scripts AND in the boot log.
+
+[[capability]]
+id = "kernel-core"
+modules = ["kinit", "kinit_plan", "kardia", "exceptions", "irq", "gic", "mmu", "slab", "page", "heap", "process", "fd", "signal", "elf", "futex", "ipc", "pipe", "socket", "supervisor", "syscall", "reflex", "mmio", "memguard"]
+tier = "emulated-mock-proven"
+witness = ["THUMOS-QEMU: boot-complete", "THUMOS-QEMU: service-loop ticks=", "/init spawned", "shell: hello from userspace", "USERFAULT:"]
+notes = "PL0 isolation, graceful kill, fork/exec/brk/guard witnesses live in the per-probe scripts (kfault/sleep/fork/exec/forkexec/guard/brk/crashloop)."
+
+[[capability]]
+id = "memory-fs"
+modules = ["block", "cache", "vfs", "devfs", "lfs", "lfs_imap", "lfs_segment", "lfs_checkpoint", "lfs_writer", "lfs_compact", "emmc", "ramfs"]
+tier = "kernel-wired"
+notes = "LFS mounts at boot (kinit Step 8c); no witness marker asserts persistence behavior in emulation yet."
+
+[[capability]]
+id = "time"
+modules = ["timer", "time", "clock"]
+tier = "emulated-mock-proven"
+witness = ["kardia: clock src=manual"]
+notes = "ClockManager trust hierarchy wired + seeded (#402). sys_clock_gettime unification is #506; QEMU timer fidelity is #461."
+
+[[capability]]
+id = "telephony"
+modules = ["telephony", "telephony_parser", "telephony_mock", "sim", "sms", "ccci", "ccci_logger", "gsm7"]
+tier = "emulated-mock-proven"
+witness = ["kardia: modem ready state=Registered", "kardia: incoming call -> ringtone", "kardia: sim iccid_len="]
+notes = "Seeded mock transport; the live CCCI wire is hardware-gated. SIM PIN/PUK unlock is #517."
+
+[[capability]]
+id = "audio"
+modules = ["audio", "audio_codec", "audio_route", "bt_audio", "avdtp", "sbc", "mic_audit"]
+tier = "emulated-mock-proven"
+witness = ["kardia: audio ready sessions=", "kardia: bt_audio sample_rate=44100 channels=2"]
+notes = "NullCodec in emulation; MT6357 codec + BT HCI are hardware-gated."
+
+[[capability]]
+id = "ui"
+modules = ["ui", "status_bar", "screen_home"]
+tier = "emulated-mock-proven"
+witness = ["kardia: frame rendered painted_px=", "kardia: nav Home -> Search", "kardia: nav Search -> Home", "kardia: statusbar net=Lte"]
+notes = "Render + input dispatch + navigation through the real screen path (#400)."
+
+[[capability]]
+id = "heorte"
+modules = ["heorte", "heorte_timer", "heorte_alarm"]
+tier = "emulated-mock-proven"
+witness = ["kardia: heorte events="]
+notes = "Calendar/alarm engine + calendar screen render wired."
+
+[[capability]]
+id = "firewall"
+modules = ["firewall"]
+tier = "emulated-mock-proven"
+witness = ["kardia: firewall rules="]
+notes = "Loop-persistent policy + verified HMAC audit chain (#403)."
+
+[[capability]]
+id = "secure-boot"
+modules = ["secure_boot"]
+tier = "emulated-mock-proven"
+witness = ["Secure boot: DEGRADED", "image-resident initramfs signature verified"]
+notes = "Fail-closed medium trust; production-signed verified boot on live eMMC is #467 (hardware-gated)."
+
+[[capability]]
+id = "security-subsystems"
+modules = ["security", "security_mode", "lock_screen", "key_manager", "audit", "capability", "panic_wipe", "bfu_timer", "csprng"]
+tier = "kernel-wired"
+notes = "Security-mode manager drives the status bar (#404); encryption/key paths land with the boot-time passphrase subsystem (#446) and per-device salt (#449)."
+hardware_reason = "panic wipe + tamper evidence need the physical eMMC/sensors"
+
+[[capability]]
+id = "power"
+modules = ["power", "battery", "watchdog"]
+tier = "kernel-wired"
+hardware_reason = "PMIC/battery telemetry needs the physical device"
+
+[[capability]]
+id = "display-input"
+modules = ["display"]
+tier = "kernel-wired"
+notes = "Rendered via the ui capability's synthetic framebuffer in emulation; the DDP pipeline is hardware-gated."
+
+[[capability]]
+id = "connectivity"
+modules = ["wifi", "bluetooth", "gps", "net", "dns", "dns_tls", "dhcp"]
+tier = "kernel-wired"
+notes = "State machines + parsers wired; packet filter consumes them. Radio I/O is hardware-gated (fail-closed loopback in emulation)."
+hardware_reason = "WiFi TX/RX/scan, BT RF, GPS NMEA need the combo chip + antennas"
+
+[[capability]]
+id = "comms-matrix"
+modules = ["matrix_crypto", "http_client", "json_mini", "harmostes", "matrix_ids"]
+tier = "kernel-wired"
+notes = "Olm/Megolm + HTTP/JSON surfaces compiled; /keys/claim consumption is #437 remnant 3."
+
+[[capability]]
+id = "screens-extended"
+modules = ["screen_search", "screen_settings", "screen_dialer", "screen_calendar", "screen_alarm", "screen_messages"]
+tier = "kernel-wired"
+notes = "screen_calendar renders via the heorte witness; the rest are routed but unwitnessed."
+
+[[capability]]
+id = "screens-compiled-only"
+modules = ["screen_call", "screen_contacts", "screen_fm", "screen_nous", "screen_privacy", "screen_radio", "screen_threat"]
+tier = "compiled-only"
+notes = "No route/input path reaches them today (#400 routing only covers the wired set). FM screen becomes reachable under #518; threat screen waits on #555's calibrated scores; nous/privacy/radio screens wait on their owning subsystems."
+
+[[capability]]
+id = "apps-compiled-only"
+modules = ["contacts", "t9", "fm_radio", "briar", "meshtastic", "ekphrasis", "provision", "encryption", "nous"]
+tier = "compiled-only"
+notes = "No production call path from boot/loop. Owners: fm_radio #518, encryption #449/#446, nous #552, ekphrasis #553, provision USB OTG (Phase 8 deferral), briar/meshtastic Phase 9 stubs."
+
+[[capability]]
+id = "hardware-support"
+modules = ["qemu", "console", "uart", "usb"]
+tier = "kernel-wired"
+notes = "console host-testability is #459; USB EP1 ISR/reader sync is #437 remnant 2."
+
+[[capability]]
+id = "board-platform"
+modules = ["device", "kconfig"]
+tier = "kernel-wired"
+notes = "Board constants consolidate under board:: in #534."
+
+# Accounting rules (from the retired KERNEL-WIRING-AUDIT.md):
+# - compiled+tested means the Rust surface exists; it does not imply boot,
+#   userspace, or hardware readiness.
+# - A capability is hardware-ready only with a production call path and
+#   identity-protection behavior at the driver boundary.
