@@ -14,11 +14,9 @@
 //! from the home screen or settings.  It interacts with the `FmRadio`
 //! controller in `fm_radio.rs` for hardware operations.
 
-// WHY: FM screen not yet wired to kinit (Wave 8, kinit wiring pending).
-#![expect(
-    dead_code,
-    reason = "FM radio screen created in Phase 07 Wave 8, kinit wiring pending (#518)"
-)]
+// WHY: FM screen is wired (#518): FmScreen sits in KernelState and is fed
+// from FmRadio<BootFmHw> each tick, so it is no longer dead surface.
+
 
 use crate::fm_radio::{self, FmState};
 use crate::ui::{

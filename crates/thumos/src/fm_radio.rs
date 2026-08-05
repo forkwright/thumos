@@ -28,11 +28,9 @@
 //! (`audio.rs`) with `SessionKind::FmRadio`.  Boot integration via
 //! `kinit.rs` Step 13d.
 
-// WHY: FM radio driver not yet wired to kinit (Wave 8, kinit wiring pending).
-#![expect(
-    dead_code,
-    reason = "FM radio driver created in Phase 07 Wave 8, kinit wiring pending (#518)"
-)]
+// WHY: FM radio driver is wired to the boot path (#518): NullFmHw under
+// qemu/test, the real WMT backend on device, FmRadio<BootFmHw> in
+// KernelState, and the FM screen fed each tick — no dead surface remains.
 
 extern crate alloc;
 
@@ -265,6 +263,84 @@ impl FmHwOps for FmHw {
         -100 // No signal
     }
 }
+
+// ---------------------------------------------------------------------------
+// No-op FM hardware for emulation (#518)
+// ---------------------------------------------------------------------------
+
+/// A no-op FM backend for qemu (#518). The combo chip's CONSYS register
+/// block is unmodeled on -machine virt, so the real `FmHw`'s MMIO would
+/// data-abort. `NullFmHw` tracks the power/tune/seek state the `FmRadio`
+/// controller and FM screen read — the controller state machine and the
+/// screen's render path run in emulation. Distinct from `MockFmHw`
+/// (test-only fail-injection knobs); seeks step deterministically by
+/// 100 kHz with band wrap so seek logic is exercised end-to-end.
+#[cfg(any(feature = "qemu", test))]
+pub(crate) struct NullFmHw {
+    /// Whether the receiver is powered.
+    powered: bool,
+    /// Current tuned frequency in kHz.
+    current_freq: u32,
+}
+
+#[cfg(any(feature = "qemu", test))]
+impl NullFmHw {
+    /// Create a powered-off null backend at the default frequency.
+    pub(crate) const fn new() -> Self {
+        Self {
+            powered: false,
+            current_freq: FM_DEFAULT_FREQ_KHZ,
+        }
+    }
+}
+
+/// Step a seek by `step` kHz, wrapping at the band edges.
+#[cfg(any(feature = "qemu", test))]
+const fn seek_step(freq_khz: u32, step: i32) -> u32 {
+    let span = (FM_FREQ_MAX_KHZ - FM_FREQ_MIN_KHZ) as i32;
+    let offset = (freq_khz - FM_FREQ_MIN_KHZ) as i32 + step;
+    let wrapped = ((offset % span) + span) % span;
+    FM_FREQ_MIN_KHZ + wrapped as u32
+}
+
+#[cfg(any(feature = "qemu", test))]
+impl FmHwOps for NullFmHw {
+    fn power_on(&mut self) -> Result<(), FmError> {
+        self.powered = true;
+        Ok(())
+    }
+
+    fn power_off(&mut self) -> Result<(), FmError> {
+        self.powered = false;
+        Ok(())
+    }
+
+    fn tune(&mut self, freq_khz: u32) -> Result<(), FmError> {
+        self.current_freq = freq_khz;
+        Ok(())
+    }
+
+    fn seek_up(&mut self) -> Result<u32, FmError> {
+        self.current_freq = seek_step(self.current_freq, 100);
+        Ok(self.current_freq)
+    }
+
+    fn seek_down(&mut self) -> Result<u32, FmError> {
+        self.current_freq = seek_step(self.current_freq, -100);
+        Ok(self.current_freq)
+    }
+
+    fn get_rssi(&self) -> i8 {
+        -55 // plausible mid-band reading for the render path
+    }
+}
+
+/// The FM backend the booted kernel wires into `FmRadio` (#518): the no-op
+/// `NullFmHw` under qemu/test, the real `FmHw` (WMT) on device.
+#[cfg(any(feature = "qemu", test))]
+pub(crate) type BootFmHw = NullFmHw;
+#[cfg(not(any(feature = "qemu", test)))]
+pub(crate) type BootFmHw = FmHw;
 
 // ---------------------------------------------------------------------------
 // Mock FM hardware for tests

@@ -45,6 +45,8 @@ use crate::power::PowerManager;
 use crate::reflex;
 use crate::screen_calendar::CalendarScreen;
 use crate::screen_dialer::DialerScreen;
+use crate::screen_fm::FmScreen;
+use crate::fm_radio::{BootFmHw, FmRadio};
 use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
 use crate::screen_messages::MessagesScreen;
 use crate::screen_search::SearchScreen;
@@ -144,6 +146,11 @@ pub(crate) struct KernelState {
     /// Calendar screen (#400): renders the agenda fed by `heorte`. Reachable via
     /// the screen stack; content comes from the heorte manager each render.
     calendar: CalendarScreen,
+    /// FM radio controller + screen (#518): the `FmRadio<BootFmHw>` state
+    /// machine runs under emulation (NullFmHw) and feeds `fm_screen`; the real
+    /// WMT backend binds on device.
+    fm: FmRadio<BootFmHw>,
+    fm_screen: FmScreen,
     /// Cursor into the qemu synthetic-input script. Real keypad decode is
     /// hardware-gated + net-new (no KPD model on -machine virt, no decoder
     /// in-tree); #400 input dispatch is CI-verified via a scripted key sequence
@@ -258,6 +265,8 @@ impl KernelState {
             dialer: DialerScreen::new(),
             settings: SettingsMenuScreen::new(),
             calendar: CalendarScreen::new(),
+            fm: FmRadio::new(BootFmHw::new()),
+            fm_screen: FmScreen::new(),
             fb,
             last_second: 0,
             #[cfg(feature = "qemu")]
@@ -276,6 +285,7 @@ impl KernelState {
             ScreenId::Dialer => &mut self.dialer,
             ScreenId::Settings => &mut self.settings,
             ScreenId::Calendar => &mut self.calendar,
+            ScreenId::FmRadio => &mut self.fm_screen,
             _ => &mut self.home,
         }
     }
@@ -661,6 +671,28 @@ impl KernelState {
         )
     }
 
+    /// Boot-time FM smoke (#518, qemu): power on via the BootFmHw path, tune
+    /// to a seeded frequency, feed the FM screen from the controller state,
+    /// and return (powered, freq_khz, rssi, volume) for the CI witness --
+    /// proves FmRadio<BootFmHw> is instantiated in KernelState and the FM
+    /// screen renders its state. Pure state logic; no hardware.
+    #[cfg(feature = "qemu")]
+    pub(crate) fn fm_boot_smoke(&mut self) -> (bool, u32, i8, u8) {
+        let powered = self.fm.power_on().is_ok();
+        let _ = self.fm.tune(103_300);
+        let freq = self.fm.frequency().unwrap_or(0);
+        let rssi = self.fm.rssi();
+        let volume = self.fm.volume();
+        let mut presets_u32 = [0u32; 6];
+        for (i, p) in self.fm.presets().iter().enumerate() {
+            presets_u32[i] = p.unwrap_or(0);
+        }
+        let preset_count = self.fm.preset_count();
+        self.fm_screen
+            .update_from_state(self.fm.state(), rssi, &presets_u32, preset_count, volume);
+        (powered, freq, rssi, volume)
+    }
+
     /// Execute pending reflex fast-path events in privileged (loop) context.
     pub(crate) fn handle_reflex(&mut self, pending: reflex::Pending, serial: &mut Uart) {
         if pending.panic_wipe {
@@ -858,6 +890,18 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
                 "kardia: firewall rules={fw_rules} allowed={fw_allowed} denied={fw_denied} audit_events={fw_audit} chain={fw_chain_str}\r\n"
             ),
         );
+        // #518: FM radio controller instantiated via BootFmHw (NullFmHw under
+        // qemu), powered + tuned at smoke, and the FM screen fed from it.
+        #[cfg(feature = "qemu")]
+        {
+            let (fm_powered, fm_freq, fm_rssi, fm_vol) = kernel.fm_boot_smoke();
+            emit_marker(
+                &mut serial,
+                format_args!(
+                    "kardia: fm powered={fm_powered} freq_khz={fm_freq} rssi={fm_rssi} volume={fm_vol}\r\n"
+                ),
+            );
+        }
     }
     let mut last_tick = exceptions::ticks();
     #[cfg(feature = "qemu")]

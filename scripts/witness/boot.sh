@@ -58,6 +58,9 @@ grep -qF 'kardia: netrat rat=Some(EUtran) net=Lte' boot.log || { echo 'FAIL #404
 grep -qE 'kardia: heorte events=[1-9][0-9]* alarms=[1-9][0-9]* calendar_rows=[1-9][0-9]* timer_armed=true' boot.log || { echo 'FAIL #400: heorte manager not wired (events/alarms/calendar/timer)'; exit 1; }
 # #403 loop-persistent firewall + verified HMAC audit chain.
 grep -qE 'kardia: firewall rules=[1-9][0-9]* allowed=[1-9][0-9]* denied=[1-9][0-9]* audit_events=2 chain=ok' boot.log || { echo 'FAIL #403: firewall not loop-persistent / policy+audit path broken'; exit 1; }
+# #518 FM radio: FmRadio<BootFmHw> instantiated in KernelState (NullFmHw under
+# qemu), powered + tuned at smoke, FM screen fed from it.
+grep -qE 'kardia: fm powered=true freq_khz=[0-9]+ rssi=-?[0-9]+ volume=[0-9]+' boot.log || { echo 'FAIL #518: FM radio controller not wired (BootFmHw/KernelState/screen feed broken)'; exit 1; }
 
 # PL0 isolation + graceful user-fault kill (#487 + fault handling): each probe
 # variant attempts one PL0-illegal op; the kernel must fault it, kill only the
