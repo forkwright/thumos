@@ -31,6 +31,41 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "fuzz_at"
+path = "fuzz_targets/fuzz_at.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ccci"
+path = "fuzz_targets/fuzz_ccci.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_pdu"
+path = "fuzz_targets/fuzz_pdu.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_wpa"
+path = "fuzz_targets/fuzz_wpa.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_packet"
+path = "fuzz_targets/fuzz_packet.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = "0.4"
 aither = { path = "../crates/aither" }

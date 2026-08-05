@@ -10,7 +10,7 @@ pub mod dns;
 pub mod filter;
 pub mod rules;
 
-pub(crate) mod packet;
+pub mod packet;
 
 pub use dns::DnsBlocklist;
 pub use filter::Filter;

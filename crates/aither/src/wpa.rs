@@ -21,22 +21,22 @@ type HmacSha1 = Hmac<Sha1>;
 const PBKDF2_ITERS: NonZeroU32 = NonZeroU32::MIN.saturating_add(4095);
 
 /// PMK/PSK output length in bytes.
-pub(crate) const PMK_LEN: usize = 32;
+pub const PMK_LEN: usize = 32;
 
 /// Key Confirmation Key length in bytes.
-pub(crate) const KCK_LEN: usize = 16;
+pub const KCK_LEN: usize = 16;
 
 /// Key Encryption Key length in bytes.
-pub(crate) const KEK_LEN: usize = 16;
+pub const KEK_LEN: usize = 16;
 
 /// Temporal Key length in bytes (WPA2-CCMP).
-pub(crate) const TK_LEN: usize = 16;
+pub const TK_LEN: usize = 16;
 
 /// Total PTK length: KCK + KEK + TK (WPA2-CCMP, 384 bits).
-pub(crate) const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
+pub const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
 
 /// MIC length in bytes.
-pub(crate) const MIC_LEN: usize = 16;
+pub const MIC_LEN: usize = 16;
 
 /// Pairwise Transient Key components.
 ///
@@ -46,13 +46,13 @@ pub(crate) const MIC_LEN: usize = 16;
 /// in memory after use. Uses `write_volatile` to prevent the compiler from
 /// optimizing away the zeroing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Ptk {
+pub struct Ptk {
     /// Key Confirmation Key: used to compute and verify MIC.
-    pub(crate) kck: [u8; KCK_LEN],
+    pub kck: [u8; KCK_LEN],
     /// Key Encryption Key: used to wrap the GTK with AES-KEYWRAP.
-    pub(crate) kek: [u8; KEK_LEN],
+    pub kek: [u8; KEK_LEN],
     /// Temporal Key: used for data frame encryption (AES-CCMP).
-    pub(crate) tk: [u8; TK_LEN],
+    pub tk: [u8; TK_LEN],
 }
 
 impl Drop for Ptk {
@@ -95,7 +95,7 @@ impl Drop for Ptk {
 /// * `passphrase` – UTF-8 encoded network password.
 /// * `ssid` – network SSID used as the PBKDF2 salt.
 #[must_use]
-pub(crate) fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
+pub fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
     let mut pmk = [0u8; PMK_LEN];
     pbkdf2_hmac::<Sha1>(passphrase, ssid, PBKDF2_ITERS.get(), &mut pmk);
     pmk
@@ -116,7 +116,7 @@ pub(crate) fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
 /// * `aa` – Authenticator MAC address.
 /// * `spa` – Supplicant MAC address.
 #[must_use]
-pub(crate) fn derive_ptk(
+pub fn derive_ptk(
     pmk: &[u8; PMK_LEN],
     anonce: &[u8; 32],
     snonce: &[u8; 32],
@@ -158,7 +158,7 @@ pub(crate) fn derive_ptk(
 /// 2, 3, and 4).  The MIC field in the EAPOL frame must be zeroed before
 /// passing `data` to this function.
 #[must_use]
-pub(crate) fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
+pub fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
     let Ok(mut mac) = HmacSha1::new_from_slice(kck) else {
         return [0u8; MIC_LEN];
     };
@@ -173,7 +173,7 @@ pub(crate) fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
 /// Uses constant-time comparison to prevent timing side-channel attacks.
 /// Returns `true` only when the MIC is correct.
 #[must_use]
-pub(crate) fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
+pub fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
     let computed = compute_mic(kck, data);
     constant_time_eq(&computed, expected_mic)
 }
@@ -238,14 +238,14 @@ fn prf(key: &[u8], input: &[u8], output: &mut [u8]) {
 /// wire but was previously never checked against prior state anywhere in
 /// this crate (audit #347); this session type is the enforcement point.
 #[derive(Debug, Default)]
-pub(crate) struct Supplicant4WaySession {
+pub struct Supplicant4WaySession {
     last_replay_counter: Option<u64>,
 }
 
 impl Supplicant4WaySession {
     /// Create a session with no replay counter observed yet.
     #[must_use]
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             last_replay_counter: None,
         }
@@ -259,7 +259,7 @@ impl Supplicant4WaySession {
     /// out-of-order counter; callers must drop the frame before processing
     /// any key material it carries.
     #[must_use]
-    pub(crate) const fn accept(&mut self, frame: &EapolKeyFrame) -> bool {
+    pub const fn accept(&mut self, frame: &EapolKeyFrame) -> bool {
         if let Some(last) = self.last_replay_counter
             && frame.replay_counter <= last
         {

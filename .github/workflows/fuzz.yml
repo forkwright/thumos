@@ -1,0 +1,66 @@
+# WHY (#548): the parser fuzz targets landed without any gate — nothing ran
+# them, and all three original targets failed to compile for weeks without
+# anyone noticing (E0603, pub(crate) imports). A bounded weekly matrix over
+# every target in fuzz/INVENTORY.md now runs them all; crash artifacts upload
+# on failure. See standards/SUPPLY-CHAIN.md.
+name: Fuzz
+
+on:
+  schedule:
+    # NOTE: Sunday 05:47 CST (11:47 UTC). Off-peak minute per global rule
+    # about avoiding :00/:30 cron schedules; non-overlapping with the
+    # Security workflow (daily 05:23 CST) and codeql (Wed 08:00 CST).
+    - cron: "47 11 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_at
+          - fuzz_ccci
+          - fuzz_dns
+          - fuzz_eapol
+          - fuzz_gsm7
+          - fuzz_packet
+          - fuzz_pdu
+          - fuzz_wpa
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # nightly
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Run ${{ matrix.target }} (seeded corpus + 300s)
+        working-directory: fuzz
+        # WHY: seeds from canonical test vectors live in fuzz/corpus/<target>;
+        # the run starts from them, so regressions replay immediately instead
+        # of waiting for rediscovery. A nonzero exit = crash or timeout bug.
+        run: cargo +nightly fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=300
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/
+          retention-days: 30

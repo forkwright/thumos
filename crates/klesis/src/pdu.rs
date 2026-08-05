@@ -11,7 +11,7 @@ use crate::gsm7;
 /// Address type indicator per 3GPP TS 24.008 § 10.5.4.7.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub(crate) enum AddressType {
+pub enum AddressType {
     /// Type-of-number = international (0x91). Number includes country code.
     International,
     /// Type-of-number = national (0x81).
@@ -23,11 +23,11 @@ pub(crate) enum AddressType {
 
 /// A phone number with its type indicator.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Address {
+pub struct Address {
     /// Decimal digit string, including leading '+' for international numbers.
-    pub(crate) number: String,
+    pub number: String,
     /// How the number should be interpreted.
-    pub(crate) type_of_address: AddressType,
+    pub type_of_address: AddressType,
 }
 
 // ── Data encoding ─────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ pub(crate) struct Address {
 /// SMS data coding scheme (DCS) classification.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub(crate) enum DataEncoding {
+pub enum DataEncoding {
     /// DCS 0x00  -  GSM 7-bit default alphabet, uncompressed.
     #[default]
     Gsm7Bit,
@@ -45,35 +45,35 @@ pub(crate) enum DataEncoding {
 
 /// Decoded user data (text payload).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct UserData {
+pub struct UserData {
     /// Which encoding was used to carry the text.
-    pub(crate) encoding: DataEncoding,
+    pub encoding: DataEncoding,
     /// The decoded text, in Rust's native UTF-8.
-    pub(crate) text: String,
+    pub text: String,
 }
 
 // ── PDU message types ─────────────────────────────────────────────────────────
 
 /// A received SMS (SMS-DELIVER, MTI = 0b00).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SmsDeliver {
+pub struct SmsDeliver {
     /// Originating address.
-    pub(crate) sender: Address,
+    pub sender: Address,
     /// Service centre timestamp in "YYYY-MM-DD HH:MM:SS+HH:MM" format.
-    pub(crate) timestamp: String,
+    pub timestamp: String,
     /// Decoded message payload.
-    pub(crate) user_data: UserData,
+    pub user_data: UserData,
 }
 
 /// A message to be sent (SMS-SUBMIT, MTI = 0b01).
 #[derive(Debug, Clone)]
-pub(crate) struct SmsSubmit {
+pub struct SmsSubmit {
     /// Destination address.
-    pub(crate) destination: Address,
+    pub destination: Address,
     /// Message payload and encoding.
-    pub(crate) user_data: UserData,
+    pub user_data: UserData,
     /// Relative validity period (1 byte). `None` = omit VP field.
-    pub(crate) validity_period: Option<u8>,
+    pub validity_period: Option<u8>,
 }
 
 // ── BCD address helpers ───────────────────────────────────────────────────────
@@ -458,7 +458,7 @@ const fn gsm7_udh_septets(udh_octets: usize) -> usize {
     clippy::similar_names,
     reason = "udl/udhl/udhi/oa are canonical 3GPP TS 23.040 SMS field abbreviations; renaming would break spec fidelity"
 )]
-pub(crate) fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
+pub fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
     if pdu_hex.len() > MAX_PDU_HEX_LEN {
         return Err(crate::error::Error::InvalidHex {
             message: format!(
@@ -558,7 +558,7 @@ pub(crate) fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
 }
 
 /// Encode an SMS-SUBMIT INTO a hex string suitable for `AT+CMGS`.
-pub(crate) fn encode_submit(msg: &SmsSubmit) -> Result<String> {
+pub fn encode_submit(msg: &SmsSubmit) -> Result<String> {
     let mut out: Vec<u8> = Vec::new();
 
     // SMSC length 0x00  -  let the modem use its stored default.
