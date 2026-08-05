@@ -603,13 +603,22 @@ pub unsafe fn run() -> ! {
         // Compute device size in sectors from the partition constants.
         let sector_count = board::LFS_PARTITION_SIZE;
 
-        // Create a block device wrapping the eMMC controller at the LFS partition.
-        let mut blk_dev = MsdcBlockDevice::new(sector_count);
+        // #603: the eMMC block device addresses the PHYSICAL medium (its LBA
+        // 0 is the eMMC's sector 0 -- the GPT/boot region), so its bound is
+        // the partition's END; the LFS mount then runs inside the userdata
+        // partition VIEW carved at LFS_PARTITION_START. Before the view, LFS
+        // would have formatted over the boot/vendor partitions.
+        let mut phys_dev = MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
 
         // SAFETY: eMMC controller was initialized successfully in Step 7.
         // MsdcBlockDevice::init() is called once here; the controller is ready.
-        match unsafe { blk_dev.init() } {
+        match unsafe { phys_dev.init() } {
             Ok(()) => {
+                let blk_dev = crate::block::PartitionBlockDevice::new(
+                    phys_dev,
+                    board::LFS_PARTITION_START,
+                    sector_count,
+                );
                 // Try to mount existing LFS.
                 match lfs::mount(alloc::boxed::Box::new(blk_dev)) {
                     Ok(fs) => {
@@ -624,44 +633,60 @@ pub unsafe fn run() -> ! {
                     // transient I/O fault (#360).
                     Err(LfsError::InvalidSuperblock) => {
                         serial.log(" LFS mount failed (no superblock), formatting\r\n");
-                        let mut fmt_dev = MsdcBlockDevice::new(sector_count);
+                        let mut fmt_phys =
+                            MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
                         // SAFETY: eMMC controller was initialized successfully in
-                        // Step 7; fmt_dev.init() is called once here on a
+                        // Step 7; fmt_phys.init() is called once here on a
                         // freshly constructed MsdcBlockDevice.
-                        if unsafe { fmt_dev.init() }.is_ok() && lfs::format(&mut fmt_dev).is_ok() {
-                            serial.log(" LFS formatted OK\r\n");
-                            // Remount the freshly formatted device so the
-                            // VFS root is backed by durable storage from
-                            // this boot onward, not just after the NEXT
-                            // reboot (#343).
-                            let mut remount_dev = MsdcBlockDevice::new(sector_count);
-                            // SAFETY: eMMC controller was initialized successfully
-                            // in Step 7; remount_dev.init() is called once here on
-                            // a freshly constructed MsdcBlockDevice.
-                            match unsafe { remount_dev.init() } {
-                                Ok(()) => match lfs::mount(alloc::boxed::Box::new(remount_dev)) {
-                                    Ok(fs) => {
-                                        serial.log(" LFS remounted OK\r\n");
-                                        lfs_root = Some(alloc::boxed::Box::new(fs));
+                        if unsafe { fmt_phys.init() }.is_ok() {
+                            let mut fmt_dev = crate::block::PartitionBlockDevice::new(
+                                fmt_phys,
+                                board::LFS_PARTITION_START,
+                                sector_count,
+                            );
+                            if lfs::format(&mut fmt_dev).is_ok() {
+                                serial.log(" LFS formatted OK\r\n");
+                                // Remount the freshly formatted device so the
+                                // VFS root is backed by durable storage from
+                                // this boot onward, not just after the NEXT
+                                // reboot (#343).
+                                let mut remount_phys =
+                                    MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
+                                // SAFETY: eMMC controller was initialized successfully
+                                // in Step 7; remount_phys.init() is called once here on
+                                // a freshly constructed MsdcBlockDevice.
+                                match unsafe { remount_phys.init() } {
+                                    Ok(()) => {
+                                        let remount_dev = crate::block::PartitionBlockDevice::new(
+                                            remount_phys,
+                                            board::LFS_PARTITION_START,
+                                            sector_count,
+                                        );
+                                        match lfs::mount(alloc::boxed::Box::new(remount_dev)) {
+                                            Ok(fs) => {
+                                                serial.log(" LFS remounted OK\r\n");
+                                                lfs_root = Some(alloc::boxed::Box::new(fs));
+                                            }
+                                            Err(e) => {
+                                                boot_log!(
+                                                    serial,
+                                                    " WARN LFS remount after format failed: {:?}\r\n",
+                                                    e
+                                                );
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         boot_log!(
                                             serial,
-                                            " WARN LFS remount after format failed: {:?}\r\n",
+                                            " WARN Block device re-init for remount failed: {:?}\r\n",
                                             e
                                         );
                                     }
-                                },
-                                Err(e) => {
-                                    boot_log!(
-                                        serial,
-                                        " WARN Block device re-init for remount failed: {:?}\r\n",
-                                        e
-                                    );
                                 }
+                            } else {
+                                serial.log(" WARN LFS format failed\r\n");
                             }
-                        } else {
-                            serial.log(" WARN LFS format failed\r\n");
                         }
                     }
                     Err(e) => {
