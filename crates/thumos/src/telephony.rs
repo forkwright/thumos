@@ -82,6 +82,11 @@ pub enum TelephonyError {
     SimPukRequired,
     /// Phone number exceeds maximum length.
     NumberTooLong,
+    /// An action with irreversible consequences (burning the final PIN/PUK
+    /// attempt) was requested without the caller's explicit confirmation
+    /// (#517) -- the caller must warn the user and re-request with
+    /// confirmation set.
+    ConfirmationRequired,
 }
 
 impl core::fmt::Display for TelephonyError {
@@ -96,6 +101,9 @@ impl core::fmt::Display for TelephonyError {
             Self::SimNotReady => write!(f, "SIM not ready"),
             Self::SimPukRequired => write!(f, "SIM PUK required"),
             Self::NumberTooLong => write!(f, "number too long"),
+            Self::ConfirmationRequired => {
+                write!(f, "final-attempt action needs explicit confirmation")
+            }
         }
     }
 }
