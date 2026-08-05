@@ -1559,7 +1559,10 @@ mod tests {
         });
         // The ring holds LEN-1 bytes (full when next_head == tail).
         for i in 0..(SERIAL_RX_BUF_LEN - 1) {
-            assert!(with_serial_rx(|r| r.push(i as u8)), "ring must accept byte {i}");
+            assert!(
+                with_serial_rx(|r| r.push(i as u8)),
+                "ring must accept byte {i}"
+            );
         }
         assert!(!with_serial_rx(|r| r.push(0xEE)), "full ring must drop");
         assert!(!with_serial_rx(|r| r.push(0xEF)), "full ring must drop");
@@ -1571,7 +1574,10 @@ mod tests {
         // One drain frees exactly one slot.
         let mut one = [0u8; 1];
         assert_eq!(with_serial_rx(|r| r.drain(&mut one)), 1);
-        assert!(with_serial_rx(|r| r.push(0xAA)), "one drained slot must admit one more byte");
+        assert!(
+            with_serial_rx(|r| r.push(0xAA)),
+            "one drained slot must admit one more byte"
+        );
     }
 
     // --- Register OFFSET encoding ---

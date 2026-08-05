@@ -3079,7 +3079,8 @@ mod tests {
 
         // Parent chdirs to /dev; its cwd reads back.
         assert_eq!(vfs_chdir("/dev"), 0);
-        crate::process::with_current_cwd(|c| assert_eq!(c, b"/dev")).expect("current process must exist");
+        crate::process::with_current_cwd(|c| assert_eq!(c, b"/dev"))
+            .expect("current process must exist");
 
         // Fork: the child INHERITS /dev.
         let child_pid = crate::process::fork().expect("fork must succeed");

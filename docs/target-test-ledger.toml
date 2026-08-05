@@ -184,7 +184,7 @@ fidelity = "the stub IS the host fixture for the exceptions module — see excep
 
 [[module]]
 name = "fd"
-tests = 69
+tests = 71
 mechanism = "host"
 
 [[module]]
@@ -648,7 +648,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "usb"
-tests = 29
+tests = 31
 mechanism = "host"
 fidelity = "MMIO/ISR paths are not exercised host-side; EP1 ring sync is #437 remnant 2"
 
