@@ -583,7 +583,7 @@ mod tests {
             assert_eq!(buf.write(b"data"), 4);
         }
         // A pointer inside the kernel image must be rejected before any deref.
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_pipe_read(pipe_idx, kernel_ptr, 4);
         assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
     }
@@ -593,7 +593,7 @@ mod tests {
         reset_pool();
         let pipe_idx = alloc_pipe_slot(0).expect("alloc pipe");
         // Buffer empty and both ends open, so the write reaches validation.
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_pipe_write(pipe_idx, kernel_ptr, 4, 0);
         assert_eq!(result, EFAULT, "kernel-range buf_ptr must return EFAULT");
     }

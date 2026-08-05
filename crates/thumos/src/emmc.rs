@@ -24,8 +24,6 @@ use crate::mmio;
 
 /// MSDC0 base address on the MT6739.
 // NOTE: FROM device registry, `crates/thumos/src/device.rs:127`
-const MSDC0_BASE: usize = 0x1123_0000;
-
 /// Sector size in bytes (eMMC standard).
 const SECTOR_SIZE: usize = 512;
 
@@ -520,7 +518,7 @@ impl MsdcController {
     /// Create a new controller handle at the default MSDC0 base address.
     pub(crate) fn new() -> Self {
         Self {
-            base: MSDC0_BASE,
+            base: crate::board::MSDC0_BASE,
             initialized: false,
         }
     }
@@ -1437,26 +1435,30 @@ mod tests {
             !ctrl.is_initialized(),
             "new controller must not be initialized"
         );
-        assert_eq!(ctrl.base, MSDC0_BASE, "default base address");
+        assert_eq!(ctrl.base, crate::board::MSDC0_BASE, "default base address");
     }
 
     #[test]
     fn controller_reg_computes_absolute_address() {
         let ctrl = MsdcController::new();
-        assert_eq!(ctrl.reg(REG_MSDC_CFG), MSDC0_BASE, "CFG at base + 0x00");
+        assert_eq!(
+            ctrl.reg(REG_MSDC_CFG),
+            crate::board::MSDC0_BASE,
+            "CFG at base + 0x00"
+        );
         assert_eq!(
             ctrl.reg(REG_MSDC_INT),
-            MSDC0_BASE + 0x0C,
+            crate::board::MSDC0_BASE + 0x0C,
             "INT at base + 0x0C"
         );
         assert_eq!(
             ctrl.reg(REG_SDC_CMD),
-            MSDC0_BASE + 0x34,
+            crate::board::MSDC0_BASE + 0x34,
             "CMD at base + 0x34"
         );
         assert_eq!(
             ctrl.reg(REG_MSDC_DMA_SA),
-            MSDC0_BASE + 0x90,
+            crate::board::MSDC0_BASE + 0x90,
             "DMA_SA at base + 0x90"
         );
     }

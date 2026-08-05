@@ -845,9 +845,12 @@ impl fmt::Display for CcciFirewall {
 /// on the modem side cannot prevent or recover from.
 ///
 /// Source: MT6357 PMIC datasheet, VMODEM_CON0 register.
-const PMIC_VMODEM_CON0: usize = 0x1000_D000 + 0x0C00;
+/// Derived from the board's PWRAP base (#534) — one MMIO truth.
+#[cfg(not(feature = "qemu"))]
+const PMIC_VMODEM_CON0: usize = crate::board::PWRAP_BASE + 0x0C00;
 
 /// VMODEM enable bit (bit 0 of VMODEM_CON0).
+#[cfg(not(feature = "qemu"))]
 const VMODEM_EN_BIT: u32 = 1 << 0;
 
 /// Execute a hardware modem power cut via PMIC VMODEM LDO disable.
@@ -866,6 +869,7 @@ const VMODEM_EN_BIT: u32 = 1 << 0;
 /// communication channels are dead.
 ///
 /// In test builds the MMIO write is skipped (no hardware available).
+#[cfg(not(feature = "qemu"))]
 pub unsafe fn modem_power_cut() {
     // SAFETY: PMIC_VMODEM_CON0 is a valid PMIC register on the MT6739.
     // Clearing the enable bit disables the VMODEM LDO.

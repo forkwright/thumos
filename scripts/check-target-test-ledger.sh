@@ -43,8 +43,9 @@ TARGET_PAT = re.compile(r'asm!|core::arch|global_asm|0x[0-9A-Fa-f]{6,}|read_vola
 
 witness_files = {os.path.basename(f) for f in glob.glob(os.path.join(wit_dir, "*.sh"))}
 
-for f in sorted(glob.glob(os.path.join(src_dir, "*.rs"))):
-    m = os.path.basename(f)[:-3]
+for f in sorted(glob.glob(os.path.join(src_dir, "**", "*.rs"), recursive=True)):
+    rel = os.path.relpath(f, src_dir)[:-3]
+    m = rel[:-4] if rel.endswith("/mod") else rel  # board/mod.rs -> "board"
     text = open(f, errors="ignore").read()
     tests = len(re.findall(r'#\[test\]', text))
     sensitive = bool(TARGET_PAT.search(text))
@@ -66,7 +67,8 @@ for f in sorted(glob.glob(os.path.join(src_dir, "*.rs"))):
         fail(f"module '{m}' is host-only with target-sensitive patterns but carries no fidelity note")
 
 for m in by_name:
-    if not os.path.exists(os.path.join(src_dir, m + ".rs")):
+    if not (os.path.exists(os.path.join(src_dir, m + ".rs"))
+            or os.path.exists(os.path.join(src_dir, m, "mod.rs"))):
         fail(f"ledger row '{m}' has no source file")
 
 if rc == 0:

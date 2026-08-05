@@ -1,6 +1,11 @@
 # Architecture
 
-Thumos is a full-Rust mobile OS targeting the AGM M7 (MT6739). No C authored, no Linux in the final system. Monolithic kernel.
+Thumos is a full-Rust small-mobile OS. No C authored, no Linux in the final system. Monolithic kernel. It boots one kernel on two boards:
+
+- **m7** — the AGM M7 feature phone (MT6739 SoC), the field board;
+- **virt** — QEMU `-machine virt` (armv7a), the dev board every CI witness boots on (selected by the kernel's `qemu` feature).
+
+Board specifics (MMIO maps, device set, bring-up behavior) live behind the `board::` module seam in the kernel crate — `board::m7` and `board::virt`, selected at one point in `board/mod.rs`. The standing invariant is structural, not prose: no `MT6739_*` identifier exists outside `board::m7`, and no board-MMIO value is re-declared as a constant outside `board/` (`scripts/check-board-seam.sh` reds on drift). Per-subsystem `HwOps` traits remain the driver seam; there is deliberately no mega-HAL, no device-tree parser, and no runtime board detection — two static boards want static config (#534).
 
 ## Crate map
 
@@ -95,7 +100,7 @@ All other workspace crates are independent of each other. External dependencies 
 +-----------------------------------------------+
 |          thumos (kernel, bare-metal)           |
 +-----------------------------------------------+
-|       MT6739 hardware / vendor blobs          |
+|        board::m7  |  board::virt (qemu)        |
 +-----------------------------------------------+
 ```
 
@@ -108,4 +113,4 @@ All other workspace crates are independent of each other. External dependencies 
 
 ## Build
 
-Workspace crates compile and test on the host: `cargo check --workspace`, `cargo test --workspace`. The kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` inside `crates/thumos/`. Boot image is created with `mkbootimg` and flashed via mtkclient BROM exploit.
+Workspace crates compile and test on the host: `cargo check --workspace`, `cargo test --workspace`. The kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` inside `crates/thumos/` — the same source builds both boards: default is the m7 field board, `--features qemu` selects the virt dev board (CI boots that image on every push). Boot image is created with `mkbootimg` and flashed via mtkclient BROM exploit.

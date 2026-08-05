@@ -16,8 +16,6 @@
 use core::fmt;
 
 /// Base address of UART0 on MT6739.
-const UART0_BASE: usize = 0x1100_2000;
-
 /// Transmit holding register OFFSET.
 const THR: usize = 0x00;
 
@@ -44,6 +42,33 @@ const LSR_DR: u32 = 1 << 0;
 /// the kernel.
 const UART_TX_TIMEOUT_SPINS: u32 = 1_000_000;
 
+/// Run `f` with IRQs masked, restoring the caller's previous mask state.
+///
+/// WHY: kernel thread-mode prints (the kinit handoff, the kardia service
+/// loop) run with IRQs live — a timer IRQ mid-print preempts into userspace,
+/// whose own writes (already atomic: SVC entry sets CPSR.I) then split the
+/// kernel's line. The 2026-08-05 boot witness caught exactly that:
+/// `kardia: modem ready state=` and its value landed on different lines.
+/// Masking for the byte loop keeps a kernel print contiguous without
+/// changing userspace (SVC/IRQ paths are atomic by hardware already).
+/// Nested calls are safe: the prior I-bit is restored, never force-enabled.
+#[inline(always)]
+fn irqs_masked<R>(f: impl FnOnce() -> R) -> R {
+    let saved: u32;
+    // SAFETY: privileged CPSR read; always available at PL1 on armv7a.
+    unsafe {
+        core::arch::asm!("mrs {}, cpsr", out(reg) saved, options(nomem, nostack, preserves_flags))
+    };
+    // SAFETY: mask IRQs for the critical section.
+    unsafe { core::arch::asm!("cpsid i", options(nomem, nostack, preserves_flags)) };
+    let r = f();
+    if saved & 0x80 == 0 {
+        // SAFETY: the caller had IRQs enabled; restore that state.
+        unsafe { core::arch::asm!("cpsie i", options(nomem, nostack, preserves_flags)) };
+    }
+    r
+}
+
 /// UART driver for MT6739.
 pub(crate) struct Uart {
     base: usize,
@@ -53,7 +78,9 @@ impl Uart {
     /// Create a UART driver for the debug console.
     /// LK has already configured baud rate and pin mux.
     pub(crate) fn new() -> Self {
-        Self { base: UART0_BASE }
+        Self {
+            base: crate::board::UART0_BASE,
+        }
     }
 
     /// Write a single byte, waiting (bounded) for the TX buffer to be ready.
@@ -95,9 +122,11 @@ impl Uart {
 
     /// Write a string to the UART.
     pub(crate) fn write_str_raw(&self, s: &str) {
-        for byte in s.bytes() {
-            self.putc(byte);
-        }
+        irqs_masked(|| {
+            for byte in s.bytes() {
+                self.putc(byte);
+            }
+        });
     }
 
     /// Write a string to the console as a boot log line.

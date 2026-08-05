@@ -771,7 +771,7 @@ mod tests {
 
         // Elf32Phdr at offset 52: p_type = PT_LOAD (1).
         buf[52..56].copy_from_slice(&1u32.to_le_bytes());
-        // p_vaddr (offset 60): kconfig::KERNEL_END, inside the allowed load
+        // p_vaddr (offset 60): board::KERNEL_END, inside the allowed load
         // region so #318's check does not fire first.
         buf[60..64].copy_from_slice(&0x4010_0000u32.to_le_bytes());
         // p_memsz (offset 72): 32 MB, comfortably inside RAM but four times
@@ -937,7 +937,7 @@ mod tests {
     fn load_does_not_leak_pages_on_success() {
         // WHY function-local `static mut`: load() writes segment bytes
         // directly to the ELF's p_vaddr. This binary's PIE image (hence any
-        // `static`) loads inside [kconfig::KERNEL_END, kconfig::RAM_END) on
+        // `static`) loads inside [board::KERNEL_END, board::RAM_END) on
         // this host toolchain, so its address passes validate_user_buffer
         // and is safe to dereference — unlike a fabricated physical address
         // or a stack array (glibc places thread stacks above RAM_END).

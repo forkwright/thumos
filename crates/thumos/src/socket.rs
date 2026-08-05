@@ -1265,7 +1265,7 @@ mod tests {
     ///
     /// WHY function-local `static mut`: sys_bind now validates addr_ptr via
     /// validate_user_buffer before dereferencing it. A stack address (e.g.
-    /// `&addr`) falls outside [kconfig::KERNEL_END, kconfig::RAM_END) on
+    /// `&addr`) falls outside [board::KERNEL_END, board::RAM_END) on
     /// this host binary and would be rejected before bind logic runs; a
     /// function-local static lands inside that window (see fd.rs tests for
     /// the same pattern).
@@ -1348,7 +1348,7 @@ mod tests {
     fn bind_rejects_kernel_range_addr_ptr() {
         // No socket setup needed: validate_user_buffer runs before the
         // FD_TABLE is-a-socket check, so fd=0 (< MAX_FDS) is sufficient.
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_bind(0, kernel_ptr, core::mem::size_of::<SockaddrIn>() as u32);
         assert_eq!(
             result,
@@ -1390,7 +1390,7 @@ mod tests {
 
     #[test]
     fn connect_rejects_kernel_range_addr_ptr() {
-        let kernel_ptr = crate::kconfig::KERNEL_LOAD as u32;
+        let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_connect(0, kernel_ptr, core::mem::size_of::<SockaddrIn>() as u32);
         assert_eq!(
             result,
@@ -1417,7 +1417,7 @@ mod tests {
         // WHY function-local `static mut`: sys_bind/sys_connect now validate
         // addr_ptr via validate_user_buffer (issue #291) before
         // dereferencing it. A stack address falls outside
-        // [kconfig::KERNEL_END, kconfig::RAM_END) on this host binary and
+        // [board::KERNEL_END, board::RAM_END) on this host binary and
         // would be rejected before bind/connect logic runs.
         static mut BIND_ADDR: SockaddrIn = SockaddrIn {
             sin_family: 0,

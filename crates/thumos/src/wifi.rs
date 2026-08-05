@@ -9,8 +9,8 @@
 //! ## Hardware path
 //!
 //! The MT6739 WiFi hardware is accessed through the WMT combo chip:
-//! - `MT6739_CONSYS = 0x1800_0000` (combo-chip base)
-//! - `MT6739_WLAN  = 0x180F_0000` (WiFi MMIO region)
+//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, board::m7 #534)
+//! - `board::WLAN_BASE  = 0x180F_0000` (WiFi MMIO region, board::m7 #534)
 //!
 //! Data path goes through WMT STP framing (kelyphos handles the transport).
 //! The `WifiHw` struct provides `#[cfg(not(test))]` MMIO access with a
@@ -38,12 +38,6 @@ use crate::security::{hmac_sha1, pbkdf2_hmac_sha1, prf_384};
 // ---------------------------------------------------------------------------
 // MT6739 WiFi hardware constants
 // ---------------------------------------------------------------------------
-
-/// WMT combo-chip (CONSYS) MMIO base address.
-const MT6739_CONSYS: usize = 0x1800_0000;
-
-/// WiFi MMIO base address within the combo-chip region.
-const MT6739_WLAN: usize = 0x180F_0000;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -1074,6 +1068,7 @@ pub(crate) trait WifiHwOps {
 ///
 /// Provides MMIO-based access to the WiFi hardware on the real target,
 /// and a mock-friendly scan result buffer for testing.
+#[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct WifiHw {
     /// WLAN MMIO base address.
     wlan_base: usize,
@@ -1083,18 +1078,20 @@ pub(crate) struct WifiHw {
     scan_buf: Vec<ScanResult>,
 }
 
+#[cfg(not(any(test, feature = "qemu")))]
 impl WifiHw {
     /// Construct a new WiFi hardware driver.
     #[must_use]
     pub(crate) const fn new() -> Self {
         Self {
-            wlan_base: MT6739_WLAN,
-            consys_base: MT6739_CONSYS,
+            wlan_base: crate::board::WLAN_BASE,
+            consys_base: crate::board::CONSYS_BASE,
             scan_buf: Vec::new(),
         }
     }
 }
 
+#[cfg(not(any(test, feature = "qemu")))]
 impl WifiHwOps for WifiHw {
     fn data_path_ready(&self) -> bool {
         false

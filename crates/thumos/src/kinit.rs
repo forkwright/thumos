@@ -20,15 +20,13 @@ use core::sync::atomic::AtomicBool;
 #[cfg(not(feature = "qemu"))]
 use core::sync::atomic::Ordering;
 
+use crate::board;
 #[cfg(not(feature = "qemu"))]
 use crate::ccci::CcciDriver;
 #[cfg(feature = "debug-console")]
 use crate::console::Console;
 use crate::csprng;
-#[cfg(feature = "qemu")]
 use crate::device::DeviceRegistry;
-#[cfg(not(feature = "qemu"))]
-use crate::device::{self, DeviceRegistry};
 #[cfg(not(feature = "qemu"))]
 use crate::dhcp::{DhcpClient, DhcpEvent};
 #[cfg(not(feature = "qemu"))]
@@ -39,16 +37,21 @@ use crate::elf;
 use crate::exceptions;
 use crate::gic;
 use crate::heap;
+// Gated: only the debug-console gate reads kconfig::DEBUG_CONSOLE.
+#[cfg(feature = "debug-console")]
 use crate::kconfig;
 #[cfg(not(feature = "qemu"))]
 use crate::kinit_plan::MODEM_BOOT_TIMEOUT_MS;
-use crate::kinit_plan::{
-    BootState, PANIC_RED_RGB565, UserspaceSpawnPlan, plan_userspace_spawn_from_vfs,
-};
+use crate::kinit_plan::{BootState, UserspaceSpawnPlan, plan_userspace_spawn_from_vfs};
+// M7-only: the panic-red fill exists only where a hardware framebuffer does.
+#[cfg(not(feature = "qemu"))]
+use crate::kinit_plan::PANIC_RED_RGB565;
 #[cfg(not(feature = "qemu"))]
 use crate::mmio;
 use crate::mmu;
-use crate::net::{self, NetworkReadiness, WifiDevice};
+use crate::net;
+#[cfg(not(feature = "qemu"))]
+use crate::net::{NetworkReadiness, WifiDevice};
 // #403: the net stack is built on both targets (loop-persistent), so these are
 // no longer qemu-gated. DhcpClient/DnsResolver stay gated -- used only in the
 // non-qemu DHCP/DNS self-test below.
@@ -133,16 +136,21 @@ pub(crate) unsafe fn fill_framebuffer(fb_addr: usize, width: u32, height: u32, c
 /// WHY(qemu): exit code 6 (distinct from 0=ok / 1=panic / 5=loop-stall) so
 /// a runner sees a secure-boot halt as its own diagnostic; unreachable
 /// today because qemu presents no boot medium.
+#[cfg_attr(feature = "qemu", allow(unused_variables))]
 fn halt_boot(serial: &mut Uart, display_ok: bool) -> ! {
+    // WHY not(qemu): virt has no hardware framebuffer (its render target is
+    // a synthetic heap buffer) and display_ok can only be set on the M7 --
+    // the fill is M7 bring-up, so it is selected out, not emulated.
+    #[cfg(not(feature = "qemu"))]
     if display_ok {
         // SAFETY: display_ok is only true after display.init() succeeded,
-        // so FB_BASE is a valid, mapped framebuffer of at least
+        // so board::FB_BASE is a valid, mapped framebuffer of at least
         // DISPLAY_WIDTH * DISPLAY_HEIGHT * 2 bytes (RGB565).
         unsafe {
             fill_framebuffer(
-                kconfig::FB_BASE,
-                kconfig::DISPLAY_WIDTH,
-                kconfig::DISPLAY_HEIGHT,
+                board::FB_BASE,
+                board::DISPLAY_WIDTH,
+                board::DISPLAY_HEIGHT,
                 PANIC_RED_RGB565,
             );
         }
@@ -242,7 +250,9 @@ pub unsafe fn run() -> ! {
     serial.log("\r\n");
     serial.log("================================\r\n");
     serial.log(" THUMOS v0.1.0\r\n");
-    serial.log(" Rust OS for the AGM M7 (MT6739)\r\n");
+    serial.log(" Rust OS for the ");
+    serial.log(board::BOARD_NAME);
+    serial.log("\r\n");
     // WHY (#233): every boot names its trust anchor -- a dev-keyed image can
     // never be mistaken for a production-trusted one, on the serial log or
     // via `strings` on the flashed binary (the stamp lives in rodata).
@@ -280,11 +290,7 @@ pub unsafe fn run() -> ! {
     // executable userspace text region (#474), reserved for spawned ELFs and
     // kept out of the allocator so kernel pages never collide with userspace.
     unsafe {
-        page::init(
-            kconfig::RAM_START,
-            kconfig::USER_TEXT_BASE,
-            kconfig::KERNEL_END,
-        );
+        page::init(board::RAM_START, board::USER_TEXT_BASE, board::KERNEL_END);
     }
     boot_log!(
         serial,
@@ -423,7 +429,7 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     serial.log("[init] Device registry\r\n");
     let mut devices = DeviceRegistry::new();
-    devices.register_mt6739_devices();
+    board::register_devices(&mut devices);
     boot_log!(serial, " {} devices registered\r\n", devices.list().len());
 
     // -----------------------------------------------------------------------
@@ -469,11 +475,11 @@ pub unsafe fn run() -> ! {
         // SAFETY: FB_BASE is a framebuffer physical address provided by the LK
         // bootloader and identity-mapped as device memory in the MMU init.
         unsafe {
-            display.init(kconfig::FB_BASE);
+            display.init(board::FB_BASE);
         }
         if display.state() != crate::display::DisplayState::Uninitialized {
             serial.log(" Display pipeline active\r\n");
-            boot_log!(serial, " Framebuffer @ {:#010x}\r\n", kconfig::FB_BASE);
+            boot_log!(serial, " Framebuffer @ {:#010x}\r\n", board::FB_BASE);
             devices.activate("gc9306-lcm");
             devices.activate("disp-ovl0");
             devices.activate("disp-rdma0");
@@ -506,16 +512,16 @@ pub unsafe fn run() -> ! {
     {
         // NOTE: Full keypad driver is in crates/haphe. Here we enable the
         // KPD hardware so interrupt-driven scanning can start.
-        let kpd_base = device::MT6739_KPD;
+        let kpd_base = board::KPD_BASE;
         // SAFETY: KPD_EN and KPD_DEBOUNCE are device MMIO registers at known
-        // offsets from the MT6739_KPD base address (0x1001_0000), which is
+        // offsets from the KPD base address (0x1001_0000), which is
         // identity-mapped as device memory. Writing these registers enables the
         // hardware keypad scanner with 16 ms debounce.
         unsafe {
             // Enable KPD module (bit 0 of KPD_EN).
-            mmio::write32(kpd_base + device::KPD_EN, 1);
+            mmio::write32(kpd_base + board::KPD_EN, 1);
             // Set debounce to 16 ms (hardware units).
-            mmio::write32(kpd_base + device::KPD_DEBOUNCE, 16);
+            mmio::write32(kpd_base + board::KPD_DEBOUNCE, 16);
         }
         devices.activate("mtk-kpd");
         state.input_ok = true;
@@ -577,19 +583,25 @@ pub unsafe fn run() -> ! {
     // Captures the mounted LFS so it can back the VFS root below instead
     // of a fresh, volatile ramfs (#343). Stays `None` on any path that
     // does not end with a durably mounted filesystem.
+    #[cfg_attr(feature = "qemu", allow(unused_mut))]
     let mut lfs_root: Option<alloc::boxed::Box<dyn crate::vfs::Filesystem>> = None;
     // WHY (#217): persistent storage mounts ONLY on a verified boot --
     // secure_boot.rs's contract is that the filesystem mounts AFTER the
     // trust gate so a tampered kernel cannot reach encrypted data. A
     // verification FAILURE has already halted above; this gate covers the
     // no-boot-medium degrade, where nothing persistent may be touched.
+    // WHY not(qemu): the mount path is eMMC + LFS-partition bring-up, which
+    // exists only on the M7 (#534) -- virt models no block medium, so
+    // `lfs_root` stays None there exactly as the runtime gate already
+    // produced, and the VFS root falls back to ramfs.
+    #[cfg(not(feature = "qemu"))]
     if state.emmc_ok && state.secure_boot_ok {
         use crate::block::MsdcBlockDevice;
         use crate::lfs;
         use crate::lfs_imap::LfsError;
 
         // Compute device size in sectors from the partition constants.
-        let sector_count = kconfig::LFS_PARTITION_SIZE;
+        let sector_count = board::LFS_PARTITION_SIZE;
 
         // Create a block device wrapping the eMMC controller at the LFS partition.
         let mut blk_dev = MsdcBlockDevice::new(sector_count);
@@ -875,6 +887,7 @@ pub unsafe fn run() -> ! {
     // Step 13: Network configuration (WiFi readiness + DHCP/DNS smoke)
     // -----------------------------------------------------------------------
     serial.log("[init] Network WiFi readiness\r\n");
+    #[cfg(not(feature = "qemu"))]
     {
         let wifi_device = WifiDevice::new(crate::wifi::WifiHw::new());
         let readiness =
@@ -893,6 +906,12 @@ pub unsafe fn run() -> ! {
             }
         }
     }
+    // WHY(virt): no combo chip exists on this board; the old path probed the
+    // M7's CONSYS address and relied on qemu's RAZ/WI to fail the probe.
+    // BootState's default is already HardwareUnavailable(Wifi), so the skip
+    // leaves the boot record identical -- but the board truth is now named.
+    #[cfg(feature = "qemu")]
+    serial.log(" WiFi skipped (virt: no combo chip)\r\n");
 
     serial.log("[init] Network loopback smoke (DHCP + DNS)\r\n");
     // #403: the net stack is now LOOP-PERSISTENT -- built here on BOTH targets
@@ -1000,6 +1019,7 @@ pub unsafe fn run() -> ! {
     // Step 13b: Bluetooth adapter
     // -----------------------------------------------------------------------
     serial.log("[init] Bluetooth (BT HCI via WMT)\r\n");
+    #[cfg(not(feature = "qemu"))]
     {
         let bt_hw = crate::bluetooth::BtHw::new();
         let mut bt = crate::bluetooth::BtAdapter::new(bt_hw);
@@ -1027,11 +1047,14 @@ pub unsafe fn run() -> ! {
             }
         }
     }
+    #[cfg(feature = "qemu")]
+    serial.log(" BT skipped (virt: no combo chip)\r\n");
 
     // -----------------------------------------------------------------------
     // Step 13c: GPS receiver
     // -----------------------------------------------------------------------
     serial.log("[init] GPS (via WMT)\r\n");
+    #[cfg(not(feature = "qemu"))]
     {
         let gps_hw = crate::gps::GpsHw::new();
         let mut gps = crate::gps::GpsReceiver::new(gps_hw);
@@ -1047,6 +1070,8 @@ pub unsafe fn run() -> ! {
             }
         }
     }
+    #[cfg(feature = "qemu")]
+    serial.log(" GPS skipped (virt: no combo chip)\r\n");
 
     // -----------------------------------------------------------------------
     // Boot status summary
@@ -1122,9 +1147,8 @@ pub unsafe fn run() -> ! {
                 // SAFETY (#502): kinit runs under the kernel L1 (proc0's table,
                 // scheduling disabled), satisfying load_confined's TTBR0
                 // precondition -- the image write lands in identity DRAM.
-                match unsafe {
-                    elf::load_confined(elf_data, kconfig::USER_TEXT_BASE, kconfig::RAM_END)
-                } {
+                match unsafe { elf::load_confined(elf_data, board::USER_TEXT_BASE, board::RAM_END) }
+                {
                     Ok(loaded) => {
                         // WHY(#482): spawn_user runs /init UNPRIVILEGED (PL0, User
                         // mode 0x10) in its own address space -- the ELF mapped
@@ -1156,9 +1180,8 @@ pub unsafe fn run() -> ! {
                 // SAFETY (#502): kinit runs under the kernel L1 (proc0's table,
                 // scheduling disabled), satisfying load_confined's TTBR0
                 // precondition -- the image write lands in identity DRAM.
-                match unsafe {
-                    elf::load_confined(elf_data, kconfig::USER_TEXT_BASE, kconfig::RAM_END)
-                } {
+                match unsafe { elf::load_confined(elf_data, board::USER_TEXT_BASE, board::RAM_END) }
+                {
                     Ok(loaded) => {
                         // WHY(#482): /shell runs PL0 in its own isolated space too.
                         if let Some(pid) = process::spawn_user(&loaded) {
@@ -1197,8 +1220,7 @@ pub unsafe fn run() -> ! {
         if let UserspaceSpawnPlan::Elf(elf_data) = plan_userspace_spawn_from_vfs("/crasher") {
             // SAFETY (#502): kinit runs under the kernel L1 (proc0's table,
             // scheduling disabled), satisfying load_confined's TTBR0 precondition.
-            match unsafe { elf::load_confined(elf_data, kconfig::USER_TEXT_BASE, kconfig::RAM_END) }
-            {
+            match unsafe { elf::load_confined(elf_data, board::USER_TEXT_BASE, board::RAM_END) } {
                 Ok(loaded) => {
                     if let Some(pid) = process::spawn_user(&loaded) {
                         boot_log!(serial, " /crasher spawned PL0 (PID {})\r\n", pid);
@@ -1293,7 +1315,7 @@ pub unsafe fn run() -> ! {
         // SAFETY: display_ok is set only after display.init(FB_BASE) mapped
         // FB_BASE as a writable RGB565 framebuffer of FRAMEBUFFER_PIXELS pixels.
         Some(unsafe {
-            core::slice::from_raw_parts_mut(kconfig::FB_BASE as *mut u16, FRAMEBUFFER_PIXELS)
+            core::slice::from_raw_parts_mut(board::FB_BASE as *mut u16, FRAMEBUFFER_PIXELS)
         })
     } else {
         None

@@ -644,28 +644,10 @@ mod tests {
     }
 
     // -- Register address constants --
-
-    #[test]
-    fn mt6739_addresses_match_device_registry() {
-        // WHY: central constants must match what register_mt6739_devices uses
-        assert_eq!(device::MT6739_UART0, 0x1100_2000, "UART0 base address");
-        assert_eq!(device::MT6739_MSDC0, 0x1123_0000, "MSDC0 base address");
-        assert_eq!(device::MT6739_MUSB, 0x1121_0000, "MUSB base address");
-        assert_eq!(
-            device::MT6739_CLDMA_AP,
-            0x200F_0000,
-            "CLDMA AP base address"
-        );
-        assert_eq!(device::MT6739_CCIF, 0x2051_0000, "CCIF base address");
-        assert_eq!(device::MT6739_KPD, 0x1001_0000, "KPD base address");
-        assert_eq!(device::MT6739_GIC_DIST, 0x0C00_0000, "GIC distributor base");
-        assert_eq!(
-            device::MT6739_GIC_CPU,
-            0x0C00_2000,
-            "GIC CPU interface base"
-        );
-        assert_eq!(device::MT6739_FB, 0x77EE_0000, "framebuffer address");
-    }
+    // NOTE (#534): the canonical address test moved with the constants — see
+    // board/m7.rs's `register_devices_pins_canonical_addresses`, which pins
+    // the registry against board::m7's consts directly (and cannot alias to
+    // QEMU addresses, the pre-#534 trap this test fell into).
 
     // -- Modem timeout constant --
 
