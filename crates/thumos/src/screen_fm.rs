@@ -17,7 +17,6 @@
 // WHY: FM screen is wired (#518): FmScreen sits in KernelState and is fed
 // from FmRadio<BootFmHw> each tick, so it is no longer dead surface.
 
-
 use crate::fm_radio::{self, FmState};
 use crate::ui::{
     self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
