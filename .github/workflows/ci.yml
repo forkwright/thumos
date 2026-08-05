@@ -149,6 +149,8 @@ jobs:
         run: scripts/witness/guard.sh
       - name: QEMU brk heap growth on a real page table (#533)
         run: scripts/witness/brk.sh
+      - name: QEMU userspace signal delivery + sigreturn (#446)
+        run: scripts/witness/signal.sh
       - name: QEMU PID-0 fault supervisor + crash-loop rate limit (#492)
         run: scripts/witness/crashloop.sh
       - name: Witness-extraction drift guard (#546)
