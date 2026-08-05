@@ -28,3 +28,18 @@ command -v cargo-nextest >/dev/null || { echo "FAIL: cargo-nextest not installed
 
 (cd "$KERNEL_DIR" && cargo nextest run --bin thumos --target i686-unknown-linux-gnu \
     --build-jobs "${THUMOS_BUILD_JOBS:-8}" --test-threads "${THUMOS_TEST_THREADS:-8}")
+
+# WHY (#459): the debug console is now host-testable (heap/page/process stub
+# pattern), but its tests only exist under `--features debug-console`. A
+# second pass runs them — and asserts they actually execute, since this class
+# of bug is "tests never ran" (the gate left them dead source for weeks).
+out=$(cd "$KERNEL_DIR" && cargo nextest run --bin thumos --target i686-unknown-linux-gnu \
+    --features debug-console --build-jobs "${THUMOS_BUILD_JOBS:-8}" --test-threads "${THUMOS_TEST_THREADS:-8}" 2>&1)
+printf '%s\n' "$out"
+# WHY a herestring, not a pipe: under `set -o pipefail`, `printf | grep -q`
+# returns 141 when grep exits on the first match and printf dies of SIGPIPE —
+# the guard would fire on the very success it checks for (#459's own witness).
+grep -q 'console::tests' <<<"$out" || {
+    echo "FAIL #459: --features debug-console pass ran zero console::tests — the tests are dead again" >&2
+    exit 1
+}
