@@ -107,6 +107,12 @@ jobs:
         # WHY (#546): canonical script shared with the forge admission gate —
         # both surfaces execute the identical suite.
         run: scripts/kernel-host-tests.sh
+      - name: Target-test ledger check (#551)
+        # WHY (#551, restoring #124): declared-vs-executed must be auditable —
+        # reds when a test-bearing or target-sensitive module has no ledger
+        # row, a witness name rots, a sensitive host-only row loses its
+        # fidelity label, or a tests count drifts. Cheap, source-level.
+        run: scripts/check-target-test-ledger.sh
       - name: Kernel cross-compile (armv7a) + zero-warning gate (#431)
         # WHY (#431): the zero-warning gate lives in crates/thumos/.cargo/
         # config.toml's rustflags; scripts/kernel-build.sh builds through it

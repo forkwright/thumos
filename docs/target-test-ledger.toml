@@ -1,0 +1,675 @@
+# Target-executed test ledger (issue #551, restoring the #124 obligation)
+# Per test-bearing (or target-sensitive) module: the declared execution
+# mechanism (host / target / both), the witness script(s) covering the
+# target side, and the fidelity limits of any host fixture. Enforced by
+# scripts/check-target-test-ledger.sh: every such module has a row, 'both'
+# rows name real witness scripts, sensitive host-only rows carry a fidelity
+# note, and the tests count matches the source tree.
+#
+# #528/#533 are the proof-by-incident: host fixtures green while real-table
+# behavior was broken on every boot — host tests are structurally blind to
+# the section-overlay class. The 'both' rows are where that class lives.
+
+[[module]]
+name = "audio"
+tests = 29
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "audio_codec"
+tests = 16
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "audio_route"
+tests = 22
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "audit"
+tests = 27
+mechanism = "host"
+
+[[module]]
+name = "avdtp"
+tests = 2
+mechanism = "host"
+
+[[module]]
+name = "battery"
+tests = 11
+mechanism = "host"
+
+[[module]]
+name = "bfu_timer"
+tests = 17
+mechanism = "host"
+
+[[module]]
+name = "block"
+tests = 11
+mechanism = "host"
+
+[[module]]
+name = "bluetooth"
+tests = 25
+mechanism = "host"
+
+[[module]]
+name = "briar"
+tests = 30
+mechanism = "host"
+
+[[module]]
+name = "bt_audio"
+tests = 19
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "cache"
+tests = 11
+mechanism = "host"
+
+[[module]]
+name = "capability"
+tests = 8
+mechanism = "host"
+
+[[module]]
+name = "ccci"
+tests = 77
+mechanism = "host"
+fidelity = "host tests cover frame codec; the live channel is hardware-gated"
+
+[[module]]
+name = "ccci_logger"
+tests = 42
+mechanism = "host"
+
+[[module]]
+name = "clock"
+tests = 17
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "console"
+tests = 4
+mechanism = "host"
+fidelity = "host-testability + presence-sequence resurrection is #459"
+
+[[module]]
+name = "contacts"
+tests = 25
+mechanism = "host"
+
+[[module]]
+name = "csprng"
+tests = 16
+mechanism = "both"
+witness = "boot.sh"
+fidelity = "host tests use the deterministic seed path; hardware entropy health is device-bound"
+
+[[module]]
+name = "devfs"
+tests = 27
+mechanism = "host"
+
+[[module]]
+name = "device"
+tests = 7
+mechanism = "host"
+
+[[module]]
+name = "dhcp"
+tests = 4
+mechanism = "host"
+
+[[module]]
+name = "display"
+tests = 32
+mechanism = "host"
+fidelity = "DDP pipeline hardware-gated; the synthetic framebuffer covers the render witness"
+
+[[module]]
+name = "dns"
+tests = 29
+mechanism = "host"
+
+[[module]]
+name = "dns_tls"
+tests = 28
+mechanism = "host"
+
+[[module]]
+name = "ekphrasis"
+tests = 59
+mechanism = "host"
+
+[[module]]
+name = "elf"
+tests = 18
+mechanism = "both"
+witness = "boot.sh+exec.sh+forkexec.sh"
+fidelity = "loader correctness against real page tables is witness-only (exec/forkexec); host tests cover header/segment parsing"
+
+[[module]]
+name = "emmc"
+tests = 31
+mechanism = "both"
+witness = "boot.sh"
+fidelity = "driver register paths are hardware-gated; host tests cover protocol logic"
+
+[[module]]
+name = "encryption"
+tests = 14
+mechanism = "host"
+fidelity = "cipher/KDF correctness is host+fuzz covered; on-device key/salt persistence is #449"
+
+[[module]]
+name = "exceptions"
+tests = 0
+mechanism = "target"
+witness = "boot.sh+kfault.sh"
+
+[[module]]
+name = "exceptions_stub"
+tests = 4
+mechanism = "host"
+fidelity = "the stub IS the host fixture for the exceptions module — see exceptions for the witness side"
+
+[[module]]
+name = "fd"
+tests = 69
+mechanism = "host"
+
+[[module]]
+name = "firewall"
+tests = 30
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "fm_radio"
+tests = 25
+mechanism = "host"
+
+[[module]]
+name = "futex"
+tests = 7
+mechanism = "both"
+witness = "sleep.sh"
+fidelity = "WAIT/WAKE logic host-covered; the IRQ-masked sleep/wake path is sleep-witnessed"
+
+[[module]]
+name = "gic"
+tests = 0
+mechanism = "host"
+fidelity = "register interaction is not exercised host-side; the PL0 probes cover the live GIC path"
+
+[[module]]
+name = "gps"
+tests = 25
+mechanism = "host"
+
+[[module]]
+name = "gsm7"
+tests = 8
+mechanism = "host"
+
+[[module]]
+name = "harmostes"
+tests = 36
+mechanism = "host"
+
+[[module]]
+name = "heap"
+tests = 0
+mechanism = "target"
+witness = "brk.sh"
+
+[[module]]
+name = "heorte"
+tests = 17
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "heorte_alarm"
+tests = 7
+mechanism = "host"
+
+[[module]]
+name = "heorte_timer"
+tests = 14
+mechanism = "host"
+
+[[module]]
+name = "http_client"
+tests = 47
+mechanism = "host"
+
+[[module]]
+name = "ipc"
+tests = 11
+mechanism = "host"
+
+[[module]]
+name = "irq"
+tests = 4
+mechanism = "both"
+witness = "boot.sh"
+fidelity = "GIC register interaction is not exercised host-side; the PL0 probes cover the live IRQ path"
+
+[[module]]
+name = "json_mini"
+tests = 66
+mechanism = "host"
+
+[[module]]
+name = "kardia"
+tests = 0
+mechanism = "target"
+witness = "boot.sh+crashloop.sh"
+
+[[module]]
+name = "kconfig"
+tests = 4
+mechanism = "host"
+fidelity = "constant table only — nothing target-executed to diverge"
+
+[[module]]
+name = "key_manager"
+tests = 12
+mechanism = "host"
+fidelity = "KDF correctness is host-covered; on-device salt persistence is #449"
+
+[[module]]
+name = "kinit"
+tests = 0
+mechanism = "target"
+witness = "boot.sh"
+
+[[module]]
+name = "kinit_plan"
+tests = 22
+mechanism = "host"
+
+[[module]]
+name = "lfs"
+tests = 33
+mechanism = "host"
+
+[[module]]
+name = "lfs_checkpoint"
+tests = 9
+mechanism = "host"
+
+[[module]]
+name = "lfs_compact"
+tests = 9
+mechanism = "host"
+
+[[module]]
+name = "lfs_imap"
+tests = 11
+mechanism = "host"
+
+[[module]]
+name = "lfs_segment"
+tests = 12
+mechanism = "host"
+
+[[module]]
+name = "lfs_writer"
+tests = 7
+mechanism = "host"
+
+[[module]]
+name = "lock_screen"
+tests = 20
+mechanism = "host"
+fidelity = "policy logic host-covered; boot-time passphrase input is #446"
+
+[[module]]
+name = "main"
+tests = 0
+mechanism = "target"
+witness = "boot.sh"
+fidelity = "module wiring only — the boot witness is its proof"
+
+[[module]]
+name = "matrix_crypto"
+tests = 37
+mechanism = "host"
+
+[[module]]
+name = "matrix_ids"
+tests = 11
+mechanism = "host"
+
+[[module]]
+name = "memguard"
+tests = 13
+mechanism = "host"
+
+[[module]]
+name = "meshtastic"
+tests = 36
+mechanism = "host"
+
+[[module]]
+name = "mic_audit"
+tests = 18
+mechanism = "host"
+
+[[module]]
+name = "mmio"
+tests = 4
+mechanism = "host"
+fidelity = "register access helpers — production paths are board/hardware-gated"
+
+[[module]]
+name = "mmu"
+tests = 35
+mechanism = "both"
+witness = "fork.sh+exec.sh+guard.sh+brk.sh"
+
+[[module]]
+name = "net"
+tests = 18
+mechanism = "host"
+
+[[module]]
+name = "nous"
+tests = 38
+mechanism = "host"
+
+[[module]]
+name = "page"
+tests = 9
+mechanism = "both"
+witness = "fork.sh+guard.sh"
+fidelity = "real-table behavior is fork/guard-witnessed; host fixtures use absent-entry tables (#533 class)"
+
+[[module]]
+name = "panic_wipe"
+tests = 18
+mechanism = "host"
+
+[[module]]
+name = "pipe"
+tests = 12
+mechanism = "host"
+
+[[module]]
+name = "power"
+tests = 29
+mechanism = "host"
+fidelity = "PMIC/DVFS telemetry and control are hardware-gated"
+
+[[module]]
+name = "process"
+tests = 53
+mechanism = "both"
+witness = "boot.sh+fork.sh+exec.sh+forkexec.sh+guard.sh+brk.sh+crashloop.sh"
+
+[[module]]
+name = "provision"
+tests = 29
+mechanism = "host"
+
+[[module]]
+name = "qemu"
+tests = 0
+mechanism = "target"
+witness = "boot.sh"
+fidelity = "emulation shim itself — exercised by every witness run"
+
+[[module]]
+name = "ramfs"
+tests = 35
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "reflex"
+tests = 4
+mechanism = "host"
+
+[[module]]
+name = "sbc"
+tests = 9
+mechanism = "host"
+
+[[module]]
+name = "screen_alarm"
+tests = 16
+mechanism = "host"
+
+[[module]]
+name = "screen_calendar"
+tests = 8
+mechanism = "host"
+
+[[module]]
+name = "screen_call"
+tests = 16
+mechanism = "host"
+
+[[module]]
+name = "screen_contacts"
+tests = 16
+mechanism = "host"
+
+[[module]]
+name = "screen_dialer"
+tests = 14
+mechanism = "host"
+
+[[module]]
+name = "screen_fm"
+tests = 15
+mechanism = "host"
+
+[[module]]
+name = "screen_home"
+tests = 19
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "screen_messages"
+tests = 42
+mechanism = "host"
+
+[[module]]
+name = "screen_nous"
+tests = 42
+mechanism = "host"
+
+[[module]]
+name = "screen_privacy"
+tests = 33
+mechanism = "host"
+
+[[module]]
+name = "screen_radio"
+tests = 13
+mechanism = "host"
+
+[[module]]
+name = "screen_search"
+tests = 14
+mechanism = "host"
+
+[[module]]
+name = "screen_settings"
+tests = 14
+mechanism = "host"
+
+[[module]]
+name = "screen_threat"
+tests = 18
+mechanism = "host"
+
+[[module]]
+name = "secure_boot"
+tests = 22
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "security"
+tests = 29
+mechanism = "host"
+
+[[module]]
+name = "security_mode"
+tests = 38
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "signal"
+tests = 7
+mechanism = "host"
+
+[[module]]
+name = "sim"
+tests = 12
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "slab"
+tests = 15
+mechanism = "host"
+fidelity = "allocator-on-real-tables is brk-witnessed; host tests cover size-class logic"
+
+[[module]]
+name = "sms"
+tests = 20
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "socket"
+tests = 24
+mechanism = "host"
+
+[[module]]
+name = "status_bar"
+tests = 13
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "supervisor"
+tests = 12
+mechanism = "both"
+witness = "crashloop.sh"
+
+[[module]]
+name = "syscall"
+tests = 70
+mechanism = "both"
+witness = "boot.sh+fork.sh+exec.sh+sleep.sh"
+fidelity = "trap entry / exception return is witness-only (PL0 probes); host tests cover dispatch logic via the uart stub"
+
+[[module]]
+name = "t9"
+tests = 14
+mechanism = "host"
+
+[[module]]
+name = "telephony"
+tests = 38
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "telephony_mock"
+tests = 0
+mechanism = "target"
+witness = "boot.sh"
+
+[[module]]
+name = "telephony_parser"
+tests = 19
+mechanism = "host"
+
+[[module]]
+name = "time"
+tests = 13
+mechanism = "host"
+fidelity = "CLOCK_REALTIME/ClockManager unification is #506 (blocked by #461); host tests cover offset math"
+
+[[module]]
+name = "timer"
+tests = 0
+mechanism = "target"
+witness = "boot.sh"
+fidelity = "host tests exercise the stub surface (timer_stub); CNTPCT/elapsed_ms semantics under QEMU are #461; the tick-driven loop is boot-witnessed"
+
+[[module]]
+name = "timer_stub"
+tests = 5
+mechanism = "host"
+fidelity = "the stub is the host fixture — see timer"
+
+[[module]]
+name = "uart"
+tests = 0
+mechanism = "target"
+witness = "boot.sh"
+fidelity = "production UART is hardware-gated; the stub covers host tests"
+
+[[module]]
+name = "uart_pl011"
+tests = 0
+mechanism = "host"
+fidelity = "production UART runs only on the qemu board (boot witness)"
+
+[[module]]
+name = "uart_stub"
+tests = 0
+mechanism = "host"
+
+[[module]]
+name = "ui"
+tests = 20
+mechanism = "both"
+witness = "boot.sh"
+
+[[module]]
+name = "usb"
+tests = 29
+mechanism = "host"
+fidelity = "MMIO/ISR paths are not exercised host-side; EP1 ring sync is #437 remnant 2"
+
+[[module]]
+name = "vfs"
+tests = 16
+mechanism = "host"
+
+[[module]]
+name = "watchdog"
+tests = 3
+mechanism = "host"
+fidelity = "watchdog peripheral is hardware-gated; host tests cover arming logic"
+
+[[module]]
+name = "watchdog_qemu"
+tests = 0
+mechanism = "host"
+
+[[module]]
+name = "wifi"
+tests = 37
+mechanism = "host"
+fidelity = "WPA/PTK logic is host+fuzz covered; radio I/O is hardware-gated"
