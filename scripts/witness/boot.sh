@@ -40,6 +40,10 @@ grep -q 'kardia: nav Search -> Home' boot.log || { echo 'FAIL #400: back-navigat
 # #402 clock trust hierarchy wired + seeded + driving the display.
 grep -q 'kardia: clock src=manual' boot.log || { echo 'FAIL #402: ClockManager not wired/seeded (no manual source)'; exit 1; }
 wall=$(grep -oE 'clock src=manual wall=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+$'); test "${wall:-0}" -gt 1700000000 || { echo "FAIL #402: wall clock is not a real epoch (wall=${wall:-0}) -- ClockManager not driving time"; exit 1; }
+# #461 clock health witness: elapsed_ms must advance under virt (measured
+# root cause 2026-08-04); a counter/frequency regression reds here instead
+# of silently hanging the wait loops that consume elapsed_ms.
+grep -q 'kardia: timer elapsed_ms=advancing' boot.log || { echo 'FAIL #461: elapsed_ms not advancing under qemu (CNTFRQ/CNTPCT regression)'; exit 1; }
 # #398 telephony: seeded mock transport, LIVE stack, Registered.
 grep -q 'kardia: modem ready state=Registered' boot.log || { echo 'FAIL #398: Telephony did not initialize to Registered (AT state machine / mock wiring broken)'; exit 1; }
 # #399 audio session manager + mic audit.
