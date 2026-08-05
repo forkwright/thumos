@@ -52,7 +52,8 @@ pub(crate) static GOLDEN_VECTORS: &[GoldenVector] = &[
             0x03, 0x00, // kind 3 = SttEvent
             0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // correlation 42
             0x04, 0x00, 0x00, 0x00, // payload_len 4
-            0x00, 0x03, 0x00, 0x00, // payload: discriminant 0 (Partial), seq 3, empty text, confidence 0
+            0x00, 0x03, 0x00,
+            0x00, // payload: discriminant 0 (Partial), seq 3, empty text, confidence 0
         ],
         kind: MessageKind::SttEvent,
         correlation_id: 42,
@@ -111,11 +112,13 @@ mod tests {
             duration_ms: 1200,
         };
         let payload = postcard::to_allocvec(&event).unwrap_or_else(|_| unreachable!());
-        let frame = Envelope::build(MessageKind::SttEvent, 0x00C0_FFEE, payload).unwrap_or_else(|_| unreachable!());
+        let frame = Envelope::build(MessageKind::SttEvent, 0x00C0_FFEE, payload)
+            .unwrap_or_else(|_| unreachable!());
         let back = Envelope::decode(&frame.encode());
         assert_eq!(back, Ok(frame));
-        let decoded: SttEvent = postcard::from_bytes(&back.unwrap_or_else(|_| unreachable!()).payload)
-            .unwrap_or_else(|_| unreachable!());
+        let decoded: SttEvent =
+            postcard::from_bytes(&back.unwrap_or_else(|_| unreachable!()).payload)
+                .unwrap_or_else(|_| unreachable!());
         assert_eq!(decoded, event);
     }
 
@@ -134,7 +137,8 @@ mod tests {
         };
         for event in [partial, err] {
             let payload = postcard::to_allocvec(&event).unwrap_or_else(|_| unreachable!());
-            let decoded: SttEvent = postcard::from_bytes(&payload).unwrap_or_else(|_| unreachable!());
+            let decoded: SttEvent =
+                postcard::from_bytes(&payload).unwrap_or_else(|_| unreachable!());
             assert_eq!(decoded, event);
         }
     }
@@ -146,7 +150,8 @@ mod tests {
         // produce for this case.
         let v = &GOLDEN_VECTORS[1];
         let frame = Envelope::decode(v.bytes).unwrap_or_else(|_| unreachable!());
-        let event: SttEvent = postcard::from_bytes(&frame.payload).unwrap_or_else(|_| unreachable!());
+        let event: SttEvent =
+            postcard::from_bytes(&frame.payload).unwrap_or_else(|_| unreachable!());
         assert_eq!(
             event,
             SttEvent::Partial {

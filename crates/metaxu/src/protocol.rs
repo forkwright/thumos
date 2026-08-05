@@ -385,11 +385,12 @@ pub(crate) fn encode_request(request: &TaskRequest) -> Result<Vec<u8>> {
 pub(crate) fn decode_request(bytes: &[u8]) -> Result<TaskRequest> {
     let frame = crate::envelope::Envelope::decode(bytes).context(crate::error::EnvelopeSnafu)?;
     if frame.header.kind != crate::envelope::MessageKind::TaskRequest {
-        return Err(crate::error::EnvelopeSnafu
-            .into_error(crate::envelope::EnvelopeError::UnexpectedKind {
+        return Err(crate::error::EnvelopeSnafu.into_error(
+            crate::envelope::EnvelopeError::UnexpectedKind {
                 expected: crate::envelope::MessageKind::TaskRequest,
                 got: frame.header.kind,
-            }));
+            },
+        ));
     }
     postcard::from_bytes(&frame.payload).context(crate::error::DecodeSnafu)
 }
@@ -411,11 +412,12 @@ pub(crate) fn encode_response(response: &TaskResponse) -> Result<Vec<u8>> {
 pub(crate) fn decode_response(bytes: &[u8]) -> Result<TaskResponse> {
     let frame = crate::envelope::Envelope::decode(bytes).context(crate::error::EnvelopeSnafu)?;
     if frame.header.kind != crate::envelope::MessageKind::TaskResponse {
-        return Err(crate::error::EnvelopeSnafu
-            .into_error(crate::envelope::EnvelopeError::UnexpectedKind {
+        return Err(crate::error::EnvelopeSnafu.into_error(
+            crate::envelope::EnvelopeError::UnexpectedKind {
                 expected: crate::envelope::MessageKind::TaskResponse,
                 got: frame.header.kind,
-            }));
+            },
+        ));
     }
     postcard::from_bytes(&frame.payload).context(crate::error::DecodeSnafu)
 }

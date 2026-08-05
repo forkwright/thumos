@@ -10,17 +10,16 @@
 mod client;
 mod envelope;
 mod error;
-#[cfg(test)]
-mod vectors;
 mod protocol;
 mod transport;
-
+#[cfg(test)]
+mod vectors;
 
 use snafu::{OptionExt as _, ResultExt as _};
 
 pub use client::BridgeClient; // kanon:ignore RUST/pub-visibility -- public API
-pub use error::{Error, Result};
 pub use envelope::{EnvelopeError, MessageKind, SttErrorCode, SttEvent}; // kanon:ignore RUST/pub-visibility -- public API
+pub use error::{Error, Result};
 pub use protocol::{
     AudioMode, Capability, CapabilityGrant, ContactSummary, DeviceAction, DeviceIdentityRef,
     IdentityKind, TaskRequest, TaskResponse, TaskStatus,
@@ -159,8 +158,8 @@ mod tests {
     }
 
     #[test]
-    fn decode_request_rejects_malformed_payload(
-    ) -> core::result::Result<(), crate::envelope::EnvelopeError> {
+    fn decode_request_rejects_malformed_payload()
+    -> core::result::Result<(), crate::envelope::EnvelopeError> {
         // A well-formed envelope whose payload is not a valid TaskRequest:
         // the envelope passes, the postcard layer rejects.
         let frame = crate::envelope::Envelope::build(

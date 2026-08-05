@@ -167,7 +167,6 @@ pub enum EnvelopeError {
     },
 }
 
-
 /// A parsed envelope header (validated; the payload is checked separately).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EnvelopeHeader {
@@ -206,7 +205,11 @@ impl EnvelopeHeader {
                 present: bytes.len(),
             });
         }
-        let magic = u32::from_le_bytes(bytes[0..4].try_into().map_err(|_| EnvelopeError::BadMagic)?);
+        let magic = u32::from_le_bytes(
+            bytes[0..4]
+                .try_into()
+                .map_err(|_| EnvelopeError::BadMagic)?,
+        );
         if magic != MAGIC {
             return Err(EnvelopeError::BadMagic);
         }
@@ -231,7 +234,8 @@ impl EnvelopeHeader {
                 .try_into()
                 .map_err(|_| EnvelopeError::UnknownKind { kind: 0 })?,
         );
-        let kind = MessageKind::from_u16(kind_raw).ok_or(EnvelopeError::UnknownKind { kind: kind_raw })?;
+        let kind =
+            MessageKind::from_u16(kind_raw).ok_or(EnvelopeError::UnknownKind { kind: kind_raw })?;
         let correlation_id = u64::from_le_bytes(
             bytes[10..18]
                 .try_into()
@@ -280,11 +284,12 @@ impl Envelope {
         correlation_id: u64,
         payload: Vec<u8>,
     ) -> Result<Self, EnvelopeError> {
-        let payload_len = u32::try_from(payload.len()).map_err(|_| EnvelopeError::FrameTooLarge {
-            kind,
-            declared: u32::MAX,
-            ceiling: kind.payload_ceiling(),
-        })?;
+        let payload_len =
+            u32::try_from(payload.len()).map_err(|_| EnvelopeError::FrameTooLarge {
+                kind,
+                declared: u32::MAX,
+                ceiling: kind.payload_ceiling(),
+            })?;
         let ceiling = kind.payload_ceiling();
         if payload_len > ceiling {
             return Err(EnvelopeError::FrameTooLarge {
@@ -445,8 +450,16 @@ mod tests {
         assert_eq!(bytes[6], MAJOR, "major at [6]");
         assert_eq!(bytes[7], MINOR, "minor at [7]");
         assert_eq!(&bytes[8..10], &1u16.to_le_bytes(), "kind at [8..10)");
-        assert_eq!(&bytes[10..18], &7u64.to_le_bytes(), "correlation at [10..18)");
-        assert_eq!(&bytes[18..22], &3u32.to_le_bytes(), "payload_len at [18..22)");
+        assert_eq!(
+            &bytes[10..18],
+            &7u64.to_le_bytes(),
+            "correlation at [10..18)"
+        );
+        assert_eq!(
+            &bytes[18..22],
+            &3u32.to_le_bytes(),
+            "payload_len at [18..22)"
+        );
         assert_eq!(&bytes[22..], &[1, 2, 3], "payload follows");
     }
 
