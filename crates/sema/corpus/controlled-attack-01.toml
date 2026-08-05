@@ -1,0 +1,18 @@
+schema_version = 1
+id = "controlled-attack-01"
+kind = "controlled_attack"
+provenance = "synthetic (#555); hand-built, NOT field-measured"
+target_level = "High"
+
+# Controlled IMSI-catcher emulation: cipher downgrade, coerced handover to
+# an unannounced tower, and an implausibly strong new cell together.
+[[alerts]]
+kind = "cipher_downgrade"
+algorithm = "A5_1"
+
+[[alerts]]
+kind = "sudden_tower_change"
+
+[[alerts]]
+kind = "unusually_strong_new_tower"
+signal_dbm = -30

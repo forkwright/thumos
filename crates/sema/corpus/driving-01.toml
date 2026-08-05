@@ -1,0 +1,15 @@
+schema_version = 1
+id = "driving-01"
+kind = "driving"
+provenance = "synthetic (#555); hand-built, NOT field-measured"
+target_level = "Low"
+
+# Ordinary mobility: handovers to announced towers plus routine reselection
+# churn spread across the trip.
+[[alerts]]
+kind = "rapid_reselection"
+count = 3
+
+[[alerts]]
+kind = "rapid_reselection"
+count = 2

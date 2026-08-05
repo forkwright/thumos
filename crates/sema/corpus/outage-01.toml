@@ -1,0 +1,10 @@
+schema_version = 1
+id = "outage-01"
+kind = "outage"
+provenance = "synthetic (#555); hand-built, NOT field-measured"
+target_level = "Low"
+
+# Serving-cell outage and recovery to announced coverage.
+[[alerts]]
+kind = "rapid_reselection"
+count = 2

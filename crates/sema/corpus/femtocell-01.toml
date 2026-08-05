@@ -1,0 +1,10 @@
+schema_version = 1
+id = "femtocell-01"
+kind = "femtocell"
+provenance = "synthetic (#555); hand-built, NOT field-measured"
+target_level = "Low"
+
+# A carrier femtocell appears nearby: one strong new cell, nothing else.
+[[alerts]]
+kind = "unusually_strong_new_tower"
+signal_dbm = -48

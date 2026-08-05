@@ -1,0 +1,11 @@
+schema_version = 1
+id = "benign-stationary-01"
+kind = "benign_stationary"
+provenance = "synthetic (#555); hand-built, NOT field-measured"
+target_level = "Low"
+
+# Stationary device on stable home macro coverage: at most incidental
+# reselections, all to announced neighbours (no alert kinds fire).
+[[alerts]]
+kind = "rapid_reselection"
+count = 2
