@@ -162,20 +162,65 @@ impl core::fmt::Display for CipherAlgorithm {
 
 // ── Threat scoring ──────────────────────────────────────────────────────────
 
+/// Calibration provenance of a [`ThreatScore`] (#555).
+///
+/// The detector's weights and thresholds ship as **provisional defaults**
+/// with no retained calibration corpus or evaluation behind them. Until the
+/// evaluation harness (`crate::eval`) reports an operating point over a
+/// versioned trace corpus, every score must be presented as UNCALIBRATED —
+/// never as validated operational severity. This marker is how the type
+/// system carries that honesty: a score cannot exist without stating its
+/// provenance, and any future automatic response must match on
+/// `Calibrated` before it may act.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[must_use]
+#[non_exhaustive]
+pub(crate) enum Calibration {
+    /// Weights/thresholds are the provisional hand-maintained defaults; no
+    /// corpus-backed evaluation has established an operating point.
+    Uncalibrated,
+    /// Weights/thresholds were derived from the named corpus version at the
+    /// recorded operating point, satisfying the recorded error budget.
+    Calibrated {
+        /// Version identifier of the trace corpus the evaluation ran over.
+        corpus: String,
+        /// The operating point (weight set + thresholds) the evaluation
+        /// selected, in `Config`-serializable form.
+        operating_point: String,
+        /// The measured error rates at that operating point
+        /// (false-positive and false-negative rates, per mille).
+        error_budget_per_mille: (u32, u32),
+    },
+}
+
+impl core::fmt::Display for Calibration {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Uncalibrated => f.write_str("UNCALIBRATED"),
+            Self::Calibrated { corpus, .. } => write!(f, "calibrated({corpus})"),
+        }
+    }
+}
+
 /// Threat level derived from the cumulative [`ThreatScore`].
 ///
 /// Thresholds: `<30` Low, `30–59` Medium, `60–79` High, `≥80` Critical.
+/// These boundaries are protocol invariants (changing them is a semver
+/// break), but their MEANING is provisional until the score behind them is
+/// `Calibration::Calibrated` (#555): the bands name score ranges, not yet
+/// validated detection confidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[must_use]
 #[non_exhaustive]
 pub(crate) enum ThreatLevel {
-    /// Score below 30. Normal operating conditions.
+    /// Score below 30. Normal operating conditions (provisional band).
     Low,
-    /// Score 30–59. Suspicious activity detected.
+    /// Score 30–59. Suspicious activity band (provisional).
     Medium,
-    /// Score 60–79. Likely IMSI catcher or active attack.
+    /// Score 60–79. High band — labeled "likely IMSI catcher" only after
+    /// calibration establishes what the band actually separates (#555).
     High,
-    /// Score 80+. Multiple strong indicators of an active attack.
+    /// Score 80+. Critical band (provisional; see High).
     Critical,
 }
 
@@ -223,14 +268,18 @@ pub(crate) struct ThreatScore {
     pub(crate) level: ThreatLevel,
     /// Individual contributing factors.
     pub(crate) factors: Vec<ThreatFactor>,
+    /// Calibration provenance (#555). Every score states it; presentation
+    /// and any future automatic response must honor it.
+    pub(crate) calibration: Calibration,
 }
 
 impl core::fmt::Display for ThreatScore {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "threat score {}: {} ({} factor{})",
+            "threat score {} [{}]: {} ({} factor{})",
             self.total,
+            self.calibration,
             self.level,
             self.factors.len(),
             if self.factors.len() == 1 { "" } else { "s" },
@@ -261,12 +310,27 @@ pub(crate) fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
 /// Supplying a non-default `config` observably changes the per-alert weights
 /// in the result and can move the overall [`ThreatLevel`] boundary. This is
 /// the primary entry point for agents tuning detection policy.
+///
+/// # Correlation model (#555)
+///
+/// Repeated alerts of the SAME kind are correlated observations — one
+/// underlying event re-reported — not independent evidence. Summing them at
+/// full weight let a single benign burst (e.g. dense-urban reselection
+/// churn) accumulate into a Critical score. The contribution of the *n*-th
+/// alert of a kind is therefore `weight / n` (harmonic discount: first
+/// alert full weight, second half, third a third, …). The harmonic series
+/// is parameter-free — it models diminishing independent information per
+/// repeat without minting another hand-maintained constant. Distinct kinds
+/// still sum fully (a cipher downgrade AND a sudden tower change ARE
+/// independent signals).
 pub(crate) fn score_threat_with_config(
     alerts: &[ImsiCatcherAlert],
     config: &Config,
 ) -> ThreatScore {
     let mut total: u32 = 0;
     let mut factors = Vec::new();
+    // Per-kind occurrence index for the harmonic correlation discount (#555).
+    let mut kind_counts = [0u32; 5];
 
     let w_cipher = config.weight_cipher_downgrade();
     let w_lac_cid = config.weight_unusual_lac_cid();
@@ -274,18 +338,21 @@ pub(crate) fn score_threat_with_config(
     let w_rapid = config.weight_rapid_reselection();
 
     for alert in alerts {
-        let (name, weight, description) = match alert {
+        let (kind_idx, name, base_weight, description) = match alert {
             ImsiCatcherAlert::TechnologyDowngrade { from, to } => (
+                0,
                 "tech_downgrade",
                 w_cipher,
                 format!("technology downgrade: {from} → {to}"),
             ),
             ImsiCatcherAlert::CipherDowngrade { algorithm } => (
+                1,
                 "cipher_downgrade",
                 w_cipher,
                 format!("weak cipher negotiated: {algorithm}"),
             ),
             ImsiCatcherAlert::SuddenTowerChange { previous, current } => (
+                2,
                 "unusual_lac_cid",
                 w_lac_cid,
                 format!(
@@ -294,6 +361,7 @@ pub(crate) fn score_threat_with_config(
                 ),
             ),
             ImsiCatcherAlert::UnusuallyStrongNewTower { tower } => (
+                3,
                 "abnormal_signal",
                 w_abnormal,
                 format!(
@@ -302,12 +370,18 @@ pub(crate) fn score_threat_with_config(
                 ),
             ),
             ImsiCatcherAlert::RapidReselection { count } => (
+                4,
                 "rapid_reselection",
                 w_rapid,
                 format!("{count} cell reselections in observation window"), // kanon:ignore STORAGE/sql-string-concat -- false positive: "reselections" contains "SELECT" substring; this is a human-readable alert string, not SQL. kanon:ignore RUST/format-sql -- same rationale
             ),
         };
 
+        // Harmonic correlation discount: the n-th alert of this kind
+        // contributes base_weight/n (#555; doc on the function).
+        kind_counts[kind_idx] += 1;
+        let n = kind_counts[kind_idx];
+        let weight = base_weight / n;
         total = total.saturating_add(weight);
         factors.push(ThreatFactor {
             name,
@@ -321,6 +395,9 @@ pub(crate) fn score_threat_with_config(
         total,
         level,
         factors,
+        // Every score ships uncalibrated until the eval harness + a versioned
+        // corpus establish an operating point (#555).
+        calibration: Calibration::Uncalibrated,
     }
 }
 
@@ -1113,6 +1190,66 @@ mod tests {
     }
 
     #[test]
+    fn score_threat_repeated_kind_gets_harmonic_discount() {
+        // #555 correlation model: three RapidReselection alerts are
+        // correlated observations of churn, not three independent events.
+        // Contributions: 10/1 + 10/2 + 10/3 = 10 + 5 + 3 = 18, NOT 30.
+        let alerts = [
+            ImsiCatcherAlert::RapidReselection { count: 3 },
+            ImsiCatcherAlert::RapidReselection { count: 4 },
+            ImsiCatcherAlert::RapidReselection { count: 5 },
+        ];
+        let score = score_threat(&alerts);
+        assert_eq!(
+            score.total, 18,
+            "repeated kind must score harmonically (10 + 5 + 3), not independently (30)"
+        );
+        assert_eq!(score.level, ThreatLevel::Low);
+        let weights: Vec<u32> = score.factors.iter().map(|f| f.weight).collect();
+        assert_eq!(weights, [10, 5, 3], "factor weights must be w, w/2, w/3");
+    }
+
+    #[test]
+    fn score_threat_repeated_strong_towers_do_not_stack_to_critical() {
+        // #555: the pre-model failure mode — five benign-but-strong tower
+        // sightings (dense-urban RF churn) stacking to 100 = Critical.
+        // Harmonic: 20 + 10 + 6 + 5 + 4 = 45 (Medium), still provisional
+        // but no longer a fabricated Critical from correlated noise.
+        let alerts: Vec<ImsiCatcherAlert> = (1..=5)
+            .map(|cid| ImsiCatcherAlert::UnusuallyStrongNewTower {
+                tower: tower(cid, -40, CellTechnology::Lte),
+            })
+            .collect();
+        let score = score_threat(&alerts);
+        assert_eq!(score.total, 45, "harmonic sum 20+10+6+5+4 = 45");
+        assert_eq!(score.level, ThreatLevel::Medium);
+    }
+
+    #[test]
+    fn score_threat_distinct_kinds_still_sum_fully() {
+        // The discount applies WITHIN a kind; distinct kinds are
+        // independent observations and sum at full weight.
+        let alerts = [
+            ImsiCatcherAlert::RapidReselection { count: 3 },
+            ImsiCatcherAlert::RapidReselection { count: 4 },
+            ImsiCatcherAlert::UnusuallyStrongNewTower {
+                tower: tower(9, -40, CellTechnology::Lte),
+            },
+        ];
+        let score = score_threat(&alerts);
+        assert_eq!(score.total, 35, "10 + 5 (harmonic) + 20 (full) = 35");
+    }
+
+    #[test]
+    fn score_threat_ships_uncalibrated() {
+        // #555: no score may exist without stating its provenance.
+        let alerts = [ImsiCatcherAlert::RapidReselection { count: 3 }];
+        let score = score_threat(&alerts);
+        assert_eq!(score.calibration, Calibration::Uncalibrated);
+        assert!(format!("{score}").contains("UNCALIBRATED"));
+    }
+
+    #[test]
     fn score_threat_combined_high() {
         // Cipher downgrade (40) + sudden tower (30) = 70 → High.
         let alerts = [
@@ -1243,6 +1380,7 @@ mod tests {
                     description: "second".to_owned(),
                 },
             ],
+            calibration: Calibration::Uncalibrated,
         };
         let display = format!("{score}");
         assert!(display.contains("70"), "display must contain total score");
@@ -1253,6 +1391,10 @@ mod tests {
         assert!(
             display.contains("2 factors"),
             "display must contain factor count"
+        );
+        assert!(
+            display.contains("UNCALIBRATED"),
+            "display must carry the calibration marker (#555) so no score reads as validated severity"
         );
     }
 

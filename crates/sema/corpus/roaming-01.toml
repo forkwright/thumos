@@ -1,0 +1,11 @@
+schema_version = 1
+id = "roaming-01"
+kind = "roaming"
+provenance = "synthetic (#555); hand-built, NOT field-measured"
+target_level = "Low"
+
+# Roaming onto a foreign network: foreign towers are never announced
+# neighbours, so handovers read as "sudden tower change" — a second
+# documented residual false-positive class (#555).
+[[alerts]]
+kind = "sudden_tower_change"
