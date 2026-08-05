@@ -74,9 +74,9 @@ notes = "Fail-closed medium trust; production-signed verified boot on live eMMC 
 
 [[capability]]
 id = "security-subsystems"
-modules = ["security", "security_mode", "lock_screen", "key_manager", "audit", "capability", "panic_wipe", "bfu_timer", "csprng"]
+modules = ["security", "security_mode", "lock_screen", "key_manager", "audit", "capability", "panic_wipe", "bfu_timer", "csprng", "secrets"]
 tier = "kernel-wired"
-notes = "Security-mode manager drives the status bar (#404); encryption/key paths land with the boot-time passphrase subsystem (#446) and per-device salt (#449)."
+notes = "Security-mode manager drives the status bar (#404); encryption/key paths land with the boot-time passphrase subsystem (#446); the per-device salt + secrets preamble are #449 (this PR)."
 hardware_reason = "panic wipe + tamper evidence need the physical eMMC/sensors"
 
 [[capability]]

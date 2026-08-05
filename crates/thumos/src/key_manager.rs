@@ -36,10 +36,11 @@ const LABEL_CSPRNG: &[u8] = b"thumos-csprng-v1";
 /// HKDF info label for ephemeral session keys.
 const LABEL_SESSION: &[u8] = b"thumos-session-v1";
 
-/// Salt used for PBKDF2 derivation. In production this would be device-specific
-/// (e.g., from eMMC CID or a stored random salt). Fixed here for
-/// determinism until the key slot infrastructure (Wave 3) is added.
-const PBKDF2_SALT: &[u8] = b"thumos-pbkdf2-salt-v1";
+// NOTE (#449): there is deliberately NO compile-time salt constant. The
+// PBKDF2 salt is a per-device random value generated at provisioning and
+// persisted in the on-disk secrets preamble (crate::secrets); every caller
+// passes it in. Two devices with the same passphrase must never derive the
+// same primary key.
 
 // ---------------------------------------------------------------------------
 // SecureKey
@@ -204,6 +205,11 @@ impl KeyManager {
     /// it to [`KeyManager::derive_partition_keys`] and then drop it (the
     /// `SecureKey` wrapper will zeroize on drop).
     ///
+    /// `salt` is the per-device random salt from the secrets preamble
+    /// (#449): generated once at provisioning, persisted in plaintext (a
+    /// salt is public by design), and read back on every boot. It is what
+    /// makes brute-force resistance per-DEVICE rather than per-image.
+    ///
     /// Uses [`PBKDF2_ITERATIONS`] rounds.
     ///
     /// # Errors
@@ -211,10 +217,11 @@ impl KeyManager {
     /// Returns [`SecurityError`] if key derivation fails.
     pub(crate) fn derive_from_passphrase(
         passphrase: &[u8],
+        salt: &[u8],
     ) -> Result<SecureKey<KEY_SIZE>, SecurityError> {
         let mut key_bytes = [0u8; KEY_SIZE];
         let derive_result =
-            security::pbkdf2_sha256(passphrase, PBKDF2_SALT, PBKDF2_ITERATIONS, &mut key_bytes);
+            security::pbkdf2_sha256(passphrase, salt, PBKDF2_ITERATIONS, &mut key_bytes);
         let result = derive_result.map(|()| SecureKey::new(key_bytes));
         // WHY: zero the stack copy on every path (success or error) — see
         // volatile_zero's doc comment. key_bytes is Copy, so SecureKey::new
@@ -377,10 +384,14 @@ impl fmt::Display for KeyManager {
 mod tests {
     use super::*;
 
+    /// Fixed salt for deterministic unit tests (the production salt is a
+    /// per-device random value from the secrets preamble, #449).
+    const TEST_SALT: &[u8] = b"thumos-unit-test-salt";
+
     // Use a low iteration count for test speed.
     fn derive_test_primary(passphrase: &[u8]) -> SecureKey<KEY_SIZE> {
         let mut key_bytes = [0u8; KEY_SIZE];
-        security::pbkdf2_sha256(passphrase, PBKDF2_SALT, 1, &mut key_bytes)
+        security::pbkdf2_sha256(passphrase, TEST_SALT, 1, &mut key_bytes)
             .expect("pbkdf2 derivation failed in test");
         SecureKey::new(key_bytes)
     }
@@ -543,19 +554,37 @@ mod tests {
     #[test]
     fn derive_from_passphrase_production_entry_point() {
         // Done-when (finding 25): exercise the actual production entry
-        // point -- 100k PBKDF2 iterations, the fixed on-disk salt -- not
-        // just the low-iteration derive_test_primary helper every other
+        // point -- 100k PBKDF2 iterations with the injected device salt --
+        // not just the low-iteration derive_test_primary helper every other
         // test in this module uses for speed.
-        let key1 = KeyManager::derive_from_passphrase(b"production entry point test")
+        let key1 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT)
             .expect("derive_from_passphrase must succeed");
         assert!(!key1.is_zero(), "derived primary key must not be all zeros");
 
-        let key2 = KeyManager::derive_from_passphrase(b"production entry point test")
+        let key2 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT)
             .expect("derive_from_passphrase must succeed");
         assert_eq!(
             key1.as_bytes(),
             key2.as_bytes(),
-            "the production entry point must be deterministic for the same passphrase"
+            "the production entry point must be deterministic for the same passphrase + salt"
+        );
+    }
+
+    #[test]
+    fn derive_from_passphrase_differs_per_device_salt() {
+        // The #449 contract: two devices (two persisted random salts) with
+        // the same user passphrase MUST derive different primary keys —
+        // brute-force/rainbow resistance is per-device, not per-image.
+        let salt_a: &[u8] = b"device-a-persisted-salt";
+        let salt_b: &[u8] = b"device-b-persisted-salt";
+        let key_a = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_a)
+            .expect("derive with salt A");
+        let key_b = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_b)
+            .expect("derive with salt B");
+        assert_ne!(
+            key_a.as_bytes(),
+            key_b.as_bytes(),
+            "same passphrase + different device salts must derive different primary keys"
         );
     }
 
