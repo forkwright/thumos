@@ -21,8 +21,9 @@ Every frame is a 22-byte fixed header (little-endian) followed by exactly
 [0..4)   magic: u32      = "MTX1" (0x4D 0x54 0x58 0x31)
 [4..6)   schema: u16     = 1
 [6]      major: u8       = 1
-[7]      minor: u8       = 0
+[7]      minor: u8       = 1
 [8..10)  kind: u16       = 1 TaskRequest | 2 TaskResponse | 3 SttEvent
+                      4 AuthenticatedRequest | 5 AuthenticatedResponse (MINOR 1)
 [10..18) correlation_id: u64 (request ULID's first 8 bytes)
 [18..22) payload_len: u32
 ```
@@ -44,7 +45,36 @@ Every frame is a 22-byte fixed header (little-endian) followed by exactly
 - Frame bytes != 22 + payload_len: reject (`TruncatedFrame` /
   `TrailingBytes`) — decoding is exact, always.
 
-## 2. STT events (JSON over WebSocket)
+## 2. Authenticated exchange (envelope MINOR 1, #544)
+
+Two additive kinds carry one mutually authenticated round trip:
+
+- **AuthenticatedRequest** (kind 4): `SignedGrant` + `TaskRequest`. The
+  device presents a cryptographically verified, expiring grant on EVERY
+  request — no session state to confuse.
+- **AuthenticatedResponse** (kind 5): `TaskResponse` + HMAC-SHA256 over the
+  response payload, keyed by `HKDF-SHA256(ikm = grant.nonce, info =
+  "metaxu-response-v1")`. A verified response proves the responder knows
+  the signed nonce — the mutual half of the authentication.
+
+Grant semantics (`crates/metaxu/src/grants.rs`):
+
+- A `Grant` is issuer(runtime Ed25519 pubkey) → subject(device pubkey),
+  capability set, issue/expiry times (ms), and a 16-byte session nonce.
+  A `SignedGrant` is the grant's postcard bytes plus the issuer's Ed25519
+  signature. Verification proves: signature valid under the pinned runtime
+  key, subject == the presenting device, not expired (expiry exclusive).
+- The endpoint verifies each request statelessly: issuer pinned →
+  signature → expiry → device match → capability inside the grant →
+  request-id replay (per-endpoint seen set). Failures reject with typed
+  reasons (`grant_signature`, `grant_expired`, `wrong_device`,
+  `wrong_issuer`, `replay`, `capability_denied`, `bad_frame`).
+- The client pre-flights identically (fail-closed both ends).
+
+Payload ceilings: AuthenticatedRequest 34 KiB, AuthenticatedResponse
+33 KiB.
+
+## 3. STT events (JSON over WebSocket)
 
 Every event is versioned, session-correlated, sequenced, and typed:
 

@@ -54,8 +54,9 @@ pub(crate) const SCHEMA_ID: u16 = 1;
 /// Major version: incompatible changes only.
 pub(crate) const MAJOR: u8 = 1;
 
-/// Minor version: additive changes within [`MAJOR`].
-pub(crate) const MINOR: u8 = 0;
+/// Minor version: additive changes within [`MAJOR`]. MINOR 1 adds the
+/// authenticated kinds (4, 5) per the #553 compat rule (#544).
+pub(crate) const MINOR: u8 = 1;
 
 /// Fixed header length in bytes.
 pub(crate) const HEADER_LEN: usize = 22;
@@ -69,6 +70,13 @@ pub(crate) const MAX_TASK_REQUEST_PAYLOAD: u32 = 32 * 1024;
 /// Task response payload ceiling.
 pub(crate) const MAX_TASK_RESPONSE_PAYLOAD: u32 = 32 * 1024;
 
+/// Authenticated request payload ceiling: the task ceiling plus room for
+/// the grant wrapper (~256 B) (#544).
+pub(crate) const MAX_AUTH_REQUEST_PAYLOAD: u32 = 34 * 1024;
+
+/// Authenticated response payload ceiling (response + 32 B MAC) (#544).
+pub(crate) const MAX_AUTH_RESPONSE_PAYLOAD: u32 = 33 * 1024;
+
 /// The message kinds this envelope version knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[must_use]
@@ -81,6 +89,10 @@ pub enum MessageKind {
     TaskResponse = 2,
     /// An STT event (partial/final/error).
     SttEvent = 3,
+    /// An authenticated task request (grant + task) — MINOR 1 (#544).
+    AuthenticatedRequest = 4,
+    /// An authenticated task response (response + MAC) — MINOR 1 (#544).
+    AuthenticatedResponse = 5,
 }
 
 impl MessageKind {
@@ -90,6 +102,8 @@ impl MessageKind {
             1 => Some(Self::TaskRequest),
             2 => Some(Self::TaskResponse),
             3 => Some(Self::SttEvent),
+            4 => Some(Self::AuthenticatedRequest),
+            5 => Some(Self::AuthenticatedResponse),
             _ => None,
         }
     }
@@ -100,6 +114,8 @@ impl MessageKind {
             Self::TaskRequest => MAX_TASK_REQUEST_PAYLOAD,
             Self::TaskResponse => MAX_TASK_RESPONSE_PAYLOAD,
             Self::SttEvent => MAX_STT_PAYLOAD,
+            Self::AuthenticatedRequest => MAX_AUTH_REQUEST_PAYLOAD,
+            Self::AuthenticatedResponse => MAX_AUTH_RESPONSE_PAYLOAD,
         }
     }
 }
@@ -420,6 +436,8 @@ mod tests {
             MessageKind::TaskRequest => b"task-payload".to_vec(),
             MessageKind::TaskResponse => b"response-payload".to_vec(),
             MessageKind::SttEvent => b"stt".to_vec(),
+            MessageKind::AuthenticatedRequest => b"auth-request".to_vec(),
+            MessageKind::AuthenticatedResponse => b"auth-response".to_vec(),
         }
     }
 
@@ -429,6 +447,8 @@ mod tests {
             MessageKind::TaskRequest,
             MessageKind::TaskResponse,
             MessageKind::SttEvent,
+            MessageKind::AuthenticatedRequest,
+            MessageKind::AuthenticatedResponse,
         ] {
             let frame = Envelope::build(kind, 0xA5A5_1234, sample_payload(kind)).ok();
             assert!(frame.is_some());
