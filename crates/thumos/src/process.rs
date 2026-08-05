@@ -440,6 +440,51 @@ unsafe fn map_user_stack(pt: usize, stack_base: usize, pages: usize) -> bool {
     true
 }
 
+/// Map the per-process sigreturn trampoline page (#446): one fresh frame at
+/// the fixed `SIGNAL_TRAMPOLINE_VA` slot with PL0 read+execute / PL1
+/// read-write permissions, then the trampoline bytes written through the
+/// kernel's identity mapping. Returns the frame's physical address for
+/// rollback, or `None` on OOM / L2-pool exhaustion (already cleaned up).
+///
+/// WHY PL0-RX and not on-stack code: the user stack is RW+XN (#482 W^X), so
+/// an on-stack trampoline prefetch-aborts when the handler returns into it
+/// — the QEMU signal witness caught exactly that. The RX page survives exec
+/// (it sits below USER_TEXT_BASE's rebuilt section), is deep-copied by fork,
+/// and is reclaimed by exit's all-user-pages walk.
+///
+/// # Safety
+/// `pt` is a caller-owned process L1 not currently live in TTBR0; the caller
+/// runs under the kernel identity L1 (the trampoline write targets phys).
+#[cfg(target_arch = "arm")]
+unsafe fn map_signal_trampoline(pt: usize) -> Option<usize> {
+    let phys = page::alloc_page()?;
+    let attrs = mmu::prot_to_l2_flags(mmu::prot::PROT_READ | mmu::prot::PROT_EXEC);
+    // SAFETY: pt caller-owned; SIGNAL_TRAMPOLINE_VA is the reserved slot
+    // below USER_TEXT_BASE (signal.rs documents why nothing else maps there).
+    unsafe {
+        if !mmu::shatter_section(pt, crate::signal::SIGNAL_TRAMPOLINE_VA)
+            || !mmu::map_page(pt, crate::signal::SIGNAL_TRAMPOLINE_VA, phys, attrs)
+        {
+            page::free_page(phys);
+            return None;
+        }
+        crate::signal::write_trampoline_page(phys);
+    }
+    Some(phys)
+}
+
+/// No-op trampoline mapping for non-ARM (host test) builds: host page frames
+/// are simulated addresses — never dereference-able — and fork's deep-copy
+/// walk WOULD deref every user page's phys, so mapping a simulated frame
+/// here segfaults the host fork tests. The map_page/shatter composition is
+/// host-covered in mmu.rs's own tests; the real grant is covered end-to-end
+/// by the QEMU signal witness. `Some(0)` keeps spawn_user's rollback shape
+/// (free_page validates allocator range, so 0 is a safe no-op there).
+#[cfg(not(target_arch = "arm"))]
+unsafe fn map_signal_trampoline(_pt: usize) -> Option<usize> {
+    Some(0)
+}
+
 /// Drop the PL0 grant on `pages` frames from `base` in `pt`: rewrite each L2
 /// entry back to the identity KERNEL_DEFAULT_PAGE (PL1-only, #489). NOT
 /// unmap_page (zeroing an entry inside a shattered identity MB would fault the
@@ -523,7 +568,18 @@ pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
         };
         let stack_top = stack_base + page::PAGE_SIZE * STACK_PAGES;
 
-        if !map_user_image(new_pt, loaded) || !map_user_stack(new_pt, stack_base, STACK_PAGES) {
+        // #446: the sigreturn trampoline page (PL0-RX) every signal delivery
+        // returns through. Mapped before image+stack so a failure anywhere
+        // below has one uniform rollback.
+        let tramp_phys = map_signal_trampoline(new_pt);
+
+        if tramp_phys.is_none()
+            || !map_user_image(new_pt, loaded)
+            || !map_user_stack(new_pt, stack_base, STACK_PAGES)
+        {
+            if let Some(phys) = tramp_phys {
+                page::free_page(phys);
+            }
             // free_addr_space also reclaims the L2 tables the shatters allocated
             // (the shared KERNEL_L2 is skipped -- free_l2_table no-ops on
             // non-pool addresses).
@@ -1929,6 +1985,22 @@ pub unsafe fn clear_any_pending() {
             if let Some(sig) = proc.signal_state.next_pending() {
                 proc.signal_state.clear_pending(sig);
             }
+        }
+    }
+}
+
+/// Clear the pending bit for EXACTLY `sig` on the current process (#446).
+/// Called at dispatch time by signal::deliver, so the handler runs once per
+/// raise; distinct from clear_any_pending (next-pending semantics), which
+/// can clear the wrong signal when several are pending at once.
+pub(crate) fn clear_pending_for_current(sig: crate::signal::Signal) {
+    // SAFETY: current process PCB pointer is valid; mutation via addr_of_mut!,
+    // single-core.
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::from(CURRENT);
+        if let Some(ref mut proc) = procs[cur] {
+            proc.signal_state.clear_pending(sig);
         }
     }
 }

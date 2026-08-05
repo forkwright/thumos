@@ -14,7 +14,7 @@ KCI="$REPO_ROOT/.kanon-ci.toml"
 rc=0
 
 # (a) Assertion markers that must exist only inside scripts/witness/.
-for marker in 'painted_px=' 'fork isolation intact' 'init2: reached via exec' 'guard child killed' 'supervisor giving up' 'KERNEL UNDEFINED INSTRUCTION' 'init: woke' 'THUMOS_BOOT_KEY_PUB=keys/dev'; do
+for marker in 'painted_px=' 'fork isolation intact' 'init2: reached via exec' 'guard child killed' 'supervisor giving up' 'KERNEL UNDEFINED INSTRUCTION' 'init: woke' 'signal: flows complete' 'signal: trampoline rx enforced' 'THUMOS_BOOT_KEY_PUB=keys/dev'; do
     if grep -qF "$marker" "$CI" || grep -qF "$marker" "$KCI"; then
         echo "DRIFT: witness assertion marker '$marker' is inline in a CI surface (must live in scripts/witness/)" >&2
         rc=1
@@ -22,7 +22,7 @@ for marker in 'painted_px=' 'fork isolation intact' 'init2: reached via exec' 'g
 done
 
 # (b) ci.yml kernel job must call the scripts, per witness.
-for w in boot kfault sleep fork exec forkexec guard brk crashloop; do
+for w in boot kfault sleep fork exec forkexec guard brk signal crashloop; do
     grep -q "scripts/witness/$w.sh" "$CI" || { echo "DRIFT: ci.yml no longer calls scripts/witness/$w.sh" >&2; rc=1; }
 done
 grep -q 'scripts/witness/trust-anchor.sh' "$CI" || { echo "DRIFT: ci.yml no longer calls scripts/witness/trust-anchor.sh" >&2; rc=1; }

@@ -580,7 +580,7 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
 
         // ---- Signal ----
         Syscall::Sigaction => signal::sys_sigaction(arg0, arg1),
-        Syscall::Sigreturn => signal::sys_sigreturn(),
+        Syscall::Sigreturn => signal::sigreturn_unreachable(),
     }
 }
 

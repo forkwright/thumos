@@ -41,7 +41,7 @@ unsafe fn sys_write(fd: u32, buf: *const u8, len: u32) -> u32 {
 ///
 /// # Safety
 /// Yields to the scheduler; the kernel resumes this process after the interval.
-#[cfg(any(thumos_init_sleep, thumos_init_fork, thumos_init_forkexec, thumos_init_guard))]
+#[cfg(any(thumos_init_sleep, thumos_init_fork, thumos_init_forkexec, thumos_init_guard, thumos_init_signal))]
 #[inline(always)]
 unsafe fn sys_sleep(ms: u32) {
     // SAFETY: issues SVC #7 (Sleep) per the thumos ABI; the kernel marks this
@@ -54,6 +54,94 @@ unsafe fn sys_sleep(ms: u32) {
             lateout("r0") _,
             options(nostack),
         );
+    }
+}
+
+/// sigaction(signum, handler) -> 0 on success (#446 signal harness).
+///
+/// # Safety
+/// `handler` must be a PL0-executable function address in this image (or 0
+/// for the default action, 1 for ignore), per sys_sigaction's contract.
+#[cfg(thumos_init_signal)]
+#[inline(always)]
+unsafe fn sys_sigaction(signum: u32, handler: u32) -> u32 {
+    let ret;
+    // SAFETY: issues SVC #80 (Sigaction) per the thumos ABI.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 80u32,
+            inlateout("r0") signum => ret,
+            in("r1") handler,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// kill(pid, signum) -> 0 on success, negative errno otherwise (#446 harness).
+///
+/// # Safety
+/// Raising a signal against this (or a permitted) process.
+#[cfg(thumos_init_signal)]
+#[inline(always)]
+unsafe fn sys_kill(pid: u32, signum: u32) -> u32 {
+    let ret;
+    // SAFETY: issues SVC #13 (Kill) per the thumos ABI.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 13u32,
+            inlateout("r0") pid => ret,
+            in("r1") signum,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// getpid() -> this process's PID (#446 harness).
+///
+/// # Safety
+/// Issues SVC #3 (Getpid) per the thumos ABI.
+#[cfg(thumos_init_signal)]
+#[inline(always)]
+unsafe fn sys_getpid() -> u32 {
+    let ret;
+    // SAFETY: SVC #3.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("r7") 3u32,
+            lateout("r0") ret,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// The SIGUSR1 handler (#446): the kernel delivers into this function with
+/// the signal frame as its stack and the sigreturn trampoline as lr. Writing
+/// a marker proves handler ENTRY; returning enters the trampoline, whose
+/// ldr+svc drives sigreturn_frame back to the interrupted flow.
+#[cfg(thumos_init_signal)]
+unsafe fn usr1_handler() {
+    let m = b"signal: handler usr1\n";
+    // SAFETY: marker literal is PL0-readable; sys_write is a plain syscall.
+    unsafe {
+        sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+    }
+}
+
+/// The SIGUSR2 handler (#446): its marker MUST appear only if SIGUSR2's
+/// pending bit survived SIGUSR1's delivery + sigreturn — the exact-clear
+/// contract (the old clear-any-pending could clear the wrong signal).
+#[cfg(thumos_init_signal)]
+unsafe fn usr2_handler() {
+    let m = b"signal: handler usr2\n";
+    // SAFETY: as usr1_handler.
+    unsafe {
+        sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
     }
 }
 
@@ -79,7 +167,7 @@ unsafe fn sys_exit(code: u32) -> ! {
 ///
 /// # Safety
 /// Creates a child process; both branches return here (the #478 ctx seed).
-#[cfg(any(thumos_init_fork, thumos_init_forkexec, thumos_init_guard))]
+#[cfg(any(thumos_init_fork, thumos_init_forkexec, thumos_init_guard, thumos_init_signal))]
 #[inline(always)]
 unsafe fn sys_fork() -> u32 {
     let ret;
@@ -95,7 +183,7 @@ unsafe fn sys_fork() -> u32 {
 ///
 /// # Safety
 /// Reads a child's exit status; reaps its slot when Dead.
-#[cfg(any(thumos_init_fork, thumos_init_forkexec, thumos_init_guard))]
+#[cfg(any(thumos_init_fork, thumos_init_forkexec, thumos_init_guard, thumos_init_signal))]
 #[inline(always)]
 unsafe fn sys_waitpid(pid: u32) -> u32 {
     let ret;
@@ -505,6 +593,76 @@ pub extern "C" fn _start() -> ! {
                 sys_exit(1);
             }
             let m = b"init: brk shrunk\n";
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+        }
+        // #446 signal harness: install handlers for SIGUSR1 (10) and SIGUSR2
+        // (12), raise BOTH against self, then yield so the kernel delivers
+        // them. next_pending takes the lowest signum, so USR1 delivers first:
+        // its handler marker proves the IRQ-frame rewrite + trampoline entry,
+        // and control returning HERE after it proves sigreturn restored the
+        // interrupted context. USR2's marker then proves its pending bit
+        // survived USR1's delivery -- the exact-clear contract (the old
+        // clear-any-pending could wipe the wrong bit). "flows complete"
+        // prints only if both sigreturns returned control to this flow.
+        #[cfg(thumos_init_signal)]
+        {
+            let pid = sys_getpid();
+            // SAFETY: both handlers are PL0-executable functions in this
+            // image; the casts take their PL0 VAs (usize == u32 on armv7a).
+            let h1 = usr1_handler as usize as u32;
+            let h2 = usr2_handler as usize as u32;
+            if sys_sigaction(10, h1) != 0 || sys_sigaction(12, h2) != 0 {
+                let m = b"signal: sigaction FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            if sys_kill(pid, 12) != 0 || sys_kill(pid, 10) != 0 {
+                let m = b"signal: kill FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            // Two yields: the first gives the kernel an exception return on
+            // which to deliver USR1; the second a return for USR2 (still
+            // pending iff the delivery clear was exact).
+            sys_sleep(30);
+            sys_sleep(30);
+            let m = b"signal: flows complete\n";
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+            // W^X probe: the sigreturn trampoline page (SIGNAL_TRAMPOLINE_VA
+            // = USER_TEXT_BASE - 4096 = 0x7FEF_F000, mirrored from
+            // signal.rs) is PL0 read+EXECUTE — a PL0 WRITE to it must die to
+            // a data-abort PERMISSION fault (DFSR 0x0f: mapped, write
+            // denied; a 0x07 translation fault would prove the page is not
+            // where signal.rs claims). The child forks, writes it, and must
+            // be fault-killed; the parent reaps and confirms. A writable
+            // trampoline would let userspace rewrite its own sigreturn path.
+            let probe = sys_fork();
+            if probe == 0 {
+                // CHILD: the write below must never complete.
+                let tramp = 0x7FEF_F000usize as *mut u32;
+                core::ptr::write_volatile(tramp, 0xDEAD_BEEF);
+                let m = b"signal: trampoline WRITEABLE (W^X broken)\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(3);
+            }
+            if probe == u32::MAX {
+                let m = b"signal: rx-probe fork FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            let status = loop {
+                let s = sys_waitpid(probe);
+                if s != u32::MAX {
+                    break s;
+                }
+                sys_sleep(10);
+            };
+            // Fault-killed children report 139 (the guard harness's contract).
+            let m: &[u8] = if status == 139 {
+                b"signal: trampoline rx enforced\n"
+            } else {
+                b"signal: trampoline rx probe WRONG status\n"
+            };
             sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
         }
         sys_write(1, msg.as_ptr(), u32::try_from(msg.len()).unwrap_or(0));

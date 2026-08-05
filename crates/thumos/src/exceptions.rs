@@ -260,6 +260,15 @@ pub extern "C" fn irq_handler_rust(frame: *mut process::Context) {
     // handler re-enables it).
     unsafe { process::trap_enter(frame) };
     irq_handler_body();
+    // #446: real signal delivery, consumed at the exception return — if the
+    // current process has a handled signal pending, build its user frame and
+    // rewrite the trap frame to enter the handler (the pending bit is
+    // cleared at dispatch inside deliver()).
+    if let Some((sig, handler)) = process::check_pending_signal() {
+        // SAFETY: frame is the current process's trap Context on the IRQ
+        // stack; its sp/pc/lr are the interrupted user state.
+        unsafe { crate::signal::deliver(&mut *frame, sig, handler) };
+    }
     process::trap_leave();
 }
 
@@ -356,12 +365,11 @@ fn irq_handler_body() {
             // remains.
         }
 
-        // Check for pending signals on the current process.
-        // WHY: signals must be delivered before the next return to user mode.
-        // The timer IRQ is the primary exception return point. Full signal
-        // frame setup requires user-mode register state from the IRQ stack;
-        // that is wired through the SVC path once userspace is active.
-        let _ = process::check_pending_signal(); // WHY: signal delivery failure is non-actionable in IRQ context; will retry on next tick
+        // NOTE: signal delivery is consumed by irq_handler_rust at the
+        // exception return (#446), not here — the old discard-only peek is
+        // gone. The delivery happens on every timer IRQ once the body has
+        // done its scheduler work, so a handled signal lands in user context
+        // at the next return.
     }
 }
 
@@ -537,6 +545,17 @@ pub(crate) extern "C" fn svc_handler_rust(frame: *mut process::Context) {
     // valid and unaliased for this call (traps never nest).
     unsafe { process::trap_enter(frame) };
     let f = unsafe { &mut *frame };
+    // #446: sigreturn is special-cased before the generic dispatch — the
+    // frame restore needs THIS SVC trap frame (dispatch receives only arg
+    // registers). The trampoline entered with user sp = the signal frame and
+    // r0 = the handled signum; the pending bit was cleared at dispatch.
+    if f.r[7] == crate::signal::SIGRETURN_NUM {
+        // SAFETY: as above; the trampoline's user sp is the frame deliver()
+        // built.
+        unsafe { crate::signal::sigreturn_frame(&mut *frame) };
+        process::trap_leave();
+        return;
+    }
     let ret = crate::syscall::dispatch(f.r[7], f.r[0], f.r[1], f.r[2], f.r[3]);
     if !process::trap_switched() {
         // SAFETY: no switch occurred, so `frame` still holds this caller's
