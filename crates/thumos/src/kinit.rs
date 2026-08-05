@@ -725,7 +725,8 @@ pub unsafe fn run() -> ! {
         // NOTE: In production, this blocks until the user enters the
         // correct passphrase.  The lock screen is shown via
         // crate::lock_screen::LockScreen and the result feeds into
-        // key_manager::derive_from_passphrase().  Placeholder here
+        // key_manager::derive_from_passphrase() with the per-device salt
+        // from crate::secrets' on-disk preamble (#449).  Placeholder here
         // until the boot-time input loop is wired.
         serial.log(" Passphrase: PENDING (awaiting boot input loop)\r\n");
     } else {

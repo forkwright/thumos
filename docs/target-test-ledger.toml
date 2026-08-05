@@ -542,6 +542,12 @@ mechanism = "both"
 witness = "boot.sh"
 
 [[module]]
+name = "secrets"
+tests = 4
+mechanism = "host"
+fidelity = "provision/read proven on the RAM double; eMMC persistence + the 8d consumption path are the m7 boot (hardware-gated)"
+
+[[module]]
 name = "security"
 tests = 29
 mechanism = "host"
