@@ -471,53 +471,15 @@ pub(crate) unsafe fn reset_fd_state_for_test() {
 /// `init_vfs()` is called during kernel boot.
 static mut MOUNT_TABLE: Option<MountTable> = None;
 
-/// Maximum path length for the CWD buffer.
-const CWD_MAX: usize = 256;
+/// Maximum CWD path length.
+pub(crate) const CWD_MAX: usize = 256;
 
-/// Global current working directory buffer.
-///
-/// Stored as a fixed-size byte buffer with a length field to avoid heap
-/// allocation in a static mut. Defaults to "/" (len=1). Updated by
-/// `sys_chdir`. Per-process cwd tracking is deferred to a later phase.
-static mut CWD_BUF: [u8; CWD_MAX] = {
+/// Default working directory at process creation ("/").
+pub(crate) const DEFAULT_CWD: [u8; CWD_MAX] = {
     let mut buf = [0u8; CWD_MAX];
     buf[0] = b'/';
     buf
 };
-
-/// Length of the current CWD string in `CWD_BUF`.
-static mut CWD_LEN: usize = 1;
-
-/// Get the current working directory path.
-///
-/// # Safety
-///
-/// Caller must ensure single-threaded access (cooperative kernel guarantee).
-unsafe fn get_cwd() -> &'static str {
-    // SAFETY: CWD_BUF and CWD_LEN are static muts; addr_of! avoids
-    // intermediate references. Single-core cooperative kernel ensures
-    // exclusive access.
-    unsafe {
-        let buf = &*core::ptr::addr_of!(CWD_BUF);
-        let len = *core::ptr::addr_of!(CWD_LEN);
-        core::str::from_utf8_unchecked(&buf[..len])
-    }
-}
-
-/// Set the current working directory.
-///
-/// # Safety
-///
-/// Caller must ensure single-threaded access.
-unsafe fn set_cwd(path: &str) {
-    unsafe {
-        let buf = &mut *core::ptr::addr_of_mut!(CWD_BUF);
-        let len_ptr = &mut *core::ptr::addr_of_mut!(CWD_LEN);
-        let copy_len = path.len().min(CWD_MAX);
-        buf[..copy_len].copy_from_slice(&path.as_bytes()[..copy_len]);
-        *len_ptr = copy_len;
-    }
-}
 
 /// Get a shared reference to the global mount table.
 ///
@@ -1429,9 +1391,15 @@ pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
         return EFAULT;
     }
 
-    // SAFETY: single-core cooperative kernel.
-    let cwd = unsafe { get_cwd() };
-    let cwd_bytes = cwd.as_bytes();
+    // Read the current process's cwd (#437); proc0/PID 0 always has one, and
+    // an absent PCB falls back to "/" rather than a bogus path.
+    let (cwd_buf, cwd_len) = crate::process::with_current_cwd(|c| {
+        let mut b = [0u8; crate::fd::CWD_MAX];
+        b[..c.len()].copy_from_slice(c);
+        (b, c.len())
+    })
+    .unwrap_or((crate::fd::DEFAULT_CWD, 1));
+    let cwd_bytes = &cwd_buf[..cwd_len];
 
     // Need room for cwd + null terminator
     if (size as usize) < cwd_bytes.len() + 1 {
@@ -1640,11 +1608,9 @@ pub(crate) fn vfs_chdir(path: &str) -> u32 {
         Err(e) => return e.to_errno(),
     }
 
-    // Update global CWD
-    // SAFETY: single-core cooperative kernel.
-    unsafe {
-        set_cwd(path);
-    }
+    // Update the current process's CWD (#437) — per-process, so a chdir here
+    // never leaks into another process.
+    crate::process::set_current_cwd(path);
 
     0
 }
@@ -1793,8 +1759,9 @@ mod tests {
             let mt_opt = &mut *core::ptr::addr_of_mut!(MOUNT_TABLE);
             *mt_opt = Some(mt);
 
-            // Reset CWD to "/"
-            set_cwd("/");
+            // Reset the current process's CWD to "/" (#437; proc0 is already
+            // created at "/", so this matters for test re-initialization).
+            crate::process::set_current_cwd("/");
         }
     }
 
@@ -3097,6 +3064,94 @@ mod tests {
             &*buf3, b", ",
             "parent's own OFD offset must still be at 5, unaffected by the child's independent open"
         );
+    }
+
+    /// CWD-PER-PROCESS (#437): a chdir in one process never leaks into
+    /// another, and fork inherits the parent's cwd (POSIX) — replacing the
+    /// old global CWD_BUF/CWD_LEN statics where every process shared one cwd.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn chdir_is_per_process_and_fork_inherits() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+
+        // Parent chdirs to /dev; its cwd reads back.
+        assert_eq!(vfs_chdir("/dev"), 0);
+        crate::process::with_current_cwd(|c| assert_eq!(c, b"/dev"))
+            .expect("current process must exist");
+
+        // Fork: the child INHERITS /dev.
+        let child_pid = crate::process::fork().expect("fork must succeed");
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(child_pid);
+        }
+        crate::process::with_current_cwd(|c| {
+            assert_eq!(c, b"/dev", "fork must inherit the parent's cwd")
+        })
+        .expect("child process must exist");
+
+        // The child chdirs back to / — the parent's cwd is untouched.
+        assert_eq!(vfs_chdir("/"), 0);
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(0);
+        }
+        crate::process::with_current_cwd(|c| {
+            assert_eq!(
+                c, b"/dev",
+                "a chdir in the child must never leak into the parent (the global-CWD bug, #437)"
+            )
+        })
+        .expect("parent process must exist");
+
+        // Restore for later tests.
+        crate::process::set_current_cwd("/");
+    }
+
+    /// CWD-GETCWD-SYSCALL (#437): sys_getcwd reports the CURRENT process's
+    /// cwd, not a shared global — after the child chdirs, parent and child
+    /// read different paths from the same syscall.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn getcwd_reports_the_current_process_cwd() {
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
+        assert_eq!(vfs_chdir("/dev"), 0);
+
+        static mut BUFCWD: [u8; 8] = [0u8; 8];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUFCWD) };
+        assert_eq!(sys_getcwd(buf.as_mut_ptr() as u32, 8), 0);
+        assert_eq!(&buf[..4], b"/dev");
+
+        let child_pid = crate::process::fork().expect("fork must succeed");
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(child_pid);
+        }
+        assert_eq!(vfs_chdir("/"), 0);
+        static mut BUFCWD2: [u8; 8] = [0u8; 8];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUFCWD2) };
+        assert_eq!(sys_getcwd(buf2.as_mut_ptr() as u32, 8), 0);
+        assert_eq!(&buf2[..1], b"/", "child reads its own cwd");
+
+        // SAFETY: test-only; single-threaded test execution.
+        unsafe {
+            crate::process::set_current_for_test(0);
+        }
+        static mut BUFCWD3: [u8; 8] = [0u8; 8];
+        // SAFETY: test-only static; single-threaded per test.
+        let buf3 = unsafe { &mut *core::ptr::addr_of_mut!(BUFCWD3) };
+        assert_eq!(sys_getcwd(buf3.as_mut_ptr() as u32, 8), 0);
+        assert_eq!(&buf3[..4], b"/dev", "parent still reads its own cwd");
+
+        crate::process::set_current_cwd("/");
     }
 
     /// CLOSE-ON-EXEC: `close_cloexec` sweeps ONLY fds marked FD_CLOEXEC

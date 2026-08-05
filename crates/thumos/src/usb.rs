@@ -21,6 +21,8 @@
 // Base address
 // ---------------------------------------------------------------------------
 
+use crate::irq;
+
 /// MUSB OTG controller base address on MT6739.
 /// Source: MT6739 device tree `usb0: usb@11210000`.
 const MUSB_BASE: usize = 0x1121_0000;
@@ -751,15 +753,81 @@ pub(crate) struct UsbController {
     line_coding: LineCoding,
     /// True after SET_CONFIGURATION activates the gadget.
     configured: bool,
-    /// Serial RX ring buffer.
-    rx_buf: [u8; SERIAL_RX_BUF_LEN],
-    /// Write index INTO rx_buf.
-    rx_head: usize,
-    /// Read index INTO rx_buf.
-    rx_tail: usize,
-    /// Count of serial RX bytes dropped because the ring was full -- see
-    /// `rx_dropped_bytes` (issue #282 finding 4).
-    rx_overflow_count: u32,
+}
+
+/// Serial RX ring shared by the MUSB ISR (push) and the reader (drain)
+/// (#437 remnant 2). The ISR path (`handle_ep1_rx`) and the reader path
+/// (`read_serial`) previously shared the controller's raw fields with
+/// nothing enforcing they could not interleave; the ring now lives behind
+/// an `irq::IrqSpinlock` (the ipc.rs/mmu.rs pattern), so when the MUSB IRQ
+/// is registered with the GIC the wiring is a one-line call-site change.
+struct SerialRxRing {
+    /// Byte storage.
+    buf: [u8; SERIAL_RX_BUF_LEN],
+    /// Write index INTO buf.
+    head: usize,
+    /// Read index INTO buf.
+    tail: usize,
+    /// Bytes dropped because the ring was full (issue #282 finding 4).
+    dropped: u32,
+}
+
+impl SerialRxRing {
+    /// Empty ring.
+    const fn new() -> Self {
+        Self {
+            buf: [0u8; SERIAL_RX_BUF_LEN],
+            head: 0,
+            tail: 0,
+            dropped: 0,
+        }
+    }
+
+    /// Push one received byte. Returns false (and counts the drop) when full.
+    fn push(&mut self, byte: u8) -> bool {
+        let next_head = (self.head + 1) % SERIAL_RX_BUF_LEN;
+        if next_head == self.tail {
+            self.dropped = self.dropped.saturating_add(1);
+            return false;
+        }
+        self.buf[self.head] = byte;
+        self.head = next_head;
+        true
+    }
+
+    /// Drain up to `out.len()` bytes in FIFO order; returns the count.
+    fn drain(&mut self, out: &mut [u8]) -> usize {
+        let mut count = 0;
+        while count < out.len() && self.head != self.tail {
+            out[count] = self.buf[self.tail];
+            self.tail = (self.tail + 1) % SERIAL_RX_BUF_LEN;
+            count += 1;
+        }
+        count
+    }
+
+    /// Total bytes dropped on overflow.
+    fn dropped_bytes(&self) -> u32 {
+        self.dropped
+    }
+}
+
+/// WHY (#322/#331 class, applied to #437 remnant 2): an `irq::IrqSpinlock`,
+/// not bare single-core-cooperative reasoning — once the MUSB IRQ is
+/// registered, `handle_ep1_rx` runs in interrupt context while `read_serial`
+/// runs in ordinary kernel code, and nothing previously enforced that the
+/// two could not interleave on the shared head/tail indices.
+static SERIAL_RX_RING_LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
+/// The guarded ring. Access ONLY through `with_serial_rx`.
+static mut SERIAL_RX_RING: SerialRxRing = SerialRxRing::new();
+
+/// Run `f` on the serial RX ring under the IRQ-safe lock. Single accessor so
+/// the lock can never be bypassed by a future call site.
+fn with_serial_rx<R>(f: impl FnOnce(&mut SerialRxRing) -> R) -> R {
+    let _guard = SERIAL_RX_RING_LOCK.lock();
+    // SAFETY: the lock serializes the ISR push path and the reader drain
+    // path; this is the only accessor to the static ring.
+    unsafe { f(&mut *core::ptr::addr_of_mut!(SERIAL_RX_RING)) }
 }
 
 impl UsbController {
@@ -778,10 +846,6 @@ impl UsbController {
             ep0_buf_pos: 0,
             line_coding: LineCoding::default_115200(),
             configured: false,
-            rx_buf: [0u8; SERIAL_RX_BUF_LEN],
-            rx_head: 0,
-            rx_tail: 0,
-            rx_overflow_count: 0,
         }
     }
 
@@ -946,21 +1010,7 @@ impl UsbController {
     /// Returns the number of bytes copied. Returns 0 if the ring buffer is
     /// empty. Does not block.
     pub(crate) fn read_serial(&mut self, buf: &mut [u8]) -> usize {
-        let mut count = 0;
-        while count < buf.len() {
-            if self.rx_head == self.rx_tail {
-                break;
-            }
-            // SAFETY: rx_tail is always a valid index within SERIAL_RX_BUF_LEN.
-            if let Some(slot) = buf.get_mut(count) {
-                *slot = self.rx_buf[self.rx_tail];
-                self.rx_tail = (self.rx_tail + 1) % SERIAL_RX_BUF_LEN;
-                count += 1;
-            } else {
-                break;
-            }
-        }
-        count
+        with_serial_rx(|r| r.drain(buf))
     }
 
     /// Number of serial RX bytes dropped because the ring buffer was full.
@@ -973,26 +1023,20 @@ impl UsbController {
     /// [`read_serial`]: UsbController::read_serial
     #[must_use]
     pub(crate) fn rx_dropped_bytes(&self) -> u32 {
-        self.rx_overflow_count
+        with_serial_rx(|r| r.dropped_bytes())
     }
 
-    /// Push one received byte into the serial RX ring buffer.
+    /// Push one received byte into the serial RX ring (#437 remnant 2: the
+    /// shared, IRQ-locked static ring, not controller-local fields).
     ///
     /// Returns `true` if accepted, `false` if the ring was full and the
-    /// byte was dropped. On drop, increments `rx_overflow_count` so a full
-    /// ring no longer discards host bytes with no counter or log (issue
-    /// #282 finding 4) -- see [`rx_dropped_bytes`].
+    /// byte was dropped. Drops increment the ring's counter so a full ring
+    /// no longer discards host bytes with no counter or log (issue #282
+    /// finding 4) -- see [`rx_dropped_bytes`].
     ///
     /// [`rx_dropped_bytes`]: UsbController::rx_dropped_bytes
     fn ring_push(&mut self, byte: u8) -> bool {
-        let next_head = (self.rx_head + 1) % SERIAL_RX_BUF_LEN;
-        if next_head == self.rx_tail {
-            self.rx_overflow_count = self.rx_overflow_count.saturating_add(1);
-            return false;
-        }
-        self.rx_buf[self.rx_head] = byte;
-        self.rx_head = next_head;
-        true
+        with_serial_rx(|r| r.push(byte))
     }
 
     // -----------------------------------------------------------------------
@@ -1048,11 +1092,12 @@ impl UsbController {
             self.ep0_state = Ep0State::Idle;
             self.pending_address = 0;
             self.configured = false;
-            self.rx_head = 0;
-            self.rx_tail = 0;
             self.configure_ep1();
             self.configure_ep2();
         }
+        with_serial_rx(|r| {
+            *r = SerialRxRing::new();
+        });
     }
 
     /// Handle EP0 events: SETUP/IN/OUT control transfer stages.
@@ -1471,6 +1516,70 @@ impl UsbController {
 mod tests {
     use super::*;
 
+    // --- Serial RX ring: the IRQ-locked shared ring (#437 remnant 2) ---
+
+    #[test]
+    fn serial_rx_ring_interleaved_push_drain_preserves_fifo() {
+        // Simulate the ISR push path and the reader drain path interleaving
+        // (an interrupting handler arriving mid-stream): FIFO order must
+        // hold with no torn or reordered reads, across the wrap boundary.
+        // Sized so the interleaved drains keep occupancy under the ring's
+        // LEN-1 capacity (pushing past capacity drops bytes by design).
+        with_serial_rx(|r| {
+            *r = SerialRxRing::new();
+        });
+        let mut produced: [u8; 288] = [0; 288];
+        let mut consumed: [u8; 288] = [0; 288];
+        let mut n_consumed = 0usize;
+        for chunk in 0..6usize {
+            for i in 0..48usize {
+                let b = (chunk * 48 + i) as u8;
+                produced[chunk * 48 + i] = b;
+                assert!(with_serial_rx(|r| r.push(b)), "ring must accept byte {b}");
+            }
+            if chunk % 2 == 1 {
+                let n = with_serial_rx(|r| r.drain(&mut consumed[n_consumed..n_consumed + 32]));
+                assert_eq!(n, 32);
+                n_consumed += n;
+            }
+        }
+        n_consumed += with_serial_rx(|r| r.drain(&mut consumed[n_consumed..]));
+        assert_eq!(n_consumed, 288);
+        assert_eq!(
+            &consumed[..],
+            &produced[..],
+            "interleaved push/drain must preserve FIFO order with no torn reads"
+        );
+    }
+
+    #[test]
+    fn serial_rx_ring_overflow_counts_drops() {
+        with_serial_rx(|r| {
+            *r = SerialRxRing::new();
+        });
+        // The ring holds LEN-1 bytes (full when next_head == tail).
+        for i in 0..(SERIAL_RX_BUF_LEN - 1) {
+            assert!(
+                with_serial_rx(|r| r.push(i as u8)),
+                "ring must accept byte {i}"
+            );
+        }
+        assert!(!with_serial_rx(|r| r.push(0xEE)), "full ring must drop");
+        assert!(!with_serial_rx(|r| r.push(0xEF)), "full ring must drop");
+        assert_eq!(
+            with_serial_rx(|r| r.dropped_bytes()),
+            2,
+            "dropped bytes must be counted (the #282 finding-4 contract)"
+        );
+        // One drain frees exactly one slot.
+        let mut one = [0u8; 1];
+        assert_eq!(with_serial_rx(|r| r.drain(&mut one)), 1);
+        assert!(
+            with_serial_rx(|r| r.push(0xAA)),
+            "one drained slot must admit one more byte"
+        );
+    }
+
     // --- Register OFFSET encoding ---
 
     #[test]
@@ -1818,12 +1927,13 @@ mod tests {
     #[test]
     fn read_serial_partial() {
         let mut ctrl = UsbController::new();
-        // Manually prime the ring buffer with 3 bytes.
-        ctrl.rx_buf[0] = b'A';
-        ctrl.rx_buf[1] = b'B';
-        ctrl.rx_buf[2] = b'C';
-        ctrl.rx_head = 3;
-        ctrl.rx_tail = 0;
+        // Prime the shared ring with 3 bytes through the locked push path.
+        with_serial_rx(|r| {
+            *r = SerialRxRing::new();
+            r.push(b'A');
+            r.push(b'B');
+            r.push(b'C');
+        });
 
         let mut buf = [0u8; 8];
         let n = ctrl.read_serial(&mut buf);
@@ -1836,8 +1946,11 @@ mod tests {
         let mut ctrl = UsbController::new();
         // SERIAL_RX_BUF_LEN - 1 slots occupied is "full" for a
         // head==tail-means-empty ring.
-        ctrl.rx_head = SERIAL_RX_BUF_LEN - 1;
-        ctrl.rx_tail = 0;
+        with_serial_rx(|r| {
+            *r = SerialRxRing::new();
+            r.head = SERIAL_RX_BUF_LEN - 1;
+            r.tail = 0;
+        });
         assert_eq!(ctrl.rx_dropped_bytes(), 0, "no drops yet");
 
         let accepted = ctrl.ring_push(b'X');
@@ -1852,6 +1965,9 @@ mod tests {
     #[test]
     fn ring_push_accepts_when_space_available() {
         let mut ctrl = UsbController::new();
+        with_serial_rx(|r| {
+            *r = SerialRxRing::new();
+        });
         let accepted = ctrl.ring_push(b'Y');
         assert!(accepted, "ring with free space must accept the push");
         assert_eq!(ctrl.rx_dropped_bytes(), 0, "an accepted push is not a drop");
@@ -1861,10 +1977,13 @@ mod tests {
     fn ring_push_and_read_wrap_indices_around_buffer_end() {
         let mut ctrl = UsbController::new();
         // WHY: position the (empty) ring two slots from the buffer end so the
-        // third push crosses SERIAL_RX_BUF_LEN - 1 and must wrap rx_head back
-        // to 0 rather than index past the end of rx_buf.
-        ctrl.rx_head = SERIAL_RX_BUF_LEN - 2;
-        ctrl.rx_tail = SERIAL_RX_BUF_LEN - 2;
+        // third push crosses SERIAL_RX_BUF_LEN - 1 and must wrap the head
+        // index back to 0 rather than index past the end of the buffer.
+        with_serial_rx(|r| {
+            *r = SerialRxRing::new();
+            r.head = SERIAL_RX_BUF_LEN - 2;
+            r.tail = SERIAL_RX_BUF_LEN - 2;
+        });
 
         assert!(
             ctrl.ring_push(b'A'),
@@ -1879,16 +1998,18 @@ mod tests {
             "push that crosses the buffer end must still be accepted"
         );
 
-        assert_eq!(
-            ctrl.rx_head, 1,
-            "write index must wrap around the buffer end, not overflow past SERIAL_RX_BUF_LEN"
-        );
-        assert_eq!(ctrl.rx_buf[SERIAL_RX_BUF_LEN - 2], b'A');
-        assert_eq!(ctrl.rx_buf[SERIAL_RX_BUF_LEN - 1], b'B');
-        assert_eq!(
-            ctrl.rx_buf[0], b'C',
-            "the byte written after wraparound must land at index 0, not overrun the buffer"
-        );
+        with_serial_rx(|r| {
+            assert_eq!(
+                r.head, 1,
+                "write index must wrap around the buffer end, not overflow past SERIAL_RX_BUF_LEN"
+            );
+            assert_eq!(r.buf[SERIAL_RX_BUF_LEN - 2], b'A');
+            assert_eq!(r.buf[SERIAL_RX_BUF_LEN - 1], b'B');
+            assert_eq!(
+                r.buf[0], b'C',
+                "the byte written after wraparound must land at index 0, not overrun the buffer"
+            );
+        });
 
         let mut buf = [0u8; 3];
         let n = ctrl.read_serial(&mut buf);
