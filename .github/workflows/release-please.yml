@@ -45,18 +45,42 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: release-attest
-      - name: Package workspace crates
-        run: cargo package --workspace --no-verify
+      # DECISION (#536): the attestation subject is a git-archive source
+      # tarball of the whole repo at the release tag — NOT `cargo package`.
+      # Why: `cargo package --workspace` is fundamentally incompatible with a
+      # publish=false workspace that has any inter-member path dependency
+      # (eidolon -> haphe is the only one): cargo validates path+version
+      # deps against the crates.io registry when packaging, haphe has never
+      # been published, so the "Package workspace crates" step failed on
+      # EVERY release since #204 (v0.1.6, v0.1.7, v0.1.8). A whole-repo
+      # source tarball is also the more honest provenance unit for a private
+      # workspace: kernel + every crate + CI + docs, exactly what an auditor
+      # needs to rebuild and verify. git-archive output is deterministic per
+      # commit (tar mtimes come from the commit timestamp).
+      # Scope: the git tree at the tag, nothing else (no build outputs).
+      - name: Create deterministic source tarball
+        run: |
+          git archive --format=tar.gz \
+            --prefix="thumos-${{ needs.release-please.outputs.tag_name }}/" \
+            -o "thumos-${{ needs.release-please.outputs.tag_name }}.tar.gz" \
+            "${{ needs.release-please.outputs.tag_name }}"
+          sha256sum "thumos-${{ needs.release-please.outputs.tag_name }}.tar.gz"
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx --locked --quiet
-      - name: Generate CycloneDX SBOM
-        run: cargo cyclonedx --format json --output-file sbom.cdx.json
-      - name: Attest crate provenance
+      # Two SBOMs for full supply-chain coverage (#536): the 13 workspace
+      # crates AND the out-of-workspace bare-metal kernel crate (the
+      # security-critical artifact) — the pre-#536 job covered neither
+      # because it never got past packaging.
+      - name: Generate CycloneDX SBOM (workspace crates)
+        run: cargo cyclonedx --format json --output-file sbom-workspace.cdx.json
+      - name: Generate CycloneDX SBOM (kernel crate)
+        run: cargo cyclonedx --manifest-path crates/thumos/Cargo.toml --format json --output-file sbom-kernel.cdx.json
+      - name: Attest source tarball provenance
         uses: actions/attest-build-provenance@10334b5f1e684784025c3fc0a277c88c19089275 # v2
         with:
-          subject-path: target/package/*.crate
-      - name: Attest CycloneDX SBOM
+          subject-path: thumos-*.tar.gz
+      - name: Attest CycloneDX SBOMs
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v2
         with:
-          subject-path: target/package/*.crate
-          sbom-path: sbom.cdx.json
+          subject-path: thumos-*.tar.gz
+          sbom-path: sbom-*.cdx.json
