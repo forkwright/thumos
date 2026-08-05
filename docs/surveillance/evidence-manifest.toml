@@ -1,0 +1,282 @@
+# Surveillance-audit evidence manifest (issue #556)
+#
+# The machine-checkable companion to docs/SURVEILLANCE-AUDIT.md: firmware
+# identity, retained artifacts with hashes, non-retained evidence (with the
+# recollection path), and the claim-to-evidence index. Every material claim
+# in the audit narrative carries one of four epistemic labels:
+#
+#   observed    — directly measured on THIS device (a dump, listing, or
+#                 capture the audit retained or can recollect byte-exactly)
+#   capability  — a package COULD do this given its granted permissions /
+#                 privileged position; NOT a claim of observed execution
+#   external    — reported by an outside source (cited); not measured here
+#   inference   — analyst judgment over the above; carries uncertainty
+#
+# The renderer (scripts/surveillance-render.py) derives the audit's tables
+# from this manifest + the collected evidence; the collector
+# (scripts/surveillance-collect.sh) re-gathers every non-retained artifact
+# read-only against this or another firmware image.
+
+[audit]
+date = "2026-03-18"
+method = "read-only ADB inspection of unmodified device"
+collector = "interactive ADB session (predates scripts/surveillance-collect.sh)"
+limits = [
+  "single session; no longitudinal network capture",
+  "no network tap beyond an on-device connection listing at one instant",
+  "jobscheduler state was altered during inspection (the adups jobs were cancelled), so the scheduled-jobs listing is the pre-cancellation state as recalled, not a retained dump",
+]
+
+[firmware]
+fingerprint = "AGM/Q12_1/Q12_1:8.1.0/OPM1.171019.026/L1635.6.01.01:user/release-keys"
+display_id = "PQ1181WAA39A.AGM.O1.QV.KFS39SST.220323.V3.07"
+build_date_utc = 1647949016 # 2022-03-22 19:36:56 CST
+android = "8.1.0"
+freemeos = "8.1.1"
+build_type = "user"
+build_tags = "release-keys"
+model = "AGM M7"
+
+[tools]
+# The 2026-03-18 session did not capture tool versions — recorded as unknown
+# rather than reconstructed. The collector captures them on every rerun.
+adb_version = "unknown (not captured)"
+device_side = "stock user build, no root"
+
+# ---------------------------------------------------------------------------
+# Retained artifacts (hashed)
+# ---------------------------------------------------------------------------
+
+[[artifact]]
+path = "docs/full-props.txt"
+sha256 = "11b27ca9f0683142841c768232b42ef8e065419798109d2cf440087b47c1e680"
+kind = "getprop dump (full)"
+retained = true
+
+[[artifact]]
+path = "docs/kernel-config-stock"
+sha256 = "580dfaa3b3a1f2f403b0f93ae6d492d2bcf6ae97b0cd4b0babd3b9faaf1303f5"
+kind = "stock kernel build config"
+retained = true
+
+# ---------------------------------------------------------------------------
+# Non-retained evidence (recollect via scripts/surveillance-collect.sh)
+# ---------------------------------------------------------------------------
+
+[[artifact]]
+kind = "package manifests + permission dumps (dumpsys package) for every package named in the audit"
+packages = [
+  "com.adups.fota", "com.adups.fota.sysoper",
+  "com.mediatek.dm",
+  "com.mediatek.gpslocationupdate", "com.mediatek.location.lppe.main",
+  "com.mediatek.location.mtknlp", "com.mediatek.nlpservice",
+  "com.mediatek.mtklogger", "com.mediatek.mtklogger.proxy",
+  "com.mediatek.engineermode", "com.mediatek.omacp",
+  "com.zhiliaoapp.musically", "com.whatsapp", "com.loudtalks",
+  "freeme", "com.freeme.provider.badge", "com.freeme.factory",
+]
+retained = false
+recollect = "scripts/surveillance-collect.sh"
+
+[[artifact]]
+kind = "APK SHA-256 hashes for the same package set"
+retained = false
+recollect = "scripts/surveillance-collect.sh"
+
+[[artifact]]
+kind = "service/process listings (dumpsys activity services, ps) at probe time"
+retained = false
+recollect = "scripts/surveillance-collect.sh"
+
+[[artifact]]
+kind = "network connection listing (ss/netstat) at probe time"
+retained = false
+recollect = "scripts/surveillance-collect.sh"
+
+[[artifact]]
+kind = "jobscheduler dump showing Adups scheduled jobs"
+retained = false
+recollect = "scripts/surveillance-collect.sh"
+
+# ---------------------------------------------------------------------------
+# Claim-to-evidence index
+# ---------------------------------------------------------------------------
+
+[[claim]]
+id = "T1.adups-present"
+text = "com.adups.fota (v5.24) + com.adups.fota.sysoper are installed as system apps"
+label = "observed"
+evidence = ["dumpsys package com.adups.fota (not retained — recollect)"]
+
+[[claim]]
+id = "T1.adups-history"
+text = "Adups was flagged in Nov 2016 for exfiltrating SMS bodies, call logs, contacts, IMEI/IMSI, and app lists to servers in China on a 72-hour cycle, on 700M+ devices"
+label = "external"
+evidence = ["Kryptowire advisory, reported 2016-11 (see SURVEILLANCE-AUDIT.md references)"]
+
+[[claim]]
+id = "T1.adups-permissions"
+text = "INTERNET, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, RECEIVE_BOOT_COMPLETED granted; sysoper holds REBOOT + RECOVERY"
+label = "observed"
+evidence = ["dumpsys package (not retained — recollect)"]
+
+[[claim]]
+id = "T1.adups-jobs"
+text = "MyJobService/MyIntentJobService are scheduled on boot and monitor BOOT_COMPLETED, DATE_CHANGED, power, and media events"
+label = "observed"
+evidence = ["dumpsys jobscheduler (not retained — recollect); session note: jobs were cancelled during inspection"]
+
+[[claim]]
+id = "T1.adups-no-traffic"
+text = "No Adups network traffic was observed during the session"
+label = "observed"
+evidence = ["session connection listing (not retained — recollect)"]
+limits = "one instant only; Adups historically exfiltrates on a 72-hour cycle"
+
+[[claim]]
+id = "T1.adups-risk"
+text = "HIGH risk: known exfiltration framework with factory integration and remote reflash capability"
+label = "inference"
+evidence = ["T1.adups-history", "T1.adups-permissions", "T1.adups-jobs"]
+
+[[claim]]
+id = "T2.dm-permissions"
+text = "com.mediatek.dm holds the listed SYSTEM_FIXED permission set (SMS, call log, location, contacts, storage, camera, mic, MASTER_CLEAR, REBOOT, INJECT_EVENTS, network control)"
+label = "observed"
+evidence = ["dumpsys package com.mediatek.dm (not retained — recollect)"]
+
+[[claim]]
+id = "T2.dm-total-access"
+text = "That set grants total device access (read every SMS, record audio, camera, location, calls, wipe, inject input)"
+label = "capability"
+evidence = ["T2.dm-permissions"]
+
+[[claim]]
+id = "T2.dm-rat-equivalence"
+text = "The INJECT_EVENTS + CAMERA + RECORD_AUDIO combination is indistinguishable from a remote access trojan"
+label = "inference"
+evidence = ["T2.dm-total-access"]
+uncertainty = "a statement about the permission profile, not about observed use"
+
+[[claim]]
+id = "T2.dm-risk"
+text = "CRITICAL risk"
+label = "inference"
+evidence = ["T2.dm-permissions", "T2.dm-total-access"]
+
+[[claim]]
+id = "T3.location-services-running"
+text = "NlpLocationService, LPPeServiceWrapper, and NlpService were running continuously in the background at probe time"
+label = "observed"
+evidence = ["service listing (not retained — recollect)"]
+
+[[claim]]
+id = "T3.location-data-shared"
+text = "LPPe positioning data is shared with the carrier and potentially MediaTek location services"
+label = "inference"
+evidence = ["T3.location-services-running", "LPPe protocol role (carrier-grade positioning, external documentation)"]
+uncertainty = "no traffic capture exists for these services; the sharing path is architectural, not observed"
+
+[[claim]]
+id = "T3.gpslocationupdate-agent"
+text = "com.mediatek.gpslocationupdate holds a device-management-grade permission set (MASTER_CLEAR, CRYPT_KEEPER, DELETE_PACKAGES, device-owner management) — a full device agent in a location package"
+label = "capability"
+evidence = ["dumpsys package com.mediatek.gpslocationupdate (not retained — recollect)"]
+
+[[claim]]
+id = "T3.risk"
+text = "HIGH risk: continuous carrier-grade location tracking plus device-management capability"
+label = "inference"
+evidence = ["T3.location-services-running", "T3.gpslocationupdate-agent"]
+
+[[claim]]
+id = "T4.mtklogger-capability"
+text = "MTKLogger can read all system logs and capture screen contents (READ_LOGS, READ_FRAME_BUFFER, DUMP), on boot, with INTERNET"
+label = "capability"
+evidence = ["dumpsys package com.mediatek.mtklogger (not retained — recollect)"]
+
+[[claim]]
+id = "T4.engineermode-surface"
+text = "EngineerMode exposes baseband AT commands, radio parameters, and device identifiers to anything that can launch its activities"
+label = "capability"
+evidence = ["dumpsys package com.mediatek.engineermode (not retained — recollect)"]
+
+[[claim]]
+id = "T4.risk"
+text = "MEDIUM risk"
+label = "inference"
+evidence = ["T4.mtklogger-capability", "T4.engineermode-surface"]
+
+[[claim]]
+id = "T5.omacp-permissions"
+text = "com.mediatek.omacp holds RECEIVE_WAP_PUSH, RECEIVE_SMS, CALL_PHONE, BLUETOOTH_ADMIN, CHANGE_NETWORK_STATE, INSTALL_DRM"
+label = "observed"
+evidence = ["dumpsys package com.mediatek.omacp (not retained — recollect)"]
+
+[[claim]]
+id = "T5.omacp-vector"
+text = "OMA-CP provisioning messages can silently reconfigure APN/proxy settings; the technique is documented in targeted-surveillance reporting"
+label = "external"
+evidence = ["Check Point Research, OMA CP provisioning phishing (2019; see references)"]
+
+[[claim]]
+id = "T5.risk"
+text = "MEDIUM risk"
+label = "inference"
+evidence = ["T5.omacp-permissions", "T5.omacp-vector"]
+
+[[claim]]
+id = "T6.preinstalled-social"
+text = "TikTok, WhatsApp, and Zello are pre-installed (in /system/app, not priv-app)"
+label = "observed"
+evidence = ["package listing (not retained — recollect)"]
+
+[[claim]]
+id = "T6.bytedance-law"
+text = "ByteDance is subject to Chinese national security law requiring cooperation with intelligence services"
+label = "external"
+evidence = ["PRC National Intelligence Law (2017), Article 7 — public statute"]
+
+[[claim]]
+id = "T6.oem-relationship"
+text = "Their factory-default presence indicates an OEM-platform relationship"
+label = "inference"
+evidence = ["T6.preinstalled-social"]
+
+[[claim]]
+id = "T7.freeme-framework"
+text = "The freeme framework package runs at the Android framework level with system privileges"
+label = "observed"
+evidence = ["package listing + uid (not retained — recollect)"]
+
+[[claim]]
+id = "T7.freeme-unknown"
+text = "Freeme OS has no public security audit history; without decompilation its behavior is unknown"
+label = "external"
+evidence = ["absence-of-publications claim; no decompilation performed for this audit"]
+
+[[claim]]
+id = "S.services-table"
+text = "The four services in the audit table were active at probe time (three location services running; Adups jobs scheduled)"
+label = "observed"
+evidence = ["service/jobscheduler listing (not retained — recollect)"]
+
+[[claim]]
+id = "N.connections-table"
+text = "The only connections at probe time were the two carrier IMS/SIP sessions listed"
+label = "observed"
+evidence = ["connection listing (not retained — recollect)"]
+limits = "one instant; not a capture window"
+
+[[claim]]
+id = "N.no-surveillance-traffic"
+text = "No outbound connections to surveillance infrastructure were observed during the probe window"
+label = "observed"
+evidence = ["connection listing (not retained — recollect)"]
+limits = "does not establish absence of exfiltration across a 72-hour cycle"
+
+[[claim]]
+id = "C.device-conclusions"
+text = "The conclusion list (exfiltration framework, RAT-equivalent agent, continuous location tracking, APN-hijack surface, pre-installed social media, none user-disableable)"
+label = "inference"
+evidence = ["all T1..T7 claims above; SYSTEM_FIXED grant flags from the package dumps (not retained — recollect)"]
