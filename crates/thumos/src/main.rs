@@ -76,15 +76,14 @@ compile_error!(
     "crashloop-probe is a CI crash-loop harness; a production image must not spawn a deliberately faulting service."
 );
 
-// WHY (issue #372): also gated `not(test)` — the console's command methods
-// (cmd_mem/cmd_ps/…) read kernel state via `crate::heap`/`page`/`process`,
-// several of which are themselves `#[cfg(not(test))]`, so the module cannot
-// compile under the host-test cfg. Making the console host-testable (to
-// resurrect the #337 receive_byte tests + the new presence test) needs
-// heap/page/process host stubs — tracked separately; out of #372's
-// structural-gate scope. The armv7a `--features debug-console` build proves
-// the console compiles for its real target.
-#[cfg(all(feature = "debug-console", not(test)))]
+// WHY (issue #459): the console is host-testable via the heap/page/process
+// stub pattern — `mod heap` binds heap_stub under cfg(test), and page/process
+// compile on the host target already. The debug-console feature selects the
+// module on every target; the armv7a `--features debug-console` build proves
+// it compiles for the real one, and the i686 `--features debug-console`
+// nextest pass runs its line-buffer + presence tests (they were dead source
+// under the old `not(test)` gate, #337's class).
+#[cfg(feature = "debug-console")]
 mod console;
 mod contacts;
 mod csprng;
@@ -132,6 +131,9 @@ mod matrix_ids;
 #[cfg(not(test))]
 mod gic;
 #[cfg(not(test))]
+mod heap;
+#[cfg(test)]
+#[path = "heap_stub.rs"]
 mod heap;
 mod heorte_alarm;
 mod heorte_timer;
