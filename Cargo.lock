@@ -903,9 +903,11 @@ dependencies = [
 name = "pteron"
 version = "0.1.16"
 dependencies = [
+ "aes",
  "jiff",
  "log",
  "snafu",
+ "zeroize",
 ]
 
 [[package]]

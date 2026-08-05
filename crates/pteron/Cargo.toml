@@ -8,6 +8,8 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+aes = "0.8"
+zeroize = "1"
 jiff = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
