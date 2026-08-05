@@ -20,9 +20,36 @@ pub(crate) struct EncryptedMessage {
 /// root key material and can exchange encrypted messages. This is NOT the
 /// Signal Double Ratchet — the chains advance symmetrically with no DH
 /// ratchet step (#543).
+/// The peer's identity key with its authentication state (#241).
+///
+/// A session that has only seen the wire bytes is `Unverified` — the key
+/// arrived inside an `InitiatorMessage` with nothing yet authenticating it
+/// (TOFU/pinning gap). It promotes to `Verified` on the first successfully
+/// authenticated decrypt from that peer, which is the implicit-
+/// authentication event X3DH + the ratchet's AEAD actually provides. No
+/// caller can read the key as authenticated before that event. Full pinning
+/// (trusted-store compare + change-of-identity UX) is a separate design
+/// decision on the Contact schema, not this type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PeerIdentity {
+    /// Identity bytes from the wire, not yet authenticated by any decrypt.
+    Unverified(PublicIdentityKey),
+    /// Identity authenticated by at least one successful decrypt from the peer.
+    Verified(PublicIdentityKey),
+}
+
+impl PeerIdentity {
+    /// The raw identity key, regardless of authentication state.
+    pub(crate) const fn key(&self) -> &PublicIdentityKey {
+        match self {
+            Self::Unverified(k) | Self::Verified(k) => k,
+        }
+    }
+}
+
 pub(crate) struct Session {
     identity: IdentityKeyPair,
-    peer_identity: PublicIdentityKey,
+    peer_identity: PeerIdentity,
     /// Ratchet for messages we send.
     send_ratchet: RatchetState,
     /// Ratchet for messages we receive.
@@ -58,7 +85,8 @@ impl Session {
         their_bundle: &PreKeyBundle,
     ) -> Result<Self> {
         let (_, keys, init_msg) = x3dh::initiate_session(&our_identity, their_bundle)?;
-        let peer_identity = their_bundle.identity_key.clone();
+        // #241: bundle bytes off the wire — unauthenticated until a decrypt.
+        let peer_identity = PeerIdentity::Unverified(their_bundle.identity_key.clone());
         Ok(Self {
             identity: our_identity,
             peer_identity,
@@ -85,7 +113,9 @@ impl Session {
         their_message: &InitiatorMessage,
     ) -> Result<Self> {
         let (_, keys) = x3dh::respond_session(our_bundle, their_message)?;
-        let peer_identity = their_message.identity_key.clone();
+        // #241: the identity bytes arrived on the wire — nothing has
+        // authenticated them yet. Verified only by a successful decrypt.
+        let peer_identity = PeerIdentity::Unverified(their_message.identity_key.clone());
         Ok(Self {
             identity: our_identity,
             peer_identity,
@@ -113,7 +143,15 @@ impl Session {
     /// Returns [`Error::Decryption`] if the authentication tag is invalid or the
     /// ciphertext has been tampered with.
     pub(crate) fn decrypt_message(&mut self, msg: &EncryptedMessage) -> Result<Vec<u8>> {
-        ratchet::decrypt(&mut self.recv_ratchet, &msg.inner)
+        let plaintext = ratchet::decrypt(&mut self.recv_ratchet, &msg.inner)?;
+        // #241: a successful authenticated decrypt from this peer is the
+        // implicit-authentication event X3DH + AEAD provides. Promote the
+        // wire-copied identity to Verified exactly once, here — never at
+        // session setup (the wire itself proves nothing).
+        if let PeerIdentity::Unverified(key) = &self.peer_identity {
+            self.peer_identity = PeerIdentity::Verified(key.clone());
+        }
+        Ok(plaintext)
     }
 
     /// Returns the local identity's public key.
@@ -121,8 +159,11 @@ impl Session {
         self.identity.public_key()
     }
 
-    /// Returns the peer's public identity key.
-    pub(crate) const fn peer_identity(&self) -> &PublicIdentityKey {
+    /// Returns the peer's identity key WITH its authentication state (#241):
+    /// Unverified (wire bytes only) until a successful decrypt from the peer
+    /// promotes it to Verified. Callers must match on the state — they can
+    /// no longer read the key as trusted by default.
+    pub(crate) const fn peer_identity(&self) -> &PeerIdentity {
         &self.peer_identity
     }
 }
@@ -161,6 +202,80 @@ mod tests {
         assert!(
             session.initiator_message().is_some(),
             "initiator session must produce an initiator message"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn peer_identity_starts_unverified_and_promotes_on_first_decrypt() -> Result<()> {
+        let (mut alice, mut bob) = make_sessions()?;
+        assert!(
+            matches!(alice.peer_identity(), PeerIdentity::Unverified(_)),
+            "initiate must record the bundle identity as Unverified (wire bytes)"
+        );
+        assert!(
+            matches!(bob.peer_identity(), PeerIdentity::Unverified(_)),
+            "respond must record the wire identity as Unverified (wire bytes)"
+        );
+
+        let encrypted = alice.encrypt_message(b"auth proof")?;
+        bob.decrypt_message(&encrypted)?;
+        assert!(
+            matches!(bob.peer_identity(), PeerIdentity::Verified(_)),
+            "a successful authenticated decrypt must promote the peer identity"
+        );
+        assert!(
+            matches!(alice.peer_identity(), PeerIdentity::Unverified(_)),
+            "alice received nothing — her peer identity must stay Unverified"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn peer_identity_stays_unverified_after_failed_decrypt() -> Result<()> {
+        let (mut alice, mut bob) = make_sessions()?;
+        let mut encrypted = alice.encrypt_message(b"tamper me")?;
+        let last = encrypted.inner.ciphertext.len() - 1;
+        encrypted.inner.ciphertext[last] ^= 0xFF;
+        assert!(
+            bob.decrypt_message(&encrypted).is_err(),
+            "a corrupted ciphertext must fail AEAD"
+        );
+        assert!(
+            matches!(bob.peer_identity(), PeerIdentity::Unverified(_)),
+            "a failed decrypt must never promote the peer identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wrong_key_session_never_promotes() -> Result<()> {
+        // Eve responds to alice's initiator message with EVE's bundle, so her
+        // ratchet keys never match alice's send key — every decrypt fails,
+        // and the wire-copied alice identity can never become Verified.
+        let alice_id = IdentityKeyPair::generate()?;
+        let bob_id = IdentityKeyPair::generate()?;
+        let eve_id = IdentityKeyPair::generate()?;
+        let bob_bundle = x3dh::create_bundle(&bob_id)?;
+        let eve_bundle = x3dh::create_bundle(&eve_id)?;
+
+        let mut alice = Session::initiate(alice_id, &bob_bundle.public_bundle)?;
+        let init_msg = alice
+            .initiator_message()
+            .ok_or_else(|| crate::error::Error::KeyAgreement {
+                location: snafu::location!(),
+            })?
+            .clone();
+        let mut eve = Session::respond(eve_id, eve_bundle, &init_msg)?;
+
+        let encrypted = alice.encrypt_message(b"for bob not eve")?;
+        assert!(
+            eve.decrypt_message(&encrypted).is_err(),
+            "eve's mismatched ratchet keys must fail the decrypt"
+        );
+        assert!(
+            matches!(eve.peer_identity(), PeerIdentity::Unverified(_)),
+            "a session that never authenticates a decrypt must never promote"
         );
         Ok(())
     }
@@ -245,9 +360,9 @@ mod tests {
         let bob_bundle = x3dh::create_bundle(&bob_id)?;
         let alice = Session::initiate(alice_id, &bob_bundle.public_bundle)?;
         assert_eq!(
-            alice.peer_identity(),
+            alice.peer_identity().key(),
             &bob_pub,
-            "session must record the peer's identity key"
+            "session must record the peer's identity key (Unverified until a decrypt, #241)"
         );
         Ok(())
     }
