@@ -229,9 +229,9 @@ impl SimManager {
     ) -> Result<Option<u8>, TelephonyError> {
         let (result, info_line, info_len) = send_with_info(transport, "AT+CPINR", 5000)?;
         match result {
-            AtResponse::Ok if info_len > 0 => {
-                Ok(telephony_parser::parse_cpinr_attempts(&info_line[..info_len]))
-            }
+            AtResponse::Ok if info_len > 0 => Ok(telephony_parser::parse_cpinr_attempts(
+                &info_line[..info_len],
+            )),
             AtResponse::Ok => Ok(None),
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
             AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
@@ -658,7 +658,11 @@ mod tests {
 
         let mut sim = SimManager::new();
         let result = sim.unlock_puk(&mut transport, "12345678", "4321", false);
-        assert_eq!(result, Ok(true), "PUK unlock with attempts remaining must succeed");
+        assert_eq!(
+            result,
+            Ok(true),
+            "PUK unlock with attempts remaining must succeed"
+        );
         assert_eq!(
             transport.sent_commands.get(1).map(Vec::as_slice),
             Some(b"AT+CPIN=12345678,4321".as_slice()),
@@ -698,7 +702,11 @@ mod tests {
 
         let mut sim = SimManager::new();
         let result = sim.unlock_puk(&mut transport, "12345678", "4321", true);
-        assert_eq!(result, Ok(true), "an explicitly-confirmed final attempt may proceed");
+        assert_eq!(
+            result,
+            Ok(true),
+            "an explicitly-confirmed final attempt may proceed"
+        );
     }
 
     #[test]
@@ -717,9 +725,18 @@ mod tests {
 
     #[test]
     fn cpinr_attempts_parser_accepts_known_shapes_and_rejects_malformed() {
-        assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR: 3"), Some(3));
-        assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR: SIM PIN,2"), Some(2));
-        assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR: SIM PUK,1"), Some(1));
+        assert_eq!(
+            telephony_parser::parse_cpinr_attempts(b"+CPINR: 3"),
+            Some(3)
+        );
+        assert_eq!(
+            telephony_parser::parse_cpinr_attempts(b"+CPINR: SIM PIN,2"),
+            Some(2)
+        );
+        assert_eq!(
+            telephony_parser::parse_cpinr_attempts(b"+CPINR: SIM PUK,1"),
+            Some(1)
+        );
         assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR: x"), None);
         assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR:"), None);
         assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CSQ: 3"), None);

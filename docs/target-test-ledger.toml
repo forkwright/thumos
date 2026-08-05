@@ -541,7 +541,7 @@ mechanism = "host"
 
 [[module]]
 name = "sim"
-tests = 12
+tests = 20
 mechanism = "both"
 witness = "boot.sh"
 

@@ -101,7 +101,9 @@ impl core::fmt::Display for TelephonyError {
             Self::SimNotReady => write!(f, "SIM not ready"),
             Self::SimPukRequired => write!(f, "SIM PUK required"),
             Self::NumberTooLong => write!(f, "number too long"),
-            Self::ConfirmationRequired => write!(f, "final-attempt action needs explicit confirmation"),
+            Self::ConfirmationRequired => {
+                write!(f, "final-attempt action needs explicit confirmation")
+            }
         }
     }
 }
