@@ -97,6 +97,86 @@ pub(crate) trait BlockDevice {
 }
 
 // ---------------------------------------------------------------------------
+// PartitionBlockDevice — partition view over a physical device (#603)
+// ---------------------------------------------------------------------------
+
+/// A partition view over a physical [`BlockDevice`]: view LBAs `[0, len)`
+/// map onto `base_lba + lba` of the inner device, and every access is
+/// bounds-checked against the partition length — never the whole device.
+///
+/// WHY (#603): `MsdcBlockDevice` addressed the eMMC from physical sector 0,
+/// so the LFS mount path would have written the GPT/boot region instead of
+/// the userdata partition (`LFS_PARTITION_START` had no consumer). The view
+/// makes partition addressing explicit and host-testable: a
+/// `MemBlockDevice` stands in as the physical device, the view as the
+/// partition. The #449 secrets preamble is a second view onto the same
+/// userdata partition's head sectors.
+///
+/// WHY the gate: the only production consumer today is the eMMC/LFS mount
+/// path, which is M7-only (#534) — on virt the view would be dead surface.
+#[cfg(not(feature = "qemu"))]
+pub(crate) struct PartitionBlockDevice<D: BlockDevice> {
+    /// The physical device this view carves from.
+    inner: D,
+    /// First physical sector of the partition.
+    base_lba: u64,
+    /// Partition length in sectors.
+    sector_count: u64,
+}
+
+#[cfg(not(feature = "qemu"))]
+impl<D: BlockDevice> PartitionBlockDevice<D> {
+    /// Create a partition view `[base_lba, base_lba + sector_count)` of
+    /// `inner`. `base_lba` must be within the inner device's bounds; every
+    /// I/O revalidates the range against the partition length.
+    pub(crate) const fn new(inner: D, base_lba: u64, sector_count: u64) -> Self {
+        Self {
+            inner,
+            base_lba,
+            sector_count,
+        }
+    }
+
+    /// Consume the view and return the physical device.
+    #[cfg(test)]
+    pub(crate) fn into_inner(self) -> D {
+        self.inner
+    }
+
+    /// Translate a view `[lba, lba+count)` to its physical base LBA,
+    /// bounds-checked against the partition length (and u64 overflow).
+    fn translate(&self, lba: u64, count: u32) -> Result<u64, BlockError> {
+        let end = lba
+            .checked_add(u64::from(count))
+            .ok_or(BlockError::OutOfBounds)?;
+        if end > self.sector_count {
+            return Err(BlockError::OutOfBounds);
+        }
+        self.base_lba
+            .checked_add(lba)
+            .ok_or(BlockError::OutOfBounds)
+    }
+}
+
+#[cfg(not(feature = "qemu"))]
+impl<D: BlockDevice> BlockDevice for PartitionBlockDevice<D> {
+    fn read_sectors(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+        let phys = self.translate(lba, count)?;
+        self.inner.read_sectors(phys, count, buf)
+    }
+
+    fn write_sectors(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
+        let phys = self.translate(lba, count)?;
+        self.inner.write_sectors(phys, count, buf)
+    }
+
+    /// The PARTITION length in sectors — never the physical device's.
+    fn sector_count(&self) -> u64 {
+        self.sector_count
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MemBlockDevice — in-memory mock
 // ---------------------------------------------------------------------------
 
@@ -385,6 +465,81 @@ pub(crate) mod tests {
     use alloc::vec;
 
     use super::*;
+
+    // -- PartitionBlockDevice (#603): partition addressing is real ---------
+
+    /// A sector-sized pattern buffer for view tests.
+    fn pattern(fill: u8) -> alloc::vec::Vec<u8> {
+        vec![fill; SECTOR_SIZE]
+    }
+
+    #[test]
+    fn partition_view_translates_view_lba_to_physical() {
+        let mut phys = MemBlockDevice::new(32).expect("phys device");
+        let mut view = PartitionBlockDevice::new(phys, 10, 5);
+
+        // Write two sectors at view lba 1; they must land at physical 11.
+        let mut two = pattern(0xA5);
+        two.extend_from_within(..);
+        view.write_sectors(1, 2, &two).expect("view write");
+
+        // Read back through the view.
+        let mut got = vec![0u8; 2 * SECTOR_SIZE];
+        view.read_sectors(1, 2, &mut got).expect("view read");
+        assert_eq!(got, two, "view read must return what the view wrote");
+    }
+
+    #[test]
+    fn partition_view_never_touches_below_base() {
+        let mut phys = MemBlockDevice::new(32).expect("phys device");
+        // Pre-fill the whole physical device with a marker.
+        let marker = pattern(0x11);
+        for lba in 0..32 {
+            phys.write_sectors(lba, 1, &marker).expect("pre-fill");
+        }
+        let mut view = PartitionBlockDevice::new(phys, 10, 5);
+        view.write_sectors(0, 1, &pattern(0xFF))
+            .expect("view write");
+
+        // The inner device is moved into the view; verify via the view that
+        // the write went to view lba 0 (physical 10) only — and that a view
+        // of the region BELOW the partition is untouched (physical 0..10).
+        let mut got = vec![0u8; SECTOR_SIZE];
+        view.read_sectors(0, 1, &mut got).expect("read back");
+        assert_eq!(got, pattern(0xFF));
+
+        let below = PartitionBlockDevice::new(view.into_inner(), 0, 10);
+        let mut below_buf = vec![0u8; SECTOR_SIZE];
+        below
+            .read_sectors(9, 1, &mut below_buf)
+            .expect("read below base");
+        assert_eq!(
+            below_buf,
+            pattern(0x11),
+            "physical sectors below the partition base must be untouched"
+        );
+    }
+
+    #[test]
+    fn partition_view_bounds_check_uses_partition_length() {
+        let phys = MemBlockDevice::new(32).expect("phys device");
+        let mut view = PartitionBlockDevice::new(phys, 10, 5);
+
+        // lba 4 is the last in-partition sector; lba 5 is out even though
+        // the physical device has plenty of room past it.
+        assert!(view.write_sectors(4, 1, &pattern(0x77)).is_ok());
+        assert_eq!(
+            view.write_sectors(5, 1, &pattern(0x77)).err(),
+            Some(BlockError::OutOfBounds),
+            "past-partition write must fail even with physical space left"
+        );
+        let mut buf = vec![0u8; 2 * SECTOR_SIZE];
+        assert_eq!(
+            view.read_sectors(4, 2, &mut buf).err(),
+            Some(BlockError::OutOfBounds),
+            "a range crossing the partition end must fail"
+        );
+    }
 
     #[test]
     fn create_mem_device_with_correct_size() {
