@@ -436,35 +436,24 @@ pub(crate) const fn generate_nrpa(entropy: &[u8; 6]) -> BdAddr {
     BdAddr::from_bytes([b0, b1, b2, b3, b4, b5])
 }
 
-/// Generate an address with RPA type bits SET (two MSBs = 0b01).
+/// Generate a Resolvable Private Address per BT Core Spec Vol 6, Part B
+/// §1.3.2.2 (#455): `[prand(22b) | 0b01(2b MSB)] : [ah(IRK, prand)(24b)]`.
 ///
-/// SECURITY GAP (too large for a mechanical fix; tracked separately): this
-/// does NOT compute a spec-conformant Resolvable Private Address. Per BT
-/// Core Spec Vol 6, Part B §1.3.2.2, an RPA's lower 24 bits MUST equal
-/// `ah(IRK, prand)` — an AES-128 hash of the upper 22-bit prand under the
-/// bonded peer's Identity Resolving Key — so a bonded peer can resolve the
-/// address back to our identity. This function fills BOTH the prand region
-/// AND the hash region FROM raw `entropy`, with no relation to any IRK. The
-/// result:
-/// - is NOT resolvable by any bonded peer (defeats reconnection, bonded
-///   auto-connect, and directed-advertising use cases that rely on RPA
-///   resolution), and
-/// - is NOT a valid RPA per spec, while still asserting via the type bits
-///   that it is one — worse than an NRPA for any caller that branches on
-///   the address-type bits and assumes resolvability.
+/// - `irk` — the Identity Resolving Key, 16 bytes big-endian display order
+///   (see `smp.rs`; ours while unbonded, the bonded peer's once SMP lands).
+/// - `prand` — 3 bytes big-endian display order, drawn independently by the
+///   caller for each rotation; only the low 22 bits are used, the top two
+///   are forced to the RPA type field 0b01.
 ///
-/// A conformant implementation needs an `ah()` AES-128 primitive (this
-/// crate has no AES dependency and no raw-ECB usage pattern anywhere), an
-/// IRK generation/storage seam (zeroized, persistent across our own address
-/// rotations), and an SMP (Security Manager Protocol) bonding flow to
-/// exchange IRKs with peers (this crate has no L2CAP/SMP layer at all —
-/// HCI/STP transport only). None of those seams exist yet; do not treat
-/// this function's output as a real RPA.
-pub(crate) const fn generate_rpa(entropy: &[u8; 6]) -> BdAddr {
-    let [mut b0, b1, b2, b3, b4, b5] = *entropy;
+/// The lower 24 bits are `ah(IRK, prand)` (spec AES-128 hash), so a bonded
+/// peer can resolve the address back to our identity — the property the
+/// pre-#455 raw-entropy fill did not have.
+pub(crate) fn generate_rpa(irk: &[u8; 16], prand: &[u8; 3]) -> BdAddr {
+    let [p0, p1, p2] = *prand;
     // Force two MSBs to 0b01 in the most-significant byte (index 0 = display MSB)
-    b0 = (b0 & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
-    BdAddr::from_bytes([b0, b1, b2, b3, b4, b5])
+    let b0 = (p0 & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
+    let hash = crate::smp::ah(irk, prand);
+    BdAddr::from_bytes([b0, p1, p2, hash[0], hash[1], hash[2]])
 }
 
 /// Build the `HCI_LE_Set_Random_Address` command packet (OGF=0x08, OCF=0x0005).
@@ -1075,10 +1064,16 @@ mod tests {
         );
     }
 
+    /// The Appendix `D.7` IRK, shared with smp.rs's `ah()` vector tests.
+    const APPENDIX_D_IRK: [u8; 16] = [
+        0xec, 0x02, 0x34, 0xa3, 0x57, 0xc8, 0xad, 0x05, 0x34, 0x10, 0x10, 0xa6, 0x0a, 0x39, 0x7d,
+        0x9b,
+    ];
+
     #[test]
     fn rpa_two_msbs_are_01() {
-        let entropy = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let addr = generate_rpa(&entropy);
+        let prand = [0x00, 0x00, 0x00];
+        let addr = generate_rpa(&APPENDIX_D_IRK, &prand);
         let msb = addr.as_bytes()[0];
         assert_eq!(
             msb & RANDOM_ADDR_MSB_MASK,
@@ -1088,18 +1083,39 @@ mod tests {
     }
 
     #[test]
-    fn rpa_lower_bits_preserved() {
-        let entropy = [0x7F, 0x11, 0x22, 0x33, 0x44, 0x55];
-        let addr = generate_rpa(&entropy);
+    fn rpa_layout_is_prand_then_ah_hash() {
+        // The spec RPA: [prand(22b) | 0b01(2b)] : [ah(IRK, prand)(24b)].
+        // Appendix D.7: prand 708194 -> hash 0dfbaa.
+        let prand = [0x70, 0x81, 0x94];
+        let addr = generate_rpa(&APPENDIX_D_IRK, &prand);
+        let bytes = addr.as_bytes();
         assert_eq!(
-            addr.as_bytes()[0] & !RANDOM_ADDR_MSB_MASK,
-            entropy.first().copied().unwrap_or_default() & !RANDOM_ADDR_MSB_MASK,
-            "lower bits of MSB byte must be preserved FROM entropy"
+            bytes[0],
+            0x70 & !RANDOM_ADDR_MSB_MASK | RPA_MSB_BITS,
+            "MSB carries prand's low 22 bits plus the 0b01 type field"
         );
+        assert_eq!(bytes[1], 0x81, "prand byte 1 preserved");
+        assert_eq!(bytes[2], 0x94, "prand byte 2 preserved");
         assert_eq!(
-            &addr.as_bytes()[1..],
-            &entropy[1..],
-            "bytes 1-5 of RPA must be copied FROM entropy unchanged"
+            &bytes[3..],
+            &[0x0d, 0xfb, 0xaa],
+            "the hash field is ah(IRK, prand) — resolvable by a bonded peer (#455)"
+        );
+    }
+
+    #[test]
+    fn rpa_resolution_round_trip() {
+        // A bonded peer resolves an RPA by recomputing ah(IRK, prand) and
+        // comparing the hash field — the contract #455 exists to provide.
+        let prand = [0x21, 0x43, 0x65];
+        let addr = generate_rpa(&APPENDIX_D_IRK, &prand);
+        let bytes = addr.as_bytes();
+        let recovered_prand = [bytes[0] & !RANDOM_ADDR_MSB_MASK, bytes[1], bytes[2]];
+        let recomputed = crate::smp::ah(&APPENDIX_D_IRK, &recovered_prand);
+        assert_eq!(
+            &bytes[3..],
+            &recomputed,
+            "the hash field must resolve against the embedded prand"
         );
     }
 
