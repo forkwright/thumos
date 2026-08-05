@@ -140,6 +140,20 @@ pub enum EkphrasisError {
     ConnectionClosed,
     /// An incomplete frame was received — need more bytes.
     Incomplete,
+    /// The STT event's protocol version is not supported (#553).
+    UnsupportedVersion {
+        /// The version the event declared.
+        got: i64,
+    },
+    /// The STT event's session does not match this recording session (#553).
+    SessionMismatch,
+    /// The STT event's sequence number regressed (#553).
+    SequenceRegression,
+    /// The STT service reported a terminal error event (#553).
+    ServiceError {
+        /// The typed error code string.
+        code: String,
+    },
 }
 
 impl fmt::Display for EkphrasisError {
@@ -158,6 +172,12 @@ impl fmt::Display for EkphrasisError {
             Self::Json(e) => write!(f, "JSON error: {e}"),
             Self::ConnectionClosed => write!(f, "WebSocket connection closed"),
             Self::Incomplete => write!(f, "incomplete WebSocket frame"),
+            Self::UnsupportedVersion { got } => {
+                write!(f, "unsupported STT protocol version {got}")
+            }
+            Self::SessionMismatch => write!(f, "STT event for a different session"),
+            Self::SequenceRegression => write!(f, "STT event sequence regressed"),
+            Self::ServiceError { code } => write!(f, "STT service error: {code}"),
         }
     }
 }
@@ -620,6 +640,16 @@ pub(crate) struct Ekphrasis {
     endpoint_reachable: bool,
     /// Audio buffer for captured samples before streaming.
     audio_buffer: Vec<u8>,
+    /// This recording session's correlation ID (#553): every STT event for
+    /// the session must carry it.
+    session_id: u64,
+    /// Highest STT event sequence seen this session (#553).
+    last_seq: u32,
+    /// Provenance of the final transcript: the language the service
+    /// recognized, when it declared one (#553).
+    final_language: Option<String>,
+    /// Provenance of the final transcript: the model that produced it (#553).
+    final_model: Option<String>,
 }
 
 impl Ekphrasis {
@@ -637,6 +667,10 @@ impl Ekphrasis {
             capture_config: AudioCaptureConfig::stt_default(),
             endpoint_reachable: false,
             audio_buffer: Vec::new(),
+            session_id: 0,
+            last_seq: 0,
+            final_language: None,
+            final_model: None,
         }
     }
 
@@ -653,7 +687,7 @@ impl Ekphrasis {
     /// Returns [`EkphrasisError::InvalidState`] if not in `Idle` state.
     /// Returns [`EkphrasisError::EndpointUnreachable`] if the endpoint
     /// has not been marked reachable.
-    pub(crate) fn start_recording(&mut self) -> Result<(), EkphrasisError> {
+    pub(crate) fn start_recording(&mut self, session_id: u64) -> Result<(), EkphrasisError> {
         if !self.endpoint_reachable {
             return Err(EkphrasisError::EndpointUnreachable);
         }
@@ -663,6 +697,10 @@ impl Ekphrasis {
                 self.partial_text.clear();
                 self.final_text.clear();
                 self.audio_buffer.clear();
+                self.session_id = session_id;
+                self.last_seq = 0;
+                self.final_language = None;
+                self.final_model = None;
                 self.state = EkphrasisState::Recording;
                 Ok(())
             }
@@ -789,51 +827,115 @@ impl Ekphrasis {
         }
     }
 
-    /// Process a transcription text response from aletheia.
+    /// Process a typed STT event from the aletheia STT service (#553).
     ///
-    /// The response is expected to be JSON with at least a "text" field
-    /// and an optional "final" boolean:
+    /// The wire shape is the thumos-side rendering of the shared contract
+    /// (docs/protocols/aletheia-v1.md): every event is versioned,
+    /// session-correlated, sequenced, and typed:
     ///
     /// ```json
-    /// {"text": "hello world", "final": false}
+    /// {"v":1, "session":42, "seq":3, "kind":"partial", "text":"hel", "confidence_milli":800}
+    /// {"v":1, "session":42, "seq":7, "kind":"final", "text":"hello", "language":"en", "model":"whisper-small", "duration_ms":1200}
+    /// {"v":1, "session":42, "seq":8, "kind":"error", "code":"model_overloaded"}
     /// ```
+    ///
+    /// Exact decoding: an unknown version, a foreign session, a sequence
+    /// regression, or a missing required field is an explicit error — never
+    /// a silent default (#553).
     fn process_transcription(&mut self, text: &str) -> Result<(), EkphrasisError> {
         let value = JsonParser::parse(text.as_bytes())?;
 
-        // WHY: a missing/non-string "text" field previously fell back to ""
-        // silently -- indistinguishable from the server legitimately sending
-        // an empty transcript. Error instead so a malformed response is
-        // surfaced rather than swallowed.
-        let transcript = value
-            .get("text")
+        // Version gate: only v1 is understood; anything else rejects
+        // explicitly (no downgrade ambiguity).
+        let version = value
+            .get("v")
+            .and_then(JsonValue::as_i64)
+            .ok_or(EkphrasisError::InvalidFrame)?;
+        if version != 1 {
+            return Err(EkphrasisError::UnsupportedVersion { got: version });
+        }
+
+        // Session correlation: events for another session are an error,
+        // not a silent mix.
+        let session = value
+            .get("session")
+            .and_then(JsonValue::as_i64)
+            .ok_or(EkphrasisError::InvalidFrame)?;
+        if session < 0 || session as u64 != self.session_id {
+            return Err(EkphrasisError::SessionMismatch);
+        }
+
+        // Sequence: monotonic within the session.
+        let seq = value
+            .get("seq")
+            .and_then(JsonValue::as_i64)
+            .ok_or(EkphrasisError::InvalidFrame)?;
+        if seq < 0 || (seq as u32) < self.last_seq {
+            return Err(EkphrasisError::SequenceRegression);
+        }
+        let seq = seq as u32;
+
+        let kind = value
+            .get("kind")
             .and_then(JsonValue::as_str)
             .ok_or(EkphrasisError::InvalidFrame)?;
 
-        let is_final = value
-            .get("final")
-            .and_then(JsonValue::as_bool)
-            .unwrap_or(false);
-
-        if is_final {
-            if transcript.len() > MAX_FINAL_TEXT_LEN {
-                return Err(EkphrasisError::TextTooLong);
+        match kind {
+            "partial" => {
+                let transcript = value
+                    .get("text")
+                    .and_then(JsonValue::as_str)
+                    .ok_or(EkphrasisError::InvalidFrame)?;
+                if transcript.len() > MAX_PARTIAL_TEXT_LEN {
+                    return Err(EkphrasisError::TextTooLong);
+                }
+                self.last_seq = seq;
+                self.partial_text.clear();
+                self.partial_text.push_str(transcript);
+                if self.state == EkphrasisState::Streaming {
+                    self.state = EkphrasisState::Transcribing;
+                }
+                Ok(())
             }
-            self.final_text.clear();
-            self.final_text.push_str(transcript);
-            self.state = EkphrasisState::Idle;
-        } else {
-            if transcript.len() > MAX_PARTIAL_TEXT_LEN {
-                return Err(EkphrasisError::TextTooLong);
+            "final" => {
+                let transcript = value
+                    .get("text")
+                    .and_then(JsonValue::as_str)
+                    .ok_or(EkphrasisError::InvalidFrame)?;
+                if transcript.len() > MAX_FINAL_TEXT_LEN {
+                    return Err(EkphrasisError::TextTooLong);
+                }
+                self.last_seq = seq;
+                self.final_text.clear();
+                self.final_text.push_str(transcript);
+                // Provenance (#553): recorded when the service declares it.
+                self.final_language = value
+                    .get("language")
+                    .and_then(JsonValue::as_str)
+                    .map(String::from);
+                self.final_model = value
+                    .get("model")
+                    .and_then(JsonValue::as_str)
+                    .map(String::from);
+                self.state = EkphrasisState::Idle;
+                Ok(())
             }
-            self.partial_text.clear();
-            self.partial_text.push_str(transcript);
-            // Remain in streaming/transcribing state.
-            if self.state == EkphrasisState::Streaming {
-                self.state = EkphrasisState::Transcribing;
+            "error" => {
+                let code = value
+                    .get("code")
+                    .and_then(JsonValue::as_str)
+                    .ok_or(EkphrasisError::InvalidFrame)?;
+                self.last_seq = seq;
+                // WHY no state write here: handle_server_frame owns the
+                // transition to Error(ServiceError) on any returned error --
+                // a service-reported terminal error must be acknowledged via
+                // reset(), not silently cleared.
+                Err(EkphrasisError::ServiceError {
+                    code: String::from(code),
+                })
             }
+            _ => Err(EkphrasisError::InvalidFrame),
         }
-
-        Ok(())
     }
 
     /// Stop recording and return the final transcription.
@@ -1567,7 +1669,7 @@ Let me know if you need anything else."#;
         assert_eq!(*ek.state(), EkphrasisState::Idle);
         assert!(!ek.is_recording());
 
-        let result = ek.start_recording();
+        let result = ek.start_recording(42);
         assert!(result.is_ok());
         assert_eq!(*ek.state(), EkphrasisState::Recording);
         assert!(ek.is_recording());
@@ -1577,7 +1679,7 @@ Let me know if you need anything else."#;
     fn state_recording_to_streaming() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
 
         let result = ek.begin_streaming();
         assert!(result.is_ok());
@@ -1591,7 +1693,7 @@ Let me know if you need anything else."#;
         // Not reachable by default.
         assert!(!ek.is_available());
 
-        let result = ek.start_recording();
+        let result = ek.start_recording(42);
         assert_eq!(result, Err(EkphrasisError::EndpointUnreachable));
     }
 
@@ -1599,9 +1701,9 @@ Let me know if you need anything else."#;
     fn state_cannot_record_when_already_recording() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
 
-        let result = ek.start_recording();
+        let result = ek.start_recording(42);
         assert!(result.is_err());
         match result {
             Err(EkphrasisError::InvalidState { operation, current }) => {
@@ -1623,7 +1725,7 @@ Let me know if you need anything else."#;
     fn state_stop_from_recording() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
 
         let result = ek.stop_recording();
         assert!(result.is_ok());
@@ -1635,12 +1737,12 @@ Let me know if you need anything else."#;
     fn stop_recording_returns_partial_text_when_no_final() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
         let _ = ek.begin_streaming();
 
         let partial_frame = WsFrame::new(
             WsOpcode::Text,
-            b"{\"text\": \"partial only\", \"final\": false}".to_vec(),
+            b"{\"v\":1, \"session\":42, \"seq\":1, \"kind\":\"partial\", \"text\":\"partial only\"}".to_vec(),
         );
         let _ = ek.handle_server_frame(&partial_frame);
         assert!(ek.final_text().is_empty());
@@ -1661,7 +1763,7 @@ Let me know if you need anything else."#;
     fn state_feed_audio_while_recording() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
 
         let result = ek.feed_audio(&[0x01, 0x02, 0x03]);
         assert!(result.is_ok());
@@ -1678,7 +1780,7 @@ Let me know if you need anything else."#;
     fn feed_audio_rejects_beyond_max_buffer() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
 
         // Fill exactly to the cap.
         let chunk = alloc::vec![0u8; MAX_AUDIO_BUFFER_BYTES];
@@ -1702,7 +1804,7 @@ Let me know if you need anything else."#;
     fn state_take_audio_frame() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
         let _ = ek.begin_streaming();
 
         // No data yet.
@@ -1721,13 +1823,14 @@ Let me know if you need anything else."#;
     fn state_transcription_flow() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
         let _ = ek.begin_streaming();
 
         // Receive partial transcription.
         let partial_frame = WsFrame::new(
             WsOpcode::Text,
-            b"{\"text\": \"hello\", \"final\": false}".to_vec(),
+            b"{\"v\":1, \"session\":42, \"seq\":1, \"kind\":\"partial\", \"text\":\"hello\"}"
+                .to_vec(),
         );
         let result = ek.handle_server_frame(&partial_frame);
         assert!(result.is_ok());
@@ -1737,7 +1840,7 @@ Let me know if you need anything else."#;
         // Receive final transcription.
         let final_frame = WsFrame::new(
             WsOpcode::Text,
-            b"{\"text\": \"hello world\", \"final\": true}".to_vec(),
+            b"{\"v\":1, \"session\":42, \"seq\":2, \"kind\":\"final\", \"text\":\"hello world\", \"language\":\"en\", \"model\":\"whisper-small\", \"duration_ms\":1200}".to_vec(),
         );
         let result = ek.handle_server_frame(&final_frame);
         assert!(result.is_ok());
@@ -1746,10 +1849,103 @@ Let me know if you need anything else."#;
     }
 
     #[test]
+    fn transcription_final_records_provenance() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording(42);
+        let _ = ek.begin_streaming();
+        let frame = WsFrame::new(
+            WsOpcode::Text,
+            b"{\"v\":1, \"session\":42, \"seq\":1, \"kind\":\"final\", \"text\":\"hi\", \"language\":\"en\", \"model\":\"whisper-small\", \"duration_ms\":900}".to_vec(),
+        );
+        assert!(ek.handle_server_frame(&frame).is_ok());
+        assert_eq!(ek.final_language.as_deref(), Some("en"));
+        assert_eq!(ek.final_model.as_deref(), Some("whisper-small"));
+    }
+
+    #[test]
+    fn transcription_rejects_unknown_version() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording(42);
+        let _ = ek.begin_streaming();
+        let frame = WsFrame::new(
+            WsOpcode::Text,
+            b"{\"v\":2, \"session\":42, \"seq\":1, \"kind\":\"partial\", \"text\":\"hi\"}".to_vec(),
+        );
+        let result = ek.handle_server_frame(&frame);
+        assert_eq!(
+            result,
+            Err(EkphrasisError::UnsupportedVersion { got: 2 }),
+            "an unknown protocol version must reject explicitly (#553)"
+        );
+    }
+
+    #[test]
+    fn transcription_rejects_foreign_session() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording(42);
+        let _ = ek.begin_streaming();
+        let frame = WsFrame::new(
+            WsOpcode::Text,
+            b"{\"v\":1, \"session\":43, \"seq\":1, \"kind\":\"partial\", \"text\":\"hi\"}".to_vec(),
+        );
+        assert_eq!(
+            ek.handle_server_frame(&frame),
+            Err(EkphrasisError::SessionMismatch),
+            "an event for another session is an error, not a silent mix (#553)"
+        );
+    }
+
+    #[test]
+    fn transcription_rejects_sequence_regression() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording(42);
+        let _ = ek.begin_streaming();
+        let f1 = WsFrame::new(
+            WsOpcode::Text,
+            b"{\"v\":1, \"session\":42, \"seq\":5, \"kind\":\"partial\", \"text\":\"a\"}".to_vec(),
+        );
+        assert!(ek.handle_server_frame(&f1).is_ok());
+        let f2 = WsFrame::new(
+            WsOpcode::Text,
+            b"{\"v\":1, \"session\":42, \"seq\":4, \"kind\":\"partial\", \"text\":\"ab\"}".to_vec(),
+        );
+        assert_eq!(
+            ek.handle_server_frame(&f2),
+            Err(EkphrasisError::SequenceRegression),
+            "a regressing sequence number must reject (#553)"
+        );
+    }
+
+    #[test]
+    fn transcription_error_event_surfaces_service_error() {
+        let mut ek = Ekphrasis::new("stt.example.lan", 8080);
+        ek.set_endpoint_reachable(true);
+        let _ = ek.start_recording(42);
+        let _ = ek.begin_streaming();
+        let frame = WsFrame::new(
+            WsOpcode::Text,
+            b"{\"v\":1, \"session\":42, \"seq\":9, \"kind\":\"error\", \"code\":\"model_overloaded\"}".to_vec(),
+        );
+        let result = ek.handle_server_frame(&frame);
+        assert!(
+            matches!(result, Err(EkphrasisError::ServiceError { .. })),
+            "a typed error event surfaces as ServiceError (#553)"
+        );
+        assert!(
+            matches!(ek.state(), EkphrasisState::Error(_)),
+            "a service-reported terminal error must require an explicit reset()"
+        );
+    }
+
+    #[test]
     fn state_server_close_frame() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
         let _ = ek.begin_streaming();
 
         let close_frame = WsFrame::new(WsOpcode::Close, Vec::new());
@@ -1779,7 +1975,7 @@ Let me know if you need anything else."#;
     fn handle_server_frame_rejects_and_stays_in_error_state() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
         let _ = ek.begin_streaming();
         ek.state = EkphrasisState::Error(EkphrasisError::ConnectionClosed);
 
@@ -1799,7 +1995,7 @@ Let me know if you need anything else."#;
     fn process_transcription_errors_on_missing_text_field() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
         let _ = ek.begin_streaming();
 
         let frame = WsFrame::new(WsOpcode::Text, b"{\"final\": false}".to_vec());
@@ -1815,7 +2011,7 @@ Let me know if you need anything else."#;
     fn handle_server_frame_transitions_to_error_on_malformed_response() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
         let _ = ek.begin_streaming();
 
         let frame = WsFrame::new(WsOpcode::Text, b"{\"final\": false}".to_vec());
@@ -1831,7 +2027,7 @@ Let me know if you need anything else."#;
     fn state_reset_clears_everything() {
         let mut ek = Ekphrasis::new("stt.example.lan", 8080);
         ek.set_endpoint_reachable(true);
-        let _ = ek.start_recording();
+        let _ = ek.start_recording(42);
         let _ = ek.feed_audio(&[0xFF; 100]);
 
         ek.reset();
