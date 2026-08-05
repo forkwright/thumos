@@ -4,9 +4,9 @@ use snafu::Snafu;
 
 /// Telephony subsystem errors.
 #[derive(Debug, Snafu)]
-#[snafu(visibility(pub(crate)))]
+#[snafu(visibility(pub))]
 #[non_exhaustive]
-pub(crate) enum Error {
+pub enum Error {
     /// AT command timed out.
     #[snafu(display("AT command timed out after {timeout_ms}ms"))]
     Timeout {
@@ -100,4 +100,4 @@ pub(crate) enum Error {
 }
 
 /// Result type for telephony operations.
-pub(crate) type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, Error>;

@@ -16,27 +16,41 @@ const MIN_IHL: u8 = 5;
 const TCP_MIN_HEADER_LEN: usize = 20;
 const UDP_HEADER_LEN: usize = 8;
 
-pub(crate) const PROTO_ICMP: u8 = 1;
-pub(crate) const PROTO_TCP: u8 = 6;
-pub(crate) const PROTO_UDP: u8 = 17;
+/// IP protocol number for ICMP (1).
+pub const PROTO_ICMP: u8 = 1;
+/// IP protocol number for TCP (6).
+pub const PROTO_TCP: u8 = 6;
+/// IP protocol number for UDP (17).
+pub const PROTO_UDP: u8 = 17;
 
 // Type definitions
 
 /// Errors that can occur when parsing network packet headers.
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
-pub(crate) enum ParseError {
+pub enum ParseError {
     /// The buffer is shorter than the minimum required for this header.
     #[snafu(display("packet too short: need {needed} bytes, got {got}"))]
-    TooShort { needed: usize, got: usize },
+    TooShort {
+        /// Bytes required to parse the header.
+        needed: usize,
+        /// Bytes actually available.
+        got: usize,
+    },
 
     /// The IP version field is not 4.
     #[snafu(display("invalid IP version: expected 4, got {version}"))]
-    InvalidVersion { version: u8 },
+    InvalidVersion {
+        /// The version nibble found in the first byte.
+        version: u8,
+    },
 
     /// The IHL field encodes a header shorter than the minimum 20 bytes.
     #[snafu(display("invalid IHL {ihl}: minimum is 5 (20 bytes)"))]
-    InvalidIhl { ihl: u8 },
+    InvalidIhl {
+        /// The IHL (internet header length) value in 32-bit words.
+        ihl: u8,
+    },
 }
 
 /// Parsed IPv4 header fields.
@@ -48,19 +62,19 @@ pub(crate) enum ParseError {
         reason = "public API — version and total_length are unused in this crate but held for downstream consumers"
     )
 )]
-pub(crate) struct IpHeader {
+pub struct IpHeader {
     /// IP version (always 4 for a successfully parsed header).
-    pub(crate) version: u8,
+    pub version: u8,
     /// Internet Header Length in 32-bit words.
-    pub(crate) ihl: u8,
+    pub ihl: u8,
     /// Total packet length in bytes (header + payload).
-    pub(crate) total_length: u16,
+    pub total_length: u16,
     /// IP protocol number (e.g. `PROTO_TCP`, `PROTO_UDP`, `PROTO_ICMP`).
-    pub(crate) protocol: u8,
+    pub protocol: u8,
     /// Source IPv4 address.
-    pub(crate) src_addr: Ipv4Addr,
+    pub src_addr: Ipv4Addr,
     /// Destination IPv4 address.
-    pub(crate) dst_addr: Ipv4Addr,
+    pub dst_addr: Ipv4Addr,
 }
 
 /// Parsed TCP header fields.
@@ -69,17 +83,17 @@ pub(crate) struct IpHeader {
     dead_code,
     reason = "public API — seq and ack are unused in this crate but held for downstream consumers"
 )]
-pub(crate) struct TcpHeader {
+pub struct TcpHeader {
     /// Source TCP port.
-    pub(crate) src_port: u16,
+    pub src_port: u16,
     /// Destination TCP port.
-    pub(crate) dst_port: u16,
+    pub dst_port: u16,
     /// Sequence number.
-    pub(crate) seq: u32,
+    pub seq: u32,
     /// Acknowledgement number.
-    pub(crate) ack: u32,
+    pub ack: u32,
     /// Control flags byte (SYN, ACK, FIN, RST, PSH, URG, ECE, CWR).
-    pub(crate) flags: u8,
+    pub flags: u8,
 }
 
 /// Parsed UDP header fields.
@@ -91,13 +105,13 @@ pub(crate) struct TcpHeader {
         reason = "public API — length is unused in this crate but held for downstream consumers"
     )
 )]
-pub(crate) struct UdpHeader {
+pub struct UdpHeader {
     /// Source UDP port.
-    pub(crate) src_port: u16,
+    pub src_port: u16,
     /// Destination UDP port.
-    pub(crate) dst_port: u16,
+    pub dst_port: u16,
     /// UDP datagram length (header + data) in bytes.
-    pub(crate) length: u16,
+    pub length: u16,
 }
 
 // Impl blocks
@@ -111,7 +125,7 @@ impl IpHeader {
     /// shorter than the length encoded in the IHL field.
     /// Returns [`ParseError::InvalidVersion`] if the version is not 4.
     /// Returns [`ParseError::InvalidIhl`] if IHL is less than 5.
-    pub(crate) fn parse(data: &[u8]) -> Result<Self, ParseError> {
+    pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
         if data.len() < IPV4_MIN_HEADER_LEN {
             return Err(ParseError::TooShort {
                 needed: IPV4_MIN_HEADER_LEN,
@@ -168,7 +182,7 @@ impl IpHeader {
     }
 
     /// Return the header length in bytes (`ihl * 4`).
-    pub(crate) fn header_len(&self) -> usize {
+    pub fn header_len(&self) -> usize {
         usize::from(self.ihl) * 4
     }
 }
@@ -182,7 +196,7 @@ impl TcpHeader {
     /// # Errors
     ///
     /// Returns [`ParseError::TooShort`] if `data` is shorter than 20 bytes.
-    pub(crate) fn parse(data: &[u8]) -> Result<Self, ParseError> {
+    pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
         if data.len() < TCP_MIN_HEADER_LEN {
             return Err(ParseError::TooShort {
                 needed: TCP_MIN_HEADER_LEN,
@@ -232,7 +246,7 @@ impl UdpHeader {
     /// # Errors
     ///
     /// Returns [`ParseError::TooShort`] if `data` is shorter than 8 bytes.
-    pub(crate) fn parse(data: &[u8]) -> Result<Self, ParseError> {
+    pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
         if data.len() < UDP_HEADER_LEN {
             return Err(ParseError::TooShort {
                 needed: UDP_HEADER_LEN,
