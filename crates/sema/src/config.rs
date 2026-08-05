@@ -2,9 +2,27 @@
 //!
 //! The IMSI-catcher detector combines five heuristic signals. Each signal has
 //! a weight that feeds a cumulative threat score and some signals carry a
-//! threshold that gates firing at all. Those values are tunable per deployment
-//! profile (daily vs. sentinel vs. panic) and should be adjustable by agents
-//! reviewing detection-vs-false-positive telemetry — not baked into the binary.
+//! threshold that gates firing at all.
+//!
+//! # Calibration status (#555): PROVISIONAL
+//!
+//! Every constant in this file is a **provisional default** — held from the
+//! detector's first implementation, with no retained calibration corpus or
+//! evaluation behind it. They are NOT validated. Two consequences:
+//!
+//! 1. Every [`crate::cell::ThreatScore`] ships marked
+//!    [`crate::cell::Calibration::Uncalibrated`]; no presentation or
+//!    automatic response may treat the resulting level as validated
+//!    operational severity.
+//! 2. The ONLY legitimate path to changing a value here is a measured
+//!    derivation: [`crate::eval`] over the versioned corpus in
+//!    `crates/sema/corpus/` (benign stationary, driving, dense-urban,
+//!    femtocell, roaming, outage, controlled attack), which reports
+//!    per-scenario outcomes and corpus-level false-positive / false-negative
+//!    / precision / recall. A calibrated config records its corpus version,
+//!    operating point, and measured error budget in
+//!    [`crate::cell::Calibration::Calibrated`]. Hand-tuning a constant
+//!    without that artifact is exactly the practice #555 prohibits.
 //!
 //! Protocol invariants (cipher algorithm IDs, threat-level boundaries at
 //! 30/60/80) remain as [`crate::cell`] compile-time values; the level
@@ -17,9 +35,10 @@ use serde::{Deserialize, Serialize};
 
 /// Default signal threshold above which a previously-unseen tower is flagged.
 ///
-/// Source: IMSI catchers typically outpower legitimate cells to force
-/// reselection; -50 dBm indicates a transmitter within ~10 m line-of-sight,
-/// which is implausible for a licensed cell site in typical deployment.
+/// PROVISIONAL (#555): rationale — IMSI catchers typically outpower
+/// legitimate cells to force reselection; -50 dBm indicates a transmitter
+/// within ~10 m line-of-sight, implausible for a licensed cell site in
+/// typical deployment. Not corpus-derived; see the module header.
 pub(crate) const DEFAULT_UNUSUALLY_STRONG_SIGNAL_DBM: i32 = -50;
 
 /// Minimum sensible signal threshold (never flag).
@@ -81,9 +100,9 @@ pub(crate) const MAX_RAPID_RESELECTION_WINDOW_SECS: u64 = 3600;
 
 /// Default weight for a cipher-downgrade alert (A5/0, A5/1, A5/2).
 ///
-/// Source: cipher downgrade is the strongest single indicator of active
-/// interception; the historical value of 40 lifts a lone alert to Medium
-/// level on its own.
+/// PROVISIONAL (#555): rationale — cipher downgrade is the strongest
+/// single indicator of active interception; 40 lifts a lone alert to
+/// Medium on its own. Not corpus-derived; see the module header.
 pub(crate) const DEFAULT_WEIGHT_CIPHER_DOWNGRADE: u32 = 40;
 
 /// Default weight for an unannounced handover (sudden-tower-change).

@@ -8,5 +8,6 @@
 
 pub mod cell;
 pub mod config;
+pub mod eval;
 pub mod wifi;
 pub mod wifi_analysis;

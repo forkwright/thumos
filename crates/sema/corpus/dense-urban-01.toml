@@ -1,0 +1,29 @@
+schema_version = 1
+id = "dense-urban-01"
+kind = "dense_urban"
+provenance = "synthetic (#555); hand-built, NOT field-measured"
+target_level = "Low"
+
+# Dense-urban RF churn: many strong neighbour cells come and go. The
+# documented residual false-positive class at the provisional weights (#555
+# and the phase plan): the harmonic model bounds it at Medium, calibration
+# must close it to Low.
+[[alerts]]
+kind = "unusually_strong_new_tower"
+signal_dbm = -40
+
+[[alerts]]
+kind = "unusually_strong_new_tower"
+signal_dbm = -42
+
+[[alerts]]
+kind = "unusually_strong_new_tower"
+signal_dbm = -38
+
+[[alerts]]
+kind = "unusually_strong_new_tower"
+signal_dbm = -45
+
+[[alerts]]
+kind = "unusually_strong_new_tower"
+signal_dbm = -41
