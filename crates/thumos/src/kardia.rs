@@ -373,6 +373,17 @@ impl KernelState {
             // for the render. evaluate() re-checks source validity/staleness.
             self.clock.evaluate(now_ms);
             self.wall_clock = self.clock.get_wall_clock(now_ms);
+            // #506: keep the userspace CLOCK_REALTIME view unified with the
+            // ClockManager trust hierarchy — sys_clock_gettime(CLOCK_REALTIME)
+            // must read this same wall time, not an independently-seeded
+            // offset. The #461 Step-5 witness proves the CNTPCT and IRQ-tick
+            // bases agree under virt, so set_realtime_offset's internal
+            // monotonic_secs() basis is sound. An ImplausibleEpoch rejection
+            // is the hostile-modem guard: fail closed, keep the old offset.
+            // SAFETY: called from the loop's privileged context, single-core.
+            unsafe {
+                let _ = crate::time::set_realtime_offset(self.wall_clock);
+            }
             // #400: check scheduled alarms against the fresh wall time + advance
             // the countdown timer. The firing IDs / expiry have no sink yet
             // (notification routing is a follow-on); the calls still advance
@@ -843,6 +854,17 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // and both events landed on a verified HMAC audit chain.
         let (fw_rules, fw_allowed, fw_denied, fw_audit, fw_chain) = kernel.firewall_boot_smoke();
 
+        // #506: seed the userspace CLOCK_REALTIME offset from the seeded
+        // ClockManager at loop start — the offset must be correct from tick
+        // 0, not one second late; poll_all's once-per-second branch then
+        // keeps it fresh. The #461 witness (Step 5) proves the CNTPCT and
+        // IRQ-tick bases agree under virt, so the internal monotonic_secs()
+        // basis is sound; an ImplausibleEpoch rejection fails closed.
+        // SAFETY: loop start, single-core, before userspace runs.
+        unsafe {
+            let _ = crate::time::set_realtime_offset(kernel.wall_clock);
+        }
+
         // Emit each witness line atomically (emit_marker masks IRQs per line)
         // so userspace /init cannot split a `kardia:` line mid-write (#513).
         if let Some(px) = painted {
@@ -854,6 +876,13 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         emit_marker(
             &mut serial,
             format_args!("kardia: clock src={clock_src} wall={wall}\r\n"),
+        );
+        // #506 witness: the offset the userspace CLOCK_REALTIME view is
+        // built from, just seeded above (sys_clock_gettime adds monotonic
+        // seconds to it; a real epoch here proves the unification).
+        emit_marker(
+            &mut serial,
+            format_args!("kardia: realtime offset={wall}\r\n"),
         );
         emit_marker(
             &mut serial,
@@ -912,6 +941,8 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
     // driven the loop to open a ringtone session.
     #[cfg(feature = "qemu")]
     let mut ring_logged = false;
+    #[cfg(feature = "qemu")]
+    let mut realtime_logged = false;
     loop {
         #[cfg(feature = "qemu")]
         {
@@ -1035,6 +1066,17 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
                         "kardia: incoming call -> ringtone sessions={}\r\n",
                         kernel.audio.session_count()
                     ),
+                );
+            }
+            // #506 witness: poll_all's once-per-second branch just refreshed
+            // the offset — log it the first time so a stuck offset is visible
+            // next to the seed witness above.
+            #[cfg(feature = "qemu")]
+            if ticked && !realtime_logged {
+                realtime_logged = true;
+                emit_marker(
+                    &mut serial,
+                    format_args!("kardia: realtime offset={}\r\n", kernel.wall_clock),
                 );
             }
             if ticked || nav.is_some() {
