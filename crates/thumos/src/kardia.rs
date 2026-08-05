@@ -390,6 +390,10 @@ impl KernelState {
             // one-shot auto-disable + timer countdown state.
             self.heorte.check_alarms(self.wall_clock);
             self.heorte.timer_mut().update(now_ms);
+            // #442: enforce the A2DP Connecting deadline against the loop's
+            // IRQ-tick base — a peer that never finishes signaling moves to
+            // Error(Timeout) instead of hanging the profile forever.
+            self.bt_audio.check_timeout(now_ms);
             return true;
         }
         false

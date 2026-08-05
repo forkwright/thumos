@@ -67,6 +67,9 @@ pub enum BtAudioError {
     AvdtpError,
     /// SBC encoding error (e.g., invalid parameters).
     SbcError,
+    /// The Connecting state exceeded BT_CONNECT_TIMEOUT_MS without reaching
+    /// Connected — the peer never finished AVDTP signaling (#442).
+    Timeout,
     /// The peer does not support SBC (mandatory codec).
     CodecNotSupported,
     /// Buffer too small for the encoded output.
@@ -85,6 +88,7 @@ impl core::fmt::Display for BtAudioError {
             Self::CodecNotSupported => write!(f, "SBC codec not supported by peer"),
             Self::BufferTooSmall => write!(f, "output buffer too small"),
             Self::NoPeer => write!(f, "no peer device configured"),
+            Self::Timeout => write!(f, "A2DP connecting timed out"),
         }
     }
 }
@@ -163,9 +167,18 @@ pub(crate) struct A2dpProfile<H: BtHwOps> {
     /// SetConfiguration -> Open -> Start) or during resume(). `None`
     /// when no signaling response is outstanding.
     pending_signal: Option<u8>,
+    /// Tick-ms when Connecting began (#442). `Some` only in the Connecting
+    /// state; a peer that never finishes signaling transitions to
+    /// Error(Timeout) at BT_CONNECT_TIMEOUT_MS via check_timeout().
+    connecting_since: Option<u64>,
     /// Bluetooth hardware backend.
     hw: H,
 }
+
+/// Deadline for the Connecting state (#442): a peer that has not finished
+/// AVDTP signaling within this window is abandoned to Error(Timeout)
+/// instead of hanging the profile forever.
+pub(crate) const BT_CONNECT_TIMEOUT_MS: u64 = 10_000;
 
 impl<H: BtHwOps> A2dpProfile<H> {
     /// Create a new A2DP source profile with default settings.
@@ -183,6 +196,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
             remote_seid: 0,
             local_seid: 1,
             pending_signal: None,
+            connecting_since: None,
             hw,
         }
     }
@@ -266,7 +280,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::NoPeer`] -- no peer address configured.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
     #[must_use]
-    pub(crate) fn connect(&mut self) -> Result<(), BtAudioError> {
+    pub(crate) fn connect(&mut self, now_ms: u64) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Disconnected {
             return Err(BtAudioError::InvalidState);
         }
@@ -275,6 +289,9 @@ impl<H: BtHwOps> A2dpProfile<H> {
         }
 
         self.state = A2dpState::Connecting;
+        // #442: timestamp the Connecting state so check_timeout() can
+        // abandon a peer that never finishes signaling.
+        self.connecting_since = Some(now_ms);
 
         // Send AVDTP Discover command.
         let label = self.next_transaction_label();
@@ -285,6 +302,21 @@ impl<H: BtHwOps> A2dpProfile<H> {
         self.pending_signal = Some(AVDTP_SIGNAL_DISCOVER);
 
         Ok(())
+    }
+
+    /// Enforce the Connecting-state deadline (#442). `now_ms` comes from the
+    /// caller's own clock (kardia's IRQ-tick base in production, a fake
+    /// clock in tests — the profile never reads a clock directly). A peer
+    /// that has been Connecting for BT_CONNECT_TIMEOUT_MS without reaching
+    /// Connected is moved to Error(Timeout) and its pending signal cleared.
+    pub(crate) fn check_timeout(&mut self, now_ms: u64) {
+        if let (A2dpState::Connecting, Some(since)) = (self.state, self.connecting_since) {
+            if now_ms.saturating_sub(since) >= BT_CONNECT_TIMEOUT_MS {
+                self.state = A2dpState::Error(BtAudioError::Timeout);
+                self.connecting_since = None;
+                self.pending_signal = None;
+            }
+        }
     }
 
     /// Advance the AVDTP signaling state machine.
@@ -358,6 +390,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
                 let msg = AvdtpMessage::start(label, self.remote_seid);
                 self.hw.send_command(&msg).map_err(BtAudioError::from)?;
                 self.state = A2dpState::Connected;
+                self.connecting_since = None;
                 self.pending_signal = Some(AVDTP_SIGNAL_START);
             }
             AVDTP_SIGNAL_START => {
@@ -548,7 +581,7 @@ mod tests {
         let peer = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
         profile.set_peer(peer);
 
-        let result = profile.connect();
+        let result = profile.connect(0);
         assert!(result.is_ok(), "connect must succeed with peer set");
         assert_eq!(
             profile.state(),
@@ -560,7 +593,7 @@ mod tests {
     #[test]
     fn connect_without_peer_returns_error() {
         let mut profile = make_a2dp();
-        let result = profile.connect();
+        let result = profile.connect(0);
         assert_eq!(
             result,
             Err(BtAudioError::NoPeer),
@@ -578,7 +611,7 @@ mod tests {
         let mut profile = make_a2dp();
         let peer = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
         profile.set_peer(peer);
-        profile.connect().ok();
+        profile.connect(0).ok();
 
         // Walk through signaling to Streaming.
         profile.set_remote_seid(1);
@@ -609,7 +642,7 @@ mod tests {
         let peer = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
         profile.set_peer(peer);
         profile.set_remote_seid(2);
-        profile.connect().ok();
+        profile.connect(0).ok();
 
         assert_eq!(profile.state(), A2dpState::Connecting);
 
@@ -660,7 +693,7 @@ mod tests {
         let peer = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
         profile.set_peer(peer);
         profile.set_remote_seid(2);
-        profile.connect().ok();
+        profile.connect(0).ok();
         assert_eq!(profile.state(), A2dpState::Connecting);
 
         // A malicious/misbehaving peer sends Start as if it were the
@@ -687,7 +720,7 @@ mod tests {
         let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
         profile.set_peer(peer);
         profile.set_remote_seid(1);
-        profile.connect().ok();
+        profile.connect(0).ok();
         profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
         profile
             .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
@@ -727,7 +760,7 @@ mod tests {
         let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
         profile.set_peer(peer);
         profile.set_remote_seid(1);
-        profile.connect().ok();
+        profile.connect(0).ok();
         profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
         profile
             .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
@@ -783,7 +816,7 @@ mod tests {
 
         let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
         profile.set_peer(peer);
-        profile.connect().ok();
+        profile.connect(0).ok();
         assert_eq!(profile.state(), A2dpState::Connecting);
 
         // suspend()/resume() while Connecting -- neither Streaming nor Connected.
@@ -851,7 +884,7 @@ mod tests {
         let mut profile = make_a2dp();
         let peer = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
         profile.set_peer(peer);
-        profile.connect().ok();
+        profile.connect(0).ok();
         assert_eq!(profile.state(), A2dpState::Connecting);
 
         let before_rate = profile.sample_rate();
@@ -881,10 +914,10 @@ mod tests {
         let mut profile = make_a2dp();
         let peer = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
         profile.set_peer(peer);
-        profile.connect().ok();
+        profile.connect(0).ok();
 
         // Already connecting -- second connect must fail.
-        let result = profile.connect();
+        let result = profile.connect(0);
         assert_eq!(
             result,
             Err(BtAudioError::InvalidState),
@@ -930,7 +963,7 @@ mod tests {
         let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
         profile.set_peer(peer);
         profile.set_remote_seid(1);
-        profile.connect().ok();
+        profile.connect(0).ok();
         profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
         profile
             .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
@@ -969,7 +1002,7 @@ mod tests {
         let peer = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
         profile.set_peer(peer);
         profile.set_remote_seid(1);
-        profile.connect().ok();
+        profile.connect(0).ok();
         profile.advance_signaling(AVDTP_SIGNAL_DISCOVER).ok();
         profile
             .advance_signaling(AVDTP_SIGNAL_GET_CAPABILITIES)
@@ -993,6 +1026,59 @@ mod tests {
             last_signal,
             Some(AVDTP_SIGNAL_CLOSE),
             "disconnect from Connected must send exactly an AVDTP Close command"
+        );
+    }
+
+    // --- #442 Connecting-state bounded deadline ---
+
+    #[test]
+    fn connecting_within_deadline_stays_connecting() {
+        let mut profile = make_a2dp();
+        profile.set_peer([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        profile.connect(0).ok();
+        profile.check_timeout(BT_CONNECT_TIMEOUT_MS - 1);
+        assert_eq!(
+            profile.state(),
+            A2dpState::Connecting,
+            "inside the deadline the profile must keep signaling, not error"
+        );
+    }
+
+    #[test]
+    fn connecting_past_deadline_errors_timeout() {
+        let mut profile = make_a2dp();
+        profile.set_peer([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        profile.connect(0).ok();
+        assert_eq!(profile.pending_signal, Some(AVDTP_SIGNAL_DISCOVER));
+        profile.check_timeout(BT_CONNECT_TIMEOUT_MS);
+        assert_eq!(
+            profile.state(),
+            A2dpState::Error(BtAudioError::Timeout),
+            "a peer silent past BT_CONNECT_TIMEOUT_MS must error with Timeout"
+        );
+        assert_eq!(
+            profile.connecting_since, None,
+            "the timeout path must clear the timestamp"
+        );
+        assert_eq!(
+            profile.pending_signal, None,
+            "the timeout path must clear the awaited signal"
+        );
+    }
+
+    #[test]
+    fn connected_state_is_not_timed_out() {
+        let mut profile = make_a2dp();
+        profile.set_peer([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        profile.connect(0).ok();
+        // Drive the signaling sequence to Connected (Open response handled).
+        profile.connecting_since = None;
+        profile.state = A2dpState::Connected;
+        profile.check_timeout(u64::MAX);
+        assert_eq!(
+            profile.state(),
+            A2dpState::Connected,
+            "a connected session must never be timed out"
         );
     }
 }

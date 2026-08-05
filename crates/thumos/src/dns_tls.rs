@@ -111,6 +111,9 @@ pub enum DotError {
     BufferTooSmall,
     /// The TLS transport is not connected.
     NotConnected,
+    /// The receive deadline passed before the frame completed (#442) — a
+    /// peer that stops answering mid-frame no longer hangs the resolver.
+    Timeout,
 }
 
 impl core::fmt::Display for DotError {
@@ -126,6 +129,7 @@ impl core::fmt::Display for DotError {
             Self::MalformedResponse => write!(f, "malformed DNS response"),
             Self::ServerError => write!(f, "DNS server error"),
             Self::NoRecords => write!(f, "no DNS answer records"),
+            Self::Timeout => write!(f, "DoT receive deadline exceeded"),
             Self::BufferTooSmall => write!(f, "response buffer too small"),
             Self::NotConnected => write!(f, "TLS transport not connected"),
         }
@@ -148,11 +152,13 @@ pub(crate) trait TlsTransport {
     /// the transport could not deliver the data.
     fn send(&mut self, data: &[u8]) -> Result<(), DotError>;
 
-    /// Receive data from the TLS connection into `buf`.
-    ///
-    /// Returns the number of bytes read on success, or
-    /// `Err(DotError::RecvFailed)` on failure.
-    fn recv(&mut self, buf: &mut [u8]) -> Result<usize, DotError>;
+    /// Receive data from the TLS connection into `buf`, bounded by a real
+    /// deadline (#442). Returns the number of bytes read on success;
+    /// `Err(DotError::Timeout)` if the transport cannot complete the read
+    /// before `deadline_ms` on its own clock; `Err(DotError::RecvFailed)`
+    /// on any other failure. The deadline is an absolute tick-ms value
+    /// supplied by the caller, so the resolver never hangs on a silent peer.
+    fn recv(&mut self, buf: &mut [u8], deadline_ms: u64) -> Result<usize, DotError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +195,10 @@ pub(crate) fn parse_frame_length(header: &[u8; 2]) -> u16 {
 /// Reads the 2-byte length prefix, then reads the DNS message body.
 /// Returns the DNS message payload (without the length prefix).
 #[must_use]
-pub(crate) fn read_dot_frame<T: TlsTransport>(transport: &mut T) -> Result<Vec<u8>, DotError> {
+pub(crate) fn read_dot_frame<T: TlsTransport>(
+    transport: &mut T,
+    deadline_ms: u64,
+) -> Result<Vec<u8>, DotError> {
     // Read the 2-byte length prefix. WHY: DoT runs over a TCP-backed TLS
     // stream; a single recv() call is not guaranteed to return all
     // requested bytes even for a 2-byte header — loop until the header
@@ -197,7 +206,7 @@ pub(crate) fn read_dot_frame<T: TlsTransport>(transport: &mut T) -> Result<Vec<u
     let mut header = [0u8; DOT_FRAME_HEADER_SIZE];
     let mut received = 0;
     while received < DOT_FRAME_HEADER_SIZE {
-        let n = transport.recv(&mut header[received..])?;
+        let n = transport.recv(&mut header[received..], deadline_ms)?;
         if n == 0 {
             return Err(DotError::TruncatedFrame);
         }
@@ -219,7 +228,7 @@ pub(crate) fn read_dot_frame<T: TlsTransport>(transport: &mut T) -> Result<Vec<u
     let mut body = alloc::vec![0u8; msg_len];
     let mut received = 0;
     while received < msg_len {
-        let n = transport.recv(&mut body[received..])?;
+        let n = transport.recv(&mut body[received..], deadline_ms)?;
         if n == 0 {
             return Err(DotError::TruncatedFrame);
         }
@@ -444,7 +453,14 @@ impl<T: TlsTransport> DotClient<T> {
     /// the TLS transport, reads the response frame, and returns the
     /// raw DNS response message.
     #[must_use]
-    pub(crate) fn query(&mut self, name: &str, record_type: u16) -> Result<Vec<u8>, DotError> {
+    pub(crate) fn query(
+        &mut self,
+        name: &str,
+        record_type: u16,
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> Result<Vec<u8>, DotError> {
+        let deadline_ms = now_ms.saturating_add(timeout_ms);
         // Build the DNS query. WHY: draw the transaction ID from the
         // kernel CSPRNG rather than a sequential counter — a predictable
         // TXID lets an attacker race a spoofed response (CWE-330, #288).
@@ -456,7 +472,7 @@ impl<T: TlsTransport> DotClient<T> {
         self.transport.send(&frame)?;
 
         // Read response frame.
-        let response = read_dot_frame(&mut self.transport)?;
+        let response = read_dot_frame(&mut self.transport, deadline_ms)?;
 
         // Validate response header: check transaction ID and QR bit.
         if response.len() < DNS_HEADER_SIZE {
@@ -482,10 +498,15 @@ impl<T: TlsTransport> DotClient<T> {
     ///
     /// The caller is responsible for building and parsing the DNS message.
     #[must_use]
-    pub(crate) fn send_raw(&mut self, dns_message: &[u8]) -> Result<Vec<u8>, DotError> {
+    pub(crate) fn send_raw(
+        &mut self,
+        dns_message: &[u8],
+        now_ms: u64,
+        timeout_ms: u64,
+    ) -> Result<Vec<u8>, DotError> {
         let frame = frame_dns_message(dns_message)?;
         self.transport.send(&frame)?;
-        read_dot_frame(&mut self.transport)
+        read_dot_frame(&mut self.transport, now_ms.saturating_add(timeout_ms))
     }
 
     /// Return a mutable reference to the underlying transport.
@@ -566,6 +587,11 @@ mod tests {
         responses: Vec<Vec<u8>>,
         /// Index into `responses` for the next `recv()` call.
         recv_idx: usize,
+        /// Scriptable clock (#442): advanced by `advance_per_recv` on each
+        /// `recv()`; a recv that lands after the deadline returns Timeout.
+        now_ms: u64,
+        /// Tick-ms added to `now_ms` per `recv()` call (0 = instant transport).
+        advance_per_recv: u64,
     }
 
     impl MockTlsTransport {
@@ -574,6 +600,8 @@ mod tests {
                 sent: Vec::new(),
                 responses: Vec::new(),
                 recv_idx: 0,
+                now_ms: 0,
+                advance_per_recv: 0,
             }
         }
 
@@ -582,6 +610,21 @@ mod tests {
                 sent: Vec::new(),
                 responses,
                 recv_idx: 0,
+                now_ms: 0,
+                advance_per_recv: 0,
+            }
+        }
+
+        /// Script a transport whose clock advances `per_recv` tick-ms on
+        /// every recv (#442): a recv that lands after the deadline must
+        /// return DotError::Timeout.
+        fn with_clock_advance(responses: Vec<Vec<u8>>, per_recv: u64) -> Self {
+            Self {
+                sent: Vec::new(),
+                responses,
+                recv_idx: 0,
+                now_ms: 0,
+                advance_per_recv: per_recv,
             }
         }
     }
@@ -592,7 +635,11 @@ mod tests {
             Ok(())
         }
 
-        fn recv(&mut self, buf: &mut [u8]) -> Result<usize, DotError> {
+        fn recv(&mut self, buf: &mut [u8], deadline_ms: u64) -> Result<usize, DotError> {
+            self.now_ms += self.advance_per_recv;
+            if self.now_ms > deadline_ms {
+                return Err(DotError::Timeout);
+            }
             if self.recv_idx >= self.responses.len() {
                 return Err(DotError::RecvFailed);
             }
@@ -844,7 +891,7 @@ mod tests {
         let pinned = [0xAA; SPKI_HASH_LEN];
         let mut client = DotClient::new(transport, QUAD9_DNS, pinned);
 
-        let result = client.query("test.com", DNS_TYPE_A);
+        let result = client.query("test.com", DNS_TYPE_A, 0, 1000);
         assert!(
             result.is_ok(),
             "query must succeed with valid mock response"
@@ -936,7 +983,7 @@ mod tests {
         let header = len.to_be_bytes().to_vec();
 
         let mut transport = MockTlsTransport::with_responses(vec![header, dns_msg.clone()]);
-        let result = read_dot_frame(&mut transport);
+        let result = read_dot_frame(&mut transport, 1000);
         assert!(result.is_ok(), "read_dot_frame must succeed");
         assert_eq!(result.ok().unwrap(), dns_msg); // ok: test
     }
@@ -957,7 +1004,7 @@ mod tests {
             dns_msg[..mid].to_vec(),
             dns_msg[mid..].to_vec(),
         ]);
-        let result = read_dot_frame(&mut transport);
+        let result = read_dot_frame(&mut transport, 1000);
         assert_eq!(
             result,
             Ok(dns_msg),
@@ -978,7 +1025,7 @@ mod tests {
             vec![header_bytes[1]],
             dns_msg.clone(),
         ]);
-        let result = read_dot_frame(&mut transport);
+        let result = read_dot_frame(&mut transport, 1000);
         assert_eq!(
             result,
             Ok(dns_msg),
@@ -997,14 +1044,14 @@ mod tests {
         // Err(RecvFailed), a distinct "transport failed" scenario, not a
         // truncated frame.
         let mut transport = MockTlsTransport::with_responses(vec![vec![0x00], vec![]]);
-        let result = read_dot_frame(&mut transport);
+        let result = read_dot_frame(&mut transport, 1000);
         assert_eq!(result, Err(DotError::TruncatedFrame));
     }
 
     #[test]
     fn read_frame_rejects_zero_length() {
         let mut transport = MockTlsTransport::with_responses(vec![vec![0x00, 0x00]]);
-        let result = read_dot_frame(&mut transport);
+        let result = read_dot_frame(&mut transport, 1000);
         assert_eq!(result, Err(DotError::InvalidFrameLength));
     }
 
@@ -1014,7 +1061,7 @@ mod tests {
         let len = (MAX_DNS_MESSAGE_SIZE + 1) as u16;
         let header = len.to_be_bytes().to_vec();
         let mut transport = MockTlsTransport::with_responses(vec![header]);
-        let result = read_dot_frame(&mut transport);
+        let result = read_dot_frame(&mut transport, 1000);
         assert_eq!(result, Err(DotError::InvalidFrameLength));
     }
 
@@ -1068,10 +1115,59 @@ mod tests {
             DotError::NoRecords,
             DotError::BufferTooSmall,
             DotError::NotConnected,
+            DotError::Timeout,
         ];
         for err in &errors {
             let s = alloc::format!("{err}");
             assert!(!s.is_empty(), "error display must not be empty");
         }
+    }
+
+    // -- #442 bounded deadline tests -----------------------------------------
+
+    #[test]
+    fn recv_past_deadline_returns_timeout_not_hang() {
+        // A transport whose clock advances 500 ms per recv can never complete
+        // within a 100 ms deadline: the timeout must surface as an error,
+        // not a hang.
+        let mut transport = MockTlsTransport::with_clock_advance(Vec::new(), 500);
+        let mut buf = [0u8; 16];
+        let result = transport.recv(&mut buf, 100);
+        assert_eq!(result, Err(DotError::Timeout));
+    }
+
+    #[test]
+    fn recv_within_deadline_succeeds() {
+        let mut transport = MockTlsTransport::with_clock_advance(Vec::new(), 500);
+        let mut buf = [0u8; 16];
+        // Deadline of exactly one advance: the first recv lands at the edge.
+        transport.responses.push(b"ok".to_vec());
+        let result = transport.recv(&mut buf, 500);
+        assert_eq!(result, Result::Ok(2));
+    }
+
+    #[test]
+    fn read_dot_frame_times_out_mid_frame() {
+        // Header arrives (at t=500), then the peer goes silent and the next
+        // recv lands at t=1000 — past the 900 ms deadline: the frame reader
+        // must return Timeout, never spin.
+        let mut transport = MockTlsTransport::with_clock_advance(vec![b"\x00\x05".to_vec()], 500);
+        let result = read_dot_frame(&mut transport, 900);
+        assert_eq!(result, Err(DotError::Timeout));
+    }
+
+    #[test]
+    fn query_passes_its_deadline_through() {
+        // The same scripted frame as the success test, but with a deadline
+        // the advancing mock cannot meet: query must return Timeout,
+        // proving the deadline threads query -> read_dot_frame -> recv.
+        let dns_response = alloc::vec![0x12, 0x34, 0x81, 0x80, 0x00, 0x01];
+        let resp_len = dns_response.len() as u16;
+        let frame_header = resp_len.to_be_bytes().to_vec();
+        let transport = MockTlsTransport::with_clock_advance(vec![frame_header, dns_response], 500);
+        let pinned = [0xAA; SPKI_HASH_LEN];
+        let mut client = DotClient::new(transport, QUAD9_DNS, pinned);
+        let result = client.query("test.com", DNS_TYPE_A, 0, 100);
+        assert_eq!(result, Err(DotError::Timeout));
     }
 }
