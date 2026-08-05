@@ -223,9 +223,15 @@ impl Console {
         }
         loop {
             // SAFETY: wfi is a safe wait-for-interrupt instruction accessible at EL1.
+            #[cfg(not(test))]
             unsafe {
                 core::arch::asm!("wfi");
             }
+            // WHY(#459): wfi has no i686 encoding, so the host-test build gates
+            // it out; the reboot path never returns in production anyway, and
+            // no host test calls cmd_reboot.
+            #[cfg(test)]
+            break;
         }
     }
 }
