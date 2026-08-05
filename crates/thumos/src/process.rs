@@ -235,6 +235,12 @@ pub(crate) struct Process {
     /// description. Owned by the PCB so its lifetime is the process's
     /// lifetime by construction -- no stale-table window on slot reuse.
     pub fds: crate::fd::FdTable,
+    /// Per-process current working directory (#437): owned by the PCB, so a
+    /// chdir in one process never leaks into another. Initialized to "/",
+    /// inherited across fork (POSIX).
+    pub cwd: [u8; crate::fd::CWD_MAX],
+    /// Length of the path stored in `cwd`.
+    pub cwd_len: usize,
 }
 
 /// Process table.
@@ -297,6 +303,8 @@ pub unsafe fn init() {
             // kinit (PID 0) has all capabilities (REQ-09).
             capabilities: crate::capability::Capabilities::ALL,
             fds: crate::fd::FdTable::new(),
+            cwd: crate::fd::DEFAULT_CWD,
+            cwd_len: 1,
         };
         let procs = &mut *addr_of_mut!(PROCS);
         procs[0] = Some(proc0);
@@ -365,6 +373,8 @@ pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
             // Spawned processes receive the default fork policy (REQ-09).
             capabilities: crate::capability::Capabilities::FORK_DEFAULT,
             fds: crate::fd::FdTable::new(),
+            cwd: crate::fd::DEFAULT_CWD,
+            cwd_len: 1,
         };
 
         procs[slot] = Some(proc);
@@ -542,6 +552,8 @@ pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
             wake_tick: 0,
             capabilities: crate::capability::Capabilities::FORK_DEFAULT,
             fds: crate::fd::FdTable::new(),
+            cwd: crate::fd::DEFAULT_CWD,
+            cwd_len: 1,
         };
         procs[slot] = Some(proc);
         Some(pid)
@@ -696,6 +708,8 @@ unsafe fn fork_pl0(
                 p.capabilities
             }) & crate::capability::Capabilities::FORK_DEFAULT,
             fds: parent_ref.map_or_else(crate::fd::FdTable::new, |p| crate::fd::fork_table(&p.fds)),
+            cwd: parent_ref.map_or(crate::fd::DEFAULT_CWD, |p| p.cwd),
+            cwd_len: parent_ref.map_or(1, |p| p.cwd_len),
         };
         procs[slot] = Some(child);
         Some(child_pid)
@@ -876,6 +890,8 @@ pub(crate) fn fork() -> Option<Pid> {
             wake_tick: 0,
             capabilities: child_caps,
             fds: child_fds,
+            cwd: parent_ref.map_or(crate::fd::DEFAULT_CWD, |p| p.cwd),
+            cwd_len: parent_ref.map_or(1, |p| p.cwd_len),
         };
 
         procs[slot] = Some(child);
@@ -1335,6 +1351,36 @@ pub(crate) fn with_current_fds<R>(f: impl FnOnce(&mut crate::fd::FdTable) -> R) 
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::from(CURRENT);
         procs[cur].as_mut().map(|p| f(&mut p.fds))
+    }
+}
+
+/// Read the current process's working directory (#437). `f` receives the path
+/// bytes (length `cwd_len`). Returns None when there is no current process.
+///
+/// INVARIANT: as with_current_fds — `f` must not re-enter process:: accessors.
+pub(crate) fn with_current_cwd<R>(f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+    // SAFETY: current process PCB pointer is valid; read-only access to the
+    // current PCB's cwd via addr_of_mut! (no mutation of PROCS itself).
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::from(CURRENT);
+        procs[cur].as_ref().map(|p| f(&p.cwd[..p.cwd_len]))
+    }
+}
+
+/// Set the current process's working directory (#437), truncating to CWD_MAX.
+/// Returns None when there is no current process.
+pub(crate) fn set_current_cwd(path: &str) -> Option<()> {
+    // SAFETY: current process PCB pointer is valid; mutation via addr_of_mut!,
+    // single-core syscall context.
+    unsafe {
+        let procs = &mut *addr_of_mut!(PROCS);
+        let cur = usize::from(CURRENT);
+        procs[cur].as_mut().map(|p| {
+            let copy_len = path.len().min(crate::fd::CWD_MAX);
+            p.cwd[..copy_len].copy_from_slice(&path.as_bytes()[..copy_len]);
+            p.cwd_len = copy_len;
+        })
     }
 }
 
@@ -2001,6 +2047,8 @@ pub(crate) unsafe fn reset_for_test() {
             wake_tick: 0,
             capabilities: crate::capability::Capabilities::ALL,
             fds: crate::fd::FdTable::new(),
+            cwd: crate::fd::DEFAULT_CWD,
+            cwd_len: 1,
         });
     }
 }
@@ -2041,6 +2089,8 @@ pub(crate) fn test_process(page_table_phys: usize) -> Process {
         wake_tick: 0,
         capabilities: crate::capability::Capabilities::ALL,
         fds: crate::fd::FdTable::new(),
+        cwd: crate::fd::DEFAULT_CWD,
+        cwd_len: 1,
     }
 }
 

@@ -24,9 +24,17 @@
 //! - AES-CBC: NIST SP 800-38A
 
 // WHY: Matrix crypto created in Phase 09 Wave 3, full integration pending.
+// #437 remnant 3, explicitly re-confirmed deferred (2026-08-04): the
+// /keys/claim round-trip cannot land without the Olm session-establishment
+// path that consumes claimed keys, and X3DH is intentionally not
+// implemented here. Building the claim builder/parser alone would only
+// move the dead call site, not close it — this module stays unreachable
+// until Phase-09 messaging integration lands, at which point
+// `consume_one_time_key` MUST be wired into claimed-key receipt or the
+// one_time_keys pool deadlocks at MAX_ONE_TIME_KEYS (#282 finding 8).
 #![expect(
     dead_code,
-    reason = "Matrix crypto created in Phase 09 Wave 3, full messaging integration pending (#437)"
+    reason = "Matrix crypto unreachable pending Phase-09 messaging integration; /keys/claim wiring explicitly deferred to that epic (#437)"
 )]
 
 extern crate alloc;
