@@ -30,6 +30,7 @@ stages = [
     "kernel host tests",
     "kernel qemu witnesses",
     "wiring inventory",
+    "target test ledger",
     "cargo clippy",
     "cargo nextest",
     "kanon lint",
@@ -62,6 +63,12 @@ timeout_secs = 900
 [stages."kernel host tests"]
 cmd = "sh -c 'rustup target add i686-unknown-linux-gnu && scripts/kernel-host-tests.sh'"
 timeout_secs = 1800
+
+# WHY (#551): declared-vs-executed audit for the kernel test obligations —
+# source-level, cheap, runs before the expensive witness stages.
+[stages."target test ledger"]
+cmd = "scripts/check-target-test-ledger.sh"
+timeout_secs = 300
 
 # WHY (#546): the full QEMU witness matrix (boot + fault + sleep + fork +
 # exec + forkexec + guard + brk + crashloop) as one canonical runner — the
