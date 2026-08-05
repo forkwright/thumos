@@ -7,6 +7,7 @@ use snafu::ResultExt as _;
 use ulid::Ulid;
 
 use crate::error::{EncodeSnafu, Result};
+use snafu::IntoError as _;
 
 mod ulid_bytes {
     use serde::{Deserialize as _, Serialize as _, Serializer};
@@ -356,24 +357,67 @@ impl TaskResponse {
     }
 }
 
-/// Serialize a task request for transport.
+/// Correlation ID for the envelope: the first 8 bytes of the request's
+/// ULID (a ULID's leading 48 bits are its timestamp; the next bits are
+/// randomness -- 64 bits total is ample correlation space, documented in
+/// the envelope contract).
+fn correlation_of(id: ulid::Ulid) -> u64 {
+    let bytes = id.to_bytes();
+    u64::from_le_bytes(bytes[..8].try_into().unwrap_or([0; 8]))
+}
+
+/// Serialize a task request for transport, wrapped in the versioned
+/// envelope (#553).
 pub(crate) fn encode_request(request: &TaskRequest) -> Result<Vec<u8>> {
-    postcard::to_allocvec(request).context(EncodeSnafu)
+    let payload = postcard::to_allocvec(request).context(EncodeSnafu)?;
+    let frame = crate::envelope::Envelope::build(
+        crate::envelope::MessageKind::TaskRequest,
+        correlation_of(request.request_id()),
+        payload,
+    )
+    .context(crate::error::EnvelopeSnafu)?;
+    Ok(frame.encode())
 }
 
-/// Deserialize a task request from transport bytes.
+/// Deserialize a task request from transport bytes: envelope validation
+/// first (exact, ceiling-checked before allocation), then the postcard
+/// payload (#553).
 pub(crate) fn decode_request(bytes: &[u8]) -> Result<TaskRequest> {
-    postcard::from_bytes(bytes).context(crate::error::DecodeSnafu)
+    let frame = crate::envelope::Envelope::decode(bytes).context(crate::error::EnvelopeSnafu)?;
+    if frame.header.kind != crate::envelope::MessageKind::TaskRequest {
+        return Err(crate::error::EnvelopeSnafu
+            .into_error(crate::envelope::EnvelopeError::UnexpectedKind {
+                expected: crate::envelope::MessageKind::TaskRequest,
+                got: frame.header.kind,
+            }));
+    }
+    postcard::from_bytes(&frame.payload).context(crate::error::DecodeSnafu)
 }
 
-/// Serialize a task response for transport.
+/// Serialize a task response for transport, wrapped in the versioned
+/// envelope (#553).
 pub(crate) fn encode_response(response: &TaskResponse) -> Result<Vec<u8>> {
-    postcard::to_allocvec(response).context(EncodeSnafu)
+    let payload = postcard::to_allocvec(response).context(EncodeSnafu)?;
+    let frame = crate::envelope::Envelope::build(
+        crate::envelope::MessageKind::TaskResponse,
+        correlation_of(response.request_id),
+        payload,
+    )
+    .context(crate::error::EnvelopeSnafu)?;
+    Ok(frame.encode())
 }
 
-/// Deserialize a task response from transport bytes.
+/// Deserialize a task response from transport bytes (#553).
 pub(crate) fn decode_response(bytes: &[u8]) -> Result<TaskResponse> {
-    postcard::from_bytes(bytes).context(crate::error::DecodeSnafu)
+    let frame = crate::envelope::Envelope::decode(bytes).context(crate::error::EnvelopeSnafu)?;
+    if frame.header.kind != crate::envelope::MessageKind::TaskResponse {
+        return Err(crate::error::EnvelopeSnafu
+            .into_error(crate::envelope::EnvelopeError::UnexpectedKind {
+                expected: crate::envelope::MessageKind::TaskResponse,
+                got: frame.header.kind,
+            }));
+    }
+    postcard::from_bytes(&frame.payload).context(crate::error::DecodeSnafu)
 }
 
 #[cfg(test)]

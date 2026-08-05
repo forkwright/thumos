@@ -8,14 +8,19 @@
 //! authenticate grants, or require live Menos connectivity.
 
 mod client;
+mod envelope;
 mod error;
+#[cfg(test)]
+mod vectors;
 mod protocol;
 mod transport;
+
 
 use snafu::{OptionExt as _, ResultExt as _};
 
 pub use client::BridgeClient; // kanon:ignore RUST/pub-visibility -- public API
 pub use error::{Error, Result};
+pub use envelope::{EnvelopeError, MessageKind, SttErrorCode, SttEvent}; // kanon:ignore RUST/pub-visibility -- public API
 pub use protocol::{
     AudioMode, Capability, CapabilityGrant, ContactSummary, DeviceAction, DeviceIdentityRef,
     IdentityKind, TaskRequest, TaskResponse, TaskStatus,
@@ -148,13 +153,30 @@ mod tests {
     fn decode_request_rejects_malformed_bytes() {
         let result = decode_request(&[]);
 
+        // #553: the envelope layer rejects first (truncated header), so a
+        // malformed frame can never reach the postcard decoder.
+        assert!(matches!(result, Err(Error::Envelope { .. })));
+    }
+
+    #[test]
+    fn decode_request_rejects_malformed_payload(
+    ) -> core::result::Result<(), crate::envelope::EnvelopeError> {
+        // A well-formed envelope whose payload is not a valid TaskRequest:
+        // the envelope passes, the postcard layer rejects.
+        let frame = crate::envelope::Envelope::build(
+            crate::envelope::MessageKind::TaskRequest,
+            1,
+            vec![0xFF, 0xFF, 0xFF],
+        )?;
+        let result = decode_request(&frame.encode());
         assert!(matches!(result, Err(Error::Decode { .. })));
+        Ok(())
     }
 
     #[test]
     fn decode_response_rejects_malformed_bytes() {
         let result = decode_response(&[]);
 
-        assert!(matches!(result, Err(Error::Decode { .. })));
+        assert!(matches!(result, Err(Error::Envelope { .. })));
     }
 }

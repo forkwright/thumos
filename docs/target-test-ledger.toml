@@ -165,7 +165,7 @@ mechanism = "host"
 
 [[module]]
 name = "ekphrasis"
-tests = 59
+tests = 64
 mechanism = "host"
 
 [[module]]

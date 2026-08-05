@@ -45,6 +45,17 @@ where
         location: Location,
     },
 
+    /// The wire envelope rejected a frame (bad magic, version, kind,
+    /// size, or shape) before any payload decode (#553).
+    #[snafu(display("envelope rejected frame at {location}: {source}"))]
+    Envelope {
+        /// The envelope-level rejection.
+        source: crate::envelope::EnvelopeError,
+        /// Source location where the error was attached.
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     /// A request was missing the capability grant required by its task.
     #[snafu(display(
         "request {request_id} is missing required capability grant {capability:?} at {location}"
@@ -126,6 +137,7 @@ impl Error<core::convert::Infallible> {
                 capability,
                 location,
             },
+            Self::Envelope { source, location } => Error::Envelope { source, location },
             Self::ResponseRequestMismatch {
                 request_id,
                 response_id,
