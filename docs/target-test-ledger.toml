@@ -302,7 +302,7 @@ fidelity = "constant table only — nothing target-executed to diverge"
 
 [[module]]
 name = "key_manager"
-tests = 12
+tests = 13
 mechanism = "host"
 fidelity = "KDF correctness is host-covered; on-device salt persistence is #449"
 
