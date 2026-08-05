@@ -364,14 +364,18 @@ pub unsafe fn run() -> ! {
             boot_log!(
                 serial,
                 " FAIL timer: elapsed_ms not advancing under qemu (freq={}, {} ms -> {} ms) -- the #461 class is BACK\r\n",
-                freq_a, el_a, el_b
+                freq_a,
+                el_a,
+                el_b
             );
             state.timer_ok = false;
         } else {
             boot_log!(
                 serial,
                 "kardia: timer elapsed_ms=advancing freq={} ({} ms -> {} ms)\r\n",
-                freq_a, el_a, el_b
+                freq_a,
+                el_a,
+                el_b
             );
         }
     }
