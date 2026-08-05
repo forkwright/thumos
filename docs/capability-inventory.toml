@@ -106,21 +106,28 @@ notes = "Olm/Megolm + HTTP/JSON surfaces compiled; /keys/claim consumption is #4
 
 [[capability]]
 id = "screens-extended"
-modules = ["screen_search", "screen_settings", "screen_dialer", "screen_calendar", "screen_alarm", "screen_messages"]
+modules = ["screen_search", "screen_settings", "screen_dialer", "screen_calendar", "screen_alarm", "screen_messages", "screen_fm"]
 tier = "kernel-wired"
-notes = "screen_calendar renders via the heorte witness; the rest are routed but unwitnessed."
+notes = "screen_calendar renders via the heorte witness; screen_fm is fed by fm-radio's smoke witness; the rest are routed but unwitnessed."
 
 [[capability]]
 id = "screens-compiled-only"
-modules = ["screen_call", "screen_contacts", "screen_fm", "screen_nous", "screen_privacy", "screen_radio", "screen_threat"]
+modules = ["screen_call", "screen_contacts", "screen_nous", "screen_privacy", "screen_radio", "screen_threat"]
 tier = "compiled-only"
-notes = "No route/input path reaches them today (#400 routing only covers the wired set). FM screen becomes reachable under #518; threat screen waits on #555's calibrated scores; nous/privacy/radio screens wait on their owning subsystems."
+notes = "No route/input path reaches them today (#400 routing only covers the wired set). Threat screen waits on #555's calibrated scores; nous/privacy/radio screens wait on their owning subsystems."
+
+[[capability]]
+id = "fm-radio"
+modules = ["fm_radio"]
+tier = "emulated-mock-proven"
+witness = ["kardia: fm powered=true"]
+notes = "FmRadio<BootFmHw> in KernelState (NullFmHw under qemu, WMT on device), powered + tuned at boot smoke, FM screen fed from it. Real MT6631 tuner backend validation is hardware-gated."
 
 [[capability]]
 id = "apps-compiled-only"
-modules = ["contacts", "t9", "fm_radio", "briar", "meshtastic", "ekphrasis", "provision", "encryption", "nous"]
+modules = ["contacts", "t9", "briar", "meshtastic", "ekphrasis", "provision", "encryption", "nous"]
 tier = "compiled-only"
-notes = "No production call path from boot/loop. Owners: fm_radio #518, encryption #449/#446, nous #552, ekphrasis #553, provision USB OTG (Phase 8 deferral), briar/meshtastic Phase 9 stubs."
+notes = "No production call path from boot/loop. Owners: encryption #449/#446, nous #552, ekphrasis #553, provision USB OTG (Phase 8 deferral), briar/meshtastic Phase 9 stubs."
 
 [[capability]]
 id = "hardware-support"
