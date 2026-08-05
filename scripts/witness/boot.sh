@@ -44,6 +44,11 @@ wall=$(grep -oE 'clock src=manual wall=[0-9]+' boot.log | head -1 | grep -oE '[0
 # root cause 2026-08-04); a counter/frequency regression reds here instead
 # of silently hanging the wait loops that consume elapsed_ms.
 grep -q 'kardia: timer elapsed_ms=advancing' boot.log || { echo 'FAIL #461: elapsed_ms not advancing under qemu (CNTFRQ/CNTPCT regression)'; exit 1; }
+# #506 CLOCK_REALTIME unification: the kardia once-per-second wiring feeds
+# ClockManager time into set_realtime_offset; the emitted offset must be a
+# real ~2025+ epoch (an unwired offset would stay at its small default).
+grep -qE 'kardia: realtime offset=[0-9]+' boot.log || { echo 'FAIL #506: kardia never emitted its realtime offset (set_realtime_offset not wired)'; exit 1; }
+off=$(grep -oE 'kardia: realtime offset=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+$'); test "${off:-0}" -gt 1700000000 || { echo "FAIL #506: realtime offset is not the ClockManager epoch (offset=${off:-0})"; exit 1; }
 # #398 telephony: seeded mock transport, LIVE stack, Registered.
 grep -q 'kardia: modem ready state=Registered' boot.log || { echo 'FAIL #398: Telephony did not initialize to Registered (AT state machine / mock wiring broken)'; exit 1; }
 # #399 audio session manager + mic audit.
