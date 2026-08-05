@@ -10,20 +10,28 @@
 mod client;
 mod envelope;
 mod error;
+mod grants;
 mod protocol;
+#[cfg(test)]
+mod pylon;
+mod session;
 mod transport;
 #[cfg(test)]
 mod vectors;
+#[cfg(test)]
+mod witness;
 
 use snafu::{OptionExt as _, ResultExt as _};
 
 pub use client::BridgeClient; // kanon:ignore RUST/pub-visibility -- public API
 pub use envelope::{EnvelopeError, MessageKind, SttErrorCode, SttEvent}; // kanon:ignore RUST/pub-visibility -- public API
 pub use error::{Error, Result};
+pub use grants::{Grant, GrantError, SignedGrant}; // kanon:ignore RUST/pub-visibility -- public API
 pub use protocol::{
     AudioMode, Capability, CapabilityGrant, ContactSummary, DeviceAction, DeviceIdentityRef,
     IdentityKind, TaskRequest, TaskResponse, TaskStatus,
 };
+pub use session::{AuthenticatedRequest, AuthenticatedResponse, AuthenticatedSession}; // kanon:ignore RUST/pub-visibility -- public API
 pub use transport::BridgeTransport; // kanon:ignore RUST/pub-visibility -- public API
 
 impl<T> BridgeClient<T>
