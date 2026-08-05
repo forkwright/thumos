@@ -33,7 +33,7 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 | UI (eidolon) | Substantial | Framebuffer 240x320, widgets, dialer, status bar |
 | Firewall (asphaleia) | Substantial | Packet filter, DNS blocklist, IPv4/TCP/UDP parsing |
 | Encrypted storage (stegnos) | Substantial | AES-256-XTS, LUKS key derivation, secure erase |
-| Signal protocol (krypta) | Substantial | X3DH, double ratchet, session management |
+| E2E encryption (krypta) | Substantial | X3DH, directional symmetric chain ratchets (no DH ratchet, #543), session management |
 | Panic mode (leipsanon) | Substantial | Priority-ordered wipe, triggers, memory scrubbing |
 | Radio tools (sema) | Substantial | WiFi scanner, IMSI catcher detection, rogue AP detection |
 | GPS (topos) | Substantial | NMEA parser, geofencing, multi-constellation |

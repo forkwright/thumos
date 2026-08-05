@@ -12,11 +12,14 @@ pub(crate) struct EncryptedMessage {
     pub(crate) inner: CiphertextMessage,
 }
 
-/// Two-party encrypted session backed by a symmetric double ratchet.
+/// Two-party encrypted session backed by directional symmetric chain
+/// ratchets (one HMAC chain per direction).
 ///
 /// The initiator (Alice) calls [`Session::initiate`]; the responder (Bob)
 /// calls [`Session::respond`]. After setup both sessions share the same
-/// root key material and can exchange encrypted messages.
+/// root key material and can exchange encrypted messages. This is NOT the
+/// Signal Double Ratchet — the chains advance symmetrically with no DH
+/// ratchet step (#543).
 pub(crate) struct Session {
     identity: IdentityKeyPair,
     peer_identity: PublicIdentityKey,
