@@ -65,7 +65,7 @@ mechanism = "host"
 
 [[module]]
 name = "bt_audio"
-tests = 19
+tests = 22
 mechanism = "both"
 witness = "boot.sh"
 
@@ -142,7 +142,7 @@ mechanism = "host"
 
 [[module]]
 name = "dns_tls"
-tests = 28
+tests = 32
 mechanism = "host"
 
 [[module]]

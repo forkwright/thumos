@@ -1164,8 +1164,7 @@ mod tests {
         let dns_response = alloc::vec![0x12, 0x34, 0x81, 0x80, 0x00, 0x01];
         let resp_len = dns_response.len() as u16;
         let frame_header = resp_len.to_be_bytes().to_vec();
-        let transport =
-            MockTlsTransport::with_clock_advance(vec![frame_header, dns_response], 500);
+        let transport = MockTlsTransport::with_clock_advance(vec![frame_header, dns_response], 500);
         let pinned = [0xAA; SPKI_HASH_LEN];
         let mut client = DotClient::new(transport, QUAD9_DNS, pinned);
         let result = client.query("test.com", DNS_TYPE_A, 0, 100);
