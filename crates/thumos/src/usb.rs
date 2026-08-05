@@ -25,7 +25,6 @@ use crate::irq;
 
 /// MUSB OTG controller base address on MT6739.
 /// Source: MT6739 device tree `usb0: usb@11210000`.
-const MUSB_BASE: usize = 0x1121_0000;
 
 // ---------------------------------------------------------------------------
 // Common register offsets (relative to MUSB_BASE)
@@ -838,7 +837,7 @@ impl UsbController {
     /// [`init`]: UsbController::init
     pub(crate) const fn new() -> Self {
         Self {
-            base: MUSB_BASE,
+            base: crate::board::MUSB_BASE,
             ep0_state: Ep0State::Idle,
             pending_address: 0,
             ep0_buf: [0u8; EP0_BUF_LEN],

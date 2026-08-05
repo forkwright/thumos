@@ -120,8 +120,26 @@ tests = 27
 mechanism = "host"
 
 [[module]]
+name = "board"
+tests = 1
+mechanism = "host"
+fidelity = "shared memory-map tables pinned host-side; MMIO interaction is the m7 boot path (hardware-gated)"
+
+[[module]]
+name = "board/m7"
+tests = 2
+mechanism = "host"
+fidelity = "address tables + registry population pinned host-side; MMIO interaction is the m7 boot path (hardware-gated)"
+
+[[module]]
+name = "board/virt"
+tests = 0
+mechanism = "host"
+fidelity = "virt consts compile only under --features qemu (the armv7a witness builds); the boot witness exercises the virt registry"
+
+[[module]]
 name = "device"
-tests = 7
+tests = 6
 mechanism = "host"
 
 [[module]]
@@ -278,7 +296,7 @@ witness = "boot.sh+crashloop.sh"
 
 [[module]]
 name = "kconfig"
-tests = 4
+tests = 3
 mechanism = "host"
 fidelity = "constant table only — nothing target-executed to diverge"
 
@@ -296,7 +314,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "kinit_plan"
-tests = 22
+tests = 21
 mechanism = "host"
 
 [[module]]

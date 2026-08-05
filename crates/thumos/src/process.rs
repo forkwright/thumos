@@ -662,7 +662,7 @@ unsafe fn fork_copy_phase(parent_pt: usize, child_pt: usize) -> bool {
             // Fail closed: only DRAM-backed user pages are copyable. A
             // device-mapped user page has no copy semantics -- refuse the whole
             // fork rather than share or skip it.
-            if !(crate::kconfig::RAM_START..crate::kconfig::RAM_END).contains(&parent_phys) {
+            if !(crate::board::RAM_START..crate::board::RAM_END).contains(&parent_phys) {
                 return false;
             }
             let Some(child_page) = page::alloc_page() else {
@@ -1836,8 +1836,8 @@ pub unsafe fn exec_replace_context(
         //    ran in sys_execve before this call).
         {
             // The image window is exactly one 1 MB section (256 4 KB pages).
-            let image_end = crate::kconfig::USER_TEXT_BASE + 0x10_0000;
-            let mut va = crate::kconfig::USER_TEXT_BASE;
+            let image_end = crate::board::USER_TEXT_BASE + 0x10_0000;
+            let mut va = crate::board::USER_TEXT_BASE;
             while va < image_end {
                 if let Some(entry) = mmu::read_l2_entry(pt, va)
                     && mmu::l2_entry_is_user(entry)
@@ -1854,7 +1854,7 @@ pub unsafe fn exec_replace_context(
         //    stale PL0 image window survives and map_user_image re-maps into the
         //    SAME L2 (no fresh alloc -> infallible). A live PL0 caller always has
         //    a shattered image MB, so false here is an invariant break.
-        let image_was_mapped = mmu::reset_shattered_section(pt, crate::kconfig::USER_TEXT_BASE);
+        let image_was_mapped = mmu::reset_shattered_section(pt, crate::board::USER_TEXT_BASE);
         debug_assert!(
             image_was_mapped,
             "exec: caller's image MB must be shattered"
@@ -3319,7 +3319,7 @@ mod tests {
             let img_phys = page::alloc_page().unwrap();
             assert!(mmu::map_page(
                 pt,
-                crate::kconfig::USER_TEXT_BASE,
+                crate::board::USER_TEXT_BASE,
                 img_phys,
                 l2_attrs
             ));

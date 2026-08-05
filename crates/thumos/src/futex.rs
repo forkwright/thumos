@@ -278,7 +278,7 @@ mod tests {
         // WHY function-local `static mut`: sys_futex_wait now validates
         // `addr` via validate_user_buffer before dereferencing it. A stack
         // address (e.g. `&word`) falls outside
-        // [kconfig::KERNEL_END, kconfig::RAM_END) on this host binary and
+        // [board::KERNEL_END, board::RAM_END) on this host binary and
         // would be rejected before the mismatch check is ever reached; a
         // function-local static lands inside that window (see fd.rs tests
         // for the same pattern).
@@ -299,7 +299,7 @@ mod tests {
         // A kernel-range addr must be rejected by validate_user_buffer
         // before any read_volatile — verified by never reaching the mismatch
         // path (which would return EAGAIN, not EINVAL).
-        let result = sys_futex_wait(crate::kconfig::KERNEL_LOAD as u32, 0);
+        let result = sys_futex_wait(crate::board::KERNEL_LOAD as u32, 0);
         assert_eq!(
             result, EINVAL,
             "kernel-range addr must return EINVAL without a load"

@@ -6,6 +6,8 @@ A privacy-first mobile OS for the AGM M7 (MediaTek MT6739), written in Rust from
 
 A custom Rust OS for the AGM M7 (MT6739, 1 GB RAM, 240x320 QVGA, IP68). Full Rust from kernel to UI - no C the project authors, no Linux underneath (the MT6739's modem/WiFi/BT/GPS vendor blobs are binary-only and cannot be replaced). The feature surface targets secure communication and counter-surveillance: on-device radio intelligence (IMSI-catcher scoring, silent-SMS detection, 2G refusal), hardware-identifier protection at the register level (WiFi/BT MAC randomization, IMEI/IMSI containment), encrypted storage, and a modem firewalled at the CCCI driver boundary.
 
+Structurally it is a general small-mobile OS, M7 first: one kernel boots two boards behind the `board::` seam - **m7** (the field board) and **virt** (QEMU `-machine virt`, the dev board CI boots on every push). Board facts live only under `board::*`; the kernel core names no SoC directly (#534).
+
 > **Maturity:** a broad compiled-and-tested software surface with an **executable boot** - the kernel boots end-to-end under emulation (see [Status](#status)). Hardware validation and boot/userspace wiring remain open. A named capability is a compiled/tested surface unless a boot or userspace call path reaches it.
 
 ## Name

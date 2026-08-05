@@ -787,8 +787,8 @@ fn restart_supervised(path: &'static str) -> Option<crate::process::Pid> {
     let loaded = unsafe {
         crate::elf::load_confined(
             elf_data,
-            crate::kconfig::USER_TEXT_BASE,
-            crate::kconfig::RAM_END,
+            crate::board::USER_TEXT_BASE,
+            crate::board::RAM_END,
         )
     }
     .ok()?;

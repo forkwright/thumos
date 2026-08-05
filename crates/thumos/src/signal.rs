@@ -56,7 +56,7 @@ pub(crate) const SIGNAL_FRAME_SIZE: usize = SIGNAL_FRAME_REGS * 4;
 /// trampoline survives exec; and fork's copy-all-user-pages replicates it
 /// for the child automatically.
 pub(crate) const SIGNAL_TRAMPOLINE_VA: usize =
-    crate::kconfig::USER_TEXT_BASE - crate::page::PAGE_SIZE;
+    crate::board::USER_TEXT_BASE - crate::page::PAGE_SIZE;
 
 /// ARM `mov r7, #81` — loads the Sigreturn syscall number into r7.
 /// Encoding: E3A07051 (MOV r7, #0x51 where 0x51 = 81).
@@ -615,7 +615,7 @@ mod tests {
     fn signal_trampoline_va_is_the_reserved_slot() {
         assert_eq!(
             SIGNAL_TRAMPOLINE_VA,
-            crate::kconfig::USER_TEXT_BASE - crate::page::PAGE_SIZE,
+            crate::board::USER_TEXT_BASE - crate::page::PAGE_SIZE,
             "trampoline page sits directly below USER_TEXT_BASE"
         );
         assert_eq!(
@@ -625,7 +625,7 @@ mod tests {
         );
         // Outside the USER_TEXT 1 MB section exec revokes + rebuilds.
         assert!(
-            SIGNAL_TRAMPOLINE_VA < crate::kconfig::USER_TEXT_BASE,
+            SIGNAL_TRAMPOLINE_VA < crate::board::USER_TEXT_BASE,
             "trampoline must not share the exec-rebuilt section"
         );
     }

@@ -7,7 +7,7 @@
 //! subsystems (`pipe`, `fd`, `socket`, `time`, ...) can call it and — crucially
 //! — so the guard has runnable host unit tests.
 
-use crate::kconfig;
+use crate::board;
 
 /// Validate that a user-supplied buffer `[ptr, ptr+len)` lies entirely
 /// within user-accessible DRAM and does not overlap kernel-reserved memory.
@@ -38,7 +38,7 @@ pub(crate) fn validate_user_buffer(ptr: usize, len: usize) -> bool {
     // Entire range must be within user DRAM: [KERNEL_END, RAM_END)
     // WHY: KERNEL_END is the first byte after kernel-reserved memory;
     // RAM_END is one past the last byte of physical DRAM.
-    ptr >= kconfig::KERNEL_END && end <= kconfig::RAM_END
+    ptr >= board::KERNEL_END && end <= board::RAM_END
 }
 
 /// True if `addr` is a page-aligned address inside the user-allocatable DRAM
@@ -47,7 +47,7 @@ pub(crate) fn validate_user_buffer(ptr: usize, len: usize) -> bool {
 /// address, device MMIO, or a misaligned value) before it reaches the physical
 /// page allocator, where an out-of-range address would corrupt the bitmap.
 pub(crate) fn is_freeable_user_page(addr: usize) -> bool {
-    addr % crate::page::PAGE_SIZE == 0 && addr >= kconfig::KERNEL_END && addr < kconfig::RAM_END
+    addr % crate::page::PAGE_SIZE == 0 && addr >= board::KERNEL_END && addr < board::RAM_END
 }
 
 #[cfg(test)]
@@ -61,8 +61,8 @@ mod tests {
 
     #[test]
     fn entire_user_range_passes() {
-        let start = kconfig::KERNEL_END;
-        let len = kconfig::RAM_END - kconfig::KERNEL_END;
+        let start = board::KERNEL_END;
+        let len = board::RAM_END - board::KERNEL_END;
         assert!(validate_user_buffer(start, len));
     }
 
@@ -79,8 +79,8 @@ mod tests {
 
     #[test]
     fn kernel_space_fails() {
-        assert!(!validate_user_buffer(kconfig::KERNEL_LOAD, 4096));
-        assert!(!validate_user_buffer(kconfig::KERNEL_LOAD + 0x1000, 256));
+        assert!(!validate_user_buffer(board::KERNEL_LOAD, 4096));
+        assert!(!validate_user_buffer(board::KERNEL_LOAD + 0x1000, 256));
     }
 
     #[test]
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn above_ram_fails() {
-        assert!(!validate_user_buffer(kconfig::RAM_END, 1));
+        assert!(!validate_user_buffer(board::RAM_END, 1));
         assert!(!validate_user_buffer(0xC000_0000, 4096));
     }
 
@@ -104,37 +104,37 @@ mod tests {
     #[test]
     fn buffer_spanning_into_kernel_fails() {
         // Starts one byte below KERNEL_END, so the range dips into kernel space.
-        assert!(!validate_user_buffer(kconfig::KERNEL_END - 1, 2));
+        assert!(!validate_user_buffer(board::KERNEL_END - 1, 2));
     }
 
     #[test]
     fn buffer_spanning_past_ram_end_fails() {
-        assert!(!validate_user_buffer(kconfig::RAM_END - 10, 20));
+        assert!(!validate_user_buffer(board::RAM_END - 10, 20));
     }
 
     #[test]
     fn boundary_exact_edges() {
         // Exactly at KERNEL_END is valid; one byte below is not.
-        assert!(validate_user_buffer(kconfig::KERNEL_END, 1));
-        assert!(!validate_user_buffer(kconfig::KERNEL_END - 1, 1));
+        assert!(validate_user_buffer(board::KERNEL_END, 1));
+        assert!(!validate_user_buffer(board::KERNEL_END - 1, 1));
         // Last valid byte of DRAM.
-        assert!(validate_user_buffer(kconfig::RAM_END - 1, 1));
+        assert!(validate_user_buffer(board::RAM_END - 1, 1));
     }
 
     #[test]
     fn freeable_page_accepts_aligned_user_pages() {
-        assert!(is_freeable_user_page(kconfig::KERNEL_END));
+        assert!(is_freeable_user_page(board::KERNEL_END));
         assert!(is_freeable_user_page(
-            kconfig::RAM_END - crate::page::PAGE_SIZE
+            board::RAM_END - crate::page::PAGE_SIZE
         ));
     }
 
     #[test]
     fn freeable_page_rejects_forged_addresses() {
         assert!(!is_freeable_user_page(0)); // null
-        assert!(!is_freeable_user_page(kconfig::KERNEL_LOAD)); // kernel image
+        assert!(!is_freeable_user_page(board::KERNEL_LOAD)); // kernel image
         assert!(!is_freeable_user_page(0x1100_2000)); // UART MMIO
-        assert!(!is_freeable_user_page(kconfig::RAM_END)); // above RAM
-        assert!(!is_freeable_user_page(kconfig::KERNEL_END + 1)); // misaligned
+        assert!(!is_freeable_user_page(board::RAM_END)); // above RAM
+        assert!(!is_freeable_user_page(board::KERNEL_END + 1)); // misaligned
     }
 }

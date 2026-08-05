@@ -70,6 +70,13 @@ timeout_secs = 1800
 cmd = "scripts/check-target-test-ledger.sh"
 timeout_secs = 300
 
+# WHY (#534): the board seam is a structural invariant, not a promise —
+# reds on an MT6739_* identifier outside board::m7 or a board-MMIO value
+# re-declared outside board/. Source-level, cheap.
+[stages."board seam"]
+cmd = "scripts/check-board-seam.sh"
+timeout_secs = 300
+
 # WHY (#546): the full QEMU witness matrix (boot + fault + sleep + fork +
 # exec + forkexec + guard + brk + signal + crashloop) as one canonical runner — the
 # exact scripts ci.yml executes step-by-step.

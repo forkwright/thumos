@@ -52,8 +52,6 @@ use super::audio_route::AudioRoute;
 /// PWRAP (PMIC Wrapper) base address on MT6739.
 ///
 /// All PMIC register accesses go through PWRAP MMIO.
-const PWRAP_BASE: usize = 0x1000_D000;
-
 /// Audio top-level power control register offset.
 const AUD_TOP_CON0: u16 = 0x2000;
 
@@ -261,7 +259,7 @@ pub(crate) trait AudioCodecOps {
 /// Accesses PMIC registers through the PWRAP bus on the MT6739.
 /// Manages LDO power gating, DAC/ADC enable, amplifier routing,
 /// volume control, and mic bias.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct Mt6357Codec {
     /// Whether the codec is powered on (LDO active).
     powered: bool,
@@ -277,7 +275,7 @@ pub(crate) struct Mt6357Codec {
     route: AudioRoute,
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 impl Mt6357Codec {
     /// Create a new MT6357 codec handle.
     ///
@@ -303,8 +301,8 @@ impl Mt6357Codec {
     /// and that PWRAP is initialized.
     #[inline]
     unsafe fn pmic_write(offset: u16, value: u32) {
-        let addr = PWRAP_BASE + offset as usize;
-        // SAFETY: PWRAP_BASE + offset is a valid MMIO address in the
+        let addr = crate::board::PWRAP_BASE + offset as usize;
+        // SAFETY: board::PWRAP_BASE + offset is a valid MMIO address in the
         // MT6739 address map.  Volatile write ensures the compiler does
         // not reorder or elide the store.
         unsafe {
@@ -320,7 +318,7 @@ impl Mt6357Codec {
     /// and that PWRAP is initialized.
     #[inline]
     unsafe fn pmic_read(offset: u16) -> u32 {
-        let addr = PWRAP_BASE + offset as usize;
+        let addr = crate::board::PWRAP_BASE + offset as usize;
         // SAFETY: same as pmic_write; volatile read ensures no elision.
         unsafe { core::ptr::read_volatile(addr as *const u32) }
     }
@@ -375,7 +373,7 @@ impl Mt6357Codec {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 impl AudioCodecOps for Mt6357Codec {
     fn power_on(&mut self) -> Result<(), AudioError> {
         if self.powered {

@@ -10,7 +10,7 @@
 //! ## Hardware path
 //!
 //! The MT6739 GPS hardware is accessed through the WMT combo chip:
-//! - `MT6739_CONSYS = 0x1800_0000` (combo-chip base)
+//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, board::m7 #534)
 //! - Data path goes through WMT STP framing (kelyphos handles the transport)
 //!
 //! ## Design
@@ -35,9 +35,6 @@ use alloc::vec::Vec;
 // ---------------------------------------------------------------------------
 // MT6739 GPS hardware constants
 // ---------------------------------------------------------------------------
-
-/// WMT combo-chip (CONSYS) MMIO base address.
-const MT6739_CONSYS: usize = 0x1800_0000;
 
 /// WMT STP channel identifier for GPS.
 const WMT_GPS_CHANNEL: u8 = 0x02;
@@ -650,21 +647,24 @@ pub(crate) trait GpsHwOps {
 // ---------------------------------------------------------------------------
 
 /// Real GPS hardware access via WMT STP on the MT6739 combo chip.
+#[cfg(not(feature = "qemu"))]
 pub(crate) struct GpsHw {
     /// WMT combo-chip MMIO base address.
     consys_base: usize,
 }
 
+#[cfg(not(feature = "qemu"))]
 impl GpsHw {
     /// Create a new GPS hardware handle.
     #[must_use]
     pub(crate) const fn new() -> Self {
         Self {
-            consys_base: MT6739_CONSYS,
+            consys_base: crate::board::CONSYS_BASE,
         }
     }
 }
 
+#[cfg(not(feature = "qemu"))]
 impl GpsHwOps for GpsHw {
     fn read_data(&mut self, _buf: &mut [u8]) -> usize {
         // TODO(#129)[deliberate-prudent]: implement WMT STP frame RX for GPS channel.

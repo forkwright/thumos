@@ -26,26 +26,6 @@
 // MT6739 governor registers
 // ---------------------------------------------------------------------------
 
-/// ARMPLL_CON1: CPU PLL control register.
-/// Bits [21:0] = PCW (integer + fractional divider).
-/// The four values below are approximate; production firmware reads them
-/// from the efuse-calibrated OPP table.
-#[cfg_attr(
-    feature = "qemu",
-    expect(
-        dead_code,
-        reason = "the ARMPLL write is qemu-gated; virt models no MT6739 CMU (#463)"
-    )
-)]
-const ARMPLL_CON1: usize = 0x1000_C104;
-
-/// MCDI (Multi-Core Deep Idle) base address.
-const MCDI_BASE: usize = 0x1000_DC00;
-
-/// MCDI_CORE_EN: per-core power-down enable register.
-/// Bit N = 1 → core N is powered down.
-const MCDI_CORE_EN: usize = MCDI_BASE + 0x04;
-
 // ---------------------------------------------------------------------------
 // CPU frequency steps
 // ---------------------------------------------------------------------------
@@ -214,11 +194,11 @@ pub(crate) fn evaluate_dvfs(load_percent: u8) {
         // WHY(qemu): virt models no MT6739 CMU; the ARMPLL write would
         // data-abort inside the timer IRQ. Governor state still updates.
         #[cfg(not(feature = "qemu"))]
-        // SAFETY: ARMPLL_CON1 is a valid MMIO register on the MT6739 CMU
-        // block at 0x1000_C104.  Volatile write is required for hardware
+        // SAFETY: board::ARMPLL_CON1 is a valid MMIO register on the MT6739
+        // CMU block at 0x1000_C104.  Volatile write is required for hardware
         // registers.  Called with IRQs disabled so no torn write.
         unsafe {
-            crate::mmio::write32(ARMPLL_CON1, new_freq as u32);
+            crate::mmio::write32(crate::board::ARMPLL_CON1, new_freq as u32);
         }
     }
 }
@@ -257,7 +237,7 @@ pub(crate) fn evaluate_core_parking(runnable_count: usize) {
         // which is not yet wired.
         #[cfg(not(feature = "qemu"))]
         unsafe {
-            crate::mmio::write32(MCDI_CORE_EN, park_mask);
+            crate::mmio::write32(crate::board::MCDI_CORE_EN, park_mask);
         }
     }
 }
@@ -365,9 +345,9 @@ unsafe fn dcs_cmd0(cmd: u8) {
     {
         // SAFETY: DSI0_CMD_FIFO is a valid MMIO register within the DSI0
         // address space at 0x1400_D000.  Volatile access required for hardware.
-        const DSI0_CMD_FIFO: usize = 0x1400_D200;
+
         unsafe {
-            crate::mmio::write32(DSI0_CMD_FIFO, u32::from(cmd) | 0x100);
+            crate::mmio::write32(crate::board::DSI0_CMD_FIFO, u32::from(cmd) | 0x100);
         }
     }
 }
@@ -569,7 +549,11 @@ impl PowerManager {
                 *s = PowerState::PmicKilled;
             }
         }
+        // WHY not(qemu): virt has no PMIC; the kill write would be a
+        // fictitious MMIO touch. The PmicKilled bookkeeping above is
+        // board-neutral and still records the kill.
         // SAFETY: caller guarantees PMIC registers are mapped.
+        #[cfg(not(feature = "qemu"))]
         unsafe {
             crate::ccci_logger::modem_power_cut();
         }

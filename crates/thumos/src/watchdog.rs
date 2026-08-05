@@ -34,16 +34,14 @@ use crate::mmio;
 /// WHY: 0x1000_7000 is the documented WDT base in the MT6739 BSP and matches
 /// the typical MTK layout for this SoC family. Verify against your specific
 /// BSP header (wdt.h or mach/mt_wdt.h) if porting to a different MT variant.
-const WDT_BASE: usize = 0x1000_7000;
-
 /// WDT_MODE: enable/disable and mode control.
-const WDT_MODE: usize = WDT_BASE + 0x00;
+const WDT_MODE: usize = crate::board::WDT_BASE + 0x00;
 
 /// WDT_LENGTH: timeout value register.
-const WDT_LENGTH: usize = WDT_BASE + 0x04;
+const WDT_LENGTH: usize = crate::board::WDT_BASE + 0x04;
 
 /// WDT_RESTART: write 0x1971 here to pet the watchdog.
-const WDT_RESTART: usize = WDT_BASE + 0x08;
+const WDT_RESTART: usize = crate::board::WDT_BASE + 0x08;
 
 /// Magic value required to pet (restart) the watchdog countdown.
 const WDT_RESTART_KEY: u32 = 0x1971;

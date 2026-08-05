@@ -3,6 +3,10 @@
 //! Runtime-configurable parameters for kernel behavior. These can be
 //! set from the boot command line, the debug console, or from userspace
 //! via syscall. All parameters have defaults suitable for the MT6739.
+//!
+//! Board and memory-map CONSTANTS (UART/GIC bases, RAM window, kernel
+//! layout, framebuffer, partition table, display geometry) are NOT here —
+//! they live under `crate::board` (#534: one seam, one selection point).
 
 /// Scheduler tick interval in milliseconds.
 pub(crate) static mut TICK_MS: u32 = 10;
@@ -33,85 +37,10 @@ pub(crate) static mut DEBUG_CONSOLE: bool = false;
 /// Panic behavior: 0 = halt, N = reboot after N seconds.
 pub(crate) static mut PANIC_TIMEOUT: u32 = 0;
 
-/// RAM start address.
-pub(crate) const RAM_START: usize = 0x4000_0000;
-
-/// RAM end address (1 GB).
-pub(crate) const RAM_END: usize = 0x8000_0000;
-
-/// Kernel load address.
-pub(crate) const KERNEL_LOAD: usize = 0x4000_8000;
-
-/// Kernel reserved size (992 KB).
-/// WHY: kernel image + reserved region spans `0x4000_8000..0x400F_FFFF`
-/// (see the memory map in `memguard.rs`), so KERNEL_END lands on the
-/// 0x4010_0000 page boundary rather than a full 1 MB past KERNEL_LOAD.
-pub(crate) const KERNEL_RESERVED: usize = 0xF_8000;
-
-/// Kernel end address (load + reserved).
-pub(crate) const KERNEL_END: usize = KERNEL_LOAD + KERNEL_RESERVED;
-
-/// Userspace text region base (#474/#482): the top 1 MB of DRAM
-/// (0x7FF0_0000..0x8000_0000), the fixed identity load address for the
-/// image-resident /init. EXCLUDED from the page allocator (kinit passes this as
-/// the allocator's upper bound) so an allocation never collides with the loaded
-/// image. In the KERNEL address space it is plain RAM + execute-never (W^X
-/// #417 -- the kernel never executes user code from its own space); a spawned
-/// process runs it user-RX from its OWN page table via `mmu` per-process
-/// mappings (PL0 isolation, #482).
-pub(crate) const USER_TEXT_BASE: usize = 0x7FF0_0000;
-
-/// UART0 base address (MT6739 ttyMT0, MTK 8250-style register map).
-#[cfg(not(feature = "qemu"))]
-pub(crate) const UART0_BASE: usize = 0x1100_2000;
-
-/// UART0 base address (PL011 on QEMU `-machine virt`).
-/// NOTE: consumed by uart_pl011.rs, which main.rs swaps in under the qemu
-/// feature -- the register map differs, not just the base.
-#[cfg(feature = "qemu")]
-pub(crate) const UART0_BASE: usize = 0x0900_0000;
-
-/// GIC distributor base address (MT6739 device tree, intc node).
-#[cfg(not(feature = "qemu"))]
-pub(crate) const GICD_BASE: usize = 0x0C00_0000;
-
-/// GIC distributor base address (QEMU `-machine virt`, GICv2).
-#[cfg(feature = "qemu")]
-pub(crate) const GICD_BASE: usize = 0x0800_0000;
-
-/// GIC CPU interface base address (MT6739).
-#[cfg(not(feature = "qemu"))]
-pub(crate) const GICC_BASE: usize = 0x0C00_2000;
-
-/// GIC CPU interface base address (QEMU `-machine virt`, GICv2).
-#[cfg(feature = "qemu")]
-pub(crate) const GICC_BASE: usize = 0x0801_0000;
-
-/// Display framebuffer base (set by LK bootloader).
-pub(crate) const FB_BASE: usize = 0x77EE_0000;
-
-/// Start sector of the LFS partition on eMMC.
-/// WHY: the boot, recovery, system, vendor partitions occupy the first ~2.6 GB.
-/// LFS uses the userdata region starting at sector 0x50C000 (~2.6 GB offset).
-/// Value from GPT dump of the MT6739 eMMC (printgpt: userdata partition).
-pub(crate) const LFS_PARTITION_START: u64 = 0x50C000;
-
-/// Size of the LFS partition in sectors.
-/// WHY: ~3 GB of the 8 GB eMMC is available for user data.
-/// Rounded down from the actual userdata partition length (0x97BFDF sectors)
-/// to a clean segment-aligned boundary.
-pub(crate) const LFS_PARTITION_SIZE: u64 = 0x600000;
-
 /// Number of blocks in the block cache.
 /// WHY: 256 entries x 4 KiB = 1 MiB of cached data. Balances memory usage
 /// against hit rate for typical file access patterns.
 pub(crate) const BLOCK_CACHE_BLOCKS: usize = 256;
-
-/// Display width.
-pub(crate) const DISPLAY_WIDTH: u32 = 240;
-
-/// Display height.
-pub(crate) const DISPLAY_HEIGHT: u32 = 320;
 
 /// Parse a boot command line parameter.
 /// Format: "key=value" pairs separated by spaces.
@@ -157,13 +86,6 @@ pub(crate) fn parse_cmdline(cmdline: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn constants_are_correct() {
-        assert_eq!(RAM_END - RAM_START, 1024 * 1024 * 1024);
-        assert_eq!(KERNEL_END, 0x4010_0000);
-        assert_eq!(DISPLAY_WIDTH * DISPLAY_HEIGHT * 2, 153_600); // RGB565 framebuffer size
-    }
 
     #[test]
     fn parse_cmdline_sets_tick_rate_and_security_flags() {

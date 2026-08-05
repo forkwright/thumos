@@ -186,7 +186,7 @@ impl BlockDevice for MemBlockDevice {
 // MsdcBlockDevice — hardware wrapper (non-test only)
 // ---------------------------------------------------------------------------
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 mod msdc_wrapper {
     use super::{BlockDevice, BlockError, SECTOR_SIZE};
     use crate::emmc::MsdcController;
@@ -331,7 +331,7 @@ mod msdc_wrapper {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu")))]
 pub(crate) use msdc_wrapper::MsdcBlockDevice;
 
 // ---------------------------------------------------------------------------
