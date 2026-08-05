@@ -211,6 +211,30 @@ pub(crate) fn is_ring(line: &[u8]) -> bool {
     line == b"RING"
 }
 
+/// Parse a `+CPINR` remaining-attempts line (#517).
+///
+/// Accepts the common shapes — `+CPINR: 3`, `+CPINR: SIM PIN,3`,
+/// `+CPINR: SIM PUK,3` — and returns the trailing count. The exact
+/// MT6739 modem report format is bench-verify (marked in sim.rs); malformed
+/// or unrecognized lines return None so the caller degrades to "unknown"
+/// rather than trusting a misread count near the last attempt.
+pub(crate) fn parse_cpinr_attempts(line: &[u8]) -> Option<u8> {
+    let rest = strip_prefix(line, b"+CPINR: ")?;
+    // Trailing integer after the last comma, or the whole remainder.
+    let num = match rest.iter().rposition(|&b| b == b',') {
+        Some(idx) => &rest[idx + 1..],
+        None => rest,
+    };
+    if num.is_empty() || !num.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut value: u32 = 0;
+    for &b in num {
+        value = value.saturating_mul(10).saturating_add(u32::from(b - b'0'));
+    }
+    u8::try_from(value).ok()
+}
+
 /// Check if a line is a NO CARRIER URC.
 pub(crate) fn is_no_carrier(line: &[u8]) -> bool {
     line == b"NO CARRIER"

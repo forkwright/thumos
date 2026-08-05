@@ -26,6 +26,7 @@
 extern crate alloc;
 
 use crate::telephony::{self, AtResponse, MAX_LINE_LEN, ModemTransport, TelephonyError};
+use crate::telephony_parser;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -205,6 +206,92 @@ impl SimManager {
                 self.sim_info.pin_required = true;
                 Ok(false)
             }
+            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::Error => Err(TelephonyError::ModemError),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SIM PIN/PUK unlock (#517)
+    // -----------------------------------------------------------------------
+
+    /// Query remaining PIN/PUK attempts via `AT+CPINR`.
+    ///
+    /// Returns `Ok(Some(n))` when the modem reports a count, `Ok(None)` when
+    /// the response is absent or unparsable — the caller degrades to
+    /// "unknown" and must NOT assume attempts remain. NOTE: the exact
+    /// MT6739 `+CPINR` report format is bench-verify before relying on the
+    /// count for a last-attempt warning on hardware.
+    pub(crate) fn pin_attempts_remaining<T: ModemTransport>(
+        &mut self,
+        transport: &mut T,
+    ) -> Result<Option<u8>, TelephonyError> {
+        let (result, info_line, info_len) = send_with_info(transport, "AT+CPINR", 5000)?;
+        match result {
+            AtResponse::Ok if info_len > 0 => {
+                Ok(telephony_parser::parse_cpinr_attempts(&info_line[..info_len]))
+            }
+            AtResponse::Ok => Ok(None),
+            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::Error => Err(TelephonyError::ModemError),
+        }
+    }
+
+    /// Unlock a PIN-locked SIM via `AT+CPIN=<pin>`.
+    ///
+    /// Format is validated client-side (4-8 ASCII digits) so a malformed PIN
+    /// never burns an attempt on the modem. On any send result the SIM state
+    /// is re-queried (`check_pin`), so the return reflects the modem's
+    /// post-unlock truth, not the command's bare OK: `Ok(true)` = SIM ready,
+    /// `Ok(false)` = still locked (wrong PIN — attempts are decremented by
+    /// the modem; use [`Self::pin_attempts_remaining`] to warn).
+    pub(crate) fn unlock_pin<T: ModemTransport>(
+        &mut self,
+        transport: &mut T,
+        pin: &str,
+    ) -> Result<bool, TelephonyError> {
+        if !valid_pin_format(pin) {
+            return Err(TelephonyError::InvalidState);
+        }
+        let command = alloc::format!("AT+CPIN={pin}");
+        let (result, _info, _len) = send_with_info(transport, &command, 8000)?;
+        match result {
+            AtResponse::Ok => self.check_pin(transport),
+            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::Error => Err(TelephonyError::ModemError),
+        }
+    }
+
+    /// Unlock a PUK-locked SIM via `AT+CPIN=<puk>,<new_pin>`.
+    ///
+    /// A PUK has ~10 attempts total across the SIM's lifetime; the last one
+    /// bricks the card. `confirm_last_attempt` MUST be true when the modem
+    /// reports a single attempt remaining (query
+    /// [`Self::pin_attempts_remaining`] first) — refusing to submit without
+    /// that explicit confirmation returns `ConfirmationRequired` and burns
+    /// nothing. When the count is unknown (None), the same guard applies:
+    /// an unknown count near the end is treated as 1 (fail closed).
+    pub(crate) fn unlock_puk<T: ModemTransport>(
+        &mut self,
+        transport: &mut T,
+        puk: &str,
+        new_pin: &str,
+        confirm_last_attempt: bool,
+    ) -> Result<bool, TelephonyError> {
+        if !valid_puk_format(puk) || !valid_pin_format(new_pin) {
+            return Err(TelephonyError::InvalidState);
+        }
+        let attempts = self.pin_attempts_remaining(transport)?;
+        if attempts.unwrap_or(1) <= 1 && !confirm_last_attempt {
+            return Err(TelephonyError::ConfirmationRequired);
+        }
+        let command = alloc::format!("AT+CPIN={puk},{new_pin}");
+        let (result, _info, _len) = send_with_info(transport, &command, 8000)?;
+        match result {
+            AtResponse::Ok => self.check_pin(transport),
             AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
             AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
             AtResponse::Error => Err(TelephonyError::ModemError),
@@ -406,6 +493,17 @@ fn starts_with(input: &[u8], prefix: &[u8]) -> bool {
     input.len() >= prefix.len() && &input[..prefix.len()] == prefix
 }
 
+/// PIN format per 3GPP: 4-8 ASCII digits. Validated client-side so a
+/// malformed entry never burns a modem attempt (#517).
+fn valid_pin_format(pin: &str) -> bool {
+    (4..=8).contains(&pin.len()) && pin.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// PUK format per 3GPP: 8-16 ASCII digits.
+fn valid_puk_format(puk: &str) -> bool {
+    (8..=16).contains(&puk.len()) && puk.bytes().all(|b| b.is_ascii_digit())
+}
+
 // ---------------------------------------------------------------------------
 // AT command exchange helper (delegated from telephony)
 // ---------------------------------------------------------------------------
@@ -456,6 +554,7 @@ fn send_with_info<T: ModemTransport>(
 mod tests {
     use super::*;
     use crate::telephony::MockModemTransport;
+    use alloc::vec::Vec;
 
     #[test]
     fn cpin_ready_means_no_pin_required() {
@@ -493,6 +592,137 @@ mod tests {
             sim.pin_required(),
             "pin_required must be true when SIM PIN is needed"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // PIN/PUK unlock (#517)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unlock_pin_success_reports_ready_after_requery() {
+        let mut transport = MockModemTransport::new();
+        transport.queue_ok(); // AT+CPIN=1234
+        transport.queue_info_ok(b"+CPIN: READY"); // re-query
+
+        let mut sim = SimManager::new();
+        sim.sim_info.pin_required = true;
+        let result = sim.unlock_pin(&mut transport, "1234");
+        assert_eq!(result, Ok(true), "correct PIN must leave the SIM READY");
+        assert!(!sim.pin_required(), "pin_required must clear on READY");
+        assert_eq!(
+            transport.sent_commands.first().map(Vec::as_slice),
+            Some(b"AT+CPIN=1234".as_slice()),
+            "the unlock must send AT+CPIN=<pin>"
+        );
+    }
+
+    #[test]
+    fn unlock_pin_wrong_pin_stays_locked() {
+        let mut transport = MockModemTransport::new();
+        transport.queue_ok(); // AT+CPIN=0000 accepted by modem, PIN wrong
+        transport.queue_info_ok(b"+CPIN: SIM PIN"); // re-query: still locked
+
+        let mut sim = SimManager::new();
+        sim.sim_info.pin_required = true;
+        let result = sim.unlock_pin(&mut transport, "0000");
+        assert_eq!(result, Ok(false), "a wrong PIN must report still-locked");
+        assert!(sim.pin_required(), "pin_required must stay set");
+    }
+
+    #[test]
+    fn unlock_pin_rejects_malformed_without_burning_an_attempt() {
+        let mut transport = MockModemTransport::new();
+        let mut sim = SimManager::new();
+        assert_eq!(
+            sim.unlock_pin(&mut transport, "12"),
+            Err(TelephonyError::InvalidState),
+            "too-short PIN must be rejected client-side"
+        );
+        assert_eq!(
+            sim.unlock_pin(&mut transport, "1234A"),
+            Err(TelephonyError::InvalidState),
+            "non-digit PIN must be rejected client-side"
+        );
+        assert!(
+            transport.sent_commands.is_empty(),
+            "a malformed PIN must never reach the modem (no attempt burned)"
+        );
+    }
+
+    #[test]
+    fn unlock_puk_success_with_attempts_remaining() {
+        let mut transport = MockModemTransport::new();
+        transport.queue_info_ok(b"+CPINR: 3"); // AT+CPINR
+        transport.queue_ok(); // AT+CPIN=<puk>,<pin>
+        transport.queue_info_ok(b"+CPIN: READY"); // re-query
+
+        let mut sim = SimManager::new();
+        let result = sim.unlock_puk(&mut transport, "12345678", "4321", false);
+        assert_eq!(result, Ok(true), "PUK unlock with attempts remaining must succeed");
+        assert_eq!(
+            transport.sent_commands.get(1).map(Vec::as_slice),
+            Some(b"AT+CPIN=12345678,4321".as_slice()),
+            "the unlock must send AT+CPIN=<puk>,<new_pin>"
+        );
+    }
+
+    #[test]
+    fn unlock_puk_refuses_last_attempt_without_confirmation() {
+        let mut transport = MockModemTransport::new();
+        transport.queue_info_ok(b"+CPINR: 1"); // one attempt left
+
+        let mut sim = SimManager::new();
+        let result = sim.unlock_puk(&mut transport, "12345678", "4321", false);
+        assert_eq!(
+            result,
+            Err(TelephonyError::ConfirmationRequired),
+            "the final PUK attempt must require explicit confirmation"
+        );
+        assert_eq!(
+            transport.sent_commands.len(),
+            1,
+            "only AT+CPINR may be sent; the PUK itself must not go out unconfirmed"
+        );
+        assert_eq!(
+            transport.sent_commands.first().map(Vec::as_slice),
+            Some(b"AT+CPINR".as_slice())
+        );
+    }
+
+    #[test]
+    fn unlock_puk_last_attempt_proceeds_with_confirmation() {
+        let mut transport = MockModemTransport::new();
+        transport.queue_info_ok(b"+CPINR: 1");
+        transport.queue_ok();
+        transport.queue_info_ok(b"+CPIN: READY");
+
+        let mut sim = SimManager::new();
+        let result = sim.unlock_puk(&mut transport, "12345678", "4321", true);
+        assert_eq!(result, Ok(true), "an explicitly-confirmed final attempt may proceed");
+    }
+
+    #[test]
+    fn unlock_puk_unknown_count_fails_closed() {
+        let mut transport = MockModemTransport::new();
+        transport.queue_ok(); // AT+CPINR with no info line -> count unknown
+
+        let mut sim = SimManager::new();
+        let result = sim.unlock_puk(&mut transport, "12345678", "4321", false);
+        assert_eq!(
+            result,
+            Err(TelephonyError::ConfirmationRequired),
+            "an unknown attempts count must fail closed, not assume attempts remain"
+        );
+    }
+
+    #[test]
+    fn cpinr_attempts_parser_accepts_known_shapes_and_rejects_malformed() {
+        assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR: 3"), Some(3));
+        assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR: SIM PIN,2"), Some(2));
+        assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR: SIM PUK,1"), Some(1));
+        assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR: x"), None);
+        assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CPINR:"), None);
+        assert_eq!(telephony_parser::parse_cpinr_attempts(b"+CSQ: 3"), None);
     }
 
     #[test]
