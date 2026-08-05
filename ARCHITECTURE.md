@@ -36,7 +36,7 @@ Thumos is a full-Rust mobile OS targeting the AGM M7 (MT6739). No C authored, no
 
 | Crate | Description |
 |-------|-------------|
-| `krypta` | Signal protocol: X3DH key exchange, double ratchet, session management |
+| `krypta` | X3DH key exchange, directional symmetric chain ratchets (NOT the Signal Double Ratchet — no DH ratchet, #543), session management |
 | `stegnos` | Encrypted storage: AES-256-XTS block cipher, LUKS key derivation, secure erase |
 
 **Radio**

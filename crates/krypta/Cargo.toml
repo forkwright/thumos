@@ -1,6 +1,6 @@
 [package]
 name = "krypta"
-description = "Encrypted communication: Signal protocol, P2P messaging"
+description = "Encrypted communication: X3DH key exchange + directional symmetric chain ratchets, P2P messaging"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

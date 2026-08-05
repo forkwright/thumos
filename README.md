@@ -30,7 +30,7 @@ A custom Rust OS for the AGM M7 (MT6739, 1 GB RAM, 240x320 QVGA, IP68). Full Rus
 eidolon (framebuffer UI, widget system)
 asphaleia (packet filter) + stegnos (encrypted storage) + leipsanon (panic mode)
 sema (radio tools) + aither (WiFi) + pteron (BT) + topos (GPS)
-klesis (AT commands, CCCI transport, SMS PDU) + krypta (Signal protocol)
+klesis (AT commands, CCCI transport, SMS PDU) + krypta (X3DH + symmetric chain ratchets)
 kelyphos (WMT combo chip STP framing) + haphe (input routing)
 ──────────────────────────────────────────────
 thumos kernel (MMU, slab allocator, scheduler, IPC, signals, syscalls,
