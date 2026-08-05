@@ -344,6 +344,38 @@ pub unsafe fn run() -> ! {
     );
     state.timer_ok = true;
 
+    // ------------------------------------------------------------------
+    // #461 clock witness (permanent): CNTPCT/CNTFRQ and elapsed_ms are
+    // healthy under qemu-virt — measured freq=62.5 MHz, counter advancing,
+    // elapsed_ms advancing across a 10-tick interval (2026-08-04, the
+    // "clock broken under QEMU" premise was refuted by this measurement).
+    // Assert it every boot so a counter/frequency regression reds the
+    // witness instead of silently hanging the wait loops that consume
+    // elapsed_ms (csprng deadline, DHCP smoke, #506's wiring).
+    // ------------------------------------------------------------------
+    #[cfg(feature = "qemu")]
+    {
+        let freq_a = crate::timer::frequency();
+        let el_a = crate::timer::elapsed_ms();
+        let tick_a = crate::exceptions::ticks();
+        while crate::exceptions::ticks() < tick_a + 10 {}
+        let el_b = crate::timer::elapsed_ms();
+        if freq_a == 0 || el_b <= el_a {
+            boot_log!(
+                serial,
+                " FAIL timer: elapsed_ms not advancing under qemu (freq={}, {} ms -> {} ms) -- the #461 class is BACK\r\n",
+                freq_a, el_a, el_b
+            );
+            state.timer_ok = false;
+        } else {
+            boot_log!(
+                serial,
+                "kardia: timer elapsed_ms=advancing freq={} ({} ms -> {} ms)\r\n",
+                freq_a, el_a, el_b
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Step 5b: CSPRNG (ChaCha20, seeded from timer entropy; fault-tolerant
     // with timeout)
@@ -877,11 +909,12 @@ pub unsafe fn run() -> ! {
         let now = net::instant_from_millis(crate::exceptions::uptime_ms() as i64);
         NetworkStack::new(device, mac, now)
     };
-    // WHY(qemu): the DHCP poll loop below is bounded by an elapsed_ms() deadline
-    // + a wfe-gated yield, neither of which terminates under QEMU (#461); and a
-    // loopback DHCP/DNS self-test verifies nothing under an emulator with no
-    // network model. The self-test is skipped under qemu, but the stack itself
-    // still persists into the loop.
+    // WHY(qemu): a loopback DHCP/DNS self-test verifies nothing under an
+    // emulator with no network model, so the smoke stays skipped — but on
+    // semantics, not fear of a hang: the #461 measurement (Step 5 witness)
+    // proved CNTPCT/CNTFRQ/elapsed_ms healthy under virt, and the wait
+    // primitive below is now WFI (see the comment in the loop), so the
+    // deadline + yield shape terminates correctly on either target.
     #[cfg(feature = "qemu")]
     serial.log(" Skipped (qemu: no network model -- #461)\r\n");
     #[cfg(not(feature = "qemu"))]
@@ -919,11 +952,19 @@ pub unsafe fn run() -> ! {
                         DhcpEvent::Deconfigured => {}
                         DhcpEvent::None => {}
                     }
-                    // WHY: WFE avoids busy-loop, yields until next event.
-                    // SAFETY: WFE is a hint instruction available in all ARM
+                    // WHY: WFI yields until the next interrupt (the timer
+                    // tick). WFE was the wrong primitive here: with no SEV
+                    // issuer and SEVONPEND unset, a WFE entered with a clear
+                    // event register sleeps forever — the latent hang the
+                    // #461 qemu gate was compensating for. Measured
+                    // 2026-08-04 under qemu-virt: the clock itself is healthy
+                    // (CNTFRQ=62.5 MHz, elapsed_ms advancing, witness in
+                    // Step 5), so the bounded deadline above terminates
+                    // correctly once the wait primitive is WFI.
+                    // SAFETY: WFI is a hint instruction available in all ARM
                     // privilege levels. No memory is accessed.
                     unsafe {
-                        core::arch::asm!("wfe");
+                        core::arch::asm!("wfi");
                     }
                 }
 
