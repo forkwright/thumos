@@ -78,55 +78,48 @@ const MAX_DESC_LEN: usize = 48;
 const COLOR_ORANGE: u16 = color::from_rgb(255, 165, 0);
 
 // ---------------------------------------------------------------------------
-// Threat level (matches sema crate convention)
+// Threat level — the canonical type from sema-core (#545)
 // ---------------------------------------------------------------------------
 
-/// Threat severity level, ordered from lowest to highest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[must_use]
-#[non_exhaustive]
-pub enum ThreatLevel {
-    /// No active threats detected.
-    Low,
-    /// Minor anomalies that may warrant attention.
-    Medium,
-    /// Active threat indicators present.
-    High,
-    /// Confirmed active attack or compromise.
-    Critical,
+/// The canonical threat severity level: defined ONCE in `sema_core` (the
+/// no_std+alloc core shared with the `sema` workspace crate) and re-exported
+/// here. The pre-#545 kernel copy drifted (bands 25/50/75 vs the canonical
+/// 30/60/80 protocol invariants) — the exact divergence class #545 exists
+/// to kill. Screen-specific presentation rides in the extension trait
+/// below; semantics stay in one place.
+pub use sema_core::ThreatLevel;
+
+/// Screen-side presentation for the canonical [`ThreatLevel`].
+pub(crate) trait ThreatLevelScreenExt {
+    /// RGB565 color for this threat level.
+    fn color(self) -> u16;
+    /// Display label for this threat level.
+    fn label(self) -> &'static str;
 }
 
-impl ThreatLevel {
-    /// RGB565 color for this threat level.
-    const fn color(self) -> u16 {
+impl ThreatLevelScreenExt for ThreatLevel {
+    fn color(self) -> u16 {
         match self {
             Self::Low => color::GREEN,
             Self::Medium => color::YELLOW,
             Self::High => COLOR_ORANGE,
             Self::Critical => color::RED,
+            // sema-core's ThreatLevel is non_exhaustive; a future band the
+            // screen doesn't know yet renders as attention, never "fine".
+            _ => COLOR_ORANGE,
         }
     }
 
-    /// Display label for the threat level.
-    const fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Self::Low => "LOW",
             Self::Medium => "MEDIUM",
             Self::High => "HIGH",
             Self::Critical => "CRITICAL",
+            // Non-exhaustive forward compat: unknown future bands read as
+            // unknown, not as a fabricated level name.
+            _ => "?",
         }
-    }
-}
-
-impl Default for ThreatLevel {
-    fn default() -> Self {
-        Self::Low
-    }
-}
-
-impl fmt::Display for ThreatLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
     }
 }
 
@@ -338,12 +331,8 @@ impl ThreatMonitor {
     /// Update the composite threat score and level.
     pub(crate) fn set_score(&mut self, score: u32) {
         self.current_score = score.min(100);
-        self.current_level = match self.current_score {
-            0..=25 => ThreatLevel::Low,
-            26..=50 => ThreatLevel::Medium,
-            51..=75 => ThreatLevel::High,
-            _ => ThreatLevel::Critical,
-        };
+        // #545: the canonical 30/60/80 band function, shared with sema.
+        self.current_level = sema_core::level_from_score(self.current_score);
     }
 
     /// Update modem status fields.

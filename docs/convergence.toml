@@ -1,0 +1,89 @@
+# Convergence ledger (issue #545) — the machine-checked record of the
+# kernel↔workspace duplication and its dispositions. scripts/check-convergence.sh
+# enforces: every pair here has a disposition + owner, every "ported from"
+# comment names a live pair below, and the #126 dead-code expectations only
+# ever burn DOWN (the ratchet — the counts below may not increase).
+#
+# Dispositions:
+#   converged        — one canonical implementation owns the invariant (name it)
+#   extract-core     — pull the shared protocol/state machine into a
+#                      no_std+alloc core crate both sides link (topology 1)
+#   kernel-owned     — the kernel copy is canonical; the workspace duplicate
+#                      deletes when its consumers are gone (topology 2)
+#   workspace-owned  — the workspace crate is canonical; the kernel copy is a
+#                      transport/board adapter only
+#
+# The ratchet: current "ported from" comments = 6 (firewall×2, gsm7, sms,
+# screen_dialer, plus gps/wifi/bluetooth/telephony doc headers count as
+# provenance notes, not live duplication markers — see notes per pair).
+
+[[pair]]
+name = "threat-semantics"
+kernel = "screen_threat.rs (was: divergent bands 25/50/75)"
+workspace = "sema (cell.rs ThreatLevel, canonical bands 30/60/80)"
+disposition = "converged"
+canonical = "sema-core (no_std+alloc; kernel links via path dep, sema re-exports)"
+owner = "#545 (this PR)"
+notes = "The live divergence that proved the class: screen bands and the detector's protocol invariants disagreed. Now one type, one boundary table, both consumers."
+
+[[pair]]
+name = "gps"
+kernel = "gps.rs (ported from topos)"
+workspace = "topos"
+disposition = "extract-core"
+canonical = "pending: topos-core (coordinate/geo types + parse) when the GPS NMEA path lands (#129 family)"
+owner = "unscheduled"
+notes = "gps.rs:3 doc header records the port. Not user-facing until the combo-chip GPS path lands."
+
+[[pair]]
+name = "wifi"
+kernel = "wifi.rs (ported from aither)"
+workspace = "aither"
+disposition = "extract-core"
+canonical = "pending: aither-core (scan/association state machine)"
+owner = "unscheduled"
+notes = "wifi.rs:3 doc header records the port."
+
+[[pair]]
+name = "bluetooth"
+kernel = "bluetooth.rs (ported from pteron)"
+workspace = "pteron"
+disposition = "workspace-owned"
+canonical = "pteron (RPA/privacy already canonical there, #455); kernel keeps the HCI board transport"
+owner = "unscheduled"
+notes = "bluetooth.rs:3 doc header records the port. After #455 the workspace side is the richer, spec-verified side."
+
+[[pair]]
+name = "telephony-sms"
+kernel = "telephony.rs, sms.rs, gsm7.rs (ported from klesis)"
+workspace = "klesis"
+disposition = "extract-core"
+canonical = "pending: klesis-core (PDU/gsm7/AT-parse cores)"
+owner = "unscheduled"
+notes = "Live 'ported from' comments: gsm7.rs:20, sms.rs:109."
+
+[[pair]]
+name = "firewall"
+kernel = "firewall.rs (packet parse + DNS extraction ported from asphaleia)"
+workspace = "asphaleia"
+disposition = "extract-core"
+canonical = "pending: asphaleia-core (packet/DNS parse, policy rules)"
+owner = "unscheduled"
+notes = "Live 'ported from' comments: firewall.rs:602, :681."
+
+[[pair]]
+name = "ui"
+kernel = "ui.rs, screen_dialer.rs (font behavior, dialer rendering ported from eidolon/haphe)"
+workspace = "eidolon, haphe"
+disposition = "extract-core"
+canonical = "pending: glyph/widget core shared by the kernel UI and eidolon"
+owner = "unscheduled"
+notes = "Live 'ported from' comment: screen_dialer.rs:11. eidolon -> haphe is the one real internal edge; the kernel consumes neither today."
+
+# The #126 ratchet: the dead-code expectations pointing at closed #126
+# (one per workspace crate lib.rs) now point here. They burn down as each
+# pair converges — the checker fails if the count ever increases.
+[ratchet]
+rule = "port-markers-and-126-expectations-never-increase"
+ported_from_comments = 5      # firewall×2, gsm7, sms, screen_dialer
+stale_126_expectations = 12   # one per workspace crate lib.rs that still points at closed #126

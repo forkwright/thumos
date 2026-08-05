@@ -118,6 +118,11 @@ jobs:
         # on any MT6739_* identifier outside board::m7 or any board-MMIO
         # value re-declared as a const outside board/. Cheap, source-level.
         run: scripts/check-board-seam.sh
+      - name: Convergence ratchet check (#545)
+        # WHY (#545): kernel↔workspace duplication only ever burns down —
+        # reds on an unclassified pair, a rising port-marker count, or a
+        # stale #126 pointer. Cheap, source-level.
+        run: scripts/check-convergence.sh
       - name: Kernel cross-compile (armv7a) + zero-warning gate (#431)
         # WHY (#431): the zero-warning gate lives in crates/thumos/.cargo/
         # config.toml's rustflags; scripts/kernel-build.sh builds through it

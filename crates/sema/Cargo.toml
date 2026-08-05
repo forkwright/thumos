@@ -13,6 +13,7 @@ snafu = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
+sema-core = { path = "../sema-core" }
 
 [dev-dependencies]
 toml = "0.8"
