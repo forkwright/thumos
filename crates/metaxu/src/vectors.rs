@@ -24,7 +24,8 @@ pub(crate) struct GoldenVector {
 }
 
 /// The golden vectors (envelope v1: magic "MTX1" LE, schema 1, major 1,
-/// minor 0). Segments annotated per byte run.
+/// minor 1). Segments annotated per byte run. MINOR-0 frames remain
+/// decodable per the compat rules (see `minor_0_frames_still_decode`).
 pub(crate) static GOLDEN_VECTORS: &[GoldenVector] = &[
     GoldenVector {
         name: "task-request-minimal",
@@ -32,7 +33,7 @@ pub(crate) static GOLDEN_VECTORS: &[GoldenVector] = &[
             0x4D, 0x54, 0x58, 0x31, // magic "MTX1"
             0x01, 0x00, // schema 1
             0x01, // major 1
-            0x00, // minor 0
+            0x01, // minor 1 (#544: authenticated kinds added)
             0x01, 0x00, // kind 1 = TaskRequest
             0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // correlation 7
             0x01, 0x00, 0x00, 0x00, // payload_len 1
@@ -48,7 +49,7 @@ pub(crate) static GOLDEN_VECTORS: &[GoldenVector] = &[
             0x4D, 0x54, 0x58, 0x31, // magic "MTX1"
             0x01, 0x00, // schema 1
             0x01, // major 1
-            0x00, // minor 0
+            0x01, // minor 1 (#544: authenticated kinds added)
             0x03, 0x00, // kind 3 = SttEvent
             0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // correlation 42
             0x04, 0x00, 0x00, 0x00, // payload_len 4
@@ -160,6 +161,21 @@ mod tests {
                 confidence_milli: 0,
             }
         );
+    }
+
+    #[test]
+    fn minor_0_frames_still_decode() {
+        // The #544 MINOR bump must not strand MINOR-0 peers: a frame with
+        // minor=0 (the pre-#544 shape) decodes identically (#553 compat
+        // rule: older minor accepted).
+        let mut bytes = GOLDEN_VECTORS[0].bytes.to_vec();
+        bytes[7] = 0x00;
+        let frame = Envelope::decode(&bytes);
+        assert!(
+            frame.is_ok(),
+            "a MINOR-0 frame must still decode at MINOR 1"
+        );
+        assert_eq!(frame.ok().map(|f| f.header.minor), Some(0));
     }
 
     #[test]

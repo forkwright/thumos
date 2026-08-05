@@ -9,6 +9,9 @@ repository.workspace = true
 
 [dependencies]
 compact_str = { workspace = true, features = ["serde"] }
+ed25519-dalek = { workspace = true, features = ["serde"] }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 jiff = { workspace = true, features = ["serde"] }
 postcard = { workspace = true }
 serde = { workspace = true }
