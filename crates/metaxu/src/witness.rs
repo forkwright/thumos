@@ -189,7 +189,7 @@ fn expired_grant_is_rejected() {
     );
     match response.response.status {
         TaskStatus::Rejected { ref reason } => {
-            assert_eq!(reason.as_str(), pylon::reject::GRANT_EXPIRED)
+            assert_eq!(reason.as_str(), pylon::reject::GRANT_EXPIRED);
         }
         ref other => unreachable!("expired grant must reject, got {other:?}"),
     }
@@ -224,7 +224,7 @@ fn wrong_runtime_identity_is_rejected() {
     );
     match response.response.status {
         TaskStatus::Rejected { ref reason } => {
-            assert_eq!(reason.as_str(), pylon::reject::WRONG_ISSUER)
+            assert_eq!(reason.as_str(), pylon::reject::WRONG_ISSUER);
         }
         ref other => unreachable!("an unpinned issuer must reject, got {other:?}"),
     }
@@ -289,7 +289,7 @@ fn capability_outside_grant_is_denied() {
     let response = verify_response(&session, &exchange(port, &auth_frame(&session, call)));
     match response.response.status {
         TaskStatus::Rejected { ref reason } => {
-            assert_eq!(reason.as_str(), pylon::reject::CAPABILITY_DENIED)
+            assert_eq!(reason.as_str(), pylon::reject::CAPABILITY_DENIED);
         }
         ref other => unreachable!("an out-of-grant capability must deny, got {other:?}"),
     }
