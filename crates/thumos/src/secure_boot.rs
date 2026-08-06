@@ -1,18 +1,20 @@
-//! Measured boot with Ed25519 signature verification.
+//! Measured boot with Ed25519ph signature verification.
 //!
-//! Verifies the integrity of the kernel image at boot by checking an
-//! Ed25519 signature against an embedded public key. The signature is
-//! appended as the last 64 bytes of the kernel image; the signed payload
-//! is everything preceding it.
+//! Verifies the integrity of the boot image at boot by checking an
+//! Ed25519ph (prehashed, RFC 8032) signature against an embedded public
+//! key. The signature is the last 64 bytes of the on-disk region; the
+//! signed payload is everything preceding it (zero-padded so the signature
+//! lands on the sector boundary, matching the sphragis signing tool).
 //!
 //! ## Signature format
 //!
 //! ```text
-//! [ kernel image payload (N bytes) ][ Ed25519 signature (64 bytes) ]
+//! [ image payload (N bytes) ][ zero pad ][ Ed25519ph signature (64 bytes) ]
 //! ```
 //!
-//! The Ed25519 signature covers the kernel image payload (all bytes
-//! except the trailing 64-byte signature itself).
+//! Ed25519ph (sign/verify over the SHA-512 prehash) is chosen over plain
+//! Ed25519 so verification streams over bounded sector reads — a multi-MB
+//! boot image never needs a contiguous buffer (#467).
 //!
 //! ## Boot integration
 //!
@@ -34,6 +36,24 @@
 //! [`sha2`]. Both are audited pure-Rust crates from the same family as the
 //! kernel's `aes` / `xts-mode` dependencies, consistent with the "no C we
 //! author" doctrine.
+//!
+//! ## Trust root (per #467's review item)
+//!
+//! This gate is a LINK in the boot chain, not the sole root: the chain is
+//! BROM (mask ROM, reads the preloader) -> preloader/LK (loads the boot
+//! image) -> this kernel's gate (verifies the boot image's Ed25519ph
+//! signature against the embedded anchor before any decrypt/mount/
+//! userspace step). What verifies THE KERNEL IMAGE is therefore the
+//! preloader's verified-boot configuration on the device — on the AGM M7
+//! as currently operated, that upstream link is NOT established by this
+//! repository (the stock device's verified-boot state is an
+//! operator/hardware fact, hardware-ledger work). Until it is, this gate
+//! honestly bounds its own claim: it proves the boot image is the one the
+//! signing key holder built, given a kernel that already started — it
+//! cannot by itself defeat a compromised preloader. That boundary is why
+//! `secure_boot_ok` reads as "verified against the production anchor" and
+//! no more, and why the fail-closed invariant (present-but-unreadable ->
+//! Halt) matters: the gate's value is that it never WIDENS what booted.
 
 use core::fmt;
 
@@ -238,18 +258,103 @@ pub(crate) fn split_image(image: &[u8]) -> Result<(&[u8], [u8; SIGNATURE_LEN]), 
     Ok((payload, sig))
 }
 
-/// Verify a combined kernel image (payload + appended signature).
-///
-/// Convenience wrapper that splits the image and verifies in one call.
+/// Verify a combined image in memory using Ed25519ph (#467) — the same
+/// signature scheme as the streamed path, for images that already fit in
+/// memory (tests, small regions). The boot-partition path is
+/// [`verify_image_streamed`]; both verify under [`BOOT_PUBLIC_KEY`].
 ///
 /// # Errors
 ///
-/// - [`SecureBootError::ImageTooShort`] if the image is too short.
-/// - [`SecureBootError::InvalidSignature`] if verification fails.
-#[must_use = "verification result must be checked"]
-pub(crate) fn verify_combined_image(image: &[u8]) -> Result<(), SecureBootError> {
-    let (payload, sig) = split_image(image)?;
-    verify_kernel_signature(payload, &sig)
+/// As [`verify_combined_image`].
+pub(crate) fn verify_combined_image_ph(image: &[u8]) -> Result<(), SecureBootError> {
+    use sha2::Digest as _;
+    let (payload, sig_bytes) = split_image(image)?;
+    let Ok(key) = VerifyingKey::from_bytes(&BOOT_PUBLIC_KEY) else {
+        return Err(SecureBootError::InvalidSignature);
+    };
+    let mut prehash = sha2::Sha512::new();
+    prehash.update(payload);
+    let sig = Signature::from_bytes(&sig_bytes);
+    key.verify_prehashed_strict(prehash, None, &sig)
+        .map_err(|_| SecureBootError::InvalidSignature)
+}
+
+/// Verify a combined boot image (payload || signature) STREAMED from a
+/// block device, using Ed25519ph (#467).
+///
+/// WHY Ed25519ph: plain Ed25519 verifies a contiguous in-memory message,
+/// but a multi-MB boot image cannot fit the 1 MB kernel heap — and must
+/// never require one. Ed25519ph prehashes with SHA-512, streamed here over
+/// bounded 4 KiB sector reads; memory stays O(chunk), never O(image).
+/// `verify_prehashed_strict` keeps the non-malleable posture of the
+/// `verify_strict` path used everywhere else in this module.
+///
+/// The image layout is the same `payload || signature(64)` as
+/// [`split_image`]; the signature covers the payload's SHA-512 prehash.
+/// Reading a partition view (#603) is the intended caller-side shape.
+///
+/// # Errors
+///
+/// - [`SecureBootError::ImageTooShort`] if the region is smaller than a
+///   signature plus one payload byte.
+/// - [`SecureBootError::InvalidSignature`] on any verification failure or
+///   unreadable sector (the caller maps failures to Halt per #467's
+///   fail-closed invariant — there is no degraded read).
+#[cfg(not(feature = "qemu"))]
+pub(crate) fn verify_image_streamed<D: crate::block::BlockDevice>(
+    dev: &D,
+    total_sectors: u64,
+    public_key: &[u8; PUBLIC_KEY_LEN],
+) -> Result<(), SecureBootError> {
+    use sha2::Digest as _;
+
+    let total_bytes = total_sectors.saturating_mul(crate::block::SECTOR_SIZE as u64);
+    if total_bytes < MIN_IMAGE_SIZE as u64 {
+        return Err(SecureBootError::ImageTooShort);
+    }
+    let Ok(key) = VerifyingKey::from_bytes(public_key) else {
+        return Err(SecureBootError::InvalidSignature);
+    };
+
+    let payload_bytes = total_bytes - SIGNATURE_LEN as u64;
+    let mut prehash = sha2::Sha512::new();
+    let mut signature = [0u8; SIGNATURE_LEN];
+    let mut lba = 0u64;
+    let mut chunk = [0u8; 4 * 1024];
+    const CHUNK_SECTORS: u64 = (4 * 1024 / crate::block::SECTOR_SIZE) as u64; // 8
+
+    while lba < total_sectors {
+        let remaining_sectors = total_sectors - lba;
+        let take = if remaining_sectors < CHUNK_SECTORS {
+            remaining_sectors
+        } else {
+            CHUNK_SECTORS
+        };
+        let take_bytes = (take as usize) * crate::block::SECTOR_SIZE;
+        dev.read_sectors(lba, take as u32, &mut chunk[..take_bytes])
+            .map_err(|_| SecureBootError::InvalidSignature)?;
+        let chunk_start = lba * crate::block::SECTOR_SIZE as u64;
+        let chunk_end = chunk_start + take_bytes as u64;
+        if chunk_end <= payload_bytes {
+            // Whole chunk is payload.
+            prehash.update(&chunk[..take_bytes]);
+        } else if chunk_start >= payload_bytes {
+            // Whole chunk is signature (only the final 64 bytes can be).
+            let off = (chunk_start - payload_bytes) as usize;
+            signature[off..off + take_bytes].copy_from_slice(&chunk[..take_bytes]);
+        } else {
+            // The boundary chunk: payload prefix into the prehash, the
+            // 64-byte signature suffix out.
+            let cut = (payload_bytes - chunk_start) as usize;
+            prehash.update(&chunk[..cut]);
+            signature[..take_bytes - cut].copy_from_slice(&chunk[cut..take_bytes]);
+        }
+        lba += take;
+    }
+
+    let sig = Signature::from_bytes(&signature);
+    key.verify_prehashed_strict(prehash, None, &sig)
+        .map_err(|_| SecureBootError::InvalidSignature)
 }
 
 // ===========================================================================
@@ -266,8 +371,8 @@ pub(crate) fn verify_combined_image(image: &[u8]) -> Result<(), SecureBootError>
 /// fail-closed HALT class, expressed as `Present` with a failing
 /// verification.
 pub(crate) enum BootImageSource<'a> {
-    /// The combined image (payload || Ed25519 signature) read from the boot
-    /// partition.
+    /// The combined image (payload || Ed25519ph signature) read from the boot
+    /// partition, in memory (tests and small images).
     #[cfg_attr(
         not(test),
         expect(
@@ -276,6 +381,21 @@ pub(crate) enum BootImageSource<'a> {
         )
     )]
     Present(&'a [u8]),
+    /// The boot partition as a block-device region, verified by STREAMED
+    /// Ed25519ph (#467): a multi-MB image never needs a contiguous buffer.
+    /// M7-only: virt models no eMMC, so no streamed region exists there.
+    #[cfg(not(feature = "qemu"))]
+    PresentStreamed {
+        /// The boot partition view (already base-translated, #603).
+        dev: crate::block::PartitionBlockDevice<&'a mut dyn crate::block::BlockDevice>,
+        /// Region length in sectors.
+        sectors: u64,
+    },
+    /// A boot medium exists but the boot partition could not be read or
+    /// parsed: I/O error, missing GPT entry, blanked partition. INVARIANT
+    /// (#467): this maps to Halt, never to the Absent/degraded path —
+    /// "attacker deleted the boot partition" is a halt class, not a degrade.
+    Unreadable,
     /// No boot medium: qemu (no MSDC model) or an eMMC that failed init, so
     /// no partition is readable and no persistent data is mountable.
     Absent,
@@ -307,11 +427,37 @@ pub(crate) enum SecureBootDecision {
 ///   encrypted mount, audit key, persistent userspace) stays locked.
 pub(crate) fn evaluate_boot_image(source: &BootImageSource<'_>) -> SecureBootDecision {
     match source {
-        BootImageSource::Present(image) => match verify_combined_image(image) {
+        BootImageSource::Present(image) => match verify_combined_image_ph(image) {
             Ok(()) => SecureBootDecision::Proceed { verified: true },
             Err(e) => SecureBootDecision::Halt(e),
         },
+        #[cfg(not(feature = "qemu"))]
+        BootImageSource::PresentStreamed { dev, sectors } => {
+            match verify_image_streamed(dev, *sectors, &BOOT_PUBLIC_KEY) {
+                Ok(()) => SecureBootDecision::Proceed { verified: true },
+                Err(e) => SecureBootDecision::Halt(e),
+            }
+        }
+        // #467: a present-but-unreadable boot partition is a halt class —
+        // never the Absent degrade.
+        BootImageSource::Unreadable => SecureBootDecision::Halt(SecureBootError::ImageTooShort),
         BootImageSource::Absent => SecureBootDecision::Proceed { verified: false },
+    }
+}
+
+/// Construct the boot-image source from the eMMC (#467): GPT-locate the
+/// `boot` partition by name and return its streamed view. ANY failure —
+/// I/O error, missing GPT entry, blanked table — maps to
+/// [`BootImageSource::Unreadable`], which the gate halts on. This is the
+/// fail-closed construction site the issue's invariant names.
+#[cfg(not(feature = "qemu"))]
+pub(crate) fn boot_image_source(dev: &mut dyn crate::block::BlockDevice) -> BootImageSource<'_> {
+    match crate::gpt::find_partition(dev, "boot") {
+        Ok(boot) => BootImageSource::PresentStreamed {
+            dev: crate::block::PartitionBlockDevice::new(dev, boot.first_lba, boot.sectors()),
+            sectors: boot.sectors(),
+        },
+        Err(_) => BootImageSource::Unreadable,
     }
 }
 
@@ -507,6 +653,154 @@ mod tests {
 
     /// Test that split_image rejects images shorter than MIN_IMAGE_SIZE.
     #[test]
+    // -- Streamed Ed25519ph verify (#467) --
+    #[test]
+    fn unreadable_boot_partition_halts_never_degrades() {
+        // #467's fail-closed invariant at the construction site: a present
+        // but unreadable boot region (here: an uninitialized/failing eMMC
+        // read) maps to Unreadable -> Halt, never to Absent/degraded.
+        use crate::block::BlockDevice as _;
+        let mut dev = crate::block::tests::FailingBlockDevice::new(2048, 0);
+        let source = boot_image_source(&mut dev);
+        assert!(
+            matches!(source, BootImageSource::Unreadable),
+            "an unreadable GPT must construct Unreadable, not Absent"
+        );
+        assert!(
+            matches!(evaluate_boot_image(&source), SecureBootDecision::Halt(_)),
+            "read failure must HALT — a deleted/corrupt boot partition is not a degrade"
+        );
+    }
+
+    #[test]
+    fn gpt_located_signed_boot_partition_verifies() {
+        use crate::block::BlockDevice as _;
+        // The full happy path through the construction site: a synthetic
+        // GPT naming "boot", holding an Ed25519ph-signed image under the
+        // embedded anchor, verifies via the streamed path.
+        let seed = BOOT_KEY_DEV_SEED.expect("dev anchor required for the streamed-verify test");
+        let (image, _pubkey) = signed_image(4096, &seed);
+        let mut dev = crate::block::MemBlockDevice::new(4096).expect("dev");
+        // GPT: "boot" at [2048, 2048 + image_sectors).
+        let image_sectors = (image.len() / 512) as u64;
+        // Write the image at the partition base.
+        dev.write_sectors(2048, image_sectors as u32, &image)
+            .expect("write image");
+        // Build the GPT over it.
+        let entry_size = 128usize;
+        let entry_count = 128u32;
+        let entries_bytes = entry_count as usize * entry_size;
+        let mut table = alloc::vec![0u8; entries_bytes];
+        table[0] = 0xAF;
+        table[32..40].copy_from_slice(&2048u64.to_le_bytes());
+        table[40..48].copy_from_slice(&(2048 + image_sectors - 1).to_le_bytes());
+        for (j, b) in b"boot".iter().enumerate() {
+            table[56 + j * 2] = *b;
+        }
+        let entries_crc = crate::gpt::crc32(&table);
+        dev.write_sectors(2, (entries_bytes / 512) as u32, &table)
+            .expect("entries");
+        let mut header = [0u8; 512];
+        header[..8].copy_from_slice(b"EFI PART");
+        header[12..16].copy_from_slice(&92u32.to_le_bytes());
+        header[72..80].copy_from_slice(&2u64.to_le_bytes());
+        header[80..84].copy_from_slice(&entry_count.to_le_bytes());
+        header[84..88].copy_from_slice(&(entry_size as u32).to_le_bytes());
+        header[88..92].copy_from_slice(&entries_crc.to_le_bytes());
+        let header_crc = crate::gpt::crc32(&header[..92]);
+        header[16..20].copy_from_slice(&header_crc.to_le_bytes());
+        dev.write_sectors(1, 1, &header).expect("header");
+
+        let source = boot_image_source(&mut dev);
+        match source {
+            BootImageSource::PresentStreamed { .. } => {}
+            _ => panic!("a valid GPT must yield PresentStreamed"),
+        }
+        match evaluate_boot_image(&source) {
+            SecureBootDecision::Proceed { verified: true } => {}
+            other => panic!("a valid signed boot partition must verify, got {other:?}"),
+        }
+    }
+
+    /// Build a signed combined image: payload zero-padded so that
+    /// payload+pad+signature is sector-aligned (the on-disk layout the
+    /// streamed verifier expects — the signature is the region's final 64
+    /// bytes).
+    fn signed_image(payload_len: usize, seed: &[u8; 32]) -> (alloc::vec::Vec<u8>, [u8; 32]) {
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use sha2::Digest as _;
+        let key = SigningKey::from_bytes(seed);
+        // Pad so payload+pad ends exactly 64 bytes before a sector boundary.
+        let padded_len = (payload_len + SIGNATURE_LEN).div_ceil(512) * 512 - SIGNATURE_LEN;
+        let mut payload = alloc::vec![0u8; padded_len];
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(31).wrapping_add(7);
+        }
+        let mut prehash = sha2::Sha512::new();
+        prehash.update(&payload);
+        let sig = key.sign_prehashed(prehash, None).expect("sign_prehashed");
+        let mut image = payload;
+        image.extend_from_slice(&sig.to_bytes());
+        (image, key.verifying_key().to_bytes())
+    }
+
+    #[test]
+    fn streamed_verify_accepts_valid_image() {
+        use crate::block::BlockDevice as _;
+        let (image, pubkey) = signed_image(3 * 4096, &[11u8; 32]); // multi-chunk, 12 KiB payload
+        let mut dev =
+            crate::block::MemBlockDevice::new((image.len() as u64).div_ceil(512)).expect("dev");
+        dev.write_sectors(0, (image.len() / 512) as u32, &image)
+            .expect("write image");
+        assert_eq!(
+            verify_image_streamed(&dev, (image.len() / 512) as u64, &pubkey),
+            Ok(()),
+            "a valid Ed25519ph-signed image must verify when streamed"
+        );
+    }
+
+    #[test]
+    fn streamed_verify_rejects_tampered_payload() {
+        use crate::block::BlockDevice as _;
+        let (mut image, pubkey) = signed_image(3 * 4096, &[11u8; 32]);
+        image[1234] ^= 0x01;
+        let mut dev =
+            crate::block::MemBlockDevice::new((image.len() as u64).div_ceil(512)).expect("dev");
+        dev.write_sectors(0, (image.len() / 512) as u32, &image)
+            .expect("write image");
+        assert_eq!(
+            verify_image_streamed(&dev, (image.len() / 512) as u64, &pubkey),
+            Err(SecureBootError::InvalidSignature),
+            "a one-bit payload change must fail verification"
+        );
+    }
+
+    #[test]
+    fn streamed_verify_rejects_wrong_key() {
+        use crate::block::BlockDevice as _;
+        let (image, _pubkey) = signed_image(4096, &[11u8; 32]);
+        let other = ed25519_dalek::SigningKey::from_bytes(&[22u8; 32]).verifying_key();
+        let mut dev =
+            crate::block::MemBlockDevice::new((image.len() as u64).div_ceil(512)).expect("dev");
+        dev.write_sectors(0, (image.len() / 512) as u32, &image)
+            .expect("write image");
+        assert_eq!(
+            verify_image_streamed(&dev, (image.len() / 512) as u64, &other.to_bytes()),
+            Err(SecureBootError::InvalidSignature),
+            "a different anchor key must fail"
+        );
+    }
+
+    #[test]
+    fn streamed_verify_rejects_too_short_region() {
+        let dev = crate::block::MemBlockDevice::new(1).expect("dev");
+        assert_eq!(
+            verify_image_streamed(&dev, 0, &[0u8; 32]),
+            Err(SecureBootError::ImageTooShort)
+        );
+    }
+
+    #[test]
     fn split_image_too_short() {
         let short = [0u8; 64]; // exactly 64 bytes, need 65+
         assert_eq!(
@@ -629,7 +923,7 @@ mod tests {
 
     #[test]
     fn combined_image_valid_signature_passes() {
-        use ed25519_dalek::{Signer, SigningKey};
+        use ed25519_dalek::SigningKey;
 
         // NOTE (#233): the committed dev seed (keys/dev/boot-dev.seed),
         // emitted by build.rs only when the build's trust anchor is the dev
@@ -645,14 +939,10 @@ mod tests {
         );
 
         let payload = [0x5Au8; 16];
-        let signature = signing_key.sign(&payload).to_bytes();
-
-        let mut image = [0u8; 16 + SIGNATURE_LEN];
-        image[..16].copy_from_slice(&payload);
-        image[16..].copy_from_slice(&signature);
+        let image = signed_dev_image(&payload);
 
         assert_eq!(
-            verify_combined_image(&image),
+            verify_combined_image_ph(&image),
             Ok(()),
             "combined image with a valid boot-key signature must verify"
         );
@@ -663,23 +953,12 @@ mod tests {
     /// modified bytes).
     #[test]
     fn combined_image_tampered_payload_fails() {
-        use ed25519_dalek::{Signer, SigningKey};
-
-        // NOTE (#233): same committed dev seed as
-        // combined_image_valid_signature_passes.
-        let seed = BOOT_KEY_DEV_SEED.expect("boot-key tests require the dev trust anchor");
-        let signing_key = SigningKey::from_bytes(&seed);
-
         let payload = [0x5Au8; 16];
-        let signature = signing_key.sign(&payload).to_bytes();
-
-        let mut image = [0u8; 16 + SIGNATURE_LEN];
-        image[..16].copy_from_slice(&payload);
-        image[16..].copy_from_slice(&signature);
+        let mut image = signed_dev_image(&payload);
         image[0] ^= 0x01; // tamper one payload byte after signing
 
         assert_eq!(
-            verify_combined_image(&image),
+            verify_combined_image_ph(&image),
             Err(SecureBootError::InvalidSignature),
             "tampered payload byte must fail signature verification"
         );
@@ -691,7 +970,7 @@ mod tests {
     fn combined_image_too_short_fails() {
         let short = [0u8; 64]; // exactly 64 bytes, need 65+
         assert_eq!(
-            verify_combined_image(&short),
+            verify_combined_image_ph(&short),
             Err(SecureBootError::ImageTooShort),
             "combined image of exactly 64 bytes must fail (need at least 65)"
         );
@@ -719,11 +998,20 @@ mod tests {
     // -- #217 fail-closed boot gate --
 
     fn signed_dev_image(payload: &[u8]) -> alloc::vec::Vec<u8> {
-        use ed25519_dalek::{Signer, SigningKey};
+        // #467: the boot gate verifies Ed25519ph (prehashed SHA-512), so the
+        // fixture signs with sign_prehashed — the same scheme the sphragis
+        // tool produces for real boot partitions.
+        use ed25519_dalek::SigningKey;
+        use sha2::Digest as _;
         let seed = BOOT_KEY_DEV_SEED.expect("boot-key tests require the dev trust anchor");
         let signing_key = SigningKey::from_bytes(&seed);
+        let mut prehash = sha2::Sha512::new();
+        prehash.update(payload);
+        let sig = signing_key
+            .sign_prehashed(prehash, None)
+            .expect("sign_prehashed");
         let mut image = alloc::vec::Vec::from(payload);
-        image.extend_from_slice(&signing_key.sign(payload).to_bytes());
+        image.extend_from_slice(&sig.to_bytes());
         image
     }
 

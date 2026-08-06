@@ -125,6 +125,7 @@ mod firewall;
 mod fm_radio;
 mod futex;
 mod gps;
+mod gpt;
 mod gsm7;
 mod harmostes;
 mod heorte;

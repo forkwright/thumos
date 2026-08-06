@@ -38,6 +38,8 @@ use crate::exceptions;
 use crate::gic;
 use crate::heap;
 // Gated: only the debug-console gate reads kconfig::DEBUG_CONSOLE.
+#[cfg(not(feature = "qemu"))]
+use crate::block::MsdcBlockDevice;
 #[cfg(feature = "debug-console")]
 use crate::kconfig;
 #[cfg(not(feature = "qemu"))]
@@ -540,16 +542,29 @@ pub unsafe fn run() -> ! {
         // state.display_ok let a display-init failure silently bypass the
         // kernel's only measured-boot gate (#361).
         //
-        // WHY Absent today: qemu models no MSDC, and an eMMC that failed
-        // init exposes no partitions -- no boot medium means nothing to
-        // verify AND nothing persistent to mount, so the boot continues
-        // DEGRADED with secure_boot_ok false and every downstream trust
-        // gate locked (the inverse of the old "PENDING but proceed open"
-        // posture). TODO(#217): wire the live-eMMC boot-partition read
-        // (GPT-locate `boot` + memory-bounded verify + signing tool) so a
-        // phone boot presents Present(image) here; until then a live-eMMC
-        // phone boot is also degraded-LOCKED, never degraded-open.
+        // WHY the source derives from the medium (#467): qemu models no
+        // MSDC, and an eMMC that failed init exposes no partitions -- no
+        // boot medium means nothing to verify AND nothing persistent to
+        // mount, so the boot continues DEGRADED with secure_boot_ok false
+        // and every downstream trust gate locked. On the M7, the boot
+        // partition is GPT-located by name and verified by streamed
+        // Ed25519ph; a present-but-unreadable partition maps to Unreadable,
+        // which HALTS -- never the Absent degrade (an attacker deleting the
+        // boot partition must not downgrade boot to degraded-open).
+        // Bound: the GPT-documented region (userdata end covers boot);
+        // a read past it errors -> Unreadable -> Halt, by design (#467).
+        // The physical device outlives `source` (the enum borrows it).
+        #[cfg(not(feature = "qemu"))]
+        let mut phys_dev =
+            MsdcBlockDevice::new(board::LFS_PARTITION_START + board::LFS_PARTITION_SIZE);
+        #[cfg(feature = "qemu")]
         let source = crate::secure_boot::BootImageSource::Absent;
+        #[cfg(not(feature = "qemu"))]
+        let source = if state.emmc_ok {
+            crate::secure_boot::boot_image_source(&mut phys_dev)
+        } else {
+            crate::secure_boot::BootImageSource::Absent
+        };
         match crate::secure_boot::evaluate_boot_image(&source) {
             crate::secure_boot::SecureBootDecision::Proceed { verified: true } => {
                 // INVARIANT (#217 + security review): secure_boot_ok is set

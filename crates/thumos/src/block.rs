@@ -96,6 +96,22 @@ pub(crate) trait BlockDevice {
     }
 }
 
+/// Mutable references forward to the underlying device so views compose
+/// over `&mut dyn BlockDevice` (#467's boot-partition view). A shared
+/// reference gets no impl by design: `write_sectors` cannot honestly
+/// forward through one.
+impl<D: BlockDevice + ?Sized> BlockDevice for &mut D {
+    fn read_sectors(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+        (**self).read_sectors(lba, count, buf)
+    }
+    fn write_sectors(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
+        (**self).write_sectors(lba, count, buf)
+    }
+    fn sector_count(&self) -> u64 {
+        (**self).sector_count()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PartitionBlockDevice — partition view over a physical device (#603)
 // ---------------------------------------------------------------------------

@@ -54,6 +54,12 @@ tests = 14
 mechanism = "host"
 
 [[module]]
+name = "gpt"
+tests = 6
+mechanism = "host"
+fidelity = "parse logic proven on synthetic GPT images host-side; the live eMMC GPT read is the m7 boot path (hardware-gated)"
+
+[[module]]
 name = "bluetooth"
 tests = 25
 mechanism = "host"
@@ -537,7 +543,7 @@ mechanism = "host"
 
 [[module]]
 name = "secure_boot"
-tests = 22
+tests = 29
 mechanism = "both"
 witness = "boot.sh"
 
