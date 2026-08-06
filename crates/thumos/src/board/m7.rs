@@ -53,6 +53,12 @@ pub(crate) const LFS_PARTITION_START: u64 = 0x50C000;
 /// segment-aligned boundary.
 pub(crate) const LFS_PARTITION_SIZE: u64 = 0x600000;
 
+/// Sectors reserved at the userdata partition head for the plaintext
+/// secrets preamble (#449). The encrypted LFS payload starts this many
+/// sectors past `LFS_PARTITION_START` (#446); a pre-#446 unprovisioned
+/// image mounts plain AT the head (the dev/transition path).
+pub(crate) const LFS_PREAMBLE_SECTORS: u64 = 1;
+
 // ---------------------------------------------------------------------------
 // USB
 // ---------------------------------------------------------------------------
@@ -103,6 +109,42 @@ pub(crate) const KPD_EN: usize = 0x00;
 /// KPD debounce register offset.
 pub(crate) const KPD_DEBOUNCE: usize = 0x18;
 
+/// GPIO controller MMIO base (MT67xx standard bank base).
+///
+/// NOTE: standard MT67xx base — verify against the MT6739 TRM GPIO section.
+/// Mirrors haphe's `GPIO_BASE` (crates/haphe/src/gpio.rs); the #446 boot
+/// keypad reader scans the matrix through these registers because the KPD
+/// hardware block has no verified read-out register map.
+pub(crate) const GPIO_BASE: usize = 0x1000_5000;
+
+/// GPIO direction register bank offset (0 = input, 1 = output).
+pub(crate) const GPIO_DIR_BASE: usize = 0x000;
+
+/// GPIO data-out register bank offset.
+pub(crate) const GPIO_DOUT_BASE: usize = 0x100;
+
+/// GPIO data-in register bank offset (reads current pin level).
+pub(crate) const GPIO_DIN_BASE: usize = 0x200;
+
+/// GPIO pull-enable register bank offset.
+pub(crate) const GPIO_PULLEN_BASE: usize = 0x300;
+
+/// GPIO pull-select register bank offset (0 = pull-down, 1 = pull-up).
+pub(crate) const GPIO_PULLSEL_BASE: usize = 0x400;
+
+/// Keypad matrix row GPIO pins (driven low in turn during a scan).
+///
+/// NOTE: placeholder values pending AGM M7 schematic verification —
+/// mirrors haphe's `ROW_PINS`.
+pub(crate) const KEYPAD_ROW_PINS: [u8; 4] = [40, 41, 42, 43];
+
+/// Keypad matrix column GPIO pins (inputs with pull-up; a pressed key
+/// shorts the driven-low row to the column, reading low).
+///
+/// NOTE: placeholder values pending AGM M7 schematic verification —
+/// mirrors haphe's `COL_PINS`.
+pub(crate) const KEYPAD_COL_PINS: [u8; 3] = [44, 45, 46];
+
 // ---------------------------------------------------------------------------
 // Combo chip (WiFi / BT / GPS / FM over the WMT transport)
 // ---------------------------------------------------------------------------
@@ -152,6 +194,7 @@ pub(crate) fn register_devices(registry: &mut DeviceRegistry) {
 
     // Input
     registry.register("mtk-kpd", KPD_BASE, 0); // Keypad
+    registry.register("gpio", GPIO_BASE, 0); // GPIO bank (boot keypad matrix scan)
     registry.register("mtk-tpd", 0x0, 0); // Touch (I2C, addr TBD from teardown)
 
     // Modem (ccci-family addresses; the ccci seam owns those drivers)
@@ -193,7 +236,7 @@ mod tests {
         let mut registry = DeviceRegistry::new();
         register_devices(&mut registry);
 
-        assert_eq!(registry.list().len(), 18);
+        assert_eq!(registry.list().len(), 19);
         let cases: &[(&str, usize)] = &[
             ("uart0", UART0_BASE),
             ("uart1", UART1_BASE),
@@ -201,6 +244,7 @@ mod tests {
             ("disp-rdma0", RDMA0_BASE),
             ("gc9306-lcm", GC9306_LCM_BASE),
             ("mtk-kpd", KPD_BASE),
+            ("gpio", GPIO_BASE),
             ("wmt-consys", CONSYS_BASE),
             ("wlan0", WLAN_BASE),
             ("musb-hdrc", MUSB_BASE),
@@ -216,7 +260,7 @@ mod tests {
         }
         assert_eq!(
             registry.count_by_status(crate::device::DeviceStatus::Registered),
-            18,
+            19,
             "all devices start in the Registered state"
         );
     }

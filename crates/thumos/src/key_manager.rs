@@ -36,6 +36,14 @@ const LABEL_CSPRNG: &[u8] = b"thumos-csprng-v1";
 /// HKDF info label for ephemeral session keys.
 const LABEL_SESSION: &[u8] = b"thumos-session-v1";
 
+/// HKDF info label for the boot passphrase verifier (#446).
+///
+/// The verifier is not a key: it is stored plaintext in the secrets
+/// preamble (crate::secrets) so the boot gate can distinguish a correct
+/// passphrase from a wrong one before mounting. Deriving it from the
+/// primary key keeps verification at PBKDF2 strength per guess.
+const LABEL_VERIFY: &[u8] = b"thumos-verify-v1";
+
 // NOTE (#449): there is deliberately NO compile-time salt constant. The
 // PBKDF2 salt is a per-device random value generated at provisioning and
 // persisted in the on-disk secrets preamble (crate::secrets); every caller
@@ -110,7 +118,7 @@ impl<const N: usize> fmt::Display for SecureKey<N> {
 /// [`KeyManager::derive_partition_keys`] are `Copy`, so constructing a
 /// `SecureKey` from them leaves the original array un-zeroized; this
 /// closes that gap explicitly on every return path (#325).
-fn volatile_zero<const N: usize>(buf: &mut [u8; N]) {
+pub(crate) fn volatile_zero<const N: usize>(buf: &mut [u8; N]) {
     for byte in buf.iter_mut() {
         // SAFETY: write_volatile prevents dead-store elimination; byte
         // points into the caller-owned stack array.
@@ -286,6 +294,35 @@ impl KeyManager {
         volatile_zero(&mut session_bytes);
 
         result
+    }
+
+    /// Derive the boot passphrase verifier from a primary key (#446).
+    ///
+    /// The verifier is what first-boot setup stores in the secrets preamble
+    /// (crate::secrets, slot kind 4, plaintext) and what the boot passphrase
+    /// gate compares against (constant-time) BEFORE any mount. It is an
+    /// HKDF output over the primary key, so a stored verifier costs an
+    /// attacker one full PBKDF2 run per guess — the same as attacking the
+    /// encrypted payload directly. It is deliberately NOT
+    /// `SHA-256(passphrase)`, which would be a fast offline oracle.
+    ///
+    /// The verifier is public by construction, so the output is a plain
+    /// array, not a [`SecureKey`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecurityError`] if HKDF derivation fails.
+    pub(crate) fn derive_boot_verifier(
+        primary: &SecureKey<KEY_SIZE>,
+    ) -> Result<[u8; KEY_SIZE], SecurityError> {
+        let mut out = [0u8; KEY_SIZE];
+        let result = security::hkdf_sha256(primary.as_bytes(), &[], LABEL_VERIFY, &mut out);
+        if result.is_err() {
+            // WHY: a half-derived verifier must never escape — same
+            // zero-on-every-path posture as derive_partition_keys (#325).
+            volatile_zero(&mut out);
+        }
+        result.map(|()| out)
     }
 
     /// Zeroize all partition keys and transition to long-sleep tier.
@@ -585,6 +622,46 @@ mod tests {
             key_a.as_bytes(),
             key_b.as_bytes(),
             "same passphrase + different device salts must derive different primary keys"
+        );
+    }
+
+    #[test]
+    fn boot_verifier_is_deterministic_per_primary() {
+        let primary = derive_test_primary(b"verifier determinism");
+        let v1 = KeyManager::derive_boot_verifier(&primary).expect("derive verifier");
+        let v2 = KeyManager::derive_boot_verifier(&primary).expect("derive verifier");
+        assert_eq!(v1, v2, "same primary must yield the same verifier");
+        assert_ne!(v1, [0u8; KEY_SIZE], "verifier must not be zero");
+    }
+
+    #[test]
+    fn boot_verifier_tracks_the_passphrase() {
+        let primary_a = derive_test_primary(b"correct horse");
+        let primary_b = derive_test_primary(b"battery staple");
+        let v_a = KeyManager::derive_boot_verifier(&primary_a).expect("verifier a");
+        let v_b = KeyManager::derive_boot_verifier(&primary_b).expect("verifier b");
+        assert_ne!(
+            v_a, v_b,
+            "different passphrases must verify differently (the boot gate's whole point)"
+        );
+    }
+
+    #[test]
+    fn boot_verifier_is_label_separated_from_partition_keys() {
+        let primary = derive_test_primary(b"label separation");
+        let verifier = KeyManager::derive_boot_verifier(&primary).expect("verifier");
+        let mut km = KeyManager::new();
+        km.derive_partition_keys(&primary).expect("partition keys");
+        let data = km.data_key().expect("data key").as_bytes();
+        assert_ne!(
+            &verifier[..],
+            &data[..KEY_SIZE],
+            "HKDF label separation: verifier must differ from the data key"
+        );
+        assert_ne!(
+            &verifier[..],
+            &primary.as_bytes()[..],
+            "the verifier is a derived value, never the primary itself"
         );
     }
 

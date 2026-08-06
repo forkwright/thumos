@@ -36,7 +36,7 @@ use crate::ui::{
 // ---------------------------------------------------------------------------
 
 /// Maximum passphrase length in bytes.
-const MAX_PASSPHRASE_LEN: usize = 64;
+pub(crate) const MAX_PASSPHRASE_LEN: usize = 64;
 
 /// Maximum PIN length in digits.
 const MAX_PIN_LEN: usize = 10;
@@ -399,6 +399,27 @@ impl LockScreen {
     /// The caller is responsible for calling `KeyManager::derive_from_passphrase`
     /// on success — this method only verifies the hash.
     pub fn submit_passphrase(&mut self, current_tick: u64) -> UnlockResult {
+        let expected = self.passphrase_hash;
+        self.submit_passphrase_with(current_tick, move |entered| {
+            constant_time_eq(&security::sha256(entered), &expected)
+        })
+    }
+
+    /// Submit the current passphrase against a caller-supplied verification
+    /// strategy (#446).
+    ///
+    /// Identical throttle / attempt / wipe bookkeeping to
+    /// [`Self::submit_passphrase`]; only the verification differs. The boot
+    /// passphrase gate verifies at PBKDF2 strength — derive from the entered
+    /// bytes, compare the boot verifier constant-time — because no usable
+    /// hash store exists before the encrypted fs is mounted. `verify`
+    /// receives the entered passphrase bytes and must perform any
+    /// constant-time comparison itself.
+    pub fn submit_passphrase_with(
+        &mut self,
+        current_tick: u64,
+        verify: impl FnOnce(&[u8]) -> bool,
+    ) -> UnlockResult {
         // Check throttle.
         if self.is_throttled(current_tick) {
             let wait = self.throttle_remaining(current_tick);
@@ -412,11 +433,9 @@ impl LockScreen {
             return UnlockResult::Throttled { wait_secs: wait };
         }
 
-        // Hash the entered passphrase and compare (constant-time).
         let entered = &self.passphrase_buffer[..self.passphrase_len as usize];
-        let hash = security::sha256(entered);
 
-        if constant_time_eq(&hash, &self.passphrase_hash) {
+        if verify(entered) {
             self.on_success(UnlockResult::Success);
             UnlockResult::Success
         } else {
@@ -552,11 +571,26 @@ impl LockScreen {
     ///
     /// For T9-style input, the caller maps key sequences to characters.
     /// For simplicity, numeric keys append their digit character directly.
-    fn push_passphrase_byte(&mut self, byte: u8) {
+    /// `pub(crate)` for the boot-time input loop (#446).
+    pub(crate) fn push_passphrase_byte(&mut self, byte: u8) {
         if self.passphrase_len < MAX_PASSPHRASE_LEN as u8 {
             self.passphrase_buffer[self.passphrase_len as usize] = byte;
             self.passphrase_len += 1;
         }
+    }
+
+    /// Drop the last entered passphrase byte (boot input backspace, #446).
+    pub(crate) fn backspace_passphrase(&mut self) {
+        if self.passphrase_len > 0 {
+            self.passphrase_len -= 1;
+        }
+    }
+
+    /// Borrow the entered passphrase bytes (boot first-boot confirm
+    /// compare, #446). The buffer is zero-copy; callers must not persist
+    /// the slice past the next input mutation.
+    pub(crate) fn passphrase_bytes(&self) -> &[u8] {
+        &self.passphrase_buffer[..self.passphrase_len as usize]
     }
 
     /// Map a Key to a digit byte (b'0'..b'9').
@@ -741,9 +775,7 @@ impl Screen for LockScreen {
                     }
                     Key::Left => {
                         // Backspace.
-                        if self.passphrase_len > 0 {
-                            self.passphrase_len -= 1;
-                        }
+                        self.backspace_passphrase();
                         ScreenAction::None
                     }
                     Key::Star => {
@@ -929,6 +961,60 @@ mod tests {
         let result = screen.submit_passphrase(100);
         assert_eq!(result, UnlockResult::WrongPassphrase);
         assert_eq!(screen.attempts(), 1);
+    }
+
+    #[test]
+    fn submit_passphrase_with_passes_the_entered_bytes_to_the_strategy() {
+        let mut screen = make_screen();
+        for &byte in TEST_PASSPHRASE {
+            screen.push_passphrase_byte(byte);
+        }
+        // The injected strategy (boot: PBKDF2-strength verifier compare)
+        // must see exactly the entered bytes.
+        let result = screen.submit_passphrase_with(100, |entered| entered == TEST_PASSPHRASE);
+        assert_eq!(result, UnlockResult::Success);
+        assert_eq!(screen.attempts(), 0, "attempts reset on success");
+    }
+
+    #[test]
+    fn submit_passphrase_with_rejection_uses_the_same_bookkeeping() {
+        let mut screen = make_screen();
+        for &byte in TEST_PASSPHRASE {
+            screen.push_passphrase_byte(byte);
+        }
+        let result = screen.submit_passphrase_with(100, |_| false);
+        assert_eq!(result, UnlockResult::WrongPassphrase);
+        assert_eq!(screen.attempts(), 1);
+        assert_eq!(
+            screen.passphrase_len(),
+            0,
+            "failure clears the input buffer"
+        );
+    }
+
+    #[test]
+    fn submit_passphrase_with_honors_the_throttle_window() {
+        let mut screen = make_screen();
+        // Three failures at the same tick arm a 5-second throttle
+        // (throttle_delay(3) = 5); delay 0 for the first two attempts
+        // keeps every submit inside the window unthrottled.
+        for _ in 0..3 {
+            screen.push_passphrase_byte(b'x');
+            let r = screen.submit_passphrase_with(100, |_| false);
+            assert_eq!(r, UnlockResult::WrongPassphrase);
+        }
+        // A retry inside the window is throttled even when the injected
+        // verifier would pass — the strategy is not even invoked.
+        for &byte in TEST_PASSPHRASE {
+            screen.push_passphrase_byte(byte);
+        }
+        let r = screen.submit_passphrase_with(101, |_| true);
+        assert_eq!(r, UnlockResult::Throttled { wait_secs: 4 });
+        assert_eq!(
+            screen.passphrase_len(),
+            0,
+            "the throttled exit clears the buffer (#388)"
+        );
     }
 
     #[test]
