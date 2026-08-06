@@ -27,6 +27,15 @@ owner = "#545 (this PR)"
 notes = "The live divergence that proved the class: screen bands and the detector's protocol invariants disagreed. Now one type, one boundary table, both consumers."
 
 [[pair]]
+name = "keypad-matrix-scan"
+kernel = "keypad.rs (mirrors haphe's scan/debounce algorithm, #446)"
+workspace = "haphe (gpio.rs)"
+disposition = "extract-core"
+canonical = "pending: matrix geometry + debounce state machine could lift into a no_std core crate when a second consumer justifies it; the event models genuinely differ today (boot taps vs queued press/release/held)"
+owner = "#446"
+notes = "The kernel boot reader reports confirmed presses only (no queue, no release/held events) and cannot link the std workspace crate; pin assignments are shared placeholders pending AGM M7 schematic verification."
+
+[[pair]]
 name = "gps"
 kernel = "gps.rs (ported from topos)"
 workspace = "topos"

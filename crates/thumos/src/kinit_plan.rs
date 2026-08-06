@@ -59,32 +59,34 @@ pub(crate) enum BootStep {
     GpioInput = 9,
     /// Measured boot signature verification (Ed25519).
     SecureBoot = 10,
-    /// Filesystem (LFS on eMMC) -- trust-gated on SecureBoot (#217).
-    Filesystem = 11,
-    /// Passphrase entry and key derivation.
-    Passphrase = 12,
-    /// Encrypted filesystem mount.
-    Encryption = 13,
+    /// Passphrase entry and key derivation (#446: runs BEFORE any mount —
+    /// once provisioned, the payload is ciphertext and only the derived
+    /// key opens it).
+    Passphrase = 11,
+    /// Filesystem mount — plain (unprovisioned) or wrapped in
+    /// `EncryptedBlockDevice` (derived data key). Trust-gated on
+    /// SecureBoot (#217); a locked payload is never plain-mounted (#446).
+    Filesystem = 12,
     /// Tamper-evident audit log initialization.
-    AuditLog = 14,
+    AuditLog = 13,
     /// Security mode manager (Daily/Sentinel/Panic).
-    SecurityMode = 15,
+    SecurityMode = 14,
     /// USB ACM serial console.
-    UsbSerial = 16,
+    UsbSerial = 15,
     /// CCCI modem link.
-    CcciModem = 17,
+    CcciModem = 16,
     /// Power manager.
-    PowerManager = 18,
+    PowerManager = 17,
     /// Network configuration (DHCP + DNS resolver).
-    Network = 19,
+    Network = 18,
     /// Bluetooth adapter initialization.
-    Bluetooth = 20,
+    Bluetooth = 19,
     /// GPS receiver initialization.
-    Gps = 21,
+    Gps = 20,
     /// Userspace process spawn attempted.
-    Userspace = 22,
+    Userspace = 21,
     /// Boot complete.
-    Complete = 23,
+    Complete = 22,
 }
 
 // WHY cfg_attr(not(test)): see the enum above -- the expectation applies to
@@ -98,7 +100,7 @@ pub(crate) enum BootStep {
 )]
 impl BootStep {
     /// Total number of boot steps.
-    pub(crate) const COUNT: usize = 24;
+    pub(crate) const COUNT: usize = 23;
 
     /// Returns true if `self` depends on `other` (i.e., `other` must
     /// be attempted before `self`).
@@ -110,6 +112,123 @@ impl BootStep {
 // ---------------------------------------------------------------------------
 // Boot state tracker
 // ---------------------------------------------------------------------------
+
+/// What the early read of the on-disk secrets preamble (#449) found (#446).
+///
+/// The read runs right after eMMC bring-up, BEFORE any mount, so the mount
+/// gate can never mistake a locked payload for an absent one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreambleLoad {
+    /// The read has not run yet (no eMMC, or the step was not reached).
+    NotRead,
+    /// Header absent/corrupt: no salt, no verifier — the device has never
+    /// set a boot passphrase. First-boot setup may provision it.
+    Unprovisioned,
+    /// A valid header carrying a boot passphrase verifier.
+    Provisioned,
+    /// The read itself failed (I/O). Fail-closed: the payload state is
+    /// UNKNOWN, so it is treated as locked.
+    ReadFailed,
+}
+
+/// What the boot passphrase step does (#446).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BootPassphrasePlan {
+    /// Verify loop: prompt, verify against the stored verifier at PBKDF2
+    /// strength, derive keys on success.
+    Verify,
+    /// No verifier stored: first-boot setup (enter, confirm, store the
+    /// verifier, derive keys).
+    FirstBootSetup,
+    /// Passphrase entry does not run this boot (degraded path).
+    Skip,
+}
+
+/// Decide the boot passphrase step. Pure logic (#528 seam): kinit executes.
+///
+/// Fail-closed ordering (#217): the trust root is checked FIRST — key
+/// derivation never runs on an unverified image. A preamble that was not
+/// read or could not be read never falls into setup: a transient fault
+/// must not masquerade as first boot.
+pub(crate) const fn boot_passphrase_plan(
+    secure_boot_ok: bool,
+    display_ok: bool,
+    input_ok: bool,
+    preamble: PreambleLoad,
+) -> BootPassphrasePlan {
+    if !secure_boot_ok || !display_ok || !input_ok {
+        return BootPassphrasePlan::Skip;
+    }
+    match preamble {
+        PreambleLoad::Provisioned => BootPassphrasePlan::Verify,
+        PreambleLoad::Unprovisioned => BootPassphrasePlan::FirstBootSetup,
+        PreambleLoad::NotRead | PreambleLoad::ReadFailed => BootPassphrasePlan::Skip,
+    }
+}
+
+/// How the userdata payload mounts (#446).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MountPlan {
+    /// Wrap the payload view in `EncryptedBlockDevice` with the derived
+    /// data key; LFS mounts one sector past the preamble.
+    Encrypted,
+    /// Unprovisioned device: the plain LFS mount at the partition head
+    /// (the dev/transition path, byte-compatible with pre-#446 images).
+    Plain,
+    /// No persistent mount; the VFS root falls back to the initramfs.
+    RamfsFallback,
+}
+
+/// Decide the userdata mount. Fail-closed invariants:
+/// - no eMMC or no verified boot: nothing persistent mounts (the #217 gate
+///   today's code already enforces);
+/// - a provisioned (locked) payload is NEVER plain-mounted or formatted —
+///   without the derived key the only honest mount is none;
+/// - an unreadable preamble is treated as provisioned (unknown = locked).
+pub(crate) const fn mount_plan(
+    emmc_ok: bool,
+    secure_boot_ok: bool,
+    preamble: PreambleLoad,
+    passphrase_ok: bool,
+) -> MountPlan {
+    if !emmc_ok || !secure_boot_ok {
+        return MountPlan::RamfsFallback;
+    }
+    if passphrase_ok {
+        return MountPlan::Encrypted;
+    }
+    match preamble {
+        PreambleLoad::Unprovisioned => MountPlan::Plain,
+        PreambleLoad::Provisioned | PreambleLoad::ReadFailed | PreambleLoad::NotRead => {
+            MountPlan::RamfsFallback
+        }
+    }
+}
+
+/// Minimum boot passphrase length (digits) accepted at first-boot setup
+/// (#446). The boot pad alphabet is digits-only (Star/Hash are the
+/// backspace/submit control keys), so this floor is the brute-force
+/// margin alongside PBKDF2-100k, throttle escalation, and the 10-attempt
+/// wipe; it matches the PIN posture (`REQUIRED_PIN_LEN`).
+pub(crate) const MIN_BOOT_PASSPHRASE_LEN: u8 = 6;
+
+/// The boot-log line for a skipped passphrase step (#446) — one source for
+/// the M7 and QEMU arms. The QEMU boot witness greps the refusal wording
+/// verbatim (`Passphrase entry refused`), so these strings are a contract,
+/// not flavor.
+pub(crate) const fn passphrase_skip_reason(
+    secure_boot_ok: bool,
+    display_ok: bool,
+    input_ok: bool,
+) -> &'static str {
+    if !secure_boot_ok {
+        " WARN Passphrase entry refused (secure boot not established -- fail-closed)\r\n"
+    } else if !display_ok || !input_ok {
+        " WARN Passphrase entry skipped (no display/input)\r\n"
+    } else {
+        " WARN Passphrase entry skipped (preamble unreadable)\r\n"
+    }
+}
 
 /// Tracks which subsystems initialized successfully during boot.
 /// The panic handler and degradation logic read this to decide what
@@ -126,6 +245,10 @@ pub(crate) struct BootState {
     pub(crate) display_ok: bool,
     pub(crate) secure_boot_ok: bool,
     pub(crate) passphrase_ok: bool,
+    /// What the early secrets-preamble read found (#446) — the mount
+    /// gate's fail-closed signal. Not an ok-flag: excluded from
+    /// `ok_count`/`total_subsystems` (it is not a subsystem).
+    pub(crate) preamble: PreambleLoad,
     pub(crate) encryption_ok: bool,
     pub(crate) audit_ok: bool,
     pub(crate) security_mode_ok: bool,
@@ -154,6 +277,7 @@ impl BootState {
             display_ok: false,
             secure_boot_ok: false,
             passphrase_ok: false,
+            preamble: PreambleLoad::NotRead,
             encryption_ok: false,
             audit_ok: false,
             security_mode_ok: false,
@@ -375,7 +499,7 @@ mod tests {
     fn boot_step_count_matches_variants() {
         assert_eq!(
             BootStep::COUNT,
-            24,
+            23,
             "BootStep::COUNT must match the number of variants"
         );
     }
@@ -429,8 +553,13 @@ mod tests {
     fn boot_step_complete_is_last() {
         assert_eq!(
             BootStep::Complete as u8,
-            23,
+            22,
             "Complete must be the highest-numbered step"
+        );
+        assert_eq!(
+            BootStep::COUNT,
+            23,
+            "COUNT tracks the enum (#446 folded Encryption into Filesystem)"
         );
     }
 
@@ -675,20 +804,16 @@ mod tests {
             "SecureBoot must run after Display (errors need display)"
         );
         assert!(
-            BootStep::Filesystem.depends_on(BootStep::SecureBoot),
-            "Filesystem mount must run after SecureBoot (#217: a tampered image must never reach user data)"
-        );
-        assert!(
             BootStep::Passphrase.depends_on(BootStep::SecureBoot),
             "Passphrase entry must run after SecureBoot verification"
         );
         assert!(
-            BootStep::Encryption.depends_on(BootStep::Passphrase),
-            "Encryption mount must run after Passphrase derives keys"
+            BootStep::Filesystem.depends_on(BootStep::Passphrase),
+            "Filesystem mount must run after Passphrase derives keys (#446: a provisioned payload is ciphertext; the mount needs the data key)"
         );
         assert!(
-            BootStep::AuditLog.depends_on(BootStep::Encryption),
-            "AuditLog must run after Encryption (needs audit key)"
+            BootStep::AuditLog.depends_on(BootStep::Filesystem),
+            "AuditLog must run after Filesystem (needs audit key + a mounted log store)"
         );
         assert!(
             BootStep::SecurityMode.depends_on(BootStep::AuditLog),
@@ -703,13 +828,125 @@ mod tests {
 
     #[test]
     fn security_boot_steps_are_contiguous() {
-        // WHY (#217): the trust chain is consecutive with no gaps --
-        // verify, then mount, then derive keys, then decrypt, then audit.
+        // WHY (#217 + #446): the trust chain is consecutive with no gaps --
+        // verify, then derive keys from the entered passphrase, then mount
+        // (encrypted when provisioned), then audit. Passphrase strictly
+        // precedes Filesystem: a provisioned payload is ciphertext, so the
+        // mount needs the derived key, and a locked payload is never
+        // plain-mounted.
         assert_eq!(BootStep::SecureBoot as u8, 10);
-        assert_eq!(BootStep::Filesystem as u8, 11);
-        assert_eq!(BootStep::Passphrase as u8, 12);
-        assert_eq!(BootStep::Encryption as u8, 13);
-        assert_eq!(BootStep::AuditLog as u8, 14);
-        assert_eq!(BootStep::SecurityMode as u8, 15);
+        assert_eq!(BootStep::Passphrase as u8, 11);
+        assert_eq!(BootStep::Filesystem as u8, 12);
+        assert_eq!(BootStep::AuditLog as u8, 13);
+        assert_eq!(BootStep::SecurityMode as u8, 14);
+    }
+
+    #[test]
+    fn boot_passphrase_plan_gates_on_trust_then_hardware_then_provisioning() {
+        // Fail-closed first: no trust root, no derivation (#217).
+        assert_eq!(
+            boot_passphrase_plan(false, true, true, PreambleLoad::Provisioned),
+            BootPassphrasePlan::Skip,
+            "no secure boot -> skip even when provisioned"
+        );
+        // Hardware prerequisites.
+        assert_eq!(
+            boot_passphrase_plan(true, false, true, PreambleLoad::Provisioned),
+            BootPassphrasePlan::Skip,
+            "no display -> skip"
+        );
+        assert_eq!(
+            boot_passphrase_plan(true, true, false, PreambleLoad::Provisioned),
+            BootPassphrasePlan::Skip,
+            "no input -> skip"
+        );
+        // Provisioning states.
+        assert_eq!(
+            boot_passphrase_plan(true, true, true, PreambleLoad::Provisioned),
+            BootPassphrasePlan::Verify
+        );
+        assert_eq!(
+            boot_passphrase_plan(true, true, true, PreambleLoad::Unprovisioned),
+            BootPassphrasePlan::FirstBootSetup
+        );
+        // An unreadable/unread preamble never masquerades as first boot.
+        assert_eq!(
+            boot_passphrase_plan(true, true, true, PreambleLoad::ReadFailed),
+            BootPassphrasePlan::Skip,
+            "I/O fault is not a first boot"
+        );
+        assert_eq!(
+            boot_passphrase_plan(true, true, true, PreambleLoad::NotRead),
+            BootPassphrasePlan::Skip
+        );
+    }
+
+    #[test]
+    fn mount_plan_never_plain_mounts_a_locked_or_unknown_payload() {
+        // The pre-#446 gate: no eMMC or no trust root -> no persistent mount.
+        assert_eq!(
+            mount_plan(false, true, PreambleLoad::Unprovisioned, false),
+            MountPlan::RamfsFallback,
+            "no eMMC -> ramfs"
+        );
+        assert_eq!(
+            mount_plan(true, false, PreambleLoad::Unprovisioned, false),
+            MountPlan::RamfsFallback,
+            "no verified boot -> ramfs (#217)"
+        );
+        // The new fail-closed invariants (#446).
+        assert_eq!(
+            mount_plan(true, true, PreambleLoad::Provisioned, false),
+            MountPlan::RamfsFallback,
+            "provisioned but locked: never plain-mount or format"
+        );
+        assert_eq!(
+            mount_plan(true, true, PreambleLoad::ReadFailed, false),
+            MountPlan::RamfsFallback,
+            "unknown payload state is treated as locked"
+        );
+        assert_eq!(
+            mount_plan(true, true, PreambleLoad::NotRead, false),
+            MountPlan::RamfsFallback
+        );
+        // The two real mounts.
+        assert_eq!(
+            mount_plan(true, true, PreambleLoad::Provisioned, true),
+            MountPlan::Encrypted,
+            "derived key -> encrypted mount"
+        );
+        assert_eq!(
+            mount_plan(true, true, PreambleLoad::Unprovisioned, true),
+            MountPlan::Encrypted,
+            "first-boot setup also ends in the encrypted mount"
+        );
+        assert_eq!(
+            mount_plan(true, true, PreambleLoad::Unprovisioned, false),
+            MountPlan::Plain,
+            "unprovisioned dev path stays byte-compatible"
+        );
+    }
+
+    #[test]
+    fn boot_state_defaults_preamble_to_not_read() {
+        let state = BootState::new();
+        assert_eq!(state.preamble, PreambleLoad::NotRead);
+    }
+
+    #[test]
+    fn passphrase_skip_reason_pins_the_witness_contract_strings() {
+        // scripts/witness/boot.sh greps the untrusted-boot refusal verbatim.
+        assert!(
+            passphrase_skip_reason(false, true, true).contains("Passphrase entry refused"),
+            "the fail-closed wording is a QEMU witness contract"
+        );
+        assert!(
+            passphrase_skip_reason(true, false, true).contains("no display/input"),
+            "hardware-skip wording"
+        );
+        assert!(
+            passphrase_skip_reason(true, true, true).contains("preamble unreadable"),
+            "unreadable-preamble wording"
+        );
     }
 }

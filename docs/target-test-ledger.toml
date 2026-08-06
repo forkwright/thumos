@@ -308,9 +308,15 @@ fidelity = "constant table only — nothing target-executed to diverge"
 
 [[module]]
 name = "key_manager"
-tests = 13
+tests = 16
 mechanism = "host"
 fidelity = "KDF correctness is host-covered; on-device salt persistence is #449"
+
+[[module]]
+name = "keypad"
+tests = 6
+mechanism = "host"
+fidelity = "scan/debounce logic proven on injected matrices host-side; the live GPIO matrix read + pin assignments are the m7 boot path (hardware-gated, placeholders pending the AGM M7 schematic)"
 
 [[module]]
 name = "kinit"
@@ -320,7 +326,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "kinit_plan"
-tests = 21
+tests = 25
 mechanism = "host"
 
 [[module]]
@@ -355,7 +361,7 @@ mechanism = "host"
 
 [[module]]
 name = "lock_screen"
-tests = 20
+tests = 23
 mechanism = "host"
 fidelity = "policy logic host-covered; boot-time passphrase input is #446"
 
@@ -549,7 +555,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "secrets"
-tests = 4
+tests = 9
 mechanism = "host"
 fidelity = "provision/read proven on the RAM double; eMMC persistence + the 8d consumption path are the m7 boot (hardware-gated)"
 
