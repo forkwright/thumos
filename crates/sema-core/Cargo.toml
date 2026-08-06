@@ -1,0 +1,19 @@
+[package]
+name = "sema-core"
+description = "no_std + alloc core types for radio-intelligence threat semantics (the canonical ThreatLevel/Calibration, shared by sema and the kernel)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+[lints]
+workspace = true
+
+[package.metadata.kanon]
+maturity = "alpha"
+since = "2026-08-05"
+exit-criteria = "operator-reviewed hardware validation and release-readiness gate"

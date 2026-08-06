@@ -162,78 +162,10 @@ impl core::fmt::Display for CipherAlgorithm {
 
 // ── Threat scoring ──────────────────────────────────────────────────────────
 
-/// Calibration provenance of a [`ThreatScore`] (#555).
-///
-/// The detector's weights and thresholds ship as **provisional defaults**
-/// with no retained calibration corpus or evaluation behind them. Until the
-/// evaluation harness (`crate::eval`) reports an operating point over a
-/// versioned trace corpus, every score must be presented as UNCALIBRATED —
-/// never as validated operational severity. This marker is how the type
-/// system carries that honesty: a score cannot exist without stating its
-/// provenance, and any future automatic response must match on
-/// `Calibrated` before it may act.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[must_use]
-#[non_exhaustive]
-pub(crate) enum Calibration {
-    /// Weights/thresholds are the provisional hand-maintained defaults; no
-    /// corpus-backed evaluation has established an operating point.
-    Uncalibrated,
-    /// Weights/thresholds were derived from the named corpus version at the
-    /// recorded operating point, satisfying the recorded error budget.
-    Calibrated {
-        /// Version identifier of the trace corpus the evaluation ran over.
-        corpus: String,
-        /// The operating point (weight set + thresholds) the evaluation
-        /// selected, in `Config`-serializable form.
-        operating_point: String,
-        /// The measured error rates at that operating point
-        /// (false-positive and false-negative rates, per mille).
-        error_budget_per_mille: (u32, u32),
-    },
-}
-
-impl core::fmt::Display for Calibration {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Uncalibrated => f.write_str("UNCALIBRATED"),
-            Self::Calibrated { corpus, .. } => write!(f, "calibrated({corpus})"),
-        }
-    }
-}
-
-/// Threat level derived from the cumulative [`ThreatScore`].
-///
-/// Thresholds: `<30` Low, `30–59` Medium, `60–79` High, `≥80` Critical.
-/// These boundaries are protocol invariants (changing them is a semver
-/// break), but their MEANING is provisional until the score behind them is
-/// `Calibration::Calibrated` (#555): the bands name score ranges, not yet
-/// validated detection confidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[must_use]
-#[non_exhaustive]
-pub(crate) enum ThreatLevel {
-    /// Score below 30. Normal operating conditions (provisional band).
-    Low,
-    /// Score 30–59. Suspicious activity band (provisional).
-    Medium,
-    /// Score 60–79. High band — labeled "likely IMSI catcher" only after
-    /// calibration establishes what the band actually separates (#555).
-    High,
-    /// Score 80+. Critical band (provisional; see High).
-    Critical,
-}
-
-impl core::fmt::Display for ThreatLevel {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Low => f.write_str("LOW"),
-            Self::Medium => f.write_str("MEDIUM"),
-            Self::High => f.write_str("HIGH"),
-            Self::Critical => f.write_str("CRITICAL"),
-        }
-    }
-}
+/// The canonical threat semantics now live in `sema_core` (#545) — one
+/// implementation, shared by this crate and the kernel. Re-exported here so
+/// existing paths (`crate::cell::ThreatLevel`, etc.) keep working.
+pub(crate) use sema_core::{Calibration, ThreatLevel, level_from_score};
 
 /// A contributing factor to the overall [`ThreatScore`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,16 +216,6 @@ impl core::fmt::Display for ThreatScore {
             self.factors.len(),
             if self.factors.len() == 1 { "" } else { "s" },
         )
-    }
-}
-
-/// Derive a [`ThreatLevel`] from a numeric score.
-const fn level_from_score(score: u32) -> ThreatLevel {
-    match score {
-        0..30 => ThreatLevel::Low,
-        30..60 => ThreatLevel::Medium,
-        60..80 => ThreatLevel::High,
-        _ => ThreatLevel::Critical,
     }
 }
 
