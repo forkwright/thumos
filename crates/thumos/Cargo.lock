@@ -192,6 +192,7 @@ dependencies = [
  "curve25519-dalek",
  "ed25519",
  "sha2",
+ "signature",
  "subtle",
 ]
 
@@ -436,6 +437,9 @@ name = "signature"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "smoltcp"

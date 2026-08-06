@@ -169,6 +169,23 @@ cd crates/thumos
 cargo run --example qemu_smoke --release   # prints "qemu_smoke: pass"
 ```
 
+## Boot-image signing (Ed25519ph, #467)
+
+`crates/sphragis` is the boot-image signing tool: it streams an image
+through SHA-512 in bounded reads, Ed25519ph-signs with the anchor's seed,
+and emits the `payload || zero-pad || signature(64)` sector-aligned layout
+the kernel's streamed boot gate (`secure_boot::verify_image_streamed`)
+verifies:
+
+```
+cargo run -p sphragis -- <image-in> <seed-hex-file> <image-out>
+```
+
+For mkbootimg assembly: the combined kernel(+ramdisk) image is sphragis's
+input; its output is what gets flashed to the GPT `boot` partition. The
+dev anchor (`keys/dev/boot-dev.seed`) signs dev images; production keys
+live offline and never enter the repo.
+
 ## Signing and attestation boundary
 
 Where trust enters the build — and what is deliberately **not** attested
