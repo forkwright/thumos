@@ -378,6 +378,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sema-core"
+version = "0.1.16"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -500,6 +507,7 @@ dependencies = [
  "postcard",
  "rand_chacha",
  "rand_core",
+ "sema-core",
  "serde",
  "sha2",
  "smoltcp",

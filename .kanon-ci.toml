@@ -77,6 +77,13 @@ timeout_secs = 300
 cmd = "scripts/check-board-seam.sh"
 timeout_secs = 300
 
+# WHY (#545): convergence is a ratchet, not a wish — port markers and
+# stale expectations only ever decrease, and every duplicated pair names
+# its disposition. Source-level, cheap.
+[stages."convergence"]
+cmd = "scripts/check-convergence.sh"
+timeout_secs = 300
+
 # WHY (#546): the full QEMU witness matrix (boot + fault + sleep + fork +
 # exec + forkexec + guard + brk + signal + crashloop) as one canonical runner — the
 # exact scripts ci.yml executes step-by-step.

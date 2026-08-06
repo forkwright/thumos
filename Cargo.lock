@@ -1053,9 +1053,17 @@ dependencies = [
  "jiff",
  "log",
  "postcard",
+ "sema-core",
  "serde",
  "snafu",
  "toml",
+]
+
+[[package]]
+name = "sema-core"
+version = "0.1.16"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

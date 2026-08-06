@@ -2,7 +2,7 @@
 #![deny(missing_docs)]
 #![expect(
     dead_code,
-    reason = "public API surface for future kernel binary integration (#126)"
+    reason = "API surface pending convergence — tracked in docs/convergence.toml (#545)"
 )]
 #![allow(unfulfilled_lint_expectations)]
 //! Input drivers for the AGM M7: GPIO keypad matrix scan, mtk-tpd touchscreen, event queue.

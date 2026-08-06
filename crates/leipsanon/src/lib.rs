@@ -1,7 +1,7 @@
 #![deny(missing_docs)]
 #![expect(
     dead_code,
-    reason = "public API surface for future kernel binary integration (#126)"
+    reason = "API surface pending convergence — tracked in docs/convergence.toml (#545)"
 )]
 #![allow(unfulfilled_lint_expectations)]
 //! Emergency data destruction. Selective wipe of sensitive partitions

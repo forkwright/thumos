@@ -9,7 +9,13 @@ Board specifics (MMIO maps, device set, bring-up behavior) live behind the `boar
 
 ## Crate map
 
-14 crates total: 1 bare-metal kernel binary + 13 workspace library crates.
+15 crates total: 1 bare-metal kernel binary + 14 workspace library crates.
+
+The kernel links `sema-core` (the canonical threat-semantics types) by path
+dependency — the first instance of the #545 convergence topology: shared
+protocol/policy invariants live in no_std+alloc core crates the kernel and
+the workspace both consume; the full pair ledger and the ratchet enforcing
+it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 
 ### Kernel binary (excluded from workspace)
 
@@ -52,6 +58,7 @@ Board specifics (MMIO maps, device set, bring-up behavior) live behind the `boar
 | `pteron` | Bluetooth HCI over STP, BLE scanning, LE Privacy address rotation |
 | `kelyphos` | WMT combo chip manager: firmware loading, STP framing, power control |
 | `sema` | Radio analysis: WiFi/BT/cell scanning, IMSI catcher detection |
+| `sema-core` | no_std+alloc threat semantics (canonical ThreatLevel/Calibration + band invariants, shared with the kernel, #545) |
 | `topos` | GPS NMEA parser, geofencing, position logging |
 
 **Security**
