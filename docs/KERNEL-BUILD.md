@@ -223,6 +223,45 @@ today:
   released boot image. Release attestation is broken and tracked in #536. Do
   not present any current artifact as release-signed or release-attested.
 
+## Boot passphrase and encrypted userdata (#446)
+
+The boot-time input subsystem behind `passphrase_ok`:
+
+- **Flow.** kinit Step 8c probes the on-disk secrets preamble (#449)
+  read-only, right after eMMC bring-up and before any mount. A provisioned
+  device (preamble carries a verifier) runs the verify loop: poll the GPIO
+  keypad matrix, drive the lock screen, and on submit derive
+  PBKDF2-HMAC-SHA256(passphrase, salt, 100_000) and compare
+  `HKDF(primary, "thumos-verify-v1")` against the stored verifier
+  constant-time. Success derives the partition keys (Step 8c), and Step 8d
+  mounts the userdata payload through `EncryptedBlockDevice` (AES-256-XTS)
+  one sector past the preamble. An unprovisioned device runs first-boot
+  setup instead: enter, confirm, store the verifier, derive, mount
+  encrypted (formatting the payload on that first encrypted mount).
+- **The verifier is not a fast oracle.** It is a PBKDF2-strength derived
+  value, never `SHA-256(passphrase)` — a disk image buys an attacker the
+  same per-guess cost as attacking the ciphertext itself.
+- **Fail-closed mount.** A provisioned-but-locked payload (passphrase not
+  entered: refused, throttled out, or hardware missing) is never
+  plain-mounted and never formatted — the boot falls back to the
+  initramfs root, and the throttle/wipe state machine (10 attempts →
+  panic wipe) applies. An unreadable preamble is treated as locked.
+- **Boot pad binding.** The 4×3 matrix yields digits, Star, Hash only:
+  digits append, Star = backspace, Hash = submit/confirm. Boot passphrases
+  are digits-only (minimum 6), constrained identically at setup so a
+  passphrase is always enterable at boot. Post-boot symbol entry in
+  `lock_screen.rs` is unaffected.
+- **One-way transition.** Completing first-boot setup writes the preamble
+  sector at the userdata head and formats the payload encrypted. Plain
+  pre-provisioning content does NOT migrate — it is overwritten. qemu and
+  dev-anchor builds never reach the gate (secure boot cannot establish
+  trust there), so CI witnesses and dev iteration are unaffected.
+- **Hardware status.** The live GPIO matrix scan, the display render, and
+  the on-device verify/mount path are hardware-gated (pin assignments are
+  placeholders pending AGM M7 schematic verification, mirroring haphe);
+  host tests prove the scan/debounce logic, the preamble format, the
+  verifier derivation, and the gate matrices.
+
 ## Hardware path: unproven
 
 Everything on this page proves the kernel **under QEMU `-machine virt`

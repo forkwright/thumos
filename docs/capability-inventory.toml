@@ -21,7 +21,7 @@ notes = "PL0 isolation, graceful kill, fork/exec/brk/guard witnesses live in the
 id = "memory-fs"
 modules = ["block", "cache", "vfs", "devfs", "lfs", "lfs_imap", "lfs_segment", "lfs_checkpoint", "lfs_writer", "lfs_compact", "emmc", "ramfs"]
 tier = "kernel-wired"
-notes = "LFS mounts at boot (kinit Step 8c); no witness marker asserts persistence behavior in emulation yet."
+notes = "LFS mounts at boot (kinit Step 8d, encrypted when provisioned per #446); no witness marker asserts persistence behavior in emulation yet."
 
 [[capability]]
 id = "time"
@@ -87,9 +87,9 @@ hardware_reason = "PMIC/battery telemetry needs the physical device"
 
 [[capability]]
 id = "display-input"
-modules = ["display"]
+modules = ["display", "keypad"]
 tier = "kernel-wired"
-notes = "Rendered via the ui capability's synthetic framebuffer in emulation; the DDP pipeline is hardware-gated."
+notes = "Rendered via the ui capability's synthetic framebuffer in emulation; the DDP pipeline is hardware-gated. keypad (boot matrix reader, #446) is host-tested on injected matrices; the live GPIO scan is hardware-gated."
 
 [[capability]]
 id = "connectivity"

@@ -153,6 +153,10 @@ mod json_mini;
 mod kardia;
 mod kconfig;
 mod key_manager;
+// WHY not(qemu): the boot matrix reader scans M7 GPIO registers (board
+// facts that exist only in board::m7) — virt has no matrix to read.
+#[cfg(not(feature = "qemu"))]
+mod keypad;
 // WHY (#528): ONLY the hardware-init-bearing boot sequence (run(), the driver
 // init steps, halt/panic display) stays cfg(not(test)). kinit's pure planning
 // logic (BootStep ordering, BootState, userspace spawn planning) lives in

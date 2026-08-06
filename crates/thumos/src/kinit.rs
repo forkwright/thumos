@@ -45,6 +45,10 @@ use crate::kconfig;
 #[cfg(not(feature = "qemu"))]
 use crate::kinit_plan::MODEM_BOOT_TIMEOUT_MS;
 use crate::kinit_plan::{BootState, UserspaceSpawnPlan, plan_userspace_spawn_from_vfs};
+// M7-only: the boot passphrase loops render the lock screen (the Screen
+// trait's draw) into the hardware framebuffer.
+#[cfg(not(feature = "qemu"))]
+use crate::ui::Screen as _;
 // M7-only: the panic-red fill exists only where a hardware framebuffer does.
 #[cfg(not(feature = "qemu"))]
 use crate::kinit_plan::PANIC_RED_RGB565;
@@ -133,6 +137,261 @@ pub(crate) unsafe fn fill_framebuffer(fb_addr: usize, width: u32, height: u32, c
 /// (`process::enable_scheduling()` is only reached at the end of `run`).
 ///
 /// WHY IRQs stay enabled: the timer ISR keeps petting the 5 s watchdog, so
+#[cfg(not(feature = "qemu"))]
+/// Map a keypad matrix key to its ASCII digit — the boot passphrase entry
+/// alphabet (#446). Star/Hash are control keys at boot (backspace/submit),
+/// never passphrase bytes.
+const fn boot_digit(key: crate::ui::Key) -> Option<u8> {
+    match key {
+        crate::ui::Key::Num0 => Some(b'0'),
+        crate::ui::Key::Num1 => Some(b'1'),
+        crate::ui::Key::Num2 => Some(b'2'),
+        crate::ui::Key::Num3 => Some(b'3'),
+        crate::ui::Key::Num4 => Some(b'4'),
+        crate::ui::Key::Num5 => Some(b'5'),
+        crate::ui::Key::Num6 => Some(b'6'),
+        crate::ui::Key::Num7 => Some(b'7'),
+        crate::ui::Key::Num8 => Some(b'8'),
+        crate::ui::Key::Num9 => Some(b'9'),
+        _ => None,
+    }
+}
+
+#[cfg(not(feature = "qemu"))]
+/// Build a fresh encrypted view over the userdata payload (#446): physical
+/// eMMC -> partition view one sector past the plaintext preamble -> AES-XTS
+/// wrapper. Returns `None` when the block device fails init (the caller
+/// logs and stays unmounted — fail-closed).
+///
+/// WHY the leak: `EncryptedBlockDevice` borrows its inner device while
+/// `lfs::mount` takes ownership — a one-time `Box::leak` of the small view
+/// struct satisfies both. Bounded (once per mount attempt) and deliberate.
+fn encrypted_payload_device(
+    data_key: &[u8; crate::security::XTS_KEY_SIZE],
+) -> Option<crate::encryption::EncryptedBlockDevice<'static>> {
+    let mut phys = MsdcBlockDevice::new(board::LFS_PARTITION_START + board::LFS_PARTITION_SIZE);
+    // SAFETY: the eMMC controller was initialized in Step 7; init() is
+    // called once here on a freshly constructed MsdcBlockDevice.
+    if unsafe { phys.init() }.is_err() {
+        return None;
+    }
+    let payload = crate::block::PartitionBlockDevice::new(
+        phys,
+        board::LFS_PARTITION_START + board::LFS_PREAMBLE_SECTORS,
+        board::LFS_PARTITION_SIZE - board::LFS_PREAMBLE_SECTORS,
+    );
+    let payload: &'static mut dyn crate::block::BlockDevice =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(payload));
+    Some(crate::encryption::EncryptedBlockDevice::new(
+        payload, *data_key,
+    ))
+}
+
+#[cfg(not(feature = "qemu"))]
+/// The boot verify loop (#446): poll the keypad, drive the lock screen,
+/// and on submit verify at PBKDF2 strength against the stored preamble
+/// verifier. On success the partition keys are derived into `key_manager`
+/// and the loop returns `true`. Throttle/wipe bookkeeping is the lock
+/// screen's own state machine; the wipe trigger executes the panic wipe
+/// and halts (never returns). Otherwise the loop runs until success — the
+/// gate is the only work this boot has until the passphrase lands.
+fn boot_verify_loop(
+    serial: &mut Uart,
+    lock: &mut crate::lock_screen::LockScreen,
+    keypad: &mut crate::keypad::BootKeypad,
+    fb: &mut [u16],
+    secrets: &crate::secrets::DeviceSecrets,
+    key_manager: &mut crate::key_manager::KeyManager,
+    display_ok: bool,
+) -> bool {
+    let Some(verifier) = secrets.boot_verifier else {
+        // Unreachable by construction (Verify is planned only for a
+        // provisioned preamble); stay total rather than panic.
+        return false;
+    };
+    let salt = secrets.salt;
+    loop {
+        let tick = crate::exceptions::uptime_ms() / 1000;
+        lock.advance_tick(tick);
+        if let Some(key) = keypad.poll() {
+            match boot_digit(key) {
+                Some(digit) => lock.push_passphrase_byte(digit),
+                None => match key {
+                    crate::ui::Key::Star => lock.backspace_passphrase(),
+                    crate::ui::Key::Hash => {
+                        let mut primary_out = None;
+                        let result = lock.submit_passphrase_with(tick, |entered| {
+                            let primary =
+                                match crate::key_manager::KeyManager::derive_from_passphrase(
+                                    entered, &salt,
+                                ) {
+                                    Ok(p) => p,
+                                    Err(_) => return false,
+                                };
+                            let candidate =
+                                match crate::key_manager::KeyManager::derive_boot_verifier(&primary)
+                                {
+                                    Ok(v) => v,
+                                    Err(_) => return false,
+                                };
+                            let matches =
+                                crate::lock_screen::constant_time_eq(&candidate, &verifier);
+                            if matches {
+                                primary_out = Some(primary);
+                            }
+                            matches
+                        });
+                        match result {
+                            crate::lock_screen::UnlockResult::Success => {
+                                if let Some(primary) = primary_out {
+                                    if key_manager.derive_partition_keys(&primary).is_ok() {
+                                        return true;
+                                    }
+                                }
+                                // A verified passphrase that cannot derive
+                                // partition keys is a crypto fault, not a
+                                // wrong passphrase — fail closed, stay locked.
+                                serial.log(" CRIT Key derivation failed after verify\r\n");
+                                return false;
+                            }
+                            crate::lock_screen::UnlockResult::WipeTrigger => {
+                                serial.log(" CRIT Passphrase attempt limit reached\r\n");
+                                // SAFETY: the panic wipe is the last kernel
+                                // action before halt_boot (which never
+                                // returns); dry_run=false zeroes the usable
+                                // range. key_manager holds no keys on this
+                                // path, so the wipe's key-zeroize is inert.
+                                // The WipeResult is deliberately discarded:
+                                // halt_boot never returns, so there is no
+                                // caller left to report it to.
+                                let _ = unsafe {
+                                    crate::panic_wipe::execute_panic_wipe(
+                                        key_manager,
+                                        crate::exceptions::uptime_ms(),
+                                        false,
+                                    )
+                                };
+                                halt_boot(serial, display_ok);
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                },
+            }
+            lock.draw(&mut fb[..crate::ui::CONTENT_PIXELS]);
+        }
+        // ~10 ms poll cadence. The busy-wait is deliberate: boot is
+        // single-threaded here and the gate is the only outstanding work.
+        let wait_until = crate::exceptions::uptime_ms() + 10;
+        while crate::exceptions::uptime_ms() < wait_until {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+#[cfg(not(feature = "qemu"))]
+/// First-boot setup (#446): enter, confirm, store the PBKDF2-strength
+/// verifier in the preamble, derive keys. Returns `true` once provisioning
+/// completes. There is deliberately no skip binding: dev-anchor builds
+/// never reach this loop (secure_boot_ok is false there), so every
+/// production-signed boot of an unprovisioned device sets a passphrase.
+fn boot_setup_loop(
+    serial: &mut Uart,
+    lock: &mut crate::lock_screen::LockScreen,
+    keypad: &mut crate::keypad::BootKeypad,
+    fb: &mut [u16],
+    preamble_view: &mut crate::block::PartitionBlockDevice<MsdcBlockDevice>,
+    key_manager: &mut crate::key_manager::KeyManager,
+) -> bool {
+    serial.log(" Set boot passphrase (6+ digits; Star backspace; Hash confirm)\r\n");
+    let mut confirming = false;
+    let mut first = [0u8; crate::lock_screen::MAX_PASSPHRASE_LEN];
+    let mut first_len = 0usize;
+    loop {
+        let tick = crate::exceptions::uptime_ms() / 1000;
+        lock.advance_tick(tick);
+        if let Some(key) = keypad.poll() {
+            match boot_digit(key) {
+                Some(digit) => lock.push_passphrase_byte(digit),
+                None => match key {
+                    crate::ui::Key::Star => lock.backspace_passphrase(),
+                    crate::ui::Key::Hash => {
+                        let entered_len = lock.passphrase_len() as usize;
+                        if !confirming {
+                            if entered_len >= crate::kinit_plan::MIN_BOOT_PASSPHRASE_LEN as usize {
+                                first[..entered_len].copy_from_slice(lock.passphrase_bytes());
+                                first_len = entered_len;
+                                lock.clear_passphrase();
+                                confirming = true;
+                                serial.log(" Confirm passphrase\r\n");
+                            } else {
+                                serial.log(" Passphrase too short (6+ digits)\r\n");
+                            }
+                        } else {
+                            let matches = entered_len == first_len
+                                && lock.passphrase_bytes() == &first[..first_len];
+                            if !matches {
+                                serial.log(" Mismatch -- start over\r\n");
+                                lock.clear_passphrase();
+                                confirming = false;
+                                crate::key_manager::volatile_zero(&mut first);
+                                first_len = 0;
+                            } else {
+                                let mut salt = [0u8; crate::secrets::SALT_LEN];
+                                if crate::csprng::kernel_random_bytes(&mut salt).is_err() {
+                                    serial.log(" CRIT CSPRNG unavailable -- cannot provision\r\n");
+                                    crate::key_manager::volatile_zero(&mut first);
+                                    return false;
+                                }
+                                let mut ok = false;
+                                if let Ok(primary) =
+                                    crate::key_manager::KeyManager::derive_from_passphrase(
+                                        lock.passphrase_bytes(),
+                                        &salt,
+                                    )
+                                {
+                                    if let Ok(verifier) =
+                                        crate::key_manager::KeyManager::derive_boot_verifier(
+                                            &primary,
+                                        )
+                                    {
+                                        if crate::secrets::store_boot_verifier(
+                                            preamble_view,
+                                            &salt,
+                                            &verifier,
+                                        )
+                                        .is_ok()
+                                            && key_manager.derive_partition_keys(&primary).is_ok()
+                                        {
+                                            ok = true;
+                                        }
+                                    }
+                                }
+                                lock.clear_passphrase();
+                                crate::key_manager::volatile_zero(&mut first);
+                                if ok {
+                                    serial.log(" Passphrase set -- userdata encrypted\r\n");
+                                    return true;
+                                }
+                                serial.log(" CRIT Provisioning failed (derive/store)\r\n");
+                                return false;
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+            }
+            lock.draw(&mut fb[..crate::ui::CONTENT_PIXELS]);
+        }
+        // Same deliberate busy-wait cadence as the verify loop.
+        let wait_until = crate::exceptions::uptime_ms() + 10;
+        while crate::exceptions::uptime_ms() < wait_until {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 /// the halt is a stable, visible state instead of a WDT reboot loop.
 ///
 /// WHY(qemu): exit code 6 (distinct from 0=ok / 1=panic / 5=loop-stall) so
@@ -203,9 +462,8 @@ fn debug_console_gate(serial: &mut Uart, mode_mgr: &crate::security_mode::ModeMa
 
     // WARNING (defense-in-depth): refuse to start under Sentinel/Panic.
     // NOTE: `mode_mgr` is freshly `ModeManager::default()`-constructed at
-    // Step 8g and nothing between there and here transitions it, so this
-    // currently always evaluates to Daily -- see the Step 8f WHY comment
-    // above. Kept as the structural check point so it becomes load-bearing
+    // Step 8f and nothing between there and here transitions it, so this
+    // currently always evaluates to Daily -- see the Step 8f WHY comment. Kept as the structural check point so it becomes load-bearing
     // the moment mode state is threaded through boot instead of re-derived
     // fresh every time (e.g. a mode persisted across a warm restart).
     if mode_mgr.mode() != crate::security_mode::SecurityMode::Daily {
@@ -592,7 +850,157 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 8c: Filesystem (LFS) -- trust-gated (#217)
+    // Step 8c: Passphrase entry and key derivation (#446)
+    // -----------------------------------------------------------------------
+    serial.log("[init] Passphrase entry\r\n");
+    // WHY before any mount (#446): once first-boot setup stores a verifier,
+    // the userdata payload is ciphertext (AES-XTS under the derived data
+    // key) — the mount needs the key, and a locked payload must never be
+    // plain-mounted or formatted. The secrets preamble (#449) is therefore
+    // probed here, READ-ONLY and ahead of the mount, and the mount plan
+    // keys off what it found.
+    //
+    // WHY the trust gate is checked first (#217): key derivation must never
+    // run on an unverified image — a tampered kernel could exfiltrate the
+    // passphrase.
+    //
+    // Boot pad binding (the 4x3 matrix yields only digits/Star/Hash):
+    // digits append, Star = backspace, Hash = submit/confirm. First-boot
+    // setup constrains the alphabet identically, so a passphrase set at
+    // setup is always enterable at boot.
+    #[cfg_attr(feature = "qemu", allow(unused_mut, unused_variables))]
+    let mut key_manager = crate::key_manager::KeyManager::new();
+    #[cfg(not(feature = "qemu"))]
+    let mut boot_secrets: Option<crate::secrets::DeviceSecrets> = None;
+    #[cfg(not(feature = "qemu"))]
+    let mut preamble_view: Option<crate::block::PartitionBlockDevice<MsdcBlockDevice>> = None;
+    #[cfg(not(feature = "qemu"))]
+    {
+        use crate::kinit_plan::PreambleLoad;
+
+        // Early read-only preamble probe — the mount gate's fail-closed
+        // signal. Runs whenever eMMC is up, independent of the trust gate,
+        // and NEVER writes here: the provisioning write happens only inside
+        // the first-boot setup completion below.
+        if state.emmc_ok {
+            let mut preamble_phys =
+                MsdcBlockDevice::new(board::LFS_PARTITION_START + board::LFS_PARTITION_SIZE);
+            // SAFETY: eMMC init succeeded in Step 7; init() is called once
+            // here on a freshly constructed MsdcBlockDevice.
+            match unsafe { preamble_phys.init() } {
+                Ok(()) => {
+                    let mut view = crate::block::PartitionBlockDevice::new(
+                        preamble_phys,
+                        board::LFS_PARTITION_START,
+                        board::LFS_PREAMBLE_SECTORS,
+                    );
+                    match crate::secrets::load(&mut view) {
+                        Ok(Some(found)) => {
+                            state.preamble = if found.boot_verifier.is_some() {
+                                PreambleLoad::Provisioned
+                            } else {
+                                PreambleLoad::Unprovisioned
+                            };
+                            boot_secrets = Some(found);
+                        }
+                        Ok(None) => state.preamble = PreambleLoad::Unprovisioned,
+                        Err(e) => {
+                            boot_log!(serial, " WARN Secrets preamble read failed: {:?}\r\n", e);
+                            state.preamble = PreambleLoad::ReadFailed;
+                        }
+                    }
+                    preamble_view = Some(view);
+                }
+                Err(e) => {
+                    boot_log!(serial, " WARN Preamble device init failed: {:?}\r\n", e);
+                    state.preamble = PreambleLoad::ReadFailed;
+                }
+            }
+        }
+    }
+
+    match crate::kinit_plan::boot_passphrase_plan(
+        state.secure_boot_ok,
+        state.display_ok,
+        state.input_ok,
+        state.preamble,
+    ) {
+        crate::kinit_plan::BootPassphrasePlan::Skip => {
+            serial.log(crate::kinit_plan::passphrase_skip_reason(
+                state.secure_boot_ok,
+                state.display_ok,
+                state.input_ok,
+            ));
+        }
+        #[cfg(not(feature = "qemu"))]
+        crate::kinit_plan::BootPassphrasePlan::Verify => {
+            if let Some(found) = boot_secrets.as_ref() {
+                // SAFETY: the plan guarantees display_ok, and the display
+                // init mapped FB_BASE as a writable RGB565 framebuffer of
+                // FRAMEBUFFER_PIXELS pixels. The slice is dropped at the
+                // end of this arm, before the kardia handoff re-derives
+                // its own framebuffer slice.
+                let fb = unsafe {
+                    core::slice::from_raw_parts_mut(board::FB_BASE as *mut u16, FRAMEBUFFER_PIXELS)
+                };
+                fb.fill(0);
+                let mut keypad = crate::keypad::BootKeypad::new();
+                keypad.init();
+                // WHY zero hashes: the boot gate never uses the raw
+                // SHA-256 compare — submit goes through
+                // submit_passphrase_with at PBKDF2 strength, so the
+                // stored-hash fields are inert in this construction.
+                let mut lock = crate::lock_screen::LockScreen::new([0u8; 32], [0u8; 32], [0u8; 32]);
+                if boot_verify_loop(
+                    &mut serial,
+                    &mut lock,
+                    &mut keypad,
+                    fb,
+                    found,
+                    &mut key_manager,
+                    state.display_ok,
+                ) {
+                    state.passphrase_ok = true;
+                    serial.log(" Passphrase: OK (keys derived)\r\n");
+                }
+            }
+        }
+        #[cfg(not(feature = "qemu"))]
+        crate::kinit_plan::BootPassphrasePlan::FirstBootSetup => {
+            if let Some(view) = preamble_view.as_mut() {
+                // SAFETY: as above — the plan guarantees display_ok.
+                let fb = unsafe {
+                    core::slice::from_raw_parts_mut(board::FB_BASE as *mut u16, FRAMEBUFFER_PIXELS)
+                };
+                fb.fill(0);
+                let mut keypad = crate::keypad::BootKeypad::new();
+                keypad.init();
+                let mut lock = crate::lock_screen::LockScreen::new([0u8; 32], [0u8; 32], [0u8; 32]);
+                if boot_setup_loop(
+                    &mut serial,
+                    &mut lock,
+                    &mut keypad,
+                    fb,
+                    view,
+                    &mut key_manager,
+                ) {
+                    state.passphrase_ok = true;
+                    state.preamble = crate::kinit_plan::PreambleLoad::Provisioned;
+                    serial.log(" Passphrase: SET (userdata encrypted)\r\n");
+                }
+            }
+        }
+        #[cfg(feature = "qemu")]
+        _ => {
+            // Virt never establishes trust (dev anchor, no boot medium), so
+            // the plan is always Skip on this board; the interactive arms'
+            // hardware paths are M7-only.
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 8d: Filesystem (LFS) -- trust-gated (#217), fail-closed on a
+    // locked payload (#446)
     // -----------------------------------------------------------------------
     serial.log("[init] Filesystem (LFS)\r\n");
     // Captures the mounted LFS so it can back the VFS root below instead
@@ -600,127 +1008,224 @@ pub unsafe fn run() -> ! {
     // does not end with a durably mounted filesystem.
     #[cfg_attr(feature = "qemu", allow(unused_mut))]
     let mut lfs_root: Option<alloc::boxed::Box<dyn crate::vfs::Filesystem>> = None;
-    // WHY (#217): persistent storage mounts ONLY on a verified boot --
-    // secure_boot.rs's contract is that the filesystem mounts AFTER the
-    // trust gate so a tampered kernel cannot reach encrypted data. A
-    // verification FAILURE has already halted above; this gate covers the
-    // no-boot-medium degrade, where nothing persistent may be touched.
+    // WHY (#217): persistent storage mounts ONLY on a verified boot -- a
+    // tampered kernel must never reach user data. WHY fail-closed on a
+    // provisioned-or-unreadable preamble (#446): the payload is ciphertext
+    // under a key this boot does not have — plain-mounting it reads garbage
+    // and the InvalidSuperblock reformat path would DESTROY it, so the only
+    // honest mount without the derived key is none.
     // WHY not(qemu): the mount path is eMMC + LFS-partition bring-up, which
     // exists only on the M7 (#534) -- virt models no block medium, so
     // `lfs_root` stays None there exactly as the runtime gate already
-    // produced, and the VFS root falls back to ramfs.
+    // produced, and the VFS root falls back to the initramfs.
     #[cfg(not(feature = "qemu"))]
-    if state.emmc_ok && state.secure_boot_ok {
-        use crate::block::MsdcBlockDevice;
-        use crate::lfs;
-        use crate::lfs_imap::LfsError;
+    match crate::kinit_plan::mount_plan(
+        state.emmc_ok,
+        state.secure_boot_ok,
+        state.preamble,
+        state.passphrase_ok,
+    ) {
+        crate::kinit_plan::MountPlan::Encrypted => {
+            use crate::lfs;
+            use crate::lfs_imap::LfsError;
 
-        // Compute device size in sectors from the partition constants.
-        let sector_count = board::LFS_PARTITION_SIZE;
-
-        // #603: the eMMC block device addresses the PHYSICAL medium (its LBA
-        // 0 is the eMMC's sector 0 -- the GPT/boot region), so its bound is
-        // the partition's END; the LFS mount then runs inside the userdata
-        // partition VIEW carved at LFS_PARTITION_START. Before the view, LFS
-        // would have formatted over the boot/vendor partitions.
-        let mut phys_dev = MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
-
-        // SAFETY: eMMC controller was initialized successfully in Step 7.
-        // MsdcBlockDevice::init() is called once here; the controller is ready.
-        match unsafe { phys_dev.init() } {
-            Ok(()) => {
-                let blk_dev = crate::block::PartitionBlockDevice::new(
-                    phys_dev,
-                    board::LFS_PARTITION_START,
-                    sector_count,
-                );
-                // Try to mount existing LFS.
-                match lfs::mount(alloc::boxed::Box::new(blk_dev)) {
-                    Ok(fs) => {
-                        serial.log(" LFS mounted OK\r\n");
-                        lfs_root = Some(alloc::boxed::Box::new(fs));
-                    }
-                    // A missing/invalid superblock means a genuine first
-                    // boot (or a never-formatted partition) -- format and
-                    // remount. Any OTHER error (Corrupt, BlockIo) is NOT
-                    // first boot and must not trigger a reformat: that
-                    // would silently destroy user data on a bit flip or a
-                    // transient I/O fault (#360).
-                    Err(LfsError::InvalidSuperblock) => {
-                        serial.log(" LFS mount failed (no superblock), formatting\r\n");
-                        let mut fmt_phys =
-                            MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
-                        // SAFETY: eMMC controller was initialized successfully in
-                        // Step 7; fmt_phys.init() is called once here on a
-                        // freshly constructed MsdcBlockDevice.
-                        if unsafe { fmt_phys.init() }.is_ok() {
-                            let mut fmt_dev = crate::block::PartitionBlockDevice::new(
-                                fmt_phys,
-                                board::LFS_PARTITION_START,
-                                sector_count,
-                            );
-                            if lfs::format(&mut fmt_dev).is_ok() {
-                                serial.log(" LFS formatted OK\r\n");
-                                // Remount the freshly formatted device so the
-                                // VFS root is backed by durable storage from
-                                // this boot onward, not just after the NEXT
-                                // reboot (#343).
-                                let mut remount_phys =
-                                    MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
-                                // SAFETY: eMMC controller was initialized successfully
-                                // in Step 7; remount_phys.init() is called once here on
-                                // a freshly constructed MsdcBlockDevice.
-                                match unsafe { remount_phys.init() } {
-                                    Ok(()) => {
-                                        let remount_dev = crate::block::PartitionBlockDevice::new(
-                                            remount_phys,
-                                            board::LFS_PARTITION_START,
-                                            sector_count,
-                                        );
-                                        match lfs::mount(alloc::boxed::Box::new(remount_dev)) {
-                                            Ok(fs) => {
-                                                serial.log(" LFS remounted OK\r\n");
-                                                lfs_root = Some(alloc::boxed::Box::new(fs));
-                                            }
-                                            Err(e) => {
-                                                boot_log!(
-                                                    serial,
-                                                    " WARN LFS remount after format failed: {:?}\r\n",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        boot_log!(
-                                            serial,
-                                            " WARN Block device re-init for remount failed: {:?}\r\n",
-                                            e
-                                        );
-                                    }
-                                }
-                            } else {
-                                serial.log(" WARN LFS format failed\r\n");
+            let data_key = key_manager.data_key().map(|k| *k.as_bytes());
+            match data_key {
+                Some(mut data_key) => {
+                    match encrypted_payload_device(&data_key) {
+                        Some(enc) => match lfs::mount(alloc::boxed::Box::new(enc)) {
+                            Ok(fs) => {
+                                serial.log(" LFS mounted (encrypted)\r\n");
+                                lfs_root = Some(alloc::boxed::Box::new(fs));
+                                state.encryption_ok = true;
                             }
-                        }
+                            // A missing/invalid superblock on the encrypted
+                            // view means the payload was never formatted
+                            // encrypted (the first boot after provisioning) —
+                            // format and remount. Any OTHER error (Corrupt,
+                            // BlockIo) must not trigger a reformat: that
+                            // would silently destroy user data (#360), the
+                            // same rule as the plain path.
+                            Err(LfsError::InvalidSuperblock) => {
+                                serial.log(" Encrypted LFS unformatted, formatting\r\n");
+                                if let Some(mut fmt_enc) = encrypted_payload_device(&data_key) {
+                                    if lfs::format(&mut fmt_enc).is_ok() {
+                                        serial.log(" Encrypted LFS formatted\r\n");
+                                        match encrypted_payload_device(&data_key) {
+                                            Some(remount_enc) => {
+                                                match lfs::mount(alloc::boxed::Box::new(
+                                                    remount_enc,
+                                                )) {
+                                                    Ok(fs) => {
+                                                        serial
+                                                            .log(" LFS remounted (encrypted)\r\n");
+                                                        lfs_root = Some(alloc::boxed::Box::new(fs));
+                                                        state.encryption_ok = true;
+                                                    }
+                                                    Err(e) => {
+                                                        boot_log!(
+                                                            serial,
+                                                            " WARN Encrypted LFS remount failed: {:?}\r\n",
+                                                            e
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            None => serial
+                                                .log(" WARN Device re-init for remount failed\r\n"),
+                                        }
+                                    } else {
+                                        serial.log(" WARN Encrypted LFS format failed\r\n");
+                                    }
+                                } else {
+                                    serial.log(" WARN Device init for format failed\r\n");
+                                }
+                            }
+                            Err(e) => {
+                                boot_log!(
+                                    serial,
+                                    " CRIT Encrypted LFS mount failed ({:?}) -- not reformatting, data at risk\r\n",
+                                    e
+                                );
+                            }
+                        },
+                        None => serial.log(" WARN Device init failed (encrypted payload)\r\n"),
                     }
-                    Err(e) => {
-                        boot_log!(
-                            serial,
-                            " CRIT LFS mount failed ({:?}) -- not reformatting, data at risk\r\n",
-                            e
-                        );
-                    }
+                    // WHY: EncryptedBlockDevice::new copied the key into its
+                    // own SecureKey; zero this stack copy on every path (#325
+                    // posture).
+                    crate::key_manager::volatile_zero(&mut data_key);
+                }
+                None => {
+                    // passphrase_ok implies loaded keys; a missing data key
+                    // here is a bug — fail closed (no mount), never panic.
+                    serial.log(" CRIT passphrase_ok without a data key\r\n");
                 }
             }
-            Err(e) => {
-                boot_log!(serial, " WARN Block device init failed: {:?}\r\n", e);
+        }
+        crate::kinit_plan::MountPlan::Plain => {
+            use crate::lfs;
+            use crate::lfs_imap::LfsError;
+
+            // Compute device size in sectors from the partition constants.
+            let sector_count = board::LFS_PARTITION_SIZE;
+
+            // #603: the eMMC block device addresses the PHYSICAL medium (its LBA
+            // 0 is the eMMC's sector 0 -- the GPT/boot region), so its bound is
+            // the partition's END; the LFS mount then runs inside the userdata
+            // partition VIEW carved at LFS_PARTITION_START. Before the view, LFS
+            // would have formatted over the boot/vendor partitions.
+            //
+            // WHY the plain mount is still at the partition head: this arm is
+            // reachable only on an UNPROVISIONED device (no preamble), so no
+            // plaintext sector has been carved — byte-compatible with pre-#446
+            // images.
+            let mut phys_dev = MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
+
+            // SAFETY: eMMC controller was initialized successfully in Step 7.
+            // MsdcBlockDevice::init() is called once here; the controller is ready.
+            match unsafe { phys_dev.init() } {
+                Ok(()) => {
+                    let blk_dev = crate::block::PartitionBlockDevice::new(
+                        phys_dev,
+                        board::LFS_PARTITION_START,
+                        sector_count,
+                    );
+                    // Try to mount existing LFS.
+                    match lfs::mount(alloc::boxed::Box::new(blk_dev)) {
+                        Ok(fs) => {
+                            serial.log(" LFS mounted OK\r\n");
+                            lfs_root = Some(alloc::boxed::Box::new(fs));
+                        }
+                        // A missing/invalid superblock means a genuine first
+                        // boot (or a never-formatted partition) -- format and
+                        // remount. Any OTHER error (Corrupt, BlockIo) is NOT
+                        // first boot and must not trigger a reformat: that
+                        // would silently destroy user data on a bit flip or a
+                        // transient I/O fault (#360).
+                        Err(LfsError::InvalidSuperblock) => {
+                            serial.log(" LFS mount failed (no superblock), formatting\r\n");
+                            let mut fmt_phys =
+                                MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
+                            // SAFETY: eMMC controller was initialized successfully in
+                            // Step 7; fmt_phys.init() is called once here on a
+                            // freshly constructed MsdcBlockDevice.
+                            if unsafe { fmt_phys.init() }.is_ok() {
+                                let mut fmt_dev = crate::block::PartitionBlockDevice::new(
+                                    fmt_phys,
+                                    board::LFS_PARTITION_START,
+                                    sector_count,
+                                );
+                                if lfs::format(&mut fmt_dev).is_ok() {
+                                    serial.log(" LFS formatted OK\r\n");
+                                    // Remount the freshly formatted device so the
+                                    // VFS root is backed by durable storage from
+                                    // this boot onward, not just after the NEXT
+                                    // reboot (#343).
+                                    let mut remount_phys = MsdcBlockDevice::new(
+                                        board::LFS_PARTITION_START + sector_count,
+                                    );
+                                    // SAFETY: eMMC controller was initialized successfully
+                                    // in Step 7; remount_phys.init() is called once here on
+                                    // a freshly constructed MsdcBlockDevice.
+                                    match unsafe { remount_phys.init() } {
+                                        Ok(()) => {
+                                            let remount_dev =
+                                                crate::block::PartitionBlockDevice::new(
+                                                    remount_phys,
+                                                    board::LFS_PARTITION_START,
+                                                    sector_count,
+                                                );
+                                            match lfs::mount(alloc::boxed::Box::new(remount_dev)) {
+                                                Ok(fs) => {
+                                                    serial.log(" LFS remounted OK\r\n");
+                                                    lfs_root = Some(alloc::boxed::Box::new(fs));
+                                                }
+                                                Err(e) => {
+                                                    boot_log!(
+                                                        serial,
+                                                        " WARN LFS remount after format failed: {:?}\r\n",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            boot_log!(
+                                                serial,
+                                                " WARN Block device re-init for remount failed: {:?}\r\n",
+                                                e
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    serial.log(" WARN LFS format failed\r\n");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            boot_log!(
+                                serial,
+                                " CRIT LFS mount failed ({:?}) -- not reformatting, data at risk\r\n",
+                                e
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    boot_log!(serial, " WARN Block device init failed: {:?}\r\n", e);
+                }
             }
         }
-    } else if state.emmc_ok {
-        serial.log(" Skipped (secure boot not established -- fail-closed)\r\n");
-    } else {
-        serial.log(" Skipped (no eMMC)\r\n");
+        crate::kinit_plan::MountPlan::RamfsFallback => {
+            if state.emmc_ok && state.secure_boot_ok {
+                serial.log(" Skipped (payload locked or unreadable -- fail-closed)\r\n");
+            } else if state.emmc_ok {
+                serial.log(" Skipped (secure boot not established -- fail-closed)\r\n");
+            } else {
+                serial.log(" Skipped (no eMMC)\r\n");
+            }
+        }
     }
 
     // Initialize the VFS mount table, backed by the mounted LFS when one
@@ -746,56 +1251,7 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 8d: Passphrase entry and key derivation
-    // -----------------------------------------------------------------------
-    serial.log("[init] Passphrase entry\r\n");
-    // WHY (#217, fail-closed): key derivation must never run on an
-    // unverified image -- a tampered kernel could exfiltrate the
-    // passphrase. The trust root is checked FIRST, before hardware
-    // availability.
-    if !state.secure_boot_ok {
-        serial
-            .log(" WARN Passphrase entry refused (secure boot not established -- fail-closed)\r\n");
-    } else if state.display_ok && state.input_ok {
-        // WHY: passphrase must be entered before any encrypted data is
-        // accessed.  The lock screen renders on the display and accepts
-        // keypad input.  On success, the primary key is derived and
-        // partition sub-keys are produced.
-        //
-        // NOTE: In production, this blocks until the user enters the
-        // correct passphrase.  The lock screen is shown via
-        // crate::lock_screen::LockScreen and the result feeds into
-        // key_manager::derive_from_passphrase() with the per-device salt
-        // from crate::secrets' on-disk preamble (#449).  Placeholder here
-        // until the boot-time input loop is wired.
-        serial.log(" Passphrase: PENDING (awaiting boot input loop)\r\n");
-    } else {
-        serial.log(" WARN Passphrase entry skipped (no display/input)\r\n");
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 8e: Encrypted filesystem mount
-    // -----------------------------------------------------------------------
-    serial.log("[init] Encrypted filesystem\r\n");
-    // WHY (#217, defense-in-depth): passphrase_ok is already unreachable
-    // without secure_boot_ok (Step 8d), but the decrypt gate re-checks the
-    // trust root explicitly so a future refactor of passphrase entry cannot
-    // silently reopen it.
-    if state.secure_boot_ok && state.passphrase_ok && state.emmc_ok {
-        // WHY: after passphrase derives the data key, wrap the eMMC block
-        // device in EncryptedBlockDevice for transparent AES-XTS encryption.
-        //
-        // NOTE: In production:
-        // let data_key = key_manager.data_key().as_bytes().clone();
-        // let enc_dev = EncryptedBlockDevice::new(&mut blk_dev, data_key);
-        // lfs::mount(Box::new(enc_dev));
-        serial.log(" Encryption: PENDING (awaiting key derivation)\r\n");
-    } else {
-        serial.log(" WARN Encrypted mount skipped (no passphrase/eMMC)\r\n");
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 8f: Audit log initialization
+    // Step 8e: Audit log initialization
     // -----------------------------------------------------------------------
     serial.log("[init] Audit log\r\n");
     if state.secure_boot_ok {
@@ -813,7 +1269,7 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 8g: Security mode manager
+    // Step 8f: Security mode manager
     // -----------------------------------------------------------------------
     serial.log("[init] Security mode (Daily)\r\n");
     let mut pm = PowerManager::new();
@@ -831,8 +1287,9 @@ pub unsafe fn run() -> ! {
         // its all-Off default the whole time radios were live (a
         // policy/reality mismatch for any later mode-transition or
         // threat-response code that reads PowerManager state as ground
-        // truth). A full passphrase-derived pin_hash is not available yet
-        // (Step 8d is pending the boot input loop -- finding 48), so
+        // truth). A full passphrase-derived pin_hash is not threaded
+        // through yet (Step 8c derives the keys; the mode manager's
+        // pin-hash provisioning is separate work), so
         // ModeManager::default() is used: unprovisioned, but still Daily
         // mode, which is the correct policy to apply at this point.
         //
@@ -1393,7 +1850,7 @@ pub unsafe fn run() -> ! {
         None
     };
     // #403: interim SESSION audit key -- CSPRNG-seeded, volatile (RAM-only,
-    // zeroized on drop). The persistent, passphrase-derived audit key (Step 8f)
+    // zeroized on drop). The persistent, passphrase-derived audit key (Step 8e)
     // stays PENDING/deferred; this key derives nothing and unlocks nothing -- it
     // only gives the loop-owned firewall audit chain HMAC integrity for THIS
     // boot. Fails closed: an all-zero key (CSPRNG unavailable) makes log_event
