@@ -34,7 +34,7 @@ Comments and approvals land through stoa. The merge button activates when all ga
 
 - CI status `Pass` (every stage in `.kanon-ci.toml` exits zero, or the stage's `fail_on` predicate reports success).
 - Independent verifier `Ok` (03f-e reproduces the headline claims from a fresh checkout of the head sha).
-- A `Gate-Passed: kanon <version>` trailer is present on the tip commit of the PR branch, or the merge will append one.
+- The `Gate Attestation` check (`.github/workflows/gate-attestation.yml`) reports success. A `Gate-Passed: kanon <version>` trailer on the tip commit takes the fast path; without one, the check runs a real `cargo fmt`/`check`/`clippy`/`nextest` build against the branch instead (skipped only for docs-only PRs). The AI-attribution check always runs, trailer or not, and no trailer is appended by the merge itself. **This check, and `.kanon-ci.toml`'s fmt/check/clippy/nextest stages, do not cover the kernel crate** (`crates/thumos`, excluded from the Cargo workspace) — only the separate, non-required `CI` workflow's kernel job (i686 host tests, armv7a cross-compile, QEMU boot) exercises it. A green `Gate Attestation` check does not attest the kernel.
 
 ## Merging
 
@@ -42,9 +42,9 @@ Comments and approvals land through stoa. The merge button activates when all ga
 kanon pr merge <pr_number>
 ```
 
-or the forge merge button. Default strategy is `squash`; `--strategy ff` or `--strategy rebase` are supported. The merge commit carries the `Gate-Passed` trailer.
+or the forge merge button. Default strategy is `squash`; `--strategy ff` or `--strategy rebase` are supported. A squash merge does not carry the source branch's `Gate-Passed` trailer forward — squashing drops per-commit trailers by construction, so no commit on `main` has one. That absence is expected, not a gap: `Gate Attestation`'s `push`-to-`main` trigger re-runs the full build against the merge commit itself, which is what actually attests `main`.
 
-Do not merge via GitHub. The GitHub mirror is read-only from the contributor's perspective: any merge performed there races the forge pr-sync worker and drops the trailer.
+Do not merge via GitHub. The GitHub mirror is read-only from the contributor's perspective: any merge performed there races the forge pr-sync worker.
 
 ## External contributors
 
@@ -53,7 +53,7 @@ Thumos has a real external-contributor path - radio, baseband, and MTK tooling f
 1. Fork on GitHub, open a PR against `forkwright/thumos:main` as you would on any OSS project.
 2. The 05d bidirectional sync ingests the PR into the forge. Review, CI, and the verifier all run there.
 3. Discussion may happen on either side; the forge thread is authoritative. The mirror sync relays merge state back to GitHub once the forge merges.
-4. The merge always happens on the forge so the `Gate-Passed` trailer and CI artifacts are preserved. GitHub closes your PR when the mirror sync observes the merge commit on `main`.
+4. The merge always happens on the forge; CI artifacts from that run are preserved there. The merge commit itself carries no `Gate-Passed` trailer — squash merges drop it — so `Gate Attestation` independently re-verifies the merge commit when it lands on `main` via GitHub's `push` trigger. GitHub closes your PR when the mirror sync observes the merge commit on `main`.
 
 You do not need a kanon.lan account to contribute. The GitHub path is a first-class inbound route, not a courtesy.
 
