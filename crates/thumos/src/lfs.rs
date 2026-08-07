@@ -1271,6 +1271,8 @@ impl Filesystem for Lfs {
     ///
     /// - [`VfsError::NotADirectory`] if `dir_inode` is not a directory.
     /// - [`VfsError::NotFound`] if `name` does not exist in the directory.
+    /// - [`VfsError::NotEmpty`] if `name` names a non-empty directory
+    ///   (#623).
     /// - [`VfsError::IoError`] on I/O failure.
     fn unlink(&mut self, dir_inode: u32, name: &str) -> Result<(), VfsError> {
         let mut parent = self.load_inode(dir_inode)?;
@@ -1320,6 +1322,19 @@ impl Filesystem for Lfs {
                 .map_err(|_| VfsError::IoError)?;
             DiskInode::read_from(&buf, 0).map_err(|_| VfsError::IoError)?
         };
+
+        // A non-empty directory must not be unlinked -- its children
+        // would survive in the imap with no path that reaches them,
+        // unreclaimable by the compactor (#623). Directories track
+        // their content size the same way files do (create() starts
+        // every new directory at size 0; the empty-directory branch
+        // below resets it to 0 on removal), so `size != 0` is exactly
+        // "has entries" for a directory inode -- checked before any
+        // directory rewrite or imap mutation below.
+        if target_inode.inode_type == INODE_TYPE_DIR && target_inode.size != 0 {
+            return Err(VfsError::NotEmpty);
+        }
+
         target_inode.link_count = target_inode.link_count.saturating_sub(1);
 
         // Write updated directory data FIRST -- this is the durable
@@ -1975,6 +1990,62 @@ mod tests {
         assert!(
             fs.lookup(root, "f").is_ok(),
             "a rejected unlink must not have mutated the parent directory"
+        );
+    }
+
+    #[test]
+    fn unlink_removes_empty_directory() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let dir_id = fs.create(root, "sub", InodeType::Directory).expect("mkdir");
+
+        fs.unlink(root, "sub")
+            .expect("unlink of an empty directory must succeed");
+
+        assert_eq!(fs.lookup(root, "sub"), Err(VfsError::NotFound));
+        assert_eq!(fs.stat(dir_id), Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn unlink_rejects_non_empty_directory() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let sub_id = fs.create(root, "sub", InodeType::Directory).expect("mkdir");
+        let file_id = fs
+            .create(sub_id, "f", InodeType::RegularFile)
+            .expect("create nested file");
+
+        // Before the fix, unlink() never inspected the target's type or
+        // contents: it decremented link_count and dropped the inode
+        // from the imap unconditionally, orphaning "f" -- reachable by
+        // no path, but never reclaimed (#623).
+        let result = fs.unlink(root, "sub");
+        assert_eq!(
+            result,
+            Err(VfsError::NotEmpty),
+            "unlink of a non-empty directory must fail, not orphan its children"
+        );
+
+        // Nothing must have been mutated: the directory and its child
+        // both remain reachable.
+        assert!(
+            fs.lookup(root, "sub").is_ok(),
+            "directory must remain in its parent after a rejected unlink"
+        );
+        assert!(
+            fs.stat(file_id).is_ok(),
+            "child inode must remain in the imap after a rejected unlink"
+        );
+        assert_eq!(
+            fs.readdir(sub_id).expect("readdir sub").len(),
+            1,
+            "the child directory entry must be untouched"
         );
     }
 
