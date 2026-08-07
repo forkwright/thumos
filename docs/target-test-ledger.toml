@@ -679,7 +679,7 @@ mechanism = "host"
 
 [[module]]
 name = "ui"
-tests = 20
+tests = 21
 mechanism = "both"
 witness = "boot.sh"
 
