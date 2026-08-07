@@ -39,7 +39,7 @@ use crate::gic;
 use crate::heap;
 // Gated: only the debug-console gate reads kconfig::DEBUG_CONSOLE.
 #[cfg(not(feature = "qemu"))]
-use crate::block::MsdcBlockDevice;
+use crate::block::{MsdcBlockDevice, MsdcBlockDeviceUninit};
 #[cfg(feature = "debug-console")]
 use crate::kconfig;
 #[cfg(not(feature = "qemu"))]
@@ -169,12 +169,12 @@ const fn boot_digit(key: crate::ui::Key) -> Option<u8> {
 fn encrypted_payload_device(
     data_key: &[u8; crate::security::XTS_KEY_SIZE],
 ) -> Option<crate::encryption::EncryptedBlockDevice<'static>> {
-    let mut phys = MsdcBlockDevice::new(board::LFS_PARTITION_START + board::LFS_PARTITION_SIZE);
+    let uninit = MsdcBlockDeviceUninit::new(board::LFS_PARTITION_START + board::LFS_PARTITION_SIZE);
     // SAFETY: the eMMC controller was initialized in Step 7; init() is
-    // called once here on a freshly constructed MsdcBlockDevice.
-    if unsafe { phys.init() }.is_err() {
+    // called once here on a freshly constructed device.
+    let Ok(phys) = (unsafe { uninit.init() }) else {
         return None;
-    }
+    };
     let payload = crate::block::PartitionBlockDevice::new(
         phys,
         board::LFS_PARTITION_START + board::LFS_PREAMBLE_SECTORS,
@@ -813,15 +813,29 @@ pub unsafe fn run() -> ! {
         // a read past it errors -> Unreadable -> Halt, by design (#467).
         // The physical device outlives `source` (the enum borrows it).
         #[cfg(not(feature = "qemu"))]
-        let mut phys_dev =
-            MsdcBlockDevice::new(board::LFS_PARTITION_START + board::LFS_PARTITION_SIZE);
+        let mut phys_dev = if state.emmc_ok {
+            let uninit =
+                MsdcBlockDeviceUninit::new(board::LFS_PARTITION_START + board::LFS_PARTITION_SIZE);
+            // SAFETY: the eMMC controller was initialized in Step 7; init() is
+            // called once here on a freshly constructed device. Step 7's
+            // controller is a separate instance, so its success says nothing
+            // about this one — this device must be initialized in its own
+            // right before any I/O (#619).
+            unsafe { uninit.init() }.ok()
+        } else {
+            None
+        };
         #[cfg(feature = "qemu")]
         let source = crate::secure_boot::BootImageSource::Absent;
         #[cfg(not(feature = "qemu"))]
-        let source = if state.emmc_ok {
-            crate::secure_boot::boot_image_source(&mut phys_dev)
-        } else {
-            crate::secure_boot::BootImageSource::Absent
+        let source = match phys_dev.as_mut() {
+            Some(dev) => crate::secure_boot::boot_image_source(dev),
+            // Absent, per BootImageSource's own contract: "no boot medium:
+            // qemu (no MSDC model) or an eMMC that failed init". A failed
+            // init is the degrade class, not the Unreadable halt class —
+            // Unreadable means a medium exists and its partition could not
+            // be read.
+            None => crate::secure_boot::BootImageSource::Absent,
         };
         match crate::secure_boot::evaluate_boot_image(&source) {
             crate::secure_boot::SecureBootDecision::Proceed { verified: true } => {
@@ -883,12 +897,12 @@ pub unsafe fn run() -> ! {
         // and NEVER writes here: the provisioning write happens only inside
         // the first-boot setup completion below.
         if state.emmc_ok {
-            let mut preamble_phys =
-                MsdcBlockDevice::new(board::LFS_PARTITION_START + board::LFS_PARTITION_SIZE);
+            let preamble_uninit =
+                MsdcBlockDeviceUninit::new(board::LFS_PARTITION_START + board::LFS_PARTITION_SIZE);
             // SAFETY: eMMC init succeeded in Step 7; init() is called once
-            // here on a freshly constructed MsdcBlockDevice.
-            match unsafe { preamble_phys.init() } {
-                Ok(()) => {
+            // here on a freshly constructed device.
+            match unsafe { preamble_uninit.init() } {
+                Ok(preamble_phys) => {
                     let mut view = crate::block::PartitionBlockDevice::new(
                         preamble_phys,
                         board::LFS_PARTITION_START,
@@ -1120,12 +1134,12 @@ pub unsafe fn run() -> ! {
             // reachable only on an UNPROVISIONED device (no preamble), so no
             // plaintext sector has been carved — byte-compatible with pre-#446
             // images.
-            let mut phys_dev = MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
+            let uninit = MsdcBlockDeviceUninit::new(board::LFS_PARTITION_START + sector_count);
 
             // SAFETY: eMMC controller was initialized successfully in Step 7.
-            // MsdcBlockDevice::init() is called once here; the controller is ready.
-            match unsafe { phys_dev.init() } {
-                Ok(()) => {
+            // init() is called once here on a freshly constructed device.
+            match unsafe { uninit.init() } {
+                Ok(phys_dev) => {
                     let blk_dev = crate::block::PartitionBlockDevice::new(
                         phys_dev,
                         board::LFS_PARTITION_START,
@@ -1145,12 +1159,13 @@ pub unsafe fn run() -> ! {
                         // transient I/O fault (#360).
                         Err(LfsError::InvalidSuperblock) => {
                             serial.log(" LFS mount failed (no superblock), formatting\r\n");
-                            let mut fmt_phys =
-                                MsdcBlockDevice::new(board::LFS_PARTITION_START + sector_count);
+                            let fmt_uninit = MsdcBlockDeviceUninit::new(
+                                board::LFS_PARTITION_START + sector_count,
+                            );
                             // SAFETY: eMMC controller was initialized successfully in
-                            // Step 7; fmt_phys.init() is called once here on a
-                            // freshly constructed MsdcBlockDevice.
-                            if unsafe { fmt_phys.init() }.is_ok() {
+                            // Step 7; init() is called once here on a freshly
+                            // constructed device.
+                            if let Ok(fmt_phys) = unsafe { fmt_uninit.init() } {
                                 let mut fmt_dev = crate::block::PartitionBlockDevice::new(
                                     fmt_phys,
                                     board::LFS_PARTITION_START,
@@ -1162,14 +1177,14 @@ pub unsafe fn run() -> ! {
                                     // VFS root is backed by durable storage from
                                     // this boot onward, not just after the NEXT
                                     // reboot (#343).
-                                    let mut remount_phys = MsdcBlockDevice::new(
+                                    let remount_uninit = MsdcBlockDeviceUninit::new(
                                         board::LFS_PARTITION_START + sector_count,
                                     );
                                     // SAFETY: eMMC controller was initialized successfully
-                                    // in Step 7; remount_phys.init() is called once here on
-                                    // a freshly constructed MsdcBlockDevice.
-                                    match unsafe { remount_phys.init() } {
-                                        Ok(()) => {
+                                    // in Step 7; init() is called once here on a freshly
+                                    // constructed device.
+                                    match unsafe { remount_uninit.init() } {
+                                        Ok(remount_phys) => {
                                             let remount_dev =
                                                 crate::block::PartitionBlockDevice::new(
                                                     remount_phys,

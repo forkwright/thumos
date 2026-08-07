@@ -287,26 +287,27 @@ mod msdc_wrapper {
     use super::{BlockDevice, BlockError, SECTOR_SIZE};
     use crate::emmc::MsdcController;
 
-    /// Block device backed by the MT6739 MSDC eMMC controller.
+    /// An MSDC block device that has not been initialized yet.
     ///
-    /// Wraps [`MsdcController`] to provide the [`BlockDevice`] trait. Each
-    /// read/write call issues single-sector PIO transfers in a loop.
+    /// WHY (#619): this type exists so that "constructed but never initialized"
+    /// cannot reach an I/O call. It deliberately does NOT implement
+    /// [`BlockDevice`], and [`MsdcBlockDevice`] has no public constructor, so
+    /// the only route to a usable device is [`Self::init`]. A call site that
+    /// forgets to initialize now fails to compile rather than returning
+    /// [`BlockError::DeviceNotReady`] at the first read — which, at the
+    /// secure-boot GPT read, presented as an unconditional boot halt.
     ///
-    /// The controller must be initialized via [`MsdcBlockDevice::init`] before
-    /// any I/O. Sector count is fixed at construction (read from CSD or
-    /// hard-coded for the known eMMC part).
-    pub(crate) struct MsdcBlockDevice {
-        /// The underlying MSDC controller.
+    /// Sector count is fixed at construction (read from CSD or hard-coded for
+    /// the known eMMC part) and carried through initialization.
+    pub(crate) struct MsdcBlockDeviceUninit {
+        /// The underlying MSDC controller, not yet initialized.
         controller: MsdcController,
         /// Total sector count of the eMMC device.
         sector_count: u64,
     }
 
-    impl MsdcBlockDevice {
-        /// Create a new MSDC block device with a known sector count.
-        ///
-        /// The controller is NOT initialized — call [`MsdcBlockDevice::init`]
-        /// before issuing any I/O.
+    impl MsdcBlockDeviceUninit {
+        /// Create an uninitialized MSDC block device with a known sector count.
         pub(crate) fn new(sector_count: u64) -> Self {
             Self {
                 controller: MsdcController::new(),
@@ -314,7 +315,10 @@ mod msdc_wrapper {
             }
         }
 
-        /// Initialize the underlying MSDC controller.
+        /// Initialize the controller, yielding a usable [`MsdcBlockDevice`].
+        ///
+        /// Consumes `self`, so the uninitialized handle is gone on success and
+        /// cannot be used afterwards.
         ///
         /// # Safety
         ///
@@ -323,20 +327,43 @@ mod msdc_wrapper {
         ///
         /// # Errors
         ///
-        /// Returns [`BlockError::DeviceNotReady`] if hardware initialization fails.
+        /// Returns [`BlockError::DeviceNotReady`] if hardware initialization
+        /// fails. No [`MsdcBlockDevice`] is produced in that case.
         #[expect(
             unsafe_code,
             reason = "MMIO register access requires raw pointer dereference"
         )]
-        pub unsafe fn init(&mut self) -> Result<(), BlockError> {
+        pub unsafe fn init(mut self) -> Result<MsdcBlockDevice, BlockError> {
             // SAFETY: caller guarantees the MSDC register block is mapped, and
             // this is called exactly once after power-on per the function contract.
             unsafe {
                 self.controller
                     .init()
-                    .map_err(|_| BlockError::DeviceNotReady)
+                    .map_err(|_| BlockError::DeviceNotReady)?;
             }
+            Ok(MsdcBlockDevice {
+                controller: self.controller,
+                sector_count: self.sector_count,
+            })
         }
+    }
+
+    /// Block device backed by the MT6739 MSDC eMMC controller.
+    ///
+    /// Wraps [`MsdcController`] to provide the [`BlockDevice`] trait. Each
+    /// read/write call issues single-sector PIO transfers in a loop.
+    ///
+    /// INVARIANT: the controller is initialized. The only constructor is
+    /// [`MsdcBlockDeviceUninit::init`], which returns this type solely on the
+    /// success path, so holding an `MsdcBlockDevice` is itself the proof that
+    /// initialization ran and succeeded. The read/write paths therefore carry
+    /// no `is_initialized()` guard: it could not fail, and a check that cannot
+    /// fail reports the same green whether the property holds or not.
+    pub(crate) struct MsdcBlockDevice {
+        /// The underlying MSDC controller, initialized per the type invariant.
+        controller: MsdcController,
+        /// Total sector count of the eMMC device.
+        sector_count: u64,
     }
 
     impl BlockDevice for MsdcBlockDevice {
@@ -345,10 +372,6 @@ mod msdc_wrapper {
             reason = "MMIO register access requires raw pointer dereference"
         )]
         fn read_sectors(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
-            if !self.controller.is_initialized() {
-                return Err(BlockError::DeviceNotReady);
-            }
-
             let end = lba
                 .checked_add(u64::from(count))
                 .ok_or(BlockError::OutOfBounds)?;
@@ -370,9 +393,11 @@ mod msdc_wrapper {
                     .try_into()
                     .map_err(|_| BlockError::InvalidArgument)?;
 
-                // SAFETY: controller.is_initialized() was verified above.
-                // The register block is valid for the lifetime of the device
-                // (hardware is memory-mapped and never unmapped on this SoC).
+                // SAFETY: the controller is initialized per this type's
+                // invariant — `MsdcBlockDeviceUninit::init` is its only
+                // constructor and yields it only on success. The register
+                // block is valid for the lifetime of the device (hardware is
+                // memory-mapped and never unmapped on this SoC).
                 unsafe {
                     self.controller
                         .read_sector(lba32, sector_buf)
@@ -387,10 +412,6 @@ mod msdc_wrapper {
             reason = "MMIO register access requires raw pointer dereference"
         )]
         fn write_sectors(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
-            if !self.controller.is_initialized() {
-                return Err(BlockError::DeviceNotReady);
-            }
-
             let end = lba
                 .checked_add(u64::from(count))
                 .ok_or(BlockError::OutOfBounds)?;
@@ -410,8 +431,10 @@ mod msdc_wrapper {
                     .try_into()
                     .map_err(|_| BlockError::InvalidArgument)?;
 
-                // SAFETY: controller.is_initialized() was verified above.
-                // The register block is valid for the lifetime of the device.
+                // SAFETY: the controller is initialized per this type's
+                // invariant — `MsdcBlockDeviceUninit::init` is its only
+                // constructor and yields it only on success. The register
+                // block is valid for the lifetime of the device.
                 unsafe {
                     self.controller
                         .write_sector(lba32, sector_buf)
@@ -428,7 +451,7 @@ mod msdc_wrapper {
 }
 
 #[cfg(not(any(test, feature = "qemu")))]
-pub(crate) use msdc_wrapper::MsdcBlockDevice;
+pub(crate) use msdc_wrapper::{MsdcBlockDevice, MsdcBlockDeviceUninit};
 
 // ---------------------------------------------------------------------------
 // Block-level I/O helpers
