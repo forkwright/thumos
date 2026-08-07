@@ -5,8 +5,9 @@
 //!
 //! - [`MemBlockDevice`]: in-memory mock backed by `Vec<u8>`, available in all
 //!   builds including tests.
-//! - [`MsdcBlockDevice`]: wraps the MT6739 MSDC controller from [`crate::emmc`],
-//!   available only in non-test builds.
+//! - [`MsdcBlockDevice`]: generic over `crate::emmc::MsdcOps` (#631), wrapping
+//!   the real MT6739 MSDC controller on hardware and a fake under test/qemu
+//!   -- available, and host-tested, on every target.
 //!
 //! All operations use 512-byte sector granularity. Higher layers (block cache,
 //! filesystem) operate at 4 KiB logical-block granularity by issuing multiple
@@ -279,13 +280,19 @@ impl BlockDevice for MemBlockDevice {
 }
 
 // ---------------------------------------------------------------------------
-// MsdcBlockDevice — hardware wrapper (non-test only)
+// MsdcBlockDevice — MSDC/eMMC wrapper (#631)
 // ---------------------------------------------------------------------------
+//
+// Generic over `MsdcOps` so this typestate and the read/write bounds/
+// overflow/narrowing logic below run against `crate::emmc::FakeMsdc` on
+// every target. `C` defaults to `BootMsdc` (the real controller on
+// hardware, the fake under test/qemu), so every existing production call
+// site (`MsdcBlockDeviceUninit::new(sector_count)`, `MsdcBlockDevice` used
+// bare as a type) keeps compiling unchanged.
 
-#[cfg(not(any(test, feature = "qemu")))]
 mod msdc_wrapper {
     use super::{BlockDevice, BlockError, SECTOR_SIZE};
-    use crate::emmc::MsdcController;
+    use crate::emmc::{BootMsdc, MsdcOps};
 
     /// An MSDC block device that has not been initialized yet.
     ///
@@ -299,18 +306,35 @@ mod msdc_wrapper {
     ///
     /// Sector count is fixed at construction (read from CSD or hard-coded for
     /// the known eMMC part) and carried through initialization.
-    pub(crate) struct MsdcBlockDeviceUninit {
+    pub(crate) struct MsdcBlockDeviceUninit<C: MsdcOps = BootMsdc> {
         /// The underlying MSDC controller, not yet initialized.
-        controller: MsdcController,
+        controller: C,
         /// Total sector count of the eMMC device.
         sector_count: u64,
     }
 
-    impl MsdcBlockDeviceUninit {
-        /// Create an uninitialized MSDC block device with a known sector count.
+    impl MsdcBlockDeviceUninit<BootMsdc> {
+        /// Create an uninitialized MSDC block device with a known sector
+        /// count, backed by the boot-wired controller (the real
+        /// `crate::emmc::MsdcController` on hardware,
+        /// `crate::emmc::FakeMsdc` under test/qemu).
         pub(crate) fn new(sector_count: u64) -> Self {
             Self {
-                controller: MsdcController::new(),
+                controller: BootMsdc::default(),
+                sector_count,
+            }
+        }
+    }
+
+    impl<C: MsdcOps> MsdcBlockDeviceUninit<C> {
+        /// Construct an uninitialized device around a specific controller
+        /// instance (#631 test seam): lets a test pre-configure a
+        /// `crate::emmc::FakeMsdc`'s failure knobs before calling
+        /// [`Self::init`].
+        #[cfg(test)]
+        pub(crate) fn with_controller(controller: C, sector_count: u64) -> Self {
+            Self {
+                controller,
                 sector_count,
             }
         }
@@ -333,7 +357,7 @@ mod msdc_wrapper {
             unsafe_code,
             reason = "MMIO register access requires raw pointer dereference"
         )]
-        pub unsafe fn init(mut self) -> Result<MsdcBlockDevice, BlockError> {
+        pub unsafe fn init(mut self) -> Result<MsdcBlockDevice<C>, BlockError> {
             // SAFETY: caller guarantees the MSDC register block is mapped, and
             // this is called exactly once after power-on per the function contract.
             unsafe {
@@ -348,10 +372,13 @@ mod msdc_wrapper {
         }
     }
 
-    /// Block device backed by the MT6739 MSDC eMMC controller.
+    /// Block device backed by an [`MsdcOps`] controller.
     ///
-    /// Wraps [`MsdcController`] to provide the [`BlockDevice`] trait. Each
-    /// read/write call issues single-sector PIO transfers in a loop.
+    /// Wraps the controller to provide the [`BlockDevice`] trait. Each
+    /// read/write call issues single-sector PIO transfers in a loop. `C`
+    /// defaults to `BootMsdc` (#631): the real `crate::emmc::MsdcController`
+    /// on hardware, `crate::emmc::FakeMsdc` under test/qemu, so this logic
+    /// runs and is asserted against on every target.
     ///
     /// INVARIANT: the controller is initialized. The only constructor is
     /// [`MsdcBlockDeviceUninit::init`], which returns this type solely on the
@@ -359,14 +386,14 @@ mod msdc_wrapper {
     /// initialization ran and succeeded. The read/write paths therefore carry
     /// no `is_initialized()` guard: it could not fail, and a check that cannot
     /// fail reports the same green whether the property holds or not.
-    pub(crate) struct MsdcBlockDevice {
+    pub(crate) struct MsdcBlockDevice<C: MsdcOps = BootMsdc> {
         /// The underlying MSDC controller, initialized per the type invariant.
-        controller: MsdcController,
+        controller: C,
         /// Total sector count of the eMMC device.
         sector_count: u64,
     }
 
-    impl BlockDevice for MsdcBlockDevice {
+    impl<C: MsdcOps> BlockDevice for MsdcBlockDevice<C> {
         #[expect(
             unsafe_code,
             reason = "MMIO register access requires raw pointer dereference"
@@ -450,7 +477,6 @@ mod msdc_wrapper {
     }
 }
 
-#[cfg(not(any(test, feature = "qemu")))]
 pub(crate) use msdc_wrapper::{MsdcBlockDevice, MsdcBlockDeviceUninit};
 
 // ---------------------------------------------------------------------------
@@ -777,5 +803,112 @@ pub(crate) mod tests {
         let mut read_buf = vec![0u8; SECTOR_SIZE];
         let result = dev.read_sectors(0, 1, &mut read_buf);
         assert_eq!(result, Ok(()));
+    }
+
+    // -- MsdcBlockDevice wrapper logic (#631) --
+    //
+    // The wrapper used to be gated to non-test, non-qemu builds on the real
+    // MsdcController, so none of this logic -- the bounds check, the
+    // checked_add overflow guard, the buffer-length validation, the u32 LBA
+    // narrowing, or the #619 typestate transition -- had ever run under any
+    // automated check. FakeMsdc (crate::emmc) stands in for the real
+    // controller so it runs here.
+
+    use crate::emmc::{FakeMsdc, MsdcError};
+
+    /// Build an initialized `MsdcBlockDevice<FakeMsdc>` around `fake`.
+    fn init_fake_device(fake: FakeMsdc, sector_count: u64) -> MsdcBlockDevice<FakeMsdc> {
+        let uninit = MsdcBlockDeviceUninit::with_controller(fake, sector_count);
+        // SAFETY: FakeMsdc touches no real MMIO; this is the host test seam
+        // #631 exists to create.
+        unsafe { uninit.init() }.expect("fake init succeeds unless force_init_failure is set")
+    }
+
+    #[test]
+    fn msdc_read_past_sector_count_rejected() {
+        let dev = init_fake_device(FakeMsdc::new(), 4);
+        let mut buf = vec![0u8; SECTOR_SIZE];
+        let result = dev.read_sectors(4, 1, &mut buf);
+        assert_eq!(
+            result,
+            Err(BlockError::OutOfBounds),
+            "lba == sector_count is one past the last valid sector"
+        );
+    }
+
+    #[test]
+    fn msdc_read_checked_add_overflow_rejected() {
+        let dev = init_fake_device(FakeMsdc::new(), 4);
+        let mut buf = vec![0u8; SECTOR_SIZE];
+        // lba + count overflows u64: the bounds check must reject via
+        // checked_add, not panic (debug builds) or silently wrap (release).
+        let result = dev.read_sectors(u64::MAX, 1, &mut buf);
+        assert_eq!(
+            result,
+            Err(BlockError::OutOfBounds),
+            "lba + count overflow must be rejected, not panic or wrap"
+        );
+    }
+
+    #[test]
+    fn msdc_write_buf_len_mismatch_rejected() {
+        let mut dev = init_fake_device(FakeMsdc::new(), 4);
+        let buf = vec![0u8; SECTOR_SIZE - 1];
+        let result = dev.write_sectors(0, 1, &buf);
+        assert_eq!(result, Err(BlockError::InvalidArgument));
+    }
+
+    #[test]
+    fn msdc_lba_u32_narrowing_boundary_rejected() {
+        // sector_count is large enough that lba = u32::MAX + 1 passes the
+        // sector_count bounds check, so only the per-sector u32::try_from
+        // narrowing can reject it -- the arithmetic #619's typestate cannot
+        // express, since it needs no runtime.
+        let lba = u64::from(u32::MAX) + 1;
+        let sector_count = lba + 1;
+        let dev = init_fake_device(FakeMsdc::new(), sector_count);
+        let mut buf = vec![0u8; SECTOR_SIZE];
+        let result = dev.read_sectors(lba, 1, &mut buf);
+        assert_eq!(
+            result,
+            Err(BlockError::OutOfBounds),
+            "an lba past u32::MAX must be rejected by the narrowing, not silently truncated"
+        );
+    }
+
+    #[test]
+    fn msdc_read_sector_error_propagates_as_io_error() {
+        let mut fake = FakeMsdc::new();
+        fake.fail_at_sector = Some(2);
+        let dev = init_fake_device(fake, 4);
+
+        let mut buf = vec![0u8; SECTOR_SIZE];
+        assert_eq!(
+            dev.read_sectors(2, 1, &mut buf),
+            Err(BlockError::IoError),
+            "the fake's per-sector failure must surface as IoError"
+        );
+
+        // A non-failing sector on the same device still succeeds.
+        assert_eq!(dev.read_sectors(0, 1, &mut buf), Ok(()));
+    }
+
+    #[test]
+    fn msdc_init_failure_yields_no_device() {
+        // #619 typestate transition: a controller that fails init must not
+        // produce an MsdcBlockDevice at all -- MsdcBlockDeviceUninit::init
+        // consumes self either way, so the failure path is the ONLY way to
+        // observe "never initialized" and it must map to DeviceNotReady with
+        // no device escaping.
+        let mut fake = FakeMsdc::new();
+        fake.force_init_failure = Some(MsdcError::CardNotPresent);
+        let uninit = MsdcBlockDeviceUninit::with_controller(fake, 4);
+        // SAFETY: FakeMsdc touches no real MMIO.
+        let result = unsafe { uninit.init() };
+        assert_eq!(
+            result.err(),
+            Some(BlockError::DeviceNotReady),
+            "init failure must map to DeviceNotReady, not silently succeed"
+        );
     }
 }

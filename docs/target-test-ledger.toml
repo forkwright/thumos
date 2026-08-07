@@ -50,7 +50,7 @@ mechanism = "host"
 
 [[module]]
 name = "block"
-tests = 14
+tests = 20
 mechanism = "host"
 
 [[module]]
