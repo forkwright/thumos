@@ -9,7 +9,9 @@ Board specifics (MMIO maps, device set, bring-up behavior) live behind the `boar
 
 ## Crate map
 
-15 crates total: 1 bare-metal kernel binary + 14 workspace library crates.
+The kernel binary plus the workspace crates below make up the full crate
+set — verified 1:1 against `Cargo.toml` workspace members (plus the
+excluded kernel crate) by `scripts/check-doc-inventory.sh`.
 
 The kernel links `sema-core` (the canonical threat-semantics types) by path
 dependency — the first instance of the #545 convergence topology: shared
@@ -73,6 +75,12 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 | Crate | Description |
 |-------|-------------|
 | `metaxu` | Aletheia/Thumos thin-client bridge protocol: typed tasks, capability grant claims, opaque identity references |
+
+**Build tooling**
+
+| Crate | Description |
+|-------|-------------|
+| `sphragis` | Boot-image signing tool: streamed Ed25519ph signer producing the payload‖signature layout the kernel's boot gate verifies (#467) |
 
 ## Dependency direction
 
