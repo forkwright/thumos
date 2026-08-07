@@ -609,6 +609,13 @@ impl Lfs {
     /// INODES_PER_BLOCK`.
     fn load_inode(&self, inode_id: u32) -> Result<DiskInode, VfsError> {
         let block_num = self.imap.get(inode_id).ok_or(VfsError::NotFound)?;
+        // WARNING: imap entries are on-disk, untrusted data -- exactly
+        // the same class as inode.direct[], which this file already
+        // bounds before it reaches the block cache. The imap is the
+        // pointer table that selects which block is authoritative for
+        // every inode, so an unguarded entry here can serve one file's
+        // content as another's (#624, #security).
+        self.validate_block_num(block_num)?;
 
         let mut buf = [0u8; BLOCK_SIZE];
         let mut dev = self.dev.borrow_mut();
@@ -1297,6 +1304,16 @@ impl Filesystem for Lfs {
         // the imap (#301).
         let mut target_inode = {
             let block_num = self.imap.get(target_id).ok_or(VfsError::NotFound)?;
+            // WARNING: imap entries are on-disk, untrusted data -- the
+            // same class as inode.direct[], which this file already
+            // bounds before it reaches the block cache (#624,
+            // #security). Inlined here (rather than calling
+            // self.validate_block_num) because `writer` above already
+            // holds an exclusive borrow of `self.writer`, so a `&self`
+            // method call on the whole struct is not available.
+            if block_num == 0 || block_num >= self.superblock.block_count {
+                return Err(VfsError::IoError);
+            }
             let mut buf = [0u8; BLOCK_SIZE];
             cache
                 .read(dev.as_mut(), block_num, &mut buf)
@@ -1770,6 +1787,33 @@ mod tests {
     }
 
     #[test]
+    fn load_inode_rejects_imap_block_pointing_at_superblock() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "f", InodeType::RegularFile)
+            .expect("create");
+
+        // Point the target's imap entry at block 0 -- the superblock
+        // itself, always present and always readable at the raw device
+        // level, so a pre-fix read would succeed and misparse
+        // superblock bytes as the target's DiskInode instead of
+        // failing. load_inode() handed imap-derived block numbers
+        // straight to the cache with no bound check, unlike
+        // inode.direct[] which this file already guards (#624).
+        fs.imap.insert(file_id, 0);
+
+        let result = fs.load_inode(file_id);
+        assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "an imap entry pointing at block 0 (the superblock) must be rejected, not read as the inode's own data"
+        );
+    }
+
+    #[test]
     fn create_file_then_read_back() {
         let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
@@ -1901,6 +1945,37 @@ mod tests {
 
         // Inode should be removed from imap (link count was 1).
         assert_eq!(fs.stat(file_id), Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn unlink_rejects_target_imap_block_pointing_at_superblock() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "f", InodeType::RegularFile)
+            .expect("create");
+
+        // Point the target's imap entry at block 0 -- the superblock
+        // itself. Root's own imap entry is untouched, so the parent
+        // lookup at the top of unlink() is unaffected by this
+        // corruption; only unlink()'s own direct imap read (distinct
+        // from load_inode's, and unguarded before the fix) is exercised
+        // (#624).
+        fs.imap.insert(file_id, 0);
+
+        let result = fs.unlink(root, "f");
+        assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "unlink() must reject an imap entry pointing at block 0 (the superblock), not read it as the target inode"
+        );
+
+        assert!(
+            fs.lookup(root, "f").is_ok(),
+            "a rejected unlink must not have mutated the parent directory"
+        );
     }
 
     #[test]
