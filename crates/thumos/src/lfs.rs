@@ -2378,6 +2378,45 @@ mod tests {
     }
 
     #[test]
+    fn create_write_unlink_loop_triggers_compaction_before_nospace() {
+        // Done-when (#625): an 8-segment filesystem driven only through
+        // ordinary write()/unlink() calls must trigger compaction and
+        // reclaim garbage before any NoSpace is returned. Before the fix,
+        // `needs_compaction`'s threshold compared raw `free_count()`
+        // against a floor of 1 -- but `allocate()` withholds the last
+        // free segment as a compaction reserve (#329), so ordinary writes
+        // can never drive `free_count()` below 1, and the trigger was
+        // unreachable on any filesystem under 20 segments.
+        use alloc::format;
+
+        let mut dev = block_device_for_lfs(); // 8 segments (2048 blocks).
+        format(&mut dev).expect("format");
+
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        // Each iteration creates and immediately deletes a 48 KiB file
+        // (12 direct blocks at 4 KiB each, the maximum reachable without
+        // an indirect block), stranding its inode and data blocks as
+        // garbage for the next iteration to potentially reclaim. Run far
+        // more iterations than the device's raw 2048 blocks could ever
+        // absorb without reclaim (roughly 13 blocks of log traffic per
+        // iteration) -- sustained success across all of them is only
+        // possible if compaction is actually running.
+        let payload = [0xABu8; 12 * BLOCK_SIZE];
+        for i in 0..300 {
+            let name = format!("f{i}");
+            let file_id = fs
+                .create(root, &name, InodeType::RegularFile)
+                .unwrap_or_else(|e| panic!("create at iteration {i} failed: {e:?}"));
+            fs.write(file_id, 0, &payload)
+                .unwrap_or_else(|e| panic!("write at iteration {i} failed: {e:?}"));
+            fs.unlink(root, &name)
+                .unwrap_or_else(|e| panic!("unlink at iteration {i} failed: {e:?}"));
+        }
+    }
+
+    #[test]
     fn create_past_one_block_capacity_fails_without_dropping_entries() {
         use alloc::format;
 
