@@ -909,7 +909,7 @@ pub unsafe fn run() -> ! {
                         board::LFS_PREAMBLE_SECTORS,
                     );
                     match crate::secrets::load(&mut view) {
-                        Ok(Some(found)) => {
+                        Ok(crate::secrets::PreambleStatus::Valid(found)) => {
                             state.preamble = if found.boot_verifier.is_some() {
                                 PreambleLoad::Provisioned
                             } else {
@@ -917,7 +917,21 @@ pub unsafe fn run() -> ! {
                             };
                             boot_secrets = Some(found);
                         }
-                        Ok(None) => state.preamble = PreambleLoad::Unprovisioned,
+                        Ok(crate::secrets::PreambleStatus::Absent) => {
+                            state.preamble = PreambleLoad::Unprovisioned;
+                        }
+                        // #621: magic present but validation failed -- a
+                        // PROVISIONED device, not a blank one. Must never
+                        // collapse to Unprovisioned: that would let
+                        // first-boot setup overwrite the only copy of the
+                        // salt, or let the mount gate plain-mount (and
+                        // then format) the still-encrypted payload.
+                        Ok(crate::secrets::PreambleStatus::Corrupt) => {
+                            serial.log(
+                                " WARN Secrets preamble corrupt (magic present, validation failed) -- locking\r\n",
+                            );
+                            state.preamble = PreambleLoad::Corrupt;
+                        }
                         Err(e) => {
                             boot_log!(serial, " WARN Secrets preamble read failed: {:?}\r\n", e);
                             state.preamble = PreambleLoad::ReadFailed;
