@@ -28,6 +28,8 @@ stages = [
     "kernel build",
     "kernel trust anchor",
     "kernel host tests",
+    "board seam",
+    "convergence",
     "kernel qemu witnesses",
     "wiring inventory",
     "target test ledger",
