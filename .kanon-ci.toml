@@ -32,6 +32,7 @@ stages = [
     "convergence",
     "kernel qemu witnesses",
     "wiring inventory",
+    "doc inventory",
     "target test ledger",
     "cargo clippy",
     "cargo nextest",
@@ -98,6 +99,14 @@ timeout_secs = 3600
 # in the boot.log the witness stage just produced.
 [stages."wiring inventory"]
 cmd = "scripts/check-wiring-inventory.sh"
+timeout_secs = 300
+
+# WHY: the crate count was hand-typed in CLAUDE.md, ARCHITECTURE.md, and
+# _llm/README.md and disagreed with itself and with Cargo.toml; docs/
+# MANIFEST.toml omitted real docs/ files and nothing referenced it.
+# Source-level, cheap.
+[stages."doc inventory"]
+cmd = "scripts/check-doc-inventory.sh"
 timeout_secs = 300
 
 [stages."cargo clippy"]
