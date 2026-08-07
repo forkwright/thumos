@@ -474,10 +474,23 @@ pub(crate) fn draw_scaled_str_centered(
 // Input event types (kernel-side, mirroring haphe::input::Key)
 // ---------------------------------------------------------------------------
 
-/// Key codes matching haphe's key definitions.
+/// Key codes for the kernel-side input path.
 ///
 /// Duplicated here because haphe is a workspace crate and cannot be linked
-/// into the `#![no_std]` kernel. The discriminant values match `haphe::input::Key`.
+/// into the `#![no_std]` kernel's shipped (armv7a) target. Only the digit /
+/// star / hash / d-pad prefix (`Num0..=Right`, discriminants 0-15) is a
+/// genuine shared vocabulary with `haphe::input::Key` — the same physical
+/// matrix keys, pinned equal by the `shared_prefix_discriminants_match_haphe`
+/// test below (checked against the real `haphe` crate, not a copied
+/// constant). The extended range (16-21, `Ok`/`Lsk`/`Rsk`/`Call`/`End`/
+/// `Power`) is this enum's OWN vocabulary and is NOT required to match
+/// haphe's `Select`/`Call`/`End`/`Side`/`VolUp`/`VolDown` at the same
+/// discriminants — the two enums model different button sets above the
+/// matrix (this one has softkeys; haphe's has the volume rocker and side
+/// button instead), so a numeric cast between them for 16+ would silently
+/// mis-map keys (#615). A future userspace-to-kernel input bridge MUST
+/// convert through an explicit, exhaustive `match`, never a bare `as` cast,
+/// across this whole enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[non_exhaustive]
@@ -1012,6 +1025,50 @@ mod tests {
                 "duplicate discriminant {disc} in Key enum"
             );
             seen[disc as usize] = true;
+        }
+    }
+
+    /// Pins the ONLY genuine shared-vocabulary claim between `ui::Key` and
+    /// `haphe::input::Key`: the digit / star / hash / d-pad prefix
+    /// (discriminants 0-15) is the same physical matrix keys with the same
+    /// meaning in both enums, so a boot-path value can round-trip through
+    /// the raw `u8` without a lookup table. This imports the REAL `haphe`
+    /// crate (see Cargo.toml `[dev-dependencies]`, #615) rather than a
+    /// copied constant, so a discriminant change on EITHER side breaks this
+    /// test -- the two enums cannot drift apart silently again.
+    ///
+    /// Deliberately does NOT extend to 16-21: `ui::Key`'s `Ok`/`Lsk`/`Rsk`/
+    /// `Call`/`End`/`Power` and haphe's `Select`/`Call`/`End`/`Side`/
+    /// `VolUp`/`VolDown` are different button sets that happen to share a
+    /// numeric range -- they are NOT required to align (see the doc comment
+    /// on `Key` above).
+    #[test]
+    fn shared_prefix_discriminants_match_haphe() {
+        let pairs: [(Key, haphe::input::Key); 16] = [
+            (Key::Num0, haphe::input::Key::Num0),
+            (Key::Num1, haphe::input::Key::Num1),
+            (Key::Num2, haphe::input::Key::Num2),
+            (Key::Num3, haphe::input::Key::Num3),
+            (Key::Num4, haphe::input::Key::Num4),
+            (Key::Num5, haphe::input::Key::Num5),
+            (Key::Num6, haphe::input::Key::Num6),
+            (Key::Num7, haphe::input::Key::Num7),
+            (Key::Num8, haphe::input::Key::Num8),
+            (Key::Num9, haphe::input::Key::Num9),
+            (Key::Star, haphe::input::Key::Star),
+            (Key::Hash, haphe::input::Key::Hash),
+            (Key::Up, haphe::input::Key::Up),
+            (Key::Down, haphe::input::Key::Down),
+            (Key::Left, haphe::input::Key::Left),
+            (Key::Right, haphe::input::Key::Right),
+        ];
+        for (ui_key, haphe_key) in pairs {
+            assert_eq!(
+                ui_key as u8, haphe_key as u8,
+                "ui::Key::{ui_key:?} discriminant must match \
+                 haphe::input::Key::{haphe_key:?} -- both encode the same \
+                 physical matrix key"
+            );
         }
     }
 

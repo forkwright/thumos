@@ -91,6 +91,15 @@ xts-mode = { version = "0.5", default-features = false }
 [build-dependencies]
 ed25519-dalek = { version = "2", default-features = false }
 
+# WHY (#615): dev-only so ui.rs's kernel-local `Key` enum can be pinned
+# against the REAL `haphe::input::Key` in a host test, instead of a
+# hand-copied constant that could itself drift unnoticed. Dev-dependencies
+# are excluded from `cargo build --release` (the armv7a-none-eabi shipped
+# kernel), so this adds no coupling to the flashed binary -- only to the
+# `--target i686-unknown-linux-gnu` test target.
+[dev-dependencies]
+haphe = { path = "../haphe" }
+
 # WHY: the kernel crate is excluded from the workspace (bare-metal target)
 # but still enforces the same lint floor -- EXCEPT unsafe_code. A bare-metal
 # kernel is inherently unsafe (MMIO, global_asm!, raw register access);

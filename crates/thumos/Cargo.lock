@@ -225,6 +225,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "haphe"
+version = "0.1.17"
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -380,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "sema-core"
-version = "0.1.16"
+version = "0.1.17"
 dependencies = [
  "serde",
 ]
@@ -505,6 +509,7 @@ dependencies = [
  "aes",
  "cbc",
  "ed25519-dalek",
+ "haphe",
  "hkdf",
  "hmac",
  "pbkdf2",
