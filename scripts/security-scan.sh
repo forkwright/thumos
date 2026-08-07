@@ -25,8 +25,12 @@ while IFS='|' read -r lockfile label disposition; do
     case "$mode" in
         deny)
             manifest_dir=$(dirname "$lockfile")
-            cargo deny --manifest-path "$repo/$manifest_dir/Cargo.toml" \
-                check --config "$repo/deny.toml" advisories licenses bans sources || rc=1
+            # NOTE (#586): --config is global-position as of cargo-deny 0.20
+            # (it moved off the check subcommand mid-line; 0.19 accepted
+            # `check --config`, 0.20 rejects it with exit 2).
+            cargo deny --config "$repo/deny.toml" \
+                --manifest-path "$repo/$manifest_dir/Cargo.toml" \
+                check advisories licenses bans sources || rc=1
             ;;
         audit)
             # .cargo/audit.toml at the repo root holds the ignore SSOT; advisory
