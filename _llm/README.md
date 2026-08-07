@@ -4,7 +4,7 @@ On-demand reference for AI agents. CLAUDE.md is instructions (always loaded, sho
 
 ## Why this exists
 
-Thumos is a 13-crate workspace (12 userspace + 1 bare-metal kernel) with a large kernel surface across 107 modules (run `cargo metadata` and `find crates/thumos/src -name '*.rs' | wc -l` for current counts). Loading every crate-level doc for every task burns tokens on context the task does not need. This directory compresses the canonical `docs/` markdown into TOML views that scan fast and diff mechanically against the source.
+Thumos is a Rust workspace (crate roster: `architecture.toml`, kept 1:1 with `Cargo.toml` workspace members + the excluded kernel crate by `../scripts/check-doc-inventory.sh`) with a large kernel surface across 107 modules (run `cargo metadata` and `find crates/thumos/src -name '*.rs' | wc -l` for current counts). Loading every crate-level doc for every task burns tokens on context the task does not need. This directory compresses the canonical `docs/` markdown into TOML views that scan fast and diff mechanically against the source.
 
 ## Files
 

@@ -74,3 +74,39 @@ type = "decision-record"
 evergreen = true
 description = "Read-only ADB audit of surveillance/telemetry systems in stock AGM M7 firmware."
 decided = "2026-03-18"
+
+[[doc]]
+path = "docs/MANIFEST.toml"
+type = "meta"
+evergreen = true
+description = "This inventory: every tracked file under docs/, kept in sync by scripts/check-doc-inventory.sh."
+
+[[doc]]
+path = "docs/KERNEL-WIRING-AUDIT.md"
+type = "decision-record"
+evergreen = true
+description = "Superseded pointer to docs/capability-inventory.toml (#550), the machine-checked capability-reachability inventory that replaced this doc's hand counts."
+
+[[doc]]
+path = "docs/convergence.toml"
+type = "decision-record"
+evergreen = true
+description = "Machine-checked convergence ledger for kernel/workspace type duplication and its dispositions (#545); scripts/check-convergence.sh fails CI on drift."
+
+[[doc]]
+path = "docs/target-test-ledger.toml"
+type = "decision-record"
+evergreen = true
+description = "Machine-checked declared-vs-executed test ledger for target-sensitive kernel modules (#551); scripts/check-target-test-ledger.sh fails CI on drift."
+
+[[doc]]
+path = "docs/protocols/aletheia-v1.md"
+type = "spec"
+evergreen = true
+description = "Versioned envelope + STT-event protocol contract between thumos and aletheia (#553)."
+
+[[doc]]
+path = "docs/surveillance/evidence-manifest.toml"
+type = "decision-record"
+evergreen = true
+description = "Machine-checkable evidence index for docs/SURVEILLANCE-AUDIT.md: firmware identity, retained artifacts with hashes, and claim-to-evidence epistemic labels (#556)."

@@ -89,6 +89,21 @@ name = "eidolon"
 path = "crates/eidolon"
 role = "Framebuffer UI, widgets, status bar, dialer, and T9 rendering."
 
+[[architecture.crates]]
+name = "sema-core"
+path = "crates/sema-core"
+role = "no_std+alloc threat-semantics core: canonical ThreatLevel/Calibration types shared by sema and the kernel."
+
+[[architecture.crates]]
+name = "metaxu"
+path = "crates/metaxu"
+role = "Aletheia/Thumos thin-client bridge protocol: typed tasks, capability grant claims, and opaque identity references."
+
+[[architecture.crates]]
+name = "sphragis"
+path = "crates/sphragis"
+role = "Boot-image signing tool: streamed Ed25519ph signer for the kernel boot gate's payload/signature layout."
+
 [[interfaces]]
 name = "thumos kernel"
 kind = "kernel"
