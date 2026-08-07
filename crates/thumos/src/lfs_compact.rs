@@ -32,7 +32,8 @@ use crate::lfs_writer::{COMPACT_THRESHOLD_PERCENT, LfsWriter};
 
 /// Check whether compaction should be triggered based on free segment count.
 ///
-/// Returns `true` if the percentage of free segments is below the threshold.
+/// Returns `true` if the percentage of free segments available to ordinary
+/// writers is below the threshold.
 pub(crate) fn needs_compaction(seg_mgr: &LfsSegmentManager) -> bool {
     let total = seg_mgr.segment_count();
     if total == 0 {
@@ -41,7 +42,14 @@ pub(crate) fn needs_compaction(seg_mgr: &LfsSegmentManager) -> bool {
     let threshold = (u64::from(total) * u64::from(COMPACT_THRESHOLD_PERCENT) / 100) as u32;
     // Always require at least 1 free segment as the minimum threshold.
     let threshold = threshold.max(1);
-    seg_mgr.free_count() < threshold
+    // WHY: `LfsSegmentManager::allocate` withholds the last free segment as
+    // a compaction reserve (#329), so ordinary writers can never drive
+    // `free_count()` below 1. Comparing raw `free_count()` against a
+    // threshold that floors at 1 makes the trigger unreachable through any
+    // production write path on filesystems below 20 segments (#625) --
+    // compare the segments actually available to ordinary writers instead.
+    let usable_free = seg_mgr.free_count().saturating_sub(1);
+    usable_free < threshold
 }
 
 /// Compact one segment: pick the segment with the most garbage, copy its
