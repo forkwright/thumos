@@ -402,7 +402,7 @@ const BD_EOL: u32 = 1 << 0;
 /// spec defines 64 bytes with reserved fields, but only these 4 words
 /// are functional for basic descriptor-mode DMA.
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Gpd {
     /// Physical address of the next GPD (0 = last).
     pub(crate) next: u32,
@@ -418,7 +418,7 @@ pub(crate) struct Gpd {
 ///
 /// Each BD is 16 bytes. Linked list terminated by EOL flag.
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Bd {
     /// Physical address of the next BD (0 if EOL).
     pub(crate) next: u32,
