@@ -121,14 +121,24 @@ impl BootStep {
 pub(crate) enum PreambleLoad {
     /// The read has not run yet (no eMMC, or the step was not reached).
     NotRead,
-    /// Header absent/corrupt: no salt, no verifier — the device has never
-    /// set a boot passphrase. First-boot setup may provision it.
+    /// Header absent (no magic — never written): no salt, no verifier —
+    /// the device has never set a boot passphrase. First-boot setup may
+    /// provision it.
     Unprovisioned,
     /// A valid header carrying a boot passphrase verifier.
     Provisioned,
     /// The read itself failed (I/O). Fail-closed: the payload state is
     /// UNKNOWN, so it is treated as locked.
     ReadFailed,
+    /// The sector carries the preamble magic but fails version,
+    /// slot-count, integrity, or zero-payload validation (#621): the
+    /// device WAS provisioned and this content is unusable, not blank.
+    /// Must never be treated as `Unprovisioned` — that would re-provision
+    /// over (destroying) the only copy of the original salt, or fall
+    /// through to a plain mount that formats the still-encrypted
+    /// userdata. Treated identically to `ReadFailed`: an unreadable
+    /// preamble and a corrupt one are the same UNKNOWN-so-locked state.
+    Corrupt,
 }
 
 /// What the boot passphrase step does (#446).
@@ -148,8 +158,9 @@ pub(crate) enum BootPassphrasePlan {
 ///
 /// Fail-closed ordering (#217): the trust root is checked FIRST — key
 /// derivation never runs on an unverified image. A preamble that was not
-/// read or could not be read never falls into setup: a transient fault
-/// must not masquerade as first boot.
+/// read, could not be read, or was read but fails validation never falls
+/// into setup (#621): a transient fault, or a corrupted-but-present
+/// header, must not masquerade as first boot.
 pub(crate) const fn boot_passphrase_plan(
     secure_boot_ok: bool,
     display_ok: bool,
@@ -162,7 +173,9 @@ pub(crate) const fn boot_passphrase_plan(
     match preamble {
         PreambleLoad::Provisioned => BootPassphrasePlan::Verify,
         PreambleLoad::Unprovisioned => BootPassphrasePlan::FirstBootSetup,
-        PreambleLoad::NotRead | PreambleLoad::ReadFailed => BootPassphrasePlan::Skip,
+        PreambleLoad::NotRead | PreambleLoad::ReadFailed | PreambleLoad::Corrupt => {
+            BootPassphrasePlan::Skip
+        }
     }
 }
 
@@ -184,7 +197,9 @@ pub(crate) enum MountPlan {
 ///   today's code already enforces);
 /// - a provisioned (locked) payload is NEVER plain-mounted or formatted —
 ///   without the derived key the only honest mount is none;
-/// - an unreadable preamble is treated as provisioned (unknown = locked).
+/// - an unreadable OR corrupt preamble is treated as provisioned (unknown
+///   = locked, #621) — never as unprovisioned, which would plain-mount
+///   and then format on the resulting `InvalidSuperblock`.
 pub(crate) const fn mount_plan(
     emmc_ok: bool,
     secure_boot_ok: bool,
@@ -199,9 +214,10 @@ pub(crate) const fn mount_plan(
     }
     match preamble {
         PreambleLoad::Unprovisioned => MountPlan::Plain,
-        PreambleLoad::Provisioned | PreambleLoad::ReadFailed | PreambleLoad::NotRead => {
-            MountPlan::RamfsFallback
-        }
+        PreambleLoad::Provisioned
+        | PreambleLoad::ReadFailed
+        | PreambleLoad::NotRead
+        | PreambleLoad::Corrupt => MountPlan::RamfsFallback,
     }
 }
 
@@ -879,6 +895,14 @@ mod tests {
             boot_passphrase_plan(true, true, true, PreambleLoad::NotRead),
             BootPassphrasePlan::Skip
         );
+        // #621: a corrupted-but-present preamble is a PROVISIONED device,
+        // never a first-boot candidate -- setup here would silently
+        // overwrite the only copy of the original salt.
+        assert_eq!(
+            boot_passphrase_plan(true, true, true, PreambleLoad::Corrupt),
+            BootPassphrasePlan::Skip,
+            "corrupt preamble must never be treated as first boot (#621)"
+        );
     }
 
     #[test]
@@ -908,6 +932,14 @@ mod tests {
         assert_eq!(
             mount_plan(true, true, PreambleLoad::NotRead, false),
             MountPlan::RamfsFallback
+        );
+        // #621: a corrupted-but-present preamble reaches neither the
+        // plain-mount arm nor a reformat -- it is locked on the same
+        // footing as an unreadable one, never treated as unprovisioned.
+        assert_eq!(
+            mount_plan(true, true, PreambleLoad::Corrupt, false),
+            MountPlan::RamfsFallback,
+            "corrupt preamble is locked, never plain-mounted or formatted (#621)"
         );
         // The two real mounts.
         assert_eq!(

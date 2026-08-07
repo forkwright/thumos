@@ -34,11 +34,17 @@
 //! the encrypted payload itself (and NEVER a raw SHA-256(passphrase)
 //! fast-path). It carries no entropy of its own beyond the passphrase.
 //!
-//! Provisioning is implicit: a missing, malformed, or corrupt header is
-//! (re)provisioned with a fresh random salt; a valid header is read back.
-//! The whole header fits one sector, so eMMC single-sector write
-//! atomicity bounds the torn-write window to "old salt or new salt", and
-//! the integrity tag detects the torn half.
+//! Two read entry points, deliberately different fail modes (#621):
+//! [`load_or_provision`] treats a missing OR corrupt header alike and
+//! (re)provisions a fresh random salt over either — the whole header fits
+//! one sector, so eMMC single-sector write atomicity bounds the torn-write
+//! window to "old salt or new salt", and the integrity tag detects the
+//! torn half. [`load`] is read-only and must NOT collapse that
+//! distinction: the boot path (kinit) needs "never written" (a legitimate
+//! first-boot candidate) kept apart from "written, then corrupted" (a
+//! provisioned device whose only salt copy a re-provision would destroy,
+//! or whose ciphertext a fallback plain-mount-and-format would destroy) —
+//! see [`PreambleStatus`] and `kinit_plan::PreambleLoad::Corrupt`.
 
 use crate::block::{BlockDevice, BlockError, SECTOR_SIZE};
 
@@ -70,6 +76,7 @@ pub(crate) const VERIFIER_LEN: usize = 32;
 const VERIFIER_OFFSET: usize = 80;
 
 /// The per-device secrets this boot derived from the preamble.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeviceSecrets {
     /// The PBKDF2 device salt: random at provisioning, plaintext on disk,
     /// stable across boots.
@@ -80,6 +87,26 @@ pub(crate) struct DeviceSecrets {
     pub(crate) boot_verifier: Option<[u8; VERIFIER_LEN]>,
 }
 
+/// Outcome of parsing a preamble sector image (#621).
+///
+/// `Absent` and `Corrupt` must never be conflated: only `Absent` is a
+/// legitimate first-boot candidate. `Corrupt` means a device WAS
+/// provisioned and the sector no longer validates — the caller must treat
+/// it the same as a read failure (unknown state = locked), never the same
+/// as `Absent` (which would re-provision over, or plain-mount-and-format,
+/// a payload that is still encrypted under the lost salt).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreambleStatus {
+    /// No preamble magic: the sector has never been written by this
+    /// scheme (a factory-blank device).
+    Absent,
+    /// The preamble magic is present but the sector fails version,
+    /// slot-count, integrity-tag, or zero-payload validation.
+    Corrupt,
+    /// A structurally valid, integrity-checked header.
+    Valid(DeviceSecrets),
+}
+
 /// Compute the integrity tag over a sector image (tag field zeroed).
 fn integrity_of(sector: &[u8; SECTOR_SIZE]) -> [u8; 32] {
     let mut copy = *sector;
@@ -87,49 +114,57 @@ fn integrity_of(sector: &[u8; SECTOR_SIZE]) -> [u8; 32] {
     crate::security::sha256(&copy)
 }
 
-/// Read the secrets from a sector image, or `None` if the header is
-/// absent (bad magic/version/slot count) or corrupt (integrity
-/// mismatch). Returns the salt plus the boot verifier when the header
-/// carries one (slot count 2).
-fn parse(sector: &[u8; SECTOR_SIZE]) -> Option<([u8; SALT_LEN], Option<[u8; VERIFIER_LEN]>)> {
+/// Classify a sector image (#621): [`PreambleStatus::Absent`] when no
+/// preamble was ever written here (bad magic — the sole "never
+/// provisioned" signal); [`PreambleStatus::Corrupt`] when the magic is
+/// present but version, slot count, integrity tag, or a zero-payload
+/// guard fails (a provisioned device whose header is now unusable);
+/// otherwise [`PreambleStatus::Valid`] with the salt plus the boot
+/// verifier when the header carries one (slot count 2). Magic presence is
+/// the ONLY line between `Absent` and `Corrupt` — every check after it
+/// means "this was a preamble" and must not fall back to `Absent`.
+fn parse(sector: &[u8; SECTOR_SIZE]) -> PreambleStatus {
     if sector[..8] != MAGIC {
-        return None;
+        return PreambleStatus::Absent;
     }
-    let version = u32::from_le_bytes(sector[VERSION_OFFSET..VERSION_OFFSET + 4].try_into().ok()?);
-    if version != VERSION {
-        return None;
+    let mut version_bytes = [0u8; 4];
+    version_bytes.copy_from_slice(&sector[VERSION_OFFSET..VERSION_OFFSET + 4]);
+    if u32::from_le_bytes(version_bytes) != VERSION {
+        return PreambleStatus::Corrupt;
     }
-    let count = u32::from_le_bytes(
-        sector[SLOT_COUNT_OFFSET..SLOT_COUNT_OFFSET + 4]
-            .try_into()
-            .ok()?,
-    );
+    let mut count_bytes = [0u8; 4];
+    count_bytes.copy_from_slice(&sector[SLOT_COUNT_OFFSET..SLOT_COUNT_OFFSET + 4]);
+    let count = u32::from_le_bytes(count_bytes);
     if count != 1 && count != 2 {
-        return None;
+        return PreambleStatus::Corrupt;
     }
     if sector[INTEGRITY_OFFSET..INTEGRITY_OFFSET + 32] != integrity_of(sector) {
-        return None;
+        return PreambleStatus::Corrupt;
     }
     let mut salt = [0u8; SALT_LEN];
     salt.copy_from_slice(&sector[SALT_OFFSET..SALT_OFFSET + SALT_LEN]);
     if salt.iter().all(|&b| b == 0) {
         // An all-zero salt is never legitimate: it would silently re-create
-        // the shared-salt failure mode #449 exists to kill.
-        return None;
+        // the shared-salt failure mode #449 exists to kill. Magic and
+        // integrity both checked out, so this is corruption, not absence.
+        return PreambleStatus::Corrupt;
     }
-    let verifier = if count == 2 {
+    let boot_verifier = if count == 2 {
         let mut v = [0u8; VERIFIER_LEN];
         v.copy_from_slice(&sector[VERIFIER_OFFSET..VERIFIER_OFFSET + VERIFIER_LEN]);
         if v.iter().all(|&b| b == 0) {
             // An all-zero verifier is never legitimate: a zero slot would
             // turn a corrupt read into an empty-derivation oracle.
-            return None;
+            return PreambleStatus::Corrupt;
         }
         Some(v)
     } else {
         None
     };
-    Some((salt, verifier))
+    PreambleStatus::Valid(DeviceSecrets {
+        salt,
+        boot_verifier,
+    })
 }
 
 /// Render a header sector around `salt`, optionally carrying the boot
@@ -150,7 +185,14 @@ fn render(salt: &[u8; SALT_LEN], verifier: Option<&[u8; VERIFIER_LEN]>) -> [u8; 
 }
 
 /// Load the device secrets from the preamble, provisioning a fresh random
-/// salt when the header is absent or corrupt (#449).
+/// salt when the header is absent OR corrupt (#449).
+///
+/// WHY absent and corrupt are treated alike HERE (unlike [`load`], #621):
+/// this entry point is never used on the early boot probe — it is a
+/// blind provisioning helper, and its whole contract is "make the header
+/// valid, no matter what state it started in". The boot path instead uses
+/// the read-only [`load`], which keeps the two states apart so the caller
+/// can lock instead of overwrite.
 ///
 /// `dev` is the block view over the preamble region (a
 /// `PartitionBlockDevice` carved at the userdata partition head — #603);
@@ -169,11 +211,8 @@ pub(crate) fn load_or_provision<D: BlockDevice>(
 ) -> Result<DeviceSecrets, BlockError> {
     let mut sector = [0u8; SECTOR_SIZE];
     dev.read_sectors(0, 1, &mut sector)?;
-    if let Some((salt, boot_verifier)) = parse(&sector) {
-        return Ok(DeviceSecrets {
-            salt,
-            boot_verifier,
-        });
+    if let PreambleStatus::Valid(secrets) = parse(&sector) {
+        return Ok(secrets);
     }
 
     let mut salt = [0u8; SALT_LEN];
@@ -191,19 +230,23 @@ pub(crate) fn load_or_provision<D: BlockDevice>(
 /// The boot path probes the preamble before the trust gate is evaluated
 /// (the mount plan needs the fail-closed signal early), and a blind
 /// re-provision there would clobber a valid header after a transient
-/// fault — so this entry point never writes. `Ok(None)` means absent or
-/// corrupt (a first-boot candidate); `Err` means the read itself failed.
+/// fault — so this entry point never writes.
+///
+/// `Ok(PreambleStatus::Absent)` means no preamble was ever written (a
+/// first-boot candidate). `Ok(PreambleStatus::Corrupt)` means one WAS
+/// written and no longer validates — the caller must route this the same
+/// as a read failure, NEVER the same as `Absent` (#621): collapsing the
+/// two turns a bit flip into first-boot re-provisioning (destroys the
+/// salt) or a plain-mount-and-format (destroys the ciphertext). `Err`
+/// means the sector read itself failed.
 ///
 /// # Errors
 ///
 /// Returns [`BlockError`] when the sector read fails.
-pub(crate) fn load<D: BlockDevice>(dev: &mut D) -> Result<Option<DeviceSecrets>, BlockError> {
+pub(crate) fn load<D: BlockDevice>(dev: &mut D) -> Result<PreambleStatus, BlockError> {
     let mut sector = [0u8; SECTOR_SIZE];
     dev.read_sectors(0, 1, &mut sector)?;
-    Ok(parse(&sector).map(|(salt, boot_verifier)| DeviceSecrets {
-        salt,
-        boot_verifier,
-    }))
+    Ok(parse(&sector))
 }
 
 /// Store the boot passphrase verifier alongside the existing salt (#446).
@@ -266,7 +309,10 @@ mod tests {
         assert_eq!(sector[..8], MAGIC, "magic written");
         assert_eq!(
             parse(&sector),
-            Some((secrets.salt, None)),
+            PreambleStatus::Valid(DeviceSecrets {
+                salt: secrets.salt,
+                boot_verifier: None,
+            }),
             "header parses to the provisioned salt, no verifier yet"
         );
         assert_eq!(
@@ -298,13 +344,65 @@ mod tests {
         dev.read_sectors(0, 1, &mut sector).expect("read");
         sector[SALT_OFFSET] ^= 0xFF;
         dev.write_sectors(0, 1, &sector).expect("corrupt");
-        assert_eq!(parse(&sector), None, "corrupt payload must fail integrity");
+        assert_eq!(
+            parse(&sector),
+            PreambleStatus::Corrupt,
+            "corrupt payload (magic present, integrity fails) is Corrupt, never Absent (#621)"
+        );
 
+        // load_or_provision's OWN contract (unlike load's, see module doc)
+        // is to re-provision over Corrupt just like Absent.
         let second = load_or_provision(&mut dev, stream(0xB0)).expect("re-provision");
         assert_ne!(
             first.salt, second.salt,
             "re-provision generates a fresh salt"
         );
+    }
+
+    #[test]
+    fn load_distinguishes_corrupt_from_absent_and_never_reprovisions_either() {
+        // The #621 regression scenario at the `load()` boundary kinit
+        // actually calls: a genuinely blank device reports Absent...
+        let mut blank = MemBlockDevice::new(1).expect("blank device");
+        assert_eq!(
+            load(&mut blank).expect("load"),
+            PreambleStatus::Absent,
+            "never-written sector is Absent"
+        );
+
+        // ...while a PROVISIONED device whose sector was then corrupted
+        // (a bit flip outside the magic bytes -- the common case) must
+        // report Corrupt, not collapse to the same Absent state.
+        let mut provisioned = MemBlockDevice::new(1).expect("provisioned device");
+        load_or_provision(&mut provisioned, stream(0xA0)).expect("provision");
+        let mut sector = [0u8; SECTOR_SIZE];
+        provisioned
+            .read_sectors(0, 1, &mut sector)
+            .expect("read back");
+        sector[SALT_OFFSET] ^= 0xFF;
+        provisioned
+            .write_sectors(0, 1, &sector)
+            .expect("corrupt on disk");
+
+        let status = load(&mut provisioned).expect("load corrupt");
+        assert_eq!(
+            status,
+            PreambleStatus::Corrupt,
+            "a provisioned-then-corrupted sector must read as Corrupt, never Absent"
+        );
+        assert_ne!(
+            status,
+            PreambleStatus::Absent,
+            "Corrupt and Absent must route differently -- #621's whole point"
+        );
+
+        // load() is read-only regardless of outcome: the sector on disk
+        // is untouched by either call above.
+        let mut after = [0u8; SECTOR_SIZE];
+        provisioned
+            .read_sectors(0, 1, &mut after)
+            .expect("read after load");
+        assert_eq!(after, sector, "load must never write, corrupt or not");
     }
 
     #[test]
@@ -364,16 +462,24 @@ mod tests {
         // is what rejects it here.
         let salt = [0x11u8; SALT_LEN];
         let sector = render(&salt, Some(&[0u8; VERIFIER_LEN]));
-        assert_eq!(parse(&sector), None, "zero verifier is never legitimate");
+        assert_eq!(
+            parse(&sector),
+            PreambleStatus::Corrupt,
+            "zero verifier is never legitimate (magic + integrity pass, so this is corrupt, not absent)"
+        );
     }
 
     #[test]
     fn load_is_read_only_and_never_provisions() {
-        // A blank device: load reports None and writes NOTHING — the
+        // A blank device: load reports Absent and writes NOTHING — the
         // provisioning write is reserved for first-boot setup completion.
         let mut dev = MemBlockDevice::new(1).expect("device");
         let loaded = load(&mut dev).expect("load");
-        assert!(loaded.is_none(), "blank preamble loads as None");
+        assert_eq!(
+            loaded,
+            PreambleStatus::Absent,
+            "blank preamble loads as Absent"
+        );
         let mut sector = [0xAAu8; SECTOR_SIZE];
         dev.read_sectors(0, 1, &mut sector).expect("read back");
         assert!(
@@ -388,9 +494,10 @@ mod tests {
         let first = load_or_provision(&mut dev, stream(0xA0)).expect("provision");
         let verifier = sample_verifier();
         store_boot_verifier(&mut dev, &first.salt, &verifier).expect("store");
-        let loaded = load(&mut dev).expect("load").unwrap_or_else(|| {
-            unreachable!("a stored preamble parses");
-        });
+        let loaded = match load(&mut dev).expect("load") {
+            PreambleStatus::Valid(secrets) => secrets,
+            other => unreachable!("a stored preamble parses as Valid, got {other:?}"),
+        };
         assert_eq!(loaded.salt, first.salt);
         assert_eq!(loaded.boot_verifier, Some(verifier));
     }
@@ -406,7 +513,11 @@ mod tests {
         dev.read_sectors(0, 1, &mut sector).expect("read");
         sector[VERIFIER_OFFSET] ^= 0xFF;
         dev.write_sectors(0, 1, &sector).expect("corrupt");
-        assert_eq!(parse(&sector), None, "tampered verifier fails the tag");
+        assert_eq!(
+            parse(&sector),
+            PreambleStatus::Corrupt,
+            "tampered verifier fails the tag -- corrupt, not absent"
+        );
 
         // Re-provision yields a fresh salt and no verifier (the device
         // returns to the first-boot setup path — never a half-valid state).
