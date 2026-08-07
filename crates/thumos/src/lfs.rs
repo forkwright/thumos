@@ -555,6 +555,7 @@ pub(crate) fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
         &seg_data,
         superblock.segment_count,
         superblock.segment_size,
+        superblock.block_count,
     )?;
 
     Ok(Lfs {
@@ -2374,6 +2375,79 @@ mod tests {
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "an oversized segment_bitmap_count must be rejected, not used to drive an allocation"
+        );
+    }
+
+    /// A device wrapper whose writes always fail: used to prove a code
+    /// path (here, `mount()` rejecting a corrupt image) performs reads
+    /// only and never writes through to the disk it is validating,
+    /// regardless of what value would otherwise land there.
+    struct ReadOnlyDevice(MemBlockDevice);
+
+    impl BlockDevice for ReadOnlyDevice {
+        fn read_sectors(
+            &self,
+            lba: u64,
+            count: u32,
+            buf: &mut [u8],
+        ) -> Result<(), block::BlockError> {
+            self.0.read_sectors(lba, count, buf)
+        }
+
+        fn write_sectors(
+            &mut self,
+            _lba: u64,
+            _count: u32,
+            _buf: &[u8],
+        ) -> Result<(), block::BlockError> {
+            Err(block::BlockError::IoError)
+        }
+
+        fn sector_count(&self) -> u64 {
+            self.0.sector_count()
+        }
+    }
+
+    #[test]
+    fn mount_rejects_self_consistent_zero_segment_size() {
+        // WHY (SECURITY, #626): `LfsSuperblock::from_block` validates only
+        // magic/version, and the pre-fix `LfsSegmentManager::deserialize`
+        // check only compared the on-disk segment bitmap's stored geometry
+        // against the superblock's -- both drawn from the same untrusted
+        // image, so a self-consistent segment_size == 0 mounted cleanly.
+        // `segment_start_block` then collapses every segment to block 0,
+        // and the first ordinary write seals a `SegmentHeader` over the
+        // superblock. Craft that exact self-consistent corruption and
+        // confirm mount() now fails closed, through reads alone.
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        // Corrupt the superblock's segment_size.
+        let mut sb_buf = [0u8; BLOCK_SIZE];
+        block::read_block(&dev, SUPERBLOCK_BLOCK, &mut sb_buf).expect("read superblock");
+        let mut sb = LfsSuperblock::from_block(&sb_buf).expect("parse superblock");
+        sb.segment_size = 0;
+        let corrupted_sb_block = sb.to_block();
+        block::write_block(&mut dev, SUPERBLOCK_BLOCK, &corrupted_sb_block)
+            .expect("write corrupted superblock");
+
+        // Corrupt the on-disk segment bitmap's stored segment_size to
+        // match, so the geometry is self-consistent -- the property the
+        // pre-fix mismatch check alone could not catch.
+        let mut cache = BlockCache::new();
+        let header = lfs_checkpoint::read_checkpoint(&mut dev, &mut cache, CHECKPOINT_SLOT_A)
+            .expect("read checkpoint");
+        let mut bitmap_block = [0u8; BLOCK_SIZE];
+        block::read_block(&dev, header.segment_bitmap_block, &mut bitmap_block)
+            .expect("read segment bitmap block");
+        bitmap_block[4..8].copy_from_slice(&0u32.to_le_bytes());
+        block::write_block(&mut dev, header.segment_bitmap_block, &bitmap_block)
+            .expect("write corrupted segment bitmap");
+
+        let result = mount(Box::new(ReadOnlyDevice(dev)));
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "a self-consistent on-disk segment_size == 0 must be rejected, not mounted"
         );
     }
 

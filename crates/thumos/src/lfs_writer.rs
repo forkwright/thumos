@@ -613,8 +613,8 @@ mod tests {
                 .expect("read seg bitmap");
             seg_data.extend_from_slice(&buf);
         }
-        let restored_seg =
-            LfsSegmentManager::deserialize(&seg_data, 8, 256).expect("deserialize segments");
+        let restored_seg = LfsSegmentManager::deserialize(&seg_data, 8, 256, 8 * 256)
+            .expect("deserialize segments");
 
         assert_eq!(restored_seg.segment_count(), 8);
         // Segment 0 and the writer's segments should be in use.

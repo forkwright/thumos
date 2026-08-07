@@ -229,17 +229,39 @@ impl LfsSegmentManager {
     /// Deserialize a segment manager from bytes.
     ///
     /// The `segment_count` and `segment_size` parameters are used to validate
-    /// the deserialized data against expected filesystem geometry.
+    /// the deserialized data against expected filesystem geometry; `device_blocks`
+    /// bounds the geometry they describe against the device that actually
+    /// backs it.
     ///
     /// # Errors
     ///
-    /// Returns [`LfsError::Corrupt`] if the data is too short or the stored
-    /// geometry does not match the expected values.
+    /// Returns [`LfsError::Corrupt`] if the data is too short, the stored
+    /// geometry does not match the expected values, `segment_size` is zero,
+    /// or `segment_count * segment_size` extends past `device_blocks`.
     pub(crate) fn deserialize(
         data: &[u8],
         segment_count: u32,
         segment_size: u32,
+        device_blocks: u64,
     ) -> Result<Self, LfsError> {
+        // WHY (SECURITY, #626): `segment_size` is on-disk, attacker-controlled
+        // geometry. A self-consistent `segment_size == 0` collapses every
+        // segment's start block to 0 (`segment_start_block` multiplies by
+        // it), so the first ordinary write seals into the superblock. Reject
+        // zero outright, and reject any extent this device could not
+        // actually hold -- the same contract `validate_header_geometry`
+        // already applies to the imap and checkpoint-bitmap regions on this
+        // mount path.
+        if segment_size == 0 {
+            return Err(LfsError::Corrupt);
+        }
+        let extent = u64::from(segment_count)
+            .checked_mul(u64::from(segment_size))
+            .ok_or(LfsError::Corrupt)?;
+        if extent > device_blocks {
+            return Err(LfsError::Corrupt);
+        }
+
         if data.len() < 8 {
             return Err(LfsError::Corrupt);
         }
@@ -372,8 +394,8 @@ mod tests {
         mgr.free(2); // free seg 2
 
         let data = mgr.serialize();
-        let restored =
-            LfsSegmentManager::deserialize(&data, 16, 256).expect("deserialize should succeed");
+        let restored = LfsSegmentManager::deserialize(&data, 16, 256, 16 * 256)
+            .expect("deserialize should succeed");
 
         assert_eq!(restored.segment_count(), 16);
         assert_eq!(restored.segment_size(), 256);
@@ -413,17 +435,61 @@ mod tests {
         let data = mgr.serialize();
 
         // Wrong segment count.
-        let result = LfsSegmentManager::deserialize(&data, 16, 256);
+        let result = LfsSegmentManager::deserialize(&data, 16, 256, 1_000_000);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "expected Corrupt for wrong segment count"
         );
 
         // Wrong segment size.
-        let result = LfsSegmentManager::deserialize(&data, 8, 128);
+        let result = LfsSegmentManager::deserialize(&data, 8, 128, 1_000_000);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "expected Corrupt for wrong segment size"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_zero_segment_size() {
+        // WHY (SECURITY, #626): a self-consistent on-disk `segment_size ==
+        // 0` collapses `segment_start_block` to 0 for every segment index,
+        // so the first ordinary write seals into the superblock. This must
+        // be rejected before the manager is ever constructed, regardless of
+        // whether the stored bitmap header agrees with it.
+        let mut data = Vec::new();
+        data.extend_from_slice(&8u32.to_le_bytes()); // stored segment_count
+        data.extend_from_slice(&0u32.to_le_bytes()); // stored segment_size = 0
+        data.push(0u8); // one bitmap byte for 8 segments
+
+        let result = LfsSegmentManager::deserialize(&data, 8, 0, 1_000_000);
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "segment_size == 0 must be rejected as Corrupt, self-consistent or not"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_extent_exceeding_device_blocks() {
+        // A geometry that is internally self-consistent (stored data
+        // matches the requested segment_count/segment_size) but whose
+        // segment_count * segment_size extent runs past the device's
+        // actual block count could not have been produced by format() --
+        // reject it rather than construct a manager describing segments
+        // the device does not have.
+        let mgr = LfsSegmentManager::new(8, 256); // extent = 2048 blocks
+        let data = mgr.serialize();
+
+        let result = LfsSegmentManager::deserialize(&data, 8, 256, 2047);
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "an extent exceeding device_blocks must be rejected as Corrupt"
+        );
+
+        // The exact-fit boundary must still be accepted.
+        let result = LfsSegmentManager::deserialize(&data, 8, 256, 2048);
+        assert!(
+            result.is_ok(),
+            "an extent exactly matching device_blocks must be accepted"
         );
     }
 
@@ -440,7 +506,7 @@ mod tests {
         // Done-when (finding 31): fewer than 8 header bytes
         // (segment_count + segment_size, 4 bytes each) must be rejected
         // as Corrupt before any bitmap parsing is attempted.
-        let result = LfsSegmentManager::deserialize(&[0u8; 4], 8, 256);
+        let result = LfsSegmentManager::deserialize(&[0u8; 4], 8, 256, 1_000_000);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "fewer than 8 header bytes must be rejected as Corrupt"
@@ -458,7 +524,7 @@ mod tests {
         // byte_count requires (64 segments = 8 bitmap bytes; leave only 2).
         data.truncate(8 + 2);
 
-        let result = LfsSegmentManager::deserialize(&data, 64, 256);
+        let result = LfsSegmentManager::deserialize(&data, 64, 256, 1_000_000);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "a bitmap shorter than segment_count requires must be rejected as Corrupt"
