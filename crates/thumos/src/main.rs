@@ -102,7 +102,11 @@ mod dns;
 mod dns_tls;
 mod ekphrasis;
 mod elf;
-#[cfg(not(any(test, feature = "qemu")))]
+// WHY (#631): emmc gates its own contents per target -- the MMIO
+// `MsdcController` impl is hardware-only, `FakeMsdc` is test/qemu-only,
+// and the `BootMsdc` alias selects between them. The module itself must
+// therefore be available on every target, or the un-gated block-device
+// wrapper cannot resolve the trait it is generic over.
 mod emmc;
 mod encryption;
 #[cfg(not(test))]

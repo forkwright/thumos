@@ -16,6 +16,9 @@
 //! MSDC0 base address: `0x1123_0000` (FROM device registry, `docs/PROBE.md`).
 //! 512-byte sector granularity. Single-block and multi-block transfers.
 
+// WHY: only the MMIO controller touches these registers, and it is absent on
+// the virt board (no MSDC peripheral) -- see the gate on MsdcController.
+#[cfg(not(feature = "qemu"))]
 use crate::mmio;
 
 // ---------------------------------------------------------------------------
@@ -402,7 +405,7 @@ const BD_EOL: u32 = 1 << 0;
 /// spec defines 64 bytes with reserved fields, but only these 4 words
 /// are functional for basic descriptor-mode DMA.
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Gpd {
     /// Physical address of the next GPD (0 = last).
     pub(crate) next: u32,
@@ -418,7 +421,7 @@ pub(crate) struct Gpd {
 ///
 /// Each BD is 16 bytes. Linked list terminated by EOL flag.
 #[repr(C, align(4))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Bd {
     /// Physical address of the next BD (0 if EOL).
     pub(crate) next: u32,
@@ -499,6 +502,58 @@ pub(crate) enum MsdcError {
 }
 
 // ---------------------------------------------------------------------------
+// MsdcOps — hardware abstraction trait (#631)
+// ---------------------------------------------------------------------------
+
+/// Hardware operations trait for MSDC/eMMC abstraction.
+///
+/// Extracts the four operations `crate::block::MsdcBlockDevice` and
+/// `crate::block::MsdcBlockDeviceUninit` drive against the controller --
+/// `init`, `read_sector`, `write_sector`, `is_initialized` -- so their
+/// wrapper logic (bounds checking, the `u32` LBA narrowing, buffer-length
+/// validation, and the #619 typestate transition) compiles and runs off
+/// hardware. Same seam as `fm_radio::FmHwOps` (#518),
+/// `audio_codec::AudioCodecOps` (#399), and `wifi::WifiHwOps`.
+pub(crate) trait MsdcOps {
+    /// Initialize the controller for eMMC operation.
+    ///
+    /// # Safety
+    ///
+    /// Must be called exactly once after power-on. The MSDC register block
+    /// must be mapped and accessible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`MsdcError`] if hardware initialization fails.
+    unsafe fn init(&mut self) -> Result<(), MsdcError>;
+
+    /// Read a single 512-byte sector at `lba`.
+    ///
+    /// # Safety
+    ///
+    /// The controller must be initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`MsdcError`] on command/data-transfer failure.
+    unsafe fn read_sector(&self, lba: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), MsdcError>;
+
+    /// Write a single 512-byte sector at `lba`.
+    ///
+    /// # Safety
+    ///
+    /// The controller must be initialized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`MsdcError`] on command/data-transfer failure.
+    unsafe fn write_sector(&self, lba: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), MsdcError>;
+
+    /// Whether the controller has completed initialization.
+    fn is_initialized(&self) -> bool;
+}
+
+// ---------------------------------------------------------------------------
 // MsdcController
 // ---------------------------------------------------------------------------
 
@@ -507,6 +562,11 @@ pub(crate) enum MsdcError {
 /// Provides PIO and DMA transfer paths for 512-byte sector operations.
 /// The controller must be initialized via [`MsdcController::init`] before
 /// any read/write operations.
+// WHY (#631): the MMIO controller reads `board::MSDC0_BASE`, which only the
+// m7 board declares -- the virt board QEMU runs has no MSDC peripheral at all.
+// Gate on the qemu feature ALONE, not on `test`: a host test build selects the
+// m7 board, so MSDC0_BASE resolves there and this type's own tests need it.
+#[cfg(not(feature = "qemu"))]
 pub(crate) struct MsdcController {
     /// MMIO base address of the MSDC controller.
     base: usize,
@@ -514,6 +574,7 @@ pub(crate) struct MsdcController {
     initialized: bool,
 }
 
+#[cfg(not(feature = "qemu"))]
 impl MsdcController {
     /// Create a new controller handle at the default MSDC0 base address.
     pub(crate) fn new() -> Self {
@@ -1083,6 +1144,117 @@ impl MsdcController {
     }
 }
 
+/// The real controller's [`MsdcOps`] conformance is hardware-only (#631) --
+/// the same `FmHw`/`NullFmHw` split as #518: off hardware, `FakeMsdc` stands
+/// in so `crate::block::MsdcBlockDevice` has something to run against.
+/// `MsdcController` itself stays available on every target (its
+/// register-arithmetic and command-encoding helpers are host-tested
+/// directly, below); it just cannot serve as an [`MsdcOps`] off hardware.
+#[cfg(not(any(test, feature = "qemu")))]
+impl MsdcOps for MsdcController {
+    unsafe fn init(&mut self) -> Result<(), MsdcError> {
+        // SAFETY: forwarded verbatim to the inherent `init`, whose contract
+        // this trait method mirrors exactly.
+        unsafe { MsdcController::init(self) }
+    }
+
+    unsafe fn read_sector(&self, lba: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), MsdcError> {
+        // SAFETY: forwarded verbatim to the inherent `read_sector`.
+        unsafe { MsdcController::read_sector(self, lba, buf) }
+    }
+
+    unsafe fn write_sector(&self, lba: u32, buf: &[u8; SECTOR_SIZE]) -> Result<(), MsdcError> {
+        // SAFETY: forwarded verbatim to the inherent `write_sector`.
+        unsafe { MsdcController::write_sector(self, lba, buf) }
+    }
+
+    fn is_initialized(&self) -> bool {
+        MsdcController::is_initialized(self)
+    }
+}
+
+/// `MsdcController::new()` performs no MMIO (it only stores the base address
+/// and clears `initialized`), so `Default` is available on every target --
+/// `crate::block::MsdcBlockDeviceUninit::new` calls it through [`BootMsdc`]
+/// without needing to know which concrete controller that resolves to.
+#[cfg(not(feature = "qemu"))]
+impl Default for MsdcController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FakeMsdc — test/qemu MSDC stand-in (#631)
+// ---------------------------------------------------------------------------
+
+/// A fake MSDC backend for host tests and qemu (#631). The real
+/// `MsdcController` dereferences MSDC0 at a fixed physical address
+/// (`0x1123_0000`); off hardware that address is unmapped, so touching it
+/// would data-abort (target) or segfault (host test binary). `FakeMsdc`
+/// tracks init state in ordinary memory instead. Every operation succeeds by
+/// default, so `FakeMsdc` also serves as the deterministic `qemu` stand-in
+/// ([`BootMsdc`]) with no failure injection configured; `force_init_failure`
+/// and `fail_at_sector` opt individual tests into the error paths
+/// `crate::block::MsdcBlockDevice`'s wrapper must handle.
+#[cfg(any(test, feature = "qemu"))]
+#[derive(Default)]
+pub(crate) struct FakeMsdc {
+    initialized: bool,
+    /// When set, the next `init()` call fails with this error instead of
+    /// succeeding.
+    pub(crate) force_init_failure: Option<MsdcError>,
+    /// LBA at which `read_sector`/`write_sector` fail with
+    /// [`MsdcError::DataTimeout`]. `None` means every sector succeeds.
+    pub(crate) fail_at_sector: Option<u32>,
+}
+
+#[cfg(any(test, feature = "qemu"))]
+impl FakeMsdc {
+    /// A fake that initializes and transfers every sector successfully.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[cfg(any(test, feature = "qemu"))]
+impl MsdcOps for FakeMsdc {
+    unsafe fn init(&mut self) -> Result<(), MsdcError> {
+        if let Some(err) = self.force_init_failure {
+            return Err(err);
+        }
+        self.initialized = true;
+        Ok(())
+    }
+
+    unsafe fn read_sector(&self, lba: u32, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), MsdcError> {
+        if self.fail_at_sector == Some(lba) {
+            return Err(MsdcError::DataTimeout);
+        }
+        buf.fill(0);
+        Ok(())
+    }
+
+    unsafe fn write_sector(&self, lba: u32, _buf: &[u8; SECTOR_SIZE]) -> Result<(), MsdcError> {
+        if self.fail_at_sector == Some(lba) {
+            return Err(MsdcError::DataTimeout);
+        }
+        Ok(())
+    }
+
+    fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+}
+
+/// The MSDC backend the booted kernel wires into
+/// `crate::block::MsdcBlockDeviceUninit` (#631): `FakeMsdc` under qemu/test
+/// (no MSDC model on `-machine virt`), the real `MsdcController` on device.
+#[cfg(any(test, feature = "qemu"))]
+pub(crate) type BootMsdc = FakeMsdc;
+#[cfg(not(any(test, feature = "qemu")))]
+pub(crate) type BootMsdc = MsdcController;
+
 // ---------------------------------------------------------------------------
 // Helper: build a command word FROM components
 // ---------------------------------------------------------------------------
@@ -1153,7 +1325,7 @@ pub(crate) fn build_bd_chain(segments: &[(u32, u32)]) -> Option<(Gpd, [Bd; 8])> 
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu")))]
 mod tests {
     use super::*;
 
