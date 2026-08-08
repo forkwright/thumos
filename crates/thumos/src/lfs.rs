@@ -1224,7 +1224,7 @@ impl Filesystem for Lfs {
                 inode_id,
                 &inode,
             )
-            .map_err(|_| VfsError::IoError)?;
+            .map_err(Self::map_write_data_block_err)?;
 
         drop(cache);
         drop(dev);
@@ -1305,7 +1305,7 @@ impl Filesystem for Lfs {
                 new_inode_id,
                 &new_inode,
             )
-            .map_err(|_| VfsError::NoSpace)?;
+            .map_err(Self::map_write_data_block_err)?;
 
         // Add directory entry to parent.
         let mut entries = existing;
@@ -1341,7 +1341,7 @@ impl Filesystem for Lfs {
         parent.direct[0] = dir_block;
         parent.size = entries.iter().map(|e| e.record_len as u64).sum();
 
-        match writer.write_inode(
+        if let Err(e) = writer.write_inode(
             dev.as_mut(),
             &mut cache,
             &mut self.imap,
@@ -1349,11 +1349,8 @@ impl Filesystem for Lfs {
             dir_inode,
             &parent,
         ) {
-            Ok(_) => {}
-            Err(_) => {
-                self.imap.remove(new_inode_id);
-                return Err(VfsError::IoError);
-            }
+            self.imap.remove(new_inode_id);
+            return Err(Self::map_write_data_block_err(e));
         }
 
         drop(cache);
@@ -1470,7 +1467,7 @@ impl Filesystem for Lfs {
                 dir_inode,
                 &parent,
             )
-            .map_err(|_| VfsError::IoError)?;
+            .map_err(Self::map_write_data_block_err)?;
 
         // Only now, after the directory entry removal is durable, retire
         // the target inode: drop it from the imap if this was the last
@@ -1487,7 +1484,7 @@ impl Filesystem for Lfs {
                     target_id,
                     &target_inode,
                 )
-                .map_err(|_| VfsError::IoError)?;
+                .map_err(Self::map_write_data_block_err)?;
         }
 
         drop(cache);
@@ -1634,7 +1631,10 @@ impl Filesystem for Lfs {
                 inode_id,
                 &inode,
             )
-            .map_err(|_| VfsError::IoError)?;
+            // Same map_write_data_block_err class fix as create()/write()/
+            // unlink() (#627): write_inode's LfsError must not collapse
+            // to a single hardcoded VfsError variant here either.
+            .map_err(Self::map_write_data_block_err)?;
 
         Ok(())
     }
@@ -2809,6 +2809,140 @@ mod tests {
         assert!(
             dir_entries.iter().any(|e| e.name == "victim"),
             "directory entry must remain after a failed unlink"
+        );
+    }
+
+    /// unlink() on the LAST entry in a directory skips write_dir_block()
+    /// entirely (the empty-directory branch just zeroes parent.direct[0]),
+    /// so writer.write_inode(dir_inode, &parent) is the ONLY log write
+    /// attempted -- isolating it from write_dir_block's write_data_block
+    /// call, which already routed through map_write_data_block_err. A
+    /// disk-full LfsError::NoFreeSegments here must map to
+    /// VfsError::NoSpace, not IoError -- before #627's fix this call site
+    /// hardcoded `.map_err(|_| VfsError::IoError)` regardless of the
+    /// underlying LfsError.
+    #[test]
+    fn unlink_last_entry_out_of_space_reports_no_space_not_io_error() {
+        // 5 segments of 4 blocks each: segment 0 reserved, segments 2/3
+        // pinned used, segment 4 withheld as the compaction reserve (only
+        // segment 1 is ordinarily allocatable, same layout style as
+        // `unlink_io_failure_during_directory_write_leaves_imap_and_directory_consistent`).
+        let mut dev =
+            MemBlockDevice::new(5 * 4 * SECTORS_PER_BLOCK as u64).expect("create tiny device");
+        let mut cache = BlockCache::new();
+        let mut seg_mgr = LfsSegmentManager::new(5, 4);
+        seg_mgr.mark_used(0);
+        seg_mgr.mark_used(2);
+        seg_mgr.mark_used(3);
+
+        let mut imap = LfsImap::new();
+        let mut writer = LfsWriter::new(&mut seg_mgr).expect("create writer");
+
+        let dir_inode_template = DiskInode {
+            inode_type: INODE_TYPE_DIR,
+            link_count: 1,
+            size: 0,
+            direct: [0u64; DIRECT_BLOCK_COUNT],
+            indirect: 0,
+        };
+        let file_inode_template = DiskInode {
+            inode_type: INODE_TYPE_FILE,
+            link_count: 1,
+            size: 0,
+            direct: [0u64; DIRECT_BLOCK_COUNT],
+            indirect: 0,
+        };
+
+        // Write 1/4: root placeholder.
+        writer
+            .write_inode(
+                &mut dev,
+                &mut cache,
+                &mut imap,
+                &mut seg_mgr,
+                0,
+                &dir_inode_template,
+            )
+            .expect("write root placeholder");
+        // Write 2/4: victim inode -- the directory's only entry.
+        writer
+            .write_inode(
+                &mut dev,
+                &mut cache,
+                &mut imap,
+                &mut seg_mgr,
+                1,
+                &file_inode_template,
+            )
+            .expect("write victim inode");
+        // Write 3/4: directory block listing only "victim".
+        let entries = alloc::vec![DiskDirEntry {
+            inode_id: 1,
+            name_len: 6,
+            record_len: ((DIR_ENTRY_HEADER_SIZE + 6 + 3) & !3) as u16,
+            name: String::from("victim"),
+        }];
+        let dir_block =
+            Lfs::write_dir_block(&mut dev, &mut cache, &mut writer, &mut seg_mgr, &entries)
+                .expect("write dir block");
+        // Write 4/4: root inode updated to point at the directory block.
+        // This consumes segment 1's last data slot.
+        let mut root = dir_inode_template;
+        root.direct[0] = dir_block;
+        root.size = entries.iter().map(|e| e.record_len as u64).sum();
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 0, &root)
+            .expect("write updated root inode");
+
+        assert_eq!(
+            seg_mgr.free_count(),
+            1,
+            "setup must exhaust every ordinarily-allocatable segment, leaving only the compaction reserve"
+        );
+
+        let superblock = LfsSuperblock {
+            magic: LFS_MAGIC,
+            version: LFS_VERSION,
+            block_count: dev.sector_count() / SECTORS_PER_BLOCK as u64,
+            segment_size: 4,
+            segment_count: 5,
+            checkpoint_block_a: 1,
+            checkpoint_block_b: 2,
+            imap_block: 3,
+            imap_block_count: 1,
+            root_inode: 0,
+            next_inode: 2,
+        };
+
+        let mut fs = Lfs {
+            dev: RefCell::new(Box::new(dev)),
+            cache: RefCell::new(cache),
+            imap,
+            segments: seg_mgr,
+            superblock,
+            next_sequence: writer.sequence(),
+            writer: Some(writer),
+            next_inode: 2,
+            checkpoint_sequence: 1,
+        };
+
+        // Removing "victim" empties the directory: unlink() takes the
+        // `remaining.is_empty()` branch (no write_dir_block call) and
+        // writer.write_inode(0, &parent) is the only write attempted --
+        // and there is no segment left for it to seal into.
+        let result = fs.unlink(0, "victim");
+        assert_eq!(
+            result,
+            Err(VfsError::NoSpace),
+            "a disk-full write_inode failure must report NoSpace, not IoError (#627)"
+        );
+
+        // The failed write must not have mutated imap state: the target
+        // inode must still be reachable (mirrors #301's rollback
+        // invariant already covered above).
+        assert!(
+            fs.stat(1).is_ok(),
+            "victim inode must remain in the imap after a failed unlink"
         );
     }
 
