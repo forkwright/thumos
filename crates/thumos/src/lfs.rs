@@ -529,12 +529,16 @@ pub(crate) fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
         superblock.checkpoint_block_b,
     )?;
 
-    // Load imap from checkpoint.
+    // Load imap from checkpoint. superblock.block_count is passed through
+    // as the extent bound for every parsed entry (#643) -- the same
+    // geometry validate_block_num applies below to imap-derived pointers
+    // at load_inode/unlink, enforced here at parse time instead.
     let imap = LfsImap::load_from_disk(
         dev.as_mut(),
         &mut cache,
         checkpoint.imap_block,
         checkpoint.imap_block_count,
+        superblock.block_count,
     )?;
 
     // Sanity-bound segment_bitmap_count before trusting it to drive an
@@ -815,13 +819,17 @@ impl Lfs {
         let mut dev = self.dev.borrow_mut();
         let mut cache = self.cache.borrow_mut();
 
-        // Run one compaction pass.
+        // Run one compaction pass. block_count is the same imap-pointer
+        // extent bound applied at load_inode/unlink (#624), threaded
+        // through so the compactor's own imap walk is guarded too
+        // (#643).
         let _copied = lfs_compact::compact_one_segment(
             dev.as_mut(),
             &mut cache,
             writer,
             &mut self.imap,
             &mut self.segments,
+            self.superblock.block_count,
         )
         .map_err(|_| VfsError::IoError)?;
 
