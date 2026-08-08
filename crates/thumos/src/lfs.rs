@@ -2823,14 +2823,23 @@ mod tests {
     /// underlying LfsError.
     #[test]
     fn unlink_last_entry_out_of_space_reports_no_space_not_io_error() {
-        // 5 segments of 4 blocks each: segment 0 reserved, segments 2/3
-        // pinned used, segment 4 withheld as the compaction reserve (only
-        // segment 1 is ordinarily allocatable, same layout style as
-        // `unlink_io_failure_during_directory_write_leaves_imap_and_directory_consistent`).
-        let mut dev =
-            MemBlockDevice::new(5 * 4 * SECTORS_PER_BLOCK as u64).expect("create tiny device");
+        // WHY the setup provisions room and exhausts it AFTERWARDS rather than
+        // sizing the device so the last setup write exactly fills it: the
+        // latter encodes how many blocks four `write_inode` calls happen to
+        // consume, which is an allocator internal. A device sized that way
+        // fails in SETUP the moment allocation changes, and the failure looks
+        // like the behaviour under test rather than a stale fixture.
+        const SEG_BLOCKS: u32 = 5;
+        const SEG_COUNT: u32 = 5;
+        let mut dev = MemBlockDevice::new(
+            u64::from(SEG_COUNT) * u64::from(SEG_BLOCKS) * SECTORS_PER_BLOCK as u64,
+        )
+        .expect("create tiny device");
         let mut cache = BlockCache::new();
-        let mut seg_mgr = LfsSegmentManager::new(5, 4);
+        // segment_size matches the superblock below: `validate_block_num`
+        // treats [0, segment_size) as the reserved metadata region, so the two
+        // disagreeing would reject live data blocks as reserved.
+        let mut seg_mgr = LfsSegmentManager::new(SEG_COUNT, SEG_BLOCKS);
         seg_mgr.mark_used(0);
         seg_mgr.mark_used(2);
         seg_mgr.mark_used(3);
@@ -2886,7 +2895,6 @@ mod tests {
             Lfs::write_dir_block(&mut dev, &mut cache, &mut writer, &mut seg_mgr, &entries)
                 .expect("write dir block");
         // Write 4/4: root inode updated to point at the directory block.
-        // This consumes segment 1's last data slot.
         let mut root = dir_inode_template;
         root.direct[0] = dir_block;
         root.size = entries.iter().map(|e| e.record_len as u64).sum();
@@ -2894,6 +2902,13 @@ mod tests {
             .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 0, &root)
             .expect("write updated root inode");
 
+        // The four writes above exactly fill segment 1's usable data blocks,
+        // and every other segment is either reserved (0), pinned used (2, 3),
+        // or the compaction reserve `allocate` withholds (#329). So the
+        // directory rewrite below has nowhere to seal -- neither room in the
+        // open segment nor a free one to allocate. BOTH conditions are needed:
+        // leaving space in the open segment lets the rewrite succeed even with
+        // no free segment left.
         assert_eq!(
             seg_mgr.free_count(),
             1,
@@ -2904,8 +2919,8 @@ mod tests {
             magic: LFS_MAGIC,
             version: LFS_VERSION,
             block_count: dev.sector_count() / SECTORS_PER_BLOCK as u64,
-            segment_size: 4,
-            segment_count: 5,
+            segment_size: SEG_BLOCKS,
+            segment_count: SEG_COUNT,
             checkpoint_block_a: 1,
             checkpoint_block_b: 2,
             imap_block: 3,
