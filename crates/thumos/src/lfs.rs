@@ -88,6 +88,15 @@ pub(crate) const INODE_TYPE_DIR: u8 = 2;
 /// Number of direct block pointers in an inode.
 pub(crate) const DIRECT_BLOCK_COUNT: usize = 12;
 
+/// Largest file size representable using only direct block pointers.
+///
+/// The indirect pointer is declared on-disk (see [`DiskInode::indirect`])
+/// but not yet consumed by `read()`/`write()`/`truncate()` -- until it
+/// is, every size-setting path must fail closed at this bound rather
+/// than let `stat()` promise data the direct pointers cannot back
+/// (#620).
+pub(crate) const LFS_MAX_FILE_SIZE: u64 = (DIRECT_BLOCK_COUNT * BLOCK_SIZE) as u64;
+
 /// Size of a serialized on-disk inode in bytes.
 pub(crate) const DISK_INODE_SIZE: usize = 128;
 
@@ -609,6 +618,13 @@ impl Lfs {
     /// INODES_PER_BLOCK`.
     fn load_inode(&self, inode_id: u32) -> Result<DiskInode, VfsError> {
         let block_num = self.imap.get(inode_id).ok_or(VfsError::NotFound)?;
+        // WARNING: imap entries are on-disk, untrusted data -- exactly
+        // the same class as inode.direct[], which this file already
+        // bounds before it reaches the block cache. The imap is the
+        // pointer table that selects which block is authoritative for
+        // every inode, so an unguarded entry here can serve one file's
+        // content as another's (#624, #security).
+        self.validate_block_num(block_num)?;
 
         let mut buf = [0u8; BLOCK_SIZE];
         let mut dev = self.dev.borrow_mut();
@@ -966,8 +982,25 @@ impl Filesystem for Lfs {
             return Ok(0);
         }
 
+        // WHY: only direct block pointers are consumed today (the
+        // indirect pointer is unimplemented, #620) -- an offset at or
+        // past LFS_MAX_FILE_SIZE is not representable by any inode this
+        // filesystem writes anymore, but on-disk state predating this
+        // bound (or corrupted on-disk state) could still carry a size
+        // that promises more. Ok(0) here would be indistinguishable
+        // from true EOF to every caller even though offset < inode.size;
+        // fail loudly instead.
+        if offset >= LFS_MAX_FILE_SIZE {
+            return Err(VfsError::IoError);
+        }
+
         let available = inode.size - offset;
-        let to_read = buf.len().min(available as usize);
+        // WHY usize::try_from: inode.size is on-disk, untrusted u64 data
+        // -- an `as usize` cast here would silently wrap on a 32-bit
+        // target instead of erroring (#620), the same class already
+        // fixed at read_dir_entries (lfs.rs:743).
+        let available = usize::try_from(available).map_err(|_| VfsError::IoError)?;
+        let to_read = buf.len().min(available);
 
         if to_read == 0 {
             return Ok(0);
@@ -980,7 +1013,13 @@ impl Filesystem for Lfs {
             let block_index = (file_offset / BLOCK_SIZE as u64) as usize;
             let block_offset = (file_offset % BLOCK_SIZE as u64) as usize;
 
-            // Only support direct blocks for now.
+            // INVARIANT: the offset >= LFS_MAX_FILE_SIZE check above
+            // guarantees bytes_read > 0 by the time block_index can
+            // reach DIRECT_BLOCK_COUNT here, so this is always a
+            // legitimate short read (some bytes served, more exist past
+            // the direct-block wall) -- never the false-EOF Ok(0) #620
+            // described. The next call at the resulting offset hits the
+            // guard above and errors instead of repeating the lie.
             if block_index >= DIRECT_BLOCK_COUNT {
                 break;
             }
@@ -1029,7 +1068,9 @@ impl Filesystem for Lfs {
     ///
     /// - [`VfsError::NotFound`] if the inode does not exist.
     /// - [`VfsError::IsADirectory`] if the inode is a directory.
-    /// - [`VfsError::NoSpace`] if the filesystem is full.
+    /// - [`VfsError::NoSpace`] if the filesystem is full, or if the
+    ///   requested range would cross [`LFS_MAX_FILE_SIZE`] (only direct
+    ///   block pointers are consumed today, #620).
     /// - [`VfsError::IoError`] on I/O failure.
     fn write(&mut self, inode_id: u32, offset: u64, buf: &[u8]) -> Result<usize, VfsError> {
         let mut inode = self.load_inode(inode_id)?;
@@ -1041,6 +1082,18 @@ impl Filesystem for Lfs {
         if buf.is_empty() {
             return Ok(0);
         }
+
+        // WHY: only direct block pointers are consumed today (the
+        // indirect pointer is unimplemented, #620) -- a write whose
+        // range would cross LFS_MAX_FILE_SIZE must fail closed instead
+        // of silently stopping partway through the block loop below and
+        // returning Ok(0), which is indistinguishable from a
+        // zero-length request (so a caller's write-all loop spins
+        // forever) while the data it was meant to persist is dropped.
+        offset
+            .checked_add(buf.len() as u64)
+            .filter(|&end| end <= LFS_MAX_FILE_SIZE)
+            .ok_or(VfsError::NoSpace)?;
 
         self.ensure_writer()?;
 
@@ -1059,8 +1112,15 @@ impl Filesystem for Lfs {
             let block_index = (file_offset / BLOCK_SIZE as u64) as usize;
             let block_offset = (file_offset % BLOCK_SIZE as u64) as usize;
 
+            // INVARIANT: unreachable given the checked_add + LFS_MAX_FILE_SIZE
+            // guard above (offset + buf.len() <= LFS_MAX_FILE_SIZE bounds
+            // every file_offset in this loop below DIRECT_BLOCK_COUNT
+            // blocks). Kept as a fail-closed backstop -- returning an
+            // error here instead of break/Ok(0) means a future change
+            // that weakens the guard fails loudly rather than silently
+            // reopening #620.
             if block_index >= DIRECT_BLOCK_COUNT {
-                break; // Only direct blocks supported for now.
+                return Err(VfsError::IoError);
             }
 
             // Prepare the block data.
@@ -1264,6 +1324,8 @@ impl Filesystem for Lfs {
     ///
     /// - [`VfsError::NotADirectory`] if `dir_inode` is not a directory.
     /// - [`VfsError::NotFound`] if `name` does not exist in the directory.
+    /// - [`VfsError::NotEmpty`] if `name` names a non-empty directory
+    ///   (#623).
     /// - [`VfsError::IoError`] on I/O failure.
     fn unlink(&mut self, dir_inode: u32, name: &str) -> Result<(), VfsError> {
         let mut parent = self.load_inode(dir_inode)?;
@@ -1297,12 +1359,35 @@ impl Filesystem for Lfs {
         // the imap (#301).
         let mut target_inode = {
             let block_num = self.imap.get(target_id).ok_or(VfsError::NotFound)?;
+            // WARNING: imap entries are on-disk, untrusted data -- the
+            // same class as inode.direct[], which this file already
+            // bounds before it reaches the block cache (#624,
+            // #security). Inlined here (rather than calling
+            // self.validate_block_num) because `writer` above already
+            // holds an exclusive borrow of `self.writer`, so a `&self`
+            // method call on the whole struct is not available.
+            if block_num == 0 || block_num >= self.superblock.block_count {
+                return Err(VfsError::IoError);
+            }
             let mut buf = [0u8; BLOCK_SIZE];
             cache
                 .read(dev.as_mut(), block_num, &mut buf)
                 .map_err(|_| VfsError::IoError)?;
             DiskInode::read_from(&buf, 0).map_err(|_| VfsError::IoError)?
         };
+
+        // A non-empty directory must not be unlinked -- its children
+        // would survive in the imap with no path that reaches them,
+        // unreclaimable by the compactor (#623). Directories track
+        // their content size the same way files do (create() starts
+        // every new directory at size 0; the empty-directory branch
+        // below resets it to 0 on removal), so `size != 0` is exactly
+        // "has entries" for a directory inode -- checked before any
+        // directory rewrite or imap mutation below.
+        if target_inode.inode_type == INODE_TYPE_DIR && target_inode.size != 0 {
+            return Err(VfsError::NotEmpty);
+        }
+
         target_inode.link_count = target_inode.link_count.saturating_sub(1);
 
         // Write updated directory data FIRST -- this is the durable
@@ -1403,13 +1488,25 @@ impl Filesystem for Lfs {
     ///
     /// - [`VfsError::NotFound`] if the inode does not exist.
     /// - [`VfsError::IsADirectory`] if the inode is a directory.
-    /// - [`VfsError::NoSpace`] if the filesystem is full (growing case).
+    /// - [`VfsError::NoSpace`] if the filesystem is full (growing case),
+    ///   or if `size` exceeds [`LFS_MAX_FILE_SIZE`] (only direct block
+    ///   pointers are consumed today, #620).
     /// - [`VfsError::IoError`] on I/O failure.
     fn truncate(&mut self, inode_id: u32, size: u64) -> Result<(), VfsError> {
         let mut inode = self.load_inode(inode_id)?;
 
         if inode.inode_type == INODE_TYPE_DIR {
             return Err(VfsError::IsADirectory);
+        }
+
+        // WHY: only direct block pointers are consumed today (the
+        // indirect pointer is unimplemented, #620) -- accepting a
+        // larger size here would record a size write()/read() can never
+        // fully service, so stat() and the file's actual servable
+        // extent would permanently disagree with no error anywhere in
+        // the stack.
+        if size > LFS_MAX_FILE_SIZE {
+            return Err(VfsError::NoSpace);
         }
 
         let old_size = inode.size;
@@ -1420,7 +1517,15 @@ impl Filesystem for Lfs {
             let new_block_count = if size == 0 {
                 0
             } else {
-                ((size as usize + BLOCK_SIZE - 1) / BLOCK_SIZE).min(DIRECT_BLOCK_COUNT)
+                // WHY usize::try_from: `size` is already bounded by
+                // LFS_MAX_FILE_SIZE above and always fits, but an `as
+                // usize` cast here would still silently wrap instead of
+                // erroring should that bound ever change -- fail
+                // closed rather than trust the caller's proof twice
+                // over, the same class already fixed at
+                // read_dir_entries (lfs.rs:743, #620).
+                let size = usize::try_from(size).map_err(|_| VfsError::IoError)?;
+                size.div_ceil(BLOCK_SIZE).min(DIRECT_BLOCK_COUNT)
             };
 
             for i in new_block_count..DIRECT_BLOCK_COUNT {
@@ -1433,10 +1538,17 @@ impl Filesystem for Lfs {
             let old_blocks = if old_size == 0 {
                 0
             } else {
-                ((old_size as usize + BLOCK_SIZE - 1) / BLOCK_SIZE).min(DIRECT_BLOCK_COUNT)
+                // WHY usize::try_from: unlike `size`, `old_size` came
+                // from the on-disk inode loaded above and predates
+                // this bound -- untrusted u64 data that must not
+                // silently wrap on a 32-bit target (#620).
+                let old_size = usize::try_from(old_size).map_err(|_| VfsError::IoError)?;
+                old_size.div_ceil(BLOCK_SIZE).min(DIRECT_BLOCK_COUNT)
             };
-            let new_blocks =
-                ((size as usize + BLOCK_SIZE - 1) / BLOCK_SIZE).min(DIRECT_BLOCK_COUNT);
+            let new_blocks = {
+                let size = usize::try_from(size).map_err(|_| VfsError::IoError)?;
+                size.div_ceil(BLOCK_SIZE).min(DIRECT_BLOCK_COUNT)
+            };
 
             let mut dev = self.dev.borrow_mut();
             let mut cache = self.cache.borrow_mut();
@@ -1770,6 +1882,33 @@ mod tests {
     }
 
     #[test]
+    fn load_inode_rejects_imap_block_pointing_at_superblock() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "f", InodeType::RegularFile)
+            .expect("create");
+
+        // Point the target's imap entry at block 0 -- the superblock
+        // itself, always present and always readable at the raw device
+        // level, so a pre-fix read would succeed and misparse
+        // superblock bytes as the target's DiskInode instead of
+        // failing. load_inode() handed imap-derived block numbers
+        // straight to the cache with no bound check, unlike
+        // inode.direct[] which this file already guards (#624).
+        fs.imap.insert(file_id, 0);
+
+        let result = fs.load_inode(file_id);
+        assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "an imap entry pointing at block 0 (the superblock) must be rejected, not read as the inode's own data"
+        );
+    }
+
+    #[test]
     fn create_file_then_read_back() {
         let mut dev = block_device_for_lfs();
         format(&mut dev).expect("format");
@@ -1901,6 +2040,93 @@ mod tests {
 
         // Inode should be removed from imap (link count was 1).
         assert_eq!(fs.stat(file_id), Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn unlink_rejects_target_imap_block_pointing_at_superblock() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "f", InodeType::RegularFile)
+            .expect("create");
+
+        // Point the target's imap entry at block 0 -- the superblock
+        // itself. Root's own imap entry is untouched, so the parent
+        // lookup at the top of unlink() is unaffected by this
+        // corruption; only unlink()'s own direct imap read (distinct
+        // from load_inode's, and unguarded before the fix) is exercised
+        // (#624).
+        fs.imap.insert(file_id, 0);
+
+        let result = fs.unlink(root, "f");
+        assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "unlink() must reject an imap entry pointing at block 0 (the superblock), not read it as the target inode"
+        );
+
+        assert!(
+            fs.lookup(root, "f").is_ok(),
+            "a rejected unlink must not have mutated the parent directory"
+        );
+    }
+
+    #[test]
+    fn unlink_removes_empty_directory() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let dir_id = fs.create(root, "sub", InodeType::Directory).expect("mkdir");
+
+        fs.unlink(root, "sub")
+            .expect("unlink of an empty directory must succeed");
+
+        assert_eq!(fs.lookup(root, "sub"), Err(VfsError::NotFound));
+        assert_eq!(fs.stat(dir_id), Err(VfsError::NotFound));
+    }
+
+    #[test]
+    fn unlink_rejects_non_empty_directory() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let sub_id = fs.create(root, "sub", InodeType::Directory).expect("mkdir");
+        let file_id = fs
+            .create(sub_id, "f", InodeType::RegularFile)
+            .expect("create nested file");
+
+        // Before the fix, unlink() never inspected the target's type or
+        // contents: it decremented link_count and dropped the inode
+        // from the imap unconditionally, orphaning "f" -- reachable by
+        // no path, but never reclaimed (#623).
+        let result = fs.unlink(root, "sub");
+        assert_eq!(
+            result,
+            Err(VfsError::NotEmpty),
+            "unlink of a non-empty directory must fail, not orphan its children"
+        );
+
+        // Nothing must have been mutated: the directory and its child
+        // both remain reachable.
+        assert!(
+            fs.lookup(root, "sub").is_ok(),
+            "directory must remain in its parent after a rejected unlink"
+        );
+        assert!(
+            fs.stat(file_id).is_ok(),
+            "child inode must remain in the imap after a rejected unlink"
+        );
+        assert_eq!(
+            fs.readdir(sub_id).expect("readdir sub").len(),
+            1,
+            "the child directory entry must be untouched"
+        );
     }
 
     #[test]
@@ -2060,6 +2286,170 @@ mod tests {
         assert!(
             buf.iter().all(|&b| b == 0),
             "the newly grown block must read back zero, not stale memory"
+        );
+    }
+
+    #[test]
+    fn truncate_rejects_size_past_direct_block_limit() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "big.bin", InodeType::RegularFile)
+            .expect("create");
+
+        // DIRECT_BLOCK_COUNT * BLOCK_SIZE (48 KiB) is the largest size
+        // direct blocks alone can back; before the fix, truncate()
+        // accepted any u64 size and stored it unchecked, even though
+        // write()/read() could never fully service it (#620).
+        let result = fs.truncate(file_id, LFS_MAX_FILE_SIZE + 1);
+        assert_eq!(
+            result,
+            Err(VfsError::NoSpace),
+            "truncate() must reject a size beyond what direct blocks can serve"
+        );
+
+        let stat = fs.stat(file_id).expect("stat");
+        assert_eq!(
+            stat.size, 0,
+            "a rejected truncate must not have recorded the oversized size"
+        );
+    }
+
+    #[test]
+    fn write_past_direct_block_limit_errors_instead_of_dropping_data() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "f", InodeType::RegularFile)
+            .expect("create");
+
+        // A write whose starting offset is already past the last direct
+        // block must fail closed, not report Ok(0) -- indistinguishable
+        // from a zero-length request, so a caller's write-all loop would
+        // spin forever while the data is silently discarded. Before the
+        // fix this also phantom-bumped inode.size to the requested tail
+        // offset despite writing zero bytes (#620).
+        let buf = [0xAAu8; 16];
+        let result = fs.write(file_id, LFS_MAX_FILE_SIZE, &buf);
+        assert_eq!(
+            result,
+            Err(VfsError::NoSpace),
+            "write() past the direct-block limit must error, not return Ok(0)"
+        );
+
+        let stat = fs.stat(file_id).expect("stat");
+        assert_eq!(
+            stat.size, 0,
+            "a rejected write must not have recorded a phantom size"
+        );
+    }
+
+    #[test]
+    fn read_at_offset_past_direct_block_limit_errors_instead_of_false_eof() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "f", InodeType::RegularFile)
+            .expect("create");
+
+        // Simulate on-disk state whose recorded size promises more than
+        // direct blocks can back (pre-fix truncate()/write() could both
+        // produce this; post-fix it can only arise from legacy or
+        // corrupted on-disk data). This filesystem has no public API to
+        // reach that state anymore, so it is constructed directly at
+        // the LFS internals level, mirroring
+        // unlink_persists_decremented_link_count_when_links_remain.
+        fs.ensure_writer().expect("ensure_writer");
+        let mut inode = fs.load_inode(file_id).expect("load");
+        inode.size = LFS_MAX_FILE_SIZE + 4096;
+        {
+            let mut dev_ref = fs.dev.borrow_mut();
+            let mut cache = fs.cache.borrow_mut();
+            let writer = fs
+                .writer
+                .as_mut()
+                .expect("writer present after ensure_writer");
+            writer
+                .write_inode(
+                    dev_ref.as_mut(),
+                    &mut cache,
+                    &mut fs.imap,
+                    &mut fs.segments,
+                    file_id,
+                    &inode,
+                )
+                .expect("write oversized-size inode");
+        }
+
+        let stat = fs.stat(file_id).expect("stat");
+        assert_eq!(stat.size, LFS_MAX_FILE_SIZE + 4096);
+
+        // offset is within the file per stat(), but past what direct
+        // blocks can serve -- before the fix this returned Ok(0),
+        // indistinguishable from true EOF, even though offset <
+        // inode.size (#620).
+        let mut buf = [0u8; 16];
+        let result = fs.read(file_id, LFS_MAX_FILE_SIZE, &mut buf);
+        assert_eq!(
+            result,
+            Err(VfsError::IoError),
+            "read() at an in-file offset past the direct-block limit must error, not report Ok(0)"
+        );
+    }
+
+    #[test]
+    fn read_rejects_available_size_that_overflows_usize_on_32_bit() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "f", InodeType::RegularFile)
+            .expect("create");
+
+        // On this 32-bit test target (i686/armv7 usize), u32::MAX + 1
+        // does not fit in usize. Before the fix, `available as usize`
+        // in read() silently wrapped instead of erroring, short-reading
+        // (as a lying Ok(0), since to_read collapsed to 0) any file
+        // larger than u32::MAX rather than surfacing the fault (#620).
+        fs.ensure_writer().expect("ensure_writer");
+        let mut inode = fs.load_inode(file_id).expect("load");
+        inode.size = u64::from(u32::MAX) + 1;
+        {
+            let mut dev_ref = fs.dev.borrow_mut();
+            let mut cache = fs.cache.borrow_mut();
+            let writer = fs
+                .writer
+                .as_mut()
+                .expect("writer present after ensure_writer");
+            writer
+                .write_inode(
+                    dev_ref.as_mut(),
+                    &mut cache,
+                    &mut fs.imap,
+                    &mut fs.segments,
+                    file_id,
+                    &inode,
+                )
+                .expect("write oversized-size inode");
+        }
+
+        let mut buf = [0u8; 16];
+        let result = fs.read(file_id, 0, &mut buf);
+        assert_eq!(
+            result,
+            Err(VfsError::IoError),
+            "read() must reject a size cast that would truncate on a 32-bit target rather than silently wrap"
         );
     }
 
