@@ -342,6 +342,23 @@ pub(crate) const INT_ERR_MASK: u32 = INT_ACMDTMO
 /// All transfer-completion interrupts.
 pub(crate) const INT_XFER_MASK: u32 = INT_XFER_COMPL | INT_DXFER_DONE;
 
+/// Classify an observed `MSDC_INT` status against [`INT_ERR_MASK`].
+///
+/// Returns the error `check_and_clear_completion` should raise (carrying
+/// only the error bits) if `status` carries any [`INT_ERR_MASK`] bit, or
+/// `None` if it does not.
+///
+/// WHY: extracted so `send_command`'s post-command error check (issue #622)
+/// is host-testable without a live `MSDC_INT` register.
+fn classify_interrupt_status(status: u32) -> Option<MsdcError> {
+    let err_bits = status & INT_ERR_MASK;
+    if err_bits != 0 {
+        Some(MsdcError::InterruptError(err_bits))
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------
 // eMMC command opcodes (MMC specification)
 // ---------------------------------------------------------------------------
@@ -384,6 +401,56 @@ const CMD24_WRITE_SINGLE: u32 = 24;
 
 /// CMD25: WRITE_MULTIPLE_BLOCK.
 const CMD25_WRITE_MULTI: u32 = 25;
+
+// ---------------------------------------------------------------------------
+// OCR (CMD1 SEND_OP_COND response) bit fields
+// ---------------------------------------------------------------------------
+
+/// OCR "power-up status" bit (bit 31) in the CMD1 (SEND_OP_COND) R3
+/// response. 0 while the card is still completing power-up, 1 once ready.
+/// The eMMC spec requires CMD1 to be repeated until this bit is observed
+/// set (issue #622).
+const OCR_BUSY_BIT: u32 = 1 << 31;
+
+/// Maximum CMD1 (SEND_OP_COND) attempts during init before giving up.
+///
+/// WHY: eMMC power-up on real hardware completes within a handful of
+/// attempts; an absent/dead card fails fast through `send_command`'s own
+/// `INT_ERR_MASK` check rather than exhausting this bound. Bounding it at
+/// all is the point -- an unbounded spin degrades a dead card into a hang
+/// with no diagnostic instead of a reported `CommandTimeout` (issue #622).
+const CMD1_MAX_RETRIES: u32 = 1000;
+
+/// True once the OCR "power-up status" bit (bit 31) reports the card ready.
+///
+/// WHY: extracted so `init`'s CMD1 retry termination condition is
+/// host-testable without a live MSDC register (issue #622).
+fn ocr_ready(ocr: u32) -> bool {
+    ocr & OCR_BUSY_BIT != 0
+}
+
+/// Repeatedly invoke `attempt` (issuing CMD1 and reading its OCR response),
+/// stopping as soon as it reports the OCR power-up status bit set.
+///
+/// A hardware error from `attempt` propagates immediately without
+/// retrying -- a latched command/CRC error is a bus fault, not "still
+/// powering up." Returns [`MsdcError::CommandTimeout`] once `max_attempts`
+/// is exhausted with the card never reporting ready.
+///
+/// Generic over the CMD1 issuer so the eMMC spec's "repeat CMD1 until OCR
+/// bit 31 is set" termination condition is host-testable without a live
+/// MSDC register (issue #622).
+fn poll_cmd1_ready<F>(mut attempt: F, max_attempts: u32) -> Result<(), MsdcError>
+where
+    F: FnMut() -> Result<u32, MsdcError>,
+{
+    for _ in 0..max_attempts {
+        if ocr_ready(attempt()?) {
+            return Ok(());
+        }
+    }
+    Err(MsdcError::CommandTimeout)
+}
 
 // ---------------------------------------------------------------------------
 // GPD / BD descriptors  -  DRIVER-INTERFACES.md §8.2
@@ -640,7 +707,10 @@ impl MsdcController {
     /// # Errors
     ///
     /// Returns [`MsdcError::CardNotPresent`] if the card detect pin is high.
-    /// Returns [`MsdcError::CommandTimeout`] if any init command fails.
+    /// Returns [`MsdcError::CommandTimeout`] if any init command's busy-wait
+    /// never clears, or if the card never reports OCR ready within the CMD1
+    /// retry bound. Returns [`MsdcError::InterruptError`] if any init
+    /// command latches a card-side failure in `MSDC_INT`.
     pub(crate) unsafe fn init(&mut self) -> Result<(), MsdcError> {
         // STEP 1: Verify card presence via MSDC_PS
         // SAFETY: MSDC_PS is a valid MMIO register at offset 0x08 within the MSDC0 address space. The controller base is valid and mapped per caller contract.
@@ -675,10 +745,21 @@ impl MsdcController {
         // SAFETY: controller is powered and register block is mapped per caller contract.
         unsafe { self.send_command(CMD0_GO_IDLE, 0, CMD_RSPTYP_NONE)? };
 
-        // CMD1: SEND_OP_COND (R3 response, no CRC)
-        // Argument: sector addressing (bit 30), voltage window 0xFF8000
-        // SAFETY: controller is powered and register block is mapped per caller contract.
-        unsafe { self.send_command(CMD1_SEND_OP_COND, 0x40FF_8000, CMD_RSPTYP_R3)? };
+        // CMD1: SEND_OP_COND (R3 response, no CRC). Argument: sector
+        // addressing (bit 30), voltage window 0xFF8000. The eMMC spec
+        // requires repeating CMD1 until the card reports the OCR power-up
+        // status bit (bit 31) set -- a card still powering up leaves it
+        // clear, and proceeding to CMD3 against a not-ready card corrupts
+        // the rest of the sequence (issue #622).
+        poll_cmd1_ready(
+            || {
+                // SAFETY: controller is powered and register block is mapped per caller contract.
+                unsafe { self.send_command(CMD1_SEND_OP_COND, 0x40FF_8000, CMD_RSPTYP_R3)? };
+                // SAFETY: valid immediately after a successful R3-response command.
+                Ok(unsafe { self.read_response() })
+            },
+            CMD1_MAX_RETRIES,
+        )?;
 
         // CMD3: SET_RELATIVE_ADDR (R1 response)
         // Assign RCA = 1
@@ -697,6 +778,13 @@ impl MsdcController {
         // SAFETY: controller is powered and register block is mapped per caller contract.
         unsafe { self.send_command(CMD16_SET_BLOCKLEN, blocklen, CMD_RSPTYP_R1)? };
 
+        // STEP 7: Clear every interrupt bit latched during init (e.g.
+        // INT_CDSC from clock/voltage settling, or per-command INT_CMDRDY)
+        // so none of them survive to be misread as an error by the first
+        // post-init check_and_clear_completion call (issue #622).
+        // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
+        unsafe { self.clear_interrupts(0xFFFF_FFFF) };
+
         self.initialized = true;
         Ok(())
     }
@@ -712,7 +800,10 @@ impl MsdcController {
     /// # Errors
     ///
     /// Returns [`MsdcError::CommandTimeout`] if the command engine does not
-    /// become idle within the poll timeout.
+    /// become idle within the poll timeout. Returns
+    /// [`MsdcError::InterruptError`] if the command phase ends with a
+    /// card-side failure (timeout or response CRC error) latched in
+    /// `MSDC_INT`.
     unsafe fn send_command(&self, opcode: u32, arg: u32, rsptyp: u32) -> Result<(), MsdcError> {
         // Wait for command engine to be idle
         // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
@@ -729,13 +820,23 @@ impl MsdcController {
         // SAFETY: SDC_CMD is a valid MMIO register at offset 0x34 within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.write_reg(REG_SDC_CMD, cmd) };
 
-        // Wait for command to complete
+        // Wait for the command phase to end. The engine clears CMDBUSY when
+        // the phase ends for ANY reason -- success, a card-side timeout
+        // (INT_CMDTMO), or a response CRC failure (INT_RSPCRCERR) -- so
+        // CMDBUSY alone cannot distinguish a failed command from a
+        // completed one (issue #622).
         // SAFETY: SDC_STS is a valid MMIO register at offset 0x3C within the MSDC0 address space. Volatile access is required for hardware registers.
         if !unsafe { mmio::wait_bits_clear(self.reg(REG_SDC_STS), STS_CMDBUSY, POLL_TIMEOUT) } {
             return Err(MsdcError::CommandTimeout);
         }
 
-        Ok(())
+        // Inspect MSDC_INT for a latched card-side failure before reporting
+        // success, reusing the same INT_ERR_MASK check the data-transfer
+        // paths already run after DATBUSY clears (issue #286). INT_CMDRDY
+        // is the command-phase completion bit cleared on the non-error path
+        // (issue #622).
+        // SAFETY: controller register block is mapped per caller contract.
+        unsafe { self.check_and_clear_completion(INT_CMDRDY) }
     }
 
     /// Send a data-transfer command (read or write direction).
@@ -1108,10 +1209,10 @@ impl MsdcController {
     unsafe fn check_and_clear_completion(&self, completion_bits: u32) -> Result<(), MsdcError> {
         // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         let status = unsafe { self.interrupt_status() };
-        if status & INT_ERR_MASK != 0 {
+        if let Some(err) = classify_interrupt_status(status) {
             // SAFETY: MSDC_INT is write-1-to-clear; writing the full observed status clears every pending bit, including the error bits just inspected.
             unsafe { self.clear_interrupts(status) };
-            return Err(MsdcError::InterruptError(status & INT_ERR_MASK));
+            return Err(err);
         }
         // SAFETY: MSDC_INT is a valid MMIO register at offset 0x0C within the MSDC0 address space. Volatile access is required for hardware registers.
         unsafe { self.clear_interrupts(completion_bits) };
@@ -1698,5 +1799,155 @@ mod tests {
             fifo_rx_ready(0xFF << FIFOCS_RXCNT_SHIFT),
             "a full RXCNT field must signal readiness"
         );
+    }
+
+    // -- MSDC_INT error classification (issue #622) --
+    //
+    // Without the fix, `send_command` never called anything that inspects
+    // MSDC_INT, so a latched INT_CMDTMO/INT_RSPCRCERR was silently dropped
+    // and the command reported Ok. These tests pin the extracted
+    // classification `send_command` now relies on: any INT_ERR_MASK bit
+    // becomes an InterruptError carrying only the error bits, and
+    // non-error activity (including the command-phase completion bit
+    // send_command clears on success) is not misclassified as failure.
+
+    #[test]
+    fn classify_interrupt_status_none_when_no_error_bits() {
+        assert_eq!(
+            classify_interrupt_status(0),
+            None,
+            "an empty status is not an error"
+        );
+        assert_eq!(
+            classify_interrupt_status(INT_CMDRDY),
+            None,
+            "command-ready alone is not an error"
+        );
+    }
+
+    #[test]
+    fn classify_interrupt_status_reports_cmdtmo() {
+        assert_eq!(
+            classify_interrupt_status(INT_CMDTMO),
+            Some(MsdcError::InterruptError(INT_CMDTMO)),
+            "a latched command timeout must be reported, not swallowed"
+        );
+    }
+
+    #[test]
+    fn classify_interrupt_status_reports_rspcrcerr() {
+        assert_eq!(
+            classify_interrupt_status(INT_RSPCRCERR),
+            Some(MsdcError::InterruptError(INT_RSPCRCERR)),
+            "a latched response CRC error must be reported, not swallowed"
+        );
+    }
+
+    #[test]
+    fn classify_interrupt_status_masks_out_non_error_bits() {
+        // WHY: CMDRDY can coincide with an error bit (issue #286's
+        // pattern); the reported payload must carry only the error bits.
+        let status = classify_interrupt_status(INT_CMDRDY | INT_CMDTMO);
+        assert_eq!(
+            status,
+            Some(MsdcError::InterruptError(INT_CMDTMO)),
+            "non-error bits must be masked out of the reported payload"
+        );
+    }
+
+    // -- OCR power-up polling (issue #622) --
+    //
+    // Without the fix, `init` sent CMD1 exactly once and never read the
+    // response, so a card still powering up (OCR bit 31 clear) let init
+    // proceed to CMD3 against a not-ready card. These tests pin the
+    // extracted retry logic `init` now runs.
+
+    #[test]
+    fn ocr_ready_false_when_busy_bit_clear() {
+        assert!(!ocr_ready(0), "an all-zero OCR must not be ready");
+        assert!(
+            !ocr_ready(0x7FFF_FFFF),
+            "every bit set except bit 31 must not be ready"
+        );
+    }
+
+    #[test]
+    fn ocr_ready_true_when_busy_bit_set() {
+        assert!(ocr_ready(OCR_BUSY_BIT), "bit 31 alone must report ready");
+        assert!(
+            ocr_ready(0xFFFF_FFFF),
+            "bit 31 among other set bits must report ready"
+        );
+    }
+
+    #[test]
+    fn poll_cmd1_ready_succeeds_immediately_when_first_response_ready() {
+        let mut calls = 0u32;
+        let result = poll_cmd1_ready(
+            || {
+                calls += 1;
+                Ok(OCR_BUSY_BIT)
+            },
+            CMD1_MAX_RETRIES,
+        );
+        assert_eq!(result, Ok(()), "a ready response must succeed");
+        assert_eq!(calls, 1, "must not retry once the card reports ready");
+    }
+
+    #[test]
+    fn poll_cmd1_ready_retries_while_busy_then_succeeds() {
+        // A card still completing power-up: two busy responses, then ready.
+        let responses = [0u32, 0u32, OCR_BUSY_BIT];
+        let mut i = 0usize;
+        let result = poll_cmd1_ready(
+            || {
+                let r = responses[i];
+                i += 1;
+                Ok(r)
+            },
+            CMD1_MAX_RETRIES,
+        );
+        assert_eq!(result, Ok(()), "must succeed once the busy bit is set");
+        assert_eq!(i, 3, "must stop polling as soon as the card is ready");
+    }
+
+    #[test]
+    fn poll_cmd1_ready_bounded_retry_returns_command_timeout() {
+        // A card that never leaves busy must not spin forever -- this is
+        // the "unbounded spin is a hang" requirement from issue #622.
+        let mut calls = 0u32;
+        let result = poll_cmd1_ready(
+            || {
+                calls += 1;
+                Ok(0u32)
+            },
+            5,
+        );
+        assert_eq!(
+            result,
+            Err(MsdcError::CommandTimeout),
+            "exhausting the retry bound must report CommandTimeout"
+        );
+        assert_eq!(calls, 5, "must attempt exactly max_attempts times");
+    }
+
+    #[test]
+    fn poll_cmd1_ready_propagates_hardware_error_without_retrying() {
+        // A latched command/CRC error is a bus fault, not "still busy" --
+        // it must not be retried through.
+        let mut calls = 0u32;
+        let result = poll_cmd1_ready(
+            || {
+                calls += 1;
+                Err(MsdcError::InterruptError(INT_CMDTMO))
+            },
+            CMD1_MAX_RETRIES,
+        );
+        assert_eq!(
+            result,
+            Err(MsdcError::InterruptError(INT_CMDTMO)),
+            "a hardware error must propagate as-is"
+        );
+        assert_eq!(calls, 1, "must not retry past a hardware error");
     }
 }
