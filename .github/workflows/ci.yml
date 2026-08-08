@@ -108,10 +108,15 @@ jobs:
         # both surfaces execute the identical suite.
         run: scripts/kernel-host-tests.sh
       - name: Target-test ledger check (#551)
-        # WHY (#551, restoring #124): declared-vs-executed must be auditable —
-        # reds when a test-bearing or target-sensitive module has no ledger
-        # row, a witness name rots, a sensitive host-only row loses its
-        # fidelity label, or a tests count drifts. Cheap, source-level.
+        # WHY (#551, restoring #124; #645): declared-vs-executed must be
+        # auditable — reds when a test-bearing or target-sensitive module has
+        # no ledger row, a witness name rots, a sensitive host-only row loses
+        # its fidelity label, or a declared tests count drifts from the
+        # RUNNABLE set `cargo nextest list` reports (#645: a module cfg'd out
+        # of the test build contributes zero regardless of its source text).
+        # Needs a build, but the "Kernel host tests" step just above already
+        # built this exact i686 target, so this is a cache hit, not a
+        # separate compile — placement in the job matters.
         run: scripts/check-target-test-ledger.sh
       - name: Board-seam invariant check (#534)
         # WHY (#534): the two-board reality is structural, not prose — reds
