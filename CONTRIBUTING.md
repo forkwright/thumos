@@ -46,6 +46,24 @@ or the forge merge button. Default strategy is `squash`; `--strategy ff` or `--s
 
 Do not merge via GitHub. The GitHub mirror is read-only from the contributor's perspective: any merge performed there races the forge pr-sync worker.
 
+## Releases
+
+Release authority is declared in `basanos/standards/RELEASES.md`: the operator cuts MAJOR, an agent cuts MINOR and PATCH with no operator interaction required. Read it there.
+
+One mechanical step is specific to this repo's GitHub mirror and is expected on every cut. A release-please PR is authored by `GITHUB_TOKEN`, and GitHub does not run `on: pull_request` workflows for events its own token triggered — the recursion guard that stops a workflow from endlessly retriggering itself. The branch-protection required checks therefore never execute, and the PR sits with `mergeStateStatus: BLOCKED` reporting no checks at all rather than failing ones.
+
+Re-trigger them as a real-user actor, which is not subject to the guard:
+
+```bash
+gh run list --repo forkwright/thumos --branch release-please--branches--main \
+  --json databaseId,name,conclusion --jq '.[] | select(.conclusion=="action_required")'
+gh run rerun <id> --repo forkwright/thumos   # once per suppressed run
+```
+
+Then merge on green, as with any PR. The three required contexts are `cargo audit`, `cargo deny`, and `gate / gate` — read them from branch protection rather than trusting this list. `Dependabot Auto-Merge` stays `action_required` and is *not* required, so `UNSTABLE` with those three green is the expected terminal state for a release PR.
+
+The merge is not the release: release-please's `push`-to-`main` trigger creates the tag and GitHub release afterwards, and that run is not suppressed because a real user performed the merge. Confirm the tag exists before calling a release done.
+
 ## External contributors
 
 Thumos has a real external-contributor path - radio, baseband, and MTK tooling folks without kanon.lan access. The GitHub mirror at `github.com/forkwright/thumos` is fully functional for you:
