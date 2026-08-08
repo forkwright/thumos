@@ -183,7 +183,7 @@ fidelity = "loader correctness against real page tables is witness-only (exec/fo
 
 [[module]]
 name = "emmc"
-tests = 31
+tests = 41
 mechanism = "both"
 witness = "boot.sh"
 fidelity = "driver register paths are hardware-gated; host tests cover protocol logic"
