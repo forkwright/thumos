@@ -36,13 +36,48 @@ hardware identifiers must not cross this bridge.
 ## Current Surface
 
 - `crates/metaxu` is registered as a workspace crate.
-- Requests and responses serialize with `postcard`.
-- `BridgeClient` exchanges one request frame for one response frame through a
-  caller-provided transport.
-- The crate has an in-memory round-trip test for device -> runtime -> device.
-- The local preflight only checks that a request carries a grant for the needed
-  capability. It does not authenticate grants, check expiration, or prove remote
-  runtime identity.
+- Requests and responses serialize with `postcard`, framed in a versioned
+  envelope (magic + schema + major/minor + kind + correlation ID + declared
+  length, checked before any payload decode) so thumos and aletheia never
+  drift on wire assumptions (#553).
+- Two request paths exist on `BridgeClient` (#544):
+  - `submit` exchanges a bare task request/response pair through a
+    caller-provided transport, checking only that the task carries a
+    self-claimed grant locally -- suitable for a trusted in-process
+    transport, not a network peer.
+  - `submit_authenticated` presents a cryptographically verified, expiring
+    `SignedGrant` (Ed25519-signed by the runtime, bound to both the
+    issuer's and the device's identity) on every request, and refuses any
+    response whose HMAC does not prove the responder held the grant's
+    signed nonce. Capability enforcement checks the session's verified
+    grant, not the wire-claimed one. An adversarial witness exercises this
+    path over real TCP: replay, expired grant, wrong runtime identity, a
+    grant for the wrong device, unavailable network (at connect and
+    mid-exchange), and a denied capability (both the client's local
+    preflight and the endpoint's independent check).
+- Golden vectors (`crates/metaxu/src/vectors.rs`) pin the envelope's byte
+  shape so both repositories decode it identically.
+
+## What Remains
+
+The verified protocol path above is proven against a reference endpoint
+double (`pylon`) inside the `metaxu` crate itself -- a stand-in for the real
+Aletheia runtime, not a live one. Outstanding for a genuinely live round
+trip:
+
+- Bind `metaxu` to the selected live transport (second-PL011 on qemu-virt
+  per the phase plan; WiFi on hardware) through the declared firewall
+  boundary, without bypassing firewall policy.
+- Drive `submit_authenticated` from a real Thumos userspace process rather
+  than a host-side test harness.
+- Stand up (or point at) an actual Aletheia-side endpoint implementing the
+  pylon's verification contract, so the pinned runtime key is a real
+  runtime's key, not a witness fixture.
+- Connect nous capability presets to concrete `metaxu` grant issuance.
+- Route accepted device actions through the existing confirmation UI and
+  local service APIs.
+- Cross-link the corresponding Aletheia-side runtime endpoint when it
+  exists.
 
 ## Non-Goals
 
@@ -51,12 +86,3 @@ hardware identifiers must not cross this bridge.
 - No network or firewall boot path changes are part of this bridge decision.
 - No userspace spawn or init path changes are part of this bridge decision.
 - No dependency on a C toolchain or heavyweight runtime library is introduced.
-
-## Follow-Up Work
-
-- Bind `metaxu` to the selected live transport without bypassing firewall policy.
-- Connect nous capability presets to concrete `metaxu` grant verification.
-- Add runtime peer authentication and grant expiration checks.
-- Route accepted device actions through the existing confirmation UI and local
-  service APIs.
-- Cross-link the corresponding Aletheia-side runtime endpoint when it exists.

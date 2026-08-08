@@ -1,15 +1,26 @@
 //! The adversarial round-trip witness (#544): one authenticated
 //! Thumos↔Aletheia exchange and every failure mode, over real TCP.
 //!
+//! Every case below drives `crate::BridgeClient::submit_authenticated` --
+//! the SAME method a real Thumos userspace process calls -- rather than
+//! hand-building envelope frames, so the witness proves the production API
+//! surface, not a parallel test-only path that could drift from it.
+//!
 //! Cases (the issue's done-when, item 5):
 //! 1. happy path — verified grant, accepted task, MAC-verified response.
 //! 2. replay — a repeated request id is rejected.
-//! 3. expired grant — rejected at evaluation.
+//! 3. expired grant — rejected at evaluation: client pre-flight AND the
+//!    endpoint refuse it, independently.
 //! 4. wrong runtime identity — a grant from an unpinned issuer is rejected;
-//!    and a grant for another device never authorizes this one.
-//! 5. unavailable network — a typed transport error, not a panic or a
-//!    silent empty response.
-//! 6. denied capability — a task outside the grant is rejected pre-action.
+//!    and a grant for another device never opens a session.
+//! 5. unavailable network — a typed transport error at connect, and again
+//!    mid-exchange when a peer accepts then closes without responding —
+//!    never a panic or a silent empty response.
+//! 6. denied capability, twice: the client refuses a task outside the
+//!    session's VERIFIED grant locally, before any network use; and the
+//!    endpoint refuses independently for a request that skips the client
+//!    (defense in depth -- the boundary does not depend on client
+//!    cooperation).
 
 use ed25519_dalek::SigningKey;
 use ulid::Ulid;
@@ -21,6 +32,8 @@ use crate::protocol::{
 };
 use crate::pylon::{self, Pylon};
 use crate::session::AuthenticatedSession;
+use crate::transport::BridgeTransport;
+use crate::{BridgeClient, Error};
 
 /// The runtime the witness pins (the pylon's identity).
 fn runtime_signing() -> SigningKey {
@@ -69,18 +82,57 @@ fn sms_request() -> TaskRequest {
     }
 }
 
-/// Encode an authenticated request frame (kind 4).
-fn auth_frame(session: &AuthenticatedSession, request: TaskRequest) -> Vec<u8> {
-    let wrapped = session.wrap(request);
-    let payload = postcard::to_allocvec(&wrapped).unwrap_or_default();
-    Envelope::build(MessageKind::AuthenticatedRequest, 1, payload)
-        .unwrap_or_else(|_| unreachable!())
-        .encode()
+/// A [`BridgeTransport`] over a length-prefixed TCP stream -- the same
+/// framing `pylon::spawn`'s server loop speaks. This is the shape a real
+/// Thumos userspace transport takes: connect, then hand frames to
+/// `BridgeClient` unmodified.
+struct TcpBridgeTransport {
+    stream: std::net::TcpStream,
 }
 
-/// One TCP exchange against a spawned pylon: send one frame, read the
-/// authenticated response.
-fn exchange(port: u16, frame: &[u8]) -> Vec<u8> {
+impl TcpBridgeTransport {
+    /// Connect to a pylon on `127.0.0.1:port`.
+    fn connect(port: u16) -> Self {
+        Self {
+            stream: std::net::TcpStream::connect(("127.0.0.1", port))
+                .unwrap_or_else(|e| unreachable!("witness pylon must accept: {e}")),
+        }
+    }
+}
+
+impl BridgeTransport for TcpBridgeTransport {
+    type Error = std::io::Error;
+
+    fn exchange(&mut self, request_frame: &[u8]) -> core::result::Result<Vec<u8>, Self::Error> {
+        use std::io::{Read, Write};
+        let len = (request_frame.len() as u32).to_le_bytes();
+        self.stream.write_all(&len)?;
+        self.stream.write_all(request_frame)?;
+        let mut len_buf = [0u8; 4];
+        self.stream.read_exact(&mut len_buf)?;
+        let out_len = u32::from_le_bytes(len_buf) as usize;
+        let mut out = vec![0u8; out_len];
+        self.stream.read_exact(&mut out)?;
+        Ok(out)
+    }
+}
+
+/// A transport that panics if ever invoked -- proves a caller path never
+/// reaches the network (used for the local-preflight-denial case).
+struct PanicIfCalledTransport;
+
+impl BridgeTransport for PanicIfCalledTransport {
+    type Error = std::io::Error;
+
+    fn exchange(&mut self, _request_frame: &[u8]) -> core::result::Result<Vec<u8>, Self::Error> {
+        unreachable!("a locally-denied capability must never reach the transport")
+    }
+}
+
+/// One raw TCP exchange against a spawned pylon, bypassing `BridgeClient`
+/// entirely -- used ONLY to prove the endpoint enforces on its own, for a
+/// caller that skips (or never had) the client's local preflight.
+fn raw_exchange(port: u16, frame: &[u8]) -> Vec<u8> {
     use std::io::{Read, Write};
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))
         .unwrap_or_else(|e| unreachable!("witness pylon must accept: {e}"));
@@ -99,23 +151,6 @@ fn exchange(port: u16, frame: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Decode an authenticated response and check its MAC under the session.
-fn verify_response(
-    session: &AuthenticatedSession,
-    frame: &[u8],
-) -> crate::session::AuthenticatedResponse {
-    let frame =
-        Envelope::decode(frame).unwrap_or_else(|e| unreachable!("response frame decodes: {e}"));
-    assert_eq!(frame.header.kind, MessageKind::AuthenticatedResponse);
-    let response: crate::session::AuthenticatedResponse =
-        postcard::from_bytes(&frame.payload).unwrap_or_else(|_| unreachable!());
-    assert!(
-        session.verify_response(&response),
-        "the response MAC must verify under the grant's response key"
-    );
-    response
-}
-
 #[test]
 fn happy_authenticated_round_trip() {
     let (port, _handle) = pylon::spawn(Pylon::new(runtime_signing().verifying_key(), 5_000), 1);
@@ -125,21 +160,25 @@ fn happy_authenticated_round_trip() {
         5_000,
     )
     .unwrap_or_else(|e| unreachable!("grant verifies: {e}"));
+    let mut client = BridgeClient::new(TcpBridgeTransport::connect(port));
     let request = sms_request();
-    let response = verify_response(
-        &session,
-        &exchange(port, &auth_frame(&session, request.clone())),
-    );
-    assert_eq!(response.response.request_id, request.request_id());
+    let response = client
+        .submit_authenticated(&session, &request)
+        .unwrap_or_else(|e| unreachable!("an authenticated submit must succeed: {e}"));
+    assert_eq!(response.request_id, request.request_id());
     assert!(
-        matches!(response.response.status, TaskStatus::Accepted { .. }),
+        matches!(response.status, TaskStatus::Accepted { .. }),
         "a verified grant + task must be accepted, got {:?}",
-        response.response.status
+        response.status
     );
 }
 
 #[test]
 fn replay_is_rejected() {
+    // The pylon answers one frame per accepted connection, so replaying a
+    // request means a second connection presenting the same frame -- the
+    // exact shape a real device retry (or an attacker's captured frame)
+    // takes.
     let (port, _handle) = pylon::spawn(Pylon::new(runtime_signing().verifying_key(), 5_000), 2);
     let session = AuthenticatedSession::open(
         runtime_grant(10_000),
@@ -147,10 +186,18 @@ fn replay_is_rejected() {
         5_000,
     )
     .unwrap_or_else(|e| unreachable!("grant verifies: {e}"));
-    let frame = auth_frame(&session, sms_request());
-    let _ = verify_response(&session, &exchange(port, &frame));
-    let second = verify_response(&session, &exchange(port, &frame));
-    match second.response.status {
+    let request = sms_request();
+
+    let mut first = BridgeClient::new(TcpBridgeTransport::connect(port));
+    let _ = first
+        .submit_authenticated(&session, &request)
+        .unwrap_or_else(|e| unreachable!("the first submit must succeed: {e}"));
+
+    let mut second = BridgeClient::new(TcpBridgeTransport::connect(port));
+    let replayed = second
+        .submit_authenticated(&session, &request)
+        .unwrap_or_else(|e| unreachable!("a replay still MAC-verifies as a rejection: {e}"));
+    match replayed.status {
         TaskStatus::Rejected { ref reason } => {
             assert_eq!(
                 reason.as_str(),
@@ -166,7 +213,8 @@ fn replay_is_rejected() {
 fn expired_grant_is_rejected() {
     let (port, _handle) = pylon::spawn(Pylon::new(runtime_signing().verifying_key(), 20_000), 1);
     // The grant expired at 10_000; the pylon evaluates at 20_000. The
-    // client-side pre-flight ALSO refuses it (fail-closed both ends).
+    // client-side pre-flight ALSO refuses it (fail-closed both ends) --
+    // this never reaches the network at all.
     assert!(
         AuthenticatedSession::open(
             runtime_grant(10_000),
@@ -176,18 +224,19 @@ fn expired_grant_is_rejected() {
         .is_err(),
         "client pre-flight must refuse an expired grant"
     );
-    // And the endpoint rejects it independently.
+    // And the endpoint rejects it independently, for a session opened
+    // while the grant was still valid but presented after it lapsed.
     let session = AuthenticatedSession::open(
         runtime_grant(10_000),
         &device_signing().verifying_key().to_bytes(),
         5_000,
     )
     .unwrap_or_else(|e| unreachable!("grant verifies at issue time: {e}"));
-    let response = verify_response(
-        &session,
-        &exchange(port, &auth_frame(&session, sms_request())),
-    );
-    match response.response.status {
+    let mut client = BridgeClient::new(TcpBridgeTransport::connect(port));
+    let response = client
+        .submit_authenticated(&session, &sms_request())
+        .unwrap_or_else(|e| unreachable!("an expired grant still MAC-verifies as a reject: {e}"));
+    match response.status {
         TaskStatus::Rejected { ref reason } => {
             assert_eq!(reason.as_str(), pylon::reject::GRANT_EXPIRED);
         }
@@ -198,8 +247,9 @@ fn expired_grant_is_rejected() {
 #[test]
 fn wrong_runtime_identity_is_rejected() {
     // The grant is signed by an impostor runtime (a different signing key
-    // than the pylon pins). Signature verifies under the impostor — and the
-    // pylon still refuses, because the issuer is not the pinned runtime.
+    // than the pylon pins). Signature verifies under the impostor -- and
+    // the pylon still refuses, because the issuer is not the pinned
+    // runtime.
     let impostor = SigningKey::from_bytes(&[0xEE; 32]);
     let forged = SignedGrant::issue(
         Grant {
@@ -218,11 +268,11 @@ fn wrong_runtime_identity_is_rejected() {
             .unwrap_or_else(|e| {
                 unreachable!("the forged grant verifies under its own issuer: {e}")
             });
-    let response = verify_response(
-        &session,
-        &exchange(port, &auth_frame(&session, sms_request())),
-    );
-    match response.response.status {
+    let mut client = BridgeClient::new(TcpBridgeTransport::connect(port));
+    let response = client
+        .submit_authenticated(&session, &sms_request())
+        .unwrap_or_else(|e| unreachable!("an unpinned issuer still MAC-verifies as a reject: {e}"));
+    match response.status {
         TaskStatus::Rejected { ref reason } => {
             assert_eq!(reason.as_str(), pylon::reject::WRONG_ISSUER);
         }
@@ -253,6 +303,8 @@ fn grant_for_another_device_never_authorizes() {
 #[test]
 fn unavailable_network_is_a_typed_transport_error() {
     // No listener on this port (bound-then-dropped to guarantee closure).
+    // A real device hits this before a `BridgeClient` can even be built --
+    // the transport trait takes an already-connected peer.
     let port = std::net::TcpListener::bind(("127.0.0.1", 0))
         .and_then(|l| l.local_addr().map(|a| a.port()))
         .unwrap_or_else(|_| unreachable!());
@@ -267,15 +319,47 @@ fn unavailable_network_is_a_typed_transport_error() {
 }
 
 #[test]
-fn capability_outside_grant_is_denied() {
-    let (port, _handle) = pylon::spawn(Pylon::new(runtime_signing().verifying_key(), 5_000), 1);
+fn mid_exchange_disconnect_surfaces_as_typed_transport_error() {
+    // A peer that accepts the connection then closes without responding --
+    // driven through the real `submit_authenticated` path, this must
+    // surface a typed `Error::Transport`, never panic or return an empty
+    // frame as if it were a valid response.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap_or_else(|_| unreachable!());
+    let port = listener
+        .local_addr()
+        .map_or_else(|_| unreachable!(), |a| a.port());
+    let handle = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            drop(stream); // accept, then close without writing a response
+        }
+    });
     let session = AuthenticatedSession::open(
         runtime_grant(10_000),
         &device_signing().verifying_key().to_bytes(),
         5_000,
     )
     .unwrap_or_else(|e| unreachable!("grant verifies: {e}"));
-    // The grant carries only SendSms; a PlaceCall task is outside it.
+    let mut client = BridgeClient::new(TcpBridgeTransport::connect(port));
+    let result = client.submit_authenticated(&session, &sms_request());
+    assert!(
+        matches!(result, Err(Error::Transport { .. })),
+        "a peer that closes without responding must surface a typed transport error, got {result:?}"
+    );
+    handle.join().unwrap_or_else(|_| unreachable!());
+}
+
+#[test]
+fn capability_outside_grant_is_denied_locally_before_any_network_use() {
+    // The session's VERIFIED grant carries only SendSms; a PlaceCall task
+    // is outside it. The client must refuse before touching the
+    // transport -- `PanicIfCalledTransport` proves that, not just an
+    // assertion on the returned error.
+    let session = AuthenticatedSession::open(
+        runtime_grant(10_000),
+        &device_signing().verifying_key().to_bytes(),
+        5_000,
+    )
+    .unwrap_or_else(|e| unreachable!("grant verifies: {e}"));
     let call = TaskRequest::PlaceCall {
         request_id: Ulid::from_bytes([6; 16]),
         identity: device_identity(),
@@ -286,7 +370,63 @@ fn capability_outside_grant_is_denied() {
         )],
         to: "+15557654321".into(),
     };
-    let response = verify_response(&session, &exchange(port, &auth_frame(&session, call)));
+    let mut client = BridgeClient::new(PanicIfCalledTransport);
+    let result = client.submit_authenticated(&session, &call);
+    assert!(
+        matches!(
+            result,
+            Err(Error::MissingCapability {
+                capability: Capability::CallDial,
+                ..
+            })
+        ),
+        "a task outside the verified grant must be denied locally, got {result:?}"
+    );
+}
+
+#[test]
+fn capability_outside_grant_is_denied_by_the_endpoint() {
+    // Defense in depth: even a caller that skips `BridgeClient`'s local
+    // preflight (a hand-built frame, or a future buggy client) is refused
+    // by the endpoint itself. Built at the envelope layer directly so the
+    // out-of-grant frame reaches the pylon regardless of client-side
+    // policy.
+    let (port, _handle) = pylon::spawn(Pylon::new(runtime_signing().verifying_key(), 5_000), 1);
+    let session = AuthenticatedSession::open(
+        runtime_grant(10_000),
+        &device_signing().verifying_key().to_bytes(),
+        5_000,
+    )
+    .unwrap_or_else(|e| unreachable!("grant verifies: {e}"));
+    let call = TaskRequest::PlaceCall {
+        request_id: Ulid::from_bytes([6; 16]),
+        identity: device_identity(),
+        grants: vec![CapabilityGrant::new(
+            Capability::CallDial,
+            "policy",
+            "grant-call",
+        )],
+        to: "+15557654321".into(),
+    };
+    let wrapped = session.wrap(call);
+    let payload = postcard::to_allocvec(&wrapped).unwrap_or_else(|_| unreachable!());
+    let frame = Envelope::build(MessageKind::AuthenticatedRequest, 1, payload)
+        .unwrap_or_else(|_| unreachable!())
+        .encode();
+
+    let out = raw_exchange(port, &frame);
+    let response_frame =
+        Envelope::decode(&out).unwrap_or_else(|e| unreachable!("response frame decodes: {e}"));
+    assert_eq!(
+        response_frame.header.kind,
+        MessageKind::AuthenticatedResponse
+    );
+    let response: crate::session::AuthenticatedResponse =
+        postcard::from_bytes(&response_frame.payload).unwrap_or_else(|_| unreachable!());
+    assert!(
+        session.verify_response(&response),
+        "the rejection is still MAC-verified, not an unauthenticated error"
+    );
     match response.response.status {
         TaskStatus::Rejected { ref reason } => {
             assert_eq!(reason.as_str(), pylon::reject::CAPABILITY_DENIED);

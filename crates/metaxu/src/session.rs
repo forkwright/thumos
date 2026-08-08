@@ -18,9 +18,12 @@
 //! adversarial witness runs against.
 
 use serde::{Deserialize, Serialize};
+use snafu::{IntoError as _, ResultExt as _};
 
+use crate::envelope::{Envelope, MessageKind};
+use crate::error::{DecodeSnafu, EncodeSnafu, EnvelopeSnafu};
 use crate::grants::SignedGrant;
-use crate::protocol::{TaskRequest, TaskResponse};
+use crate::protocol::{TaskRequest, TaskResponse, correlation_of};
 
 /// An authenticated task request: the verified grant plus the typed task
 /// (#544). Envelope kind 4 (MINOR 1).
@@ -105,4 +108,47 @@ impl AuthenticatedSession {
     pub fn verify_response(&self, response: &AuthenticatedResponse) -> bool {
         response.verify(&self.signed_grant)
     }
+}
+
+/// Encode an authenticated task request for transport, wrapped in the
+/// versioned envelope (kind 4, MINOR 1) (#544). This is the ONLY place a
+/// wire frame for the authenticated exchange is built -- `BridgeClient`
+/// and the adversarial witness both go through it, so there is one
+/// encoding, not a client copy and a test copy that can drift apart.
+pub(crate) fn encode_authenticated_request(
+    session: &AuthenticatedSession,
+    request: &TaskRequest,
+) -> crate::error::Result<Vec<u8>> {
+    let wrapped = session.wrap(request.clone());
+    let payload = postcard::to_allocvec(&wrapped).context(EncodeSnafu)?;
+    let frame = Envelope::build(
+        MessageKind::AuthenticatedRequest,
+        correlation_of(request.request_id()),
+        payload,
+    )
+    .context(EnvelopeSnafu)?;
+    Ok(frame.encode())
+}
+
+/// Decode an authenticated task response from transport bytes (kind 5,
+/// MINOR 1) (#544).
+///
+/// Does NOT verify the MAC -- the returned value is untrusted wire data
+/// until the caller checks it against the session, via
+/// [`AuthenticatedSession::verify_response`]. Splitting decode from verify
+/// keeps "parsed" and "trusted" distinct states, so a caller cannot act on
+/// a well-formed-but-unverified response by forgetting a step.
+pub(crate) fn decode_authenticated_response(
+    bytes: &[u8],
+) -> crate::error::Result<AuthenticatedResponse> {
+    let frame = Envelope::decode(bytes).context(EnvelopeSnafu)?;
+    if frame.header.kind != MessageKind::AuthenticatedResponse {
+        return Err(
+            EnvelopeSnafu.into_error(crate::envelope::EnvelopeError::UnexpectedKind {
+                expected: MessageKind::AuthenticatedResponse,
+                got: frame.header.kind,
+            }),
+        );
+    }
+    postcard::from_bytes(&frame.payload).context(DecodeSnafu)
 }
