@@ -587,12 +587,14 @@ mod tests {
         assert_eq!(header.sequence, checkpoint_seq);
         assert_eq!(header.next_inode, 3);
 
-        // Load the imap from the checkpoint and verify.
+        // Load the imap from the checkpoint and verify. Device is 8 MB /
+        // BLOCK_SIZE (see block_device_for_writer) = 2048 blocks.
         let restored_imap = LfsImap::load_from_disk(
             &mut dev,
             &mut cache2,
             header.imap_block,
             header.imap_block_count,
+            2048,
         )
         .expect("load imap");
 

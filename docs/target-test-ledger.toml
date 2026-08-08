@@ -341,12 +341,12 @@ mechanism = "host"
 
 [[module]]
 name = "lfs_compact"
-tests = 9
+tests = 11
 mechanism = "host"
 
 [[module]]
 name = "lfs_imap"
-tests = 11
+tests = 13
 mechanism = "host"
 
 [[module]]
