@@ -55,7 +55,7 @@ mechanism = "host"
 
 [[module]]
 name = "gpt"
-tests = 6
+tests = 8
 mechanism = "host"
 fidelity = "parse logic proven on synthetic GPT images host-side; the live eMMC GPT read is the m7 boot path (hardware-gated)"
 
