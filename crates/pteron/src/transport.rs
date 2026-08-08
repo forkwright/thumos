@@ -2,7 +2,12 @@
 //!
 //! BT uses STP function type 0. All HCI packets are wrapped in STP frames
 //! before transmission to the BTIF UART. Received STP frames are unwrapped
-//! and decoded as HCI events.
+//! and dispatched by H4 packet type: HCI Events decode directly
+//! ([`recv_event`](BtHciTransport::recv_event)); ACL Data packets
+//! reassemble through the L2CAP path (`crate::l2cap`, #635) into complete
+//! SDUs ([`recv_l2cap_pdu`](BtHciTransport::recv_l2cap_pdu)). The two
+//! never lose data to each other — a frame of the kind the caller didn't
+//! ask for is queued rather than discarded.
 //!
 //! Frame format (DRIVER-INTERFACES.md §2.7):
 //! ```text
@@ -15,10 +20,16 @@
 //! HDR3      = checksum (XOR of HDR0..HDR2)
 //! ```
 
+use std::collections::VecDeque;
+
 use snafu::Snafu;
 
 use crate::config::Config;
-use crate::hci::{BdAddr, HciCommand, HciEvent, decode_event, encode_command};
+use crate::hci::{
+    BdAddr, H4_ACL_TYPE, H4_EVENT_TYPE, HciCommand, HciEvent, decode_acl_data, decode_event,
+    encode_command,
+};
+use crate::l2cap::{AclReassembler, L2capSdu};
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -165,11 +176,27 @@ pub(crate) enum Error {
     #[snafu(display("STP receive buffer underrun: incomplete frame"))]
     RxUnderrun,
 
-    /// HCI event decoding failed.
+    /// HCI event or ACL data decoding failed.
     #[snafu(display("HCI decode error: {source}"))]
     HciDecode {
         /// Underlying HCI decode error.
         source: crate::hci::Error,
+    },
+
+    /// L2CAP reassembly of an ACL data fragment failed (#635).
+    #[snafu(display("L2CAP reassembly error: {source}"))]
+    L2capReassembly {
+        /// Underlying L2CAP reassembly error.
+        source: crate::l2cap::Error,
+    },
+
+    /// The RX loop decoded an STP frame whose H4 packet type is neither
+    /// Event (`0x04`) nor ACL Data (`0x02`) — the only two this transport
+    /// dispatches (#635).
+    #[snafu(display("unrouted H4 packet type on RX: 0x{actual:02X}"))]
+    UnroutedH4Type {
+        /// The unrecognized H4 type byte.
+        actual: u8,
     },
 
     /// The reset state machine is in an unexpected state for the requested
@@ -183,6 +210,25 @@ pub(crate) enum Error {
 
 /// Result alias for this module.
 pub(crate) type Result<T> = core::result::Result<T, Error>;
+
+// ── RX frame dispatch ──────────────────────────────────────────────────────────
+
+/// One STP frame decoded and dispatched by its H4 packet type (#635).
+///
+/// Internal to [`BtHciTransport::recv_frame`] — [`recv_event`] and
+/// [`recv_l2cap_pdu`] each unwrap the variant they want and queue the other.
+///
+/// [`recv_event`]: BtHciTransport::recv_event
+/// [`recv_l2cap_pdu`]: BtHciTransport::recv_l2cap_pdu
+enum RxFrame {
+    /// A decoded HCI Event.
+    Event(HciEvent),
+    /// A complete, reassembled L2CAP SDU.
+    L2cap(L2capSdu),
+    /// A frame was consumed but produced no complete higher-layer unit yet
+    /// — an ACL fragment still awaiting its Continuation(s).
+    Absorbed,
+}
 
 // ── Reset state ────────────────────────────────────────────────────────────────
 
@@ -511,6 +557,23 @@ pub(crate) struct BtHciTransport {
     /// WHY: stored per-instance so different transports (Daily vs. Sentinel
     /// mode) can use different rotation cadences without a global mutable.
     rotation_interval_secs: u64,
+
+    /// L2CAP reassembly state for ACL Data frames, keyed by connection
+    /// handle (#635).
+    acl_reassembler: AclReassembler,
+
+    /// Events decoded FROM the RX ring but not yet claimed by
+    /// [`recv_event`](Self::recv_event), because
+    /// [`recv_l2cap_pdu`](Self::recv_l2cap_pdu) drained past them while
+    /// looking for an L2CAP SDU. Keeps the shared RX stream non-lossy when
+    /// both packet kinds interleave (#635).
+    pending_events: VecDeque<HciEvent>,
+
+    /// L2CAP SDUs reassembled FROM the RX ring but not yet claimed by
+    /// [`recv_l2cap_pdu`](Self::recv_l2cap_pdu), because
+    /// [`recv_event`](Self::recv_event) drained past them while looking for
+    /// an event. Mirrors `pending_events` (#635).
+    pending_l2cap: VecDeque<L2capSdu>,
 }
 
 impl BtHciTransport {
@@ -536,6 +599,9 @@ impl BtHciTransport {
             current_random_addr: None,
             secs_since_rotation: 0,
             rotation_interval_secs: config.rotation_interval_secs(),
+            acl_reassembler: AclReassembler::new(),
+            pending_events: VecDeque::new(),
+            pending_l2cap: VecDeque::new(),
         }
     }
 
@@ -641,7 +707,8 @@ impl BtHciTransport {
 
     // ── RX path ────────────────────────────────────────────────────────────────
 
-    /// Push raw bytes FROM the hardware character device INTO the RX ring buffer.
+    /// Push raw bytes FROM the hardware character device INTO the RX ring
+    /// buffer.
     ///
     /// Returns `false` if the buffer does not have sufficient free space.
     pub(crate) fn push_rx(&mut self, data: &[u8]) -> bool {
@@ -650,18 +717,75 @@ impl BtHciTransport {
 
     /// Attempt to decode one HCI event FROM the front of the RX ring buffer.
     ///
-    /// This method checks whether the RX buffer contains enough bytes for a
-    /// complete STP frame (delimiter + header + payload), then decodes the
-    /// payload as an HCI event.
+    /// ACL Data frames encountered while draining toward the next event are
+    /// reassembled via the L2CAP path (#635) and queued for
+    /// [`recv_l2cap_pdu`](Self::recv_l2cap_pdu) instead of being discarded
+    /// or mis-decoded as an event — the RX ring carries both packet kinds
+    /// once a connection exists, so a caller that only wants events must
+    /// not silently destroy ACL data sitting ahead of the next one.
     ///
-    /// Returns `Ok(None)` when no complete frame is available yet.
+    /// Returns `Ok(None)` when no complete event is available yet — this
+    /// can mean the RX ring is empty, or that everything currently queued
+    /// is an in-progress ACL fragment.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ChecksumMismatch`] on STP header corruption.
     /// Returns [`Error::FuncTypeMismatch`] if the frame is not BT function type 0.
-    /// Returns [`Error::HciDecode`] if the HCI payload is malformed.
+    /// Returns [`Error::HciDecode`] if the HCI or ACL payload is malformed.
+    /// Returns [`Error::L2capReassembly`] if an interleaved ACL fragment
+    /// fails L2CAP reassembly.
+    /// Returns [`Error::UnroutedH4Type`] if a frame is neither an Event nor
+    /// an ACL Data packet.
     pub(crate) fn recv_event(&mut self) -> Result<Option<HciEvent>> {
+        if let Some(evt) = self.pending_events.pop_front() {
+            return Ok(Some(evt));
+        }
+        loop {
+            match self.recv_frame()? {
+                None => return Ok(None),
+                Some(RxFrame::Absorbed) => {}
+                Some(RxFrame::Event(evt)) => return Ok(Some(evt)),
+                Some(RxFrame::L2cap(sdu)) => self.pending_l2cap.push_back(sdu),
+            }
+        }
+    }
+
+    /// Attempt to decode one complete, reassembled L2CAP SDU FROM the front
+    /// of the RX ring buffer (#635).
+    ///
+    /// HCI Event frames encountered while draining toward the next L2CAP
+    /// SDU are queued for [`recv_event`](Self::recv_event) instead of being
+    /// discarded, mirroring [`recv_event`]'s treatment of ACL frames —
+    /// calling one method never starves the other of a packet kind it
+    /// didn't ask for.
+    ///
+    /// Returns `Ok(None)` when no complete SDU is available yet.
+    ///
+    /// # Errors
+    ///
+    /// Same error set as [`recv_event`](Self::recv_event).
+    pub(crate) fn recv_l2cap_pdu(&mut self) -> Result<Option<L2capSdu>> {
+        if let Some(sdu) = self.pending_l2cap.pop_front() {
+            return Ok(Some(sdu));
+        }
+        loop {
+            match self.recv_frame()? {
+                None => return Ok(None),
+                Some(RxFrame::Absorbed) => {}
+                Some(RxFrame::L2cap(sdu)) => return Ok(Some(sdu)),
+                Some(RxFrame::Event(evt)) => self.pending_events.push_back(evt),
+            }
+        }
+    }
+
+    /// Decode exactly one STP frame FROM the RX ring buffer, if a complete
+    /// one is available, and dispatch it by its H4 packet type.
+    ///
+    /// A malformed frame is still consumed FROM the ring (matching the
+    /// pre-#635 single-purpose `recv_event`'s contract) so one bad frame
+    /// cannot jam every packet queued behind it.
+    fn recv_frame(&mut self) -> Result<Option<RxFrame>> {
         if self.rx.is_empty() {
             return Ok(None);
         }
@@ -687,8 +811,29 @@ impl BtHciTransport {
             Ok((payload, frame_len)) => {
                 // We have a complete frame  -  consume it FROM the ring buffer
                 self.rx.skip(frame_len);
-                let event = decode_event(payload).map_err(|source| Error::HciDecode { source })?;
-                Ok(Some(event))
+                let h4_type = payload.first().copied().unwrap_or_default();
+                match h4_type {
+                    H4_EVENT_TYPE => {
+                        let event =
+                            decode_event(payload).map_err(|source| Error::HciDecode { source })?;
+                        Ok(Some(RxFrame::Event(event)))
+                    }
+                    H4_ACL_TYPE => {
+                        let acl = decode_acl_data(payload)
+                            .map_err(|source| Error::HciDecode { source })?;
+                        // A fragment that does not complete an SDU is Absorbed:
+                        // the reassembler holds it and the caller gets a frame
+                        // back either way, so an incomplete PDU is never
+                        // mistaken for an idle transport.
+                        Ok(Some(
+                            self.acl_reassembler
+                                .feed(&acl)
+                                .map_err(|source| Error::L2capReassembly { source })?
+                                .map_or(RxFrame::Absorbed, RxFrame::L2cap),
+                        ))
+                    }
+                    actual => Err(Error::UnroutedH4Type { actual }),
+                }
             }
             Err(Error::RxUnderrun) => Ok(None),
             Err(e) => Err(e),
@@ -1328,5 +1473,183 @@ mod tests {
             "last address byte in the framed payload must be the MSB (0xAA)"
         );
         Ok(())
+    }
+
+    // ── ACL/L2CAP RX dispatch (#635) ──
+
+    /// Build the raw ACL Data H4 payload, matching `hci::decode_acl_data`'s
+    /// wire layout: handle/flags, then `Data_Total_Length`, then the data.
+    /// #635's scope is RX-only, so there is no `encode_acl_data` to reuse yet.
+    fn raw_acl_payload(handle: u16, pb_bits: u8, bc_bits: u8, data: &[u8]) -> Vec<u8> {
+        let handle_and_flags = (handle & 0x0FFF)
+            | (u16::from(pb_bits & 0b11) << 12)
+            | (u16::from(bc_bits & 0b11) << 14);
+        let [hf_lo, hf_hi] = handle_and_flags.to_le_bytes();
+        let data_len = u16::try_from(data.len()).unwrap_or(u16::MAX);
+        let [dl_lo, dl_hi] = data_len.to_le_bytes();
+        let mut pkt = vec![H4_ACL_TYPE, hf_lo, hf_hi, dl_lo, dl_hi];
+        pkt.extend_from_slice(data);
+        pkt
+    }
+
+    /// Build an L2CAP Basic-mode header+body: `[len_lo, len_hi, cid_lo, cid_hi, body...]`.
+    fn raw_l2cap_pdu(cid: u16, body: &[u8]) -> Vec<u8> {
+        let len = u16::try_from(body.len()).unwrap_or(u16::MAX);
+        let mut pkt = Vec::with_capacity(4 + body.len());
+        pkt.extend_from_slice(&len.to_le_bytes());
+        pkt.extend_from_slice(&cid.to_le_bytes());
+        pkt.extend_from_slice(body);
+        pkt
+    }
+
+    /// STP-frame `payload` and push it directly INTO `transport`'s RX ring,
+    /// mirroring how a real STP frame arrives FROM the hardware character
+    /// device (bypassing the TX path entirely).
+    fn push_stp_frame(transport: &mut BtHciTransport, seq: u8, payload: &[u8]) {
+        let mut buf = vec![0u8; STP_DELIMITER_LEN + STP_HEADER_LEN + payload.len()];
+        let Ok(written) = stp_encode(seq, payload, &mut buf) else {
+            unreachable!("test payload always fits the buffer sized for it");
+        };
+        assert!(
+            transport.push_rx(&buf[..written]),
+            "test RX ring should have room for one small frame"
+        );
+    }
+
+    #[test]
+    fn recv_l2cap_pdu_delivers_single_fragment_smp_pdu() {
+        let mut transport = BtHciTransport::new();
+        let l2cap = raw_l2cap_pdu(crate::l2cap::CID_SMP, &[0x01, 0x02, 0x03]);
+        let acl = raw_acl_payload(0x0001, 0b00, 0b00, &l2cap);
+        push_stp_frame(&mut transport, 0, &acl);
+
+        let Ok(Some(sdu)) = transport.recv_l2cap_pdu() else {
+            unreachable!("a complete single-fragment SMP PDU must decode successfully");
+        };
+        assert_eq!(sdu.handle, 0x0001);
+        assert_eq!(sdu.cid, crate::l2cap::CID_SMP);
+        assert_eq!(sdu.payload, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn recv_l2cap_pdu_reassembles_a_pdu_split_across_two_acl_packets() {
+        let mut transport = BtHciTransport::new();
+        // L2CAP length=5, but the start ACL fragment only carries 2 payload bytes.
+        let mut header_and_partial = Vec::new();
+        header_and_partial.extend_from_slice(&5u16.to_le_bytes());
+        header_and_partial.extend_from_slice(&crate::l2cap::CID_SMP.to_le_bytes());
+        header_and_partial.extend_from_slice(&[0x01, 0x02]);
+        let start = raw_acl_payload(0x0040, 0b00, 0b00, &header_and_partial);
+        push_stp_frame(&mut transport, 0, &start);
+
+        let Ok(none) = transport.recv_l2cap_pdu() else {
+            unreachable!("recv_l2cap_pdu should not error on an in-progress fragment");
+        };
+        assert_eq!(
+            none, None,
+            "the PDU must not be reported complete before its continuation arrives"
+        );
+
+        let cont = raw_acl_payload(0x0040, 0b01, 0b00, &[0x03, 0x04, 0x05]);
+        push_stp_frame(&mut transport, 1, &cont);
+
+        let Ok(Some(sdu)) = transport.recv_l2cap_pdu() else {
+            unreachable!("the continuation should complete the declared 5-byte PDU");
+        };
+        assert_eq!(sdu.payload, vec![0x01, 0x02, 0x03, 0x04, 0x05]);
+    }
+
+    #[test]
+    fn recv_event_skips_past_a_completed_acl_frame_without_losing_it() {
+        let mut transport = BtHciTransport::new();
+        // Queue an ACL frame that completes immediately, THEN an event frame.
+        let l2cap = raw_l2cap_pdu(crate::l2cap::CID_SMP, &[0xAA]);
+        let acl = raw_acl_payload(0x0001, 0b00, 0b00, &l2cap);
+        push_stp_frame(&mut transport, 0, &acl);
+
+        let event_payload = [0x04, 0x01, 0x01, 0x00]; // InquiryComplete, status=0
+        push_stp_frame(&mut transport, 1, &event_payload);
+
+        let Ok(Some(HciEvent::InquiryComplete { status: 0 })) = transport.recv_event() else {
+            unreachable!("recv_event must skip past the ACL frame and return the queued event");
+        };
+
+        // The ACL frame's SDU must not have been lost — it must now be
+        // retrievable FROM the pending queue.
+        let Ok(Some(sdu)) = transport.recv_l2cap_pdu() else {
+            unreachable!("the SDU skipped by recv_event must still be retrievable");
+        };
+        assert_eq!(sdu.payload, vec![0xAA]);
+    }
+
+    #[test]
+    fn recv_l2cap_pdu_skips_past_an_event_frame_without_losing_it() {
+        let mut transport = BtHciTransport::new();
+        // Queue an event frame, THEN an ACL frame that completes immediately.
+        let event_payload = [0x04, 0x01, 0x01, 0x00]; // InquiryComplete, status=0
+        push_stp_frame(&mut transport, 0, &event_payload);
+
+        let l2cap = raw_l2cap_pdu(crate::l2cap::CID_SMP, &[0xBB]);
+        let acl = raw_acl_payload(0x0002, 0b00, 0b00, &l2cap);
+        push_stp_frame(&mut transport, 1, &acl);
+
+        let Ok(Some(sdu)) = transport.recv_l2cap_pdu() else {
+            unreachable!("recv_l2cap_pdu must skip past the event frame and return the SDU");
+        };
+        assert_eq!(sdu.payload, vec![0xBB]);
+
+        let Ok(Some(HciEvent::InquiryComplete { status: 0 })) = transport.recv_event() else {
+            unreachable!("the event skipped by recv_l2cap_pdu must still be retrievable");
+        };
+    }
+
+    #[test]
+    fn recv_event_returns_none_after_absorbing_an_in_progress_acl_fragment() {
+        let mut transport = BtHciTransport::new();
+        // A start fragment declaring more length than it carries: needs a
+        // continuation that never arrives.
+        let mut header_and_partial = Vec::new();
+        header_and_partial.extend_from_slice(&10u16.to_le_bytes());
+        header_and_partial.extend_from_slice(&crate::l2cap::CID_SMP.to_le_bytes());
+        header_and_partial.extend_from_slice(&[0x01]);
+        let start = raw_acl_payload(0x0001, 0b00, 0b00, &header_and_partial);
+        push_stp_frame(&mut transport, 0, &start);
+
+        let Ok(none) = transport.recv_event() else {
+            unreachable!("an in-progress ACL fragment with no event behind it must not error");
+        };
+        assert_eq!(
+            none, None,
+            "recv_event must yield None (not Some/Err) when only an in-progress ACL fragment is queued"
+        );
+    }
+
+    #[test]
+    fn recv_event_surfaces_l2cap_reassembly_errors() {
+        let mut transport = BtHciTransport::new();
+        // A Continuation (PB=0b01) with no prior start on this handle.
+        let orphan = raw_acl_payload(0x0099, 0b01, 0b00, &[0x01, 0x02]);
+        push_stp_frame(&mut transport, 0, &orphan);
+
+        let result = transport.recv_event();
+        assert!(
+            matches!(result, Err(Error::L2capReassembly { .. })),
+            "an orphan continuation must surface as a L2capReassembly error, not be silently dropped"
+        );
+    }
+
+    #[test]
+    fn recv_event_surfaces_unrouted_h4_type() {
+        let mut transport = BtHciTransport::new();
+        // H4 type 0x01 (Command) never legitimately appears in the RX
+        // direction; the dispatcher must reject it rather than misroute it.
+        let bogus = [0x01u8, 0x03, 0x0C, 0x00];
+        push_stp_frame(&mut transport, 0, &bogus);
+
+        let result = transport.recv_event();
+        assert!(
+            matches!(result, Err(Error::UnroutedH4Type { actual: 0x01 })),
+            "an H4 type this transport does not route must surface as UnroutedH4Type"
+        );
     }
 }
