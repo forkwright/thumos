@@ -290,6 +290,11 @@ impl BlockDevice for MemBlockDevice {
 // site (`MsdcBlockDeviceUninit::new(sector_count)`, `MsdcBlockDevice` used
 // bare as a type) keeps compiling unchanged.
 
+// WHY (#631): gated on the qemu feature ALONE, not on `test`. A host test
+// build selects the m7 board, so this wrapper compiles and its logic is
+// exercised off-hardware -- which is the entire point of the seam. The virt
+// board QEMU runs models no MSDC at all, so there is nothing here to back.
+#[cfg(not(feature = "qemu"))]
 mod msdc_wrapper {
     use super::{BlockDevice, BlockError, SECTOR_SIZE};
     use crate::emmc::{BootMsdc, MsdcOps};
@@ -477,6 +482,7 @@ mod msdc_wrapper {
     }
 }
 
+#[cfg(not(feature = "qemu"))]
 pub(crate) use msdc_wrapper::{MsdcBlockDevice, MsdcBlockDeviceUninit};
 
 // ---------------------------------------------------------------------------

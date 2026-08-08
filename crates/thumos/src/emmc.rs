@@ -16,6 +16,9 @@
 //! MSDC0 base address: `0x1123_0000` (FROM device registry, `docs/PROBE.md`).
 //! 512-byte sector granularity. Single-block and multi-block transfers.
 
+// WHY: only the MMIO controller touches these registers, and it is absent on
+// the virt board (no MSDC peripheral) -- see the gate on MsdcController.
+#[cfg(not(feature = "qemu"))]
 use crate::mmio;
 
 // ---------------------------------------------------------------------------
@@ -559,6 +562,11 @@ pub(crate) trait MsdcOps {
 /// Provides PIO and DMA transfer paths for 512-byte sector operations.
 /// The controller must be initialized via [`MsdcController::init`] before
 /// any read/write operations.
+// WHY (#631): the MMIO controller reads `board::MSDC0_BASE`, which only the
+// m7 board declares -- the virt board QEMU runs has no MSDC peripheral at all.
+// Gate on the qemu feature ALONE, not on `test`: a host test build selects the
+// m7 board, so MSDC0_BASE resolves there and this type's own tests need it.
+#[cfg(not(feature = "qemu"))]
 pub(crate) struct MsdcController {
     /// MMIO base address of the MSDC controller.
     base: usize,
@@ -566,6 +574,7 @@ pub(crate) struct MsdcController {
     initialized: bool,
 }
 
+#[cfg(not(feature = "qemu"))]
 impl MsdcController {
     /// Create a new controller handle at the default MSDC0 base address.
     pub(crate) fn new() -> Self {
@@ -1168,6 +1177,7 @@ impl MsdcOps for MsdcController {
 /// and clears `initialized`), so `Default` is available on every target --
 /// `crate::block::MsdcBlockDeviceUninit::new` calls it through [`BootMsdc`]
 /// without needing to know which concrete controller that resolves to.
+#[cfg(not(feature = "qemu"))]
 impl Default for MsdcController {
     fn default() -> Self {
         Self::new()
@@ -1315,7 +1325,7 @@ pub(crate) fn build_bd_chain(segments: &[(u32, u32)]) -> Option<(Gpd, [Bd; 8])> 
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu")))]
 mod tests {
     use super::*;
 
