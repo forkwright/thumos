@@ -348,12 +348,26 @@ impl MountTable {
     ///
     /// # Errors
     ///
-    /// - `VfsError::InvalidPath` if the path does not start with `/`.
+    /// - `VfsError::InvalidPath` if the path does not start with `/`, or is
+    ///   a non-root path with a trailing `/`.
     /// - `VfsError::AlreadyExists` if the path is already mounted.
     /// - `VfsError::NoSpace` if all mount slots are occupied.
     #[must_use]
     pub(crate) fn mount(&mut self, path: &str, fs: Box<dyn Filesystem>) -> Result<(), VfsError> {
         if !path.starts_with('/') {
+            return Err(VfsError::InvalidPath);
+        }
+
+        // WHY: a non-root entry with a trailing slash (e.g. "/dev/") can
+        // never be the winning prefix in lookup()'s longest-prefix match
+        // -- an ordinary path like "/dev/tty" does not have "/dev/" as a
+        // `starts_with` prefix followed by another '/' (the next byte is
+        // 't', not '/'), so the entry would sit in the table matching
+        // nothing and silently shadow no requests while also never
+        // routing any (#627). Reject it at mount time instead of
+        // installing a dead entry. Root "/" is the sole trailing-slash
+        // path this table ever holds.
+        if path.len() > 1 && path.ends_with('/') {
             return Err(VfsError::InvalidPath);
         }
 
@@ -839,6 +853,41 @@ mod tests {
         mt.mount("/", Box::new(TestFs)).expect("first mount");
         let result = mt.mount("/", Box::new(TestFs));
         assert_eq!(result, Err(VfsError::AlreadyExists));
+    }
+
+    /// A non-root trailing-slash mount path can never win lookup()'s
+    /// longest-prefix match against an ordinary child path -- it would
+    /// sit in the table as a dead entry that matches nothing (#627).
+    /// Reject it at mount() instead of installing it.
+    #[test]
+    fn mount_rejects_trailing_slash() {
+        let mut mt = MountTable::new();
+        let result = mt.mount("/dev/", Box::new(TestFs));
+        assert_eq!(result, Err(VfsError::InvalidPath));
+    }
+
+    /// Root "/" is the one legitimate trailing-slash mount path.
+    #[test]
+    fn mount_accepts_bare_root() {
+        let mut mt = MountTable::new();
+        assert_eq!(mt.mount("/", Box::new(TestFs)), Ok(()));
+    }
+
+    /// Companion to `mount_rejects_trailing_slash`: proves what the
+    /// rejected form would have broken -- a correctly-mounted "/dev"
+    /// (no trailing slash) resolves an ordinary child path.
+    #[test]
+    fn mount_without_trailing_slash_resolves_children() {
+        let mut mt = MountTable::new();
+        mt.mount("/", Box::new(TestFs)).expect("mount root");
+        mt.mount("/dev", Box::new(TestFs)).expect("mount /dev");
+        let (idx, remaining) = mt.lookup("/dev/tty").expect("must resolve");
+        assert_eq!(remaining, "/tty");
+        assert_ne!(
+            idx,
+            mt.lookup("/").expect("root must resolve").0,
+            "/dev/tty must resolve against the /dev mount, not fall through to root"
+        );
     }
 
     #[test]

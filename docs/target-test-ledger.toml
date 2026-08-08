@@ -691,7 +691,7 @@ fidelity = "MMIO/ISR paths are not exercised host-side; EP1 ring sync is #437 re
 
 [[module]]
 name = "vfs"
-tests = 16
+tests = 19
 mechanism = "host"
 
 [[module]]
