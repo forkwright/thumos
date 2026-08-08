@@ -2,10 +2,19 @@
 //! Thin capability bridge between Thumos device services and an
 //! Aletheia/Menos-resident runtime.
 //!
-//! `metaxu` defines the typed wire boundary only: task requests, capability
-//! grant claims, device-identity references, responses, and a synchronous
-//! transport abstraction. It intentionally does not embed runtime logic,
-//! authenticate grants, or require live Menos connectivity.
+//! `metaxu` defines the typed wire boundary: task requests, capability grant
+//! claims, device-identity references, responses, and a synchronous
+//! transport abstraction. It intentionally does not embed runtime logic or
+//! require live Menos connectivity.
+//!
+//! Two request paths exist. [`BridgeClient::submit`] sends a bare
+//! [`TaskRequest`] and only checks that the task carries a self-claimed
+//! [`CapabilityGrant`] locally -- suitable for an in-process transport where
+//! the runtime boundary is trusted by construction (tests, a same-address-
+//! space stub). [`BridgeClient::submit_authenticated`] (#544) is the path
+//! for an actual network peer: it presents a cryptographically verified,
+//! expiring [`SignedGrant`] on every request and refuses any response whose
+//! MAC does not prove the responder held the grant's signed nonce.
 
 mod client;
 mod envelope;
@@ -87,6 +96,75 @@ where
         )?;
 
         Ok(response)
+    }
+
+    /// Submit a task through a mutually authenticated session (#544): the
+    /// device presents a cryptographically verified, expiring grant on
+    /// every request and refuses any response whose MAC does not prove the
+    /// responder held the grant's signed nonce. This is the path a real
+    /// network-connected caller uses; [`Self::submit`] is for a trusted
+    /// in-process transport only.
+    ///
+    /// Capability enforcement here checks the session's VERIFIED grant
+    /// (`session.grant().grant.capabilities`) -- never the task's
+    /// self-claimed wire [`CapabilityGrant`] list [`Self::submit`] checks.
+    /// A caller cannot talk itself into a capability the runtime never
+    /// actually granted; this is the local confirmation gate the runtime
+    /// endpoint's own check backs up, not a substitute for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingCapability`] when the session's verified
+    /// grant does not cover the task's required capability -- checked
+    /// locally, before anything is sent. [`Error::Envelope`] /
+    /// [`Error::Encode`] if the request cannot be framed.
+    /// [`Error::Transport`] for transport failures (wrapping `T::Error` so
+    /// the concrete transport cause is preserved). [`Error::Envelope`] /
+    /// [`Error::Decode`] for a malformed response frame.
+    /// [`Error::ResponseAuthenticationFailed`] when the response MAC does
+    /// not verify under the session's grant -- the response is discarded,
+    /// never trusted. [`Error::ResponseRequestMismatch`] when the runtime
+    /// answers another request id.
+    pub fn submit_authenticated(
+        &mut self,
+        session: &AuthenticatedSession,
+        request: &TaskRequest,
+    ) -> Result<TaskResponse, T::Error> {
+        let required = request.required_capability();
+        session
+            .grant()
+            .grant
+            .capabilities
+            .contains(&required)
+            .then_some(())
+            .context(error::MissingCapabilitySnafu {
+                request_id: request.request_id(),
+                capability: required,
+            })?;
+
+        let request_id = request.request_id();
+        let request_frame =
+            session::encode_authenticated_request(session, request).map_err(error::Error::widen)?;
+        let response_frame = self
+            .transport
+            .exchange(&request_frame)
+            .context(error::TransportSnafu)?;
+        let authenticated =
+            session::decode_authenticated_response(&response_frame).map_err(error::Error::widen)?;
+
+        session
+            .verify_response(&authenticated)
+            .then_some(())
+            .context(error::ResponseAuthenticationFailedSnafu { request_id })?;
+
+        (authenticated.response.request_id == request_id)
+            .then_some(())
+            .context(error::ResponseRequestMismatchSnafu {
+                request_id,
+                response_id: authenticated.response.request_id,
+            })?;
+
+        Ok(authenticated.response)
     }
 }
 

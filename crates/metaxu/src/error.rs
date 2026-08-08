@@ -70,6 +70,21 @@ where
         location: Location,
     },
 
+    /// An authenticated response's MAC did not verify under the session's
+    /// grant response key -- the response cannot be trusted: it may be
+    /// tampered, forged by a party that never held the grant's nonce, or
+    /// corrupted in transit. The response is discarded unread.
+    #[snafu(display(
+        "authenticated response for request {request_id} failed MAC verification at {location}"
+    ))]
+    ResponseAuthenticationFailed {
+        /// Submitted request identifier.
+        request_id: Ulid,
+        /// Source location where the error was attached.
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     /// The runtime response did not correspond to the submitted request.
     #[snafu(display(
         "response request id {response_id} did not match submitted request {request_id} at {location}"
@@ -138,6 +153,13 @@ impl Error<core::convert::Infallible> {
                 location,
             },
             Self::Envelope { source, location } => Error::Envelope { source, location },
+            Self::ResponseAuthenticationFailed {
+                request_id,
+                location,
+            } => Error::ResponseAuthenticationFailed {
+                request_id,
+                location,
+            },
             Self::ResponseRequestMismatch {
                 request_id,
                 response_id,
