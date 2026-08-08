@@ -529,15 +529,17 @@ pub(crate) fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
         superblock.checkpoint_block_b,
     )?;
 
-    // Load imap from checkpoint. superblock.block_count is passed through
-    // as the extent bound for every parsed entry (#643) -- the same
-    // geometry validate_block_num applies below to imap-derived pointers
-    // at load_inode/unlink, enforced here at parse time instead.
+    // Load imap from checkpoint. superblock.segment_size/block_count are
+    // passed through as the reserved-segment/extent bounds for every
+    // parsed entry (#643, #653) -- the same geometry validate_block_num
+    // applies below to imap-derived pointers at load_inode/unlink,
+    // enforced here at parse time instead.
     let imap = LfsImap::load_from_disk(
         dev.as_mut(),
         &mut cache,
         checkpoint.imap_block,
         checkpoint.imap_block_count,
+        superblock.segment_size,
         superblock.block_count,
     )?;
 
