@@ -361,7 +361,7 @@ mechanism = "host"
 
 [[module]]
 name = "lock_screen"
-tests = 23
+tests = 24
 mechanism = "host"
 fidelity = "policy logic host-covered; boot-time passphrase input is #446"
 
