@@ -67,8 +67,14 @@ timeout_secs = 900
 cmd = "sh -c 'rustup target add i686-unknown-linux-gnu && scripts/kernel-host-tests.sh'"
 timeout_secs = 1800
 
-# WHY (#551): declared-vs-executed audit for the kernel test obligations —
-# source-level, cheap, runs before the expensive witness stages.
+# WHY (#551; #645): declared-vs-executed audit for the kernel test
+# obligations — tests-count drift is checked against the RUNNABLE set
+# `cargo nextest list` reports, not source text (#645: text-regex counted a
+# module's tests even when a #[cfg] excluded it from every test build).
+# Runs right after "kernel host tests", which just built this exact i686
+# target — a cache hit, not a fresh compile — so this stage stays cheap in
+# this pipeline position specifically; do not reorder it away from that
+# stage.
 [stages."target test ledger"]
 cmd = "scripts/check-target-test-ledger.sh"
 timeout_secs = 300
