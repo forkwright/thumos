@@ -5,15 +5,43 @@
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": false,
   "changelog-sections": [
-    {"type": "feat", "section": "Features"},
-    {"type": "fix", "section": "Bug Fixes"},
-    {"type": "perf", "section": "Performance"},
-    {"type": "chore", "section": "Maintenance", "hidden": true},
-    {"type": "docs", "hidden": true},
-    {"type": "test", "hidden": true},
-    {"type": "refactor", "hidden": true},
-    {"type": "ci", "hidden": true},
-    {"type": "style", "hidden": true}
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Bug Fixes"
+    },
+    {
+      "type": "perf",
+      "section": "Performance"
+    },
+    {
+      "type": "chore",
+      "section": "Maintenance",
+      "hidden": true
+    },
+    {
+      "type": "docs",
+      "hidden": true
+    },
+    {
+      "type": "test",
+      "hidden": true
+    },
+    {
+      "type": "refactor",
+      "hidden": true
+    },
+    {
+      "type": "ci",
+      "hidden": true
+    },
+    {
+      "type": "style",
+      "hidden": true
+    }
   ],
   "packages": {
     ".": {
@@ -48,6 +76,11 @@
           "type": "toml",
           "path": "fuzz/Cargo.lock",
           "jsonpath": "$.package[?(@.name == 'klesis')].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/thumos/Cargo.lock",
+          "jsonpath": "$.package[?(@.name == 'sema-core')].version"
         }
       ]
     }
