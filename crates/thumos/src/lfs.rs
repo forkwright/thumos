@@ -583,16 +583,34 @@ pub(crate) fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
         superblock.block_count,
     )?;
 
+    // WHY checked_add: last_segment_sequence and sequence are on-disk,
+    // untrusted u64 fields -- a crafted or bit-flipped u64::MAX here
+    // would wrap the unchecked `+ 1` to 0. For checkpoint_sequence that
+    // is a silent, mount-surviving failure: a checkpoint written next
+    // with sequence 0 compares as older than every prior nonzero
+    // sequence, so pick_latest() (lfs_checkpoint.rs) would never select
+    // it again -- new checkpoints go durably to disk but are never
+    // picked up, freezing the filesystem's recoverable state at whatever
+    // checkpoint predated the wrap (#627). Fail closed at mount instead.
+    let next_sequence = checkpoint
+        .last_segment_sequence
+        .checked_add(1)
+        .ok_or(LfsError::Corrupt)?;
+    let checkpoint_sequence = checkpoint
+        .sequence
+        .checked_add(1)
+        .ok_or(LfsError::Corrupt)?;
+
     Ok(Lfs {
         dev: RefCell::new(dev),
         cache: RefCell::new(cache),
         imap,
         segments,
         superblock,
-        next_sequence: checkpoint.last_segment_sequence + 1,
+        next_sequence,
         writer: None,
         next_inode: checkpoint.next_inode,
-        checkpoint_sequence: checkpoint.sequence + 1,
+        checkpoint_sequence,
     })
 }
 
@@ -2886,6 +2904,54 @@ mod tests {
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "block_count exceeding the device's real capacity must be rejected at mount"
+        );
+    }
+
+    /// (#627): checkpoint.sequence == u64::MAX must not silently wrap to
+    /// 0 through mount()'s `+ 1`. A checkpoint written next with
+    /// sequence 0 compares as older than every prior nonzero sequence,
+    /// so pick_latest() would never select it again -- freezing the
+    /// filesystem's recoverable state at whatever checkpoint predated
+    /// the wrap.
+    #[test]
+    fn mount_rejects_checkpoint_sequence_overflow() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        let mut cache = BlockCache::new();
+        let mut header = lfs_checkpoint::read_checkpoint(&mut dev, &mut cache, CHECKPOINT_SLOT_A)
+            .expect("read initial checkpoint");
+        header.sequence = u64::MAX;
+        let header_buf = header.to_block();
+        block::write_block(&mut dev, CHECKPOINT_SLOT_A, &header_buf)
+            .expect("write corrupted checkpoint");
+
+        let result = mount(Box::new(dev));
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "checkpoint.sequence == u64::MAX must be rejected, not silently wrapped to 0"
+        );
+    }
+
+    /// Same defect as `mount_rejects_checkpoint_sequence_overflow`, on
+    /// the sibling field `last_segment_sequence` (#627).
+    #[test]
+    fn mount_rejects_last_segment_sequence_overflow() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        let mut cache = BlockCache::new();
+        let mut header = lfs_checkpoint::read_checkpoint(&mut dev, &mut cache, CHECKPOINT_SLOT_A)
+            .expect("read initial checkpoint");
+        header.last_segment_sequence = u64::MAX;
+        let header_buf = header.to_block();
+        block::write_block(&mut dev, CHECKPOINT_SLOT_A, &header_buf)
+            .expect("write corrupted checkpoint");
+
+        let result = mount(Box::new(dev));
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "last_segment_sequence == u64::MAX must be rejected, not silently wrapped to 0"
         );
     }
 
