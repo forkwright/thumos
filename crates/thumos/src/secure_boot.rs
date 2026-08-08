@@ -651,8 +651,6 @@ mod tests {
         );
     }
 
-    /// Test that split_image rejects images shorter than MIN_IMAGE_SIZE.
-    #[test]
     // -- Streamed Ed25519ph verify (#467) --
     #[test]
     fn unreadable_boot_partition_halts_never_degrades() {

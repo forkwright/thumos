@@ -4,11 +4,19 @@
 # target side, and the fidelity limits of any host fixture. Enforced by
 # scripts/check-target-test-ledger.sh: every such module has a row, 'both'
 # rows name real witness scripts, sensitive host-only rows carry a fidelity
-# note, and the tests count matches the source tree.
+# note, and the tests count matches the RUNNABLE set `cargo nextest list`
+# reports for the i686 host test binary (#645) -- not a count of `#[test]`
+# occurrences in source text, which cannot tell a module a #[cfg] excluded
+# from every test build from one that genuinely compiled and ran.
 #
 # #528/#533 are the proof-by-incident: host fixtures green while real-table
 # behavior was broken on every boot — host tests are structurally blind to
 # the section-overlay class. The 'both' rows are where that class lives.
+# #619/#631/#645 are the proof-by-incident for the tests-count rule itself:
+# emmc (31 tests) and watchdog (3 tests) were both cfg'd out of every test
+# build, so their tests existed as text, were counted as coverage, and had
+# never once been compiled -- exactly the failure mode a text-based count
+# cannot see.
 
 [[module]]
 name = "audio"
@@ -115,7 +123,7 @@ mechanism = "host"
 
 [[module]]
 name = "csprng"
-tests = 16
+tests = 15
 mechanism = "both"
 witness = "boot.sh"
 fidelity = "host tests use the deterministic seed path; hardware entropy health is device-bound"
@@ -468,7 +476,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "reflex"
-tests = 4
+tests = 3
 mechanism = "host"
 
 [[module]]
@@ -549,7 +557,7 @@ mechanism = "host"
 
 [[module]]
 name = "secure_boot"
-tests = 29
+tests = 28
 mechanism = "both"
 witness = "boot.sh"
 

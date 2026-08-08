@@ -255,11 +255,20 @@ mod uart;
 #[cfg(not(feature = "qemu"))]
 mod usb;
 mod vfs;
-#[cfg(all(not(test), not(feature = "qemu")))]
+// WHY(host-test, #645): un-gated from not(test), matching display/keypad/usb
+// -- init/pet/disable are unsafe MMIO writers, but the module's own tests
+// only assert the register-offset and encoding CONSTANTS, never call them,
+// so the file is host-testable as-is. The prior `all(not(test), ...)` gate
+// excluded watchdog from every host test build; its 3 tests were dead
+// source under both cfgs (the #528 kinit/#631 emmc trap), which is what
+// #645 found and this line fixes. The two call sites (kinit::run,
+// exceptions::timer_irq) are themselves `#[cfg(not(test))]`, so nothing
+// new gets pulled into the host build by un-gating the module itself.
+#[cfg(not(feature = "qemu"))]
 mod watchdog;
 // WHY(qemu): virt models no MT6739 WDT; a no-op stub keeps the timer-IRQ
 // pet path and kinit call sites identical without touching MMIO.
-#[cfg(all(not(test), feature = "qemu"))]
+#[cfg(feature = "qemu")]
 #[path = "watchdog_qemu.rs"]
 mod watchdog;
 mod wifi;
