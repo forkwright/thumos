@@ -521,6 +521,18 @@ pub(crate) fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
     cache.read(dev.as_mut(), SUPERBLOCK_BLOCK, &mut sb_buf)?;
     let superblock = LfsSuperblock::from_block(&sb_buf)?;
 
+    // The on-disk block_count is untrusted (magic/version-checked only,
+    // by LfsSuperblock::from_block) and is passed below as the extent
+    // bound every imap/direct-block pointer is validated against
+    // (validate_block_num, LfsImap::load_from_disk). A block_count that
+    // outruns the device's actual capacity would let that bound wave
+    // through pointers into space the device does not physically have --
+    // reject it here, once, before it is trusted anywhere (#627).
+    let device_blocks = dev.sector_count() / SECTORS_PER_BLOCK as u64;
+    if superblock.block_count > device_blocks {
+        return Err(LfsError::Corrupt);
+    }
+
     // Pick the latest checkpoint.
     let (checkpoint, _slot_block) = lfs_checkpoint::pick_latest(
         dev.as_mut(),
@@ -2846,6 +2858,34 @@ mod tests {
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "a self-consistent on-disk segment_size == 0 must be rejected, not mounted"
+        );
+    }
+
+    /// (SECURITY, #627): the on-disk superblock's block_count is passed
+    /// unvalidated as the extent bound every imap/direct-block pointer is
+    /// checked against after mount (validate_block_num,
+    /// LfsImap::load_from_disk) -- a crafted value exceeding the device's
+    /// real capacity must be rejected at mount instead of silently
+    /// trusted as that bound.
+    #[test]
+    fn mount_rejects_block_count_exceeding_device_capacity() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+
+        let device_blocks = dev.sector_count() / SECTORS_PER_BLOCK as u64;
+
+        let mut sb_buf = [0u8; BLOCK_SIZE];
+        block::read_block(&dev, SUPERBLOCK_BLOCK, &mut sb_buf).expect("read superblock");
+        let mut sb = LfsSuperblock::from_block(&sb_buf).expect("parse superblock");
+        sb.block_count = device_blocks + 1;
+        let corrupted_sb_block = sb.to_block();
+        block::write_block(&mut dev, SUPERBLOCK_BLOCK, &corrupted_sb_block)
+            .expect("write corrupted superblock");
+
+        let result = mount(Box::new(dev));
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "block_count exceeding the device's real capacity must be rejected at mount"
         );
     }
 
