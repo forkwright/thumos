@@ -79,9 +79,10 @@ pub(crate) fn compact_one_segment(
     writer: &mut LfsWriter,
     imap: &mut LfsImap,
     seg_mgr: &mut LfsSegmentManager,
+    device_blocks: u64,
 ) -> Result<u32, LfsError> {
     // Build a map of which blocks in each segment are live.
-    let candidate = pick_candidate(dev, cache, imap, seg_mgr, writer)?;
+    let candidate = pick_candidate(dev, cache, imap, seg_mgr, writer, device_blocks)?;
     let seg_idx = candidate.segment_idx;
     let seg_start = seg_mgr.segment_start_block(seg_idx);
     let seg_end = seg_start + u64::from(seg_mgr.segment_size());
@@ -113,7 +114,16 @@ pub(crate) fn compact_one_segment(
 
         // Update any inode direct pointers that reference this old block.
         // We need to find which inode references this data block and update it.
-        update_data_block_references(dev, cache, imap, seg_mgr, writer, old_block, new_block)?;
+        update_data_block_references(
+            dev,
+            cache,
+            imap,
+            seg_mgr,
+            writer,
+            old_block,
+            new_block,
+            device_blocks,
+        )?;
         copied += 1;
     }
 
@@ -123,7 +133,7 @@ pub(crate) fn compact_one_segment(
     // segment is handed back to the allocator -- freeing with live blocks
     // still present is exactly the silent data-loss defect this guards
     // against (#315).
-    if segment_has_live_blocks(dev, cache, imap, seg_start, seg_end)? {
+    if segment_has_live_blocks(dev, cache, imap, seg_start, seg_end, device_blocks)? {
         return Err(LfsError::Corrupt);
     }
 
@@ -145,11 +155,20 @@ fn segment_has_live_blocks(
     imap: &LfsImap,
     seg_start: u64,
     seg_end: u64,
+    device_blocks: u64,
 ) -> Result<bool, LfsError> {
     for (_, block) in imap.iter() {
         if block >= seg_start && block < seg_end {
             return Ok(true);
         }
+
+        // WARNING: imap entries are on-disk, untrusted data -- the same
+        // class lfs.rs's Lfs::validate_block_num already bounds before
+        // reaching the block cache at load_inode/unlink (#624). The
+        // compactor walks every imap entry each pass, so an unguarded
+        // entry here can serve one file's content as another's, or
+        // misparse arbitrary device bytes as a DiskInode (#643).
+        validate_block_num(block, device_blocks)?;
 
         let mut buf = [0u8; BLOCK_SIZE];
         cache.read(dev, block, &mut buf)?;
@@ -202,6 +221,7 @@ fn pick_candidate(
     imap: &LfsImap,
     seg_mgr: &LfsSegmentManager,
     writer: &LfsWriter,
+    device_blocks: u64,
 ) -> Result<CompactCandidate, LfsError> {
     let seg_count = seg_mgr.segment_count();
     let seg_size = seg_mgr.segment_size();
@@ -214,6 +234,13 @@ fn pick_candidate(
     // be built without re-reading inodes for each candidate segment.
     let mut live_data_pointers: Vec<u64> = Vec::new();
     for &(_, inode_block) in &imap_blocks {
+        // WARNING: imap entries are on-disk, untrusted data -- the same
+        // class lfs.rs's Lfs::validate_block_num already bounds before
+        // reaching the block cache at load_inode/unlink (#624). This is
+        // the compactor's own imap-derived read, unguarded before this
+        // fix (#643).
+        validate_block_num(inode_block, device_blocks)?;
+
         let mut buf = [0u8; BLOCK_SIZE];
         cache.read(dev, inode_block, &mut buf)?;
         let inode = DiskInode::read_from(&buf, 0)?;
@@ -288,6 +315,28 @@ fn collect_imap_entries(imap: &LfsImap) -> Vec<(u32, u64)> {
     imap.iter().collect()
 }
 
+/// Bound an imap-derived block number to the filesystem's own extent
+/// before it reaches the block cache.
+///
+/// Mirrors `Lfs::validate_block_num` (`lfs.rs`): imap entries are
+/// on-disk, untrusted data -- the imap is the pointer table that selects
+/// which block is authoritative for every inode, so an unguarded entry
+/// can serve one file's content as another's. `lfs.rs` already applies
+/// this bound at `load_inode`/`unlink` (#624); the compactor walks the
+/// same imap during every compaction pass and needs its own copy, since
+/// it has no `&Lfs` to call the method on (#643).
+///
+/// # Errors
+///
+/// Returns [`LfsError::Corrupt`] if `block_num` is 0 or `>=
+/// device_blocks`.
+fn validate_block_num(block_num: u64, device_blocks: u64) -> Result<(), LfsError> {
+    if block_num == 0 || block_num >= device_blocks {
+        return Err(LfsError::Corrupt);
+    }
+    Ok(())
+}
+
 /// After relocating a data block, find and update the inode that references it.
 ///
 /// Scans all inodes in the imap, loads each, checks direct block pointers
@@ -301,10 +350,18 @@ fn update_data_block_references(
     writer: &mut LfsWriter,
     old_block: u64,
     new_block: u64,
+    device_blocks: u64,
 ) -> Result<(), LfsError> {
     let entries = collect_imap_entries(imap);
 
     for (inode_id, inode_block) in entries {
+        // WARNING: imap entries are on-disk, untrusted data -- the same
+        // class lfs.rs's Lfs::validate_block_num already bounds before
+        // reaching the block cache at load_inode/unlink (#624). This scan
+        // walks the raw imap directly (not the pre-validated candidate
+        // buckets), so it needs its own guard (#643).
+        validate_block_num(inode_block, device_blocks)?;
+
         let mut buf = [0u8; BLOCK_SIZE];
         cache.read(dev, inode_block, &mut buf)?;
 
@@ -395,9 +452,15 @@ mod tests {
         let free_before = seg_mgr.free_count();
 
         // Compact: should free the segment containing the garbage v1 block.
-        let copied =
-            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
-                .expect("compact");
+        let copied = compact_one_segment(
+            &mut dev,
+            &mut cache,
+            &mut writer,
+            &mut imap,
+            &mut seg_mgr,
+            512,
+        )
+        .expect("compact");
 
         // No live blocks in the garbage segment (imap points to v2).
         assert_eq!(copied, 0, "garbage-only segment should have 0 live blocks");
@@ -431,9 +494,15 @@ mod tests {
             .expect("seal");
 
         // Now compact. The inode is live, so it should be copied.
-        let copied =
-            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
-                .expect("compact");
+        let copied = compact_one_segment(
+            &mut dev,
+            &mut cache,
+            &mut writer,
+            &mut imap,
+            &mut seg_mgr,
+            512,
+        )
+        .expect("compact");
 
         assert_eq!(copied, 1, "should copy 1 live inode block");
 
@@ -483,9 +552,15 @@ mod tests {
             .expect("seal");
 
         // Compact.
-        let copied =
-            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
-                .expect("compact");
+        let copied = compact_one_segment(
+            &mut dev,
+            &mut cache,
+            &mut writer,
+            &mut imap,
+            &mut seg_mgr,
+            512,
+        )
+        .expect("compact");
 
         assert_eq!(copied, 2, "should copy 2 live inodes");
 
@@ -532,9 +607,15 @@ mod tests {
         // Compact: both the inode block and the data block it references
         // are live and must be relocated together, not silently dropped
         // (#315).
-        let copied =
-            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
-                .expect("compact");
+        let copied = compact_one_segment(
+            &mut dev,
+            &mut cache,
+            &mut writer,
+            &mut imap,
+            &mut seg_mgr,
+            512,
+        )
+        .expect("compact");
         assert_eq!(copied, 2, "should copy 1 live inode + 1 live data block");
 
         // The data must still be reachable at its new address via the
@@ -557,6 +638,90 @@ mod tests {
             .expect("read relocated data block");
         assert_eq!(data_buf[0], 0xAB);
         assert_eq!(data_buf[1], 0xCD);
+    }
+
+    #[test]
+    fn compact_rejects_imap_entry_pointing_at_superblock() {
+        // WHY (#643): block 0 is the superblock, always present and
+        // always readable at the raw device level -- a pre-fix
+        // compaction pass would hand it straight to BlockCache::read and
+        // misparse superblock bytes as a DiskInode instead of failing.
+        // pick_candidate's own imap walk (distinct from load_inode's,
+        // and unguarded before this fix) is what's exercised here.
+        let mut dev = block_device_for_compact();
+        let mut cache = BlockCache::new();
+        let mut imap = LfsImap::new();
+        let mut seg_mgr = LfsSegmentManager::new(64, 8);
+        seg_mgr.mark_used(0);
+
+        let mut writer = LfsWriter::new(&mut seg_mgr).expect("create writer");
+
+        let inode = new_file_inode(42);
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 1, &inode)
+            .expect("write live inode");
+        writer
+            .seal_segment(&mut dev, &mut cache, &mut seg_mgr)
+            .expect("seal so it becomes a candidate");
+
+        // Corrupt an unrelated inode's imap entry to point at block 0.
+        // pick_candidate loads every live inode up front (not just the
+        // eventual candidate segment's), so this must be caught before
+        // any relocation happens.
+        imap.insert(99, 0);
+
+        let result = compact_one_segment(
+            &mut dev,
+            &mut cache,
+            &mut writer,
+            &mut imap,
+            &mut seg_mgr,
+            512,
+        );
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "compaction must reject an imap entry pointing at block 0 (the superblock), not read it as an inode"
+        );
+    }
+
+    #[test]
+    fn compact_rejects_imap_entry_beyond_device_extent() {
+        // WHY (#643): an imap entry at or past device_blocks is
+        // corruption -- the same bound Lfs::validate_block_num applies
+        // to imap-derived pointers at load_inode/unlink (#624), now also
+        // enforced on the compactor's own imap walk.
+        let mut dev = block_device_for_compact();
+        let mut cache = BlockCache::new();
+        let mut imap = LfsImap::new();
+        let mut seg_mgr = LfsSegmentManager::new(64, 8);
+        seg_mgr.mark_used(0);
+
+        let mut writer = LfsWriter::new(&mut seg_mgr).expect("create writer");
+
+        let inode = new_file_inode(42);
+        writer
+            .write_inode(&mut dev, &mut cache, &mut imap, &mut seg_mgr, 1, &inode)
+            .expect("write live inode");
+        writer
+            .seal_segment(&mut dev, &mut cache, &mut seg_mgr)
+            .expect("seal so it becomes a candidate");
+
+        // block_device_for_compact() is 512 blocks; 99_999 is far beyond
+        // the device's extent.
+        imap.insert(99, 99_999);
+
+        let result = compact_one_segment(
+            &mut dev,
+            &mut cache,
+            &mut writer,
+            &mut imap,
+            &mut seg_mgr,
+            512,
+        );
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "compaction must reject an imap entry beyond device_blocks"
+        );
     }
 
     #[test]
@@ -606,9 +771,15 @@ mod tests {
         // writer's current segment -- it is the sole compaction
         // candidate. The writer's current segment (2) is already full,
         // so relocating inode 1 will force an immediate seal.
-        let copied =
-            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
-                .expect("compaction must not deadlock with only the reserve segment free");
+        let copied = compact_one_segment(
+            &mut dev,
+            &mut cache,
+            &mut writer,
+            &mut imap,
+            &mut seg_mgr,
+            512,
+        )
+        .expect("compaction must not deadlock with only the reserve segment free");
         assert_eq!(copied, 1, "should relocate the one live inode");
 
         // The reserve was consumed to land the relocated inode, but
@@ -698,9 +869,15 @@ mod tests {
         let block2_before = imap.get(2).expect("inode 2 in imap");
         let block3_before = imap.get(3).expect("inode 3 in imap");
 
-        let copied =
-            compact_one_segment(&mut dev, &mut cache, &mut writer, &mut imap, &mut seg_mgr)
-                .expect("compact");
+        let copied = compact_one_segment(
+            &mut dev,
+            &mut cache,
+            &mut writer,
+            &mut imap,
+            &mut seg_mgr,
+            512,
+        )
+        .expect("compact");
 
         assert_eq!(
             copied, 0,
