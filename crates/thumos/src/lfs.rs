@@ -620,25 +620,33 @@ pub(crate) fn mount(mut dev: Box<dyn BlockDevice>) -> Result<Lfs, LfsError> {
 
 impl Lfs {
     /// Validate that an on-disk block pointer falls within the
-    /// filesystem's own block extent before it is used to address the
-    /// block cache.
+    /// filesystem's own allocatable block extent before it is used to
+    /// address the block cache.
     ///
     /// `inode.direct[]` entries are on-disk, untrusted data: a
     /// corrupted or maliciously crafted inode could set them to any
-    /// `u64`. Every block the filesystem itself allocates stays within
-    /// `[1, superblock.block_count)` (block 0 is the superblock, never
-    /// an allocatable data block), so any pointer outside that range is
-    /// corruption -- fail closed rather than let it reach the block
-    /// cache and read/write memory outside the filesystem's own
-    /// extent, even when that block number is still within the raw
-    /// block device's physical capacity.
+    /// `u64`. Segment 0 -- blocks `[0, superblock.segment_size)` -- is
+    /// permanently reserved for the superblock, both checkpoint slots,
+    /// the imap, and the segment bitmap (`LfsSegmentManager::new` marks
+    /// it used forever; the ordinary allocator never hands it out), so
+    /// every block the filesystem itself allocates for inode/data
+    /// content stays within `[superblock.segment_size,
+    /// superblock.block_count)`. A direct pointer inside segment 0 is
+    /// corruption -- without this bound it would let a crafted inode
+    /// alias a live checkpoint or imap block as ordinary file content,
+    /// serving (or overwriting) filesystem metadata as if it were file
+    /// data (#627). Fail closed rather than let it reach the block
+    /// cache, even when the block number is still within the raw block
+    /// device's physical capacity.
     ///
     /// # Errors
     ///
-    /// Returns [`VfsError::IoError`] if `block_num` is 0 or `>=
-    /// superblock.block_count`.
+    /// Returns [`VfsError::IoError`] if `block_num` is inside the
+    /// reserved segment 0 or `>= superblock.block_count`.
     fn validate_block_num(&self, block_num: u64) -> Result<(), VfsError> {
-        if block_num == 0 || block_num >= self.superblock.block_count {
+        if block_num < u64::from(self.superblock.segment_size)
+            || block_num >= self.superblock.block_count
+        {
             return Err(VfsError::IoError);
         }
         Ok(())
@@ -1139,6 +1147,7 @@ impl Filesystem for Lfs {
         // check inside the loop doesn't need a `&self` method call while
         // `self.writer` is exclusively borrowed.
         let block_count = self.superblock.block_count;
+        let reserved_blocks = u64::from(self.superblock.segment_size);
 
         let mut bytes_written = 0usize;
         let mut dev = self.dev.borrow_mut();
@@ -1169,12 +1178,14 @@ impl Filesystem for Lfs {
                 let existing_block = inode.direct[block_index];
                 if existing_block != 0 {
                     // WARNING: inode.direct[] is on-disk, untrusted data --
-                    // bound it to the filesystem's own extent before it
-                    // reaches the block cache (#security, mirrors read()'s
-                    // validate_block_num; inlined here because `writer`
-                    // already holds an exclusive borrow of `self.writer`,
-                    // so a `&self` method call is not available).
-                    if existing_block >= block_count {
+                    // bound it to the filesystem's own allocatable extent
+                    // before it reaches the block cache (#security, mirrors
+                    // read()'s validate_block_num, including its segment-0
+                    // reserved-metadata exclusion, #627; inlined here
+                    // because `writer` already holds an exclusive borrow
+                    // of `self.writer`, so a `&self` method call is not
+                    // available).
+                    if existing_block < reserved_blocks || existing_block >= block_count {
                         return Err(VfsError::IoError);
                     }
                     cache
@@ -1400,11 +1411,15 @@ impl Filesystem for Lfs {
             // WARNING: imap entries are on-disk, untrusted data -- the
             // same class as inode.direct[], which this file already
             // bounds before it reaches the block cache (#624,
-            // #security). Inlined here (rather than calling
-            // self.validate_block_num) because `writer` above already
-            // holds an exclusive borrow of `self.writer`, so a `&self`
-            // method call on the whole struct is not available.
-            if block_num == 0 || block_num >= self.superblock.block_count {
+            // #security), including the segment-0 reserved-metadata
+            // exclusion validate_block_num applies (#627). Inlined here
+            // (rather than calling self.validate_block_num) because
+            // `writer` above already holds an exclusive borrow of
+            // `self.writer`, so a `&self` method call on the whole
+            // struct is not available.
+            if block_num < u64::from(self.superblock.segment_size)
+                || block_num >= self.superblock.block_count
+            {
                 return Err(VfsError::IoError);
             }
             let mut buf = [0u8; BLOCK_SIZE];
@@ -1946,6 +1961,32 @@ mod tests {
         );
     }
 
+    /// (#627): validate_block_num previously excluded only block 0 (the
+    /// superblock), not the rest of reserved segment 0 -- blocks
+    /// `[1, segment_size)` hold the checkpoint slots, imap, and segment
+    /// bitmap. Block 1 (checkpoint slot A) is nonzero and well within
+    /// the raw device's capacity, so only the reserved-segment bound
+    /// this test targets catches a crafted pointer there.
+    #[test]
+    fn load_inode_rejects_imap_block_inside_reserved_segment_but_nonzero() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "f", InodeType::RegularFile)
+            .expect("create");
+
+        fs.imap.insert(file_id, 1); // checkpoint slot A -- live metadata, not block 0.
+
+        let result = fs.load_inode(file_id);
+        assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "an imap entry inside the reserved metadata segment (but not block 0) must be rejected"
+        );
+    }
+
     #[test]
     fn create_file_then_read_back() {
         let mut dev = block_device_for_lfs();
@@ -2108,6 +2149,32 @@ mod tests {
         assert!(
             fs.lookup(root, "f").is_ok(),
             "a rejected unlink must not have mutated the parent directory"
+        );
+    }
+
+    /// (#627): the check above catches block 0, but unlink()'s inline
+    /// bound previously stopped there too -- blocks `[1, segment_size)`
+    /// (checkpoint slots, imap, segment bitmap) were left addressable.
+    /// Block 1 (checkpoint slot A) is nonzero and well within the raw
+    /// device's capacity, so only the reserved-segment bound this test
+    /// targets catches it.
+    #[test]
+    fn unlink_rejects_target_imap_block_inside_reserved_segment_but_nonzero() {
+        let mut dev = block_device_for_lfs();
+        format(&mut dev).expect("format");
+        let mut fs = mount(Box::new(dev)).expect("mount");
+        let root = fs.root_inode();
+
+        let file_id = fs
+            .create(root, "f", InodeType::RegularFile)
+            .expect("create");
+
+        fs.imap.insert(file_id, 1); // checkpoint slot A -- live metadata, not block 0.
+
+        let result = fs.unlink(root, "f");
+        assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "unlink()'s inline imap-pointer bound must also exclude the reserved segment, not just block 0"
         );
     }
 

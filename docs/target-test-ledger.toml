@@ -331,7 +331,7 @@ mechanism = "host"
 
 [[module]]
 name = "lfs"
-tests = 46
+tests = 48
 mechanism = "host"
 
 [[module]]
