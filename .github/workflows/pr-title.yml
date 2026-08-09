@@ -1,0 +1,38 @@
+# WHY (#665): the repo squash-merges, so a PR title becomes main's commit
+# message, and release-please parses that message for the changelog and the
+# version bump. Unvalidated, 11 of 20 commits since v0.1.17 used a bare
+# scope in the type position (`sms: ...` instead of `fix(sms): ...`) and
+# were silently invisible to both — 0.1.18's release notes are known-
+# incomplete as a result. This check enforces the grammar CLAUDE.md declares
+# before merge, and re-runs on every title edit so a fix is re-verified.
+#
+# NOTE: an inline script (scripts/check-pr-title.sh), not a marketplace
+# action — the type list must stay derived from CLAUDE.md, and this repo
+# pins action SHAs, so an inline check is cheaper to audit and keeps the
+# type list local.
+name: PR Title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: conventional-commit grammar
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Validate PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: scripts/check-pr-title.sh "$PR_TITLE"
