@@ -63,7 +63,7 @@ mechanism = "host"
 
 [[module]]
 name = "gpt"
-tests = 6
+tests = 8
 mechanism = "host"
 fidelity = "parse logic proven on synthetic GPT images host-side; the live eMMC GPT read is the m7 boot path (hardware-gated)"
 
@@ -339,7 +339,7 @@ mechanism = "host"
 
 [[module]]
 name = "lfs"
-tests = 43
+tests = 49
 mechanism = "host"
 
 [[module]]
@@ -369,7 +369,7 @@ mechanism = "host"
 
 [[module]]
 name = "lock_screen"
-tests = 23
+tests = 24
 mechanism = "host"
 fidelity = "policy logic host-covered; boot-time passphrase input is #446"
 
@@ -699,7 +699,7 @@ fidelity = "MMIO/ISR paths are not exercised host-side; EP1 ring sync is #437 re
 
 [[module]]
 name = "vfs"
-tests = 16
+tests = 19
 mechanism = "host"
 
 [[module]]
