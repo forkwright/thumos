@@ -280,6 +280,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "klesis-core"
+version = "0.1.17"
+
+[[package]]
 name = "libc"
 version = "0.2.184"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -517,6 +521,7 @@ dependencies = [
  "haphe",
  "hkdf",
  "hmac",
+ "klesis-core",
  "pbkdf2",
  "postcard",
  "rand_chacha",

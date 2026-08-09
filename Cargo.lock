@@ -845,11 +845,16 @@ dependencies = [
 name = "klesis"
 version = "0.1.17"
 dependencies = [
+ "klesis-core",
  "log",
  "nom",
  "rustix",
  "snafu",
 ]
+
+[[package]]
+name = "klesis-core"
+version = "0.1.17"
 
 [[package]]
 name = "krypta"

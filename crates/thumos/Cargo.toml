@@ -54,6 +54,12 @@ sema-core = { path = "../sema-core", default-features = false }
 # its suffix-matching rule) live in asphaleia-core, shared with the workspace
 # `asphaleia` crate — one implementation, no drifted duplicate in firewall.rs.
 asphaleia-core = { path = "../asphaleia-core", default-features = false }
+# WHY (#545, #662): the canonical GSM-7 codec, SMS-PDU byte primitives, and
+# the silent-SMS/WAP-Push classification live in klesis-core, shared with the
+# workspace `klesis` crate. The kernel's hand-port had dropped the
+# surveillance classification entirely — it read the PID and discarded it —
+# so the detection existed only in the layer that never runs on the phone.
+klesis-core = { path = "../klesis-core", default-features = false }
 # WHY: Megolm needs AES-256-CBC (audit #231). Use the audited RustCrypto `cbc`
 # mode crate rather than hand-rolled chaining/padding. no_std verified for
 # i686 + armv7a-none-eabi (crate is `no-std` categorised, alloc-only feature set).

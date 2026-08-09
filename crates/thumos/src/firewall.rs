@@ -77,23 +77,12 @@ const EVENT_QUEUE_CAP: usize = 32;
 
 /// Surveillance domains blocked by default.
 ///
-/// These are the advertising, analytics, and telemetry domains identified
-/// in the thumos security brainstorm. Matching is by suffix: a domain is
-/// blocked if it equals or is a subdomain of any entry.
-const SURVEILLANCE_DOMAINS: &[&str] = &[
-    "graph.facebook.com",
-    "analytics.google.com",
-    "firebaselogging.googleapis.com",
-    "app-measurement.com",
-    "crashlytics.com",
-    "doubleclick.net",
-    "googlesyndication.com",
-    "googleadservices.com",
-    "analytics.yahoo.com",
-    "ads.linkedin.com",
-    "bat.bing.com",
-    "pixel.facebook.com",
-];
+/// The list and its suffix-matching rule live in [`asphaleia_core`], shared
+/// with the workspace `asphaleia` crate (#545). Keeping a second copy here
+/// is what let the two drift: the same domain string protected different
+/// traffic depending on which layer evaluated it, and nothing reported the
+/// disagreement.
+use asphaleia_core::SURVEILLANCE_DOMAINS;
 
 // ---------------------------------------------------------------------------
 // Type definitions
@@ -286,7 +275,15 @@ impl Firewall {
     /// Any DNS query whose queried domain equals or is a subdomain of
     /// `suffix` will be denied. Matching is case-insensitive.
     pub(crate) fn add_dns_block(&mut self, suffix: &str) {
-        self.dns_blocklist.push(suffix.to_ascii_lowercase());
+        // WHY the normalize (#545, #662): matching is plain suffix, so an
+        // entry already blocks itself and every subdomain and needs no
+        // wildcard syntax. But `"*."` is the near-universal spelling in
+        // hosts/adblock formats, and stored literally it becomes a suffix no
+        // domain can ever match -- the entry silently blocks nothing. That
+        // is fail-OPEN on a surveillance blocklist, and invisible, because
+        // nothing errors and the entry is present when listed.
+        self.dns_blocklist
+            .push(asphaleia_core::normalize_suffix(suffix).to_ascii_lowercase());
     }
 
     /// Evaluate an inbound (RX) packet against the firewall rules.
@@ -678,69 +675,17 @@ fn parse_packet(packet: &[u8]) -> Option<PacketInfo> {
 }
 
 // ---------------------------------------------------------------------------
-// DNS query domain extraction (ported from asphaleia::dns for no_std)
+// DNS query domain extraction
 // ---------------------------------------------------------------------------
 
 /// Extract the QNAME from the first question in a DNS query message.
 ///
-/// `data` must be the DNS message payload (after the UDP header).
-/// Returns `None` if the message is malformed, truncated, or uses
-/// compression pointers.
+/// The parser is [`asphaleia_core::extract_query_domain`], shared with the
+/// workspace `asphaleia` crate (#545). It lowercases while decoding, which
+/// is what lets [`Firewall::is_dns_blocked_lowercased`] compare against the
+/// blocklist without a second per-packet allocation.
 fn extract_query_domain(data: &[u8]) -> Option<String> {
-    if data.len() < DNS_HEADER_LEN {
-        return None;
-    }
-
-    // QDCOUNT must be at least 1.
-    let qdcount = u16::from_be_bytes([*data.get(4)?, *data.get(5)?]);
-    if qdcount == 0 {
-        return None;
-    }
-
-    let mut pos = DNS_HEADER_LEN;
-    let mut domain = String::new();
-    let mut label_count: usize = 0;
-
-    loop {
-        let len_byte = *data.get(pos)?;
-        pos = pos.checked_add(1)?;
-
-        if len_byte == 0 {
-            break;
-        }
-
-        // Reject compression pointers.
-        if len_byte & 0xC0 == 0xC0 {
-            return None;
-        }
-
-        label_count = label_count.checked_add(1)?;
-        if label_count > MAX_LABELS {
-            return None;
-        }
-
-        let label_len = len_byte as usize;
-        let label_end = pos.checked_add(label_len)?;
-        let label_bytes = data.get(pos..label_end)?;
-        let label = core::str::from_utf8(label_bytes).ok()?;
-
-        if !domain.is_empty() {
-            domain.push('.');
-        }
-        // Lowercase while building: the only consumer is
-        // check_dns_blocklist, which compares directly against the
-        // (already-lowercased) blocklist via is_dns_blocked_lowercased --
-        // doing it here avoids a second per-packet allocation.
-        domain.extend(label.chars().map(|c| c.to_ascii_lowercase()));
-
-        pos = label_end;
-    }
-
-    if domain.is_empty() {
-        None
-    } else {
-        Some(domain)
-    }
+    asphaleia_core::extract_query_domain(data)
 }
 
 // ---------------------------------------------------------------------------
@@ -785,20 +730,9 @@ fn rule_matches(rule: &FilterRule, direction: Direction, info: &PacketInfo) -> b
     true
 }
 
-/// Check whether a domain equals or is a subdomain of a blocklist suffix.
-///
-/// `"sub.doubleclick.net"` matches suffix `"doubleclick.net"`.
-/// `"doubleclick.net"` matches suffix `"doubleclick.net"`.
-/// `"notdoubleclick.net"` does NOT match suffix `"doubleclick.net"`.
-fn domain_matches_suffix(domain: &str, suffix: &str) -> bool {
-    if domain == suffix {
-        return true;
-    }
-    // Check if domain ends with ".suffix" (genuine subdomain).
-    domain
-        .strip_suffix(suffix)
-        .is_some_and(|rest| rest.ends_with('.'))
-}
+// The suffix-matching rule is [`asphaleia_core::domain_matches_suffix`],
+// shared with the workspace `asphaleia` crate (#545).
+use asphaleia_core::domain_matches_suffix;
 
 // ---------------------------------------------------------------------------
 // Test helpers

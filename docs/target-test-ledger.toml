@@ -249,11 +249,6 @@ tests = 25
 mechanism = "host"
 
 [[module]]
-name = "gsm7"
-tests = 8
-mechanism = "host"
-
-[[module]]
 name = "harmostes"
 tests = 36
 mechanism = "host"
@@ -598,7 +593,7 @@ fidelity = "allocator-on-real-tables is brk-witnessed; host tests cover size-cla
 
 [[module]]
 name = "sms"
-tests = 20
+tests = 25
 mechanism = "both"
 witness = "boot.sh"
 
