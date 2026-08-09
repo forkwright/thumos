@@ -55,6 +55,10 @@ pub(crate) fn flags_to_prot(p_flags: u32) -> u32 {
 /// packed)] binary compatibility.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
+// WHY: field names mirror the ELF32 spec's own `e_*` names verbatim, so a
+// reader cross-referencing the spec matches fields by name; stripping the
+// shared prefix would decouple this struct from the spec it exists to mirror.
+#[allow(clippy::struct_field_names)]
 struct Elf32Ehdr {
     // kanon:ignore RUST/struct-too-many-fields -- ELF32 spec layout; see doc comment
     e_ident: [u8; 16],
@@ -76,6 +80,9 @@ struct Elf32Ehdr {
 /// ELF32 program header.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
+// WHY: field names mirror the ELF32 spec's own `p_*` names verbatim; see
+// Elf32Ehdr's identical rationale above.
+#[allow(clippy::struct_field_names)]
 struct Elf32Phdr {
     p_type: u32,
     p_offset: u32,
@@ -238,20 +245,18 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
         // fields; plain addition/multiplication can wrap a 32-bit usize
         // target and bypass the bounds check below. checked_mul/checked_add
         // reject a header that would wrap instead of silently admitting it.
-        let offset = match i
+        let Some(offset) = i
             .checked_mul(phentsize)
             .and_then(|stride| stride.checked_add(phoff))
-        {
-            Some(o) => o,
-            None => return Err(ElfError::InvalidSegment),
+        else {
+            return Err(ElfError::InvalidSegment);
         };
         // WHY (#317): bounds-check against PHDR_SIZE (the bytes actually
         // read below), not phentsize (the attacker-controlled stride) — a
         // phentsize >= PHDR_SIZE is enforced above, but the read width
         // itself must never depend on the untrusted field.
-        let offset_end = match offset.checked_add(PHDR_SIZE) {
-            Some(e) => e,
-            None => return Err(ElfError::InvalidSegment),
+        let Some(offset_end) = offset.checked_add(PHDR_SIZE) else {
+            return Err(ElfError::InvalidSegment);
         };
         if offset_end > data.len() {
             return Err(ElfError::InvalidSegment);
@@ -275,9 +280,8 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
 
         // WHY (#316): file_offset/filesz are attacker-controlled; checked_add
         // rejects a wrap instead of letting it bypass this guard.
-        let file_end = match file_offset.checked_add(filesz) {
-            Some(e) => e,
-            None => return Err(ElfError::InvalidSegment),
+        let Some(file_end) = file_offset.checked_add(filesz) else {
+            return Err(ElfError::InvalidSegment);
         };
         if file_end > data.len() {
             return Err(ElfError::InvalidSegment);
@@ -297,12 +301,11 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
         // total across all segments, via checked arithmetic (memsz +
         // PAGE_SIZE - 1 can itself overflow a 32-bit usize) before any page
         // is allocated.
-        let seg_pages = match memsz
+        let Some(seg_pages) = memsz
             .checked_add(page::PAGE_SIZE - 1)
             .map(|rounded| rounded / page::PAGE_SIZE)
-        {
-            Some(n) => n,
-            None => return Err(ElfError::InvalidSegment),
+        else {
+            return Err(ElfError::InvalidSegment);
         };
         segments.total_pages = match segments.total_pages.checked_add(seg_pages) {
             Some(t) if t <= MAX_ELF_PAGES => t,
@@ -511,7 +514,7 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
         // performed for this same memsz while building validated.total_pages
         // (#327) — if it did not overflow there, it cannot overflow here —
         // so plain arithmetic is safe without re-deriving the check.
-        let num_pages = (memsz + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
+        let num_pages = memsz.div_ceil(page::PAGE_SIZE);
         for p in 0..num_pages {
             pages_used += 1;
 
@@ -578,9 +581,9 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
     // Carry per-segment (vaddr, memsz, p_flags) so spawn_user can map each
     // segment PL0-accessible with W^X permissions (#482).
     let mut segments = [(0usize, 0usize, 0u32); 16];
-    for i in 0..validated.count {
+    for (i, seg) in segments.iter_mut().enumerate().take(validated.count) {
         let (vaddr, memsz, _, _, flags) = validated.segments[i];
-        segments[i] = (vaddr, memsz, flags);
+        *seg = (vaddr, memsz, flags);
     }
     Ok(LoadedElf {
         entry,
@@ -945,7 +948,7 @@ mod tests {
         // WHY no unsafe: addr_of_mut! only forms the static's address; it
         // does not dereference it, so this line needs no unsafe block —
         // only reading/writing through the resulting pointer would.
-        let vaddr = core::ptr::addr_of_mut!(BUF) as *mut u8 as usize;
+        let vaddr = core::ptr::addr_of_mut!(BUF).cast::<u8>() as usize;
 
         let mut data = [0u8; ELF32_EHDR_SIZE + ELF32_PHDR_SIZE + 4];
         let h = make_valid_ehdr();
@@ -1012,7 +1015,7 @@ mod tests {
         // (fail-before-destroy), so a boot/exec image can never write into
         // page-allocator RAM or escape the exec revocation surface.
         static mut BUF: [u8; 16] = [0xEE; 16];
-        let vaddr = core::ptr::addr_of_mut!(BUF) as *mut u8 as usize;
+        let vaddr = core::ptr::addr_of_mut!(BUF).cast::<u8>() as usize;
 
         let mut data = [0u8; ELF32_EHDR_SIZE + ELF32_PHDR_SIZE + 4];
         let h = make_valid_ehdr();
@@ -1073,7 +1076,7 @@ mod tests {
         // WHY no unsafe: addr_of_mut! only forms the static's address; it
         // does not dereference it, so this line needs no unsafe block —
         // only reading/writing through the resulting pointer would.
-        let vaddr = core::ptr::addr_of_mut!(BUF) as *mut u8 as usize;
+        let vaddr = core::ptr::addr_of_mut!(BUF).cast::<u8>() as usize;
 
         let mut data = [0u8; ELF32_EHDR_SIZE + ELF32_PHDR_SIZE];
         let h = make_valid_ehdr();

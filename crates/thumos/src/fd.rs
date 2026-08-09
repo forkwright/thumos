@@ -181,9 +181,8 @@ impl FileDescriptor {
         // SAFETY: MOUNT_TABLE is a static mut; single-core cooperative
         // kernel ensures exclusive access during syscall handling.
         let mt_opt = unsafe { &*core::ptr::addr_of!(MOUNT_TABLE) };
-        let mt = match mt_opt.as_ref() {
-            Some(t) => t,
-            None => return 0,
+        let Some(mt) = mt_opt.as_ref() else {
+            return 0;
         };
         match mt.get(self.mount_idx as usize) {
             Some(fs) => match fs.stat(self.inode_id) {
@@ -419,7 +418,7 @@ pub(crate) fn fork_table(parent: &FdTable) -> FdTable {
 /// exit/fault (#267): close every fd -- drain the table, unref each OFD.
 /// Idempotent: a drained table is a no-op.
 pub(crate) fn close_all(table: &mut FdTable) {
-    for slot in table.entries.iter_mut() {
+    for slot in &mut table.entries {
         if let Some(entry) = slot.take() {
             ofd_unref(entry.ofd);
         }
@@ -429,11 +428,11 @@ pub(crate) fn close_all(table: &mut FdTable) {
 /// execve (#267): close every fd with `FD_CLOEXEC` set. Called only after
 /// the last execve failure point (POSIX: fds close on SUCCESSFUL exec).
 pub(crate) fn close_cloexec(table: &mut FdTable) {
-    for slot in table.entries.iter_mut() {
-        if slot.map(|e| e.cloexec).unwrap_or(false) {
-            if let Some(entry) = slot.take() {
-                ofd_unref(entry.ofd);
-            }
+    for slot in &mut table.entries {
+        if slot.map(|e| e.cloexec).unwrap_or(false)
+            && let Some(entry) = slot.take()
+        {
+            ofd_unref(entry.ofd);
         }
     }
 }
@@ -574,19 +573,16 @@ pub unsafe fn init_ramfs(fs: crate::ramfs::RamFs) {
     unsafe {
         let mt_opt = &mut *core::ptr::addr_of_mut!(MOUNT_TABLE);
 
-        match mt_opt {
-            Some(mt) => {
-                // Only mount root if not already mounted (init_vfs may have been called first)
-                if mt.lookup("/").is_none() {
-                    let _ = mt.mount("/", Box::new(fs)); // WHY: legacy init shim; mount failure leaves table unpopulated and later syscalls fail
-                }
-            }
-            None => {
-                // init_vfs was never called; create a new mount table with just ramfs.
-                let mut mt = MountTable::new();
+        if let Some(mt) = mt_opt {
+            // Only mount root if not already mounted (init_vfs may have been called first)
+            if mt.lookup("/").is_none() {
                 let _ = mt.mount("/", Box::new(fs)); // WHY: legacy init shim; mount failure leaves table unpopulated and later syscalls fail
-                *mt_opt = Some(mt);
             }
+        } else {
+            // init_vfs was never called; create a new mount table with just ramfs.
+            let mut mt = MountTable::new();
+            let _ = mt.mount("/", Box::new(fs)); // WHY: legacy init shim; mount failure leaves table unpopulated and later syscalls fail
+            *mt_opt = Some(mt);
         }
     }
 }
@@ -637,9 +633,8 @@ pub unsafe fn ramfs_find(path: &str) -> Option<&'static [u8]> {
     unsafe {
         let mt = get_mount_table()?;
 
-        let (mount_idx, inode_id) = match vfs::resolve_path(mt, path) {
-            Ok(r) => r,
-            Err(_) => return None,
+        let Ok((mount_idx, inode_id)) = vfs::resolve_path(mt, path) else {
+            return None;
         };
 
         let fs = mt.get(mount_idx)?;
@@ -677,14 +672,13 @@ pub unsafe fn ramfs_find(path: &str) -> Option<&'static [u8]> {
                 let leaked = buf.leak();
 
                 let cache = &mut *core::ptr::addr_of_mut!(ELF_CACHE);
-                let slot_idx = match cache.iter().position(|s| s.is_none()) {
-                    Some(idx) => idx,
-                    None => {
-                        let next = &mut *core::ptr::addr_of_mut!(ELF_CACHE_NEXT);
-                        let idx = *next % ELF_CACHE_SLOTS;
-                        *next = (*next + 1) % ELF_CACHE_SLOTS;
-                        idx
-                    }
+                let slot_idx = if let Some(idx) = cache.iter().position(Option::is_none) {
+                    idx
+                } else {
+                    let next = &mut *core::ptr::addr_of_mut!(ELF_CACHE_NEXT);
+                    let idx = *next % ELF_CACHE_SLOTS;
+                    *next = (*next + 1) % ELF_CACHE_SLOTS;
+                    idx
                 };
                 cache[slot_idx] = Some(ElfCacheEntry {
                     mount_idx: mount_idx_u8,
@@ -728,15 +722,13 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
     // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
     // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let path = match core::str::from_utf8(path_slice) {
-        Ok(s) => s,
-        Err(_) => return EINVAL,
+    let Ok(path) = core::str::from_utf8(path_slice) else {
+        return EINVAL;
     };
 
     // SAFETY: init_vfs has been called during kernel init.
-    let mt = match unsafe { get_mount_table() } {
-        Some(t) => t,
-        None => return ENOENT,
+    let Some(mt) = (unsafe { get_mount_table() }) else {
+        return ENOENT;
     };
 
     let (mount_idx, inode_id) = match vfs::resolve_path(mt, path) {
@@ -763,14 +755,13 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
     };
     let installed =
         crate::process::with_current_fds(|t| t.alloc(FdEntry { ofd, cloexec })).flatten();
-    match installed {
-        Some(n) => n as u32,
-        None => {
-            // Absent PCB or per-process table full: roll the OFD back --
-            // never leave an orphaned description (fail closed).
-            ofd_unref(ofd);
-            EMFILE
-        }
+    if let Some(n) = installed {
+        n as u32
+    } else {
+        // Absent PCB or per-process table full: roll the OFD back --
+        // never leave an orphaned description (fail closed).
+        ofd_unref(ofd);
+        EMFILE
     }
 }
 
@@ -818,13 +809,11 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     // required so devfs can serve /dev/urandom via Filesystem::read_mut()
     // (its PRNG needs &mut self); every other filesystem's read_mut()
     // defaults to its immutable read() (see vfs.rs).
-    let mt = match unsafe { get_mount_table_mut() } {
-        Some(t) => t,
-        None => return EBADF,
+    let Some(mt) = (unsafe { get_mount_table_mut() }) else {
+        return EBADF;
     };
-    let fs = match mt.get_mut(mount_idx) {
-        Some(f) => f,
-        None => return EBADF,
+    let Some(fs) = mt.get_mut(mount_idx) else {
+        return EBADF;
     };
 
     // SAFETY: buf_ptr + count validated by validate_user_buffer above
@@ -888,13 +877,11 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
 
     // SAFETY: init_vfs has been called during kernel init.
     // Mutable access needed for write.
-    let mt = match unsafe { get_mount_table_mut() } {
-        Some(t) => t,
-        None => return EBADF,
+    let Some(mt) = (unsafe { get_mount_table_mut() }) else {
+        return EBADF;
     };
-    let fs = match mt.get_mut(mount_idx) {
-        Some(f) => f,
-        None => return EBADF,
+    let Some(fs) = mt.get_mut(mount_idx) else {
+        return EBADF;
     };
 
     // SAFETY: buf_ptr + count validated by validate_user_buffer above
@@ -966,25 +953,21 @@ pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
     // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
     // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let path = match core::str::from_utf8(path_slice) {
-        Ok(s) => s,
-        Err(_) => return EINVAL,
+    let Ok(path) = core::str::from_utf8(path_slice) else {
+        return EINVAL;
     };
 
     // SAFETY: init_vfs has been called during kernel init.
-    let mt = match unsafe { get_mount_table() } {
-        Some(t) => t,
-        None => return ENOENT,
+    let Some(mt) = (unsafe { get_mount_table() }) else {
+        return ENOENT;
     };
 
-    let (mount_idx, inode_id) = match vfs::resolve_path(mt, path) {
-        Ok(r) => r,
-        Err(_) => return ENOENT,
+    let Ok((mount_idx, inode_id)) = vfs::resolve_path(mt, path) else {
+        return ENOENT;
     };
 
-    let fs = match mt.get(mount_idx) {
-        Some(f) => f,
-        None => return ENOENT,
+    let Some(fs) = mt.get(mount_idx) else {
+        return ENOENT;
     };
 
     let inode_stat = match fs.stat(inode_id) {
@@ -1049,35 +1032,29 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
     }
 
     // SAFETY: init_vfs has been called during kernel init.
-    let mt = match unsafe { get_mount_table() } {
-        Some(t) => t,
-        None => {
-            // Mount table not initialized — return minimal stat.
-            let stat = StatBuf {
-                size: 0,
-                file_type: S_IFREG,
-            };
-            unsafe {
-                let dst = stat_buf_ptr as *mut StatBuf;
-                core::ptr::write(dst, stat);
-            }
-            return 0;
+    let Some(mt) = (unsafe { get_mount_table() }) else {
+        // Mount table not initialized — return minimal stat.
+        let stat = StatBuf {
+            size: 0,
+            file_type: S_IFREG,
+        };
+        unsafe {
+            let dst = stat_buf_ptr as *mut StatBuf;
+            core::ptr::write(dst, stat);
         }
+        return 0;
     };
-    let fs = match mt.get(entry.mount_idx as usize) {
-        Some(f) => f,
-        None => {
-            // Pipe fd or no filesystem — return minimal stat
-            let stat = StatBuf {
-                size: 0,
-                file_type: S_IFREG,
-            };
-            unsafe {
-                let dst = stat_buf_ptr as *mut StatBuf;
-                core::ptr::write(dst, stat);
-            }
-            return 0;
+    let Some(fs) = mt.get(entry.mount_idx as usize) else {
+        // Pipe fd or no filesystem — return minimal stat
+        let stat = StatBuf {
+            size: 0,
+            file_type: S_IFREG,
+        };
+        unsafe {
+            let dst = stat_buf_ptr as *mut StatBuf;
+            core::ptr::write(dst, stat);
         }
+        return 0;
     };
 
     let inode_stat = match fs.stat(entry.inode_id) {
@@ -1120,6 +1097,9 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
 /// # Returns
 /// New file offset on success, negative error code on failure.
 pub(crate) fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
+    // The syscall ABI reports the result in r0 as a signed i32 (0 =
+    // success); the representable non-error domain is 0..=i32::MAX.
+    const MAX_REPRESENTABLE_POS: i64 = 0x7FFF_FFFF;
     let fd_idx = fd as usize;
 
     let Some(ofd_idx) = resolve_fd(fd_idx) else {
@@ -1157,10 +1137,7 @@ pub(crate) fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
         _ => return EINVAL,
     };
 
-    // The syscall ABI reports the result in r0 as a signed i32 (0 =
-    // success); the representable non-error domain is 0..=i32::MAX.
-    const MAX_REPRESENTABLE_POS: i64 = 0x7FFF_FFFF;
-    if new_pos < 0 || new_pos > MAX_REPRESENTABLE_POS {
+    if !(0..=MAX_REPRESENTABLE_POS).contains(&new_pos) {
         return EINVAL;
     }
 
@@ -1449,9 +1426,8 @@ pub(crate) fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
     // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
     // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let path = match core::str::from_utf8(path_slice) {
-        Ok(s) => s,
-        Err(_) => return EINVAL,
+    let Ok(path) = core::str::from_utf8(path_slice) else {
+        return EINVAL;
     };
 
     vfs_mkdir(path)
@@ -1462,15 +1438,13 @@ pub(crate) fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
 /// Splits the path into parent and final component, resolves the parent
 /// directory, then creates the directory entry.
 pub(crate) fn vfs_mkdir(path: &str) -> u32 {
-    let (parent_path, name) = match split_parent_name(path) {
-        Some(r) => r,
-        None => return EINVAL,
+    let Some((parent_path, name)) = split_parent_name(path) else {
+        return EINVAL;
     };
 
     // SAFETY: init_vfs has been called during kernel init.
-    let mt = match unsafe { get_mount_table_mut() } {
-        Some(t) => t,
-        None => return VfsError::NotFound.to_errno(),
+    let Some(mt) = (unsafe { get_mount_table_mut() }) else {
+        return VfsError::NotFound.to_errno();
     };
 
     let (mount_idx, parent_inode) = match vfs::resolve_path(mt, parent_path) {
@@ -1478,9 +1452,8 @@ pub(crate) fn vfs_mkdir(path: &str) -> u32 {
         Err(e) => return e.to_errno(),
     };
 
-    let fs = match mt.get_mut(mount_idx) {
-        Some(f) => f,
-        None => return VfsError::NotFound.to_errno(),
+    let Some(fs) = mt.get_mut(mount_idx) else {
+        return VfsError::NotFound.to_errno();
     };
 
     match fs.create(parent_inode, name, InodeType::Directory) {
@@ -1514,9 +1487,8 @@ pub(crate) fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
     // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
     // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let path = match core::str::from_utf8(path_slice) {
-        Ok(s) => s,
-        Err(_) => return EINVAL,
+    let Ok(path) = core::str::from_utf8(path_slice) else {
+        return EINVAL;
     };
 
     vfs_unlink(path)
@@ -1524,15 +1496,13 @@ pub(crate) fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
 
 /// Remove a file or directory via VFS path resolution.
 pub(crate) fn vfs_unlink(path: &str) -> u32 {
-    let (parent_path, name) = match split_parent_name(path) {
-        Some(r) => r,
-        None => return EINVAL,
+    let Some((parent_path, name)) = split_parent_name(path) else {
+        return EINVAL;
     };
 
     // SAFETY: init_vfs has been called during kernel init.
-    let mt = match unsafe { get_mount_table_mut() } {
-        Some(t) => t,
-        None => return VfsError::NotFound.to_errno(),
+    let Some(mt) = (unsafe { get_mount_table_mut() }) else {
+        return VfsError::NotFound.to_errno();
     };
 
     let (mount_idx, parent_inode) = match vfs::resolve_path(mt, parent_path) {
@@ -1540,9 +1510,8 @@ pub(crate) fn vfs_unlink(path: &str) -> u32 {
         Err(e) => return e.to_errno(),
     };
 
-    let fs = match mt.get_mut(mount_idx) {
-        Some(f) => f,
-        None => return VfsError::NotFound.to_errno(),
+    let Some(fs) = mt.get_mut(mount_idx) else {
+        return VfsError::NotFound.to_errno();
     };
 
     match fs.unlink(parent_inode, name) {
@@ -1576,9 +1545,8 @@ pub(crate) fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
     // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
     // within user-accessible DRAM.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
-    let path = match core::str::from_utf8(path_slice) {
-        Ok(s) => s,
-        Err(_) => return EINVAL,
+    let Ok(path) = core::str::from_utf8(path_slice) else {
+        return EINVAL;
     };
 
     vfs_chdir(path)
@@ -1589,9 +1557,8 @@ pub(crate) fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
 /// Verifies the path resolves to a directory, then updates the global CWD.
 pub(crate) fn vfs_chdir(path: &str) -> u32 {
     // SAFETY: init_vfs has been called during kernel init.
-    let mt = match unsafe { get_mount_table() } {
-        Some(t) => t,
-        None => return VfsError::NotFound.to_errno(),
+    let Some(mt) = (unsafe { get_mount_table() }) else {
+        return VfsError::NotFound.to_errno();
     };
 
     let (mount_idx, inode_id) = match vfs::resolve_path(mt, path) {
@@ -1599,9 +1566,8 @@ pub(crate) fn vfs_chdir(path: &str) -> u32 {
         Err(e) => return e.to_errno(),
     };
 
-    let fs = match mt.get(mount_idx) {
-        Some(f) => f,
-        None => return VfsError::NotFound.to_errno(),
+    let Some(fs) = mt.get(mount_idx) else {
+        return VfsError::NotFound.to_errno();
     };
 
     // Verify it's a directory
@@ -1944,6 +1910,13 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn read_file_contents() {
+        // WHY function-local `static mut`: sys_read now validates buf_ptr via
+        // validate_user_buffer before dereferencing it. This binary's PIE
+        // image (hence any `static`) loads inside
+        // [board::KERNEL_END, board::RAM_END) on this host toolchain;
+        // a stack array does not (verified: glibc places the per-test-thread
+        // stack near the top of the 32-bit address space, above RAM_END).
+        static mut BUF: [u8; 64] = [0u8; 64];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -1952,13 +1925,6 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert_eq!(fd, 0);
 
-        // WHY function-local `static mut`: sys_read now validates buf_ptr via
-        // validate_user_buffer before dereferencing it. This binary's PIE
-        // image (hence any `static`) loads inside
-        // [board::KERNEL_END, board::RAM_END) on this host toolchain;
-        // a stack array does not (verified: glibc places the per-test-thread
-        // stack near the top of the 32-bit address space, above RAM_END).
-        static mut BUF: [u8; 64] = [0u8; 64];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let bytes_read = sys_read(fd, buf.as_mut_ptr() as u32, 64);
@@ -1974,6 +1940,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn read_at_eof_returns_zero() {
+        static mut BUF: [u8; 64] = [0u8; 64];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -1981,7 +1948,6 @@ mod tests {
         let path = b"/test.txt";
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
 
-        static mut BUF: [u8; 64] = [0u8; 64];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let _ = sys_read(fd, buf.as_mut_ptr() as u32, 64);
@@ -1999,6 +1965,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn close_then_read_returns_ebadf() {
+        static mut BUF: [u8; 64] = [0u8; 64];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2007,7 +1974,6 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert_eq!(sys_close(fd), 0);
 
-        static mut BUF: [u8; 64] = [0u8; 64];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let result = sys_read(fd, buf.as_mut_ptr() as u32, 64);
@@ -2022,6 +1988,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn lseek_set_then_read() {
+        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2033,7 +2000,6 @@ mod tests {
         let new_pos = sys_lseek(fd, 7, SEEK_SET);
         assert_eq!(new_pos, 7);
 
-        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let bytes_read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
@@ -2049,6 +2015,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn lseek_end_positions_at_eof() {
+        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2059,7 +2026,6 @@ mod tests {
         let new_pos = sys_lseek(fd, 0, SEEK_END);
         assert_eq!(new_pos, 14);
 
-        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let bytes_read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
@@ -2077,6 +2043,11 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn dup_shares_offset_with_original() {
+        // Read from fd0 — the dup SHARES the OFD, so fd1's offset advances too.
+        static mut BUF: [u8; 5] = [0u8; 5];
+        // fd1 must continue from the offset fd0 just advanced to (5), not
+        // restart from 0.
+        static mut BUF2: [u8; 7] = [0u8; 7];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2088,17 +2059,12 @@ mod tests {
         let fd1 = sys_dup(fd0);
         assert_eq!(fd1, 1, "dup should return lowest available fd");
 
-        // Read from fd0 — the dup SHARES the OFD, so fd1's offset advances too.
-        static mut BUF: [u8; 5] = [0u8; 5];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let n = sys_read(fd0, buf.as_mut_ptr() as u32, 5);
         assert_eq!(n, 5);
         assert_eq!(&*buf, b"Hello");
 
-        // fd1 must continue from the offset fd0 just advanced to (5), not
-        // restart from 0.
-        static mut BUF2: [u8; 7] = [0u8; 7];
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
         let bytes = sys_read(fd1, buf2.as_mut_ptr() as u32, 7);
@@ -2117,6 +2083,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn dup2_replaces_target_fd() {
+        static mut BUF: [u8; 5] = [0u8; 5];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2131,7 +2098,6 @@ mod tests {
         let result = sys_dup2(fd0, fd1);
         assert_eq!(result, 1);
 
-        static mut BUF: [u8; 5] = [0u8; 5];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let bytes = sys_read(1, buf.as_mut_ptr() as u32, 5);
@@ -2147,21 +2113,21 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn stat_existing_file() {
+        static mut STAT: StatBuf = StatBuf {
+            size: 0,
+            file_type: 0,
+        };
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
         }
         let path = b"/test.txt";
-        static mut STAT: StatBuf = StatBuf {
-            size: 0,
-            file_type: 0,
-        };
         // SAFETY: test-only static; single-threaded per test.
         let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
         let result = sys_stat(
             path.as_ptr() as u32,
             path.len() as u32,
-            stat as *mut StatBuf as u32,
+            core::ptr::from_mut::<StatBuf>(stat) as u32,
         );
         assert_eq!(result, 0);
         assert_eq!(stat.size, 14);
@@ -2176,21 +2142,21 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn stat_nonexistent_returns_enoent() {
+        static mut STAT: StatBuf = StatBuf {
+            size: 0,
+            file_type: 0,
+        };
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
         }
         let path = b"/nope";
-        static mut STAT: StatBuf = StatBuf {
-            size: 0,
-            file_type: 0,
-        };
         // SAFETY: test-only static; single-threaded per test.
         let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
         let result = sys_stat(
             path.as_ptr() as u32,
             path.len() as u32,
-            stat as *mut StatBuf as u32,
+            core::ptr::from_mut::<StatBuf>(stat) as u32,
         );
         assert_eq!(result, ENOENT);
     }
@@ -2203,6 +2169,10 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn fstat_open_fd() {
+        static mut STAT: StatBuf = StatBuf {
+            size: 0,
+            file_type: 0,
+        };
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2211,13 +2181,9 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert_eq!(fd, 0);
 
-        static mut STAT: StatBuf = StatBuf {
-            size: 0,
-            file_type: 0,
-        };
         // SAFETY: test-only static; single-threaded per test.
         let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
-        let result = sys_fstat(fd, stat as *mut StatBuf as u32);
+        let result = sys_fstat(fd, core::ptr::from_mut::<StatBuf>(stat) as u32);
         assert_eq!(result, 0);
         assert_eq!(stat.size, 6);
         assert_eq!(stat.file_type, S_IFREG);
@@ -2225,17 +2191,17 @@ mod tests {
 
     #[test]
     fn fstat_closed_fd_returns_ebadf() {
-        // SAFETY: test-only.
-        unsafe {
-            setup_test_vfs();
-        }
         static mut STAT: StatBuf = StatBuf {
             size: 0,
             file_type: 0,
         };
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
         // SAFETY: test-only static; single-threaded per test.
         let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
-        let result = sys_fstat(99, stat as *mut StatBuf as u32);
+        let result = sys_fstat(99, core::ptr::from_mut::<StatBuf>(stat) as u32);
         assert_eq!(result, EBADF);
     }
 
@@ -2244,6 +2210,10 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn fstat_propagates_real_stat_error_instead_of_fabricating_success() {
+        static mut STAT: StatBuf = StatBuf {
+            size: 0,
+            file_type: 0,
+        };
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2251,13 +2221,9 @@ mod tests {
         let bogus = FileDescriptor::from_vfs(0, 9_999, 0);
         let fd = install_test_fd(bogus);
 
-        static mut STAT: StatBuf = StatBuf {
-            size: 0,
-            file_type: 0,
-        };
         // SAFETY: test-only static; single-threaded per test.
         let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
-        let result = sys_fstat(fd, stat as *mut StatBuf as u32);
+        let result = sys_fstat(fd, core::ptr::from_mut::<StatBuf>(stat) as u32);
 
         assert_ne!(
             result, 0,
@@ -2273,11 +2239,11 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn getcwd_returns_root() {
+        static mut BUF: [u8; 16] = [0u8; 16];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
         }
-        static mut BUF: [u8; 16] = [0u8; 16];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let result = sys_getcwd(buf.as_mut_ptr() as u32, 16);
@@ -2289,14 +2255,14 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn getcwd_buffer_too_small_returns_einval() {
-        // SAFETY: test-only.
-        unsafe {
-            setup_test_vfs();
-        }
         // The root cwd ("/") needs 2 bytes (1 char + NUL terminator); a
         // 1-byte buffer must be rejected, not truncated or overflowed
         // (issue #282 finding 14).
         static mut BUF: [u8; 1] = [0u8; 1];
+        // SAFETY: test-only.
+        unsafe {
+            setup_test_vfs();
+        }
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let result = sys_getcwd(buf.as_mut_ptr() as u32, 1);
@@ -2316,6 +2282,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn write_and_read_back_via_vfs() {
+        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2335,7 +2302,6 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert!(fd < MAX_FDS as u32, "open should succeed");
 
-        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
@@ -2368,6 +2334,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn read_dev_urandom_returns_random_bytes() {
+        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2376,7 +2343,6 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert!(fd < MAX_FDS as u32, "opening /dev/urandom should succeed");
 
-        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
@@ -2398,6 +2364,10 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn mkdir_and_verify() {
+        static mut STAT: StatBuf = StatBuf {
+            size: 0,
+            file_type: 0,
+        };
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2407,16 +2377,12 @@ mod tests {
 
         // Stat should show directory
         let path = b"/mydir";
-        static mut STAT: StatBuf = StatBuf {
-            size: 0,
-            file_type: 0,
-        };
         // SAFETY: test-only static; single-threaded per test.
         let stat = unsafe { &mut *core::ptr::addr_of_mut!(STAT) };
         let r = sys_stat(
             path.as_ptr() as u32,
             path.len() as u32,
-            stat as *mut StatBuf as u32,
+            core::ptr::from_mut::<StatBuf>(stat) as u32,
         );
         assert_eq!(r, 0);
         assert_eq!(stat.file_type, S_IFDIR);
@@ -2458,6 +2424,8 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn chdir_to_valid_directory() {
+        // getcwd should return "/subdir"
+        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2469,8 +2437,6 @@ mod tests {
         let result = vfs_chdir("/subdir");
         assert_eq!(result, 0);
 
-        // getcwd should return "/subdir"
-        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         sys_getcwd(buf.as_mut_ptr() as u32, 32);
@@ -2668,6 +2634,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn write_dispatches_to_vfs_for_file_fds() {
+        static mut BUF: [u8; 32] = [0u8; 32];
         unsafe {
             setup_test_vfs();
         }
@@ -2678,7 +2645,7 @@ mod tests {
         let _file_id = fs
             .create(0, "writable.txt", InodeType::RegularFile)
             .expect("create");
-        drop(fs);
+        let _ = fs;
 
         let path = b"/writable.txt";
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
@@ -2694,7 +2661,6 @@ mod tests {
 
         // Read back
         let _ = sys_lseek(fd, 0, SEEK_SET);
-        static mut BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         let read = sys_read(fd, buf.as_mut_ptr() as u32, 32);
@@ -2897,7 +2863,9 @@ mod tests {
     /// referenced as a function pointer to populate the new PCB's context.
     #[cfg(target_pointer_width = "32")]
     fn isolation_test_entry() -> ! {
-        loop {}
+        loop {
+            core::hint::spin_loop();
+        }
     }
 
     /// ISOLATION: a different process must not be able to name proc0's fd
@@ -2907,6 +2875,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn fd_isolation_cross_process_ops_return_ebadf() {
+        static mut BUF: [u8; 8] = [0u8; 8];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2923,7 +2892,6 @@ mod tests {
             crate::process::set_current_for_test(other_pid);
         }
 
-        static mut BUF: [u8; 8] = [0u8; 8];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         assert_eq!(
@@ -2955,6 +2923,11 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn fork_shares_ofd_offset_advances_together() {
+        // Parent reads 5 bytes ("Hello") before forking.
+        static mut BUF: [u8; 5] = [0u8; 5];
+        // Child's fd 0 shares the SAME OFD -- offset continues at 5, not 0.
+        static mut BUF2: [u8; 7] = [0u8; 7];
+        static mut BUF3: [u8; 2] = [0u8; 2];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -2963,8 +2936,6 @@ mod tests {
         let fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert_eq!(fd, 0);
 
-        // Parent reads 5 bytes ("Hello") before forking.
-        static mut BUF: [u8; 5] = [0u8; 5];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         assert_eq!(sys_read(fd, buf.as_mut_ptr() as u32, 5), 5);
@@ -2976,8 +2947,6 @@ mod tests {
             crate::process::set_current_for_test(child_pid);
         }
 
-        // Child's fd 0 shares the SAME OFD -- offset continues at 5, not 0.
-        static mut BUF2: [u8; 7] = [0u8; 7];
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
         let n2 = sys_read(fd, buf2.as_mut_ptr() as u32, 7);
@@ -2999,7 +2968,6 @@ mod tests {
         unsafe {
             crate::process::set_current_for_test(child_pid);
         }
-        static mut BUF3: [u8; 2] = [0u8; 2];
         // SAFETY: test-only static; single-threaded per test.
         let buf3 = unsafe { &mut *core::ptr::addr_of_mut!(BUF3) };
         let n3 = sys_read(fd, buf3.as_mut_ptr() as u32, 2);
@@ -3016,6 +2984,10 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn fork_then_open_is_independent_ofd() {
+        // Parent advances its offset by reading 5 bytes.
+        static mut BUF: [u8; 5] = [0u8; 5];
+        static mut BUF2: [u8; 5] = [0u8; 5];
+        static mut BUF3: [u8; 2] = [0u8; 2];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -3024,8 +2996,6 @@ mod tests {
         let parent_fd = sys_open(path.as_ptr() as u32, path.len() as u32, 0);
         assert_eq!(parent_fd, 0);
 
-        // Parent advances its offset by reading 5 bytes.
-        static mut BUF: [u8; 5] = [0u8; 5];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         assert_eq!(sys_read(parent_fd, buf.as_mut_ptr() as u32, 5), 5);
@@ -3044,7 +3014,6 @@ mod tests {
             "child's fresh open lands on its own next-free slot (inherited fd 0 is taken)"
         );
 
-        static mut BUF2: [u8; 5] = [0u8; 5];
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
         let n = sys_read(child_fd, buf2.as_mut_ptr() as u32, 5);
@@ -3059,7 +3028,6 @@ mod tests {
         unsafe {
             crate::process::set_current_for_test(0);
         }
-        static mut BUF3: [u8; 2] = [0u8; 2];
         // SAFETY: test-only static; single-threaded per test.
         let buf3 = unsafe { &mut *core::ptr::addr_of_mut!(BUF3) };
         assert_eq!(sys_read(parent_fd, buf3.as_mut_ptr() as u32, 2), 2);
@@ -3092,7 +3060,7 @@ mod tests {
             crate::process::set_current_for_test(child_pid);
         }
         crate::process::with_current_cwd(|c| {
-            assert_eq!(c, b"/dev", "fork must inherit the parent's cwd")
+            assert_eq!(c, b"/dev", "fork must inherit the parent's cwd");
         })
         .expect("child process must exist");
 
@@ -3106,7 +3074,7 @@ mod tests {
             assert_eq!(
                 c, b"/dev",
                 "a chdir in the child must never leak into the parent (the global-CWD bug, #437)"
-            )
+            );
         })
         .expect("parent process must exist");
 
@@ -3120,13 +3088,15 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn getcwd_reports_the_current_process_cwd() {
+        static mut BUFCWD: [u8; 8] = [0u8; 8];
+        static mut BUFCWD2: [u8; 8] = [0u8; 8];
+        static mut BUFCWD3: [u8; 8] = [0u8; 8];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
         }
         assert_eq!(vfs_chdir("/dev"), 0);
 
-        static mut BUFCWD: [u8; 8] = [0u8; 8];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUFCWD) };
         assert_eq!(sys_getcwd(buf.as_mut_ptr() as u32, 8), 0);
@@ -3138,7 +3108,6 @@ mod tests {
             crate::process::set_current_for_test(child_pid);
         }
         assert_eq!(vfs_chdir("/"), 0);
-        static mut BUFCWD2: [u8; 8] = [0u8; 8];
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUFCWD2) };
         assert_eq!(sys_getcwd(buf2.as_mut_ptr() as u32, 8), 0);
@@ -3148,7 +3117,6 @@ mod tests {
         unsafe {
             crate::process::set_current_for_test(0);
         }
-        static mut BUFCWD3: [u8; 8] = [0u8; 8];
         // SAFETY: test-only static; single-threaded per test.
         let buf3 = unsafe { &mut *core::ptr::addr_of_mut!(BUFCWD3) };
         assert_eq!(sys_getcwd(buf3.as_mut_ptr() as u32, 8), 0);
@@ -3164,6 +3132,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn close_cloexec_sweeps_only_cloexec_fds_dup_clears_flag() {
+        static mut BUF: [u8; 4] = [0u8; 4];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -3198,7 +3167,6 @@ mod tests {
         let swept = crate::process::with_current_fds(close_cloexec);
         assert!(swept.is_some(), "current process must exist");
 
-        static mut BUF: [u8; 4] = [0u8; 4];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         assert_eq!(
@@ -3229,6 +3197,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn close_all_frees_both_ofds_on_exit() {
+        static mut BUF: [u8; 1] = [0u8; 1];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -3258,7 +3227,6 @@ mod tests {
             "exit-path close_all must free the second OFD"
         );
 
-        static mut BUF: [u8; 1] = [0u8; 1];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         assert_eq!(
@@ -3275,6 +3243,9 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn dup_shares_ofd_offset_and_status_flags() {
+        // Reading via the dup must advance the ORIGINAL's shared offset.
+        static mut BUF: [u8; 5] = [0u8; 5];
+        static mut BUF2: [u8; 2] = [0u8; 2];
         // SAFETY: test-only.
         unsafe {
             setup_test_vfs();
@@ -3285,14 +3256,11 @@ mod tests {
         let fd1 = sys_dup(fd0);
         assert_eq!(fd1, 1);
 
-        // Reading via the dup must advance the ORIGINAL's shared offset.
-        static mut BUF: [u8; 5] = [0u8; 5];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         assert_eq!(sys_read(fd1, buf.as_mut_ptr() as u32, 5), 5);
         assert_eq!(&*buf, b"Hello");
 
-        static mut BUF2: [u8; 2] = [0u8; 2];
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
         let n = sys_read(fd0, buf2.as_mut_ptr() as u32, 2);

@@ -221,19 +221,18 @@ fn boot_verify_loop(
                     crate::ui::Key::Hash => {
                         let mut primary_out = None;
                         let result = lock.submit_passphrase_with(tick, |entered| {
-                            let primary =
-                                match crate::key_manager::KeyManager::derive_from_passphrase(
+                            let Ok(primary) =
+                                crate::key_manager::KeyManager::derive_from_passphrase(
                                     entered, &salt,
-                                ) {
-                                    Ok(p) => p,
-                                    Err(_) => return false,
-                                };
-                            let candidate =
-                                match crate::key_manager::KeyManager::derive_boot_verifier(&primary)
-                                {
-                                    Ok(v) => v,
-                                    Err(_) => return false,
-                                };
+                                )
+                            else {
+                                return false;
+                            };
+                            let Ok(candidate) =
+                                crate::key_manager::KeyManager::derive_boot_verifier(&primary)
+                            else {
+                                return false;
+                            };
                             let matches =
                                 crate::lock_screen::constant_time_eq(&candidate, &verifier);
                             if matches {
@@ -243,10 +242,10 @@ fn boot_verify_loop(
                         });
                         match result {
                             crate::lock_screen::UnlockResult::Success => {
-                                if let Some(primary) = primary_out {
-                                    if key_manager.derive_partition_keys(&primary).is_ok() {
-                                        return true;
-                                    }
+                                if let Some(primary) = primary_out
+                                    && key_manager.derive_partition_keys(&primary).is_ok()
+                                {
+                                    return true;
                                 }
                                 // A verified passphrase that cannot derive
                                 // partition keys is a crypto fault, not a
@@ -318,26 +317,10 @@ fn boot_setup_loop(
                     crate::ui::Key::Star => lock.backspace_passphrase(),
                     crate::ui::Key::Hash => {
                         let entered_len = lock.passphrase_len() as usize;
-                        if !confirming {
-                            if entered_len >= crate::kinit_plan::MIN_BOOT_PASSPHRASE_LEN as usize {
-                                first[..entered_len].copy_from_slice(lock.passphrase_bytes());
-                                first_len = entered_len;
-                                lock.clear_passphrase();
-                                confirming = true;
-                                serial.log(" Confirm passphrase\r\n");
-                            } else {
-                                serial.log(" Passphrase too short (6+ digits)\r\n");
-                            }
-                        } else {
+                        if confirming {
                             let matches = entered_len == first_len
                                 && lock.passphrase_bytes() == &first[..first_len];
-                            if !matches {
-                                serial.log(" Mismatch -- start over\r\n");
-                                lock.clear_passphrase();
-                                confirming = false;
-                                crate::key_manager::volatile_zero(&mut first);
-                                first_len = 0;
-                            } else {
+                            if matches {
                                 let mut salt = [0u8; crate::secrets::SALT_LEN];
                                 if crate::csprng::kernel_random_bytes(&mut salt).is_err() {
                                     serial.log(" CRIT CSPRNG unavailable -- cannot provision\r\n");
@@ -350,23 +333,19 @@ fn boot_setup_loop(
                                         lock.passphrase_bytes(),
                                         &salt,
                                     )
-                                {
-                                    if let Ok(verifier) =
+                                    && let Ok(verifier) =
                                         crate::key_manager::KeyManager::derive_boot_verifier(
                                             &primary,
                                         )
-                                    {
-                                        if crate::secrets::store_boot_verifier(
-                                            preamble_view,
-                                            &salt,
-                                            &verifier,
-                                        )
-                                        .is_ok()
-                                            && key_manager.derive_partition_keys(&primary).is_ok()
-                                        {
-                                            ok = true;
-                                        }
-                                    }
+                                    && crate::secrets::store_boot_verifier(
+                                        preamble_view,
+                                        &salt,
+                                        &verifier,
+                                    )
+                                    .is_ok()
+                                    && key_manager.derive_partition_keys(&primary).is_ok()
+                                {
+                                    ok = true;
                                 }
                                 lock.clear_passphrase();
                                 crate::key_manager::volatile_zero(&mut first);
@@ -377,6 +356,20 @@ fn boot_setup_loop(
                                 serial.log(" CRIT Provisioning failed (derive/store)\r\n");
                                 return false;
                             }
+                            serial.log(" Mismatch -- start over\r\n");
+                            lock.clear_passphrase();
+                            confirming = false;
+                            crate::key_manager::volatile_zero(&mut first);
+                            first_len = 0;
+                        } else if entered_len >= crate::kinit_plan::MIN_BOOT_PASSPHRASE_LEN as usize
+                        {
+                            first[..entered_len].copy_from_slice(lock.passphrase_bytes());
+                            first_len = entered_len;
+                            lock.clear_passphrase();
+                            confirming = true;
+                            serial.log(" Confirm passphrase\r\n");
+                        } else {
+                            serial.log(" Passphrase too short (6+ digits)\r\n");
                         }
                     }
                     _ => {}
@@ -502,6 +495,16 @@ fn debug_console_gate(serial: &mut Uart, mode_mgr: &crate::security_mode::ModeMa
 ///
 /// Must be called exactly once, FROM the boot processor, with
 /// interrupts disabled.
+//
+// WHY the allow: this is the boot sequencer -- one linear, numbered "Step N"
+// narrative over ~20 subsystems, called from exactly one site, executed
+// exactly once, never reused or independently tested in isolation. Splitting
+// it into helper functions would thread `serial`/`state`/intermediate
+// hand-offs (e.g. the mounted LFS feeding the VFS step) through a growing set
+// of new `unsafe fn` boundaries -- each needing its own safety contract --
+// purely to satisfy a line count, while making the top-to-bottom boot order
+// this function exists to keep auditable harder to read in one pass.
+#[allow(clippy::too_many_lines)]
 pub unsafe fn run() -> ! {
     let mut serial = Uart::new();
     let mut state = BootState::new();
@@ -737,7 +740,10 @@ pub unsafe fn run() -> ! {
         unsafe {
             display.init(board::FB_BASE);
         }
-        if display.state() != crate::display::DisplayState::Uninitialized {
+        if display.state() == crate::display::DisplayState::Uninitialized {
+            serial.log(" WARN Display init incomplete\r\n");
+            serial.log(" Falling back to USB serial console only\r\n");
+        } else {
             serial.log(" Display pipeline active\r\n");
             boot_log!(serial, " Framebuffer @ {:#010x}\r\n", board::FB_BASE);
             devices.activate("gc9306-lcm");
@@ -745,9 +751,6 @@ pub unsafe fn run() -> ! {
             devices.activate("disp-rdma0");
             state.display_ok = true;
             DISPLAY_AVAILABLE.store(true, Ordering::Release);
-        } else {
-            serial.log(" WARN Display init incomplete\r\n");
-            serial.log(" Falling back to USB serial console only\r\n");
         }
     }
 
@@ -1268,6 +1271,12 @@ pub unsafe fn run() -> ! {
     // initramfs -- the /init ELF wrapped in a newc CPIO, built by build.rs into
     // the kernel image -- as the root so plan_userspace_spawn_from_vfs("/init")
     // resolves. A verified boot uses the LFS root instead (initramfs ignored).
+    //
+    // WHY the allow: hoisting to the top of `run()`'s ~900-line boot sequence
+    // would separate this declaration from its use two lines below by
+    // hundreds of lines, for the same audit-ability reason `run()` itself
+    // carries a `too_many_lines` allow above.
+    #[allow(clippy::items_after_statements)]
     static INITRAMFS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/initramfs.cpio"));
     let boot_cpio = if lfs_root.is_none() {
         Some(INITRAMFS)
@@ -1510,8 +1519,7 @@ pub unsafe fn run() -> ! {
                             configured = true;
                             break;
                         }
-                        DhcpEvent::Deconfigured => {}
-                        DhcpEvent::None => {}
+                        DhcpEvent::Deconfigured | DhcpEvent::None => {}
                     }
                     // WHY: WFI yields until the next interrupt (the timer
                     // tick). WFE was the wrong primitive here: with no SEV
@@ -1662,16 +1670,16 @@ pub unsafe fn run() -> ! {
     // eMMC secure-boot gate. secure_boot_ok stays false here (no medium), so
     // every OTHER trust-dependent step (passphrase, audit, persistent decrypt)
     // remains fail-closed.
+    //
+    // WHY the allow: see `INITRAMFS`'s identical note above -- hoisting out of
+    // `run()`'s boot narrative to satisfy a line-position lint would separate
+    // this from its use three lines below by well over a thousand lines.
+    #[allow(clippy::items_after_statements)]
     static INITRAMFS_SIG: &[u8; 64] =
         include_bytes!(concat!(env!("OUT_DIR"), "/initramfs_sig.bin"));
     let userspace_image_verified =
         crate::secure_boot::verify_userspace_image(INITRAMFS, INITRAMFS_SIG);
-    if !(state.secure_boot_ok || userspace_image_verified) {
-        // Fail-closed: no verified medium AND no verified image-resident image.
-        serial.log(
-            " WARN Userspace spawn refused (no verified boot medium or image -- fail-closed)\r\n",
-        );
-    } else {
+    if state.secure_boot_ok || userspace_image_verified {
         if userspace_image_verified && !state.secure_boot_ok {
             serial.log(" Userspace: image-resident initramfs signature verified (boot anchor)\r\n");
         }
@@ -1809,6 +1817,11 @@ pub unsafe fn run() -> ! {
                 state.userspace_entries_missing
             );
         }
+    } else {
+        // Fail-closed: no verified medium AND no verified image-resident image.
+        serial.log(
+            " WARN Userspace spawn refused (no verified boot medium or image -- fail-closed)\r\n",
+        );
     }
 
     // Boot is complete; the boot context now becomes the idle loop. Enable
