@@ -110,9 +110,8 @@ impl SlabClass {
 
         // SAFETY: page allocator is initialized before the slab allocator.
         let phys = unsafe { page_fn() };
-        let page_addr = match phys {
-            Some(a) => a,
-            None => return false,
+        let Some(page_addr) = phys else {
+            return false;
         };
 
         let page_ptr = page_addr as *mut u8;
@@ -135,6 +134,13 @@ impl SlabClass {
             // always a multiple of 4 -- `FreeNode`'s alignment requirement.
             // `.cast()` keeps that a type-checked reinterpretation rather
             // than a raw `as`.
+            //
+            // WHY the allow: `cast_ptr_alignment` fires on `.cast()` the same
+            // as on `as` -- it cannot see the page-alignment + size-class
+            // multiple-of-4 proof in the INVARIANT above, which is exactly
+            // what discharges the alignment obligation the lint exists to
+            // demand.
+            #[allow(clippy::cast_ptr_alignment)]
             let node_ptr = unsafe { page_ptr.add(i * self.obj_size).cast::<FreeNode>() };
             unsafe {
                 (*node_ptr).next = self.free_list;
@@ -197,6 +203,11 @@ impl SlabClass {
         // obj_size-multiple offset `refill` establishes (see that
         // function's comment) -- `.cast()` keeps the reinterpretation
         // type-checked instead of re-deriving alignment by hand.
+        //
+        // WHY the allow: see `refill`'s identical `cast_ptr_alignment` note
+        // -- the lint fires on `.cast()` too and cannot see the INVARIANT
+        // above that discharges it.
+        #[allow(clippy::cast_ptr_alignment)]
         let node = ptr.cast::<FreeNode>();
         unsafe {
             (*node).next = self.free_list;
@@ -268,33 +279,30 @@ impl SlabAllocator {
 
         let size = layout.size().max(layout.align());
 
-        match Self::class_for(size) {
-            Some(idx) => {
-                // SAFETY: delegated to alloc_obj's contract; page_fn is valid.
-                unsafe { self.classes[idx].alloc_obj(page_fn) }
-            }
-            None => {
-                // Large allocation: back it with whole pages from the page
-                // allocator.
-                let pages = (size + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
-                let addr = if pages == 1 {
-                    // SAFETY: large_alloc_fn returns a page from an initialized
-                    // page allocator (injected so the single-page path stays
-                    // host-fakeable).
-                    unsafe { large_alloc_fn() }
-                } else {
-                    // WHY (#475): multi-page requests need a contiguous run;
-                    // the injected single-page fn cannot express that, so go
-                    // direct to the page allocator's contiguous path.
-                    page::alloc_contiguous(pages)
-                };
-                match addr {
-                    Some(a) => {
-                        self.large_alloc_count += 1;
-                        a as *mut u8
-                    }
-                    None => ptr::null_mut(),
+        if let Some(idx) = Self::class_for(size) {
+            // SAFETY: delegated to alloc_obj's contract; page_fn is valid.
+            unsafe { self.classes[idx].alloc_obj(page_fn) }
+        } else {
+            // Large allocation: back it with whole pages from the page
+            // allocator.
+            let pages = size.div_ceil(page::PAGE_SIZE);
+            let addr = if pages == 1 {
+                // SAFETY: large_alloc_fn returns a page from an initialized
+                // page allocator (injected so the single-page path stays
+                // host-fakeable).
+                unsafe { large_alloc_fn() }
+            } else {
+                // WHY (#475): multi-page requests need a contiguous run;
+                // the injected single-page fn cannot express that, so go
+                // direct to the page allocator's contiguous path.
+                page::alloc_contiguous(pages)
+            };
+            match addr {
+                Some(a) => {
+                    self.large_alloc_count += 1;
+                    a as *mut u8
                 }
+                None => ptr::null_mut(),
             }
         }
     }
@@ -317,27 +325,24 @@ impl SlabAllocator {
 
         let size = layout.size().max(layout.align());
 
-        match Self::class_for(size) {
-            Some(idx) => {
-                // SAFETY: delegated to dealloc_obj's contract.
-                unsafe { self.classes[idx].dealloc_obj(ptr) };
+        if let Some(idx) = Self::class_for(size) {
+            // SAFETY: delegated to dealloc_obj's contract.
+            unsafe { self.classes[idx].dealloc_obj(ptr) };
+        } else {
+            // ptr was returned by alloc_inner's large path, so it is a
+            // page-aligned base of `pages` whole pages.
+            let pages = size.div_ceil(page::PAGE_SIZE);
+            if pages == 1 {
+                // SAFETY: single-page large alloc came from large_alloc_fn.
+                unsafe { large_free_fn(ptr as usize) };
+            } else {
+                // WHY (#475): free the contiguous run alloc_contiguous
+                // handed out. The bool return is a validated no-op on a bad
+                // address (not an error to propagate).
+                // SAFETY: ptr/pages name the run from alloc_contiguous.
+                unsafe { page::free_contiguous(ptr as usize, pages) };
             }
-            None => {
-                // ptr was returned by alloc_inner's large path, so it is a
-                // page-aligned base of `pages` whole pages.
-                let pages = (size + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
-                if pages == 1 {
-                    // SAFETY: single-page large alloc came from large_alloc_fn.
-                    unsafe { large_free_fn(ptr as usize) };
-                } else {
-                    // WHY (#475): free the contiguous run alloc_contiguous
-                    // handed out. The bool return is a validated no-op on a bad
-                    // address (not an error to propagate).
-                    // SAFETY: ptr/pages name the run from alloc_contiguous.
-                    unsafe { page::free_contiguous(ptr as usize, pages) };
-                }
-                self.large_free_count += 1;
-            }
+            self.large_free_count += 1;
         }
     }
 
@@ -416,8 +421,8 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 layout,
                 // SAFETY: wrapping the free function: alloc_page returns None on
                 // exhaustion, never panics.
-                || page::alloc_page(),
-                || page::alloc_page(),
+                page::alloc_page,
+                page::alloc_page,
             )
         }
     }
@@ -427,7 +432,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
         // returned by alloc_page.
         unsafe {
             let _g = LOCK.lock();
-            (*ptr::addr_of_mut!(SLAB)).dealloc_inner(ptr, layout, page::free_page)
+            (*ptr::addr_of_mut!(SLAB)).dealloc_inner(ptr, layout, page::free_page);
         }
     }
 }
@@ -474,7 +479,7 @@ mod tests {
             if TEST_NEXT_PAGE >= TEST_PAGES {
                 return None;
             }
-            let base = core::ptr::addr_of_mut!(TEST_POOL) as *mut u8 as usize;
+            let base = core::ptr::addr_of_mut!(TEST_POOL).cast::<u8>() as usize;
             let addr = base + TEST_NEXT_PAGE * page::PAGE_SIZE;
             TEST_NEXT_PAGE += 1;
             Some(addr)
@@ -593,15 +598,15 @@ mod tests {
     fn stress_test_no_leaks() {
         // Alloc + free 1000 objects; alloc_count must equal free_count.
         unsafe {
+            const N: usize = 1000;
             let mut sa = make_allocator();
             let layout = Layout::from_size_align(128, 8).unwrap();
-            const N: usize = 1000;
             let mut ptrs = [ptr::null_mut::<u8>(); N];
-            for p in ptrs.iter_mut() {
+            for p in &mut ptrs {
                 *p = sa.alloc_inner(layout, fake_alloc_page, fake_alloc_page);
                 assert!(!p.is_null());
             }
-            for &p in ptrs.iter() {
+            for &p in &ptrs {
                 sa.dealloc_inner(p, layout, fake_free_page);
             }
             let (allocs, frees) = sa.stats();
@@ -641,7 +646,7 @@ mod tests {
             if TEST_SCARCE_NEXT_PAGE >= TEST_SCARCE_PAGES {
                 return None;
             }
-            let base = core::ptr::addr_of_mut!(TEST_POOL) as *mut u8 as usize;
+            let base = core::ptr::addr_of_mut!(TEST_POOL).cast::<u8>() as usize;
             let addr = base + TEST_SCARCE_NEXT_PAGE * page::PAGE_SIZE;
             TEST_SCARCE_NEXT_PAGE += 1;
             Some(addr)
