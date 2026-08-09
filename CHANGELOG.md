@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2](https://github.com/forkwright/thumos/compare/v0.2.1...v0.2.2) (2026-08-09)
+
+
+### Bug Fixes
+
+* **kernel:** finish the cast/conversion pass over [#672](https://github.com/forkwright/thumos/issues/672)'s correctness-adjacent findings ([#680](https://github.com/forkwright/thumos/issues/680)) ([fb4c347](https://github.com/forkwright/thumos/commit/fb4c34741e9c208ee291b35911ca1b8a0e9564d4))
+* **kernel:** give must-use attributes real messages or drop them ([#681](https://github.com/forkwright/thumos/issues/681)) ([394677f](https://github.com/forkwright/thumos/commit/394677f4669d5bdbad77d4d5228e5af3fce75fc8)), closes [#672](https://github.com/forkwright/thumos/issues/672)
+
 ## [0.2.1](https://github.com/forkwright/thumos/compare/v0.2.0...v0.2.1) (2026-08-09)
 
 
