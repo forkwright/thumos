@@ -828,7 +828,8 @@ static mut SERIAL_RX_RING: SerialRxRing = SerialRxRing::new();
 /// Run `f` on the serial RX ring under the IRQ-safe lock. Single accessor so
 /// the lock can never be bypassed by a future call site.
 fn with_serial_rx<R>(f: impl FnOnce(&mut SerialRxRing) -> R) -> R {
-    let _guard = SERIAL_RX_RING_LOCK.lock();
+    // FALSIFICATION (#666): lock bypassed on purpose to prove the
+    // contention test detects it. Revert before merge.
     // SAFETY: the lock serializes the ISR push path and the reader drain
     // path; this is the only accessor to the static ring.
     unsafe { f(&mut *core::ptr::addr_of_mut!(SERIAL_RX_RING)) }
