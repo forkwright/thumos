@@ -34,7 +34,11 @@ use metaxu_core::session::AuthenticatedSession;
 use ulid::Ulid;
 
 use crate::board::UART1_BASE;
-use crate::uart_pl011::Uart;
+// WHY `crate::uart`, not `crate::uart_pl011`: main.rs path-swaps the
+// driver FILE under the `qemu` feature (`#[path = "uart_pl011.rs"] mod
+// uart;`) -- the MODULE name every caller in this kernel uses is `uart`
+// regardless of which file backs it.
+use crate::uart::Uart;
 
 /// Status: the authenticated request was accepted.
 pub(crate) const METAXU_ACCEPTED: u32 = 0;
