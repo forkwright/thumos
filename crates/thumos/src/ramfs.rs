@@ -283,25 +283,22 @@ impl RamFs {
                 .find(|(n, _)| n == component)
                 .map(|(_, id)| *id);
 
-            match existing {
-                Some(child_id) => {
-                    current = child_id;
-                }
-                None => {
-                    // Create new directory inode
-                    let new_id = self.next_inode;
-                    self.next_inode += 1;
-                    self.inodes.push(RamInode {
-                        inode_type: InodeType::Directory,
-                        data: Vec::new(),
-                        children: Vec::new(),
-                        parent: current,
-                    });
-                    self.inodes[current as usize]
-                        .children
-                        .push((String::from(component), new_id));
-                    current = new_id;
-                }
+            if let Some(child_id) = existing {
+                current = child_id;
+            } else {
+                // Create new directory inode
+                let new_id = self.next_inode;
+                self.next_inode += 1;
+                self.inodes.push(RamInode {
+                    inode_type: InodeType::Directory,
+                    data: Vec::new(),
+                    children: Vec::new(),
+                    parent: current,
+                });
+                self.inodes[current as usize]
+                    .children
+                    .push((String::from(component), new_id));
+                current = new_id;
             }
         }
 
@@ -571,10 +568,11 @@ impl Filesystem for RamFs {
         let child_id = dir.children[child_pos].1;
 
         // If child is a directory, check it's empty
-        if let Some(child) = self.inodes.get(child_id as usize) {
-            if child.inode_type == InodeType::Directory && !child.children.is_empty() {
-                return Err(VfsError::NotEmpty);
-            }
+        if let Some(child) = self.inodes.get(child_id as usize)
+            && child.inode_type == InodeType::Directory
+            && !child.children.is_empty()
+        {
+            return Err(VfsError::NotEmpty);
         }
 
         // Remove from parent's children list
@@ -1052,8 +1050,8 @@ mod tests {
     #[test]
     fn parse_cpio_creates_files() {
         let mut archive = Vec::new();
-        archive.extend(build_cpio_entry("init", b"#!/bin/sh", 0o100755));
-        archive.extend(build_cpio_entry("config.toml", b"key=val", 0o100644));
+        archive.extend(build_cpio_entry("init", b"#!/bin/sh", 0o100_755));
+        archive.extend(build_cpio_entry("config.toml", b"key=val", 0o100_644));
         archive.extend(build_cpio_trailer());
 
         let fs = RamFs::from_cpio(&archive);
@@ -1072,8 +1070,8 @@ mod tests {
     #[test]
     fn parse_cpio_strips_dot_slash_prefixes() {
         let mut archive = Vec::new();
-        archive.extend(build_cpio_entry("./init", b"#!/bin/sh", 0o100755));
-        archive.extend(build_cpio_entry("./etc/hostname", b"thumos", 0o100644));
+        archive.extend(build_cpio_entry("./init", b"#!/bin/sh", 0o100_755));
+        archive.extend(build_cpio_entry("./etc/hostname", b"thumos", 0o100_644));
         archive.extend(build_cpio_trailer());
 
         let fs = RamFs::from_cpio(&archive);
@@ -1085,7 +1083,7 @@ mod tests {
 
     #[test]
     fn parse_cpio_rejects_zero_namesize() {
-        let mut archive = build_cpio_entry("init", b"#!/bin/sh", 0o100755);
+        let mut archive = build_cpio_entry("init", b"#!/bin/sh", 0o100_755);
         archive[94..102].copy_from_slice(b"00000000");
 
         let fs = RamFs::from_cpio(&archive);
@@ -1099,7 +1097,7 @@ mod tests {
 
     #[test]
     fn parse_cpio_rejects_invalid_utf8_name() {
-        let mut archive = build_cpio_entry("init", b"#!/bin/sh", 0o100755);
+        let mut archive = build_cpio_entry("init", b"#!/bin/sh", 0o100_755);
         // Corrupt the first name byte (header is exactly 110 bytes, so the
         // name field starts at offset 110). 0xFF can never start a valid
         // UTF-8 sequence.
@@ -1117,7 +1115,7 @@ mod tests {
 
     #[test]
     fn parse_cpio_rejects_filesize_exceeding_remaining_archive() {
-        let mut archive = build_cpio_entry("init", b"#!/bin/sh", 0o100755);
+        let mut archive = build_cpio_entry("init", b"#!/bin/sh", 0o100_755);
         // Claim a filesize far larger than any data actually present in
         // the archive -- data_end = data_start + filesize must be
         // rejected before the out-of-bounds slice &data[data_start..data_end]
@@ -1138,9 +1136,9 @@ mod tests {
     fn parse_cpio_creates_directories() {
         let mut archive = Vec::new();
         // Directory entry
-        archive.extend(build_cpio_entry("etc", &[], 0o040755));
+        archive.extend(build_cpio_entry("etc", &[], 0o040_755));
         // File inside directory
-        archive.extend(build_cpio_entry("etc/hostname", b"thumos", 0o100644));
+        archive.extend(build_cpio_entry("etc/hostname", b"thumos", 0o100_644));
         archive.extend(build_cpio_trailer());
 
         let fs = RamFs::from_cpio(&archive);
@@ -1184,7 +1182,7 @@ mod tests {
     fn parse_cpio_creates_implicit_parent_dirs() {
         let mut archive = Vec::new();
         // File in nested path without explicit directory entries
-        archive.extend(build_cpio_entry("usr/bin/hello", b"binary", 0o100755));
+        archive.extend(build_cpio_entry("usr/bin/hello", b"binary", 0o100_755));
         archive.extend(build_cpio_trailer());
 
         let fs = RamFs::from_cpio(&archive);

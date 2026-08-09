@@ -206,8 +206,13 @@ impl SimManager {
                 self.sim_info.pin_required = true;
                 Ok(false)
             }
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: CmsError deliberately collapses into the same
+            // TelephonyError::CmeError variant as CmeError -- there is no
+            // distinct CmsError case in TelephonyError, per
+            // query_operator_maps_at_error_branches below.
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -223,8 +228,9 @@ impl SimManager {
     /// "unknown" and must NOT assume attempts remain. NOTE: the exact
     /// MT6739 `+CPINR` report format is bench-verify before relying on the
     /// count for a last-attempt warning on hardware.
+    // WHY: no `self` -- the count comes straight back from the modem and is
+    // never cached on `SimManager` (same shape as `query_operator` below).
     pub(crate) fn pin_attempts_remaining<T: ModemTransport>(
-        &mut self,
         transport: &mut T,
     ) -> Result<Option<u8>, TelephonyError> {
         let (result, info_line, info_len) = send_with_info(transport, "AT+CPINR", 5000)?;
@@ -233,8 +239,10 @@ impl SimManager {
                 &info_line[..info_len],
             )),
             AtResponse::Ok => Ok(None),
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: see check_pin above -- CmsError collapses into CmeError.
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -259,8 +267,10 @@ impl SimManager {
         let (result, _info, _len) = send_with_info(transport, &command, 8000)?;
         match result {
             AtResponse::Ok => self.check_pin(transport),
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: see check_pin above -- CmsError collapses into CmeError.
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -284,7 +294,7 @@ impl SimManager {
         if !valid_puk_format(puk) || !valid_pin_format(new_pin) {
             return Err(TelephonyError::InvalidState);
         }
-        let attempts = self.pin_attempts_remaining(transport)?;
+        let attempts = Self::pin_attempts_remaining(transport)?;
         if attempts.unwrap_or(1) <= 1 && !confirm_last_attempt {
             return Err(TelephonyError::ConfirmationRequired);
         }
@@ -292,8 +302,10 @@ impl SimManager {
         let (result, _info, _len) = send_with_info(transport, &command, 8000)?;
         match result {
             AtResponse::Ok => self.check_pin(transport),
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: see check_pin above -- CmsError collapses into CmeError.
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -326,8 +338,10 @@ impl SimManager {
                 Ok(())
             }
             AtResponse::Ok => Ok(()),
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: see check_pin above -- CmsError collapses into CmeError.
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -366,8 +380,10 @@ impl SimManager {
                 }
             }
             AtResponse::Ok => Ok(&self.signal_info),
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: see check_pin above -- CmsError collapses into CmeError.
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -387,10 +403,10 @@ impl SimManager {
         transport: &mut T,
         current_tick: u64,
     ) -> Option<Result<&SignalInfo, TelephonyError>> {
-        if let Some(last) = self.last_poll_tick {
-            if current_tick.saturating_sub(last) < SIGNAL_POLL_INTERVAL_MS {
-                return None;
-            }
+        if let Some(last) = self.last_poll_tick
+            && current_tick.saturating_sub(last) < SIGNAL_POLL_INTERVAL_MS
+        {
+            return None;
         }
 
         self.last_poll_tick = Some(current_tick);
@@ -416,8 +432,10 @@ impl SimManager {
                 telephony::parse_cops_response(line, name_buf).ok_or(TelephonyError::ParseError)
             }
             AtResponse::Ok => Ok(0),
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: see check_pin above -- CmsError collapses into CmeError.
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
             AtResponse::Error => Err(TelephonyError::ModemError),
         }
     }
@@ -564,9 +582,8 @@ mod tests {
         let mut sim = SimManager::new();
         let result = sim.check_pin(&mut transport);
         assert!(result.is_ok(), "check_pin must succeed");
-        assert_eq!(
+        assert!(
             result.unwrap_or(false),
-            true,
             "READY response must indicate no PIN required"
         );
         assert!(
@@ -583,9 +600,8 @@ mod tests {
         let mut sim = SimManager::new();
         let result = sim.check_pin(&mut transport);
         assert!(result.is_ok(), "check_pin must succeed");
-        assert_eq!(
-            result.unwrap_or(true),
-            false,
+        assert!(
+            !result.unwrap_or(true),
             "SIM PIN response must indicate PIN required"
         );
         assert!(

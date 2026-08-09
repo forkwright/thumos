@@ -93,6 +93,20 @@ pub(crate) const FD_KIND_MASK: u32 = 0x00FF;
 pub(crate) const FD_KIND_SOCKET: u32 = 0x0002;
 
 // ---------------------------------------------------------------------------
+// Well-known addresses
+// ---------------------------------------------------------------------------
+
+/// The IPv4 loopback address (127.0.0.1).
+///
+/// WHY named constant + local allow: smoltcp's `Ipv4Address` carries
+/// `UNSPECIFIED`/`BROADCAST` but no `LOCALHOST` -- unlike
+/// `core::net::Ipv4Addr`, which clippy's `ip_constant` lint otherwise
+/// steers callers toward. This is the one place the raw octets are
+/// spelled out; every other use in this file names this constant instead.
+#[allow(clippy::ip_constant)]
+pub(crate) const LOOPBACK_ADDR: Ipv4Address = Ipv4Address::new(127, 0, 0, 1);
+
+// ---------------------------------------------------------------------------
 // Socket metadata
 // ---------------------------------------------------------------------------
 
@@ -128,6 +142,12 @@ pub struct SocketInfo {
 ///
 /// Layout matches the 32-bit ARM Linux `struct sockaddr_in`.
 /// Port and address are in network byte order (big-endian).
+// WHY: the `sin_*` prefix on every field is the actual POSIX `struct
+// sockaddr_in` field naming (`sin_family`, `sin_port`, `sin_addr`,
+// `sin_zero`) -- this struct exists to mirror that ABI layout field-for-
+// field; dropping the prefix would decouple the names from the spec they
+// document.
+#[allow(clippy::struct_field_names)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SockaddrIn {
@@ -214,7 +234,7 @@ pub unsafe fn init_network_stack() {
         let device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
         let mac = net::randomized_local_ethernet_address();
         let mut stack = NetworkStack::new(device, mac, Instant::from_millis(0));
-        stack.set_ipv4_addr(Ipv4Address::new(127, 0, 0, 1), 8);
+        stack.set_ipv4_addr(LOOPBACK_ADDR, 8);
         let ns = &mut *core::ptr::addr_of_mut!(NETWORK_STACK);
         *ns = Some(stack);
     }
@@ -288,9 +308,9 @@ static mut NEXT_EPHEMERAL_PORT: u16 = 49152;
 /// and `SOCKET_TABLE`.
 unsafe fn alloc_ephemeral_port() -> Option<u16> {
     unsafe {
+        const EPHEMERAL_RANGE: u16 = 65535 - 49152 + 1;
         let table = get_socket_table();
 
-        const EPHEMERAL_RANGE: u16 = 65535 - 49152 + 1;
         let start = {
             let mut rand_buf = [0u8; 2];
             match csprng::kernel_random_bytes(&mut rand_buf) {
@@ -348,9 +368,8 @@ pub(crate) fn sys_socket(domain: u32, sock_type: u32, _protocol: u32) -> u32 {
     };
 
     // SAFETY: single-core cooperative kernel; init_network_stack called.
-    let stack = match unsafe { get_network_stack() } {
-        Some(s) => s,
-        None => return fd::EBADF,
+    let Some(stack) = (unsafe { get_network_stack() }) else {
+        return fd::EBADF;
     };
 
     let handle = match socket_type {
@@ -440,9 +459,8 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     // name a socket it owns, and the OFD index -- not the fd number -- keys
     // SOCKET_TABLE, so per-process fd numbers can never collide across
     // processes.
-    let flags = match fd::current_fd_flags(fd_idx) {
-        Some(f) => f,
-        None => return fd::EBADF,
+    let Some(flags) = fd::current_fd_flags(fd_idx) else {
+        return fd::EBADF;
     };
     if !is_socket_fd(flags) {
         return fd::EBADF;
@@ -470,18 +488,18 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
         if i == ofd_idx {
             continue;
         }
-        if let Some(other) = slot {
-            if other.bound_port == port && other.socket_type == socket_type {
-                return EADDRINUSE;
-            }
+        if let Some(other) = slot
+            && other.bound_port == port
+            && other.socket_type == socket_type
+        {
+            return EADDRINUSE;
         }
     }
 
     // Bind in smoltcp.
     // SAFETY: single-core cooperative kernel; init_network_stack called.
-    let stack = match unsafe { get_network_stack() } {
-        Some(s) => s,
-        None => return fd::EBADF,
+    let Some(stack) = (unsafe { get_network_stack() }) else {
+        return fd::EBADF;
     };
 
     let local_addr = sockaddr.ipv4_addr();
@@ -579,9 +597,8 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     // name a socket it owns, and the OFD index -- not the fd number -- keys
     // SOCKET_TABLE, so per-process fd numbers can never collide across
     // processes.
-    let flags = match fd::current_fd_flags(fd_idx) {
-        Some(f) => f,
-        None => return fd::EBADF,
+    let Some(flags) = fd::current_fd_flags(fd_idx) else {
+        return fd::EBADF;
     };
     if !is_socket_fd(flags) {
         return fd::EBADF;
@@ -634,7 +651,7 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
             let connect_result = unsafe {
                 let stack_ptr = &mut *core::ptr::addr_of_mut!(NETWORK_STACK);
                 let stack_ref = match stack_ptr.as_mut() {
-                    Some(s) => s as *mut SocketNetworkStack,
+                    Some(s) => core::ptr::from_mut::<SocketNetworkStack>(s),
                     None => return fd::EBADF,
                 };
                 let cx = (*stack_ref).iface_mut().context();
@@ -736,9 +753,8 @@ pub(crate) fn sys_sendto(
     // name a socket it owns, and the OFD index -- not the fd number -- keys
     // SOCKET_TABLE, so per-process fd numbers can never collide across
     // processes.
-    let flags = match fd::current_fd_flags(fd_idx) {
-        Some(f) => f,
-        None => return fd::EBADF,
+    let Some(flags) = fd::current_fd_flags(fd_idx) else {
+        return fd::EBADF;
     };
     if !is_socket_fd(flags) {
         return fd::EBADF;
@@ -750,9 +766,8 @@ pub(crate) fn sys_sendto(
 
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
-    let info = match &sock_table[ofd_idx] {
-        Some(i) => i,
-        None => return fd::EBADF,
+    let Some(info) = &sock_table[ofd_idx] else {
+        return fd::EBADF;
     };
 
     // SAFETY: validate_user_buffer confirmed [buf_ptr, buf_ptr+len) lies
@@ -760,9 +775,8 @@ pub(crate) fn sys_sendto(
     let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
 
     // SAFETY: single-core cooperative kernel; init_network_stack called.
-    let stack = match unsafe { get_network_stack() } {
-        Some(s) => s,
-        None => return fd::EBADF,
+    let Some(stack) = (unsafe { get_network_stack() }) else {
+        return fd::EBADF;
     };
 
     match info.socket_type {
@@ -805,9 +819,8 @@ pub(crate) fn sys_sendto(
             // Auto-bind if not yet bound.
             if !udp_socket.is_open() {
                 // SAFETY: single-core cooperative kernel.
-                let local_port = match unsafe { alloc_ephemeral_port() } {
-                    Some(p) => p,
-                    None => return EADDRINUSE,
+                let Some(local_port) = (unsafe { alloc_ephemeral_port() }) else {
+                    return EADDRINUSE;
                 };
                 if udp_socket.bind(local_port).is_err() {
                     return fd::EINVAL;
@@ -873,9 +886,8 @@ pub(crate) fn sys_recvfrom(
     // name a socket it owns, and the OFD index -- not the fd number -- keys
     // SOCKET_TABLE, so per-process fd numbers can never collide across
     // processes.
-    let flags = match fd::current_fd_flags(fd_idx) {
-        Some(f) => f,
-        None => return fd::EBADF,
+    let Some(flags) = fd::current_fd_flags(fd_idx) else {
+        return fd::EBADF;
     };
     if !is_socket_fd(flags) {
         return fd::EBADF;
@@ -887,9 +899,8 @@ pub(crate) fn sys_recvfrom(
 
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
-    let info = match &sock_table[ofd_idx] {
-        Some(i) => i,
-        None => return fd::EBADF,
+    let Some(info) = &sock_table[ofd_idx] else {
+        return fd::EBADF;
     };
 
     // SAFETY: validate_user_buffer confirmed [buf_ptr, buf_ptr+len) lies
@@ -897,9 +908,8 @@ pub(crate) fn sys_recvfrom(
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
 
     // SAFETY: single-core cooperative kernel; init_network_stack called.
-    let stack = match unsafe { get_network_stack() } {
-        Some(s) => s,
-        None => return fd::EBADF,
+    let Some(stack) = (unsafe { get_network_stack() }) else {
+        return fd::EBADF;
     };
 
     match info.socket_type {
@@ -977,9 +987,8 @@ pub(crate) fn sys_recvfrom(
 pub(crate) fn on_socket_fd_closed(ofd_idx: usize) {
     // SAFETY: single-core cooperative kernel.
     let sock_table = unsafe { get_socket_table() };
-    let info = match sock_table[ofd_idx].take() {
-        Some(i) => i,
-        None => return,
+    let Some(info) = sock_table[ofd_idx].take() else {
+        return;
     };
 
     // Remove the socket from the smoltcp stack.
@@ -1272,22 +1281,22 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn bind_sets_local_port_syscall() {
-        unsafe {
-            setup_test_network();
-        }
-        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
         static mut ADDR: SockaddrIn = SockaddrIn {
             sin_family: 0,
             sin_port: 0,
             sin_addr: 0,
             sin_zero: [0u8; 8],
         };
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
         // SAFETY: test-only static; single-threaded per test.
         let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
-        *addr = SockaddrIn::new(8080, Ipv4Address::new(127, 0, 0, 1));
+        *addr = SockaddrIn::new(8080, LOOPBACK_ADDR);
         let result = sys_bind(
             fd,
-            addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(result, 0, "bind should succeed");
@@ -1300,6 +1309,18 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn udp_bind_does_not_conflict_with_tcp_bind_on_same_port() {
+        static mut TCP_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        static mut UDP_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
         unsafe {
             setup_test_network();
         }
@@ -1307,34 +1328,22 @@ mod tests {
         let udp_fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
         assert!(tcp_fd < MAX_FDS as u32 && udp_fd < MAX_FDS as u32);
 
-        static mut TCP_ADDR: SockaddrIn = SockaddrIn {
-            sin_family: 0,
-            sin_port: 0,
-            sin_addr: 0,
-            sin_zero: [0u8; 8],
-        };
         // SAFETY: test-only static; single-threaded per test.
         let tcp_addr = unsafe { &mut *core::ptr::addr_of_mut!(TCP_ADDR) };
-        *tcp_addr = SockaddrIn::new(53, Ipv4Address::new(0, 0, 0, 0));
+        *tcp_addr = SockaddrIn::new(53, Ipv4Address::UNSPECIFIED);
         let tcp_bind = sys_bind(
             tcp_fd,
-            tcp_addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(tcp_addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(tcp_bind, 0, "TCP bind to port 53 must succeed");
 
-        static mut UDP_ADDR: SockaddrIn = SockaddrIn {
-            sin_family: 0,
-            sin_port: 0,
-            sin_addr: 0,
-            sin_zero: [0u8; 8],
-        };
         // SAFETY: test-only static; single-threaded per test.
         let udp_addr = unsafe { &mut *core::ptr::addr_of_mut!(UDP_ADDR) };
-        *udp_addr = SockaddrIn::new(53, Ipv4Address::new(0, 0, 0, 0));
+        *udp_addr = SockaddrIn::new(53, Ipv4Address::UNSPECIFIED);
         let udp_bind = sys_bind(
             udp_fd,
-            udp_addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(udp_addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(
@@ -1361,24 +1370,24 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn udp_connect_rejects_peer_port_zero() {
-        unsafe {
-            setup_test_network();
-        }
-        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
-        assert!(fd < MAX_FDS as u32);
-
         static mut ADDR: SockaddrIn = SockaddrIn {
             sin_family: 0,
             sin_port: 0,
             sin_addr: 0,
             sin_zero: [0u8; 8],
         };
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
         // SAFETY: test-only static; single-threaded per test.
         let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
         *addr = SockaddrIn::new(0, Ipv4Address::new(93, 184, 216, 34));
         let result = sys_connect(
             fd,
-            addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(
@@ -1407,13 +1416,6 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn tcp_bind_then_connect_succeeds() {
-        unsafe {
-            setup_test_network();
-        }
-
-        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
-        assert!(fd < MAX_FDS as u32);
-
         // WHY function-local `static mut`: sys_bind/sys_connect now validate
         // addr_ptr via validate_user_buffer (issue #291) before
         // dereferencing it. A stack address falls outside
@@ -1425,15 +1427,28 @@ mod tests {
             sin_addr: 0,
             sin_zero: [0u8; 8],
         };
+        static mut CONNECT_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        unsafe {
+            setup_test_network();
+        }
+
+        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
         // SAFETY: test-only static; single-threaded per test.
         let bind_addr = unsafe { &mut *core::ptr::addr_of_mut!(BIND_ADDR) };
-        *bind_addr = SockaddrIn::new(40000, Ipv4Address::new(0, 0, 0, 0));
+        *bind_addr = SockaddrIn::new(40000, Ipv4Address::UNSPECIFIED);
 
         // bind() to a specific source port first, per the standard POSIX
         // bind()-then-connect() client pattern.
         let bind_result = sys_bind(
             fd,
-            bind_addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(bind_addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(bind_result, 0, "bind must succeed");
@@ -1453,18 +1468,12 @@ mod tests {
             "bind() must leave the TCP socket in CLOSED state, not LISTEN"
         );
 
-        static mut CONNECT_ADDR: SockaddrIn = SockaddrIn {
-            sin_family: 0,
-            sin_port: 0,
-            sin_addr: 0,
-            sin_zero: [0u8; 8],
-        };
         // SAFETY: test-only static; single-threaded per test.
         let connect_addr = unsafe { &mut *core::ptr::addr_of_mut!(CONNECT_ADDR) };
         *connect_addr = SockaddrIn::new(80, Ipv4Address::new(93, 184, 216, 34));
         let connect_result = sys_connect(
             fd,
-            connect_addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(connect_addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(
@@ -1477,32 +1486,32 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn tcp_connect_twice_returns_eisconn_not_econnrefused() {
-        unsafe {
-            setup_test_network();
-        }
-        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
-        assert!(fd < MAX_FDS as u32);
-
         static mut ADDR: SockaddrIn = SockaddrIn {
             sin_family: 0,
             sin_port: 0,
             sin_addr: 0,
             sin_zero: [0u8; 8],
         };
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
         // SAFETY: test-only static; single-threaded per test.
         let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
         *addr = SockaddrIn::new(80, Ipv4Address::new(93, 184, 216, 34));
 
         let first = sys_connect(
             fd,
-            addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(first, 0, "first connect() must succeed");
 
         let second = sys_connect(
             fd,
-            addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(
@@ -1515,25 +1524,25 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn tcp_connect_without_prior_bind_allocates_port_and_sets_connected_state() {
-        unsafe {
-            setup_test_network();
-        }
-        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
-        assert!(fd < MAX_FDS as u32);
-
         static mut ADDR: SockaddrIn = SockaddrIn {
             sin_family: 0,
             sin_port: 0,
             sin_addr: 0,
             sin_zero: [0u8; 8],
         };
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_STREAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
         // SAFETY: test-only static; single-threaded per test.
         let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
         *addr = SockaddrIn::new(80, Ipv4Address::new(93, 184, 216, 34));
 
         let result = sys_connect(
             fd,
-            addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(
@@ -1589,18 +1598,18 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn udp_sendto_unaddressable_dest_returns_edestaddrreq() {
-        unsafe {
-            setup_test_network();
-        }
-        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
-        assert!(fd < MAX_FDS as u32);
-
         static mut DEST: SockaddrIn = SockaddrIn {
             sin_family: 0,
             sin_port: 0,
             sin_addr: 0,
             sin_zero: [0u8; 8],
         };
+        unsafe {
+            setup_test_network();
+        }
+        let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
+        assert!(fd < MAX_FDS as u32);
+
         // SAFETY: test-only static; single-threaded per test.
         let dest = unsafe { &mut *core::ptr::addr_of_mut!(DEST) };
         // Port 0 on an EXPLICIT sendto destination bypasses sys_connect()
@@ -1614,7 +1623,7 @@ mod tests {
             data.as_ptr() as u32,
             data.len() as u32,
             0,
-            dest as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(dest) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(
@@ -1627,13 +1636,13 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn udp_recvfrom_with_no_data_returns_eagain_not_zero() {
+        static mut BUF: [u8; 16] = [0u8; 16];
         unsafe {
             setup_test_network();
         }
         let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
         assert!(fd < MAX_FDS as u32);
 
-        static mut BUF: [u8; 16] = [0u8; 16];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
 
@@ -1649,6 +1658,25 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "32")]
     fn udp_recvfrom_writes_back_the_real_datagram_source_address() {
+        static mut BIND_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        static mut DEST_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        static mut RECV_BUF: [u8; 32] = [0u8; 32];
+        static mut SRC_ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
         unsafe {
             setup_test_network();
         }
@@ -1676,18 +1704,12 @@ mod tests {
 
         // Receiver: bound to a fixed port, any local address.
         let receiver_fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
-        static mut BIND_ADDR: SockaddrIn = SockaddrIn {
-            sin_family: 0,
-            sin_port: 0,
-            sin_addr: 0,
-            sin_zero: [0u8; 8],
-        };
         // SAFETY: test-only static; single-threaded per test.
         let bind_addr = unsafe { &mut *core::ptr::addr_of_mut!(BIND_ADDR) };
-        *bind_addr = SockaddrIn::new(9000, Ipv4Address::new(0, 0, 0, 0));
+        *bind_addr = SockaddrIn::new(9000, Ipv4Address::UNSPECIFIED);
         let bind_result = sys_bind(
             receiver_fd,
-            bind_addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(bind_addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(bind_result, 0, "receiver bind must succeed");
@@ -1696,15 +1718,9 @@ mod tests {
         // send. Destination is the broadcast address so the interface
         // dispatches it immediately without needing ARP resolution.
         let sender_fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
-        static mut DEST_ADDR: SockaddrIn = SockaddrIn {
-            sin_family: 0,
-            sin_port: 0,
-            sin_addr: 0,
-            sin_zero: [0u8; 8],
-        };
         // SAFETY: test-only static; single-threaded per test.
         let dest_addr = unsafe { &mut *core::ptr::addr_of_mut!(DEST_ADDR) };
-        *dest_addr = SockaddrIn::new(9000, Ipv4Address::new(255, 255, 255, 255));
+        *dest_addr = SockaddrIn::new(9000, Ipv4Address::BROADCAST);
 
         let payload = b"src-check";
         let send_result = sys_sendto(
@@ -1712,7 +1728,7 @@ mod tests {
             payload.as_ptr() as u32,
             payload.len() as u32,
             0,
-            dest_addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(dest_addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(
@@ -1745,15 +1761,8 @@ mod tests {
             stack.poll(smoltcp::time::Instant::from_millis(i64::from(step) * 10));
         }
 
-        static mut RECV_BUF: [u8; 32] = [0u8; 32];
         // SAFETY: test-only static; single-threaded per test.
         let recv_buf = unsafe { &mut *core::ptr::addr_of_mut!(RECV_BUF) };
-        static mut SRC_ADDR: SockaddrIn = SockaddrIn {
-            sin_family: 0,
-            sin_port: 0,
-            sin_addr: 0,
-            sin_zero: [0u8; 8],
-        };
         // SAFETY: test-only static; single-threaded per test.
         let src_addr = unsafe { &mut *core::ptr::addr_of_mut!(SRC_ADDR) };
 
@@ -1762,7 +1771,7 @@ mod tests {
             recv_buf.as_mut_ptr() as u32,
             recv_buf.len() as u32,
             0,
-            src_addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(src_addr) as u32,
             0,
         );
         assert_eq!(
@@ -1783,7 +1792,7 @@ mod tests {
         // resolver validating which server answered) trusts this value.
         assert_eq!(
             src_addr.ipv4_addr(),
-            Ipv4Address::new(127, 0, 0, 1),
+            LOOPBACK_ADDR,
             "written-back source IP must match the real sender, not the broadcast destination"
         );
         assert_eq!(
@@ -1812,7 +1821,9 @@ mod tests {
     /// the new PCB's context.
     #[cfg(target_pointer_width = "32")]
     fn isolation_test_entry() -> ! {
-        loop {}
+        loop {
+            core::hint::spin_loop();
+        }
     }
 
     /// ISOLATION (CRITICAL): a different process must not be able to name
@@ -1825,6 +1836,19 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn socket_isolation_cross_process_ops_return_ebadf() {
+        static mut ADDR: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
+        static mut RECV_BUF: [u8; 4] = [0u8; 4];
+        static mut ADDR2: SockaddrIn = SockaddrIn {
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: 0,
+            sin_zero: [0u8; 8],
+        };
         // SAFETY: test-only; setup_test_network resets global state.
         unsafe {
             setup_test_network();
@@ -1833,18 +1857,12 @@ mod tests {
         let fd = sys_socket(AF_INET, SOCK_DGRAM, 0);
         assert!(fd < MAX_FDS as u32);
 
-        static mut ADDR: SockaddrIn = SockaddrIn {
-            sin_family: 0,
-            sin_port: 0,
-            sin_addr: 0,
-            sin_zero: [0u8; 8],
-        };
         // SAFETY: test-only static; single-threaded per test.
         let addr = unsafe { &mut *core::ptr::addr_of_mut!(ADDR) };
-        *addr = SockaddrIn::new(9001, Ipv4Address::new(0, 0, 0, 0));
+        *addr = SockaddrIn::new(9001, Ipv4Address::UNSPECIFIED);
         let bind_result = sys_bind(
             fd,
-            addr as *const SockaddrIn as u32,
+            core::ptr::from_ref::<SockaddrIn>(addr) as u32,
             core::mem::size_of::<SockaddrIn>() as u32,
         );
         assert_eq!(bind_result, 0, "proc0 must be able to bind its own socket");
@@ -1863,7 +1881,6 @@ mod tests {
             "a different process must not be able to sendto proc0's socket fd number"
         );
 
-        static mut RECV_BUF: [u8; 4] = [0u8; 4];
         // SAFETY: test-only static; single-threaded per test.
         let recv_buf = unsafe { &mut *core::ptr::addr_of_mut!(RECV_BUF) };
         assert_eq!(
@@ -1872,19 +1889,13 @@ mod tests {
             "a different process must not be able to recvfrom proc0's socket fd number"
         );
 
-        static mut ADDR2: SockaddrIn = SockaddrIn {
-            sin_family: 0,
-            sin_port: 0,
-            sin_addr: 0,
-            sin_zero: [0u8; 8],
-        };
         // SAFETY: test-only static; single-threaded per test.
         let addr2 = unsafe { &mut *core::ptr::addr_of_mut!(ADDR2) };
-        *addr2 = SockaddrIn::new(9002, Ipv4Address::new(0, 0, 0, 0));
+        *addr2 = SockaddrIn::new(9002, Ipv4Address::UNSPECIFIED);
         assert_eq!(
             sys_bind(
                 fd,
-                addr2 as *const SockaddrIn as u32,
+                core::ptr::from_ref::<SockaddrIn>(addr2) as u32,
                 core::mem::size_of::<SockaddrIn>() as u32,
             ),
             fd::EBADF,

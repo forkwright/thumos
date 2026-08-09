@@ -25,8 +25,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::irq;
 
-/// MUSB OTG controller base address on MT6739.
-/// Source: MT6739 device tree `usb0: usb@11210000`.
+// MUSB OTG controller base address (`MUSB_BASE`) lives in `board::m7` --
+// see its doc comment there for the device-tree source and the open
+// GIC-INTID question (#676).
 
 // ---------------------------------------------------------------------------
 // Common register offsets (relative to MUSB_BASE)
@@ -540,7 +541,7 @@ impl SetupPacket {
     #[must_use]
     pub(crate) fn from_bytes(b: &[u8; 8]) -> Self {
         Self {
-            bm_request_type: b.get(0).copied().unwrap_or_default(),
+            bm_request_type: b.first().copied().unwrap_or_default(),
             b_request: b.get(1).copied().unwrap_or_default(),
             w_value: u16::from_le_bytes([
                 b.get(2).copied().unwrap_or_default(),
@@ -610,7 +611,7 @@ impl LineCoding {
     pub(crate) fn to_bytes(self) -> [u8; 7] {
         let r = self.dw_dte_rate.to_le_bytes();
         [
-            r.get(0).copied().unwrap_or_default(),
+            r.first().copied().unwrap_or_default(),
             r.get(1).copied().unwrap_or_default(),
             r.get(2).copied().unwrap_or_default(),
             r.get(3).copied().unwrap_or_default(),
@@ -625,7 +626,7 @@ impl LineCoding {
     pub(crate) fn from_bytes(b: &[u8; 7]) -> Self {
         Self {
             dw_dte_rate: u32::from_le_bytes([
-                b.get(0).copied().unwrap_or_default(),
+                b.first().copied().unwrap_or_default(),
                 b.get(1).copied().unwrap_or_default(),
                 b.get(2).copied().unwrap_or_default(),
                 b.get(3).copied().unwrap_or_default(),
@@ -1016,7 +1017,14 @@ impl UsbController {
     ///
     /// Returns the number of bytes copied. Returns 0 if the ring buffer is
     /// empty. Does not block.
-    pub(crate) fn read_serial(&mut self, buf: &mut [u8]) -> usize {
+    ///
+    /// WHY: no `self` parameter -- the ring is deliberately NOT a
+    /// `UsbController` field (see [`SerialRxRing`]'s doc comment: it must
+    /// stay reachable from the ISR under its own lock, independent of
+    /// whatever borrow of the controller instance is live). An associated
+    /// function says that honestly instead of taking a `self` the body
+    /// never reads.
+    pub(crate) fn read_serial(buf: &mut [u8]) -> usize {
         with_serial_rx(|r| r.drain(buf))
     }
 
@@ -1029,7 +1037,7 @@ impl UsbController {
     ///
     /// [`read_serial`]: UsbController::read_serial
     #[must_use]
-    pub(crate) fn rx_dropped_bytes(&self) -> u32 {
+    pub(crate) fn rx_dropped_bytes() -> u32 {
         with_serial_rx(|r| r.dropped_bytes())
     }
 
@@ -1042,7 +1050,7 @@ impl UsbController {
     /// finding 4) -- see [`rx_dropped_bytes`].
     ///
     /// [`rx_dropped_bytes`]: UsbController::rx_dropped_bytes
-    fn ring_push(&mut self, byte: u8) -> bool {
+    fn ring_push(byte: u8) -> bool {
         with_serial_rx(|r| r.push(byte))
     }
 
@@ -1404,7 +1412,7 @@ impl UsbController {
                 let byte = core::ptr::read_volatile(fifo as *const u8);
                 // Ring-full bytes are counted, not silently dropped -- see
                 // ring_push / rx_dropped_bytes (issue #282 finding 4).
-                self.ring_push(byte);
+                Self::ring_push(byte);
             }
 
             // Clear RxPktRdy to signal we've consumed the packet.
@@ -1453,7 +1461,7 @@ impl UsbController {
     /// # Safety
     ///
     /// `offset` must be a valid 8-bit MUSB register offset.
-    #[inline(always)]
+    #[inline]
     unsafe fn read8(&self, offset: usize) -> u8 {
         // SAFETY: caller verifies offset is a valid 8-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
         unsafe { core::ptr::read_volatile((self.base + offset) as *const u8) }
@@ -1464,7 +1472,7 @@ impl UsbController {
     /// # Safety
     ///
     /// `offset` must be a valid 8-bit MUSB register offset.
-    #[inline(always)]
+    #[inline]
     unsafe fn write8(&self, offset: usize, val: u8) {
         // SAFETY: caller verifies offset is a valid 8-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
         unsafe { core::ptr::write_volatile((self.base + offset) as *mut u8, val) }
@@ -1475,7 +1483,7 @@ impl UsbController {
     /// # Safety
     ///
     /// `offset` must be a valid 16-bit MUSB register, 2-byte aligned.
-    #[inline(always)]
+    #[inline]
     unsafe fn read16(&self, offset: usize) -> u16 {
         // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
         unsafe { core::ptr::read_volatile((self.base + offset) as *const u16) }
@@ -1486,7 +1494,7 @@ impl UsbController {
     /// # Safety
     ///
     /// `offset` must be a valid 16-bit MUSB register, 2-byte aligned.
-    #[inline(always)]
+    #[inline]
     unsafe fn write16(&self, offset: usize, val: u16) {
         // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
         unsafe { core::ptr::write_volatile((self.base + offset) as *mut u16, val) }
@@ -1734,7 +1742,7 @@ mod tests {
             "device descriptor must be exactly 18 bytes per USB 2.0 spec §9.6.1"
         );
         assert_eq!(
-            DEVICE_DESCRIPTOR.get(0).copied().unwrap_or_default(),
+            DEVICE_DESCRIPTOR.first().copied().unwrap_or_default(),
             18,
             "bLength must equal 18"
         );
@@ -2007,15 +2015,13 @@ mod tests {
 
     #[test]
     fn read_serial_empty() {
-        let mut ctrl = UsbController::new();
         let mut buf = [0u8; 16];
-        let n = ctrl.read_serial(&mut buf);
+        let n = UsbController::read_serial(&mut buf);
         assert_eq!(n, 0, "read FROM empty ring buffer must return 0");
     }
 
     #[test]
     fn read_serial_partial() {
-        let mut ctrl = UsbController::new();
         // Prime the shared ring with 3 bytes through the locked push path.
         with_serial_rx(|r| {
             *r = SerialRxRing::new();
@@ -2025,14 +2031,13 @@ mod tests {
         });
 
         let mut buf = [0u8; 8];
-        let n = ctrl.read_serial(&mut buf);
+        let n = UsbController::read_serial(&mut buf);
         assert_eq!(n, 3, "must read exactly 3 bytes");
         assert_eq!(&buf[..3], b"ABC", "bytes must match what was written");
     }
 
     #[test]
     fn ring_push_drops_and_counts_overflow_when_ring_is_full() {
-        let mut ctrl = UsbController::new();
         // SERIAL_RX_BUF_LEN - 1 slots occupied is "full" for a
         // head==tail-means-empty ring.
         with_serial_rx(|r| {
@@ -2040,12 +2045,12 @@ mod tests {
             r.head = SERIAL_RX_BUF_LEN - 1;
             r.tail = 0;
         });
-        assert_eq!(ctrl.rx_dropped_bytes(), 0, "no drops yet");
+        assert_eq!(UsbController::rx_dropped_bytes(), 0, "no drops yet");
 
-        let accepted = ctrl.ring_push(b'X');
+        let accepted = UsbController::ring_push(b'X');
         assert!(!accepted, "ring at capacity must reject the push");
         assert_eq!(
-            ctrl.rx_dropped_bytes(),
+            UsbController::rx_dropped_bytes(),
             1,
             "a dropped byte must be counted, not silently discarded (issue #282 finding 4)"
         );
@@ -2053,18 +2058,20 @@ mod tests {
 
     #[test]
     fn ring_push_accepts_when_space_available() {
-        let mut ctrl = UsbController::new();
         with_serial_rx(|r| {
             *r = SerialRxRing::new();
         });
-        let accepted = ctrl.ring_push(b'Y');
+        let accepted = UsbController::ring_push(b'Y');
         assert!(accepted, "ring with free space must accept the push");
-        assert_eq!(ctrl.rx_dropped_bytes(), 0, "an accepted push is not a drop");
+        assert_eq!(
+            UsbController::rx_dropped_bytes(),
+            0,
+            "an accepted push is not a drop"
+        );
     }
 
     #[test]
     fn ring_push_and_read_wrap_indices_around_buffer_end() {
-        let mut ctrl = UsbController::new();
         // WHY: position the (empty) ring two slots from the buffer end so the
         // third push crosses SERIAL_RX_BUF_LEN - 1 and must wrap the head
         // index back to 0 rather than index past the end of the buffer.
@@ -2075,15 +2082,15 @@ mod tests {
         });
 
         assert!(
-            ctrl.ring_push(b'A'),
+            UsbController::ring_push(b'A'),
             "push into a non-full ring must be accepted"
         );
         assert!(
-            ctrl.ring_push(b'B'),
+            UsbController::ring_push(b'B'),
             "push into a non-full ring must be accepted"
         );
         assert!(
-            ctrl.ring_push(b'C'),
+            UsbController::ring_push(b'C'),
             "push that crosses the buffer end must still be accepted"
         );
 
@@ -2101,7 +2108,7 @@ mod tests {
         });
 
         let mut buf = [0u8; 3];
-        let n = ctrl.read_serial(&mut buf);
+        let n = UsbController::read_serial(&mut buf);
         assert_eq!(
             n, 3,
             "read_serial must drain all 3 bytes across the wrap boundary"
