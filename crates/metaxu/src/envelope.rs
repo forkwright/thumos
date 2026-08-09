@@ -108,6 +108,17 @@ impl MessageKind {
         }
     }
 
+    /// This kind's wire value (the inverse of [`Self::from_u16`]).
+    const fn to_u16(self) -> u16 {
+        match self {
+            Self::TaskRequest => 1,
+            Self::TaskResponse => 2,
+            Self::SttEvent => 3,
+            Self::AuthenticatedRequest => 4,
+            Self::AuthenticatedResponse => 5,
+        }
+    }
+
     /// This kind's payload ceiling.
     const fn payload_ceiling(self) -> u32 {
         match self {
@@ -204,7 +215,7 @@ impl EnvelopeHeader {
         out[4..6].copy_from_slice(&SCHEMA_ID.to_le_bytes());
         out[6] = MAJOR;
         out[7] = MINOR;
-        out[8..10].copy_from_slice(&(self.kind as u16).to_le_bytes());
+        out[8..10].copy_from_slice(&self.kind.to_u16().to_le_bytes());
         out[10..18].copy_from_slice(&self.correlation_id.to_le_bytes());
         out[18..22].copy_from_slice(&self.payload_len.to_le_bytes());
         out
@@ -338,7 +349,13 @@ impl Envelope {
     /// is ceiling-checked BEFORE the payload is copied (#553).
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, EnvelopeError> {
         let header = EnvelopeHeader::parse(bytes)?;
-        let expected = HEADER_LEN + header.payload_len as usize;
+        let payload_len =
+            usize::try_from(header.payload_len).map_err(|_| EnvelopeError::FrameTooLarge {
+                kind: header.kind,
+                declared: header.payload_len,
+                ceiling: header.kind.payload_ceiling(),
+            })?;
+        let expected = HEADER_LEN + payload_len;
         if bytes.len() < expected {
             return Err(EnvelopeError::TruncatedFrame {
                 expected,

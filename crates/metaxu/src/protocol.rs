@@ -3,11 +3,10 @@
 use compact_str::CompactString;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use snafu::ResultExt as _;
+use snafu::{IntoError as _, ResultExt as _};
 use ulid::Ulid;
 
 use crate::error::{EncodeSnafu, Result};
-use snafu::IntoError as _;
 
 mod ulid_bytes {
     use serde::{Deserialize as _, Serialize as _, Serializer};
