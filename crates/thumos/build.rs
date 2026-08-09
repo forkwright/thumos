@@ -212,10 +212,6 @@ fn compile_init_binary(
 }
 
 fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
-    // WARNING(#663): falsification probe, deliberately similar to
-    // `init_src` below and unused -- proves the `kernel clippy` stage
-    // catches a regression in `build.rs`. Removed before merge.
-    let init_src_check = 1;
     let init_src = manifest_dir.join("init/init.rs");
     let init_ld = manifest_dir.join("init/init.ld");
     println!("cargo:rerun-if-changed={}", init_src.display());
