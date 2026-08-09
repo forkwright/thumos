@@ -64,21 +64,21 @@ notes = "bluetooth.rs:3 doc header records the port. After #455 the workspace si
 
 [[pair]]
 name = "telephony-sms"
-kernel = "telephony.rs, sms.rs, gsm7.rs (ported from klesis)"
+kernel = "telephony.rs, sms.rs (AT parse + CCCI transport still kernel-local)"
 workspace = "klesis"
 disposition = "extract-core"
-canonical = "pending: klesis-core (PDU/gsm7/AT-parse cores)"
+canonical = "klesis-core (GSM-7 codec, PDU byte primitives, surveillance classification); AT-parse core still pending"
 owner = "unscheduled"
-notes = "Live 'ported from' comments: gsm7.rs:20, sms.rs:109."
+notes = "Converged (#662): the GSM-7 tables and codec, hex/BCD/cursor primitives, and the silent-SMS + WAP-Push classification. The kernel's duplicate gsm7.rs is deleted. Two live divergences were found and resolved on the way -- the kernel discarded the PID entirely, so silent SMS was detected only in the layer that never runs; and the kernel accepted GSM-7 data ending on a dangling ESC that klesis rejected. NOT yet converged: at.rs (AT command parsing) and the CCCI/CLDMA transport, which is genuinely kernel-owned hardware framing. The remaining port marker is sms.rs:138 (BCD address FRAMING -- the length/type octets are PDU-shaped and stay here; the packing itself is in the core)."
 
 [[pair]]
 name = "firewall"
-kernel = "firewall.rs (packet parse + DNS extraction ported from asphaleia)"
+kernel = "firewall.rs (packet parse still kernel-local; DNS + blocklist converged)"
 workspace = "asphaleia"
 disposition = "extract-core"
-canonical = "pending: asphaleia-core (packet/DNS parse, policy rules)"
+canonical = "asphaleia-core (DNS QNAME extraction, blocklist policy + suffix rule); packet-parse core still pending"
 owner = "unscheduled"
-notes = "Live 'ported from' comments: firewall.rs:602, :681."
+notes = "Converged (#661 workspace side, #662 kernel side): SURVEILLANCE_DOMAINS, domain_matches_suffix, normalize_suffix, and extract_query_domain. WHY the two-step: #661 created the core, wired crates/asphaleia, and added the dependency to the kernel WITHOUT importing it -- so the blocklist divergence stayed live on the side that actually filters packets, and the `*.` fail-open fix never reached it. The checker now fails on a declared *-core path dependency that no source file names, which is the tell that catches this class. NOT yet converged: parse_packet, because the kernel's PacketInfo is a deliberately narrower shape than the core's Ipv4Fields/TcpFields/UdpFields. Live port marker: firewall.rs:602."
 
 [[pair]]
 name = "ui"
@@ -94,5 +94,5 @@ notes = "Live 'ported from' comment: screen_dialer.rs:11. eidolon -> haphe is th
 # pair converges — the checker fails if the count ever increases.
 [ratchet]
 rule = "port-markers-and-126-expectations-never-increase"
-ported_from_comments = 5      # firewall×2, gsm7, sms, screen_dialer
-stale_126_expectations = 12   # one per workspace crate lib.rs that still points at closed #126
+ported_from_comments = 3      # firewall (packet parse), sms (BCD framing), screen_dialer
+stale_126_expectations = 0    # all workspace lib.rs pointers now name this ledger, not closed #126

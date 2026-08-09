@@ -3,7 +3,8 @@
 //! Implements the [`Screen`] trait to display a unified view of all Phase 10
 //! radio intelligence subsystems: IMSI catcher detection, BLE tracker
 //! alerts, deauth attack detection, CCCI anomaly flagging, geofence breach
-//! warnings, Silent SMS detection, and WAP Push rejection.
+//! warnings, and the Silent SMS / WAP Push classifications raised by the
+//! SMS decoder (`crate::sms`, via `klesis_core::MessageClass`).
 //!
 //! ## Layout (240x320)
 //!
@@ -142,15 +143,32 @@ pub enum ThreatAlertType {
     CcciAnomaly,
     /// Device has left a defined geofence.
     GeofenceBreach,
-    /// Silent SMS (Type 0) received and blocked.
+    /// Silent SMS (Type 0) received — recorded, not discarded.
     SilentSms,
-    /// WAP Push message rejected by firewall.
+    /// WAP Push / OMA-CP message received — recorded, not discarded.
     WapPushRejected,
     /// Modem behavior anomaly (unexpected power/channel changes).
     ModemAnomaly,
 }
 
 impl ThreatAlertType {
+    /// The alert an incoming SMS classification raises, if any.
+    ///
+    /// WHY this mapping exists (#662): the `SilentSms` and
+    /// `WapPushRejected` variants had no producer anywhere in the kernel —
+    /// the SMS decoder read the PID and threw it away, so the alert type,
+    /// its icon, and its tests described an event that could never occur.
+    /// This is the seam that lets a decode result reach the screen. The
+    /// remaining step is the kinit event loop, which does not yet reach the
+    /// SMS path at all (#145).
+    #[must_use]
+    pub(crate) const fn from_message_class(class: klesis_core::MessageClass) -> Option<Self> {
+        match class {
+            klesis_core::MessageClass::Normal => None,
+            klesis_core::MessageClass::Silent { .. } => Some(Self::SilentSms),
+            klesis_core::MessageClass::WapPush { .. } => Some(Self::WapPushRejected),
+        }
+    }
     /// Single-character icon for the alert list display.
     const fn icon(self) -> char {
         match self {

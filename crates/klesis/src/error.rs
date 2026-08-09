@@ -99,5 +99,45 @@ pub enum Error {
     },
 }
 
+impl From<klesis_core::CoreError> for Error {
+    fn from(e: klesis_core::CoreError) -> Self {
+        use klesis_core::CoreError as C;
+        match e {
+            C::Gsm7Encode { codepoint } => Self::Gsm7Encode { codepoint },
+            C::HexInvalid { offset } => Self::InvalidHex {
+                message: format!("invalid hex at offset {offset}"),
+            },
+            C::AddressTooLong { digits } => Self::PduDecode {
+                offset: 0,
+                message: format!("address of {digits} digits exceeds the maximum"),
+            },
+            C::BcdInvalidDigit { nibble } => Self::PduDecode {
+                offset: 0,
+                message: format!("BCD nibble 0x{nibble:X} is not a decimal digit"),
+            },
+            C::Gsm7Truncated { septet } => Self::PduDecode {
+                offset: septet,
+                message: "GSM-7 data ended before the declared septet count".to_owned(),
+            },
+            C::Gsm7DanglingEscape => Self::PduDecode {
+                offset: 0,
+                message: "GSM-7 data ends with a dangling ESC septet (truncated extension char)"
+                    .to_owned(),
+            },
+            C::Truncated { offset } => Self::PduDecode {
+                offset,
+                message: "read past the end of the PDU".to_owned(),
+            },
+            // WHY a catch-all: CoreError is `#[non_exhaustive]`, and an
+            // unrecognised decode failure becoming PduDecode rejects the
+            // message, which is the fail-closed direction.
+            _ => Self::PduDecode {
+                offset: 0,
+                message: "unrecognised PDU decode failure".to_owned(),
+            },
+        }
+    }
+}
+
 /// Result type for telephony operations.
 pub type Result<T> = std::result::Result<T, Error>;
