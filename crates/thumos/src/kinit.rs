@@ -1458,7 +1458,11 @@ pub unsafe fn run() -> ! {
     let mut net = {
         let device = FirewallDevice::with_default_firewall(LoopbackDevice::new());
         let mac = net::randomized_local_ethernet_address();
-        let now = net::instant_from_millis(crate::exceptions::uptime_ms() as i64);
+        // INVARIANT: `uptime_ms()` is a device-uptime millisecond count;
+        // `i64::MAX` ms is ~292 million years of uptime, so this
+        // bit-reinterpretation (required by smoltcp's
+        // `Instant::from_millis(i64)`) cannot flip sign.
+        let now = net::instant_from_millis(crate::exceptions::uptime_ms().cast_signed());
         NetworkStack::new(device, mac, now)
     };
     // WHY(qemu): a loopback DHCP/DNS self-test verifies nothing under an
@@ -1485,7 +1489,12 @@ pub unsafe fn run() -> ! {
                 let dhcp_start = crate::timer::elapsed_ms();
                 let mut configured = false;
                 while crate::timer::elapsed_ms() - dhcp_start < crate::dhcp::DHCP_TIMEOUT_MS {
-                    let now = net::instant_from_millis(crate::exceptions::uptime_ms() as i64);
+                    // INVARIANT: `uptime_ms()` is a device-uptime millisecond
+                    // count; `i64::MAX` ms is ~292 million years of uptime,
+                    // so this bit-reinterpretation (required by smoltcp's
+                    // `Instant::from_millis(i64)`) cannot flip sign.
+                    let now =
+                        net::instant_from_millis(crate::exceptions::uptime_ms().cast_signed());
                     net.poll(now);
                     match dhcp.poll(&mut net) {
                         DhcpEvent::Configured(config) => {
