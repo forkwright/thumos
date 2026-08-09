@@ -133,7 +133,7 @@ notes = "No production call path from boot/loop. Owners: encryption #449/#446, n
 id = "hardware-support"
 modules = ["qemu", "console", "uart", "usb"]
 tier = "kernel-wired"
-notes = "console host-testability is #459; USB EP1 ISR/reader sync is #437 remnant 2."
+notes = "console host-testability is #459; USB EP1 ISR is registered with the GIC and reader/ISR sync is locked + concurrency-tested (#666), gated on board::m7::MUSB_IRQ pending hardware confirmation of the interrupt number."
 
 [[capability]]
 id = "board-platform"
