@@ -50,6 +50,8 @@ Do not merge via GitHub. The GitHub mirror is read-only from the contributor's p
 
 Release authority is declared in `basanos/standards/RELEASES.md`: the operator cuts MAJOR, an agent cuts MINOR and PATCH with no operator interaction required. Read it there.
 
+release-please builds the changelog and computes the version bump entirely from squashed commit messages, i.e. PR titles. A required check (`.github/workflows/pr-title.yml`) validates every PR title against `CLAUDE.md`'s grammar before merge, so a non-conforming title can no longer land silently. `0.1.18`'s release notes predate that check and are known-incomplete: 11 of the 20 commits since `v0.1.17` used a bare scope in the type position and were dropped from both the changelog and the version-bump computation (#665).
+
 One mechanical step is specific to this repo's GitHub mirror and is expected on every cut. A release-please PR is authored by `GITHUB_TOKEN`, and GitHub does not run `on: pull_request` workflows for events its own token triggered — the recursion guard that stops a workflow from endlessly retriggering itself. The branch-protection required checks therefore never execute, and the PR sits with `mergeStateStatus: BLOCKED` reporting no checks at all rather than failing ones.
 
 Re-trigger them as a real-user actor, which is not subject to the guard:
@@ -96,4 +98,4 @@ The kernel binary (`thumos`) lives outside the workspace and has its own build p
 
 ## Branch naming and commit format
 
-Per `CLAUDE.md`: `feat/`, `fix/`, `docs/`, `refactor/`, `test/`, `cleanup/`, `chore/`. Commit messages are `category(scope): description`. Squash merges keep main linear.
+Branch prefixes and PR title format both follow the `commit_types` grammar declared in `CLAUDE.md`'s Git section — read it there rather than here, so this doc cannot drift from it a second time. Squash merges keep `main` linear, which is why the PR title matters: it becomes `main`'s commit message, and a required check (`.github/workflows/pr-title.yml`) validates every title against that grammar before merge.
