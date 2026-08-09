@@ -1215,7 +1215,7 @@ mod tests {
     fn render_fills_all_three_zones() {
         let mgr = UiManager::new();
         let screen = StubScreen;
-        let mut fb = [0u16; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize];
 
         mgr.render(
             &screen,

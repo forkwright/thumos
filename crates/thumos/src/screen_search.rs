@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn draw_does_not_panic() {
         let screen = SearchScreen::new();
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "search screen must render visible content");
@@ -675,7 +675,7 @@ mod tests {
             screen.match_count() > 0,
             "filter must keep matching entries"
         );
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -695,7 +695,7 @@ mod tests {
         screen.rebuild_matches();
         assert_eq!(screen.match_count(), 0, "zzz must match nothing");
 
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
     }
 

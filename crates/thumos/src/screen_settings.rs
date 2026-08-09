@@ -781,7 +781,7 @@ mod tests {
         assert_eq!(MENU_ITEMS.len(), 6, "settings menu must have 6 items");
 
         // Verify draw does not panic.
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "settings menu must render visible content");
@@ -796,7 +796,7 @@ mod tests {
         assert_eq!(BUILD_DATE, "2026-04-09", "build date must be '2026-04-09'");
 
         // Verify draw does not panic.
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "about screen must render visible content");
@@ -851,7 +851,7 @@ mod tests {
     #[test]
     fn wifi_screen_disconnected() {
         let screen = WifiSettingsScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -873,7 +873,7 @@ mod tests {
             ip_addr: [192, 168, 0, 42],
             scanning: false,
         });
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "wifi connected screen must render visible content");
@@ -896,7 +896,7 @@ mod tests {
             ip_addr: [192, 168, 0, 42],
             scanning: false,
         });
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb); // must not panic
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -908,7 +908,7 @@ mod tests {
     #[test]
     fn bt_screen_disabled() {
         let screen = BtSettingsScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -926,7 +926,7 @@ mod tests {
             scanning: true,
             scan_results: 5,
         });
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(

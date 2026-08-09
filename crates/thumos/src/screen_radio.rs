@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn draw_does_not_panic() {
         let screen = RadioControlScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "radio control screen must render visible content");
@@ -431,7 +431,7 @@ mod tests {
     fn draw_covert_lock_does_not_panic() {
         let mut screen = RadioControlScreen::new();
         screen.apply_preset(0);
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let off_status_rendered = fb.iter().any(|&px| px == color::RED);
         assert!(

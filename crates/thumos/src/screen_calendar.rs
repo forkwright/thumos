@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn empty_state_draws() {
         let screen = CalendarScreen::new();
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         // Should render the "No upcoming events" message.
         let any_set = fb.iter().any(|&px| px != 0);
@@ -467,7 +467,7 @@ mod tests {
         let current = 100 * 86400u64 + 10 * 3600 + 900; // during standup
         screen.update(&mgr, current);
 
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "calendar with events must render visible content");

@@ -1404,7 +1404,7 @@ mod tests {
     #[test]
     fn draw_list_does_not_panic() {
         let screen = PrivacyScreen::new_for_test(b"1234");
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "privacy list must render visible content");
@@ -1414,7 +1414,7 @@ mod tests {
     fn draw_detail_does_not_panic() {
         let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.view = PrivacyView::Detail;
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "privacy detail view must render visible content");
@@ -1425,7 +1425,7 @@ mod tests {
         let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.view = PrivacyView::PurgeConfirm;
         screen.purge_state = Some(PurgeConfirmState::new(1));
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "privacy purge confirm must render visible content");

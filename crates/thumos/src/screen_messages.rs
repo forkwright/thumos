@@ -1090,7 +1090,7 @@ mod tests {
         let mut screen = MessagesScreen::new();
         screen.set_messages(make_test_messages());
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
 
         // Should have rendered visible content.
@@ -1170,7 +1170,7 @@ mod tests {
         }]);
         screen.view = MessageView::Detail;
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
 
         let any_set = fb.iter().any(|&px| px != 0);
@@ -1312,7 +1312,7 @@ mod tests {
     #[test]
     fn empty_inbox_renders() {
         let screen = MessagesScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "empty inbox must render 'No messages' text");
@@ -1337,7 +1337,7 @@ mod tests {
     fn compose_renders_without_panic() {
         let mut screen = MessagesScreen::new();
         screen.enter_compose();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "compose screen must render visible content");
@@ -1470,7 +1470,7 @@ mod tests {
         ];
         screen.set_messages(entries);
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
 
         let any_set = fb.iter().any(|&px| px != 0);
@@ -1571,7 +1571,7 @@ mod tests {
              after the list shrinks"
         );
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -1671,7 +1671,7 @@ mod tests {
         let mut screen = MessagesScreen::new();
         screen.enter_compose();
         screen.on_key(Key::Star); // -> Matrix
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "compose with Matrix transport must render");

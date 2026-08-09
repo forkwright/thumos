@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn screen_renders_without_panic() {
         let monitor = ThreatMonitor::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         monitor.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "threat monitor must render visible content");
@@ -770,7 +770,7 @@ mod tests {
             ThreatLevel::Critical,
         ));
         monitor.set_score(80);
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         monitor.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -789,7 +789,7 @@ mod tests {
         alert.description = String::from("12345678901234567890é tracker seen nearby");
         monitor.push_alert(alert);
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         // Must not panic ("byte index N is not a char boundary").
         monitor.draw(&mut fb);
         assert!(

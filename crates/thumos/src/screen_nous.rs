@@ -1203,7 +1203,7 @@ mod tests {
     #[test]
     fn draw_does_not_panic_empty() {
         let screen = NousChatScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "empty nous chat must render visible content");
@@ -1219,7 +1219,7 @@ mod tests {
             1001,
         ));
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -1236,7 +1236,7 @@ mod tests {
         );
         screen.push_message(ChatMessage::from_nous("Syn", body, 1000));
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
