@@ -889,7 +889,7 @@ mod tests {
 
     #[test]
     fn briar_state_default_is_offline() {
-        let state: BriarState = Default::default();
+        let state: BriarState = BriarState::default();
         assert_eq!(
             state,
             BriarState::Offline,

@@ -35,7 +35,7 @@ use crate::mmio;
 /// the typical MTK layout for this `SoC` family. Verify against your specific
 /// BSP header (wdt.h or `mach/mt_wdt.h`) if porting to a different MT variant.
 /// `WDT_MODE`: enable/disable and mode control.
-const WDT_MODE: usize = crate::board::WDT_BASE + 0x00;
+const WDT_MODE: usize = crate::board::WDT_BASE;
 
 /// `WDT_LENGTH`: timeout value register.
 const WDT_LENGTH: usize = crate::board::WDT_BASE + 0x04;

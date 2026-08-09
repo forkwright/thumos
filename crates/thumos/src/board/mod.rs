@@ -75,6 +75,12 @@ mod tests {
     use super::*;
 
     #[test]
+    // WHY: every bound here is a fixed board-layout const, so clippy sees
+    // compile-time-constant assertions. This test exists precisely to pin
+    // those relationships (map size, KERNEL_END derivation, ordering) as a
+    // discoverable, individually reportable regression guard rather than a
+    // silent const-eval check.
+    #[allow(clippy::assertions_on_constants)]
     fn shared_memory_map_is_self_consistent() {
         assert_eq!(RAM_END - RAM_START, 1024 * 1024 * 1024);
         assert_eq!(KERNEL_END, 0x4010_0000);

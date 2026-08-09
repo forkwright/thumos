@@ -33,7 +33,7 @@ pub(crate) struct Pending {
 
 impl Pending {
     /// True when any reflex is pending.
-    pub(crate) const fn any(&self) -> bool {
+    pub(crate) const fn any(self) -> bool {
         self.duress || self.panic_wipe || self.incoming_ring
     }
 }

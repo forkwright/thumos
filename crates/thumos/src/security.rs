@@ -322,6 +322,11 @@ fn sha1_compress(state: &mut [u32; 5], block: &[u8; SHA1_BLOCK_SIZE]) {
     }
 
     // Message schedule expansion (rounds 16-79).
+    // WHY: FIPS 180-4's recurrence reads four different past offsets of the
+    // same buffer (i-3, i-8, i-14, i-16) while writing w[i] -- an iterator
+    // rewrite would need split-borrow/windows tricks that add real
+    // complexity to a hash compression function for no behavior change.
+    #[allow(clippy::needless_range_loop)]
     for i in 16..80 {
         w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
     }

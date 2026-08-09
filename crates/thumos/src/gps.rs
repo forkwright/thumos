@@ -825,8 +825,7 @@ mod tests {
         // Our simplified calculation won't be exact, but should be in the right ballpark.
         assert!(
             epoch > 1_300_000_000 && epoch < 1_320_000_000,
-            "epoch for 2011-05-28 must be approximately 1306573670, got {}",
-            epoch
+            "epoch for 2011-05-28 must be approximately 1306573670, got {epoch}"
         );
     }
 

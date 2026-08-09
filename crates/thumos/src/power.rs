@@ -433,8 +433,7 @@ impl PowerManager {
             self.states
                 .iter()
                 .find(|(r, _)| *r == radio)
-                .map(|(_, s)| *s)
-                .unwrap_or(PowerState::Off)
+                .map_or(PowerState::Off, |(_, s)| *s)
         }
     }
 
