@@ -13,6 +13,9 @@ zeroize = "1"
 jiff = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
+cmac = "0.7"
+p256 = { version = "0.14.0", default-features = false, features = ["arithmetic", "ecdh"] }
+rand_core = { version = "0.10.1", default-features = false }
 
 [lints]
 workspace = true
