@@ -641,6 +641,28 @@ pub(crate) struct MsdcController {
     initialized: bool,
 }
 
+/// Store a 32-bit little-endian word into a sector buffer at word index `i`.
+///
+/// Byte-level store rather than a `*mut u32` cast, because a `&mut [u8;
+/// SECTOR_SIZE]` carries no alignment guarantee (see `read_sector`'s call
+/// site) -- this is correct for any buffer alignment, unlike a typed
+/// pointer write.
+#[cfg(not(feature = "qemu"))]
+#[inline]
+fn store_word_le(buf: &mut [u8; SECTOR_SIZE], i: usize, word: u32) {
+    buf[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+}
+
+/// Load a 32-bit little-endian word from a sector buffer at word index `i`.
+/// See [`store_word_le`].
+#[cfg(not(feature = "qemu"))]
+#[inline]
+fn load_word_le(buf: &[u8; SECTOR_SIZE], i: usize) -> u32 {
+    let mut word_bytes = [0u8; 4];
+    word_bytes.copy_from_slice(&buf[i * 4..i * 4 + 4]);
+    u32::from_le_bytes(word_bytes)
+}
+
 #[cfg(not(feature = "qemu"))]
 impl MsdcController {
     /// Create a new controller handle at the default MSDC0 base address.
@@ -922,8 +944,24 @@ impl MsdcController {
             self.send_data_command(CMD17_READ_SINGLE, lba, CMD_RSPTYP_R1, CMD_DTYPE_READ, 1)?;
         }
 
-        // PIO: read 128 words (512 bytes) FROM MSDC_RXDATA
-        let buf_ptr = buf.as_mut_ptr().cast::<u32>();
+        // PIO: read 128 words (512 bytes) FROM MSDC_RXDATA.
+        //
+        // INVARIANT: `buf` is a caller-supplied `&mut [u8; SECTOR_SIZE]` --
+        // nothing in its type or this function's `# Safety` contract above
+        // promises 4-byte alignment (a bare `[u8; N]` has `align_of` 1, and
+        // both real callers -- `block.rs`'s slice-sourced `sector_buf` and
+        // `gpt.rs`'s stack-local array -- pass buffers with no alignment
+        // guarantee). Forming a `*mut u32` over it and dereferencing (as the
+        // previous `buf_ptr.add(i).write_volatile(word)` form did) is
+        // undefined behaviour whenever the address is not 4-byte aligned:
+        // armv7a data-aborts on the misaligned access, while the i686 host
+        // build this was linted on tolerates it silently -- see
+        // `page.rs`'s `AlignedBuf` comment for the same class caught once
+        // already via a CI SIGABRT. Storing each word byte-by-byte is
+        // correct for any alignment and, as a byte-swap-free bonus, makes
+        // the wire order (little-endian, matching every target this crate
+        // builds for) explicit rather than implicit in `write_volatile`'s
+        // native-endian store.
         for i in 0..WORDS_PER_SECTOR {
             // Poll the RX FIFO word count until at least one word is
             // buffered, instead of STS_DATBUSY (which cannot signal
@@ -942,8 +980,7 @@ impl MsdcController {
             }
             // SAFETY: MSDC_RXDATA is a valid MMIO register at offset 0x1C within the MSDC0 address space. Volatile access is required for hardware registers.
             let word = unsafe { self.read_reg(REG_MSDC_RXDATA) };
-            // SAFETY: buf_ptr is valid for WORDS_PER_SECTOR u32 writes, i < WORDS_PER_SECTOR
-            unsafe { buf_ptr.add(i).write_volatile(word) };
+            store_word_le(buf, i, word);
         }
 
         // Wait for transfer complete
@@ -989,11 +1026,13 @@ impl MsdcController {
             self.send_data_command(CMD24_WRITE_SINGLE, lba, CMD_RSPTYP_R1, CMD_DTYPE_WRITE, 1)?;
         }
 
-        // PIO: write 128 words (512 bytes) to MSDC_TXDATA
-        let buf_ptr = buf.as_ptr().cast::<u32>();
+        // PIO: write 128 words (512 bytes) to MSDC_TXDATA.
+        //
+        // INVARIANT: `buf` carries the same no-alignment-guarantee as
+        // `read_sector`'s `buf` above -- see that comment. Read each word's
+        // bytes explicitly rather than forming a `*const u32` over `buf`.
         for i in 0..WORDS_PER_SECTOR {
-            // SAFETY: buf_ptr is valid for WORDS_PER_SECTOR u32 reads, i < WORDS_PER_SECTOR
-            let word = unsafe { buf_ptr.add(i).read_volatile() };
+            let word = load_word_le(buf, i);
             // SAFETY: MSDC_TXDATA is a valid MMIO register at offset 0x18 within the MSDC0 address space. Volatile access is required for hardware registers.
             unsafe { self.write_reg(REG_MSDC_TXDATA, word) };
         }
@@ -1764,6 +1803,58 @@ mod tests {
     fn sector_size_is_512() {
         assert_eq!(SECTOR_SIZE, 512, "eMMC sector size");
         assert_eq!(WORDS_PER_SECTOR, 128, "words per sector (512/4)");
+    }
+
+    #[test]
+    fn sector_word_roundtrip_is_correct_and_alignment_independent() {
+        // `read_sector`/`write_sector` move PIO data through `store_word_le`/
+        // `load_word_le` (byte-by-byte) rather than reinterpreting `buf` as
+        // `*mut/const u32`, because a `&[u8; SECTOR_SIZE]` carries no
+        // alignment guarantee -- real callers slice one out of a larger
+        // buffer (`block.rs`) or place it on the stack (`gpt.rs`), neither of
+        // which promises 4-byte alignment. Confirm the byte-level round trip
+        // is correct regardless of where the backing array actually lands,
+        // by deliberately misaligning it.
+        //
+        // WHY the offset is derived from the runtime address rather than a
+        // fixed constant: `[u8; N]` has `align_of` 1, so the compiler is
+        // free to place the backing array at any address. A FIXED pad only
+        // shifts alignment relative to a base whose residue is unknown, so
+        // it can land back on a 4-byte boundary depending on that residue
+        // (a constant 1-byte pad is misaligning only when `base % 4 != 3`)
+        // -- silently passing while exercising nothing, the opposite of
+        // this test's purpose. `off` is chosen from the OBSERVED
+        // `base % 4` so the result is never 0 for any base: off=1 covers
+        // residues 0/1/2 (giving 1/2/3), and residue 3 alone needs off=2
+        // (giving 1), since off=1 there reproduces the boundary case above.
+        let mut backing = [0u8; SECTOR_SIZE + 4];
+        let base = backing.as_ptr() as usize;
+        let off = if base % 4 == 3 { 2 } else { 1 };
+        let Ok(sector) = <&mut [u8; SECTOR_SIZE]>::try_from(&mut backing[off..off + SECTOR_SIZE])
+        else {
+            unreachable!("[off..off + SECTOR_SIZE] fits within backing for off in 1..=2")
+        };
+        assert_ne!(
+            sector.as_ptr() as usize % 4,
+            0,
+            "test setup must actually produce a misaligned buffer"
+        );
+
+        for i in 0..WORDS_PER_SECTOR {
+            let word = 0xDEAD_0000u32.wrapping_add(i as u32);
+            store_word_le(sector, i, word);
+        }
+        for i in 0..WORDS_PER_SECTOR {
+            let expected = 0xDEAD_0000u32.wrapping_add(i as u32);
+            assert_eq!(
+                load_word_le(sector, i),
+                expected,
+                "word {i} did not round-trip"
+            );
+        }
+
+        // Wire order is little-endian on every target this crate builds for.
+        assert_eq!(&sector[0..4], &0xDEAD_0000u32.to_le_bytes());
     }
 
     // -- SDC_STS bit tests --

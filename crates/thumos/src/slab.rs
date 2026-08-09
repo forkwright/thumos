@@ -125,10 +125,17 @@ impl SlabClass {
         let n = page::PAGE_SIZE / self.obj_size;
         for i in (0..n).rev() {
             // SAFETY: i * obj_size < PAGE_SIZE, so offset is within the page.
-            let node_ptr = unsafe { page_ptr.add(i * self.obj_size) as *mut FreeNode };
-            // SAFETY: node_ptr is aligned to at least obj_size bytes, which is
-            // a power of two >= 32, so it satisfies FreeNode's alignment (4 bytes
-            // on ARM32).
+            //
+            // INVARIANT: `page_ptr` is the physical page address the page
+            // allocator returned, which is always `PAGE_SIZE` (4096-byte)
+            // aligned (`page::alloc_page`'s `FIRST_PAGE + page_num *
+            // PAGE_SIZE`, with `FIRST_PAGE` the SoC's fixed, page-aligned
+            // DRAM base). `self.obj_size` is one of `SLAB_SIZES` (32..=2048),
+            // always a multiple of 4, so `page_ptr + i * self.obj_size` is
+            // always a multiple of 4 -- `FreeNode`'s alignment requirement.
+            // `.cast()` keeps that a type-checked reinterpretation rather
+            // than a raw `as`.
+            let node_ptr = unsafe { page_ptr.add(i * self.obj_size).cast::<FreeNode>() };
             unsafe {
                 (*node_ptr).next = self.free_list;
             }
@@ -161,7 +168,7 @@ impl SlabClass {
         let node = self.free_list;
         self.free_list = unsafe { (*node).next };
         self.alloc_count += 1;
-        node as *mut u8
+        node.cast::<u8>()
     }
 
     /// Push `ptr` onto the free list.
@@ -185,7 +192,12 @@ impl SlabClass {
                 core::ptr::write_volatile(ptr.add(i), 0);
             }
         }
-        let node = ptr as *mut FreeNode;
+        // INVARIANT: `ptr` was returned by `alloc_obj` on this class per this
+        // function's own contract, so it traces back to the page-aligned,
+        // obj_size-multiple offset `refill` establishes (see that
+        // function's comment) -- `.cast()` keeps the reinterpretation
+        // type-checked instead of re-deriving alignment by hand.
+        let node = ptr.cast::<FreeNode>();
         unsafe {
             (*node).next = self.free_list;
         }

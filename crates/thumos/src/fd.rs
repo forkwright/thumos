@@ -1132,8 +1132,11 @@ pub(crate) fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
         None => return EBADF,
     };
 
-    // WHY: offset is treated as signed (i32) for SEEK_CUR and SEEK_END.
-    let offset_signed = offset as i32;
+    // WHY: offset is treated as signed (i32) for SEEK_CUR and SEEK_END --
+    // the syscall ABI passes a signed offset as a raw u32 register value, so
+    // this is a deliberate bit-reinterpretation of a value userspace already
+    // encoded as two's-complement, not a value-preserving widen.
+    let offset_signed = offset.cast_signed();
 
     // WHY: entry.offset/file_size are inherently non-negative `usize`
     // quantities; the old blind `as i32` reinterpreted a legitimate value
