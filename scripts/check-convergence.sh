@@ -78,6 +78,49 @@ for f in glob.glob(os.path.join(root, "crates", "*", "src", "lib.rs")):
 if stale > ratchet.get("stale_126_expectations", 0):
     fail(f"stale #126 expectations increased: {stale} > ratchet {ratchet.get('stale_126_expectations')}")
 
+# (e) a declared *-core dependency must actually be consumed in source.
+#
+# WHY: an extraction that creates the core crate, wires ONE consumer, and adds
+# the dependency to the other without ever importing it looks converged at
+# every level this script previously checked — the ledger row exists, the
+# port-marker count did not rise, and both sides compile. It is not
+# convergence; it is a third copy plus an unused dependency. #661 landed in
+# exactly that state: `asphaleia-core` was created and consumed by
+# `crates/asphaleia`, while `crates/thumos/src/firewall.rs` kept its own
+# blocklist and parser and merely gained a dependency it never named.
+#
+# The unused dependency is the reliable tell, so it is what this checks.
+for cargo in glob.glob(os.path.join(root, "crates", "*", "Cargo.toml")):
+    crate_dir = os.path.dirname(cargo)
+    crate_name = os.path.basename(crate_dir)
+    try:
+        manifest = tomllib.load(open(cargo, "rb"))
+    except Exception as e:
+        fail(f"{os.path.relpath(cargo, root)} is not parseable TOML: {e}")
+        continue
+    deps = manifest.get("dependencies", {})
+    # Only OUR extractions: a `-core` crate in this repo, declared by path.
+    # A third-party dependency that happens to end in `-core`
+    # (embedded-graphics-core) is not an extraction and firing on it would
+    # teach a reader to skip this check.
+    core_deps = [
+        d
+        for d, spec in deps.items()
+        if d.endswith("-core") and isinstance(spec, dict) and "path" in spec
+    ]
+    if not core_deps:
+        continue
+    sources = glob.glob(os.path.join(crate_dir, "src", "**", "*.rs"), recursive=True)
+    text = "".join(open(f, errors="ignore").read() for f in sources)
+    for dep in core_deps:
+        # Rust refers to a hyphenated crate by its underscored name.
+        if dep.replace("-", "_") not in text:
+            fail(
+                f"crate '{crate_name}' declares dependency '{dep}' but no source file "
+                f"references it — an extraction wired only one side, so the duplicate "
+                f"it was meant to remove is still live (#545)"
+            )
+
 # (d) no lib.rs may point at closed #126 at all going forward (the pointer
 # is the ledger now).
 for f in glob.glob(os.path.join(root, "crates", "*", "src", "lib.rs")):

@@ -325,117 +325,16 @@ impl<'a> Cursor<'a> {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-// ── Silent SMS / WAP Push constants ──────────────────────────────────────────
-
-/// PID value for Type 0 SMS (silent, no display, no storage).
-/// 3GPP TS 23.040 § 9.2.3.9: bits 7-6 = 01, bits 5-0 = 000000.
-const PID_TYPE_0_SMS: u8 = 0x40;
-
-/// Upper bound (exclusive) of PID values used for SIM toolkit replace
-/// short message types (0x41-0x47). These are used in SIM toolkit attacks.
-const PID_SIM_TOOLKIT_UPPER: u8 = 0x48;
-
-/// OMA-CP WAP Push destination port (3GPP TS 23.040 / OMA WAP-259).
-const WAP_PUSH_PORT_OMA_CP: u16 = 2948;
-
-/// Alternative WAP Push destination port used by some implementations.
-const WAP_PUSH_PORT_ALT: u16 = 49999;
-
-/// Maximum accepted hex-string length for a single SMS-DELIVER PDU.
-///
-/// SECURITY: `pdu_hex` originates from modem-controlled storage (`AT+CMGR`
-/// response) and is otherwise unbounded before reaching `hex_decode`.
-/// 3GPP TS 23.040 keeps a single SMS-DELIVER TPDU well under 200 octets
-/// (SMSC prefix + header + address + 140-byte max user data); this cap is
-/// generous headroom against a malicious/malfunctioning modem flooding
-/// `decode_deliver` with an oversized hex string.
-const MAX_PDU_HEX_LEN: usize = 1024;
-
-/// UDH Information Element Identifier for application port addressing (16-bit).
-/// 3GPP TS 23.040 § 9.2.3.24.4.
-const UDH_IEI_APP_PORT_16BIT: u8 = 0x05;
-
-/// Bit 6 of the first TPDU octet: User Data Header Indicator.
-/// When set, the UD field begins with a User Data Header.
-const UDHI_BIT: u8 = 0x40;
-
-/// A parsed UDH application port addressing element.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct UdhPorts {
-    /// Destination port from the UDH IE.
-    destination: u16,
-    /// Source port from the UDH IE.
-    source: u16,
-}
-
-/// Parse UDH (User Data Header) from the beginning of user data bytes.
-///
-/// Scans information elements for 16-bit application port addressing (IEI 0x05).
-/// Returns the port pair if found, or `None` if the UDH contains no port IE.
-fn parse_udh_ports(ud_bytes: &[u8]) -> Option<UdhPorts> {
-    if ud_bytes.is_empty() {
-        return None;
-    }
-
-    let udhl = usize::from(*ud_bytes.first()?);
-    // UDH content starts at byte 1, extends for `udhl` bytes.
-    if ud_bytes.len() < udhl + 1 {
-        return None;
-    }
-
-    let udh = &ud_bytes[1..=udhl];
-    let mut pos = 0;
-
-    while pos < udh.len() {
-        let iei = *udh.get(pos)?;
-        let ie_len = usize::from(*udh.get(pos + 1)?);
-        let ie_data_start = pos + 2;
-        let ie_data_end = ie_data_start + ie_len;
-
-        if ie_data_end > udh.len() {
-            break;
-        }
-
-        // 16-bit application port addressing: IEI=0x05, length=4.
-        if iei == UDH_IEI_APP_PORT_16BIT && ie_len == 4 {
-            let dest_hi = *udh.get(ie_data_start)?;
-            let dest_lo = *udh.get(ie_data_start + 1)?;
-            let src_hi = *udh.get(ie_data_start + 2)?;
-            let src_lo = *udh.get(ie_data_start + 3)?;
-            return Some(UdhPorts {
-                destination: u16::from_be_bytes([dest_hi, dest_lo]),
-                source: u16::from_be_bytes([src_hi, src_lo]),
-            });
-        }
-
-        pos = ie_data_end;
-    }
-
-    None
-}
-
-/// Check whether a PID byte indicates a silent / surveillance SMS.
-///
-/// Returns `true` for PID values 0x40 (Type 0 SMS) through 0x47
-/// (replace short message types used for SIM toolkit attacks).
-const fn is_silent_sms_pid(pid: u8) -> bool {
-    pid >= PID_TYPE_0_SMS && pid < PID_SIM_TOOLKIT_UPPER
-}
-
-/// Check whether a UDH destination port indicates a WAP Push / OMA-CP message.
-const fn is_wap_push_port(port: u16) -> bool {
-    port == WAP_PUSH_PORT_OMA_CP || port == WAP_PUSH_PORT_ALT
-}
-
-/// Number of GSM-7 septets consumed by `udh_octets` raw UDH bytes once
-/// folded into the septet stream.
-///
-/// 3GPP TS 23.040 § 9.2.3.24: the UDH is stored as full 8-bit octets; fill
-/// bits pad it to the next septet boundary before the text septets begin.
-/// `ceil(udh_octets * 8 / 7)`.
-const fn gsm7_udh_septets(udh_octets: usize) -> usize {
-    (udh_octets * 8).div_ceil(7)
-}
+// ── Silent SMS / WAP Push ────────────────────────────────────────────────────
+//
+// The constants, the UDH port parser, and the classification predicates live
+// in klesis-core, shared with the thumos kernel (#545, #662) — the kernel's
+// hand-port had dropped them entirely, so a silent SMS was detected only in
+// the layer that never runs on the phone.
+use klesis_core::{
+    MAX_PDU_HEX_LEN, UDHI_BIT, gsm7_udh_septets, is_silent_sms_pid, is_wap_push_port,
+    parse_udh_ports,
+};
 
 /// Decode an SMS-DELIVER PDU FROM its hex string representation.
 ///
@@ -510,6 +409,9 @@ pub fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
 
     // User data length (UDL) + user data (UD).
     let mut udl = usize::from(cur.read_byte()?);
+    // Septets the UDH consumes once folded into the septet stream. Zero when
+    // no header is present.
+    let mut udh_septets = 0usize;
 
     // WHY: we need the raw UD bytes for UDH inspection before decoding text.
     // If UDHI is set, the first bytes of UD contain the User Data Header.
@@ -538,17 +440,28 @@ pub fn decode_deliver(pdu_hex: &str) -> Result<SmsDeliver> {
         // -- a forged-sender-prefix phishing vector.
         let udhl = usize::from(ud_preview.first().copied().unwrap_or(0));
         let udh_octets = (udhl + 1).min(ud_preview.len());
-        cur.read_slice(udh_octets)?;
-        udl = match encoding {
-            // 3GPP TS 23.040 § 9.2.3.24: the UDH is byte-aligned; text
-            // resumes at the next septet boundary once folded into the
-            // septet stream.
-            DataEncoding::Gsm7Bit => udl.saturating_sub(gsm7_udh_septets(udh_octets)),
-            DataEncoding::Ucs2 => udl.saturating_sub(udh_octets),
-        };
+        match encoding {
+            // 3GPP TS 23.040 § 9.2.3.24: the UDH is octet-aligned, and fill
+            // bits then pad it to the next SEPTET boundary before the text
+            // begins. Those two boundaries differ by up to 6 bits, so the
+            // cursor must NOT be advanced past the header here -- the text
+            // is read from a septet offset into the whole UD field instead.
+            // Advancing by octets and decoding from bit 0 shifts the entire
+            // message: six header octets end at bit 48 while the text starts
+            // at bit 49, and "Hello" decodes as "ΔKYY§".
+            DataEncoding::Gsm7Bit => {
+                udh_septets = gsm7_udh_septets(udh_octets);
+            }
+            // UCS-2 is octet-aligned throughout, so skipping the header
+            // bytes is exactly right there.
+            DataEncoding::Ucs2 => {
+                cur.read_slice(udh_octets)?;
+                udl = udl.saturating_sub(udh_octets);
+            }
+        }
     }
 
-    let user_data = decode_user_data(&mut cur, udl, encoding)?;
+    let user_data = decode_user_data(&mut cur, udl, udh_septets, encoding)?;
 
     Ok(SmsDeliver {
         sender,
@@ -626,13 +539,21 @@ fn dcs_to_encoding(dcs: u8, offset: usize) -> Result<DataEncoding> {
     }
 }
 
-fn decode_user_data(cur: &mut Cursor<'_>, udl: usize, encoding: DataEncoding) -> Result<UserData> {
+fn decode_user_data(
+    cur: &mut Cursor<'_>,
+    udl: usize,
+    udh_septets: usize,
+    encoding: DataEncoding,
+) -> Result<UserData> {
     let text = match encoding {
         DataEncoding::Gsm7Bit => {
-            // UDL is the number of septets; byte count is ceil(UDL*7/8).
+            // UDL counts every septet in the field, header fill included, so
+            // the byte span covers the UDH too. Text is then decoded from
+            // septet index `udh_septets` -- see the UDHI branch in
+            // decode_deliver for why the offset is in septets, not octets.
             let byte_count = udl.saturating_mul(7).div_ceil(8);
             let ud_bytes = cur.read_slice(byte_count)?;
-            gsm7::decode(ud_bytes, udl)?
+            gsm7::decode_from(ud_bytes, udh_septets, udl.saturating_sub(udh_septets))?
         }
         DataEncoding::Ucs2 => {
             // UDL is the number of bytes for UCS-2.
@@ -749,6 +670,7 @@ fn count_gsm7_septets(text: &str) -> Result<usize> {
 )]
 mod tests {
     use super::*;
+    use klesis_core::UdhPorts;
 
     // ── BCD address tests ─────────────────────────────────────────────────────
 

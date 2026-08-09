@@ -32,7 +32,7 @@ notes = "ClockManager trust hierarchy wired + seeded (#402). sys_clock_gettime u
 
 [[capability]]
 id = "telephony"
-modules = ["telephony", "telephony_parser", "telephony_mock", "sim", "sms", "ccci", "ccci_logger", "gsm7"]
+modules = ["telephony", "telephony_parser", "telephony_mock", "sim", "sms", "ccci", "ccci_logger"]
 tier = "emulated-mock-proven"
 witness = ["kardia: modem ready state=Registered", "kardia: incoming call -> ringtone", "kardia: sim iccid_len="]
 notes = "Seeded mock transport; the live CCCI wire is hardware-gated. SIM PIN/PUK unlock is #517."

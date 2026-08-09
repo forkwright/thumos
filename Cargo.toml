@@ -8,6 +8,7 @@ members = [
     "crates/haphe",
     "crates/kelyphos",
     "crates/klesis",
+    "crates/klesis-core",
     "crates/krypta",
     "crates/leipsanon",
     "crates/metaxu",

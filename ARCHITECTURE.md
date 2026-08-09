@@ -44,6 +44,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 | Crate | Description |
 |-------|-------------|
 | `klesis` | AT command parser, CCCI/CLDMA framing, SMS PDU, GSM-7 codec |
+| `klesis-core` | Canonical GSM-7 codec, SMS-PDU primitives, and silent-SMS/WAP-Push classification, shared no_std with the kernel (#545, #662) |
 
 **Crypto**
 

@@ -1,13 +1,15 @@
 //! SMS send/receive with PDU encoding (3GPP TS 23.040).
 //!
-//! Ports GSM-7 character encoding and PDU framing from `klesis/src/gsm7.rs`
-//! and `klesis/src/pdu.rs` into the `#![no_std]` kernel context. Provides
-//! the [`SmsManager`] for inbox management and AT command-based SMS operations
-//! via the telephony subsystem's [`ModemTransport`] trait.
+//! Provides the [`SmsManager`] for inbox management and AT command-based SMS
+//! operations via the telephony subsystem's [`ModemTransport`] trait.
 //!
 //! ## Module structure
 //!
-//! GSM-7 codec (encode/decode, character tables) is in [`crate::gsm7`].
+//! The GSM-7 codec, the PDU byte primitives (hex, BCD, cursor), and the
+//! surveillance classification of an incoming message live in
+//! [`klesis_core`], shared with the workspace `klesis` crate. This module
+//! holds only what is kernel-shaped: PDU framing, the AT command exchange,
+//! and inbox storage.
 //!
 //! ## PDU format
 //!
@@ -37,8 +39,8 @@ use alloc::vec::Vec;
 
 use crate::telephony::{AtResponse, MAX_LINE_LEN, ModemTransport};
 
-// Re-export GSM-7 codec so callers can still use crate::sms::*.
-pub(crate) use crate::gsm7::*;
+pub(crate) use klesis_core::MessageClass;
+use klesis_core::{CoreError, Cursor};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -75,6 +77,33 @@ pub enum SmsError {
     InboxOverflow,
 }
 
+impl From<CoreError> for SmsError {
+    fn from(e: CoreError) -> Self {
+        match e {
+            CoreError::Gsm7Encode { codepoint } => Self::Gsm7Encode(codepoint),
+            CoreError::AddressTooLong { .. } => Self::NumberTooLong,
+            // WHY the rest collapse to PduDecode: they all describe a PDU
+            // the modem should not have produced (truncation, a dangling
+            // ESC, a non-decimal BCD nibble, bad hex). The kernel's caller
+            // acts identically on each -- drop the PDU -- so distinguishing
+            // them here would add variants nothing branches on.
+            //
+            // The `_` arm is required because CoreError is
+            // `#[non_exhaustive]`, and it is safe here in a way it would
+            // NOT be on MessageClass: an unrecognised decode failure
+            // becoming PduDecode drops the PDU, which is fail-closed. An
+            // unrecognised *classification* becoming Normal would deliver
+            // it, which is why that type is exhaustive.
+            CoreError::Gsm7Truncated { .. }
+            | CoreError::Gsm7DanglingEscape
+            | CoreError::BcdInvalidDigit { .. }
+            | CoreError::HexInvalid { .. }
+            | CoreError::Truncated { .. }
+            | _ => Self::PduDecode,
+        }
+    }
+}
+
 impl core::fmt::Display for SmsError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -109,125 +138,23 @@ const MAX_INBOX_MESSAGES: usize = 256;
 // BCD address encoding (ported from klesis/src/pdu.rs)
 // ---------------------------------------------------------------------------
 
-/// Encode a phone number string into BCD address format for PDU.
+/// Encode a phone number string into the PDU address field.
 ///
-/// Returns `[length_in_digits, type_byte, bcd_bytes...]`.
-/// International numbers (starting with '+') use type 0x91.
+/// Returns `[length_in_digits, type_byte, bcd_bytes...]`. The BCD packing
+/// itself is [`klesis_core::encode_bcd_address`]; only the length/type
+/// framing is PDU-shaped and lives here.
 fn encode_bcd_address(number: &str) -> Result<Vec<u8>, SmsError> {
     let digits = number.strip_prefix('+').unwrap_or(number);
-    let type_byte: u8 = if number.starts_with('+') { 0x91 } else { 0x81 };
-
     if digits.len() > MAX_NUMBER_DIGITS {
         return Err(SmsError::NumberTooLong);
     }
+    let (type_byte, bcd) = klesis_core::encode_bcd_address(number)?;
 
-    let digit_bytes = digits.as_bytes();
-    let len_digits = digit_bytes.len();
-    let bcd_byte_count = len_digits.div_ceil(2);
-
-    let mut bcd = alloc::vec![0u8; bcd_byte_count];
-    for (i, &d) in digit_bytes.iter().enumerate() {
-        if !d.is_ascii_digit() {
-            return Err(SmsError::PduDecode);
-        }
-        let nibble = d - b'0';
-        let byte_index = i / 2;
-        if i % 2 == 0 {
-            bcd[byte_index] = nibble; // low nibble
-        } else {
-            bcd[byte_index] |= nibble << 4; // high nibble
-        }
-    }
-    // Pad odd-length numbers with 0xF in the final high nibble.
-    if len_digits % 2 != 0 {
-        if let Some(last) = bcd.last_mut() {
-            *last |= 0xF0;
-        }
-    }
-
-    let mut out = Vec::with_capacity(2 + bcd_byte_count);
+    let mut out = Vec::with_capacity(2 + bcd.len());
     // INVARIANT: SMS phone numbers are at most 20 digits (E.164), fits in u8.
-    out.push(len_digits as u8);
+    out.push(digits.len() as u8);
     out.push(type_byte);
     out.extend_from_slice(&bcd);
-    Ok(out)
-}
-
-/// Decode a BCD-packed address from raw PDU bytes.
-///
-/// `len_digits` is the number of significant digits. `type_byte` is the
-/// type-of-address octet. `bcd` contains the packed BCD bytes.
-///
-/// # Errors
-///
-/// Returns [`SmsError::PduDecode`] if any significant nibble is outside
-/// `0..=9` -- a network-supplied PDU that claims a BCD digit of 0xA-0xE
-/// has no valid decimal-digit meaning and must not be rendered as a
-/// non-digit character in the sender field (same class as the klesis
-/// BCD fix).
-fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Result<String, SmsError> {
-    let mut number = String::new();
-    if type_byte == 0x91 {
-        number.push('+');
-    }
-
-    let digit_count = usize::from(len_digits);
-    for (idx, &byte) in bcd.iter().enumerate() {
-        let lo = byte & 0x0F;
-        let hi = (byte >> 4) & 0x0F;
-
-        let lo_digit_index = idx * 2;
-        if lo_digit_index < digit_count {
-            if lo > 9 {
-                return Err(SmsError::PduDecode);
-            }
-            number.push(char::from(b'0' + lo));
-        }
-        let hi_digit_index = idx * 2 + 1;
-        if hi_digit_index < digit_count && hi != 0x0F {
-            if hi > 9 {
-                return Err(SmsError::PduDecode);
-            }
-            number.push(char::from(b'0' + hi));
-        }
-    }
-    Ok(number)
-}
-
-// ---------------------------------------------------------------------------
-// Hex codec helpers
-// ---------------------------------------------------------------------------
-
-const HEX_CHARS: &[u8; 16] = b"0123456789ABCDEF";
-
-fn hex_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len() * 2);
-    for &b in data {
-        out.push(char::from(HEX_CHARS[usize::from(b >> 4)]));
-        out.push(char::from(HEX_CHARS[usize::from(b & 0x0F)]));
-    }
-    out
-}
-
-const fn hex_nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn hex_decode(s: &[u8]) -> Result<Vec<u8>, SmsError> {
-    if s.len() % 2 != 0 {
-        return Err(SmsError::PduDecode);
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for chunk in s.chunks(2) {
-        let hi = hex_nibble(chunk[0]).ok_or(SmsError::PduDecode)?;
-        let lo = hex_nibble(chunk[1]).ok_or(SmsError::PduDecode)?;
-        out.push((hi << 4) | lo);
-    }
     Ok(out)
 }
 
@@ -239,7 +166,7 @@ fn hex_decode(s: &[u8]) -> Result<Vec<u8>, SmsError> {
 ///
 /// Returns the hex-encoded PDU string and the TPDU length (bytes after SCA).
 fn encode_submit_pdu(number: &str, text: &str) -> Result<(String, usize), SmsError> {
-    let septet_count = count_gsm7_septets(text)?;
+    let septet_count = klesis_core::count_septets(text)?;
     if septet_count > MAX_GSM7_SEPTETS {
         return Err(SmsError::MessageTooLong);
     }
@@ -269,43 +196,21 @@ fn encode_submit_pdu(number: &str, text: &str) -> Result<(String, usize), SmsErr
     pdu.push(septet_count as u8);
 
     // User data: packed GSM-7 bytes.
-    let packed = encode_gsm7(text)?;
+    let packed = klesis_core::encode(text)?;
     pdu.extend_from_slice(&packed);
 
     // TPDU length = total PDU bytes minus the SCA byte.
     let tpdu_len = pdu.len() - 1;
 
-    Ok((hex_encode(&pdu), tpdu_len))
+    Ok((klesis_core::hex_encode(&pdu), tpdu_len))
 }
 
 // ---------------------------------------------------------------------------
 // PDU decoding (SMS-DELIVER, for incoming +CMT)
 // ---------------------------------------------------------------------------
 
-/// Simple cursor for reading PDU bytes.
-struct PduCursor<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> PduCursor<'a> {
-    const fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
-    }
-
-    fn read_byte(&mut self) -> Result<u8, SmsError> {
-        let b = *self.data.get(self.pos).ok_or(SmsError::PduDecode)?;
-        self.pos += 1;
-        Ok(b)
-    }
-
-    fn read_slice(&mut self, len: usize) -> Result<&'a [u8], SmsError> {
-        let end = self.pos + len;
-        let slice = self.data.get(self.pos..end).ok_or(SmsError::PduDecode)?;
-        self.pos = end;
-        Ok(slice)
-    }
-}
+// The PDU cursor is [`klesis_core::Cursor`] -- bounds-checked reads over
+// modem-supplied bytes, shared with the workspace `klesis` crate.
 
 // ---------------------------------------------------------------------------
 // SMS message types
@@ -323,6 +228,14 @@ pub(crate) struct SmsMessage {
     pub timestamp: u64,
     /// Whether this message has been read.
     pub read: bool,
+    /// What this message is beyond its text (#662).
+    ///
+    /// WHY the message is kept rather than dropped: `klesis` rejects a
+    /// silent SMS outright, which is right for a daemon and wrong here. On
+    /// a counter-surveillance phone the ping itself is the intelligence --
+    /// an alert the user never sees is indistinguishable from no detection
+    /// at all -- so the kernel records it and marks what it is.
+    pub class: MessageClass,
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +371,7 @@ impl SmsManager {
     ///   coding scheme other than GSM-7 (0x00).
     #[must_use]
     pub(crate) fn handle_incoming(pdu_data: &[u8]) -> Result<SmsMessage, SmsError> {
-        let mut cur = PduCursor::new(pdu_data);
+        let mut cur = Cursor::new(pdu_data);
 
         // SMSC prefix: length byte + SMSC bytes (skip).
         let smsc_len = usize::from(cur.read_byte()?);
@@ -476,7 +389,7 @@ impl SmsManager {
         let oa_type = cur.read_byte()?;
         let oa_bcd_bytes = usize::from(oa_len_digits.div_ceil(2));
         let oa_bcd = cur.read_slice(oa_bcd_bytes)?;
-        let sender_str = decode_bcd_address(oa_len_digits, oa_type, oa_bcd)?;
+        let sender_str = klesis_core::decode_bcd_address(oa_len_digits, oa_type, oa_bcd)?;
 
         // Build sender field.
         let mut sender = [0u8; MAX_SENDER_LEN];
@@ -484,8 +397,11 @@ impl SmsManager {
         let sender_len = sender_bytes.len().min(MAX_SENDER_LEN);
         sender[..sender_len].copy_from_slice(&sender_bytes[..sender_len]);
 
-        // PID (ignored).
-        cur.read_byte()?;
+        // WHY (#662): the PID is the silent-SMS signal. This byte was
+        // previously read and discarded, so a Type 0 message -- specified
+        // as neither displayed nor stored, and the standard covert
+        // location-ping -- was filed to the inbox as ordinary mail.
+        let pid = cur.read_byte()?;
 
         // DCS: only GSM-7 (0x00) supported in this kernel build.
         let dcs = cur.read_byte()?;
@@ -503,17 +419,33 @@ impl SmsManager {
         // User data length (septets) and packed user data.
         let udl = usize::from(cur.read_byte()?);
         // GSM 03.40: TP-UD is at most 140 octets, i.e. 160 GSM-7 septets,
-        // for a single (non-concatenated) segment. This kernel does not
-        // parse the concatenation UDH, so no legitimately encodable
-        // single-segment message can claim a larger UDL; treat it as a
-        // malformed PDU rather than decoding whatever bytes follow.
+        // for a single (non-concatenated) segment. No legitimately
+        // encodable single-segment message can claim a larger UDL; treat it
+        // as a malformed PDU rather than decoding whatever bytes follow.
         const MAX_SINGLE_SEGMENT_SEPTETS: usize = 160;
         if udl > MAX_SINGLE_SEGMENT_SEPTETS {
             return Err(SmsError::PduDecode);
         }
         let ud_byte_count = udl.saturating_mul(7).div_ceil(8);
         let ud_bytes = cur.read_slice(ud_byte_count)?;
-        let body = decode_gsm7(ud_bytes, udl)?;
+
+        let class = klesis_core::classify(first_octet, pid, ud_bytes);
+
+        // SECURITY (#662): strip the User Data Header before decoding text.
+        // Without this the header octets -- attacker-controlled on e.g. a
+        // concatenation IE -- decode as characters and are prepended to the
+        // visible body, which is a forged-sender-prefix phishing surface
+        // inside a message that displays as coming from a real number.
+        let body = if klesis_core::has_udh(first_octet) {
+            let udh_septets = klesis_core::gsm7_udh_septets(klesis_core::udh_octet_len(ud_bytes));
+            // WHY decode_from over slicing at the UDH's last octet: the
+            // header is octet-aligned but the text resumes on a SEPTET
+            // boundary, and those differ by up to 6 fill bits. Slicing
+            // shifts the whole message.
+            klesis_core::decode_from(ud_bytes, udh_septets, udl.saturating_sub(udh_septets))?
+        } else {
+            klesis_core::decode(ud_bytes, udl)?
+        };
 
         Ok(SmsMessage {
             sender,
@@ -521,6 +453,7 @@ impl SmsManager {
             body,
             timestamp,
             read: false,
+            class,
         })
     }
 
@@ -676,7 +609,7 @@ mod tests {
             "PDU must start with SCA length 0x00"
         );
         // Verify it's valid hex by decoding.
-        let raw = hex_decode(pdu_hex.as_bytes());
+        let raw = klesis_core::hex_decode(pdu_hex.as_bytes());
         assert!(raw.is_ok(), "PDU hex must be valid hex");
     }
 
@@ -714,11 +647,166 @@ mod tests {
             body: String::new(),
             timestamp: 0,
             read: false,
+            class: MessageClass::Normal,
         });
         let sender = core::str::from_utf8(&msg.sender[..msg.sender_len as usize]).unwrap_or("");
         assert_eq!(sender, "+1234567890", "sender must decode to +1234567890");
         assert_eq!(msg.body, "Hello", "body must decode to 'Hello'");
         assert!(!msg.read, "incoming message must be unread");
+        assert_eq!(
+            msg.class,
+            MessageClass::Normal,
+            "an ordinary PDU must not be classified as covert"
+        );
+    }
+
+    /// Build an SMS-DELIVER PDU with a caller-chosen first octet, PID, and
+    /// user-data section. Everything else matches the canonical fixture
+    /// above, so a test difference is attributable to what it varied.
+    fn deliver_pdu(first_octet: u8, pid: u8, udl: u8, ud: &[u8]) -> Vec<u8> {
+        let mut pdu = alloc::vec![
+            0x00, // SCA len
+            first_octet,
+            0x0A, // OA len (10 digits)
+            0x91, // OA type (international)
+            0x21,
+            0x43,
+            0x65,
+            0x87,
+            0x09, // BCD +1234567890
+            pid,
+            0x00, // DCS (GSM-7)
+            0x32,
+            0x10,
+            0x51,
+            0x21,
+            0x03,
+            0x00,
+            0x00, // SCTS
+            udl,
+        ];
+        pdu.extend_from_slice(ud);
+        pdu
+    }
+
+    #[test]
+    fn handle_incoming_classifies_silent_sms_and_keeps_the_message() {
+        // WHY (#662): PID 0x40 marks a Type 0 message -- specified as
+        // neither displayed nor stored, and the standard covert
+        // location-ping. Before this, the PID byte was read and discarded,
+        // so the ping was filed to the inbox as ordinary mail.
+        for pid in [0x40u8, 0x41, 0x47] {
+            let pdu = deliver_pdu(0x00, pid, 0x05, &[0xC8, 0x32, 0x9B, 0xFD, 0x06]);
+            let msg = SmsManager::handle_incoming(&pdu);
+            let Ok(msg) = msg else {
+                unreachable!("silent SMS must still decode, not error: PID {pid:#04X}")
+            };
+            assert_eq!(
+                msg.class,
+                MessageClass::Silent { pid },
+                "PID {pid:#04X} must classify as a silent SMS"
+            );
+            // The message is RETAINED, not dropped: on a counter-surveillance
+            // phone the ping itself is the intelligence, and an alert nobody
+            // sees is indistinguishable from no detection.
+            assert_eq!(msg.body, "Hello", "a silent SMS must keep its decoded body");
+        }
+    }
+
+    #[test]
+    fn handle_incoming_leaves_ordinary_pid_unclassified() {
+        // 0x3F sits just below the silent range and 0x48 just above it --
+        // an off-by-one in either bound would show here.
+        for pid in [0x00u8, 0x3F, 0x48] {
+            let pdu = deliver_pdu(0x00, pid, 0x05, &[0xC8, 0x32, 0x9B, 0xFD, 0x06]);
+            let Ok(msg) = SmsManager::handle_incoming(&pdu) else {
+                unreachable!("PID {pid:#04X} must decode")
+            };
+            assert_eq!(
+                msg.class,
+                MessageClass::Normal,
+                "PID {pid:#04X} is outside the silent range"
+            );
+        }
+    }
+
+    #[test]
+    fn handle_incoming_strips_udh_from_the_visible_body() {
+        // SECURITY (#662): with UDHI set, the UD begins with a header whose
+        // bytes are attacker-controlled. Decoded as text they are prepended
+        // to what the user reads -- a forged-sender-prefix inside a message
+        // that displays as coming from a real number.
+        //
+        // UDH: UDHL=05, IEI=00 (concatenation), IEL=03, ref=0xAB, total=02,
+        // seq=01 -- 6 octets. 6 octets = 48 bits; ceil(48/7) = 7 septets =
+        // 49 bits, so ONE fill bit sits between the header and the text.
+        // "Hello" is then packed starting at BIT 49, not byte 6.
+        //
+        // This fixture is the point of the test. Decoding by slicing at the
+        // header's last octet and reading from bit 0 -- which both this
+        // kernel and klesis did -- yields "ΔKYY§" from these exact bytes.
+        // An assertion that merely checked for absent NULs or a short body
+        // passes on that garbage, which is why it must assert the text.
+        let ud = alloc::vec![
+            0x05, 0x00, 0x03, 0xAB, 0x02, 0x01, // UDH (6 octets)
+            0x90, 0x65, 0x36, 0xFB, 0x0D, // "Hello" packed from bit 49
+        ];
+        let pdu = deliver_pdu(klesis_core::UDHI_BIT, 0x00, 12, &ud);
+
+        let Ok(msg) = SmsManager::handle_incoming(&pdu) else {
+            unreachable!("a UDH-bearing PDU must decode")
+        };
+        assert_eq!(
+            msg.body, "Hello",
+            "the body must be the text septets only, decoded from the septet \
+             boundary after the UDH -- not the octet boundary"
+        );
+    }
+
+    #[test]
+    fn handle_incoming_flags_wap_push_destination_port() {
+        // UDHL=06, IEI=05 (16-bit app ports), len=04, dest=2948, src=0.
+        let mut ud = alloc::vec![0x06, 0x05, 0x04, 0x0B, 0x84, 0x00, 0x00];
+        ud.extend_from_slice(&[0xC8, 0x32, 0x9B, 0xFD, 0x06]);
+        let pdu = deliver_pdu(klesis_core::UDHI_BIT, 0x00, 13, &ud);
+
+        let Ok(msg) = SmsManager::handle_incoming(&pdu) else {
+            unreachable!("a WAP Push PDU must decode")
+        };
+        assert_eq!(
+            msg.class,
+            MessageClass::WapPush {
+                destination_port: 2948,
+                source_port: 0
+            },
+            "an OMA-CP destination port must classify as WAP Push"
+        );
+    }
+
+    #[test]
+    fn silent_sms_maps_to_a_threat_alert() {
+        // WHY (#662): ThreatAlertType::SilentSms existed with an icon, a
+        // Display impl, and tests -- and no producer anywhere in the
+        // kernel. This is the seam that gives a decode result somewhere to
+        // go. Wiring it into the live event loop is #145.
+        use crate::screen_threat::ThreatAlertType;
+        assert_eq!(
+            ThreatAlertType::from_message_class(MessageClass::Silent { pid: 0x40 }),
+            Some(ThreatAlertType::SilentSms),
+            "a silent SMS must raise the alert type that already exists for it"
+        );
+        assert_eq!(
+            ThreatAlertType::from_message_class(MessageClass::WapPush {
+                destination_port: 2948,
+                source_port: 0
+            }),
+            Some(ThreatAlertType::WapPushRejected),
+        );
+        assert_eq!(
+            ThreatAlertType::from_message_class(MessageClass::Normal),
+            None,
+            "an ordinary message must raise no alert"
+        );
     }
 
     #[test]
@@ -924,6 +1012,7 @@ mod tests {
                 body: String::from("m"),
                 timestamp: i as u64,
                 read: false,
+                class: MessageClass::Normal,
             });
             assert!(result.is_ok(), "inbox has room until MAX_INBOX_MESSAGES");
         }
@@ -937,6 +1026,7 @@ mod tests {
             body: String::from("overflow"),
             timestamp: MAX_INBOX_MESSAGES as u64,
             read: false,
+            class: MessageClass::Normal,
         });
         assert_eq!(
             result,
@@ -970,6 +1060,7 @@ mod tests {
                 body: String::from("test"),
                 timestamp: 0,
                 read: false,
+                class: MessageClass::Normal,
             })
             .ok();
         assert!(!manager.inbox()[0].read, "message must start unread");
@@ -990,6 +1081,7 @@ mod tests {
                 body: String::from("msg1"),
                 timestamp: 0,
                 read: false,
+                class: MessageClass::Normal,
             })
             .ok();
         manager
@@ -999,6 +1091,7 @@ mod tests {
                 body: String::from("msg2"),
                 timestamp: 0,
                 read: false,
+                class: MessageClass::Normal,
             })
             .ok();
         assert_eq!(manager.inbox().len(), 2);
@@ -1025,7 +1118,7 @@ mod tests {
         let bcd = encode_bcd_address("+15551234567");
         assert!(bcd.is_ok());
         let bcd = bcd.unwrap_or_default();
-        let decoded = decode_bcd_address(bcd[0], bcd[1], &bcd[2..]);
+        let decoded = klesis_core::decode_bcd_address(bcd[0], bcd[1], &bcd[2..]);
         assert_eq!(
             decoded,
             Ok(String::from("+15551234567")),
@@ -1039,11 +1132,18 @@ mod tests {
         // fix this silently emitted ':' (b'0' + 10) into the sender
         // field instead of being rejected.
         let bcd = [0x1Au8];
-        let decoded = decode_bcd_address(2, 0x81, &bcd);
+        let decoded = klesis_core::decode_bcd_address(2, 0x81, &bcd);
         assert_eq!(
             decoded,
-            Err(SmsError::PduDecode),
+            Err(klesis_core::CoreError::BcdInvalidDigit { nibble: 0x0A }),
             "a BCD nibble outside 0-9 must be rejected, not rendered as a non-digit character"
+        );
+        // ...and the kernel's own error mapping must keep it a decode
+        // failure rather than losing it to a broader variant.
+        assert_eq!(
+            decoded.map_err(SmsError::from),
+            Err(SmsError::PduDecode),
+            "a rejected BCD nibble must surface to the kernel as PduDecode"
         );
     }
 
