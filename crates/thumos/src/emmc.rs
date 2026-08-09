@@ -1,7 +1,7 @@
 //! eMMC block device driver for MT6739 MSDC controller.
 //!
-//! Implements PIO and DMA transfer paths for eMMC 5.1 on the MediaTek MSDC
-//! (MultiSlot Data Controller). Register offsets and interrupt definitions
+//! Implements PIO and DMA transfer paths for eMMC 5.1 on the `MediaTek` MSDC
+//! (`MultiSlot` Data Controller). Register offsets and interrupt definitions
 //! are derived FROM `docs/DRIVER-INTERFACES.md` section 8.
 //!
 //! # Architecture
@@ -212,7 +212,7 @@ const CMD_DTYPE_READ: u32 = 0b01 << 11;
 /// Data transfer direction: write (host → device).
 const CMD_DTYPE_WRITE: u32 = 0b10 << 11;
 
-/// Block length shift for SDC_CMD (bits [31:16] in some configs).
+/// Block length shift for `SDC_CMD` (bits [31:16] in some configs).
 #[expect(dead_code, reason = "block length SET via SDC_CFG on MT6739 (#145)")]
 const CMD_BLK_LEN_SHIFT: u32 = 16;
 
@@ -252,18 +252,18 @@ const FIFOCS_CLR: u32 = 1 << 0;
 ///
 /// WARNING: the exact bit position is taken from the issue's datasheet
 /// citation, not independently re-derived against the BSP header. The
-/// per-word poll is bounded by POLL_TIMEOUT so a wrong field position
-/// degrades to a DataTimeout (safe), but must be verified before silicon.
+/// per-word poll is bounded by `POLL_TIMEOUT` so a wrong field position
+/// degrades to a `DataTimeout` (safe), but must be verified before silicon.
 /// TODO(#293)[deliberate-prudent]: confirm FIFOCS RXCNT field position against the MT6739 BSP.
 const FIFOCS_RXCNT_SHIFT: u32 = 16;
 
 /// RX FIFO word-count field mask (8 bits at [23:16]).
 const FIFOCS_RXCNT_MASK: u32 = 0xFF << FIFOCS_RXCNT_SHIFT;
 
-/// True if the MSDC_FIFOCS RX word count is nonzero, i.e. at least one word
-/// is buffered and safe to read FROM MSDC_RXDATA.
+/// True if the `MSDC_FIFOCS` RX word count is nonzero, i.e. at least one word
+/// is buffered and safe to read FROM `MSDC_RXDATA`.
 ///
-/// WHY: STS_DATBUSY stays SET for the duration of an entire block transfer,
+/// WHY: `STS_DATBUSY` stays SET for the duration of an entire block transfer,
 /// so it cannot signal per-word FIFO readiness during a PIO read; the RX
 /// count field is the per-word-accurate signal (issue #293).
 fn fifo_rx_ready(fifocs: u32) -> bool {
@@ -363,56 +363,56 @@ fn classify_interrupt_status(status: u32) -> Option<MsdcError> {
 // eMMC command opcodes (MMC specification)
 // ---------------------------------------------------------------------------
 
-/// CMD0: GO_IDLE_STATE  -  reset card to idle.
+/// CMD0: `GO_IDLE_STATE`  -  reset card to idle.
 const CMD0_GO_IDLE: u32 = 0;
 
-/// CMD1: SEND_OP_COND  -  send operating conditions.
+/// CMD1: `SEND_OP_COND`  -  send operating conditions.
 const CMD1_SEND_OP_COND: u32 = 1;
 
-/// CMD2: ALL_SEND_CID  -  request card identification.
+/// CMD2: `ALL_SEND_CID`  -  request card identification.
 #[expect(dead_code, reason = "reserved for CID readback (#145)")]
 const CMD2_ALL_SEND_CID: u32 = 2;
 
-/// CMD3: SET_RELATIVE_ADDR  -  assign relative card address.
+/// CMD3: `SET_RELATIVE_ADDR`  -  assign relative card address.
 const CMD3_SET_RELATIVE_ADDR: u32 = 3;
 
-/// CMD7: SELECT_CARD  -  SELECT card for data transfer.
+/// CMD7: `SELECT_CARD`  -  SELECT card for data transfer.
 const CMD7_SELECT_CARD: u32 = 7;
 
-/// CMD8: SEND_EXT_CSD  -  read extended CSD register.
+/// CMD8: `SEND_EXT_CSD`  -  read extended CSD register.
 #[expect(dead_code, reason = "reserved for EXT_CSD readback (#145)")]
 const CMD8_SEND_EXT_CSD: u32 = 8;
 
-/// CMD13: SEND_STATUS  -  read card status register.
+/// CMD13: `SEND_STATUS`  -  read card status register.
 #[expect(dead_code, reason = "reserved for status polling (#145)")]
 const CMD13_SEND_STATUS: u32 = 13;
 
-/// CMD16: SET_BLOCKLEN  -  SET block length to 512 bytes.
+/// CMD16: `SET_BLOCKLEN`  -  SET block length to 512 bytes.
 const CMD16_SET_BLOCKLEN: u32 = 16;
 
-/// CMD17: READ_SINGLE_BLOCK.
+/// CMD17: `READ_SINGLE_BLOCK`.
 const CMD17_READ_SINGLE: u32 = 17;
 
-/// CMD18: READ_MULTIPLE_BLOCK.
+/// CMD18: `READ_MULTIPLE_BLOCK`.
 const CMD18_READ_MULTI: u32 = 18;
 
-/// CMD24: WRITE_SINGLE_BLOCK.
+/// CMD24: `WRITE_SINGLE_BLOCK`.
 const CMD24_WRITE_SINGLE: u32 = 24;
 
-/// CMD25: WRITE_MULTIPLE_BLOCK.
+/// CMD25: `WRITE_MULTIPLE_BLOCK`.
 const CMD25_WRITE_MULTI: u32 = 25;
 
 // ---------------------------------------------------------------------------
 // OCR (CMD1 SEND_OP_COND response) bit fields
 // ---------------------------------------------------------------------------
 
-/// OCR "power-up status" bit (bit 31) in the CMD1 (SEND_OP_COND) R3
+/// OCR "power-up status" bit (bit 31) in the CMD1 (`SEND_OP_COND`) R3
 /// response. 0 while the card is still completing power-up, 1 once ready.
 /// The eMMC spec requires CMD1 to be repeated until this bit is observed
 /// set (issue #622).
 const OCR_BUSY_BIT: u32 = 1 << 31;
 
-/// Maximum CMD1 (SEND_OP_COND) attempts during init before giving up.
+/// Maximum CMD1 (`SEND_OP_COND`) attempts during init before giving up.
 ///
 /// WHY: eMMC power-up on real hardware completes within a handful of
 /// attempts; an absent/dead card fails fast through `send_command`'s own
@@ -1144,7 +1144,7 @@ impl MsdcController {
         unsafe { self.check_and_clear_completion(INT_XFER_COMPL | INT_DXFER_DONE) }
     }
 
-    /// Read the 32-bit response FROM SDC_RESP0.
+    /// Read the 32-bit response FROM `SDC_RESP0`.
     ///
     /// # Safety
     ///
@@ -1154,7 +1154,7 @@ impl MsdcController {
         unsafe { self.read_reg(REG_SDC_RESP0) }
     }
 
-    /// Read the full 128-bit response FROM SDC_RESP0–3.
+    /// Read the full 128-bit response FROM `SDC_RESP0–3`.
     ///
     /// # Safety
     ///
@@ -1194,13 +1194,13 @@ impl MsdcController {
     /// Check for hardware error interrupts before clearing a transfer's
     /// completion bits.
     ///
-    /// Reads MSDC_INT; if any bit in [`INT_ERR_MASK`] is set, clears every
-    /// observed bit (MSDC_INT is write-1-to-clear) and returns
+    /// Reads `MSDC_INT`; if any bit in [`INT_ERR_MASK`] is set, clears every
+    /// observed bit (`MSDC_INT` is write-1-to-clear) and returns
     /// [`MsdcError::InterruptError`] carrying the error bits. Otherwise
     /// clears only `completion_bits` and returns `Ok(())`.
     ///
-    /// WHY: clearing a completion bit (e.g. INT_XFER_COMPL) without first
-    /// inspecting INT_ERR_MASK silently discards a hardware error that
+    /// WHY: clearing a completion bit (e.g. `INT_XFER_COMPL`) without first
+    /// inspecting `INT_ERR_MASK` silently discards a hardware error that
     /// coincided with completion (issue #286).
     ///
     /// # Safety
@@ -1393,7 +1393,7 @@ pub(crate) fn build_single_bd_chain(buf_phys: u32, len: u32) -> (Gpd, Bd) {
     (gpd, bd)
 }
 
-/// Build a multi-segment BD chain FROM an array of (phys_addr, len) pairs.
+/// Build a multi-segment BD chain FROM an array of (`phys_addr`, len) pairs.
 ///
 /// Returns a vector of BDs with next pointers SET to zero. The caller must
 /// fixup next pointers after placing BDs in contiguous physical memory.

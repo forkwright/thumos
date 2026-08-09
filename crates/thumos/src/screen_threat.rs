@@ -83,7 +83,7 @@ const COLOR_ORANGE: u16 = color::from_rgb(255, 165, 0);
 // ---------------------------------------------------------------------------
 
 /// The canonical threat severity level: defined ONCE in `sema_core` (the
-/// no_std+alloc core shared with the `sema` workspace crate) and re-exported
+/// `no_std+alloc` core shared with the `sema` workspace crate) and re-exported
 /// here. The pre-#545 kernel copy drifted (bands 25/50/75 vs the canonical
 /// 30/60/80 protocol invariants) — the exact divergence class #545 exists
 /// to kill. Screen-specific presentation rides in the extension trait
@@ -137,7 +137,7 @@ pub enum ThreatAlertType {
     ImsiCatcher,
     /// BLE tracker device following the user.
     BleTracker,
-    /// WiFi deauthentication attack in progress.
+    /// `WiFi` deauthentication attack in progress.
     DeauthAttack,
     /// CCCI modem traffic anomaly detected.
     CcciAnomaly,

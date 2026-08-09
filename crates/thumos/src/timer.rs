@@ -1,9 +1,9 @@
 //! ARM Generic Timer driver.
 //!
-//! The Cortex-A53 has an integrated generic timer (CNTPCT, CNTP_TVAL, CNTP_CTL).
+//! The Cortex-A53 has an integrated generic timer (CNTPCT, `CNTP_TVAL`, `CNTP_CTL`).
 //! We use the physical timer (not virtual) since we're the kernel.
 //!
-//! The timer fires an IRQ (typically IRQ 30 on GICv2 for the physical timer PPI)
+//! The timer fires an IRQ (typically IRQ 30 on `GICv2` for the physical timer PPI)
 //! which we use as the scheduler tick.
 //!
 //! WHY `TIMER_IRQ` is feature-conditional (#544): the `CNTP_*` registers

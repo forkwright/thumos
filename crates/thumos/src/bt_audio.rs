@@ -67,7 +67,7 @@ pub enum BtAudioError {
     AvdtpError,
     /// SBC encoding error (e.g., invalid parameters).
     SbcError,
-    /// The Connecting state exceeded BT_CONNECT_TIMEOUT_MS without reaching
+    /// The Connecting state exceeded `BT_CONNECT_TIMEOUT_MS` without reaching
     /// Connected — the peer never finished AVDTP signaling (#442).
     Timeout,
     /// The peer does not support SBC (mandatory codec).
@@ -163,13 +163,13 @@ pub(crate) struct A2dpProfile<H: BtHwOps> {
     /// Local stream endpoint ID.
     local_seid: u8,
     /// AVDTP signal ID whose response is currently awaited during the
-    /// Connecting sequence (Discover -> GetCapabilities ->
-    /// SetConfiguration -> Open -> Start) or during resume(). `None`
+    /// Connecting sequence (Discover -> `GetCapabilities` ->
+    /// `SetConfiguration` -> Open -> Start) or during `resume()`. `None`
     /// when no signaling response is outstanding.
     pending_signal: Option<u8>,
     /// Tick-ms when Connecting began (#442). `Some` only in the Connecting
     /// state; a peer that never finishes signaling transitions to
-    /// Error(Timeout) at BT_CONNECT_TIMEOUT_MS via check_timeout().
+    /// Error(Timeout) at `BT_CONNECT_TIMEOUT_MS` via `check_timeout()`.
     connecting_since: Option<u64>,
     /// Bluetooth hardware backend.
     hw: H,
@@ -307,7 +307,7 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// Enforce the Connecting-state deadline (#442). `now_ms` comes from the
     /// caller's own clock (kardia's IRQ-tick base in production, a fake
     /// clock in tests — the profile never reads a clock directly). A peer
-    /// that has been Connecting for BT_CONNECT_TIMEOUT_MS without reaching
+    /// that has been Connecting for `BT_CONNECT_TIMEOUT_MS` without reaching
     /// Connected is moved to Error(Timeout) and its pending signal cleared.
     pub(crate) fn check_timeout(&mut self, now_ms: u64) {
         if let (A2dpState::Connecting, Some(since)) = (self.state, self.connecting_since) {

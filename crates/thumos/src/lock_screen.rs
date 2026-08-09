@@ -1087,7 +1087,7 @@ mod tests {
         );
     }
 
-    /// Map a decimal digit byte to its keypad key (inverse of key_to_digit).
+    /// Map a decimal digit byte to its keypad key (inverse of `key_to_digit`).
     fn digit_key(byte: u8) -> Key {
         match byte {
             b'0' => Key::Num0,

@@ -54,7 +54,7 @@ pub(crate) const KEY_MAP: [[Key; COL_COUNT]; ROW_COUNT] = [
 /// Register address and bit mask for `pin` within the register bank at
 /// `bank_base` (an offset from `board::GPIO_BASE`).
 ///
-/// MT67xx layout: each bank controls 32 pins; the address stride within a
+/// `MT67xx` layout: each bank controls 32 pins; the address stride within a
 /// bank is 8 (value at +0x00, set/clear aliases at +0x04). Mirrors haphe's
 /// `gpio_reg`.
 #[inline]

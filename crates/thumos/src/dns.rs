@@ -1,6 +1,6 @@
 //! DNS resolver with caching and split-horizon routing.
 //!
-//! Queries for `*.lan` hostnames are routed to a local AdGuard DNS
+//! Queries for `*.lan` hostnames are routed to a local `AdGuard` DNS
 //! instance, which resolves internal LAN services. All other queries
 //! go to Mullvad DNS (`194.242.2.2`) for privacy. ISP DNS is never
 //! used.
@@ -452,8 +452,8 @@ fn skip_dns_name(data: &[u8], mut offset: usize) -> Result<usize, DnsError> {
 ///
 /// When `use_dot` is enabled, non-LAN queries are routed through
 /// DNS-over-TLS (port 853) instead of plain UDP (port 53). LAN queries
-/// (`*.lan`) always use plain UDP to the local AdGuard instance regardless
-/// of the DoT setting. See [`dns_tls`](crate::dns_tls) for the DoT
+/// (`*.lan`) always use plain UDP to the local `AdGuard` instance regardless
+/// of the `DoT` setting. See [`dns_tls`](crate::dns_tls) for the `DoT`
 /// framing layer.
 pub(crate) struct DnsResolver {
     /// Local DNS cache.
@@ -466,7 +466,7 @@ pub(crate) struct DnsResolver {
     ///
     /// When true, the resolver signals that queries for non-LAN hostnames
     /// should be dispatched via a `dns_tls::DotClient` instead of plain UDP.
-    /// The actual DoT transport is managed externally; this flag controls
+    /// The actual `DoT` transport is managed externally; this flag controls
     /// routing decisions only.
     use_dot: bool,
 }
@@ -503,8 +503,8 @@ impl DnsResolver {
 
     /// Check whether a given hostname should use DNS-over-TLS.
     ///
-    /// Returns `true` if DoT is enabled and the hostname is not a LAN
-    /// hostname. LAN queries always bypass DoT.
+    /// Returns `true` if `DoT` is enabled and the hostname is not a LAN
+    /// hostname. LAN queries always bypass `DoT`.
     pub(crate) fn should_use_dot(&self, hostname: &str) -> bool {
         self.use_dot && !is_lan_hostname(hostname)
     }

@@ -16,7 +16,7 @@
 //!
 //! ## NTP client
 //!
-//! Minimal UDP NTP exchange: sends a single NTPv4 request to a configured
+//! Minimal UDP NTP exchange: sends a single `NTPv4` request to a configured
 //! server, parses the response for server transmit timestamp, and computes
 //! the clock offset. Uses the socket syscall layer (Wave 4) for UDP.
 
@@ -280,9 +280,9 @@ impl ClockManager {
 // NTP client (minimal UDP exchange)
 // ---------------------------------------------------------------------------
 
-/// Build a minimal NTPv4 client request packet (48 bytes).
+/// Build a minimal `NTPv4` client request packet (48 bytes).
 ///
-/// Sets LI=0 (no warning), VN=4 (NTPv4), Mode=3 (client).
+/// Sets LI=0 (no warning), VN=4 (`NTPv4`), Mode=3 (client).
 /// All timestamp fields are zeroed; the server will fill in its transmit time.
 #[must_use]
 pub(crate) fn build_ntp_request() -> [u8; NTP_PACKET_SIZE] {
@@ -350,7 +350,7 @@ pub(crate) fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
 /// and the server's transmit timestamp (Unix epoch seconds), computes the
 /// offset to add to the local monotonic clock to get wall time.
 ///
-/// offset = server_time - local_send_time
+/// offset = `server_time` - `local_send_time`
 ///
 /// This is a simplified single-exchange offset. A production NTP client
 /// would use the four-timestamp algorithm (T1, T2, T3, T4) with RTT

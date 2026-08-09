@@ -565,7 +565,7 @@ pub(crate) fn flush_packet_audit(
 }
 
 /// Format `"<count> <inbound|outbound> packet(s) denied"` into `buf`, returning
-/// the byte length written. A small no_std decimal formatter in the style of
+/// the byte length written. A small `no_std` decimal formatter in the style of
 /// the `format_*_into` helpers in `lock_screen`/`screen_fm`.
 fn format_deny_detail(count: u32, direction: Direction, buf: &mut [u8; DETAIL_LEN]) -> usize {
     let mut digits = [0u8; 10];

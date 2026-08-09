@@ -1,12 +1,12 @@
 //! Network subsystem foundation.
 //!
 //! Wraps smoltcp to provide the kernel's TCP/IP stack. This module is the
-//! layer that WiFi, DHCP, DNS, and socket syscalls all build on.
+//! layer that `WiFi`, DHCP, DNS, and socket syscalls all build on.
 //!
 //! # Architecture
 //!
 //! [`NetworkStack`] owns a smoltcp [`Interface`] and [`SocketSet`], wired
-//! together with a [`phy::Device`] implementor (loopback for testing, WiFi
+//! together with a [`phy::Device`] implementor (loopback for testing, `WiFi`
 //! hardware for production). The stack is polled periodically — each call
 //! to [`NetworkStack::poll`] drives packet ingress/egress and socket state
 //! machines forward.
@@ -66,7 +66,7 @@ const DEFAULT_MTU: usize = 1514;
 /// Ethernet header length before the layer-3 payload.
 const ETHERNET_HEADER_LEN: usize = 14;
 
-/// EtherType for IPv4 frames.
+/// `EtherType` for IPv4 frames.
 const ETHERTYPE_IPV4: u16 = 0x0800;
 
 /// Generate a locally administered unicast Ethernet address for kernel stacks.
@@ -86,7 +86,7 @@ pub(crate) fn randomized_local_ethernet_address() -> EthernetAddress {
 pub(crate) enum NetworkDeviceKind {
     /// Host-only loopback smoke path. Useful for stack tests, not connectivity.
     LoopbackSmoke,
-    /// Real WiFi hardware data path.
+    /// Real `WiFi` hardware data path.
     Wifi,
 }
 
@@ -267,7 +267,7 @@ impl Device for LoopbackDevice {
 // WiFi device adapter
 // ---------------------------------------------------------------------------
 
-/// smoltcp device adapter for the kernel WiFi hardware boundary.
+/// smoltcp device adapter for the kernel `WiFi` hardware boundary.
 ///
 /// This adapter only exposes TX/RX tokens after the hardware backend reports
 /// its Ethernet data path ready. The current MT6739 backend returns false, so
@@ -279,7 +279,7 @@ pub(crate) struct WifiDevice<H: WifiHwOps> {
 }
 
 impl<H: WifiHwOps> WifiDevice<H> {
-    /// Create a WiFi smoltcp adapter around hardware operations.
+    /// Create a `WiFi` smoltcp adapter around hardware operations.
     pub(crate) const fn new(hw: H) -> Self {
         Self {
             hw,
@@ -398,7 +398,7 @@ impl<H: WifiHwOps> Device for WifiDevice<H> {
 /// leaves non-IPv4 traffic untouched, and preserves the existing `Device`
 /// contract for boot smoke tests and future WiFi-backed devices.
 /// Boot network device behind the firewall wrapper (#403). `LoopbackDevice`
-/// until the WiFi data path lands (#129) -- the same build-time alias pattern as
+/// until the `WiFi` data path lands (#129) -- the same build-time alias pattern as
 /// `telephony::BootModemTransport`, so swapping in a real NIC is a one-line
 /// change. INVARIANT (kardia `KernelState`): this device must stay
 /// synchronous/polled; if a future NIC becomes IRQ-fed, its ISR must hand frames
@@ -545,7 +545,7 @@ fn frame_allowed_tx(firewall: &mut Firewall, frame: &[u8]) -> bool {
 ///
 /// Wraps a smoltcp [`Interface`] and [`SocketSet`] with convenience methods
 /// for socket creation, removal, and polling. The stack is generic over the
-/// underlying device — use [`LoopbackDevice`] for tests and the WiFi driver
+/// underlying device — use [`LoopbackDevice`] for tests and the `WiFi` driver
 /// for production.
 pub(crate) struct NetworkStack<D: Device> {
     /// The smoltcp network interface (handles ARP, IP routing, etc.).

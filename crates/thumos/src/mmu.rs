@@ -1,4 +1,4 @@
-//! ARMv7 MMU (Memory Management Unit) setup.
+//! `ARMv7` MMU (Memory Management Unit) setup.
 //!
 //! Configures the ARM two-level page table for the MT6739:
 //! - Level 1 (L1): 4096 entries, each covers 1 MB (section mapping)
@@ -33,7 +33,7 @@ mod flags {
     /// Access permission: PL1 (kernel) read/write, PL0 (user) NO access
     /// (AP[2:0] = 0b001: APX = 0 at bit 15 (unset), AP[1:0] = 0b01 at bits
     /// [11:10]). WHY (#323): kernel RAM and device MMIO sections must never
-    /// grant PL0 access -- the prior AP_FULL (AP[2:0] = 0b011) let any user
+    /// grant PL0 access -- the prior `AP_FULL` (AP[2:0] = 0b011) let any user
     /// process read and write kernel memory and MMIO directly.
     pub(crate) const AP_PL1_ONLY: u32 = 0b01 << 10;
     /// Shareable (bit 16).
@@ -51,7 +51,7 @@ mod flags {
 /// L2 (small page) descriptor flags (4 KB mapping).
 ///
 /// WHY: L1 section mapping (1 MB) is too coarse for userspace memory management.
-/// mmap/brk need page-level (4 KB) granularity. ARMv7 short-descriptor format
+/// mmap/brk need page-level (4 KB) granularity. `ARMv7` short-descriptor format
 /// uses L2 page tables (256 entries x 4 bytes = 1 KB) pointed to by L1 "page
 /// table" descriptors.
 pub(crate) mod page_flags {
@@ -74,10 +74,10 @@ pub(crate) mod page_flags {
     pub(crate) const SHAREABLE: u32 = 1 << 10;
     /// Normal memory for small pages: TEX[2:0]=0b001 (bits [8:6]), C=1 (bit 3), B=1 (bit 2).
     pub(crate) const NORMAL_WB_WA: u32 = (0b001 << 6) | (1 << 3) | (1 << 2);
-    /// Not-global (nG, bit 11), repurposed as a software USER_OWNED tag (#496).
+    /// Not-global (nG, bit 11), repurposed as a software `USER_OWNED` tag (#496).
     /// Every user page (minted through `prot_to_l2_flags`) carries it; the kernel
     /// fills (`KERNEL_DEFAULT_PAGE`, `wx_page_attrs`) never do. This lets
-    /// `l2_entry_is_user` recognise a PROT_NONE user page -- whose AP (0b01) is
+    /// `l2_entry_is_user` recognise a `PROT_NONE` user page -- whose AP (0b01) is
     /// byte-identical to a kernel fill -- so fork/exit/exec enumeration copies +
     /// frees it. HW effect: nG makes the TLB entry ASID-tagged; harmless here
     /// because CONTEXTIDR is pinned 0 (see `program_translation`) and every
@@ -92,7 +92,7 @@ pub(crate) struct L2Table {
     pub entries: [u32; 256],
 }
 
-/// Dedicated L2 table for the kernel's 1 MB region at 0x4000_0000, mapped with
+/// Dedicated L2 table for the kernel's 1 MB region at `0x4000_0000`, mapped with
 /// W^X page permissions (#417). Permanent (not drawn from the userspace pool).
 static mut KERNEL_L2: L2Table = L2Table { entries: [0; 256] };
 
@@ -105,11 +105,11 @@ static mut L2_TABLES: [L2Table; L2_POOL_SIZE] = {
     [EMPTY; L2_POOL_SIZE]
 };
 
-/// Allocation bitmask for L2_TABLES. Bit N = 1 means slot N is in use.
+/// Allocation bitmask for `L2_TABLES`. Bit N = 1 means slot N is in use.
 static mut L2_ALLOC: u64 = 0;
 
 /// WHY (#416): guards every `L2_ALLOC` accessor (`alloc_l2_table`,
-/// `free_l2_table`) -- same defect class as #331/PAGE_LOCK.
+/// `free_l2_table`) -- same defect class as #`331/PAGE_LOCK`.
 static L2_POOL_LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
 
 /// Allocate an L2 page table from the pool. Returns its physical address.
@@ -170,9 +170,9 @@ pub(crate) mod prot {
     pub(crate) const PROT_EXEC: u32 = 0x4;
 }
 
-/// Translate POSIX prot flags to ARMv7 L2 small page descriptor attributes.
+/// Translate POSIX prot flags to `ARMv7` L2 small page descriptor attributes.
 ///
-/// WHY: userspace passes POSIX prot flags (PROT_READ|PROT_WRITE|PROT_EXEC),
+/// WHY: userspace passes POSIX prot flags (`PROT_READ|PROT_WRITE|PROT_EXEC`),
 /// but the ARM MMU uses AP bits and XN to control access and execution.
 pub(crate) fn prot_to_l2_flags(prot_flags: u32) -> u32 {
     // #496: this function is the SOLE funnel for user L2 descriptors (image,
@@ -245,7 +245,7 @@ pub unsafe fn map_page(l1_phys: usize, virt_addr: usize, phys_addr: usize, l2_at
 
         // Write the L2 entry
         let l2_entry_ptr = (l2_phys as *mut u32).add(l2_index);
-        let l2_desc = (phys_addr as u32 & 0xFFFFF000) | l2_attrs;
+        let l2_desc = (phys_addr as u32 & 0xFFFF_F000) | l2_attrs;
         l2_entry_ptr.write_volatile(l2_desc);
 
         true
@@ -380,14 +380,14 @@ pub(crate) unsafe fn read_l2_entry(l1_phys: usize, virt_addr: usize) -> Option<u
 /// A small-page descriptor is bits[1:0] = 0b1X (bit 1 marks the small page, bit
 /// 0 is XN), so `bit 1 set` catches an executable (0b10) or execute-never (0b11)
 /// page and rejects a large-page (0b01) or fault (0b00) entry. Ownership is then
-/// decided by the software `NG` (USER_OWNED) tag, NOT by AP: `prot_to_l2_flags`
+/// decided by the software `NG` (`USER_OWNED`) tag, NOT by AP: `prot_to_l2_flags`
 /// sets NG on every user page (image, stack, heap/mmap), while the kernel fills
 /// (`KERNEL_DEFAULT_PAGE`, `wx_page_attrs`, the shared `KERNEL_L2`) never do.
 ///
-/// WHY NG and not AP (#496): a PROT_NONE user page maps to AP=0b01
+/// WHY NG and not AP (#496): a `PROT_NONE` user page maps to AP=0b01
 /// (`AP_KERNEL_ONLY`) -- byte-identical to a kernel fill -- so the old AP >= 0b10
 /// test dropped it from fork's deep-copy and from exit/exec teardown. Keying on
-/// the ownership tag enumerates PROT_NONE user pages while still rejecting every
+/// the ownership tag enumerates `PROT_NONE` user pages while still rejecting every
 /// kernel entry.
 pub(crate) fn l2_entry_is_user(entry: u32) -> bool {
     entry & page_flags::SMALL_PAGE != 0 && entry & page_flags::NG != 0
@@ -516,7 +516,7 @@ pub unsafe fn read_l2_phys(l1_phys: usize, virt_addr: usize) -> Option<usize> {
             return None;
         }
 
-        Some((l2_val & 0xFFFFF000) as usize)
+        Some((l2_val & 0xFFFF_F000) as usize)
     }
 }
 
@@ -549,7 +549,7 @@ pub unsafe fn update_page_prot(l1_phys: usize, virt_addr: usize, l2_attrs: u32) 
         }
 
         // Preserve the physical address, replace the attribute bits
-        let new_desc = (old & 0xFFFFF000) | l2_attrs;
+        let new_desc = (old & 0xFFFF_F000) | l2_attrs;
         l2_entry_ptr.write_volatile(new_desc);
 
         true
@@ -609,7 +609,7 @@ pub unsafe fn flush_tlb_all() {
 #[cfg(not(target_arch = "arm"))]
 pub unsafe fn flush_tlb_all() {}
 
-/// D-cache line size in bytes, decoded from CTR (CP15 c0, c0, 1) DminLine
+/// D-cache line size in bytes, decoded from CTR (CP15 c0, c0, 1) `DminLine`
 /// (bits [19:16], ARM ARM B4.1.61): the smallest data/unified cache line is
 /// `2^DminLine` words, so its byte size is `4 << DminLine`. Pure so the
 /// encoding is host-testable without CP15 access.
@@ -796,10 +796,10 @@ fn map_section(virt_mb: usize, phys_mb: usize, mem_type: MemoryType) {
 /// Set up the initial page table and enable the MMU.
 ///
 /// Identity maps:
-/// - 0x0000_0000 - 0x0FFF_FFFF: boot ROM / SRAM (device)
-/// - 0x1000_0000 - 0x1FFF_FFFF: peripheral MMIO (device)
-/// - 0x2000_0000 - 0x2FFF_FFFF: modem / CCCI (device)
-/// - 0x4000_0000 - 0x7FFF_FFFF: DRAM 1 GB (normal RAM)
+/// - `0x0000_0000` - `0x0FFF_FFFF`: boot ROM / SRAM (device)
+/// - `0x1000_0000` - `0x1FFF_FFFF`: peripheral MMIO (device)
+/// - `0x2000_0000` - `0x2FFF_FFFF`: modem / CCCI (device)
+/// - `0x4000_0000` - `0x7FFF_FFFF`: DRAM 1 GB (normal RAM)
 ///
 /// # Safety
 ///
@@ -1012,7 +1012,7 @@ static mut USER_TABLES: [UserL1Table; 16] = {
     [EMPTY; 16]
 };
 
-/// Allocation bitmask for USER_TABLES. Bit N = 1 means slot N is in use.
+/// Allocation bitmask for `USER_TABLES`. Bit N = 1 means slot N is in use.
 // NOTE: cfg(test) makes it pub(crate) so process.rs tests can call reset helpers.
 #[cfg(test)]
 pub(crate) static mut ADDR_SPACE_ALLOC: u16 = 0;
@@ -1020,7 +1020,7 @@ pub(crate) static mut ADDR_SPACE_ALLOC: u16 = 0;
 static mut ADDR_SPACE_ALLOC: u16 = 0;
 
 /// WHY (#416): guards every `ADDR_SPACE_ALLOC` accessor (`alloc_addr_space`,
-/// `free_addr_space`) -- same defect class as #331/PAGE_LOCK.
+/// `free_addr_space`) -- same defect class as #`331/PAGE_LOCK`.
 static ADDR_SPACE_LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
 
 /// Allocate a free user L1 page table FROM the pool.
@@ -1099,12 +1099,12 @@ pub unsafe fn free_addr_space(phys_addr: usize) -> bool {
 }
 
 /// Copy all 4096 L1 entries FROM the source address space INTO the destination.
-/// Used by fork() to clone the kernel's mappings INTO a new process table.
+/// Used by `fork()` to clone the kernel's mappings INTO a new process table.
 ///
 /// # Safety
 ///
 /// Both `src_phys` and `dst_phys` must be valid physical addresses of
-/// 16 KB-aligned L1 tables (either the kernel L1 or a USER_TABLES slot).
+/// 16 KB-aligned L1 tables (either the kernel L1 or a `USER_TABLES` slot).
 pub unsafe fn clone_addr_space(src_phys: usize, dst_phys: usize) {
     // SAFETY: caller guarantees both pointers are valid 16 KB-aligned L1 tables.
     unsafe {
@@ -1292,8 +1292,8 @@ mod tests {
         }
     }
 
-    /// #225/#226: read_l2_phys must return the mapped frame while the page is
-    /// mapped, and None once unmap_page has cleared the entry.
+    /// #225/#226: `read_l2_phys` must return the mapped frame while the page is
+    /// mapped, and None once `unmap_page` has cleared the entry.
     #[test]
     fn read_l2_phys_returns_mapped_frame_and_none_after_unmap() {
         reset();

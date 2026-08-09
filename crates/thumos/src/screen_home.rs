@@ -60,7 +60,7 @@ pub enum OperatingMode {
 
 impl From<crate::security_mode::SecurityMode> for OperatingMode {
     /// Bridge the runtime security-mode manager into the home-screen display
-    /// mode (#404): the badge/color follow the live ModeManager, not a hardcode.
+    /// mode (#404): the badge/color follow the live `ModeManager`, not a hardcode.
     fn from(m: crate::security_mode::SecurityMode) -> Self {
         match m {
             crate::security_mode::SecurityMode::Daily => Self::Daily,

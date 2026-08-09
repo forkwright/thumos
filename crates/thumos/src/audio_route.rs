@@ -83,7 +83,7 @@ impl core::fmt::Display for AudioRoute {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SessionKind {
-    /// Duplex voice call (cellular or VoIP).
+    /// Duplex voice call (cellular or `VoIP`).
     VoiceCall,
     /// Incoming call ringtone.
     Ringtone,

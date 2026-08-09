@@ -319,7 +319,7 @@ pub(crate) const DIR_ENTRY_HEADER_SIZE: usize = 8; // 4 + 2 + 2
 /// Contains a magic number and metadata about the segment's contents.
 #[derive(Debug, Clone, Copy)]
 pub struct SegmentHeader {
-    /// Magic number: 0x5345_4721 ("SEG!").
+    /// Magic number: `0x5345_4721` ("SEG!").
     pub magic: u32,
     /// Monotonically increasing sequence number.
     pub sequence: u64,
@@ -1963,7 +1963,7 @@ mod tests {
         );
     }
 
-    /// (#627): validate_block_num previously excluded only block 0 (the
+    /// (#627): `validate_block_num` previously excluded only block 0 (the
     /// superblock), not the rest of reserved segment 0 -- blocks
     /// `[1, segment_size)` hold the checkpoint slots, imap, and segment
     /// bitmap. Block 1 (checkpoint slot A) is nonzero and well within
@@ -2154,7 +2154,7 @@ mod tests {
         );
     }
 
-    /// (#627): the check above catches block 0, but unlink()'s inline
+    /// (#627): the check above catches block 0, but `unlink()`'s inline
     /// bound previously stopped there too -- blocks `[1, segment_size)`
     /// (checkpoint slots, imap, segment bitmap) were left addressable.
     /// Block 1 (checkpoint slot A) is nonzero and well within the raw
@@ -2814,15 +2814,15 @@ mod tests {
         );
     }
 
-    /// unlink() on the LAST entry in a directory skips write_dir_block()
+    /// `unlink()` on the LAST entry in a directory skips `write_dir_block()`
     /// entirely (the empty-directory branch just zeroes parent.direct[0]),
-    /// so writer.write_inode(dir_inode, &parent) is the ONLY log write
-    /// attempted -- isolating it from write_dir_block's write_data_block
-    /// call, which already routed through map_write_data_block_err. A
-    /// disk-full LfsError::NoFreeSegments here must map to
-    /// VfsError::NoSpace, not IoError -- before #627's fix this call site
+    /// so `writer.write_inode(dir_inode`, &parent) is the ONLY log write
+    /// attempted -- isolating it from `write_dir_block`'s `write_data_block`
+    /// call, which already routed through `map_write_data_block_err`. A
+    /// disk-full `LfsError::NoFreeSegments` here must map to
+    /// `VfsError::NoSpace`, not `IoError` -- before #627's fix this call site
     /// hardcoded `.map_err(|_| VfsError::IoError)` regardless of the
-    /// underlying LfsError.
+    /// underlying `LfsError`.
     #[test]
     fn unlink_last_entry_out_of_space_reports_no_space_not_io_error() {
         // WHY the setup provisions room and exhausts it AFTERWARDS rather than
@@ -3097,10 +3097,10 @@ mod tests {
         );
     }
 
-    /// (SECURITY, #627): the on-disk superblock's block_count is passed
+    /// (SECURITY, #627): the on-disk superblock's `block_count` is passed
     /// unvalidated as the extent bound every imap/direct-block pointer is
-    /// checked against after mount (validate_block_num,
-    /// LfsImap::load_from_disk) -- a crafted value exceeding the device's
+    /// checked against after mount (`validate_block_num`,
+    /// `LfsImap::load_from_disk`) -- a crafted value exceeding the device's
     /// real capacity must be rejected at mount instead of silently
     /// trusted as that bound.
     #[test]
@@ -3125,10 +3125,10 @@ mod tests {
         );
     }
 
-    /// (#627): checkpoint.sequence == u64::MAX must not silently wrap to
-    /// 0 through mount()'s `+ 1`. A checkpoint written next with
+    /// (#627): checkpoint.sequence == `u64::MAX` must not silently wrap to
+    /// 0 through `mount()`'s `+ 1`. A checkpoint written next with
     /// sequence 0 compares as older than every prior nonzero sequence,
-    /// so pick_latest() would never select it again -- freezing the
+    /// so `pick_latest()` would never select it again -- freezing the
     /// filesystem's recoverable state at whatever checkpoint predated
     /// the wrap.
     #[test]

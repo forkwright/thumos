@@ -1,11 +1,11 @@
-//! Battery monitoring for LiPo cells.
+//! Battery monitoring for `LiPo` cells.
 //!
 //! Provides [`BatteryInfo`] snapshots and a [`BatteryMonitor`] that polls
 //! hardware via the [`BatteryHwOps`] trait. Voltage-to-percentage conversion
-//! uses a piecewise-linear lookup table matching typical 3.7V LiPo discharge
+//! uses a piecewise-linear lookup table matching typical 3.7V `LiPo` discharge
 //! curves.
 //!
-//! ## Voltage table (3.7V single-cell LiPo)
+//! ## Voltage table (3.7V single-cell `LiPo`)
 //!
 //! | Voltage (mV) | Percentage |
 //! |--------------|------------|
@@ -43,7 +43,7 @@ struct LookupEntry {
     percentage: u8,
 }
 
-/// LiPo discharge curve lookup table.
+/// `LiPo` discharge curve lookup table.
 ///
 /// Sorted descending by voltage. Linear interpolation is used between
 /// adjacent entries.
@@ -95,7 +95,7 @@ pub(crate) const POLL_INTERVAL_SECS: u64 = 60;
 /// Snapshot of battery state at a point in time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatteryInfo {
-    /// Battery voltage in millivolts (3000-4200 typical LiPo).
+    /// Battery voltage in millivolts (3000-4200 typical `LiPo`).
     pub voltage_mv: u16,
     /// Estimated charge percentage (0-100).
     pub percentage: u8,

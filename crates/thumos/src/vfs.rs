@@ -487,7 +487,7 @@ impl Default for MountTable {
 // Path resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve an absolute path to a (mount_index, inode_id) pair.
+/// Resolve an absolute path to a (`mount_index`, `inode_id`) pair.
 ///
 /// Walks each component of `path` via `Filesystem::lookup()`, starting from
 /// the filesystem root inode. Handles `.` (current directory, skip) and `..`
@@ -855,10 +855,10 @@ mod tests {
         assert_eq!(result, Err(VfsError::AlreadyExists));
     }
 
-    /// A non-root trailing-slash mount path can never win lookup()'s
+    /// A non-root trailing-slash mount path can never win `lookup()`'s
     /// longest-prefix match against an ordinary child path -- it would
     /// sit in the table as a dead entry that matches nothing (#627).
-    /// Reject it at mount() instead of installing it.
+    /// Reject it at `mount()` instead of installing it.
     #[test]
     fn mount_rejects_trailing_slash() {
         let mut mt = MountTable::new();

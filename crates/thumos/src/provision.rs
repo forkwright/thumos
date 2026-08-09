@@ -17,9 +17,9 @@
 //! the same untrusted bundle it protects, so it catches corruption but proves
 //! nothing about origin. The Ed25519 signature covers the same magic + length
 //! + payload region and is the sole authenticity guarantee — verified against
-//! [`PROVISION_PUBLIC_KEY`], a compile-time-embedded public key whose
-//! corresponding private key is held offline by the operator, mirroring the
-//! secure-boot Ed25519 key custody model (see [`secure_boot`]).
+//!   [`PROVISION_PUBLIC_KEY`], a compile-time-embedded public key whose
+//!   corresponding private key is held offline by the operator, mirroring the
+//!   secure-boot Ed25519 key custody model (see [`secure_boot`]).
 //!
 //! ## Provisioning flow
 //!
@@ -246,7 +246,7 @@ pub(crate) struct Provisioner {
     /// Successfully deserialized bundle (set after finalize).
     bundle: Option<ProvisionBundle>,
     /// Ed25519 public key used to verify bundle signatures. Always
-    /// PROVISION_PUBLIC_KEY outside tests; test-injectable via
+    /// `PROVISION_PUBLIC_KEY` outside tests; test-injectable via
     /// [`Provisioner::new_with_key`] to exercise verification against a
     /// locally generated keypair.
     provision_public_key: [u8; secure_boot::PUBLIC_KEY_LEN],

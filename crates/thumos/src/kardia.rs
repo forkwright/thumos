@@ -1,4 +1,4 @@
-//! Kardia -- the kernel heartbeat: post-boot KernelState + service loop.
+//! Kardia -- the kernel heartbeat: post-boot `KernelState` + service loop.
 //!
 //! `kinit::run()` hands its fn-scope subsystem state to [`KernelState`], and
 //! the boot context (PID 0, the kernel/idle process created by
@@ -22,7 +22,7 @@
 //! (see [`service_loop`]) so a reflex IRQ that fires+retires in the check ->
 //! idle window cannot be lost. WHY `exceptions::ticks()`, not
 //! `timer::elapsed_ms()`, as the tick source (#461): the CNTPCT-backed
-//! elapsed_ms does not advance under qemu-virt, while the IRQ-incremented
+//! `elapsed_ms` does not advance under qemu-virt, while the IRQ-incremented
 //! tick counter does.
 
 use core::fmt::Write;
@@ -62,16 +62,16 @@ use crate::telephony::{BootModemTransport, RatGeneration, Telephony};
 use crate::uart::Uart;
 use crate::ui::{Screen, ScreenId, UiManager};
 
-/// Timer ticks per wall-clock second (exceptions.rs TICK_MS = 10).
+/// Timer ticks per wall-clock second (exceptions.rs `TICK_MS` = 10).
 const TICKS_PER_SECOND: u64 = 100;
 
-/// Milliseconds per timer tick (exceptions.rs TICK_MS). `ticks * TICK_MS` is the
-/// monotonic ms the ClockManager needs -- via the IRQ tick counter, which
+/// Milliseconds per timer tick (exceptions.rs `TICK_MS`). `ticks * TICK_MS` is the
+/// monotonic ms the `ClockManager` needs -- via the IRQ tick counter, which
 /// advances under qemu-virt (unlike CNTPCT, #461).
 const TICK_MS: u64 = 10;
 
-/// Boot wall-clock epoch (2025-01-01 UTC) -- matches time::REALTIME_OFFSET_SECS.
-/// Seeds ClockManager as a Manual (lowest-trust) source until a trusted source
+/// Boot wall-clock epoch (2025-01-01 UTC) -- matches `time::REALTIME_OFFSET_SECS`.
+/// Seeds `ClockManager` as a Manual (lowest-trust) source until a trusted source
 /// (GPS #129 / NTP / modem RTC #398) lands; on device the modem RTC replaces
 /// this at boot.
 const BOOT_WALL_EPOCH: u64 = 1_735_603_200;
@@ -147,7 +147,7 @@ pub(crate) struct KernelState {
     /// the screen stack; content comes from the heorte manager each render.
     calendar: CalendarScreen,
     /// FM radio controller + screen (#518): the `FmRadio<BootFmHw>` state
-    /// machine runs under emulation (NullFmHw) and feeds `fm_screen`; the real
+    /// machine runs under emulation (`NullFmHw`) and feeds `fm_screen`; the real
     /// WMT backend binds on device.
     fm: FmRadio<BootFmHw>,
     fm_screen: FmScreen,
@@ -175,7 +175,7 @@ pub(crate) struct KernelState {
     /// modem transport.
     sms: SmsManager,
     /// Audio session manager (#399): priority-preemptive sessions over the
-    /// codec (NullCodec under qemu, real MT6357 on device). Event-driven -- no
+    /// codec (`NullCodec` under qemu, real MT6357 on device). Event-driven -- no
     /// tick source; sessions open on ring/media/alarm events.
     audio: AudioManager<BootCodec>,
     /// Audio route arbitration (earpiece/speaker/BT/...) for the audio manager.
@@ -184,7 +184,7 @@ pub(crate) struct KernelState {
     /// recorded for the privacy dashboard.
     mic_audit: MicAuditLog,
     /// Bluetooth A2DP audio profile (#401): SBC-encoded stereo streaming over
-    /// the BT HCI transport (NullBtHw under qemu; real WMT/STP on device -- the
+    /// the BT HCI transport (`NullBtHw` under qemu; real WMT/STP on device -- the
     /// RF/HCI link is hardware-gated, so only the local profile state machine +
     /// SBC framing run in emulation).
     bt_audio: A2dpProfile<BootBtHw>,
@@ -197,7 +197,7 @@ pub(crate) struct KernelState {
     /// emitting Log/Deny audit events at the packet drop-site.
     ///
     /// INVARIANT-SAFE as a bare field: the device is synchronous/polled (the
-    /// loopback in-memory queue today; a polled WiFi adapter later) and is
+    /// loopback in-memory queue today; a polled `WiFi` adapter later) and is
     /// mutated only from loop context. If a future NIC becomes IRQ-fed (#129),
     /// its ISR MUST deposit frames into an `IrqSpinlock`/reflex ring that the
     /// loop drains -- this field never becomes IRQ-touched.
@@ -210,7 +210,7 @@ pub(crate) struct KernelState {
     /// `log_event` then fails closed (`NoKey`). Replaced by the key-hierarchy
     /// audit key when the passphrase flow lands (#217).
     audit_key: SecureKey<KEY_SIZE>,
-    /// Render target: the hardware framebuffer (FB_BASE) on device, a synthetic
+    /// Render target: the hardware framebuffer (`FB_BASE`) on device, a synthetic
     /// heap buffer under qemu (the virt machine models no display), or None when
     /// no display path exists. Wiring the render loop through this makes the UI
     /// surface CI-verifiable in emulation for the first time (#400).
@@ -421,7 +421,7 @@ impl KernelState {
     /// is no render target.
     ///
     /// The status badge + operating mode are read LIVE from the security-mode
-    /// manager (#404), and the wall-clock epoch from the ClockManager trust
+    /// manager (#404), and the wall-clock epoch from the `ClockManager` trust
     /// hierarchy (#402) -- both formerly hardcoded.
     pub(crate) fn render_if_dirty(&mut self) -> Option<usize> {
         // Computed before the fb borrow: status_network() reads &self as a whole

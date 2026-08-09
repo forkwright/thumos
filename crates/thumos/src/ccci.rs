@@ -1,7 +1,7 @@
 //! CCCI (Cross-Core Communication Interface) kernel driver.
 //!
 //! Manages the AP↔modem link on the MT6739. The modem (MD 6293) is a separate
-//! ARM core running opaque MediaTek firmware. This driver is the kernel boundary
+//! ARM core running opaque `MediaTek` firmware. This driver is the kernel boundary
 //! between the trusted AP and the hostile modem — every byte from the modem is
 //! untrusted.
 //!
@@ -80,7 +80,7 @@ mod cldma_pd {
     // Source: `eccci/mt6739/cldma_reg.h:69–133`
 
     /// PD base — TX/RX DMA control registers.
-    /// On MT6739 the PD registers share the CLDMA_AP aperture.
+    /// On MT6739 the PD registers share the `CLDMA_AP` aperture.
     const PD_BASE: usize = super::CLDMA_AP_BASE;
 
     // TX (UL = uplink = AP→MD) registers
@@ -173,7 +173,7 @@ const CLDMA_AO_RST_MASK: u32 = 1 << 6;
 const CLDMA_PD_RST_MASK: u32 = 1 << 2;
 /// CLDMA IP busy mask (bit 1).
 const CLDMA_IP_BUSY_MASK: u32 = 1 << 1;
-/// Bit 12 in MD_GLOBAL_CON0 enables CLDMA.
+/// Bit 12 in `MD_GLOBAL_CON0` enables CLDMA.
 const MD_GLOBAL_CON0_CLDMA_EN: u32 = 1 << 12;
 
 // ---------------------------------------------------------------------------
@@ -631,7 +631,7 @@ pub(crate) enum BootStep {
     MapHardware,
     /// Step 4: Write MD boot vector, release reset, poll status.
     ReleaseMd,
-    /// Step 5: Send runtime data via CCIF H2D_SRAM (channel 15).
+    /// Step 5: Send runtime data via CCIF `H2D_SRAM` (channel 15).
     SendRuntime,
     /// Step 6: Wait for MD acknowledge.
     WaitAck,
@@ -754,7 +754,7 @@ impl CldmaGpd {
     /// Set hardware ownership (give to DMA engine).
     ///
     /// WHY: this is the release half of the ownership handoff (issue
-    /// #262) -- the barrier ensures data_ptr/data_len/recv_len writes the
+    /// #262) -- the barrier ensures `data_ptr/data_len/recv_len` writes the
     /// caller made before this call are visible to the CLDMA engine before
     /// it can observe HWO set.
     pub(crate) fn set_hw_owned(&mut self) {
@@ -904,9 +904,9 @@ pub(crate) struct RxRing {
     head: usize,
     /// Number of descriptors currently owned by hardware.
     hw_count: usize,
-    /// Active ring length -- may be less than RX_RING_SIZE if fewer buffer
+    /// Active ring length -- may be less than `RX_RING_SIZE` if fewer buffer
     /// addresses were supplied to `init_chain` (e.g. a boot-time allocation
-    /// shortfall). `head` must wrap by this, not RX_RING_SIZE, or it walks
+    /// shortfall). `head` must wrap by this, not `RX_RING_SIZE`, or it walks
     /// into descriptors HW never chained into the ring (issue #282 finding 4).
     count: usize,
 }
@@ -1052,7 +1052,7 @@ pub(crate) enum NonCacheableRegion {
     CcismShare,
     /// CCB (Credit Control Buffer) for network flow control.
     CcbShare,
-    /// DHLogger raw.
+    /// `DHLogger` raw.
     DhlRawShare,
     /// Modem-consys shared.
     MdConsysShare,

@@ -135,7 +135,7 @@ const fn default_categories() -> [DataCategory; CATEGORY_COUNT] {
         },
         DataCategory {
             name: "Messages",
-            size_bytes: 524288,
+            size_bytes: 524_288,
             retention_days: 90,
             purgeable: true,
         },
@@ -159,13 +159,13 @@ const fn default_categories() -> [DataCategory; CATEGORY_COUNT] {
         },
         DataCategory {
             name: "SIGINT",
-            size_bytes: 262144,
+            size_bytes: 262_144,
             retention_days: 7,
             purgeable: true,
         },
         DataCategory {
             name: "Location",
-            size_bytes: 131072,
+            size_bytes: 131_072,
             retention_days: 14,
             purgeable: true,
         },
@@ -223,7 +223,7 @@ impl SizeBuf {
 
 /// Format a byte count as a human-readable string (B, KB, MB, GB).
 ///
-/// Uses integer division for no_std compatibility. Rounds down.
+/// Uses integer division for `no_std` compatibility. Rounds down.
 fn format_size(bytes: u64) -> SizeBuf {
     let mut buf = SizeBuf::new();
 
@@ -265,7 +265,7 @@ fn format_size_display(bytes: u64) -> SizeBufDisplay {
     SizeBufDisplay(format_size(bytes))
 }
 
-/// Wrapper to implement Display for SizeBuf without heap allocation.
+/// Wrapper to implement Display for `SizeBuf` without heap allocation.
 struct SizeBufDisplay(SizeBuf);
 
 impl core::fmt::Display for SizeBufDisplay {
@@ -274,7 +274,7 @@ impl core::fmt::Display for SizeBufDisplay {
     }
 }
 
-/// Write a u64 value as decimal digits into a SizeBuf.
+/// Write a u64 value as decimal digits into a `SizeBuf`.
 fn write_u64(buf: &mut SizeBuf, mut val: u64) {
     if val == 0 {
         buf.push(b'0');
@@ -344,7 +344,7 @@ impl RetentionBuf {
     }
 }
 
-/// Write a u16 value as decimal digits into a RetentionBuf.
+/// Write a u16 value as decimal digits into a `RetentionBuf`.
 fn write_u16_ret(buf: &mut RetentionBuf, mut val: u16) {
     if val == 0 {
         buf.push(b'0');
@@ -443,7 +443,7 @@ pub(crate) struct PrivacyScreen {
     scroll_offset: usize,
     /// Current sub-view.
     view: PrivacyView,
-    /// Purge confirmation state (valid when view == PurgeConfirm).
+    /// Purge confirmation state (valid when view == `PurgeConfirm`).
     purge_state: Option<PurgeConfirmState>,
     /// Total storage usage across all categories (cached).
     total_bytes: u64,

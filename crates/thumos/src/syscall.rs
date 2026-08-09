@@ -292,7 +292,7 @@ impl Syscall {
 
     /// All defined syscall variants in declaration ORDER.
     /// WHY: enables exhaustive iteration for tests and introspection
-    /// without relying on external derive macros in no_std.
+    /// without relying on external derive macros in `no_std`.
     pub(crate) const ALL: [Self; SYSCALL_COUNT] = [
         // Legacy
         Self::Exit,
@@ -366,12 +366,12 @@ impl Syscall {
 ///
 /// # Syscall implementation status
 ///
-/// Implemented: exit, write, yield, getpid, alloc_page, free_page, uptime,
+/// Implemented: exit, write, yield, getpid, `alloc_page`, `free_page`, uptime,
 ///   sleep, send, recv, fork, waitpid, execve, kill, getuid, brk, mmap,
 ///   munmap, mprotect, open, close, read, stat, fstat, lseek, ioctl, fcntl,
-///   dup, dup2, mkdir, unlink, getcwd, chdir, pipe, futex, metaxu_submit,
-///   metaxu_poll (both ENOSYS off the `metaxu-probe` feature), socket, bind,
-///   connect, sendto, recvfrom, clock_gettime, nanosleep, sigaction, sigreturn
+///   dup, dup2, mkdir, unlink, getcwd, chdir, pipe, futex, `metaxu_submit`,
+///   `metaxu_poll` (both ENOSYS off the `metaxu-probe` feature), socket, bind,
+///   connect, sendto, recvfrom, `clock_gettime`, nanosleep, sigaction, sigreturn
 /// Stub (returns EOPNOTSUPP): listen, accept
 pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     let Some(call) = Syscall::from_u32(num) else {
@@ -639,7 +639,7 @@ fn sys_metaxu_poll_dispatch() -> u32 {
 // the flags before delegating to the appropriate handler, keeping all pipe
 // logic in pipe.rs and the dispatch minimal.
 
-/// SYS_read: dispatch to pipe or ramfs based on fd kind.
+/// `SYS_read`: dispatch to pipe or ramfs based on fd kind.
 fn sys_read_with_pipe(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
     let flags = match fd::current_fd_flags(fd_idx) {
@@ -655,11 +655,11 @@ fn sys_read_with_pipe(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     }
 }
 
-/// SYS_write: dispatch to pipe, UART (stdout), or VFS file based on fd kind.
+/// `SYS_write`: dispatch to pipe, UART (stdout), or VFS file based on fd kind.
 ///
-/// - Pipe fd: dispatch to pipe::sys_pipe_write.
-/// - VFS fd (including a `dup2`-redirected fd 1): dispatch to fd::sys_write.
-/// - fd 1 with no FD_TABLE entry: the default, un-redirected case — write to
+/// - Pipe fd: dispatch to `pipe::sys_pipe_write`.
+/// - VFS fd (including a `dup2`-redirected fd 1): dispatch to `fd::sys_write`.
+/// - fd 1 with no `FD_TABLE` entry: the default, un-redirected case — write to
 ///   UART serial (legacy behavior).
 fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
@@ -707,16 +707,16 @@ const ENOENT: u32 = 0u32.wrapping_sub(2);
 /// Exec format error (two's complement -8, matches Linux ENOEXEC).
 const ENOEXEC: u32 = 0u32.wrapping_sub(8);
 
-/// execve(path_ptr, argv_ptr, _envp_ptr): replace the current process image.
+/// `execve(path_ptr`, `argv_ptr`, _`envp_ptr)`: replace the current process image.
 ///
 /// # Steps
 ///
 /// 1. Validate and read the path string from user space.
 /// 2. Find the file in the global ramfs.
 /// 3. Parse and validate the ELF header (must be ARM32 LE).
-/// 4. Load ELF PT_LOAD segments (identity-mapped; elf::load writes to vaddr).
+/// 4. Load ELF `PT_LOAD` segments (identity-mapped; `elf::load` writes to vaddr).
 /// 5. Allocate a new stack; push argc and argv onto it.
-/// 6. Reset all signal handlers to SIG_DFL (POSIX exec semantics).
+/// 6. Reset all signal handlers to `SIG_DFL` (POSIX exec semantics).
 /// 7. Update the PCB: entry → lr, stack top → sp, reset heap break + mappings.
 ///
 /// # On success
@@ -727,7 +727,7 @@ const ENOEXEC: u32 = 0u32.wrapping_sub(8);
 /// # Preserved across exec
 ///
 /// - PID (same process, new image)
-/// - File descriptors without FD_CLOEXEC (close-on-exec fds are closed, #267)
+/// - File descriptors without `FD_CLOEXEC` (close-on-exec fds are closed, #267)
 ///
 /// # envp
 ///
@@ -1003,14 +1003,14 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
 const EINVAL: u32 = 0u32.wrapping_sub(22);
 /// Out of memory (two's complement -12, matches Linux ENOMEM).
 const ENOMEM: u32 = 0u32.wrapping_sub(12);
-/// mmap failure sentinel (MAP_FAILED = (void *)-1).
+/// mmap failure sentinel (`MAP_FAILED` = (void *)-1).
 const MAP_FAILED: u32 = u32::MAX;
-/// MAP_ANONYMOUS flag (Linux mman.h).
+/// `MAP_ANONYMOUS` flag (Linux mman.h).
 const MAP_ANONYMOUS: u32 = 0x20;
 
 // --- Memory management syscall implementations ---
 
-/// brk(new_break): adjust the program break.
+/// `brk(new_break)`: adjust the program break.
 ///
 /// If `new_break_raw` is 0, returns the current break without modifying it.
 /// If `new_break_raw` > current break: allocates pages and maps them.
@@ -1172,15 +1172,15 @@ fn sys_brk(new_break_raw: u32) -> u32 {
     break_u32
 }
 
-/// mmap(addr_hint, length, prot, flags_and_fd):
+/// `mmap(addr_hint`, length, prot, `flags_and_fd)`:
 ///
 /// WHY: ARM syscall convention passes only 4 registers (r0-r3). POSIX mmap
 /// takes 6 arguments. We pack flags in the low 16 bits of arg3 and fd in
 /// the high 16 bits. Offset is not supported (anonymous only).
 ///
-/// - arg0: addr hint (ignored for MAP_ANONYMOUS, we pick the address)
+/// - arg0: addr hint (ignored for `MAP_ANONYMOUS`, we pick the address)
 /// - arg1: length in bytes
-/// - arg2: prot flags (PROT_READ | PROT_WRITE | PROT_EXEC)
+/// - arg2: prot flags (`PROT_READ` | `PROT_WRITE` | `PROT_EXEC`)
 /// - arg3: low 16 bits = flags, high 16 bits = fd (as i16, -1 = 0xFFFF)
 fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     let _addr_hint = arg0 as usize;
@@ -1522,7 +1522,7 @@ fn sys_mprotect(arg0: u32, arg1: u32, arg2: u32) -> u32 {
 #[cfg(test)]
 mod tests {
 
-    /// #282 finding 13: an OOM partway through sys_mmap's page allocation must
+    /// #282 finding 13: an OOM partway through `sys_mmap`'s page allocation must
     /// roll back exactly the pages it mapped before failing, freeing their
     /// physical frames -- not just unmapping them (same class as #226).
     #[test]
@@ -1995,8 +1995,8 @@ mod tests {
     /// stopped at `reset_for_test`'s absent-entry table, so `map_page` only
     /// ever took its "no mapping -> allocate an L2" branch: every
     /// mmap/brk/mprotect test passed against an L1 shape no real process has,
-    /// while sys_mmap returned MAP_FAILED on every real boot (#496) and
-    /// sys_brk growth never worked at all. mmu.rs's own tests build the
+    /// while `sys_mmap` returned `MAP_FAILED` on every real boot (#496) and
+    /// `sys_brk` growth never worked at all. mmu.rs's own tests build the
     /// faithful shape exactly this way.
     unsafe fn setup_mm() {
         unsafe {
@@ -2010,7 +2010,7 @@ mod tests {
         }
     }
 
-    /// #533 fixture-faithfulness guard: setup_mm() must produce a CLONED
+    /// #533 fixture-faithfulness guard: `setup_mm()` must produce a CLONED
     /// IDENTITY table -- the heap and mmap windows covered by 1 MB SECTION
     /// descriptors (bits[1:0]=0b10), not the absent entries the old synthetic
     /// fixture had. A fixture regression fails THIS test with a clear message
@@ -2331,7 +2331,7 @@ mod tests {
     /// REQ-07: execve must return EFAULT for an invalid (null or kernel-space)
     /// path pointer before attempting any filesystem lookup.
     ///
-    /// WHY: validate_user_buffer is the first gate in sys_execve. Verifying it
+    /// WHY: `validate_user_buffer` is the first gate in `sys_execve`. Verifying it
     /// returns EFAULT for out-of-range pointers confirms that the implementation
     /// rejects bad pointers before touching any kernel data structures.
     #[test]
@@ -2367,9 +2367,9 @@ mod tests {
         );
     }
 
-    /// #220: a path_ptr within MAX_PATH (256) bytes of RAM_END must be
+    /// #220: a `path_ptr` within `MAX_PATH` (256) bytes of `RAM_END` must be
     /// rejected with EFAULT before any read, instead of scanning past
-    /// RAM_END into unmapped/device memory.
+    /// `RAM_END` into unmapped/device memory.
     #[test]
     fn execve_rejects_path_pointer_near_ram_end() {
         let result = sys_execve((board::RAM_END - 1) as u32, 0, 0);
@@ -2381,7 +2381,7 @@ mod tests {
 
     /// REQ-07: execve must return ENOENT when the path is not found in ramfs.
     ///
-    /// WHY: after path validation, sys_execve calls fd::ramfs_find. This test
+    /// WHY: after path validation, `sys_execve` calls `fd::ramfs_find`. This test
     /// confirms that the lookup correctly returns None (→ ENOENT) for a path
     /// that was never added to the filesystem.
     // NOTE(un-gate): surfaced when syscall was un-gated for host testing. The
@@ -2423,7 +2423,7 @@ mod tests {
         assert_eq!(ENOENT, 0xFFFF_FFFEu32, "ENOENT must be two's complement -2");
     }
 
-    /// #255: write(1, ...) after dup2(pipe_write_end, 1) must deliver data to
+    /// #255: write(1, ...) after `dup2(pipe_write_end`, 1) must deliver data to
     /// the pipe, not silently continue to UART.
     #[cfg(target_pointer_width = "32")]
     #[test]
@@ -2467,7 +2467,7 @@ mod tests {
 
     // ---- Syscall table completeness tests ----
 
-    /// Verify every variant in Syscall::ALL is either implemented (does not
+    /// Verify every variant in `Syscall::ALL` is either implemented (does not
     /// return ENOSYS in the dispatch handler) or has a documented deferral to
     /// a named future phase.
     ///
@@ -2650,7 +2650,7 @@ mod tests {
     /// Null pointer must be rejected for any length, including zero.
     ///
     /// WHY: null dereference is always invalid. The null check in
-    /// validate_user_buffer is an unconditional first gate.
+    /// `validate_user_buffer` is an unconditional first gate.
     #[test]
     fn null_pointer_rejected() {
         // Non-zero lengths.
@@ -2670,7 +2670,7 @@ mod tests {
     /// A buffer starting near the top of the address space that would wrap
     /// around must be rejected.
     ///
-    /// WHY: without the checked_add overflow guard, ptr + len wraps to a low
+    /// WHY: without the `checked_add` overflow guard, ptr + len wraps to a low
     /// address that passes the range check, allowing kernel memory access
     /// through an apparently "valid" user pointer.
     #[test]
@@ -2742,7 +2742,7 @@ mod tests {
     /// back to the requested value AND return the underlying physical pages
     /// to the allocator (#226) — not just unmap the page-table entries.
     ///
-    /// WHY: brk shrink is how musl's free() returns memory. An incorrect
+    /// WHY: brk shrink is how musl's `free()` returns memory. An incorrect
     /// shrink leaves the break misreported, breaking subsequent brk queries;
     /// unmapping without freeing leaks the physical frame permanently.
     #[test]
@@ -2814,9 +2814,9 @@ mod tests {
     /// mmap N pages then munmap them — subsequent mmap in the same range must
     /// succeed (mapping table is consistent after munmap).
     ///
-    /// WHY: munmap must remove the VmMapping record so the first-fit allocator
+    /// WHY: munmap must remove the `VmMapping` record so the first-fit allocator
     /// can reuse that virtual address range. A stale entry would cause
-    /// mmap_munmap cycles to exhaust the mapping table (MAX_MAPPINGS = 32).
+    /// `mmap_munmap` cycles to exhaust the mapping table (`MAX_MAPPINGS` = 32).
     #[test]
     fn mmap_munmap_balance() {
         unsafe {
@@ -2851,14 +2851,14 @@ mod tests {
         );
     }
 
-    /// #251: an OOM partway through sys_execve's stack allocation must roll
+    /// #251: an OOM partway through `sys_execve`'s stack allocation must roll
     /// back exactly the pages allocated so far. Uses a minimal ELF32 LE ARM
-    /// header with e_phnum = 0 (mirrors elf.rs's make_valid_ehdr test
-    /// helper) so elf::load consumes zero pages and only the execve stack
+    /// header with `e_phnum` = 0 (mirrors elf.rs's `make_valid_ehdr` test
+    /// helper) so `elf::load` consumes zero pages and only the execve stack
     /// allocation exercises the page allocator; the ramfs Vec allocation in
-    /// fd::ramfs_find is unaffected because #[global_allocator] is
+    /// `fd::ramfs_find` is unaffected because #[`global_allocator`] is
     /// #[cfg(not(test))]-only (heap allocations under test use the host's
-    /// default allocator, decoupled from page::alloc_page()).
+    /// default allocator, decoupled from `page::alloc_page()`).
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn execve_oom_rollback_frees_exact_stack_pages() {
@@ -2929,8 +2929,8 @@ mod tests {
 
     // ---- Slab allocator integration test ----
 
-    /// Perform many alloc/dealloc cycles on a local SlabAllocator and verify
-    /// that alloc_count equals free_count (no leaks).
+    /// Perform many alloc/dealloc cycles on a local `SlabAllocator` and verify
+    /// that `alloc_count` equals `free_count` (no leaks).
     ///
     /// WHY: the same slab logic backs the global heap used by all kernel paths
     /// including syscall handlers. Equal alloc/free counts confirm that the
@@ -3007,9 +3007,9 @@ mod tests {
 
     // ---- Sleep syscall (#264) ----
 
-    /// #264: SYS_Sleep's tick-conversion must round up like sys_nanosleep's
-    /// (ceil(ms / TICK_MS)), now that Sleep uses the same set_wake_tick +
-    /// busy-wait + clear_wake_tick pattern instead of a bare uptime_ms()
+    /// #264: `SYS_Sleep`'s tick-conversion must round up like `sys_nanosleep`'s
+    /// (ceil(ms / `TICK_MS`)), now that Sleep uses the same `set_wake_tick` +
+    /// busy-wait + `clear_wake_tick` pattern instead of a bare `uptime_ms()`
     /// busy-wait that never touched process state at all.
     #[test]
     fn sleep_tick_conversion_matches_nanosleep_rounding() {
@@ -3029,11 +3029,11 @@ mod tests {
         );
     }
 
-    /// #264: Sleep(0) must exercise the full set_wake_tick -> wait ->
-    /// clear_wake_tick sequence and leave the process Running, not stuck
-    /// Sleeping. arg0 = 0 makes wake_tick == now_ticks so the wait loop
+    /// #264: Sleep(0) must exercise the full `set_wake_tick` -> wait ->
+    /// `clear_wake_tick` sequence and leave the process Running, not stuck
+    /// Sleeping. arg0 = 0 makes `wake_tick` == `now_ticks` so the wait loop
     /// resolves immediately without hanging the single-threaded host test
-    /// (nothing else advances the settable exceptions_stub tick source).
+    /// (nothing else advances the settable `exceptions_stub` tick source).
     #[test]
     fn sleep_zero_round_trips_process_state() {
         unsafe {

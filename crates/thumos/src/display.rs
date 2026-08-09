@@ -1,6 +1,6 @@
 //! Display Data Path (DDP) driver for the MT6739.
 //!
-//! Implements the MediaTek display pipeline: OVL0 → RDMA0 → DSI0 → LCM.
+//! Implements the `MediaTek` display pipeline: OVL0 → RDMA0 → DSI0 → LCM.
 //! The [`DisplayDriver`] orchestrates the 10-step hardware init sequence
 //! and provides framebuffer UPDATE via RDMA0 memory mode.
 //!
@@ -64,13 +64,13 @@ mod mmsys {
     pub(crate) const CG0_DISP_ALL: u32 = (1 << 0) | (1 << 3) | (1 << 5) | (1 << 24);
 
     /// Bit mask: display pipeline clocks in CG1.
-    /// DSI0_DIGITAL(bit 0) | DSI0_ENGINE(bit 1).
+    /// `DSI0_DIGITAL(bit` 0) | `DSI0_ENGINE(bit` 1).
     pub(crate) const CG1_DISP_ALL: u32 = (1 << 0) | (1 << 1);
 
-    /// Full release mask for SW0_RST_B.
+    /// Full release mask for `SW0_RST_B`.
     pub(crate) const SW0_RST_RELEASE: u32 = 0xFFFF_FFFF;
 
-    /// Full release mask for SW1_RST_B.
+    /// Full release mask for `SW1_RST_B`.
     pub(crate) const SW1_RST_RELEASE: u32 = 0xFFFF_FFFF;
 
     /// LCM reset release (bit 0).
@@ -90,9 +90,9 @@ mod ovl {
     pub(crate) const INTEN: usize = crate::board::OVL0_BASE + 0x004;
     /// Interrupt status.
     pub(crate) const INTSTA: usize = crate::board::OVL0_BASE + 0x008;
-    /// Enable; bit 0 = OVL_EN, bit 8 = CK_ON.
+    /// Enable; bit 0 = `OVL_EN`, bit 8 = `CK_ON`.
     pub(crate) const EN: usize = crate::board::OVL0_BASE + 0x00C;
-    /// Trigger; bit 0 = SW_TRIG.
+    /// Trigger; bit 0 = `SW_TRIG`.
     pub(crate) const TRIG: usize = crate::board::OVL0_BASE + 0x010;
     /// Reset.
     pub(crate) const RST: usize = crate::board::OVL0_BASE + 0x014;
@@ -107,13 +107,13 @@ mod ovl {
     /// Layer 0 control (alpha, flip, format).
     pub(crate) const L0_CON: usize = crate::board::OVL0_BASE + 0x030;
 
-    /// OVL_EN bit.
+    /// `OVL_EN` bit.
     pub(crate) const EN_BIT: u32 = 1 << 0;
-    /// CK_ON bit (force clock on).
+    /// `CK_ON` bit (force clock on).
     pub(crate) const CK_ON_BIT: u32 = 1 << 8;
-    /// SW_TRIG bit.
+    /// `SW_TRIG` bit.
     pub(crate) const SW_TRIG_BIT: u32 = 1 << 0;
-    /// Layer 0 enable bit in SRC_CON.
+    /// Layer 0 enable bit in `SRC_CON`.
     pub(crate) const LAYER0_EN: u32 = 1 << 0;
 
     /// Frame complete interrupt enable.
@@ -133,7 +133,7 @@ mod ovl {
 /// RDMA0 register block.
 mod rdma {
 
-    /// Global control; bit 0 = ENGINE_EN, bit 1 = MODE_SEL (1=memory).
+    /// Global control; bit 0 = `ENGINE_EN`, bit 1 = `MODE_SEL` (1=memory).
     pub(crate) const GLOBAL_CON: usize = crate::board::RDMA0_BASE;
     /// Output frame width.
     pub(crate) const SIZE_CON_0: usize = crate::board::RDMA0_BASE + 0x014;
@@ -146,12 +146,12 @@ mod rdma {
     /// Framebuffer start address (physical).
     pub(crate) const MEM_START_ADDR: usize = crate::board::RDMA0_BASE + 0x0F0;
 
-    /// ENGINE_EN bit.
+    /// `ENGINE_EN` bit.
     pub(crate) const ENGINE_EN: u32 = 1 << 0;
-    /// MODE_SEL bit (1 = memory mode).
+    /// `MODE_SEL` bit (1 = memory mode).
     pub(crate) const MODE_MEMORY: u32 = 1 << 1;
 
-    /// RGB565 input format in MEM_CON.
+    /// RGB565 input format in `MEM_CON`.
     pub(crate) const FMT_RGB565: u32 = 0;
 }
 
@@ -204,15 +204,15 @@ mod dsi {
     /// Rack (read-ack) register — write 1 to acknowledge completed command.
     pub(crate) const RACK: usize = crate::board::DSI0_BASE + 0x084;
 
-    /// DSI_START bit.
+    /// `DSI_START` bit.
     pub(crate) const START_BIT: u32 = 1;
     /// Video mode sync pulse.
     pub(crate) const MODE_SYNC_PULSE: u32 = 1;
-    /// 1 data lane in TXRX_CTRL bits [3:2].
+    /// 1 data lane in `TXRX_CTRL` bits [3:2].
     pub(crate) const LANE_1: u32 = 0b00 << 2;
-    /// Clock lane enable in PHY_LCCON.
+    /// Clock lane enable in `PHY_LCCON`.
     pub(crate) const LC_HS_TX_EN: u32 = 1 << 0;
-    /// Data lane 0 enable in PHY_LD0CON.
+    /// Data lane 0 enable in `PHY_LD0CON`.
     pub(crate) const LD0_HS_TX_EN: u32 = 1 << 0;
 
     // WHY: CMDQ word format for DCS short writes (the only type we use):
@@ -778,7 +778,7 @@ pub enum DisplayState {
 // Pure helper functions (testable without hardware)
 // ---------------------------------------------------------------------------
 
-/// Encode width and height INTO OVL_ROI_SIZE register format.
+/// Encode width and height INTO `OVL_ROI_SIZE` register format.
 ///
 /// Format: bits [12:0] = width, bits [28:16] = height.
 pub const fn encode_roi_size(width: u16, height: u16) -> u32 {

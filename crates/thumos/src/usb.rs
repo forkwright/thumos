@@ -14,7 +14,7 @@
 //! ## Register reference
 //!
 //! Offsets FROM the MUSB Programmer's Guide, verified against MT6739 BSP
-//! `drivers/usb/musb/musb_core.h` and the hardware_info provided in the
+//! `drivers/usb/musb/musb_core.h` and the `hardware_info` provided in the
 //! dispatch prompt.
 
 // ---------------------------------------------------------------------------
@@ -32,13 +32,13 @@ use crate::irq;
 // Common register offsets (relative to MUSB_BASE)
 // ---------------------------------------------------------------------------
 
-/// Function address  -  device address after SET_ADDRESS (8-bit).
+/// Function address  -  device address after `SET_ADDRESS` (8-bit).
 const REG_FADDR: usize = 0x00;
 /// Power management  -  SOFTCONN, HSENAB, suspend, resume, reset (8-bit).
 const REG_POWER: usize = 0x01;
-/// TX endpoint interrupt status  -  bit N = EPn (16-bit, reading clears).
+/// TX endpoint interrupt status  -  bit N = `EPn` (16-bit, reading clears).
 const REG_INTRTX: usize = 0x02;
-/// RX endpoint interrupt status  -  bit N = EPn (16-bit, reading clears).
+/// RX endpoint interrupt status  -  bit N = `EPn` (16-bit, reading clears).
 const REG_INTRRX: usize = 0x04;
 /// TX endpoint interrupt enable mask (16-bit).
 const REG_INTRTXE: usize = 0x06;
@@ -62,28 +62,28 @@ const REG_TESTMODE: usize = 0x10;
 // EP0 uses REG_EP0_CSR; EP1+ use REG_TXCSR / REG_RXCSR.
 // ---------------------------------------------------------------------------
 
-/// EP0 control/status register (16-bit); valid when REG_INDEX == 0.
+/// EP0 control/status register (16-bit); valid when `REG_INDEX` == 0.
 const REG_EP0_CSR: usize = 0x110;
-/// EPx TX control/status register (16-bit); valid when REG_INDEX >= 1.
+/// `EPx` TX control/status register (16-bit); valid when `REG_INDEX` >= 1.
 const REG_TXCSR: usize = 0x112;
-/// EPx RX control/status register (16-bit); valid when REG_INDEX >= 1.
+/// `EPx` RX control/status register (16-bit); valid when `REG_INDEX` >= 1.
 const REG_RXCSR: usize = 0x116;
-/// EPx TX max packet size (16-bit).
+/// `EPx` TX max packet size (16-bit).
 const REG_TXMAXP: usize = 0x118;
-/// EPx RX max packet size (16-bit).
+/// `EPx` RX max packet size (16-bit).
 const REG_RXMAXP: usize = 0x11A;
-/// EPx RX byte count for the last received OUT packet (16-bit); valid
-/// when REG_INDEX >= 1. Source: MUSB Programmer's Guide `RxCount`/`COUNT0`
-/// -- may be less than REG_RXMAXP for a short packet (issue #221). Placed
-/// immediately after REG_RXMAXP to follow this driver's banked-register
+/// `EPx` RX byte count for the last received OUT packet (16-bit); valid
+/// when `REG_INDEX` >= 1. Source: MUSB Programmer's Guide `RxCount`/`COUNT0`
+/// -- may be less than `REG_RXMAXP` for a short packet (issue #221). Placed
+/// immediately after `REG_RXMAXP` to follow this driver's banked-register
 /// layout (which already reorders from the raw Mentor Graphics offsets).
 ///
 /// WARNING: this offset is inferred from the driver's banked layout, NOT
 /// confirmed against the MT6739 BSP header — the drain is clamped to
-/// EP1_MAX_PKT so a wrong value cannot overrun the ring buffer, but the
+/// `EP1_MAX_PKT` so a wrong value cannot overrun the ring buffer, but the
 /// exact offset must be verified before trusting short-packet lengths on
 /// real silicon.
-/// TODO(#221)[deliberate-prudent]: confirm REG_RXCOUNT against the MT6739 MUSB BSP header.
+/// TODO(#221)[deliberate-prudent]: confirm `REG_RXCOUNT` against the MT6739 MUSB BSP header.
 const REG_RXCOUNT: usize = 0x11C;
 
 // ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ const REG_RXCOUNT: usize = 0x11C;
 // queue data INTO the FIFO; reads dequeue. MUSB auto-advances on each write.
 // ---------------------------------------------------------------------------
 
-/// EP FIFO base. FIFO for EPn is at MUSB_BASE + REG_FIFO_BASE + n * 4.
+/// EP FIFO base. FIFO for `EPn` is at `MUSB_BASE` + `REG_FIFO_BASE` + n * 4.
 const REG_FIFO_BASE: usize = 0x120;
 
 // ---------------------------------------------------------------------------
@@ -142,48 +142,48 @@ const INTRRX_EP1: u16 = 1 << 1;
 // REG_EP0_CSR bit fields (when REG_INDEX == 0)
 // ---------------------------------------------------------------------------
 
-/// RxPktRdy: a SETUP or OUT data packet is in the FIFO.
+/// `RxPktRdy`: a SETUP or OUT data packet is in the FIFO.
 const EP0_RXPKTRDY: u16 = 1 << 0;
-/// TxPktRdy: arm the FIFO for transmission (SET to send IN data).
+/// `TxPktRdy`: arm the FIFO for transmission (SET to send IN data).
 const EP0_TXPKTRDY: u16 = 1 << 1;
-/// SentStall: a STALL handshake was sent; clear after handling.
+/// `SentStall`: a STALL handshake was sent; clear after handling.
 const EP0_SENTSTALL: u16 = 1 << 2;
-/// DataEnd: SET alongside TxPktRdy (or alone for no-data status) to end the
+/// `DataEnd`: SET alongside `TxPktRdy` (or alone for no-data status) to end the
 /// control transfer. MUSB clears it automatically after the status stage.
 const EP0_DATAEND: u16 = 1 << 3;
-/// SetupEnd: an IN control transfer was aborted by the host; must be cleared.
+/// `SetupEnd`: an IN control transfer was aborted by the host; must be cleared.
 const EP0_SETUPEND: u16 = 1 << 4;
-/// SendStall: issue a STALL handshake for unrecognised requests.
+/// `SendStall`: issue a STALL handshake for unrecognised requests.
 const EP0_SENDSTALL: u16 = 1 << 5;
-/// ServicedRxPktRdy: clear RxPktRdy after reading the SETUP/OUT packet.
+/// `ServicedRxPktRdy`: clear `RxPktRdy` after reading the SETUP/OUT packet.
 const EP0_SVDRXPKTRDY: u16 = 1 << 6;
-/// ServicedSetupEnd: acknowledge the SetupEnd condition.
+/// `ServicedSetupEnd`: acknowledge the `SetupEnd` condition.
 const EP0_SVDSETUPEND: u16 = 1 << 7;
 
 // ---------------------------------------------------------------------------
 // REG_TXCSR bit fields (when REG_INDEX >= 1)
 // ---------------------------------------------------------------------------
 
-/// TxPktRdy: arm TX FIFO for transmission.
+/// `TxPktRdy`: arm TX FIFO for transmission.
 const TXCSR_TXPKTRDY: u16 = 1 << 0;
-/// FIFONotEmpty: TX FIFO still contains data.
+/// `FIFONotEmpty`: TX FIFO still contains data.
 const TXCSR_FIFONOTEMPTY: u16 = 1 << 1;
 /// Underrun: host issued an IN token when FIFO was empty.
 const TXCSR_UNDERRUN: u16 = 1 << 2;
-/// FlushFIFO: discard the current TX FIFO contents.
+/// `FlushFIFO`: discard the current TX FIFO contents.
 const TXCSR_FLUSHFIFO: u16 = 1 << 3;
-/// ClrDataTog: reset data toggle to DATA0 (call after configuration).
+/// `ClrDataTog`: reset data toggle to DATA0 (call after configuration).
 const TXCSR_CLRDATATOG: u16 = 1 << 6;
 
 // ---------------------------------------------------------------------------
 // REG_RXCSR bit fields (when REG_INDEX >= 1)
 // ---------------------------------------------------------------------------
 
-/// RxPktRdy: a packet has arrived in the RX FIFO.
+/// `RxPktRdy`: a packet has arrived in the RX FIFO.
 const RXCSR_RXPKTRDY: u16 = 1 << 0;
-/// FlushFIFO: discard the current RX FIFO contents.
+/// `FlushFIFO`: discard the current RX FIFO contents.
 const RXCSR_FLUSHFIFO: u16 = 1 << 4;
-/// ClrDataTog: reset data toggle to DATA0 (call after configuration).
+/// `ClrDataTog`: reset data toggle to DATA0 (call after configuration).
 const RXCSR_CLRDATATOG: u16 = 1 << 7;
 
 // ---------------------------------------------------------------------------
@@ -207,26 +207,26 @@ const USB_DT_CS_INTERFACE: u8 = 0x24;
 // USB standard request codes (bRequest)
 // ---------------------------------------------------------------------------
 
-/// GET_STATUS: return 2-byte status word.
+/// `GET_STATUS`: return 2-byte status word.
 const USB_REQ_GET_STATUS: u8 = 0x00;
-/// SET_ADDRESS: assign the device address after enumeration.
+/// `SET_ADDRESS`: assign the device address after enumeration.
 const USB_REQ_SET_ADDRESS: u8 = 0x05;
-/// GET_DESCRIPTOR: return a descriptor by type and index.
+/// `GET_DESCRIPTOR`: return a descriptor by type and index.
 const USB_REQ_GET_DESCRIPTOR: u8 = 0x06;
-/// SET_CONFIGURATION: activate a configuration.
+/// `SET_CONFIGURATION`: activate a configuration.
 const USB_REQ_SET_CONFIGURATION: u8 = 0x09;
 
 // ---------------------------------------------------------------------------
 // CDC ACM class request codes (bRequest)
 // ---------------------------------------------------------------------------
 
-/// SET_LINE_CODING: configure serial port parameters (baud, stop bits, parity).
+/// `SET_LINE_CODING`: configure serial port parameters (baud, stop bits, parity).
 const CDC_REQ_SET_LINE_CODING: u8 = 0x20;
-/// GET_LINE_CODING: return current serial port parameters.
+/// `GET_LINE_CODING`: return current serial port parameters.
 const CDC_REQ_GET_LINE_CODING: u8 = 0x21;
-/// SET_CONTROL_LINE_STATE: SET DTR/RTS control lines.
+/// `SET_CONTROL_LINE_STATE`: SET DTR/RTS control lines.
 const CDC_REQ_SET_CONTROL_LINE_STATE: u8 = 0x22;
-/// SET_LINE_CODING's fixed payload length (baud[4] + stop[1] + parity[1] +
+/// `SET_LINE_CODING`'s fixed payload length (baud[4] + stop[1] + parity[1] +
 /// data bits[1] = 7 bytes) per the CDC ACM spec.
 const LINE_CODING_LEN: u16 = 7;
 
@@ -271,7 +271,7 @@ const EP2_MAX_PKT: u16 = 16;
 // USB device identity constants
 // ---------------------------------------------------------------------------
 
-/// USB VID  -  NetChip Technology (used for CDC ACM examples; suitable for debug).
+/// USB VID  -  `NetChip` Technology (used for CDC ACM examples; suitable for debug).
 const USB_VID: u16 = 0x0525;
 /// USB PID  -  Linux-USB CDC ACM gadget.
 const USB_PID: u16 = 0xA4A7;
@@ -510,9 +510,9 @@ enum Ep0State {
     Setup,
     /// Sending descriptor/data to host (IN direction).
     DataIn,
-    /// Receiving data FROM host (OUT direction, e.g., SET_LINE_CODING).
+    /// Receiving data FROM host (OUT direction, e.g., `SET_LINE_CODING`).
     DataOut,
-    /// SET_ADDRESS pending  -  address written to FAddr after status stage.
+    /// `SET_ADDRESS` pending  -  address written to `FAddr` after status stage.
     AddressPending,
 }
 
@@ -580,7 +580,7 @@ impl SetupPacket {
 // ACM line coding
 // ---------------------------------------------------------------------------
 
-/// CDC ACM line coding (7 bytes, as returned by GET_LINE_CODING).
+/// CDC ACM line coding (7 bytes, as returned by `GET_LINE_CODING`).
 #[derive(Debug, Clone, Copy)]
 pub struct LineCoding {
     /// Baud rate (bits per second).
@@ -605,7 +605,7 @@ impl LineCoding {
         }
     }
 
-    /// Serialize to 7 bytes for GET_LINE_CODING response.
+    /// Serialize to 7 bytes for `GET_LINE_CODING` response.
     #[must_use]
     pub(crate) fn to_bytes(self) -> [u8; 7] {
         let r = self.dw_dte_rate.to_le_bytes();
@@ -620,7 +620,7 @@ impl LineCoding {
         ]
     }
 
-    /// Parse FROM 7 bytes received in SET_LINE_CODING.
+    /// Parse FROM 7 bytes received in `SET_LINE_CODING`.
     #[must_use]
     pub(crate) fn from_bytes(b: &[u8; 7]) -> Self {
         Self {
@@ -643,15 +643,15 @@ impl LineCoding {
 
 /// Interrupt register snapshot captured on USB IRQ entry.
 ///
-/// Reading IntrUSB, IntrTx, and IntrRx FROM MUSB clears those bits
+/// Reading `IntrUSB`, `IntrTx`, and `IntrRx` FROM MUSB clears those bits
 /// atomically. The ISR must save them here before dispatching.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UsbIrqStatus {
-    /// IntrUSB snapshot (reset/suspend/resume/SOF).
+    /// `IntrUSB` snapshot (reset/suspend/resume/SOF).
     pub intrusb: u8,
-    /// IntrTx snapshot (EP0 + TX EPs).
+    /// `IntrTx` snapshot (EP0 + TX EPs).
     pub intrtx: u16,
-    /// IntrRx snapshot (RX EPs).
+    /// `IntrRx` snapshot (RX EPs).
     pub intrrx: u16,
 }
 
@@ -710,9 +710,9 @@ fn clamp_rx_count(raw_count: u16, max_pkt: u16) -> usize {
     usize::from(raw_count).min(usize::from(max_pkt))
 }
 
-/// True if `w_length` matches SET_LINE_CODING's fixed [`LINE_CODING_LEN`].
+/// True if `w_length` matches `SET_LINE_CODING`'s fixed [`LINE_CODING_LEN`].
 ///
-/// SET_LINE_CODING declares a fixed-size (7-byte) payload per the CDC ACM
+/// `SET_LINE_CODING` declares a fixed-size (7-byte) payload per the CDC ACM
 /// spec. A request with any other `wLength` did not actually send the
 /// number of bytes `handle_ep0_data_out` unconditionally reads FROM the
 /// FIFO (issue #282 finding 20).
@@ -742,7 +742,7 @@ pub(crate) struct UsbController {
     base: usize,
     /// EP0 state machine.
     ep0_state: Ep0State,
-    /// Device address to apply after SET_ADDRESS status stage.
+    /// Device address to apply after `SET_ADDRESS` status stage.
     pending_address: u8,
     /// EP0 transmit buffer for descriptor/data responses.
     ep0_buf: [u8; EP0_BUF_LEN],
@@ -750,9 +750,9 @@ pub(crate) struct UsbController {
     ep0_buf_len: usize,
     /// Next byte index to send FROM `ep0_buf`.
     ep0_buf_pos: usize,
-    /// Current ACM line coding (updated by SET_LINE_CODING).
+    /// Current ACM line coding (updated by `SET_LINE_CODING`).
     line_coding: LineCoding,
-    /// True after SET_CONFIGURATION activates the gadget.
+    /// True after `SET_CONFIGURATION` activates the gadget.
     configured: bool,
 }
 
@@ -915,8 +915,8 @@ impl UsbController {
     /// Read and dispatch a USB interrupt.
     ///
     /// Called FROM the GIC interrupt handler for the MUSB IRQ line. Reads
-    /// IntrUSB, IntrTx, and IntrRx (which auto-clear on read), then dispatches
-    /// to reset, EP0, or EPx handlers.
+    /// `IntrUSB`, `IntrTx`, and `IntrRx` (which auto-clear on read), then dispatches
+    /// to reset, EP0, or `EPx` handlers.
     ///
     /// Returns the captured interrupt status for the caller to inspect.
     ///
@@ -1287,7 +1287,7 @@ impl UsbController {
         }
     }
 
-    /// Build and begin sending a GET_DESCRIPTOR response.
+    /// Build and begin sending a `GET_DESCRIPTOR` response.
     ///
     /// Loads the requested descriptor INTO `ep0_buf` and begins the IN data stage.
     ///
@@ -1326,7 +1326,7 @@ impl UsbController {
         unsafe { self.ep0_send_next_chunk() };
     }
 
-    /// Send up to one EP0_MAX_PKT chunk FROM ep0_buf to the host.
+    /// Send up to one `EP0_MAX_PKT` chunk FROM `ep0_buf` to the host.
     ///
     /// # Safety
     ///
@@ -1356,11 +1356,11 @@ impl UsbController {
         }
     }
 
-    /// Receive SET_LINE_CODING data (7 bytes) FROM EP0 OUT FIFO.
+    /// Receive `SET_LINE_CODING` data (7 bytes) FROM EP0 OUT FIFO.
     ///
     /// # Safety
     ///
-    /// Called FROM EP0 handler when DataOut is in progress.
+    /// Called FROM EP0 handler when `DataOut` is in progress.
     unsafe fn handle_ep0_data_out(&mut self) {
         // SAFETY: FIFO reads and register writes.
         unsafe {
@@ -1433,7 +1433,7 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// EP0 FIFO must contain a valid SETUP packet (RxPktRdy SET).
+    /// EP0 FIFO must contain a valid SETUP packet (`RxPktRdy` SET).
     unsafe fn read_ep0_fifo_setup(&self) -> SetupPacket {
         // SAFETY: FIFO read; caller ensures SETUP packet is ready.
         let fifo = self.base + REG_FIFO_BASE;
@@ -1498,7 +1498,7 @@ impl UsbController {
     /// correctly-sized 16-bit access -- unlike `mmio::wait_bits_clear`,
     /// which performs an unconditional 32-bit load and would straddle
     /// adjacent register bytes when polling a 16-bit-only MUSB register
-    /// such as REG_TXCSR at an odd half-word offset (issue #227).
+    /// such as `REG_TXCSR` at an odd half-word offset (issue #227).
     ///
     /// # Safety
     ///
@@ -1519,7 +1519,7 @@ impl UsbController {
 // Shared controller instance (#666)
 // ---------------------------------------------------------------------------
 
-/// WHY (#322/#331 class, same reasoning as SERIAL_RX_RING_LOCK above): an
+/// WHY (#322/#331 class, same reasoning as `SERIAL_RX_RING_LOCK` above): an
 /// `irq::IrqSpinlock`, not bare single-core-cooperative reasoning -- once
 /// the MUSB IRQ is registered with the GIC (`board::m7::MUSB_IRQ`, `None`
 /// until hardware-confirmed), `handle_musb_interrupt` runs in interrupt
@@ -2171,8 +2171,8 @@ mod tests {
     /// ordering to manifest, which is what makes it a reliable witness
     /// even on x86 CI hardware.
     ///
-    /// Each producer pushes a disjoint value lane (0..PUSH_PER_LANE and
-    /// PUSH_PER_LANE..2*PUSH_PER_LANE) so the drained stream can still be
+    /// Each producer pushes a disjoint value lane (`0..PUSH_PER_LANE` and
+    /// `PUSH_PER_LANE..2`*`PUSH_PER_LANE`) so the drained stream can still be
     /// checked per-lane after interleaving. Two properties a
     /// torn/lost/duplicated/reordered ring slot would break: exact count
     /// conservation (every `push()` that reported `accepted` is either

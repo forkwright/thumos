@@ -23,7 +23,7 @@
 //!
 //! ## Security
 //!
-//! All structures are fixed-size, no_std, no heap allocation.  The firewall
+//! All structures are fixed-size, `no_std`, no heap allocation.  The firewall
 //! evaluates *before* packet dispatch -- non-allowlisted channels never reach
 //! higher layers.
 
@@ -37,7 +37,7 @@ use crate::ccci::{CCCI_MAGIC, CCCI_MTU, CcciChannel};
 
 /// Logger ring buffer capacity in entries.
 ///
-/// 4 KB budget / size_of::<CcciLogEntry>() -- each entry is 28 bytes,
+/// 4 KB budget / `size_of::`<CcciLogEntry>() -- each entry is 28 bytes,
 /// giving 146 entries.  We round down to 128 (power of 2) for efficient
 /// modular arithmetic.
 const LOG_CAPACITY: usize = 128;
@@ -95,7 +95,7 @@ pub struct CcciLogEntry {
     pub channel: u32,
     /// Packet direction.
     pub direction: PacketDirection,
-    /// Header data0 field (length for data packets, CCCI_MAGIC for control).
+    /// Header data0 field (length for data packets, `CCCI_MAGIC` for control).
     pub data0: u32,
     /// Header data1 field (offset/index on some channels).
     pub data1: u32,
@@ -127,7 +127,7 @@ pub(crate) struct CcciLogger {
     entries: [CcciLogEntry; LOG_CAPACITY],
     /// Next write index.
     head: usize,
-    /// Number of live entries (0..=LOG_CAPACITY).
+    /// Number of live entries (`0..=LOG_CAPACITY`).
     count: usize,
 }
 
@@ -308,7 +308,7 @@ impl fmt::Display for ChannelStats {
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct ModemBaseline {
-    /// Per-channel statistics (indexed by channel number 0..CHANNEL_COUNT).
+    /// Per-channel statistics (indexed by channel number `0..CHANNEL_COUNT`).
     pub channels: [ChannelStats; CHANNEL_COUNT],
     /// Start timestamp of the baseline window.
     pub window_start: u64,
@@ -522,7 +522,7 @@ const MAX_ANOMALIES: usize = 16;
 /// Returns an array of up to [`MAX_ANOMALIES`] anomalies, the count, and
 /// whether more anomalies were detected than the array could hold (issue
 /// #282 finding 5 -- the old 2-tuple gave no way to distinguish "exactly
-/// MAX_ANOMALIES occurred" from "more occurred and were dropped").
+/// `MAX_ANOMALIES` occurred" from "more occurred and were dropped").
 #[must_use]
 pub(crate) fn detect_anomalies(
     log: &CcciLogger,
@@ -844,12 +844,12 @@ impl fmt::Display for CcciFirewall {
 /// physically removes power from the modem -- a hard kill that software
 /// on the modem side cannot prevent or recover from.
 ///
-/// Source: MT6357 PMIC datasheet, VMODEM_CON0 register.
+/// Source: MT6357 PMIC datasheet, `VMODEM_CON0` register.
 /// Derived from the board's PWRAP base (#534) — one MMIO truth.
 #[cfg(not(feature = "qemu"))]
 const PMIC_VMODEM_CON0: usize = crate::board::PWRAP_BASE + 0x0C00;
 
-/// VMODEM enable bit (bit 0 of VMODEM_CON0).
+/// VMODEM enable bit (bit 0 of `VMODEM_CON0`).
 #[cfg(not(feature = "qemu"))]
 const VMODEM_EN_BIT: u32 = 1 << 0;
 

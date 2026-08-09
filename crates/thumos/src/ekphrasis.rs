@@ -1106,7 +1106,7 @@ impl fmt::Display for Ekphrasis {
 #[must_use]
 #[non_exhaustive]
 pub struct ActionProposal {
-    /// The action identifier (e.g., "open_dialer", "draft_sms").
+    /// The action identifier (e.g., "`open_dialer`", "`draft_sms`").
     pub action: String,
     /// Key-value parameters for the action.
     pub params: Vec<(String, String)>,
@@ -1164,13 +1164,13 @@ pub(crate) mod action_types {
     pub(crate) const ADD_CALENDAR_EVENT: &str = "add_calendar_event";
     /// Toggle security mode (Sentinel, Covert, etc.).
     pub(crate) const TOGGLE_MODE: &str = "toggle_mode";
-    /// Toggle a specific radio (WiFi, cellular, Bluetooth).
+    /// Toggle a specific radio (`WiFi`, cellular, Bluetooth).
     pub(crate) const TOGGLE_RADIO: &str = "toggle_radio";
     /// Navigate to a thumos function/screen.
     pub(crate) const OPEN_FEATURE: &str = "open_feature";
     /// Initiate a security scan (Phase 10).
     pub(crate) const SCAN_START: &str = "scan_start";
-    /// Add the current WiFi network to safe networks.
+    /// Add the current `WiFi` network to safe networks.
     pub(crate) const ADD_SAFE_NETWORK: &str = "add_safe_network";
 
     /// All known action type strings, for validation.
@@ -1247,7 +1247,7 @@ fn find_fenced_block(message: &str) -> Option<(&str, usize)> {
 }
 
 /// Try to find a fenced block with the given delimiters. `end_marker` must
-/// already include its leading newline (see FENCE_END / FENCE_END_ALT).
+/// already include its leading newline (see `FENCE_END` / `FENCE_END_ALT`).
 fn try_find_fence<'a>(
     message: &'a str,
     start_marker: &str,

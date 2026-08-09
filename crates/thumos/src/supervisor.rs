@@ -8,7 +8,7 @@
 //! WHY a dedicated ring, not PID 0's IPC inbox: `notify_fault` used to
 //! `ipc::send(0, ..)` the report, but nothing ever drained it, so reports piled
 //! up and (at `INBOX_SIZE`) were dropped, while any legitimate userspace
-//! `send(0, ..)` then failed with InboxFull. A naive drain is not the answer
+//! `send(0, ..)` then failed with `InboxFull`. A naive drain is not the answer
 //! either -- `ipc::recv` pops the FRONT regardless of tag, so it would discard
 //! real user->PID0 IPC. Separating the channels is what makes the drain safe,
 //! and it also drops the `CURRENT`-swap hack `notify_fault` needed only so
@@ -32,7 +32,7 @@
 //!   masked for exactly as long as the loop holds this lock, so no user process
 //!   can run -- and therefore no PL0 fault can be raised -- inside that window.
 //! - A PL1 (kernel) fault taken under the lock never reaches here at all:
-//!   `process::fault_disposition` routes a non-User-mode fault to KernelHalt
+//!   `process::fault_disposition` routes a non-User-mode fault to `KernelHalt`
 //!   (fail-closed), not to `notify_fault`.
 //!
 //! So `report_fault` only ever runs when the loop is NOT in its critical section.

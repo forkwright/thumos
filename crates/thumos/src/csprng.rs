@@ -1,15 +1,15 @@
-//! Kernel CSPRNG — RustCrypto `ChaCha20Rng`, seeded from ARM generic timer jitter.
+//! Kernel CSPRNG — `RustCrypto` `ChaCha20Rng`, seeded from ARM generic timer jitter.
 //!
 //! Architecture mirrors Linux kernel random.c:
-//!   entropy pool (256 bits) → ChaCha20 key → keystream output
+//!   entropy pool (256 bits) → `ChaCha20` key → keystream output
 //!
-//! The DRBG core is `rand_chacha::ChaCha20Rng` (RustCrypto). This module owns
+//! The DRBG core is `rand_chacha::ChaCha20Rng` (`RustCrypto`). This module owns
 //! only the kernel-specific parts: entropy sourcing, the seededness gate, the
 //! reseed-after-N-bytes policy, and the fail-closed `kernel_random_bytes`
-//! interface. It does NOT hand-roll ChaCha20.
+//! interface. It does NOT hand-roll `ChaCha20`.
 //!
 //! Entropy sources:
-//!   (a) ARM generic timer (CNTPCT_EL0 / mrrc p15,0,…,c14) low word sampled
+//!   (a) ARM generic timer (`CNTPCT_EL0` / mrrc p15,0,…,c14) low word sampled
 //!       at every timer interrupt entry.
 //!   (b) Interrupt arrival timing jitter from source (a) — the *variation*
 //!       between successive samples, which is what earns entropy credit.
@@ -37,7 +37,7 @@
 //!
 //! All mutable globals are `static mut`. Access is restricted to:
 //!   - `collect_timer_entropy` / `add_entropy`: called only from the IRQ handler
-//!     (non-reentrant on single-core ARMv7, IRQ disabled during execution).
+//!     (non-reentrant on single-core `ARMv7`, IRQ disabled during execution).
 //!   - `init`: called once from kinit, before any code reads the CSPRNG.
 //!   - `kernel_random_bytes`: callable from kernel context after `init()`; not
 //!     called concurrently on this single-core kernel.
@@ -87,7 +87,7 @@ pub enum CsprngError {
 // DRBG wrapper
 // ---------------------------------------------------------------------------
 
-/// Kernel DRBG: a RustCrypto `ChaCha20Rng` plus the reseed accounting the
+/// Kernel DRBG: a `RustCrypto` `ChaCha20Rng` plus the reseed accounting the
 /// kernel policy needs.
 struct Csprng {
     rng: ChaCha20Rng,
@@ -188,7 +188,7 @@ static mut CSPRNG: Option<Csprng> = None;
 /// Global entropy accumulator. Written only from the IRQ handler.
 ///
 /// SAFETY: all writes are from `irq_handler_rust` (non-reentrant on single-core
-/// ARMv7 with IRQs disabled during handler execution). `init()` reads it once
+/// `ARMv7` with IRQs disabled during handler execution). `init()` reads it once
 /// after sufficient mixing; no concurrent read/write is possible.
 static mut ENTROPY: EntropyPool = EntropyPool::new();
 
@@ -424,7 +424,7 @@ pub fn kernel_random_bytes(buf: &mut [u8]) -> Result<(), CsprngError> {
 ///
 /// Only available in `#[cfg(test)]` builds. Seeds the DRBG deterministically so
 /// test vectors are reproducible without platform hardware. `nonce` sets the
-/// ChaCha20 stream and `counter` the block position (both zero for most callers).
+/// `ChaCha20` stream and `counter` the block position (both zero for most callers).
 #[cfg(test)]
 pub fn seed_for_test(key: &[u8; 32], nonce: &[u8; 8], counter: u64) {
     let mut rng = ChaCha20Rng::from_seed(*key);

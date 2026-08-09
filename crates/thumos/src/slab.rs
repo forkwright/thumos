@@ -455,7 +455,7 @@ mod tests {
     static mut TEST_FREED_PAGES: [usize; TEST_PAGES] = [0; TEST_PAGES];
     static mut TEST_FREED_COUNT: usize = 0;
 
-    /// Fake alloc_page: returns the next page from TEST_POOL.
+    /// Fake `alloc_page`: returns the next page from `TEST_POOL`.
     unsafe fn fake_alloc_page() -> Option<usize> {
         // SAFETY: single-threaded test execution; TEST_NEXT_PAGE is private.
         unsafe {
@@ -469,7 +469,7 @@ mod tests {
         }
     }
 
-    /// Fake free_page: records the freed address.
+    /// Fake `free_page`: records the freed address.
     unsafe fn fake_free_page(addr: usize) {
         // SAFETY: single-threaded test execution.
         unsafe {
@@ -480,7 +480,7 @@ mod tests {
         }
     }
 
-    /// Create a fresh, initialized SlabAllocator for each test.
+    /// Create a fresh, initialized `SlabAllocator` for each test.
     fn make_allocator() -> SlabAllocator {
         let mut sa = SlabAllocator::new();
         sa.init();

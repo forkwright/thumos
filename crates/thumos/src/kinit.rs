@@ -9,7 +9,7 @@
 //! eMMC → display → GPIO keypad → secure boot → passphrase → encrypted fs →
 //! audit log → security mode → USB serial → CCCI modem → power → userspace.
 //!
-//! Pure planning logic (BootStep ordering, BootState, userspace spawn
+//! Pure planning logic (`BootStep` ordering, `BootState`, userspace spawn
 //! planning) lives in `kinit_plan` (#528) so the host test build compiles and
 //! runs its unit tests; this module keeps only the hardware-init-bearing
 //! boot sequence.
@@ -294,7 +294,7 @@ fn boot_verify_loop(
 /// First-boot setup (#446): enter, confirm, store the PBKDF2-strength
 /// verifier in the preamble, derive keys. Returns `true` once provisioning
 /// completes. There is deliberately no skip binding: dev-anchor builds
-/// never reach this loop (secure_boot_ok is false there), so every
+/// never reach this loop (`secure_boot_ok` is false there), so every
 /// production-signed boot of an unprovisioned device sets a passphrase.
 fn boot_setup_loop(
     serial: &mut Uart,

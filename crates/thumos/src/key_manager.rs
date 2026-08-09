@@ -39,7 +39,7 @@ const LABEL_SESSION: &[u8] = b"thumos-session-v1";
 /// HKDF info label for the boot passphrase verifier (#446).
 ///
 /// The verifier is not a key: it is stored plaintext in the secrets
-/// preamble (crate::secrets) so the boot gate can distinguish a correct
+/// preamble (`crate::secrets`) so the boot gate can distinguish a correct
 /// passphrase from a wrong one before mounting. Deriving it from the
 /// primary key keeps verification at PBKDF2 strength per guess.
 const LABEL_VERIFY: &[u8] = b"thumos-verify-v1";
@@ -299,7 +299,7 @@ impl KeyManager {
     /// Derive the boot passphrase verifier from a primary key (#446).
     ///
     /// The verifier is what first-boot setup stores in the secrets preamble
-    /// (crate::secrets, slot kind 4, plaintext) and what the boot passphrase
+    /// (`crate::secrets`, slot kind 4, plaintext) and what the boot passphrase
     /// gate compares against (constant-time) BEFORE any mount. It is an
     /// HKDF output over the primary key, so a stored verifier costs an
     /// attacker one full PBKDF2 run per guess — the same as attacking the
