@@ -716,7 +716,10 @@ fn address_octets((address_type, address): (u8, BdAddr)) -> [u8; 7] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hci::{self, PbFlag};
+    use crate::l2cap::{self, CID_SMP, FixedChannel};
     use crate::smp::pdu::{AuthReq, IoCapability, KeyDistribution};
+    use crate::transport::{self, BtHciTransport};
 
     /// A small deterministic byte stream — enough entropy variety for
     /// ECDH key generation and nonces to differ from call to call and
@@ -1157,5 +1160,255 @@ mod tests {
         let mut bob = PairingSession::new(Role::Responder, test_addr(0x02), test_addr(0x01), &irk);
         assert_eq!(bob.initiate(), None);
         assert_eq!(bob.state(), PairingState::AwaitingPairingRequest);
+    }
+
+    // ── #635/#657 composition: pairing + RPA over the real L2CAP dispatch ──
+    //
+    // `full_handshake_bonds_both_directions` above proves the state
+    // machine correctly derives and exchanges IRKs, but it calls
+    // `handle_pdu` directly with each PDU's raw SMP bytes — it never
+    // touches `crate::l2cap`/`crate::transport`, so it does not prove SMP
+    // PDUs actually travel the CID 0x0006 fixed channel #635/#657 built.
+    // The helpers and tests below route the SAME handshake through the
+    // real STP -> HCI ACL -> L2CAP dispatch pipeline, and then close
+    // #455's "a bonded peer can resolve the address": the bonded IRK used
+    // to resolve an RPA is the one the handshake itself delivered, not a
+    // shared constant.
+
+    /// Deliver one SMP PDU to `receiver`'s RX path exactly as a real combo
+    /// chip forwarding an over-the-air SMP PDU would: L2CAP Basic-mode
+    /// framing (CID 0x0006) inside one HCI ACL Data H4 packet inside one
+    /// STP frame, pushed into the RX ring.
+    fn deliver_smp_pdu(receiver: &mut BtHciTransport, seq: u8, handle: u16, smp_payload: &[u8]) {
+        let l2cap_frame = l2cap::encode_pdu(CID_SMP, smp_payload);
+        let acl_frame = hci::encode_acl_data(handle, PbFlag::FirstNonFlushable, 0b00, &l2cap_frame);
+        let mut stp_buf = vec![0u8; acl_frame.len() + 16];
+        let Ok(written) = transport::stp_encode(seq, &acl_frame, &mut stp_buf) else {
+            unreachable!("a small SMP PDU always fits a buffer sized for it");
+        };
+        assert!(
+            receiver.push_rx(&stp_buf[..written]),
+            "test RX ring must have room for one small SMP PDU"
+        );
+    }
+
+    /// Drain the next SMP PDU FROM `receiver` via the real STP -> HCI ACL
+    /// -> L2CAP dispatch pipeline (`recv_l2cap_pdu`, #635/#657), asserting
+    /// it actually resolved to the SMP fixed channel rather than being
+    /// accepted off some other CID.
+    fn recv_smp_pdu(receiver: &mut BtHciTransport) -> Vec<u8> {
+        let Ok(Some(sdu)) = receiver.recv_l2cap_pdu() else {
+            unreachable!("a delivered single-fragment SMP PDU must reassemble immediately");
+        };
+        assert_eq!(
+            FixedChannel::from_cid(sdu.cid),
+            FixedChannel::Smp,
+            "an SMP PDU must dispatch via CID 0x0006, not be accepted off some other channel"
+        );
+        sdu.payload
+    }
+
+    /// Deliver every PDU in `outgoing` to `receiver` through the real
+    /// L2CAP dispatch, feed each through `receiver.handle_pdu`, and return
+    /// the concatenation of whatever that produces — the dispatch-routed
+    /// equivalent of `full_handshake_bonds_both_directions`'s `step`
+    /// helper above.
+    fn relay(
+        receiver: &mut PairingSession<'_>,
+        receiver_transport: &mut BtHciTransport,
+        handle: u16,
+        seq: &mut u8,
+        outgoing: &[Vec<u8>],
+        random: &mut dyn FnMut(&mut [u8]),
+    ) -> Outbound {
+        let mut produced = Vec::new();
+        for pdu in outgoing {
+            deliver_smp_pdu(receiver_transport, *seq, handle, pdu);
+            *seq = seq.wrapping_add(1) & 0x0F;
+            let payload = recv_smp_pdu(receiver_transport);
+            produced.extend(receiver.handle_pdu(&payload, &mut *random));
+        }
+        produced
+    }
+
+    /// Run the full LE Secure Connections handshake between `alice`
+    /// (initiator) and `bob` (responder) with every PDU routed through the
+    /// real L2CAP dispatch pipeline rather than a direct `handle_pdu`
+    /// call. Leaves both sessions `Complete` with a populated
+    /// `bonding_record`, mirroring `full_handshake_bonds_both_directions`.
+    fn run_handshake_via_l2cap(
+        alice: &mut PairingSession<'_>,
+        bob: &mut PairingSession<'_>,
+        rng_a: &mut dyn FnMut(&mut [u8]),
+        rng_b: &mut dyn FnMut(&mut [u8]),
+    ) {
+        let mut alice_transport = BtHciTransport::new();
+        let mut bob_transport = BtHciTransport::new();
+        let (alice_handle, bob_handle) = (0x0040u16, 0x0041u16);
+        let (mut seq_to_alice, mut seq_to_bob) = (0u8, 0u8);
+
+        let Some(request) = alice.initiate() else {
+            unreachable!("a fresh initiator session must produce a Pairing Request");
+        };
+
+        // Phase 1-2: alternate delivery until a side's handle_pdu produces
+        // nothing further to send. That happens exactly once, right after
+        // alice accepts bob's verified DHKey Check — mirrors the fixed
+        // step sequence `full_handshake_bonds_both_directions` walks
+        // through manually.
+        let mut pending = vec![request];
+        let mut next_is_bob = true;
+        loop {
+            pending = if next_is_bob {
+                relay(
+                    bob,
+                    &mut bob_transport,
+                    bob_handle,
+                    &mut seq_to_bob,
+                    &pending,
+                    rng_b,
+                )
+            } else {
+                relay(
+                    alice,
+                    &mut alice_transport,
+                    alice_handle,
+                    &mut seq_to_alice,
+                    &pending,
+                    rng_a,
+                )
+            };
+            if pending.is_empty() {
+                break;
+            }
+            next_is_bob = !next_is_bob;
+        }
+        assert_eq!(alice.state(), PairingState::AwaitingEncryption);
+        assert_eq!(bob.state(), PairingState::AwaitingEncryption);
+
+        // Phase 3: gated on confirm_link_encrypted, then IdKey exchange —
+        // same shape as `full_handshake_bonds_both_directions`.
+        let alice_identity = alice.confirm_link_encrypted();
+        let bob_identity = bob.confirm_link_encrypted();
+        let to_bob = relay(
+            bob,
+            &mut bob_transport,
+            bob_handle,
+            &mut seq_to_bob,
+            &alice_identity,
+            rng_b,
+        );
+        assert!(
+            to_bob.is_empty(),
+            "receiving an identity PDU produces no reply PDU"
+        );
+        let to_alice = relay(
+            alice,
+            &mut alice_transport,
+            alice_handle,
+            &mut seq_to_alice,
+            &bob_identity,
+            rng_a,
+        );
+        assert!(to_alice.is_empty());
+
+        assert_eq!(alice.state(), PairingState::Complete);
+        assert_eq!(bob.state(), PairingState::Complete);
+    }
+
+    #[test]
+    fn full_handshake_bonds_both_directions_via_l2cap_dispatch() {
+        let alice_irk = fixed_irk(0x20);
+        let bob_irk = fixed_irk(0xA0);
+        let alice_addr = test_addr(0x11);
+        let bob_addr = test_addr(0x12);
+
+        let mut alice = PairingSession::new(
+            Role::Initiator,
+            alice_addr.clone(),
+            bob_addr.clone(),
+            &alice_irk,
+        );
+        let mut bob = PairingSession::new(
+            Role::Responder,
+            bob_addr.clone(),
+            alice_addr.clone(),
+            &bob_irk,
+        );
+        let mut rng_a = fixed_stream(0x02);
+        let mut rng_b = fixed_stream(0x82);
+
+        run_handshake_via_l2cap(&mut alice, &mut bob, &mut rng_a, &mut rng_b);
+
+        let Some(alice_bond) = alice.bonding_record() else {
+            unreachable!("alice must have bonded bob's identity over the L2CAP dispatch path");
+        };
+        assert_eq!(alice_bond.peer_identity_address, bob_addr);
+        assert_eq!(alice_bond.peer_irk.as_bytes(), bob_irk.as_bytes());
+
+        let Some(bob_bond) = bob.bonding_record() else {
+            unreachable!("bob must have bonded alice's identity over the L2CAP dispatch path");
+        };
+        assert_eq!(bob_bond.peer_identity_address, alice_addr);
+        assert_eq!(
+            bob_bond.peer_irk.as_bytes(),
+            alice_irk.as_bytes(),
+            "the IRK bob holds must be the one alice's session distributed, delivered through CID 0x0006 — not a copy handed over out of band"
+        );
+    }
+
+    #[test]
+    fn bonded_peer_resolves_an_rpa_generated_with_the_protocol_obtained_irk() {
+        let alice_irk = fixed_irk(0x30);
+        let bob_irk = fixed_irk(0xB0);
+        let alice_addr = test_addr(0x21);
+        let bob_addr = test_addr(0x22);
+
+        let mut alice = PairingSession::new(
+            Role::Initiator,
+            alice_addr.clone(),
+            bob_addr.clone(),
+            &alice_irk,
+        );
+        let mut bob = PairingSession::new(
+            Role::Responder,
+            bob_addr.clone(),
+            alice_addr.clone(),
+            &bob_irk,
+        );
+        let mut rng_a = fixed_stream(0x03);
+        let mut rng_b = fixed_stream(0x83);
+
+        run_handshake_via_l2cap(&mut alice, &mut bob, &mut rng_a, &mut rng_b);
+
+        let Some(bob_bond) = bob.bonding_record() else {
+            unreachable!("bob must hold alice's bonded IRK after the handshake");
+        };
+
+        // Alice generates an RPA with HER OWN IRK. `prand`'s top two bits
+        // are deliberately NOT already 0b01 (0x2C = 0b00101100) — proves
+        // generate_rpa hashes what actually lands in the address (#455
+        // fix), not whatever raw bits the caller passed.
+        let prand = [0x2C, 0x71, 0x9A];
+        let alice_rpa = transport::generate_rpa(alice_irk.as_bytes(), &prand);
+
+        // Peer B resolves using the IRK IT OBTAINED THROUGH THE HANDSHAKE
+        // — never `alice_irk` directly. This is #455's "a bonded peer can
+        // resolve the address," composed end to end: the IRK travelled
+        // through the pairing protocol over the real L2CAP dispatch, and
+        // is what actually resolves the address.
+        assert!(
+            transport::resolve_rpa(bob_bond.peer_irk.as_bytes(), &alice_rpa),
+            "bob must resolve alice's RPA using the IRK the pairing handshake gave him"
+        );
+
+        // Negative case: an unbonded/wrong IRK must NOT resolve it — a
+        // resolver that returns true for everything would pass the
+        // positive assertion above too.
+        let unbonded_irk = fixed_irk(0xE0);
+        assert!(
+            !transport::resolve_rpa(unbonded_irk.as_bytes(), &alice_rpa),
+            "an IRK that never bonded with alice must not resolve her RPA"
+        );
     }
 }

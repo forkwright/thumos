@@ -109,6 +109,25 @@ pub(crate) enum Error {
 /// Result alias for this module.
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
+// ── PDU encoding ───────────────────────────────────────────────────────────────
+
+/// Frame `payload` for `cid` as a single-fragment L2CAP Basic-mode PDU:
+/// `[Length(2 LE)][CID(2 LE)][payload...]` (Vol 3 Part A §3.1) — the
+/// inverse of what [`AclReassembler`] reassembles.
+///
+/// Single-fragment only: every PDU this driver encodes today (SMP) fits
+/// well under one ACL packet, so there is no TX-side segmentation to model
+/// yet — that would additionally need the connection's negotiated ACL
+/// MTU, which this crate does not track.
+pub(crate) fn encode_pdu(cid: u16, payload: &[u8]) -> Vec<u8> {
+    let len = u16::try_from(payload.len()).unwrap_or(u16::MAX);
+    let mut out = Vec::with_capacity(L2CAP_HEADER_LEN + payload.len());
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&cid.to_le_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 /// A fully-reassembled L2CAP SDU delivered on a fixed channel.
@@ -308,6 +327,21 @@ mod tests {
             bc_flag: 0b00,
             data,
         }
+    }
+
+    // ── encode_pdu (#455 stage 3 / #636 composition) ──
+
+    #[test]
+    fn encode_pdu_is_consumable_by_the_real_reassembler() -> Result<()> {
+        let mut r = AclReassembler::new();
+        let framed = encode_pdu(CID_SMP, &[0x01, 0x02, 0x03]);
+        let pkt = acl(0x0001, PbFlag::FirstNonFlushable, &framed);
+        let Some(sdu) = r.feed(&pkt)? else {
+            unreachable!("a freshly encoded single-fragment PDU must complete immediately");
+        };
+        assert_eq!(sdu.cid, CID_SMP);
+        assert_eq!(sdu.payload, vec![0x01, 0x02, 0x03]);
+        Ok(())
     }
 
     // ── single-fragment PDUs ──
