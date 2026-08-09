@@ -198,6 +198,11 @@ impl core::fmt::Display for Contact {
     }
 }
 
+// WHY: name/number/matrix_id/*_len are the fixed-size byte-array + length
+// halves of what name_str()/number_str()/matrix_id_str() already decode --
+// dumping the raw arrays alongside the decoded strings would duplicate
+// the same content in a less readable form, not add information.
+#[allow(clippy::missing_fields_in_debug)]
 impl core::fmt::Debug for Contact {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut s = f.debug_struct("Contact");
@@ -449,8 +454,8 @@ mod tests {
         mgr.delete(1); // Remove Bob.
 
         assert_eq!(mgr.count(), 2);
-        assert_eq!(mgr.get(0).map(|c| c.name_str()), Some("Alice"));
-        assert_eq!(mgr.get(1).map(|c| c.name_str()), Some("Charlie"));
+        assert_eq!(mgr.get(0).map(super::Contact::name_str), Some("Alice"));
+        assert_eq!(mgr.get(1).map(super::Contact::name_str), Some("Charlie"));
     }
 
     #[test]
@@ -501,7 +506,7 @@ mod tests {
         let sorted = mgr.sorted_indices();
         let names: Vec<&str> = sorted
             .iter()
-            .map(|&i| mgr.get(i).map(|c| c.name_str()).unwrap_or(""))
+            .map(|&i| mgr.get(i).map_or("", super::Contact::name_str))
             .collect();
         assert_eq!(
             names,

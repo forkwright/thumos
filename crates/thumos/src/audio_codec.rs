@@ -259,6 +259,11 @@ pub(crate) trait AudioCodecOps {
 /// Accesses PMIC registers through the PWRAP bus on the MT6739.
 /// Manages LDO power gating, DAC/ADC enable, amplifier routing,
 /// volume control, and mic bias.
+// WHY: powered/dac_enabled/adc_enabled/mic_bias are independent hardware
+// power-gate flags that can be set in any combination, not a mutually
+// exclusive state machine — a bitflags/enum recast would not simplify
+// the per-flag read/write pattern used against the PMIC registers.
+#[allow(clippy::struct_excessive_bools)]
 #[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct Mt6357Codec {
     /// Whether the codec is powered on (LDO active).
@@ -363,7 +368,7 @@ impl Mt6357Codec {
     /// # Safety
     ///
     /// Must only be called when the codec is powered on.
-    unsafe fn disable_all_amps(&mut self) {
+    unsafe fn disable_all_amps() {
         // SAFETY: codec is powered, PWRAP is active, register offsets are valid.
         unsafe {
             Self::pmic_clear_bits(AUDDEC_ANA_CON1, EARPIECE_AMP_EN);
@@ -420,7 +425,7 @@ impl AudioCodecOps for Mt6357Codec {
         // SAFETY: PWRAP initialized, valid register offsets.
         unsafe {
             // Disable all amplifiers.
-            self.disable_all_amps();
+            Self::disable_all_amps();
 
             // Disable top-level power.
             Self::pmic_clear_bits(AUD_TOP_CON0, AUD_TOP_POWER_ON);
@@ -478,7 +483,7 @@ impl AudioCodecOps for Mt6357Codec {
         // SAFETY: codec powered (checked by enable_dac precondition),
         // valid registers.
         unsafe {
-            self.disable_all_amps();
+            Self::disable_all_amps();
             Self::pmic_clear_bits(AFE_DL_CON0, DAC_ENABLE);
             Self::pmic_clear_bits(AFE_UL_DL_CON0, AFE_DL_EN);
         }
@@ -514,7 +519,7 @@ impl AudioCodecOps for Mt6357Codec {
         // SAFETY: codec powered, DAC enabled, valid registers.
         unsafe {
             // Disable all amps first, then enable the target.
-            self.disable_all_amps();
+            Self::disable_all_amps();
 
             match route {
                 AudioRoute::Earpiece => {
@@ -629,6 +634,10 @@ impl AudioCodecOps for Mt6357Codec {
 /// Records all operations in order for test verification.  Controllable
 /// failure injection via the `fail_*` flags.
 // kanon:ignore RUST/struct-too-many-fields -- test-only mock: one state flag + one fail-injection flag per codec hardware operation; each field targets a distinct operation's failure path
+// WHY: powered/dac_enabled/adc_enabled/mic_bias mirror the independent
+// hardware power-gate flags of the real codec (see Mt6357Codec) — not a
+// state machine, so no bitflags/enum recast applies here either.
+#[allow(clippy::struct_excessive_bools)]
 #[cfg(test)]
 pub struct MockCodec {
     /// Whether the codec is powered on.
@@ -859,6 +868,10 @@ impl AudioCodecOps for MockCodec {
 /// session logic reads, but touches no hardware -- so the session / priority /
 /// route state machine runs in emulation. Distinct from the test-only
 /// `MockCodec` (which carries fail-injection knobs).
+// WHY: powered/dac_enabled/adc_enabled/mic_bias mirror the independent
+// hardware power-gate flags of the real codec (see Mt6357Codec) — not a
+// state machine, so no bitflags/enum recast applies here either.
+#[allow(clippy::struct_excessive_bools)]
 #[cfg(any(feature = "qemu", test))]
 pub(crate) struct NullCodec {
     powered: bool,

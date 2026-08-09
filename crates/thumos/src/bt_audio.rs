@@ -315,12 +315,12 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// that has been Connecting for `BT_CONNECT_TIMEOUT_MS` without reaching
     /// Connected is moved to Error(Timeout) and its pending signal cleared.
     pub(crate) fn check_timeout(&mut self, now_ms: u64) {
-        if let (A2dpState::Connecting, Some(since)) = (self.state, self.connecting_since) {
-            if now_ms.saturating_sub(since) >= BT_CONNECT_TIMEOUT_MS {
-                self.state = A2dpState::Error(BtAudioError::Timeout);
-                self.connecting_since = None;
-                self.pending_signal = None;
-            }
+        if let (A2dpState::Connecting, Some(since)) = (self.state, self.connecting_since)
+            && now_ms.saturating_sub(since) >= BT_CONNECT_TIMEOUT_MS
+        {
+            self.state = A2dpState::Error(BtAudioError::Timeout);
+            self.connecting_since = None;
+            self.pending_signal = None;
         }
     }
 
@@ -502,7 +502,6 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// # Errors
     ///
     /// Currently infallible but returns `Result` for API consistency.
-    #[must_use]
     #[expect(
         clippy::unnecessary_wraps,
         reason = "returns Result for API consistency with other lifecycle methods"

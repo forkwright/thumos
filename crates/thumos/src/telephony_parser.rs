@@ -225,7 +225,7 @@ pub(crate) fn parse_cpinr_attempts(line: &[u8]) -> Option<u8> {
         Some(idx) => &rest[idx + 1..],
         None => rest,
     };
-    if num.is_empty() || !num.iter().all(|b| b.is_ascii_digit()) {
+    if num.is_empty() || !num.iter().all(u8::is_ascii_digit) {
         return None;
     }
     let mut value: u32 = 0;
@@ -352,10 +352,8 @@ pub(crate) fn dbm_to_bars(dbm: i16) -> u8 {
         3
     } else if dbm >= -100 {
         2
-    } else if dbm >= -110 {
-        1
     } else {
-        0
+        u8::from(dbm >= -110)
     }
 }
 
