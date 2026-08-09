@@ -50,14 +50,14 @@ impl AuthenticatedResponse {
     /// Build an authenticated response for `response` under `grant`'s
     /// response key.
     pub fn build(signed_grant: &SignedGrant, response: TaskResponse) -> Self {
-        let payload = postcard::to_allocvec(&response).unwrap_or_default();
+        let payload = postcard::to_allocvec(&response).unwrap_or_default(); // WHY: infallible -- TaskResponse is plain enums/structs over CompactString, Vec<ContactSummary>, and a fixed-size Ulid; postcard cannot fail encoding it
         let mac = crate::grants::response_mac(&signed_grant.response_key(), &[&payload]);
         Self { response, mac }
     }
 
     /// Verify the response MAC under `signed_grant`'s response key.
     pub fn verify(&self, signed_grant: &SignedGrant) -> bool {
-        let payload = postcard::to_allocvec(&self.response).unwrap_or_default();
+        let payload = postcard::to_allocvec(&self.response).unwrap_or_default(); // WHY: infallible -- see AuthenticatedResponse::build
         let expected = crate::grants::response_mac(&signed_grant.response_key(), &[&payload]);
         // Constant-time comparison for a 32-byte MAC.
         expected

@@ -73,14 +73,14 @@ pub struct SignedGrant {
 impl SignedGrant {
     /// Issue a grant: sign the postcard encoding with the issuer key.
     pub fn issue(grant: Grant, issuer_key: &SigningKey) -> Self {
-        let bytes = postcard::to_allocvec(&grant).unwrap_or_default();
+        let bytes = postcard::to_allocvec(&grant).unwrap_or_default(); // WHY: infallible -- Grant is fixed-size byte arrays, a bounded Vec<Capability>, and u64 fields; postcard cannot fail encoding it
         let signature: Signature = issuer_key.sign(&bytes);
         Self { grant, signature }
     }
 
     /// The signed payload bytes (what the signature covers).
     fn signed_bytes(&self) -> Vec<u8> {
-        postcard::to_allocvec(&self.grant).unwrap_or_default()
+        postcard::to_allocvec(&self.grant).unwrap_or_default() // WHY: infallible -- see SignedGrant::issue
     }
 
     /// Verify the grant against the expected device at `now_ms`.
@@ -126,10 +126,10 @@ pub(crate) fn hkdf_sha256(ikm: &[u8; 16], info: &[u8]) -> [u8; 32] {
     use sha2::Sha256;
     // extract: PRK = HMAC(salt=zero, IKM); expand: OKM = HMAC(PRK, info||0x01).
     let mut h =
-        <Hmac<Sha256> as Mac>::new_from_slice(&[0u8; 32]).unwrap_or_else(|_| unreachable!());
+        <Hmac<Sha256> as Mac>::new_from_slice(&[0u8; 32]).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key
     h.update(ikm);
     let prk = h.finalize().into_bytes();
-    let mut e = <Hmac<Sha256> as Mac>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!());
+    let mut e = <Hmac<Sha256> as Mac>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key
     e.update(info);
     e.update(&[0x01]);
     e.finalize().into_bytes().into()
@@ -139,7 +139,7 @@ pub(crate) fn hkdf_sha256(ikm: &[u8; 16], info: &[u8]) -> [u8; 32] {
 pub fn response_mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
-    let mut h = <Hmac<Sha256> as Mac>::new_from_slice(key).unwrap_or_else(|_| unreachable!());
+    let mut h = <Hmac<Sha256> as Mac>::new_from_slice(key).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key
     for part in parts {
         h.update(part);
     }
