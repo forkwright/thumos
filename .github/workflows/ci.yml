@@ -107,6 +107,12 @@ jobs:
         # WHY (#546): canonical script shared with the forge admission gate —
         # both surfaces execute the identical suite.
         run: scripts/kernel-host-tests.sh
+      - name: Kernel clippy (i686) -- zero-warning gate (#663)
+        # WHY (#663): the kernel crate is excluded from the workspace, so no
+        # --workspace clippy invocation in the repo ever reaches crates/
+        # thumos. Runs right after "Kernel host tests", which just built
+        # this exact i686 target — a cache hit, not a fresh compile.
+        run: scripts/kernel-clippy.sh
       - name: Target-test ledger check (#551)
         # WHY (#551, restoring #124; #645): declared-vs-executed must be
         # auditable — reds when a test-bearing or target-sensitive module has

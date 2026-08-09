@@ -28,6 +28,7 @@ stages = [
     "kernel build",
     "kernel trust anchor",
     "kernel host tests",
+    "kernel clippy",
     "board seam",
     "convergence",
     "kernel qemu witnesses",
@@ -66,6 +67,16 @@ timeout_secs = 900
 [stages."kernel host tests"]
 cmd = "sh -c 'rustup target add i686-unknown-linux-gnu && scripts/kernel-host-tests.sh'"
 timeout_secs = 1800
+
+# WHY (#663): the kernel crate is excluded from the workspace, so no
+# --workspace clippy invocation in the repo ever reaches crates/thumos --
+# build.rs sat with 18 -D warnings errors, unseen, for months. Runs right
+# after "kernel host tests", which just built this exact i686 target — a
+# cache hit, not a fresh compile — so this stage stays cheap in this
+# pipeline position specifically; do not reorder it away from that stage.
+[stages."kernel clippy"]
+cmd = "sh -c 'rustup target add i686-unknown-linux-gnu && scripts/kernel-clippy.sh'"
+timeout_secs = 600
 
 # WHY (#551; #645): declared-vs-executed audit for the kernel test
 # obligations — tests-count drift is checked against the RUNNABLE set
