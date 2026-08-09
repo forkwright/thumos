@@ -38,9 +38,16 @@
 //! (full rendering is Wave 8).
 
 // WHY: ekphrasis created in Phase 09 Wave 6, audio pipeline integration pending.
-#![expect(
-    dead_code,
-    reason = "Ekphrasis created in Phase 09 Wave 6, audio pipeline integration pending (#145)"
+// cfg_attr(not(test), ...): the module's own tests now exercise its full
+// surface, so nothing is dead in the test build -- expecting dead_code there
+// makes the expectation unfulfilled. Production reachability is unchanged;
+// the expectation is scoped to the build where it is still real.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Ekphrasis created in Phase 09 Wave 6, audio pipeline integration pending (#145)"
+    )
 )]
 
 extern crate alloc;

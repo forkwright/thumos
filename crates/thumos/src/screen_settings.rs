@@ -16,9 +16,16 @@
 //! kernel globals.
 
 // WHY: settings screens created in Phase 07 Wave 6, kinit wiring pending.
-#![expect(
-    dead_code,
-    reason = "Settings screens created in Phase 07 Wave 6, kinit wiring pending (#145)"
+// cfg_attr(not(test), ...): the module's own tests now exercise its full
+// surface, so nothing is dead in the test build -- expecting dead_code there
+// makes the expectation unfulfilled. Production reachability is unchanged;
+// the expectation is scoped to the build where it is still real.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Settings screens created in Phase 07 Wave 6, kinit wiring pending (#145)"
+    )
 )]
 
 use crate::ui::{
