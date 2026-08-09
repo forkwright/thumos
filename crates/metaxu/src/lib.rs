@@ -17,26 +17,35 @@
 //! MAC does not prove the responder held the grant's signed nonce.
 
 mod client;
-mod envelope;
 mod error;
-mod grants;
-mod protocol;
-#[cfg(test)]
-mod pylon;
 mod session;
 mod transport;
 #[cfg(test)]
 mod vectors;
 #[cfg(test)]
 mod witness;
+// WHY (#544 on-device leg): un-gated from `#[cfg(test)]` to `pylon-bin` so a
+// standalone host binary (src/bin/pylon_bridge.rs) can launch the SAME
+// reference endpoint double the adversarial witness runs against, as a real
+// process a QEMU-booted kernel talks to over a second UART -- reusing
+// verification logic instead of a second, driftable reimplementation.
+#[cfg(any(test, feature = "pylon-bin"))]
+pub mod pylon;
+
+// WHY (#545): the envelope framing, signed-grant verification, and typed
+// task/response payloads are canonically defined in metaxu-core (no_std +
+// alloc, shared with the kernel) -- re-exported here as modules so every
+// existing `crate::envelope::X` / `crate::grants::X` / `crate::protocol::X`
+// reference in this crate keeps resolving unchanged.
+pub(crate) use metaxu_core::{envelope, grants, protocol};
 
 use snafu::{OptionExt as _, ResultExt as _};
 
 pub use client::BridgeClient; // kanon:ignore RUST/pub-visibility -- public API
-pub use envelope::{EnvelopeError, MessageKind, SttErrorCode, SttEvent}; // kanon:ignore RUST/pub-visibility -- public API
 pub use error::{Error, Result};
-pub use grants::{Grant, GrantError, SignedGrant}; // kanon:ignore RUST/pub-visibility -- public API
-pub use protocol::{
+pub use metaxu_core::envelope::{EnvelopeError, MessageKind, SttErrorCode, SttEvent}; // kanon:ignore RUST/pub-visibility -- public API
+pub use metaxu_core::grants::{Grant, GrantError, SignedGrant}; // kanon:ignore RUST/pub-visibility -- public API
+pub use metaxu_core::protocol::{
     AudioMode, Capability, CapabilityGrant, ContactSummary, DeviceAction, DeviceIdentityRef,
     IdentityKind, TaskRequest, TaskResponse, TaskStatus,
 };
@@ -174,7 +183,7 @@ where
 ///
 /// Returns [`Error::Encode`] if the request cannot be serialized.
 pub fn encode_request(request: &TaskRequest) -> Result<Vec<u8>> {
-    protocol::encode_request(request)
+    protocol::encode_request(request).map_err(error::Error::from_core)
 }
 
 /// Deserialize a task request from transport bytes.
@@ -183,7 +192,7 @@ pub fn encode_request(request: &TaskRequest) -> Result<Vec<u8>> {
 ///
 /// Returns [`Error::Decode`] if the frame is malformed.
 pub fn decode_request(bytes: &[u8]) -> Result<TaskRequest> {
-    protocol::decode_request(bytes)
+    protocol::decode_request(bytes).map_err(error::Error::from_core)
 }
 
 /// Serialize a task response for transport.
@@ -192,7 +201,7 @@ pub fn decode_request(bytes: &[u8]) -> Result<TaskRequest> {
 ///
 /// Returns [`Error::Encode`] if the response cannot be serialized.
 pub fn encode_response(response: &TaskResponse) -> Result<Vec<u8>> {
-    protocol::encode_response(response)
+    protocol::encode_response(response).map_err(error::Error::from_core)
 }
 
 /// Deserialize a task response from transport bytes.
@@ -201,7 +210,7 @@ pub fn encode_response(response: &TaskResponse) -> Result<Vec<u8>> {
 ///
 /// Returns [`Error::Decode`] if the frame is malformed.
 pub fn decode_response(bytes: &[u8]) -> Result<TaskResponse> {
-    protocol::decode_response(bytes)
+    protocol::decode_response(bytes).map_err(error::Error::from_core)
 }
 
 #[cfg(test)]

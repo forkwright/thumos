@@ -92,13 +92,29 @@ if [[ "${THUMOS_QEMU_GDB:-0}" == "1" ]]; then
   GDB_ARGS=(-gdb "tcp::${GDB_PORT}" -S)
 fi
 
+# WHY (#544 on-device leg): THUMOS_QEMU_METAXU_PORT, when set, enables ARM
+# Security Extensions (-machine virt,secure=on) so the virt board's SECOND
+# PL011 (board::UART1_BASE, 0x09040000) exists, and adds it as a second
+# `-serial` chardev connecting OUT (client, default) to a host pylon-bridge
+# process already listening on that port -- the bridge binds first (see
+# scripts/witness/metaxu.sh), so this is a deterministic connect, never a
+# race. Unset (every other witness) leaves this runner byte-identical to
+# every prior invocation: one UART, secure=off.
+MACHINE_ARG="virt"
+EXTRA_SERIAL_ARGS=()
+if [[ -n "${THUMOS_QEMU_METAXU_PORT:-}" ]]; then
+  MACHINE_ARG="virt,secure=on"
+  EXTRA_SERIAL_ARGS=(-serial "tcp:127.0.0.1:${THUMOS_QEMU_METAXU_PORT}")
+fi
+
 exec timeout --kill-after=5 "${TIMEOUT_SECS}" \
   qemu-system-arm \
-    -machine virt \
+    -machine "${MACHINE_ARG}" \
     -cpu cortex-a7 \
     -m 1024M \
     -nographic \
     -semihosting-config enable=on,target=native \
     -kernel "${BINARY}" \
     "${GDB_ARGS[@]}" \
+    "${EXTRA_SERIAL_ARGS[@]}" \
     "$@"

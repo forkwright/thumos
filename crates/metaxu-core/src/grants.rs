@@ -1,4 +1,6 @@
-//! Cryptographically verified, expiring capability grants (#544).
+//! Cryptographically verified, expiring capability grants (#544), extracted
+//! `no_std` + alloc (#545) so the kernel signs/verifies against the same
+//! implementation `metaxu`'s pylon and witness already prove.
 //!
 //! A grant is the Aletheia runtime's signed authorization for ONE device to
 //! request specific capabilities until an expiry. It is bound to both
@@ -14,23 +16,24 @@
 //! signed grant — i.e. it is the issuer (or holds the grant, which the
 //! device handed only over the authenticated hello).
 
+extern crate alloc;
+
+use alloc::vec::Vec;
+use core::fmt;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use snafu::Snafu;
 
 use crate::protocol::Capability;
 
 /// Grant error: every verification failure is explicit (#544).
-#[derive(Debug, Clone, PartialEq, Eq, Snafu)]
-#[snafu(visibility(pub(crate)))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 #[non_exhaustive]
 pub enum GrantError {
     /// The Ed25519 signature does not verify under the issuer key.
-    #[snafu(display("grant signature invalid"))]
     BadSignature,
     /// The grant is expired at the evaluation time.
-    #[snafu(display("grant expired at {expired_at_ms} (evaluated at {now_ms})"))]
     Expired {
         /// When the grant expired.
         expired_at_ms: u64,
@@ -38,9 +41,26 @@ pub enum GrantError {
         now_ms: u64,
     },
     /// The grant's subject is not the device presenting it.
-    #[snafu(display("grant issued for a different device"))]
     WrongDevice,
 }
+
+impl fmt::Display for GrantError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadSignature => write!(f, "grant signature invalid"),
+            Self::Expired {
+                expired_at_ms,
+                now_ms,
+            } => write!(
+                f,
+                "grant expired at {expired_at_ms} (evaluated at {now_ms})"
+            ),
+            Self::WrongDevice => write!(f, "grant issued for a different device"),
+        }
+    }
+}
+
+impl core::error::Error for GrantError {}
 
 /// A capability grant: issuer → subject, bounded in time (#544).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,7 +141,7 @@ impl SignedGrant {
 }
 
 /// HKDF-SHA256 extract+expand to a 32-byte key (single block).
-pub(crate) fn hkdf_sha256(ikm: &[u8; 16], info: &[u8]) -> [u8; 32] {
+pub fn hkdf_sha256(ikm: &[u8; 16], info: &[u8]) -> [u8; 32] {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     // extract: PRK = HMAC(salt=zero, IKM); expand: OKM = HMAC(PRK, info||0x01).
@@ -167,7 +187,7 @@ mod tests {
         Grant {
             issuer: issuer_key().verifying_key().to_bytes(),
             subject: device_key().to_bytes(),
-            capabilities: vec![Capability::SmsSend],
+            capabilities: alloc::vec![Capability::SmsSend],
             issued_at_ms: 1_000,
             expires_at_ms,
             nonce: [0xA5; 16],
@@ -181,7 +201,7 @@ mod tests {
         assert!(verified.is_ok(), "a valid unexpired grant must verify");
         assert_eq!(
             verified.map(|g| &g.capabilities),
-            Ok(&vec![Capability::SmsSend])
+            Ok(&alloc::vec![Capability::SmsSend])
         );
     }
 
@@ -217,7 +237,7 @@ mod tests {
     #[test]
     fn tampered_capability_rejects() {
         let mut signed = SignedGrant::issue(grant(10_000), &issuer_key());
-        signed.grant.capabilities = vec![Capability::CallDial];
+        signed.grant.capabilities = alloc::vec![Capability::CallDial];
         assert_eq!(
             signed.verify(&device_key().to_bytes(), 5_000),
             Err(GrantError::BadSignature),

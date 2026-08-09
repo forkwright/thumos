@@ -1,12 +1,16 @@
-//! Wire protocol types for the Aletheia/Thumos bridge.
+//! Wire protocol types for the Aletheia/Thumos bridge, extracted `no_std` +
+//! alloc (#544/#545) so the kernel builds/parses the identical typed task
+//! and response shapes `metaxu`'s pylon and witness already prove.
+
+extern crate alloc;
+
+use alloc::vec::Vec;
 
 use compact_str::CompactString;
-use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use snafu::{IntoError as _, ResultExt as _};
 use ulid::Ulid;
 
-use crate::error::{EncodeSnafu, Result};
+use crate::error::{CoreError, Result};
 
 mod ulid_bytes {
     use serde::{Deserialize as _, Serialize as _, Serializer};
@@ -48,9 +52,12 @@ pub enum Capability {
 
 /// Wire claim that a task was issued one bridge capability.
 ///
-/// `metaxu` does not authenticate or authorize grants. Thumos policy or the
-/// Menos-facing runtime must validate issuer, grant id, expiration, and any
-/// cryptographic proof before performing a device action.
+/// `metaxu` does not authenticate or authorize grants through this claim
+/// alone. Thumos policy or the Menos-facing runtime must validate issuer,
+/// grant id, and expiration before performing a device action; the
+/// AUTHENTICATED path (#544, see `crate::session`) additionally requires a
+/// cryptographically verified [`crate::grants::SignedGrant`] and does not
+/// consult this list at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityGrant {
     /// Capability being granted.
@@ -59,8 +66,14 @@ pub struct CapabilityGrant {
     pub issuer: CompactString,
     /// Optional task-scoped grant identifier.
     pub grant_id: CompactString,
-    /// Optional expiration timestamp for the external policy verifier.
-    pub expires_at: Option<Timestamp>,
+    /// Optional expiration, milliseconds since the Unix epoch, for the
+    /// external policy verifier.
+    ///
+    /// `u64` epoch-ms (not a calendar timestamp type) so this crate stays
+    /// dependency-minimal (#545) and matches [`crate::grants::Grant`]'s own
+    /// `issued_at_ms`/`expires_at_ms` convention -- the authenticated path's
+    /// own idiom for every other wire timestamp.
+    pub expires_at_ms: Option<u64>,
 }
 
 impl CapabilityGrant {
@@ -75,7 +88,7 @@ impl CapabilityGrant {
             capability,
             issuer: issuer.into(),
             grant_id: grant_id.into(),
-            expires_at: None,
+            expires_at_ms: None,
         }
     }
 
@@ -85,13 +98,13 @@ impl CapabilityGrant {
         capability: Capability,
         issuer: impl Into<CompactString>,
         grant_id: impl Into<CompactString>,
-        expires_at: Timestamp,
+        expires_at_ms: u64,
     ) -> Self {
         Self {
             capability,
             issuer: issuer.into(),
             grant_id: grant_id.into(),
-            expires_at: Some(expires_at),
+            expires_at_ms: Some(expires_at_ms),
         }
     }
 }
@@ -360,65 +373,65 @@ impl TaskResponse {
 /// ULID (a ULID's leading 48 bits are its timestamp; the next bits are
 /// randomness -- 64 bits total is ample correlation space, documented in
 /// the envelope contract).
-pub(crate) fn correlation_of(id: ulid::Ulid) -> u64 {
+pub fn correlation_of(id: ulid::Ulid) -> u64 {
     let bytes = id.to_bytes();
     u64::from_le_bytes(bytes[..8].try_into().unwrap_or([0; 8]))
 }
 
 /// Serialize a task request for transport, wrapped in the versioned
 /// envelope (#553).
-pub(crate) fn encode_request(request: &TaskRequest) -> Result<Vec<u8>> {
-    let payload = postcard::to_allocvec(request).context(EncodeSnafu)?;
+pub fn encode_request(request: &TaskRequest) -> Result<Vec<u8>> {
+    let payload = postcard::to_allocvec(request).map_err(CoreError::Encode)?;
     let frame = crate::envelope::Envelope::build(
         crate::envelope::MessageKind::TaskRequest,
         correlation_of(request.request_id()),
         payload,
     )
-    .context(crate::error::EnvelopeSnafu)?;
+    .map_err(CoreError::Envelope)?;
     Ok(frame.encode())
 }
 
 /// Deserialize a task request from transport bytes: envelope validation
 /// first (exact, ceiling-checked before allocation), then the postcard
 /// payload (#553).
-pub(crate) fn decode_request(bytes: &[u8]) -> Result<TaskRequest> {
-    let frame = crate::envelope::Envelope::decode(bytes).context(crate::error::EnvelopeSnafu)?;
+pub fn decode_request(bytes: &[u8]) -> Result<TaskRequest> {
+    let frame = crate::envelope::Envelope::decode(bytes).map_err(CoreError::Envelope)?;
     if frame.header.kind != crate::envelope::MessageKind::TaskRequest {
-        return Err(crate::error::EnvelopeSnafu.into_error(
+        return Err(CoreError::Envelope(
             crate::envelope::EnvelopeError::UnexpectedKind {
                 expected: crate::envelope::MessageKind::TaskRequest,
                 got: frame.header.kind,
             },
         ));
     }
-    postcard::from_bytes(&frame.payload).context(crate::error::DecodeSnafu)
+    postcard::from_bytes(&frame.payload).map_err(CoreError::Decode)
 }
 
 /// Serialize a task response for transport, wrapped in the versioned
 /// envelope (#553).
-pub(crate) fn encode_response(response: &TaskResponse) -> Result<Vec<u8>> {
-    let payload = postcard::to_allocvec(response).context(EncodeSnafu)?;
+pub fn encode_response(response: &TaskResponse) -> Result<Vec<u8>> {
+    let payload = postcard::to_allocvec(response).map_err(CoreError::Encode)?;
     let frame = crate::envelope::Envelope::build(
         crate::envelope::MessageKind::TaskResponse,
         correlation_of(response.request_id),
         payload,
     )
-    .context(crate::error::EnvelopeSnafu)?;
+    .map_err(CoreError::Envelope)?;
     Ok(frame.encode())
 }
 
 /// Deserialize a task response from transport bytes (#553).
-pub(crate) fn decode_response(bytes: &[u8]) -> Result<TaskResponse> {
-    let frame = crate::envelope::Envelope::decode(bytes).context(crate::error::EnvelopeSnafu)?;
+pub fn decode_response(bytes: &[u8]) -> Result<TaskResponse> {
+    let frame = crate::envelope::Envelope::decode(bytes).map_err(CoreError::Envelope)?;
     if frame.header.kind != crate::envelope::MessageKind::TaskResponse {
-        return Err(crate::error::EnvelopeSnafu.into_error(
+        return Err(CoreError::Envelope(
             crate::envelope::EnvelopeError::UnexpectedKind {
                 expected: crate::envelope::MessageKind::TaskResponse,
                 got: frame.header.kind,
             },
         ));
     }
-    postcard::from_bytes(&frame.payload).context(crate::error::DecodeSnafu)
+    postcard::from_bytes(&frame.payload).map_err(CoreError::Decode)
 }
 
 #[cfg(test)]
@@ -439,7 +452,7 @@ mod tests {
         let request = TaskRequest::PlaceCall {
             request_id: Ulid::from_bytes([5; 16]),
             identity: identity_ref(),
-            grants: vec![CapabilityGrant::new(
+            grants: alloc::vec![CapabilityGrant::new(
                 Capability::CallDial,
                 "policy",
                 "grant-call",
@@ -459,7 +472,7 @@ mod tests {
         let request = TaskRequest::AudioSession {
             request_id: Ulid::from_bytes([6; 16]),
             identity: identity_ref(),
-            grants: vec![CapabilityGrant::new(
+            grants: alloc::vec![CapabilityGrant::new(
                 Capability::AudioCapture,
                 "policy",
                 "grant-audio",
@@ -473,5 +486,11 @@ mod tests {
             .and_then(|bytes| decode_request(&bytes).ok());
 
         assert_eq!(round_tripped, Some(request));
+    }
+
+    #[test]
+    fn capability_grant_expiring_carries_epoch_ms() {
+        let grant = CapabilityGrant::expiring(Capability::SmsSend, "policy", "grant-1", 12_345);
+        assert_eq!(grant.expires_at_ms, Some(12_345));
     }
 }

@@ -77,6 +77,22 @@ compile_error!(
     "crashloop-probe is a CI crash-loop harness; a production image must not spawn a deliberately faulting service."
 );
 
+// WHY (#544 on-device leg): metaxu-probe self-issues a grant under a
+// well-known, deliberately-public dev keypair and drives it over a UART the
+// M7 board never has -- a production image must never contain either.
+#[cfg(all(feature = "metaxu-probe", feature = "production"))]
+compile_error!(
+    "metaxu-probe is a CI round-trip harness (dev-only signing keys, a QEMU-only second UART); a production image must not contain it."
+);
+// WHY: board::UART1_BASE only answers under QEMU's `-machine
+// virt,secure=on` (see board/virt.rs); metaxu-probe on the real M7 build
+// would MMIO-fault the moment it touched that address, so the combination
+// is refused at compile time rather than at a runtime data abort.
+#[cfg(all(feature = "metaxu-probe", not(feature = "qemu")))]
+compile_error!(
+    "metaxu-probe's second UART exists only on the QEMU virt board (--features qemu); it is meaningless (and would MMIO-fault) on the M7 build."
+);
+
 // WHY (issue #459): the console is host-testable via the heap/page/process
 // stub pattern — `mod heap` binds heap_stub under cfg(test), and page/process
 // compile on the host target already. The debug-console feature selects the
@@ -172,6 +188,13 @@ mod lock_screen;
 mod matrix_crypto;
 mod memguard;
 mod meshtastic;
+// WHY (#544 on-device leg): the metaxu-core authenticated request/response
+// exchange over board::UART1_BASE -- feature-gated (never in `production`
+// or the M7 build, see the compile_error!s above) AND test-gated (host
+// test builds use `uart_stub`, which has no `at()` constructor; this
+// module is integration-only glue, not unit-tested on the host target).
+#[cfg(all(not(test), feature = "metaxu-probe"))]
+mod metaxu_bridge;
 mod mic_audit;
 mod mmio;
 mod mmu;

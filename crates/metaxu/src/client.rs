@@ -12,11 +12,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        BridgeTransport, Result,
-        protocol::{
-            Capability, CapabilityGrant, DeviceAction, DeviceIdentityRef, IdentityKind,
-            TaskRequest, TaskResponse, TaskStatus, decode_request, encode_response,
-        },
+        BridgeTransport, Capability, CapabilityGrant, DeviceAction, DeviceIdentityRef,
+        IdentityKind, Result, TaskRequest, TaskResponse, TaskStatus, decode_request,
+        encode_response,
     };
 
     struct InMemoryRuntime {

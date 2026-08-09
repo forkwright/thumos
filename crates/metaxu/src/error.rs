@@ -129,6 +129,29 @@ where
 }
 
 impl Error<core::convert::Infallible> {
+    /// Convert a `metaxu-core` encode/decode failure into this crate's own
+    /// error shape (#545): `metaxu-core` is `no_std` and has no
+    /// `snafu::Location`/transport concept of its own, so every
+    /// `metaxu_core::error::CoreError` produced by a core wire function is
+    /// mapped here, preserving `Error::{Encode,Decode,Envelope}`'s existing
+    /// public shape for every caller in this crate.
+    pub(crate) fn from_core(err: metaxu_core::error::CoreError) -> Self {
+        match err {
+            metaxu_core::error::CoreError::Encode(source) => Self::Encode {
+                source,
+                location: Location::generate(),
+            },
+            metaxu_core::error::CoreError::Decode(source) => Self::Decode {
+                source,
+                location: Location::generate(),
+            },
+            metaxu_core::error::CoreError::Envelope(source) => Self::Envelope {
+                source,
+                location: Location::generate(),
+            },
+        }
+    }
+
     // WHY: encode/decode/capability call sites are fixed at the
     // `Infallible` placeholder so they never name a transport error type;
     // widen() composes their result with a caller's transport-typed

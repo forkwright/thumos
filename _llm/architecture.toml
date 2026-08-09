@@ -115,6 +115,11 @@ path = "crates/metaxu"
 role = "Aletheia/Thumos thin-client bridge protocol: typed tasks, capability grant claims, and opaque identity references."
 
 [[architecture.crates]]
+name = "metaxu-core"
+path = "crates/metaxu-core"
+role = "no_std+alloc envelope framing, signed-grant verification, and typed task/response payloads; consumed by both metaxu and the kernel's metaxu_bridge.rs so the wire format cannot drift (#544, #545)."
+
+[[architecture.crates]]
 name = "sphragis"
 path = "crates/sphragis"
 role = "Boot-image signing tool: streamed Ed25519ph signer for the kernel boot gate's payload/signature layout."
