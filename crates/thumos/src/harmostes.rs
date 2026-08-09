@@ -73,9 +73,9 @@ const MAX_MESSAGES_PER_ROOM: usize = 100;
 
 /// Maximum number of pending messages held in the outbox before
 /// `queue_message`/`send_message` reject further additions (#365). Each
-/// entry holds two heap Strings (room_id + body); bounding count bounds
-/// worst-case outbox memory on a 1 GB device the same way MAX_ROOMS and
-/// MAX_MESSAGES_PER_ROOM already bound room/timeline memory.
+/// entry holds two heap Strings (`room_id` + body); bounding count bounds
+/// worst-case outbox memory on a 1 GB device the same way `MAX_ROOMS` and
+/// `MAX_MESSAGES_PER_ROOM` already bound room/timeline memory.
 const MAX_OUTBOX_MESSAGES: usize = 256;
 
 /// Maximum bytes of a non-JSON server error body surfaced verbatim in

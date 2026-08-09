@@ -9,14 +9,14 @@
 //! # Architecture
 //!
 //! - `SOCKET_TABLE`: fixed-size array of `Option<SocketInfo>`, indexed by fd
-//!   number (0..MAX_FDS). Populated on `sys_socket`, cleared on close.
+//!   number (`0..MAX_FDS`). Populated on `sys_socket`, cleared on close.
 //! - `NETWORK_STACK`: global firewall-backed loopback stack. Socket creation
-//!   and I/O go through this host-only smoke path until WiFi hardware frame
+//!   and I/O go through this host-only smoke path until `WiFi` hardware frame
 //!   TX/RX is available; it must not be reported as production connectivity.
 //! - fd flags encode `FD_KIND_SOCKET` in the kind field so that close, read,
 //!   and write dispatch can identify socket fds without consulting the table.
 //!
-//! WHY separate table instead of extending FileDescriptor: FileDescriptor
+//! WHY separate table instead of extending `FileDescriptor`: `FileDescriptor`
 //! is `Copy` and fixed-layout. Adding an `Option<SocketInfo>` would break
 //! that and balloon the fd table. A parallel table is the same pattern
 //! pipes use (pipe index encoded in flags, buffer pool separate).
@@ -63,7 +63,7 @@ pub(crate) const EOPNOTSUPP: u32 = 0u32.wrapping_sub(95);
 pub(crate) const EADDRINUSE: u32 = 0u32.wrapping_sub(98);
 
 /// Address not available (an unaddressable remote/local endpoint, e.g. a
-/// zero port or unspecified address smoltcp's connect()/send() refused).
+/// zero port or unspecified address smoltcp's `connect()/send()` refused).
 pub(crate) const EADDRNOTAVAIL: u32 = 0u32.wrapping_sub(99);
 
 /// Resource temporarily unavailable (no datagram currently queued).
@@ -85,7 +85,7 @@ pub(crate) const EISCONN: u32 = 0u32.wrapping_sub(106);
 // -- fd kind encoding (same bit-field scheme as pipe.rs) --
 
 /// FD kind mask: low 8 bits of flags identify the fd type.
-/// WHY: matches pipe.rs FD_KIND_MASK (0x00FF). A plain VFS fd has
+/// WHY: matches pipe.rs `FD_KIND_MASK` (0x00FF). A plain VFS fd has
 /// kind 0; pipe is 1; socket is 2.
 pub(crate) const FD_KIND_MASK: u32 = 0x00FF;
 
@@ -105,16 +105,16 @@ pub enum SocketType {
     Udp,
 }
 
-/// Metadata for an open socket, stored in SOCKET_TABLE.
+/// Metadata for an open socket, stored in `SOCKET_TABLE`.
 #[derive(Debug, Clone, Copy)]
 pub struct SocketInfo {
-    /// Handle into the smoltcp SocketSet.
+    /// Handle into the smoltcp `SocketSet`.
     pub socket_handle: SocketHandle,
     /// TCP or UDP.
     pub socket_type: SocketType,
-    /// Local port bound via bind() (0 = unbound).
+    /// Local port bound via `bind()` (0 = unbound).
     pub bound_port: u16,
-    /// Whether a connect() has been performed.
+    /// Whether a `connect()` has been performed.
     pub connected: bool,
     /// Peer address and port (set by connect, or per-datagram for UDP).
     pub peer_addr: Option<(Ipv4Address, u16)>,
@@ -131,7 +131,7 @@ pub struct SocketInfo {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SockaddrIn {
-    /// Address family (AF_INET = 2).
+    /// Address family (`AF_INET` = 2).
     pub sin_family: u16,
     /// Port number in network byte order (big-endian).
     pub sin_port: u16,
@@ -153,7 +153,7 @@ impl SockaddrIn {
         Ipv4Address::new(octets[0], octets[1], octets[2], octets[3])
     }
 
-    /// Create a SockaddrIn from host-order values.
+    /// Create a `SockaddrIn` from host-order values.
     pub(crate) fn new(port: u16, addr: Ipv4Address) -> Self {
         let o = addr.octets();
         let sin_addr = u32::from_be_bytes([o[0], o[1], o[2], o[3]]);
@@ -172,11 +172,11 @@ impl SockaddrIn {
 
 /// Socket metadata table, indexed by fd number.
 ///
-/// WHY parallel table: SocketInfo is not Copy-friendly with SocketHandle
-/// (opaque smoltcp type) and would bloat FileDescriptor. A separate table
+/// WHY parallel table: `SocketInfo` is not Copy-friendly with `SocketHandle`
+/// (opaque smoltcp type) and would bloat `FileDescriptor`. A separate table
 /// indexed by the same fd number keeps the two in sync with minimal coupling.
 ///
-/// Entries are set on sys_socket, cleared on socket close.
+/// Entries are set on `sys_socket`, cleared on socket close.
 static mut SOCKET_TABLE: [Option<SocketInfo>; MAX_FDS] = {
     const NONE: Option<SocketInfo> = None;
     [NONE; MAX_FDS]
@@ -184,11 +184,11 @@ static mut SOCKET_TABLE: [Option<SocketInfo>; MAX_FDS] = {
 
 /// Global network stack for socket I/O.
 ///
-/// Uses a firewall-backed LoopbackDevice for now. Production WiFi readiness is
+/// Uses a firewall-backed `LoopbackDevice` for now. Production `WiFi` readiness is
 /// tracked separately during boot and remains false until hardware frame I/O is
 /// available.
 ///
-/// WHY Option: NetworkStack::new() is not const. Initialized by
+/// WHY Option: `NetworkStack::new()` is not const. Initialized by
 /// `init_network_stack()` during kernel boot or test setup.
 type SocketNetworkStack = NetworkStack<FirewallDevice<LoopbackDevice>>;
 
@@ -265,7 +265,7 @@ fn socket_flags() -> u32 {
 /// WHY static counter: fallback sequential allocation from the IANA
 /// ephemeral range (49152-65535), used only while the CSPRNG is not yet
 /// seeded (see `alloc_ephemeral_port`). Good enough for a kernel with
-/// MAX_SOCKETS=32.
+/// `MAX_SOCKETS=32`.
 static mut NEXT_EPHEMERAL_PORT: u16 = 49152;
 
 /// Allocate an ephemeral port that is not currently in use.
@@ -284,8 +284,8 @@ static mut NEXT_EPHEMERAL_PORT: u16 = 49152;
 ///
 /// # Safety
 ///
-/// Single-core cooperative kernel ensures exclusive access to NEXT_EPHEMERAL_PORT
-/// and SOCKET_TABLE.
+/// Single-core cooperative kernel ensures exclusive access to `NEXT_EPHEMERAL_PORT`
+/// and `SOCKET_TABLE`.
 unsafe fn alloc_ephemeral_port() -> Option<u16> {
     unsafe {
         let table = get_socket_table();
@@ -326,11 +326,11 @@ unsafe fn alloc_ephemeral_port() -> Option<u16> {
 // Syscall implementations
 // ---------------------------------------------------------------------------
 
-/// SYS_socket: create a network socket.
+/// `SYS_socket`: create a network socket.
 ///
 /// # Arguments
-/// - `domain`: address family (AF_INET = 2)
-/// - `sock_type`: socket type (SOCK_STREAM = 1, SOCK_DGRAM = 2)
+/// - `domain`: address family (`AF_INET` = 2)
+/// - `sock_type`: socket type (`SOCK_STREAM` = 1, `SOCK_DGRAM` = 2)
 /// - `_protocol`: protocol (ignored, auto-selected from type)
 ///
 /// # Returns
@@ -398,7 +398,7 @@ pub(crate) fn sys_socket(domain: u32, sock_type: u32, _protocol: u32) -> u32 {
     fd_num as u32
 }
 
-/// SYS_bind: bind a socket to a local address and port.
+/// `SYS_bind`: bind a socket to a local address and port.
 ///
 /// # Arguments
 /// - `fd`: socket file descriptor
@@ -516,7 +516,7 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     0
 }
 
-/// SYS_listen: mark a TCP socket as listening.
+/// `SYS_listen`: mark a TCP socket as listening.
 ///
 /// # Returns
 /// EOPNOTSUPP — full listen/accept is deferred to a future phase.
@@ -526,7 +526,7 @@ pub(crate) fn sys_listen(_fd: u32, _backlog: u32) -> u32 {
     EOPNOTSUPP
 }
 
-/// SYS_accept: accept a connection on a listening socket.
+/// `SYS_accept`: accept a connection on a listening socket.
 ///
 /// # Returns
 /// EOPNOTSUPP — full listen/accept is deferred to a future phase.
@@ -536,7 +536,7 @@ pub(crate) fn sys_accept(_fd: u32, _addr_ptr: u32, _addr_len_ptr: u32) -> u32 {
     EOPNOTSUPP
 }
 
-/// SYS_connect: initiate a connection on a socket.
+/// `SYS_connect`: initiate a connection on a socket.
 ///
 /// For TCP: initiates a three-way handshake to the peer.
 /// For UDP: sets the default peer address for subsequent send/recv.
@@ -696,7 +696,7 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     0
 }
 
-/// SYS_sendto: send data on a socket.
+/// `SYS_sendto`: send data on a socket.
 ///
 /// For TCP: sends data on a connected stream. `dest_addr_ptr` is ignored.
 /// For UDP: sends a datagram. If `dest_addr_ptr` is non-null, sends to that
@@ -832,7 +832,7 @@ pub(crate) fn sys_sendto(
     }
 }
 
-/// SYS_recvfrom: receive data from a socket.
+/// `SYS_recvfrom`: receive data from a socket.
 ///
 /// For TCP: receives data from a connected stream. `src_addr_ptr` is ignored.
 /// For UDP: receives a datagram. If `src_addr_ptr` is non-null, writes the
@@ -970,7 +970,7 @@ pub(crate) fn sys_recvfrom(
 /// Release a socket's network resources at OFD refcount zero (#267).
 ///
 /// Called from `fd::ofd_unref` when the LAST fd referencing this open-file
-/// description is closed; `ofd_idx` is the OFD index that keys SOCKET_TABLE.
+/// description is closed; `ofd_idx` is the OFD index that keys `SOCKET_TABLE`.
 /// WHY at refcount zero, not per close: with dup/fork several fds may share
 /// one socket OFD, so the smoltcp socket must be released only when the last
 /// of them closes.
@@ -1002,7 +1002,7 @@ mod tests {
     /// # Safety
     ///
     /// Test-only. Resets the process fd table + shared OFD table (#267),
-    /// SOCKET_TABLE, and NETWORK_STACK.
+    /// `SOCKET_TABLE`, and `NETWORK_STACK`.
     unsafe fn setup_test_network() {
         unsafe {
             // Reset the process fd table and the shared OFD table (#267).
@@ -1263,9 +1263,9 @@ mod tests {
 
     /// Pointer-dependent test: only runs on 32-bit targets.
     ///
-    /// WHY function-local `static mut`: sys_bind now validates addr_ptr via
-    /// validate_user_buffer before dereferencing it. A stack address (e.g.
-    /// `&addr`) falls outside [board::KERNEL_END, board::RAM_END) on
+    /// WHY function-local `static mut`: `sys_bind` now validates `addr_ptr` via
+    /// `validate_user_buffer` before dereferencing it. A stack address (e.g.
+    /// `&addr`) falls outside [`board::KERNEL_END`, `board::RAM_END`) on
     /// this host binary and would be rejected before bind logic runs; a
     /// function-local static lands inside that window (see fd.rs tests for
     /// the same pattern).
@@ -1399,8 +1399,8 @@ mod tests {
         );
     }
 
-    /// Regression test for issue #307: bind() must leave a TCP socket in
-    /// CLOSED state (not LISTEN), so a subsequent connect() is not
+    /// Regression test for issue #307: `bind()` must leave a TCP socket in
+    /// CLOSED state (not LISTEN), so a subsequent `connect()` is not
     /// refused.
     ///
     /// Pointer-dependent test: only runs on 32-bit targets.
@@ -1816,10 +1816,10 @@ mod tests {
     }
 
     /// ISOLATION (CRITICAL): a different process must not be able to name
-    /// proc0's socket by fd number. SOCKET_TABLE is keyed by OFD index, not
+    /// proc0's socket by fd number. `SOCKET_TABLE` is keyed by OFD index, not
     /// raw fd number, and every socket syscall resolves the fd through the
     /// CURRENT process's own table first -- a process whose table lacks
-    /// this fd slot fails closed with EBADF before SOCKET_TABLE is ever
+    /// this fd slot fails closed with EBADF before `SOCKET_TABLE` is ever
     /// consulted (#267 -- this is the security core the two-level fd model
     /// exists to close for sockets).
     #[cfg(target_pointer_width = "32")]

@@ -48,7 +48,7 @@ pub(crate) fn parse_final_result(line: &[u8]) -> Option<AtResponse> {
 
 /// Parse a +CSQ response line: "+CSQ: <rssi>,<ber>"
 ///
-/// Returns (rssi_raw, ber) where rssi_raw is 0-31 or 99 (unknown).
+/// Returns (`rssi_raw`, ber) where `rssi_raw` is 0-31 or 99 (unknown).
 pub(crate) fn parse_csq_response(line: &[u8]) -> Option<(u8, u8)> {
     let rest = strip_prefix(line, b"+CSQ: ")?;
     let comma = memchr(b',', rest)?;

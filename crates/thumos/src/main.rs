@@ -2,7 +2,7 @@
 //!
 //! Bare-metal Rust kernel for the MT6739. ARM boot stub is inline
 //! assembly that sets up the stack and zeros BSS before jumping to
-//! kernel_main.
+//! `kernel_main`.
 
 #![no_std]
 #![cfg_attr(not(test), no_main)]
@@ -15,6 +15,13 @@
 // unfulfilled and prompts its own removal. All OTHER warning classes stay live
 // under the -D warnings gate.
 #![expect(dead_code, reason = "compiled-but-unwired surface, tracked #145/#420")]
+// WHY: unwrap_used/expect_used are denied crate-wide (Cargo.toml) to keep
+// panics out of shipping kernel paths, where a panic is a crash. In a test,
+// an unwrap()/expect() panic IS the assertion -- the failure signal the test
+// exists to produce -- so the rule is scoped to where it means something.
+// Production code is unaffected: this cfg_attr only takes effect when
+// compiling under `#[cfg(test)]`, and no other lint is added to this list.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 extern crate alloc;
 
 #[cfg(not(test))]

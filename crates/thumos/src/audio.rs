@@ -474,13 +474,13 @@ impl<C: AudioCodecOps> AudioManager<C> {
     /// Return a mutable reference to the underlying codec.
     ///
     /// WHY test-only: production code must reach the codec ONLY through
-    /// the auditable session lifecycle (open_session/close_session/
-    /// set_route/set_volume) -- this raw accessor bypasses that entirely,
-    /// letting a caller flip enable_mic_bias()/enable_adc() with no
-    /// AudioSession ever recorded, defeating the "all mic activity is
+    /// the auditable session lifecycle (`open_session/close_session`/
+    /// `set_route/set_volume`) -- this raw accessor bypasses that entirely,
+    /// letting a caller flip `enable_mic_bias()/enable_adc()` with no
+    /// `AudioSession` ever recorded, defeating the "all mic activity is
     /// auditable via the session log" invariant documented at the top of
     /// this module. Grepped: every call site in the tree is this file's
-    /// own `#[cfg(test)] mod tests` (fault injection on MockCodec); no
+    /// own `#[cfg(test)] mod tests` (fault injection on `MockCodec`); no
     /// production caller exists (#397).
     #[cfg(test)]
     pub(crate) fn codec_mut(&mut self) -> &mut C {

@@ -1,14 +1,14 @@
 //! Futex subsystem: fast userspace mutex kernel support.
 //!
-//! Provides FUTEX_WAIT and FUTEX_WAKE operations sufficient to implement
+//! Provides `FUTEX_WAIT` and `FUTEX_WAKE` operations sufficient to implement
 //! userspace mutexes and condition variables. This is the minimal kernel
 //! half of the Linux futex(2) interface.
 //!
 //! # Protocol
-//! - FUTEX_WAIT (op=0): atomically check `*addr == val` and, if equal,
+//! - `FUTEX_WAIT` (op=0): atomically check `*addr == val` and, if equal,
 //!   suspend the calling process. If `*addr != val`, return EAGAIN immediately
 //!   (the value changed before we could sleep — caller should retry).
-//! - FUTEX_WAKE (op=1): wake up to `val` processes waiting on `addr`.
+//! - `FUTEX_WAKE` (op=1): wake up to `val` processes waiting on `addr`.
 //!   Returns the number of processes woken.
 //!
 //! # Design constraints
@@ -19,7 +19,7 @@
 //! - Process suspension: set state to Blocked; the scheduler will not
 //!   reschedule a Blocked process. Wakeup sets it back to Ready.
 //!
-//! WHY 32 waiters: the maximum number of processes is 16 (MAX_PROCS), so 32
+//! WHY 32 waiters: the maximum number of processes is 16 (`MAX_PROCS`), so 32
 //! slots is 2× headroom in case a process waits on multiple futexes in sequence
 //! before the slots are reclaimed. Each slot is freed immediately on wakeup.
 
@@ -29,17 +29,17 @@ pub(crate) const EAGAIN: u32 = 0u32.wrapping_sub(11);
 /// ENOMEM — waiter table exhausted (two's complement -12, Linux ARM
 /// convention). Distinct from EAGAIN: a caller retrying on EAGAIN expects
 /// `*addr` to eventually change on its own, but a full waiter table will
-/// not free itself without a FUTEX_WAKE elsewhere -- conflating the two
+/// not free itself without a `FUTEX_WAKE` elsewhere -- conflating the two
 /// would make a retry loop on this specific failure spin forever.
 pub(crate) const ENOMEM: u32 = 0u32.wrapping_sub(12);
 
 /// EINVAL — unknown op (two's complement -22, Linux ARM convention).
 pub(crate) const EINVAL: u32 = 0u32.wrapping_sub(22);
 
-/// FUTEX_WAIT operation code.
+/// `FUTEX_WAIT` operation code.
 pub(crate) const FUTEX_WAIT: u32 = 0;
 
-/// FUTEX_WAKE operation code.
+/// `FUTEX_WAKE` operation code.
 pub(crate) const FUTEX_WAKE: u32 = 1;
 
 /// Maximum number of simultaneously sleeping futex waiters.
@@ -59,7 +59,7 @@ static mut FUTEX_WAITERS: [Option<FutexWaiter>; MAX_FUTEX_WAITERS] = {
     [NONE; MAX_FUTEX_WAITERS]
 };
 
-/// FUTEX_WAIT: if `*addr == val`, block the current process.
+/// `FUTEX_WAIT`: if `*addr == val`, block the current process.
 ///
 /// Returns 0 after being woken, EAGAIN if `*addr != val`, or EINVAL if
 /// `addr` does not lie within user-accessible DRAM (see
@@ -153,7 +153,7 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
     EAGAIN
 }
 
-/// FUTEX_WAKE: wake up to `max_wake` processes waiting on `addr`.
+/// `FUTEX_WAKE`: wake up to `max_wake` processes waiting on `addr`.
 ///
 /// Returns the number of processes woken.
 pub fn sys_futex_wake(addr: u32, max_wake: u32) -> u32 {
@@ -241,7 +241,7 @@ pub(crate) fn has_waiter_for_pid(pid: u32) -> bool {
 ///
 /// # Arguments
 /// - `addr`: userspace address of the futex word
-/// - `op`: FUTEX_WAIT (0) or FUTEX_WAKE (1)
+/// - `op`: `FUTEX_WAIT` (0) or `FUTEX_WAKE` (1)
 /// - `val`: for WAIT — expected value; for WAKE — max processes to wake
 ///
 /// # Returns

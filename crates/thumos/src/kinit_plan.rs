@@ -65,7 +65,7 @@ pub(crate) enum BootStep {
     Passphrase = 11,
     /// Filesystem mount — plain (unprovisioned) or wrapped in
     /// `EncryptedBlockDevice` (derived data key). Trust-gated on
-    /// SecureBoot (#217); a locked payload is never plain-mounted (#446).
+    /// `SecureBoot` (#217); a locked payload is never plain-mounted (#446).
     Filesystem = 12,
     /// Tamper-evident audit log initialization.
     AuditLog = 13,
@@ -316,7 +316,7 @@ impl BootState {
     /// and denominator (`total_subsystems`) update together automatically
     /// -- the boot summary's "N / total" denominator was previously a
     /// hand-maintained literal independent of this list, and had already
-    /// drifted once (17 -> 18 when csprng_ok was added). The array length
+    /// drifted once (17 -> 18 when `csprng_ok` was added). The array length
     /// in the return type is compiler-checked against this literal, so the
     /// two can no longer silently diverge.
     const fn subsystem_flags(&self) -> [bool; 18] {

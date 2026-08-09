@@ -1,6 +1,6 @@
 //! ARM GIC (Generic Interrupt Controller) driver for MT6739.
 //!
-//! The MT6739 uses a GICv2 with:
+//! The MT6739 uses a `GICv2` with:
 //! - Distributor (GICD) at 0x0C000000
 //! - CPU Interface (GICC) at 0x0C002000
 //!

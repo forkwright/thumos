@@ -8,9 +8,9 @@
 //!
 //! - kinit (PID 0) holds `Capabilities::ALL` at boot.
 //! - Forked children receive a subset defined by kinit policy. The default
-//!   policy strips MODEM, AUDIT, and IPC_INIT so that generic userspace
+//!   policy strips MODEM, AUDIT, and `IPC_INIT` so that generic userspace
 //!   cannot access the baseband, read the audit log, or message PID 0's
-//!   inbox (#371 -- mirrors the CAP_KILL precedent for protecting PID 0
+//!   inbox (#371 -- mirrors the `CAP_KILL` precedent for protecting PID 0
 //!   as a signal target, #269).
 //! - Syscalls that access sensitive resources call `check(required)` at entry.
 //!   On failure the syscall returns EPERM; on success execution continues.
@@ -44,11 +44,11 @@ impl Capabilities {
     pub(crate) const KILL: u32 = 1 << 2;
     /// Access kernel CSPRNG and key material.
     pub(crate) const CRYPTO: u32 = 1 << 3;
-    /// WiFi / BT / GPS radio control.
+    /// `WiFi` / BT / GPS radio control.
     pub(crate) const RADIO: u32 = 1 << 4;
     /// Read audit log.
     pub(crate) const AUDIT: u32 = 1 << 5;
-    /// Send an IPC message to PID 0 (kinit). Mirrors the CAP_KILL precedent
+    /// Send an IPC message to PID 0 (kinit). Mirrors the `CAP_KILL` precedent
     /// (#269/REQ-09) of protecting PID 0 -- the fault supervisor and
     /// IPC-trust anchor -- with a dedicated capability rather than leaving
     /// it reachable by any process holding a generic "can do IPC" bit
@@ -59,7 +59,7 @@ impl Capabilities {
 
     /// Default capability set for forked children.
     ///
-    /// WHY: strips MODEM, AUDIT, and IPC_INIT from ALL. Generic userspace
+    /// WHY: strips MODEM, AUDIT, and `IPC_INIT` from ALL. Generic userspace
     /// processes have no legitimate need to speak AT commands to the
     /// baseband, read the audit log, or message kinit's inbox directly
     /// (#371). All other capabilities remain available; the policy can be

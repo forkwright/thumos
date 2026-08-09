@@ -144,7 +144,7 @@ pub enum Urc {
     Busy,
     /// Signal quality report (+CSQ: rssi,ber).
     Csq { rssi: u8, ber: u8 },
-    /// Network registration status changed (+CREG: stat[,...,AcT]).
+    /// Network registration status changed (+CREG: stat[,...,`AcT`]).
     Creg {
         stat: RegStatus,
         act: Option<RadioAccessTech>,
@@ -566,7 +566,7 @@ pub struct Telephony<T: ModemTransport> {
     signal_ber: u8,
     /// Operator name.
     operator_name: [u8; MAX_OPERATOR_LEN],
-    /// Length of valid bytes in operator_name.
+    /// Length of valid bytes in `operator_name`.
     operator_len: u8,
     /// Registration status detail. [`Telephony::is_registered`] derives
     /// directly from this -- no separate `registered` bool is kept, so
@@ -1188,7 +1188,7 @@ impl<T: ModemTransport> Telephony<T> {
 pub struct CcciModemTransport {
     /// Receive line buffer for accumulating bytes.
     rx_buf: [u8; MAX_LINE_LEN],
-    /// Number of valid bytes in rx_buf.
+    /// Number of valid bytes in `rx_buf`.
     rx_len: usize,
 }
 

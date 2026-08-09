@@ -5,7 +5,7 @@
 //! holds all known devices and initializes them in dependency order.
 //!
 //! This is the framework that connects the kernel to UART, display,
-//! keypad, touch, modem, WiFi, BT, GPS, FM, USB, and eMMC.
+//! keypad, touch, modem, `WiFi`, BT, GPS, FM, USB, and eMMC.
 //!
 //! The DEVICE SET and every MMIO base address are board facts — they live
 //! in `crate::board` (#534): `board::m7::register_devices` populates the

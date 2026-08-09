@@ -13,7 +13,7 @@
 //!
 //! WHY static array of 8 pipes: avoids heap allocation, consistent with the
 //! rest of the kernel's fixed-size-table pattern. 8 concurrent pipes is
-//! sufficient for an early BusyBox shell (pipelines have at most 2-3 stages).
+//! sufficient for an early `BusyBox` shell (pipelines have at most 2-3 stages).
 
 use crate::fd::EMFILE;
 // Signal is only used in the #[cfg(not(test))] SIGPIPE delivery block.
@@ -118,7 +118,7 @@ static mut PIPE_POOL: [Option<PipeBuffer>; MAX_PIPES] = {
 };
 
 /// Maximum pipes a single process may have open at once, so one process
-/// cannot exhaust the entire MAX_PIPES pool and starve every other
+/// cannot exhaust the entire `MAX_PIPES` pool and starve every other
 /// process of pipe fds.
 const MAX_PIPES_PER_PROCESS: usize = 4;
 
@@ -204,10 +204,10 @@ pub(crate) fn pipe_flags(pipe_idx: usize, end: u32) -> u32 {
 /// Extract the pipe index from an fd flags word.
 ///
 /// WHY 0x07 not 0x7F: the previous 7-bit mask (max 127) did not match
-/// MAX_PIPES (8 slots) -- a flags word with any of bits 12-15 set would
+/// `MAX_PIPES` (8 slots) -- a flags word with any of bits 12-15 set would
 /// decode to an out-of-range pipe index and panic on the array index in
-/// get_pipe_mut/on_pipe_fd_closed/maybe_free_pipe. This mask covers
-/// exactly the valid 0..MAX_PIPES range.
+/// `get_pipe_mut/on_pipe_fd_closed/maybe_free_pipe`. This mask covers
+/// exactly the valid `0..MAX_PIPES` range.
 pub(crate) fn pipe_idx_from_flags(flags: u32) -> usize {
     ((flags >> FD_PIPE_IDX_SHIFT) & 0x07) as usize
 }
@@ -226,7 +226,7 @@ pub(crate) fn is_write_end(flags: u32) -> bool {
 // Syscall implementation
 // ---------------------------------------------------------------------------
 
-/// SYS_pipe: create a pipe and write two fd numbers to userspace.
+/// `SYS_pipe`: create a pipe and write two fd numbers to userspace.
 ///
 /// # Arguments
 /// - `fds_ptr`: pointer to a `[u32; 2]` in userspace.
@@ -313,9 +313,9 @@ pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     0
 }
 
-/// SYS_read on a pipe fd.
+/// `SYS_read` on a pipe fd.
 ///
-/// Called from the generic sys_read path when the fd is detected as a pipe.
+/// Called from the generic `sys_read` path when the fd is detected as a pipe.
 ///
 /// # Returns
 /// Bytes read on success, 0 on EOF, negative error code on failure.
@@ -354,9 +354,9 @@ pub(crate) fn sys_pipe_read(pipe_idx: usize, buf_ptr: u32, count: u32) -> u32 {
     buf.read(dst) as u32
 }
 
-/// SYS_write on a pipe fd.
+/// `SYS_write` on a pipe fd.
 ///
-/// Called from the generic sys_write path when the fd is detected as a pipe.
+/// Called from the generic `sys_write` path when the fd is detected as a pipe.
 /// `writer_pid` is the PID of the calling process (for SIGPIPE delivery).
 ///
 /// # Returns
@@ -405,7 +405,7 @@ pub(crate) fn sys_pipe_write(pipe_idx: usize, buf_ptr: u32, count: u32, writer_p
     buf.write(src) as u32
 }
 
-/// Called from sys_close when a pipe fd is closed.
+/// Called from `sys_close` when a pipe fd is closed.
 /// Marks the appropriate end closed and frees the slot if both ends are gone.
 pub fn on_pipe_fd_closed(pipe_idx: usize, end_is_write: bool) {
     // SAFETY: single-core cooperative kernel; no concurrent mutation.

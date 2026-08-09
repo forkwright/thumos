@@ -2,7 +2,7 @@
 //!
 //! Implements Matrix end-to-end encryption on top of the kernel's existing
 //! cryptographic primitives (`security.rs` SHA-256/HMAC/HKDF, `csprng.rs`
-//! ChaCha20 CSPRNG, `aes` crate for AES-256).
+//! `ChaCha20` CSPRNG, `aes` crate for AES-256).
 //!
 //! This is a **simplified** implementation suitable for the Thumos kernel's
 //! bare-metal environment. It implements the core cryptographic operations
@@ -155,7 +155,7 @@ pub enum CryptoError {
     /// The room id supplied for session creation is not a well-formed Matrix
     /// room identifier (#373).
     InvalidRoomId(crate::matrix_ids::MatrixIdError),
-    /// The Megolm session's message_index has reached u32::MAX; encrypting
+    /// The Megolm session's `message_index` has reached `u32::MAX`; encrypting
     /// further would reuse a (key, IV) pair (issue #282 finding 9). The
     /// session must be rotated.
     MegolmIndexExhausted,
@@ -672,7 +672,7 @@ impl MatrixCrypto {
     /// A session with a `session_id` already present is REPLACED in place
     /// (matching [`create_outbound_megolm`]'s replace-on-match semantics)
     /// instead of pushed as a duplicate -- without this, an adversary
-    /// resending the same session_id repeatedly fills all
+    /// resending the same `session_id` repeatedly fills all
     /// [`MAX_MEGOLM_INBOUND`] slots with copies of one session, permanently
     /// exhausting inbound capacity for every other room/device (issue #282
     /// finding 16).
@@ -758,7 +758,7 @@ fn generate_device_keys() -> Result<DeviceKeys, CryptoError> {
 
 /// AES-256-CBC encrypt with an explicit IV and PKCS#7 padding.
 ///
-/// Uses the audited RustCrypto `cbc` mode over the `aes` block cipher — no
+/// Uses the audited `RustCrypto` `cbc` mode over the `aes` block cipher — no
 /// hand-rolled chaining (audit #231). Returns the ciphertext blocks only; the
 /// IV is a caller responsibility (derived, for Megolm; prepended, for the
 /// standalone helper below).

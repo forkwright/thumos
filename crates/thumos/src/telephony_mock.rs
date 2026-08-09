@@ -18,7 +18,7 @@ pub(crate) struct MockModemTransport {
     pub response_lines: Vec<Vec<u8>>,
     /// URC lines to return from `poll_urc_line`, in FIFO order.
     pub urc_lines: Vec<Vec<u8>>,
-    /// Whether send_at should succeed.
+    /// Whether `send_at` should succeed.
     pub send_ok: bool,
     /// Number of upcoming `recv_line` calls that must fail with
     /// `TransportError` regardless of queued lines, decrementing on each

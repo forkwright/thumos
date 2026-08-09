@@ -403,7 +403,7 @@ pub(crate) fn draw_str_centered(
 /// (`s.chars().enumerate()`), so the width budget must be a character
 /// count -- using the UTF-8 byte length overestimates the rendered width
 /// for multi-byte content (e.g., an accented contact name), mis-centering
-/// or mis-aligning text that draw_str_centered/status_bar/softkey
+/// or mis-aligning text that `draw_str_centered/status_bar/softkey`
 /// right-alignment all depend on (#397).
 pub(crate) fn str_pixel_width(s: &str) -> u16 {
     let char_count = u16::try_from(s.chars().count()).unwrap_or(u16::MAX);
@@ -588,7 +588,7 @@ pub enum ScreenId {
     Alarms,
     /// FM Radio.
     FmRadio,
-    /// WiFi settings (read-only display of wifi state).
+    /// `WiFi` settings (read-only display of wifi state).
     WifiSettings,
     /// Bluetooth settings (read-only display of BT state).
     BtSettings,

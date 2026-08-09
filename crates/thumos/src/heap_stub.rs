@@ -7,7 +7,7 @@
 //!
 //! WHY(pattern): a gated-out hardware dependency is made test-visible by a
 //! parallel `#[cfg(test)] #[path = "..._stub.rs"] mod x;` binding in main.rs
-//! (see exceptions_stub.rs / timer_stub.rs / uart_stub.rs).
+//! (see `exceptions_stub.rs` / `timer_stub.rs` / `uart_stub.rs`).
 
 /// Return `(total_allocs, total_frees)` for leak detection.
 ///

@@ -1,6 +1,6 @@
 //! Minimal ELF loader for userspace binaries.
 //!
-//! Parses ELF32 headers and loads PT_LOAD segments INTO memory.
+//! Parses ELF32 headers and loads `PT_LOAD` segments INTO memory.
 //! Only supports statically-linked ARM ELF binaries (what our userspace
 //! crates compile to with `armv7-unknown-linux-musleabihf` target).
 //!
@@ -26,7 +26,7 @@ const EM_ARM: u16 = 40;
 /// Program header type: loadable segment
 const PT_LOAD: u32 = 1;
 
-/// PT_LOAD segment permission flags (ELF32 program header `p_flags`).
+/// `PT_LOAD` segment permission flags (ELF32 program header `p_flags`).
 const PF_X: u32 = 0x1;
 const PF_W: u32 = 0x2;
 const PF_R: u32 = 0x4;
@@ -34,7 +34,7 @@ const PF_R: u32 = 0x4;
 /// Translate ELF `p_flags` to POSIX prot bits for `mmu::prot_to_l2_flags`
 /// (#482), so a spawned process's segments get W^X user page permissions
 /// (text RX, rodata RO, data/bss RW+XN; a W|X segment degrades to RW+XN
-/// because `prot_to_l2_flags` forces XN whenever PROT_WRITE is set).
+/// because `prot_to_l2_flags` forces XN whenever `PROT_WRITE` is set).
 pub(crate) fn flags_to_prot(p_flags: u32) -> u32 {
     let mut prot = 0;
     if p_flags & PF_R != 0 {
@@ -89,14 +89,14 @@ struct Elf32Phdr {
 
 /// Size of an on-disk `Elf32Phdr`: eight `u32` fields = 32 bytes.
 ///
-/// WHY size_of, not the header-declared `e_phentsize` (#317): the phdr read
+/// WHY `size_of`, not the header-declared `e_phentsize` (#317): the phdr read
 /// in `validate()` always consumes exactly this many bytes regardless of
 /// what the attacker-controlled `e_phentsize` claims, so both the entsize
 /// floor and the per-header bounds check must be pinned to the type's
 /// actual size.
 const PHDR_SIZE: usize = core::mem::size_of::<Elf32Phdr>();
 
-/// Maximum total PT_LOAD segment memory, in pages, a single ELF image may
+/// Maximum total `PT_LOAD` segment memory, in pages, a single ELF image may
 /// declare (#327).
 ///
 /// WHY 2048 (8 MB): generous headroom for a statically-linked ARM musl
@@ -113,7 +113,7 @@ pub(crate) struct LoadedElf {
     /// Number of pages written (#328: no longer a count of
     /// `page::alloc_page()` reservations — see `load()`'s doc comment).
     pub pages_used: usize,
-    /// `(vaddr, memsz, p_flags)` per PT_LOAD segment (#482), so `spawn_user`
+    /// `(vaddr, memsz, p_flags)` per `PT_LOAD` segment (#482), so `spawn_user`
     /// can map each segment PL0-accessible with W^X permissions derived from
     /// `p_flags`. The link address is `vaddr`; the LOAD address is
     /// `image_phys + (vaddr - image_lo)` (#502, no longer identity).
@@ -134,7 +134,7 @@ pub(crate) struct LoadedElf {
 }
 
 impl LoadedElf {
-    /// The loaded PT_LOAD segments as `(vaddr, memsz, p_flags)` (#482).
+    /// The loaded `PT_LOAD` segments as `(vaddr, memsz, p_flags)` (#482).
     pub(crate) fn segments(&self) -> &[(usize, usize, u32)] {
         &self.segments[..self.seg_count]
     }
@@ -184,7 +184,7 @@ pub enum ElfError {
 /// Performs all header validation (magic, class, endianness, machine type)
 /// and verifies that each program header is within `data` bounds.
 /// Returns the entry point, program header metadata, and validated segment
-/// descriptors for each PT_LOAD segment.
+/// descriptors for each `PT_LOAD` segment.
 ///
 /// This function is pure (no page allocation or memory writes) and is
 /// therefore safe to call in test builds.
@@ -347,7 +347,7 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
 /// Validated ELF segment descriptors (output of header validation).
 #[derive(Debug)]
 struct ValidatedElf {
-    /// `(vaddr, memsz, filesz, file_offset, p_flags)` for each PT_LOAD segment.
+    /// `(vaddr, memsz, filesz, file_offset, p_flags)` for each `PT_LOAD` segment.
     segments: [(usize, usize, usize, usize, u32); 16],
     /// Number of valid entries in `segments`.
     count: usize,
@@ -360,7 +360,7 @@ struct ValidatedElf {
 
 /// Load an ELF binary FROM a byte slice INTO memory.
 ///
-/// Writes each PT_LOAD segment directly to its identity-mapped `vaddr`
+/// Writes each `PT_LOAD` segment directly to its identity-mapped `vaddr`
 /// (validated by `validate()`'s load-region check, #318), zeroing BSS.
 /// Returns the entry point for process creation. #328: does not call
 /// `page::alloc_page()` per segment page — nothing would ever free such a
@@ -378,13 +378,13 @@ pub(crate) fn load(data: &[u8]) -> Result<LoadedElf, ElfError> {
     load_impl(data, None)
 }
 
-/// `load()`, but reject any PT_LOAD segment outside `[lo, hi)` -- the reserved
+/// `load()`, but reject any `PT_LOAD` segment outside `[lo, hi)` -- the reserved
 /// user-image window (#489) -- BEFORE writing a byte, and (#502) load into a
 /// freshly-allocated per-process image frame rather than the identity vaddr.
 /// A single `validate()` pass gates both format and placement, so a boot/exec
 /// image can never write into page-allocator RAM or escape the exec revocation
 /// surface, and fail-before-destroy holds. Every authored image links at
-/// USER_TEXT_BASE (init.ld). The returned `LoadedElf` carries the image frame
+/// `USER_TEXT_BASE` (init.ld). The returned `LoadedElf` carries the image frame
 /// base (`image_phys`/`image_lo`/`image_pages`) for `map_user_image` + teardown.
 ///
 /// # Safety
@@ -408,7 +408,7 @@ pub(crate) unsafe fn load_confined(
 /// the contiguous per-process image frame. Returns `(image_phys, image_lo)`.
 ///
 /// WHY its own `#[inline(never)]` function: see the call site in `load_impl` --
-/// keeping this out of load_impl's frame is what prevents the armv7 exec-path
+/// keeping this out of `load_impl`'s frame is what prevents the armv7 exec-path
 /// codegen from corrupting the returned `ValidatedElf`.
 #[inline(never)]
 fn plan_confined_image(
@@ -695,7 +695,7 @@ mod tests {
         assert_eq!(validate(&h).unwrap_err(), ElfError::InvalidSegment);
     }
 
-    /// #316: e_phoff chosen so `phoff + i*phentsize` would wrap a 32-bit
+    /// #316: `e_phoff` chosen so `phoff + i*phentsize` would wrap a 32-bit
     /// usize (this crate's host tests run on i686, so the wrap reproduces
     /// without a target-width mock) and bypass the bounds guard.
     #[test]
@@ -707,7 +707,7 @@ mod tests {
         assert_eq!(validate(&h).unwrap_err(), ElfError::InvalidSegment);
     }
 
-    /// #316: p_offset/p_filesz chosen so `file_offset + filesz` would wrap
+    /// #316: `p_offset/p_filesz` chosen so `file_offset + filesz` would wrap
     /// a 32-bit usize, attempting to smuggle a bogus segment past the
     /// file-extent bounds guard.
     #[test]
@@ -728,7 +728,7 @@ mod tests {
         assert_eq!(validate(&buf).unwrap_err(), ElfError::InvalidSegment);
     }
 
-    /// #317: e_phentsize smaller than size_of::<Elf32Phdr>() must be
+    /// #317: `e_phentsize` smaller than `size_of::`<Elf32Phdr>() must be
     /// rejected before any phdr is read, not admitted by a bounds check
     /// that trusts the attacker-controlled stride.
     #[test]
@@ -740,7 +740,7 @@ mod tests {
         assert_eq!(validate(&h).unwrap_err(), ElfError::InvalidSegment);
     }
 
-    /// #318: a PT_LOAD segment whose p_vaddr lies outside the sanctioned
+    /// #318: a `PT_LOAD` segment whose `p_vaddr` lies outside the sanctioned
     /// user-accessible DRAM load region must be rejected before any byte
     /// is written.
     #[test]
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(validate(&buf).unwrap_err(), ElfError::InvalidSegment);
     }
 
-    /// #327: a PT_LOAD segment declaring memory far beyond the configured
+    /// #327: a `PT_LOAD` segment declaring memory far beyond the configured
     /// per-image budget must be rejected before any page is allocated.
     #[test]
     fn parse_rejects_segment_memory_over_budget() {
@@ -781,7 +781,7 @@ mod tests {
         assert_eq!(validate(&buf).unwrap_err(), ElfError::InvalidSegment);
     }
 
-    /// finding 2: a 17th PT_LOAD segment must be rejected, not silently
+    /// finding 2: a 17th `PT_LOAD` segment must be rejected, not silently
     /// dropped from the fixed 16-slot `segments` array while `total_pages`
     /// still counted its budget -- the old behavior let `load()` report
     /// success while never writing that segment's bytes to memory.
@@ -843,11 +843,11 @@ mod tests {
 
     /// #501 regression: the exec-path mis-read (a segment's (vaddr, memsz)
     /// coming back field-shifted, e.g. (0x7ff00000, 0x40) -> (0x0, 0x7ff00000))
-    /// came from a SEPARATE pre-pass that re-parsed via a second validate()
-    /// "peek", now removed -- placement is folded into load()'s single write
+    /// came from a SEPARATE pre-pass that re-parsed via a second `validate()`
+    /// "peek", now removed -- placement is folded into `load()`'s single write
     /// loop. Guard both halves of the Done-when: (1) reading validated.segments
     /// in a standalone pre-pass yields the exact tuple values the write loop's
-    /// destructure yields (no field shift), and (2) a second validate() over
+    /// destructure yields (no field shift), and (2) a second `validate()` over
     /// the same bytes is idempotent (the peek scenario). Two distinct segments
     /// so any single-field shift is visible.
     #[test]
@@ -901,8 +901,8 @@ mod tests {
         }
     }
 
-    /// finding 49: e_entry outside every loaded PT_LOAD segment must be
-    /// rejected -- kinit.rs and syscall.rs's sys_execve both transmute this
+    /// finding 49: `e_entry` outside every loaded `PT_LOAD` segment must be
+    /// rejected -- kinit.rs and syscall.rs's `sys_execve` both transmute this
     /// address straight to a callable function pointer, so an unvalidated
     /// entry point is an arbitrary jump/code-execution primitive, not just
     /// a crash.
@@ -1062,7 +1062,7 @@ mod tests {
         assert!(unsafe { load_confined(&data, vaddr, vaddr.wrapping_add(0x1000)) }.is_ok());
     }
 
-    /// #328: when the free pool is smaller than the segment budget, load()
+    /// #328: when the free pool is smaller than the segment budget, `load()`
     /// must reject up front (before writing anything) rather than fail
     /// partway through — there is no partial state to roll back because no
     /// allocation happens until after this check passes.

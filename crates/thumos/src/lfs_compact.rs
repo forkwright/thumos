@@ -310,7 +310,7 @@ fn pick_candidate(
     best.ok_or(LfsError::NoCompactionCandidate)
 }
 
-/// Collect all (inode_id, block_number) pairs from the imap.
+/// Collect all (`inode_id`, `block_number`) pairs from the imap.
 fn collect_imap_entries(imap: &LfsImap) -> Vec<(u32, u64)> {
     imap.iter().collect()
 }

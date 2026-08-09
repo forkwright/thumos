@@ -1,11 +1,11 @@
 //! Radio control panel for the thumos kernel UI.
 //!
 //! Displays per-radio ON/OFF status for all wireless subsystems
-//! (cellular, WiFi, Bluetooth, GPS) and provides quick-action
+//! (cellular, `WiFi`, Bluetooth, GPS) and provides quick-action
 //! presets for privacy-oriented operation:
 //!
 //! - **COVERT LOCK**: all radios off (full RF silence)
-//! - **STEALTH**: cellular off, WiFi + BT on (local-only connectivity)
+//! - **STEALTH**: cellular off, `WiFi` + BT on (local-only connectivity)
 //! - **RESTORE**: all radios on (normal operation)
 //!
 //! The screen does not directly control hardware; it sets a desired
@@ -57,7 +57,7 @@ const PRESET_COUNT: usize = 3;
 pub struct RadioState {
     /// Cellular modem (voice + data).
     pub cellular: bool,
-    /// WiFi radio.
+    /// `WiFi` radio.
     pub wifi: bool,
     /// Bluetooth radio.
     pub bluetooth: bool,
@@ -82,7 +82,7 @@ impl RadioState {
         gps: false,
     };
 
-    /// Stealth mode: cellular + GPS off, WiFi + BT on.
+    /// Stealth mode: cellular + GPS off, `WiFi` + BT on.
     pub(crate) const STEALTH: Self = Self {
         cellular: false,
         wifi: true,

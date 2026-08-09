@@ -1,28 +1,28 @@
 //! MT6739 Watchdog Timer (WDT) driver.
 //!
-//! The MT6739 WDT is a hardware timer that resets the SoC if the kernel
+//! The MT6739 WDT is a hardware timer that resets the `SoC` if the kernel
 //! stops petting it within the configured timeout. This provides a safety
 //! net against kernel hangs (infinite loops, deadlocks, interrupt starvation).
 //!
-//! Register map (base 0x1000_7000, per MTK BSP reference):
+//! Register map (base `0x1000_7000`, per MTK BSP reference):
 //!
 //! | Offset | Register    | Description                              |
 //! |--------|-------------|------------------------------------------|
-//! | 0x00   | WDT_MODE    | Enable/disable, auto-restart mode        |
-//! | 0x04   | WDT_LENGTH  | Timeout value (encoded, see below)       |
-//! | 0x08   | WDT_RESTART | Write 0x1971 to reset the countdown      |
-//! | 0x0C   | WDT_STA     | Status register (bit 0 = WDT reset flag) |
+//! | 0x00   | `WDT_MODE`    | Enable/disable, auto-restart mode        |
+//! | 0x04   | `WDT_LENGTH`  | Timeout value (encoded, see below)       |
+//! | 0x08   | `WDT_RESTART` | Write 0x1971 to reset the countdown      |
+//! | 0x0C   | `WDT_STA`     | Status register (bit 0 = WDT reset flag) |
 //!
-//! Timeout encoding (WDT_LENGTH):
+//! Timeout encoding (`WDT_LENGTH)`:
 //!   bits [15:5] = timeout in units of 512/32768 s ≈ 15.6 ms per unit
 //!   bits [4:0]  = key (must be 0x08 to commit the write)
 //!
 //! For a 5-second timeout: 5 / (512/32768) ≈ 320 units → 320 << 5 | 0x08.
 //!
-//! WDT_MODE bit fields:
-//!   bit 0  = WDT_EN   (1 = enabled)
-//!   bit 1  = WDT_AUTO (1 = auto-restart on IRQ ACK; we leave this 0)
-//!   bit 6  = WDT_KEY  (always write 1 to commit mode changes)
+//! `WDT_MODE` bit fields:
+//!   bit 0  = `WDT_EN`   (1 = enabled)
+//!   bit 1  = `WDT_AUTO` (1 = auto-restart on IRQ ACK; we leave this 0)
+//!   bit 6  = `WDT_KEY`  (always write 1 to commit mode changes)
 //!
 //! WHY 5-second timeout: long enough for the scheduler to complete a full
 //! tick cycle even under heavy load, short enough to recover from a hang
@@ -31,35 +31,35 @@
 use crate::mmio;
 
 /// WDT register base address for MT6739.
-/// WHY: 0x1000_7000 is the documented WDT base in the MT6739 BSP and matches
-/// the typical MTK layout for this SoC family. Verify against your specific
-/// BSP header (wdt.h or mach/mt_wdt.h) if porting to a different MT variant.
-/// WDT_MODE: enable/disable and mode control.
+/// WHY: `0x1000_7000` is the documented WDT base in the MT6739 BSP and matches
+/// the typical MTK layout for this `SoC` family. Verify against your specific
+/// BSP header (wdt.h or `mach/mt_wdt.h`) if porting to a different MT variant.
+/// `WDT_MODE`: enable/disable and mode control.
 const WDT_MODE: usize = crate::board::WDT_BASE + 0x00;
 
-/// WDT_LENGTH: timeout value register.
+/// `WDT_LENGTH`: timeout value register.
 const WDT_LENGTH: usize = crate::board::WDT_BASE + 0x04;
 
-/// WDT_RESTART: write 0x1971 here to pet the watchdog.
+/// `WDT_RESTART`: write 0x1971 here to pet the watchdog.
 const WDT_RESTART: usize = crate::board::WDT_BASE + 0x08;
 
 /// Magic value required to pet (restart) the watchdog countdown.
 const WDT_RESTART_KEY: u32 = 0x1971;
 
-/// WDT_MODE enable bit (bit 0).
+/// `WDT_MODE` enable bit (bit 0).
 const WDT_MODE_EN: u32 = 1 << 0;
 
-/// WDT_MODE key bit (bit 6): must be set to commit any mode write.
+/// `WDT_MODE` key bit (bit 6): must be set to commit any mode write.
 const WDT_MODE_KEY: u32 = 1 << 6;
 
-/// WDT_LENGTH key bits [4:0]: must be 0x08 to commit a length write.
+/// `WDT_LENGTH` key bits [4:0]: must be 0x08 to commit a length write.
 const WDT_LENGTH_KEY: u32 = 0x08;
 
-/// Timeout in WDT_LENGTH units (each unit ≈ 15.6 ms; 320 ≈ 5 seconds).
-/// Calculation: 5_000 ms / 15.625 ms = 320.
+/// Timeout in `WDT_LENGTH` units (each unit ≈ 15.6 ms; 320 ≈ 5 seconds).
+/// Calculation: `5_000` ms / 15.625 ms = 320.
 const WDT_TIMEOUT_UNITS: u32 = 320;
 
-/// Encoded WDT_LENGTH register value: timeout units in [15:5] | key in [4:0].
+/// Encoded `WDT_LENGTH` register value: timeout units in [15:5] | key in [4:0].
 const WDT_LENGTH_VAL: u32 = (WDT_TIMEOUT_UNITS << 5) | WDT_LENGTH_KEY;
 
 /// Initialize the hardware watchdog with a 5-second timeout and start it.
@@ -70,7 +70,7 @@ const WDT_LENGTH_VAL: u32 = (WDT_TIMEOUT_UNITS << 5) | WDT_LENGTH_KEY;
 /// # Safety
 ///
 /// Writes to MMIO registers at the MT6739 WDT base address. Safe only
-/// after the MMU has identity-mapped device MMIO (which includes 0x1000_7000).
+/// after the MMU has identity-mapped device MMIO (which includes `0x1000_7000`).
 pub unsafe fn init() {
     // SAFETY: WDT_LENGTH and WDT_MODE are MMIO registers at the MT6739 WDT base,
     // identity-mapped as device memory by mmu::init_and_enable(). Write ordering
@@ -97,7 +97,7 @@ pub unsafe fn init() {
 ///
 /// # Safety
 ///
-/// Writes to the WDT_RESTART MMIO register. Safe after `init()` has
+/// Writes to the `WDT_RESTART` MMIO register. Safe after `init()` has
 /// been called and the MMU has identity-mapped device MMIO.
 pub unsafe fn pet() {
     // SAFETY: WDT_RESTART is a write-only MMIO register; writing 0x1971 resets
@@ -114,7 +114,7 @@ pub unsafe fn pet() {
 ///
 /// # Safety
 ///
-/// Writes to WDT_MODE. Safe after `init()` has been called.
+/// Writes to `WDT_MODE`. Safe after `init()` has been called.
 pub unsafe fn disable() {
     // SAFETY: WDT_MODE is an MMIO register at the MT6739 WDT base. Writing
     // only the key bit (WDT_MODE_KEY) with WDT_MODE_EN clear disables the WDT.

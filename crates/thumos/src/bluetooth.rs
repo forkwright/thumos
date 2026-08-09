@@ -10,7 +10,7 @@
 //! ## Hardware path
 //!
 //! The MT6739 Bluetooth hardware is accessed through the WMT combo chip:
-//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, board::m7 #534)
+//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, `board::m7` #534)
 //! - Data path goes through WMT STP framing (kelyphos handles the transport)
 //!
 //! ## Integration
@@ -30,7 +30,7 @@ use crate::csprng;
 
 /// WMT STP channel identifier for Bluetooth.
 ///
-/// The combo chip multiplexes WiFi, BT, GPS, and FM over a single transport.
+/// The combo chip multiplexes `WiFi`, BT, GPS, and FM over a single transport.
 /// Each subsystem is identified by a channel byte in the STP header.
 const WMT_BT_CHANNEL: u8 = 0x01;
 
@@ -441,7 +441,7 @@ impl BtHwOps for BtHw {
 /// MMIO is unmodeled on -machine virt, so the real `BtHw` STP transport would
 /// data-abort. `NullBtHw` lets the A2DP profile's local state machine + SBC
 /// framing run in emulation; it acknowledges commands without a controller
-/// (recv_event yields nothing, so no connection ever completes).
+/// (`recv_event` yields nothing, so no connection ever completes).
 #[cfg(any(feature = "qemu", test))]
 pub(crate) struct NullBtHw;
 
@@ -694,9 +694,9 @@ pub struct MockBtHw {
     pub sent_commands: Vec<Vec<u8>>,
     /// ACL data sent via `send_acl_data`.
     pub sent_acl_data: Vec<Vec<u8>>,
-    /// Whether power_on succeeds.
+    /// Whether `power_on` succeeds.
     pub power_on_ok: bool,
-    /// Whether send_command succeeds.
+    /// Whether `send_command` succeeds.
     pub send_ok: bool,
     /// Number of `send_command` calls observed so far.
     pub send_calls: usize,

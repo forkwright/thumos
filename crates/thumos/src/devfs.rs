@@ -5,13 +5,13 @@
 //! | Inode | Name      | Type        | Behavior                              |
 //! |-------|-----------|-------------|---------------------------------------|
 //! | 0     | (root)    | Directory   | Contains all device entries            |
-//! | 1     | `null`    | CharDevice  | Write discards, read returns EOF      |
-//! | 2     | `zero`    | CharDevice  | Write discards, read fills with 0x00  |
-//! | 3     | `urandom` | CharDevice  | Write discards, read returns PRNG     |
-//! | 4     | `ttyMT0`  | CharDevice  | Stub: read/write return Ok(0)         |
-//! | 5     | `fb0`     | CharDevice  | Stub: read/write return Ok(0)         |
-//! | 6     | `bt0`     | CharDevice  | BT control (ioctl for scan)           |
-//! | 7     | `gps0`    | CharDevice  | GPS data (read returns position)      |
+//! | 1     | `null`    | `CharDevice`  | Write discards, read returns EOF      |
+//! | 2     | `zero`    | `CharDevice`  | Write discards, read fills with 0x00  |
+//! | 3     | `urandom` | `CharDevice`  | Write discards, read returns PRNG     |
+//! | 4     | `ttyMT0`  | `CharDevice`  | Stub: read/write return Ok(0)         |
+//! | 5     | `fb0`     | `CharDevice`  | Stub: read/write return Ok(0)         |
+//! | 6     | `bt0`     | `CharDevice`  | BT control (ioctl for scan)           |
+//! | 7     | `gps0`    | `CharDevice`  | GPS data (read returns position)      |
 //!
 //! No dynamic device registration. The devfs is read-only: `create`, `unlink`,
 //! and `truncate` always return `PermissionDenied`.

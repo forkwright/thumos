@@ -8,7 +8,7 @@
 //! ## Hardware path
 //!
 //! FM radio is accessed through the WMT STP transport on the combo chip:
-//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, board::m7 #534)
+//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, `board::m7` #534)
 //! - WMT channel 0x04 for FM radio commands
 //! - FM register block at offset `0x6000` within the combo chip
 //!
@@ -346,15 +346,15 @@ pub(crate) type BootFmHw = FmHw;
 /// Mock FM hardware for unit testing.
 #[cfg(test)]
 pub struct MockFmHw {
-    /// Whether power_on succeeds.
+    /// Whether `power_on` succeeds.
     pub power_on_ok: bool,
-    /// Current tuned frequency (set by tune()).
+    /// Current tuned frequency (set by `tune()`).
     pub tuned_freq: u32,
     /// RSSI value to return.
     pub rssi: i8,
-    /// Frequency returned by seek_up (None = no station found).
+    /// Frequency returned by `seek_up` (None = no station found).
     pub seek_up_result: Option<u32>,
-    /// Frequency returned by seek_down (None = no station found).
+    /// Frequency returned by `seek_down` (None = no station found).
     pub seek_down_result: Option<u32>,
 }
 

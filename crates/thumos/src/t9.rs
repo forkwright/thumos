@@ -430,7 +430,7 @@ impl T9Input {
 
     /// Convert the key sequence to letters (multi-tap committed bytes).
     ///
-    /// In multi-tap mode, the key_sequence stores raw letter bytes
+    /// In multi-tap mode, the `key_sequence` stores raw letter bytes
     /// after they are committed.
     fn key_sequence_as_letters(&self) -> String {
         let mut s = String::with_capacity(self.key_sequence.len());

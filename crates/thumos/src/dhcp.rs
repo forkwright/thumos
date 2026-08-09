@@ -1,4 +1,4 @@
-//! DHCP client wrapping smoltcp's built-in DHCPv4 socket.
+//! DHCP client wrapping smoltcp's built-in `DHCPv4` socket.
 //!
 //! smoltcp provides [`dhcpv4::Socket`] which handles the full DHCP state
 //! machine (Discover -> Offer -> Request -> Ack). This module wraps it
@@ -77,13 +77,13 @@ impl core::fmt::Display for DhcpConfig {
     }
 }
 
-/// DHCP client that wraps a smoltcp DHCPv4 socket.
+/// DHCP client that wraps a smoltcp `DHCPv4` socket.
 ///
 /// Owns a socket handle into the [`NetworkStack`]'s socket set. On each
 /// [`poll`](Self::poll) call, it checks for DHCP events and applies the
 /// resulting configuration (IP address, gateway) to the network interface.
 pub(crate) struct DhcpClient {
-    /// Handle to the smoltcp DHCPv4 socket in the network stack's socket set.
+    /// Handle to the smoltcp `DHCPv4` socket in the network stack's socket set.
     socket_handle: SocketHandle,
     /// Whether the interface currently has a DHCP-provided configuration.
     configured: bool,
@@ -97,7 +97,7 @@ pub(crate) struct DhcpClient {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DhcpError {
-    /// The socket set is full; cannot add the DHCPv4 socket.
+    /// The socket set is full; cannot add the `DHCPv4` socket.
     SocketSetFull,
     /// Failed to apply the gateway route.
     RouteTableFull,

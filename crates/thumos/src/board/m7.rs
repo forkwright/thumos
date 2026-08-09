@@ -1,4 +1,4 @@
-//! The AGM M7 field board (MT6739 SoC) — every MT6739-specific fact in the
+//! The AGM M7 field board (MT6739 `SoC`) — every MT6739-specific fact in the
 //! kernel lives HERE and nowhere else (#534's standing invariant, enforced
 //! by `scripts/check-board-seam.sh`).
 //!
@@ -7,9 +7,9 @@
 //! structs by design — two real boards want no device-tree parser (#534
 //! explicitly retires the old "Phase 04+ DT" ambition).
 //!
-//! WHY cfg_attr(not(test)) on some expects (#528 shape): this module
+//! WHY `cfg_attr(not(test))` on some expects (#528 shape): this module
 //! compiles on the host test target, where this file's own tests reference
-//! the consts — a blanket expect(dead_code) would be UNFULFILLED there,
+//! the consts — a blanket `expect(dead_code)` would be UNFULFILLED there,
 //! while on armv7a a const with no runtime consumer is genuinely dead.
 
 use crate::device::DeviceRegistry;
@@ -45,13 +45,13 @@ pub(crate) const MSDC0_BASE: usize = 0x1123_0000;
 /// ~2.6 GB. LFS uses the userdata region starting at sector 0x50C000
 /// (~2.6 GB offset). Value from the GPT dump of the MT6739 eMMC
 /// (printgpt: userdata partition).
-pub(crate) const LFS_PARTITION_START: u64 = 0x50C000;
+pub(crate) const LFS_PARTITION_START: u64 = 0x0050_C000;
 
 /// Size of the LFS partition in sectors.
 /// WHY: ~3 GB of the 8 GB eMMC is available for user data. Rounded down
 /// from the actual userdata partition length (0x97BFDF sectors) to a clean
 /// segment-aligned boundary.
-pub(crate) const LFS_PARTITION_SIZE: u64 = 0x600000;
+pub(crate) const LFS_PARTITION_SIZE: u64 = 0x0060_0000;
 
 /// Sectors reserved at the userdata partition head for the plaintext
 /// secrets preamble (#449). The encrypted LFS payload starts this many
@@ -73,15 +73,15 @@ pub(crate) const MUSB_BASE: usize = 0x1121_0000;
 /// both consume -- SPI number + 32, same convention as `timer::TIMER_IRQ`).
 ///
 /// `None` -- NOT hardware-confirmed (#666, tracked to closure by #676).
-/// Every MediaTek MT6739 vendor Android kernel DTS this driver's own
+/// Every `MediaTek` MT6739 vendor Android kernel DTS this driver's own
 /// history cites was re-checked while wiring this constant, and none of it
-/// resolves cleanly: two independently hosted copies of MediaTek's mt6739
+/// resolves cleanly: two independently hosted copies of `MediaTek`'s mt6739
 /// vendor tree
 /// (github.com/fukehan/kernel-4.4, github.com/iscle/OrangePi_4G-IOT_Android_8.1_BSP)
 /// carry a `usb0@11200000` node -- `compatible = "mediatek,mt6739-usb20"`,
 /// `interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL_LOW>` (INTID 32+73 = 105) -- but
-/// that node's `reg` base is `0x1120_0000`, not the `0x1121_0000` MUSB_BASE
-/// carries above. MUSB_BASE's own doc comment attributes `0x1121_0000` to
+/// that node's `reg` base is `0x1120_0000`, not the `0x1121_0000` `MUSB_BASE`
+/// carries above. `MUSB_BASE`'s own doc comment attributes `0x1121_0000` to
 /// "the DT node", and the #534 PR that moved it here repeats that claim,
 /// but neither cites a source beyond the other -- there is no artifact in
 /// this repo's history that independently confirms either address against
@@ -96,7 +96,7 @@ pub(crate) const MUSB_BASE: usize = 0x1121_0000;
 /// `exceptions::irq_handler_body()`, both already written against this
 /// constant.
 /// TODO(#676)[deliberate-prudent]: confirm the AGM M7 MUSB GIC INTID (candidate:
-/// 105) against real hardware or a source that resolves the MUSB_BASE
+/// 105) against real hardware or a source that resolves the `MUSB_BASE`
 /// 0x1121_0000-vs-0x1120_0000 conflict noted above, then set this to Some(n).
 pub(crate) const MUSB_IRQ: Option<u32> = None;
 
@@ -141,9 +141,9 @@ pub(crate) const KPD_EN: usize = 0x00;
 /// KPD debounce register offset.
 pub(crate) const KPD_DEBOUNCE: usize = 0x18;
 
-/// GPIO controller MMIO base (MT67xx standard bank base).
+/// GPIO controller MMIO base (`MT67xx` standard bank base).
 ///
-/// NOTE: standard MT67xx base — verify against the MT6739 TRM GPIO section.
+/// NOTE: standard `MT67xx` base — verify against the MT6739 TRM GPIO section.
 /// Mirrors haphe's `GPIO_BASE` (crates/haphe/src/gpio.rs); the #446 boot
 /// keypad reader scans the matrix through these registers because the KPD
 /// hardware block has no verified read-out register map.
@@ -184,7 +184,7 @@ pub(crate) const KEYPAD_COL_PINS: [u8; 3] = [44, 45, 46];
 /// WMT combo-chip (CONSYS) MMIO base.
 pub(crate) const CONSYS_BASE: usize = 0x1800_0000;
 
-/// WiFi (WLAN) MMIO base.
+/// `WiFi` (WLAN) MMIO base.
 pub(crate) const WLAN_BASE: usize = 0x180F_0000;
 
 // ---------------------------------------------------------------------------
@@ -260,7 +260,7 @@ mod tests {
     use super::*;
 
     /// The registered device set must pin to the module's canonical consts —
-    /// this replaces kinit_plan's pre-#534 address test, which pinned the
+    /// this replaces `kinit_plan`'s pre-#534 address test, which pinned the
     /// consts the OLD device.rs carried (including the GIC aliases that
     /// silently resolved to QEMU addresses under --features qemu).
     #[test]
@@ -304,7 +304,7 @@ mod tests {
         assert!(!BOARD_NAME.is_empty());
     }
 
-    /// WHY (#666): MUSB_IRQ is `None` until hardware-confirmed (see its doc
+    /// WHY (#666): `MUSB_IRQ` is `None` until hardware-confirmed (see its doc
     /// comment). Guards the day it flips to `Some(n)` -- n must be a real
     /// SPI (INTID >= 32; 0..31 are SGI/PPI, never a peripheral line), so a
     /// typo during the eventual hardware-confirmed edit cannot silently
