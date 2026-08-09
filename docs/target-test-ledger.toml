@@ -354,7 +354,7 @@ mechanism = "host"
 
 [[module]]
 name = "lfs_imap"
-tests = 13
+tests = 14
 mechanism = "host"
 
 [[module]]
