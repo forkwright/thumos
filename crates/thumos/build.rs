@@ -357,6 +357,20 @@ fn cpio_newc_entry(name: &str, data: &[u8], mode: u32) -> Vec<u8> {
     e
 }
 
+// WHY: `core::fmt::Write` for a `String` cannot fail (no I/O, no allocator
+// limit modeled) -- an `Err` here would mean the standard library itself is
+// broken, not that this write failed. `[lints.clippy]` denies `unwrap_used`
+// and `expect_used` crate-wide (including build.rs), so `unwrap_or_else(|_|
+// unreachable!(..))` -- the same idiom `crates/thumos/src/*.rs` already uses
+// for definitionally-infallible `Result`s -- replaces a bare `.unwrap()`/
+// `.expect()` at every `write!`/`writeln!` call site below.
+macro_rules! infallible_write {
+    ($dst:expr $(, $arg:tt)*) => {
+        writeln!($dst $(, $arg)*)
+            .unwrap_or_else(|_| unreachable!("writing to a String is infallible"))
+    };
+}
+
 fn render_boot_key_rs(
     key: &[u8; KEY_LEN],
     production: bool,
@@ -366,37 +380,33 @@ fn render_boot_key_rs(
 ) -> String {
     let mut out = String::from("// build.rs (#233) writes this file; do not edit by hand.\n\n");
     out.push_str("/// Embedded Ed25519 public key for kernel signature verification.\n");
-    writeln!(
+    infallible_write!(
         out,
         "pub(crate) const BOOT_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [{}];",
         byte_list(key)
-    )
-    .expect("String Write is infallible");
-    writeln!(out).expect("String Write is infallible");
+    );
+    infallible_write!(out);
     out.push_str("/// True only when the anchor was provisioned for a production image.\n");
-    writeln!(
+    infallible_write!(
         out,
         "pub(crate) const BOOT_KEY_IS_PRODUCTION: bool = {production};"
-    )
-    .expect("String Write is infallible");
-    writeln!(out).expect("String Write is infallible");
+    );
+    infallible_write!(out);
     out.push_str("/// Grep-able image trust stamp (printed on the boot banner).\n");
-    writeln!(
+    infallible_write!(
         out,
         "pub(crate) const BOOT_TRUST_STAMP: &str = \"THUMOS-BOOT-TRUST:{trust}:{fingerprint}\";"
-    )
-    .expect("String Write is infallible");
-    writeln!(out).expect("String Write is infallible");
+    );
+    infallible_write!(out);
     out.push_str("/// Dev signing seed (test-only; the dev keypair is deliberately public).\n");
     out.push_str("/// `None` when this build's anchor is not the committed dev key.\n");
     out.push_str("#[cfg(test)]\n");
     match dev_seed {
-        Some(seed) => writeln!(
+        Some(seed) => infallible_write!(
             out,
             "pub(crate) const BOOT_KEY_DEV_SEED: Option<[u8; PUBLIC_KEY_LEN]> = Some([{}]);",
             byte_list(seed)
-        )
-        .expect("String Write is infallible"),
+        ),
         None => out
             .push_str("pub(crate) const BOOT_KEY_DEV_SEED: Option<[u8; PUBLIC_KEY_LEN]> = None;\n"),
     }
@@ -437,7 +447,8 @@ fn byte_list(bytes: &[u8]) -> String {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().fold(String::new(), |mut out, b| {
-        write!(out, "{b:02x}").expect("String Write is infallible");
+        write!(out, "{b:02x}")
+            .unwrap_or_else(|_| unreachable!("writing to a String is infallible"));
         out
     })
 }
