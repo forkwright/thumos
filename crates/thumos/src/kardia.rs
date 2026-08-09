@@ -350,8 +350,13 @@ impl KernelState {
         // events to the audit trail every tick. poll() with zero configured
         // sockets is O(1), and the drain is a no-op when the event queue is
         // empty; the firewall evaluation itself is clock-free.
+        //
+        // INVARIANT: `now_ms` is a device-uptime millisecond count
+        // (tick count x TICK_MS); `i64::MAX` ms is ~292 million years of
+        // uptime, so this bit-reinterpretation (required by smoltcp's
+        // `Instant::from_millis(i64)`) cannot flip sign.
         self.net
-            .poll(crate::net::instant_from_millis(now_ms as i64));
+            .poll(crate::net::instant_from_millis(now_ms.cast_signed()));
         let Self {
             net,
             audit,

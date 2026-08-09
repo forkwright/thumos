@@ -922,8 +922,24 @@ impl MsdcController {
             self.send_data_command(CMD17_READ_SINGLE, lba, CMD_RSPTYP_R1, CMD_DTYPE_READ, 1)?;
         }
 
-        // PIO: read 128 words (512 bytes) FROM MSDC_RXDATA
-        let buf_ptr = buf.as_mut_ptr().cast::<u32>();
+        // PIO: read 128 words (512 bytes) FROM MSDC_RXDATA.
+        //
+        // INVARIANT: `buf` is a caller-supplied `&mut [u8; SECTOR_SIZE]` --
+        // nothing in its type or this function's `# Safety` contract above
+        // promises 4-byte alignment (a bare `[u8; N]` has `align_of` 1, and
+        // both real callers -- `block.rs`'s slice-sourced `sector_buf` and
+        // `gpt.rs`'s stack-local array -- pass buffers with no alignment
+        // guarantee). Forming a `*mut u32` over it and dereferencing (as the
+        // previous `buf_ptr.add(i).write_volatile(word)` form did) is
+        // undefined behaviour whenever the address is not 4-byte aligned:
+        // armv7a data-aborts on the misaligned access, while the i686 host
+        // build this was linted on tolerates it silently -- see
+        // `page.rs`'s `AlignedBuf` comment for the same class caught once
+        // already via a CI SIGABRT. Storing each word byte-by-byte is
+        // correct for any alignment and, as a byte-swap-free bonus, makes
+        // the wire order (little-endian, matching every target this crate
+        // builds for) explicit rather than implicit in `write_volatile`'s
+        // native-endian store.
         for i in 0..WORDS_PER_SECTOR {
             // Poll the RX FIFO word count until at least one word is
             // buffered, instead of STS_DATBUSY (which cannot signal
@@ -942,8 +958,7 @@ impl MsdcController {
             }
             // SAFETY: MSDC_RXDATA is a valid MMIO register at offset 0x1C within the MSDC0 address space. Volatile access is required for hardware registers.
             let word = unsafe { self.read_reg(REG_MSDC_RXDATA) };
-            // SAFETY: buf_ptr is valid for WORDS_PER_SECTOR u32 writes, i < WORDS_PER_SECTOR
-            unsafe { buf_ptr.add(i).write_volatile(word) };
+            buf[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
         }
 
         // Wait for transfer complete
@@ -989,11 +1004,15 @@ impl MsdcController {
             self.send_data_command(CMD24_WRITE_SINGLE, lba, CMD_RSPTYP_R1, CMD_DTYPE_WRITE, 1)?;
         }
 
-        // PIO: write 128 words (512 bytes) to MSDC_TXDATA
-        let buf_ptr = buf.as_ptr().cast::<u32>();
+        // PIO: write 128 words (512 bytes) to MSDC_TXDATA.
+        //
+        // INVARIANT: `buf` carries the same no-alignment-guarantee as
+        // `read_sector`'s `buf` above -- see that comment. Read each word's
+        // bytes explicitly rather than forming a `*const u32` over `buf`.
         for i in 0..WORDS_PER_SECTOR {
-            // SAFETY: buf_ptr is valid for WORDS_PER_SECTOR u32 reads, i < WORDS_PER_SECTOR
-            let word = unsafe { buf_ptr.add(i).read_volatile() };
+            let mut word_bytes = [0u8; 4];
+            word_bytes.copy_from_slice(&buf[i * 4..i * 4 + 4]);
+            let word = u32::from_le_bytes(word_bytes);
             // SAFETY: MSDC_TXDATA is a valid MMIO register at offset 0x18 within the MSDC0 address space. Volatile access is required for hardware registers.
             unsafe { self.write_reg(REG_MSDC_TXDATA, word) };
         }

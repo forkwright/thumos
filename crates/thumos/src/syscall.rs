@@ -1141,8 +1141,10 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     let prot_flags = arg2;
     let flags = arg3 & 0xFFFF;
     let fd_raw = (arg3 >> 16) as u16;
-    // Interpret fd as i16: 0xFFFF = -1
-    let fd = fd_raw as i16;
+    // Interpret fd as i16: 0xFFFF = -1 -- a deliberate bit-reinterpretation
+    // of the packed ABI field (see the arg3 packing note above), not a
+    // value-preserving widen.
+    let fd = fd_raw.cast_signed();
 
     // Validate: length must be non-zero
     if length == 0 {

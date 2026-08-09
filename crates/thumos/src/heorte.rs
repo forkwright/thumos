@@ -364,7 +364,10 @@ pub(crate) fn decompose_epoch(epoch: u64) -> (u8, u8, u16, u8, u8) {
 /// `year` saturates to `u16::MAX` rather than overflowing for dates far
 /// beyond the display range.
 fn civil_from_days(days: u64) -> (u16, u8, u8) {
-    let z = (days as i64).saturating_add(719_468);
+    // INVARIANT: `days` is `epoch / SECS_PER_DAY` for a `u64` epoch, so it is
+    // at most `u64::MAX / 86_400` (~2.13e14) -- far below `i64::MAX`
+    // (~9.2e18) -- so this bit-reinterpretation cannot flip sign.
+    let z = days.cast_signed().saturating_add(719_468);
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]

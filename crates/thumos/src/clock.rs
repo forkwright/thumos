@@ -247,8 +247,13 @@ impl ClockManager {
             && self.ntp_is_fresh(current_tick_ms)
         {
             // NTP offset is relative to monotonic clock.
+            //
+            // INVARIANT: `monotonic_secs` is device uptime in seconds
+            // (`current_tick_ms / 1000`, a `u64` millisecond tick count).
+            // `i64::MAX` seconds is ~292 billion years -- no device uptime
+            // reaches that, so this bit-reinterpretation cannot flip sign.
             let monotonic_secs = current_tick_ms / 1000;
-            return (monotonic_secs as i64 + offset) as u64;
+            return (monotonic_secs.cast_signed() + offset).cast_unsigned();
         }
 
         if let Some(epoch) = self.rtc_epoch {

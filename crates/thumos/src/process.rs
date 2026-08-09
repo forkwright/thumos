@@ -353,7 +353,12 @@ pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
 
         // Set up initial context. First context switch exception-returns to
         // `entry` in System mode (0x1F, PL1, IRQs enabled) on the fresh stack.
-        let ctx = Context::initial(entry_point as u32, stack_top as u32, 0x1F);
+        // INVARIANT: thumos builds only for `target_pointer_width = "32"`
+        // (armv7a hardware, i686 host tests) -- a function pointer's address
+        // always fits `usize`, and `usize` and `u32` are the same width on
+        // every target this crate has, so routing the cast through `usize`
+        // first (rather than straight to `u32`) is lossless, not truncating.
+        let ctx = Context::initial(entry_point as usize as u32, stack_top as u32, 0x1F);
 
         let parent_pid = CURRENT;
         let proc = Process {
@@ -1699,7 +1704,10 @@ pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
     }
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let idx = usize::try_from(pid).unwrap_or(MAX_PROCS);
+        // INVARIANT: `Pid` is `u8`, which always fits `usize` -- `usize::from`
+        // is the infallible conversion `try_from` was standing in for. The
+        // `idx >= MAX_PROCS` check below is the real bounds guard.
+        let idx = usize::from(pid);
         if idx >= MAX_PROCS {
             return ESRCH;
         }
@@ -2032,7 +2040,10 @@ pub(crate) fn check_pending_signal() -> Option<(Signal, u32)> {
 pub unsafe fn get_pending_mask(pid: Pid) -> u32 {
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let idx = usize::try_from(pid).unwrap_or(MAX_PROCS);
+        // INVARIANT: `Pid` is `u8`, which always fits `usize` -- `usize::from`
+        // is the infallible conversion `try_from` was standing in for. The
+        // `idx >= MAX_PROCS` check below is the real bounds guard.
+        let idx = usize::from(pid);
         if idx >= MAX_PROCS {
             return 0;
         }
@@ -2048,7 +2059,10 @@ pub unsafe fn get_pending_mask(pid: Pid) -> u32 {
 pub unsafe fn get_state(pid: Pid) -> Option<State> {
     unsafe {
         let procs = &*core::ptr::addr_of!(PROCS);
-        let idx = usize::try_from(pid).unwrap_or(MAX_PROCS);
+        // INVARIANT: `Pid` is `u8`, which always fits `usize` -- `usize::from`
+        // is the infallible conversion `try_from` was standing in for. The
+        // `idx >= MAX_PROCS` check below is the real bounds guard.
+        let idx = usize::from(pid);
         if idx >= MAX_PROCS {
             return None;
         }
@@ -2070,7 +2084,10 @@ pub unsafe fn set_state(pid: Pid, state: State) {
     // reference to the static mut.
     unsafe {
         let procs = &mut *core::ptr::addr_of_mut!(PROCS);
-        let idx = usize::try_from(pid).unwrap_or(MAX_PROCS);
+        // INVARIANT: `Pid` is `u8`, which always fits `usize` -- `usize::from`
+        // is the infallible conversion `try_from` was standing in for. The
+        // `idx >= MAX_PROCS` check below is the real bounds guard.
+        let idx = usize::from(pid);
         if idx >= MAX_PROCS {
             return;
         }

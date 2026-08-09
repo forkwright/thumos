@@ -1038,8 +1038,11 @@ pub fn alloc_addr_space() -> Option<usize> {
         // WHY: find first zero bit (free slot)
         let slot = (0u16..16).find(|&i| mask & (1 << i) == 0)?;
         core::ptr::write_volatile(alloc, mask | (1 << slot));
-        let table =
-            &mut (*core::ptr::addr_of_mut!(USER_TABLES))[usize::try_from(slot).unwrap_or_default()];
+        // INVARIANT: `slot` is drawn from `0u16..16`, which fits `usize` on
+        // every target this crate builds for -- `usize::from` expresses that
+        // as a type-level fact instead of a runtime check with a silent
+        // fallback.
+        let table = &mut (*core::ptr::addr_of_mut!(USER_TABLES))[usize::from(slot)];
         for entry in table.entries.iter_mut() {
             *entry = 0;
         }
