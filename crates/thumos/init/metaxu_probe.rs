@@ -10,10 +10,12 @@
 //! (`metaxu_bridge.rs`) against the `pylon-bridge` host process on the
 //! other end of the second PL011.
 //!
-//! `MetaxuPoll` is non-blocking (mirrors `Uart::getc`); this program polls
-//! it with `sys_sleep` between attempts -- the SAME poll-with-sleep idiom
-//! `init.rs`'s fork/forkexec/guard harnesses already use for a child's
-//! non-blocking `waitpid`.
+//! `MetaxuPoll` is non-blocking (mirrors `Uart::getc`); this program
+//! busy-polls it first (costs no scheduler ticks -- see
+//! `BUSY_POLL_ATTEMPTS`'s doc) and falls back to a small number of
+//! `sys_sleep`-paced retries, the SAME poll-with-sleep idiom `init.rs`'s
+//! fork/forkexec/guard harnesses use for a child's non-blocking
+//! `waitpid`, only reached if the busy-poll bound is not enough.
 //!
 //! kinit spawns this ONLY under the `metaxu-probe` feature (never in a
 //! normal boot, mirrors `/crasher`'s `crashloop-probe` gating) -- see
@@ -110,9 +112,25 @@ unsafe fn sys_metaxu_poll() -> u32 {
 /// other thumos syscall returning "would block" uses).
 const EAGAIN: u32 = 0u32.wrapping_sub(11);
 
-/// Poll attempts before giving up: 200 x 10 ms = ~2 s, comfortably inside
-/// the witness's overall QEMU timeout.
-const MAX_POLL_ATTEMPTS: u32 = 200;
+/// Busy-poll attempts (no `sys_sleep` between them) before falling back to
+/// a `sys_sleep`-paced retry.
+///
+/// WHY busy-poll first (#544, found via a real QEMU boot): the round trip
+/// itself is fast in real wall-clock time (UART TX/RX + a local TCP hop +
+/// pylon-bridge's compute, all sub-millisecond in practice), but
+/// `kardia::QEMU_TICK_CAP` bounds the ENTIRE boot+service-loop run to a
+/// fixed, small tick budget shared with every other process and the
+/// kernel's own per-tick housekeeping. A `sys_sleep`-paced retry loop
+/// spends that shared budget just waiting -- the busy-poll costs no ticks
+/// at all (a `sys_metaxu_poll` syscall does not sleep or yield), so it
+/// finds an already-arrived response on one of its first iterations
+/// without competing for the scarce tick budget other processes need too.
+const BUSY_POLL_ATTEMPTS: u32 = 200_000;
+
+/// `sys_sleep`-paced fallback attempts, each costing one tick (`TICK_MS`
+/// in syscall.rs) -- a much smaller budget than the busy-poll's, for the
+/// genuinely-slow case the busy-poll bound does not cover.
+const SLEEP_POLL_ATTEMPTS: u32 = 5;
 
 /// ELF entry point.
 #[unsafe(no_mangle)]
@@ -129,29 +147,33 @@ pub extern "C" fn _start() -> ! {
         let m = b"metaxu: request submitted\n";
         sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
 
-        let mut attempts: u32 = 0;
-        loop {
+        let mut busy_attempts: u32 = 0;
+        let mut sleep_attempts: u32 = 0;
+        let rc = loop {
             let rc = sys_metaxu_poll();
-            if rc == EAGAIN {
-                attempts += 1;
-                if attempts > MAX_POLL_ATTEMPTS {
-                    let m = b"metaxu: round trip timed out\n";
-                    sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
-                    sys_exit(1);
-                }
-                sys_sleep(10);
+            if rc != EAGAIN {
+                break rc;
+            }
+            busy_attempts += 1;
+            if busy_attempts <= BUSY_POLL_ATTEMPTS {
                 continue;
             }
-            let m: &[u8] = match rc {
-                0 => b"metaxu: round trip accepted\n",
-                1 => b"metaxu: round trip rejected\n",
-                2 => b"metaxu: round trip mac verification failed\n",
-                3 => b"metaxu: round trip response mismatch\n",
-                _ => b"metaxu: round trip transport error\n",
-            };
-            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
-            break;
-        }
+            sleep_attempts += 1;
+            if sleep_attempts > SLEEP_POLL_ATTEMPTS {
+                let m = b"metaxu: round trip timed out\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            sys_sleep(10);
+        };
+        let m: &[u8] = match rc {
+            0 => b"metaxu: round trip accepted\n",
+            1 => b"metaxu: round trip rejected\n",
+            2 => b"metaxu: round trip mac verification failed\n",
+            3 => b"metaxu: round trip response mismatch\n",
+            _ => b"metaxu: round trip transport error\n",
+        };
+        sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
         sys_exit(0);
     }
 }

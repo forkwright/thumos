@@ -99,12 +99,27 @@ fi
 # process already listening on that port -- the bridge binds first (see
 # scripts/witness/metaxu.sh), so this is a deterministic connect, never a
 # race. Unset (every other witness) leaves this runner byte-identical to
-# every prior invocation: one UART, secure=off.
+# every prior invocation: one UART, secure=off, `-nographic`'s implicit
+# `-serial mon:stdio`.
+#
+# WHY NOT just append `-serial tcp:...` alongside `-nographic`: verified
+# empirically -- with an explicit `-serial` ALSO present, `-nographic`'s
+# implicit stdio wiring does not claim serial index 0 (UART0, the
+# console) as it does with no explicit `-serial` at all; the explicit one
+# claims index 0 instead, so the kernel's own boot log went to the TCP
+# port meant for the metaxu transport and stdio (this runner's captured
+# log) stayed empty. Once a metaxu port is set, both serial mappings are
+# named explicitly instead: `-display none` replaces `-nographic`'s
+# display suppression, and `-serial mon:stdio` (index 0, UART0) is
+# listed BEFORE the metaxu `-serial tcp:...` (index 1, UART1) so the
+# ordering is asserted, not implied.
 MACHINE_ARG="virt"
+DISPLAY_ARGS=(-nographic)
 EXTRA_SERIAL_ARGS=()
 if [[ -n "${THUMOS_QEMU_METAXU_PORT:-}" ]]; then
   MACHINE_ARG="virt,secure=on"
-  EXTRA_SERIAL_ARGS=(-serial "tcp:127.0.0.1:${THUMOS_QEMU_METAXU_PORT}")
+  DISPLAY_ARGS=(-display none)
+  EXTRA_SERIAL_ARGS=(-serial mon:stdio -serial "tcp:127.0.0.1:${THUMOS_QEMU_METAXU_PORT}")
 fi
 
 exec timeout --kill-after=5 "${TIMEOUT_SECS}" \
@@ -112,7 +127,7 @@ exec timeout --kill-after=5 "${TIMEOUT_SECS}" \
     -machine "${MACHINE_ARG}" \
     -cpu cortex-a7 \
     -m 1024M \
-    -nographic \
+    "${DISPLAY_ARGS[@]}" \
     -semihosting-config enable=on,target=native \
     -kernel "${BINARY}" \
     "${GDB_ARGS[@]}" \
