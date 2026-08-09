@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.18](https://github.com/forkwright/thumos/compare/v0.1.17...v0.1.18) (2026-08-09)
+
+
+### Bug Fixes
+
+* **kinit:** distinguish a corrupt secrets preamble from unprovisioned ([#639](https://github.com/forkwright/thumos/issues/639)) ([fe5bb34](https://github.com/forkwright/thumos/commit/fe5bb3462b758f0ea5e69a31b3d6725ea008e14f))
+* **lfs:** exclude the reserved metadata segment in imap deserialize ([#658](https://github.com/forkwright/thumos/issues/658)) ([0fdfaf0](https://github.com/forkwright/thumos/commit/0fdfaf0e7beab53816d03c10eb2d76b91f225ba7)), closes [#653](https://github.com/forkwright/thumos/issues/653)
+* **metaxu:** close 10 real kanon-lint defects, report 71 rule false-positives ([#659](https://github.com/forkwright/thumos/issues/659)) ([f6d0539](https://github.com/forkwright/thumos/commit/f6d0539f8699c00932c64e9d66455bde81929d7f)), closes [#652](https://github.com/forkwright/thumos/issues/652)
+* **thumos:** scope the ui::Key/haphe::Key discriminant claim to what holds ([#640](https://github.com/forkwright/thumos/issues/640)) ([4a47935](https://github.com/forkwright/thumos/commit/4a47935aa486a054848e2d47e432701ce8e54e9b)), closes [#615](https://github.com/forkwright/thumos/issues/615)
+
 ## [0.1.17](https://github.com/forkwright/thumos/compare/v0.1.16...v0.1.17) (2026-08-07)
 
 
