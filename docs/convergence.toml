@@ -30,10 +30,10 @@ notes = "The live divergence that proved the class: screen bands and the detecto
 name = "keypad-matrix-scan"
 kernel = "keypad.rs (mirrors haphe's scan/debounce algorithm, #446)"
 workspace = "haphe (gpio.rs)"
-disposition = "extract-core"
-canonical = "pending: matrix geometry + debounce state machine could lift into a no_std core crate when a second consumer justifies it; the event models genuinely differ today (boot taps vs queued press/release/held)"
-owner = "#446"
-notes = "The kernel boot reader reports confirmed presses only (no queue, no release/held events) and cannot link the std workspace crate; pin assignments are shared placeholders pending AGM M7 schematic verification."
+disposition = "kernel-owned"
+canonical = "keypad.rs's BootKeypad is the only consumed matrix-scan/debounce implementation; haphe::gpio's GpioKeypad/Debounce/KeyMatrix are pub(crate) and reached only by their own test module, so the duplicate has no consumer to converge with"
+owner = "#545 (this PR)"
+notes = "The event models genuinely differ: BootKeypad::poll_with_matrix (keypad.rs) returns Option<Key>, the first confirmed press only, no queue, no release/held -- it runs before interrupts, the heap, or the real KPD hardware block exist. GpioKeypad::process_matrix (haphe/gpio.rs) pushes InputEvent::Key { key, state: Pressed | Released } into a 64-slot InputQueue for a running input loop. But no second consumer exists to justify lifting a shared core: GpioKeypad/Debounce/KeyMatrix/gpio_reg/read_matrix are pub(crate), unreachable outside haphe, and called only from gpio.rs's own tests -- eidolon, haphe's one real external consumer, imports haphe::input::{Key, TouchPoint} and never touches haphe::gpio. Pin assignments are shared placeholders pending AGM M7 schematic verification either way. haphe has been #![no_std] with zero dependencies since its first commit and crates/thumos/Cargo.toml already path-links it as a dev-dependency for host tests (#615) -- \"cannot link a std crate\" is not the real reason keypad.rs stays independent; visibility and the differing event shape are. The workspace matrix-scan code is a deletion candidate under this disposition's own rule (the duplicate deletes when its consumers are gone) whenever a real second consumer is decided against; it is kept here only because deleting it is outside this ledger decision's scope."
 
 [[pair]]
 name = "gps"
