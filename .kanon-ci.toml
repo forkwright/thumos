@@ -33,6 +33,7 @@ stages = [
     "kernel qemu witnesses",
     "wiring inventory",
     "doc inventory",
+    "kernel lockfile versions",
     "target test ledger",
     "cargo clippy",
     "cargo nextest",
@@ -129,6 +130,15 @@ timeout_secs = 300
 [stages."doc inventory"]
 cmd = "scripts/check-doc-inventory.sh"
 timeout_secs = 300
+
+# WHY (#688): crates/thumos is excluded from the workspace and carries its own
+# lockfile. release-please updates it through an explicit selector that once
+# named a single crate, so six first-party versions sat three releases behind
+# while cargo silently rewrote the file on every build. An enumeration of
+# things that grow goes stale quietly; this makes it loud.
+[stages."kernel lockfile versions"]
+cmd = "scripts/check-kernel-lockfile-versions.sh"
+timeout_secs = 60
 
 [stages."cargo clippy"]
 cmd = "cargo clippy --workspace --all-targets --jobs 8 -- -D warnings"

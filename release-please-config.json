@@ -80,7 +80,7 @@
         {
           "type": "toml",
           "path": "crates/thumos/Cargo.lock",
-          "jsonpath": "$.package[?(@.name == 'sema-core')].version"
+          "jsonpath": "$.package[?(!@.source && @.name != 'thumos')].version"
         }
       ]
     }

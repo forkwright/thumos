@@ -128,6 +128,13 @@ jobs:
         # reds on an unclassified pair, a rising port-marker count, or a
         # stale #126 pointer. Cheap, source-level.
         run: scripts/check-convergence.sh
+      - name: Kernel lockfile version drift (#688)
+        # WHY (#688): crates/thumos is excluded from the workspace and keeps its
+        # own lockfile. release-please updates it via an explicit selector that
+        # once named a single crate by hand, so six first-party versions sat
+        # three releases behind while cargo rewrote the file underfoot on every
+        # build. An enumeration of things that grow goes stale quietly.
+        run: scripts/check-kernel-lockfile-versions.sh
       - name: Kernel cross-compile (armv7a) + zero-warning gate (#431)
         # WHY (#431): the zero-warning gate lives in crates/thumos/.cargo/
         # config.toml's rustflags; scripts/kernel-build.sh builds through it
