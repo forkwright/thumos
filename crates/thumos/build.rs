@@ -365,7 +365,7 @@ fn cpio_newc_entry(name: &str, data: &[u8], mode: u32) -> Vec<u8> {
 // for definitionally-infallible `Result`s -- replaces a bare `.unwrap()`/
 // `.expect()` at every `write!`/`writeln!` call site below.
 macro_rules! infallible_write {
-    ($dst:expr $(, $arg:tt)*) => {
+    ($dst:expr $(, $arg:expr)* $(,)?) => {
         writeln!($dst $(, $arg)*)
             .unwrap_or_else(|_| unreachable!("writing to a String is infallible"))
     };
