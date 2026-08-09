@@ -37,11 +37,11 @@
 //!
 //! ## Integration points
 //!
-//! - `capability.rs` — CapDeny events
-//! - `firewall.rs` — PacketDeny events
-//! - `lock_screen.rs` — AuthFail, DuressAttempt events
-//! - `security_mode.rs` — ModeChange, PanicTrigger events
-//! - `secure_boot.rs` (Wave 6) — BootVerify events
+//! - `capability.rs` — `CapDeny` events
+//! - `firewall.rs` — `PacketDeny` events
+//! - `lock_screen.rs` — `AuthFail`, `DuressAttempt` events
+//! - `security_mode.rs` — `ModeChange`, `PanicTrigger` events
+//! - `secure_boot.rs` (Wave 6) — `BootVerify` events
 
 use core::fmt;
 
@@ -153,7 +153,7 @@ pub struct AuditEntry {
     pub detail: [u8; DETAIL_LEN],
     /// Number of valid bytes in `detail`.
     pub detail_len: u8,
-    /// HMAC-SHA256 covering (timestamp || event_type || pid || detail || prev_hmac).
+    /// HMAC-SHA256 covering (timestamp || `event_type` || pid || detail || `prev_hmac`).
     pub hmac: [u8; SHA256_DIGEST_LEN],
 }
 
@@ -167,7 +167,7 @@ impl AuditEntry {
     /// Serialize the entry content (excluding the HMAC itself) into a
     /// buffer suitable for HMAC computation.
     ///
-    /// Layout: timestamp (8 LE) || event_type (1) || pid (4 LE) || detail (64) || prev_hmac (32)
+    /// Layout: timestamp (8 LE) || `event_type` (1) || pid (4 LE) || detail (64) || `prev_hmac` (32)
     ///
     /// Returns the number of bytes written.
     fn serialize_for_hmac(
@@ -313,7 +313,7 @@ pub(crate) struct AuditLog {
     entries: Box<[AuditEntry]>,
     /// Index of the next write position in the ring.
     head: usize,
-    /// Number of live entries (0..=MAX_ENTRIES).
+    /// Number of live entries (`0..=MAX_ENTRIES`).
     count: usize,
     /// HMAC of the most recently appended entry (chains the next append).
     last_hmac: [u8; SHA256_DIGEST_LEN],

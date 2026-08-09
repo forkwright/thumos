@@ -20,13 +20,13 @@
 //! ## Hardware path
 //!
 //! The MT6739 GPS hardware is accessed through the WMT combo chip:
-//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, board::m7 #534)
+//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, `board::m7` #534)
 //! - Data path goes through WMT STP framing (kelyphos handles the transport)
 //!
 //! ## Design
 //!
 //! No floating-point arithmetic: latitude and longitude are stored as
-//! fixed-point integers (degrees * 1_000_000) to avoid soft-float overhead
+//! fixed-point integers (degrees * `1_000_000`) to avoid soft-float overhead
 //! in a `#![no_std]` kernel without FPU support enabled.
 //!
 //! ## Integration
@@ -141,7 +141,7 @@ impl core::fmt::Display for GpsState {
 
 /// GPS position with fixed-point coordinates.
 ///
-/// Latitude and longitude are stored as microdegrees (degrees * 1_000_000)
+/// Latitude and longitude are stored as microdegrees (degrees * `1_000_000`)
 /// to avoid floating-point arithmetic in the kernel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GpsPosition {
@@ -535,7 +535,7 @@ impl<H: GpsHwOps> GpsReceiver<H> {
 pub struct MockGpsHw {
     /// Data to return from `read_data`.
     pub data_queue: Vec<u8>,
-    /// Whether power_on succeeds.
+    /// Whether `power_on` succeeds.
     pub power_on_ok: bool,
 }
 

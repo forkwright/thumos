@@ -35,7 +35,7 @@ pub(crate) fn elapsed_ms() -> u64 {
 }
 
 /// Host-test mirror of the production `set_ms` tick-conversion arithmetic.
-/// `timer::set_ms` itself is ARM-only (it also programs CNTP_TVAL/CNTP_CTL
+/// `timer::set_ms` itself is ARM-only (it also programs `CNTP_TVAL/CNTP_CTL`
 /// via CP15, which does not exist on the host target); this mirrors just
 /// the overflow-safety fix so it has host-test coverage. Kept in lockstep
 /// with the arithmetic in `timer::set_ms`.

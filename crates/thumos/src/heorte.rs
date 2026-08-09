@@ -354,7 +354,7 @@ pub(crate) fn decompose_epoch(epoch: u64) -> (u8, u8, u16, u8, u8) {
 
 /// Convert days-since-Unix-epoch to a `(year, month, day)` civil date in
 /// O(1), replacing the year-by-year iteration that made `decompose_epoch`
-/// an O(years) DoS surface for an adversarial epoch -- up to ~11.7M
+/// an O(years) `DoS` surface for an adversarial epoch -- up to ~11.7M
 /// iterations for a large `days` value (#366).
 ///
 /// Closed-form Gregorian calendar algorithm (Howard Hinnant's

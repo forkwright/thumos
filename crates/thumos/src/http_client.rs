@@ -539,10 +539,10 @@ fn find_header_end(data: &[u8]) -> Option<usize> {
     None
 }
 
-/// Parse the HTTP status line and return (status_code, bytes_consumed).
+/// Parse the HTTP status line and return (`status_code`, `bytes_consumed`).
 ///
 /// Expects: `HTTP/1.1 200 OK\r\n` (or similar).
-/// The bytes_consumed includes the trailing `\r\n`.
+/// The `bytes_consumed` includes the trailing `\r\n`.
 fn parse_status_line(header_block: &[u8]) -> Result<(u16, usize), HttpError> {
     // Find the first \r\n — that's the end of the status line.
     let line_end = find_crlf(header_block).ok_or(HttpError::MalformedStatusLine)?;
@@ -689,8 +689,8 @@ fn digit_value(b: u8) -> Option<u16> {
 }
 
 /// Write a usize as ASCII decimal digits into a byte buffer.
-/// WHY: no_std environment — we can't use format!() in the hot path
-/// of request serialization without pulling in alloc::format.
+/// WHY: `no_std` environment — we can't use format!() in the hot path
+/// of request serialization without pulling in `alloc::format`.
 fn write_usize_to_buf(buf: &mut Vec<u8>, mut n: usize) {
     if n == 0 {
         buf.push(b'0');

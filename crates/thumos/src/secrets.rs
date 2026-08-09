@@ -29,7 +29,7 @@
 //! The boot verifier is PLAINTEXT by construction, like the salt: it must
 //! be readable before any passphrase-derived key exists, and it is not a
 //! fast oracle — it is `HKDF(primary, "thumos-verify-v1")` where the
-//! primary is PBKDF2-HMAC-SHA256(passphrase, salt, 100_000), so a disk
+//! primary is PBKDF2-HMAC-SHA256(passphrase, salt, `100_000`), so a disk
 //! image buys an attacker exactly the same per-guess cost as attacking
 //! the encrypted payload itself (and NEVER a raw SHA-256(passphrase)
 //! fast-path). It carries no entropy of its own beyond the passphrase.

@@ -139,9 +139,9 @@ enum AddField {
 pub(crate) struct ContactsScreen {
     /// Sorted indices into the contact manager.
     sorted_indices: Vec<usize>,
-    /// Contact names for display (parallel to sorted_indices).
+    /// Contact names for display (parallel to `sorted_indices`).
     display_names: Vec<String>,
-    /// Contact numbers for display (parallel to sorted_indices).
+    /// Contact numbers for display (parallel to `sorted_indices`).
     display_numbers: Vec<String>,
     /// Currently selected index in the sorted list.
     selected: usize,

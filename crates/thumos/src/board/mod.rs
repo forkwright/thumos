@@ -2,7 +2,7 @@
 //! thumos boots on (#534).
 //!
 //! thumos is a two-board OS:
-//! - **m7** — the AGM M7 feature phone (MT6739 SoC), the field board;
+//! - **m7** — the AGM M7 feature phone (MT6739 `SoC`), the field board;
 //! - **virt** — QEMU `-machine virt` (armv7a), the dev board every CI
 //!   witness boots on (selected by `--features qemu`).
 //!
@@ -17,7 +17,7 @@
 //! base so the memory map is one truth), not per-board facts.
 //!
 //! OUT OF SCOPE by design (recognition-not-induction, #534): no device-tree
-//! parsing, no runtime board detection, no second SoC port, no mega-HAL —
+//! parsing, no runtime board detection, no second `SoC` port, no mega-HAL —
 //! the per-subsystem `HwOps` traits stay the driver seam; this module is
 //! only the *board* seam.
 
@@ -46,15 +46,15 @@ pub(crate) const KERNEL_LOAD: usize = 0x4000_8000;
 
 /// Kernel reserved size (992 KB).
 /// WHY: kernel image + reserved region spans `0x4000_8000..0x400F_FFFF`
-/// (see the memory map in `memguard.rs`), so KERNEL_END lands on the
-/// 0x4010_0000 page boundary rather than a full 1 MB past KERNEL_LOAD.
+/// (see the memory map in `memguard.rs`), so `KERNEL_END` lands on the
+/// `0x4010_0000` page boundary rather than a full 1 MB past `KERNEL_LOAD`.
 pub(crate) const KERNEL_RESERVED: usize = 0xF_8000;
 
 /// Kernel end address (load + reserved).
 pub(crate) const KERNEL_END: usize = KERNEL_LOAD + KERNEL_RESERVED;
 
 /// Userspace text region base (#474/#482): the top 1 MB of DRAM
-/// (0x7FF0_0000..0x8000_0000), the fixed identity load address for the
+/// (`0x7FF0_0000..0x8000_0000`), the fixed identity load address for the
 /// image-resident /init. EXCLUDED from the page allocator (kinit passes this
 /// as the allocator's upper bound) so an allocation never collides with the
 /// loaded image. In the KERNEL address space it is plain RAM + execute-never

@@ -2,7 +2,7 @@
 //!
 //! Provides a menu-style settings hub with subpages:
 //! - Main settings menu (scrollable list of categories)
-//! - WiFi settings (current connection state, SSID, signal, IP)
+//! - `WiFi` settings (current connection state, SSID, signal, IP)
 //! - Bluetooth settings (paired count, scanning status)
 //! - About screen (device info, OS version, build date)
 //!
@@ -324,13 +324,13 @@ impl Screen for AboutScreen {
 // WiFi settings screen
 // ---------------------------------------------------------------------------
 
-/// Snapshot of WiFi state for display on the settings screen.
+/// Snapshot of `WiFi` state for display on the settings screen.
 ///
 /// Decoupled from `wifi::WifiState` to avoid coupling screen rendering
 /// to the driver state machine. Updated each render cycle.
 #[derive(Debug, Clone)]
 pub struct WifiSettingsState {
-    /// Whether WiFi is connected.
+    /// Whether `WiFi` is connected.
     pub connected: bool,
     /// Current SSID (empty if not connected).
     pub ssid: [u8; 32],
@@ -357,14 +357,14 @@ impl Default for WifiSettingsState {
     }
 }
 
-/// WiFi settings screen (read-only display of WiFi state).
+/// `WiFi` settings screen (read-only display of `WiFi` state).
 pub(crate) struct WifiSettingsScreen {
-    /// Current WiFi state snapshot.
+    /// Current `WiFi` state snapshot.
     pub state: WifiSettingsState,
 }
 
 impl WifiSettingsScreen {
-    /// Create a new WiFi settings screen with default (disconnected) state.
+    /// Create a new `WiFi` settings screen with default (disconnected) state.
     pub(crate) fn new() -> Self {
         Self {
             state: WifiSettingsState::default(),
@@ -687,7 +687,7 @@ impl Screen for BtSettingsScreen {
 // Formatting helpers (no_std, no alloc for small values)
 // ---------------------------------------------------------------------------
 
-/// Small fixed-capacity buffer for no_std number formatting.
+/// Small fixed-capacity buffer for `no_std` number formatting.
 struct SmallBuf {
     data: [u8; 16],
     len: usize,

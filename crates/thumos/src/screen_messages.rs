@@ -24,8 +24,8 @@
 //! ## Transport badges
 //!
 //! Each inbox entry is prefixed with a short badge identifying the
-//! transport: `S` (SMS), `M` (Matrix), `B` (Briar), `L` (LoRa/
-//! Meshtastic), `W` (bridged WhatsApp), `Sl` (bridged Slack),
+//! transport: `S` (SMS), `M` (Matrix), `B` (Briar), `L` (`LoRa`/
+//! Meshtastic), `W` (bridged `WhatsApp`), `Sl` (bridged Slack),
 //! `T` (bridged Telegram).
 //!
 //! ## Data source
@@ -62,9 +62,9 @@ pub enum MessageTransport {
     Matrix,
     /// Briar peer-to-peer messaging.
     Briar,
-    /// Meshtastic LoRa mesh.
+    /// Meshtastic `LoRa` mesh.
     Meshtastic,
-    /// WhatsApp bridged through Matrix.
+    /// `WhatsApp` bridged through Matrix.
     BridgedWhatsApp,
     /// Slack bridged through Matrix.
     BridgedSlack,
@@ -92,7 +92,7 @@ impl MessageTransport {
     /// Cycle to the next transport in compose mode.
     ///
     /// Cycles through: Sms -> Matrix -> Briar -> Meshtastic ->
-    /// BridgedWhatsApp -> BridgedSlack -> BridgedTelegram -> Sms.
+    /// `BridgedWhatsApp` -> `BridgedSlack` -> `BridgedTelegram` -> Sms.
     #[must_use]
     pub(crate) const fn next(self) -> Self {
         match self {

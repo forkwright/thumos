@@ -1,12 +1,12 @@
-//! Kernel time services: clock_gettime and nanosleep.
+//! Kernel time services: `clock_gettime` and nanosleep.
 //!
 //! # Clock sources
 //!
-//! CLOCK_MONOTONIC reads the ARM generic timer (CNTPCT) which counts at
+//! `CLOCK_MONOTONIC` reads the ARM generic timer (CNTPCT) which counts at
 //! a fixed frequency (CNTFRQ, typically 13 MHz on MT6739). It measures
 //! time elapsed since the timer was enabled at boot and never goes backward.
 //!
-//! CLOCK_REALTIME adds a boot-epoch offset to the monotonic counter. The
+//! `CLOCK_REALTIME` adds a boot-epoch offset to the monotonic counter. The
 //! offset is hardcoded to 2025-01-01 00:00:00 UTC at boot and may be
 //! updated later when the modem RTC becomes available. Accuracy before
 //! RTC sync is ±1 minute (based on OEM firmware boot time estimates).
@@ -25,7 +25,7 @@
 //! offset 0: tv_sec  (u32, seconds)
 //! offset 4: tv_nsec (u32, nanoseconds, 0..999_999_999)
 //! ```
-//! This matches the 32-bit ABI layout used by musl on ARMv7.
+//! This matches the 32-bit ABI layout used by musl on `ARMv7`.
 
 use crate::exceptions;
 use crate::memguard::validate_user_buffer;
@@ -49,7 +49,7 @@ const EINVAL: u32 = 0u32.wrapping_sub(22);
 /// Nanoseconds per second.
 const NANOS_PER_SEC: u64 = 1_000_000_000;
 
-/// Boot epoch offset for CLOCK_REALTIME: 2025-01-01 00:00:00 UTC in seconds
+/// Boot epoch offset for `CLOCK_REALTIME`: 2025-01-01 00:00:00 UTC in seconds
 /// since the Unix epoch (1970-01-01).
 ///
 /// WHY: the kernel has no RTC access at boot. We use a hardcoded recent date
@@ -57,7 +57,7 @@ const NANOS_PER_SEC: u64 = 1_000_000_000;
 /// RTC driver (ccci) may update this later via `set_realtime_offset()`.
 ///
 /// Calculation: days from 1970-01-01 to 2025-01-01:
-///   55 years × 365.25 days ≈ 20088 days → 20088 × 86400 = 1_735_603_200 s
+///   55 years × 365.25 days ≈ 20088 days → 20088 × 86400 = `1_735_603_200` s
 pub(crate) static mut REALTIME_OFFSET_SECS: u64 = 1_735_603_200;
 
 // ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ fn compute_realtime_offset(unix_now_secs: u64, elapsed_secs: u64) -> Option<u64>
 ///
 /// Writes to a static mut. Must be called from a single-threaded context
 /// (e.g., kinit before spawning userspace, or from an IPC handler with
-/// interrupts disabled). On ARMv7 a 64-bit store is not atomic; callers
+/// interrupts disabled). On `ARMv7` a 64-bit store is not atomic; callers
 /// are responsible for ensuring no concurrent read occurs.
 #[cfg(not(test))]
 pub unsafe fn set_realtime_offset(unix_now_secs: u64) -> Result<(), ImplausibleEpoch> {
@@ -169,11 +169,11 @@ fn counter_to_timespec(count: u64, freq: u64) -> (u32, u32) {
 // tick-wait is target_arch-split (real hint on ARM, no-op on the host).
 // ---------------------------------------------------------------------------
 
-/// sys_clock_gettime — fill a user-space timespec with the requested clock.
+/// `sys_clock_gettime` — fill a user-space timespec with the requested clock.
 ///
 /// # Arguments
 ///
-/// * `clock_id` — 0 (CLOCK_REALTIME) or 1 (CLOCK_MONOTONIC)
+/// * `clock_id` — 0 (`CLOCK_REALTIME`) or 1 (`CLOCK_MONOTONIC`)
 /// * `ts_ptr`   — user-space pointer to `{ tv_sec: u32, tv_nsec: u32 }`
 ///
 /// # Returns
@@ -219,7 +219,7 @@ pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
     0
 }
 
-/// sys_nanosleep — suspend the calling process for (at least) the specified duration.
+/// `sys_nanosleep` — suspend the calling process for (at least) the specified duration.
 ///
 /// Reads the duration from a user-space timespec, converts it to a future
 /// tick count, records it in the PCB, and marks the process as Sleeping.
@@ -342,9 +342,9 @@ mod tests {
 
     /// EINVAL constant matches Linux ARM EINVAL (-22).
     ///
-    /// NOTE: sys_clock_gettime itself is not callable from host tests (it depends
+    /// NOTE: `sys_clock_gettime` itself is not callable from host tests (it depends
     /// on #[cfg(not(test))] modules). This test verifies the error constant value
-    /// that sys_clock_gettime returns for unknown clock IDs, which is the
+    /// that `sys_clock_gettime` returns for unknown clock IDs, which is the
     /// observable ABI contract.
     #[test]
     fn clock_gettime_invalid_clock_returns_error() {
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(EINVAL, 0u32.wrapping_sub(22), "EINVAL must be -22 as u32");
     }
 
-    /// CLOCK_REALTIME and CLOCK_MONOTONIC IDs have the correct POSIX values.
+    /// `CLOCK_REALTIME` and `CLOCK_MONOTONIC` IDs have the correct POSIX values.
     #[test]
     fn clock_gettime_null_ptr_returns_efault() {
         // We verify the clock ID constants; the actual EFAULT path requires
@@ -362,8 +362,8 @@ mod tests {
         assert_eq!(CLOCK_MONOTONIC, 1, "CLOCK_MONOTONIC must be 1");
     }
 
-    /// CLOCK_MONOTONIC increases between two consecutive reads.
-    /// Uses the counter_to_timespec helper directly since we can't drive
+    /// `CLOCK_MONOTONIC` increases between two consecutive reads.
+    /// Uses the `counter_to_timespec` helper directly since we can't drive
     /// the hardware timer from a host test.
     #[test]
     fn clock_gettime_monotonic_increases() {
@@ -396,7 +396,7 @@ mod tests {
     }
 
     /// #374: a plausible epoch within the accepted window computes the
-    /// expected offset (unix_now_secs - elapsed_secs).
+    /// expected offset (`unix_now_secs` - `elapsed_secs`).
     #[test]
     fn compute_realtime_offset_accepts_plausible_window() {
         assert_eq!(
@@ -472,10 +472,10 @@ mod tests {
         assert_eq!(ticks_needed, 1, "5 ms sleep must round up to 1 tick");
     }
 
-    /// POSIX requires EINVAL when tv_nsec is out of [0, 999_999_999]; the
+    /// POSIX requires EINVAL when `tv_nsec` is out of [0, `999_999_999`]; the
     /// kernel must not silently fold an out-of-range value into extra
     /// whole seconds of sleep. A `static mut` buffer is used (not a stack
-    /// array) so its address lands inside validate_user_buffer's accepted
+    /// array) so its address lands inside `validate_user_buffer`'s accepted
     /// user-DRAM range on the 32-bit test target.
     #[cfg(target_pointer_width = "32")]
     #[test]

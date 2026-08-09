@@ -3,7 +3,7 @@
 //! Two concerns live here:
 //!
 //! 1. **Radio kill switches** — GPIO-controlled power gates for cellular,
-//!    WiFi, BT, GPS, FM.  When off the hardware is physically disconnected
+//!    `WiFi`, BT, GPS, FM.  When off the hardware is physically disconnected
 //!    from power; software cannot override a hardware kill.
 //!
 //! 2. **CPU power governor** (REQ-19) — DVFS, core parking, and display
@@ -13,11 +13,11 @@
 //!
 //! | Register      | Address       | Purpose                              |
 //! |---------------|---------------|--------------------------------------|
-//! | ARMPLL_CON1   | 0x1000_C104   | CPU PLL divider → frequency          |
-//! | MCDI_BASE     | 0x1000_DC00   | Multi-Core Deep Idle control block   |
-//! | MCDI_CORE_EN  | 0x1000_DC04   | Per-core power-down enable bitmask   |
+//! | `ARMPLL_CON1`   | `0x1000_C104`   | CPU PLL divider → frequency          |
+//! | `MCDI_BASE`     | `0x1000_DC00`   | Multi-Core Deep Idle control block   |
+//! | `MCDI_CORE_EN`  | `0x1000_DC04`   | Per-core power-down enable bitmask   |
 //!
-//! ARMPLL_CON1 encoding used here matches the four frequency steps
+//! `ARMPLL_CON1` encoding used here matches the four frequency steps
 //! supported by the MT6739 stock DVFS table (1500 / 1200 / 900 / 600 MHz).
 //! The exact PCW (post-divider control word) values are documented in the
 //! MT6739 Clock Management Unit (CMU) specification rev 1.3 §4.2.
@@ -32,19 +32,19 @@
 
 /// CPU frequency operating points.
 ///
-/// `repr(u32)` values are written directly to ARMPLL_CON1.  The PCW
+/// `repr(u32)` values are written directly to `ARMPLL_CON1`.  The PCW
 /// values are truncated approximations; a production kernel reads the
 /// exact values from the efuse OPP table during boot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum CpuFreq {
-    /// 1 500 MHz — full performance (PCW 0x009_6000 ≈ 0x0096_0000).
+    /// 1 500 MHz — full performance (PCW `0x009_6000` ≈ `0x0096_0000`).
     Mhz1500 = 0x0096_0000,
-    /// 1 200 MHz — mid-high (PCW ≈ 0x0078_0000).
+    /// 1 200 MHz — mid-high (PCW ≈ `0x0078_0000`).
     Mhz1200 = 0x0078_0000,
-    /// 900 MHz — mid-low (PCW ≈ 0x005A_0000).
+    /// 900 MHz — mid-low (PCW ≈ `0x005A_0000`).
     Mhz900 = 0x005A_0000,
-    /// 600 MHz — low power (PCW ≈ 0x003C_0000).
+    /// 600 MHz — low power (PCW ≈ `0x003C_0000`).
     Mhz600 = 0x003C_0000,
 }
 
@@ -87,7 +87,7 @@ const LOAD_HISTORY_LEN: usize = 4;
 /// CPU governor and display timeout state.
 ///
 /// One global instance is accessed from the timer IRQ handler only
-/// (single-core ARMv7, IRQs disabled during the handler).  No lock needed.
+/// (single-core `ARMv7`, IRQs disabled during the handler).  No lock needed.
 pub(crate) struct CpuGovernor {
     /// Current CPU frequency operating point.
     current_freq: CpuFreq,
@@ -101,10 +101,10 @@ pub(crate) struct CpuGovernor {
     backlight_timeout_ticks: u64,
     /// Rolling CPU load history (load % per tick, most-recent last).
     load_history: [u8; LOAD_HISTORY_LEN],
-    /// Write pointer into load_history (circular).
+    /// Write pointer into `load_history` (circular).
     load_idx: usize,
     /// Number of valid samples in `load_history` (saturates at
-    /// LOAD_HISTORY_LEN once the ring buffer has filled once after boot).
+    /// `LOAD_HISTORY_LEN` once the ring buffer has filled once after boot).
     load_samples: usize,
 }
 
@@ -145,7 +145,7 @@ impl CpuGovernor {
 // ---------------------------------------------------------------------------
 
 /// Global CPU governor.  Written only from the timer IRQ handler on a
-/// single-core ARMv7 with interrupts disabled — no lock needed.
+/// single-core `ARMv7` with interrupts disabled — no lock needed.
 static mut GOVERNOR: CpuGovernor = CpuGovernor::new();
 
 // ---------------------------------------------------------------------------
@@ -211,8 +211,8 @@ pub(crate) fn evaluate_dvfs(load_percent: u8) {
 /// stays on.
 ///
 /// MT6739 MCDI register addresses:
-/// * `0x1000_DC00` — MCDI_BASE
-/// * `0x1000_DC04` — MCDI_CORE_EN: bit N=1 powers down core N
+/// * `0x1000_DC00` — `MCDI_BASE`
+/// * `0x1000_DC04` — `MCDI_CORE_EN`: bit N=1 powers down core N
 ///
 /// # Safety
 ///
@@ -334,7 +334,7 @@ unsafe fn display_wake() {
 
 /// Write a zero-parameter DCS command to DSI0.
 ///
-/// DSI0 CMD_FIFO register: 0x1400_D000 + offset 0x200.
+/// DSI0 `CMD_FIFO` register: `0x1400_D000` + offset 0x200.
 /// Format: bits [7:0] = DCS opcode, bit 8 = last-byte flag.
 unsafe fn dcs_cmd0(cmd: u8) {
     // WHY(qemu): virt models no DSI0 block; the FIFO write would data-abort
@@ -590,8 +590,8 @@ impl Default for PowerManager {
 /// security-relevant radio).
 ///
 /// Used by the boot sequence (Wave 8) and by [`ModeManager`] on mode
-/// transitions to enforce radio policy without coupling security_mode
-/// directly to PowerManager internals.
+/// transitions to enforce radio policy without coupling `security_mode`
+/// directly to `PowerManager` internals.
 pub(crate) fn apply_mode_policy(policy: &crate::security_mode::ModePolicy, pm: &mut PowerManager) {
     let to_state = |enabled: bool| -> PowerState {
         if enabled {

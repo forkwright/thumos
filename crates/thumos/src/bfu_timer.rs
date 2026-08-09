@@ -141,7 +141,7 @@ pub(crate) struct BfuTimer {
     fired: bool,
     /// Ticks elapsed since the current pause began. Reset whenever the
     /// timer leaves the Paused state (resume, reset, or the
-    /// MAX_PAUSE_TICKS force-resume in `tick`).
+    /// `MAX_PAUSE_TICKS` force-resume in `tick`).
     paused_ticks: u64,
 }
 

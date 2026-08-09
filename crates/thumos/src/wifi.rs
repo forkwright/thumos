@@ -1,16 +1,16 @@
-//! WiFi network interface and WPA supplicant for the MT6739 combo chip.
+//! `WiFi` network interface and WPA supplicant for the MT6739 combo chip.
 //!
 //! Ports essential logic from the `aither` userspace crate into the kernel:
 //! - MAC randomization via the kernel CSPRNG (`csprng.rs`)
 //! - WPA2-Personal 4-way handshake state machine
 //! - EAPOL frame parsing and construction (IEEE 802.1X-2020)
-//! - WiFi hardware abstraction via `WifiHwOps` trait
+//! - `WiFi` hardware abstraction via `WifiHwOps` trait
 //!
 //! ## Hardware path
 //!
-//! The MT6739 WiFi hardware is accessed through the WMT combo chip:
-//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, board::m7 #534)
-//! - `board::WLAN_BASE  = 0x180F_0000` (WiFi MMIO region, board::m7 #534)
+//! The MT6739 `WiFi` hardware is accessed through the WMT combo chip:
+//! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, `board::m7` #534)
+//! - `board::WLAN_BASE  = 0x180F_0000` (`WiFi` MMIO region, `board::m7` #534)
 //!
 //! Data path goes through WMT STP framing (kelyphos handles the transport).
 //! The `WifiHw` struct provides `#[cfg(not(test))]` MMIO access with a
@@ -43,7 +43,7 @@ use crate::security::{hmac_sha1, pbkdf2_hmac_sha1, prf_384};
 // Error types
 // ---------------------------------------------------------------------------
 
-/// WiFi subsystem errors.
+/// `WiFi` subsystem errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum WifiError {
@@ -74,7 +74,7 @@ pub enum WifiError {
     },
     /// No scan results matched the configured network.
     NetworkNotFound,
-    /// The WiFi hardware is not initialized.
+    /// The `WiFi` hardware is not initialized.
     NotInitialized,
 }
 
@@ -103,7 +103,7 @@ impl core::fmt::Display for WifiError {
 // WiFi state machine
 // ---------------------------------------------------------------------------
 
-/// WiFi connection lifecycle state machine.
+/// `WiFi` connection lifecycle state machine.
 ///
 /// Transitions are driven by external events: scan results, association
 /// responses, EAPOL frames, and timeouts.
@@ -129,7 +129,7 @@ pub enum WifiState {
 // Security types
 // ---------------------------------------------------------------------------
 
-/// WiFi security protocol.
+/// `WiFi` security protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum WifiSecurity {
@@ -153,7 +153,7 @@ pub(crate) const MAX_SSID_LEN: usize = 32;
 /// Maximum passphrase length in bytes (WPA2-Personal: 8-63 ASCII).
 pub(crate) const MAX_PASSPHRASE_LEN: usize = 64;
 
-/// WiFi network configuration.
+/// `WiFi` network configuration.
 ///
 /// Stores SSID and passphrase in fixed-size arrays to avoid heap allocation
 /// in the connection hot path.
@@ -172,7 +172,7 @@ pub struct WifiConfig {
 }
 
 impl WifiConfig {
-    /// Create a new WiFi configuration.
+    /// Create a new `WiFi` configuration.
     ///
     /// Truncates SSID and passphrase to their respective maximum lengths
     /// rather than returning an error.
@@ -219,7 +219,7 @@ impl Drop for WifiConfig {
     }
 }
 
-/// A single scan result from the WiFi firmware.
+/// A single scan result from the `WiFi` firmware.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanResult {
     /// Advertised SSID (raw bytes from beacon/probe response).
@@ -436,8 +436,8 @@ const EAPOL_HEADER_LEN: usize = 4;
 
 /// Size of the fixed portion of an EAPOL-Key body (before variable key data).
 ///
-/// Fields: descriptor_type(1) + key_info(2) + key_length(2) + replay_counter(8)
-/// + nonce(32) + iv(16) + rsc(8) + reserved(8) + mic(16) + key_data_length(2) = 95
+/// Fields: `descriptor_type(1)` + `key_info(2)` + `key_length(2)` + `replay_counter(8)`
+/// + nonce(32) + iv(16) + rsc(8) + reserved(8) + mic(16) + `key_data_length(2)` = 95
 const EAPOL_KEY_FIXED_LEN: usize = 95;
 
 /// Nonce field length in bytes.
@@ -546,7 +546,7 @@ pub struct EapolKeyFrame {
     pub key_length: u16,
     /// Strictly monotonic replay counter.
     pub replay_counter: u64,
-    /// Authenticator or supplicant nonce (ANonce / SNonce).
+    /// Authenticator or supplicant nonce (`ANonce` / `SNonce`).
     pub nonce: [u8; NONCE_LEN],
     /// Key IV (all-zero for CCMP; used by TKIP).
     pub iv: [u8; IV_LEN],
@@ -743,10 +743,10 @@ fn eapol_encode_key_frame(kf: &EapolKeyFrame) -> Vec<u8> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum HandshakeState {
-    /// Waiting for Message 1 (ANonce from authenticator).
+    /// Waiting for Message 1 (`ANonce` from authenticator).
     #[default]
     AwaitMsg1,
-    /// Message 1 received; supplicant generated SNonce and derived PTK.
+    /// Message 1 received; supplicant generated `SNonce` and derived PTK.
     /// Waiting to send Message 2.
     SendMsg2,
     /// Message 2 sent; waiting for Message 3 (GTK + Install).
@@ -1035,12 +1035,12 @@ impl Default for WpaHandshake {
 // WiFi hardware abstraction
 // ---------------------------------------------------------------------------
 
-/// Hardware operations trait for WiFi driver abstraction.
+/// Hardware operations trait for `WiFi` driver abstraction.
 ///
 /// Allows test-friendly mocking of MMIO access. The real implementation
 /// (`WifiHw`) uses `#[cfg(not(test))]` MMIO; tests provide a mock.
 pub(crate) trait WifiHwOps {
-    /// Return true once the WiFi data path can exchange Ethernet frames.
+    /// Return true once the `WiFi` data path can exchange Ethernet frames.
     ///
     /// The default is closed so partially wired hardware operations cannot be
     /// mistaken for production connectivity.
@@ -1048,10 +1048,10 @@ pub(crate) trait WifiHwOps {
         false
     }
 
-    /// Transmit a frame to the WiFi hardware.
+    /// Transmit a frame to the `WiFi` hardware.
     fn send_frame(&mut self, data: &[u8]) -> Result<(), WifiError>;
 
-    /// Receive a frame from the WiFi hardware, if one is available.
+    /// Receive a frame from the `WiFi` hardware, if one is available.
     fn recv_frame(&mut self) -> Option<Vec<u8>>;
 
     /// Initiate a passive scan.
@@ -1064,9 +1064,9 @@ pub(crate) trait WifiHwOps {
     fn associate(&mut self, ssid: &[u8], bssid: &[u8; 6]) -> Result<(), WifiError>;
 }
 
-/// WiFi hardware driver for the MT6739 WMT combo chip.
+/// `WiFi` hardware driver for the MT6739 WMT combo chip.
 ///
-/// Provides MMIO-based access to the WiFi hardware on the real target,
+/// Provides MMIO-based access to the `WiFi` hardware on the real target,
 /// and a mock-friendly scan result buffer for testing.
 #[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct WifiHw {
@@ -1080,7 +1080,7 @@ pub(crate) struct WifiHw {
 
 #[cfg(not(any(test, feature = "qemu")))]
 impl WifiHw {
-    /// Construct a new WiFi hardware driver.
+    /// Construct a new `WiFi` hardware driver.
     #[must_use]
     pub(crate) const fn new() -> Self {
         Self {
@@ -1129,7 +1129,7 @@ impl WifiHwOps for WifiHw {
 // WiFi driver (combines state machine + hardware + WPA)
 // ---------------------------------------------------------------------------
 
-/// WiFi network driver combining state machine, hardware ops, and WPA handshake.
+/// `WiFi` network driver combining state machine, hardware ops, and WPA handshake.
 ///
 /// Orchestrates the full connection lifecycle: scan, associate, handshake,
 /// connected. Uses MAC randomization for each new connection attempt.
@@ -1147,7 +1147,7 @@ pub(crate) struct WifiDriver<H: WifiHwOps> {
 }
 
 impl<H: WifiHwOps> WifiDriver<H> {
-    /// Create a new WiFi driver with the given hardware backend.
+    /// Create a new `WiFi` driver with the given hardware backend.
     ///
     /// Generates an initial random MAC address.
     #[must_use]
@@ -1210,7 +1210,7 @@ impl<H: WifiHwOps> WifiDriver<H> {
 // Test mock
 // ---------------------------------------------------------------------------
 
-/// Mock WiFi hardware for testing.
+/// Mock `WiFi` hardware for testing.
 ///
 /// Records calls and returns pre-configured results without MMIO access.
 #[cfg(test)]
@@ -1219,7 +1219,7 @@ pub struct MockWifiHw {
     pub scan_results: Vec<ScanResult>,
     /// Frames sent via `send_frame`.
     pub sent_frames: Vec<Vec<u8>>,
-    /// Whether scan_start should succeed.
+    /// Whether `scan_start` should succeed.
     pub scan_ok: bool,
     /// Whether associate should succeed.
     pub associate_ok: bool,

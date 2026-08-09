@@ -69,7 +69,7 @@ impl From<BlockError> for LfsError {
 // LfsImap
 // ---------------------------------------------------------------------------
 
-/// Entry size in the serialized imap: 4 bytes inode_id + 8 bytes block_number.
+/// Entry size in the serialized imap: 4 bytes `inode_id` + 8 bytes `block_number`.
 const IMAP_ENTRY_SIZE: usize = 12;
 
 /// Size of the count prefix in the serialized imap (u32).

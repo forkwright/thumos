@@ -1,6 +1,6 @@
-//! DNS-over-TLS (DoT) framing layer.
+//! DNS-over-TLS (`DoT`) framing layer.
 //!
-//! Wraps DNS queries in the DoT wire format (RFC 7858): a 2-byte length
+//! Wraps DNS queries in the `DoT` wire format (RFC 7858): a 2-byte length
 //! prefix followed by the DNS message, transmitted over a TLS 1.3 connection
 //! to port 853. The actual TLS handshake is abstracted behind the
 //! [`TlsTransport`] trait, allowing the kernel to plug in any TLS backend
@@ -11,7 +11,7 @@
 //! The client stores the SHA-256 hash of the server's Subject Public Key
 //! Info (SPKI). During the TLS handshake callback, the received SPKI is
 //! checked against `pinned_spki_hash`. A mismatch causes the connection
-//! to be rejected. No plaintext fallback: DoT failure = DNS failure.
+//! to be rejected. No plaintext fallback: `DoT` failure = DNS failure.
 //!
 //! ## Wire format
 //!
@@ -30,8 +30,8 @@
 //!
 //! The `dns.rs` resolver can be wired to use a `DotClient` as transport
 //! instead of plain UDP by setting `DnsResolver::use_dot` (added by this
-//! module). LAN queries (`*.lan`) bypass DoT and use plain UDP to the
-//! local AdGuard instance.
+//! module). LAN queries (`*.lan`) bypass `DoT` and use plain UDP to the
+//! local `AdGuard` instance.
 
 // WHY: DNS-over-TLS created in Phase 08 Wave 7, integration pending.
 #![expect(
@@ -53,12 +53,12 @@ use crate::csprng;
 /// Standard DNS-over-TLS port (RFC 7858).
 pub(crate) const DOT_PORT: u16 = 853;
 
-/// Maximum DNS message size for DoT framing (RFC 7858 section 3.3).
+/// Maximum DNS message size for `DoT` framing (RFC 7858 section 3.3).
 /// TCP/TLS DNS messages can be up to 65535 bytes, but practical queries
 /// are much smaller. We cap at 4096 to prevent memory exhaustion.
 const MAX_DNS_MESSAGE_SIZE: usize = 4096;
 
-/// DoT frame header size: 2-byte big-endian length prefix.
+/// `DoT` frame header size: 2-byte big-endian length prefix.
 const DOT_FRAME_HEADER_SIZE: usize = 2;
 
 /// Maximum total frame size (header + message).
@@ -67,7 +67,7 @@ const MAX_FRAME_SIZE: usize = DOT_FRAME_HEADER_SIZE + MAX_DNS_MESSAGE_SIZE;
 /// SHA-256 hash length for SPKI pinning.
 const SPKI_HASH_LEN: usize = 32;
 
-/// Quad9 DNS server address (primary DoT target).
+/// Quad9 DNS server address (primary `DoT` target).
 pub(crate) const QUAD9_DNS: Ipv4Address = Ipv4Address::new(9, 9, 9, 9);
 
 /// DNS record type A (IPv4 address).
@@ -165,7 +165,7 @@ pub(crate) trait TlsTransport {
 // DoT framing
 // ---------------------------------------------------------------------------
 
-/// Wrap a DNS message in a DoT frame (2-byte big-endian length prefix).
+/// Wrap a DNS message in a `DoT` frame (2-byte big-endian length prefix).
 ///
 /// Returns the framed message or `DotError::MessageTooLarge` if the
 /// DNS message exceeds `MAX_DNS_MESSAGE_SIZE`.
@@ -182,7 +182,7 @@ pub(crate) fn frame_dns_message(dns_message: &[u8]) -> Result<Vec<u8>, DotError>
     Ok(frame)
 }
 
-/// Extract the DNS message length from a DoT frame header.
+/// Extract the DNS message length from a `DoT` frame header.
 ///
 /// Reads the first 2 bytes as a big-endian u16 length value.
 #[must_use]
@@ -190,7 +190,7 @@ pub(crate) fn parse_frame_length(header: &[u8; 2]) -> u16 {
     u16::from_be_bytes(*header)
 }
 
-/// Read a complete DoT frame from a TLS transport.
+/// Read a complete `DoT` frame from a TLS transport.
 ///
 /// Reads the 2-byte length prefix, then reads the DNS message body.
 /// Returns the DNS message payload (without the length prefix).
@@ -404,7 +404,7 @@ fn random_txid() -> u16 {
 }
 
 impl<T: TlsTransport> DotClient<T> {
-    /// Create a new DoT client with the given transport and SPKI pin.
+    /// Create a new `DoT` client with the given transport and SPKI pin.
     ///
     /// The `pinned_spki_hash` is the SHA-256 digest of the server's
     /// Subject Public Key Info, used for certificate pinning during
@@ -449,7 +449,7 @@ impl<T: TlsTransport> DotClient<T> {
 
     /// Send a DNS query for the given hostname (A record).
     ///
-    /// Builds a DNS A query, wraps it in a DoT frame, sends it over
+    /// Builds a DNS A query, wraps it in a `DoT` frame, sends it over
     /// the TLS transport, reads the response frame, and returns the
     /// raw DNS response message.
     #[must_use]
@@ -494,7 +494,7 @@ impl<T: TlsTransport> DotClient<T> {
         Ok(response)
     }
 
-    /// Send a raw DNS message over DoT and return the raw response.
+    /// Send a raw DNS message over `DoT` and return the raw response.
     ///
     /// The caller is responsible for building and parsing the DNS message.
     #[must_use]
@@ -522,21 +522,21 @@ impl<T: TlsTransport> DotClient<T> {
 /// Configuration for DNS-over-TLS integration with the DNS resolver.
 ///
 /// When `enabled` is true, the resolver routes non-LAN queries through
-/// a DoT client instead of plain UDP. LAN queries (`*.lan`) always use
-/// plain UDP to the local AdGuard instance.
+/// a `DoT` client instead of plain UDP. LAN queries (`*.lan`) always use
+/// plain UDP to the local `AdGuard` instance.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct DotConfig {
-    /// Whether DoT is enabled for non-LAN queries.
+    /// Whether `DoT` is enabled for non-LAN queries.
     pub enabled: bool,
-    /// DoT server address (e.g., Quad9 9.9.9.9).
+    /// `DoT` server address (e.g., Quad9 9.9.9.9).
     pub server_addr: Ipv4Address,
-    /// SHA-256 SPKI pin for the DoT server.
+    /// SHA-256 SPKI pin for the `DoT` server.
     pub pinned_spki_hash: [u8; SPKI_HASH_LEN],
 }
 
 impl DotConfig {
-    /// Create a new DoT configuration.
+    /// Create a new `DoT` configuration.
     pub(crate) fn new(server_addr: Ipv4Address, pinned_spki_hash: [u8; SPKI_HASH_LEN]) -> Self {
         Self {
             enabled: true,
@@ -545,7 +545,7 @@ impl DotConfig {
         }
     }
 
-    /// Create a disabled DoT configuration.
+    /// Create a disabled `DoT` configuration.
     pub(crate) fn disabled() -> Self {
         Self {
             enabled: false,
@@ -577,7 +577,7 @@ mod tests {
 
     // -- Mock TLS transport ---------------------------------------------------
 
-    /// Mock TLS transport for testing DoT framing and query flow.
+    /// Mock TLS transport for testing `DoT` framing and query flow.
     ///
     /// Stores sent data and returns preconfigured responses.
     struct MockTlsTransport {
@@ -617,7 +617,7 @@ mod tests {
 
         /// Script a transport whose clock advances `per_recv` tick-ms on
         /// every recv (#442): a recv that lands after the deadline must
-        /// return DotError::Timeout.
+        /// return `DotError::Timeout`.
         fn with_clock_advance(responses: Vec<Vec<u8>>, per_recv: u64) -> Self {
             Self {
                 sent: Vec::new(),

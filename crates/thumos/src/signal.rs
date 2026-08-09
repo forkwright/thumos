@@ -38,7 +38,7 @@
 //! vDSO-shaped answer: PL0 can execute but never write it, the kernel wrote
 //! it once through the PL1 mapping, the address is known without per-frame
 //! code, and fork copies it / exec inherits it (it sits outside the
-//! USER_TEXT section exec rebuilds) / exit's page walk reclaims it.
+//! `USER_TEXT` section exec rebuilds) / exit's page walk reclaims it.
 
 /// Number of u32 registers saved in the signal frame (r0-r12, sp, lr, pc, cpsr).
 pub(crate) const SIGNAL_FRAME_REGS: usize = 17;
@@ -49,10 +49,10 @@ pub(crate) const SIGNAL_FRAME_SIZE: usize = SIGNAL_FRAME_REGS * 4;
 
 /// Virtual address of the per-process sigreturn trampoline page: the page
 /// directly below `USER_TEXT_BASE`. WHY here: heap grows up from
-/// `DEFAULT_HEAP_BREAK` (0x1000_0000) and mmap from `MMAP_BASE`
-/// (0x2000_0000), so this page is unreachable by legitimate user mappings;
-/// it sits OUTSIDE the USER_TEXT 1 MB section that exec revokes and rebuilds
-/// (exec_replace_context resets only USER_TEXT_BASE's section), so the
+/// `DEFAULT_HEAP_BREAK` (`0x1000_0000`) and mmap from `MMAP_BASE`
+/// (`0x2000_0000`), so this page is unreachable by legitimate user mappings;
+/// it sits OUTSIDE the `USER_TEXT` 1 MB section that exec revokes and rebuilds
+/// (`exec_replace_context` resets only `USER_TEXT_BASE`'s section), so the
 /// trampoline survives exec; and fork's copy-all-user-pages replicates it
 /// for the child automatically.
 pub(crate) const SIGNAL_TRAMPOLINE_VA: usize =
@@ -150,7 +150,7 @@ pub(crate) unsafe fn write_trampoline_page(_phys: usize) {}
 
 /// Sigreturn (#446): restore the interrupted context the signal frame saved,
 /// resuming user mode exactly where the signal interrupted it. Called from
-/// svc_handler_rust's special case for syscall 81 with the SVC trap frame:
+/// `svc_handler_rust`'s special case for syscall 81 with the SVC trap frame:
 /// the trampoline page's `svc` entered with user sp = the signal frame's
 /// base, and the pending bit was already cleared at dispatch, so this
 /// function only restores — it never touches pending state (the old
@@ -175,7 +175,7 @@ pub(crate) unsafe fn sigreturn_frame(frame: &mut crate::process::Context) {
     }
 }
 
-/// Unreachable by design: svc_handler_rust special-cases syscall 81 before
+/// Unreachable by design: `svc_handler_rust` special-cases syscall 81 before
 /// the generic dispatch, because the frame restore needs the SVC trap frame
 /// (which `dispatch` does not receive). This shim exists only so the
 /// dispatcher's match stays exhaustive (#446).
@@ -183,7 +183,7 @@ pub(crate) fn sigreturn_unreachable() -> u32 {
     crate::syscall::ENOSYS
 }
 
-/// The sigreturn syscall number (81), for svc_handler_rust's special case.
+/// The sigreturn syscall number (81), for `svc_handler_rust`'s special case.
 pub(crate) const SIGRETURN_NUM: u32 = 81;
 
 /// Recognized signal numbers.
@@ -232,7 +232,7 @@ impl Signal {
 
     /// Whether this signal can be caught or ignored.
     ///
-    /// WHY: POSIX requires SIGKILL to always terminate; no handler or SIG_IGN
+    /// WHY: POSIX requires SIGKILL to always terminate; no handler or `SIG_IGN`
     /// can override it. Rejecting sigaction for SIGKILL here enforces that rule.
     pub(crate) const fn can_catch(self) -> bool {
         !matches!(self, Self::Sigkill)
@@ -250,14 +250,14 @@ pub enum DefaultAction {
 
 /// Per-signal action: what to do when the signal is delivered.
 ///
-/// WHY: `#[derive(Clone, Copy)]` — SignalAction is stored inline in the
+/// WHY: `#[derive(Clone, Copy)]` — `SignalAction` is stored inline in the
 /// fixed-size `SignalState::handlers` array, which must be `Copy` so the
 /// whole `Process` struct can be cloned in `fork()` without a heap allocation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SignalAction {
     /// Apply the kernel default action (terminate or ignore).
     Default,
-    /// Explicitly ignore this signal (SIG_IGN, handler_ptr == 1).
+    /// Explicitly ignore this signal (`SIG_IGN`, `handler_ptr` == 1).
     Ignore,
     /// Call this user-space function pointer when the signal is delivered.
     /// The value is a virtual address in the process's address space.
@@ -265,10 +265,10 @@ pub enum SignalAction {
 }
 
 impl SignalAction {
-    /// Sentinel value userspace passes in handler_ptr to mean SIG_IGN.
+    /// Sentinel value userspace passes in `handler_ptr` to mean `SIG_IGN`.
     pub(crate) const SIG_IGN: u32 = 1;
 
-    /// Sentinel value userspace passes in handler_ptr to mean SIG_DFL.
+    /// Sentinel value userspace passes in `handler_ptr` to mean `SIG_DFL`.
     pub(crate) const SIG_DFL: u32 = 0;
 }
 
@@ -609,8 +609,8 @@ mod tests {
     }
 
     /// The trampoline page's VA is the reserved slot one page below
-    /// USER_TEXT_BASE — outside the section exec rebuilds, above every
-    /// growing user region (heap at 0x1000_0000, mmap at 0x2000_0000).
+    /// `USER_TEXT_BASE` — outside the section exec rebuilds, above every
+    /// growing user region (heap at `0x1000_0000`, mmap at `0x2000_0000`).
     #[test]
     fn signal_trampoline_va_is_the_reserved_slot() {
         assert_eq!(
@@ -630,7 +630,7 @@ mod tests {
         );
     }
 
-    /// trampoline_words() must emit [mov r7, #81; svc #0] — the whole
+    /// `trampoline_words()` must emit [mov r7, #81; svc #0] — the whole
     /// trampoline, exactly what the ARM writer emits into the page.
     #[test]
     fn trampoline_words_are_mov_then_svc() {
@@ -641,7 +641,7 @@ mod tests {
 
     // --- #446 frame build + restore ---
 
-    /// deliver() must lay out the 17 saved Context words on the user stack
+    /// `deliver()` must lay out the 17 saved Context words on the user stack
     /// and rewrite the trap frame to enter the handler with the frame as its
     /// stack, r0 = the signum, and lr = the RX trampoline page.
     #[test]
@@ -687,7 +687,7 @@ mod tests {
         }
     }
 
-    /// sigreturn_frame() must restore all 17 saved registers into the SVC
+    /// `sigreturn_frame()` must restore all 17 saved registers into the SVC
     /// trap frame, resuming the interrupted context exactly.
     #[test]
     fn sigreturn_frame_restores_interrupted_context() {

@@ -422,7 +422,7 @@ pub(crate) enum SecureBootDecision {
 ///
 /// - `Present` + valid signature: proceed, trusted.
 /// - `Present` + anything else: halt (fail closed).
-/// - `Absent` (no boot medium): proceed UNTRUSTED — secure_boot_ok stays
+/// - `Absent` (no boot medium): proceed UNTRUSTED — `secure_boot_ok` stays
 ///   false and every downstream trust gate (LFS mount, passphrase,
 ///   encrypted mount, audit key, persistent userspace) stays locked.
 pub(crate) fn evaluate_boot_image(source: &BootImageSource<'_>) -> SecureBootDecision {
@@ -862,7 +862,7 @@ mod tests {
         );
     }
 
-    /// Test split_image correctly separates payload and signature.
+    /// Test `split_image` correctly separates payload and signature.
     #[test]
     fn split_image_correct() {
         let mut image = [0u8; 128];
@@ -962,7 +962,7 @@ mod tests {
         );
     }
 
-    /// Test that an image shorter than MIN_IMAGE_SIZE is rejected by
+    /// Test that an image shorter than `MIN_IMAGE_SIZE` is rejected by
     /// [`verify_combined_image`] before any signature verification.
     #[test]
     fn combined_image_too_short_fails() {
@@ -974,7 +974,7 @@ mod tests {
         );
     }
 
-    /// Test Display impl for SecureBootError.
+    /// Test Display impl for `SecureBootError`.
     #[test]
     fn error_display() {
         let msg = SecureBootError::ImageTooShort.to_string();

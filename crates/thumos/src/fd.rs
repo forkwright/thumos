@@ -17,7 +17,7 @@
 //!
 //! WHY fixed-size: avoids heap allocation in the fd tables, keeps the
 //! structures predictable for a bare-metal kernel. 256 per-process fds and
-//! 256 system-wide OFDs suffice for a BusyBox shell + init + concurrent
+//! 256 system-wide OFDs suffice for a `BusyBox` shell + init + concurrent
 //! processes.
 
 extern crate alloc;
@@ -74,9 +74,9 @@ pub(crate) const ENOTTY: u32 = 0u32.wrapping_sub(25);
 
 /// Duplicate fd to lowest available >= arg.
 pub(crate) const F_DUPFD: u32 = 0;
-/// Get per-fd flags (FD_CLOEXEC).
+/// Get per-fd flags (`FD_CLOEXEC`).
 pub(crate) const F_GETFD: u32 = 1;
-/// Set per-fd flags (FD_CLOEXEC).
+/// Set per-fd flags (`FD_CLOEXEC`).
 pub(crate) const F_SETFD: u32 = 2;
 /// Get file descriptor flags.
 pub(crate) const F_GETFL: u32 = 3;
@@ -92,9 +92,9 @@ pub(crate) const O_APPEND: u32 = 0x400;
 /// Close-on-exec open flag (Linux ARM 0o2000000). Recorded on the per-fd
 /// entry and stripped from the OFD status flags at open (POSIX: it is an
 /// fd flag, not a file-status flag).
-pub(crate) const O_CLOEXEC: u32 = 0o2000000;
-/// Mask for access mode bits (O_RDONLY | O_WRONLY | O_RDWR).
-/// WHY: these bits are immutable after open; F_SETFL must not modify them.
+pub(crate) const O_CLOEXEC: u32 = 0o2_000_000;
+/// Mask for access mode bits (`O_RDONLY` | `O_WRONLY` | `O_RDWR`).
+/// WHY: these bits are immutable after open; `F_SETFL` must not modify them.
 pub(crate) const O_ACCMODE: u32 = 0o3;
 
 /// Seek whence constants (POSIX).
@@ -104,12 +104,12 @@ pub(crate) const SEEK_CUR: u32 = 1;
 /// Seek from end of file.
 pub(crate) const SEEK_END: u32 = 2;
 
-/// File type constants for StatBuf.
-pub(crate) const S_IFREG: u32 = 0o100000;
+/// File type constants for `StatBuf`.
+pub(crate) const S_IFREG: u32 = 0o100_000;
 /// Directory file type.
-pub(crate) const S_IFDIR: u32 = 0o040000;
+pub(crate) const S_IFDIR: u32 = 0o040_000;
 /// Character device file type.
-pub(crate) const S_IFCHR: u32 = 0o020000;
+pub(crate) const S_IFCHR: u32 = 0o020_000;
 
 /// Stat buffer written to userspace.
 ///
@@ -121,7 +121,7 @@ pub(crate) const S_IFCHR: u32 = 0o020000;
 pub struct StatBuf {
     /// File size in bytes.
     pub size: u32,
-    /// File type (S_IFREG, S_IFDIR, S_IFCHR).
+    /// File type (`S_IFREG`, `S_IFDIR`, `S_IFCHR`).
     pub file_type: u32,
 }
 
@@ -139,13 +139,13 @@ pub struct StatBuf {
 /// (see `pipe.rs`/`socket.rs`). `mount_idx` and `inode_id` are unused there.
 #[derive(Clone, Copy)]
 pub struct FileDescriptor {
-    /// Index into the global MountTable identifying the filesystem.
+    /// Index into the global `MountTable` identifying the filesystem.
     pub mount_idx: u8,
     /// Inode ID within the filesystem.
     pub inode_id: u32,
     /// Current read/write position within the file.
     pub offset: usize,
-    /// Open flags (O_RDONLY, O_WRONLY, O_RDWR, pipe encoding, etc.).
+    /// Open flags (`O_RDONLY`, `O_WRONLY`, `O_RDWR`, pipe encoding, etc.).
     pub flags: u32,
 }
 
@@ -195,7 +195,7 @@ impl FileDescriptor {
     }
 }
 
-/// One per-process fd slot: the OFD it names plus the per-fd FD_CLOEXEC
+/// One per-process fd slot: the OFD it names plus the per-fd `FD_CLOEXEC`
 /// flag.
 ///
 /// INVARIANT: `cloexec` lives on the fd entry, never on the shared OFD --
@@ -250,7 +250,7 @@ impl FdTable {
     }
 
     /// Allocate the lowest available file descriptor slot >= `min_fd`
-    /// (F_DUPFD). Returns the fd number, or None if no slot is available.
+    /// (`F_DUPFD`). Returns the fd number, or None if no slot is available.
     pub(crate) fn alloc_from(&mut self, min_fd: usize, entry: FdEntry) -> Option<usize> {
         if min_fd >= MAX_FDS {
             return None;
@@ -358,7 +358,7 @@ pub(crate) fn ofd_ref(idx: u16) {
 /// Drop one reference to an OFD; at zero, free the slot and run kind
 /// teardown (pipe EOF accounting, socket release).
 ///
-/// WHY teardown here and not in sys_close: with dup and fork a close no
+/// WHY teardown here and not in `sys_close`: with dup and fork a close no
 /// longer implies the description is dead -- pipe close-notification and
 /// socket release are correct only at refcount zero.
 pub(crate) fn ofd_unref(idx: u16) {
@@ -401,7 +401,7 @@ pub(crate) fn current_fd_flags(fd: usize) -> Option<u32> {
     ofds.get(usize::from(idx))?.as_ref().map(|o| o.desc.flags)
 }
 
-/// fork() (#267): copy a parent fd table for the child, bumping each
+/// `fork()` (#267): copy a parent fd table for the child, bumping each
 /// entry's OFD refcount. Each fd entry is one reference, so a dup'd pair
 /// in the parent bumps its OFD twice -- exactly matching the two entries
 /// the child receives.
@@ -426,7 +426,7 @@ pub(crate) fn close_all(table: &mut FdTable) {
     }
 }
 
-/// execve (#267): close every fd with FD_CLOEXEC set. Called only after
+/// execve (#267): close every fd with `FD_CLOEXEC` set. Called only after
 /// the last execve failure point (POSIX: fds close on SUCCESSFUL exec).
 pub(crate) fn close_cloexec(table: &mut FdTable) {
     for slot in table.entries.iter_mut() {
@@ -702,7 +702,7 @@ pub unsafe fn ramfs_find(path: &str) -> Option<&'static [u8]> {
 
 // -- Syscall implementation functions --
 
-/// SYS_open: open a file by path.
+/// `SYS_open`: open a file by path.
 ///
 /// # Arguments
 /// - `path_ptr`: userspace pointer to the path string
@@ -774,7 +774,7 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
     }
 }
 
-/// SYS_read: read bytes from an open file descriptor.
+/// `SYS_read`: read bytes from an open file descriptor.
 ///
 /// # Arguments
 /// - `fd`: file descriptor number
@@ -846,7 +846,7 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     }
 }
 
-/// SYS_write: write bytes to an open file descriptor.
+/// `SYS_write`: write bytes to an open file descriptor.
 ///
 /// # Arguments
 /// - `fd`: file descriptor number
@@ -915,7 +915,7 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     }
 }
 
-/// SYS_close: close an open file descriptor.
+/// `SYS_close`: close an open file descriptor.
 ///
 /// # Arguments
 /// - `fd`: file descriptor number
@@ -936,12 +936,12 @@ pub(crate) fn sys_close(fd: u32) -> u32 {
     }
 }
 
-/// SYS_stat: get file status by path.
+/// `SYS_stat`: get file status by path.
 ///
 /// # Arguments
 /// - `path_ptr`: userspace pointer to the path string
 /// - `path_len`: length of the path string
-/// - `stat_buf_ptr`: userspace pointer to a StatBuf
+/// - `stat_buf_ptr`: userspace pointer to a `StatBuf`
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
@@ -1012,11 +1012,11 @@ pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
     0
 }
 
-/// SYS_fstat: get file status by file descriptor.
+/// `SYS_fstat`: get file status by file descriptor.
 ///
 /// # Arguments
 /// - `fd`: file descriptor number
-/// - `stat_buf_ptr`: userspace pointer to a StatBuf
+/// - `stat_buf_ptr`: userspace pointer to a `StatBuf`
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
@@ -1110,12 +1110,12 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
     0
 }
 
-/// SYS_lseek: reposition the file offset.
+/// `SYS_lseek`: reposition the file offset.
 ///
 /// # Arguments
 /// - `fd`: file descriptor number
 /// - `offset`: offset value (interpreted based on whence)
-/// - `whence`: SEEK_SET (0), SEEK_CUR (1), or SEEK_END (2)
+/// - `whence`: `SEEK_SET` (0), `SEEK_CUR` (1), or `SEEK_END` (2)
 ///
 /// # Returns
 /// New file offset on success, negative error code on failure.
@@ -1172,7 +1172,7 @@ pub(crate) fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
     new_pos_u32
 }
 
-/// SYS_dup: duplicate a file descriptor.
+/// `SYS_dup`: duplicate a file descriptor.
 ///
 /// # Arguments
 /// - `fd`: file descriptor to duplicate
@@ -1204,7 +1204,7 @@ pub(crate) fn sys_dup(fd: u32) -> u32 {
     }
 }
 
-/// SYS_dup2: duplicate a file descriptor to a specific number.
+/// `SYS_dup2`: duplicate a file descriptor to a specific number.
 ///
 /// # Arguments
 /// - `oldfd`: source file descriptor
@@ -1256,7 +1256,7 @@ pub(crate) fn sys_dup2(oldfd: u32, newfd: u32) -> u32 {
     }
 }
 
-/// SYS_fcntl: file descriptor control.
+/// `SYS_fcntl`: file descriptor control.
 ///
 /// Supports:
 /// - `F_GETFL` (3): return the fd's flags.
@@ -1266,7 +1266,7 @@ pub(crate) fn sys_dup2(oldfd: u32, newfd: u32) -> u32 {
 ///
 /// # Arguments
 /// - `fd`: file descriptor number
-/// - `cmd`: fcntl command (F_DUPFD, F_GETFL, F_SETFL)
+/// - `cmd`: fcntl command (`F_DUPFD`, `F_GETFL`, `F_SETFL`)
 /// - `arg`: command-specific argument
 ///
 /// # Returns
@@ -1352,7 +1352,7 @@ pub(crate) fn sys_fcntl(fd: u32, cmd: u32, arg: u32) -> u32 {
     }
 }
 
-/// SYS_ioctl: device-specific control operations.
+/// `SYS_ioctl`: device-specific control operations.
 ///
 /// Currently returns `ENOTTY` for all file descriptors. This establishes
 /// the dispatch path for future device-specific ioctl support.
@@ -1375,7 +1375,7 @@ pub(crate) fn sys_ioctl(fd: u32, _request: u32, _arg: u32) -> u32 {
     }
 }
 
-/// SYS_getcwd: get current working directory.
+/// `SYS_getcwd`: get current working directory.
 ///
 /// # Arguments
 /// - `buf_ptr`: userspace buffer
@@ -1418,7 +1418,7 @@ pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
     0
 }
 
-/// SYS_mkdir: create a directory at the given path.
+/// `SYS_mkdir`: create a directory at the given path.
 ///
 /// Resolves the parent directory from the path, then calls
 /// `Filesystem::create()` with `InodeType::Directory`.
@@ -1486,7 +1486,7 @@ pub(crate) fn vfs_mkdir(path: &str) -> u32 {
     }
 }
 
-/// SYS_unlink: remove a file or directory entry.
+/// `SYS_unlink`: remove a file or directory entry.
 ///
 /// # Arguments
 /// - `path_ptr`: userspace pointer to the path string
@@ -1548,7 +1548,7 @@ pub(crate) fn vfs_unlink(path: &str) -> u32 {
     }
 }
 
-/// SYS_chdir: change the current working directory.
+/// `SYS_chdir`: change the current working directory.
 ///
 /// # Arguments
 /// - `path_ptr`: userspace pointer to the path string
@@ -1615,7 +1615,7 @@ pub(crate) fn vfs_chdir(path: &str) -> u32 {
     0
 }
 
-/// Split a path into (parent_path, final_component).
+/// Split a path into (`parent_path`, `final_component`).
 ///
 /// Returns `None` for paths without a valid split (empty, root-only).
 fn split_parent_name(path: &str) -> Option<(&str, &str)> {
@@ -1896,7 +1896,7 @@ mod tests {
         assert_eq!(fd, 0, "first open should return fd 0");
     }
 
-    /// #222: repeated ramfs_find on the same file must reuse the cached
+    /// #222: repeated `ramfs_find` on the same file must reuse the cached
     /// leak, not allocate a fresh copy on every call.
     #[test]
     fn ramfs_find_caches_repeated_lookups() {
@@ -2236,7 +2236,7 @@ mod tests {
         assert_eq!(result, EBADF);
     }
 
-    /// #249: a genuine fs.stat() failure (bogus inode) must propagate a
+    /// #249: a genuine `fs.stat()` failure (bogus inode) must propagate a
     /// non-zero errno, not a fabricated zeroed success stat.
     #[cfg(target_pointer_width = "32")]
     #[test]
@@ -2945,7 +2945,7 @@ mod tests {
         );
     }
 
-    /// FORK-SHARES-OFFSET: fork() copies the fd table, but the copied entry
+    /// FORK-SHARES-OFFSET: `fork()` copies the fd table, but the copied entry
     /// still names the SAME OFD as the parent -- one shared byte offset, per
     /// POSIX. A close in the parent must not affect the child's reference
     /// (the OFD lives until the LAST reference is gone).
@@ -3007,7 +3007,7 @@ mod tests {
         assert_eq!(&*buf3, b"s!");
     }
 
-    /// OPEN-AFTER-FORK-INDEPENDENT: a fresh open() in the child (even of the
+    /// OPEN-AFTER-FORK-INDEPENDENT: a fresh `open()` in the child (even of the
     /// SAME path) allocates a brand-new OFD at offset 0 -- it does not
     /// alias the parent's inherited, already-advanced descriptor.
     #[cfg(target_pointer_width = "32")]
@@ -3068,7 +3068,7 @@ mod tests {
 
     /// CWD-PER-PROCESS (#437): a chdir in one process never leaks into
     /// another, and fork inherits the parent's cwd (POSIX) — replacing the
-    /// old global CWD_BUF/CWD_LEN statics where every process shared one cwd.
+    /// old global `CWD_BUF/CWD_LEN` statics where every process shared one cwd.
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn chdir_is_per_process_and_fork_inherits() {
@@ -3111,7 +3111,7 @@ mod tests {
         crate::process::set_current_cwd("/");
     }
 
-    /// CWD-GETCWD-SYSCALL (#437): sys_getcwd reports the CURRENT process's
+    /// CWD-GETCWD-SYSCALL (#437): `sys_getcwd` reports the CURRENT process's
     /// cwd, not a shared global — after the child chdirs, parent and child
     /// read different paths from the same syscall.
     #[cfg(target_pointer_width = "32")]
@@ -3154,8 +3154,8 @@ mod tests {
         crate::process::set_current_cwd("/");
     }
 
-    /// CLOSE-ON-EXEC: `close_cloexec` sweeps ONLY fds marked FD_CLOEXEC
-    /// (whether set at open() via O_CLOEXEC or later via F_SETFD) and
+    /// CLOSE-ON-EXEC: `close_cloexec` sweeps ONLY fds marked `FD_CLOEXEC`
+    /// (whether set at `open()` via `O_CLOEXEC` or later via `F_SETFD`) and
     /// leaves plain fds untouched; a dup of a cloexec fd never inherits the
     /// flag (POSIX).
     #[cfg(target_pointer_width = "32")]
@@ -3267,7 +3267,7 @@ mod tests {
 
     /// DUP-SHARES-OFD: reading via the DUP advances the ORIGINAL's shared
     /// offset (the reverse direction from `dup_shares_offset_with_original`
-    /// above), and F_SETFL(O_APPEND) through one fd is visible through the
+    /// above), and `F_SETFL(O_APPEND)` through one fd is visible through the
     /// other -- both fds name one OFD's status flags, not a private copy.
     #[cfg(target_pointer_width = "32")]
     #[test]

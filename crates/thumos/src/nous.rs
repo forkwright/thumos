@@ -209,7 +209,7 @@ impl CapabilitySet {
 
     /// Whether any autonomous-class grant exists -- the new-model meaning
     /// of "can auto-execute" (#552). Auto-execution is per-capability
-    /// (SendMessagesAutonomous, ModifyContactsAutonomous), never a rank.
+    /// (`SendMessagesAutonomous`, `ModifyContactsAutonomous`), never a rank.
     #[must_use]
     pub(crate) const fn can_auto_execute(&self) -> bool {
         const AUTO_BITS: u32 = (1 << NousCapability::SendMessagesAutonomous as u32)
@@ -244,15 +244,15 @@ pub enum CapabilityPreset {
     /// + read contacts metadata, draft messages.
     Assistant = 2,
     /// + read messages (metadata and content), read calendar, draft
-    /// calendar events. Design-reading note (#552): the design table's
-    /// "Read messages" spans both message rows -- granting content without
-    /// metadata would be incoherent for an advisor.
+    ///   calendar events. Design-reading note (#552): the design table's
+    ///   "Read messages" spans both message rows -- granting content without
+    ///   metadata would be incoherent for an advisor.
     Advisor = 3,
     /// + send messages with confirmation, modify contacts with confirmation.
     Agent = 4,
     /// + send messages autonomously per rules, modify contacts
-    /// autonomously. Reachable ONLY via an explicit opt-in confirmation --
-    /// never by cycling (#552).
+    ///   autonomously. Reachable ONLY via an explicit opt-in confirmation --
+    ///   never by cycling (#552).
     Autonomous = 5,
     /// A custom set matching no preset exactly.
     Custom = 6,
@@ -415,7 +415,7 @@ pub(crate) struct ActionRequirement {
 /// Mapping notes (the design has no rows for these; flagged for operator
 /// review): `open_dialer`, `start_timer`, `set_alarm`, `open_feature` are
 /// low-risk device/UI actions bound to the draft class with Always-confirm;
-/// `scan_start` is an observation action bound to ReadState;
+/// `scan_start` is an observation action bound to `ReadState`;
 /// `add_safe_network` modifies a security-adjacent allowlist and binds to
 /// the mode-confirmation class (Always-confirm, every time).
 #[must_use]
@@ -485,7 +485,7 @@ pub(crate) struct AuditReceipt {
     pub(crate) action: String,
     /// The capability the action required (when known).
     pub(crate) required: Option<NousCapability>,
-    /// The decision, rendered ("granted", "requires_confirmation",
+    /// The decision, rendered ("granted", "`requires_confirmation`",
     /// "denied:<reason>").
     pub(crate) decision: String,
 }
@@ -515,8 +515,8 @@ pub(crate) const MAX_RECEIPTS: usize = 64;
 /// regardless of grants -- the adversarial proof that no preset, custom
 /// map, or runtime path reaches panic/wipe/security-disable/keys/SIGINT
 /// (#552). Matching is defense-in-depth: these strings are not in the
-/// binding table, so they would already deny as UnknownAction; the
-/// KernelNever reason makes the boundary explicit in the receipt.
+/// binding table, so they would already deny as `UnknownAction`; the
+/// `KernelNever` reason makes the boundary explicit in the receipt.
 const NEVER_ACTIONS: &[&str] = &[
     "wipe",
     "wipe_device",

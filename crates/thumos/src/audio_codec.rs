@@ -7,25 +7,25 @@
 //! ## Hardware path
 //!
 //! The MT6357 PMIC is accessed via the PMIC wrapper bus (PWRAP) on the
-//! MT6739 SoC.  Register writes go through PWRAP MMIO at `0x1000_D000`,
+//! MT6739 `SoC`.  Register writes go through PWRAP MMIO at `0x1000_D000`,
 //! which bridges to the PMIC I2C/SPI bus.
 //!
 //! ## PMIC audio register map (MT6357)
 //!
 //! | Register           | Offset   | Purpose                              |
 //! |--------------------|----------|--------------------------------------|
-//! | AUD_TOP_CON0       | 0x2000   | Audio top-level power control        |
-//! | AFE_UL_DL_CON0     | 0x2004   | UL/DL path enable                   |
-//! | AFE_DL_CON0        | 0x2008   | Downlink (DAC) control               |
-//! | AFE_UL_CON0        | 0x200C   | Uplink (ADC) control                 |
-//! | AFE_DL_GAIN        | 0x2010   | DAC digital gain (volume)            |
-//! | AFE_UL_GAIN        | 0x2014   | ADC digital gain                     |
-//! | AUDDEC_ANA_CON0    | 0x2080   | Decoder analog control 0 (HPL/HPR)   |
-//! | AUDDEC_ANA_CON1    | 0x2084   | Decoder analog control 1 (earpiece)  |
-//! | AUDDEC_ANA_CON6    | 0x2098   | Decoder analog control 6 (speaker)   |
-//! | AUDENC_ANA_CON0    | 0x20C0   | Encoder analog control (mic preamp)  |
-//! | AUDENC_ANA_CON9    | 0x20E4   | Mic bias voltage control             |
-//! | AUD_TOP_LDO_CON0   | 0x2100   | Audio LDO enable                    |
+//! | `AUD_TOP_CON0`       | 0x2000   | Audio top-level power control        |
+//! | `AFE_UL_DL_CON0`     | 0x2004   | UL/DL path enable                   |
+//! | `AFE_DL_CON0`        | 0x2008   | Downlink (DAC) control               |
+//! | `AFE_UL_CON0`        | 0x200C   | Uplink (ADC) control                 |
+//! | `AFE_DL_GAIN`        | 0x2010   | DAC digital gain (volume)            |
+//! | `AFE_UL_GAIN`        | 0x2014   | ADC digital gain                     |
+//! | `AUDDEC_ANA_CON0`    | 0x2080   | Decoder analog control 0 (HPL/HPR)   |
+//! | `AUDDEC_ANA_CON1`    | 0x2084   | Decoder analog control 1 (earpiece)  |
+//! | `AUDDEC_ANA_CON6`    | 0x2098   | Decoder analog control 6 (speaker)   |
+//! | `AUDENC_ANA_CON0`    | 0x20C0   | Encoder analog control (mic preamp)  |
+//! | `AUDENC_ANA_CON9`    | 0x20E4   | Mic bias voltage control             |
+//! | `AUD_TOP_LDO_CON0`   | 0x2100   | Audio LDO enable                    |
 //!
 //! These offsets are within the PMIC register space; actual access goes
 //! through PWRAP at `PWRAP_BASE + offset`.
@@ -96,40 +96,40 @@ const AUD_TOP_LDO_CON0: u16 = 0x2100;
 // Register bit definitions
 // ---------------------------------------------------------------------------
 
-/// AUD_TOP_CON0: audio subsystem power-on bit.
+/// `AUD_TOP_CON0`: audio subsystem power-on bit.
 const AUD_TOP_POWER_ON: u32 = 1 << 0;
 
-/// AUD_TOP_LDO_CON0: audio LDO enable bit.
+/// `AUD_TOP_LDO_CON0`: audio LDO enable bit.
 const AUD_LDO_ENABLE: u32 = 1 << 0;
 
-/// AFE_UL_DL_CON0: downlink path enable.
+/// `AFE_UL_DL_CON0`: downlink path enable.
 const AFE_DL_EN: u32 = 1 << 0;
 
-/// AFE_UL_DL_CON0: uplink path enable.
+/// `AFE_UL_DL_CON0`: uplink path enable.
 const AFE_UL_EN: u32 = 1 << 1;
 
-/// AFE_DL_CON0: DAC enable bit.
+/// `AFE_DL_CON0`: DAC enable bit.
 const DAC_ENABLE: u32 = 1 << 0;
 
-/// AFE_UL_CON0: ADC enable bit.
+/// `AFE_UL_CON0`: ADC enable bit.
 const ADC_ENABLE: u32 = 1 << 0;
 
-/// AUDDEC_ANA_CON0: headphone left amplifier enable.
+/// `AUDDEC_ANA_CON0`: headphone left amplifier enable.
 const HPL_AMP_EN: u32 = 1 << 0;
 
-/// AUDDEC_ANA_CON0: headphone right amplifier enable.
+/// `AUDDEC_ANA_CON0`: headphone right amplifier enable.
 const HPR_AMP_EN: u32 = 1 << 1;
 
-/// AUDDEC_ANA_CON1: earpiece receiver amplifier enable.
+/// `AUDDEC_ANA_CON1`: earpiece receiver amplifier enable.
 const EARPIECE_AMP_EN: u32 = 1 << 0;
 
-/// AUDDEC_ANA_CON6: loudspeaker amplifier enable.
+/// `AUDDEC_ANA_CON6`: loudspeaker amplifier enable.
 const SPEAKER_AMP_EN: u32 = 1 << 0;
 
-/// AUDENC_ANA_CON0: mic preamp enable.
+/// `AUDENC_ANA_CON0`: mic preamp enable.
 const MIC_PREAMP_EN: u32 = 1 << 0;
 
-/// AUDENC_ANA_CON9: mic bias voltage enable.
+/// `AUDENC_ANA_CON9`: mic bias voltage enable.
 const MIC_BIAS_EN: u32 = 1 << 0;
 
 /// Maximum hardware volume level (4-bit, 0-15).
@@ -137,7 +137,7 @@ const MAX_VOLUME: u8 = 15;
 
 /// Volume step in hardware gain units.
 ///
-/// Each step is approximately 1 dB.  The MT6357 AFE_DL_GAIN register
+/// Each step is approximately 1 dB.  The MT6357 `AFE_DL_GAIN` register
 /// uses a 16-bit value; we map 0-15 linearly into the usable range.
 const VOLUME_STEP: u32 = 0x0800;
 
@@ -658,8 +658,8 @@ pub struct MockCodec {
     /// If set, `disable_dac` returns this error.
     pub fail_disable_dac: Option<AudioError>,
     /// If set, `disable_adc` returns this error (#397) -- exercises the
-    /// power_down_mic partial-teardown path (disable_mic_bias succeeds,
-    /// disable_adc fails).
+    /// `power_down_mic` partial-teardown path (`disable_mic_bias` succeeds,
+    /// `disable_adc` fails).
     pub fail_disable_adc: Option<AudioError>,
     /// If set, `power_off` returns this error.
     pub fail_power_off: Option<AudioError>,
@@ -855,7 +855,7 @@ impl AudioCodecOps for MockCodec {
 
 /// A no-op audio codec for qemu (#399). The MT6357 PMIC/PWRAP MMIO is unmodeled
 /// on -machine virt, so the real `Mt6357Codec`'s register writes would
-/// data-abort. `NullCodec` tracks the power/enable/route state the AudioManager
+/// data-abort. `NullCodec` tracks the power/enable/route state the `AudioManager`
 /// session logic reads, but touches no hardware -- so the session / priority /
 /// route state machine runs in emulation. Distinct from the test-only
 /// `MockCodec` (which carries fail-injection knobs).
@@ -948,7 +948,7 @@ impl AudioCodecOps for NullCodec {
     }
 }
 
-/// The codec the booted kernel wires into its AudioManager (#399): the no-op
+/// The codec the booted kernel wires into its `AudioManager` (#399): the no-op
 /// `NullCodec` under qemu/test (no PMIC model on -machine virt), the real
 /// `Mt6357Codec` on device.
 #[cfg(any(feature = "qemu", test))]

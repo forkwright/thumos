@@ -19,7 +19,7 @@
 //! range is zeroed in place — free and in-use alike — via
 //! [`page::zero_usable_range`], which walks physical addresses directly
 //! and performs no heap allocation (#321: the previous alloc_page-then-
-//! free_page loop only reached free frames and could abort via
+//! `free_page` loop only reached free frames and could abort via
 //! `handle_alloc_error` under memory pressure). This is destructive to any
 //! live kernel/user state backed by that range and must be the LAST
 //! action taken before an immediate halt/reboot.
@@ -209,7 +209,7 @@ pub struct WipeResult {
     /// `failed_targets`'s entry for `WipeTarget::Keys`, which reflects
     /// ONLY the on-disk key-file overwrite (defense-in-depth, currently
     /// always fails per #324/#129) -- conflating the two under one bit
-    /// would let a reader mistake "Keys in failed_targets" for "the
+    /// would let a reader mistake "Keys in `failed_targets`" for "the
     /// encryption keys are still recoverable" when the in-memory keys
     /// (the actual protection) are already destroyed. Set inside the
     /// IRQ-masked critical section in Step 1 (finding 15).
@@ -220,7 +220,7 @@ pub struct WipeResult {
     /// slots; unused slots are `None`). WHY (SECURITY, finding 9): the
     /// caller needs to know WHICH category of sensitive data survived an
     /// incomplete wipe, not just how many -- a bare count cannot
-    /// distinguish "WiFi credentials intact" from "message store intact".
+    /// distinguish "`WiFi` credentials intact" from "message store intact".
     pub failed_targets: [Option<WipeTarget>; PANIC_WIPE_TARGET_COUNT],
     /// Whether memory scrub was performed.
     pub memory_scrubbed: bool,

@@ -3,7 +3,7 @@
 //! The ARMv7-A (Cortex-A7) has 7 exception vectors at fixed offsets. We place
 //! the vector table at a known address and install handlers for IRQ (FROM GIC),
 //! SVC (syscalls), and the abort/undef traps. Abort/undef traps from PL0 kill
-//! the faulting process; from PL1 they halt the kernel (see handle_fault).
+//! the faulting process; from PL1 they halt the kernel (see `handle_fault`).
 //!
 //! Vector table layout (ARM ARM B1.8):
 //! Offset 0x00: Reset

@@ -5,7 +5,7 @@
 //! ready process and context-switches to it on each timer tick, swapping
 //! TTBR0 so each process has an independent virtual address space.
 //!
-//! On ARMv7 (#465), a context switch is a FULL trap-frame swap: the exception
+//! On `ARMv7` (#465), a context switch is a FULL trap-frame swap: the exception
 //! stub (exceptions.rs) captures the interrupted register file (r0-r12, banked
 //! sp/lr, resume pc, cpsr) into a `Context` on the handler stack, `switch_to`
 //! copies that into the current PCB and loads the next process's `Context`
@@ -37,7 +37,7 @@ pub enum State {
     Running,
     /// Blocked waiting for an event.
     Blocked,
-    /// Sleeping until wake_tick (set by nanosleep).
+    /// Sleeping until `wake_tick` (set by nanosleep).
     Sleeping,
     /// Terminated, awaiting cleanup.
     Dead,
@@ -72,7 +72,7 @@ const CPSR_MODE_USER: u32 = 0x10;
 /// Kill-vs-halt decision for a fault, from the SAVED CPSR in the trap frame.
 ///
 /// ONLY User mode (0x10) is killable: scheduled processes run at User
-/// (spawn_user/exec) or System (PID 0 + spawn kernel threads), and System-mode
+/// (`spawn_user/exec`) or System (PID 0 + spawn kernel threads), and System-mode
 /// code is kernel code in the kernel address space, so its faults are kernel
 /// bugs. A saved exception mode (SVC/IRQ/ABT/UND/FIQ) means a HANDLER faulted
 /// -- also a kernel bug; ABT/UND halting here is what bounds recursion if the
@@ -96,14 +96,14 @@ pub(crate) fn fault_exit_status(kind: FaultKind) -> i32 {
 }
 
 /// Kill the CURRENT process for `kind`, from abort/undef trap context: notify
-/// PID 0 (Dead + fd drain + IPC, via notify_fault), then run the exit path
-/// (exit_current: resource teardown + trap-frame swap to the successor). On
+/// PID 0 (Dead + fd drain + IPC, via `notify_fault`), then run the exit path
+/// (`exit_current`: resource teardown + trap-frame swap to the successor). On
 /// return the trap frame holds the successor's context and the stub epilogue
 /// exception-returns into it -- the same unwind contract as the Exit syscall.
 ///
-/// INVARIANT: exit_current frees the victim's L1 while TTBR0 still points at
-/// it; safe because free_addr_space only clears a pool bit (tables are zeroed
-/// at ALLOC, not free) and nothing allocates before switch_to's TTBR0 +
+/// INVARIANT: `exit_current` frees the victim's L1 while TTBR0 still points at
+/// it; safe because `free_addr_space` only clears a pool bit (tables are zeroed
+/// at ALLOC, not free) and nothing allocates before `switch_to`'s TTBR0 +
 /// TLBIALL -- the exact pattern the Exit-syscall path already relies on.
 pub(crate) fn fault_exit_current(kind: FaultKind) {
     notify_fault(current_pid(), kind);
@@ -179,18 +179,18 @@ pub struct VmMapping {
     pub start: usize,
     /// Number of 4 KB pages in this mapping.
     pub pages: usize,
-    /// POSIX protection flags (PROT_READ | PROT_WRITE | PROT_EXEC).
+    /// POSIX protection flags (`PROT_READ` | `PROT_WRITE` | `PROT_EXEC`).
     pub prot: u32,
 }
 
 /// Default initial program break for new processes.
-/// WHY: 0x1000_0000 is above device MMIO (0x0-0x2FFF_FFFF) but below DRAM
-/// (0x4000_0000), providing a clean region for the user heap that won't
+/// WHY: `0x1000_0000` is above device MMIO (0x0-0x2FFF_FFFF) but below DRAM
+/// (`0x4000_0000`), providing a clean region for the user heap that won't
 /// conflict with kernel data structures or device mappings.
 pub(crate) const DEFAULT_HEAP_BREAK: usize = 0x1000_0000;
 
 /// Base address for mmap allocations, above the heap region.
-/// WHY: 0x2000_0000 provides 256 MB of VA space for mmap before hitting
+/// WHY: `0x2000_0000` provides 256 MB of VA space for mmap before hitting
 /// the modem region, keeping mmap and brk regions non-overlapping.
 pub(crate) const MMAP_BASE: usize = 0x2000_0000;
 
@@ -200,9 +200,9 @@ pub(crate) struct Process {
     pub pid: Pid,
     pub state: State,
     pub ctx: Context,
-    /// Parent PID, if this process was created via fork().
+    /// Parent PID, if this process was created via `fork()`.
     pub parent: Option<Pid>,
-    /// Exit status SET by exit_with_status() / exit_cleanup().
+    /// Exit status SET by `exit_with_status()` / `exit_cleanup()`.
     pub exit_status: i32,
     /// Physical address of this process's L1 page table.
     /// 0 means "use kernel global L1" (process 0 / kinit).
@@ -223,8 +223,8 @@ pub(crate) struct Process {
     /// UID. A future setuid syscall can lower (but not raise) this value.
     pub uid: u32,
     /// Tick count at which this process should wake from Sleeping state.
-    /// Only meaningful when state == Sleeping. Set by sys_nanosleep;
-    /// the scheduler transitions the process to Ready when ticks() >= wake_tick.
+    /// Only meaningful when state == Sleeping. Set by `sys_nanosleep`;
+    /// the scheduler transitions the process to Ready when `ticks()` >= `wake_tick`.
     pub wake_tick: u64,
     /// Capability bitfield: which sensitive kernel operations this process may
     /// invoke. kinit (PID 0) holds ALL capabilities. Forked children inherit a
@@ -382,7 +382,7 @@ pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
     }
 }
 
-/// Map a loaded ELF's PT_LOAD segments PL0-accessible at their identity VAs in
+/// Map a loaded ELF's `PT_LOAD` segments PL0-accessible at their identity VAs in
 /// process page table `pt`, with W^X page permissions from each segment's ELF
 /// flags (#482): text RX, rodata RO+XN, data/bss RW+XN. Fails closed on an
 /// unaligned segment vaddr (a page would carry two permission classes) or
@@ -476,24 +476,24 @@ unsafe fn map_signal_trampoline(pt: usize) -> Option<usize> {
 /// No-op trampoline mapping for non-ARM (host test) builds: host page frames
 /// are simulated addresses — never dereference-able — and fork's deep-copy
 /// walk WOULD deref every user page's phys, so mapping a simulated frame
-/// here segfaults the host fork tests. The map_page/shatter composition is
+/// here segfaults the host fork tests. The `map_page/shatter` composition is
 /// host-covered in mmu.rs's own tests; the real grant is covered end-to-end
-/// by the QEMU signal witness. `Some(0)` keeps spawn_user's rollback shape
-/// (free_page validates allocator range, so 0 is a safe no-op there).
+/// by the QEMU signal witness. `Some(0)` keeps `spawn_user`'s rollback shape
+/// (`free_page` validates allocator range, so 0 is a safe no-op there).
 #[cfg(not(target_arch = "arm"))]
 unsafe fn map_signal_trampoline(_pt: usize) -> Option<usize> {
     Some(0)
 }
 
 /// Drop the PL0 grant on `pages` frames from `base` in `pt`: rewrite each L2
-/// entry back to the identity KERNEL_DEFAULT_PAGE (PL1-only, #489). NOT
-/// unmap_page (zeroing an entry inside a shattered identity MB would fault the
-/// kernel on its next access there), and NOT reset_shattered_section for a
+/// entry back to the identity `KERNEL_DEFAULT_PAGE` (PL1-only, #489). NOT
+/// `unmap_page` (zeroing an entry inside a shattered identity MB would fault the
+/// kernel on its next access there), and NOT `reset_shattered_section` for a
 /// stack (old and new exec stacks can share an allocator MB, so a whole-MB
 /// reset would revoke the new stack's grants). The caller flushes the TLB.
 ///
 /// # Safety
-/// `pt` is a caller-owned L1; each VA was granted via map_user_stack/image.
+/// `pt` is a caller-owned L1; each VA was granted via `map_user_stack/image`.
 unsafe fn revoke_user_pages(pt: usize, base: usize, pages: usize) {
     for i in 0..pages {
         let va = base + i * page::PAGE_SIZE;
@@ -523,7 +523,7 @@ unsafe fn revoke_user_pages(pt: usize, base: usize, pages: usize) {
 /// run is orphaned for the rest of the boot: there is no PCB and no page table
 /// left that could ever reclaim it.
 ///
-/// WHY this matters now (#492): spawn_user used to be called only by kinit's
+/// WHY this matters now (#492): `spawn_user` used to be called only by kinit's
 /// one-shot boot spawns, where a full process table / exhausted address-space
 /// pool is not a realistic condition. The fault supervisor relaunches a
 /// crash-looping service through the same path repeatedly, so a leak per
@@ -618,14 +618,14 @@ pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
 
 /// Free every PL0-mapped frame of `pt` back to the allocator (#478).
 ///
-/// `try_free_page`'s own validation makes this exact: a spawn_user image at
-/// USER_TEXT_BASE lies OUTSIDE the allocator range (kinit passes USER_TEXT_BASE
+/// `try_free_page`'s own validation makes this exact: a `spawn_user` image at
+/// `USER_TEXT_BASE` lies OUTSIDE the allocator range (kinit passes `USER_TEXT_BASE`
 /// as the upper bound) and is rejected as a no-op, while fork-copied image
 /// pages, stack backing, and heap/mmap frames are allocator pages freed exactly
 /// once. Ownership derives from the page table, not a separate record.
 ///
 /// # Safety
-/// `pt` is a valid L1; the current TTBR0 must be the KERNEL table (try_free_page
+/// `pt` is a valid L1; the current TTBR0 must be the KERNEL table (`try_free_page`
 /// zeroes the frame through the live TTBR0, so a user-remapped VA would alias).
 unsafe fn free_user_pages(pt: usize) {
     // SAFETY: caller guarantees pt valid + kernel TTBR0; try_free_page validates
@@ -775,14 +775,14 @@ unsafe fn fork_pl0(
 /// Create a child process (POSIX fork).
 ///
 /// A PL0 (userspace) parent gets a fresh ISOLATED address space with its user
-/// pages deep-copied (#478, fork_pl0). A PL1 parent (PID 0 / spawn kernel
+/// pages deep-copied (#478, `fork_pl0`). A PL1 parent (PID 0 / spawn kernel
 /// threads / host tests) takes the legacy path: shallow L1 clone + fresh
 /// translated stack (correct because kernel threads share the kernel identity
 /// map and their stacks are sections, not L2 mappings).
 ///
-/// NOTE: unlike POSIX fork(), both parent and child continue FROM the next
+/// NOTE: unlike POSIX `fork()`, both parent and child continue FROM the next
 /// scheduler tick; the child resumes at the fork return (its ctx is seeded from
-/// the live trap frame) with r0 = 0, the parent with r0 = child_pid.
+/// the live trap frame) with r0 = 0, the parent with r0 = `child_pid`.
 pub(crate) fn fork() -> Option<Pid> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. addr_of_mut! avoids intermediate references to static mut.
@@ -1031,11 +1031,11 @@ pub(crate) fn waitpid(child_pid: Pid) -> Option<i32> {
 /// free pool; returns the count reaped.
 ///
 /// WHY (#491 review): a fault-killed process is marked Dead by the abort
-/// handler (fault_exit_current), but its PCB slot is only reclaimed by waitpid,
+/// handler (`fault_exit_current`), but its PCB slot is only reclaimed by waitpid,
 /// which is otherwise reachable only via the SVC Waitpid syscall. The kardia
 /// service loop (PID 0, the parent of every spawned process) calls this each
 /// tick so a fault-killed slot does not leak -- without it the process table
-/// monotonically exhausts at MAX_PROCS after repeated user faults, and every
+/// monotonically exhausts at `MAX_PROCS` after repeated user faults, and every
 /// subsequent spawn/fork silently fails while the kernel still appears alive.
 /// Scan-based (not fault-inbox-driven) so it reaps every Dead child even if the
 /// fault notification was dropped on a full inbox, and without consuming any
@@ -1218,7 +1218,7 @@ pub(crate) fn current_pid() -> Pid {
 ///
 /// Used by the power governor to decide how many cores to keep active.
 /// Called from the timer IRQ handler with interrupts disabled — safe to
-/// read PROCS without a lock on single-core ARMv7.
+/// read PROCS without a lock on single-core `ARMv7`.
 pub(crate) fn runnable_count() -> usize {
     // SAFETY: called from timer IRQ handler (single-core, IRQs disabled).
     // addr_of! avoids an intermediate reference to the static mut.
@@ -1235,7 +1235,7 @@ pub(crate) fn runnable_count() -> usize {
 /// Simple round-robin scheduler. Called FROM the timer tick handler.
 /// Returns the PID to switch to (may be the same as current).
 ///
-/// Also wakes any Sleeping processes whose wake_tick has been reached,
+/// Also wakes any Sleeping processes whose `wake_tick` has been reached,
 /// transitioning them to Ready so they can be scheduled next tick.
 pub(crate) fn schedule() -> Pid {
     // SAFETY: called from the timer IRQ handler with interrupts disabled on
@@ -1343,10 +1343,10 @@ pub(crate) fn set_trap_return(val: u32) {
 ///
 /// Serves BOTH the preemptive (timer IRQ) and cooperative (Yield/Exit/futex,
 /// from SVC) paths -- both enter through an exception stub that established
-/// ACTIVE_FRAME.
+/// `ACTIVE_FRAME`.
 ///
 /// # Safety
-/// Must be called from trap context (ACTIVE_FRAME live) with interrupts masked.
+/// Must be called from trap context (`ACTIVE_FRAME` live) with interrupts masked.
 pub unsafe fn switch_to(next_pid: Pid) {
     // SAFETY: trap context; PROCS/CURRENT are accessed with interrupts masked
     // and no concurrent access on this single core.
@@ -1395,9 +1395,9 @@ pub unsafe fn switch_to(next_pid: Pid) {
 
 /// Run `f` on the CURRENT process's fd table (#267). Returns None (fail
 /// closed) when the current PCB slot is absent -- fd syscalls map that to
-/// EBADF, matching the current_uid() posture (#282).
+/// EBADF, matching the `current_uid()` posture (#282).
 ///
-/// INVARIANT: `f` must not re-enter process:: accessors -- PROCS is
+/// INVARIANT: `f` must not re-enter `process::` accessors -- PROCS is
 /// mutably borrowed for the duration of the closure.
 pub(crate) fn with_current_fds<R>(f: impl FnOnce(&mut crate::fd::FdTable) -> R) -> Option<R> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
@@ -1413,7 +1413,7 @@ pub(crate) fn with_current_fds<R>(f: impl FnOnce(&mut crate::fd::FdTable) -> R) 
 /// Read the current process's working directory (#437). `f` receives the path
 /// bytes (length `cwd_len`). Returns None when there is no current process.
 ///
-/// INVARIANT: as with_current_fds — `f` must not re-enter process:: accessors.
+/// INVARIANT: as `with_current_fds` — `f` must not re-enter `process::` accessors.
 pub(crate) fn with_current_cwd<R>(f: impl FnOnce(&[u8]) -> R) -> Option<R> {
     // SAFETY: current process PCB pointer is valid; read-only access to the
     // current PCB's cwd via addr_of_mut! (no mutation of PROCS itself).
@@ -1424,7 +1424,7 @@ pub(crate) fn with_current_cwd<R>(f: impl FnOnce(&[u8]) -> R) -> Option<R> {
     }
 }
 
-/// Set the current process's working directory (#437), truncating to CWD_MAX.
+/// Set the current process's working directory (#437), truncating to `CWD_MAX`.
 /// Returns None when there is no current process.
 pub(crate) fn set_current_cwd(path: &str) -> Option<()> {
     // SAFETY: current process PCB pointer is valid; mutation via addr_of_mut!,
@@ -1607,9 +1607,9 @@ pub(crate) fn current_capabilities() -> u32 {
     }
 }
 
-/// Set the current process's wake_tick and transition it to Sleeping.
+/// Set the current process's `wake_tick` and transition it to Sleeping.
 ///
-/// Called by sys_nanosleep after computing the target tick count.
+/// Called by `sys_nanosleep` after computing the target tick count.
 /// The scheduler will transition this process back to Ready when
 /// `exceptions::ticks() >= wake_tick`.
 pub(crate) fn set_wake_tick(wake_tick: u64) {
@@ -1628,8 +1628,8 @@ pub(crate) fn set_wake_tick(wake_tick: u64) {
 
 /// Clear the Sleeping state after the process wakes, transitioning to Running.
 ///
-/// Called by sys_nanosleep after the busy-wait loop confirms the wake tick
-/// has elapsed. Resets wake_tick to 0 and marks the process Running again.
+/// Called by `sys_nanosleep` after the busy-wait loop confirms the wake tick
+/// has elapsed. Resets `wake_tick` to 0 and marks the process Running again.
 pub(crate) fn clear_wake_tick() {
     // SAFETY: same as set_wake_tick — called from syscall context only.
     unsafe {
@@ -1754,7 +1754,7 @@ pub unsafe fn deliver_signal_to(pid: Pid, sig: Signal) -> u32 {
 
 /// Reset all signal handlers and the pending mask for the current process.
 ///
-/// Called by sys_execve (POSIX: exec resets all signal dispositions to SIG_DFL
+/// Called by `sys_execve` (POSIX: exec resets all signal dispositions to `SIG_DFL`
 /// and clears any pending signals that were set by a handler).
 ///
 /// # Safety
@@ -1789,7 +1789,7 @@ pub unsafe fn reset_signal_state() {
 /// Returns `false` if the new image/stack could not be mapped (L2-pool
 /// exhaustion). The old image is already gone by then, so the caller MUST kill
 /// the process (it is unrecoverable); the PCB is left consistent for
-/// exit_cleanup's page-table walk.
+/// `exit_cleanup`'s page-table walk.
 #[must_use]
 pub unsafe fn exec_replace_context(
     loaded: &crate::elf::LoadedElf,
@@ -1972,7 +1972,7 @@ pub unsafe fn exec_replace_context(
 }
 
 /// Clear the lowest-numbered pending signal for the current process.
-/// Called by sys_sigreturn after the handler returns.
+/// Called by `sys_sigreturn` after the handler returns.
 ///
 /// # Safety
 ///
@@ -1990,8 +1990,8 @@ pub unsafe fn clear_any_pending() {
 }
 
 /// Clear the pending bit for EXACTLY `sig` on the current process (#446).
-/// Called at dispatch time by signal::deliver, so the handler runs once per
-/// raise; distinct from clear_any_pending (next-pending semantics), which
+/// Called at dispatch time by `signal::deliver`, so the handler runs once per
+/// raise; distinct from `clear_any_pending` (next-pending semantics), which
 /// can clear the wrong signal when several are pending at once.
 pub(crate) fn clear_pending_for_current(sig: crate::signal::Signal) {
     // SAFETY: current process PCB pointer is valid; mutation via addr_of_mut!,
@@ -2806,10 +2806,10 @@ mod tests {
         }
     }
 
-    /// fork() must NOT let the child inherit a signal that was pending in the
+    /// `fork()` must NOT let the child inherit a signal that was pending in the
     /// parent at fork time: signal HANDLERS are inherited but the pending mask
-    /// is cleared (process.rs fork(), `s.pending = 0`), matching POSIX
-    /// fork() semantics.
+    /// is cleared (process.rs `fork()`, `s.pending = 0`), matching POSIX
+    /// `fork()` semantics.
     #[test]
     fn fork_clears_child_pending_signal_mask() {
         // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
@@ -2910,7 +2910,7 @@ mod tests {
         }
     }
 
-    /// #251: an OOM partway through spawn()'s stack allocation must roll
+    /// #251: an OOM partway through `spawn()`'s stack allocation must roll
     /// back exactly the pages allocated so far, verified against the bitmap
     /// free-count (not assumed physically contiguous).
     #[test]
@@ -2949,8 +2949,8 @@ mod tests {
         }
     }
 
-    /// #251: an OOM partway through fork()'s child-stack allocation must roll
-    /// back exactly the pages allocated so far. #208 rewrote fork()'s SUCCESS
+    /// #251: an OOM partway through `fork()`'s child-stack allocation must roll
+    /// back exactly the pages allocated so far. #208 rewrote `fork()`'s SUCCESS
     /// path (translated sp + stack copy) but left the rollback assuming
     /// physical contiguity; this guards the re-derived array-tracked rollback.
     #[test]
@@ -3007,7 +3007,7 @@ mod tests {
         }
     }
 
-    /// #232: waitpid must reject any PID >= MAX_PROCS instead of indexing
+    /// #232: waitpid must reject any PID >= `MAX_PROCS` instead of indexing
     /// the fixed-size table out of bounds.
     #[test]
     fn waitpid_rejects_out_of_bounds_pid() {
@@ -3031,7 +3031,7 @@ mod tests {
         }
     }
 
-    /// #218/#224: fork/exit/waitpid MAX_PROCS times must leave every
+    /// #218/#224: fork/exit/waitpid `MAX_PROCS` times must leave every
     /// non-init slot reaped (None), and a further fork must then succeed —
     /// not permanently exhaust the table with Dead-but-unreaped PCBs.
     #[test]
@@ -3283,7 +3283,7 @@ mod tests {
         }
     }
 
-    /// #225: exec_replace_context must unmap and free every previously
+    /// #225: `exec_replace_context` must unmap and free every previously
     /// tracked mmap page and every grown heap page, not just reset the
     /// tracking state and leak the physical frames.
     #[test]
@@ -3399,7 +3399,7 @@ mod tests {
         }
     }
 
-    /// set_wake_tick transitions the process to Sleeping with the correct tick.
+    /// `set_wake_tick` transitions the process to Sleeping with the correct tick.
     #[test]
     fn nanosleep_sets_wake_time() {
         // SAFETY: test-only; reset_all reinitialises global state.
@@ -3427,7 +3427,7 @@ mod tests {
         }
     }
 
-    /// clear_wake_tick returns the process to Running state.
+    /// `clear_wake_tick` returns the process to Running state.
     #[test]
     fn clear_wake_tick_restores_running() {
         // SAFETY: test-only; reset_all reinitialises global state.
@@ -3452,11 +3452,11 @@ mod tests {
         }
     }
 
-    /// schedule()'s first pass wakes a Sleeping process once its wake_tick has
+    /// `schedule()`'s first pass wakes a Sleeping process once its `wake_tick` has
     /// elapsed (`now >= wake_tick`), transitioning it to Ready; a process whose
-    /// wake_tick has NOT yet elapsed must stay Sleeping. exceptions::ticks()
+    /// `wake_tick` has NOT yet elapsed must stay Sleeping. `exceptions::ticks()`
     /// is only ever written FROM the real timer IRQ handler, so it reads 0 for
-    /// the life of the host test binary -- wake_tick 0 is therefore already due.
+    /// the life of the host test binary -- `wake_tick` 0 is therefore already due.
     #[test]
     fn schedule_wakes_sleeping_process_past_wake_tick() {
         // SAFETY: test-only; reset_all reinitialises global state. Single-threaded
@@ -3843,7 +3843,7 @@ mod tests {
         }
     }
 
-    /// #269: kinit (PID 0) must never be a valid deliver_signal_to target,
+    /// #269: kinit (PID 0) must never be a valid `deliver_signal_to` target,
     /// even for SIGKILL.
     #[test]
     fn deliver_signal_to_rejects_pid_zero() {
@@ -3932,7 +3932,7 @@ mod tests {
         }
     }
 
-    /// #269: sys_kill must reject PID 0 outright, even for a self-signal
+    /// #269: `sys_kill` must reject PID 0 outright, even for a self-signal
     /// from kinit, before any capability check.
     #[test]
     fn sys_kill_rejects_pid_zero_even_for_self() {
@@ -3952,8 +3952,8 @@ mod tests {
         }
     }
 
-    /// #379 (REQ-09): a process without CAP_KILL may not signal a
-    /// different, non-zero process -- sys_kill must return EPERM and the
+    /// #379 (REQ-09): a process without `CAP_KILL` may not signal a
+    /// different, non-zero process -- `sys_kill` must return EPERM and the
     /// target must be left untouched.
     #[test]
     fn sys_kill_cross_process_denied_without_cap_kill() {
@@ -3999,8 +3999,8 @@ mod tests {
         }
     }
 
-    /// #379 (REQ-09): a process holding CAP_KILL may signal a different,
-    /// non-zero process -- sys_kill succeeds and the default action
+    /// #379 (REQ-09): a process holding `CAP_KILL` may signal a different,
+    /// non-zero process -- `sys_kill` succeeds and the default action
     /// (SIGTERM -> terminate) is applied to the target.
     #[test]
     fn sys_kill_cross_process_allowed_with_cap_kill() {
@@ -4042,8 +4042,8 @@ mod tests {
         }
     }
 
-    /// #371: sys_send (Syscall::Send) targeting PID 0 must be denied when
-    /// the sender lacks CAP_IPC_INIT, and the message must not be
+    /// #371: `sys_send` (`Syscall::Send`) targeting PID 0 must be denied when
+    /// the sender lacks `CAP_IPC_INIT`, and the message must not be
     /// delivered into kinit's inbox.
     #[test]
     fn sys_send_to_pid_zero_denied_without_ipc_init_cap() {
@@ -4080,7 +4080,7 @@ mod tests {
         }
     }
 
-    /// #371: a process explicitly granted CAP_IPC_INIT may message PID 0,
+    /// #371: a process explicitly granted `CAP_IPC_INIT` may message PID 0,
     /// and the delivered message carries the sender's PID and tag.
     #[test]
     fn sys_send_to_pid_zero_allowed_with_ipc_init_cap() {

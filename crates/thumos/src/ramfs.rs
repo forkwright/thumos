@@ -35,7 +35,7 @@ struct RamInode {
     inode_type: InodeType,
     /// File contents (empty for directories).
     data: Vec<u8>,
-    /// Child entries for directories: (name, inode_id) pairs.
+    /// Child entries for directories: (name, `inode_id`) pairs.
     children: Vec<(String, u32)>,
     /// Parent directory inode id (root's parent is itself).
     parent: u32,
@@ -52,7 +52,7 @@ struct RamInode {
 pub(crate) struct RamFs {
     /// All inodes in the filesystem. Index == inode id.
     inodes: Vec<RamInode>,
-    /// Next inode id to allocate (always == inodes.len()).
+    /// Next inode id to allocate (always == `inodes.len()`).
     next_inode: u32,
 }
 
@@ -242,8 +242,8 @@ impl RamFs {
 
             // Determine entry type from mode field
             // S_IFMT mask = 0o170000, S_IFDIR = 0o040000, S_IFREG = 0o100000
-            let file_type = mode & 0o170000;
-            let is_dir = file_type == 0o040000;
+            let file_type = mode & 0o170_000;
+            let is_dir = file_type == 0o040_000;
 
             if !name.is_empty() && name != "." {
                 // Strip leading "./" if present (common in CPIO archives)
@@ -254,7 +254,7 @@ impl RamFs {
                     if is_dir {
                         // Ensure the directory exists in the tree
                         fs.ensure_directory_path(clean_name);
-                    } else if filesize > 0 || file_type == 0o100000 {
+                    } else if filesize > 0 || file_type == 0o100_000 {
                         // Regular file: ensure parent directories exist, then add file
                         fs.insert_file_at_path(clean_name, &data[data_start..data_end]);
                     }

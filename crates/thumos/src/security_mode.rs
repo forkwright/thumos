@@ -234,7 +234,7 @@ pub enum ModeTransitionError {
     /// (`pin_hash` is `None`) -- distinct from `PinMismatch` so an
     /// unprovisioned manager fails closed instead of silently accepting or
     /// permanently masquerading as a wrong-PIN lockout (issue #282,
-    /// security_mode.rs).
+    /// `security_mode.rs`).
     NotProvisioned,
 }
 
@@ -309,7 +309,7 @@ pub(crate) struct ModeManager {
     /// cryptographically negligible, so an all-zero `pin_hash` would be
     /// indistinguishable from "unprovisioned" yet would silently behave as
     /// if provisioned -- permanently failing every future PIN check
-    /// (issue #282, security_mode.rs).
+    /// (issue #282, `security_mode.rs`).
     pin_hash: Option<[u8; 32]>,
 }
 
@@ -884,12 +884,12 @@ mod tests {
         derived
     }
 
-    /// Helper: create a ModeManager with a known test PIN.
+    /// Helper: create a `ModeManager` with a known test PIN.
     fn mode_manager_with_test_pin() -> ModeManager {
         ModeManager::new(derive_test_pin_hash(b"123456"))
     }
 
-    /// Helper: create a KeyManager with loaded keys for testing.
+    /// Helper: create a `KeyManager` with loaded keys for testing.
     fn key_manager_with_derived_keys() -> KeyManager {
         let mut km = KeyManager::new();
         let primary = {
@@ -918,7 +918,7 @@ mod tests {
     /// A `Default`-constructed manager has never been provisioned with a
     /// real PIN; Sentinel exit must fail closed (`NotProvisioned`), not
     /// silently accept any input and not masquerade as an ordinary
-    /// wrong-PIN `PinMismatch` (issue #282, security_mode.rs).
+    /// wrong-PIN `PinMismatch` (issue #282, `security_mode.rs`).
     #[test]
     fn default_mode_manager_is_unprovisioned_and_cannot_exit_sentinel() {
         let mut mm = ModeManager::default();
