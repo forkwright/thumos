@@ -362,7 +362,22 @@ pub(crate) fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
 /// correction.
 #[must_use]
 pub(crate) fn calculate_ntp_offset(local_send_secs: u64, server_transmit_epoch: u64) -> i64 {
-    server_transmit_epoch as i64 - local_send_secs as i64
+    // INVARIANT: unlike the other u64 -> i64 sites in this module, this
+    // function has no wired-in caller yet (#145 -- the clock trust manager
+    // is not wired into kernel time) to bound `local_send_secs` by
+    // construction, and `server_transmit_epoch` is meant to carry a value
+    // parsed from a network-supplied NTP packet (see `parse_ntp_response`).
+    // A bare `as i64` on either operand would silently flip sign for an
+    // input >= 2^63, and subtracting two such reinterpreted values then
+    // produces a small, plausible-looking but wrong offset instead of an
+    // obviously-wrong one -- the same failure shape #670 closed on the GPS
+    // side. Use checked widening with a stated saturation bound, and a
+    // saturating subtract, so the result is well-defined for every `u64`
+    // input this function could ever be called with, not just the ones a
+    // not-yet-written caller happens to pass.
+    let local = i64::try_from(local_send_secs).unwrap_or(i64::MAX);
+    let server = i64::try_from(server_transmit_epoch).unwrap_or(i64::MAX);
+    server.saturating_sub(local)
 }
 
 /// NTP server endpoint for the clock manager.
@@ -728,5 +743,25 @@ mod tests {
             1_700_000_000 - 1000,
             "offset must be server_time - local_time"
         );
+    }
+
+    #[test]
+    fn calculate_ntp_offset_saturates_instead_of_wrapping_sign() {
+        // A `local_send_secs` >= 2^63 used to bit-flip to negative under a
+        // bare `as i64`, so `server - local` computed as a small *positive*
+        // number (0 - (-1) = 1) instead of reflecting that `local_send_secs`
+        // is vastly larger than `server_transmit_epoch`. The saturating form
+        // must report a large-magnitude NEGATIVE offset instead.
+        let offset = calculate_ntp_offset(u64::MAX, 0);
+        assert_eq!(
+            offset,
+            -(i64::MAX),
+            "an out-of-range local time must saturate the offset negative, not wrap to +1"
+        );
+
+        // Symmetric case: an out-of-range server timestamp must saturate to
+        // a large positive offset, not silently reinterpret as negative.
+        let offset = calculate_ntp_offset(0, u64::MAX);
+        assert_eq!(offset, i64::MAX);
     }
 }

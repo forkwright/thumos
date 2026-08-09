@@ -634,7 +634,11 @@ impl KernelState {
             0x00, 0x00, // checksum
             0x00, 0x00, // urgent
         ];
-        let now = crate::net::instant_from_millis(crate::exceptions::uptime_ms() as i64);
+        // INVARIANT: `uptime_ms()` is a device-uptime millisecond count;
+        // `i64::MAX` ms is ~292 million years of uptime, so this
+        // bit-reinterpretation (required by smoltcp's
+        // `Instant::from_millis(i64)`) cannot flip sign.
+        let now = crate::net::instant_from_millis(crate::exceptions::uptime_ms().cast_signed());
         // TX drop-site: outbound eval matches the Log rule -> forwarded to the
         // loopback queue + a PacketLog event queued.
         if let Some(tx) = self.net.device_mut().transmit(now) {

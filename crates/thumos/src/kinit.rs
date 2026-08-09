@@ -1493,7 +1493,8 @@ pub unsafe fn run() -> ! {
                     // count; `i64::MAX` ms is ~292 million years of uptime,
                     // so this bit-reinterpretation (required by smoltcp's
                     // `Instant::from_millis(i64)`) cannot flip sign.
-                    let now = net::instant_from_millis(crate::exceptions::uptime_ms().cast_signed());
+                    let now =
+                        net::instant_from_millis(crate::exceptions::uptime_ms().cast_signed());
                     net.poll(now);
                     match dhcp.poll(&mut net) {
                         DhcpEvent::Configured(config) => {

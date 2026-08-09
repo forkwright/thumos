@@ -106,7 +106,7 @@ mechanism = "host"
 
 [[module]]
 name = "clock"
-tests = 17
+tests = 18
 mechanism = "both"
 witness = "boot.sh"
 
@@ -191,7 +191,7 @@ fidelity = "loader correctness against real page tables is witness-only (exec/fo
 
 [[module]]
 name = "emmc"
-tests = 41
+tests = 42
 mechanism = "both"
 witness = "boot.sh"
 fidelity = "driver register paths are hardware-gated; host tests cover protocol logic"
