@@ -1370,12 +1370,9 @@ mod tests {
             bob_addr.clone(),
             &alice_irk,
         );
-        let mut bob = PairingSession::new(
-            Role::Responder,
-            bob_addr.clone(),
-            alice_addr.clone(),
-            &bob_irk,
-        );
+        // Neither address is used again after this — move rather than
+        // clone (clippy::redundant_clone).
+        let mut bob = PairingSession::new(Role::Responder, bob_addr, alice_addr, &bob_irk);
         let mut rng_a = fixed_stream(0x03);
         let mut rng_b = fixed_stream(0x83);
 
