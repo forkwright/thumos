@@ -498,8 +498,33 @@ pub(crate) fn generate_rpa(irk: &[u8; 16], prand: &[u8; 3]) -> BdAddr {
     let [p0, p1, p2] = *prand;
     // Force two MSBs to 0b01 in the most-significant byte (index 0 = display MSB)
     let b0 = (p0 & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
-    let hash = crate::smp::ah(irk, prand);
+    // WHY: ah() must hash the SAME 24 bits that end up stored in the
+    // address (b0, not the caller's raw p0) — a peer resolving against
+    // the transmitted address recomputes ah() over [b0, p1, p2], never
+    // over whatever top bits the caller's entropy happened to carry. Any
+    // caller passing a prand whose top two bits are not already 0b01
+    // would otherwise store an address that no bonded peer can resolve.
+    let masked_prand = [b0, p1, p2];
+    let hash = crate::smp::ah(irk, &masked_prand);
     BdAddr::from_bytes([b0, p1, p2, hash[0], hash[1], hash[2]])
+}
+
+/// Resolve a resolvable private address against a candidate IRK — the
+/// operation a bonded peer performs on every advertisement/connection to
+/// decide whether an RPA belongs to that IRK's owner: recompute
+/// `ah(irk, prand)` over the address's OWN transmitted `prand` field
+/// (bytes 0..3, type bits included per [`crate::smp::ah`]'s documented
+/// contract) and compare against its `hash` field (bytes 3..6).
+///
+/// This proves the cryptographic binding between an IRK and an RPA that
+/// IRK generated — `ah()` itself is verified against the Core Spec
+/// Appendix D.7 known-answer vector, and this runs the same primitive in
+/// the resolving direction. It proves nothing about resolution against
+/// real controller resolving-list hardware, real advertisement/connection
+/// timing, or interop with an independent BLE stack.
+pub(crate) fn resolve_rpa(irk: &[u8; 16], addr: &BdAddr) -> bool {
+    let [b0, b1, b2, b3, b4, b5] = *addr.as_bytes();
+    crate::smp::ah(irk, &[b0, b1, b2]) == [b3, b4, b5]
 }
 
 /// Build the `HCI_LE_Set_Random_Address` command packet (OGF=0x08, OCF=0x0005).
@@ -1250,17 +1275,31 @@ mod tests {
 
     #[test]
     fn rpa_resolution_round_trip() {
-        // A bonded peer resolves an RPA by recomputing ah(IRK, prand) and
-        // comparing the hash field — the contract #455 exists to provide.
+        // A bonded peer resolves an RPA by recomputing ah(IRK, prand) over
+        // the address's OWN transmitted prand bytes and comparing the hash
+        // field — the contract #455 exists to provide. `prand`'s top two
+        // bits are deliberately NOT already 0b01 (0x21 = 0b00100001):
+        // proves generate_rpa hashes what actually lands on the wire, not
+        // whatever raw top bits the caller's entropy happened to carry.
         let prand = [0x21, 0x43, 0x65];
         let addr = generate_rpa(&APPENDIX_D_IRK, &prand);
-        let bytes = addr.as_bytes();
-        let recovered_prand = [bytes[0] & !RANDOM_ADDR_MSB_MASK, bytes[1], bytes[2]];
-        let recomputed = crate::smp::ah(&APPENDIX_D_IRK, &recovered_prand);
-        assert_eq!(
-            &bytes[3..],
-            &recomputed,
-            "the hash field must resolve against the embedded prand"
+        assert!(
+            resolve_rpa(&APPENDIX_D_IRK, &addr),
+            "a bonded peer recomputing ah(IRK, prand) over the address's own prand bytes must resolve it"
+        );
+    }
+
+    #[test]
+    fn rpa_does_not_resolve_against_an_unrelated_irk() {
+        // The negative case: resolution must FAIL for an IRK that did not
+        // generate the address — a resolver that always returns true
+        // would pass `rpa_resolution_round_trip` too.
+        let prand = [0x21, 0x43, 0x65];
+        let addr = generate_rpa(&APPENDIX_D_IRK, &prand);
+        let unrelated_irk = [0x11u8; 16];
+        assert!(
+            !resolve_rpa(&unrelated_irk, &addr),
+            "an IRK that never generated this address must not resolve it"
         );
     }
 
