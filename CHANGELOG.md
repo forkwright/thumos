@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/forkwright/thumos/compare/v0.1.18...v0.2.0) (2026-08-09)
+
+
+### Features
+
+* **metaxu:** second UART + authenticated round trip from real userspace ([#544](https://github.com/forkwright/thumos/issues/544)) ([#677](https://github.com/forkwright/thumos/issues/677)) ([c43b625](https://github.com/forkwright/thumos/commit/c43b625522834741a4d8124dce3b66cba8e00b15))
+* **usb:** register the MUSB interrupt with the GIC ([#675](https://github.com/forkwright/thumos/issues/675)) ([1ca84f4](https://github.com/forkwright/thumos/commit/1ca84f43c8fc472830b5872ce51be1a06e94f206))
+
+
+### Bug Fixes
+
+* **gps:** converge checksum, quality-byte, and coordinate-bounds gaps into topos-core ([#670](https://github.com/forkwright/thumos/issues/670)) ([d34fb55](https://github.com/forkwright/thumos/commit/d34fb55eae8254349e48e2b6f199fb96486af3be)), closes [#545](https://github.com/forkwright/thumos/issues/545)
+* **pteron:** compose bonded-IRK pairing with RPA resolution over real L2CAP dispatch ([#669](https://github.com/forkwright/thumos/issues/669)) ([348233a](https://github.com/forkwright/thumos/commit/348233a0cc900578105cca65056eadbd048621ec))
+
 ## [0.1.18](https://github.com/forkwright/thumos/compare/v0.1.17...v0.1.18) (2026-08-09)
 
 
