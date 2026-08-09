@@ -10,6 +10,12 @@
 //!
 //! Security-failure rejections are typed `TaskStatus::Rejected` reasons so
 //! the witness can assert each adversarial case explicitly.
+//!
+//! Public (not `pub(crate)`) under the `pylon-bin` feature (#544 on-device
+//! leg): `src/bin/pylon_bridge.rs` links this module as an external binary
+//! target and launches [`spawn`] as a real host process a QEMU-booted
+//! kernel talks to over a second UART, reusing this SAME verification logic
+//! rather than a second, driftable implementation.
 
 use std::collections::HashSet;
 use std::net::{TcpListener, TcpStream};
@@ -40,7 +46,7 @@ pub(crate) mod reject {
 }
 
 /// One pylon endpoint: a pinned runtime identity + the clock it trusts.
-pub(crate) struct Pylon {
+pub struct Pylon {
     runtime_key: ed25519_dalek::VerifyingKey,
     now_ms: u64,
     seen_request_ids: HashSet<[u8; 16]>,
@@ -49,7 +55,7 @@ pub(crate) struct Pylon {
 impl Pylon {
     /// Create a pylon for the runtime identity `runtime_key`, evaluating
     /// expiry at `now_ms`.
-    pub(crate) fn new(runtime_key: ed25519_dalek::VerifyingKey, now_ms: u64) -> Self {
+    pub fn new(runtime_key: ed25519_dalek::VerifyingKey, now_ms: u64) -> Self {
         Self {
             runtime_key,
             now_ms,
@@ -58,7 +64,7 @@ impl Pylon {
     }
 
     /// Verify + answer one authenticated request frame (#544).
-    pub(crate) fn handle(&mut self, frame_bytes: &[u8]) -> Vec<u8> {
+    pub fn handle(&mut self, frame_bytes: &[u8]) -> Vec<u8> {
         let response = self.answer(frame_bytes);
         // Wrap the authenticated response in the envelope (kind 5).
         let payload = postcard::to_allocvec(&response).unwrap_or_default();
@@ -97,10 +103,16 @@ impl Pylon {
         // the request's identity ref, checked next).
         let device = auth.request.identity().attestation_digest;
         match auth.signed_grant.verify(&device, self.now_ms) {
-            Err(GrantError::BadSignature) => return Self::reject(&auth, reject::GRANT_SIGNATURE),
             Err(GrantError::Expired { .. }) => return Self::reject(&auth, reject::GRANT_EXPIRED),
             Err(GrantError::WrongDevice) => return Self::reject(&auth, reject::WRONG_DEVICE),
             Ok(_) => {}
+            // WHY a wildcard rather than a named `BadSignature` arm:
+            // GrantError is `#[non_exhaustive]` (metaxu-core, cross-repo
+            // API, #545) -- pylon.rs is now an external-crate consumer of
+            // it, so a match must tolerate a future additive variant. This
+            // catches BOTH `BadSignature` and any such future variant,
+            // identically (both reject with GRANT_SIGNATURE).
+            Err(_) => return Self::reject(&auth, reject::GRANT_SIGNATURE),
         }
         // The request's identity ref must match the grant's subject.
         if device != auth.signed_grant.grant.subject {
@@ -165,8 +177,11 @@ impl Pylon {
 
 /// Run a pylon on `127.0.0.1:0` in a background thread, answering exactly
 /// `n_requests` frames then stopping. Returns the bound port and the join
-/// handle. Used by the adversarial witness (#544).
-pub(crate) fn spawn(mut pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
+/// handle.
+///
+/// Used by the adversarial witness (#544) and, under `pylon-bin`, by
+/// `src/bin/pylon_bridge.rs` for the on-device QEMU round trip.
+pub fn spawn(mut pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap_or_else(|_| unreachable!());
     let port = listener.local_addr().map(|a| a.port()).unwrap_or_default();
     let handle = std::thread::spawn(move || {

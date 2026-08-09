@@ -81,6 +81,15 @@ owner = "unscheduled"
 notes = "Converged (#661 workspace side, #662 kernel side): SURVEILLANCE_DOMAINS, domain_matches_suffix, normalize_suffix, and extract_query_domain. WHY the two-step: #661 created the core, wired crates/asphaleia, and added the dependency to the kernel WITHOUT importing it -- so the blocklist divergence stayed live on the side that actually filters packets, and the `*.` fail-open fix never reached it. The checker now fails on a declared *-core path dependency that no source file names, which is the tell that catches this class. NOT yet converged: parse_packet, because the kernel's PacketInfo is a deliberately narrower shape than the core's Ipv4Fields/TcpFields/UdpFields. Live port marker: firewall.rs:602."
 
 [[pair]]
+name = "aletheia-bridge"
+kernel = "metaxu_bridge.rs (new, #544 on-device leg)"
+workspace = "metaxu"
+disposition = "converged"
+canonical = "metaxu-core (envelope framing, signed-grant verification, typed task/response payloads, authenticated-session logic; no_std+alloc, kernel links via path dep, metaxu re-exports)"
+owner = "#544"
+notes = "Born shared, not reconciled from a divergence: the kernel had zero metaxu-related code before #544, so this is the #545 topology applied at the crate's creation rather than an after-the-fact extraction. metaxu's own envelope.rs/grants.rs/protocol.rs/session.rs moved into metaxu-core verbatim (session.rs stays a thin std-error-mapping wrapper in metaxu); metaxu_bridge.rs (kernel, metaxu-probe feature only) is the second consumer."
+
+[[pair]]
 name = "ui"
 kernel = "ui.rs, screen_dialer.rs (font behavior, dialer rendering ported from eidolon/haphe)"
 workspace = "eidolon, haphe"

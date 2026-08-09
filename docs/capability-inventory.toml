@@ -141,6 +141,12 @@ modules = ["device", "kconfig"]
 tier = "kernel-wired"
 notes = "Board constants consolidate under board:: in #534."
 
+[[capability]]
+id = "aletheia-bridge"
+modules = ["metaxu_bridge"]
+tier = "kernel-wired"
+notes = "#544 on-device leg: the authenticated metaxu-core round trip over board::UART1_BASE, reachable from kinit's /metaxu_probe spawn only under the metaxu-probe feature (never in a normal boot, so no marker appears in the default boot.log this script checks). The real proof is scripts/witness/metaxu.sh's own QEMU run + metaxu.log, asserting 'metaxu: request submitted' and 'metaxu: round trip accepted' -- a witness this inventory's boot-log rule (c) does not reach because it checks a fixed boot.log path, not per-capability log files."
+
 # Accounting rules (from the retired KERNEL-WIRING-AUDIT.md):
 # - compiled+tested means the Rust surface exists; it does not imply boot,
 #   userspace, or hardware readiness.

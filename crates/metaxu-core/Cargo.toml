@@ -1,0 +1,42 @@
+[package]
+name = "metaxu-core"
+description = "no_std + alloc core for the Aletheia/Thumos wire protocol (envelope framing, expiring signed grants, and typed task/response payloads, shared by metaxu and the kernel, #544/#545)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+# WHY plain version pins, not `{ workspace = true }` (#544): every one of
+# these needs `default-features = false` for a no_std build, but the
+# workspace-level declarations (compact_str/ed25519-dalek/hmac/sha2/
+# postcard/serde) fix default-features implicitly TRUE for `metaxu` (std)
+# and every other workspace crate that uses them -- cargo refuses a member
+# override (`default-features = false cannot override workspace's
+# default-features`). Versions match the workspace pins exactly; `ulid`
+# alone stays `{ workspace = true }` because the workspace's OWN ulid
+# declaration already sets `default-features = false` (metaxu's own
+# no-override need, pre-dating this crate).
+[dependencies]
+compact_str = { version = "0.8", default-features = false, features = [
+    "serde",
+] }
+ed25519-dalek = { version = "2", default-features = false, features = [
+    "serde",
+] }
+hmac = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1", default-features = false, features = [
+    "derive",
+    "alloc",
+] }
+ulid = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.kanon]
+maturity = "alpha"
+since = "2026-08-09"
+exit-criteria = "operator-reviewed hardware validation and release-readiness gate"

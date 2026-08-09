@@ -5,9 +5,33 @@
 //!
 //! The timer fires an IRQ (typically IRQ 30 on GICv2 for the physical timer PPI)
 //! which we use as the scheduler tick.
+//!
+//! WHY `TIMER_IRQ` is feature-conditional (#544): the `CNTP_*` registers
+//! programmed below (`p15, 0, ..., c14, c2, *`) are BANKED between Secure
+//! and Non-secure PL1 on a core with ARM Security Extensions -- every
+//! normal boot (`secure=off`, the M7 board and every other QEMU witness)
+//! runs Non-secure (or on a core with no Security Extensions active at
+//! all), so the physical timer's interrupt is the Non-secure PPI (GIC
+//! INTID 30). `metaxu-probe`'s `-machine virt,secure=on` (for the second
+//! PL011, `board::UART1_BASE`) boots this kernel in SECURE state instead
+//! (there is no Secure->Non-secure monitor-mode transition in this boot
+//! stub) -- the SAME register writes there bank to the SECURE physical
+//! timer, whose interrupt is a DIFFERENT PPI (GIC INTID 29). Programming
+//! IRQ 30 there leaves the kernel waiting on an interrupt line that never
+//! fires: `exceptions::ticks()` never advances past 0, silently hanging
+//! the #461 timer witness's own busy-wait in `kinit.rs` forever (found
+//! via the metaxu-probe QEMU boot hanging at "Timer frequency: ... Hz").
 
 /// Timer IRQ number (PPI 14 = SPI-less, mapped to GIC IRQ 30 on A53).
+///
+/// Under `metaxu-probe` (secure=on), the physical timer registers bank to
+/// the SECURE instance (PPI 13, GIC INTID 29) instead -- see the module
+/// doc's WHY.
+#[cfg(not(feature = "metaxu-probe"))]
 pub(crate) const TIMER_IRQ: u32 = 30;
+/// See [`TIMER_IRQ`]'s doc (the non-`metaxu-probe` one) and the module doc.
+#[cfg(feature = "metaxu-probe")]
+pub(crate) const TIMER_IRQ: u32 = 29;
 
 /// Read the counter frequency (CNTFRQ).
 pub(crate) fn frequency() -> u32 {

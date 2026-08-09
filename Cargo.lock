@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "asphaleia-core"
-version = "0.1.17"
+version = "0.1.18"
 
 [[package]]
 name = "atomic-polyfill"
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "klesis-core"
-version = "0.1.17"
+version = "0.1.18"
 
 [[package]]
 name = "krypta"
@@ -936,11 +936,24 @@ dependencies = [
  "compact_str",
  "ed25519-dalek",
  "hmac 0.12.1",
- "jiff",
+ "metaxu-core",
  "postcard",
  "serde",
  "sha2",
  "snafu",
+ "ulid",
+]
+
+[[package]]
+name = "metaxu-core"
+version = "0.1.18"
+dependencies = [
+ "compact_str",
+ "ed25519-dalek",
+ "hmac 0.12.1",
+ "postcard",
+ "serde",
+ "sha2",
  "ulid",
 ]
 

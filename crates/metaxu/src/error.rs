@@ -129,6 +129,41 @@ where
 }
 
 impl Error<core::convert::Infallible> {
+    /// Convert a `metaxu-core` encode/decode failure into this crate's own
+    /// error shape (#545): `metaxu-core` is `no_std` and has no
+    /// `snafu::Location`/transport concept of its own, so every
+    /// `metaxu_core::error::CoreError` produced by a core wire function is
+    /// mapped here, preserving `Error::{Encode,Decode,Envelope}`'s existing
+    /// public shape for every caller in this crate.
+    pub(crate) fn from_core(err: metaxu_core::error::CoreError) -> Self {
+        match err {
+            metaxu_core::error::CoreError::Encode(source) => Self::Encode {
+                source,
+                location: Location::generate(),
+            },
+            metaxu_core::error::CoreError::Decode(source) => Self::Decode {
+                source,
+                location: Location::generate(),
+            },
+            metaxu_core::error::CoreError::Envelope(source) => Self::Envelope {
+                source,
+                location: Location::generate(),
+            },
+            // WHY a fallback arm despite listing every known variant:
+            // CoreError is `#[non_exhaustive]` (metaxu-core, cross-repo
+            // API, #545) -- this crate is an external consumer, so the
+            // match must tolerate a future additive variant, even though
+            // only the three arms above are ever actually produced today.
+            // `EnvelopeError::BadMagic` (a plain unit variant this crate
+            // fully controls) is the safest fallback shape -- it needs no
+            // knowledge of a foreign crate's exact error internals.
+            _ => Self::Envelope {
+                source: crate::envelope::EnvelopeError::BadMagic,
+                location: Location::generate(),
+            },
+        }
+    }
+
     // WHY: encode/decode/capability call sites are fixed at the
     // `Infallible` placeholder so they never name a transport error type;
     // widen() composes their result with a caller's transport-typed

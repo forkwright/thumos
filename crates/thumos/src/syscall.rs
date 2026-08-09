@@ -52,7 +52,7 @@ pub(crate) const ENOSYS: u32 = 0u32.wrapping_sub(38);
 pub(crate) const EFAULT: u32 = 0u32.wrapping_sub(14);
 
 /// Total number of defined syscalls.
-pub(crate) const SYSCALL_COUNT: usize = 46;
+pub(crate) const SYSCALL_COUNT: usize = 48;
 
 /// Operation not permitted (two's complement -1, matches Linux EPERM).
 const EPERM: u32 = 0u32.wrapping_sub(1);
@@ -60,7 +60,11 @@ const EPERM: u32 = 0u32.wrapping_sub(1);
 const ESRCH: u32 = 0u32.wrapping_sub(3);
 /// Resource temporarily unavailable (two's complement -11, matches Linux
 /// EAGAIN).
-const EAGAIN: u32 = 0u32.wrapping_sub(11);
+///
+/// `pub(crate)` (#544): `metaxu_bridge::poll` returns this same code for
+/// "no complete response frame yet" -- the non-blocking-poll convention
+/// every other EAGAIN-returning syscall in this file already uses.
+pub(crate) const EAGAIN: u32 = 0u32.wrapping_sub(11);
 
 /// Syscall numbers grouped by kernel domain.
 ///
@@ -167,6 +171,14 @@ pub enum Syscall {
     Pipe = 50,
     /// Fast userspace mutex (kernel wait/wake).
     Futex = 51,
+    /// Build + sign an authenticated Aletheia bridge request and write it
+    /// to the second UART (#544, `metaxu-probe` only). Fire-and-forget:
+    /// returns once the frame is on the wire, not once it is answered.
+    MetaxuSubmit = 52,
+    /// Non-blocking check for the response to the last `MetaxuSubmit`
+    /// (#544, `metaxu-probe` only). Returns `EAGAIN` until a complete
+    /// frame has arrived.
+    MetaxuPoll = 53,
 
     // --- Network (60-69) ---
     // WHY: thumos needs raw socket access for WiFi scanning (sema), packet
@@ -258,6 +270,8 @@ impl Syscall {
             // IPC
             50 => Some(Self::Pipe),
             51 => Some(Self::Futex),
+            52 => Some(Self::MetaxuSubmit),
+            53 => Some(Self::MetaxuPoll),
             // Network
             60 => Some(Self::Socket),
             61 => Some(Self::Bind),
@@ -320,6 +334,8 @@ impl Syscall {
         // IPC
         Self::Pipe,
         Self::Futex,
+        Self::MetaxuSubmit,
+        Self::MetaxuPoll,
         // Network
         Self::Socket,
         Self::Bind,
@@ -353,7 +369,8 @@ impl Syscall {
 /// Implemented: exit, write, yield, getpid, alloc_page, free_page, uptime,
 ///   sleep, send, recv, fork, waitpid, execve, kill, getuid, brk, mmap,
 ///   munmap, mprotect, open, close, read, stat, fstat, lseek, ioctl, fcntl,
-///   dup, dup2, mkdir, unlink, getcwd, chdir, pipe, futex, socket, bind,
+///   dup, dup2, mkdir, unlink, getcwd, chdir, pipe, futex, metaxu_submit,
+///   metaxu_poll (both ENOSYS off the `metaxu-probe` feature), socket, bind,
 ///   connect, sendto, recvfrom, clock_gettime, nanosleep, sigaction, sigreturn
 /// Stub (returns EOPNOTSUPP): listen, accept
 pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
@@ -561,6 +578,8 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         // ---- IPC ----
         Syscall::Pipe => pipe::sys_pipe(arg0),
         Syscall::Futex => futex::sys_futex(arg0, arg1, arg2),
+        Syscall::MetaxuSubmit => sys_metaxu_submit_dispatch(),
+        Syscall::MetaxuPoll => sys_metaxu_poll_dispatch(),
 
         // ---- Network ----
         // WHY: BSD socket API backed by smoltcp via the socket module.
@@ -582,6 +601,34 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         Syscall::Sigaction => signal::sys_sigaction(arg0, arg1),
         Syscall::Sigreturn => signal::sigreturn_unreachable(),
     }
+}
+
+// WHY two cfg'd definitions rather than a cfg on the match arm itself
+// (#544): `Syscall::MetaxuSubmit`/`MetaxuPoll` are unconditionally-defined
+// variants (every other syscall is too, regardless of feature), so the
+// match stays exhaustive and uniform in every build; only the BODY differs
+// -- the real bridge under `metaxu-probe` on the target, `ENOSYS` on the
+// host test target (`metaxu_bridge` uses `uart_pl011`, unavailable under
+// `uart_stub`) and whenever the feature is off (never in `production`, see
+// main.rs compile_error!).
+#[cfg(all(not(test), feature = "metaxu-probe"))]
+fn sys_metaxu_submit_dispatch() -> u32 {
+    crate::metaxu_bridge::submit()
+}
+
+#[cfg(not(all(not(test), feature = "metaxu-probe")))]
+fn sys_metaxu_submit_dispatch() -> u32 {
+    ENOSYS
+}
+
+#[cfg(all(not(test), feature = "metaxu-probe"))]
+fn sys_metaxu_poll_dispatch() -> u32 {
+    crate::metaxu_bridge::poll()
+}
+
+#[cfg(not(all(not(test), feature = "metaxu-probe")))]
+fn sys_metaxu_poll_dispatch() -> u32 {
+    ENOSYS
 }
 
 // --- Process management syscall implementations (see sys_execve below) ---
@@ -1638,8 +1685,8 @@ mod tests {
             26,
             44,
             45,
-            52,
-            53,
+            // WHY 52/53 removed (#544): MetaxuSubmit/MetaxuPoll now occupy
+            // these -- no longer a gap.
             67,
             68,
             72,
@@ -2467,6 +2514,8 @@ mod tests {
             43, // Chdir
             50, // Pipe
             51, // Futex
+            52, // MetaxuSubmit
+            53, // MetaxuPoll
             70, // ClockGettime
             71, // Nanosleep
             80, // Sigaction
@@ -2525,7 +2574,7 @@ mod tests {
                 50,
                 &[30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43],
             ),
-            ("ipc", 50, 60, &[50, 51]),
+            ("ipc", 50, 60, &[50, 51, 52, 53]),
             ("network", 60, 70, &[60, 61, 62, 63, 64, 65, 66]),
             ("time", 70, 80, &[70, 71]),
             ("signal", 80, 90, &[80, 81]),
