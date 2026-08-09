@@ -28,7 +28,6 @@ stages = [
     "kernel build",
     "kernel trust anchor",
     "kernel host tests",
-    "kernel clippy",
     "board seam",
     "convergence",
     "kernel qemu witnesses",
@@ -38,6 +37,11 @@ stages = [
     "cargo clippy",
     "cargo nextest",
     "kanon lint",
+    # WHY LAST (#663/#672): a failing stage aborts the pipeline, and this one
+    # is known-red while #672's backlog is open. Ordered ahead of the other
+    # kernel stages it would stop them running, trading working gates for a
+    # new one.
+    "kernel clippy",
 ]
 
 [stages."cargo fmt"]

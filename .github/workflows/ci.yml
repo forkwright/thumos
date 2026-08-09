@@ -107,12 +107,6 @@ jobs:
         # WHY (#546): canonical script shared with the forge admission gate —
         # both surfaces execute the identical suite.
         run: scripts/kernel-host-tests.sh
-      - name: Kernel clippy (i686) -- zero-warning gate (#663)
-        # WHY (#663): the kernel crate is excluded from the workspace, so no
-        # --workspace clippy invocation in the repo ever reaches crates/
-        # thumos. Runs right after "Kernel host tests", which just built
-        # this exact i686 target — a cache hit, not a fresh compile.
-        run: scripts/kernel-clippy.sh
       - name: Target-test ledger check (#551)
         # WHY (#551, restoring #124; #645): declared-vs-executed must be
         # auditable — reds when a test-bearing or target-sensitive module has
@@ -178,3 +172,15 @@ jobs:
         # WHY (#546): reds if witness assertions ever re-inline into a CI
         # surface or a stage stops calling the canonical scripts.
         run: scripts/check-witness-extraction.sh
+      - name: Kernel clippy (i686) -- zero-warning gate (#663)
+        # WHY (#663): the kernel crate is excluded from the workspace, so no
+        # --workspace clippy invocation in the repo ever reaches crates/thumos.
+        #
+        # WHY LAST rather than beside the i686 tests that warm its cache: a
+        # failing step aborts the job, and every check below it would stop
+        # running. While #672's backlog is open this step is known-red, so
+        # placing it earlier would silently disable the ledger, board-seam,
+        # convergence, armv7a cross-compile, trust-anchor and QEMU witness
+        # gates — trading six working gates for one new one. It costs a
+        # recompile here; that is the correct price.
+        run: scripts/kernel-clippy.sh
