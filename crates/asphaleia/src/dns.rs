@@ -51,7 +51,8 @@ impl DnsBlocklist {
     /// Lower-cased on insertion. Any query domain equal to or a subdomain of
     /// `suffix` will be blocked — see [`asphaleia_core::domain_matches_suffix`].
     pub fn add(&mut self, suffix: &str) {
-        self.patterns.push(suffix.to_ascii_lowercase());
+        self.patterns
+            .push(asphaleia_core::normalize_suffix(suffix).to_ascii_lowercase());
     }
 
     /// Returns `true` if `domain` matches any suffix in this blocklist.
@@ -223,19 +224,28 @@ mod tests {
     #[test]
     fn blocklist_wildcard_matches_subdomains() {
         let mut bl = DnsBlocklist::new();
+        // Both spellings must behave identically: the converged rule is plain
+        // suffix matching, and a "*." entry is normalized rather than stored
+        // as a literal that could never match (#545).
         bl.add("*.example.com");
         assert!(
             bl.is_blocked("sub.example.com"),
-            "sub.example.com must match *.example.com"
+            "sub.example.com must match a '*.example.com' entry after normalization"
+        );
+        assert!(
+            bl.is_blocked("example.com"),
+            "the apex must match too: '*.' is normalized away, not treated as a literal"
         );
         assert!(
             bl.is_blocked("a.b.example.com"),
             "a.b.example.com must match *.example.com"
         );
-        assert!(
-            !bl.is_blocked("example.com"),
-            "example.com itself must not match *.example.com"
-        );
+        // NOTE (#545): the pre-convergence copy asserted the apex must NOT
+        // match, i.e. strict subdomain-only wildcards. The converged rule
+        // deliberately includes the apex, and for a surveillance blocklist
+        // that is the correct default: blocking ads.doubleclick.net while
+        // leaving doubleclick.net reachable is under-blocking, and
+        // under-blocking is the failure mode that matters on this device.
         assert!(
             !bl.is_blocked("notexample.com"),
             "notexample.com must not match *.example.com"

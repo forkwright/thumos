@@ -68,6 +68,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 | Crate | Description |
 |-------|-------------|
 | `asphaleia` | Packet filter firewall, DNS blocklist, capability enforcement |
+| `asphaleia-core` | Canonical packet-parse + DNS-policy semantics, shared no_std with the kernel (#545) |
 | `leipsanon` | Panic mode: priority-ordered wipe, trigger system, memory scrubbing |
 
 **Cognition bridge**

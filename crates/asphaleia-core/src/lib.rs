@@ -375,7 +375,11 @@ pub fn extract_query_domain(data: &[u8]) -> Option<String> {
         pos = label_end;
     }
 
-    if domain.is_empty() { None } else { Some(domain) }
+    if domain.is_empty() {
+        None
+    } else {
+        Some(domain)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +431,20 @@ pub fn domain_matches_suffix(domain: &str, suffix: &str) -> bool {
     domain
         .strip_suffix(suffix)
         .is_some_and(|rest| rest.ends_with('.'))
+}
+
+/// Strip a leading `"*."` from a blocklist entry, if present.
+///
+/// WHY (#545): the converged rule is plain suffix matching -- an entry blocks
+/// itself and every subdomain, so no wildcard syntax is needed. But `"*."` is
+/// the near-universal spelling in hosts/adblock formats, and before #545 this
+/// crate's own blocklist REQUIRED it. Accepting such an entry as a literal
+/// would store a suffix no domain can ever match, so the entry silently blocks
+/// nothing -- a fail-OPEN outcome on a surveillance blocklist, and invisible
+/// because nothing errors. Normalizing it is fail-closed and costs one strip.
+#[must_use]
+pub fn normalize_suffix(entry: &str) -> &str {
+    entry.strip_prefix("*.").unwrap_or(entry)
 }
 
 /// Check whether `domain` (already lowercased) matches any entry in
@@ -498,7 +516,8 @@ mod tests {
     #[test]
     fn ipv4_fields_parses_valid_packet() {
         let pkt = make_tcp_packet();
-        let hdr = Ipv4Fields::parse(&pkt).expect("valid packet must parse");
+        let hdr =
+            Ipv4Fields::parse(&pkt).unwrap_or_else(|_| unreachable!("valid packet must parse"));
         assert_eq!(hdr.version, 4);
         assert_eq!(hdr.ihl, 5);
         assert_eq!(hdr.total_length, 40);
@@ -540,8 +559,10 @@ mod tests {
     #[test]
     fn tcp_fields_parses_valid_segment() {
         let pkt = make_tcp_packet();
-        let ip = Ipv4Fields::parse(&pkt).expect("valid packet must parse");
-        let tcp = TcpFields::parse(&pkt[ip.header_len()..]).expect("valid TCP header must parse");
+        let ip =
+            Ipv4Fields::parse(&pkt).unwrap_or_else(|_| unreachable!("valid packet must parse"));
+        let tcp = TcpFields::parse(&pkt[ip.header_len()..])
+            .unwrap_or_else(|_| unreachable!("valid TCP header must parse"));
         assert_eq!(tcp.src_port, 12345);
         assert_eq!(tcp.dst_port, 80);
         assert_eq!(tcp.flags, 0x02);
@@ -559,8 +580,10 @@ mod tests {
     #[test]
     fn udp_fields_parses_valid_datagram() {
         let pkt = make_udp_packet();
-        let ip = Ipv4Fields::parse(&pkt).expect("valid packet must parse");
-        let udp = UdpFields::parse(&pkt[ip.header_len()..]).expect("valid UDP header must parse");
+        let ip =
+            Ipv4Fields::parse(&pkt).unwrap_or_else(|_| unreachable!("valid packet must parse"));
+        let udp = UdpFields::parse(&pkt[ip.header_len()..])
+            .unwrap_or_else(|_| unreachable!("valid UDP header must parse"));
         assert_eq!(udp.src_port, 54321);
         assert_eq!(udp.dst_port, 53);
         assert_eq!(udp.length, 8);
@@ -645,7 +668,9 @@ mod tests {
     /// subsumed by the one "doubleclick.net" entry.
     #[test]
     fn canonical_list_subsumes_asphaleias_pre_convergence_doubleclick_entries() {
-        assert!(is_default_surveillance_domain("googleads.g.doubleclick.net"));
+        assert!(is_default_surveillance_domain(
+            "googleads.g.doubleclick.net"
+        ));
         assert!(is_default_surveillance_domain("ad.doubleclick.net"));
     }
 
