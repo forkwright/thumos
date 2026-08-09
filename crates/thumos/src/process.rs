@@ -306,8 +306,8 @@ pub unsafe fn init() {
             cwd: crate::fd::DEFAULT_CWD,
             cwd_len: 1,
         };
-        let procs = &mut *addr_of_mut!(PROCS);
-        procs[0] = Some(proc0);
+        let proc_table = &mut *addr_of_mut!(PROCS);
+        proc_table[0] = Some(proc0);
         CURRENT = 0;
     }
 }
@@ -321,7 +321,7 @@ pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
     unsafe {
         // Find a free slot
         let procs = &mut *addr_of_mut!(PROCS);
-        let slot = procs.iter().position(|p| p.is_none())?;
+        let slot = procs.iter().position(Option::is_none)?;
         let pid = slot as Pid;
 
         // Allocate new address space cloned FROM kernel table
@@ -336,16 +336,15 @@ pub(crate) fn spawn(entry_point: fn() -> !) -> Option<Pid> {
         // rollback exact regardless of fragmentation.
         let mut stack_pages_alloc: [usize; STACK_PAGES] = [0; STACK_PAGES];
         for i in 0..STACK_PAGES {
-            match page::alloc_page() {
-                Some(page) => stack_pages_alloc[i] = page,
-                None => {
-                    // OOM: roll back exactly the pages allocated so far.
-                    for j in 0..i {
-                        page::free_page(stack_pages_alloc[j]);
-                    }
-                    mmu::free_addr_space(new_pt);
-                    return None;
+            if let Some(page) = page::alloc_page() {
+                stack_pages_alloc[i] = page;
+            } else {
+                // OOM: roll back exactly the pages allocated so far.
+                for &p in &stack_pages_alloc[..i] {
+                    page::free_page(p);
                 }
+                mmu::free_addr_space(new_pt);
+                return None;
             }
         }
         let stack_base = stack_pages_alloc[0];
@@ -485,7 +484,13 @@ unsafe fn map_signal_trampoline(pt: usize) -> Option<usize> {
 /// host-covered in mmu.rs's own tests; the real grant is covered end-to-end
 /// by the QEMU signal witness. `Some(0)` keeps `spawn_user`'s rollback shape
 /// (`free_page` validates allocator range, so 0 is a safe no-op there).
+// WHY the allow: this host stub's signature must match the ARM
+// implementation above (`Option<usize>`, genuinely fallible there) --
+// callers are shared across both `cfg`s and are not split per-arch, so
+// unwrapping this stub to a bare `usize` would break the common call site
+// rather than the mapping being pointless here.
 #[cfg(not(target_arch = "arm"))]
+#[allow(clippy::unnecessary_wraps)]
 unsafe fn map_signal_trampoline(_pt: usize) -> Option<usize> {
     Some(0)
 }
@@ -551,7 +556,7 @@ pub(crate) fn spawn_user(loaded: &crate::elf::LoadedElf) -> Option<Pid> {
     // core, no concurrent access at spawn.
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
-        let Some(slot) = procs.iter().position(|p| p.is_none()) else {
+        let Some(slot) = procs.iter().position(Option::is_none) else {
             free_unspawned_image(loaded); // process table full
             return None;
         };
@@ -788,6 +793,14 @@ unsafe fn fork_pl0(
 /// NOTE: unlike POSIX `fork()`, both parent and child continue FROM the next
 /// scheduler tick; the child resumes at the fork return (its ctx is seeded from
 /// the live trap frame) with r0 = 0, the parent with r0 = `child_pid`.
+//
+// WHY the allow: `parent_pid` and `parent_uid` name genuinely distinct
+// fields (which process, which user) -- dropping either the `parent_`
+// prefix or the field suffix to defeat the Levenshtein check would lose
+// which value each name holds. A statement-local allow does not suppress
+// this lint (clippy checks binding similarity over the whole function body),
+// so the allow lives here.
+#[allow(clippy::similar_names)]
 pub(crate) fn fork() -> Option<Pid> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. addr_of_mut! avoids intermediate references to static mut.
@@ -796,13 +809,13 @@ pub(crate) fn fork() -> Option<Pid> {
         let procs = &mut *addr_of_mut!(PROCS);
 
         // Find a free process slot
-        let slot = procs.iter().position(|p| p.is_none())?;
+        let slot = procs.iter().position(Option::is_none)?;
         let child_pid = slot as Pid;
         let parent_pid = CURRENT;
 
         let parent_ref0 = procs[usize::from(parent_pid)].as_ref();
         let parent_pt = parent_ref0.map_or(0, |p| p.page_table_phys);
-        let parent_pcb_ctx = parent_ref0.map(|p| p.ctx).unwrap_or_else(Context::zero);
+        let parent_pcb_ctx = parent_ref0.map_or_else(Context::zero, |p| p.ctx);
 
         // #478: seed the child from the LIVE trap frame (the in-flight fork
         // SVC), not the PCB's stale switch-OUT snapshot; the child resumes at
@@ -843,17 +856,16 @@ pub(crate) fn fork() -> Option<Pid> {
         // assumed contiguity.
         let mut child_stack_pages_alloc: [usize; STACK_PAGES] = [0; STACK_PAGES];
         for i in 0..STACK_PAGES {
-            match page::alloc_page() {
-                Some(page) => child_stack_pages_alloc[i] = page,
-                None => {
-                    // OOM: roll back exactly the pages allocated so far, then
-                    // the child's address space.
-                    for j in 0..i {
-                        page::free_page(child_stack_pages_alloc[j]);
-                    }
-                    mmu::free_addr_space(child_pt);
-                    return None;
+            if let Some(page) = page::alloc_page() {
+                child_stack_pages_alloc[i] = page;
+            } else {
+                // OOM: roll back exactly the pages allocated so far, then
+                // the child's address space.
+                for &p in &child_stack_pages_alloc[..i] {
+                    page::free_page(p);
                 }
+                mmu::free_addr_space(child_pt);
+                return None;
             }
         }
         let stack_base = child_stack_pages_alloc[0];
@@ -1051,10 +1063,10 @@ pub(crate) fn reap_dead_children() -> usize {
         // waitpid reaps only a Dead child of CURRENT; live/non-child PIDs (and
         // PID 0 itself, whose parent is None) return None and are skipped.
         // MAX_PROCS (16) fits Pid (u8), so the cast is total.
-        if let Ok(p) = Pid::try_from(pid) {
-            if waitpid(p).is_some() {
-                reaped += 1;
-            }
+        if let Ok(p) = Pid::try_from(pid)
+            && waitpid(p).is_some()
+        {
+            reaped += 1;
         }
     }
     reaped
@@ -1265,10 +1277,10 @@ pub(crate) fn schedule() -> Pid {
         let procs_ro = &*core::ptr::addr_of!(PROCS);
         for offset in 1..MAX_PROCS {
             let idx = (cur + offset) % MAX_PROCS;
-            if let Some(ref proc) = procs_ro[idx] {
-                if proc.state == State::Ready {
-                    return proc.pid;
-                }
+            if let Some(ref proc) = procs_ro[idx]
+                && proc.state == State::Ready
+            {
+                return proc.pid;
             }
         }
         // No other ready process  -  stay on current
@@ -1493,7 +1505,7 @@ pub(crate) fn add_mapping(mapping: VmMapping) -> Option<usize> {
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::from(CURRENT);
         let proc = procs[cur].as_mut()?;
-        let slot = proc.mappings.iter().position(|m| m.is_none())?;
+        let slot = proc.mappings.iter().position(Option::is_none)?;
         proc.mappings[slot] = Some(mapping);
         Some(slot)
     }
@@ -1508,11 +1520,11 @@ pub(crate) fn remove_mapping(start_addr: usize) -> Option<VmMapping> {
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::from(CURRENT);
         let proc = procs[cur].as_mut()?;
-        for slot in proc.mappings.iter_mut() {
-            if let Some(m) = slot {
-                if m.start == start_addr {
-                    return slot.take();
-                }
+        for slot in &mut proc.mappings {
+            if let Some(m) = slot
+                && m.start == start_addr
+            {
+                return slot.take();
             }
         }
         None
@@ -1528,11 +1540,9 @@ pub(crate) fn find_mapping(start_addr: usize) -> Option<VmMapping> {
         let procs = &*core::ptr::addr_of!(PROCS);
         let cur = usize::from(CURRENT);
         let proc = procs[cur].as_ref()?;
-        for slot in &proc.mappings {
-            if let Some(m) = slot {
-                if m.start == start_addr {
-                    return Some(*m);
-                }
+        for m in proc.mappings.iter().flatten() {
+            if m.start == start_addr {
+                return Some(*m);
             }
         }
         None
@@ -1550,12 +1560,10 @@ pub(crate) fn update_mapping_prot(start_addr: usize, new_prot: u32) -> bool {
         let Some(proc) = procs[cur].as_mut() else {
             return false;
         };
-        for slot in proc.mappings.iter_mut() {
-            if let Some(m) = slot {
-                if m.start == start_addr {
-                    m.prot = new_prot;
-                    return true;
-                }
+        for m in proc.mappings.iter_mut().flatten() {
+            if m.start == start_addr {
+                m.prot = new_prot;
+                return true;
             }
         }
         false
@@ -1989,10 +1997,10 @@ pub unsafe fn clear_any_pending() {
     unsafe {
         let procs = &mut *addr_of_mut!(PROCS);
         let cur = usize::from(CURRENT);
-        if let Some(ref mut proc) = procs[cur] {
-            if let Some(sig) = proc.signal_state.next_pending() {
-                proc.signal_state.clear_pending(sig);
-            }
+        if let Some(ref mut proc) = procs[cur]
+            && let Some(sig) = proc.signal_state.next_pending()
+        {
+            proc.signal_state.clear_pending(sig);
         }
     }
 }
@@ -2191,20 +2199,24 @@ mod tests {
 
     /// Reset all global state before each test.
     unsafe fn reset_all() {
-        // Zero process table
-        let procs = &mut *core::ptr::addr_of_mut!(PROCS);
-        for p in procs.iter_mut() {
-            *p = None;
+        // SAFETY: delegated to this function's own contract (test-only,
+        // single-threaded, called fresh before each test).
+        unsafe {
+            // Zero process table
+            let procs = &mut *core::ptr::addr_of_mut!(PROCS);
+            for p in procs.iter_mut() {
+                *p = None;
+            }
+            CURRENT = 0;
+
+            // Reset address space pool
+            mmu::reset_addr_space_pool();
+
+            // Reset page allocator with a modest test pool
+            // WHY: 0x4000_0000..0x8000_0000 is DRAM; kernel_end just above base so
+            // pages FROM 0x4010_0000 onward are available.
+            page::init(0x4000_0000, 0x8000_0000, 0x4010_0000);
         }
-        CURRENT = 0;
-
-        // Reset address space pool
-        mmu::reset_addr_space_pool();
-
-        // Reset page allocator with a modest test pool
-        // WHY: 0x4000_0000..0x8000_0000 is DRAM; kernel_end just above base so
-        // pages FROM 0x4010_0000 onward are available.
-        page::init(0x4000_0000, 0x8000_0000, 0x4010_0000);
 
         // Reset IPC inboxes by re-initialising as process 0 and draining
         // (no direct reset API; we just reconstruct process 0 and let
@@ -2251,7 +2263,7 @@ mod tests {
             };
             let interrupted = frame;
 
-            trap_enter(&mut frame as *mut Context);
+            trap_enter(&raw mut frame);
             assert!(!trap_switched(), "trap_enter must reset the swapped flag");
             switch_to(1);
 
@@ -2282,7 +2294,7 @@ mod tests {
             set_trap_return(42); // must be a harmless no-op with no frame
 
             let mut frame = Context::zero();
-            trap_enter(&mut frame as *mut Context);
+            trap_enter(&raw mut frame);
             set_trap_return(0xABC);
             assert_eq!(frame.r[0], 0xABC, "return value deposited into frame r0");
             trap_leave();
@@ -2299,7 +2311,7 @@ mod tests {
             CURRENT = 0;
             let mut frame = Context::zero();
             frame.r[0] = 0x1234;
-            trap_enter(&mut frame as *mut Context);
+            trap_enter(&raw mut frame);
             switch_to(0);
             assert!(!trap_switched(), "self-switch must not flag a swap");
             assert_eq!(frame.r[0], 0x1234, "self-switch must not touch the frame");
@@ -2396,7 +2408,9 @@ mod tests {
     #[test]
     fn fault_exit_current_kills_notifies_and_swaps_to_successor() {
         fn fault_test_entry() -> ! {
-            loop {}
+            loop {
+                core::hint::spin_loop();
+            }
         }
         // The composed abort-path kill the ARM stubs rely on, end to end: Dead +
         // fault status + resource teardown + PID-0 IPC + frame swap.
@@ -2425,7 +2439,7 @@ mod tests {
                 cpsr: 0x10,
                 ..Context::zero()
             };
-            trap_enter(&mut frame as *mut Context);
+            trap_enter(&raw mut frame);
             fault_exit_current(FaultKind::DataAbort {
                 fault_addr: 0xDEAD_0000,
                 fault_status: 0x80D,
@@ -2582,7 +2596,7 @@ mod tests {
                 pc: 0x7FF0_0010,
                 cpsr: 0x10,
             };
-            trap_enter(&mut frame as *mut Context);
+            trap_enter(&raw mut frame);
             let child_pid = fork().expect("PL0 fork must deep-copy");
             trap_leave();
 
@@ -2634,7 +2648,7 @@ mod tests {
                 cpsr: 0x10,
                 ..Context::zero()
             };
-            trap_enter(&mut frame as *mut Context);
+            trap_enter(&raw mut frame);
             assert!(fork().is_none(), "fork must fail closed on OOM");
             trap_leave();
 
@@ -2677,7 +2691,7 @@ mod tests {
                 cpsr: 0x10,
                 ..Context::zero()
             };
-            trap_enter(&mut frame as *mut Context);
+            trap_enter(&raw mut frame);
             let cpid = fork().expect("PL0 fork");
             trap_leave();
 
@@ -2740,7 +2754,7 @@ mod tests {
                 cpsr: 0x10,
                 ..Context::zero()
             };
-            trap_enter(&mut frame as *mut Context);
+            trap_enter(&raw mut frame);
             let cpid = fork().expect("PL0 fork");
             trap_leave();
 
@@ -2933,7 +2947,9 @@ mod tests {
     #[test]
     fn spawn_oom_rollback_frees_exact_allocated_pages() {
         fn spawn_test_entry() -> ! {
-            loop {}
+            loop {
+                core::hint::spin_loop();
+            }
         }
         unsafe {
             reset_all();
@@ -3082,9 +3098,9 @@ mod tests {
             }
 
             let procs_ro = &*core::ptr::addr_of!(PROCS);
-            for pid in 1..MAX_PROCS {
+            for (pid, slot) in procs_ro.iter().enumerate().skip(1) {
                 assert!(
-                    procs_ro[pid].is_none(),
+                    slot.is_none(),
                     "reaped slot {pid} must be None, not a lingering Dead PCB"
                 );
             }
@@ -3255,7 +3271,7 @@ mod tests {
 
             // Saturate PID 0's inbox so ipc::send(0, ...) returns false.
             for _ in 0..20 {
-                ipc::send(0, ipc::Message::new(99, b"fill"));
+                let _ = ipc::send(0, ipc::Message::new(99, b"fill"));
             }
 
             // Must not panic even though the fault notification cannot be delivered.
@@ -3373,7 +3389,7 @@ mod tests {
             let procs_ro = &*core::ptr::addr_of!(PROCS);
             let proc = procs_ro[0].as_ref().unwrap();
             assert!(
-                proc.mappings.iter().all(|m| m.is_none()),
+                proc.mappings.iter().all(Option::is_none),
                 "mappings must be cleared"
             );
             assert_eq!(
@@ -3865,13 +3881,13 @@ mod tests {
     #[test]
     fn deliver_signal_to_rejects_pid_zero() {
         unsafe {
+            const EPERM: u32 = 0u32.wrapping_sub(1);
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
             procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
-            const EPERM: u32 = 0u32.wrapping_sub(1);
             let ret = deliver_signal_to(0, crate::signal::Signal::Sigkill);
             assert_eq!(ret, EPERM, "deliver_signal_to(0, ...) must return EPERM");
 
@@ -3954,13 +3970,13 @@ mod tests {
     #[test]
     fn sys_kill_rejects_pid_zero_even_for_self() {
         unsafe {
+            const EPERM: u32 = 0u32.wrapping_sub(1);
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
             let pt = mmu::alloc_addr_space().unwrap();
             procs[0] = Some(test_process(pt));
             CURRENT = 0;
 
-            const EPERM: u32 = 0u32.wrapping_sub(1);
             let ret = crate::signal::sys_kill(0, crate::signal::Signal::Sigkill as u32);
             assert_eq!(
                 ret, EPERM,
@@ -3975,6 +3991,7 @@ mod tests {
     #[test]
     fn sys_kill_cross_process_denied_without_cap_kill() {
         unsafe {
+            const EPERM: u32 = 0u32.wrapping_sub(1);
             reset_all();
             let procs = &mut *core::ptr::addr_of_mut!(PROCS);
 
@@ -4000,7 +4017,6 @@ mod tests {
             });
             CURRENT = 1;
 
-            const EPERM: u32 = 0u32.wrapping_sub(1);
             let ret = crate::signal::sys_kill(2, crate::signal::Signal::Sigterm as u32);
             assert_eq!(
                 ret, EPERM,
