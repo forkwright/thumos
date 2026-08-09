@@ -18,6 +18,7 @@ members = [
     "crates/sphragis",
     "crates/stegnos",
     "crates/topos",
+    "crates/topos-core",
 ]
 exclude = ["crates/thumos"]
 

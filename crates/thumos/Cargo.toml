@@ -60,6 +60,14 @@ asphaleia-core = { path = "../asphaleia-core", default-features = false }
 # surveillance classification entirely — it read the PID and discarded it —
 # so the detection existed only in the layer that never runs on the phone.
 klesis-core = { path = "../klesis-core", default-features = false }
+# WHY (#545): the canonical NMEA checksum framing, coordinate/fix-quality
+# semantics, and GGA/RMC sentence parsing live in topos-core, shared with the
+# workspace `topos` crate. The kernel's hand-port truncated an overflowing
+# fix-quality byte instead of range-checking it, validated a checksum field
+# with only one hex digit as a distinct-but-related bug lived on the
+# `topos` side, and neither side bounded latitude/longitude or the parsed
+# RMC clock fields before treating them as trustworthy.
+topos-core = { path = "../topos-core", default-features = false }
 # WHY: Megolm needs AES-256-CBC (audit #231). Use the audited RustCrypto `cbc`
 # mode crate rather than hand-rolled chaining/padding. no_std verified for
 # i686 + armv7a-none-eabi (crate is `no-std` categorised, alloc-only feature set).

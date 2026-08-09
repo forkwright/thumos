@@ -1601,7 +1601,12 @@ dependencies = [
  "nom",
  "proptest",
  "snafu",
+ "topos-core",
 ]
+
+[[package]]
+name = "topos-core"
+version = "0.1.18"
 
 [[package]]
 name = "typenum"

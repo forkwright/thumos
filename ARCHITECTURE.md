@@ -63,6 +63,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 | `sema` | Radio analysis: WiFi/BT/cell scanning, IMSI catcher detection |
 | `sema-core` | no_std+alloc threat semantics (canonical ThreatLevel/Calibration + band invariants, shared with the kernel, #545) |
 | `topos` | GPS NMEA parser, geofencing, position logging |
+| `topos-core` | Canonical NMEA checksum framing, coordinate/fix-quality semantics, and GGA/RMC sentence parsing, shared no_std with the kernel (#545) |
 
 **Security**
 

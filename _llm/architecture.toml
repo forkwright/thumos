@@ -75,6 +75,11 @@ path = "crates/topos"
 role = "GPS NMEA parsing, geofencing, and position logging."
 
 [[architecture.crates]]
+name = "topos-core"
+path = "crates/topos-core"
+role = "Canonical NMEA checksum framing, coordinate/fix-quality semantics, and GGA/RMC sentence parsing; no_std, consumed by both the kernel GPS driver and topos so the two cannot drift (#545)."
+
+[[architecture.crates]]
 name = "klesis"
 path = "crates/klesis"
 role = "AT command parser, CCCI/CLDMA framing, SMS PDU, and GSM-7."

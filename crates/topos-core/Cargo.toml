@@ -1,0 +1,16 @@
+[package]
+name = "topos-core"
+description = "no_std + alloc core for NMEA 0183 parsing and position semantics (the canonical checksum, coordinate, and fix-quality invariants, shared by topos and the kernel)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.kanon]
+maturity = "alpha"
+since = "2026-08-09"
+exit-criteria = "operator-reviewed hardware validation and release-readiness gate"

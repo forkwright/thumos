@@ -8,6 +8,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+topos-core = { path = "../topos-core" }
 nom = { workspace = true }
 jiff = { workspace = true }
 snafu = { workspace = true }
