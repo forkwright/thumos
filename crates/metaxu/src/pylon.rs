@@ -103,15 +103,15 @@ impl Pylon {
         // the request's identity ref, checked next).
         let device = auth.request.identity().attestation_digest;
         match auth.signed_grant.verify(&device, self.now_ms) {
-            Err(GrantError::BadSignature) => return Self::reject(&auth, reject::GRANT_SIGNATURE),
             Err(GrantError::Expired { .. }) => return Self::reject(&auth, reject::GRANT_EXPIRED),
             Err(GrantError::WrongDevice) => return Self::reject(&auth, reject::WRONG_DEVICE),
             Ok(_) => {}
-            // WHY a wildcard despite listing every known variant: GrantError
-            // is `#[non_exhaustive]` (metaxu-core, cross-repo API, #545) --
-            // pylon.rs is now an external-crate consumer of it, so a match
-            // must tolerate a future additive variant rather than fail to
-            // compile on one.
+            // WHY a wildcard rather than a named `BadSignature` arm:
+            // GrantError is `#[non_exhaustive]` (metaxu-core, cross-repo
+            // API, #545) -- pylon.rs is now an external-crate consumer of
+            // it, so a match must tolerate a future additive variant. This
+            // catches BOTH `BadSignature` and any such future variant,
+            // identically (both reject with GRANT_SIGNATURE).
             Err(_) => return Self::reject(&auth, reject::GRANT_SIGNATURE),
         }
         // The request's identity ref must match the grant's subject.
@@ -177,8 +177,10 @@ impl Pylon {
 
 /// Run a pylon on `127.0.0.1:0` in a background thread, answering exactly
 /// `n_requests` frames then stopping. Returns the bound port and the join
-/// handle. Used by the adversarial witness (#544) and, under `pylon-bin`,
-/// by `src/bin/pylon_bridge.rs` for the on-device QEMU round trip.
+/// handle.
+///
+/// Used by the adversarial witness (#544) and, under `pylon-bin`, by
+/// `src/bin/pylon_bridge.rs` for the on-device QEMU round trip.
 pub fn spawn(mut pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap_or_else(|_| unreachable!());
     let port = listener.local_addr().map(|a| a.port()).unwrap_or_default();

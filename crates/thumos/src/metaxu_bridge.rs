@@ -1,9 +1,10 @@
 //! The `metaxu-probe` on-device bridge (#544): the kernel-side half of the
-//! second-UART round trip criterion 3 exercises. Builds a harmless
-//! `SendSms` task under a self-issued dev grant, sends it through
-//! `metaxu-core`'s authenticated session/envelope framing over the second
-//! PL011 (`board::UART1_BASE`, the on-device transport), and verifies the
-//! `pylon-bridge` host process's signed response.
+//! second-UART round trip criterion 3 exercises.
+//!
+//! Builds a harmless `SendSms` task under a self-issued dev grant, sends it
+//! through `metaxu-core`'s authenticated session/envelope framing over the
+//! second PL011 (`board::UART1_BASE`, the on-device transport), and
+//! verifies the `pylon-bridge` host process's signed response.
 //!
 //! Dev-only, single-shot, wire-compatible: this module signs with the SAME
 //! well-known dev seeds `metaxu`'s own witness and `pylon-bridge` use for
