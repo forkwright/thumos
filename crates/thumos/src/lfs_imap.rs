@@ -157,26 +157,35 @@ impl LfsImap {
 
     /// Deserialize an imap from bytes.
     ///
-    /// `device_blocks` is the filesystem's own `superblock.block_count` --
-    /// the same geometry bound `Lfs::validate_block_num` (`lfs.rs`)
-    /// enforces on `inode.direct[]` and on imap-derived pointers at
-    /// `load_inode`/`unlink`. The imap is on-disk, untrusted data: it is
-    /// the pointer table that selects which block is authoritative for
-    /// every inode, so an unguarded entry can serve one file's content as
-    /// another's, or misparse arbitrary device bytes as an inode. Every
-    /// block this filesystem itself allocates stays within `[1,
-    /// device_blocks)` (block 0 is the superblock, never an allocatable
-    /// data block); rejecting out-of-extent entries here means a
-    /// corrupted checkpoint fails at mount instead of at first use of the
-    /// bad entry (#643).
+    /// `segment_size` is the filesystem's own `superblock.segment_size`
+    /// and `device_blocks` its `superblock.block_count` -- the same
+    /// geometry bound `Lfs::validate_block_num` (`lfs.rs`) enforces on
+    /// `inode.direct[]` and on imap-derived pointers at `load_inode`/
+    /// `unlink`. The imap is on-disk, untrusted data: it is the pointer
+    /// table that selects which block is authoritative for every inode,
+    /// so an unguarded entry can serve one file's content as another's,
+    /// or misparse arbitrary device bytes as an inode. Segment 0 --
+    /// blocks `[0, segment_size)` -- is permanently reserved for the
+    /// superblock, both checkpoint slots, the imap, and the segment
+    /// bitmap (`LfsSegmentManager::new` marks it used forever; the
+    /// ordinary allocator never hands it out), so every block this
+    /// filesystem itself allocates for inode content stays within
+    /// `[segment_size, device_blocks)`. Rejecting an entry outside that
+    /// extent here means a corrupted checkpoint fails at mount instead of
+    /// at first use of the bad entry, matching #643's mount-time intent
+    /// and closing the gap #627 closed for `validate_block_num` (#653).
     ///
     /// # Errors
     ///
     /// Returns [`LfsError::Corrupt`] if the buffer is too short, contains
-    /// invalid data, or any entry's block number is 0 or `>=
-    /// device_blocks`.
+    /// invalid data, or any entry's block number is inside the reserved
+    /// segment 0 or `>= device_blocks`.
     #[must_use]
-    pub(crate) fn deserialize(buf: &[u8], device_blocks: u64) -> Result<Self, LfsError> {
+    pub(crate) fn deserialize(
+        buf: &[u8],
+        segment_size: u32,
+        device_blocks: u64,
+    ) -> Result<Self, LfsError> {
         if buf.len() < IMAP_HEADER_SIZE {
             return Err(LfsError::Corrupt);
         }
@@ -196,6 +205,8 @@ impl LfsImap {
         if buf.len() < expected_len {
             return Err(LfsError::Corrupt);
         }
+
+        let reserved_blocks = u64::from(segment_size);
 
         let mut map = BTreeMap::new();
         let mut offset = IMAP_HEADER_SIZE;
@@ -218,8 +229,11 @@ impl LfsImap {
             // WARNING: reject at load time, not first use -- an
             // out-of-extent entry left in the map would still reach
             // `BlockCache::read` unguarded the moment the compactor or a
-            // load_inode call walked to it (#643).
-            if block == 0 || block >= device_blocks {
+            // load_inode call walked to it (#643). Segment 0 is
+            // permanently reserved for filesystem metadata (#653) -- an
+            // entry inside it is corruption even though it is nonzero
+            // and within the raw device's physical capacity.
+            if block < reserved_blocks || block >= device_blocks {
                 return Err(LfsError::Corrupt);
             }
 
@@ -264,20 +278,23 @@ impl LfsImap {
 
     /// Read and deserialize the imap from consecutive blocks on disk.
     ///
-    /// `device_blocks` is forwarded to [`Self::deserialize`] as the
-    /// `superblock.block_count` extent bound for every parsed entry
-    /// (#643).
+    /// `segment_size` and `device_blocks` are forwarded to
+    /// [`Self::deserialize`] as the `superblock.segment_size`/
+    /// `superblock.block_count` extent bounds for every parsed entry
+    /// (#643, #653).
     ///
     /// # Errors
     ///
     /// - [`LfsError::BlockIo`] if any block read fails.
     /// - [`LfsError::Corrupt`] if the deserialized data is invalid, or any
-    ///   entry's block number is 0 or `>= device_blocks`.
+    ///   entry's block number is inside the reserved segment 0 or `>=
+    ///   device_blocks`.
     pub(crate) fn load_from_disk(
         dev: &mut dyn BlockDevice,
         cache: &mut BlockCache,
         start_block: u64,
         block_count: u32,
+        segment_size: u32,
         device_blocks: u64,
     ) -> Result<Self, LfsError> {
         // WHY: block_count is an attacker-controlled on-disk field
@@ -303,7 +320,7 @@ impl LfsImap {
             data.extend_from_slice(&buf);
         }
 
-        Self::deserialize(&data, device_blocks)
+        Self::deserialize(&data, segment_size, device_blocks)
     }
 }
 
@@ -363,7 +380,7 @@ mod tests {
         let mut buf = Vec::new();
         imap.serialize(&mut buf);
 
-        let restored = LfsImap::deserialize(&buf, 2048).expect("deserialize should succeed");
+        let restored = LfsImap::deserialize(&buf, 8, 2048).expect("deserialize should succeed");
         assert_eq!(restored.get(0), Some(10));
         assert_eq!(restored.get(1), Some(20));
         assert_eq!(restored.get(100), Some(300));
@@ -390,7 +407,7 @@ mod tests {
         // Create a fresh cache to prove we're reading from disk.
         let mut cache2 = BlockCache::new();
         let restored =
-            LfsImap::load_from_disk(&mut dev, &mut cache2, start_block, block_count, 2048)
+            LfsImap::load_from_disk(&mut dev, &mut cache2, start_block, block_count, 8, 2048)
                 .expect("load should succeed");
 
         assert_eq!(restored.len(), 50);
@@ -405,7 +422,7 @@ mod tests {
 
     #[test]
     fn deserialize_rejects_truncated_data() {
-        let result = LfsImap::deserialize(&[0; 2], 2048);
+        let result = LfsImap::deserialize(&[0; 2], 8, 2048);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "expected Corrupt error for truncated data"
@@ -420,7 +437,7 @@ mod tests {
         // Only 4 bytes instead of 12.
         buf.extend_from_slice(&0u32.to_le_bytes());
 
-        let result = LfsImap::deserialize(&buf, 2048);
+        let result = LfsImap::deserialize(&buf, 8, 2048);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "expected Corrupt error for short entry data"
@@ -433,7 +450,7 @@ mod tests {
         let mut buf = Vec::new();
         imap.serialize(&mut buf);
 
-        let restored = LfsImap::deserialize(&buf, 2048).expect("deserialize empty");
+        let restored = LfsImap::deserialize(&buf, 8, 2048).expect("deserialize empty");
         assert!(restored.is_empty());
     }
 
@@ -447,7 +464,7 @@ mod tests {
         buf.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
         buf.extend_from_slice(&[0u8; 16]);
 
-        let result = LfsImap::deserialize(&buf, 2048);
+        let result = LfsImap::deserialize(&buf, 8, 2048);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "overflowing count must be rejected as Corrupt, not wrap and OOB-index"
@@ -469,7 +486,7 @@ mod tests {
         // with 0.
         buf[8..16].copy_from_slice(&0u64.to_le_bytes());
 
-        let result = LfsImap::deserialize(&buf, 2048);
+        let result = LfsImap::deserialize(&buf, 8, 2048);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "an entry pointing at block 0 (the superblock) must be rejected at load time"
@@ -488,10 +505,32 @@ mod tests {
         let mut buf = Vec::new();
         imap.serialize(&mut buf);
 
-        let result = LfsImap::deserialize(&buf, 2048);
+        let result = LfsImap::deserialize(&buf, 8, 2048);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "an entry equal to device_blocks must be rejected as out of extent"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_entry_inside_reserved_segment_but_nonzero() {
+        // WHY (#653): the check above catches block 0, but deserialize()
+        // previously stopped there too -- blocks `[1, segment_size)` (the
+        // second checkpoint slot, the imap's own on-disk region, and the
+        // segment bitmap) were left addressable. Block 1 is nonzero and
+        // well within device_blocks, so only the reserved-segment bound
+        // this test targets catches it (mirrors lfs.rs's
+        // load_inode_rejects_imap_block_inside_reserved_segment_but_nonzero,
+        // #627).
+        let mut imap = LfsImap::new();
+        imap.insert(9, 1);
+        let mut buf = Vec::new();
+        imap.serialize(&mut buf);
+
+        let result = LfsImap::deserialize(&buf, 8, 2048);
+        assert!(
+            matches!(result, Err(LfsError::Corrupt)),
+            "an entry inside the reserved metadata segment (but not block 0) must be rejected"
         );
     }
 
@@ -503,7 +542,7 @@ mod tests {
         let mut dev = MemBlockDevice::new(64).expect("create device"); // 32 KiB device
         let mut cache = BlockCache::new();
 
-        let result = LfsImap::load_from_disk(&mut dev, &mut cache, 0, 262_145, 8);
+        let result = LfsImap::load_from_disk(&mut dev, &mut cache, 0, 262_145, 1, 8);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "block_count implying ~1 GiB on a 32 KiB device must be rejected before allocating"
@@ -516,7 +555,7 @@ mod tests {
         let mut dev = MemBlockDevice::new(64).expect("create device");
         let mut cache = BlockCache::new();
 
-        let result = LfsImap::load_from_disk(&mut dev, &mut cache, 0, u32::MAX, 8);
+        let result = LfsImap::load_from_disk(&mut dev, &mut cache, 0, u32::MAX, 1, 8);
         assert!(
             matches!(result, Err(LfsError::Corrupt)),
             "overflowing block_count must be rejected, not wrap into a tiny allocation"
@@ -551,7 +590,7 @@ mod tests {
 
         let mut cache2 = BlockCache::new();
         let restored =
-            LfsImap::load_from_disk(&mut dev, &mut cache2, start_block, block_count, 8192)
+            LfsImap::load_from_disk(&mut dev, &mut cache2, start_block, block_count, 8, 8192)
                 .expect("load should succeed");
 
         assert_eq!(restored.len(), ENTRY_COUNT as usize);
