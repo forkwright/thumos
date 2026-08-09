@@ -1685,8 +1685,8 @@ mod tests {
             26,
             44,
             45,
-            52,
-            53,
+            // WHY 52/53 removed (#544): MetaxuSubmit/MetaxuPoll now occupy
+            // these -- no longer a gap.
             67,
             68,
             72,

@@ -107,6 +107,12 @@ impl Pylon {
             Err(GrantError::Expired { .. }) => return Self::reject(&auth, reject::GRANT_EXPIRED),
             Err(GrantError::WrongDevice) => return Self::reject(&auth, reject::WRONG_DEVICE),
             Ok(_) => {}
+            // WHY a wildcard despite listing every known variant: GrantError
+            // is `#[non_exhaustive]` (metaxu-core, cross-repo API, #545) --
+            // pylon.rs is now an external-crate consumer of it, so a match
+            // must tolerate a future additive variant rather than fail to
+            // compile on one.
+            Err(_) => return Self::reject(&auth, reject::GRANT_SIGNATURE),
         }
         // The request's identity ref must match the grant's subject.
         if device != auth.signed_grant.grant.subject {

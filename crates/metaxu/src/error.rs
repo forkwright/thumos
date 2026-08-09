@@ -149,6 +149,18 @@ impl Error<core::convert::Infallible> {
                 source,
                 location: Location::generate(),
             },
+            // WHY a fallback arm despite listing every known variant:
+            // CoreError is `#[non_exhaustive]` (metaxu-core, cross-repo
+            // API, #545) -- this crate is an external consumer, so the
+            // match must tolerate a future additive variant, even though
+            // only the three arms above are ever actually produced today.
+            // `EnvelopeError::BadMagic` (a plain unit variant this crate
+            // fully controls) is the safest fallback shape -- it needs no
+            // knowledge of a foreign crate's exact error internals.
+            _ => Self::Envelope {
+                source: crate::envelope::EnvelopeError::BadMagic,
+                location: Location::generate(),
+            },
         }
     }
 

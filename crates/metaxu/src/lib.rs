@@ -36,8 +36,12 @@ pub mod pylon;
 // task/response payloads are canonically defined in metaxu-core (no_std +
 // alloc, shared with the kernel) -- re-exported here as modules so every
 // existing `crate::envelope::X` / `crate::grants::X` / `crate::protocol::X`
-// reference in this crate keeps resolving unchanged.
-pub(crate) use metaxu_core::{envelope, grants, protocol};
+// reference in this crate keeps resolving unchanged. `grants` is used only
+// by test-gated code (witness.rs, pylon.rs) -- cfg-gated the same way, or
+// it is an unused-import error on a plain (non-test, non-pylon-bin) build.
+#[cfg(any(test, feature = "pylon-bin"))]
+pub(crate) use metaxu_core::grants;
+pub(crate) use metaxu_core::{envelope, protocol};
 
 use snafu::{OptionExt as _, ResultExt as _};
 
