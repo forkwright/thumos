@@ -37,12 +37,12 @@ notes = "The kernel boot reader reports confirmed presses only (no queue, no rel
 
 [[pair]]
 name = "gps"
-kernel = "gps.rs (ported from topos)"
+kernel = "gps.rs (checksum framing, coordinate/fix-quality, GGA/RMC parsing converged)"
 workspace = "topos"
-disposition = "extract-core"
-canonical = "pending: topos-core (coordinate/geo types + parse) when the GPS NMEA path lands (#129 family)"
-owner = "unscheduled"
-notes = "gps.rs:3 doc header records the port. Not user-facing until the combo-chip GPS path lands."
+disposition = "converged"
+canonical = "topos-core (no_std+alloc; kernel links via path dep, topos re-exports FixQuality and converts Position/Fix)"
+owner = "#545 (this PR)"
+notes = "Converged: $...*XX checksum framing, ddmm.mmmm coordinate conversion, FixQuality, and full GGA/RMC sentence parsing. Five divergences found and resolved on the way -- (1) topos's checksum parser accepted a checksum field with only one hex digit (a width-flexible hex reader validated a truncated sentence missing its leading zero); the kernel required exactly two and topos now does too. (2) the kernel widened a parsed GGA quality byte via a truncating `as u8` cast, so a quality field of 264 wrapped to 8 (a DEFINED code) instead of being rejected; converged onto a saturate-to-default parse. (3) the kernel's fixed-point coordinate parser rejected minutes >= 60 and guarded an unbounded fractional-digit exponent; topos's f64 parser did neither -- both now share the guarded parser. (4) neither side bounded latitude to +/-90 or longitude to +/-180; both now do. (5) the kernel's altitude parser had no sign handling and silently swallowed a legitimate below-sea-level reading; topos's f64 parser handled it correctly and the kernel now does too. Also found: topos's RMC parser never extracted time/date at all (no prior implementation to compare against; both sides now share it, with range validation on hour/minute/second/month/day that neither side had, since clock.rs treats GPS as its highest-trust automatic time source); and topos's own `parse_gga_returns_error_when_no_fix` test carried a hardcoded checksum that did not match its body text, so it passed for the wrong reason (exercising the checksum-mismatch path, not the no-fix path it claimed to cover) -- fixed to compute the checksum. NOT converged: the WMT/CCCI hardware transport (SentenceBuffer, GpsHwOps, GpsHw) and the SentenceBuffer/GpsReceiver lifecycle state machine, which are genuinely kernel-device-specific; topos's own HDOP/speed/course extraction, which is plain `str::parse` with no NMEA-specific invariant worth sharing and which the kernel never reads."
 
 [[pair]]
 name = "wifi"

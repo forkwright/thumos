@@ -1,5 +1,7 @@
 //! Geographic position types.
 
+pub(crate) use topos_core::FixQuality;
+
 /// A geographic coordinate with latitude, longitude, and optional altitude.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Position {
@@ -11,42 +13,21 @@ pub(crate) struct Position {
     pub(crate) alt: Option<f64>,
 }
 
-/// GPS fix quality indicator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub(crate) enum FixQuality {
-    /// No fix.
-    NoFix,
-    /// Standard GPS fix.
-    Gps,
-    /// Differential GPS fix.
-    Dgps,
-    /// PPS fix.
-    Pps,
-    /// Real-Time Kinematic.
-    Rtk,
-    /// Float RTK.
-    FloatRtk,
-    /// Estimated (dead reckoning).
-    Estimated,
-    /// Manual input mode.
-    Manual,
-    /// Simulation mode.
-    Simulation,
-}
-
-impl From<u8> for FixQuality {
-    fn from(val: u8) -> Self {
-        match val {
-            1 => Self::Gps,
-            2 => Self::Dgps,
-            3 => Self::Pps,
-            4 => Self::Rtk,
-            5 => Self::FloatRtk,
-            6 => Self::Estimated,
-            7 => Self::Manual,
-            8 => Self::Simulation,
-            _ => Self::NoFix,
+impl From<topos_core::Position> for Position {
+    // WHY: topos_core::Position stores microdegrees as i64 (bounded to
+    // +/-180 * 1_000_000 by topos_core's own range checks -- nowhere near
+    // f64's 53-bit exact-integer range), so the i64 -> f64 widening below
+    // never loses precision in practice; `cast_precision_loss` cannot see
+    // that value-range invariant, only the types.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "microdegrees are bounded to +/-180_000_000, far inside f64's exact range"
+    )]
+    fn from(p: topos_core::Position) -> Self {
+        Self {
+            lat: p.lat_udeg as f64 / topos_core::MICRODEG_SCALE as f64,
+            lon: p.lon_udeg as f64 / topos_core::MICRODEG_SCALE as f64,
+            alt: None,
         }
     }
 }

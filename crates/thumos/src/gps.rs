@@ -1,11 +1,21 @@
 //! GPS kernel adapter for the MT6739 combo chip.
 //!
-//! Ports NMEA parsing from `crates/topos/src/` (nmea.rs, position.rs)
-//! into the kernel context:
 //! - NMEA sentence parser: GGA (fix data) and RMC (recommended minimum)
 //! - Sentence buffer: accumulate bytes until `\r\n`, then parse
 //! - GPS position and time extraction
 //! - Hardware abstraction via `GpsHwOps` trait for testability
+//!
+//! The checksum framing, coordinate conversion, and fix-quality semantics
+//! are canonical in `topos_core` (`no_std` + alloc), shared with the
+//! workspace `topos` crate -- the first hand-port and the workspace crate
+//! had drifted (#545): the kernel truncated an overflowing fix-quality byte
+//! via `as u8` instead of range-checking it (a quality field of `264`
+//! wrapped to `8`, a defined code, rather than being rejected), and
+//! `topos`'s checksum parser accepted a checksum field with only one hex
+//! digit. Neither side bounded latitude/longitude or validated the parsed
+//! RMC clock fields before treating them as trustworthy, and the kernel's
+//! altitude parser had no sign handling (a below-sea-level reading was
+//! silently swallowed). One parser, one set of bounds, both consumers.
 //!
 //! ## Hardware path
 //!
@@ -80,6 +90,21 @@ impl core::fmt::Display for GpsError {
     }
 }
 
+impl From<topos_core::CoreError> for GpsError {
+    fn from(e: topos_core::CoreError) -> Self {
+        use topos_core::CoreError as C;
+        match e {
+            C::NoFix => Self::NoFix,
+            C::ChecksumMismatch { .. } => Self::ChecksumMismatch,
+            // WHY a catch-all: CoreError is `#[non_exhaustive]`; an
+            // unrecognised parse failure becoming ParseError rejects the
+            // sentence, which is the fail-closed direction -- GPS position
+            // is a location trust boundary, not a display convenience.
+            _ => Self::ParseError,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GPS state machine
 // ---------------------------------------------------------------------------
@@ -124,12 +149,29 @@ pub struct GpsPosition {
     pub latitude: i64,
     /// Longitude in microdegrees. Positive = East, negative = West.
     pub longitude: i64,
-    /// Altitude above mean sea level in millimeters. `0` if unavailable.
-    pub altitude_mm: i32,
-    /// Fix quality indicator (0 = no fix, 1 = GPS, 2 = DGPS, etc.).
-    pub fix_quality: u8,
+    /// Altitude above mean sea level in millimeters. `None` when the
+    /// sentence's altitude field was absent or malformed -- distinct from
+    /// an actual sea-level (`Some(0)`) reading (#545: the prior
+    /// representation defaulted a malformed field to `0`, indistinguishable
+    /// from sea level, and could not represent a below-sea-level reading
+    /// at all).
+    pub altitude_mm: Option<i32>,
+    /// Fix quality indicator.
+    pub fix_quality: topos_core::FixQuality,
     /// Number of satellites in use.
     pub satellite_count: u8,
+}
+
+impl From<topos_core::Fix> for GpsPosition {
+    fn from(fix: topos_core::Fix) -> Self {
+        Self {
+            latitude: fix.position.lat_udeg,
+            longitude: fix.position.lon_udeg,
+            altitude_mm: fix.altitude_mm,
+            fix_quality: fix.quality,
+            satellite_count: fix.satellite_count,
+        }
+    }
 }
 
 impl core::fmt::Display for GpsPosition {
@@ -160,6 +202,19 @@ pub struct GpsTime {
     pub minute: u8,
     /// Second (0-59).
     pub second: u8,
+}
+
+impl From<topos_core::DateTime> for GpsTime {
+    fn from(dt: topos_core::DateTime) -> Self {
+        Self {
+            year: dt.year,
+            month: dt.month,
+            day: dt.day,
+            hour: dt.hour,
+            minute: dt.minute,
+            second: dt.second,
+        }
+    }
 }
 
 impl core::fmt::Display for GpsTime {
@@ -193,289 +248,22 @@ impl GpsTime {
 }
 
 // ---------------------------------------------------------------------------
-// NMEA parsing (no_std, no floating-point)
+// NMEA parsing (delegates to topos_core; see the module doc for #545)
 // ---------------------------------------------------------------------------
 
-/// Validate NMEA checksum. The checksum is the XOR of all bytes between '$' and '*'.
-fn validate_checksum(sentence: &[u8]) -> Result<(), GpsError> {
-    // Find $ and * positions.
-    let start = sentence
-        .iter()
-        .position(|&b| b == b'$')
-        .ok_or(GpsError::ParseError)?;
-    let star = sentence
-        .iter()
-        .position(|&b| b == b'*')
-        .ok_or(GpsError::ParseError)?;
-
-    if star <= start + 1 || star + 3 > sentence.len() {
-        return Err(GpsError::ParseError);
-    }
-
-    // Compute XOR checksum of bytes between $ and *.
-    let mut checksum: u8 = 0;
-    for &b in &sentence[start + 1..star] {
-        checksum ^= b;
-    }
-
-    // Parse the expected checksum (two hex chars after *). Invalid hex
-    // digits mean the sentence is malformed, not that a computed
-    // checksum merely disagreed with the claimed value -- those are
-    // distinct failure classes.
-    let expected =
-        parse_hex_byte(sentence[star + 1], sentence[star + 2]).ok_or(GpsError::ParseError)?;
-
-    if checksum == expected {
-        Ok(())
-    } else {
-        Err(GpsError::ChecksumMismatch)
-    }
-}
-
-/// Parse a single hex digit to its numeric value.
-const fn hex_digit(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        _ => None,
-    }
-}
-
-/// Parse two hex character bytes into a single u8.
-fn parse_hex_byte(hi: u8, lo: u8) -> Option<u8> {
-    let h = hex_digit(hi)?;
-    let l = hex_digit(lo)?;
-    Some(h * 16 + l)
-}
-
-/// Split an NMEA sentence body (between $ and *) into comma-separated fields.
-///
-/// Returns a vector of byte slices.
-fn split_fields(body: &[u8]) -> Vec<&[u8]> {
-    let mut fields = Vec::new();
-    let mut start = 0;
-    for (i, &b) in body.iter().enumerate() {
-        if b == b',' {
-            fields.push(&body[start..i]);
-            start = i + 1;
-        }
-    }
-    fields.push(&body[start..]);
-    fields
-}
-
-/// Parse NMEA latitude field (DDMM.MMMM format) to microdegrees.
-///
-/// Returns microdegrees (degrees * 1_000_000). Negated if hemisphere is 'S'.
-fn parse_lat(value: &[u8], hemisphere: &[u8]) -> Result<i64, GpsError> {
-    if value.len() < 4 {
-        return Err(GpsError::ParseError);
-    }
-
-    let microdeg = parse_nmea_coord(value, 2)?;
-
-    if hemisphere == b"S" {
-        Ok(-microdeg)
-    } else {
-        Ok(microdeg)
-    }
-}
-
-/// Parse NMEA longitude field (DDDMM.MMMM format) to microdegrees.
-fn parse_lon(value: &[u8], hemisphere: &[u8]) -> Result<i64, GpsError> {
-    if value.len() < 5 {
-        return Err(GpsError::ParseError);
-    }
-
-    let microdeg = parse_nmea_coord(value, 3)?;
-
-    if hemisphere == b"W" {
-        Ok(-microdeg)
-    } else {
-        Ok(microdeg)
-    }
-}
-
-/// Parse an NMEA coordinate (DDDMM.MMMM) into microdegrees.
-///
-/// `deg_digits` is 2 for latitude, 3 for longitude.
-fn parse_nmea_coord(value: &[u8], deg_digits: usize) -> Result<i64, GpsError> {
-    if value.len() < deg_digits + 2 {
-        return Err(GpsError::ParseError);
-    }
-
-    let degrees = parse_int(&value[..deg_digits]).ok_or(GpsError::ParseError)? as i64;
-    let minutes_part = &value[deg_digits..];
-
-    // Parse minutes as integer + fractional parts.
-    // Find the decimal point.
-    let dot_pos = minutes_part.iter().position(|&b| b == b'.');
-
-    let (int_part, frac_part) = match dot_pos {
-        Some(pos) => (&minutes_part[..pos], &minutes_part[pos + 1..]),
-        None => (minutes_part, &[] as &[u8]),
-    };
-
-    let minutes_int = parse_int(int_part).ok_or(GpsError::ParseError)? as i64;
-
-    // Parse fractional part, scaled to 4 decimal places.
-    let frac_val = if frac_part.is_empty() {
-        0i64
-    } else {
-        let raw = parse_int(frac_part).ok_or(GpsError::ParseError)? as i64;
-        // Scale to 4 digits (10000).
-        let frac_len = frac_part.len() as u32;
-        // WHY: an adversarial GPS source controls frac_part length; beyond
-        // 18 digits 10i64.pow(frac_len - 4) can wrap to 0 in release builds
-        // (panic = "abort"), turning the division below into a divide-by-zero
-        // kernel abort. Reject rather than let the exponent grow unbounded.
-        if frac_len > 18 {
-            return Err(GpsError::ParseError);
-        }
-        if frac_len < 4 {
-            raw * 10i64.pow(4 - frac_len)
-        } else if frac_len > 4 {
-            raw / 10i64.pow(frac_len - 4)
-        } else {
-            raw
-        }
-    };
-
-    // minutes = minutes_int + frac_val / 10000
-    // microdegrees = (degrees + minutes / 60) * 1_000_000
-    //              = degrees * 1_000_000 + (minutes_int * 10000 + frac_val) * 1_000_000 / (60 * 10000)
-    let minutes_scaled = minutes_int * 10000 + frac_val;
-
-    // INVARIANT: NMEA minutes must be in [0, 60); minutes_scaled is minutes
-    // in units of 1/10000, so the bound is 60 * 10000 = 600_000. A GPS source
-    // reporting >= 60 minutes is malformed and must not silently wrap into
-    // the next degree.
-    if minutes_scaled >= 600_000 {
-        return Err(GpsError::ParseError);
-    }
-
-    let microdeg = degrees * 1_000_000 + minutes_scaled * 1_000_000 / 600_000;
-
-    Ok(microdeg)
-}
-
-/// Parse a byte slice of ASCII digits into a u32.
-fn parse_int(bytes: &[u8]) -> Option<u32> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let mut result: u32 = 0;
-    for &b in bytes {
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        result = result.checked_mul(10)?.checked_add((b - b'0') as u32)?;
-    }
-    Some(result)
-}
-
-/// Parse a fixed-point decimal number from bytes, returning value * 10^scale.
-fn parse_fixed_point(bytes: &[u8], scale: u32) -> Option<i64> {
-    let dot_pos = bytes.iter().position(|&b| b == b'.');
-    let (int_bytes, frac_bytes) = match dot_pos {
-        Some(pos) => (&bytes[..pos], &bytes[pos + 1..]),
-        None => (bytes, &[] as &[u8]),
-    };
-
-    let int_val = parse_int(int_bytes)? as i64;
-    let frac_val = if frac_bytes.is_empty() {
-        0i64
-    } else {
-        parse_int(frac_bytes)? as i64
-    };
-
-    let frac_len = frac_bytes.len() as u32;
-    let frac_scaled = if frac_len < scale {
-        frac_val * 10i64.pow(scale - frac_len)
-    } else if frac_len > scale {
-        frac_val / 10i64.pow(frac_len - scale)
-    } else {
-        frac_val
-    };
-
-    Some(int_val * 10i64.pow(scale) + frac_scaled)
-}
-
-/// Parse altitude from NMEA field (meters with decimal) into millimeters.
-fn parse_altitude_mm(bytes: &[u8]) -> Option<i32> {
-    if bytes.is_empty() {
-        return None;
-    }
-    // Parse as fixed-point with 3 decimal places (millimeters).
-    let val = parse_fixed_point(bytes, 3)?;
-    // Clamp to i32 range.
-    if val > i32::MAX as i64 || val < i32::MIN as i64 {
-        return None;
-    }
-    Some(val as i32)
-}
-
 /// Parse a GGA sentence (Global Positioning System Fix Data).
-///
-/// Extracts position, fix quality, and satellite count.
 ///
 /// # Errors
 ///
 /// Returns `GpsError::ChecksumMismatch` if the checksum is invalid.
-/// Returns `GpsError::NoFix` if fix quality is 0.
+/// Returns `GpsError::NoFix` if fix quality is 0 or an undefined code.
 /// Returns `GpsError::ParseError` if the sentence cannot be parsed.
 #[must_use]
 pub(crate) fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
-    validate_checksum(sentence)?;
-
-    // Extract body between $ and *.
-    let start = sentence
-        .iter()
-        .position(|&b| b == b'$')
-        .ok_or(GpsError::ParseError)?;
-    let star = sentence
-        .iter()
-        .position(|&b| b == b'*')
-        .ok_or(GpsError::ParseError)?;
-    let body = &sentence[start + 1..star];
-
-    let fields = split_fields(body);
-    if fields.len() < 10 {
-        return Err(GpsError::ParseError);
-    }
-
-    // fields[0] = GPGGA/GNGGA
-    // fields[1] = time (hhmmss.ss)
-    // fields[2] = lat, fields[3] = N/S
-    // fields[4] = lon, fields[5] = E/W
-    // fields[6] = fix quality
-    // fields[7] = num satellites
-    // fields[8] = HDOP
-    // fields[9] = altitude, fields[10] = M
-
-    let quality = parse_int(fields[6]).unwrap_or(0) as u8;
-    if quality == 0 || fields[2].is_empty() {
-        return Err(GpsError::NoFix);
-    }
-
-    let latitude = parse_lat(fields[2], fields[3])?;
-    let longitude = parse_lon(fields[4], fields[5])?;
-    let altitude_mm = parse_altitude_mm(fields[9]).unwrap_or(0);
-    let satellite_count = parse_int(fields[7]).unwrap_or(0) as u8;
-
-    Ok(GpsPosition {
-        latitude,
-        longitude,
-        altitude_mm,
-        fix_quality: quality,
-        satellite_count,
-    })
+    Ok(topos_core::parse_gga(sentence)?.into())
 }
 
 /// Parse an RMC sentence (Recommended Minimum Navigation Information).
-///
-/// Extracts time and date for clock synchronization, plus position.
 ///
 /// # Errors
 ///
@@ -484,80 +272,8 @@ pub(crate) fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
 /// Returns `GpsError::ParseError` if the sentence cannot be parsed.
 #[must_use]
 pub(crate) fn parse_rmc(sentence: &[u8]) -> Result<(GpsPosition, GpsTime), GpsError> {
-    validate_checksum(sentence)?;
-
-    let start = sentence
-        .iter()
-        .position(|&b| b == b'$')
-        .ok_or(GpsError::ParseError)?;
-    let star = sentence
-        .iter()
-        .position(|&b| b == b'*')
-        .ok_or(GpsError::ParseError)?;
-    let body = &sentence[start + 1..star];
-
-    let fields = split_fields(body);
-    if fields.len() < 10 {
-        return Err(GpsError::ParseError);
-    }
-
-    // fields[0] = GPRMC/GNRMC
-    // fields[1] = time (hhmmss.ss)
-    // fields[2] = status (A=active, V=void)
-    // fields[3] = lat, fields[4] = N/S
-    // fields[5] = lon, fields[6] = E/W
-    // fields[7] = speed (knots)
-    // fields[8] = course (degrees true)
-    // fields[9] = date (ddmmyy)
-
-    if fields[2] != b"A" {
-        return Err(GpsError::NoFix);
-    }
-
-    let latitude = parse_lat(fields[3], fields[4])?;
-    let longitude = parse_lon(fields[5], fields[6])?;
-
-    let position = GpsPosition {
-        latitude,
-        longitude,
-        altitude_mm: 0,
-        fix_quality: 1, // GPS fix
-        satellite_count: 0,
-    };
-
-    let time = parse_time_date(fields[1], fields[9])?;
-
-    Ok((position, time))
-}
-
-/// Parse NMEA time (hhmmss.ss) and date (ddmmyy) fields into `GpsTime`.
-fn parse_time_date(time_field: &[u8], date_field: &[u8]) -> Result<GpsTime, GpsError> {
-    if time_field.len() < 6 || date_field.len() < 6 {
-        return Err(GpsError::ParseError);
-    }
-
-    let hour = parse_int(&time_field[..2]).ok_or(GpsError::ParseError)? as u8;
-    let minute = parse_int(&time_field[2..4]).ok_or(GpsError::ParseError)? as u8;
-    let second = parse_int(&time_field[4..6]).ok_or(GpsError::ParseError)? as u8;
-
-    let day = parse_int(&date_field[..2]).ok_or(GpsError::ParseError)? as u8;
-    let month = parse_int(&date_field[2..4]).ok_or(GpsError::ParseError)? as u8;
-    let year_short = parse_int(&date_field[4..6]).ok_or(GpsError::ParseError)? as u16;
-    // NMEA year is two digits; assume 2000+ for years < 70, 1900+ otherwise.
-    let year = if year_short < 70 {
-        2000 + year_short
-    } else {
-        1900 + year_short
-    };
-
-    Ok(GpsTime {
-        year,
-        month,
-        day,
-        hour,
-        minute,
-        second,
-    })
+    let (fix, time) = topos_core::parse_rmc(sentence)?;
+    Ok((fix.into(), time.into()))
 }
 
 // ---------------------------------------------------------------------------
@@ -874,7 +590,11 @@ mod tests {
         let pos = parse_gga(sentence);
         assert!(pos.is_ok(), "valid GGA sentence must parse successfully");
         let pos = pos.unwrap_or_default();
-        assert_eq!(pos.fix_quality, 1, "fix quality must be 1 (GPS)");
+        assert_eq!(
+            pos.fix_quality,
+            topos_core::FixQuality::Gps,
+            "fix quality must be GPS"
+        );
         assert_eq!(pos.satellite_count, 8, "satellite count must be 8");
         // 53 degrees 21.6802 minutes N = ~53361336 microdegrees
         assert!(
@@ -884,6 +604,38 @@ mod tests {
         );
         // 6 degrees 30.3372 minutes W = ~-6505620 microdegrees (negative for W)
         assert!(pos.longitude < 0, "longitude must be negative for West");
+        assert_eq!(
+            pos.altitude_mm,
+            Some(61_700),
+            "altitude must parse to Some(61700) mm"
+        );
+    }
+
+    #[test]
+    fn parse_gga_rejects_bad_checksum() {
+        let sentence = b"$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*FF";
+        assert_eq!(
+            parse_gga(sentence),
+            Err(GpsError::ChecksumMismatch),
+            "a corrupted checksum must propagate through the topos_core \
+             delegation as GpsError::ChecksumMismatch"
+        );
+    }
+
+    #[test]
+    fn parse_gga_rejects_undefined_and_overflowing_quality_code() {
+        // #545: the kernel previously widened this field via a truncating
+        // `as u8` cast, so a quality value of 264 (which does not fit u8)
+        // wrapped to 8 -- a DEFINED quality code -- and was accepted as a
+        // fix. Converged onto topos_core's saturate-to-default parse: an
+        // overflowing or undefined quality code must resolve to NoFix.
+        let sentence =
+            nmea_sentence(b"GPGGA,092750.000,5321.6802,N,00630.3372,W,264,8,1.03,61.7,M,55.2,M,,");
+        assert_eq!(
+            parse_gga(&sentence),
+            Err(GpsError::NoFix),
+            "a quality field of 264 must never resolve to a defined (accepted) fix"
+        );
     }
 
     // -- RMC parsing --
@@ -931,16 +683,17 @@ mod tests {
         );
     }
 
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
     /// Build a valid-checksum NMEA sentence "$<body>*<XX>" (no CRLF) for
-    /// tests that need to get past validate_checksum() before reaching a
+    /// tests that need to get past checksum validation before reaching a
     /// deeper parse branch.
     fn nmea_sentence(body: &[u8]) -> Vec<u8> {
-        let checksum = body.iter().fold(0u8, |acc, &b| acc ^ b);
+        let checksum = topos_core::compute_checksum(body);
         let mut sentence = Vec::new();
         sentence.push(b'$');
         sentence.extend_from_slice(body);
         sentence.push(b'*');
-        const HEX: &[u8; 16] = b"0123456789ABCDEF";
         sentence.push(HEX[(checksum >> 4) as usize]);
         sentence.push(HEX[(checksum & 0xF) as usize]);
         sentence
@@ -1032,41 +785,6 @@ mod tests {
         );
     }
 
-    // -- Checksum validation --
-
-    #[test]
-    fn validate_checksum_rejects_bad_checksum() {
-        let sentence = b"$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*FF";
-        assert_eq!(
-            validate_checksum(sentence),
-            Err(GpsError::ChecksumMismatch),
-            "corrupted checksum must be rejected"
-        );
-    }
-
-    #[test]
-    fn validate_checksum_rejects_non_hex_digits_as_parse_error() {
-        // "ZZ" are not valid hex digits -- this is a malformed sentence,
-        // not a checksum that was computed and disagreed. Distinct from
-        // validate_checksum_rejects_bad_checksum's well-formed-but-wrong-
-        // value case.
-        let sentence = b"$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*ZZ";
-        assert_eq!(
-            validate_checksum(sentence),
-            Err(GpsError::ParseError),
-            "non-hex checksum digits must be ParseError, not ChecksumMismatch"
-        );
-    }
-
-    #[test]
-    fn validate_checksum_accepts_valid() {
-        let sentence = b"$GPGGA,092750.000,5321.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,*76";
-        assert!(
-            validate_checksum(sentence).is_ok(),
-            "valid checksum must be accepted"
-        );
-    }
-
     // -- GPS receiver --
 
     #[test]
@@ -1091,70 +809,6 @@ mod tests {
             receiver.state(),
             GpsState::Searching,
             "state must be Searching after init"
-        );
-    }
-
-    // -- parse_int --
-
-    #[test]
-    fn parse_int_parses_digits() {
-        assert_eq!(parse_int(b"123"), Some(123));
-        assert_eq!(parse_int(b"0"), Some(0));
-        assert_eq!(parse_int(b""), None);
-        assert_eq!(parse_int(b"abc"), None);
-    }
-
-    // -- Coordinate parsing --
-
-    #[test]
-    fn parse_lat_rejects_excessive_fractional_digit_count() {
-        let value = b"5321.00000000000000000000000"; // 23 fractional digits
-        let result = parse_lat(value, b"N");
-        assert_eq!(
-            result,
-            Err(GpsError::ParseError),
-            "23+ fractional digits must error instead of overflowing 10i64.pow"
-        );
-    }
-
-    #[test]
-    fn parse_lat_rejects_minutes_of_60_or_more() {
-        let value = b"5360.0000"; // 60.0 minutes is invalid; NMEA minutes must be < 60
-        let result = parse_lat(value, b"N");
-        assert_eq!(
-            result,
-            Err(GpsError::ParseError),
-            "minutes >= 60 must be rejected as invalid NMEA"
-        );
-    }
-
-    #[test]
-    fn parse_lat_accepts_minutes_just_under_60() {
-        let value = b"5359.9999";
-        let result = parse_lat(value, b"N");
-        assert!(
-            result.is_ok(),
-            "minutes just under 60 must be accepted, got {result:?}"
-        );
-    }
-
-    #[test]
-    fn parse_time_date_applies_1900_century_for_year_70_and_above() {
-        // NMEA's two-digit year maps to 1900+year for year_short >= 70,
-        // not 2000+year -- only the < 70 branch was exercised elsewhere
-        // (parse_rmc_extracts_time uses year_short=11).
-        let result = parse_time_date(b"092750", b"280599");
-        assert_eq!(
-            result,
-            Ok(GpsTime {
-                year: 1999,
-                month: 5,
-                day: 28,
-                hour: 9,
-                minute: 27,
-                second: 50,
-            }),
-            "year_short=99 must map to 1999, not 2099"
         );
     }
 
