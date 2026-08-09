@@ -286,7 +286,6 @@ impl Provisioner {
     }
 
     /// Current provisioning state.
-    #[must_use]
     pub(crate) fn state(&self) -> &ProvisionState {
         &self.state
     }
@@ -308,7 +307,6 @@ impl Provisioner {
     /// Returns the new state after processing. The caller should keep
     /// feeding data until the state is [`ProvisionState::Complete`] or
     /// [`ProvisionState::Error`].
-    #[must_use]
     pub(crate) fn receive_chunk(&mut self, data: &[u8]) -> &ProvisionState {
         // Don't accept data in terminal states.
         match &self.state {

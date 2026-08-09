@@ -352,7 +352,6 @@ impl MountTable {
     ///   a non-root path with a trailing `/`.
     /// - `VfsError::AlreadyExists` if the path is already mounted.
     /// - `VfsError::NoSpace` if all mount slots are occupied.
-    #[must_use]
     pub(crate) fn mount(&mut self, path: &str, fs: Box<dyn Filesystem>) -> Result<(), VfsError> {
         if !path.starts_with('/') {
             return Err(VfsError::InvalidPath);
@@ -499,7 +498,6 @@ impl Default for MountTable {
 /// - `VfsError::InvalidPath` if the path is empty or does not start with `/`.
 /// - `VfsError::NotFound` if any path component cannot be found.
 /// - `VfsError::NotADirectory` if a non-terminal component is not a directory.
-#[must_use]
 pub(crate) fn resolve_path(mounts: &MountTable, path: &str) -> Result<(usize, u32), VfsError> {
     if path.is_empty() || !path.starts_with('/') {
         return Err(VfsError::InvalidPath);

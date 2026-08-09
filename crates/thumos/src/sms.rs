@@ -369,7 +369,6 @@ impl SmsManager {
     /// - [`SmsError::PduDecode`] -- PDU is truncated or malformed.
     /// - [`SmsError::UnsupportedDcs`] -- PDU is well-formed but uses a data
     ///   coding scheme other than GSM-7 (0x00).
-    #[must_use]
     pub(crate) fn handle_incoming(pdu_data: &[u8]) -> Result<SmsMessage, SmsError> {
         let mut cur = Cursor::new(pdu_data);
 

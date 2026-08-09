@@ -456,7 +456,6 @@ impl<'a> JsonParser<'a> {
     ///
     /// Returns [`JsonError`] if the input is not valid JSON (within
     /// the subset we support).
-    #[must_use]
     pub(crate) fn parse(data: &'a [u8]) -> Result<JsonValue, JsonError> {
         let mut parser = Self {
             data,

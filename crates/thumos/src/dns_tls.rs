@@ -169,7 +169,6 @@ pub(crate) trait TlsTransport {
 ///
 /// Returns the framed message or `DotError::MessageTooLarge` if the
 /// DNS message exceeds `MAX_DNS_MESSAGE_SIZE`.
-#[must_use]
 pub(crate) fn frame_dns_message(dns_message: &[u8]) -> Result<Vec<u8>, DotError> {
     if dns_message.len() > MAX_DNS_MESSAGE_SIZE {
         return Err(DotError::MessageTooLarge);
@@ -194,7 +193,6 @@ pub(crate) fn parse_frame_length(header: &[u8; 2]) -> u16 {
 ///
 /// Reads the 2-byte length prefix, then reads the DNS message body.
 /// Returns the DNS message payload (without the length prefix).
-#[must_use]
 pub(crate) fn read_dot_frame<T: TlsTransport>(
     transport: &mut T,
     deadline_ms: u64,
@@ -246,7 +244,6 @@ pub(crate) fn read_dot_frame<T: TlsTransport>(
 ///
 /// Returns the wire-format query bytes and the transaction ID.
 /// The query has flags RD=1 (recursion desired), QDCOUNT=1.
-#[must_use]
 pub(crate) fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DotError> {
     if hostname.is_empty() {
         return Err(DotError::InvalidName);
@@ -295,7 +292,6 @@ pub(crate) fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DotE
 /// Build a DNS query for an arbitrary record type.
 ///
 /// Like `build_dns_query` but accepts a custom record type value.
-#[must_use]
 pub(crate) fn build_dns_query_typed(
     hostname: &str,
     txid: u16,
@@ -435,7 +431,6 @@ impl<T: TlsTransport> DotClient<T> {
     ///
     /// Returns `Ok(())` if the hashes match, or
     /// `Err(DotError::PinMismatch)` if they differ.
-    #[must_use]
     pub(crate) fn verify_server_pin(
         &self,
         received_spki: &[u8; SPKI_HASH_LEN],
@@ -452,7 +447,6 @@ impl<T: TlsTransport> DotClient<T> {
     /// Builds a DNS A query, wraps it in a `DoT` frame, sends it over
     /// the TLS transport, reads the response frame, and returns the
     /// raw DNS response message.
-    #[must_use]
     pub(crate) fn query(
         &mut self,
         name: &str,
@@ -497,7 +491,6 @@ impl<T: TlsTransport> DotClient<T> {
     /// Send a raw DNS message over `DoT` and return the raw response.
     ///
     /// The caller is responsible for building and parsing the DNS message.
-    #[must_use]
     pub(crate) fn send_raw(
         &mut self,
         dns_message: &[u8],

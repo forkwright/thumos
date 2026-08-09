@@ -332,7 +332,6 @@ impl AuditLog {
     /// `entries` is built element-by-element into a heap-allocated `Vec`
     /// and converted to a boxed slice, so the ~64 KiB backing storage is
     /// never materialized as a single stack frame (#297).
-    #[must_use]
     pub(crate) fn new() -> Self {
         let mut entries = Vec::with_capacity(MAX_ENTRIES);
         for _ in 0..MAX_ENTRIES {
@@ -495,7 +494,6 @@ impl AuditLog {
     /// array.
     ///
     /// To iterate in order: process `older` first, then `newer`.
-    #[must_use]
     pub(crate) fn recent(&self, n: usize) -> (&[AuditEntry], &[AuditEntry]) {
         if self.count == 0 || n == 0 {
             return (&[], &[]);

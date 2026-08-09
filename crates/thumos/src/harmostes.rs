@@ -437,7 +437,6 @@ impl MatrixClient {
     // -----------------------------------------------------------------------
 
     /// Return the list of tracked rooms.
-    #[must_use]
     pub(crate) fn rooms(&self) -> &[Room] {
         &self.rooms
     }
@@ -497,7 +496,6 @@ impl MatrixClient {
     }
 
     /// Return the current outbox contents.
-    #[must_use]
     pub(crate) fn outbox(&self) -> &[PendingMessage] {
         &self.outbox
     }

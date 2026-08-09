@@ -93,7 +93,6 @@ impl MessageTransport {
     ///
     /// Cycles through: Sms -> Matrix -> Briar -> Meshtastic ->
     /// `BridgedWhatsApp` -> `BridgedSlack` -> `BridgedTelegram` -> Sms.
-    #[must_use]
     pub(crate) const fn next(self) -> Self {
         match self {
             Self::Sms => Self::Matrix,
