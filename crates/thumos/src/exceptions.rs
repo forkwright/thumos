@@ -17,12 +17,16 @@
 
 use core::fmt::Write;
 
+#[cfg(not(feature = "qemu"))]
+use crate::board;
 use crate::csprng;
 use crate::gic;
 use crate::power;
 use crate::process;
 use crate::timer;
 use crate::uart::Uart;
+#[cfg(not(feature = "qemu"))]
+use crate::usb;
 use crate::watchdog;
 
 /// Tick counter incremented by the timer IRQ handler, split into
@@ -68,6 +72,25 @@ pub unsafe fn init() {
 
         // Set the first timer tick
         timer::set_ms(TICK_MS);
+
+        // Enable the MUSB serial RX IRQ in the GIC (#666), alongside the
+        // timer registration above -- same call site, same mechanism, no
+        // second registration path. board::m7::MUSB_IRQ is `None` until
+        // hardware-confirmed (see its doc comment), so this is a no-op on
+        // every build today; flipping the board constant to `Some(n)` is
+        // the entire remaining step. Safe to enable before
+        // usb::init_controller() runs later in kinit: a MUSB interrupt
+        // reaching the CPU here can only come from a genuine bus event
+        // (SOFTCONN, set inside init(), is what attaches D+/D- to the bus
+        // in the first place) or a stale latched condition surviving the
+        // bootloader handoff -- either way, usb::handle_musb_interrupt's
+        // own not-yet-ready gate turns a pre-init fire into a controlled
+        // no-op rather than dispatching into a partially-initialized
+        // controller.
+        #[cfg(not(feature = "qemu"))]
+        if let Some(musb_irq) = board::MUSB_IRQ {
+            gic::enable_irq(musb_irq);
+        }
     }
 }
 
@@ -370,6 +393,15 @@ fn irq_handler_body() {
         // gone. The delivery happens on every timer IRQ once the body has
         // done its scheduler work, so a handled signal lands in user context
         // at the next return.
+    }
+
+    // #666: MUSB serial RX. board::m7::MUSB_IRQ is `None` until
+    // hardware-confirmed, so `Some(irq) == board::MUSB_IRQ` is always false
+    // today and this branch never dispatches -- see MUSB_IRQ's doc comment
+    // and exceptions::init()'s registration above.
+    #[cfg(not(feature = "qemu"))]
+    if Some(irq) == board::MUSB_IRQ {
+        usb::handle_musb_interrupt();
     }
 }
 

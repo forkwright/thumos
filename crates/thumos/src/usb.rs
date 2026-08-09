@@ -21,6 +21,8 @@
 // Base address
 // ---------------------------------------------------------------------------
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use crate::irq;
 
 /// MUSB OTG controller base address on MT6739.
@@ -758,8 +760,11 @@ pub(crate) struct UsbController {
 /// (#437 remnant 2). The ISR path (`handle_ep1_rx`) and the reader path
 /// (`read_serial`) previously shared the controller's raw fields with
 /// nothing enforcing they could not interleave; the ring now lives behind
-/// an `irq::IrqSpinlock` (the ipc.rs/mmu.rs pattern), so when the MUSB IRQ
-/// is registered with the GIC the wiring is a one-line call-site change.
+/// an `irq::IrqSpinlock` (the ipc.rs/mmu.rs pattern). The MUSB IRQ is
+/// registered with the GIC as of #666 (`exceptions::init()`,
+/// `board::m7::MUSB_IRQ`) -- `handle_musb_interrupt` now dispatches into
+/// this ring's ISR-side push path for real, gated only on the real GIC
+/// INTID remaining unconfirmed (see `MUSB_IRQ`'s doc comment).
 struct SerialRxRing {
     /// Byte storage.
     buf: [u8; SERIAL_RX_BUF_LEN],
@@ -963,7 +968,10 @@ impl UsbController {
     ///
     /// # Safety
     ///
-    /// Caller must not call this concurrently with [`handle_interrupt`].
+    /// Caller must not call this concurrently with [`handle_interrupt`] --
+    /// guaranteed by construction when reached only through
+    /// [`with_usb_controller`] (#666), the sole accessor to the shared
+    /// controller instance.
     ///
     /// [`handle_interrupt`]: UsbController::handle_interrupt
     #[must_use]
@@ -1508,6 +1516,88 @@ impl UsbController {
 }
 
 // ---------------------------------------------------------------------------
+// Shared controller instance (#666)
+// ---------------------------------------------------------------------------
+
+/// WHY (#322/#331 class, same reasoning as SERIAL_RX_RING_LOCK above): an
+/// `irq::IrqSpinlock`, not bare single-core-cooperative reasoning -- once
+/// the MUSB IRQ is registered with the GIC (`board::m7::MUSB_IRQ`, `None`
+/// until hardware-confirmed), `handle_musb_interrupt` runs in interrupt
+/// context while `init_controller` and any future ordinary-context caller
+/// (`write_serial`) run in ordinary kernel code, and nothing previously
+/// enforced they could not interleave. `UsbController` was a `kinit` stack
+/// local before #666 for exactly this reason -- an ISR cannot reach a stack
+/// local at all, so the question of concurrent access never arose.
+static USB_CONTROLLER_LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
+/// The one kernel-wide controller instance. Access ONLY through
+/// `with_usb_controller`.
+static mut USB_CONTROLLER: UsbController = UsbController::new();
+
+/// True once [`init_controller`] has run to completion. Gates
+/// [`handle_musb_interrupt`] against a MUSB interrupt reaching the CPU
+/// before the controller is configured -- `exceptions::init()` enables the
+/// MUSB IRQ at the GIC well before kinit's USB step runs
+/// `init_controller`, so a stale latched interrupt condition surviving the
+/// bootloader handoff could in principle fire in that window. Without this
+/// gate that would dispatch into a controller whose endpoints have never
+/// been configured; with it, a pre-ready fire is a controlled no-op.
+static USB_CONTROLLER_READY: AtomicBool = AtomicBool::new(false);
+
+/// Run `f` on the shared USB controller under the IRQ-safe lock. Single
+/// accessor so the lock can never be bypassed by a future call site -- the
+/// same pattern as [`with_serial_rx`], extended to the whole controller.
+pub(crate) fn with_usb_controller<R>(f: impl FnOnce(&mut UsbController) -> R) -> R {
+    let _guard = USB_CONTROLLER_LOCK.lock();
+    // SAFETY: the lock masks IRQ delivery for its entire hold
+    // (`irq::IrqSpinlock`), so `handle_musb_interrupt`'s ISR-context call
+    // literally cannot preempt an ordinary-context caller inside this
+    // closure, and vice versa -- this is the only accessor to the static
+    // controller.
+    unsafe { f(&mut *core::ptr::addr_of_mut!(USB_CONTROLLER)) }
+}
+
+/// Initialize the shared USB controller and mark it ready for interrupt
+/// dispatch. Must be called exactly once during kernel init, before
+/// anything else touches the MUSB hardware.
+///
+/// # Safety
+///
+/// Same contract as [`UsbController::init`]: the caller must ensure no
+/// concurrent access to MUSB registers outside this call -- satisfied by
+/// this being the sole `init` call site (kinit's USB step) and by every
+/// other accessor going through [`with_usb_controller`]'s lock.
+pub(crate) unsafe fn init_controller() -> Result<(), UsbInitError> {
+    let result = with_usb_controller(|usb| {
+        // SAFETY: propagated from this function's own contract; the lock
+        // held by with_usb_controller is the exclusivity guarantee.
+        unsafe { usb.init() }
+    });
+    if result.is_ok() {
+        USB_CONTROLLER_READY.store(true, Ordering::Release);
+    }
+    result
+}
+
+/// Route a MUSB GIC interrupt to [`UsbController::handle_interrupt`].
+///
+/// Called FROM `exceptions::irq_handler_body` when the acknowledged GIC IRQ
+/// ID matches `board::m7::MUSB_IRQ`. No-ops before [`init_controller`] has
+/// completed (see [`USB_CONTROLLER_READY`]).
+pub(crate) fn handle_musb_interrupt() {
+    if !USB_CONTROLLER_READY.load(Ordering::Acquire) {
+        return;
+    }
+    with_usb_controller(|usb| {
+        // SAFETY: called only FROM the GIC IRQ dispatch path
+        // (exceptions::irq_handler_body), which is interrupt context --
+        // the sole call site.
+        unsafe {
+            usb.handle_interrupt();
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2032,5 +2122,159 @@ mod tests {
         // write_serial checks `configured` before any MMIO access.
         let n = unsafe { ctrl.write_serial(b"hello") };
         assert_eq!(n, 0, "write_serial must return 0 when not configured");
+    }
+
+    // --- Contention witness (#666): real concurrent ISR-push vs. reader-drain ---
+
+    /// WHY `extern crate std` HERE, scoped inside this test function rather
+    /// than at module or crate scope: the kernel crate is `#![no_std]` for
+    /// the armv7a target, but the i686 host test binary links a real
+    /// libstd in its sysroot regardless -- `#![no_std]` only suppresses the
+    /// IMPLICIT `extern crate std` + prelude, not std's availability.
+    /// `std::thread` is the only way to exercise `with_serial_rx`'s
+    /// `IrqSpinlock` under REAL concurrent access on host:
+    /// `IrqSpinlock::lock()`'s `AtomicBool::compare_exchange_weak` is a
+    /// genuine cross-thread mutex (not merely a single-core IRQ-mask
+    /// simulation), so two real OS threads racing on it faithfully tests
+    /// the lock itself, even though the ARM CPSR-masking half of its
+    /// contract (irq.rs's own `cfg(not(target_arch = "arm"))` mock) is
+    /// single-core-only and cannot be exercised this way. This function is
+    /// the ONLY place in the kernel crate that references `std`, and the
+    /// `extern crate` is function-scoped so it cannot leak into any other
+    /// item or the armv7a build.
+    ///
+    /// WHY this shape proves synchronization, not just correctness: a test
+    /// that calls the push path then the drain path sequentially proves
+    /// nothing about synchronization -- both paths would run under the SAME
+    /// execution context either way. This spawns TWO real OS threads as
+    /// producers (standing in for the MUSB ISR's `ring_push` path -- e.g. a
+    /// bus reset re-arming the ring while a prior packet's bytes are still
+    /// draining) racing each other AND the main thread as the reader
+    /// (standing in for `read_serial`'s `drain` path) against the SAME
+    /// shared ring, many rounds.
+    ///
+    /// WHY two producers, not one: an earlier version of this test used a
+    /// single producer racing the reader. Pushed to CI with
+    /// `SERIAL_RX_RING_LOCK` deliberately bypassed, it stayed GREEN --
+    /// x86's strong memory ordering (TSO) plus this crate's `SerialRxRing`
+    /// touching mostly-disjoint fields per role (the pusher's `head`/
+    /// `buf[head]` vs. the reader's `tail`/`buf[tail]`) makes a
+    /// single-producer/single-reader race a subtle memory-VISIBILITY
+    /// hazard that x86 hardware happens to mask often enough that it is
+    /// not a reliable witness. Two producers racing EACH OTHER on the SAME
+    /// `head` field is a classic read-modify-write "lost update": both
+    /// read the same `head`, both compute the same `next_head`, one
+    /// pusher's `buf[head]` write is silently overwritten by the other's,
+    /// and `head` only advances once despite two `push()` calls both
+    /// returning `accepted`. That is a genuine race on shared mutable
+    /// state, not a memory-ordering subtlety -- it does not depend on weak
+    /// ordering to manifest, which is what makes it a reliable witness
+    /// even on x86 CI hardware.
+    ///
+    /// Each producer pushes a disjoint value lane (0..PUSH_PER_LANE and
+    /// PUSH_PER_LANE..2*PUSH_PER_LANE) so the drained stream can still be
+    /// checked per-lane after interleaving. Two properties a
+    /// torn/lost/duplicated/reordered ring slot would break: exact count
+    /// conservation (every `push()` that reported `accepted` is either
+    /// drained or counted `dropped`), and strict per-lane monotonicity of
+    /// what was drained. ROUNDS repeats with a fresh ring each time --
+    /// races are probabilistic, so many short rounds give a lock bypass
+    /// many independent chances to manifest.
+    ///
+    /// Falsification (see the PR body for the CI run pair): with
+    /// `with_serial_rx`'s `SERIAL_RX_RING_LOCK.lock()` bypassed, this test
+    /// goes RED under real thread contention; restoring the lock turns it
+    /// GREEN again.
+    #[test]
+    fn serial_rx_ring_survives_real_concurrent_isr_and_reader_contention() {
+        extern crate std;
+        use std::thread;
+        use std::vec::Vec;
+
+        const PUSH_PER_LANE: u8 = 100;
+        const ROUNDS: usize = 64;
+
+        for _round in 0..ROUNDS {
+            with_serial_rx(|r| *r = SerialRxRing::new());
+
+            let producer_a = thread::spawn(move || {
+                let mut accepted = 0usize;
+                for byte in 0..PUSH_PER_LANE {
+                    if with_serial_rx(|r| r.push(byte)) {
+                        accepted += 1;
+                    }
+                }
+                accepted
+            });
+            let producer_b = thread::spawn(move || {
+                let mut accepted = 0usize;
+                for byte in 0..PUSH_PER_LANE {
+                    if with_serial_rx(|r| r.push(byte + PUSH_PER_LANE)) {
+                        accepted += 1;
+                    }
+                }
+                accepted
+            });
+
+            // Drain concurrently while both producers are still pushing --
+            // the real production scenario (ISR push vs. read_serial drain
+            // interleaving), not a sequential call-then-call.
+            let mut drained: Vec<u8> = Vec::with_capacity(2 * usize::from(PUSH_PER_LANE));
+            while !producer_a.is_finished() || !producer_b.is_finished() {
+                let mut chunk = [0u8; 32];
+                let n = with_serial_rx(|r| r.drain(&mut chunk));
+                drained.extend_from_slice(&chunk[..n]);
+            }
+            let Ok(accepted_a) = producer_a.join() else {
+                unreachable!("producer_a thread must not panic")
+            };
+            let Ok(accepted_b) = producer_b.join() else {
+                unreachable!("producer_b thread must not panic")
+            };
+            // Drain the remainder pushed between the last poll above and
+            // the producers' join.
+            loop {
+                let mut chunk = [0u8; 32];
+                let n = with_serial_rx(|r| r.drain(&mut chunk));
+                if n == 0 {
+                    break;
+                }
+                drained.extend_from_slice(&chunk[..n]);
+            }
+
+            let dropped = with_serial_rx(|r| r.dropped_bytes());
+            assert_eq!(
+                drained.len() + usize::try_from(dropped).unwrap_or(usize::MAX),
+                accepted_a + accepted_b,
+                "every byte push() reported accepted must be either drained or counted dropped -- a mismatch means the two producers (or a producer and the reader) corrupted the shared head/tail indices"
+            );
+
+            let mut previous_a: Option<u8> = None;
+            let mut previous_b: Option<u8> = None;
+            for &b in &drained {
+                if b < PUSH_PER_LANE {
+                    if let Some(prev) = previous_a {
+                        assert!(
+                            b > prev,
+                            "lane-A byte {b} did not strictly increase past {prev} -- a duplicated or reordered ring slot"
+                        );
+                    }
+                    previous_a = Some(b);
+                } else if b < 2 * PUSH_PER_LANE {
+                    let lane_b_value = b - PUSH_PER_LANE;
+                    if let Some(prev) = previous_b {
+                        assert!(
+                            lane_b_value > prev,
+                            "lane-B byte {lane_b_value} did not strictly increase past {prev} -- a duplicated or reordered ring slot"
+                        );
+                    }
+                    previous_b = Some(lane_b_value);
+                } else {
+                    unreachable!(
+                        "drained byte {b} is outside both pushed lanes -- a corrupted ring slot"
+                    );
+                }
+            }
+        }
     }
 }
