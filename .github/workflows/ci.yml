@@ -168,6 +168,13 @@ jobs:
         run: scripts/witness/signal.sh
       - name: QEMU PID-0 fault supervisor + crash-loop rate limit (#492)
         run: scripts/witness/crashloop.sh
+      - name: Authenticated Aletheia round trip over the second UART (#544)
+        # WHY (#544 on-device leg): a real Thumos userspace process
+        # (/metaxu_probe) drives a metaxu-core authenticated request over
+        # board::UART1_BASE to a real host pylon-bridge process and back --
+        # the SAME reference endpoint the crates/metaxu adversarial witness
+        # runs against, not a second implementation.
+        run: scripts/witness/metaxu.sh
       - name: Witness-extraction drift guard (#546)
         # WHY (#546): reds if witness assertions ever re-inline into a CI
         # surface or a stage stops calling the canonical scripts.

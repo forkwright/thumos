@@ -12,6 +12,7 @@ members = [
     "crates/krypta",
     "crates/leipsanon",
     "crates/metaxu",
+    "crates/metaxu-core",
     "crates/pteron",
     "crates/sema",
     "crates/sema-core",

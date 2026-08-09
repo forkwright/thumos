@@ -78,6 +78,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 | Crate | Description |
 |-------|-------------|
 | `metaxu` | Aletheia/Thumos thin-client bridge protocol: typed tasks, capability grant claims, opaque identity references |
+| `metaxu-core` | no_std+alloc envelope framing, signed-grant verification, and typed task/response payloads, shared with the kernel (#544, #545) |
 
 **Build tooling**
 

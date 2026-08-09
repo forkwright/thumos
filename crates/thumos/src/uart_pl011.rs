@@ -65,6 +65,14 @@ impl Uart {
         Self { base: UART0_BASE }
     }
 
+    /// Create a UART driver for an arbitrary PL011 instance base -- the
+    /// `metaxu-probe` bridge (#544) uses this for `board::UART1_BASE`
+    /// rather than adding a second hardcoded constructor per instance.
+    #[cfg(feature = "metaxu-probe")]
+    pub(crate) const fn at(base: usize) -> Self {
+        Self { base }
+    }
+
     /// Write a single byte, waiting (bounded) for TX FIFO space.
     pub(crate) fn putc(&self, byte: u8) {
         // SAFETY: DR/FR are PL011 MMIO registers at UART0_BASE on the QEMU

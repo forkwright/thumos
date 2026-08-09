@@ -1,6 +1,10 @@
 //! The versioned wire envelope: the ONE shared Aletheia-facing contract
 //! (#553).
 //!
+//! Extracted `no_std` + alloc (#544/#545) so the kernel and the `metaxu`
+//! workspace crate compile the identical framing logic instead of two
+//! implementations that could drift.
+//!
 //! Every Aletheia-facing frame — task request, task response, STT event —
 //! travels inside this envelope. It exists so two repositories (thumos and
 //! aletheia) never ship separate assumptions: magic + schema identity,
@@ -38,44 +42,48 @@
 //! - Actual bytes != 22 + `payload_len`: reject (`TruncatedFrame` /
 //!   `TrailingBytes`) — exact decoding, always.
 //!
-//! Golden vectors live in `vectors.rs`; both repositories must decode them
-//! identically (#544 proves both endpoints against them).
+//! Golden vectors live in `metaxu`'s `vectors.rs`; both repositories must
+//! decode them identically (#544 proves both endpoints against them).
+
+extern crate alloc;
+
+use alloc::vec::Vec;
+use core::fmt;
 
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
-use snafu::Snafu;
 
 /// Envelope magic bytes: "MTX1" as a u32 LE (4D 54 58 31 on the wire).
-pub(crate) const MAGIC: u32 = 0x3158_544D;
+pub const MAGIC: u32 = 0x3158_544D;
 
 /// Schema family identifier (bump only for a new envelope family).
-pub(crate) const SCHEMA_ID: u16 = 1;
+pub const SCHEMA_ID: u16 = 1;
 
 /// Major version: incompatible changes only.
-pub(crate) const MAJOR: u8 = 1;
+pub const MAJOR: u8 = 1;
 
 /// Minor version: additive changes within [`MAJOR`]. MINOR 1 adds the
 /// authenticated kinds (4, 5) per the #553 compat rule (#544).
-pub(crate) const MINOR: u8 = 1;
+pub const MINOR: u8 = 1;
 
 /// Fixed header length in bytes.
-pub(crate) const HEADER_LEN: usize = 22;
+pub const HEADER_LEN: usize = 22;
 
 /// Per-kind payload ceilings (v1). Derived from content classes:
 /// - STT text is one utterance: 4 KiB.
 /// - Task requests/responses carry summaries, drafts, small batches: 32 KiB.
-pub(crate) const MAX_STT_PAYLOAD: u32 = 4 * 1024;
+pub const MAX_STT_PAYLOAD: u32 = 4 * 1024;
 /// Task request payload ceiling.
-pub(crate) const MAX_TASK_REQUEST_PAYLOAD: u32 = 32 * 1024;
+pub const MAX_TASK_REQUEST_PAYLOAD: u32 = 32 * 1024;
 /// Task response payload ceiling.
-pub(crate) const MAX_TASK_RESPONSE_PAYLOAD: u32 = 32 * 1024;
+pub const MAX_TASK_RESPONSE_PAYLOAD: u32 = 32 * 1024;
 
 /// Authenticated request payload ceiling: the task ceiling plus room for
 /// the grant wrapper (~256 B) (#544).
-pub(crate) const MAX_AUTH_REQUEST_PAYLOAD: u32 = 34 * 1024;
+pub const MAX_AUTH_REQUEST_PAYLOAD: u32 = 34 * 1024;
 
 /// Authenticated response payload ceiling (response + 32 B MAC) (#544).
-pub(crate) const MAX_AUTH_RESPONSE_PAYLOAD: u32 = 33 * 1024;
+pub const MAX_AUTH_RESPONSE_PAYLOAD: u32 = 33 * 1024;
 
 /// The message kinds this envelope version knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,22 +140,23 @@ impl MessageKind {
 }
 
 /// Envelope errors: every reject is explicit and named (#553).
-#[derive(Debug, Clone, PartialEq, Eq, Snafu)]
-#[snafu(visibility(pub(crate)))]
+///
+/// Hand-rolled `Display`/[`core::error::Error`] rather than a derive macro
+/// (#545): this crate stays dependency-minimal (no error-derive crate) to
+/// match the established `*-core` convention (`klesis-core::CoreError`,
+/// `asphaleia-core`'s parse errors).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 #[non_exhaustive]
 pub enum EnvelopeError {
     /// Magic bytes did not match.
-    #[snafu(display("bad envelope magic"))]
     BadMagic,
     /// Schema family is not supported.
-    #[snafu(display("unsupported schema {schema}"))]
     UnsupportedSchema {
         /// The frame's schema ID.
         schema: u16,
     },
     /// Major version mismatch — never silently negotiated.
-    #[snafu(display("incompatible major version (ours {ours}, theirs {theirs})"))]
     IncompatibleVersion {
         /// Our major.
         ours: u8,
@@ -155,13 +164,11 @@ pub enum EnvelopeError {
         theirs: u8,
     },
     /// The kind value is not known at this version.
-    #[snafu(display("unknown message kind {kind}"))]
     UnknownKind {
         /// The frame's kind field.
         kind: u16,
     },
     /// A decoder was handed a frame of a different kind than it expects.
-    #[snafu(display("unexpected kind: expected {expected:?}, got {got:?}"))]
     UnexpectedKind {
         /// The kind the caller asked for.
         expected: MessageKind,
@@ -169,7 +176,6 @@ pub enum EnvelopeError {
         got: MessageKind,
     },
     /// Declared payload length exceeds the kind's ceiling.
-    #[snafu(display("frame too large for {kind:?}: declared {declared} > ceiling {ceiling}"))]
     FrameTooLarge {
         /// The kind.
         kind: MessageKind,
@@ -179,7 +185,6 @@ pub enum EnvelopeError {
         ceiling: u32,
     },
     /// Fewer bytes than 22 + `payload_len` arrived.
-    #[snafu(display("truncated frame: expected {expected} bytes, have {present}"))]
     TruncatedFrame {
         /// Bytes expected.
         expected: usize,
@@ -187,24 +192,57 @@ pub enum EnvelopeError {
         present: usize,
     },
     /// More bytes than 22 + `payload_len` arrived (exact decoding).
-    #[snafu(display("{extra} trailing bytes after frame"))]
     TrailingBytes {
         /// Extra byte count.
         extra: usize,
     },
 }
 
+impl fmt::Display for EnvelopeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadMagic => write!(f, "bad envelope magic"),
+            Self::UnsupportedSchema { schema } => write!(f, "unsupported schema {schema}"),
+            Self::IncompatibleVersion { ours, theirs } => write!(
+                f,
+                "incompatible major version (ours {ours}, theirs {theirs})"
+            ),
+            Self::UnknownKind { kind } => write!(f, "unknown message kind {kind}"),
+            Self::UnexpectedKind { expected, got } => {
+                write!(f, "unexpected kind: expected {expected:?}, got {got:?}")
+            }
+            Self::FrameTooLarge {
+                kind,
+                declared,
+                ceiling,
+            } => write!(
+                f,
+                "frame too large for {kind:?}: declared {declared} > ceiling {ceiling}"
+            ),
+            Self::TruncatedFrame { expected, present } => {
+                write!(
+                    f,
+                    "truncated frame: expected {expected} bytes, have {present}"
+                )
+            }
+            Self::TrailingBytes { extra } => write!(f, "{extra} trailing bytes after frame"),
+        }
+    }
+}
+
+impl core::error::Error for EnvelopeError {}
+
 /// A parsed envelope header (validated; the payload is checked separately).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EnvelopeHeader {
+pub struct EnvelopeHeader {
     /// Message kind.
-    pub(crate) kind: MessageKind,
+    pub kind: MessageKind,
     /// Correlation ID.
-    pub(crate) correlation_id: u64,
+    pub correlation_id: u64,
     /// Declared payload length (ceiling-checked already).
-    pub(crate) payload_len: u32,
+    pub payload_len: u32,
     /// The frame's minor version.
-    pub(crate) minor: u8,
+    pub minor: u8,
 }
 
 impl EnvelopeHeader {
@@ -292,11 +330,11 @@ impl EnvelopeHeader {
 
 /// An owned, fully-validated frame (header + exact payload).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Envelope {
+pub struct Envelope {
     /// The validated header.
-    pub(crate) header: EnvelopeHeader,
+    pub header: EnvelopeHeader,
     /// The payload bytes (exactly `header.payload_len` long).
-    pub(crate) payload: Vec<u8>,
+    pub payload: Vec<u8>,
 }
 
 impl Envelope {
@@ -306,7 +344,7 @@ impl Envelope {
     ///
     /// [`EnvelopeError::FrameTooLarge`] if the payload exceeds the kind's
     /// ceiling (outgoing frames obey the same bound as incoming).
-    pub(crate) fn build(
+    pub fn build(
         kind: MessageKind,
         correlation_id: u64,
         payload: Vec<u8>,
@@ -337,7 +375,7 @@ impl Envelope {
     }
 
     /// Serialize the frame (header + payload).
-    pub(crate) fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_LEN + self.payload.len());
         out.extend_from_slice(&self.header.encode());
         out.extend_from_slice(&self.payload);
@@ -347,7 +385,7 @@ impl Envelope {
     /// Parse a frame, enforcing exact decoding: the input must be EXACTLY
     /// one frame (no truncation, no trailing bytes), and the payload length
     /// is ceiling-checked BEFORE the payload is copied (#553).
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, EnvelopeError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, EnvelopeError> {
         let header = EnvelopeHeader::parse(bytes)?;
         let payload_len =
             usize::try_from(header.payload_len).map_err(|_| EnvelopeError::FrameTooLarge {
@@ -478,7 +516,7 @@ mod tests {
 
     #[test]
     fn header_layout_is_exact() {
-        let frame = Envelope::build(MessageKind::TaskRequest, 7, vec![1, 2, 3])
+        let frame = Envelope::build(MessageKind::TaskRequest, 7, alloc::vec![1, 2, 3])
             .unwrap_or_else(|_| unreachable!());
         let bytes = frame.encode();
         assert_eq!(bytes.len(), HEADER_LEN + 3);
@@ -502,7 +540,7 @@ mod tests {
 
     #[test]
     fn bad_magic_rejects() {
-        let mut bytes = Envelope::build(MessageKind::TaskRequest, 1, vec![0])
+        let mut bytes = Envelope::build(MessageKind::TaskRequest, 1, alloc::vec![0])
             .unwrap_or_else(|_| unreachable!())
             .encode();
         bytes[0] ^= 0xFF;
@@ -511,7 +549,7 @@ mod tests {
 
     #[test]
     fn major_mismatch_rejects_explicitly() {
-        let mut bytes = Envelope::build(MessageKind::TaskRequest, 1, vec![0])
+        let mut bytes = Envelope::build(MessageKind::TaskRequest, 1, alloc::vec![0])
             .unwrap_or_else(|_| unreachable!())
             .encode();
         bytes[6] = MAJOR + 1;
@@ -527,7 +565,7 @@ mod tests {
 
     #[test]
     fn unknown_kind_rejects() {
-        let mut bytes = Envelope::build(MessageKind::TaskRequest, 1, vec![0])
+        let mut bytes = Envelope::build(MessageKind::TaskRequest, 1, alloc::vec![0])
             .unwrap_or_else(|_| unreachable!())
             .encode();
         bytes[8..10].copy_from_slice(&99u16.to_le_bytes());
@@ -539,7 +577,7 @@ mod tests {
 
     #[test]
     fn oversized_payload_rejects_before_allocation() {
-        let mut bytes = Envelope::build(MessageKind::SttEvent, 1, vec![0])
+        let mut bytes = Envelope::build(MessageKind::SttEvent, 1, alloc::vec![0])
             .unwrap_or_else(|_| unreachable!())
             .encode();
         // Declare a payload one byte over the STT ceiling.
@@ -578,7 +616,7 @@ mod tests {
     fn newer_minor_with_known_kind_accepted() {
         // Compat rule: a newer minor is accepted when kind is known and the
         // payload decodes exactly (minor bumps are additive only).
-        let mut bytes = Envelope::build(MessageKind::TaskRequest, 1, vec![0])
+        let mut bytes = Envelope::build(MessageKind::TaskRequest, 1, alloc::vec![0])
             .unwrap_or_else(|_| unreachable!())
             .encode();
         bytes[7] = MINOR + 1;
@@ -593,7 +631,7 @@ mod tests {
 
     #[test]
     fn build_rejects_over_ceiling_payload() {
-        let too_big = vec![0u8; MAX_STT_PAYLOAD as usize + 1];
+        let too_big = alloc::vec![0u8; MAX_STT_PAYLOAD as usize + 1];
         assert!(matches!(
             Envelope::build(MessageKind::SttEvent, 1, too_big),
             Err(EnvelopeError::FrameTooLarge { .. })

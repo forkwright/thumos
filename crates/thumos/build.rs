@@ -283,6 +283,18 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     let crasher_elf = out_dir.join("crasher.elf");
     compile_init_binary(&rustc, &crasher_src, &init_ld, &crasher_elf, None);
 
+    // #544 on-device leg: /metaxu_probe -- the authenticated Aletheia round
+    // trip's userspace origin. Always embedded (tiny; inert unless spawned),
+    // but kinit only spawns it under the `metaxu-probe` feature (mirrors
+    // /crasher's `crashloop-probe` gating), so it never runs in a normal
+    // boot. Uses only syscalls (no external crates) -- the real metaxu-core
+    // encode/UART/decode/verify sequence runs kernel-side, in
+    // metaxu_bridge.rs.
+    let metaxu_probe_src = manifest_dir.join("init/metaxu_probe.rs");
+    println!("cargo:rerun-if-changed={}", metaxu_probe_src.display());
+    let metaxu_probe_elf = out_dir.join("metaxu_probe.elf");
+    compile_init_binary(&rustc, &metaxu_probe_src, &init_ld, &metaxu_probe_elf, None);
+
     let elf = match fs::read(&init_elf) {
         Ok(b) => b,
         Err(e) => die(&format!("#474: cannot read built /init ELF: {e}")),
@@ -299,11 +311,20 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
         Ok(b) => b,
         Err(e) => die(&format!("#492: cannot read built /crasher ELF: {e}")),
     };
+    let elf_metaxu_probe = match fs::read(&metaxu_probe_elf) {
+        Ok(b) => b,
+        Err(e) => die(&format!("#544: cannot read built /metaxu_probe ELF: {e}")),
+    };
 
     let mut archive = cpio_newc_entry("init", &elf, 0o100_755);
     archive.extend_from_slice(&cpio_newc_entry("init2", &elf2, 0o100_755));
     archive.extend_from_slice(&cpio_newc_entry("shell", &elf_shell, 0o100_755));
     archive.extend_from_slice(&cpio_newc_entry("crasher", &elf_crasher, 0o100_755));
+    archive.extend_from_slice(&cpio_newc_entry(
+        "metaxu_probe",
+        &elf_metaxu_probe,
+        0o100_755,
+    ));
     archive.extend_from_slice(&cpio_newc_entry("TRAILER!!!", &[], 0));
     if let Err(e) = fs::write(out_dir.join("initramfs.cpio"), &archive) {
         die(&format!("#474: cannot write initramfs.cpio: {e}"));

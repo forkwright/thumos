@@ -42,6 +42,16 @@ kfault-probe = []
 # body, while supervised registration is kinit behaviour. Only meaningful with
 # `qemu`; mutually exclusive with `production` (main.rs compile_error!).
 crashloop-probe = []
+# WHY (#544 on-device leg): CI round-trip harness -- kinit spawns
+# `/metaxu_probe`, a userspace process that syscalls into a self-issued dev
+# grant + a real `metaxu-core` authenticated request/response exchange over
+# the second PL011 (`board::UART1_BASE`), against a host `pylon-bridge`
+# process (crates/metaxu, `pylon-bin` feature). Only meaningful with `qemu`
+# (main.rs compile_error! requires it -- the second PL011 exists only under
+# QEMU's `-machine virt,secure=on`, which `scripts/qemu-runner.sh` enables
+# ONLY when this feature's witness script asks); mutually exclusive with
+# `production` (main.rs compile_error!).
+metaxu-probe = []
 
 [dependencies]
 aes = { version = "0.8", default-features = false }
@@ -75,8 +85,25 @@ cbc = { version = "0.1", default-features = false, features = [
     "alloc",
     "block-padding",
 ] }
+# WHY (#545, #544 on-device leg): the canonical Aletheia/Thumos envelope
+# framing, signed-grant verification, and typed task/response payloads live
+# in metaxu-core, shared no_std+alloc with the `metaxu` workspace crate --
+# one implementation on both sides of the wire, consumed by
+# `metaxu_bridge.rs` under the `metaxu-probe` feature.
+metaxu-core = { path = "../metaxu-core", default-features = false }
+# WHY: metaxu-core's public TaskRequest/DeviceIdentityRef surface names
+# these types directly, so `metaxu_bridge.rs` (which builds them) needs its
+# own direct dependency -- Rust does not let a crate name a transitive
+# dependency's types without declaring the dependency itself. Versions
+# match metaxu-core's workspace pins (compact_str "0.8", ulid "1"
+# default-features=false).
+compact_str = { version = "0.8", default-features = false, features = [
+    "serde",
+] }
+ulid = { version = "1", default-features = false }
 ed25519-dalek = { version = "2", default-features = false, features = [
     "digest",
+    "serde",
 ] }
 hkdf = { version = "0.12", default-features = false }
 hmac = { version = "0.12", default-features = false }

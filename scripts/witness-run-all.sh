@@ -6,7 +6,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-for w in boot kfault sleep fork exec forkexec guard brk signal crashloop; do
+for w in boot kfault sleep fork exec forkexec guard brk signal crashloop metaxu; do
     echo "===== witness: $w ====="
     "$HERE/witness/$w.sh" || exit 1
 done

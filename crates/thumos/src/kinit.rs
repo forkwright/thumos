@@ -1765,6 +1765,29 @@ pub unsafe fn run() -> ! {
             }
         }
 
+        // #544 on-device leg: /metaxu_probe, spawned ONLY under the
+        // metaxu-probe feature (never in a normal boot). Unlike /crasher it
+        // is NOT supervised -- a one-shot probe that exits cleanly, not a
+        // service the supervisor should relaunch.
+        #[cfg(feature = "metaxu-probe")]
+        if let UserspaceSpawnPlan::Elf(elf_data) = plan_userspace_spawn_from_vfs("/metaxu_probe") {
+            // SAFETY (#502): kinit runs under the kernel L1 (proc0's table,
+            // scheduling disabled), satisfying load_confined's TTBR0 precondition.
+            match unsafe { elf::load_confined(elf_data, board::USER_TEXT_BASE, board::RAM_END) } {
+                Ok(loaded) => {
+                    if let Some(pid) = process::spawn_user(&loaded) {
+                        boot_log!(serial, " /metaxu_probe spawned PL0 (PID {})\r\n", pid);
+                        state.processes_spawned += 1;
+                    } else {
+                        serial.log(" WARN /metaxu_probe spawn failed\r\n");
+                    }
+                }
+                Err(e) => {
+                    boot_log!(serial, " WARN /metaxu_probe ELF load failed: {:?}\r\n", e);
+                }
+            }
+        }
+
         boot_log!(
             serial,
             " {} userspace ELF processes running\r\n",
