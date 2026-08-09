@@ -40,6 +40,11 @@ path = "crates/asphaleia"
 role = "Packet filter firewall, DNS blocklist, capability enforcement, and packet parsing."
 
 [[architecture.crates]]
+name = "asphaleia-core"
+path = "crates/asphaleia-core"
+role = "Canonical IPv4/TCP/UDP parse + DNS blocklist semantics; no_std, consumed by both the kernel firewall and asphaleia so the two cannot drift (#545)."
+
+[[architecture.crates]]
 name = "stegnos"
 path = "crates/stegnos"
 role = "Encrypted storage and secure erase."
