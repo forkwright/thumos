@@ -580,7 +580,6 @@ pub struct EapolFrame {
 /// declared packet length, [`WifiError::UnknownEapolType`] for
 /// unrecognised packet type bytes, and [`WifiError::UnknownKeyDescriptorType`]
 /// when an EAPOL-Key frame's descriptor type is not RSN (0x02).
-#[must_use]
 pub(crate) fn eapol_parse(data: &[u8]) -> Result<EapolFrame, WifiError> {
     if data.len() < EAPOL_HEADER_LEN {
         return Err(WifiError::FrameTooShort {
@@ -1185,7 +1184,6 @@ impl<H: WifiHwOps> WifiDriver<H> {
     /// # Errors
     ///
     /// Returns `WifiError` if the hardware scan cannot be started.
-    #[must_use]
     pub(crate) fn start_scan(&mut self) -> Result<(), WifiError> {
         // Fresh MAC for each scan (privacy)
         self.mac = generate_random_mac();

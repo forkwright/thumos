@@ -535,7 +535,6 @@ impl<H: BtHwOps> BtAdapter<H> {
     /// Initialize the BT adapter: power on, HCI reset, set random address.
     ///
     /// Transitions from `Off` to `Ready` on success, or to `Error` on failure.
-    #[must_use]
     pub(crate) fn init(&mut self, current_tick_ms: u64) -> Result<(), BtError> {
         if self.state != BtState::Off {
             return Err(BtError::InvalidState);
@@ -583,7 +582,6 @@ impl<H: BtHwOps> BtAdapter<H> {
     /// address and rotation timestamp are committed only after the hardware
     /// write succeeds, so a rejected/failed write leaves state unchanged and
     /// eligible for retry on the next call.
-    #[must_use]
     pub(crate) fn maybe_rotate_address(&mut self, current_tick_ms: u64) -> Result<bool, BtError> {
         if !matches!(self.state, BtState::Ready | BtState::Scanning) {
             return Ok(false);
@@ -620,7 +618,6 @@ impl<H: BtHwOps> BtAdapter<H> {
     /// Start a BLE passive scan.
     ///
     /// Sets scan parameters (passive, random address, accept all) then enables scanning.
-    #[must_use]
     pub(crate) fn start_scan(&mut self) -> Result<(), BtError> {
         match self.state {
             BtState::Ready => {}
@@ -644,7 +641,6 @@ impl<H: BtHwOps> BtAdapter<H> {
     }
 
     /// Stop the BLE passive scan.
-    #[must_use]
     pub(crate) fn stop_scan(&mut self) -> Result<(), BtError> {
         if self.state != BtState::Scanning {
             return Err(BtError::InvalidState);

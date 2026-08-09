@@ -406,7 +406,6 @@ impl MatrixCrypto {
     }
 
     /// Return a reference to this device's identity keys.
-    #[must_use]
     pub(crate) fn device_keys(&self) -> &DeviceKeys {
         &self.device_keys
     }
@@ -418,19 +417,16 @@ impl MatrixCrypto {
     }
 
     /// Return the outbound Megolm sessions.
-    #[must_use]
     pub(crate) fn megolm_outbound(&self) -> &[MegolmSession] {
         &self.megolm_outbound
     }
 
     /// Return the inbound Megolm sessions.
-    #[must_use]
     pub(crate) fn megolm_inbound(&self) -> &[MegolmSession] {
         &self.megolm_inbound
     }
 
     /// Return the active Olm sessions.
-    #[must_use]
     pub(crate) fn olm_sessions(&self) -> &[OlmSession] {
         &self.olm_sessions
     }

@@ -260,7 +260,6 @@ pub enum CapabilityPreset {
 
 impl CapabilityPreset {
     /// The capability set this preset constructs (design table, verbatim).
-    #[must_use]
     pub(crate) const fn grants(self) -> CapabilitySet {
         const RS: u32 = 1 << NousCapability::ReadState as u32;
         const RCM: u32 = 1 << NousCapability::ReadContactsMetadata as u32;
@@ -291,7 +290,6 @@ impl CapabilityPreset {
     }
 
     /// The preset whose constructor produces `set`, or `Custom`.
-    #[must_use]
     pub(crate) fn of(set: &CapabilitySet) -> Self {
         for preset in [
             Self::Off,
@@ -314,7 +312,6 @@ impl CapabilityPreset {
     /// explicit opt-in confirmation, not a dial step. `Custom` and
     /// `Autonomous` cycle back to `Off` (re-entering the ladder re-selects
     /// a preset constructor).
-    #[must_use]
     pub(crate) const fn next_grantable(self) -> Self {
         match self {
             Self::Off => Self::Observer,
@@ -666,13 +663,11 @@ impl NousEntity {
     }
 
     /// The entity's capability set (read-only view).
-    #[must_use]
     pub(crate) const fn grants(&self) -> &CapabilitySet {
         &self.grants
     }
 
     /// The preset matching this entity's current set, or `Custom` (#552).
-    #[must_use]
     pub(crate) fn preset(&self) -> CapabilityPreset {
         CapabilityPreset::of(&self.grants)
     }

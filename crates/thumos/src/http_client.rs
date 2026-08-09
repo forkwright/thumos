@@ -231,7 +231,6 @@ impl HttpRequest {
     ///
     /// Returns [`HttpError::EmptyHost`] if `self.host` is empty, or
     /// [`HttpError::EmptyPath`] if `self.path` is empty.
-    #[must_use]
     pub(crate) fn build_raw(&self) -> Result<Vec<u8>, HttpError> {
         if self.host.is_empty() {
             return Err(HttpError::EmptyHost);
@@ -359,7 +358,6 @@ impl HttpResponse {
     /// - [`HttpError::InvalidContentLength`] — Content-Length is not a
     ///   valid number.
     /// - [`HttpError::BodyTooLarge`] — body exceeds [`MAX_BODY_SIZE`].
-    #[must_use]
     pub(crate) fn parse(data: &[u8]) -> Result<Self, HttpError> {
         // Find the end of the header block: \r\n\r\n.
         let header_end = find_header_end(data).ok_or(HttpError::Incomplete)?;

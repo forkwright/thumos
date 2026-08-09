@@ -174,7 +174,6 @@ impl CcciLogger {
     ///
     /// Returns a pair of slices `(older, newer)` due to the ring buffer
     /// potentially wrapping.
-    #[must_use]
     pub(crate) fn entries(&self) -> (&[CcciLogEntry], &[CcciLogEntry]) {
         if self.count == 0 {
             return (&[], &[]);
@@ -358,7 +357,6 @@ impl fmt::Display for ModemBaseline {
 ///
 /// * `log` -- the CCCI traffic logger with recorded entries
 /// * `window_end_ms` -- the end timestamp of the 60s baseline window
-#[must_use]
 pub(crate) fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBaseline {
     let window_start = window_end_ms.saturating_sub(BASELINE_WINDOW_MS);
 
@@ -789,7 +787,6 @@ impl CcciFirewall {
     }
 
     /// Current firewall mode.
-    #[must_use]
     pub(crate) fn mode(&self) -> FirewallMode {
         self.mode
     }

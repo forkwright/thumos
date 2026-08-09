@@ -518,7 +518,6 @@ impl DnsResolver {
     /// This is a non-blocking "start resolve" — the caller must poll the
     /// network stack and call [`poll_resolve`](Self::poll_resolve) to
     /// check for results, since bare-metal kernels cannot block on I/O.
-    #[must_use]
     pub(crate) fn resolve<D: Device>(
         &mut self,
         _stack: &mut NetworkStack<D>,
@@ -551,7 +550,6 @@ impl DnsResolver {
     /// Returns the wire-format bytes and the transaction ID. The caller
     /// is responsible for sending this via a UDP socket to the
     /// appropriate DNS server on port 53.
-    #[must_use]
     pub(crate) fn build_query(&mut self, hostname: &str) -> Result<(Vec<u8>, u16), DnsError> {
         let txid = random_txid();
         let packet = build_dns_query(hostname, txid)?;
@@ -561,7 +559,6 @@ impl DnsResolver {
     /// Process a DNS response and cache the result.
     ///
     /// Returns the resolved address on success.
-    #[must_use]
     pub(crate) fn process_response(
         &mut self,
         hostname: &str,
