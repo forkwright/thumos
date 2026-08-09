@@ -10,7 +10,12 @@ use snafu::Snafu;
 const BD_ADDR_LEN: usize = 6;
 
 const H4_COMMAND_TYPE: u8 = 0x01;
-const H4_EVENT_TYPE: u8 = 0x04;
+/// H4 packet type for HCI ACL Data (Vol 4 Part E §5.4.2). `pub(crate)` so
+/// `transport.rs`'s RX loop can dispatch on it without re-decoding.
+pub(crate) const H4_ACL_TYPE: u8 = 0x02;
+/// `pub(crate)` so `transport.rs`'s RX loop can dispatch on it without
+/// re-decoding (#635).
+pub(crate) const H4_EVENT_TYPE: u8 = 0x04;
 
 // OGF (Opcode Group Field)
 const OGF_LINK_CONTROL: u16 = 0x01;
@@ -52,6 +57,8 @@ const INQUIRY_ENTRY_CLOCK_OFFSET: usize = 12;
 
 // Minimum sizes
 const MIN_EVENT_PACKET: usize = 3; // H4 type + event_code + param_length
+// H4 type(1) + Connection_Handle/PB/BC(2) + Data_Total_Length(2)
+const MIN_ACL_PACKET: usize = 5;
 
 // ── Error type ─────────────────────────────────────────────────────────────────
 
@@ -101,6 +108,13 @@ pub(crate) enum Error {
     /// Event parameters are truncated or structurally invalid.
     #[snafu(display("malformed HCI event: {detail}"))]
     MalformedEvent {
+        /// Human-readable description of the problem.
+        detail: &'static str,
+    },
+
+    /// ACL Data packet fields are truncated or structurally invalid (#635).
+    #[snafu(display("malformed HCI ACL packet: {detail}"))]
+    MalformedAclPacket {
         /// Human-readable description of the problem.
         detail: &'static str,
     },
@@ -253,6 +267,55 @@ pub(crate) enum HciEvent {
         /// Individual advertising reports.
         reports: Vec<LeAdvReport>,
     },
+}
+
+/// `Packet_Boundary_Flag` values on an HCI ACL Data packet (Vol 4 Part E
+/// §5.4.2, Table 5.1) — where in an L2CAP PDU's fragmentation sequence this
+/// ACL packet falls (#635).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub(crate) enum PbFlag {
+    /// `0b00` — first fragment of a message, not automatically flushable.
+    FirstNonFlushable,
+    /// `0b01` — a continuing fragment of a higher-layer message.
+    Continuation,
+    /// `0b10` — first fragment of a message, automatically flushable.
+    FirstFlushable,
+    /// `0b11` — a complete L2CAP PDU, automatically flushable
+    /// (Controller-to-Host only).
+    CompleteFlushable,
+}
+
+impl PbFlag {
+    /// Decode the two-bit `Packet_Boundary_Flag` field.
+    const fn from_bits(bits: u8) -> Self {
+        match bits & 0b11 {
+            0b00 => Self::FirstNonFlushable,
+            0b01 => Self::Continuation,
+            0b10 => Self::FirstFlushable,
+            _ => Self::CompleteFlushable,
+        }
+    }
+}
+
+/// A decoded HCI ACL Data packet (H4 type `0x02`, Vol 4 Part E §5.4.2).
+///
+/// `data` borrows FROM the input buffer — every variant of
+/// [`Packet_Boundary_Flag`](PbFlag) still needs its bytes copied exactly
+/// once by the L2CAP reassembler (`l2cap.rs`, #635), so this decode step
+/// does not pay for a second copy first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub(crate) struct AclDataPacket<'a> {
+    /// `Connection_Handle` (12 bits).
+    pub(crate) handle: u16,
+    /// `Packet_Boundary_Flag` (2 bits).
+    pub(crate) pb_flag: PbFlag,
+    /// `Broadcast_Flag` (2 bits). Always `0b00` (point-to-point) on LE-U;
+    /// classic BR/EDR broadcast values are decoded but unused by this driver.
+    pub(crate) bc_flag: u8,
+    /// The packet's `Data` field — one fragment of an L2CAP PDU.
+    pub(crate) data: &'a [u8],
 }
 
 // ── BdAddr impl ────────────────────────────────────────────────────────────────
@@ -457,6 +520,75 @@ pub(crate) fn decode_event(data: &[u8]) -> Result<HciEvent> {
         EVT_LE_META => decode_le_meta(params),
         code => Err(Error::UnknownEventCode { code }),
     }
+}
+
+/// Decode an H4-framed HCI ACL Data packet (H4 type `0x02`, Vol 4 Part E
+/// §5.4.2).
+///
+/// Layout: `[0x02, handle_lo, handle_hi|pb|bc, data_len_lo, data_len_hi, data...]`
+/// — `Connection_Handle` (12 bits) and `PB_Flag`/`BC_Flag` (2 bits each)
+/// share a little-endian `u16`; `Data_Total_Length` is a second
+/// little-endian `u16` bounding the `Data` field that follows.
+///
+/// # Errors
+///
+/// Returns [`Error::PacketTooShort`] if `data` has fewer than 5 bytes.
+///
+/// Returns [`Error::UnexpectedPacketType`] if the first byte is not `0x02`.
+///
+/// Returns [`Error::MalformedAclPacket`] if `Data_Total_Length` exceeds the
+/// bytes actually present — mirrors [`decode_event`]'s `param_length` bound,
+/// so a truncated ACL packet is rejected rather than silently short-read.
+pub(crate) fn decode_acl_data(data: &[u8]) -> Result<AclDataPacket<'_>> {
+    if data.len() < MIN_ACL_PACKET {
+        return Err(Error::PacketTooShort {
+            min: MIN_ACL_PACKET,
+            actual: data.len(),
+        });
+    }
+
+    let h4_type = data.first().copied().unwrap_or_default();
+    if h4_type != H4_ACL_TYPE {
+        return Err(Error::UnexpectedPacketType {
+            expected: H4_ACL_TYPE,
+            actual: h4_type,
+        });
+    }
+
+    let mut cur = Cursor::new(data.get(1..).unwrap_or(&[]));
+    let handle_and_flags = cur.read_u16_le().ok_or(Error::MalformedAclPacket {
+        detail: "ACL: missing Connection_Handle/PB/BC field",
+    })?;
+    let handle = handle_and_flags & 0x0FFF;
+    // WHY: PB_Flag occupies bits [13:12] and BC_Flag bits [15:14] of the
+    // combined field (Table 5.1) — both above the 12-bit handle. Each is
+    // masked to 2 bits before the u16->u8 narrowing, so the cast never
+    // truncates a live bit (workspace lint cast_possible_truncation = allow).
+    let pb_flag = PbFlag::from_bits(((handle_and_flags >> 12) & 0b11) as u8);
+    let bc_flag = ((handle_and_flags >> 14) & 0b11) as u8;
+
+    let data_total_length = cur.read_u16_le().ok_or(Error::MalformedAclPacket {
+        detail: "ACL: missing Data_Total_Length field",
+    })?;
+    // WHY the slice comes from `data` and not from `cur`: the returned packet
+    // borrows for the caller's lifetime, and `cur` is local — reading the
+    // payload through the cursor would return a reference into a value dropped
+    // at the end of this function. The header is fixed-width (H4 type, then the
+    // handle/flags and length u16s), so the payload offset is known without it.
+    let payload_start = 1 + 2 + 2;
+    let payload = data
+        .get(payload_start..)
+        .and_then(|rest| rest.get(..usize::from(data_total_length)))
+        .ok_or(Error::MalformedAclPacket {
+            detail: "ACL: Data_Total_Length exceeds available bytes",
+        })?;
+
+    Ok(AclDataPacket {
+        handle,
+        pb_flag,
+        bc_flag,
+        data: payload,
+    })
 }
 
 fn decode_command_complete(params: &[u8]) -> Result<HciEvent> {
@@ -905,5 +1037,120 @@ mod tests {
             matches!(result, Err(Error::UnexpectedPacketType { .. })),
             "non-event H4 type should produce UnexpectedPacketType error"
         );
+    }
+
+    // ── decode_acl_data (#635) ──
+
+    #[test]
+    fn decode_acl_data_extracts_handle_flags_and_payload() -> Result<()> {
+        // handle=0x0040, PB=0b10 (FirstFlushable), BC=0b00 -> handle_and_flags
+        // = 0x0040 | (0b10 << 12) = 0x2040, LE bytes [0x40, 0x20].
+        // data_total_length=3, payload=[0xAA, 0xBB, 0xCC].
+        let data = [0x02, 0x40, 0x20, 0x03, 0x00, 0xAA, 0xBB, 0xCC];
+        let pkt = decode_acl_data(&data)?;
+        assert_eq!(pkt.handle, 0x0040, "handle should be the low 12 bits");
+        assert_eq!(
+            pkt.pb_flag,
+            PbFlag::FirstFlushable,
+            "PB bits 0b10 should decode to FirstFlushable"
+        );
+        assert_eq!(pkt.bc_flag, 0b00, "BC bits should be 0b00 (point-to-point)");
+        assert_eq!(
+            pkt.data,
+            &[0xAA, 0xBB, 0xCC],
+            "payload should match Data field"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn decode_acl_data_decodes_continuation_pb_flag() -> Result<()> {
+        // handle=0x0001, PB=0b01 (Continuation) -> 0x0001 | (0b01 << 12) = 0x1001.
+        let data = [0x02, 0x01, 0x10, 0x01, 0x00, 0xFF];
+        let pkt = decode_acl_data(&data)?;
+        assert_eq!(
+            pkt.pb_flag,
+            PbFlag::Continuation,
+            "PB bits 0b01 should decode to Continuation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn decode_acl_data_masks_handle_to_twelve_bits() -> Result<()> {
+        // handle field bits set beyond 12 must not leak into the handle:
+        // handle_and_flags = 0xFFFF -> handle = 0x0FFF, PB=0b11, BC=0b11.
+        let data = [0x02, 0xFF, 0xFF, 0x00, 0x00];
+        let pkt = decode_acl_data(&data)?;
+        assert_eq!(pkt.handle, 0x0FFF, "handle must be masked to 12 bits");
+        assert_eq!(pkt.pb_flag, PbFlag::CompleteFlushable, "PB bits 0b11");
+        assert_eq!(pkt.bc_flag, 0b11, "BC bits 0b11");
+        Ok(())
+    }
+
+    #[test]
+    fn decode_acl_data_rejects_wrong_h4_type() {
+        // 0x04 = Event, not ACL.
+        let data = [0x04, 0x40, 0x00, 0x01, 0x00, 0xAA];
+        let result = decode_acl_data(&data);
+        assert!(
+            matches!(
+                result,
+                Err(Error::UnexpectedPacketType {
+                    expected: H4_ACL_TYPE,
+                    ..
+                })
+            ),
+            "non-ACL H4 type should produce UnexpectedPacketType error"
+        );
+    }
+
+    #[test]
+    fn decode_acl_data_rejects_packet_too_short() {
+        let data = [0x02, 0x40, 0x00, 0x00]; // only 4 bytes, need 5
+        let result = decode_acl_data(&data);
+        assert!(
+            matches!(
+                result,
+                Err(Error::PacketTooShort {
+                    min: MIN_ACL_PACKET,
+                    actual: 4
+                })
+            ),
+            "a 4-byte ACL packet should be rejected as too short"
+        );
+    }
+
+    #[test]
+    fn decode_acl_data_rejects_data_total_length_exceeding_available_bytes() {
+        // data_total_length declares 10 bytes but only 2 follow.
+        let data = [0x02, 0x40, 0x00, 0x0A, 0x00, 0xAA, 0xBB];
+        let result = decode_acl_data(&data);
+        assert!(
+            matches!(result, Err(Error::MalformedAclPacket { .. })),
+            "Data_Total_Length exceeding the actual buffer must be rejected, not silently truncated"
+        );
+    }
+
+    #[test]
+    fn decode_acl_data_accepts_empty_payload() -> Result<()> {
+        // data_total_length=0 is a valid (if unusual) ACL packet.
+        let data = [0x02, 0x40, 0x00, 0x00, 0x00];
+        let pkt = decode_acl_data(&data)?;
+        assert!(
+            pkt.data.is_empty(),
+            "zero-length Data field should decode to an empty slice"
+        );
+        Ok(())
+    }
+
+    // ── PbFlag::from_bits ──
+
+    #[test]
+    fn pb_flag_from_bits_covers_all_four_values() {
+        assert_eq!(PbFlag::from_bits(0b00), PbFlag::FirstNonFlushable);
+        assert_eq!(PbFlag::from_bits(0b01), PbFlag::Continuation);
+        assert_eq!(PbFlag::from_bits(0b10), PbFlag::FirstFlushable);
+        assert_eq!(PbFlag::from_bits(0b11), PbFlag::CompleteFlushable);
     }
 }
