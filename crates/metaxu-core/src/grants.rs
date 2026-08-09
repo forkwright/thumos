@@ -1,6 +1,7 @@
-//! Cryptographically verified, expiring capability grants (#544), extracted
-//! `no_std` + alloc (#545) so the kernel signs/verifies against the same
-//! implementation `metaxu`'s pylon and witness already prove.
+//! Cryptographically verified, expiring capability grants (#544).
+//!
+//! Extracted `no_std` + alloc (#545) so the kernel signs/verifies against
+//! the same implementation `metaxu`'s pylon and witness already prove.
 //!
 //! A grant is the Aletheia runtime's signed authorization for ONE device to
 //! request specific capabilities until an expiry. It is bound to both

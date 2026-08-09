@@ -1,6 +1,8 @@
-//! Wire protocol types for the Aletheia/Thumos bridge, extracted `no_std` +
-//! alloc (#544/#545) so the kernel builds/parses the identical typed task
-//! and response shapes `metaxu`'s pylon and witness already prove.
+//! Wire protocol types for the Aletheia/Thumos bridge (#544).
+//!
+//! Extracted `no_std` + alloc (#545) so the kernel builds/parses the
+//! identical typed task and response shapes `metaxu`'s pylon and witness
+//! already prove.
 
 extern crate alloc;
 
@@ -369,10 +371,11 @@ impl TaskResponse {
     }
 }
 
-/// Correlation ID for the envelope: the first 8 bytes of the request's
-/// ULID (a ULID's leading 48 bits are its timestamp; the next bits are
+/// Correlation ID for the envelope: the first 8 bytes of the request's ULID.
+///
+/// A ULID's leading 48 bits are its timestamp; the next bits are
 /// randomness -- 64 bits total is ample correlation space, documented in
-/// the envelope contract).
+/// the envelope contract.
 pub fn correlation_of(id: ulid::Ulid) -> u64 {
     let bytes = id.to_bytes();
     u64::from_le_bytes(bytes[..8].try_into().unwrap_or([0; 8]))

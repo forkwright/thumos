@@ -65,17 +65,28 @@ double (`pylon`) inside the `metaxu` crate itself -- a stand-in for the real
 Aletheia runtime, not a live one. Outstanding for a genuinely live round
 trip:
 
-- Bind `metaxu` to the selected live transport (second-PL011 on qemu-virt
-  per the phase plan; WiFi on hardware) through the declared firewall
-  boundary, without bypassing firewall policy.
-- Drive `submit_authenticated` from a real Thumos userspace process rather
-  than a host-side test harness.
+- **Done in QEMU (#544):** `board::UART1_BASE` (the qemu-virt second PL011,
+  present under `-machine virt,secure=on`) carries an authenticated request
+  end to end, driven by a real Thumos userspace process
+  (`/metaxu_probe`, via two syscalls) against a real host process
+  (`pylon-bridge`, the SAME `pylon` reference endpoint this doc's witness
+  already used, not a live runtime). The kernel side calls
+  `metaxu-core`'s session primitives directly (`AuthenticatedSession`,
+  `encode_authenticated_request`) rather than `BridgeClient::
+  submit_authenticated` -- the `no_std` kernel cannot depend on `metaxu`'s
+  std-only client/transport layer, so it links `metaxu-core` (the shared
+  no_std+alloc extraction, #545) instead. WiFi on hardware, and routing
+  the transport through firewall policy (meaningful for an IP-based
+  transport; the UART leg is not one), remain unaddressed.
 - Stand up (or point at) an actual Aletheia-side endpoint implementing the
   pylon's verification contract, so the pinned runtime key is a real
   runtime's key, not a witness fixture.
+- Provision the device's grant from a real Aletheia-side issuer rather than
+  having the kernel self-issue a dev-seed grant to itself (#544's on-device
+  leg does the latter, clearly labeled dev-only).
 - Connect nous capability presets to concrete `metaxu` grant issuance.
 - Route accepted device actions through the existing confirmation UI and
-  local service APIs.
+  local service APIs (criterion 4 of #544; untouched).
 - Cross-link the corresponding Aletheia-side runtime endpoint when it
   exists.
 

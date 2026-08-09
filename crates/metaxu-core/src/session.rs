@@ -1,8 +1,10 @@
 //! The authenticated session layer (#544): one mutually authenticated
-//! Thumos↔Aletheia round trip over the versioned envelope, extracted
-//! `no_std` + alloc (#545) so the kernel builds/verifies the identical
-//! frames `metaxu`'s pylon and witness already prove -- one implementation
-//! signs and parses on both sides of the wire, not two that could drift.
+//! Thumos↔Aletheia round trip over the versioned envelope.
+//!
+//! Extracted `no_std` + alloc (#545) so the kernel builds/verifies the
+//! identical frames `metaxu`'s pylon and witness already prove -- one
+//! implementation signs and parses on both sides of the wire, not two that
+//! could drift.
 //!
 //! Two payload kinds extend the contract additively (envelope MINOR 1,
 //! exercising the #553 compat rule — known kinds decode identically on both
@@ -114,11 +116,12 @@ impl AuthenticatedSession {
 }
 
 /// Encode an authenticated task request for transport, wrapped in the
-/// versioned envelope (kind 4, MINOR 1) (#544). This is the ONLY place a
-/// wire frame for the authenticated exchange is built -- every caller
-/// (metaxu's `BridgeClient`, the kernel's own bridge module, and the
-/// adversarial witness) goes through it, so there is one encoding, not a
-/// client copy and a test copy that can drift apart.
+/// versioned envelope (kind 4, MINOR 1) (#544).
+///
+/// This is the ONLY place a wire frame for the authenticated exchange is
+/// built -- every caller (metaxu's `BridgeClient`, the kernel's own bridge
+/// module, and the adversarial witness) goes through it, so there is one
+/// encoding, not a client copy and a test copy that can drift apart.
 pub fn encode_authenticated_request(
     session: &AuthenticatedSession,
     request: &TaskRequest,

@@ -1,7 +1,9 @@
 //! The versioned wire envelope: the ONE shared Aletheia-facing contract
-//! (#553), extracted `no_std` + alloc (#544/#545) so the kernel and the
-//! `metaxu` workspace crate compile the identical framing logic instead of
-//! two implementations that could drift.
+//! (#553).
+//!
+//! Extracted `no_std` + alloc (#544/#545) so the kernel and the `metaxu`
+//! workspace crate compile the identical framing logic instead of two
+//! implementations that could drift.
 //!
 //! Every Aletheia-facing frame — task request, task response, STT event —
 //! travels inside this envelope. It exists so two repositories (thumos and
