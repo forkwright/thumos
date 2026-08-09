@@ -13,9 +13,13 @@
 #   workspace-owned  — the workspace crate is canonical; the kernel copy is a
 #                      transport/board adapter only
 #
-# The ratchet: current "ported from" comments = 6 (firewall×2, gsm7, sms,
-# screen_dialer, plus gps/wifi/bluetooth/telephony doc headers count as
-# provenance notes, not live duplication markers — see notes per pair).
+# The ratchet: [ratchet].ported_from_comments below is the count, and
+# scripts/check-convergence.sh derives the live figure from the tree and fails
+# if it ever rises. WHY this header names no number: a count restated here is a
+# second copy that drifts the moment a pair converges — this one said 6 while
+# the ratchet said 3 and one of the files it named had already been deleted.
+# A doc-header inventory of a thing a script already measures is drift waiting
+# to happen; read the ratchet and the per-pair notes instead.
 
 [[pair]]
 name = "threat-semantics"
