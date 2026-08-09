@@ -146,7 +146,7 @@ impl LfsSuperblock {
     /// # Errors
     ///
     /// This method is infallible.
-    fn to_block(&self) -> [u8; BLOCK_SIZE] {
+    fn to_block(self) -> [u8; BLOCK_SIZE] {
         let mut buf = [0u8; BLOCK_SIZE];
         let mut off = 0;
         write_u32_le(&mut buf, &mut off, self.magic);
@@ -338,7 +338,7 @@ impl SegmentHeader {
     /// # Errors
     ///
     /// This method is infallible.
-    pub(crate) fn to_block(&self) -> [u8; BLOCK_SIZE] {
+    pub(crate) fn to_block(self) -> [u8; BLOCK_SIZE] {
         let mut buf = [0u8; BLOCK_SIZE];
         let mut off = 0;
         write_u32_le(&mut buf, &mut off, self.magic);
@@ -849,9 +849,8 @@ impl Lfs {
             return Ok(());
         }
 
-        let writer = match self.writer.as_mut() {
-            Some(w) => w,
-            None => return Ok(()),
+        let Some(writer) = self.writer.as_mut() else {
+            return Ok(());
         };
 
         let mut dev = self.dev.borrow_mut();
@@ -2727,19 +2726,20 @@ mod tests {
             .expect("write keeper inode");
 
         // Write 4/5: initial directory block listing both entries.
-        let mut entries: Vec<DiskDirEntry> = Vec::new();
-        entries.push(DiskDirEntry {
-            inode_id: 1,
-            name_len: 6,
-            record_len: ((DIR_ENTRY_HEADER_SIZE + 6 + 3) & !3) as u16,
-            name: String::from("victim"),
-        });
-        entries.push(DiskDirEntry {
-            inode_id: 2,
-            name_len: 6,
-            record_len: ((DIR_ENTRY_HEADER_SIZE + 6 + 3) & !3) as u16,
-            name: String::from("keeper"),
-        });
+        let entries: Vec<DiskDirEntry> = alloc::vec![
+            DiskDirEntry {
+                inode_id: 1,
+                name_len: 6,
+                record_len: ((DIR_ENTRY_HEADER_SIZE + 6 + 3) & !3) as u16,
+                name: String::from("victim"),
+            },
+            DiskDirEntry {
+                inode_id: 2,
+                name_len: 6,
+                record_len: ((DIR_ENTRY_HEADER_SIZE + 6 + 3) & !3) as u16,
+                name: String::from("keeper"),
+            },
+        ];
         let dir_block =
             Lfs::write_dir_block(&mut dev, &mut cache, &mut writer, &mut seg_mgr, &entries)
                 .expect("write initial dir block");
@@ -2975,15 +2975,16 @@ mod tests {
         // entries; see create_past_one_block_capacity_fails_without_dropping_entries).
         let mut created = 0usize;
         loop {
-            let name = format!("file{:03}", created);
+            let name = format!("file{created:03}");
             match fs.create(root, &name, InodeType::RegularFile) {
                 Ok(_) => created += 1,
                 Err(VfsError::NoSpace) => break,
                 Err(e) => panic!("unexpected error at entry {created}: {e:?}"),
             }
-            if created > 300 {
-                panic!("directory did not report NoSpace within expected bounds");
-            }
+            assert!(
+                created <= 300,
+                "directory did not report NoSpace within expected bounds"
+            );
         }
 
         // The 257th create() allocated (and durably wrote) a new inode
@@ -3197,13 +3198,20 @@ mod tests {
         // absorb without reclaim (roughly 13 blocks of log traffic per
         // iteration) -- sustained success across all of them is only
         // possible if compaction is actually running.
-        let payload = [0xABu8; 12 * BLOCK_SIZE];
+        //
+        // WHY vec! not a boxed array: 12 * BLOCK_SIZE (48 KiB) on the stack
+        // trips clippy's large_stack_arrays -- and `Box::new([0xAB; N])`
+        // does NOT avoid that, since the array literal is still built as a
+        // stack temporary before the move into the box. `vec![elem; N]`
+        // allocates directly on the heap, never materializing the full
+        // buffer on the stack.
+        let payload = alloc::vec![0xABu8; 12 * BLOCK_SIZE];
         for i in 0..300 {
             let name = format!("f{i}");
             let file_id = fs
                 .create(root, &name, InodeType::RegularFile)
                 .unwrap_or_else(|e| panic!("create at iteration {i} failed: {e:?}"));
-            fs.write(file_id, 0, &payload)
+            fs.write(file_id, 0, &payload[..])
                 .unwrap_or_else(|e| panic!("write at iteration {i} failed: {e:?}"));
             fs.unlink(root, &name)
                 .unwrap_or_else(|e| panic!("unlink at iteration {i} failed: {e:?}"));
@@ -3226,15 +3234,16 @@ mod tests {
         // vanish (#287).
         let mut created = 0usize;
         loop {
-            let name = format!("file{:03}", created);
+            let name = format!("file{created:03}");
             match fs.create(root, &name, InodeType::RegularFile) {
                 Ok(_) => created += 1,
                 Err(VfsError::NoSpace) => break,
                 Err(e) => panic!("unexpected error at entry {created}: {e:?}"),
             }
-            if created > 300 {
-                panic!("directory did not report NoSpace within expected bounds");
-            }
+            assert!(
+                created <= 300,
+                "directory did not report NoSpace within expected bounds"
+            );
         }
 
         assert_eq!(
@@ -3245,7 +3254,7 @@ mod tests {
         // Every entry that WAS created must still be reachable -- none
         // were silently dropped while create() reported success.
         for i in 0..created {
-            let name = format!("file{:03}", i);
+            let name = format!("file{i:03}");
             assert!(
                 fs.lookup(root, &name).is_ok(),
                 "entry {name} must be reachable after fitting in the directory block"
@@ -3269,10 +3278,7 @@ mod tests {
         let mut fs = mount(Box::new(dev)).expect("mount");
         let root = fs.root_inode();
 
-        let mut name_bytes = Vec::new();
-        for _ in 0..256 {
-            name_bytes.push(b'a');
-        }
+        let name_bytes = alloc::vec![b'a'; 256];
         let long_name = String::from_utf8(name_bytes).expect("valid utf8");
 
         let result = fs.create(root, &long_name, InodeType::RegularFile);
@@ -3292,19 +3298,15 @@ mod tests {
         // wrapped this to a small value and bypassed the block-full
         // guard entirely (#290). Called directly to exercise the guard
         // independent of create()'s own 255-byte gate.
-        let mut name_bytes = Vec::new();
-        for _ in 0..65530 {
-            name_bytes.push(b'x');
-        }
+        let name_bytes = alloc::vec![b'x'; 65530];
         let huge_name = String::from_utf8(name_bytes).expect("valid utf8");
 
-        let mut entries: Vec<DiskDirEntry> = Vec::new();
-        entries.push(DiskDirEntry {
+        let entries: Vec<DiskDirEntry> = alloc::vec![DiskDirEntry {
             inode_id: 1,
             name_len: 0, // recomputed inside write_dir_block
             record_len: 0,
             name: huge_name,
-        });
+        }];
 
         let result =
             Lfs::write_dir_block(&mut dev, &mut cache, &mut writer, &mut seg_mgr, &entries);

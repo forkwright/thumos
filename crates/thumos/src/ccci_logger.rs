@@ -390,18 +390,18 @@ pub(crate) fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBasel
         // Data0OutOfRange anomaly detection.
         let clamped_data0 = entry.data0.min(CCCI_MTU as u32);
 
-        if !stats.active {
-            // First packet on this channel: initialize min/max.
-            stats.active = true;
-            stats.min_size = entry.packet_len;
-            stats.max_size = entry.packet_len;
-        } else {
+        if stats.active {
             if entry.packet_len < stats.min_size {
                 stats.min_size = entry.packet_len;
             }
             if entry.packet_len > stats.max_size {
                 stats.max_size = entry.packet_len;
             }
+        } else {
+            // First packet on this channel: initialize min/max.
+            stats.active = true;
+            stats.min_size = entry.packet_len;
+            stats.max_size = entry.packet_len;
         }
 
         // SECURITY: control-plane sentinel packets (data0 == CCCI_MAGIC) are
@@ -413,17 +413,17 @@ pub(crate) fn build_baseline(log: &CcciLogger, window_end_ms: u64) -> ModemBasel
         // baseline max to u32::MAX, permanently defeating the upper-bound
         // Data0OutOfRange check (issue #282 finding 1).
         if entry.data0 != CCCI_MAGIC {
-            if !*d0_seen {
-                *d0_seen = true;
-                stats.min_data0 = clamped_data0;
-                stats.max_data0 = clamped_data0;
-            } else {
+            if *d0_seen {
                 if clamped_data0 < stats.min_data0 {
                     stats.min_data0 = clamped_data0;
                 }
                 if clamped_data0 > stats.max_data0 {
                     stats.max_data0 = clamped_data0;
                 }
+            } else {
+                *d0_seen = true;
+                stats.min_data0 = clamped_data0;
+                stats.max_data0 = clamped_data0;
             }
         }
 
@@ -562,7 +562,7 @@ pub(crate) fn detect_anomalies(
     }
 
     // Per-channel: check for active channels, rate, and data0.
-    for ch in 0..CHANNEL_COUNT {
+    for (ch, out_of_range) in out_of_range_data0.iter().enumerate() {
         let ch_u32 = ch as u32;
         let live_count = log.channel_count_since(ch_u32, since);
         let baseline_stats = &baseline.channels[ch];
@@ -609,7 +609,7 @@ pub(crate) fn detect_anomalies(
         // SECURITY: checking only the most recent packet let an
         // adversarial modem smuggle an out-of-range data0 in any packet
         // except the last and evade detection entirely (issue #248).
-        if let Some(d0) = out_of_range_data0[ch] {
+        if let Some(d0) = *out_of_range {
             if count < MAX_ANOMALIES {
                 anomalies[count] = Some(CcciAnomaly {
                     timestamp: now,
@@ -938,7 +938,7 @@ mod tests {
 
         let entry = log.get(0);
         assert!(entry.is_some());
-        let e = entry.unwrap_or_else(|| &CcciLogEntry {
+        let e = entry.unwrap_or(&CcciLogEntry {
             timestamp: 0,
             channel: 0,
             direction: PacketDirection::Rx,
@@ -969,7 +969,7 @@ mod tests {
         // Oldest live entry should be entry #10 (0-9 overwritten).
         let oldest = log.get(0);
         assert!(oldest.is_some());
-        let o = oldest.unwrap_or_else(|| &CcciLogEntry {
+        let o = oldest.unwrap_or(&CcciLogEntry {
             timestamp: 0,
             channel: 0,
             direction: PacketDirection::Rx,
@@ -1776,9 +1776,12 @@ mod tests {
 
         // Accumulate counters in Daily mode: ControlTx/SystemTx are
         // allowlisted (allow), MdLogRx is not (drop).
-        fw.evaluate(CcciChannel::ControlTx as u32);
-        fw.evaluate(CcciChannel::SystemTx as u32);
-        fw.evaluate(CcciChannel::MdLogRx as u32);
+        // WHY: the per-call FirewallVerdict is discarded -- this test
+        // asserts on the accumulated allow_count()/drop_count() below, not
+        // on any individual verdict.
+        let _ = fw.evaluate(CcciChannel::ControlTx as u32);
+        let _ = fw.evaluate(CcciChannel::SystemTx as u32);
+        let _ = fw.evaluate(CcciChannel::MdLogRx as u32);
         assert_eq!(fw.allow_count(), 2);
         assert_eq!(fw.drop_count(), 1);
 
@@ -1808,12 +1811,14 @@ mod tests {
     fn firewall_counters_accumulate() {
         let mut fw = CcciFirewall::new(FirewallMode::Sentinel);
 
-        // 3 allows, 2 drops.
-        fw.evaluate(CcciChannel::ControlTx as u32);
-        fw.evaluate(CcciChannel::ControlRx as u32);
-        fw.evaluate(CcciChannel::SystemTx as u32);
-        fw.evaluate(CcciChannel::Uart1Tx as u32);
-        fw.evaluate(CcciChannel::FsTx as u32);
+        // 3 allows, 2 drops. WHY: see firewall_apply_mode_preserves_counters
+        // above -- the per-call verdict is discarded; the counters below
+        // are what this test asserts on.
+        let _ = fw.evaluate(CcciChannel::ControlTx as u32);
+        let _ = fw.evaluate(CcciChannel::ControlRx as u32);
+        let _ = fw.evaluate(CcciChannel::SystemTx as u32);
+        let _ = fw.evaluate(CcciChannel::Uart1Tx as u32);
+        let _ = fw.evaluate(CcciChannel::FsTx as u32);
 
         assert_eq!(fw.allow_count(), 3);
         assert_eq!(fw.drop_count(), 2);

@@ -113,10 +113,11 @@ impl core::fmt::Display for TelephonyError {
 // ---------------------------------------------------------------------------
 
 /// Parsed AT response from the modem.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum AtResponse {
     /// Command succeeded.
+    #[default]
     Ok,
     /// Generic error (no code).
     Error,
@@ -126,14 +127,8 @@ pub enum AtResponse {
     CmsError(u32),
 }
 
-impl Default for AtResponse {
-    fn default() -> Self {
-        Self::Ok
-    }
-}
-
 /// Unsolicited result code from the modem.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Urc {
     /// Incoming call (RING).
@@ -777,11 +772,8 @@ impl<T: ModemTransport> Telephony<T> {
                 self.modem_state = ModemState::Error(TelephonyError::ParseError);
                 return Err(TelephonyError::ParseError);
             }
-            Ok((AtResponse::CmeError(code), _, _)) => {
-                self.modem_state = ModemState::Error(TelephonyError::CmeError(code));
-                return Err(TelephonyError::CmeError(code));
-            }
-            Ok((AtResponse::CmsError(code), _, _)) => {
+            // WHY: see dial() below -- CmsError collapses into CmeError.
+            Ok((AtResponse::CmeError(code) | AtResponse::CmsError(code), _, _)) => {
                 self.modem_state = ModemState::Error(TelephonyError::CmeError(code));
                 return Err(TelephonyError::CmeError(code));
             }
@@ -807,12 +799,12 @@ impl<T: ModemTransport> Telephony<T> {
 
         // Step 6: Query operator name.
         let cops_result = send_with_info(&mut self.transport, "AT+COPS?", 5000);
-        if let Ok((AtResponse::Ok, ref info_line, info_len)) = cops_result {
-            if info_len > 0 {
-                let line = &info_line[..info_len];
-                if let Some(len) = parse_cops_response(line, &mut self.operator_name) {
-                    self.operator_len = len;
-                }
+        if let Ok((AtResponse::Ok, ref info_line, info_len)) = cops_result
+            && info_len > 0
+        {
+            let line = &info_line[..info_len];
+            if let Some(len) = parse_cops_response(line, &mut self.operator_name) {
+                self.operator_len = len;
             }
         }
         self.init_step = 6;
@@ -1008,11 +1000,12 @@ impl<T: ModemTransport> Telephony<T> {
                 Ok(())
             }
             AtResponse::Error => Err(TelephonyError::ModemError),
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
             // WHY: +CMS ERROR is SMS-specific and not expected on a voice
             // dial, but AtResponse is exhaustively matched here; surface it
             // through the same numeric-code channel as CME errors.
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
         }
     }
 
@@ -1033,8 +1026,10 @@ impl<T: ModemTransport> Telephony<T> {
                 Ok(())
             }
             AtResponse::Error => Err(TelephonyError::ModemError),
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: see dial() above -- CmsError collapses into CmeError.
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
         }
     }
 
@@ -1043,9 +1038,8 @@ impl<T: ModemTransport> Telephony<T> {
     /// Sends `ATH` and transitions to Idle state.
     pub fn hangup(&mut self) -> Result<(), TelephonyError> {
         // Allow hangup from any active call state.
-        match &self.call_state {
-            CallState::Idle => return Err(TelephonyError::InvalidState),
-            _ => {}
+        if self.call_state == CallState::Idle {
+            return Err(TelephonyError::InvalidState);
         }
 
         let result = send_simple(&mut self.transport, "ATH", 10_000)?;
@@ -1060,8 +1054,10 @@ impl<T: ModemTransport> Telephony<T> {
                 self.call_state = CallState::Idle;
                 Ok(())
             }
-            AtResponse::CmeError(code) => Err(TelephonyError::CmeError(code)),
-            AtResponse::CmsError(code) => Err(TelephonyError::CmeError(code)),
+            // WHY: see dial() above -- CmsError collapses into CmeError.
+            AtResponse::CmeError(code) | AtResponse::CmsError(code) => {
+                Err(TelephonyError::CmeError(code))
+            }
         }
     }
 
@@ -1453,7 +1449,7 @@ mod tests {
         // Verify the ATD command was sent.
         let last_cmd = tel.transport.sent_commands.last();
         assert_eq!(
-            last_cmd.map(|c| c.as_slice()),
+            last_cmd.map(alloc::vec::Vec::as_slice),
             Some(b"ATD+15551234567;" as &[u8]),
             "ATD command must be formatted correctly"
         );
@@ -1824,7 +1820,10 @@ mod tests {
             "refuse_2g must SET lte_only=true on OK response"
         );
         assert_eq!(
-            tel.transport.sent_commands.last().map(|c| c.as_slice()),
+            tel.transport
+                .sent_commands
+                .last()
+                .map(alloc::vec::Vec::as_slice),
             Some(b"AT+COPS=0,,,7" as &[u8]),
             "refuse_2g must send AT+COPS=0,,,7"
         );
