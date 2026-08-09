@@ -258,7 +258,6 @@ impl GpsTime {
 /// Returns `GpsError::ChecksumMismatch` if the checksum is invalid.
 /// Returns `GpsError::NoFix` if fix quality is 0 or an undefined code.
 /// Returns `GpsError::ParseError` if the sentence cannot be parsed.
-#[must_use]
 pub(crate) fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
     Ok(topos_core::parse_gga(sentence)?.into())
 }
@@ -270,7 +269,6 @@ pub(crate) fn parse_gga(sentence: &[u8]) -> Result<GpsPosition, GpsError> {
 /// Returns `GpsError::ChecksumMismatch` if the checksum is invalid.
 /// Returns `GpsError::NoFix` if status is 'V' (void).
 /// Returns `GpsError::ParseError` if the sentence cannot be parsed.
-#[must_use]
 pub(crate) fn parse_rmc(sentence: &[u8]) -> Result<(GpsPosition, GpsTime), GpsError> {
     let (fix, time) = topos_core::parse_rmc(sentence)?;
     Ok((fix.into(), time.into()))
@@ -453,7 +451,6 @@ impl<H: GpsHwOps> GpsReceiver<H> {
     }
 
     /// Initialize the GPS receiver: power on and begin searching.
-    #[must_use]
     pub(crate) fn init(&mut self) -> Result<(), GpsError> {
         if self.state != GpsState::Off {
             return Err(GpsError::InvalidState);
@@ -515,7 +512,6 @@ impl<H: GpsHwOps> GpsReceiver<H> {
     /// Clears the last known position/time fix and any partially
     /// accumulated NMEA bytes so a subsequent `init()` does not resume
     /// with stale data left over from before shutdown.
-    #[must_use]
     pub(crate) fn shutdown(&mut self) -> Result<(), GpsError> {
         self.hw.power_off()?;
         self.state = GpsState::Off;

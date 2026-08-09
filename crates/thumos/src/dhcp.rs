@@ -131,7 +131,7 @@ impl DhcpClient {
     ///
     /// Returns `Err(DhcpError::SocketSetFull)` if the socket set has
     /// reached [`MAX_SOCKETS`].
-    #[must_use]
+    #[must_use = "store the returned client; dropping it orphans its socket in `stack` with no handle left to reclaim the slot"]
     pub(crate) fn new<D: Device>(stack: &mut NetworkStack<D>) -> Result<Self, DhcpError> {
         if stack.socket_count() >= MAX_SOCKETS {
             return Err(DhcpError::SocketSetFull);

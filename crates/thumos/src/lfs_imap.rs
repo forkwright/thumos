@@ -180,7 +180,6 @@ impl LfsImap {
     /// Returns [`LfsError::Corrupt`] if the buffer is too short, contains
     /// invalid data, or any entry's block number is inside the reserved
     /// segment 0 or `>= device_blocks`.
-    #[must_use]
     pub(crate) fn deserialize(
         buf: &[u8],
         segment_size: u32,

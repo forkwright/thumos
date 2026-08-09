@@ -99,7 +99,6 @@ impl Contact {
     /// byte outside the GSM dial-string charset (an empty `number` is
     /// valid -- Matrix-only contacts have no phone number). A rejected
     /// number is never truncated-and-stored: reject, don't sanitize.
-    #[must_use]
     pub(crate) fn new(name: &str, number: &str) -> Result<Self, ContactError> {
         if !number
             .bytes()
@@ -142,7 +141,6 @@ impl Contact {
     ///
     /// Returns [`ContactError::InvalidNumber`] under the same condition as
     /// [`Contact::new`].
-    #[must_use]
     pub(crate) fn with_matrix_id(
         name: &str,
         number: &str,

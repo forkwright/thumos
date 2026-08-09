@@ -258,7 +258,6 @@ pub struct WsFrame {
 
 impl WsFrame {
     /// Create a new frame with the given opcode and payload.
-    #[must_use]
     pub(crate) fn new(opcode: WsOpcode, payload: Vec<u8>) -> Self {
         Self { opcode, payload }
     }
@@ -284,7 +283,6 @@ impl fmt::Display for WsFrame {
 /// - [`EkphrasisError::Incomplete`] if the buffer doesn't contain a full frame.
 /// - [`EkphrasisError::InvalidFrame`] if the opcode is unknown.
 /// - [`EkphrasisError::PayloadTooLarge`] if the payload exceeds the limit.
-#[must_use]
 pub(crate) fn parse_ws_frame(data: &[u8]) -> Result<(WsFrame, usize), EkphrasisError> {
     // Minimum frame size: 2 bytes (FIN+opcode, MASK+payload-len).
     if data.len() < 2 {
@@ -437,7 +435,6 @@ fn contains_control_byte(s: &str) -> bool {
 /// Returns [`EkphrasisError::InvalidUpgradeParam`] if `host` or `ws_key`
 /// contains a control character (CR, LF, NUL, etc.) that could corrupt
 /// the HTTP request line or inject additional headers.
-#[must_use]
 pub(crate) fn build_ws_upgrade(
     host: &str,
     path: &str,
@@ -586,7 +583,6 @@ pub struct AudioCaptureConfig {
 
 impl AudioCaptureConfig {
     /// Configuration for STT audio capture (16 kHz, mono, 16-bit PCM).
-    #[must_use]
     pub(crate) const fn stt_default() -> Self {
         Self {
             sample_rate_hz: AUDIO_SAMPLE_RATE_HZ,
@@ -1012,7 +1008,6 @@ impl Ekphrasis {
     }
 
     /// Return a reference to the current state.
-    #[must_use]
     pub(crate) fn state(&self) -> &EkphrasisState {
         &self.state
     }
@@ -1030,7 +1025,6 @@ impl Ekphrasis {
     }
 
     /// Return the audio capture configuration.
-    #[must_use]
     pub(crate) fn capture_config(&self) -> AudioCaptureConfig {
         self.capture_config
     }
@@ -1116,7 +1110,6 @@ pub struct ActionProposal {
 
 impl ActionProposal {
     /// Create a new action proposal.
-    #[must_use]
     pub(crate) fn new(action: String, params: Vec<(String, String)>, description: String) -> Self {
         Self {
             action,

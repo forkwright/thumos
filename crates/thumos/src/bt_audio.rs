@@ -241,7 +241,6 @@ impl<H: BtHwOps> A2dpProfile<H> {
     ///   SBC parameters once signaling has started would silently diverge the
     ///   local encoder from the format already negotiated with the peer via
     ///   `SetConfiguration`.
-    #[must_use]
     pub(crate) fn configure(&mut self, sample_rate: u32, channels: u8) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Disconnected {
             return Err(BtAudioError::InvalidState);
@@ -279,7 +278,6 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::InvalidState`] -- not in Disconnected state.
     /// - [`BtAudioError::NoPeer`] -- no peer address configured.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
-    #[must_use]
     pub(crate) fn connect(&mut self, now_ms: u64) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Disconnected {
             return Err(BtAudioError::InvalidState);
@@ -335,7 +333,6 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::InvalidState`] -- not in Connecting state.
     /// - [`BtAudioError::AvdtpError`] -- unknown or unexpected signal ID.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
-    #[must_use]
     pub(crate) fn advance_signaling(&mut self, signal: u8) -> Result<(), BtAudioError> {
         if !matches!(self.state, A2dpState::Connecting | A2dpState::Connected) {
             return Err(BtAudioError::InvalidState);
@@ -420,7 +417,6 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// - [`BtAudioError::SbcError`] -- SBC encoding failed.
     /// - [`BtAudioError::BufferTooSmall`] -- internal frame buffer too small.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
-    #[must_use]
     pub(crate) fn send_audio(&mut self, pcm: &[i16]) -> Result<usize, BtAudioError> {
         if self.state != A2dpState::Streaming {
             return Err(BtAudioError::InvalidState);
@@ -450,7 +446,6 @@ impl<H: BtHwOps> A2dpProfile<H> {
     ///
     /// - [`BtAudioError::InvalidState`] -- not in Streaming state.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
-    #[must_use]
     pub(crate) fn suspend(&mut self) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Streaming {
             return Err(BtAudioError::InvalidState);
@@ -480,7 +475,6 @@ impl<H: BtHwOps> A2dpProfile<H> {
     ///
     /// - [`BtAudioError::InvalidState`] -- not in Connected state.
     /// - [`BtAudioError::HciError`] -- HCI send failed.
-    #[must_use]
     pub(crate) fn resume(&mut self) -> Result<(), BtAudioError> {
         if self.state != A2dpState::Connected {
             return Err(BtAudioError::InvalidState);

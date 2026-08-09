@@ -215,7 +215,6 @@ impl MemBlockDevice {
     /// # Errors
     ///
     /// Returns [`BlockError::InvalidArgument`] if `sector_count` is zero.
-    #[must_use]
     pub(crate) fn new(sector_count: u64) -> Result<Self, BlockError> {
         if sector_count == 0 {
             return Err(BlockError::InvalidArgument);
@@ -498,7 +497,6 @@ pub(crate) use msdc_wrapper::{MsdcBlockDevice, MsdcBlockDeviceUninit};
 ///
 /// Returns [`BlockError`] if the underlying sector read fails or the
 /// block address is out of bounds.
-#[must_use]
 pub(crate) fn read_block(
     dev: &dyn BlockDevice,
     block_num: u64,
@@ -517,7 +515,6 @@ pub(crate) fn read_block(
 ///
 /// Returns [`BlockError`] if the underlying sector write fails or the
 /// block address is out of bounds.
-#[must_use]
 pub(crate) fn write_block(
     dev: &mut dyn BlockDevice,
     block_num: u64,
