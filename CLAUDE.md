@@ -2,6 +2,7 @@
 scope: thumos repo conventions (bare-metal Rust kernel + userspace for AGM M7 / MT6739)
 defers_to: operator CLAUDE.md (menos-ops) for machine topology; operator global CLAUDE.md for principles; kanon standards for universal engineering policy
 tightens: MT6739-specific constraints and device-identity protection discipline that do not apply outside this repo
+commit_types: feat,fix,docs,refactor,test,chore,perf,ci
 -->
 
 # CLAUDE.md
@@ -66,6 +67,10 @@ Thumos treats all hardware identifiers as sensitive. Every radio driver implemen
 | Probe requests | Passive WiFi scanning by default, no SSID broadcast |
 | BLE advertisements | Non-resolvable private address (NRPA) by default |
 | RF fingerprint | Accepted risk on M7 hardware. Custom PCB future addresses this. |
+
+## Git
+
+The repo squash-merges: a PR title becomes `main`'s commit message, and release-please parses that message to build the changelog and compute the version bump. Grammar: `<type>(<scope>)<!>: <description>`. `type` is one of the `commit_types` declared in this file's frontmatter — `.github/workflows/pr-title.yml` (via `scripts/check-pr-title.sh`) derives its accepted list from that same line rather than restating it, so there is one place to update. `scope` is the crate/module name; `!` before the colon marks a breaking change. A bare scope in the type position (`sms: ...`) is rejected — the type must be one of the declared literals, not any word followed by a colon.
 
 ## TODO convention
 
