@@ -29,6 +29,10 @@ pub(crate) enum GptError {
     NotFound,
     /// A block read failed.
     Io,
+    /// A partition entry's `first_lba`/`last_lba` pair is not a valid
+    /// forward extent (`last_lba < first_lba`, or the length would
+    /// overflow `u64`).
+    InvalidExtent,
 }
 
 impl core::fmt::Display for GptError {
@@ -40,6 +44,7 @@ impl core::fmt::Display for GptError {
             Self::Malformed => f.write_str("GPT malformed structure"),
             Self::NotFound => f.write_str("GPT partition not found"),
             Self::Io => f.write_str("GPT block I/O error"),
+            Self::InvalidExtent => f.write_str("GPT partition extent invalid"),
         }
     }
 }
@@ -62,6 +67,12 @@ pub(crate) struct PartitionInfo {
 
 impl PartitionInfo {
     /// Partition length in sectors.
+    ///
+    /// INVARIANT: only [`find_partition`] constructs a [`PartitionInfo`],
+    /// and it rejects `last_lba < first_lba` (and the `last_lba ==
+    /// u64::MAX` case that would overflow this add) before returning one
+    /// (#627) -- so `last_lba - first_lba + 1` never underflows or
+    /// overflows for any value this type actually holds.
     pub(crate) const fn sectors(&self) -> u64 {
         self.last_lba - self.first_lba + 1
     }
@@ -176,9 +187,22 @@ pub(crate) fn find_partition(dev: &dyn BlockDevice, name: &str) -> Result<Partit
             continue;
         }
         if entry[56..56 + 72] == name_utf16 {
+            let first_lba = le64(entry, 32);
+            let last_lba = le64(entry, 40);
+            // WHY: first_lba/last_lba are on-disk, attacker-controlled
+            // fields -- PartitionInfo::sectors() computes `last_lba -
+            // first_lba + 1` and requires this to be a valid forward
+            // extent to stay total. A crafted last_lba < first_lba
+            // underflows that subtraction; a crafted last_lba ==
+            // u64::MAX overflows the + 1. Reject both here, once, so
+            // every PartitionInfo this function returns already
+            // satisfies the invariant sectors() relies on (#627).
+            if last_lba < first_lba || last_lba == u64::MAX {
+                return Err(GptError::InvalidExtent);
+            }
             return Ok(PartitionInfo {
-                first_lba: le64(entry, 32),
-                last_lba: le64(entry, 40),
+                first_lba,
+                last_lba,
             });
         }
     }
@@ -247,6 +271,23 @@ mod tests {
         assert_eq!(boot.first_lba, 2048);
         assert_eq!(boot.last_lba, 4095);
         assert_eq!(boot.sectors(), 2048);
+    }
+
+    /// A crafted entry with `last_lba < first_lba` must be rejected
+    /// rather than let `PartitionInfo::sectors()` underflow (#627).
+    #[test]
+    fn inverted_extent_rejects_instead_of_underflowing() {
+        let dev = gpt_device(&[("boot", 4095, 2048)]);
+        assert_eq!(find_partition(&dev, "boot"), Err(GptError::InvalidExtent));
+    }
+
+    /// A crafted entry with `last_lba == u64::MAX` must be rejected
+    /// rather than let `PartitionInfo::sectors()` overflow the `+ 1`
+    /// (#627).
+    #[test]
+    fn max_last_lba_rejects_instead_of_overflowing() {
+        let dev = gpt_device(&[("boot", 0, u64::MAX)]);
+        assert_eq!(find_partition(&dev, "boot"), Err(GptError::InvalidExtent));
     }
 
     #[test]

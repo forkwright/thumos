@@ -430,7 +430,9 @@ impl LockScreen {
             // re-match after the window elapses (#388). Keeps throttle
             // recoverable and keeps all submit exits consistent.
             self.clear_input();
-            return UnlockResult::Throttled { wait_secs: wait };
+            let result = UnlockResult::Throttled { wait_secs: wait };
+            self.last_result = Some(result);
+            return result;
         }
 
         let entered = &self.passphrase_buffer[..self.passphrase_len as usize];
@@ -459,7 +461,9 @@ impl LockScreen {
             // never re-match — the same "locked out after throttle" failure
             // class #388 targets. Clearing keeps the throttle recoverable.
             self.clear_input();
-            return UnlockResult::Throttled { wait_secs: wait };
+            let result = UnlockResult::Throttled { wait_secs: wait };
+            self.last_result = Some(result);
+            return result;
         }
 
         // Require exactly REQUIRED_PIN_LEN digits.
@@ -1014,6 +1018,40 @@ mod tests {
             screen.passphrase_len(),
             0,
             "the throttled exit clears the buffer (#388)"
+        );
+        // last_result drives draw()'s "WAIT..." status line -- a throttled
+        // attempt that never records it leaves that UI branch unreachable
+        // (#627).
+        assert_eq!(
+            screen.last_result,
+            Some(UnlockResult::Throttled { wait_secs: 4 }),
+            "a throttled attempt must record last_result so draw() can show it"
+        );
+    }
+
+    /// Same coverage as `submit_passphrase_with_honors_the_throttle_window`
+    /// for the `submit_pin` throttle exit -- a separate call site with the
+    /// identical defect (#627).
+    #[test]
+    fn submit_pin_throttled_attempt_records_last_result() {
+        let mut screen = make_screen();
+        screen.set_mode(LockMode::PinUnlock);
+        for _ in 0..3 {
+            for &byte in b"999999" {
+                screen.push_pin_digit(byte);
+            }
+            let r = screen.submit_pin(100);
+            assert_eq!(r, UnlockResult::WrongPin);
+        }
+        for &byte in TEST_PIN {
+            screen.push_pin_digit(byte);
+        }
+        let r = screen.submit_pin(101);
+        assert_eq!(r, UnlockResult::Throttled { wait_secs: 4 });
+        assert_eq!(
+            screen.last_result,
+            Some(UnlockResult::Throttled { wait_secs: 4 }),
+            "a throttled PIN attempt must record last_result so draw() can show it"
         );
     }
 
