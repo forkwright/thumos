@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.18](https://github.com/forkwright/thumos/compare/v0.1.17...v0.1.18) (2026-08-09)
+
+
+### Bug Fixes
+
+* **kinit:** distinguish a corrupt secrets preamble from unprovisioned ([#639](https://github.com/forkwright/thumos/issues/639)) ([fe5bb34](https://github.com/forkwright/thumos/commit/fe5bb3462b758f0ea5e69a31b3d6725ea008e14f))
+* **lfs:** exclude the reserved metadata segment in imap deserialize ([#658](https://github.com/forkwright/thumos/issues/658)) ([0fdfaf0](https://github.com/forkwright/thumos/commit/0fdfaf0e7beab53816d03c10eb2d76b91f225ba7)), closes [#653](https://github.com/forkwright/thumos/issues/653)
+* **metaxu:** close 10 real kanon-lint defects, report 71 rule false-positives ([#659](https://github.com/forkwright/thumos/issues/659)) ([f6d0539](https://github.com/forkwright/thumos/commit/f6d0539f8699c00932c64e9d66455bde81929d7f)), closes [#652](https://github.com/forkwright/thumos/issues/652)
+* **thumos:** scope the ui::Key/haphe::Key discriminant claim to what holds ([#640](https://github.com/forkwright/thumos/issues/640)) ([4a47935](https://github.com/forkwright/thumos/commit/4a47935aa486a054848e2d47e432701ce8e54e9b)), closes [#615](https://github.com/forkwright/thumos/issues/615)
+
+### Also in this release
+
+These landed on `main` for 0.1.18 but were not derived automatically: squash-merge
+takes the pull-request title as the commit message, and a title without a
+conventional-commit type is not parsed by the changelog generator or by the
+version-bump calculation. Recorded here so the notes match the release; the
+gap itself is [#665](https://github.com/forkwright/thumos/issues/665).
+
+* **sms:** one GSM-7 and PDU implementation, and the silent-SMS detection the kernel never had ([#664](https://github.com/forkwright/thumos/issues/664)), closes [#662](https://github.com/forkwright/thumos/issues/662)
+* **asphaleia:** one implementation of packet parse and DNS policy ([#661](https://github.com/forkwright/thumos/issues/661))
+* **pteron:** LE Secure Connections pairing and IRK bonding exchange ([#660](https://github.com/forkwright/thumos/issues/660))
+* **pteron:** ACL data path and L2CAP fixed-channel layer ([#657](https://github.com/forkwright/thumos/issues/657))
+* **lfs/gpt/vfs/lock_screen:** the seven low-severity audit findings ([#656](https://github.com/forkwright/thumos/issues/656))
+* **metaxu:** wire the authenticated session into BridgeClient ([#654](https://github.com/forkwright/thumos/issues/654))
+* **lfs:** guard the compactor and LfsImap::deserialize against unvalidated imap block numbers ([#648](https://github.com/forkwright/thumos/issues/648))
+* **lfs:** fail closed at the direct-block limit, guard imap pointers, reject non-empty unlink ([#647](https://github.com/forkwright/thumos/issues/647))
+* **block:** give eMMC/MSDC the test seam its sibling drivers already have ([#638](https://github.com/forkwright/thumos/issues/638))
+* **lfs:** make the compaction trigger reachable and reject a zero segment_size ([#637](https://github.com/forkwright/thumos/issues/637))
+* **release:** bump the kernel lockfile's path-dep on every release ([#650](https://github.com/forkwright/thumos/issues/650))
+
 ## [0.1.17](https://github.com/forkwright/thumos/compare/v0.1.16...v0.1.17) (2026-08-07)
 
 
