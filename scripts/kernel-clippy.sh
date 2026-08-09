@@ -16,4 +16,12 @@ rustup target list --installed 2>/dev/null | grep -q '^i686-unknown-linux-gnu$' 
 # kernel crate has no host target -- clippy must be pointed at i686
 # explicitly from inside crates/thumos, the same way kernel-host-tests.sh
 # and kernel-build.sh do.
-(cd "$KERNEL_DIR" && cargo clippy --bin thumos --target i686-unknown-linux-gnu --all-targets -- -D warnings)
+# WHY --bin + --tests, not --all-targets (#673): --all-targets is additive,
+# not a narrowing of --bin -- it drags in examples/qemu_smoke.rs, an armv7
+# QEMU smoke test that references ARM registers (r0/r1) and cannot compile
+# for i686 by construction. That is a defect in the gate, not debt in the
+# crate: a gate with a guaranteed-red target trains people to ignore it.
+# --tests covers the #[cfg(test)] unit tests kernel-host-tests.sh exercises
+# on this exact target; build.rs stays in scope regardless of target
+# selection, since a build script is always a prerequisite of the bin.
+(cd "$KERNEL_DIR" && cargo clippy --bin thumos --tests --target i686-unknown-linux-gnu -- -D warnings)

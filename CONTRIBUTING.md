@@ -87,7 +87,7 @@ If the forge is unreachable from within the fleet, push to `github` and open a G
 - `cargo check --workspace --all-targets`
 - `cd crates/thumos && cargo build --release --target armv7a-none-eabi`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cd crates/thumos && cargo clippy --bin thumos --target i686-unknown-linux-gnu --all-targets -- -D warnings`
+- `cd crates/thumos && cargo clippy --bin thumos --tests --target i686-unknown-linux-gnu -- -D warnings`
 - `cargo nextest run --workspace`
 - `kanon lint . --summary`
 
