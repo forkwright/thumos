@@ -3,33 +3,26 @@
 //! Parses the queried domain name FROM a raw DNS query message and matches it
 //! against a configurable blocklist. The default blocklist covers domains
 //! identified in the Adups FOTA surveillance audit (`docs/SURVEILLANCE-AUDIT.md`).
-
-use std::str;
-
-// Constants
-
-/// DNS message header length in bytes.
-const DNS_HEADER_LEN: usize = 12;
+//!
+//! QNAME extraction and the default surveillance-domain policy (list +
+//! suffix-matching rule) delegate to `asphaleia_core` (#545) — the same
+//! canonical implementation the kernel's `firewall.rs` links by path
+//! dependency.
 
 /// DNS port number.
-pub const DNS_PORT: u16 = 53;
-
-/// Maximum number of labels we will follow when decoding a QNAME.
-/// Prevents unbounded iteration on malformed packets.
-const MAX_LABELS: usize = 128;
+pub use asphaleia_core::DNS_PORT;
 
 // Type definitions
 
-/// A SET of domain patterns that should be blocked.
+/// A SET of domain suffixes that should be blocked.
 ///
-/// Each entry is either:
-/// - An **exact** domain name (`"app-measurement.com"`)
-/// - A **wildcard** prefix that matches any subdomain (`"*.doubleclick.net"`)
-///
-/// Matching is case-insensitive.
+/// A domain is blocked if it equals or is a subdomain of any entry (see
+/// [`asphaleia_core::domain_matches_suffix`]) — matching is unconditional,
+/// case-insensitive, and needs no wildcard syntax: adding `"doubleclick.net"`
+/// already blocks `"ad.doubleclick.net"` and every other subdomain.
 #[derive(Debug, Default)]
 pub struct DnsBlocklist {
-    /// Patterns stored in lower-case for case-insensitive comparison.
+    /// Suffixes stored in lower-case for case-insensitive comparison.
     patterns: Vec<String>,
 }
 
@@ -42,40 +35,41 @@ impl DnsBlocklist {
         Self::default()
     }
 
-    /// Create a blocklist pre-populated with the surveillance domains identified
-    /// in `docs/SURVEILLANCE-AUDIT.md` (Adups FOTA analysis).
+    /// Create a blocklist pre-populated with the canonical surveillance
+    /// domains ([`asphaleia_core::SURVEILLANCE_DOMAINS`], #545).
     #[must_use]
     pub fn with_surveillance_defaults() -> Self {
         let mut bl = Self::new();
-        for domain in [
-            "app-measurement.com",
-            "googleads.g.doubleclick.net",
-            "ad.doubleclick.net",
-            "googlesyndication.com",
-            "analytics.google.com",
-            "firebaselogging.googleapis.com",
-        ] {
+        for domain in asphaleia_core::SURVEILLANCE_DOMAINS {
             bl.add(domain);
         }
         bl
     }
 
-    /// Add a domain pattern to the blocklist.
+    /// Add a domain suffix to the blocklist.
     ///
-    /// Patterns are lower-cased on insertion. A pattern beginning with `*.`
-    /// will match any subdomain of the suffix (e.g. `"*.doubleclick.net"`
-    /// matches `"ad.doubleclick.net"` and `"googleads.g.doubleclick.net"`).
-    pub fn add(&mut self, pattern: &str) {
-        self.patterns.push(pattern.to_ascii_lowercase());
+    /// Lower-cased on insertion. Any query domain equal to or a subdomain of
+    /// `suffix` will be blocked — see [`asphaleia_core::domain_matches_suffix`].
+    pub fn add(&mut self, suffix: &str) {
+        self.patterns.push(suffix.to_ascii_lowercase());
     }
 
-    /// Returns `true` if `domain` matches any pattern in this blocklist.
+    /// Returns `true` if `domain` matches any suffix in this blocklist.
     ///
     /// `domain` is compared case-insensitively.
     #[must_use]
     pub fn is_blocked(&self, domain: &str) -> bool {
         let lower = domain.to_ascii_lowercase();
-        self.patterns.iter().any(|pat| pattern_matches(pat, &lower))
+        self.is_blocked_lowercased(&lower)
+    }
+
+    /// Same as [`Self::is_blocked`], for a caller that already holds a
+    /// lowercased domain (e.g. [`extract_query_domain`], which lowercases
+    /// while it decodes) — avoids a second allocation on the hot path.
+    fn is_blocked_lowercased(&self, lowercased_domain: &str) -> bool {
+        self.patterns
+            .iter()
+            .any(|suffix| asphaleia_core::domain_matches_suffix(lowercased_domain, suffix))
     }
 
     /// Extract the queried domain FROM a raw DNS message and check it against
@@ -93,88 +87,21 @@ impl DnsBlocklist {
         // blocking with a deliberately malformed query.
         extract_query_domain(data)
             .as_deref()
-            .is_none_or(|d| self.is_blocked(d))
+            .is_none_or(|d| self.is_blocked_lowercased(d))
     }
 }
 
 // Free functions
 
-/// Extract the QNAME FROM the first question in a DNS query message.
+/// Extract the QNAME FROM the first question in a DNS query message,
+/// lowercased. See [`asphaleia_core::extract_query_domain`].
 ///
 /// Returns `None` if the message is malformed, truncated, or contains a
 /// compression pointer (which should not appear in query QNAMEs but can appear
 /// in malformed or spoofed packets).
 #[must_use]
 pub fn extract_query_domain(data: &[u8]) -> Option<String> {
-    if data.len() < DNS_HEADER_LEN {
-        return None;
-    }
-
-    // QDCOUNT must be at least 1.
-    let qdcount = u16::from_be_bytes([
-        data.get(4).copied().unwrap_or_default(),
-        data.get(5).copied().unwrap_or_default(),
-    ]);
-    if qdcount == 0 {
-        return None;
-    }
-
-    let mut pos = DNS_HEADER_LEN;
-    let mut domain = String::new();
-    let mut label_count = 0usize;
-
-    loop {
-        let len_byte = *data.get(pos)?;
-        pos = pos.checked_add(1)?;
-
-        if len_byte == 0 {
-            // Root label  -  end of QNAME.
-            break;
-        }
-
-        // Reject compression pointers (top two bits SET). They should not
-        // appear in query QNAMEs and indicate malformed or spoofed packets.
-        if len_byte & 0xC0 == 0xC0 {
-            return None;
-        }
-
-        label_count = label_count.checked_add(1)?;
-        if label_count > MAX_LABELS {
-            return None;
-        }
-
-        let label_len = usize::from(len_byte);
-        let label_end = pos.checked_add(label_len)?;
-        let label_bytes = data.get(pos..label_end)?;
-        let label = str::from_utf8(label_bytes).ok()?;
-
-        if !domain.is_empty() {
-            domain.push('.');
-        }
-        domain.push_str(label);
-
-        pos = label_end;
-    }
-
-    if domain.is_empty() {
-        None
-    } else {
-        Some(domain)
-    }
-}
-
-fn pattern_matches(pattern: &str, domain: &str) -> bool {
-    pattern
-        .strip_prefix("*.")
-        .map_or_else(|| domain == pattern, |suffix| subdomain_of(domain, suffix))
-}
-
-// Returns true if `domain` is a direct or nested subdomain of `suffix`.
-// The bare suffix itself does not match (only `sub.suffix` and deeper do).
-fn subdomain_of(domain: &str, suffix: &str) -> bool {
-    domain
-        .strip_suffix(suffix)
-        .is_some_and(|rest| rest.ends_with('.'))
+    asphaleia_core::extract_query_domain(data)
 }
 
 // Tests
@@ -259,7 +186,7 @@ mod tests {
         let mut msg = make_dns_query("example.com");
         // Overwrite the first QNAME label-length byte with a compression
         // pointer (top two bits SET) — the anti-spoof guard must reject it.
-        msg[DNS_HEADER_LEN] = 0xC0;
+        msg[asphaleia_core::DNS_HEADER_LEN] = 0xC0;
         assert_eq!(
             extract_query_domain(&msg),
             None,
