@@ -163,10 +163,11 @@ unsafe fn get_pipe_mut(pipe_idx: usize) -> Option<&'static mut PipeBuffer> {
 fn maybe_free_pipe(pipe_idx: usize) {
     // SAFETY: single-core cooperative kernel; no concurrent mutation.
     let pool = unsafe { &mut *core::ptr::addr_of_mut!(PIPE_POOL) };
-    if let Some(ref buf) = pool[pipe_idx] {
-        if buf.write_closed && buf.read_closed {
-            pool[pipe_idx] = None;
-        }
+    if let Some(ref buf) = pool[pipe_idx]
+        && buf.write_closed
+        && buf.read_closed
+    {
+        pool[pipe_idx] = None;
     }
 }
 
@@ -234,6 +235,12 @@ pub(crate) fn is_write_end(flags: u32) -> bool {
 ///
 /// # Returns
 /// 0 on success, negative error code on failure.
+// WHY: `read_ofd`/`write_ofd` (open-file-description table indices) and
+// `read_fd`/`write_fd` (the per-process fd numbers derived from them) are
+// standard POSIX fd/ofd terminology naming two genuinely distinct values --
+// renaming either pair to defeat the Levenshtein check would decouple the
+// names from the concepts they name.
+#[allow(clippy::similar_names)]
 pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     if fds_ptr == 0 {
         return EFAULT;
@@ -242,9 +249,8 @@ pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     // Allocate a pipe buffer slot, capped per-process (MAX_PIPES_PER_PROCESS)
     // so one process cannot exhaust the entire pool.
     let owner_pid = crate::process::current_pid();
-    let pipe_idx = match alloc_pipe_slot(owner_pid) {
-        Some(i) => i,
-        None => return EMFILE,
+    let Some(pipe_idx) = alloc_pipe_slot(owner_pid) else {
+        return EMFILE;
     };
 
     // Two-level alloc (#267): one OFD per pipe end (refs=1 each), then
@@ -326,9 +332,8 @@ pub(crate) fn sys_pipe_read(pipe_idx: usize, buf_ptr: u32, count: u32) -> u32 {
     }
 
     // SAFETY: single-core cooperative kernel; no concurrent mutation of pipe pool.
-    let buf = match unsafe { get_pipe_mut(pipe_idx) } {
-        Some(b) => b,
-        None => return EBADF,
+    let Some(buf) = (unsafe { get_pipe_mut(pipe_idx) }) else {
+        return EBADF;
     };
 
     if buf.available() == 0 {
@@ -368,9 +373,8 @@ pub(crate) fn sys_pipe_write(pipe_idx: usize, buf_ptr: u32, count: u32, writer_p
     }
 
     // SAFETY: single-core cooperative kernel; no concurrent mutation.
-    let buf = match unsafe { get_pipe_mut(pipe_idx) } {
-        Some(b) => b,
-        None => return EBADF,
+    let Some(buf) = (unsafe { get_pipe_mut(pipe_idx) }) else {
+        return EBADF;
     };
 
     if buf.read_closed {
@@ -638,6 +642,8 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn dup_of_pipe_write_end_delays_eof_until_last_close() {
+        static mut FDS: [u32; 2] = [0, 0];
+        static mut BUF: [u8; 8] = [0u8; 8];
         reset_pool();
         // SAFETY: test-only; establishes a fresh current process for
         // sys_pipe/sys_dup/sys_close to install fds into.
@@ -645,7 +651,6 @@ mod tests {
             crate::fd::reset_fd_state_for_test();
         }
 
-        static mut FDS: [u32; 2] = [0, 0];
         let fds_ptr = core::ptr::addr_of_mut!(FDS) as u32;
         assert_eq!(sys_pipe(fds_ptr), 0, "pipe() should succeed");
         // SAFETY: test-only static; single-threaded per test.
@@ -669,7 +674,6 @@ mod tests {
         // ZERO, not at the first close of the write end.
         assert_eq!(crate::fd::sys_close(write_fd), 0);
 
-        static mut BUF: [u8; 8] = [0u8; 8];
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
         assert_eq!(
