@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1](https://github.com/forkwright/thumos/compare/v0.2.0...v0.2.1) (2026-08-09)
+
+
+### Bug Fixes
+
+* **build:** lint the kernel build script ([#668](https://github.com/forkwright/thumos/issues/668)) ([c79dbaf](https://github.com/forkwright/thumos/commit/c79dbaf9f77d71f90debfff3d366c62d84f4a6e6))
+* **kernel:** scope unwrap/expect denial to production, fix doc backticks + literals ([#678](https://github.com/forkwright/thumos/issues/678)) ([4559dd0](https://github.com/forkwright/thumos/commit/4559dd07d8a17311b95327cc357aa1bce034a1f5)), closes [#672](https://github.com/forkwright/thumos/issues/672)
+
 ## [0.2.0](https://github.com/forkwright/thumos/compare/v0.1.18...v0.2.0) (2026-08-09)
 
 
