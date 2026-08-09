@@ -1,6 +1,22 @@
-//! SMP cryptographic toolbox subset (#455): the `ah()` random-address hash
-//! function (BT Core Spec Vol 3, Part H §2.2.2) and the Identity Resolving
-//! Key type.
+//! Security Manager Protocol (SMP): the crypto toolbox, PDU codec, and the
+//! LE Secure Connections pairing state machine (#455, #636).
+//!
+//! This module (`ah()`, [`Irk`]) covers #455 stages 1-2: the
+//! random-address hash function and the key type. [`toolbox`] adds the LE
+//! Secure Connections toolbox (`f4`/`f5`/`f6`/`g2`, ECDH P-256). [`pdu`]
+//! covers the wire codec. [`pairing`] drives the state machine that
+//! exchanges keys — #455 stage 3 / #636.
+//!
+//! # LE Secure Connections only
+//!
+//! [`pairing`] implements LE Secure Connections (ECDH P-256 key agreement)
+//! exclusively and refuses a peer that will not negotiate it. LE Legacy
+//! Pairing (`c1`/`s1`, no `ah()`-family relation) is deliberately NOT
+//! implemented: Legacy's confirm/random exchange is derived from the TK
+//! alone and is broken by passive eavesdropping for Just Works and
+//! Passkey Entry — the exact class of weakness #636 exists to avoid
+//! landing. See [`pairing`] docs for the IO capability / association
+//! model this module supports (Just Works only, for now).
 //!
 //! # Byte-order convention
 //!
@@ -12,10 +28,16 @@
 //! (The LE-over-air swap dance Linux's `smp_ah` performs exists only
 //! because Linux stores keys/addresses little-endian; this crate's HCI
 //! layer already converts at the packet boundary, `build_le_*_cmd`.)
+//! [`toolbox`] and [`pdu`] document where this convention's boundary with
+//! the little-endian wire format sits for the newer functions.
 //!
 //! Verified against Core Spec Vol 3, Part H, Appendix D.7 (v5.4 p1644):
 //! IRK `ec0234a357c8ad05341010a60a397d9b`, prand `708194`,
 //! AES `159d5fb7 2ebe2311 a48c1bdc c40dfbaa`, ah `0dfbaa` — see the tests.
+
+pub(crate) mod pairing;
+pub(crate) mod pdu;
+pub(crate) mod toolbox;
 
 use aes::Aes128;
 use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
