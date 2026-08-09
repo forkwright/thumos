@@ -252,11 +252,11 @@ impl SearchScreen {
     fn rebuild_matches(&mut self) {
         self.match_count = 0;
         for (i, entry) in FUNCTIONS.iter().enumerate() {
-            if fuzzy_match(entry.name, &self.filter, self.filter_len) {
-                if self.match_count < MAX_ENTRIES {
-                    self.matches[self.match_count] = i;
-                    self.match_count += 1;
-                }
+            if fuzzy_match(entry.name, &self.filter, self.filter_len)
+                && self.match_count < MAX_ENTRIES
+            {
+                self.matches[self.match_count] = i;
+                self.match_count += 1;
             }
         }
 

@@ -273,15 +273,12 @@ impl NousChatScreen {
     /// explicitly rather than keeping a stale prior selection's name and
     /// capability label.
     pub(crate) fn sync_from_manager(&mut self, manager: &NousManager) {
-        match manager.active() {
-            Some(entity) => {
-                self.active_entity_name = String::from(entity.name_str());
-                self.active_preset_label = entity.capability_label();
-            }
-            None => {
-                self.active_entity_name = String::from("(none)");
-                self.active_preset_label = CapabilityPreset::Off.label();
-            }
+        if let Some(entity) = manager.active() {
+            self.active_entity_name = String::from(entity.name_str());
+            self.active_preset_label = entity.capability_label();
+        } else {
+            self.active_entity_name = String::from("(none)");
+            self.active_preset_label = CapabilityPreset::Off.label();
         }
     }
 
@@ -1273,7 +1270,7 @@ mod tests {
         assert_eq!(msg.line_count(), 2);
 
         // Empty body: 1 header line.
-        let msg = ChatMessage::from_user(String::from(""), 0);
+        let msg = ChatMessage::from_user(String::new(), 0);
         assert_eq!(msg.line_count(), 1);
     }
 

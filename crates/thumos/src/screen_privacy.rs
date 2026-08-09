@@ -536,11 +536,11 @@ impl PrivacyScreen {
     /// secure erasure with passphrase verification via `key_manager`.
     /// For now, it zeroes the size and resets the purge state.
     fn execute_purge(&mut self, category_idx: usize) {
-        if let Some(cat) = self.categories.get_mut(category_idx) {
-            if cat.purgeable {
-                cat.size_bytes = 0;
-                self.recalc_total();
-            }
+        if let Some(cat) = self.categories.get_mut(category_idx)
+            && cat.purgeable
+        {
+            cat.size_bytes = 0;
+            self.recalc_total();
         }
         if let Some(state) = &mut self.purge_state {
             state.zeroize();
@@ -630,11 +630,16 @@ impl PrivacyScreen {
             // Purgeable indicator.
             if !cat.purgeable {
                 let lock_x = w - CHAR_WIDTH - 4;
-                let lock_color = if ci == self.cursor {
-                    color::DARK_GREY
-                } else {
-                    color::DARK_GREY
-                };
+                // NOTE: both branches of the prior cursor-conditional here
+                // evaluated to the same color::DARK_GREY, which clippy's
+                // identical_if_else caught. Collapsed to the single value
+                // with NO behavior change. Left as a NOTE rather than
+                // guessing a differing non-cursor color: DARK_GREY against
+                // the selected row's WHITE highlight (bg above) reads fine,
+                // but against the unselected row's BLACK bg the same
+                // DARK_GREY is low-contrast -- a real UI question, not a
+                // clippy one, and not this pass's fabricated call to make.
+                let lock_color = color::DARK_GREY;
                 ui::draw_char(fb, w, lock_x, row_y + 2, '*', lock_color, bg);
             }
         }

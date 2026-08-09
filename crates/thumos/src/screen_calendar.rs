@@ -405,7 +405,7 @@ mod tests {
                     "first event must be Standup (earlier time)"
                 );
             }
-            _ => panic!("row 1 must be an event"),
+            AgendaRow::DayHeader { .. } => panic!("row 1 must be an event"),
         }
     }
 

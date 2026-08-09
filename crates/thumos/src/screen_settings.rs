@@ -335,7 +335,7 @@ impl Screen for AboutScreen {
 ///
 /// Decoupled from `wifi::WifiState` to avoid coupling screen rendering
 /// to the driver state machine. Updated each render cycle.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WifiSettingsState {
     /// Whether `WiFi` is connected.
     pub connected: bool,
@@ -349,19 +349,6 @@ pub struct WifiSettingsState {
     pub ip_addr: [u8; 4],
     /// Whether a scan is in progress.
     pub scanning: bool,
-}
-
-impl Default for WifiSettingsState {
-    fn default() -> Self {
-        Self {
-            connected: false,
-            ssid: [0u8; 32],
-            ssid_len: 0,
-            signal_percent: 0,
-            ip_addr: [0u8; 4],
-            scanning: false,
-        }
-    }
 }
 
 /// `WiFi` settings screen (read-only display of `WiFi` state).

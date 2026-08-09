@@ -60,6 +60,10 @@ const PRESET_COUNT: usize = 3;
 ///
 /// Each field represents the desired power state of a radio subsystem.
 /// `true` = powered on, `false` = powered off.
+// WHY: cellular/wifi/bluetooth/gps are four independent radio power flags,
+// not a state machine -- an enum or bitflags wouldn't remove any of the
+// four axes, just rename how each is read.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RadioState {
     /// Cellular modem (voice + data).
@@ -194,7 +198,7 @@ impl RadioControlScreen {
 const RADIO_LABELS: [&str; 4] = ["Cellular", "WiFi", "Bluetooth", "GPS"];
 
 /// Helper to get the status of a radio by index.
-fn radio_enabled(state: &RadioState, index: usize) -> bool {
+fn radio_enabled(state: RadioState, index: usize) -> bool {
     match index {
         0 => state.cellular,
         1 => state.wifi,
@@ -215,7 +219,7 @@ impl Screen for RadioControlScreen {
         // Draw each radio row.
         for (i, label) in RADIO_LABELS.iter().enumerate() {
             let row_y = RADIO_START_Y + (i as u16) * ROW_HEIGHT;
-            let enabled = radio_enabled(&self.state, i);
+            let enabled = radio_enabled(self.state, i);
 
             // Radio name.
             ui::draw_str(fb, w, PADDING_X, row_y, label, color::WHITE, color::BLACK);
@@ -433,7 +437,7 @@ mod tests {
         screen.apply_preset(0);
         let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
-        let off_status_rendered = fb.iter().any(|&px| px == color::RED);
+        let off_status_rendered = fb.contains(&color::RED);
         assert!(
             off_status_rendered,
             "covert lock must render OFF radio status text"
@@ -443,10 +447,10 @@ mod tests {
     #[test]
     fn radio_enabled_helper_correct() {
         let state = RadioState::STEALTH;
-        assert!(!radio_enabled(&state, 0), "cellular off in stealth");
-        assert!(radio_enabled(&state, 1), "wifi on in stealth");
-        assert!(radio_enabled(&state, 2), "bluetooth on in stealth");
-        assert!(!radio_enabled(&state, 3), "gps off in stealth");
-        assert!(!radio_enabled(&state, 4), "out-of-range returns false");
+        assert!(!radio_enabled(state, 0), "cellular off in stealth");
+        assert!(radio_enabled(state, 1), "wifi on in stealth");
+        assert!(radio_enabled(state, 2), "bluetooth on in stealth");
+        assert!(!radio_enabled(state, 3), "gps off in stealth");
+        assert!(!radio_enabled(state, 4), "out-of-range returns false");
     }
 }

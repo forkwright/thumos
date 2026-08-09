@@ -504,7 +504,7 @@ impl MessagesScreen {
             let badge = msg.transport.badge();
             let marker = if msg.read { " " } else { "*" };
             let sender_display = truncate_str(&msg.sender, 22);
-            let line1 = format_entry_line1_with_badge(badge, marker, &sender_display);
+            let line1 = format_entry_line1_with_badge(badge, marker, sender_display);
             let badge_color = transport_badge_color(msg.transport);
             let sender_color = if msg.read {
                 color::WHITE
@@ -532,7 +532,7 @@ impl MessagesScreen {
                 w,
                 4,
                 y + CHAR_HEIGHT + 4,
-                &preview,
+                preview,
                 color::DARK_GREY,
                 color::BLACK,
             );
@@ -570,7 +570,7 @@ impl MessagesScreen {
             w,
             from_x + 6 * CHAR_WIDTH,
             TITLE_Y,
-            &sender_display,
+            sender_display,
             color::WHITE,
             color::BLACK,
         );
