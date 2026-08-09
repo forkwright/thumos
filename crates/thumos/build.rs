@@ -20,6 +20,7 @@
 //! responsibility.
 
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -32,7 +33,7 @@ const KEY_LEN: usize = 32;
 /// RFC 8032 section 7.1 test-vector PUBLIC keys (TEST 1/2/3/1024/abc). Each
 /// has its private half published in the RFC, so all are forgeable and are
 /// refused as a trust anchor unconditionally. TEST 1 is the exact placeholder
-/// this change removes from secure_boot.rs.
+/// this change removes from `secure_boot.rs`.
 const RFC8032_TEST_PUBLIC_KEYS: [[u8; KEY_LEN]; 5] = [
     // TEST 1: d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
     [
@@ -148,14 +149,14 @@ fn main() {
 }
 
 /// Compile the userspace /init (#474) to a static armv7a ELF linked at
-/// 0x40100000 (kconfig::KERNEL_END) and wrap it in a newc CPIO the kernel
+/// 0x40100000 (`kconfig::KERNEL_END`) and wrap it in a newc CPIO the kernel
 /// embeds and mounts as the image-resident boot root ramfs.
 ///
-/// WHY rustc-direct (not a sub-crate): /init is one no_std no_main file, so a
-/// raw rustc invocation for armv7a-none-eabi produces the ET_EXEC ELF
-/// elf::load parses without a nested cargo build or workspace membership.
-/// -Ttext places all PT_LOAD >= KERNEL_END so the identity-mapping loader
-/// writes them into the sanctioned user-DRAM window [KERNEL_END, RAM_END).
+/// WHY rustc-direct (not a sub-crate): /init is one `no_std` `no_main` file,
+/// so a raw rustc invocation for armv7a-none-eabi produces the `ET_EXEC` ELF
+/// `elf::load` parses without a nested cargo build or workspace membership.
+/// -Ttext places all `PT_LOAD` >= `KERNEL_END` so the identity-mapping loader
+/// writes them into the sanctioned user-DRAM window [`KERNEL_END`, `RAM_END`).
 /// Compile one userspace program (init.rs / init2.rs) to a static armv7a ELF
 /// linked by init.ld (#474/#489). `variant_cfg` optionally adds a
 /// `thumos_init_<variant>` cfg.
@@ -259,10 +260,10 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     // every process loads into its OWN per-process image frame; a real /shell
     // that coexists with /init now ships (#526), packed as a third CPIO entry
     // below and spawned by kinit as PID 2 (see init/shell.rs).
-    let init2_src = manifest_dir.join("init/init2.rs");
-    println!("cargo:rerun-if-changed={}", init2_src.display());
-    let init2_elf = out_dir.join("init2.elf");
-    compile_init_binary(&rustc, &init2_src, &init_ld, &init2_elf, None);
+    let exec_target_src = manifest_dir.join("init/init2.rs");
+    println!("cargo:rerun-if-changed={}", exec_target_src.display());
+    let exec_target_elf = out_dir.join("init2.elf");
+    compile_init_binary(&rustc, &exec_target_src, &init_ld, &exec_target_elf, None);
 
     // #526: /shell -- a THIRD boot-resident program kinit spawns by name
     // alongside /init to WITNESS per-process image frames (#502): two userspace
@@ -299,7 +300,7 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
         Ok(b) => b,
         Err(e) => die(&format!("#474: cannot read built /init ELF: {e}")),
     };
-    let elf2 = match fs::read(&init2_elf) {
+    let elf2 = match fs::read(&exec_target_elf) {
         Ok(b) => b,
         Err(e) => die(&format!("#489: cannot read built /init2 ELF: {e}")),
     };
@@ -346,7 +347,7 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
 }
 
 /// One newc (070701) CPIO entry, byte-identical to the kernel's tested
-/// `build_cpio_entry` (kinit tests) so ramfs::from_cpio parses it: 110-byte
+/// `build_cpio_entry` (kinit tests) so `ramfs::from_cpio` parses it: 110-byte
 /// header, name+NUL padded to 4, data padded to 4.
 fn cpio_newc_entry(name: &str, data: &[u8], mode: u32) -> Vec<u8> {
     let mut e = Vec::new();
@@ -377,6 +378,20 @@ fn cpio_newc_entry(name: &str, data: &[u8], mode: u32) -> Vec<u8> {
     e
 }
 
+// WHY: `core::fmt::Write` for a `String` cannot fail (no I/O, no allocator
+// limit modeled) -- an `Err` here would mean the standard library itself is
+// broken, not that this write failed. `[lints.clippy]` denies `unwrap_used`
+// and `expect_used` crate-wide (including build.rs), so `unwrap_or_else(|_|
+// unreachable!(..))` -- the same idiom `crates/thumos/src/*.rs` already uses
+// for definitionally-infallible `Result`s -- replaces a bare `.unwrap()`/
+// `.expect()` at every `write!`/`writeln!` call site below.
+macro_rules! infallible_write {
+    ($dst:expr $(, $arg:expr)* $(,)?) => {
+        writeln!($dst $(, $arg)*)
+            .unwrap_or_else(|_| unreachable!("writing to a String is infallible"))
+    };
+}
+
 fn render_boot_key_rs(
     key: &[u8; KEY_LEN],
     production: bool,
@@ -386,26 +401,33 @@ fn render_boot_key_rs(
 ) -> String {
     let mut out = String::from("// build.rs (#233) writes this file; do not edit by hand.\n\n");
     out.push_str("/// Embedded Ed25519 public key for kernel signature verification.\n");
-    out.push_str(&format!(
-        "pub(crate) const BOOT_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [{}];\n\n",
+    infallible_write!(
+        out,
+        "pub(crate) const BOOT_PUBLIC_KEY: [u8; PUBLIC_KEY_LEN] = [{}];",
         byte_list(key)
-    ));
+    );
+    infallible_write!(out);
     out.push_str("/// True only when the anchor was provisioned for a production image.\n");
-    out.push_str(&format!(
-        "pub(crate) const BOOT_KEY_IS_PRODUCTION: bool = {production};\n\n"
-    ));
+    infallible_write!(
+        out,
+        "pub(crate) const BOOT_KEY_IS_PRODUCTION: bool = {production};"
+    );
+    infallible_write!(out);
     out.push_str("/// Grep-able image trust stamp (printed on the boot banner).\n");
-    out.push_str(&format!(
-        "pub(crate) const BOOT_TRUST_STAMP: &str = \"THUMOS-BOOT-TRUST:{trust}:{fingerprint}\";\n\n"
-    ));
+    infallible_write!(
+        out,
+        "pub(crate) const BOOT_TRUST_STAMP: &str = \"THUMOS-BOOT-TRUST:{trust}:{fingerprint}\";"
+    );
+    infallible_write!(out);
     out.push_str("/// Dev signing seed (test-only; the dev keypair is deliberately public).\n");
     out.push_str("/// `None` when this build's anchor is not the committed dev key.\n");
     out.push_str("#[cfg(test)]\n");
     match dev_seed {
-        Some(seed) => out.push_str(&format!(
-            "pub(crate) const BOOT_KEY_DEV_SEED: Option<[u8; PUBLIC_KEY_LEN]> = Some([{}]);\n",
+        Some(seed) => infallible_write!(
+            out,
+            "pub(crate) const BOOT_KEY_DEV_SEED: Option<[u8; PUBLIC_KEY_LEN]> = Some([{}]);",
             byte_list(seed)
-        )),
+        ),
         None => out
             .push_str("pub(crate) const BOOT_KEY_DEV_SEED: Option<[u8; PUBLIC_KEY_LEN]> = None;\n"),
     }
@@ -445,7 +467,11 @@ fn byte_list(bytes: &[u8]) -> String {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    bytes.iter().fold(String::new(), |mut out, b| {
+        write!(out, "{b:02x}")
+            .unwrap_or_else(|_| unreachable!("writing to a String is infallible"));
+        out
+    })
 }
 
 fn env_or_die(name: &str) -> String {
