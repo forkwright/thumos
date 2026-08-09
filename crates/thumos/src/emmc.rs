@@ -1814,12 +1814,25 @@ mod tests {
         // buffer (`block.rs`) or place it on the stack (`gpt.rs`), neither of
         // which promises 4-byte alignment. Confirm the byte-level round trip
         // is correct regardless of where the backing array actually lands,
-        // by deliberately misaligning it: a leading pad byte forces the
-        // sector's start address off whatever boundary the allocator would
-        // otherwise have chosen.
-        let mut padded = [0u8; SECTOR_SIZE + 1];
-        let Ok(sector) = <&mut [u8; SECTOR_SIZE]>::try_from(&mut padded[1..]) else {
-            unreachable!("padded[1..] is exactly SECTOR_SIZE bytes long")
+        // by deliberately misaligning it.
+        //
+        // WHY the offset is derived from the runtime address rather than a
+        // fixed constant: `[u8; N]` has `align_of` 1, so the compiler is
+        // free to place the backing array at any address. A FIXED pad only
+        // shifts alignment relative to a base whose residue is unknown, so
+        // it can land back on a 4-byte boundary depending on that residue
+        // (a constant 1-byte pad is misaligning only when `base % 4 != 3`)
+        // -- silently passing while exercising nothing, the opposite of
+        // this test's purpose. `off` is chosen from the OBSERVED
+        // `base % 4` so the result is never 0 for any base: off=1 covers
+        // residues 0/1/2 (giving 1/2/3), and residue 3 alone needs off=2
+        // (giving 1), since off=1 there reproduces the boundary case above.
+        let mut backing = [0u8; SECTOR_SIZE + 4];
+        let base = backing.as_ptr() as usize;
+        let off = if base % 4 == 3 { 2 } else { 1 };
+        let Ok(sector) = <&mut [u8; SECTOR_SIZE]>::try_from(&mut backing[off..off + SECTOR_SIZE])
+        else {
+            unreachable!("[off..off + SECTOR_SIZE] fits within backing for off in 1..=2")
         };
         assert_ne!(
             sector.as_ptr() as usize % 4,
