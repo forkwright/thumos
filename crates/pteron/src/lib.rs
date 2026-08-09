@@ -15,5 +15,6 @@ pub mod ble;
 pub mod config;
 pub mod device;
 pub mod hci;
+pub mod l2cap;
 pub mod smp;
 pub mod transport;
