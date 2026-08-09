@@ -515,30 +515,7 @@ impl CcciChannel {
     /// SECURITY: Used at the modem boundary to reject unknown channel IDs.
     /// Only channels defined in the protocol are accepted.
     pub(crate) fn is_valid(ch: u32) -> bool {
-        matches!(
-            ch,
-            0 | 1
-                | 2
-                | 3
-                | 4
-                | 5
-                | 6
-                | 7
-                | 8
-                | 9
-                | 10
-                | 11
-                | 12
-                | 13
-                | 14
-                | 15
-                | 16
-                | 17
-                | 18
-                | 19
-                | 20
-                | 21
-        )
+        matches!(ch, 0..=21)
     }
 }
 
@@ -648,8 +625,9 @@ impl BootStep {
             Self::MapHardware => Self::ReleaseMd,
             Self::ReleaseMd => Self::SendRuntime,
             Self::SendRuntime => Self::WaitAck,
-            Self::WaitAck => Self::Complete,
-            Self::Complete => Self::Complete,
+            // WHY: Complete is terminal -- once boot finishes, next() stays
+            // at Complete rather than cycling back to EnableClocks.
+            Self::WaitAck | Self::Complete => Self::Complete,
         }
     }
 }
@@ -797,6 +775,7 @@ impl fmt::Debug for CldmaGpd {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CldmaGpd")
             .field("flags", &format_args!("{:#010x}", self.flags))
+            .field("checksum", &self.checksum)
             .field("data_ptr", &format_args!("{:#010x}", self.data_ptr))
             .field("next", &format_args!("{:#010x}", self.next))
             .field("data_len", &self.data_len)
@@ -891,7 +870,12 @@ impl TxRing {
     }
 
     /// Physical address of the first descriptor (for CLDMA start register).
-    pub(crate) fn start_addr(&self, base_addr: u32) -> u32 {
+    ///
+    /// WHY: no `self` -- the descriptor chain always starts at
+    /// `self.descriptors[0]`, so the caller-supplied physical `base_addr`
+    /// of that first descriptor already IS the answer; nothing about the
+    /// ring's own state changes it.
+    pub(crate) fn start_addr(base_addr: u32) -> u32 {
         base_addr
     }
 }
@@ -1533,7 +1517,7 @@ impl WdtStatus {
     }
 
     /// Whether the modem has crashed (WDT triggered).
-    pub(crate) fn is_triggered(&self) -> bool {
+    pub(crate) fn is_triggered(self) -> bool {
         self.raw != 0
     }
 }
@@ -1670,7 +1654,7 @@ pub(crate) unsafe fn ccif_recv(buf: &mut [u8]) -> usize {
         // Access is synchronized via CCIF doorbell.
         let word = unsafe { mmio::read32(sram_base + offset) };
         let bytes = word.to_le_bytes();
-        buf[offset] = bytes.get(0).copied().unwrap_or_default();
+        buf[offset] = bytes.first().copied().unwrap_or_default();
         buf[offset + 1] = bytes.get(1).copied().unwrap_or_default();
         buf[offset + 2] = bytes.get(2).copied().unwrap_or_default();
         buf[offset + 3] = bytes.get(3).copied().unwrap_or_default();
@@ -2104,8 +2088,11 @@ impl CcciDriver {
     /// shared memory region into `dest`. The copy uses volatile reads to
     /// prevent the modem from modifying data between validation and use
     /// (TOCTOU defense).
+    ///
+    /// WHY: no `self` -- every byte this reads comes from `region` (bounds,
+    /// physical address) and `dest`; nothing about the `CcciDriver`
+    /// instance participates in the copy.
     pub(crate) fn copy_from_shared(
-        &self,
         region: &SharedMemRegion,
         offset: u32,
         dest: &mut [u8],
@@ -2123,7 +2110,7 @@ impl CcciDriver {
             // Access is synchronized via CCIF doorbell.
             let word = unsafe { mmio::read32(base + i) };
             let bytes = word.to_le_bytes();
-            dest[i] = bytes.get(0).copied().unwrap_or_default();
+            dest[i] = bytes.first().copied().unwrap_or_default();
             dest[i + 1] = bytes.get(1).copied().unwrap_or_default();
             dest[i + 2] = bytes.get(2).copied().unwrap_or_default();
             dest[i + 3] = bytes.get(3).copied().unwrap_or_default();
@@ -2481,7 +2468,7 @@ mod tests {
         assert_eq!(len, 256, "received length must match");
 
         // Rearm the descriptor
-        ring.rearm(idx, buf_addrs.get(0).copied().unwrap_or_default(), 2048);
+        ring.rearm(idx, buf_addrs.first().copied().unwrap_or_default(), 2048);
         assert!(
             ring.descriptors[idx].is_hw_owned(),
             "descriptor must be HW-owned after rearm"
@@ -2956,7 +2943,7 @@ mod tests {
     fn cldma_tx_interrupt_done() {
         let events = parse_cldma_tx_status(CLDMA_TX_INT_DONE);
         assert_eq!(
-            events.get(0).copied().unwrap_or_default(),
+            events.first().copied().unwrap_or_default(),
             Some(CldmaIrqEvent::TxDone(0x0F)),
             "all 4 queues done"
         );
@@ -2967,7 +2954,7 @@ mod tests {
         let status = CLDMA_TX_INT_DONE | CLDMA_TX_INT_ERROR;
         let events = parse_cldma_tx_status(status);
         assert_eq!(
-            events.get(0).copied().unwrap_or_default(),
+            events.first().copied().unwrap_or_default(),
             Some(CldmaIrqEvent::TxDone(0x0F)),
             "done bits"
         );
@@ -2982,7 +2969,7 @@ mod tests {
     fn cldma_rx_interrupt_done() {
         let events = parse_cldma_rx_status(CLDMA_RX_INT_DONE);
         assert_eq!(
-            events.get(0).copied().unwrap_or_default(),
+            events.first().copied().unwrap_or_default(),
             Some(CldmaIrqEvent::RxDone),
             "RX done"
         );
@@ -2993,7 +2980,7 @@ mod tests {
         let status = CLDMA_RX_INT_DONE | CLDMA_RX_INT_QUEUE_EMPTY | CLDMA_RX_INT_ERROR;
         let events = parse_cldma_rx_status(status);
         assert_eq!(
-            events.get(0).copied().unwrap_or_default(),
+            events.first().copied().unwrap_or_default(),
             Some(CldmaIrqEvent::RxDone),
             "RX done"
         );
@@ -3013,7 +3000,7 @@ mod tests {
     fn cldma_tx_no_interrupts() {
         let events = parse_cldma_tx_status(0);
         assert!(
-            events.iter().all(|e| e.is_none()),
+            events.iter().all(Option::is_none),
             "zero status = no events"
         );
     }

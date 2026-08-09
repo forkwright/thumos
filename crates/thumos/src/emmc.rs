@@ -106,30 +106,57 @@ const REG_SDC_DCRC_STS: usize = 0x60;
 const REG_SDC_ADV_CFG0: usize = 0x64;
 
 /// eMMC config 0: boot mode, part access.
-#[expect(dead_code, reason = "reserved for boot mode configuration (#145)")]
+// WHY cfg_attr(not(test)): a regression test asserts this offset/value
+// against the datasheet, so it is used under the host test build; on
+// armv7a nothing outside tests reads it, and the expectation lives
+// exactly there so it stays fulfilled in both configurations.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reserved for boot mode configuration (#145)")
+)]
 const REG_EMMC_CFG0: usize = 0x70;
 
 /// eMMC config 1.
-#[expect(dead_code, reason = "reserved for boot mode configuration (#145)")]
+// WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reserved for boot mode configuration (#145)")
+)]
 const REG_EMMC_CFG1: usize = 0x74;
 
 /// eMMC status: boot ack.
-#[expect(dead_code, reason = "reserved for boot status readback (#145)")]
+// WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reserved for boot status readback (#145)")
+)]
 const REG_EMMC_STS: usize = 0x78;
 
 /// eMMC I/O control.
-#[expect(dead_code, reason = "reserved for eMMC I/O tuning (#145)")]
+// WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reserved for eMMC I/O tuning (#145)")
+)]
 const REG_EMMC_IOCON: usize = 0x7C;
 
 /// DMA start address [35:32] (4 MSB).
-#[expect(dead_code, reason = "MT6739 is 32-bit; high bits unused (#145)")]
+// WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "MT6739 is 32-bit; high bits unused (#145)")
+)]
 const REG_MSDC_DMA_SA_HIGH: usize = 0x8C;
 
 /// DMA start address [31:0].
 const REG_MSDC_DMA_SA: usize = 0x90;
 
 /// DMA current address.
-#[expect(dead_code, reason = "reserved for DMA progress monitoring (#145)")]
+// WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reserved for DMA progress monitoring (#145)")
+)]
 const REG_MSDC_DMA_CA: usize = 0x94;
 
 /// DMA control: start, stop, mode.
@@ -139,7 +166,11 @@ const REG_MSDC_DMA_CTRL: usize = 0x98;
 const REG_MSDC_DMA_CFG: usize = 0x9C;
 
 /// DMA transfer length.
-#[expect(dead_code, reason = "length encoded in GPD/BD descriptors (#145)")]
+// WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "length encoded in GPD/BD descriptors (#145)")
+)]
 const REG_MSDC_DMA_LEN: usize = 0xA8;
 
 /// Patch register 0 (tuning overrides).
@@ -147,13 +178,21 @@ const REG_MSDC_DMA_LEN: usize = 0xA8;
 const REG_MSDC_PATCH_BIT0: usize = 0xB0;
 
 /// Version register.
-#[expect(dead_code, reason = "reserved for version readback (#145)")]
+// WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reserved for version readback (#145)")
+)]
 const REG_MSDC_VERSION: usize = 0x114;
 
 // NOTE: source `drivers/mmc/host/mediatek/ComboA/msdc_reg.h:75–221`
 
 /// Inline AES encryption SELECT.
-#[expect(dead_code, reason = "reserved for encrypted storage layer (#145)")]
+// WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "reserved for encrypted storage layer (#145)")
+)]
 const REG_MSDC_AES_SEL: usize = 0x280;
 
 // ---------------------------------------------------------------------------
@@ -170,7 +209,11 @@ const CFG_CKDIV_SHIFT: u32 = 8;
 const CFG_BUSWIDTH_1: u32 = 0b00 << 20;
 
 /// Bus width: 4-bit (bits [21:20] = 0b01).
-#[expect(dead_code, reason = "eMMC uses 8-bit; kept for SD card support (#145)")]
+// WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "eMMC uses 8-bit; kept for SD card support (#145)")
+)]
 const CFG_BUSWIDTH_4: u32 = 0b01 << 20;
 
 /// Bus width: 8-bit (bits [21:20] = 0b10).
@@ -686,7 +729,7 @@ impl MsdcController {
     }
 
     /// Absolute register address from offset.
-    #[inline(always)]
+    #[inline]
     fn reg(&self, offset: usize) -> usize {
         self.base + offset
     }
@@ -1620,7 +1663,7 @@ mod tests {
         assert_eq!(gpd.data_len, 1536, "total length = 3 * 512");
 
         assert!(
-            !bds.get(0).copied().unwrap_or_default().is_eol(),
+            !bds.first().copied().unwrap_or_default().is_eol(),
             "first BD is not EOL"
         );
         assert!(
@@ -1633,7 +1676,7 @@ mod tests {
         );
 
         assert_eq!(
-            bds.get(0).copied().unwrap_or_default().ptr,
+            bds.first().copied().unwrap_or_default().ptr,
             0x4000_0000,
             "segment 0 address"
         );
