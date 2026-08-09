@@ -296,6 +296,16 @@ impl PbFlag {
             _ => Self::CompleteFlushable,
         }
     }
+
+    /// Encode back to the two-bit wire value — the inverse of [`Self::from_bits`].
+    const fn to_bits(self) -> u8 {
+        match self {
+            Self::FirstNonFlushable => 0b00,
+            Self::Continuation => 0b01,
+            Self::FirstFlushable => 0b10,
+            Self::CompleteFlushable => 0b11,
+        }
+    }
 }
 
 /// A decoded HCI ACL Data packet (H4 type `0x02`, Vol 4 Part E §5.4.2).
@@ -589,6 +599,27 @@ pub(crate) fn decode_acl_data(data: &[u8]) -> Result<AclDataPacket<'_>> {
         bc_flag,
         data: payload,
     })
+}
+
+/// Encode an H4-framed HCI ACL Data packet (H4 type `0x02`) — the inverse
+/// of [`decode_acl_data`]: `[0x02, handle_lo, handle_hi|pb|bc, data_len_lo,
+/// data_len_hi, data...]`.
+///
+/// `handle` is masked to its 12 protocol bits and `bc_flag` to its 2 (Vol
+/// 4 Part E §5.4.2) — an out-of-range caller value is truncated rather
+/// than panicking, matching [`decode_acl_data`]'s own tolerance for the
+/// field's bit width.
+pub(crate) fn encode_acl_data(handle: u16, pb_flag: PbFlag, bc_flag: u8, data: &[u8]) -> Vec<u8> {
+    let handle_and_flags = (handle & 0x0FFF)
+        | (u16::from(pb_flag.to_bits()) << 12)
+        | (u16::from(bc_flag & 0b11) << 14);
+    let data_len = u16::try_from(data.len()).unwrap_or(u16::MAX);
+    let mut packet = Vec::with_capacity(5 + data.len());
+    packet.push(H4_ACL_TYPE);
+    packet.extend_from_slice(&handle_and_flags.to_le_bytes());
+    packet.extend_from_slice(&data_len.to_le_bytes());
+    packet.extend_from_slice(data);
+    packet
 }
 
 fn decode_command_complete(params: &[u8]) -> Result<HciEvent> {
@@ -1144,7 +1175,7 @@ mod tests {
         Ok(())
     }
 
-    // ── PbFlag::from_bits ──
+    // ── PbFlag::from_bits / to_bits ──
 
     #[test]
     fn pb_flag_from_bits_covers_all_four_values() {
@@ -1152,5 +1183,42 @@ mod tests {
         assert_eq!(PbFlag::from_bits(0b01), PbFlag::Continuation);
         assert_eq!(PbFlag::from_bits(0b10), PbFlag::FirstFlushable);
         assert_eq!(PbFlag::from_bits(0b11), PbFlag::CompleteFlushable);
+    }
+
+    #[test]
+    fn pb_flag_to_bits_is_the_inverse_of_from_bits() {
+        for bits in 0b00..=0b11 {
+            assert_eq!(
+                PbFlag::from_bits(bits).to_bits(),
+                bits,
+                "to_bits must invert from_bits for every two-bit value"
+            );
+        }
+    }
+
+    // ── encode_acl_data (#635/#455 stage 3 composition) ──
+
+    #[test]
+    fn encode_acl_data_round_trips_through_decode() -> Result<()> {
+        let encoded = encode_acl_data(0x0040, PbFlag::FirstFlushable, 0b00, &[0xAA, 0xBB, 0xCC]);
+        let pkt = decode_acl_data(&encoded)?;
+        assert_eq!(pkt.handle, 0x0040, "handle must round-trip");
+        assert_eq!(
+            pkt.pb_flag,
+            PbFlag::FirstFlushable,
+            "pb_flag must round-trip"
+        );
+        assert_eq!(pkt.bc_flag, 0b00, "bc_flag must round-trip");
+        assert_eq!(pkt.data, &[0xAA, 0xBB, 0xCC], "payload must round-trip");
+        Ok(())
+    }
+
+    #[test]
+    fn encode_acl_data_masks_handle_and_bc_flag_to_their_protocol_widths() -> Result<()> {
+        let encoded = encode_acl_data(0xFFFF, PbFlag::Continuation, 0xFF, &[]);
+        let pkt = decode_acl_data(&encoded)?;
+        assert_eq!(pkt.handle, 0x0FFF, "handle must be masked to 12 bits");
+        assert_eq!(pkt.bc_flag, 0b11, "bc_flag must be masked to 2 bits");
+        Ok(())
     }
 }
