@@ -23,7 +23,7 @@ use metaxu::pylon::{Pylon, spawn};
 /// bridge module signs grants under this SAME seed, so a freshly issued
 /// grant always verifies here.
 fn runtime_signing() -> SigningKey {
-    SigningKey::from_bytes(&[0xEEu8; 32]) // FALSIFICATION TEST (#544): deliberately wrong runtime key -- see PR body for the revert
+    SigningKey::from_bytes(&[7u8; 32])
 }
 
 /// Current wall-clock time in milliseconds since the Unix epoch, for grant
