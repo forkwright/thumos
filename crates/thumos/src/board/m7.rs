@@ -72,10 +72,11 @@ pub(crate) const MUSB_BASE: usize = 0x1121_0000;
 /// `gic::enable_irq` and the IRQ-dispatch comparison in `exceptions.rs`
 /// both consume -- SPI number + 32, same convention as `timer::TIMER_IRQ`).
 ///
-/// `None` -- NOT hardware-confirmed (#666). Every MediaTek MT6739 vendor
-/// Android kernel DTS this driver's own history cites was re-checked while
-/// wiring this constant, and none of it resolves cleanly: two independently
-/// hosted copies of MediaTek's mt6739 vendor tree
+/// `None` -- NOT hardware-confirmed (#666, tracked to closure by #676).
+/// Every MediaTek MT6739 vendor Android kernel DTS this driver's own
+/// history cites was re-checked while wiring this constant, and none of it
+/// resolves cleanly: two independently hosted copies of MediaTek's mt6739
+/// vendor tree
 /// (github.com/fukehan/kernel-4.4, github.com/iscle/OrangePi_4G-IOT_Android_8.1_BSP)
 /// carry a `usb0@11200000` node -- `compatible = "mediatek,mt6739-usb20"`,
 /// `interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL_LOW>` (INTID 32+73 = 105) -- but
@@ -85,16 +86,16 @@ pub(crate) const MUSB_BASE: usize = 0x1121_0000;
 /// but neither cites a source beyond the other -- there is no artifact in
 /// this repo's history that independently confirms either address against
 /// real AGM M7 hardware or an authoritative MT6739 datasheet. Wiring a real
-/// GIC INTID into a live `enable_irq` call on that contested a foundation
+/// GIC INTID into a live `enable_irq` call on that contested foundation
 /// would be a fabricated fact wearing a hardware-verified constant's
 /// clothes, not an engineering shortcut -- so this stays `None` (a
-/// no-op at the `exceptions::init()` call site) until a follow-up closes
-/// the gap by hardware probe or a source that resolves the base-address
-/// conflict. Flipping this to `Some(105)` (the one researched candidate,
-/// unverified) is then the ENTIRE remaining step -- see `exceptions::init()`
-/// and `exceptions::irq_handler_body()`, both already written against this
+/// no-op at the `exceptions::init()` call site) until #676 closes the gap
+/// by hardware probe or a source that resolves the base-address conflict.
+/// Flipping this to `Some(105)` (the one researched candidate, unverified)
+/// is then the ENTIRE remaining step -- see `exceptions::init()` and
+/// `exceptions::irq_handler_body()`, both already written against this
 /// constant.
-/// TODO(#666)[deliberate-prudent]: confirm the AGM M7 MUSB GIC INTID (candidate:
+/// TODO(#676)[deliberate-prudent]: confirm the AGM M7 MUSB GIC INTID (candidate:
 /// 105) against real hardware or a source that resolves the MUSB_BASE
 /// 0x1121_0000-vs-0x1120_0000 conflict noted above, then set this to Some(n).
 pub(crate) const MUSB_IRQ: Option<u32> = None;

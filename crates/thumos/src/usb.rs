@@ -828,8 +828,7 @@ static mut SERIAL_RX_RING: SerialRxRing = SerialRxRing::new();
 /// Run `f` on the serial RX ring under the IRQ-safe lock. Single accessor so
 /// the lock can never be bypassed by a future call site.
 fn with_serial_rx<R>(f: impl FnOnce(&mut SerialRxRing) -> R) -> R {
-    // FALSIFICATION (#666): lock bypassed on purpose to prove the
-    // contention test detects it. Revert before merge.
+    let _guard = SERIAL_RX_RING_LOCK.lock();
     // SAFETY: the lock serializes the ISR push path and the reader drain
     // path; this is the only accessor to the static ring.
     unsafe { f(&mut *core::ptr::addr_of_mut!(SERIAL_RX_RING)) }
@@ -2147,18 +2146,40 @@ mod tests {
     /// WHY this shape proves synchronization, not just correctness: a test
     /// that calls the push path then the drain path sequentially proves
     /// nothing about synchronization -- both paths would run under the SAME
-    /// execution context either way. This spawns a real OS thread as the
-    /// producer (standing in for the MUSB ISR's `ring_push` path) racing
-    /// the main thread as the reader (standing in for `read_serial`'s
-    /// `drain` path) against the SAME shared ring, many rounds, and checks
-    /// two properties that a torn/lost/duplicated/reordered ring slot would
-    /// break: exact count conservation, and strict per-round monotonicity
-    /// of what was drained. Unique byte values 0..PUSH_PER_ROUND per round
-    /// (kept under 256, so no value wraps) turn "the drained sequence must
-    /// be strictly increasing" into an unambiguous check. ROUNDS repeats
-    /// with a fresh ring each time -- real-world races are probabilistic,
-    /// so many short rounds give a lock bypass many independent chances to
-    /// manifest rather than relying on one long run's timing.
+    /// execution context either way. This spawns TWO real OS threads as
+    /// producers (standing in for the MUSB ISR's `ring_push` path -- e.g. a
+    /// bus reset re-arming the ring while a prior packet's bytes are still
+    /// draining) racing each other AND the main thread as the reader
+    /// (standing in for `read_serial`'s `drain` path) against the SAME
+    /// shared ring, many rounds.
+    ///
+    /// WHY two producers, not one: an earlier version of this test used a
+    /// single producer racing the reader. Pushed to CI with
+    /// `SERIAL_RX_RING_LOCK` deliberately bypassed, it stayed GREEN --
+    /// x86's strong memory ordering (TSO) plus this crate's `SerialRxRing`
+    /// touching mostly-disjoint fields per role (the pusher's `head`/
+    /// `buf[head]` vs. the reader's `tail`/`buf[tail]`) makes a
+    /// single-producer/single-reader race a subtle memory-VISIBILITY
+    /// hazard that x86 hardware happens to mask often enough that it is
+    /// not a reliable witness. Two producers racing EACH OTHER on the SAME
+    /// `head` field is a classic read-modify-write "lost update": both
+    /// read the same `head`, both compute the same `next_head`, one
+    /// pusher's `buf[head]` write is silently overwritten by the other's,
+    /// and `head` only advances once despite two `push()` calls both
+    /// returning `accepted`. That is a genuine race on shared mutable
+    /// state, not a memory-ordering subtlety -- it does not depend on weak
+    /// ordering to manifest, which is what makes it a reliable witness
+    /// even on x86 CI hardware.
+    ///
+    /// Each producer pushes a disjoint value lane (0..PUSH_PER_LANE and
+    /// PUSH_PER_LANE..2*PUSH_PER_LANE) so the drained stream can still be
+    /// checked per-lane after interleaving. Two properties a
+    /// torn/lost/duplicated/reordered ring slot would break: exact count
+    /// conservation (every `push()` that reported `accepted` is either
+    /// drained or counted `dropped`), and strict per-lane monotonicity of
+    /// what was drained. ROUNDS repeats with a fresh ring each time --
+    /// races are probabilistic, so many short rounds give a lock bypass
+    /// many independent chances to manifest.
     ///
     /// Falsification (see the PR body for the CI run pair): with
     /// `with_serial_rx`'s `SERIAL_RX_RING_LOCK.lock()` bypassed, this test
@@ -2170,36 +2191,48 @@ mod tests {
         use std::thread;
         use std::vec::Vec;
 
-        const PUSH_PER_ROUND: u8 = 200;
+        const PUSH_PER_LANE: u8 = 100;
         const ROUNDS: usize = 64;
 
         for _round in 0..ROUNDS {
             with_serial_rx(|r| *r = SerialRxRing::new());
 
-            let producer = thread::spawn(move || {
+            let producer_a = thread::spawn(move || {
                 let mut accepted = 0usize;
-                for byte in 0..PUSH_PER_ROUND {
+                for byte in 0..PUSH_PER_LANE {
                     if with_serial_rx(|r| r.push(byte)) {
                         accepted += 1;
                     }
                 }
                 accepted
             });
+            let producer_b = thread::spawn(move || {
+                let mut accepted = 0usize;
+                for byte in 0..PUSH_PER_LANE {
+                    if with_serial_rx(|r| r.push(byte + PUSH_PER_LANE)) {
+                        accepted += 1;
+                    }
+                }
+                accepted
+            });
 
-            // Drain concurrently while the producer is still pushing -- the
-            // real production scenario (ISR push vs. read_serial drain
+            // Drain concurrently while both producers are still pushing --
+            // the real production scenario (ISR push vs. read_serial drain
             // interleaving), not a sequential call-then-call.
-            let mut drained: Vec<u8> = Vec::with_capacity(usize::from(PUSH_PER_ROUND));
-            while !producer.is_finished() {
+            let mut drained: Vec<u8> = Vec::with_capacity(2 * usize::from(PUSH_PER_LANE));
+            while !producer_a.is_finished() || !producer_b.is_finished() {
                 let mut chunk = [0u8; 32];
                 let n = with_serial_rx(|r| r.drain(&mut chunk));
                 drained.extend_from_slice(&chunk[..n]);
             }
-            let Ok(accepted) = producer.join() else {
-                unreachable!("producer thread must not panic")
+            let Ok(accepted_a) = producer_a.join() else {
+                unreachable!("producer_a thread must not panic")
+            };
+            let Ok(accepted_b) = producer_b.join() else {
+                unreachable!("producer_b thread must not panic")
             };
             // Drain the remainder pushed between the last poll above and
-            // the producer's join.
+            // the producers' join.
             loop {
                 let mut chunk = [0u8; 32];
                 let n = with_serial_rx(|r| r.drain(&mut chunk));
@@ -2212,23 +2245,35 @@ mod tests {
             let dropped = with_serial_rx(|r| r.dropped_bytes());
             assert_eq!(
                 drained.len() + usize::try_from(dropped).unwrap_or(usize::MAX),
-                accepted,
-                "every byte push() reported accepted must be either drained or counted dropped -- a mismatch means the reader and pusher corrupted the shared head/tail indices"
+                accepted_a + accepted_b,
+                "every byte push() reported accepted must be either drained or counted dropped -- a mismatch means the two producers (or a producer and the reader) corrupted the shared head/tail indices"
             );
 
-            let mut previous: Option<u8> = None;
+            let mut previous_a: Option<u8> = None;
+            let mut previous_b: Option<u8> = None;
             for &b in &drained {
-                assert!(
-                    b < PUSH_PER_ROUND,
-                    "drained byte {b} is outside the pushed range 0..{PUSH_PER_ROUND} -- a corrupted ring slot"
-                );
-                if let Some(prev) = previous {
-                    assert!(
-                        b > prev,
-                        "drained byte {b} did not strictly increase past {prev} -- a duplicated or reordered ring slot"
+                if b < PUSH_PER_LANE {
+                    if let Some(prev) = previous_a {
+                        assert!(
+                            b > prev,
+                            "lane-A byte {b} did not strictly increase past {prev} -- a duplicated or reordered ring slot"
+                        );
+                    }
+                    previous_a = Some(b);
+                } else if b < 2 * PUSH_PER_LANE {
+                    let lane_b_value = b - PUSH_PER_LANE;
+                    if let Some(prev) = previous_b {
+                        assert!(
+                            lane_b_value > prev,
+                            "lane-B byte {lane_b_value} did not strictly increase past {prev} -- a duplicated or reordered ring slot"
+                        );
+                    }
+                    previous_b = Some(lane_b_value);
+                } else {
+                    unreachable!(
+                        "drained byte {b} is outside both pushed lanes -- a corrupted ring slot"
                     );
                 }
-                previous = Some(b);
             }
         }
     }
