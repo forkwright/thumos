@@ -141,7 +141,7 @@ fidelity = "shared memory-map tables pinned host-side; MMIO interaction is the m
 
 [[module]]
 name = "board/m7"
-tests = 2
+tests = 3
 mechanism = "host"
 fidelity = "address tables + registry population pinned host-side; MMIO interaction is the m7 boot path (hardware-gated)"
 
@@ -688,9 +688,9 @@ witness = "boot.sh"
 
 [[module]]
 name = "usb"
-tests = 31
+tests = 32
 mechanism = "host"
-fidelity = "MMIO/ISR paths are not exercised host-side; EP1 ring sync is #437 remnant 2"
+fidelity = "MMIO/GIC dispatch is not exercised host-side (no real MUSB IRQ fires until board::m7::MUSB_IRQ is hardware-confirmed, #666); the SERIAL_RX_RING_LOCK contention it depends on IS exercised host-side, under real OS-thread concurrency, not single-core simulation"
 
 [[module]]
 name = "vfs"

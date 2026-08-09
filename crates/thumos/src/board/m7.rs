@@ -68,6 +68,37 @@ pub(crate) const LFS_PREAMBLE_SECTORS: u64 = 1;
 /// for `musb-hdrc`; the DT node and the usb.rs driver agree on this value.
 pub(crate) const MUSB_BASE: usize = 0x1121_0000;
 
+/// MUSB OTG controller GIC interrupt (raw GIC INTID, the form
+/// `gic::enable_irq` and the IRQ-dispatch comparison in `exceptions.rs`
+/// both consume -- SPI number + 32, same convention as `timer::TIMER_IRQ`).
+///
+/// `None` -- NOT hardware-confirmed (#666). Every MediaTek MT6739 vendor
+/// Android kernel DTS this driver's own history cites was re-checked while
+/// wiring this constant, and none of it resolves cleanly: two independently
+/// hosted copies of MediaTek's mt6739 vendor tree
+/// (github.com/fukehan/kernel-4.4, github.com/iscle/OrangePi_4G-IOT_Android_8.1_BSP)
+/// carry a `usb0@11200000` node -- `compatible = "mediatek,mt6739-usb20"`,
+/// `interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL_LOW>` (INTID 32+73 = 105) -- but
+/// that node's `reg` base is `0x1120_0000`, not the `0x1121_0000` MUSB_BASE
+/// carries above. MUSB_BASE's own doc comment attributes `0x1121_0000` to
+/// "the DT node", and the #534 PR that moved it here repeats that claim,
+/// but neither cites a source beyond the other -- there is no artifact in
+/// this repo's history that independently confirms either address against
+/// real AGM M7 hardware or an authoritative MT6739 datasheet. Wiring a real
+/// GIC INTID into a live `enable_irq` call on that contested a foundation
+/// would be a fabricated fact wearing a hardware-verified constant's
+/// clothes, not an engineering shortcut -- so this stays `None` (a
+/// no-op at the `exceptions::init()` call site) until a follow-up closes
+/// the gap by hardware probe or a source that resolves the base-address
+/// conflict. Flipping this to `Some(105)` (the one researched candidate,
+/// unverified) is then the ENTIRE remaining step -- see `exceptions::init()`
+/// and `exceptions::irq_handler_body()`, both already written against this
+/// constant.
+/// TODO(#666)[deliberate-prudent]: confirm the AGM M7 MUSB GIC INTID (candidate:
+/// 105) against real hardware or a source that resolves the MUSB_BASE
+/// 0x1121_0000-vs-0x1120_0000 conflict noted above, then set this to Some(n).
+pub(crate) const MUSB_IRQ: Option<u32> = None;
+
 // ---------------------------------------------------------------------------
 // Display pipeline
 // ---------------------------------------------------------------------------
@@ -270,5 +301,22 @@ mod tests {
         assert_eq!(DSI0_CMD_FIFO, 0x1400_D200);
         assert_eq!(MCDI_CORE_EN, 0x1000_DC04);
         assert!(!BOARD_NAME.is_empty());
+    }
+
+    /// WHY (#666): MUSB_IRQ is `None` until hardware-confirmed (see its doc
+    /// comment). Guards the day it flips to `Some(n)` -- n must be a real
+    /// SPI (INTID >= 32; 0..31 are SGI/PPI, never a peripheral line), so a
+    /// typo during the eventual hardware-confirmed edit cannot silently
+    /// enable a reserved software/private interrupt line instead of a real
+    /// peripheral one.
+    #[test]
+    fn musb_irq_is_unset_or_a_valid_spi() {
+        match MUSB_IRQ {
+            None => {}
+            Some(n) => assert!(
+                n >= 32,
+                "MUSB_IRQ must be a real SPI (INTID >= 32, not an SGI/PPI slot), got {n}"
+            ),
+        }
     }
 }

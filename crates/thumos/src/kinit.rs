@@ -69,7 +69,7 @@ use crate::uart::Uart;
 use crate::uart::boot_log;
 use crate::ui;
 #[cfg(not(feature = "qemu"))]
-use crate::usb::UsbController;
+use crate::usb;
 use crate::watchdog;
 
 // ---------------------------------------------------------------------------
@@ -1340,10 +1340,12 @@ pub unsafe fn run() -> ! {
     serial.log(" Skipped (qemu: no MUSB model)\r\n");
     #[cfg(not(feature = "qemu"))]
     {
-        let mut usb = UsbController::new();
-        // SAFETY: usb.init() programs the MUSB MMIO registers at their known
-        // physical address (0x1121_0000). Called once after heap and GIC init.
-        match unsafe { usb.init() } {
+        // SAFETY: init_controller() programs the MUSB MMIO registers at
+        // their known physical address (0x1121_0000) on the shared static
+        // controller (#666, promoted off this stack frame so
+        // exceptions::irq_handler_body's ISR path can reach it). Called
+        // once, here, after heap and GIC init -- the sole init call site.
+        match unsafe { usb::init_controller() } {
             Ok(()) => {
                 serial.log(" USB ACM gadget connected\r\n");
                 devices.activate("musb-hdrc");
