@@ -324,24 +324,26 @@ pub(crate) fn parse_ws_frame(data: &[u8]) -> Result<(WsFrame, usize), EkphrasisE
     let len_indicator = byte1 & 0x7F;
 
     // Determine actual payload length and header size.
-    let (payload_len, header_size) = if len_indicator < 126 {
-        (len_indicator as usize, 2_usize)
-    } else if len_indicator == 126 {
-        // Next 2 bytes are the length (big-endian u16).
-        if data.len() < 4 {
-            return Err(EkphrasisError::Incomplete);
+    let (payload_len, header_size) = match len_indicator.cmp(&126) {
+        core::cmp::Ordering::Less => (len_indicator as usize, 2_usize),
+        core::cmp::Ordering::Equal => {
+            // Next 2 bytes are the length (big-endian u16).
+            if data.len() < 4 {
+                return Err(EkphrasisError::Incomplete);
+            }
+            let len = u16::from_be_bytes([data[2], data[3]]) as usize;
+            (len, 4_usize)
         }
-        let len = u16::from_be_bytes([data[2], data[3]]) as usize;
-        (len, 4_usize)
-    } else {
-        // len_indicator == 127: next 8 bytes are the length (big-endian u64).
-        if data.len() < 10 {
-            return Err(EkphrasisError::Incomplete);
+        core::cmp::Ordering::Greater => {
+            // len_indicator == 127: next 8 bytes are the length (big-endian u64).
+            if data.len() < 10 {
+                return Err(EkphrasisError::Incomplete);
+            }
+            let len = u64::from_be_bytes([
+                data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
+            ]) as usize;
+            (len, 10_usize)
         }
-        let len = u64::from_be_bytes([
-            data[2], data[3], data[4], data[5], data[6], data[7], data[8], data[9],
-        ]) as usize;
-        (len, 10_usize)
     };
 
     if payload_len > MAX_WS_FRAME_PAYLOAD {
@@ -399,10 +401,10 @@ pub(crate) fn build_ws_frame(opcode: WsOpcode, payload: &[u8], mask_key: [u8; 4]
     if payload_len < 126 {
         frame.push(0x80 | (payload_len as u8));
     } else if payload_len <= 0xFFFF {
-        frame.push(0x80 | 126);
+        frame.push(0x80 | 0x7E);
         frame.extend_from_slice(&(payload_len as u16).to_be_bytes());
     } else {
-        frame.push(0x80 | 127);
+        frame.push(0x80 | 0x7F);
         frame.extend_from_slice(&(payload_len as u64).to_be_bytes());
     }
 
@@ -960,10 +962,10 @@ impl Ekphrasis {
                 self.state = EkphrasisState::Idle;
 
                 // Return final text if available, otherwise partial.
-                let result = if !self.final_text.is_empty() {
-                    self.final_text.clone()
-                } else {
+                let result = if self.final_text.is_empty() {
                     self.partial_text.clone()
+                } else {
+                    self.final_text.clone()
                 };
 
                 Ok(result)
@@ -1489,8 +1491,8 @@ mod tests {
         assert_eq!(parsed.opcode, WsOpcode::Ping);
         assert_eq!(parsed.payload, b"ping");
 
-        let pong_frame = build_ws_frame(WsOpcode::Pong, b"pong", mask_key);
-        let (parsed, _) = parse_ws_frame(&pong_frame).ok().flatten_pair();
+        let pong_reply = build_ws_frame(WsOpcode::Pong, b"pong", mask_key);
+        let (parsed, _) = parse_ws_frame(&pong_reply).ok().flatten_pair();
         assert_eq!(parsed.opcode, WsOpcode::Pong);
         assert_eq!(parsed.payload, b"pong");
     }
@@ -1534,12 +1536,12 @@ Let me know if you need anything else."#;
 
         let result = parse_action_proposal(message);
         assert!(result.is_some());
-        let proposal = result.as_ref().map(|r| r.as_ref().ok()).flatten();
+        let proposal = result.as_ref().and_then(|r| r.as_ref().ok());
         assert!(proposal.is_some());
-        let proposal = proposal.map(|p| p.clone());
-        let p = proposal.as_ref().map(|p| p);
+        let proposal = proposal.cloned();
+        let p = proposal.as_ref();
         assert!(p.is_some());
-        let p = p.map(|p| p).flatten_ref();
+        let p = p.flatten_ref();
 
         assert_eq!(p.action, "open_dialer");
         assert_eq!(p.description, "Call Maria");
@@ -1571,11 +1573,11 @@ Let me know if you need anything else."#;
 
         let result = parse_action_proposal(message);
         assert!(result.is_some());
-        let p = result.and_then(|r| r.ok());
+        let p = result.and_then(Result::ok);
         assert!(p.is_some());
-        let p = p.as_ref().map(|p| p);
+        let p = p.as_ref();
         assert!(p.is_some());
-        let p = p.map(|p| p).flatten_ref();
+        let p = p.flatten_ref();
 
         assert_eq!(p.action, "start_timer");
         assert_eq!(p.description, "5 minute timer");
@@ -1588,9 +1590,9 @@ Let me know if you need anything else."#;
 
         let result = parse_action_proposal(message);
         assert!(result.is_some());
-        let p = result.and_then(|r| r.ok());
+        let p = result.and_then(Result::ok);
         assert!(p.is_some());
-        let p = p.as_ref().map(|p| p).flatten_ref();
+        let p = p.as_ref().flatten_ref();
 
         assert_eq!(p.action, "scan_start");
         assert!(p.params.is_empty());
@@ -1613,7 +1615,7 @@ Let me know if you need anything else."#;
         let message = "```thumos-action\n{\"description\": \"Call Maria\"}\n```";
         let result = parse_action_proposal(message);
         assert!(result.is_some());
-        let err = result.and_then(|r| r.err());
+        let err = result.and_then(Result::err);
         assert!(err.is_some());
     }
 
@@ -1622,7 +1624,7 @@ Let me know if you need anything else."#;
         let message = "```thumos-action\n{\"thumos_action\": \"open_dialer\"}\n```";
         let result = parse_action_proposal(message);
         assert!(result.is_some());
-        let err = result.and_then(|r| r.err());
+        let err = result.and_then(Result::err);
         assert!(err.is_some());
     }
 
@@ -1631,7 +1633,7 @@ Let me know if you need anything else."#;
         let message = "```thumos-action\nnot valid json at all\n```";
         let result = parse_action_proposal(message);
         assert!(result.is_some());
-        let err = result.and_then(|r| r.err());
+        let err = result.and_then(Result::err);
         assert!(err.is_some());
     }
 
@@ -1639,9 +1641,9 @@ Let me know if you need anything else."#;
     fn parse_action_proposal_numeric_params() {
         let message = "```thumos-action\n{\"thumos_action\": \"set_alarm\", \"params\": {\"hour\": 7, \"minute\": 30}, \"description\": \"Wake up alarm\"}\n```";
         let result = parse_action_proposal(message);
-        let p = result.and_then(|r| r.ok());
+        let p = result.and_then(Result::ok);
         assert!(p.is_some());
-        let p = p.as_ref().map(|p| p).flatten_ref();
+        let p = p.as_ref().flatten_ref();
 
         assert_eq!(p.action, "set_alarm");
         assert_eq!(p.param("hour"), Some("7"));

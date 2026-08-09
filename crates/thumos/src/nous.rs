@@ -177,7 +177,7 @@ impl CapabilitySet {
 
     /// Whether `cap` is granted.
     #[must_use]
-    pub(crate) const fn grants(&self, cap: NousCapability) -> bool {
+    pub(crate) const fn grants(self, cap: NousCapability) -> bool {
         self.bits & (1 << cap as u32) != 0
     }
 
@@ -195,7 +195,7 @@ impl CapabilitySet {
     /// Whether any action-capable grant exists (draft/send/modify/toggle
     /// classes) -- the new-model meaning of "can propose" (#552).
     #[must_use]
-    pub(crate) const fn can_propose(&self) -> bool {
+    pub(crate) const fn can_propose(self) -> bool {
         const ACTION_BITS: u32 = (1 << NousCapability::DraftMessages as u32)
             | (1 << NousCapability::DraftCalendarEvents as u32)
             | (1 << NousCapability::SendMessagesConfirmed as u32)
@@ -211,7 +211,7 @@ impl CapabilitySet {
     /// of "can auto-execute" (#552). Auto-execution is per-capability
     /// (`SendMessagesAutonomous`, `ModifyContactsAutonomous`), never a rank.
     #[must_use]
-    pub(crate) const fn can_auto_execute(&self) -> bool {
+    pub(crate) const fn can_auto_execute(self) -> bool {
         const AUTO_BITS: u32 = (1 << NousCapability::SendMessagesAutonomous as u32)
             | (1 << NousCapability::ModifyContactsAutonomous as u32);
         self.bits & AUTO_BITS != 0
@@ -260,6 +260,14 @@ pub enum CapabilityPreset {
 
 impl CapabilityPreset {
     /// The capability set this preset constructs (design table, verbatim).
+    // WHY: Off and Custom both evaluate to CapabilitySet::NONE here for
+    // different reasons -- Off's NONE is the real, documented "nothing
+    // granted" set (design table), while Custom's NONE is a placeholder:
+    // this constructor never reconstructs an arbitrary custom map (that
+    // state lives on the entity, not derivable from the enum variant
+    // alone -- see the arm's own comment below). Merging the arms with `|`
+    // would erase that distinction for a future reader.
+    #[allow(clippy::match_same_arms)]
     pub(crate) const fn grants(self) -> CapabilitySet {
         const RS: u32 = 1 << NousCapability::ReadState as u32;
         const RCM: u32 = 1 << NousCapability::ReadContactsMetadata as u32;
@@ -290,7 +298,7 @@ impl CapabilityPreset {
     }
 
     /// The preset whose constructor produces `set`, or `Custom`.
-    pub(crate) fn of(set: &CapabilitySet) -> Self {
+    pub(crate) fn of(set: CapabilitySet) -> Self {
         for preset in [
             Self::Off,
             Self::Observer,
@@ -299,7 +307,7 @@ impl CapabilityPreset {
             Self::Agent,
             Self::Autonomous,
         ] {
-            if preset.grants() == *set {
+            if preset.grants() == set {
                 return preset;
             }
         }
@@ -416,6 +424,15 @@ pub(crate) struct ActionRequirement {
 /// `add_safe_network` modifies a security-adjacent allowlist and binds to
 /// the mode-confirmation class (Always-confirm, every time).
 #[must_use]
+// WHY: DRAFT_SMS/DRAFT_MATRIX_MESSAGE and the open_dialer/start_timer/
+// set_alarm/open_feature group share today's DraftMessages binding only
+// because the design table has no dedicated row for the latter group (see
+// "Mapping notes" above); likewise TOGGLE_MODE and ADD_SAFE_NETWORK share
+// ToggleModeConfirmed for unrelated reasons (mode toggling vs. a security-
+// adjacent allowlist edit). Each pair is conceptually distinct and may
+// diverge independently on a future design-table update -- merging the
+// arms with `|` would erase that independence.
+#[allow(clippy::match_same_arms)]
 pub(crate) fn action_requirement(action: &str) -> Option<ActionRequirement> {
     use crate::ekphrasis::action_types as at;
     let req = |capability, confirmation| {
@@ -626,7 +643,7 @@ impl NousEntity {
     /// well-formed Matrix user identifier (#373).
     pub(crate) fn new(
         name: &str,
-        matrix_id: String,
+        matrix_id: &str,
         preset: CapabilityPreset,
     ) -> Result<Self, NousError> {
         let name_bytes = name.as_bytes();
@@ -644,7 +661,7 @@ impl NousEntity {
             name_len: name_bytes.len() as u8,
             // WHY(#373): validate the Matrix user id rather than trusting the
             // caller; a malformed id surfaces as NousError::InvalidMatrixId.
-            matrix_id: MatrixUserId::new(&matrix_id).map_err(NousError::InvalidMatrixId)?,
+            matrix_id: MatrixUserId::new(matrix_id).map_err(NousError::InvalidMatrixId)?,
             grants: preset.grants(),
         })
     }
@@ -669,7 +686,7 @@ impl NousEntity {
 
     /// The preset matching this entity's current set, or `Custom` (#552).
     pub(crate) fn preset(&self) -> CapabilityPreset {
-        CapabilityPreset::of(&self.grants)
+        CapabilityPreset::of(self.grants)
     }
 
     /// Replace the set from a preset constructor (discards custom edits).
@@ -755,11 +772,7 @@ impl Eq for NousEntity {}
 /// fallible signature keeps the no-panic contract without an infallible
 /// identifier constructor (#373).
 pub(crate) fn default_syn() -> Result<NousEntity, NousError> {
-    NousEntity::new(
-        "Syn",
-        String::from("@syn:thumos.lan"),
-        CapabilityPreset::Advisor,
-    )
+    NousEntity::new("Syn", "@syn:thumos.lan", CapabilityPreset::Advisor)
 }
 
 /// Create the default Phrouros entity (security/field operations).
@@ -770,7 +783,7 @@ pub(crate) fn default_syn() -> Result<NousEntity, NousError> {
 pub(crate) fn default_phrouros() -> Result<NousEntity, NousError> {
     NousEntity::new(
         "Phrouros",
-        String::from("@phrouros:thumos.lan"),
+        "@phrouros:thumos.lan",
         CapabilityPreset::Observer,
     )
 }
@@ -783,7 +796,7 @@ pub(crate) fn default_phrouros() -> Result<NousEntity, NousError> {
 pub(crate) fn default_paideia() -> Result<NousEntity, NousError> {
     NousEntity::new(
         "Paideia",
-        String::from("@paideia:thumos.lan"),
+        "@paideia:thumos.lan",
         CapabilityPreset::Assistant,
     )
 }
@@ -1222,7 +1235,7 @@ mod tests {
             let preset = CapabilityPreset::from_level(level);
             assert!(preset.is_some(), "level {level} must parse");
             assert_eq!(
-                preset.map(|p| p.level()),
+                preset.map(CapabilityPreset::level),
                 Some(level),
                 "level roundtrip for {level}"
             );
@@ -1344,7 +1357,7 @@ mod tests {
         ] {
             assert_eq!(
                 preset,
-                CapabilityPreset::of(&preset.grants()),
+                CapabilityPreset::of(preset.grants()),
                 "every preset's set must round-trip through of()"
             );
         }
@@ -1371,7 +1384,7 @@ mod tests {
             all.grant(cap);
         }
         assert_eq!(
-            CapabilityPreset::of(&all),
+            CapabilityPreset::of(all),
             CapabilityPreset::Custom,
             "a fully-granted map is Custom, not any preset"
         );
@@ -1382,12 +1395,8 @@ mod tests {
         // #552 adversarial: panic/wipe/security-disable/keys/SIGINT action
         // strings deny on EVERY grant state, Autonomous included.
         let mut mgr = NousManager::empty();
-        let mut all_grant = NousEntity::new(
-            "max",
-            "@max:thumos.lan".into(),
-            CapabilityPreset::Autonomous,
-        )
-        .expect("valid entity");
+        let mut all_grant = NousEntity::new("max", "@max:thumos.lan", CapabilityPreset::Autonomous)
+            .expect("valid entity");
         for cap in [
             NousCapability::ToggleModeConfirmed,
             NousCapability::ToggleRadiosConfirmed,
@@ -1542,8 +1551,8 @@ mod tests {
             p = p.next_grantable();
         }
         // The opt-in path requires the explicit confirmation flag.
-        let mut e = NousEntity::new("e", "@e:thumos.lan".into(), CapabilityPreset::Agent)
-            .expect("valid entity");
+        let mut e =
+            NousEntity::new("e", "@e:thumos.lan", CapabilityPreset::Agent).expect("valid entity");
         e.opt_in_autonomous(false);
         assert_ne!(
             e.preset(),
@@ -1560,7 +1569,7 @@ mod tests {
 
     #[test]
     fn custom_edits_flip_label() {
-        let mut e = NousEntity::new("e", "@e:thumos.lan".into(), CapabilityPreset::Observer)
+        let mut e = NousEntity::new("e", "@e:thumos.lan", CapabilityPreset::Observer)
             .expect("valid entity");
         assert_eq!(e.capability_label(), "OBSERVER");
         e.grant(NousCapability::ReadCalendar);
@@ -1594,7 +1603,7 @@ mod tests {
     fn entity_creation() {
         let entity = NousEntity::new(
             "TestBot",
-            String::from("@testbot:thumos.lan"),
+            "@testbot:thumos.lan",
             CapabilityPreset::Assistant,
         );
         assert!(entity.is_ok());
@@ -1607,11 +1616,7 @@ mod tests {
     #[test]
     fn entity_name_too_long() {
         let long_name = "a]".repeat(20); // 40 bytes > MAX_NAME_LEN (32)
-        let result = NousEntity::new(
-            &long_name,
-            String::from("@long:thumos.lan"),
-            CapabilityPreset::Off,
-        );
+        let result = NousEntity::new(&long_name, "@long:thumos.lan", CapabilityPreset::Off);
         assert!(result.is_err());
         match result {
             Err(NousError::NameTooLong { len }) => {
@@ -1625,11 +1630,7 @@ mod tests {
     fn entity_max_name_length() {
         // Exactly MAX_NAME_LEN bytes should succeed.
         let name: String = core::iter::repeat_n('x', MAX_NAME_LEN).collect();
-        let result = NousEntity::new(
-            &name,
-            String::from("@max:thumos.lan"),
-            CapabilityPreset::Off,
-        );
+        let result = NousEntity::new(&name, "@max:thumos.lan", CapabilityPreset::Off);
         assert!(result.is_ok(), "exactly MAX_NAME_LEN must succeed");
     }
 
@@ -1640,20 +1641,12 @@ mod tests {
         // -- `tests` is a descendant module of `nous`) to prove the read
         // path stays fail-closed even if that invariant is ever violated
         // again, rather than panicking on an out-of-bounds slice index.
-        let mut entity = NousEntity::new(
-            "Bot",
-            String::from("@bot:thumos.lan"),
-            CapabilityPreset::Off,
-        )
-        .unwrap_or_else(|_| unreachable!());
+        let mut entity = NousEntity::new("Bot", "@bot:thumos.lan", CapabilityPreset::Off)
+            .unwrap_or_else(|_| unreachable!());
         entity.name_len = 200;
 
-        let other = NousEntity::new(
-            "Bot",
-            String::from("@bot:thumos.lan"),
-            CapabilityPreset::Off,
-        )
-        .unwrap_or_else(|_| unreachable!());
+        let other = NousEntity::new("Bot", "@bot:thumos.lan", CapabilityPreset::Off)
+            .unwrap_or_else(|_| unreachable!());
 
         let name = entity.name_str();
         assert!(
@@ -1665,20 +1658,12 @@ mod tests {
 
     #[test]
     fn entity_propose_reflects_preset() {
-        let observer = NousEntity::new(
-            "Obs",
-            String::from("@obs:thumos.lan"),
-            CapabilityPreset::Observer,
-        )
-        .unwrap_or_else(|_| unreachable!());
+        let observer = NousEntity::new("Obs", "@obs:thumos.lan", CapabilityPreset::Observer)
+            .unwrap_or_else(|_| unreachable!());
         assert!(!observer.can_propose());
 
-        let assistant = NousEntity::new(
-            "Ast",
-            String::from("@ast:thumos.lan"),
-            CapabilityPreset::Assistant,
-        )
-        .unwrap_or_else(|_| unreachable!());
+        let assistant = NousEntity::new("Ast", "@ast:thumos.lan", CapabilityPreset::Assistant)
+            .unwrap_or_else(|_| unreachable!());
         assert!(assistant.can_propose());
     }
 
@@ -1739,7 +1724,7 @@ mod tests {
         let active = mgr.active();
         assert!(active.is_some());
         assert_eq!(
-            active.map(|e| e.name_str()),
+            active.map(NousEntity::name_str),
             Some("Syn"),
             "active must be Syn"
         );
@@ -1759,13 +1744,13 @@ mod tests {
         let mut mgr = NousManager::new();
         assert!(mgr.switch(1).is_ok(), "switch to index 1 must succeed");
         assert_eq!(
-            mgr.active().map(|e| e.name_str()),
+            mgr.active().map(NousEntity::name_str),
             Some("Phrouros"),
             "active must be Phrouros after switch(1)"
         );
 
         assert!(mgr.switch(2).is_ok());
-        assert_eq!(mgr.active().map(|e| e.name_str()), Some("Paideia"),);
+        assert_eq!(mgr.active().map(NousEntity::name_str), Some("Paideia"),);
 
         // Out of bounds.
         let err = mgr.switch(99);
@@ -1804,12 +1789,8 @@ mod tests {
     #[test]
     fn manager_add_entity() {
         let mut mgr = NousManager::new();
-        let custom = NousEntity::new(
-            "Custom",
-            String::from("@custom:thumos.lan"),
-            CapabilityPreset::Agent,
-        )
-        .unwrap_or_else(|_| unreachable!());
+        let custom = NousEntity::new("Custom", "@custom:thumos.lan", CapabilityPreset::Agent)
+            .unwrap_or_else(|_| unreachable!());
 
         assert!(mgr.add_entity(custom).is_ok());
         assert_eq!(mgr.entity_count(), 4);
@@ -1818,12 +1799,8 @@ mod tests {
     #[test]
     fn manager_add_duplicate_name() {
         let mut mgr = NousManager::new();
-        let dup = NousEntity::new(
-            "Syn",
-            String::from("@syn2:thumos.lan"),
-            CapabilityPreset::Off,
-        )
-        .unwrap_or_else(|_| unreachable!());
+        let dup = NousEntity::new("Syn", "@syn2:thumos.lan", CapabilityPreset::Off)
+            .unwrap_or_else(|_| unreachable!());
 
         let err = mgr.add_entity(dup);
         assert!(matches!(err, Err(NousError::DuplicateName)));
@@ -1871,7 +1848,7 @@ mod tests {
         let mut mgr = NousManager::new();
         // Syn (Advisor) at 0, Phrouros (Observer) at 1, Paideia (Assistant) at 2.
         mgr.switch(1).unwrap_or_else(|_| unreachable!()); // active = Phrouros
-        assert_eq!(mgr.active().map(|e| e.name_str()), Some("Phrouros"));
+        assert_eq!(mgr.active().map(NousEntity::name_str), Some("Phrouros"));
 
         let removed = mgr.remove_entity(1); // remove the ACTIVE entity, non-last
         assert_eq!(
@@ -1880,7 +1857,7 @@ mod tests {
         );
 
         assert_eq!(
-            mgr.active().map(|e| e.name_str()),
+            mgr.active().map(NousEntity::name_str),
             None,
             "removing the active entity must deselect -- no entity is \
              active until one is explicitly selected"
@@ -1903,7 +1880,7 @@ mod tests {
         let mut mgr = NousManager::new();
         assert!(mgr.set_preset(0, CapabilityPreset::Agent).is_ok());
         assert_eq!(
-            mgr.entity(0).map(|e| e.preset()),
+            mgr.entity(0).map(NousEntity::preset),
             Some(CapabilityPreset::Agent),
         );
     }
@@ -1981,8 +1958,8 @@ mod tests {
 
         let err = NousError::InvalidIndex { index: 5, count: 3 };
         let display = alloc::format!("{err}");
-        assert!(display.contains("5"));
-        assert!(display.contains("3"));
+        assert!(display.contains('5'));
+        assert!(display.contains('3'));
 
         let err = NousError::DuplicateName;
         assert!(!alloc::format!("{err}").is_empty());

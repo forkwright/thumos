@@ -324,9 +324,9 @@ impl JsonWriter {
 
     /// Write a number value (i64).
     pub(crate) fn number_value(&mut self, value: i64) {
-        self.pre_value();
         // WHY: use Display trait to convert i64 to string in no_std.
         use core::fmt::Write;
+        self.pre_value();
         write!(&mut self.buf, "{value}").ok();
         self.post_value();
     }
@@ -401,19 +401,19 @@ impl JsonWriter {
     /// The `key()` method calls this, so values within objects don't
     /// need to call it themselves (they are preceded by a key).
     fn maybe_comma(&mut self) {
-        if let Some(count) = self.counts.last() {
-            if *count > 0 {
-                self.buf.push(',');
-            }
+        if let Some(count) = self.counts.last()
+            && *count > 0
+        {
+            self.buf.push(',');
         }
     }
 
     /// Pre-value hook: in array context, insert comma if needed.
     fn pre_value(&mut self) {
-        if let Some(ctx) = self.stack.last() {
-            if *ctx == WriterContext::Array {
-                self.maybe_comma();
-            }
+        if let Some(ctx) = self.stack.last()
+            && *ctx == WriterContext::Array
+        {
+            self.maybe_comma();
         }
     }
 
@@ -715,10 +715,10 @@ impl<'a> JsonParser<'a> {
         // must not be a digit (JSON spec).
         if first == b'0' {
             self.advance();
-            if let Some(next) = self.peek() {
-                if next.is_ascii_digit() {
-                    return Err(JsonError::InvalidNumber);
-                }
+            if let Some(next) = self.peek()
+                && next.is_ascii_digit()
+            {
+                return Err(JsonError::InvalidNumber);
             }
         } else {
             // Consume remaining digits.
@@ -1360,7 +1360,7 @@ mod tests {
         assert_eq!(val.get("key").and_then(JsonValue::as_str), Some("value"));
         assert_eq!(val.get("num").and_then(JsonValue::as_i64), Some(42));
         assert_eq!(val.get("flag").and_then(JsonValue::as_bool), Some(true));
-        assert!(val.get("nil").map_or(false, JsonValue::is_null));
+        assert!(val.get("nil").is_some_and(JsonValue::is_null));
     }
 
     #[test]
