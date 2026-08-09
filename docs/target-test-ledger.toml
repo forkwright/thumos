@@ -245,7 +245,7 @@ fidelity = "register interaction is not exercised host-side; the PL0 probes cove
 
 [[module]]
 name = "gps"
-tests = 25
+tests = 19
 mechanism = "host"
 
 [[module]]

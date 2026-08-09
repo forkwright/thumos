@@ -531,8 +531,13 @@ dependencies = [
  "sha2",
  "smoltcp",
  "subtle",
+ "topos-core",
  "xts-mode",
 ]
+
+[[package]]
+name = "topos-core"
+version = "0.1.18"
 
 [[package]]
 name = "typenum"
