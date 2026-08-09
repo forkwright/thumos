@@ -630,15 +630,12 @@ impl PrivacyScreen {
             // Purgeable indicator.
             if !cat.purgeable {
                 let lock_x = w - CHAR_WIDTH - 4;
-                // NOTE: both branches of the prior cursor-conditional here
-                // evaluated to the same color::DARK_GREY, which clippy's
-                // identical_if_else caught. Collapsed to the single value
-                // with NO behavior change. Left as a NOTE rather than
-                // guessing a differing non-cursor color: DARK_GREY against
-                // the selected row's WHITE highlight (bg above) reads fine,
-                // but against the unselected row's BLACK bg the same
-                // DARK_GREY is low-contrast -- a real UI question, not a
-                // clippy one, and not this pass's fabricated call to make.
+                // NOTE: fixed DARK_GREY regardless of cursor state. Against
+                // the selected row's WHITE highlight (bg above) that reads
+                // fine; against an unselected row's BLACK bg it is
+                // low-contrast. Whether the unselected case wants a
+                // different color is a UI design call, not a clippy one --
+                // left as-is rather than guessed at.
                 let lock_color = color::DARK_GREY;
                 ui::draw_char(fb, w, lock_x, row_y + 2, '*', lock_color, bg);
             }
