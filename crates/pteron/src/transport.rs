@@ -498,14 +498,10 @@ pub(crate) fn generate_rpa(irk: &[u8; 16], prand: &[u8; 3]) -> BdAddr {
     let [p0, p1, p2] = *prand;
     // Force two MSBs to 0b01 in the most-significant byte (index 0 = display MSB)
     let b0 = (p0 & !RANDOM_ADDR_MSB_MASK) | RPA_MSB_BITS;
-    // WHY: ah() must hash the SAME 24 bits that end up stored in the
-    // address (b0, not the caller's raw p0) — a peer resolving against
-    // the transmitted address recomputes ah() over [b0, p1, p2], never
-    // over whatever top bits the caller's entropy happened to carry. Any
-    // caller passing a prand whose top two bits are not already 0b01
-    // would otherwise store an address that no bonded peer can resolve.
-    let masked_prand = [b0, p1, p2];
-    let hash = crate::smp::ah(irk, &masked_prand);
+    // FALSIFICATION: intentionally hash the caller's raw, unmasked prand
+    // again (the pre-fix defect) to prove the negative-case/CI wiring
+    // actually catches it. Revert before merge.
+    let hash = crate::smp::ah(irk, prand);
     BdAddr::from_bytes([b0, p1, p2, hash[0], hash[1], hash[2]])
 }
 
