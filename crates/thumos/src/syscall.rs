@@ -440,6 +440,7 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         }
         Syscall::Uptime => crate::exceptions::uptime_ms() as u32,
         Syscall::Sleep => {
+            const TICK_MS: u64 = 10;
             // WHY (#264): mirror sys_nanosleep's pattern instead of a bare
             // uptime_ms() busy-wait that never touched process state — mark
             // the process Sleeping with its wake tick before waiting so
@@ -447,7 +448,6 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             // this process as blocked for the sleep window, not spuriously
             // Running.
             let ms = u64::from(arg0);
-            const TICK_MS: u64 = 10;
             let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
             let wake_tick = crate::exceptions::ticks().saturating_add(ticks_needed);
             // Mark Sleeping and YIELD (#465/#477, mirrors sys_nanosleep): the
@@ -456,18 +456,18 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             // the process at wake_tick; a later switch resumes it with r0=0.
             process::set_wake_tick(wake_tick);
             let next = process::schedule();
-            if next != process::current_pid() {
+            if next == process::current_pid() {
+                // No other process to yield to (or a zero-length sleep the
+                // scheduler re-woke at once): the sleep is a no-op -- restore
+                // Running rather than linger mis-marked Sleeping.
+                process::clear_wake_tick();
+            } else {
                 // WHY(#465): deposit the return value (0) before switching away.
                 process::set_trap_return(0);
                 // SAFETY: `next` is a valid Ready PID from schedule().
                 unsafe {
                     process::switch_to(next);
                 }
-            } else {
-                // No other process to yield to (or a zero-length sleep the
-                // scheduler re-woke at once): the sleep is a no-op -- restore
-                // Running rather than linger mis-marked Sleeping.
-                process::clear_wake_tick();
             }
             0
         }
@@ -520,10 +520,7 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
 
         // ---- Process management ----
         Syscall::Fork => match process::fork() {
-            Some(child_pid) => {
-                let pid_u32 = u32::from(child_pid);
-                pid_u32
-            }
+            Some(child_pid) => u32::from(child_pid),
             None => u32::MAX,
         },
         Syscall::Waitpid => {
@@ -642,9 +639,8 @@ fn sys_metaxu_poll_dispatch() -> u32 {
 /// `SYS_read`: dispatch to pipe or ramfs based on fd kind.
 fn sys_read_with_pipe(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     let fd_idx = fd as usize;
-    let flags = match fd::current_fd_flags(fd_idx) {
-        Some(f) => f,
-        None => return fd::EBADF,
+    let Some(flags) = fd::current_fd_flags(fd_idx) else {
+        return fd::EBADF;
     };
 
     if pipe::is_pipe_fd(flags) {
@@ -734,6 +730,13 @@ const ENOEXEC: u32 = 0u32.wrapping_sub(8);
 /// `_envp_ptr` is accepted but ignored; environment variables are not yet
 /// supported.
 fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
+    // --- Step 4: allocate new stack ---
+    // WHY 4 pages (16 KB): matches spawn() stack size; sufficient for musl
+    // libc start-up (argc/argv + environ + aux vectors + initial stack frame).
+    const EXEC_STACK_PAGES: usize = 4;
+    // Collect argv strings from user space (cap at 16 args, 128 bytes each).
+    const MAX_ARGS: usize = 16;
+    const MAX_ARG_LEN: usize = 128;
     // --- Step 1: validate and read path ---
 
     // Cap at 256 bytes to bound the scan; longer paths are rejected.
@@ -771,9 +774,8 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // SAFETY: path_ptr is in user DRAM (validated above); path_len bytes
     // were just scanned without trapping. The slice lifetime is local.
     let path_bytes = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len) };
-    let path = match core::str::from_utf8(path_bytes) {
-        Ok(s) => s,
-        Err(_) => return ENOENT,
+    let Ok(path) = core::str::from_utf8(path_bytes) else {
+        return ENOENT;
     };
 
     // --- Step 2: locate the file in ramfs ---
@@ -793,10 +795,6 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // measured-boot chain (#480) is the primary guarantee: only signed ramfs
     // images ever reach here.
 
-    // --- Step 4: allocate new stack ---
-    // WHY 4 pages (16 KB): matches spawn() stack size; sufficient for musl
-    // libc start-up (argc/argv + environ + aux vectors + initial stack frame).
-    const EXEC_STACK_PAGES: usize = 4;
     // WHY contiguous (#489): the new stack must be a single run -- new_stack_top
     // arithmetic and exec_replace_context's map_user_stack both assume
     // `new_stack_base + i * PAGE_SIZE` names the i-th frame (the old alloc_page
@@ -817,9 +815,6 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // This layout matches the Linux/ARM AAPCS start-up convention consumed by
     // musl libc's __start_main.
 
-    // Collect argv strings from user space (cap at 16 args, 128 bytes each).
-    const MAX_ARGS: usize = 16;
-    const MAX_ARG_LEN: usize = 128;
     // WHY fixed-size arrays: avoids heap allocation in the execve path; size
     // is bounded so the combined frame always fits in the 16 KB stack.
     let mut arg_data: [[u8; MAX_ARG_LEN]; MAX_ARGS] = [[0u8; MAX_ARG_LEN]; MAX_ARGS];
@@ -869,7 +864,15 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         new_stack_top - frame_aligned
     } else {
         // Pathological argv (too many/long args): fall back to argc=0 frame.
-        argc = 0;
+        // WHY the cfg: the only read of this reset is the ARM-only argv-frame
+        // write below (`#[cfg(target_arch = "arm")]`); on host the write never
+        // happens, so the assignment is genuinely dead there and not merely
+        // lint-noise -- gate it to match its one reader instead of writing a
+        // value host builds can never observe.
+        #[cfg(target_arch = "arm")]
+        {
+            argc = 0;
+        }
         new_stack_top - 8
     };
 
@@ -1183,7 +1186,9 @@ fn sys_brk(new_break_raw: u32) -> u32 {
 /// - arg2: prot flags (`PROT_READ` | `PROT_WRITE` | `PROT_EXEC`)
 /// - arg3: low 16 bits = flags, high 16 bits = fd (as i16, -1 = 0xFFFF)
 fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
-    let _addr_hint = arg0 as usize;
+    // arg0 (addr hint) is accepted for ABI shape only -- see the doc comment
+    // above (ignored for MAP_ANONYMOUS; we always pick the address).
+    let _ = arg0;
     let length = arg1 as usize;
     let prot_flags = arg2;
     let flags = arg3 & 0xFFFF;
@@ -1230,7 +1235,7 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
     }
 
     // Round length up to page boundary
-    let page_count = (length + page::PAGE_SIZE - 1) / page::PAGE_SIZE;
+    let page_count = length.div_ceil(page::PAGE_SIZE);
 
     let pt = process::current_page_table();
     if pt == 0 {
@@ -1415,7 +1420,9 @@ fn sys_mmap(arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> u32 {
 /// Returns 0 on success, EINVAL if the mapping is not found.
 fn sys_munmap(arg0: u32, arg1: u32) -> u32 {
     let addr = arg0 as usize;
-    let _length = arg1 as usize;
+    // arg1 (length) is accepted for ABI shape only; the mapping is looked up
+    // and removed by addr alone below.
+    let _ = arg1;
 
     let pt = process::current_page_table();
     if pt == 0 {
@@ -1467,7 +1474,9 @@ fn sys_munmap(arg0: u32, arg1: u32) -> u32 {
 /// Returns 0 on success, EINVAL if the mapping is not found.
 fn sys_mprotect(arg0: u32, arg1: u32, arg2: u32) -> u32 {
     let addr = arg0 as usize;
-    let _length = arg1 as usize;
+    // arg1 (length) is accepted for ABI shape only; the mapping (and its page
+    // count) is looked up by addr alone below.
+    let _ = arg1;
     let new_prot = arg2;
 
     let pt = process::current_page_table();
@@ -1529,6 +1538,7 @@ mod tests {
     /// physical frames -- not just unmapping them (same class as #226).
     #[test]
     fn mmap_oom_rollback_frees_mapped_pages() {
+        const MAP_PAGES: u32 = 4;
         unsafe {
             setup_mm();
         }
@@ -1545,7 +1555,6 @@ mod tests {
         let free_before = page::free_count();
         assert_eq!(free_before, 2, "test setup must yield exactly 2 free pages");
 
-        const MAP_PAGES: u32 = 4;
         let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
         let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
         let length = MAP_PAGES * u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
@@ -1576,6 +1585,7 @@ mod tests {
     #[test]
     fn execve_returns_enoexec_for_bad_elf_magic() {
         unsafe {
+            static mut PATH: [u8; 5] = *b"/bin\0";
             process::reset_for_test();
 
             // Not a valid ELF file at all (bad magic) -- elf::load rejects this
@@ -1588,8 +1598,7 @@ mod tests {
             fs.add("bin", &garbage);
             fd::init_ramfs(fs);
 
-            static mut PATH: [u8; 5] = *b"/bin\0";
-            let path_ptr = core::ptr::addr_of!(PATH) as *const u8 as u32;
+            let path_ptr = core::ptr::addr_of!(PATH).cast::<u8>() as u32;
 
             let result = sys_execve(path_ptr, 0, 0);
             assert_eq!(
@@ -1742,10 +1751,13 @@ mod tests {
 
     #[test]
     fn syscall_count_at_least_35() {
-        assert!(
-            SYSCALL_COUNT >= 35,
-            "must define at least 35 syscalls, got {SYSCALL_COUNT}"
-        );
+        // WHY the const block: SYSCALL_COUNT is a compile-time constant, so
+        // this invariant can be (and now is) checked at build time -- a
+        // regression fails compilation, not just this test if it happens to
+        // run.
+        const {
+            assert!(SYSCALL_COUNT >= 35, "must define at least 35 syscalls");
+        }
     }
 
     #[test]
@@ -2096,7 +2108,7 @@ mod tests {
         );
         let addr = result as usize;
         assert!(
-            addr >= process::MMAP_BASE && addr < 0x3000_0000,
+            (process::MMAP_BASE..0x3000_0000).contains(&addr),
             "mmap address 0x{addr:08x} must be in user mmap range"
         );
     }
@@ -2431,9 +2443,11 @@ mod tests {
     #[test]
     fn write_dispatch_respects_dup2_redirected_stdout() {
         unsafe {
+            static mut FDS: [u32; 2] = [0, 0];
+            static mut MSG: [u8; 5] = *b"hello";
+            static mut BUF: [u8; 5] = [0u8; 5];
             fd::reset_fd_state_for_test();
 
-            static mut FDS: [u32; 2] = [0, 0];
             let fds_ptr = core::ptr::addr_of_mut!(FDS) as u32;
             let pipe_result = pipe::sys_pipe(fds_ptr);
             assert_eq!(pipe_result, 0, "pipe creation must succeed");
@@ -2447,7 +2461,6 @@ mod tests {
                 "dup2 must install the pipe write end at fd 1"
             );
 
-            static mut MSG: [u8; 5] = *b"hello";
             let msg_ptr = core::ptr::addr_of!(MSG) as u32;
             let written = sys_write_dispatch(1, msg_ptr, 5);
             assert_eq!(
@@ -2455,7 +2468,6 @@ mod tests {
                 "write(1, ...) after dup2 must report 5 bytes written"
             );
 
-            static mut BUF: [u8; 5] = [0u8; 5];
             let buf_ptr = core::ptr::addr_of_mut!(BUF) as u32;
             let read_result = sys_read_with_pipe(read_fd, buf_ptr, 5);
             assert_eq!(read_result, 5, "5 bytes must be read back from the pipe");
@@ -2538,9 +2550,9 @@ mod tests {
 
         for &variant in &Syscall::ALL {
             let n = variant.as_u32();
-            let is_implemented = IMPLEMENTED.iter().any(|&x| x == n);
-            let is_phase05 = PHASE05.iter().any(|&x| x == n);
-            let is_phase06 = PHASE06.iter().any(|&x| x == n);
+            let is_implemented = IMPLEMENTED.contains(&n);
+            let is_phase05 = PHASE05.contains(&n);
+            let is_phase06 = PHASE06.contains(&n);
             assert!(
                 is_implemented || is_phase05 || is_phase06,
                 "syscall {variant:?} (number {n}) has no documented status — \
@@ -2821,12 +2833,12 @@ mod tests {
     /// `mmap_munmap` cycles to exhaust the mapping table (`MAX_MAPPINGS` = 32).
     #[test]
     fn mmap_munmap_balance() {
+        const MAP_PAGES: u32 = 4;
         unsafe {
             setup_mm();
         }
         let free_before = page::free_count();
 
-        const MAP_PAGES: u32 = 4;
         let flags_and_fd: u32 = MAP_ANONYMOUS | (0xFFFF << 16);
         let prot = mmu::prot::PROT_READ | mmu::prot::PROT_WRITE;
         let length = MAP_PAGES * u32::try_from(crate::page::PAGE_SIZE).unwrap_or_default();
@@ -2865,8 +2877,6 @@ mod tests {
     #[test]
     fn execve_oom_rollback_frees_exact_stack_pages() {
         unsafe {
-            process::reset_for_test();
-
             // 52-byte header + one 32-byte PT_LOAD program header. e_entry
             // must fall inside a loaded segment (#384 finding 49), so the
             // segment covers the entry address. WHY a `static mut BUF`
@@ -2875,7 +2885,10 @@ mod tests {
             // address (this binary's static lands in user DRAM range) --
             // same pattern as elf::tests::load_does_not_leak_pages_on_success.
             static mut SEG_BUF: [u8; 16] = [0u8; 16];
-            let vaddr = core::ptr::addr_of_mut!(SEG_BUF) as *mut u8 as u32;
+            static mut PATH: [u8; 5] = *b"/bin\0";
+            process::reset_for_test();
+
+            let vaddr = core::ptr::addr_of_mut!(SEG_BUF).cast::<u8>() as u32;
             let mut elf = [0u8; 84];
             elf[0] = 0x7F;
             elf[1] = b'E';
@@ -2912,8 +2925,7 @@ mod tests {
             let free_before = page::free_count();
             assert_eq!(free_before, 2, "test setup must yield exactly 2 free pages");
 
-            static mut PATH: [u8; 5] = *b"/bin\0";
-            let path_ptr = core::ptr::addr_of!(PATH) as *const u8 as u32;
+            let path_ptr = core::ptr::addr_of!(PATH).cast::<u8>() as u32;
 
             let result = sys_execve(path_ptr, 0, 0);
             assert_eq!(
@@ -2969,7 +2981,7 @@ mod tests {
                 // WHY addr_of_mut!: avoids forming a reference to the mutable
                 // static. The wrapper's address equals its sole field's array
                 // address, and repr(align(4096)) guarantees page alignment.
-                let base = core::ptr::addr_of_mut!(POOL) as *mut u8 as usize;
+                let base = core::ptr::addr_of_mut!(POOL).cast::<u8>() as usize;
                 let addr = base + NEXT * crate::page::PAGE_SIZE;
                 NEXT += 1;
                 Some(addr)
@@ -2979,19 +2991,19 @@ mod tests {
 
         // SAFETY: sa is local; POOL/NEXT are test-only statics.
         unsafe {
+            const N: usize = 128;
             NEXT = 0;
             let mut sa = SlabAllocator::new();
             sa.init();
 
             let layout = Layout::from_size_align(64, 8).unwrap();
-            const N: usize = 128;
             let mut ptrs = [core::ptr::null_mut::<u8>(); N];
 
-            for p in ptrs.iter_mut() {
+            for p in &mut ptrs {
                 *p = sa.alloc_inner(layout, fake_alloc, fake_alloc);
                 assert!(!p.is_null(), "slab alloc must succeed");
             }
-            for &p in ptrs.iter() {
+            for &p in &ptrs {
                 sa.dealloc_inner(p, layout, fake_free);
             }
 
