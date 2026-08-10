@@ -133,7 +133,7 @@ impl<T: ModemTransport> AtSession<T> {
                 // Blank lines between echo and response are normal; skip them.
                 continue;
             }
-            if let Ok((_, result)) = at::parse_final_result(&line) {
+            if let Some(result) = at::parse_final_result(&line) {
                 return Ok(CommandResponse { info, result });
             }
             info.push(line);
@@ -177,7 +177,7 @@ impl<T: ModemTransport> AtSession<T> {
                 continue;
             }
 
-            if let Ok((_, urc)) = at::parse_ring(&line) {
+            if let Some(urc) = at::parse_ring(&line) {
                 return Ok(urc);
             }
             if let Ok((_, urc)) = at::parse_creg(&line) {
@@ -186,7 +186,7 @@ impl<T: ModemTransport> AtSession<T> {
             if let Ok((_, urc)) = at::parse_cmti(&line) {
                 return Ok(urc);
             }
-            if let Ok((_, (rssi, ber))) = at::parse_csq(&line) {
+            if let Some((rssi, ber)) = at::parse_csq(&line) {
                 return Ok(Urc::Csq { rssi, ber });
             }
             // Unrecognised line; keep reading.

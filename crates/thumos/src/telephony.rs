@@ -152,48 +152,11 @@ pub enum Urc {
 }
 
 /// Network registration status (3GPP TS 27.007 +CREG).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RegStatus {
-    /// Not registered, not searching.
-    NotRegistered,
-    /// Registered on home network.
-    RegisteredHome,
-    /// Searching for network.
-    Searching,
-    /// Registration denied.
-    Denied,
-    /// Status unknown.
-    Unknown,
-    /// Registered, roaming.
-    RegisteredRoaming,
-}
-
-impl From<u8> for RegStatus {
-    fn from(val: u8) -> Self {
-        match val {
-            0 => Self::NotRegistered,
-            1 => Self::RegisteredHome,
-            2 => Self::Searching,
-            3 => Self::Denied,
-            5 => Self::RegisteredRoaming,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl core::fmt::Display for RegStatus {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NotRegistered => write!(f, "not registered"),
-            Self::RegisteredHome => write!(f, "registered (home)"),
-            Self::Searching => write!(f, "searching"),
-            Self::Denied => write!(f, "denied"),
-            Self::Unknown => write!(f, "unknown"),
-            Self::RegisteredRoaming => write!(f, "registered (roaming)"),
-        }
-    }
-}
+///
+/// Canonical definition: [`klesis_core::RegStatus`] (#545), shared with
+/// klesis's `at::RegStatus` -- re-exported here so existing
+/// `telephony::RegStatus` call sites are unaffected.
+pub use klesis_core::RegStatus;
 
 /// Radio access technology, parsed from the `+CREG` `<AcT>` field (3GPP TS
 /// 27.007 §7.2). Distinguishes the technology a registration actually landed
