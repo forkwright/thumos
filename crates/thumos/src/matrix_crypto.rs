@@ -24,17 +24,23 @@
 //! - AES-CBC: NIST SP 800-38A
 
 // WHY: Matrix crypto created in Phase 09 Wave 3, full integration pending.
-// #437 remnant 3, explicitly re-confirmed deferred (2026-08-04): the
-// /keys/claim round-trip cannot land without the Olm session-establishment
-// path that consumes claimed keys, and X3DH is intentionally not
-// implemented here. Building the claim builder/parser alone would only
-// move the dead call site, not close it — this module stays unreachable
-// until Phase-09 messaging integration lands, at which point
-// `consume_one_time_key` MUST be wired into claimed-key receipt or the
-// one_time_keys pool deadlocks at MAX_ONE_TIME_KEYS (#282 finding 8).
+// #437 remnant 3: `harmostes` builds the /keys/claim request and validates
+// + returns the peer's claimed key (the send side of key exchange -- that
+// key belongs to the remote device, never to this device's own
+// `one_time_keys` pool). `consume_one_time_key` belongs to the RECEIVE
+// side instead: it removes one of THIS device's own uploaded keys once
+// something reports it was claimed by a peer (a dropping
+// `device_one_time_keys_count` on `/sync`, or an inbound Olm pre-key
+// message naming the key). Neither exists in this tree -- `/sync` here
+// reads only room timeline events, and there is no inbound Olm pre-key
+// handler (`OlmSession` is declared, never constructed). Wiring
+// `consume_one_time_key` there is what remains open; without it the
+// one_time_keys pool deadlocks at MAX_ONE_TIME_KEYS once that receive path
+// exists (#282 finding 8). This module stays unreachable until Phase-09
+// messaging integration lands.
 #![expect(
     dead_code,
-    reason = "Matrix crypto unreachable pending Phase-09 messaging integration; /keys/claim wiring explicitly deferred to that epic (#437)"
+    reason = "Matrix crypto unreachable pending Phase-09 messaging integration; consume_one_time_key's receive-side call site does not exist yet (#437)"
 )]
 
 extern crate alloc;

@@ -139,11 +139,6 @@ pub enum MatrixError {
     /// A `/keys/claim` response's matching key entry was not a string, or
     /// did not decode to a well-formed key (#437).
     MalformedClaimedKey,
-    /// A `/keys/claim` response's extracted key was already removed from the
-    /// local one-time-key pool by an earlier claim (#437) -- the single-use
-    /// property a one-time key exists to provide. Fails closed rather than
-    /// treating a replayed/duplicate claim response as reusable.
-    OneTimeKeyAlreadyConsumed,
 }
 
 impl fmt::Display for MatrixError {
@@ -174,9 +169,6 @@ impl fmt::Display for MatrixError {
             }
             Self::MalformedClaimedKey => {
                 write!(f, "keys/claim response key value is malformed")
-            }
-            Self::OneTimeKeyAlreadyConsumed => {
-                write!(f, "claimed one-time key was already consumed")
             }
         }
     }
@@ -1088,17 +1080,27 @@ impl MatrixClient {
     }
 
     /// Process a `/keys/claim` HTTP response for the `(user_id, device_id)`
-    /// target requested via [`build_claim_keys_request`].
+    /// target requested via [`build_claim_keys_request`], validating and
+    /// returning the claimed one-time key.
     ///
-    /// Extracts the claimed one-time key and marks it consumed via
-    /// [`MatrixCrypto::consume_one_time_key`] -- the structural single-use
-    /// gate this remnant exists to wire (#437, closing #282 finding 8: a
-    /// claimed key that is never consumed permanently counts against
-    /// `MAX_ONE_TIME_KEYS`). A key value no longer present in the local
-    /// pool -- already removed by an earlier claim, or never registered --
-    /// is rejected rather than treated as reusable: `consume_one_time_key`'s
-    /// find-then-remove-once mechanics make a second consumption of the
-    /// same key value structurally impossible, not merely checked.
+    /// This is the send side of key exchange: the returned key belongs to
+    /// the remote device named by `user_id`/`device_id`, never to this
+    /// device's own [`MatrixCrypto::one_time_keys`] pool, so this function
+    /// does not touch `self` -- there is nothing here for it to consume
+    /// (`consume_one_time_key`'s pool holds only keys this device generated
+    /// and uploaded). Establishing an Olm session from the returned key
+    /// (X3DH) is not implemented; the caller receives raw key material.
+    ///
+    /// [`MatrixCrypto::consume_one_time_key`] belongs to the *receive* side
+    /// of key exchange instead: it removes one of this device's own
+    /// uploaded keys once something reports it was claimed by a peer (a
+    /// dropping `device_one_time_keys_count` on `/sync`, or an inbound Olm
+    /// pre-key message naming the key). Neither exists in this tree yet
+    /// (#437 remainder): `/sync` here reads only `rooms.join.*.timeline`,
+    /// and there is no inbound Olm pre-key handler -- `OlmSession` is
+    /// declared but never constructed anywhere. Wiring
+    /// `consume_one_time_key` belongs at that future receive-side call
+    /// site, not here.
     ///
     /// # Errors
     ///
@@ -1112,10 +1114,7 @@ impl MatrixClient {
     /// [`matrix_crypto::ONE_TIME_KEY_ALGORITHM`].
     /// Returns [`MatrixError::MalformedClaimedKey`] if the matching entry's
     /// value is not a string, or does not decode to a well-formed key.
-    /// Returns [`MatrixError::OneTimeKeyAlreadyConsumed`] if the extracted
-    /// key was already removed from the local pool by an earlier claim.
     pub(crate) fn process_claim_keys_response(
-        &mut self,
         user_id: &str,
         device_id: &str,
         response: &HttpResponse,
@@ -1151,10 +1150,6 @@ impl MatrixClient {
         let key_value = value.as_str().ok_or(MatrixError::MalformedClaimedKey)?;
         let key =
             matrix_crypto::decode_base64_key(key_value).ok_or(MatrixError::MalformedClaimedKey)?;
-
-        if !self.crypto.consume_one_time_key(&key) {
-            return Err(MatrixError::OneTimeKeyAlreadyConsumed);
-        }
 
         Ok(key)
     }
@@ -2515,65 +2510,67 @@ mod tests {
     }
 
     #[test]
-    fn claim_response_happy_path_consumes_matching_local_key() {
-        // The single-use tracking this remnant wires is grounded in
-        // consume_one_time_key's existing pool -- seed a known key the same
-        // way consume_one_time_key_frees_capacity_for_regeneration (in
-        // matrix_crypto.rs) does, then verify the claim response round trip
-        // extracts and consumes that exact key.
-        let mut client = matrix_client_with_test_credentials();
-        let key = client
-            .crypto_mut()
-            .generate_one_time_keys(1)
-            .expect("seeding one key must succeed")[0];
+    fn claim_response_happy_path_returns_peer_key() {
+        // The claimed key belongs to the REMOTE device named in the
+        // request -- it is never drawn from this device's own pool, exactly
+        // as a real homeserver response would look (#437 rework: an earlier
+        // version of this test seeded the response from
+        // generate_one_time_keys, which made the fixture a shape a
+        // homeserver would never send).
+        let peer_key = [0xABu8; KEY_SIZE];
         let user_id = "@alice:matrix.example.com";
         let device_id = "ALICEDEVICE";
-        let key_hex = hex_encode_bytes(&key);
-        let body = build_claim_response(user_id, device_id, "curve25519:AAAAAQ", &key_hex);
+        let body = build_claim_response(
+            user_id,
+            device_id,
+            "curve25519:AAAAAQ",
+            &hex_encode_bytes(&peer_key),
+        );
         let response = mock_response(200, &body);
 
-        let result = client.process_claim_keys_response(user_id, device_id, &response);
-        assert_eq!(result, Ok(key));
-        assert!(
-            !client.crypto().one_time_keys().contains(&key),
-            "a successfully claimed key must be removed from the local pool"
-        );
+        let result = MatrixClient::process_claim_keys_response(user_id, device_id, &response);
+        assert_eq!(result, Ok(peer_key));
     }
 
     #[test]
-    fn claim_response_rejects_double_consumption_of_same_key() {
-        // The security property this remnant exists for: a one-time key
-        // claimed once must never be usable a second time.
+    fn claim_response_does_not_touch_this_devices_own_pool() {
+        // process_claim_keys_response takes no `self`, so it cannot reach
+        // this device's own one_time_keys pool by construction -- pinned
+        // here as a concrete regression guard, not just a type-signature
+        // argument. consume_one_time_key belongs to the receive side of key
+        // exchange (an inbound Olm pre-key message naming one of THIS
+        // device's own claimed keys), which does not exist in this tree yet.
         let mut client = matrix_client_with_test_credentials();
-        let key = client
+        let own_keys = client
             .crypto_mut()
-            .generate_one_time_keys(1)
-            .expect("seeding one key must succeed")[0];
-        let user_id = "@alice:matrix.example.com";
-        let device_id = "ALICEDEVICE";
-        let key_hex = hex_encode_bytes(&key);
-        let body = build_claim_response(user_id, device_id, "curve25519:AAAAAQ", &key_hex);
+            .generate_one_time_keys(3)
+            .expect("seeding must succeed");
 
-        let first =
-            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
-        assert_eq!(
-            first,
-            Ok(key),
-            "the first consumption of a fresh key must succeed"
+        let peer_key = [0xCDu8; KEY_SIZE];
+        let user_id = "@bob:matrix.example.com";
+        let device_id = "BOBDEVICE";
+        let body = build_claim_response(
+            user_id,
+            device_id,
+            "curve25519:AAAAAQ",
+            &hex_encode_bytes(&peer_key),
         );
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
+        assert_eq!(result, Ok(peer_key));
 
-        let second =
-            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
         assert_eq!(
-            second,
-            Err(MatrixError::OneTimeKeyAlreadyConsumed),
-            "a second consumption of the identical key must fail closed, not silently succeed"
+            client.crypto().one_time_keys(),
+            own_keys.as_slice(),
+            "processing a claim response must never mutate this device's own pool"
         );
     }
 
     #[test]
     fn claim_response_missing_device_fails_closed() {
-        let mut client = matrix_client_with_test_credentials();
         let user_id = "@alice:matrix.example.com";
         // Response carries a key, but for a DIFFERENT device than requested.
         let body = build_claim_response(
@@ -2582,14 +2579,16 @@ mod tests {
             "curve25519:AAAAAQ",
             &"11".repeat(32),
         );
-        let result =
-            client.process_claim_keys_response(user_id, "ALICEDEVICE", &mock_response(200, &body));
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            "ALICEDEVICE",
+            &mock_response(200, &body),
+        );
         assert_eq!(result, Err(MatrixError::ClaimedKeyMissing));
     }
 
     #[test]
     fn claim_response_empty_key_map_fails_closed() {
-        let mut client = matrix_client_with_test_credentials();
         let user_id = "@alice:matrix.example.com";
         let device_id = "ALICEDEVICE";
 
@@ -2608,8 +2607,11 @@ mod tests {
         w.end();
         let body = w.finish();
 
-        let result =
-            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
         assert_eq!(result, Err(MatrixError::ClaimedKeyMissing));
     }
 
@@ -2618,7 +2620,6 @@ mod tests {
         // A homeserver returning only `signed_curve25519` (this simplified
         // client neither signs nor verifies signed one-time keys) must be
         // rejected, not misread as a raw key.
-        let mut client = matrix_client_with_test_credentials();
         let user_id = "@alice:matrix.example.com";
         let device_id = "ALICEDEVICE";
         let body = build_claim_response(
@@ -2627,14 +2628,16 @@ mod tests {
             "signed_curve25519:AAAAAQ",
             &"11".repeat(32),
         );
-        let result =
-            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
         assert_eq!(result, Err(MatrixError::UnsupportedKeyAlgorithm));
     }
 
     #[test]
     fn claim_response_malformed_key_value_fails_closed() {
-        let mut client = matrix_client_with_test_credentials();
         let user_id = "@alice:matrix.example.com";
         let device_id = "ALICEDEVICE";
         let body = build_claim_response(
@@ -2643,8 +2646,11 @@ mod tests {
             "curve25519:AAAAAQ",
             "not-a-valid-key-encoding",
         );
-        let result =
-            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
         assert_eq!(result, Err(MatrixError::MalformedClaimedKey));
     }
 
@@ -2652,7 +2658,6 @@ mod tests {
     fn claim_response_non_object_key_value_fails_closed() {
         // The matching key entry's value must be a string; a JSON number
         // (or any non-string) must not be coerced or silently skipped past.
-        let mut client = matrix_client_with_test_credentials();
         let user_id = "@alice:matrix.example.com";
         let device_id = "ALICEDEVICE";
 
@@ -2673,17 +2678,19 @@ mod tests {
         w.end();
         let body = w.finish();
 
-        let result =
-            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
         assert_eq!(result, Err(MatrixError::MalformedClaimedKey));
     }
 
     #[test]
     fn claim_response_server_error_propagates() {
-        let mut client = matrix_client_with_test_credentials();
         let body = "{\"errcode\":\"M_NOT_FOUND\",\"error\":\"device not found\"}";
         let response = mock_response(404, body);
-        let result = client.process_claim_keys_response(
+        let result = MatrixClient::process_claim_keys_response(
             "@alice:matrix.example.com",
             "ALICEDEVICE",
             &response,
