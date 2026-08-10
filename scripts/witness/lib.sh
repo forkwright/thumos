@@ -47,3 +47,40 @@ run_qemu() {
     echo "=== $log (runner rc=$rc) ==="; cat "$log"; echo "=== end $log ==="
     return "$rc"
 }
+
+# start_pylon_bridge [pylon-bridge args...] — build + launch the host
+# pylon-bridge (crates/metaxu, pylon-bin feature) FIRST (deterministic
+# ordering, #544): it binds its listener and prints its port BEFORE qemu
+# starts, so the guest's outbound UART1 TCP client never races an unbound
+# host socket. Extra args pass through to the pylon-bridge binary (e.g.
+# --tamper-mac, #544 negative-case witness). Sets PYLON_LOG, PYLON_PID,
+# PYLON_PORT for the caller.
+start_pylon_bridge() {
+    (cd "$REPO_ROOT" && cargo build --release --features metaxu/pylon-bin --bin pylon-bridge \
+        --jobs "${THUMOS_BUILD_JOBS:-8}") \
+        || { echo "FAIL: pylon-bridge build failed"; exit 1; }
+    local bin="$REPO_ROOT/target/release/pylon-bridge"
+    [[ -x "$bin" ]] || { echo "FAIL: pylon-bridge binary missing at $bin"; exit 1; }
+    PYLON_LOG=$(mktemp)
+    "$bin" "$@" >"$PYLON_LOG" 2>&1 &
+    PYLON_PID=$!
+    PYLON_PORT=""
+    for _ in $(seq 1 50); do
+        if grep -q '^PYLON_PORT=' "$PYLON_LOG" 2>/dev/null; then
+            PYLON_PORT=$(grep '^PYLON_PORT=' "$PYLON_LOG" | head -1 | cut -d= -f2)
+            break
+        fi
+        kill -0 "$PYLON_PID" 2>/dev/null || { echo "FAIL: pylon-bridge exited before printing its port"; cat "$PYLON_LOG"; exit 1; }
+        sleep 0.1
+    done
+    [[ -n "$PYLON_PORT" ]] || { echo "FAIL: pylon-bridge never printed PYLON_PORT="; cat "$PYLON_LOG"; exit 1; }
+    echo "=== pylon-bridge listening on 127.0.0.1:$PYLON_PORT (pid $PYLON_PID) ==="
+}
+
+# stop_pylon_bridge — terminate the process started by start_pylon_bridge.
+# Idempotent (safe on an already-dead PID). Does NOT touch PYLON_LOG: a
+# negative-case witness asserts on its content (or the absence of a marker
+# line) after stopping, before removing it.
+stop_pylon_bridge() {
+    kill "$PYLON_PID" 2>/dev/null || true
+}
