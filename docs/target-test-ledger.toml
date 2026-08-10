@@ -628,7 +628,7 @@ mechanism = "host"
 
 [[module]]
 name = "telephony"
-tests = 38
+tests = 40
 mechanism = "both"
 witness = "boot.sh"
 
@@ -640,7 +640,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "telephony_parser"
-tests = 18
+tests = 19
 mechanism = "host"
 
 [[module]]
