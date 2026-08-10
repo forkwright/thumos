@@ -128,19 +128,19 @@ impl Console {
             return;
         }
 
-        match parts.get(0).copied().unwrap_or_default() {
+        match parts.first().copied().unwrap_or_default() {
             "help" | "?" => self.cmd_help(),
             "uptime" => self.cmd_uptime(),
             "mem" => self.cmd_mem(),
             "ps" => self.cmd_ps(),
             "ver" => self.cmd_version(),
-            "panic" => self.cmd_panic(),
+            "panic" => Self::cmd_panic(),
             "reboot" => self.cmd_reboot(),
             _ => {
                 let _ = write!(
                     self.serial,
                     "unknown command: {}\r\n",
-                    parts.get(0).copied().unwrap_or_default()
+                    parts.first().copied().unwrap_or_default()
                 ); // WHY: best-effort serial write; kernel cannot block on failed UART output
                 let _ = self.serial.write_str("type 'help' for commands\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
             }
@@ -183,7 +183,7 @@ impl Console {
         let free = page::free_count();
         let free_mb = page::free_bytes() / 1024 / 1024;
         let (heap_allocs, heap_frees) = crate::heap::stats();
-        let _ = write!(self.serial, "pages: {} free ({} MB)\r\n", free, free_mb); // WHY: best-effort serial write; kernel cannot block on failed UART output
+        let _ = write!(self.serial, "pages: {free} free ({free_mb} MB)\r\n"); // WHY: best-effort serial write; kernel cannot block on failed UART output
         let _ = write!(
             self.serial,
             "heap: {} allocs, {} frees, {} live\r\n",
@@ -204,7 +204,7 @@ impl Console {
             .write_str("Rust monolithic kernel for MT6739\r\n");
     }
 
-    fn cmd_panic(&mut self) {
+    fn cmd_panic() {
         panic!("user-triggered panic FROM console");
     }
 
@@ -221,17 +221,18 @@ impl Console {
             let wdt_swrst = 0x1000_7014 as *mut u32;
             core::ptr::write_volatile(wdt_swrst, 0x1209);
         }
+        // WHY(#459): wfi has no i686 encoding, so the host-test build gates
+        // this whole loop out; the reboot path never returns in production
+        // anyway, and no host test calls cmd_reboot. Gating the STATEMENT
+        // (not a `break` inside it) means the test build never contains a
+        // loop that runs its body once and exits -- clippy::never_loop has
+        // nothing to flag there, because there is no loop there at all.
+        #[cfg(not(test))]
         loop {
             // SAFETY: wfi is a safe wait-for-interrupt instruction accessible at EL1.
-            #[cfg(not(test))]
             unsafe {
                 core::arch::asm!("wfi");
             }
-            // WHY(#459): wfi has no i686 encoding, so the host-test build gates
-            // it out; the reboot path never returns in production anyway, and
-            // no host test calls cmd_reboot.
-            #[cfg(test)]
-            break;
         }
     }
 }
