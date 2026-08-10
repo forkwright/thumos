@@ -8,7 +8,7 @@ use nom::Parser;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until, take_while1};
 use nom::character::complete::{char, digit1};
-use nom::combinator::{map, map_res, opt, value, verify};
+use nom::combinator::{all_consuming, map, map_res, opt, value, verify};
 use nom::sequence::{delimited, preceded};
 
 use crate::error::{Error, Result};
@@ -151,8 +151,19 @@ impl From<u8> for SignalStrength {
 // (variable whitespace, optional fields, interleaved URCs).
 
 /// Parse a final result code (OK, ERROR, +CME ERROR, +CMS ERROR).
+///
+/// SECURITY: 3GPP TS 27.007 final result codes are complete lines, not
+/// prefixes -- `OK` and `ERROR` terminate the response with no further
+/// bytes. `all_consuming` enforces that: a `nom::bytes::complete::tag`
+/// alone accepts any line merely *beginning* with the matched text (`"OK"`
+/// matches `"OKAY"`, an unsolicited line, or trailing framing debris the
+/// transport failed to strip), which would let the caller record a modem
+/// command as having succeeded when it did not. `+CME ERROR: `/`+CMS
+/// ERROR: ` remain legitimate prefixes -- they carry a numeric code after
+/// the tag -- but `all_consuming` still requires that code to account for
+/// every remaining byte on the line.
 pub fn parse_final_result(input: &str) -> IResult<&str, Response> {
-    alt((
+    all_consuming(alt((
         value(Response::Ok, tag("OK")),
         value(Response::Error, tag("ERROR")),
         map(
@@ -163,7 +174,7 @@ pub fn parse_final_result(input: &str) -> IResult<&str, Response> {
             preceded(tag("+CMS ERROR: "), map_res(digit1, str::parse::<u32>)),
             Response::CmsError,
         ),
-    ))
+    )))
     .parse(input)
 }
 
@@ -215,8 +226,14 @@ pub fn parse_creg(input: &str) -> IResult<&str, Urc> {
 }
 
 /// Parse a RING URC.
+///
+/// SECURITY: same prefix-vs-exact hazard as [`parse_final_result`] -- `RING`
+/// is a bare literal with no trailing payload (3GPP TS 27.007), so a plain
+/// `tag` would also accept `"RINGING"` or any other line merely beginning
+/// with it. `all_consuming` keeps this in parity with the kernel's
+/// `is_ring`, which already compares the whole line.
 pub fn parse_ring(input: &str) -> IResult<&str, Urc> {
-    value(Urc::Ring, tag("RING")).parse(input)
+    all_consuming(value(Urc::Ring, tag("RING"))).parse(input)
 }
 
 /// Maximum length accepted for a `+CMTI` storage-location name.
@@ -364,6 +381,43 @@ mod tests {
     }
 
     #[test]
+    fn parse_final_result_rejects_okay_as_success() {
+        // SECURITY (#685): a modem line beginning "OK" but carrying more
+        // bytes must not be accepted as command success. Before
+        // `all_consuming`, `tag("OK")` matched the prefix and returned
+        // Response::Ok with "AY" as unconsumed remainder that callers
+        // following the usual IResult idiom discard.
+        assert!(
+            parse_final_result("OKAY").is_err(),
+            "'OKAY' must not parse as a successful final result"
+        );
+    }
+
+    #[test]
+    fn parse_final_result_rejects_okk_prefix_collision() {
+        // SECURITY (#685): issue's exact near-miss case.
+        assert!(
+            parse_final_result("OKK").is_err(),
+            "'OKK' must not be classified as Response::Ok by prefix match"
+        );
+    }
+
+    #[test]
+    fn parse_final_result_rejects_ok_embedded_mid_string() {
+        // SECURITY (#685): a final result code is the whole line; "OK"
+        // occurring anywhere other than as the complete line must not
+        // classify as success.
+        assert!(
+            parse_final_result("PREFIX OK").is_err(),
+            "a line with OK embedded mid-string must not parse as a final result"
+        );
+        assert!(
+            parse_final_result("NOKIA").is_err(),
+            "a line merely containing the substring OK must not parse as a final result"
+        );
+    }
+
+    #[test]
     fn parse_final_result_bare_error() {
         let (_, resp) = parse_final_result("ERROR").unwrap_or_default();
         assert_eq!(
@@ -374,12 +428,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_final_result_rejects_error_prefix_collision() {
+        // SECURITY (#685): same exactness requirement as OK -- ERROR is
+        // also a bare, no-payload final result code.
+        assert!(
+            parse_final_result("ERRORX").is_err(),
+            "'ERRORX' must not be classified as Response::Error by prefix match"
+        );
+    }
+
+    #[test]
     fn parse_cme_error() {
         let (_, resp) = parse_final_result("+CME ERROR: 10").unwrap_or_default();
         assert_eq!(
             resp,
             Response::CmeError(10),
             "CME error code 10 must be extracted"
+        );
+    }
+
+    #[test]
+    fn parse_cme_error_rejects_trailing_garbage() {
+        // WHY: +CME ERROR remains a legitimate prefix (it carries a code)
+        // -- this is NOT turned into an exact string match. `all_consuming`
+        // only requires that, once the code is extracted, no bytes are
+        // left unaccounted for on the line.
+        assert!(
+            parse_final_result("+CME ERROR: 10x").is_err(),
+            "trailing bytes after a CME error code must not be silently dropped"
         );
     }
 
@@ -463,6 +539,17 @@ mod tests {
     fn parse_ring_urc() {
         let (_, urc) = parse_ring("RING").unwrap_or_default();
         assert_eq!(urc, Urc::Ring, "RING must parse to Urc::Ring");
+    }
+
+    #[test]
+    fn parse_ring_rejects_prefix_collision() {
+        // SECURITY (#685, same class): RING is a bare no-payload URC token,
+        // just like OK/ERROR. The kernel's `is_ring` already compares the
+        // whole line; klesis must not diverge by accepting a mere prefix.
+        assert!(
+            parse_ring("RINGING").is_err(),
+            "'RINGING' must not be classified as Urc::Ring by prefix match"
+        );
     }
 
     #[test]
