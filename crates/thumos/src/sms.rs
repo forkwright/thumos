@@ -142,7 +142,7 @@ const MAX_SENDER_LEN: usize = 32;
 const MAX_INBOX_MESSAGES: usize = 256;
 
 // ---------------------------------------------------------------------------
-// BCD address encoding (ported from klesis/src/pdu.rs)
+// BCD address encoding (packing shared with klesis via klesis_core, #545)
 // ---------------------------------------------------------------------------
 
 /// Encode a phone number string into the PDU address field.
