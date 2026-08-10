@@ -28,7 +28,14 @@ pub(crate) use m7::*;
 
 #[cfg(feature = "qemu")]
 mod virt;
+// WHY: under `--features qemu --tests`, nothing in the test build's own
+// code paths references virt's re-exports (register_devices and the MMIO
+// base consts are only called from the non-test boot path) -- the glob
+// import is real production surface, just unused specifically in test
+// compilations, the same shape as m7's non-qemu re-export would show if
+// virt's board had comparably test-referenced content.
 #[cfg(feature = "qemu")]
+#[cfg_attr(test, allow(unused_imports))]
 pub(crate) use virt::*;
 
 // ---------------------------------------------------------------------------

@@ -535,12 +535,19 @@ pub(crate) mod tests {
     use super::*;
 
     // -- PartitionBlockDevice (#603): partition addressing is real ---------
+    //
+    // WHY the gate: PartitionBlockDevice itself is #[cfg(not(feature =
+    // "qemu"))] (its only production consumer is the eMMC/LFS mount path,
+    // M7-only per #534) -- these tests exercise a type that does not exist
+    // in a qemu build.
 
     /// A sector-sized pattern buffer for view tests.
+    #[cfg(not(feature = "qemu"))]
     fn pattern(fill: u8) -> alloc::vec::Vec<u8> {
         vec![fill; SECTOR_SIZE]
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn partition_view_translates_view_lba_to_physical() {
         let phys = MemBlockDevice::new(32).expect("phys device");
@@ -557,6 +564,7 @@ pub(crate) mod tests {
         assert_eq!(got, two, "view read must return what the view wrote");
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn partition_view_never_touches_below_base() {
         let mut phys = MemBlockDevice::new(32).expect("phys device");
@@ -588,6 +596,7 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn partition_view_bounds_check_uses_partition_length() {
         let phys = MemBlockDevice::new(32).expect("phys device");
@@ -816,10 +825,17 @@ pub(crate) mod tests {
     // narrowing, or the #619 typestate transition -- had ever run under any
     // automated check. FakeMsdc (crate::emmc) stands in for the real
     // controller so it runs here.
+    //
+    // WHY the #[cfg(not(feature = "qemu"))] on every item below: MsdcBlockDevice
+    // and MsdcBlockDeviceUninit are themselves #[cfg(not(feature = "qemu"))]
+    // (eMMC is M7-only, #534) -- this section tests a type that does not
+    // exist in a qemu build.
 
+    #[cfg(not(feature = "qemu"))]
     use crate::emmc::{FakeMsdc, MsdcError};
 
     /// Build an initialized `MsdcBlockDevice<FakeMsdc>` around `fake`.
+    #[cfg(not(feature = "qemu"))]
     fn init_fake_device(fake: FakeMsdc, sector_count: u64) -> MsdcBlockDevice<FakeMsdc> {
         let uninit = MsdcBlockDeviceUninit::with_controller(fake, sector_count);
         // SAFETY: FakeMsdc touches no real MMIO; this is the host test seam
@@ -827,6 +843,7 @@ pub(crate) mod tests {
         unsafe { uninit.init() }.expect("fake init succeeds unless force_init_failure is set")
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn msdc_read_past_sector_count_rejected() {
         let dev = init_fake_device(FakeMsdc::new(), 4);
@@ -839,6 +856,7 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn msdc_read_checked_add_overflow_rejected() {
         let dev = init_fake_device(FakeMsdc::new(), 4);
@@ -853,6 +871,7 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn msdc_write_buf_len_mismatch_rejected() {
         let mut dev = init_fake_device(FakeMsdc::new(), 4);
@@ -861,6 +880,7 @@ pub(crate) mod tests {
         assert_eq!(result, Err(BlockError::InvalidArgument));
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn msdc_lba_u32_narrowing_boundary_rejected() {
         // sector_count is large enough that lba = u32::MAX + 1 passes the
@@ -879,6 +899,7 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn msdc_read_sector_error_propagates_as_io_error() {
         let mut fake = FakeMsdc::new();
@@ -896,6 +917,7 @@ pub(crate) mod tests {
         assert_eq!(dev.read_sectors(0, 1, &mut buf), Ok(()));
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn msdc_init_failure_yields_no_device() {
         // #619 typestate transition: a controller that fails init must not

@@ -844,6 +844,11 @@ mod tests {
         );
     }
 
+    // WHY the gate: GpsHw is #[cfg(not(feature = "qemu"))] (real hardware
+    // access via WMT STP on the MT6739 combo chip, which qemu's virt board
+    // does not model) -- this test exercises a type that does not exist in
+    // a qemu build.
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn production_gps_hw_fails_closed_without_wmt_transport() {
         let mut receiver = GpsReceiver::new(GpsHw::new());

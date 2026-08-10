@@ -653,6 +653,15 @@ mod tests {
     }
 
     // -- Streamed Ed25519ph verify (#467) --
+    //
+    // WHY the gate on this section: boot_image_source/verify_image_streamed
+    // are themselves #[cfg(not(feature = "qemu"))] -- GPT-located eMMC boot
+    // partition verification is M7-hardware-only, matching board::virt's own
+    // "no eMMC" (see board/virt.rs). These tests exercise functions that do
+    // not exist in a qemu build; they are not weakened test coverage of
+    // anything a qemu boot actually exercises, only aligned with the
+    // production gate already in place on the functions under test.
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn unreadable_boot_partition_halts_never_degrades() {
         // #467's fail-closed invariant at the construction site: a present
@@ -670,6 +679,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn gpt_located_signed_boot_partition_verifies() {
         use crate::block::BlockDevice as _;
@@ -724,6 +734,7 @@ mod tests {
     /// payload+pad+signature is sector-aligned (the on-disk layout the
     /// streamed verifier expects — the signature is the region's final 64
     /// bytes).
+    #[cfg(not(feature = "qemu"))]
     fn signed_image(payload_len: usize, seed: &[u8; 32]) -> (alloc::vec::Vec<u8>, [u8; 32]) {
         use ed25519_dalek::SigningKey;
         use sha2::Digest as _;
@@ -742,6 +753,7 @@ mod tests {
         (image, key.verifying_key().to_bytes())
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn streamed_verify_accepts_valid_image() {
         use crate::block::BlockDevice as _;
@@ -757,6 +769,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn streamed_verify_rejects_tampered_payload() {
         use crate::block::BlockDevice as _;
@@ -773,6 +786,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn streamed_verify_rejects_wrong_key() {
         use crate::block::BlockDevice as _;
@@ -789,6 +803,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn streamed_verify_rejects_too_short_region() {
         let dev = crate::block::MemBlockDevice::new(1).expect("dev");
