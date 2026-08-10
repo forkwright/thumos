@@ -166,7 +166,7 @@ impl EntropyPool {
     /// fills the pool from a fixed vector and marks it seeded so the boot
     /// proceeds. NOT cryptographically secure; compiled ONLY under
     /// `--features qemu`, which is mutually exclusive with `production`
-    /// (main.rs compile_error!) and so can never reach a shippable image.
+    /// (`main.rs` compile_error!) and so can never reach a shippable image.
     #[cfg(feature = "qemu")]
     fn seed_deterministic_qemu(&mut self) {
         self.pool = *b"thumos-qemu-deterministic-seed!!";

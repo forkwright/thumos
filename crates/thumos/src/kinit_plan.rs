@@ -384,8 +384,13 @@ impl BootState {
 // ---------------------------------------------------------------------------
 
 /// Maximum time (ms) to wait for modem boot before declaring failure.
+// WHY not(test) too: modem_timeout_is_reasonable (below) reads this
+// constant directly, so under `qemu` + `--tests` it is not dead -- only
+// under plain `qemu` (no test harness) is it genuinely unreferenced,
+// since the CCCI init step that consumes it in production is qemu-gated
+// out (#463).
 #[cfg_attr(
-    feature = "qemu",
+    all(feature = "qemu", not(test)),
     expect(
         dead_code,
         reason = "consumed by the CCCI init step, which is qemu-gated (#463)"

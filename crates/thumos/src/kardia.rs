@@ -152,7 +152,7 @@ pub(crate) struct KernelState {
     /// Cursor into the qemu synthetic-input script. Real keypad decode is
     /// hardware-gated + net-new (no KPD model on -machine virt, no decoder
     /// in-tree); #400 input dispatch is CI-verified via a scripted key sequence
-    /// under qemu, exercising the exact on_key -> ScreenAction -> apply_action
+    /// under qemu, exercising the exact `on_key` -> `ScreenAction` -> `apply_action`
     /// -> navigation path the real keypad will drive.
     #[cfg(feature = "qemu")]
     input_cursor: usize,
@@ -505,10 +505,10 @@ impl KernelState {
         fw.rule_count()
     }
 
-    /// Boot-time audio smoke (#399, qemu): open a VoiceCall session -- which
+    /// Boot-time audio smoke (#399, qemu): open a `VoiceCall` session -- which
     /// powers the codec + arbitrates a route + records mic access -- then close
-    /// it. Exercises the session manager, RouteManager, and MicAuditLog with the
-    /// NullCodec (no real MT6357 I/O). Returns (peak session count, mic-audit
+    /// it. Exercises the session manager, `RouteManager`, and `MicAuditLog` with the
+    /// `NullCodec` (no real MT6357 I/O). Returns (peak session count, mic-audit
     /// entries) for the CI witness. On device this smoke is not run; real audio
     /// sessions open on ring/media events.
     #[cfg(feature = "qemu")]
@@ -537,6 +537,12 @@ impl KernelState {
     /// exercises them fully under qemu; only the returned values are hardware.
     #[cfg(feature = "qemu")]
     pub(crate) fn sim_sms_boot_smoke(&mut self) -> (usize, usize, bool, u8, usize, bool) {
+        // SMS receive: decode a known SMS-DELIVER PDU ("Hello" from +1234567890).
+        const PDU: &[u8] = &[
+            0x00, 0x00, 0x0A, 0x91, 0x21, 0x43, 0x65, 0x87, 0x09, 0x00, 0x00, 0x32, 0x10, 0x51,
+            0x21, 0x03, 0x00, 0x00, 0x05, 0xC8, 0x32, 0x9B, 0xFD, 0x06,
+        ];
+
         // SIM + SMS-send: query ICCID + PIN status + signal + operator and send
         // an outgoing SMS over Telephony's owned transport, in the order the mock
         // queues the responses.
@@ -563,12 +569,7 @@ impl KernelState {
             } else {
                 (0, false, 0, 0, false)
             };
-        // SMS receive: decode a known SMS-DELIVER PDU ("Hello" from +1234567890)
-        // + file it.
-        const PDU: &[u8] = &[
-            0x00, 0x00, 0x0A, 0x91, 0x21, 0x43, 0x65, 0x87, 0x09, 0x00, 0x00, 0x32, 0x10, 0x51,
-            0x21, 0x03, 0x00, 0x00, 0x05, 0xC8, 0x32, 0x9B, 0xFD, 0x06,
-        ];
+        // File the decoded PDU.
         if let Ok(msg) = SmsManager::handle_incoming(PDU) {
             self.sms.receive(msg).ok();
         }
@@ -583,10 +584,10 @@ impl KernelState {
     }
 
     /// Boot-time BT A2DP smoke (#401, qemu): configure the A2DP profile (SBC
-    /// framing at 44.1 kHz stereo) and report the resulting sample rate +
-    /// channels. Proves the profile state machine + SBC encoder are instantiated
-    /// + functional; the RF/HCI link is hardware-gated (NullBtHw yields no
-    /// controller events, so no connection completes).
+    /// framing at 44.1 kHz stereo) and report the resulting sample rate and
+    /// channels. Proves the profile state machine and SBC encoder are
+    /// instantiated and functional; the RF/HCI link is hardware-gated
+    /// (`NullBtHw` yields no controller events, so no connection completes).
     #[cfg(feature = "qemu")]
     pub(crate) fn bt_audio_boot_smoke(&mut self) -> (u32, u8) {
         self.bt_audio.configure(44_100, 2).ok();
@@ -609,7 +610,7 @@ impl KernelState {
     /// frame through the device: the TX drop-site matches the outbound `Log`
     /// rule (allow + audit), the looped-back inbound copy hits default-deny at
     /// the RX drop-site, and both events drain onto the HMAC audit chain via the
-    /// production path. Returns (rule count, packets_allowed, packets_denied,
+    /// production path. Returns (rule count, `packets_allowed`, `packets_denied`,
     /// audit entries appended, chain-verified) for the CI witness.
     #[cfg(feature = "qemu")]
     pub(crate) fn firewall_boot_smoke(&mut self) -> (usize, u64, u64, usize, bool) {
@@ -674,7 +675,7 @@ impl KernelState {
     /// Boot-time heorte smoke (#400, qemu): seed a calendar event + an alarm,
     /// check alarms, arm the countdown timer + stopwatch, and feed the calendar
     /// screen from the manager. Returns (event count, alarm count, calendar
-    /// agenda rows, timer armed) for the CI witness -- proves HeorteManager +
+    /// agenda rows, timer armed) for the CI witness -- proves `HeorteManager` +
     /// its Timer/Stopwatch are instantiated + hold state and the calendar screen
     /// renders that state (rows > 0). Pure tick logic; no hardware.
     #[cfg(feature = "qemu")]
@@ -698,10 +699,10 @@ impl KernelState {
         )
     }
 
-    /// Boot-time FM smoke (#518, qemu): power on via the BootFmHw path, tune
+    /// Boot-time FM smoke (#518, qemu): power on via the `BootFmHw` path, tune
     /// to a seeded frequency, feed the FM screen from the controller state,
-    /// and return (powered, freq_khz, rssi, volume) for the CI witness --
-    /// proves FmRadio<BootFmHw> is instantiated in KernelState and the FM
+    /// and return (powered, `freq_khz`, rssi, volume) for the CI witness --
+    /// proves `FmRadio<BootFmHw>` is instantiated in `KernelState` and the FM
     /// screen renders its state. Pure state logic; no hardware.
     #[cfg(feature = "qemu")]
     pub(crate) fn fm_boot_smoke(&mut self) -> (bool, u32, i8, u8) {
