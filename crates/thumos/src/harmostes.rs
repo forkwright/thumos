@@ -1072,8 +1072,11 @@ impl MatrixClient {
         user_id: &str,
         device_id: &str,
     ) -> Result<HttpRequest, MatrixError> {
-        MatrixUserId::new(user_id)?;
-        MatrixDeviceId::new(device_id)?;
+        // WHY: bind (not a bare `expr?;` statement) -- MatrixUserId/
+        // MatrixDeviceId are #[must_use]; discarding the validated value as
+        // a statement trips the must_use lint under -D warnings.
+        let _validated_user = MatrixUserId::new(user_id)?;
+        let _validated_device = MatrixDeviceId::new(device_id)?;
 
         let mut path = String::from(API_PREFIX);
         path.push_str("/keys/claim");
