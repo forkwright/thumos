@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4](https://github.com/forkwright/thumos/compare/v0.2.3...v0.2.4) (2026-08-10)
+
+
+### Bug Fixes
+
+* **sim:** match +CPIN? lock states exactly so SIM PUK2 cannot present as a primary-SIM PUK lock ([#701](https://github.com/forkwright/thumos/issues/701)) ([b2a60cc](https://github.com/forkwright/thumos/commit/b2a60cc3d8364ab6fd9e7587d3af8623f320747f))
+
 ## [0.2.3](https://github.com/forkwright/thumos/compare/v0.2.2...v0.2.3) (2026-08-10)
 
 

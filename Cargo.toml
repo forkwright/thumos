@@ -24,7 +24,7 @@ members = [
 exclude = ["crates/thumos"]
 
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 # WHY: match the toolchain we actually build and test against.
 rust-version = "1.94"
