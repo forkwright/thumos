@@ -102,7 +102,7 @@ hardware_reason = "WiFi TX/RX/scan, BT RF, GPS NMEA need the combo chip + antenn
 id = "comms-matrix"
 modules = ["matrix_crypto", "http_client", "json_mini", "harmostes", "matrix_ids"]
 tier = "kernel-wired"
-notes = "Olm/Megolm + HTTP/JSON surfaces compiled; /keys/claim consumption is #437 remnant 3."
+notes = "Olm/Megolm + HTTP/JSON surfaces compiled, including the /keys/claim request/response round trip and its consume_one_time_key single-use gate (#437); X3DH session establishment is not implemented, so nothing yet drives a claim from kinit/kardia."
 
 [[capability]]
 id = "screens-extended"
