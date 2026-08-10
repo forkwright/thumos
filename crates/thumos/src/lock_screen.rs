@@ -1402,7 +1402,7 @@ mod tests {
             for &byte in b"wrong" {
                 screen.push_passphrase_byte(byte);
             }
-            screen.submit_passphrase(100 + (i as u64) * 100);
+            let _ = screen.submit_passphrase(100 + (i as u64) * 100);
         }
 
         // 4th attempt should now have a 5-second throttle.

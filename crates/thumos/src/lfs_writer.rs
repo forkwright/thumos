@@ -364,7 +364,7 @@ impl LfsWriter {
         let seg_bitmap_blocks = blocks_needed(segment_data.len());
 
         // Alternate between slot A (even sequence) and slot B (odd sequence).
-        let slot_block = if checkpoint_sequence % 2 == 0 {
+        let slot_block = if checkpoint_sequence.is_multiple_of(2) {
             checkpoint_slots.0
         } else {
             checkpoint_slots.1
@@ -401,7 +401,7 @@ impl LfsWriter {
 /// Calculate the number of 4 KiB blocks needed to store `byte_count` bytes.
 fn blocks_needed(byte_count: usize) -> usize {
     let full = byte_count / BLOCK_SIZE;
-    let partial = if byte_count % BLOCK_SIZE != 0 { 1 } else { 0 };
+    let partial = usize::from(!byte_count.is_multiple_of(BLOCK_SIZE));
     full + partial
 }
 

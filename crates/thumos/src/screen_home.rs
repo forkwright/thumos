@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn home_screen_draws_without_panic() {
         let screen = HomeScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         // Should have rendered at least the "No service" text and mode indicator.
         let any_set = fb.iter().any(|&px| px != 0);
@@ -363,7 +363,7 @@ mod tests {
             mode: OperatingMode::Daily,
             unread_count: 3,
         });
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "home screen with time must render visible content");
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn scaled_char_draws_without_panic() {
-        let mut fb = [0u16; 240 * 50];
+        let mut fb = alloc::vec![0u16; 240 * 50];
         ui::draw_char_scaled(
             &mut fb,
             240,
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn scaled_str_centered_draws_without_panic() {
-        let mut fb = [0u16; 240 * 50];
+        let mut fb = alloc::vec![0u16; 240 * 50];
         let time = format_time(12, 34);
         ui::draw_scaled_str_centered(
             &mut fb,

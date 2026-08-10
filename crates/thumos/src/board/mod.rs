@@ -28,7 +28,14 @@ pub(crate) use m7::*;
 
 #[cfg(feature = "qemu")]
 mod virt;
+// WHY: under `--features qemu --tests`, nothing in the test build's own
+// code paths references virt's re-exports (register_devices and the MMIO
+// base consts are only called from the non-test boot path) -- the glob
+// import is real production surface, just unused specifically in test
+// compilations, the same shape as m7's non-qemu re-export would show if
+// virt's board had comparably test-referenced content.
 #[cfg(feature = "qemu")]
+#[cfg_attr(test, allow(unused_imports))]
 pub(crate) use virt::*;
 
 // ---------------------------------------------------------------------------
@@ -75,6 +82,12 @@ mod tests {
     use super::*;
 
     #[test]
+    // WHY: every bound here is a fixed board-layout const, so clippy sees
+    // compile-time-constant assertions. This test exists precisely to pin
+    // those relationships (map size, KERNEL_END derivation, ordering) as a
+    // discoverable, individually reportable regression guard rather than a
+    // silent const-eval check.
+    #[allow(clippy::assertions_on_constants)]
     fn shared_memory_map_is_self_consistent() {
         assert_eq!(RAM_END - RAM_START, 1024 * 1024 * 1024);
         assert_eq!(KERNEL_END, 0x4010_0000);

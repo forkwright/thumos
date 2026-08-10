@@ -825,8 +825,7 @@ mod tests {
         // Our simplified calculation won't be exact, but should be in the right ballpark.
         assert!(
             epoch > 1_300_000_000 && epoch < 1_320_000_000,
-            "epoch for 2011-05-28 must be approximately 1306573670, got {}",
-            epoch
+            "epoch for 2011-05-28 must be approximately 1306573670, got {epoch}"
         );
     }
 
@@ -845,6 +844,11 @@ mod tests {
         );
     }
 
+    // WHY the gate: GpsHw is #[cfg(not(feature = "qemu"))] (real hardware
+    // access via WMT STP on the MT6739 combo chip, which qemu's virt board
+    // does not model) -- this test exercises a type that does not exist in
+    // a qemu build.
+    #[cfg(not(feature = "qemu"))]
     #[test]
     fn production_gps_hw_fails_closed_without_wmt_transport() {
         let mut receiver = GpsReceiver::new(GpsHw::new());

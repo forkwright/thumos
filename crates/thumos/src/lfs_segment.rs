@@ -211,7 +211,7 @@ impl LfsSegmentManager {
         buf.extend_from_slice(&self.segment_size.to_le_bytes());
 
         // Pack bitmap into bytes, 8 segments per byte.
-        let byte_count = (self.segment_count as usize + 7) / 8;
+        let byte_count = (self.segment_count as usize).div_ceil(8);
         for byte_idx in 0..byte_count {
             let mut byte_val: u8 = 0;
             for bit in 0..8 {
@@ -273,7 +273,7 @@ impl LfsSegmentManager {
             return Err(LfsError::Corrupt);
         }
 
-        let byte_count = (segment_count as usize + 7) / 8;
+        let byte_count = (segment_count as usize).div_ceil(8);
         let bitmap_data = &data[8..];
         if bitmap_data.len() < byte_count {
             return Err(LfsError::Corrupt);

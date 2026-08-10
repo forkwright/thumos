@@ -11,7 +11,7 @@ use core::ptr;
 ///
 /// The caller must ensure `addr` points to a valid MMIO register
 /// that is safe to read without side effects beyond the read itself.
-#[inline(always)]
+#[inline]
 pub unsafe fn read32(addr: usize) -> u32 {
     unsafe { ptr::read_volatile(addr as *const u32) }
 }
@@ -21,7 +21,7 @@ pub unsafe fn read32(addr: usize) -> u32 {
 /// # Safety
 ///
 /// The caller must ensure `addr` points to a valid MMIO register.
-#[inline(always)]
+#[inline]
 pub unsafe fn write32(addr: usize, val: u32) {
     unsafe {
         ptr::write_volatile(addr as *mut u32, val);
@@ -35,7 +35,7 @@ pub unsafe fn write32(addr: usize, val: u32) {
 /// Same requirements as `read32` and `write32`. The read-modify-write
 /// is NOT atomic — do not use on registers where concurrent access
 /// from other cores or DMA is possible without synchronization.
-#[inline(always)]
+#[inline]
 pub unsafe fn set_bits(addr: usize, bits: u32) {
     unsafe {
         let val = read32(addr);
@@ -48,7 +48,7 @@ pub unsafe fn set_bits(addr: usize, bits: u32) {
 /// # Safety
 ///
 /// Same as `set_bits`.
-#[inline(always)]
+#[inline]
 pub unsafe fn clear_bits(addr: usize, bits: u32) {
     unsafe {
         let val = read32(addr);

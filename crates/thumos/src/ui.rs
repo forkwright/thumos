@@ -721,6 +721,11 @@ impl UiManager {
     ///
     /// Applies the navigation action (navigate, back, or exit).
     /// Returns `true` if the UI should exit (e.g., from `ScreenAction::Exit`).
+    // WHY: Exit, KillModem, and Duress all return true, but each does so for
+    // a different reason (documented per-arm below: real UI exit vs. a
+    // privileged hardware action vs. yielding to the panic sequence).
+    // Merging them into one arm would blur those distinct rationales.
+    #[allow(clippy::match_same_arms)]
     pub(crate) fn apply_action(&mut self, action: ScreenAction) -> bool {
         match action {
             ScreenAction::None => false,
@@ -1215,7 +1220,7 @@ mod tests {
     fn render_fills_all_three_zones() {
         let mgr = UiManager::new();
         let screen = StubScreen;
-        let mut fb = [0u16; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize];
 
         mgr.render(
             &screen,

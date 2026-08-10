@@ -674,7 +674,7 @@ mod tests {
     #[test]
     fn draw_off_does_not_panic() {
         let screen = FmScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -691,7 +691,7 @@ mod tests {
         };
         screen.frequency_khz = 98_500;
         screen.rssi = -60;
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -714,7 +714,7 @@ mod tests {
         screen.presets[0] = 88_000;
         screen.presets[1] = 98_500;
         screen.presets[2] = 107_900;
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(

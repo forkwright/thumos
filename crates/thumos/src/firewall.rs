@@ -384,9 +384,8 @@ impl Firewall {
 
     /// Parse the packet and classify it against rules and blocklist.
     fn classify(&mut self, packet: &[u8], direction: Direction) -> Action {
-        let info = match parse_packet(packet) {
-            Some(info) => info,
-            None => return Action::Deny,
+        let Some(info) = parse_packet(packet) else {
+            return Action::Deny;
         };
 
         // WHY: cover port-53 queries over both UDP (the common case) and

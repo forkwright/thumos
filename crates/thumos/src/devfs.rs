@@ -216,7 +216,6 @@ impl Filesystem for DevFs {
     fn read(&self, inode_id: u32, _offset: u64, buf: &mut [u8]) -> Result<usize, VfsError> {
         match inode_id {
             ROOT_INODE => Err(VfsError::IsADirectory),
-            NULL_INODE => Ok(0),
             ZERO_INODE => {
                 for b in buf.iter_mut() {
                     *b = 0;
@@ -225,7 +224,7 @@ impl Filesystem for DevFs {
             }
             // urandom needs &mut self for PRNG; callers must use read_mut().
             URANDOM_INODE => Err(VfsError::RequiresMut),
-            TTYMT0_INODE | FB0_INODE | BT0_INODE | GPS0_INODE => Ok(0),
+            NULL_INODE | TTYMT0_INODE | FB0_INODE | BT0_INODE | GPS0_INODE => Ok(0),
             _ => Err(VfsError::NotFound),
         }
     }

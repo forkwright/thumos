@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn draw_does_not_panic() {
         let screen = DialerScreen::new();
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "dialer screen must render visible content");

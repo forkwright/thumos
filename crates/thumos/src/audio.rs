@@ -40,9 +40,16 @@
 //! Boot integration via `kinit.rs`.
 
 // WHY: audio manager API not yet wired to kinit (Wave 4 integration pending).
-#![expect(
-    dead_code,
-    reason = "audio manager API created in Phase 07 Wave 4, kinit wiring pending (#145)"
+// cfg_attr(not(test), ...): the module's own tests now exercise its full
+// surface, so nothing is dead in the test build -- expecting dead_code there
+// makes the expectation unfulfilled. Production reachability is unchanged;
+// the expectation is scoped to the build where it is still real.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "audio manager API created in Phase 07 Wave 4, kinit wiring pending (#145)"
+    )
 )]
 
 extern crate alloc;
@@ -81,10 +88,8 @@ impl SessionPriority {
     pub(crate) const fn from_kind(kind: SessionKind) -> Self {
         match kind {
             SessionKind::VoiceCall => Self::Call,
-            SessionKind::Ringtone => Self::High,
-            SessionKind::Alarm => Self::High,
-            SessionKind::Notification => Self::Normal,
-            SessionKind::Music => Self::Normal,
+            SessionKind::Ringtone | SessionKind::Alarm => Self::High,
+            SessionKind::Notification | SessionKind::Music => Self::Normal,
             SessionKind::FmRadio => Self::Low,
         }
     }
@@ -723,7 +728,7 @@ mod tests {
         let low_session = sessions.iter().find(|s| s.id == low_id);
         assert!(low_session.is_some(), "low session must still exist");
         assert!(
-            !low_session.map_or(true, |s| s.active),
+            !low_session.is_none_or(|s| s.active),
             "low-priority session must be paused (preempted by alarm)"
         );
     }
@@ -745,7 +750,7 @@ mod tests {
         // Verify music is paused.
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(
-            !music.map_or(true, |s| s.active),
+            !music.is_none_or(|s| s.active),
             "music must be paused during alarm"
         );
 
@@ -755,7 +760,7 @@ mod tests {
 
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(
-            music.map_or(false, |s| s.active),
+            music.is_some_and(|s| s.active),
             "music must resume after alarm closes"
         );
     }
@@ -782,7 +787,7 @@ mod tests {
 
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(
-            !music.map_or(true, |s| s.active),
+            !music.is_none_or(|s| s.active),
             "music must NOT be marked active when the resume's set_output failed"
         );
     }
@@ -804,22 +809,19 @@ mod tests {
         // Music must be paused.
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(
-            !music.map_or(true, |s| s.active),
+            !music.is_none_or(|s| s.active),
             "music must be paused during voice call"
         );
 
         // Call must be active.
         let call = mgr.active_sessions().iter().find(|s| s.id == call_id);
-        assert!(
-            call.map_or(false, |s| s.active),
-            "voice call must be active"
-        );
+        assert!(call.is_some_and(|s| s.active), "voice call must be active");
 
         // Close call — music resumes.
         mgr.close_session(call_id).ok();
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(
-            music.map_or(false, |s| s.active),
+            music.is_some_and(|s| s.active),
             "music must resume after call ends"
         );
     }
@@ -839,14 +841,14 @@ mod tests {
         // First session must be paused (same priority, newer wins).
         let first = mgr.active_sessions().iter().find(|s| s.id == first_id);
         assert!(
-            !first.map_or(true, |s| s.active),
+            !first.is_none_or(|s| s.active),
             "earlier same-priority session must be paused"
         );
 
         // Second session must be active.
         let second = mgr.active_sessions().iter().find(|s| s.id == second_id);
         assert!(
-            second.map_or(false, |s| s.active),
+            second.is_some_and(|s| s.active),
             "latest same-priority session must be active"
         );
     }
@@ -1010,7 +1012,7 @@ mod tests {
         mgr.close_session(call_id).ok();
         let alarm = mgr.active_sessions().iter().find(|s| s.id == alarm_id);
         assert!(
-            alarm.map_or(false, |s| s.active),
+            alarm.is_some_and(|s| s.active),
             "alarm must resume after call closes"
         );
 
@@ -1018,7 +1020,7 @@ mod tests {
         mgr.close_session(alarm_id).ok();
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(
-            music.map_or(false, |s| s.active),
+            music.is_some_and(|s| s.active),
             "music must resume after alarm closes"
         );
 
@@ -1026,7 +1028,7 @@ mod tests {
         mgr.close_session(music_id).ok();
         let fm = mgr.active_sessions().iter().find(|s| s.id == fm_id);
         assert!(
-            fm.map_or(false, |s| s.active),
+            fm.is_some_and(|s| s.active),
             "FM must resume after music closes"
         );
     }
@@ -1045,7 +1047,7 @@ mod tests {
         // FM must be paused.
         let fm = mgr.active_sessions().iter().find(|s| s.id == fm_id);
         assert!(
-            !fm.map_or(true, |s| s.active),
+            !fm.is_none_or(|s| s.active),
             "FM must be paused during ringtone"
         );
 
@@ -1053,7 +1055,7 @@ mod tests {
         mgr.close_session(ring_id).ok();
         let fm = mgr.active_sessions().iter().find(|s| s.id == fm_id);
         assert!(
-            fm.map_or(false, |s| s.active),
+            fm.is_some_and(|s| s.active),
             "FM must resume after ringtone"
         );
     }
@@ -1144,7 +1146,7 @@ mod tests {
             mgr.active_sessions()
                 .iter()
                 .find(|s| s.id == call_id)
-                .map_or(false, |s| s.active),
+                .is_some_and(|s| s.active),
             "voice call must be active"
         );
 
@@ -1156,7 +1158,7 @@ mod tests {
         // The call must remain the sole active session and keep its route.
         let call = mgr.active_sessions().iter().find(|s| s.id == call_id);
         assert!(
-            call.map_or(false, |s| s.active),
+            call.is_some_and(|s| s.active),
             "higher-priority call must remain active"
         );
         assert_eq!(
@@ -1168,7 +1170,7 @@ mod tests {
         // The new lower-priority session must be inserted paused, not active.
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(
-            !music.map_or(true, |s| s.active),
+            !music.is_none_or(|s| s.active),
             "lower-priority session opened over an active higher-priority one must start paused"
         );
 
@@ -1183,7 +1185,7 @@ mod tests {
         mgr.close_session(call_id).ok();
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(
-            music.map_or(false, |s| s.active),
+            music.is_some_and(|s| s.active),
             "music must resume once the call closes"
         );
     }
@@ -1254,7 +1256,7 @@ mod tests {
 
         let music = mgr.active_sessions().iter().find(|s| s.id == music_id);
         assert!(
-            music.map_or(false, |s| s.active),
+            music.is_some_and(|s| s.active),
             "music must remain active when the preempting session's set_output fails (#390)"
         );
         assert_eq!(

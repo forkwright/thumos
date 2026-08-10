@@ -548,14 +548,14 @@ unsafe fn dcs_write_long(cmd: u8, data: &[u8]) -> Result<(), DsiTimeout> {
             let shift = (byte_idx % 4) * 8;
             word |= u32::from(b) << shift;
             byte_idx += 1;
-            if byte_idx % 4 == 0 {
+            if byte_idx.is_multiple_of(4) {
                 mmio::write32(dsi::CMDQ_DATA + slot * 4, word);
                 slot += 1;
                 word = 0;
             }
         }
         // Flush any remaining partial word.
-        if byte_idx % 4 != 0 {
+        if !byte_idx.is_multiple_of(4) {
             mmio::write32(dsi::CMDQ_DATA + slot * 4, word);
             slot += 1;
         }
@@ -929,6 +929,15 @@ impl<L: LcmDriver> DisplayDriver<L> {
     /// - `addr` must be a valid physical address with a full frame
     ///   of pixel data.
     /// - `stride` is bytes per row (width × bpp).
+    // WHY: the body only touches global MMIO today, but this is a
+    // documented instance method on the pipeline handle (its safety
+    // contract is stated in terms of `self`'s Active state) meant to be
+    // called as `display.write_framebuffer(..)` alongside this same
+    // struct's other &mut self steps (kinit.rs already treats
+    // DisplayDriver instance-style via `display.state()`). Dropping
+    // &mut self would turn a pipeline-instance method into a free
+    // function and misrepresent the state precondition as global.
+    #[allow(clippy::unused_self)]
     pub unsafe fn write_framebuffer(&mut self, addr: usize, stride: u32) {
         debug_assert!(
             is_fb_addr_aligned(addr),
@@ -1062,10 +1071,10 @@ impl<L: LcmDriver> DisplayDriver<L> {
 
             // Horizontal timing (word counts  -  bytes per line)
             let hsa_wc: u32 = 4; // sync active
-            let hbp_wc: u32 = 40; // back porch
+            let back_porch_wc: u32 = 40; // back porch
             let hfp_wc: u32 = 40; // front porch
             mmio::write32(dsi::HSA_WC, hsa_wc);
-            mmio::write32(dsi::HBP_WC, hbp_wc);
+            mmio::write32(dsi::HBP_WC, back_porch_wc);
             mmio::write32(dsi::HFP_WC, hfp_wc);
 
             // Enable clock lane and data lane 0

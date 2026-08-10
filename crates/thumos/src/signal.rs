@@ -314,12 +314,12 @@ impl SignalState {
     /// Return the lowest-numbered pending signal, or `None` if none are pending.
     pub(crate) fn next_pending(&self) -> Option<Signal> {
         for n in 0u32..18 {
-            if self.pending & (1 << n) != 0 {
-                if let Some(sig) = Signal::from_u32(n) {
-                    return Some(sig);
-                }
-                // Unknown bit set: skip it (defensive)
+            if self.pending & (1 << n) != 0
+                && let Some(sig) = Signal::from_u32(n)
+            {
+                return Some(sig);
             }
+            // Unknown bit set: skip it (defensive)
         }
         None
     }
@@ -404,9 +404,8 @@ pub(crate) fn sys_kill(pid: u32, signum: u32) -> u32 {
         return EINVAL;
     };
 
-    let pid8 = match u8::try_from(pid) {
-        Ok(p) => p,
-        Err(_) => return ESRCH,
+    let Ok(pid8) = u8::try_from(pid) else {
+        return ESRCH;
     };
 
     // WHY (#269): PID 0 (kinit) is the fault supervisor; belt-and-suspenders
@@ -421,10 +420,10 @@ pub(crate) fn sys_kill(pid: u32, signum: u32) -> u32 {
     // Self-signals (kill(getpid(), sig)) bypass the check — a process may
     // always signal itself (matches Linux semantics and enables self-termination).
     let current = crate::process::current_pid();
-    if pid8 != current {
-        if let Err(e) = crate::capability::check(crate::capability::Capabilities::KILL) {
-            return e;
-        }
+    if pid8 != current
+        && let Err(e) = crate::capability::check(crate::capability::Capabilities::KILL)
+    {
+        return e;
     }
 
     // SAFETY: deliver_signal_to accesses PROCS via addr_of_mut!.
@@ -432,12 +431,6 @@ pub(crate) fn sys_kill(pid: u32, signum: u32) -> u32 {
     unsafe { crate::process::deliver_signal_to(pid8, sig) }
 }
 
-/// `sigreturn()` — return from a signal handler.
-///
-/// Restores the register state that was saved onto the user stack before
-/// the signal handler was invoked. The saved frame is at the current user
-/// SP; after restoring it the interrupted thread resumes where it left off.
-///
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -612,6 +605,14 @@ mod tests {
     /// `USER_TEXT_BASE` — outside the section exec rebuilds, above every
     /// growing user region (heap at `0x1000_0000`, mmap at `0x2000_0000`).
     #[test]
+    // WHY: SIGNAL_TRAMPOLINE_VA derives entirely from fixed board/page consts
+    // (USER_TEXT_BASE, PAGE_SIZE), so the final assert! below is
+    // compile-time-constant to clippy. This test exists precisely to pin
+    // the trampoline's placement outside the exec-rebuilt section as a
+    // discoverable, individually reportable host test (not a const-eval
+    // check) so a future board-layout edit fails a named test rather than
+    // a silent build-time check.
+    #[allow(clippy::assertions_on_constants)]
     fn signal_trampoline_va_is_the_reserved_slot() {
         assert_eq!(
             SIGNAL_TRAMPOLINE_VA,
@@ -646,6 +647,7 @@ mod tests {
     /// stack, r0 = the signum, and lr = the RX trampoline page.
     #[test]
     fn deliver_builds_frame_and_rewrites_context() {
+        static mut USER_STACK: [u32; 64] = [0; 64];
         let mut frame = crate::process::Context {
             r: [0; 13],
             sp: 0,
@@ -658,9 +660,10 @@ mod tests {
         frame.lr = 0xBEEF;
         frame.pc = 0xDEAD;
         frame.cpsr = 0x10;
-        static mut USER_STACK: [u32; 64] = [0; 64];
-        // SAFETY: test-only static; single-threaded per test.
-        let base = unsafe { core::ptr::addr_of_mut!(USER_STACK) };
+        // NOTE: forming the pointer needs no unsafe (addr_of_mut! never
+        // dereferences); the test-only static is single-threaded per test,
+        // and every actual read/write below is its own gated unsafe block.
+        let base = core::ptr::addr_of_mut!(USER_STACK);
         let stack_top = base as u32 + (64 * 4);
         frame.sp = stack_top;
 
@@ -692,8 +695,10 @@ mod tests {
     #[test]
     fn sigreturn_frame_restores_interrupted_context() {
         static mut SIGFRAME: [u32; 21] = [0; 21];
-        // SAFETY: test-only static; single-threaded per test.
-        let base = unsafe { core::ptr::addr_of_mut!(SIGFRAME) };
+        // NOTE: forming the pointer needs no unsafe (addr_of_mut! never
+        // dereferences); the test-only static is single-threaded per test,
+        // and every actual read/write below is its own gated unsafe block.
+        let base = core::ptr::addr_of_mut!(SIGFRAME);
         let mut saved = crate::process::Context {
             r: [0; 13],
             sp: 0,
@@ -709,7 +714,7 @@ mod tests {
         saved.cpsr = 0x10;
         // Lay out the frame as deliver() would.
         unsafe {
-            let dst = base as *mut u32;
+            let dst = base.cast::<u32>();
             for (i, word) in saved.r.iter().enumerate() {
                 dst.add(i).write_volatile(*word);
             }

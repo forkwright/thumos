@@ -166,7 +166,7 @@ impl EntropyPool {
     /// fills the pool from a fixed vector and marks it seeded so the boot
     /// proceeds. NOT cryptographically secure; compiled ONLY under
     /// `--features qemu`, which is mutually exclusive with `production`
-    /// (main.rs compile_error!) and so can never reach a shippable image.
+    /// (`main.rs` `compile_error!`) and so can never reach a shippable image.
     #[cfg(feature = "qemu")]
     fn seed_deterministic_qemu(&mut self) {
         self.pool = *b"thumos-qemu-deterministic-seed!!";
@@ -307,6 +307,13 @@ pub unsafe fn init() -> bool {
 
     // Spin until the entropy pool has accumulated a full seed estimate,
     // or until CSPRNG_INIT_TIMEOUT_MS elapses.
+    // WHY: in host test builds the #[cfg(test)] arm below always breaks on
+    // the first pass (test host bypasses real entropy collection), so this
+    // loop genuinely never loops more than once THERE -- but the production
+    // (#[cfg(not(test))]) arm is the real spin/timeout wait and must stay a
+    // loop. cfg_attr scopes the allow to the build where the single-pass
+    // shape is deliberate, not the one doing the actual waiting.
+    #[cfg_attr(test, allow(clippy::never_loop))]
     let seeded = loop {
         // SAFETY: ENTROPY is accessed read-only here; writes only come from the
         // IRQ handler which cannot execute concurrently on single-core ARMv7.
@@ -483,6 +490,12 @@ mod tests {
     }
 
     #[test]
+    // WHY: CSPRNG_INIT_TIMEOUT_MS is a fixed crate const, so both bounds
+    // below are compile-time-constant to clippy. This test exists precisely
+    // to pin that literal within a sane range as a discoverable, individually
+    // reportable host test (not a const-eval assert) so a future edit to the
+    // constant fails a named test rather than a silent build-time check.
+    #[allow(clippy::assertions_on_constants)]
     fn csprng_init_timeout_is_sane() {
         assert!(
             CSPRNG_INIT_TIMEOUT_MS >= 5_000,

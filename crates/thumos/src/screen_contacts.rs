@@ -692,7 +692,7 @@ mod tests {
         let mut screen = ContactsScreen::new();
         screen.update_contacts(&mgr);
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
 
         let any_set = fb.iter().any(|&px| px != 0);
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn empty_contacts_renders() {
         let screen = ContactsScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "empty contact list must render 'No contacts'");
@@ -866,7 +866,7 @@ mod tests {
         screen.update_contacts(&mgr);
         screen.view = ContactView::Detail;
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "detail view must render content");
@@ -876,7 +876,7 @@ mod tests {
     fn add_view_renders_without_panic() {
         let mut screen = ContactsScreen::new();
         screen.view = ContactView::Add;
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "add contact view must render visible content");

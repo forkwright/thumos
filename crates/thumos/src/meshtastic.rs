@@ -1017,7 +1017,7 @@ mod tests {
 
     #[test]
     fn mesh_state_default_is_disconnected() {
-        let state: MeshState = Default::default();
+        let state: MeshState = MeshState::default();
         assert_eq!(
             state,
             MeshState::Disconnected,
