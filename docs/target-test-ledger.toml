@@ -396,6 +396,11 @@ tests = 36
 mechanism = "host"
 
 [[module]]
+name = "metaxu_bridge"
+tests = 4
+mechanism = "host"
+
+[[module]]
 name = "mic_audit"
 tests = 18
 mechanism = "host"
