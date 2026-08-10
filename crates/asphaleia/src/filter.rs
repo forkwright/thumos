@@ -2,7 +2,8 @@
 //!
 //! [`Filter`] combines a [`RuleSet`] with an optional [`DnsBlocklist`] to
 //! evaluate raw IP packets. DNS queries to blocked domains are denied before
-//! rule evaluation. Parse failures default to deny.
+//! rule evaluation. Parse failures and unrecognized IP protocol numbers
+//! default to deny.
 
 use crate::dns::{DNS_PORT, DnsBlocklist};
 use crate::packet::{IpHeader, PROTO_ICMP, PROTO_TCP, PROTO_UDP, TcpHeader, UdpHeader};
@@ -56,7 +57,8 @@ impl Filter {
     /// Evaluate a raw IPv4 packet in the given `direction` and return the
     /// action to take.
     ///
-    /// Packets that fail to parse are denied (fail-closed).
+    /// Packets that fail to parse, and packets carrying an unrecognized IP
+    /// protocol number, are denied (fail-closed).
     pub fn evaluate(&mut self, packet: &[u8], direction: Direction) -> Action {
         let action = self.classify(packet, direction);
         self.record(action);
@@ -99,7 +101,16 @@ impl Filter {
                 (Protocol::Udp, Some(udp.src_port), Some(udp.dst_port))
             }
             PROTO_ICMP => (Protocol::Icmp, None, None),
-            _ => (Protocol::Any, None, None),
+            // INVARIANT: an IP protocol number this filter does not
+            // recognize must deny, not classify as `Protocol::Any`.
+            // `Protocol::Any` is the rule-side wildcard ("match every
+            // protocol this filter understands") -- feeding it a packet
+            // whose protocol was never identified would let an allow-all
+            // rule admit traffic the filter has no basis to judge. This
+            // mirrors the kernel's `parse_packet` (firewall.rs), which
+            // returns `None` for the same case and is denied by its
+            // caller.
+            _ => return Action::Deny,
         };
 
         let info = PacketInfo {
@@ -181,6 +192,20 @@ mod tests {
         pkt[24] = ul_bytes[0];
         pkt[25] = ul_bytes[1];
         pkt[28..].copy_from_slice(udp_payload);
+        pkt
+    }
+
+    /// Build a bare IPv4 packet (no layer-4 payload) carrying `protocol`.
+    /// Used for protocols whose branch never parses past the IP header
+    /// (ICMP, and any unrecognized protocol number).
+    fn make_ip_only(protocol: u8, src: [u8; 4], dst: [u8; 4]) -> Vec<u8> {
+        let mut pkt = vec![0u8; 20];
+        pkt[0] = 0x45;
+        pkt[2] = 0x00;
+        pkt[3] = 20;
+        pkt[9] = protocol;
+        pkt[12..16].copy_from_slice(&src);
+        pkt[16..20].copy_from_slice(&dst);
         pkt
     }
 
@@ -272,6 +297,74 @@ mod tests {
             f.evaluate(&garbage, Direction::In),
             Action::Deny,
             "unparseable packet must be denied even with allow-all rule"
+        );
+    }
+
+    #[test]
+    fn unrecognized_protocol_is_denied_despite_allow_all_rule() {
+        // GRE (IANA protocol 47) -- representative of the ~250 IP protocol
+        // numbers this filter does not classify (anything outside
+        // TCP/UDP/ICMP).
+        const PROTO_GRE: u8 = 47;
+
+        let mut f = Filter::new();
+        f.ruleset_mut().add_rule(Rule {
+            direction: Direction::In,
+            protocol: Protocol::Any,
+            src_addr: AddressMatch::any(),
+            dst_addr: AddressMatch::any(),
+            src_port: PortMatch::Any,
+            dst_port: PortMatch::Any,
+            action: Action::Allow,
+        });
+        let pkt = make_ip_only(PROTO_GRE, [1, 2, 3, 4], [10, 0, 0, 1]);
+        assert_eq!(
+            f.evaluate(&pkt, Direction::In),
+            Action::Deny,
+            "an unrecognized IP protocol number must be denied even when an \
+             allow-all (Protocol::Any) rule is installed -- Any is the \
+             rule-side wildcard for protocols this filter understands, not \
+             a signal that classification succeeded"
+        );
+    }
+
+    #[test]
+    fn icmp_protocol_permitted_by_matching_rule() {
+        let mut f = Filter::new();
+        f.ruleset_mut().add_rule(Rule {
+            direction: Direction::In,
+            protocol: Protocol::Icmp,
+            src_addr: AddressMatch::any(),
+            dst_addr: AddressMatch::any(),
+            src_port: PortMatch::Any,
+            dst_port: PortMatch::Any,
+            action: Action::Allow,
+        });
+        let pkt = make_ip_only(PROTO_ICMP, [1, 2, 3, 4], [10, 0, 0, 1]);
+        assert_eq!(
+            f.evaluate(&pkt, Direction::In),
+            Action::Allow,
+            "ICMP packet must still be permitted by an explicit ICMP allow rule"
+        );
+    }
+
+    #[test]
+    fn udp_protocol_permitted_by_matching_rule() {
+        let mut f = Filter::new();
+        f.ruleset_mut().add_rule(Rule {
+            direction: Direction::In,
+            protocol: Protocol::Udp,
+            src_addr: AddressMatch::any(),
+            dst_addr: AddressMatch::any(),
+            src_port: PortMatch::Any,
+            dst_port: PortMatch::Single(4500),
+            action: Action::Allow,
+        });
+        let pkt = make_ip_udp([1, 2, 3, 4], [10, 0, 0, 1], 54321, 4500, &[]);
+        assert_eq!(
+            f.evaluate(&pkt, Direction::In),
+            Action::Allow,
+            "UDP packet must still be permitted by an explicit UDP allow rule"
         );
     }
 
