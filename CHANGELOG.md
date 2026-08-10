@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3](https://github.com/forkwright/thumos/compare/v0.2.2...v0.2.3) (2026-08-10)
+
+
+### Bug Fixes
+
+* **asphaleia:** deny unrecognized IP protocols instead of classifying them as the allow-all wildcard ([#697](https://github.com/forkwright/thumos/issues/697)) ([87c2c17](https://github.com/forkwright/thumos/commit/87c2c17d8183259742735bd08983ad09b1e7d98f)), closes [#686](https://github.com/forkwright/thumos/issues/686)
+* **kernel:** guard the QEMU semihosting asm by target_arch so the host lint pass can compile it ([#698](https://github.com/forkwright/thumos/issues/698)) ([0344d2e](https://github.com/forkwright/thumos/commit/0344d2e71fd6c8a6f3e391cf6b3d6f9540ea6e50)), closes [#692](https://github.com/forkwright/thumos/issues/692)
+* **klesis:** match AT final result codes exactly rather than by prefix ([#695](https://github.com/forkwright/thumos/issues/695)) ([07d747b](https://github.com/forkwright/thumos/commit/07d747b0bd3a2e2d804298497a3a22554571c21a)), closes [#685](https://github.com/forkwright/thumos/issues/685)
+* **release:** derive the kernel lockfile's first-party versions instead of naming one ([#689](https://github.com/forkwright/thumos/issues/689)) ([fe34482](https://github.com/forkwright/thumos/commit/fe34482b92adbb2a3a7438f8c5e3b9fa12926fc1)), closes [#688](https://github.com/forkwright/thumos/issues/688)
+
 ## [0.2.2](https://github.com/forkwright/thumos/compare/v0.2.1...v0.2.2) (2026-08-09)
 
 
