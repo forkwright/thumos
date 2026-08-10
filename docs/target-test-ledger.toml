@@ -640,7 +640,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "telephony_parser"
-tests = 19
+tests = 18
 mechanism = "host"
 
 [[module]]

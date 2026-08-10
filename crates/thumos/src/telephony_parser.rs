@@ -14,47 +14,38 @@ use crate::telephony::{AtResponse, MAX_NUMBER_LEN, RadioAccessTech, RegStatus, U
 // ---------------------------------------------------------------------------
 // AT response parsing (no_std, no nom)
 // ---------------------------------------------------------------------------
+//
+// Final-result exactness, +CSQ extraction, the dial-string charset, and
+// the dBm/bars conversion are genuinely identical to the klesis workspace
+// crate's copy and live in klesis_core (#545, #685) -- delegated to below,
+// not reimplemented. +CREG's stat/AcT extraction stays kernel-local: the
+// composite shape klesis needs (`<lac>`/`<ci>`) differs from what the
+// kernel needs (`<AcT>`), so only the shared RegStatus code table moved.
 
 /// Parse a final result code from an AT response line.
 ///
 /// Handles: "OK", "ERROR", "+CME ERROR: <code>", "+CMS ERROR: <code>"
+/// (including a verbose non-numeric body under `AT+CMEE=2`, which
+/// classifies as a generic error rather than falling through
+/// unclassified -- see [`klesis_core::parse_final_result`]).
 pub(crate) fn parse_final_result(line: &[u8]) -> Option<AtResponse> {
-    if line == b"OK" {
-        return Some(AtResponse::Ok);
+    match klesis_core::parse_final_result(line)? {
+        klesis_core::FinalResult::Ok => Some(AtResponse::Ok),
+        klesis_core::FinalResult::Error => Some(AtResponse::Error),
+        klesis_core::FinalResult::CmeError(code) => Some(AtResponse::CmeError(code)),
+        klesis_core::FinalResult::CmsError(code) => Some(AtResponse::CmsError(code)),
+        // NOTE: klesis_core::FinalResult is #[non_exhaustive] -- a future
+        // variant added there without a matching AtResponse counterpart
+        // must not be misclassified as any of the above.
+        _ => None,
     }
-    if line == b"ERROR" {
-        return Some(AtResponse::Error);
-    }
-    if let Some(rest) = strip_prefix(line, b"+CME ERROR: ") {
-        // WHY (finding 13): a modem in verbose CME error mode (AT+CMEE=2,
-        // 3GPP TS 27.007 section 9.2) reports a text message here instead
-        // of a numeric code (e.g. "+CME ERROR: SIM not inserted"). Falling
-        // through unclassified left the caller's response loop treating
-        // the line as informational and eventually timing out, hiding a
-        // real modem-reported error behind a misleading Timeout.
-        return Some(match parse_u32(rest) {
-            Some(code) => AtResponse::CmeError(code),
-            None => AtResponse::Error,
-        });
-    }
-    if let Some(rest) = strip_prefix(line, b"+CMS ERROR: ") {
-        return Some(match parse_u32(rest) {
-            Some(code) => AtResponse::CmsError(code),
-            None => AtResponse::Error,
-        });
-    }
-    None
 }
 
 /// Parse a +CSQ response line: "+CSQ: <rssi>,<ber>"
 ///
 /// Returns (`rssi_raw`, ber) where `rssi_raw` is 0-31 or 99 (unknown).
 pub(crate) fn parse_csq_response(line: &[u8]) -> Option<(u8, u8)> {
-    let rest = strip_prefix(line, b"+CSQ: ")?;
-    let comma = memchr(b',', rest)?;
-    let rssi = parse_u8(&rest[..comma])?;
-    let ber = parse_u8(&rest[comma + 1..])?;
-    Some((rssi, ber))
+    klesis_core::parse_csq(line)
 }
 
 /// Parse a +CREG URC line: "+CREG: <stat>[,<lac>,<ci>[,<AcT>]]"
@@ -135,9 +126,11 @@ pub(crate) fn parse_cops_response(
 /// excluded: either would let attacker-controlled bytes terminate an ATD
 /// command early and inject a follow-on AT command once relayed into
 /// `dial`.
-pub(crate) const fn is_valid_dial_byte(b: u8) -> bool {
-    matches!(b, b'0'..=b'9' | b'+' | b'*' | b'#' | b'A'..=b'D')
-}
+///
+/// Canonical definition: [`klesis_core::is_valid_dial_byte`] (#545),
+/// shared with klesis's `validate_phone_number` -- re-exported here so
+/// existing `is_valid_dial_byte` call sites are unaffected.
+pub(crate) use klesis_core::is_valid_dial_byte;
 
 /// Parse a +CLIP URC line: "+CLIP: \"<number>\",<type>..."
 ///
@@ -207,9 +200,10 @@ pub(crate) fn parse_cpin_response(line: &[u8]) -> Option<SimPinState> {
 }
 
 /// Check if a line is a RING URC.
-pub(crate) fn is_ring(line: &[u8]) -> bool {
-    line == b"RING"
-}
+///
+/// Canonical definition: [`klesis_core::is_ring`] (#545, #685), shared
+/// with klesis's `parse_ring`.
+pub(crate) use klesis_core::is_ring;
 
 /// Parse a `+CPINR` remaining-attempts line (#517).
 ///
@@ -312,30 +306,13 @@ fn parse_u8(input: &[u8]) -> Option<u8> {
     Some(result)
 }
 
-/// Parse a byte slice as a decimal u32.
-fn parse_u32(input: &[u8]) -> Option<u32> {
-    if input.is_empty() {
-        return None;
-    }
-    let mut result: u32 = 0;
-    for &b in input {
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        result = result.checked_mul(10)?.checked_add(u32::from(b - b'0'))?;
-    }
-    Some(result)
-}
-
 /// Convert raw AT+CSQ RSSI value (0-31, 99=unknown) to dBm.
 ///
 /// Formula: dBm = -113 + (rssi * 2), per 3GPP TS 27.007.
-pub(crate) fn rssi_to_dbm(rssi: u8) -> i16 {
-    if rssi == 99 {
-        return -999; // unknown sentinel
-    }
-    -113 + (i16::from(rssi) * 2)
-}
+///
+/// Canonical definition: [`klesis_core::rssi_to_dbm`] (#545), shared with
+/// klesis's `SignalStrength::from`.
+pub(crate) use klesis_core::rssi_to_dbm;
 
 /// Map signal strength in dBm to bars (0-4).
 ///
@@ -345,17 +322,10 @@ pub(crate) fn rssi_to_dbm(rssi: u8) -> i16 {
 /// - >= -100 dBm -> 2 bars (fair)
 /// - >= -110 dBm -> 1 bar  (poor)
 /// - <  -110 dBm -> 0 bars (no signal)
-pub(crate) fn dbm_to_bars(dbm: i16) -> u8 {
-    if dbm >= -70 {
-        4
-    } else if dbm >= -85 {
-        3
-    } else if dbm >= -100 {
-        2
-    } else {
-        u8::from(dbm >= -110)
-    }
-}
+///
+/// Canonical definition: [`klesis_core::dbm_to_bars`] (#545), shared with
+/// klesis's `SignalStrength::from`.
+pub(crate) use klesis_core::dbm_to_bars;
 
 /// Maximum operator name length in bytes.
 pub(crate) const MAX_OPERATOR_LEN: usize = 32;
@@ -662,7 +632,10 @@ mod tests {
         // rejected via the checked_mul/checked_add overflow guards, not
         // silently wrap. parse_u8 is private but has no direct test at
         // all -- existing coverage is only indirect, via in-range fields
-        // in parse_csq_response/parse_creg_response/parse_final_result.
+        // in parse_creg_response/parse_creg_query_response (the last
+        // remaining kernel-local caller; parse_csq_response and
+        // parse_final_result now delegate their decimal parsing to
+        // klesis_core, #545).
         assert_eq!(parse_u8(b"255"), Some(255), "255 (u8::MAX) must parse");
         assert_eq!(
             parse_u8(b"256"),
@@ -677,29 +650,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_u32_rejects_overflowing_value() {
-        assert_eq!(
-            parse_u32(b"4294967295"),
-            Some(u32::MAX),
-            "u32::MAX must parse"
-        );
-        assert_eq!(
-            parse_u32(b"4294967296"),
-            None,
-            "one past u32::MAX must be rejected, not wrap to 0"
-        );
-        assert_eq!(
-            parse_u32(b"99999999999999999999"),
-            None,
-            "a value far exceeding u32::MAX must be rejected"
-        );
-    }
-
-    #[test]
     fn csq_response_with_overflowing_rssi_field_is_rejected() {
         // Integration-level check: an over-range AT field must propagate
-        // the parse_u8 overflow rejection all the way up through the
-        // public parser, not just at the private helper.
+        // klesis_core::parse_csq's overflow rejection (#545) all the way
+        // up through the kernel's public wrapper.
         assert_eq!(
             parse_csq_response(b"+CSQ: 999,0"),
             None,

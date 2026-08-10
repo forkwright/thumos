@@ -1,6 +1,6 @@
 [package]
 name = "klesis-core"
-description = "no_std + alloc core for GSM-7 and SMS-PDU semantics (the canonical codec, address/hex primitives, and silent-SMS/WAP-Push classification, shared by klesis and the kernel)"
+description = "no_std + alloc core for GSM-7, SMS-PDU, and AT-response semantics (the canonical codec, address/hex primitives, silent-SMS/WAP-Push classification, and AT final-result/URC token parsing, shared by klesis and the kernel)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

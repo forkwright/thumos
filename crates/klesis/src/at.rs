@@ -5,13 +5,18 @@
 
 use nom::IResult;
 use nom::Parser;
-use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until, take_while1};
 use nom::character::complete::{char, digit1};
-use nom::combinator::{all_consuming, map, map_res, opt, value, verify};
+use nom::combinator::{map, map_res, opt, verify};
 use nom::sequence::{delimited, preceded};
 
 use crate::error::{Error, Result};
+
+/// Network registration status (3GPP TS 27.007 +CREG).
+///
+/// Canonical definition: [`klesis_core::RegStatus`] (#545) -- re-exported
+/// here so existing `at::RegStatus` call sites are unaffected.
+pub use klesis_core::RegStatus;
 
 /// Raw AT response FROM the modem.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -79,37 +84,6 @@ pub enum Urc {
     NoAnswer,
 }
 
-/// Network registration status (3GPP TS 27.007 +CREG).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RegStatus {
-    /// Not registered, not searching.
-    NotRegistered,
-    /// Registered on home network.
-    RegisteredHome,
-    /// Searching for network.
-    Searching,
-    /// Registration denied.
-    Denied,
-    /// Status unknown.
-    Unknown,
-    /// Registered, roaming.
-    RegisteredRoaming,
-}
-
-impl From<u8> for RegStatus {
-    fn from(val: u8) -> Self {
-        match val {
-            0 => Self::NotRegistered,
-            1 => Self::RegisteredHome,
-            2 => Self::Searching,
-            3 => Self::Denied,
-            5 => Self::RegisteredRoaming,
-            _ => Self::Unknown,
-        }
-    }
-}
-
 /// Signal strength in dBm, converted FROM AT+CSQ RSSI value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalStrength {
@@ -123,21 +97,13 @@ pub struct SignalStrength {
 
 impl From<u8> for SignalStrength {
     fn from(rssi: u8) -> Self {
-        let dbm = if rssi == 99 {
-            -999 // NOTE: unknown
-        } else {
-            -113 + (i16::from(rssi) * 2)
-        };
-        // NOTE: thresholds mirror the kernel's telephony_parser::dbm_to_bars
-        // (the canonical 3GPP-derived dBm mapping) so klesis and the kernel
-        // never disagree on how many bars a given dBm value reports.
-        let bars: u8 = match dbm {
-            d if d >= -70 => 4,
-            d if d >= -85 => 3,
-            d if d >= -100 => 2,
-            d if d >= -110 => 1,
-            _ => 0,
-        };
+        // WHY: dBm conversion and bar thresholds are
+        // [`klesis_core::rssi_to_dbm`]/[`klesis_core::dbm_to_bars`] (#545)
+        // -- the canonical 3GPP-derived mapping shared with the kernel, so
+        // klesis and the kernel cannot silently disagree on how many bars
+        // a given dBm value reports.
+        let dbm = klesis_core::rssi_to_dbm(rssi);
+        let bars = klesis_core::dbm_to_bars(dbm);
         Self {
             rssi_raw: rssi,
             dbm,
@@ -148,46 +114,36 @@ impl From<u8> for SignalStrength {
 
 // WHY: AT commands are line-oriented text protocol. nom gives us composable,
 // zero-copy parsing that handles the messy reality of modem responses
-// (variable whitespace, optional fields, interleaved URCs).
+// (variable whitespace, optional fields, interleaved URCs) for the URCs
+// that still differ between klesis and the kernel (+CREG's `<lac>`/`<ci>`,
+// +CMTI). The token-exactness parsers below have no such variability left
+// to parse -- they delegate entirely to [`klesis_core`] (#545).
 
 /// Parse a final result code (OK, ERROR, +CME ERROR, +CMS ERROR).
 ///
 /// SECURITY: 3GPP TS 27.007 final result codes are complete lines, not
-/// prefixes -- `OK` and `ERROR` terminate the response with no further
-/// bytes. `all_consuming` enforces that: a `nom::bytes::complete::tag`
-/// alone accepts any line merely *beginning* with the matched text (`"OK"`
-/// matches `"OKAY"`, an unsolicited line, or trailing framing debris the
-/// transport failed to strip), which would let the caller record a modem
-/// command as having succeeded when it did not. `+CME ERROR: `/`+CMS
-/// ERROR: ` remain legitimate prefixes -- they carry a numeric code after
-/// the tag -- but `all_consuming` still requires that code to account for
-/// every remaining byte on the line.
-pub fn parse_final_result(input: &str) -> IResult<&str, Response> {
-    all_consuming(alt((
-        value(Response::Ok, tag("OK")),
-        value(Response::Error, tag("ERROR")),
-        map(
-            preceded(tag("+CME ERROR: "), map_res(digit1, str::parse::<u32>)),
-            Response::CmeError,
-        ),
-        map(
-            preceded(tag("+CMS ERROR: "), map_res(digit1, str::parse::<u32>)),
-            Response::CmsError,
-        ),
-    )))
-    .parse(input)
+/// prefixes -- delegates to [`klesis_core::parse_final_result`], the
+/// byte-slice classifier shared with the kernel, which enforces that
+/// exactly (#685). AT response text is pure ASCII, so the `&str` -> `&[u8]`
+/// view loses nothing.
+#[must_use]
+pub fn parse_final_result(input: &str) -> Option<Response> {
+    match klesis_core::parse_final_result(input.as_bytes())? {
+        klesis_core::FinalResult::Ok => Some(Response::Ok),
+        klesis_core::FinalResult::Error => Some(Response::Error),
+        klesis_core::FinalResult::CmeError(code) => Some(Response::CmeError(code)),
+        klesis_core::FinalResult::CmsError(code) => Some(Response::CmsError(code)),
+        // WHY: klesis_core::FinalResult is #[non_exhaustive] -- a future
+        // variant added there without a matching Response counterpart
+        // must not be misclassified as one of the above.
+        _ => None,
+    }
 }
 
 /// Parse a +CSQ response: +CSQ: <rssi>,<ber>
-pub fn parse_csq(input: &str) -> IResult<&str, (u8, u8)> {
-    preceded(
-        tag("+CSQ: "),
-        (
-            map_res(digit1, str::parse::<u8>),
-            preceded(char(','), map_res(digit1, str::parse::<u8>)),
-        ),
-    )
-    .parse(input)
+#[must_use]
+pub fn parse_csq(input: &str) -> Option<(u8, u8)> {
+    klesis_core::parse_csq(input.as_bytes())
 }
 
 /// Parse a +CREG URC: +CREG: <stat>[,<lac>,<ci>]
@@ -229,11 +185,12 @@ pub fn parse_creg(input: &str) -> IResult<&str, Urc> {
 ///
 /// SECURITY: same prefix-vs-exact hazard as [`parse_final_result`] -- `RING`
 /// is a bare literal with no trailing payload (3GPP TS 27.007), so a plain
-/// `tag` would also accept `"RINGING"` or any other line merely beginning
-/// with it. `all_consuming` keeps this in parity with the kernel's
-/// `is_ring`, which already compares the whole line.
-pub fn parse_ring(input: &str) -> IResult<&str, Urc> {
-    all_consuming(value(Urc::Ring, tag("RING"))).parse(input)
+/// prefix match would also accept `"RINGING"` or any other line merely
+/// beginning with it. Delegates to [`klesis_core::is_ring`], the exact-match
+/// check shared with the kernel's `is_ring`.
+#[must_use]
+pub fn parse_ring(input: &str) -> Option<Urc> {
+    klesis_core::is_ring(input.as_bytes()).then_some(Urc::Ring)
 }
 
 /// Maximum length accepted for a `+CMTI` storage-location name.
@@ -276,12 +233,11 @@ pub(crate) fn build_cmd(cmd: &str) -> String {
 /// second AT command past the modem.
 ///
 /// Allowed set: ASCII digits `0`-`9`, `+`, `*`, `#`, and `A`-`D`
-/// (3GPP TS 27.007 dial-string charset).
+/// (3GPP TS 27.007 dial-string charset) -- the charset itself is
+/// [`klesis_core::is_valid_dial_byte`] (#545), shared with the kernel's
+/// `+CLIP` caller-ID validation.
 pub(crate) fn validate_phone_number(s: &str) -> Result<&str> {
-    if !s
-        .bytes()
-        .all(|b| matches!(b, b'0'..=b'9' | b'+' | b'*' | b'#' | b'A'..=b'D'))
-    {
+    if !s.bytes().all(klesis_core::is_valid_dial_byte) {
         return Err(Error::Parse {
             message: format!("invalid phone number: {s:?}"),
         });
@@ -375,20 +331,18 @@ mod tests {
 
     #[test]
     fn parse_ok() {
-        let (remaining, resp) = parse_final_result("OK").unwrap_or_default();
+        let resp = parse_final_result("OK").unwrap_or_default();
         assert_eq!(resp, Response::Ok, "parsing 'OK' must produce Response::Ok");
-        assert!(remaining.is_empty(), "expected empty rest");
     }
 
     #[test]
     fn parse_final_result_rejects_okay_as_success() {
         // SECURITY (#685): a modem line beginning "OK" but carrying more
-        // bytes must not be accepted as command success. Before
-        // `all_consuming`, `tag("OK")` matched the prefix and returned
-        // Response::Ok with "AY" as unconsumed remainder that callers
-        // following the usual IResult idiom discard.
-        assert!(
-            parse_final_result("OKAY").is_err(),
+        // bytes must not be accepted as command success -- a prefix match
+        // would accept "OKAY" as OK with "AY" silently discarded.
+        assert_eq!(
+            parse_final_result("OKAY"),
+            None,
             "'OKAY' must not parse as a successful final result"
         );
     }
@@ -396,8 +350,9 @@ mod tests {
     #[test]
     fn parse_final_result_rejects_okk_prefix_collision() {
         // SECURITY (#685): issue's exact near-miss case.
-        assert!(
-            parse_final_result("OKK").is_err(),
+        assert_eq!(
+            parse_final_result("OKK"),
+            None,
             "'OKK' must not be classified as Response::Ok by prefix match"
         );
     }
@@ -407,19 +362,21 @@ mod tests {
         // SECURITY (#685): a final result code is the whole line; "OK"
         // occurring anywhere other than as the complete line must not
         // classify as success.
-        assert!(
-            parse_final_result("PREFIX OK").is_err(),
+        assert_eq!(
+            parse_final_result("PREFIX OK"),
+            None,
             "a line with OK embedded mid-string must not parse as a final result"
         );
-        assert!(
-            parse_final_result("NOKIA").is_err(),
+        assert_eq!(
+            parse_final_result("NOKIA"),
+            None,
             "a line merely containing the substring OK must not parse as a final result"
         );
     }
 
     #[test]
     fn parse_final_result_bare_error() {
-        let (_, resp) = parse_final_result("ERROR").unwrap_or_default();
+        let resp = parse_final_result("ERROR").unwrap_or_default();
         assert_eq!(
             resp,
             Response::Error,
@@ -431,15 +388,16 @@ mod tests {
     fn parse_final_result_rejects_error_prefix_collision() {
         // SECURITY (#685): same exactness requirement as OK -- ERROR is
         // also a bare, no-payload final result code.
-        assert!(
-            parse_final_result("ERRORX").is_err(),
+        assert_eq!(
+            parse_final_result("ERRORX"),
+            None,
             "'ERRORX' must not be classified as Response::Error by prefix match"
         );
     }
 
     #[test]
     fn parse_cme_error() {
-        let (_, resp) = parse_final_result("+CME ERROR: 10").unwrap_or_default();
+        let resp = parse_final_result("+CME ERROR: 10").unwrap_or_default();
         assert_eq!(
             resp,
             Response::CmeError(10),
@@ -448,20 +406,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_cme_error_rejects_trailing_garbage() {
-        // WHY: +CME ERROR remains a legitimate prefix (it carries a code)
-        // -- this is NOT turned into an exact string match. `all_consuming`
-        // only requires that, once the code is extracted, no bytes are
-        // left unaccounted for on the line.
-        assert!(
-            parse_final_result("+CME ERROR: 10x").is_err(),
-            "trailing bytes after a CME error code must not be silently dropped"
+    fn parse_cme_error_verbose_or_trailing_garbage_classifies_as_generic_error() {
+        // WHY (#545 convergence): converged onto the kernel's finding-13
+        // behavior -- a CME/CMS error body that is not cleanly numeric (a
+        // verbose AT+CMEE=2 message, or trailing bytes after a digit run)
+        // classifies as a generic Response::Error rather than falling
+        // through unparsed. The prior klesis-only behavior rejected
+        // "+CME ERROR: 10x" outright; that left a caller's response loop
+        // treating the line as informational and looping for a final
+        // result that would never arrive -- the same silent-timeout
+        // hazard finding 13 fixed on the kernel side. It never risks
+        // truncating to CmeError(10) with the "x" silently dropped: the
+        // whole remainder must be digits, or the fallback applies.
+        assert_eq!(
+            parse_final_result("+CME ERROR: 10x"),
+            Some(Response::Error),
+            "trailing bytes after a CME error code must classify as a generic error, not be silently dropped or left unparsed"
+        );
+        assert_eq!(
+            parse_final_result("+CME ERROR: SIM not inserted"),
+            Some(Response::Error),
+            "a verbose CME ERROR message must classify as a generic Error, not time out unclassified"
         );
     }
 
     #[test]
     fn parse_cms_error() {
-        let (_, resp) = parse_final_result("+CMS ERROR: 321").unwrap_or_default();
+        let resp = parse_final_result("+CMS ERROR: 321").unwrap_or_default();
         assert_eq!(
             resp,
             Response::CmsError(321),
@@ -471,7 +442,7 @@ mod tests {
 
     #[test]
     fn parse_csq_response() {
-        let (_, (rssi, ber)) = parse_csq("+CSQ: 18,99").unwrap_or_default();
+        let (rssi, ber) = parse_csq("+CSQ: 18,99").unwrap_or_default();
         assert_eq!(rssi, 18, "RSSI must be 18");
         assert_eq!(ber, 99, "BER must be 99");
     }
@@ -488,9 +459,10 @@ mod tests {
 
     #[test]
     fn signal_strength_bars_match_telephony_parser_thresholds() {
-        // WHY: locks bar thresholds to the kernel's telephony_parser::dbm_to_bars
-        // boundary values so a future edit on either side cannot silently
-        // diverge again.
+        // WHY: locks bar thresholds to klesis_core::dbm_to_bars's boundary
+        // values -- the single implementation the kernel's
+        // telephony_parser also links (#545) -- so a future edit cannot
+        // silently diverge the two again.
         // rssi=21 -> dbm = -113 + 21*2 = -71 dBm (just below -70)
         assert_eq!(SignalStrength::from(21u8).bars, 3, "-71 dBm must be 3 bars");
         // rssi=22 -> dbm = -113 + 22*2 = -69 dBm (at/above -70)
@@ -537,7 +509,7 @@ mod tests {
 
     #[test]
     fn parse_ring_urc() {
-        let (_, urc) = parse_ring("RING").unwrap_or_default();
+        let urc = parse_ring("RING").unwrap_or_default();
         assert_eq!(urc, Urc::Ring, "RING must parse to Urc::Ring");
     }
 
@@ -546,8 +518,9 @@ mod tests {
         // SECURITY (#685, same class): RING is a bare no-payload URC token,
         // just like OK/ERROR. The kernel's `is_ring` already compares the
         // whole line; klesis must not diverge by accepting a mere prefix.
-        assert!(
-            parse_ring("RINGING").is_err(),
+        assert_eq!(
+            parse_ring("RINGING"),
+            None,
             "'RINGING' must not be classified as Urc::Ring by prefix match"
         );
     }
