@@ -250,7 +250,7 @@ mechanism = "host"
 
 [[module]]
 name = "harmostes"
-tests = 36
+tests = 48
 mechanism = "host"
 
 [[module]]
