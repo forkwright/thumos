@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5](https://github.com/forkwright/thumos/compare/v0.2.4...v0.2.5) (2026-08-10)
+
+
+### Bug Fixes
+
+* **release:** generate SBOMs cargo-cyclonedx actually writes, and assert they match the attest glob ([#708](https://github.com/forkwright/thumos/issues/708)) ([61efb2b](https://github.com/forkwright/thumos/commit/61efb2b3e091bc9888ca8b8545fe403cc9ffb263)), closes [#705](https://github.com/forkwright/thumos/issues/705) [#536](https://github.com/forkwright/thumos/issues/536)
+
 ## [0.2.4](https://github.com/forkwright/thumos/compare/v0.2.3...v0.2.4) (2026-08-10)
 
 
