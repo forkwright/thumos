@@ -11,7 +11,7 @@ Thumos is a custom Rust mobile OS targeting the AGM M7 (MT6739).
 
 ## Repository
 
-- GitHub: `forkwright/thumos` (private)
+- GitHub: `forkwright/thumos` (public — CI runs on GitHub-hosted runners with free public-repo minutes; never register a self-hosted runner here, the workflows target none and this box holds operator credentials)
 - Target: AGM M7 (MediaTek MT6739, Android 8.1 stock)
 - Goal: privacy-first OS with counter-surveillance capabilities
 
@@ -41,7 +41,9 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 
 ## Key constraints
 
-- Crate roster: ARCHITECTURE.md's crate map (verified 1:1 against `Cargo.toml` workspace members + the excluded kernel crate by `scripts/check-doc-inventory.sh`). ~138K LOC (111K kernel + 27K userspace), ~2,900 tests (2,234 kernel on i686 + 661 workspace), zero clippy warnings on the workspace surface (`cargo clippy --workspace`). The kernel crate (`crates/thumos`, excluded from the workspace) is gated separately by the `kernel clippy` stage: `build.rs` is clean, but the stage is red pending #672 (pre-existing pedantic-lint debt across `src/`, ~1161 findings, never previously reachable by any linter — see #672 for the burn-down). Phase 10 (radio intelligence + counter-surveillance) compiled/tested surface complete; end-to-end boot/userspace wiring gaps are tracked in README Known gaps. NOTE: LOC/test counts are hand-maintained and drift — measure before quoting (`ls crates/thumos/src/*.rs | wc -l`, `cargo nextest run --bin thumos --target i686-unknown-linux-gnu`).
+- Crate roster: ARCHITECTURE.md's crate map, verified 1:1 against `Cargo.toml` workspace members plus the excluded kernel crate by `scripts/check-doc-inventory.sh`. LOC and test counts are deliberately not stated here — measure them (`cargo nextest run --bin thumos --target i686-unknown-linux-gnu`, `cargo nextest run --workspace`). A count written into prose drifts from the tree the moment either changes, and a stale number reads as authoritative.
+- Lint surface: the workspace is clean under `cargo clippy --workspace`. The kernel crate (`crates/thumos`) is excluded from the workspace, so no `--workspace` invocation reaches it; `scripts/kernel-clippy.sh` covers it separately and is clean across **every declared feature configuration**, with the pass list parsed from `Cargo.toml`'s `[features]` so a new feature cannot be added without a pass. The `kernel` CI job is a required status check and blocks a merge, which is what makes the above enforceable rather than aspirational.
+- Phase 10 (radio intelligence + counter-surveillance) compiled/tested surface is complete. End-to-end boot and userspace wiring gaps are tracked in README Known gaps.
 - 1 GB RAM: every megabyte matters. No unnecessary services.
 - 240x320 display: no standard Android UI. Custom framebuffer or TUI.
 - Keypad + touchscreen input. T9-style or menu navigation.
