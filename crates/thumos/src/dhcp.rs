@@ -115,9 +115,8 @@ impl core::fmt::Display for DhcpError {
 impl From<NetError> for DhcpError {
     fn from(e: NetError) -> Self {
         match e {
-            NetError::SocketSetFull => DhcpError::SocketSetFull,
+            NetError::SocketSetFull | NetError::InvalidHandle => DhcpError::SocketSetFull,
             NetError::RouteTableFull => DhcpError::RouteTableFull,
-            NetError::InvalidHandle => DhcpError::SocketSetFull,
         }
     }
 }
@@ -152,6 +151,13 @@ impl DhcpClient {
     /// Must be called after every `NetworkStack::poll()`. When a
     /// `DhcpEvent::Configured` is returned, the IP address and gateway
     /// have already been applied to the network interface.
+    // WHY: clippy's suggested `heapless::vec::Vec::clear` names a type this
+    // crate cannot resolve -- `Vec` here is smoltcp's internal
+    // `heapless::Vec<IpCidr, IFACE_MAX_ADDR_COUNT>` alias, and `heapless` is
+    // only a transitive dependency (via smoltcp), not a direct one this
+    // crate can name. Adding it as a direct dependency just to spell a
+    // method path is out of scope for a lint fix.
+    #[allow(clippy::redundant_closure_for_method_calls)]
     pub(crate) fn poll<D: Device>(&mut self, stack: &mut NetworkStack<D>) -> DhcpEvent {
         // WHY: Extract all data from the DHCP config *before* calling any
         // methods on `stack`, to avoid overlapping mutable borrows. The
@@ -190,7 +196,9 @@ impl DhcpClient {
                 })
             }
             Some(Err(())) => {
-                // Clear interface IP addresses.
+                // Clear interface IP addresses (see the fn-level
+                // redundant_closure_for_method_calls allow above for why
+                // this can't take clippy's literal suggestion).
                 stack.iface_mut().update_ip_addrs(|addrs| addrs.clear());
                 // WHY (finding 1): the Configured arm above adds a default
                 // gateway route via set_default_gateway when the DHCP

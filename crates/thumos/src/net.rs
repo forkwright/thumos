@@ -216,7 +216,7 @@ pub(crate) struct LoopbackTxToken<'a> {
     dropped_frames: &'a mut usize,
 }
 
-impl<'a> phy::TxToken for LoopbackTxToken<'a> {
+impl phy::TxToken for LoopbackTxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
@@ -288,6 +288,11 @@ impl<H: WifiHwOps> WifiDevice<H> {
     }
 
     /// Device kind for boot readiness accounting.
+    // WHY: kinit.rs (out of scope here) calls this instance-style
+    // (`wifi_device.kind()`) alongside `.data_path_ready()` in
+    // NetworkReadiness::from_device -- dropping &self would need a matching
+    // kinit.rs call-site edit this PR cannot make.
+    #[allow(clippy::unused_self)]
     pub(crate) const fn kind(&self) -> NetworkDeviceKind {
         NetworkDeviceKind::Wifi
     }
@@ -736,10 +741,10 @@ impl<D: Device> NetworkStack<D> {
         };
 
         // Tick DNS cache TTLs.
-        if let Some(resolver) = dns {
-            if elapsed_secs > 0 {
-                resolver.tick(elapsed_secs);
-            }
+        if let Some(resolver) = dns
+            && elapsed_secs > 0
+        {
+            resolver.tick(elapsed_secs);
         }
 
         dhcp_event
@@ -882,7 +887,7 @@ mod tests {
         let mac = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
         let now = Instant::from_millis(0);
         let mut stack = NetworkStack::new(device, mac, now);
-        stack.set_ipv4_addr(Ipv4Address::new(127, 0, 0, 1), 8);
+        stack.set_ipv4_addr(Ipv4Address::LOCALHOST, 8);
         stack
     }
 
@@ -1157,7 +1162,7 @@ mod tests {
     #[test]
     fn set_default_gateway_succeeds() {
         let mut stack = make_stack();
-        let result = stack.set_default_gateway(Ipv4Address::new(127, 0, 0, 1));
+        let result = stack.set_default_gateway(Ipv4Address::LOCALHOST);
         assert!(result.is_ok(), "setting default gateway must succeed");
     }
 

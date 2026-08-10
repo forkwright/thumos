@@ -93,7 +93,7 @@ pub unsafe fn init() {
         };
 
         // Disable all interrupts
-        let num_regs = (num_irqs + 31) / 32;
+        let num_regs = num_irqs.div_ceil(32);
         let Ok(num_regs) = usize::try_from(num_regs) else {
             return;
         };
@@ -103,7 +103,7 @@ pub unsafe fn init() {
         }
 
         // Set all priorities to 0xA0 (medium)
-        let num_prio_regs = (num_irqs + 3) / 4;
+        let num_prio_regs = num_irqs.div_ceil(4);
         let Ok(num_prio_regs) = usize::try_from(num_prio_regs) else {
             return;
         };
@@ -112,7 +112,7 @@ pub unsafe fn init() {
         }
 
         // Target all SPIs to core 0
-        let num_target_regs = (num_irqs + 3) / 4;
+        let num_target_regs = num_irqs.div_ceil(4);
         let Ok(num_target_regs) = usize::try_from(num_target_regs) else {
             return;
         };

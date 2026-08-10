@@ -29,9 +29,16 @@
 //! `AudioRoute::BluetoothA2dp`.  Connects to the BT adapter via `bluetooth.rs`.
 
 // WHY: A2DP profile not yet wired to audio session manager (Wave 8, kinit pending).
-#![expect(
-    dead_code,
-    reason = "A2DP profile created in Phase 07 Wave 8, audio manager wiring pending (#442)"
+// cfg_attr(not(test), ...): the module's own tests now exercise its full
+// surface, so nothing is dead in the test build -- expecting dead_code there
+// makes the expectation unfulfilled. Production reachability is unchanged;
+// the expectation is scoped to the build where it is still real.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "A2DP profile created in Phase 07 Wave 8, audio manager wiring pending (#442)"
+    )
 )]
 
 extern crate alloc;
@@ -308,12 +315,12 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// that has been Connecting for `BT_CONNECT_TIMEOUT_MS` without reaching
     /// Connected is moved to Error(Timeout) and its pending signal cleared.
     pub(crate) fn check_timeout(&mut self, now_ms: u64) {
-        if let (A2dpState::Connecting, Some(since)) = (self.state, self.connecting_since) {
-            if now_ms.saturating_sub(since) >= BT_CONNECT_TIMEOUT_MS {
-                self.state = A2dpState::Error(BtAudioError::Timeout);
-                self.connecting_since = None;
-                self.pending_signal = None;
-            }
+        if let (A2dpState::Connecting, Some(since)) = (self.state, self.connecting_since)
+            && now_ms.saturating_sub(since) >= BT_CONNECT_TIMEOUT_MS
+        {
+            self.state = A2dpState::Error(BtAudioError::Timeout);
+            self.connecting_since = None;
+            self.pending_signal = None;
         }
     }
 
@@ -495,7 +502,6 @@ impl<H: BtHwOps> A2dpProfile<H> {
     /// # Errors
     ///
     /// Currently infallible but returns `Result` for API consistency.
-    #[must_use]
     #[expect(
         clippy::unnecessary_wraps,
         reason = "returns Result for API consistency with other lifecycle methods"

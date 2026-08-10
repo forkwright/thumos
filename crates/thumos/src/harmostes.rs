@@ -248,7 +248,7 @@ impl fmt::Display for IncomingMessage {
 #[non_exhaustive]
 pub struct Room {
     /// The Matrix room ID (e.g., `!abc123:matrix.example.com`).
-    pub room_id: MatrixRoomId,
+    pub id: MatrixRoomId,
     /// Human-readable display name for the room.
     pub display_name: String,
     /// Whether this room is a direct message (1:1).
@@ -268,7 +268,7 @@ impl Room {
     /// Matrix room identifier (#373).
     fn new(room_id: &str, display_name: String, is_dm: bool) -> Result<Self, MatrixError> {
         Ok(Self {
-            room_id: MatrixRoomId::new(room_id)?,
+            id: MatrixRoomId::new(room_id)?,
             display_name,
             is_dm,
             messages: Vec::new(),
@@ -291,7 +291,7 @@ impl fmt::Display for Room {
         write!(
             f,
             "Room({}, \"{}\", {} messages, {} unread)",
-            self.room_id,
+            self.id,
             self.display_name,
             self.messages.len(),
             self.unread_count,
@@ -457,7 +457,7 @@ impl MatrixClient {
     ///
     /// Returns `true` if `room_id` was found and reset, `false` otherwise.
     pub(crate) fn mark_room_read(&mut self, room_id: &str) -> bool {
-        match self.rooms.iter_mut().find(|r| r.room_id == room_id) {
+        match self.rooms.iter_mut().find(|r| r.id == room_id) {
             Some(room) => {
                 room.unread_count = 0;
                 true
@@ -624,19 +624,16 @@ impl MatrixClient {
         };
 
         // Extract joined rooms from rooms.join.
-        let rooms_obj = match root.get("rooms") {
-            Some(r) => r,
-            None => return Ok(result),
+        let Some(rooms_obj) = root.get("rooms") else {
+            return Ok(result);
         };
 
-        let join_obj = match rooms_obj.get("join") {
-            Some(j) => j,
-            None => return Ok(result),
+        let Some(join_obj) = rooms_obj.get("join") else {
+            return Ok(result);
         };
 
-        let join_entries = match join_obj.as_object() {
-            Some(entries) => entries,
-            None => return Ok(result),
+        let Some(join_entries) = join_obj.as_object() else {
+            return Ok(result);
         };
 
         for (room_id, room_data) in join_entries {
@@ -678,7 +675,7 @@ impl MatrixClient {
                     let incoming = IncomingMessage {
                         // WHY(#373): reuse the already-validated room id stored
                         // on the room, avoiding a redundant fallible re-parse.
-                        room_id: self.rooms[room_idx].room_id.clone(),
+                        room_id: self.rooms[room_idx].id.clone(),
                         event_id: msg.event_id.clone(),
                         sender: msg.sender.clone(),
                         body: msg.body.clone(),
@@ -720,15 +717,7 @@ impl MatrixClient {
     ///
     /// Uses PUT `/_matrix/client/v3/rooms/{roomId}/send/m.room.message/{txnId}`.
     /// The transaction ID is monotonically increasing for idempotent retries.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MatrixError::Http`] if the request cannot be built.
-    pub(crate) fn build_send_request(
-        &mut self,
-        room_id: &str,
-        body: &str,
-    ) -> Result<(HttpRequest, u32), MatrixError> {
+    pub(crate) fn build_send_request(&mut self, room_id: &str, body: &str) -> (HttpRequest, u32) {
         let txn_id = self.next_txn_id;
         self.next_txn_id = self.next_txn_id.saturating_add(1);
 
@@ -742,7 +731,7 @@ impl MatrixClient {
         let mut req = http_client::put_json(&self.homeserver, &path, json_body.as_bytes());
         http_client::with_auth(&mut req, &self.access_token);
 
-        Ok((req, txn_id))
+        (req, txn_id)
     }
 
     /// Build an encrypted send-message HTTP request for the given room.
@@ -787,7 +776,7 @@ impl MatrixClient {
         if self.crypto.find_outbound_megolm(room_id).is_none() {
             self.crypto
                 .create_outbound_megolm(room_id)
-                .map_err(crypto_error)?;
+                .map_err(|e| crypto_error(&e))?;
         }
 
         let session_idx = self
@@ -804,8 +793,8 @@ impl MatrixClient {
         let session = &mut self.crypto.megolm_outbound[session_idx];
         // `[u8; 32]` is `Copy`; capture the session id before the mutable borrow.
         let session_id = session.session_id;
-        let ciphertext =
-            matrix_crypto::encrypt_megolm(session, body.as_bytes()).map_err(crypto_error)?;
+        let ciphertext = matrix_crypto::encrypt_megolm(session, body.as_bytes())
+            .map_err(|e| crypto_error(&e))?;
 
         let mut path = String::from(API_PREFIX);
         path.push_str("/rooms/");
@@ -828,10 +817,7 @@ impl MatrixClient {
     /// Returns [`MatrixError::ServerError`] on non-2xx responses.
     /// Returns [`MatrixError::MissingSendResponse`] if the response
     /// does not contain an `event_id`.
-    pub(crate) fn process_send_response(
-        &self,
-        response: &HttpResponse,
-    ) -> Result<String, MatrixError> {
+    pub(crate) fn process_send_response(response: &HttpResponse) -> Result<String, MatrixError> {
         if !response.is_success() {
             return Err(parse_error_response(response));
         }
@@ -858,7 +844,8 @@ impl MatrixClient {
     ///
     /// # Errors
     ///
-    /// Returns [`MatrixError::Http`] if the request cannot be built.
+    /// Returns [`MatrixError::InvalidId`] if `room_id` is not a well-formed
+    /// Matrix room identifier (#373).
     /// Returns [`MatrixError::OutboxFull`] if the outbox already holds
     /// [`MAX_OUTBOX_MESSAGES`] pending messages (#365).
     pub(crate) fn send_message(
@@ -874,7 +861,7 @@ impl MatrixClient {
         // room_id into the HTTP request path — a CRLF-bearing id would be a
         // header/path injection.
         let validated_room = MatrixRoomId::new(room_id)?;
-        let (req, txn_id) = self.build_send_request(room_id, body)?;
+        let (req, txn_id) = self.build_send_request(room_id, body);
 
         self.outbox.push(PendingMessage {
             room_id: validated_room,
@@ -1035,7 +1022,7 @@ impl MatrixClient {
 
     /// Find a room by ID in the tracked rooms list.
     fn find_room(&self, room_id: &str) -> Option<&Room> {
-        self.rooms.iter().find(|r| r.room_id == room_id)
+        self.rooms.iter().find(|r| r.id == room_id)
     }
 
     /// Find the index of a room by ID, or create it if it does not exist.
@@ -1045,7 +1032,7 @@ impl MatrixClient {
     /// Returns [`MatrixError::RoomCapacityReached`] if the room list
     /// is at capacity and the room is not already tracked.
     fn find_or_create_room(&mut self, room_id: &str) -> Result<usize, MatrixError> {
-        if let Some(idx) = self.rooms.iter().position(|r| r.room_id == room_id) {
+        if let Some(idx) = self.rooms.iter().position(|r| r.id == room_id) {
             return Ok(idx);
         }
         if self.rooms.len() >= MAX_ROOMS {
@@ -1127,13 +1114,11 @@ fn hex_encode_bytes(bytes: &[u8]) -> String {
 ///
 /// Navigates: `room_data.timeline.events` → `Vec<&JsonValue>`.
 fn extract_timeline_events(room_data: &JsonValue) -> Vec<&JsonValue> {
-    let timeline = match room_data.get("timeline") {
-        Some(t) => t,
-        None => return Vec::new(),
+    let Some(timeline) = room_data.get("timeline") else {
+        return Vec::new();
     };
-    let events = match timeline.get("events") {
-        Some(e) => e,
-        None => return Vec::new(),
+    let Some(events) = timeline.get("events") else {
+        return Vec::new();
     };
     match events.as_array() {
         Some(arr) => arr.iter().collect(),
@@ -1224,7 +1209,7 @@ fn parse_timeline_event(
 
 /// Decode a hex string into a byte vector.
 fn hex_decode_bytes(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let bytes = s.as_bytes();
@@ -1268,7 +1253,7 @@ fn hex_nibble_val(b: u8) -> Option<u8> {
 
 /// Map a [`CryptoError`] into a client-side [`MatrixError::ServerError`] so
 /// encryption failures never silently fall back to plaintext (audit #370).
-fn crypto_error(e: CryptoError) -> MatrixError {
+fn crypto_error(e: &CryptoError) -> MatrixError {
     MatrixError::ServerError {
         status: 0,
         errcode: String::from("M_CRYPTO_ERROR"),
@@ -1282,30 +1267,34 @@ fn parse_error_response(response: &HttpResponse) -> MatrixError {
 
     let (errcode, message) = body_str
         .and_then(|s| JsonParser::parse(s.as_bytes()).ok().map(|root| (s, root)))
-        .map(|(_, root)| {
-            let errcode = root
-                .get("errcode")
-                .and_then(|v| v.as_str())
-                .unwrap_or("M_UNKNOWN");
-            let message = root
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error");
-            (String::from(errcode), String::from(message))
-        })
-        .unwrap_or_else(|| {
-            // WHY: preserve the server's raw error text instead of discarding
-            // it -- a non-JSON error body previously became the generic
-            // "non-JSON error response", losing the server's actual text.
-            let message = match body_str {
-                Some(s) if !s.is_empty() => {
-                    let len = crate::heorte::utf8_truncate_len(s.as_bytes(), MAX_ERROR_BODY_LEN);
-                    String::from(&s[..len])
-                }
-                _ => String::from("non-JSON error response"),
-            };
-            (String::from("M_UNKNOWN"), message)
-        });
+        .map_or_else(
+            || {
+                // WHY: preserve the server's raw error text instead of
+                // discarding it -- a non-JSON error body previously became
+                // the generic "non-JSON error response", losing the
+                // server's actual text.
+                let message = match body_str {
+                    Some(s) if !s.is_empty() => {
+                        let len =
+                            crate::heorte::utf8_truncate_len(s.as_bytes(), MAX_ERROR_BODY_LEN);
+                        String::from(&s[..len])
+                    }
+                    _ => String::from("non-JSON error response"),
+                };
+                (String::from("M_UNKNOWN"), message)
+            },
+            |(_, root)| {
+                let errcode = root
+                    .get("errcode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("M_UNKNOWN");
+                let message = root
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown error");
+                (String::from(errcode), String::from(message))
+            },
+        );
 
     MatrixError::ServerError {
         status: response.status,
@@ -1475,7 +1464,7 @@ mod tests {
         assert_eq!(client.rooms().len(), 1);
 
         let room = &client.rooms()[0];
-        assert_eq!(room.room_id, room_id);
+        assert_eq!(room.id, room_id);
         assert_eq!(room.messages.len(), 2);
         assert_eq!(room.messages[0].body, "hello");
         assert_eq!(room.messages[0].sender, "@alice:matrix.example.com");
@@ -1570,14 +1559,7 @@ mod tests {
         let mut client = matrix_client_with_test_credentials();
         let room_id = "!room:matrix.example.com";
 
-        let result = client.build_send_request(room_id, "test message");
-        assert!(result.is_ok());
-
-        let (req, txn_id) = result.ok().unwrap_or_else(|| {
-            // Fallback that never executes — satisfies no-unwrap lint.
-            let r = HttpRequest::new(http_client::HttpMethod::Get, String::new(), String::new());
-            (r, 0)
-        });
+        let (req, txn_id) = client.build_send_request(room_id, "test message");
 
         assert_eq!(txn_id, TXN_ID_START);
 
@@ -1593,7 +1575,7 @@ mod tests {
         assert!(has_auth);
 
         // Verify body is JSON with msgtype and body.
-        let body_bytes = req.body.as_ref().map(|b| b.as_slice()).unwrap_or(&[]);
+        let body_bytes = req.body.as_deref().unwrap_or(&[]);
         let body_str = core::str::from_utf8(body_bytes).unwrap_or("");
         assert!(body_str.contains("m.text"));
         assert!(body_str.contains("test message"));
@@ -1722,7 +1704,7 @@ mod tests {
             req.path
         );
 
-        let body_bytes = req.body.as_ref().map(|b| b.as_slice()).unwrap_or(&[]);
+        let body_bytes = req.body.as_deref().unwrap_or(&[]);
         let body_str = core::str::from_utf8(body_bytes).unwrap_or("");
         assert!(
             body_str.contains("\"ciphertext\""),
@@ -1974,7 +1956,7 @@ mod tests {
         assert!(result.is_ok());
 
         assert_eq!(client.rooms().len(), 1);
-        assert_eq!(client.rooms()[0].room_id, room_id);
+        assert_eq!(client.rooms()[0].id, room_id);
 
         // Joining the same room again should not duplicate.
         let result = client.process_join_response(room_id, &response);
@@ -2022,8 +2004,7 @@ mod tests {
                 assert_eq!(message, "You are not allowed");
             }
             other => {
-                // Use assert! to avoid panic! lint.
-                assert!(false, "expected ServerError, got {other:?}");
+                panic!("expected ServerError, got {other:?}");
             }
         }
     }
@@ -2039,7 +2020,7 @@ mod tests {
                     "raw non-JSON body text must be preserved, got: {message}"
                 );
             }
-            other => assert!(false, "expected ServerError, got {other:?}"),
+            other => panic!("expected ServerError, got {other:?}"),
         }
     }
 
@@ -2056,7 +2037,7 @@ mod tests {
                     message.len()
                 );
             }
-            other => assert!(false, "expected ServerError, got {other:?}"),
+            other => panic!("expected ServerError, got {other:?}"),
         }
     }
 
@@ -2087,10 +2068,8 @@ mod tests {
 
     #[test]
     fn process_send_response_extracts_event_id() {
-        let client = matrix_client_with_test_credentials();
-
         let response = mock_response(200, r#"{"event_id":"$sent123"}"#);
-        let result = client.process_send_response(&response);
+        let result = MatrixClient::process_send_response(&response);
         assert!(result.is_ok());
         assert_eq!(result.ok(), Some(String::from("$sent123")));
     }

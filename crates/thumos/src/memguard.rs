@@ -47,7 +47,8 @@ pub(crate) fn validate_user_buffer(ptr: usize, len: usize) -> bool {
 /// address, device MMIO, or a misaligned value) before it reaches the physical
 /// page allocator, where an out-of-range address would corrupt the bitmap.
 pub(crate) fn is_freeable_user_page(addr: usize) -> bool {
-    addr % crate::page::PAGE_SIZE == 0 && addr >= board::KERNEL_END && addr < board::RAM_END
+    addr.is_multiple_of(crate::page::PAGE_SIZE)
+        && (board::KERNEL_END..board::RAM_END).contains(&addr)
 }
 
 #[cfg(test)]

@@ -201,7 +201,7 @@ impl RouteManager {
     /// Check whether a specific output route is currently available.
     #[must_use]
     pub(crate) fn is_output_available(&self, route: AudioRoute) -> bool {
-        self.connected_outputs.iter().any(|r| *r == route)
+        self.connected_outputs.contains(&route)
     }
 
     /// Return a slice of all currently connected outputs.
@@ -285,7 +285,7 @@ impl RouteManager {
     ///
     /// Falls back to speaker for media, earpiece for calls.
     #[must_use]
-    pub(crate) fn fallback_route(&self, kind: SessionKind) -> AudioRoute {
+    pub(crate) fn fallback_route(kind: SessionKind) -> AudioRoute {
         match kind {
             SessionKind::VoiceCall => AudioRoute::Earpiece,
             _ => AudioRoute::Speaker,
@@ -542,9 +542,8 @@ mod tests {
 
     #[test]
     fn fallback_route_for_call_is_earpiece() {
-        let mgr = RouteManager::new();
         assert_eq!(
-            mgr.fallback_route(SessionKind::VoiceCall),
+            RouteManager::fallback_route(SessionKind::VoiceCall),
             AudioRoute::Earpiece,
             "call fallback must be earpiece"
         );
@@ -552,9 +551,8 @@ mod tests {
 
     #[test]
     fn fallback_route_for_music_is_speaker() {
-        let mgr = RouteManager::new();
         assert_eq!(
-            mgr.fallback_route(SessionKind::Music),
+            RouteManager::fallback_route(SessionKind::Music),
             AudioRoute::Speaker,
             "music fallback must be speaker"
         );

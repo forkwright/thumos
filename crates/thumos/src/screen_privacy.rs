@@ -18,9 +18,16 @@
 //! (`ScreenId::Privacy`), and from the settings menu.
 
 // WHY: privacy dashboard created in Phase 08 Wave 7, kinit wiring pending.
-#![expect(
-    dead_code,
-    reason = "Privacy dashboard created in Phase 08 Wave 7, kinit wiring pending (#145)"
+// cfg_attr(not(test), ...): the module's own tests now exercise its full
+// surface, so nothing is dead in the test build -- expecting dead_code there
+// makes the expectation unfulfilled. Production reachability is unchanged;
+// the expectation is scoped to the build where it is still real.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Privacy dashboard created in Phase 08 Wave 7, kinit wiring pending (#145)"
+    )
 )]
 
 use crate::lock_screen::constant_time_eq;
@@ -529,11 +536,11 @@ impl PrivacyScreen {
     /// secure erasure with passphrase verification via `key_manager`.
     /// For now, it zeroes the size and resets the purge state.
     fn execute_purge(&mut self, category_idx: usize) {
-        if let Some(cat) = self.categories.get_mut(category_idx) {
-            if cat.purgeable {
-                cat.size_bytes = 0;
-                self.recalc_total();
-            }
+        if let Some(cat) = self.categories.get_mut(category_idx)
+            && cat.purgeable
+        {
+            cat.size_bytes = 0;
+            self.recalc_total();
         }
         if let Some(state) = &mut self.purge_state {
             state.zeroize();
@@ -623,11 +630,13 @@ impl PrivacyScreen {
             // Purgeable indicator.
             if !cat.purgeable {
                 let lock_x = w - CHAR_WIDTH - 4;
-                let lock_color = if ci == self.cursor {
-                    color::DARK_GREY
-                } else {
-                    color::DARK_GREY
-                };
+                // NOTE: fixed DARK_GREY regardless of cursor state. Against
+                // the selected row's WHITE highlight (bg above) that reads
+                // fine; against an unselected row's BLACK bg it is
+                // low-contrast. Whether the unselected case wants a
+                // different color is a UI design call, not a clippy one --
+                // left as-is rather than guessed at.
+                let lock_color = color::DARK_GREY;
                 ui::draw_char(fb, w, lock_x, row_y + 2, '*', lock_color, bg);
             }
         }
@@ -1397,7 +1406,7 @@ mod tests {
     #[test]
     fn draw_list_does_not_panic() {
         let screen = PrivacyScreen::new_for_test(b"1234");
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "privacy list must render visible content");
@@ -1407,7 +1416,7 @@ mod tests {
     fn draw_detail_does_not_panic() {
         let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.view = PrivacyView::Detail;
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "privacy detail view must render visible content");
@@ -1418,7 +1427,7 @@ mod tests {
         let mut screen = PrivacyScreen::new_for_test(b"1234");
         screen.view = PrivacyView::PurgeConfirm;
         screen.purge_state = Some(PurgeConfirmState::new(1));
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "privacy purge confirm must render visible content");

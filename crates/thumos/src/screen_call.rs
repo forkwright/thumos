@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn draw_does_not_panic() {
         let screen = make_active_screen(0, 5000);
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "active call screen must render visible content");
@@ -570,7 +570,7 @@ mod tests {
         // buffer (#394) — number_str() must clamp instead of panicking.
         screen.state.number_len = 255;
 
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         assert!(
             fb.iter().any(|&px| px != 0),

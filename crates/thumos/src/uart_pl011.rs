@@ -42,12 +42,12 @@ pub(crate) struct Uart {
 /// Masking for the byte loop keeps a kernel print contiguous without
 /// changing userspace (SVC/IRQ paths are atomic by hardware already).
 /// Nested calls are safe: the prior I-bit is restored, never force-enabled.
-#[inline(always)]
+#[inline]
 fn irqs_masked<R>(f: impl FnOnce() -> R) -> R {
     let saved: u32;
     // SAFETY: privileged CPSR read; always available at PL1 on armv7a.
     unsafe {
-        core::arch::asm!("mrs {}, cpsr", out(reg) saved, options(nomem, nostack, preserves_flags))
+        core::arch::asm!("mrs {}, cpsr", out(reg) saved, options(nomem, nostack, preserves_flags));
     };
     // SAFETY: mask IRQs for the critical section.
     unsafe { core::arch::asm!("cpsid i", options(nomem, nostack, preserves_flags)) };
@@ -82,10 +82,11 @@ impl Uart {
             let dr = (self.base + DR) as *mut u32;
 
             let mut spins: u32 = 0;
-            #[expect(
-                clippy::while_immutable_condition,
-                reason = "volatile MMIO read sees hardware-driven changes the compiler cannot observe"
-            )]
+            // WHY: volatile MMIO read sees hardware-driven changes the
+            // compiler cannot observe -- clippy does not flag
+            // while_immutable_condition here because the condition calls
+            // a function (read_volatile), which it treats as
+            // potentially side-effecting.
             while core::ptr::read_volatile(fr) & FR_TXFF != 0 {
                 spins += 1;
                 if spins >= UART_TX_TIMEOUT_SPINS {

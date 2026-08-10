@@ -16,9 +16,16 @@
 //! kernel globals.
 
 // WHY: settings screens created in Phase 07 Wave 6, kinit wiring pending.
-#![expect(
-    dead_code,
-    reason = "Settings screens created in Phase 07 Wave 6, kinit wiring pending (#145)"
+// cfg_attr(not(test), ...): the module's own tests now exercise its full
+// surface, so nothing is dead in the test build -- expecting dead_code there
+// makes the expectation unfulfilled. Production reachability is unchanged;
+// the expectation is scoped to the build where it is still real.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Settings screens created in Phase 07 Wave 6, kinit wiring pending (#145)"
+    )
 )]
 
 use crate::ui::{
@@ -328,7 +335,7 @@ impl Screen for AboutScreen {
 ///
 /// Decoupled from `wifi::WifiState` to avoid coupling screen rendering
 /// to the driver state machine. Updated each render cycle.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WifiSettingsState {
     /// Whether `WiFi` is connected.
     pub connected: bool,
@@ -342,19 +349,6 @@ pub struct WifiSettingsState {
     pub ip_addr: [u8; 4],
     /// Whether a scan is in progress.
     pub scanning: bool,
-}
-
-impl Default for WifiSettingsState {
-    fn default() -> Self {
-        Self {
-            connected: false,
-            ssid: [0u8; 32],
-            ssid_len: 0,
-            signal_percent: 0,
-            ip_addr: [0u8; 4],
-            scanning: false,
-        }
-    }
 }
 
 /// `WiFi` settings screen (read-only display of `WiFi` state).
@@ -774,7 +768,7 @@ mod tests {
         assert_eq!(MENU_ITEMS.len(), 6, "settings menu must have 6 items");
 
         // Verify draw does not panic.
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "settings menu must render visible content");
@@ -789,7 +783,7 @@ mod tests {
         assert_eq!(BUILD_DATE, "2026-04-09", "build date must be '2026-04-09'");
 
         // Verify draw does not panic.
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "about screen must render visible content");
@@ -844,7 +838,7 @@ mod tests {
     #[test]
     fn wifi_screen_disconnected() {
         let screen = WifiSettingsScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -866,7 +860,7 @@ mod tests {
             ip_addr: [192, 168, 0, 42],
             scanning: false,
         });
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "wifi connected screen must render visible content");
@@ -889,7 +883,7 @@ mod tests {
             ip_addr: [192, 168, 0, 42],
             scanning: false,
         });
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb); // must not panic
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -901,7 +895,7 @@ mod tests {
     #[test]
     fn bt_screen_disabled() {
         let screen = BtSettingsScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -919,7 +913,7 @@ mod tests {
             scanning: true,
             scan_results: 5,
         });
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(

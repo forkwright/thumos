@@ -82,6 +82,12 @@ impl VfsError {
     /// Returns the value that would be placed in r0 for a failed syscall on
     /// ARM Linux (e.g., `ENOENT` -> `0u32.wrapping_sub(2)` = `0xFFFF_FFFE`).
     pub(crate) const fn to_errno(self) -> u32 {
+        // WHY: IoError and RequiresMut both resolve to 5 (EIO) for distinct
+        // reasons -- IoError is EIO's natural POSIX meaning, while
+        // RequiresMut deliberately reuses it because no POSIX code fits
+        // "wrong access mode used internally" (see RequiresMut's own doc
+        // above). Keeping the arms separate documents both reasons in place.
+        #[allow(clippy::match_same_arms)]
         let raw = match self {
             Self::NotFound => 2,
             Self::NotADirectory => 20,
@@ -404,10 +410,7 @@ impl MountTable {
         let mut best_len = 0;
 
         for (i, slot) in self.entries.iter().enumerate() {
-            let entry = match slot {
-                Some(e) => e,
-                None => continue,
-            };
+            let Some(entry) = slot else { continue };
 
             let mount_path = entry.path.as_str();
 
@@ -422,14 +425,13 @@ impl MountTable {
 
             // Non-root: path must equal mount_path or have mount_path as a
             // prefix followed by '/'.
-            if path == mount_path
+            if (path == mount_path
                 || (path.starts_with(mount_path)
-                    && path.as_bytes().get(mount_path.len()) == Some(&b'/'))
+                    && path.as_bytes().get(mount_path.len()) == Some(&b'/')))
+                && mount_path.len() > best_len
             {
-                if mount_path.len() > best_len {
-                    best_idx = Some(i);
-                    best_len = mount_path.len();
-                }
+                best_idx = Some(i);
+                best_len = mount_path.len();
             }
         }
 

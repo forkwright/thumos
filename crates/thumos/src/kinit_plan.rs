@@ -10,8 +10,6 @@
 //! compiled on EVERY target (same pattern as `supervisor`, see main.rs);
 //! kinit.rs keeps only the hardware-init-bearing boot sequence.
 
-#[cfg(test)]
-use crate::device;
 use crate::fd;
 use crate::net::{self, NetworkReadiness};
 #[cfg(test)]
@@ -250,6 +248,11 @@ pub(crate) const fn passphrase_skip_reason(
 /// The panic handler and degradation logic read this to decide what
 /// output paths are available.
 #[derive(Debug, Clone, Copy)]
+// WHY: mmu_ok/heap_ok/gic_ok/... are independent, unrelated per-subsystem
+// boot-success flags read individually by the panic handler and degradation
+// logic, not a state machine -- an enum or bitflags wouldn't remove any of
+// the axes, just rename how each is read.
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct BootState {
     // kanon:ignore RUST/struct-too-many-fields -- one bool per boot subsystem; grouping would obscure the per-subsystem degradation model
     pub(crate) mmu_ok: bool,
@@ -381,8 +384,13 @@ impl BootState {
 // ---------------------------------------------------------------------------
 
 /// Maximum time (ms) to wait for modem boot before declaring failure.
+// WHY not(test) too: modem_timeout_is_reasonable (below) reads this
+// constant directly, so under `qemu` + `--tests` it is not dead -- only
+// under plain `qemu` (no test harness) is it genuinely unreferenced,
+// since the CCCI init step that consumes it in production is qemu-gated
+// out (#463).
 #[cfg_attr(
-    feature = "qemu",
+    all(feature = "qemu", not(test)),
     expect(
         dead_code,
         reason = "consumed by the CCCI init step, which is qemu-gated (#463)"
@@ -475,8 +483,8 @@ mod tests {
     #[test]
     fn userspace_spawn_plan_prefers_populated_initramfs_entry() {
         let mut archive = Vec::new();
-        archive.extend(build_cpio_entry("init", b"\x7FELFinit", 0o100755));
-        archive.extend(build_cpio_entry("shell", b"\x7FELFshell", 0o100755));
+        archive.extend(build_cpio_entry("init", b"\x7FELFinit", 0o100_755));
+        archive.extend(build_cpio_entry("shell", b"\x7FELFshell", 0o100_755));
         archive.extend(build_cpio_trailer());
         let fs = RamFs::from_cpio(&archive);
 
@@ -797,6 +805,12 @@ mod tests {
     // -- Modem timeout constant --
 
     #[test]
+    // WHY: MODEM_BOOT_TIMEOUT_MS is a fixed crate const, so both bounds
+    // below are compile-time-constant to clippy. This test exists precisely
+    // to pin that literal within a sane range as a discoverable, individually
+    // reportable host test (not a const-eval assert) so a future edit to the
+    // constant fails a named test rather than a silent build-time check.
+    #[allow(clippy::assertions_on_constants)]
     fn modem_timeout_is_reasonable() {
         assert!(
             MODEM_BOOT_TIMEOUT_MS >= 5_000,

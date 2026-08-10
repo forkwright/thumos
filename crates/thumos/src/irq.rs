@@ -33,7 +33,7 @@ static MOCK_IRQ_ENABLED: AtomicBool = AtomicBool::new(true);
 /// with [`restore`]. Safe to call with IRQs already masked (nests
 /// correctly).
 #[cfg(target_arch = "arm")]
-#[inline(always)]
+#[inline]
 fn disable() -> u32 {
     let cpsr: u32;
     // SAFETY: MRS is a non-faulting status-register read; CPSID only clears
@@ -50,7 +50,7 @@ fn disable() -> u32 {
 /// saved state already had IRQs masked (a nested critical section), this is
 /// a no-op -- only the outermost `restore` re-enables delivery.
 #[cfg(target_arch = "arm")]
-#[inline(always)]
+#[inline]
 fn restore(saved: u32) {
     /// CPSR I-bit (bit 7): IRQ mask, 1 = masked.
     const I_BIT: u32 = 1 << 7;
@@ -65,7 +65,7 @@ fn restore(saved: u32) {
 /// Host-test stand-in for [`disable`]: flips the mock flag instead of the
 /// CPSR I-bit, preserving the same "return prior state" contract.
 #[cfg(not(target_arch = "arm"))]
-#[inline(always)]
+#[inline]
 fn disable() -> u32 {
     let was_enabled = MOCK_IRQ_ENABLED.swap(false, Ordering::AcqRel);
     u32::from(was_enabled)
@@ -74,7 +74,7 @@ fn disable() -> u32 {
 /// Host-test stand-in for [`restore`]: mirrors the real nesting contract
 /// against the mock flag.
 #[cfg(not(target_arch = "arm"))]
-#[inline(always)]
+#[inline]
 fn restore(saved: u32) {
     if saved != 0 {
         MOCK_IRQ_ENABLED.store(true, Ordering::Release);

@@ -678,7 +678,10 @@ mod tests {
         let mut mgr = HeorteManager::new();
         let id = mgr.add_event(b"Find me", 1_000_000, 60, false);
         assert!(mgr.find_event(id).is_some(), "must find existing event");
-        assert_eq!(mgr.find_event(id).map(|e| e.title_str()), Some("Find me"));
+        assert_eq!(
+            mgr.find_event(id).map(super::CalendarEvent::title_str),
+            Some("Find me")
+        );
         assert!(mgr.find_event(999).is_none(), "must not find non-existent");
     }
 

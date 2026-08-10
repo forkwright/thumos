@@ -410,18 +410,18 @@ fn irq_handler_body() {
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn data_abort_handler_rust(frame: *mut process::Context) {
     let dfar: u32;
-    let dfsr: u32;
+    let fault_status: u32;
     // SAFETY: CP15 access is privileged. DFAR (c6, c0, 0) holds the faulting
     // address, DFSR (c5, c0, 0) the fault status; both valid after a data abort.
     unsafe {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 0", out(reg) dfar); // DFAR
-        core::arch::asm!("mrc p15, 0, {}, c5, c0, 0", out(reg) dfsr); // DFSR
+        core::arch::asm!("mrc p15, 0, {}, c5, c0, 0", out(reg) fault_status); // DFSR
     }
     handle_fault(
         frame,
         process::FaultKind::DataAbort {
             fault_addr: dfar,
-            fault_status: dfsr,
+            fault_status,
         },
         2,
     );
@@ -431,18 +431,18 @@ pub(crate) extern "C" fn data_abort_handler_rust(frame: *mut process::Context) {
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn prefetch_abort_handler_rust(frame: *mut process::Context) {
     let ifar: u32;
-    let ifsr: u32;
+    let fault_status: u32;
     // SAFETY: CP15 access is privileged. IFAR (c6, c0, 2) holds the faulting
     // fetch address, IFSR (c5, c0, 1) the status; both valid after a prefetch abort.
     unsafe {
         core::arch::asm!("mrc p15, 0, {}, c6, c0, 2", out(reg) ifar); // IFAR
-        core::arch::asm!("mrc p15, 0, {}, c5, c0, 1", out(reg) ifsr); // IFSR
+        core::arch::asm!("mrc p15, 0, {}, c5, c0, 1", out(reg) fault_status); // IFSR
     }
     handle_fault(
         frame,
         process::FaultKind::PrefetchAbort {
             fault_addr: ifar,
-            fault_status: ifsr,
+            fault_status,
         },
         3,
     );

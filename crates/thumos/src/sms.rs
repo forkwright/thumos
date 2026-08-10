@@ -28,9 +28,16 @@
 //! for handling incoming `+CMT` URCs.
 
 // WHY: SMS API not yet wired to kinit event loop (Wave 4 integration).
-#![expect(
-    dead_code,
-    reason = "SMS API created in Phase 07 Wave 3, kinit wiring pending (#145)"
+// cfg_attr(not(test), ...): the module's own tests now exercise its full
+// surface, so nothing is dead in the test build -- expecting dead_code there
+// makes the expectation unfulfilled. Production reachability is unchanged;
+// the expectation is scoped to the build where it is still real.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "SMS API created in Phase 07 Wave 3, kinit wiring pending (#145)"
+    )
 )]
 
 extern crate alloc;
@@ -370,6 +377,12 @@ impl SmsManager {
     /// - [`SmsError::UnsupportedDcs`] -- PDU is well-formed but uses a data
     ///   coding scheme other than GSM-7 (0x00).
     pub(crate) fn handle_incoming(pdu_data: &[u8]) -> Result<SmsMessage, SmsError> {
+        // GSM 03.40: TP-UD is at most 140 octets, i.e. 160 GSM-7 septets,
+        // for a single (non-concatenated) segment. No legitimately
+        // encodable single-segment message can claim a larger UDL; treat it
+        // as a malformed PDU rather than decoding whatever bytes follow.
+        const MAX_SINGLE_SEGMENT_SEPTETS: usize = 160;
+
         let mut cur = Cursor::new(pdu_data);
 
         // SMSC prefix: length byte + SMSC bytes (skip).
@@ -417,11 +430,6 @@ impl SmsManager {
 
         // User data length (septets) and packed user data.
         let udl = usize::from(cur.read_byte()?);
-        // GSM 03.40: TP-UD is at most 140 octets, i.e. 160 GSM-7 septets,
-        // for a single (non-concatenated) segment. No legitimately
-        // encodable single-segment message can claim a larger UDL; treat it
-        // as a malformed PDU rather than decoding whatever bytes follow.
-        const MAX_SINGLE_SEGMENT_SEPTETS: usize = 160;
         if udl > MAX_SINGLE_SEGMENT_SEPTETS {
             return Err(SmsError::PduDecode);
         }
@@ -875,7 +883,7 @@ mod tests {
         ];
         // 161 septets needs ceil(161*7/8) = 141 packed bytes; pad enough
         // that a plain truncation error could never mask the UDL bound.
-        pdu.extend(core::iter::repeat(0u8).take(141));
+        pdu.extend(core::iter::repeat_n(0u8, 141));
 
         let result = SmsManager::handle_incoming(&pdu);
         assert!(

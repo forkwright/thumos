@@ -682,8 +682,9 @@ mod tests {
         // whether the checksum is checked first.
         assert!(matches!(
             state,
-            ProvisionState::Error(ProvisionError::ChecksumMismatch)
-                | ProvisionState::Error(ProvisionError::DeserializeError)
+            ProvisionState::Error(
+                ProvisionError::ChecksumMismatch | ProvisionError::DeserializeError
+            )
         ));
     }
 
@@ -729,8 +730,7 @@ mod tests {
         // checksum + signature). Content is irrelevant -- the cap must
         // reject growth BEFORE parsing a header, not rely on the
         // payload_len check (which only fires once a header is present).
-        let mut oversized = Vec::new();
-        oversized.resize(RECV_BUF_CAPACITY + 1, 0u8);
+        let oversized = alloc::vec![0u8; RECV_BUF_CAPACITY + 1];
 
         let mut prov = Provisioner::new();
         let state = prov.receive_chunk(&oversized);

@@ -294,8 +294,12 @@ impl NullFmHw {
 /// Step a seek by `step` kHz, wrapping at the band edges.
 #[cfg(any(feature = "qemu", test))]
 const fn seek_step(freq_khz: u32, step: i32) -> u32 {
-    let span = (FM_FREQ_MAX_KHZ - FM_FREQ_MIN_KHZ) as i32;
-    let offset = (freq_khz - FM_FREQ_MIN_KHZ) as i32 + step;
+    // INVARIANT: FM_FREQ_MIN_KHZ (87_500) and FM_FREQ_MAX_KHZ (108_000) are
+    // both far below i32::MAX, and freq_khz is always a previously-tuned,
+    // band-validated frequency -- so both differences here are bounded by
+    // the ~20_500 kHz band span and never wrap when cast to i32.
+    let span = (FM_FREQ_MAX_KHZ - FM_FREQ_MIN_KHZ).cast_signed();
+    let offset = (freq_khz - FM_FREQ_MIN_KHZ).cast_signed() + step;
     let wrapped = ((offset % span) + span) % span;
     FM_FREQ_MIN_KHZ + wrapped as u32
 }

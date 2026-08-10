@@ -268,6 +268,13 @@ fn random_txid() -> u16 {
 ///
 /// Returns the wire-format query bytes and the transaction ID.
 fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DnsError> {
+    // RFC 1035 section 3.1 caps the total encoded QNAME -- every
+    // length-prefix octet plus every label octet plus the terminating zero
+    // -- at 255 octets; the per-label <= 63 check below does not bound the
+    // SUM across many short labels, so a long dotted name could otherwise
+    // produce an out-of-spec query with no error.
+    const DNS_MAX_NAME_LEN: usize = 255;
+
     if hostname.is_empty() {
         return Err(DnsError::InvalidName);
     }
@@ -285,13 +292,7 @@ fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DnsError> {
     packet.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
     packet.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
 
-    // QNAME: encode hostname as DNS labels. RFC 1035 section 3.1 caps the
-    // total encoded name -- every length-prefix octet plus every label
-    // octet plus the terminating zero -- at 255 octets; the per-label
-    // <= 63 check above does not bound the SUM across many short labels,
-    // so a long dotted name could otherwise produce an out-of-spec query
-    // with no error.
-    const DNS_MAX_NAME_LEN: usize = 255;
+    // QNAME: encode hostname as DNS labels.
     let mut qname_len: usize = 0;
     for label in hostname.split('.') {
         if label.is_empty() || label.len() > 63 {
@@ -404,8 +405,8 @@ fn skip_dns_name(data: &[u8], mut offset: usize) -> Result<usize, DnsError> {
     // the minimal label encoding (1-octet length + 1-octet content)
     // allows up to 127 labels before the terminating zero, so the cap
     // must be at least that high or legal hostnames get rejected.
-    let mut labels = 0;
     const MAX_LABELS: u32 = 127;
+    let mut labels = 0;
 
     loop {
         if offset >= data.len() {
@@ -550,6 +551,13 @@ impl DnsResolver {
     /// Returns the wire-format bytes and the transaction ID. The caller
     /// is responsible for sending this via a UDP socket to the
     /// appropriate DNS server on port 53.
+    // WHY: the body only calls free functions today, but this sits in
+    // DnsResolver's instance-method API alongside resolve/process_response/
+    // tick (all &mut self, all called as `resolver.<method>(..)`); its own
+    // test exercises it that way (`resolver.build_query(..)` in a loop over
+    // one `DnsResolver::new(..)` instance). Dropping &mut self would force
+    // restructuring that test's instance shape for no functional benefit.
+    #[allow(clippy::unused_self)]
     pub(crate) fn build_query(&mut self, hostname: &str) -> Result<(Vec<u8>, u16), DnsError> {
         let txid = random_txid();
         let packet = build_dns_query(hostname, txid)?;

@@ -254,12 +254,12 @@ impl T9Input {
 
     /// Commit the current multi-tap letter to the key sequence.
     fn commit_multi_tap_letter(&mut self) {
-        if let Some(ref state) = self.multi_tap {
-            if let Some(group_idx) = digit_to_group(state.digit) {
-                let group = KEY_LETTERS[group_idx];
-                let letter_idx = state.tap_count as usize % group.len();
-                self.key_sequence.push(group[letter_idx]);
-            }
+        if let Some(ref state) = self.multi_tap
+            && let Some(group_idx) = digit_to_group(state.digit)
+        {
+            let group = KEY_LETTERS[group_idx];
+            let letter_idx = state.tap_count as usize % group.len();
+            self.key_sequence.push(group[letter_idx]);
         }
         self.multi_tap = None;
     }
@@ -362,12 +362,12 @@ impl T9Input {
             T9Mode::MultiTap => {
                 let mut text = self.key_sequence_as_letters();
                 // Append the current multi-tap cycling letter.
-                if let Some(ref state) = self.multi_tap {
-                    if let Some(group_idx) = digit_to_group(state.digit) {
-                        let group = KEY_LETTERS[group_idx];
-                        let letter_idx = state.tap_count as usize % group.len();
-                        text.push(group[letter_idx] as char);
-                    }
+                if let Some(ref state) = self.multi_tap
+                    && let Some(group_idx) = digit_to_group(state.digit)
+                {
+                    let group = KEY_LETTERS[group_idx];
+                    let letter_idx = state.tap_count as usize % group.len();
+                    text.push(group[letter_idx] as char);
                 }
                 text
             }
@@ -678,7 +678,7 @@ mod tests {
         );
         // "a" is in the dictionary and matches key 2 exactly.
         assert!(
-            input.candidates.iter().any(|&w| w == "a"),
+            input.candidates.contains(&"a"),
             "'a' must be among candidates for key 2"
         );
     }

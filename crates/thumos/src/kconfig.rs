@@ -73,7 +73,7 @@ pub(crate) fn parse_cmdline(cmdline: &str) {
                         // SAFETY: parse_cmdline is called once during early boot before
                         // any concurrent access to these static mut config globals.
                         unsafe {
-                            TICK_MS = v.max(1).min(100);
+                            TICK_MS = v.clamp(1, 100);
                         }
                     }
                 }

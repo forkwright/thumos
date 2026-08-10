@@ -2,7 +2,7 @@
 //! boots on (#534). Only hardware the virt machine actually HAS is defined
 //! here: the console PL011 UART (always present), a second PL011 the
 //! machine models only under ARM Security Extensions (#544's on-device
-//! transport), a GICv2, and DRAM. There is no eMMC, no display pipeline,
+//! transport), a `GICv2`, and DRAM. There is no eMMC, no display pipeline,
 //! no combo chip, no keypad — those consts exist only in `board::m7`, and
 //! code referencing them is selected out of virt builds.
 
@@ -26,14 +26,14 @@ pub(crate) const UART0_BASE: usize = 0x0900_0000;
 /// outside that path faults (unassigned MMIO). See `metaxu_bridge.rs`.
 pub(crate) const UART1_BASE: usize = 0x0904_0000;
 
-/// GIC distributor MMIO base (virt, GICv2).
+/// GIC distributor MMIO base (virt, `GICv2`).
 pub(crate) const GICD_BASE: usize = 0x0800_0000;
 
-/// GIC CPU interface MMIO base (virt, GICv2).
+/// GIC CPU interface MMIO base (virt, `GICv2`).
 pub(crate) const GICC_BASE: usize = 0x0801_0000;
 
 /// Register the devices the virt machine actually models (#534). Honestly
-/// minimal: the two PL011 UARTs and the GICv2 — no eMMC, display, combo
+/// minimal: the two PL011 UARTs and the `GICv2` — no eMMC, display, combo
 /// chip, keypad, USB, or modem entries, because qemu provides none. `uart1`
 /// is registered unconditionally (a board FACT, like `board::m7`'s own
 /// `uart1`), even though it MMIO-faults unless the boot used
