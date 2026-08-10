@@ -46,7 +46,8 @@ use alloc::vec::Vec;
 use crate::http_client::{self, HttpError, HttpRequest, HttpResponse};
 use crate::json_mini::{JsonError, JsonParser, JsonValue, JsonWriter};
 use crate::matrix_crypto::{self, CryptoError, MatrixCrypto};
-use crate::matrix_ids::{MatrixEventId, MatrixRoomId};
+use crate::matrix_ids::{MatrixDeviceId, MatrixEventId, MatrixRoomId, MatrixUserId};
+use crate::security::KEY_SIZE;
 use crate::security_mode::SecurityMode;
 
 // ---------------------------------------------------------------------------
@@ -123,8 +124,21 @@ pub enum MatrixError {
     RoomCapacityReached,
     /// The outbox has reached [`MAX_OUTBOX_MESSAGES`] pending messages (#365).
     OutboxFull,
-    /// A Matrix identifier (room/event) failed format validation (#373).
+    /// A Matrix identifier (room/event/user/device) failed format validation
+    /// (#373).
     InvalidId(crate::matrix_ids::MatrixIdError),
+    /// A `/keys/claim` response carried no one-time key for the requested
+    /// (`user_id`, `device_id`) -- absent user, absent device, or an empty
+    /// key map (#437).
+    ClaimedKeyMissing,
+    /// None of a `/keys/claim` response's key entries for the requested
+    /// device used [`matrix_crypto::ONE_TIME_KEY_ALGORITHM`] (#437) -- e.g. a
+    /// homeserver returning only `signed_curve25519`, which this simplified
+    /// client does not verify.
+    UnsupportedKeyAlgorithm,
+    /// A `/keys/claim` response's matching key entry was not a string, or
+    /// did not decode to a well-formed key (#437).
+    MalformedClaimedKey,
 }
 
 impl fmt::Display for MatrixError {
@@ -144,6 +158,18 @@ impl fmt::Display for MatrixError {
             Self::RoomCapacityReached => write!(f, "room capacity reached"),
             Self::OutboxFull => write!(f, "outbox capacity reached"),
             Self::InvalidId(e) => write!(f, "invalid Matrix identifier: {e}"),
+            Self::ClaimedKeyMissing => {
+                write!(
+                    f,
+                    "keys/claim response carried no key for the requested device"
+                )
+            }
+            Self::UnsupportedKeyAlgorithm => {
+                write!(f, "keys/claim response used an unsupported key algorithm")
+            }
+            Self::MalformedClaimedKey => {
+                write!(f, "keys/claim response key value is malformed")
+            }
         }
     }
 }
@@ -1017,6 +1043,118 @@ impl MatrixClient {
     }
 
     // -----------------------------------------------------------------------
+    // Key claim (#437)
+    // -----------------------------------------------------------------------
+
+    /// Build a `/keys/claim` HTTP request for a one-time key from a single
+    /// target device.
+    ///
+    /// Uses POST `/_matrix/client/v3/keys/claim` with a
+    /// `{"one_time_keys": {user_id: {device_id: algorithm}}}` body -- the
+    /// Matrix CS API's device→algorithm map, nested under the requested
+    /// user.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::InvalidId`] if `user_id` or `device_id` fails
+    /// identifier validation (#373: rejects a CRLF/NUL-bearing target before
+    /// it is written into the request body).
+    pub(crate) fn build_claim_keys_request(
+        &self,
+        user_id: &str,
+        device_id: &str,
+    ) -> Result<HttpRequest, MatrixError> {
+        // WHY: bind (not a bare `expr?;` statement) -- MatrixUserId/
+        // MatrixDeviceId are #[must_use]; discarding the validated value as
+        // a statement trips the must_use lint under -D warnings.
+        let _validated_user = MatrixUserId::new(user_id)?;
+        let _validated_device = MatrixDeviceId::new(device_id)?;
+
+        let mut path = String::from(API_PREFIX);
+        path.push_str("/keys/claim");
+
+        let json_body = build_claim_keys_body(user_id, device_id);
+        let mut req = http_client::post_json(&self.homeserver, &path, json_body.as_bytes());
+        http_client::with_auth(&mut req, &self.access_token);
+        Ok(req)
+    }
+
+    /// Process a `/keys/claim` HTTP response for the `(user_id, device_id)`
+    /// target requested via [`build_claim_keys_request`], validating and
+    /// returning the claimed one-time key.
+    ///
+    /// This is the send side of key exchange: the returned key belongs to
+    /// the remote device named by `user_id`/`device_id`, never to this
+    /// device's own [`MatrixCrypto::one_time_keys`] pool, so this function
+    /// does not touch `self` -- there is nothing here for it to consume
+    /// (`consume_one_time_key`'s pool holds only keys this device generated
+    /// and uploaded). Establishing an Olm session from the returned key
+    /// (X3DH) is not implemented; the caller receives raw key material.
+    ///
+    /// [`MatrixCrypto::consume_one_time_key`] belongs to the *receive* side
+    /// of key exchange instead: it removes one of this device's own
+    /// uploaded keys once something reports it was claimed by a peer (a
+    /// dropping `device_one_time_keys_count` on `/sync`, or an inbound Olm
+    /// pre-key message naming the key). Neither exists in this tree yet
+    /// (#437 remainder): `/sync` here reads only `rooms.join.*.timeline`,
+    /// and there is no inbound Olm pre-key handler -- `OlmSession` is
+    /// declared but never constructed anywhere. Wiring
+    /// `consume_one_time_key` belongs at that future receive-side call
+    /// site, not here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::ServerError`] on a non-2xx response.
+    /// Returns [`MatrixError::Json`] if the body is not valid JSON.
+    /// Returns [`MatrixError::ClaimedKeyMissing`] if the response carries no
+    /// key for `user_id`/`device_id` (absent user, absent device, or an
+    /// empty key map).
+    /// Returns [`MatrixError::UnsupportedKeyAlgorithm`] if none of the
+    /// returned key entries for that device use
+    /// [`matrix_crypto::ONE_TIME_KEY_ALGORITHM`].
+    /// Returns [`MatrixError::MalformedClaimedKey`] if the matching entry's
+    /// value is not a string, or does not decode to a well-formed key.
+    pub(crate) fn process_claim_keys_response(
+        user_id: &str,
+        device_id: &str,
+        response: &HttpResponse,
+    ) -> Result<[u8; KEY_SIZE], MatrixError> {
+        if !response.is_success() {
+            return Err(parse_error_response(response));
+        }
+
+        let body_str = response
+            .body_as_str()
+            .ok_or(MatrixError::MalformedClaimedKey)?;
+        let root = JsonParser::parse(body_str.as_bytes())?;
+
+        let device_map = root
+            .get("one_time_keys")
+            .and_then(|otk| otk.get(user_id))
+            .and_then(|dev| dev.get(device_id))
+            .ok_or(MatrixError::ClaimedKeyMissing)?;
+
+        let entries = device_map
+            .as_object()
+            .ok_or(MatrixError::ClaimedKeyMissing)?;
+        if entries.is_empty() {
+            return Err(MatrixError::ClaimedKeyMissing);
+        }
+
+        let Some((_, value)) = entries.iter().find(|(key_id, _)| {
+            claimed_key_algorithm(key_id) == matrix_crypto::ONE_TIME_KEY_ALGORITHM
+        }) else {
+            return Err(MatrixError::UnsupportedKeyAlgorithm);
+        };
+
+        let key_value = value.as_str().ok_or(MatrixError::MalformedClaimedKey)?;
+        let key =
+            matrix_crypto::decode_base64_key(key_value).ok_or(MatrixError::MalformedClaimedKey)?;
+
+        Ok(key)
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
@@ -1097,6 +1235,33 @@ fn build_encrypted_body(ciphertext: &[u8], session_id: &[u8; 32]) -> String {
     w.string_value(&hex_encode_bytes(session_id));
     w.end();
     w.finish()
+}
+
+/// Build the JSON body for `/_matrix/client/v3/keys/claim`.
+///
+/// ```json
+/// {"one_time_keys":{"@alice:example.com":{"DEVICEID":"curve25519"}}}
+/// ```
+fn build_claim_keys_body(user_id: &str, device_id: &str) -> String {
+    let mut w = JsonWriter::new();
+    w.object_start();
+    w.key("one_time_keys");
+    w.object_start();
+    w.key(user_id);
+    w.object_start();
+    w.key(device_id);
+    w.string_value(matrix_crypto::ONE_TIME_KEY_ALGORITHM);
+    w.end(); // device -> algorithm map
+    w.end(); // user -> device map
+    w.end(); // one_time_keys
+    w.end(); // root
+    w.finish()
+}
+
+/// Extract the algorithm portion of a `/keys/claim` response key id
+/// (`"<algorithm>:<key_id>"`, e.g. `"curve25519:AAAAAQ"`).
+fn claimed_key_algorithm(key_id: &str) -> &str {
+    key_id.split_once(':').map_or(key_id, |(algo, _)| algo)
 }
 
 /// Encode a byte slice as lowercase hex string.
@@ -2259,5 +2424,287 @@ mod tests {
     fn hex_decode_32_bytes_rejects_non_hex_char() {
         let bad = alloc::format!("zz{}", "aa".repeat(31));
         assert_eq!(hex_decode_32_bytes(&bad), None);
+    }
+
+    // -- /keys/claim (#437) --
+
+    /// Helper: build a minimal `/keys/claim` response body. `key_id` is the
+    /// `"<algorithm>:<id>"` string under the target device (e.g.
+    /// `"curve25519:AAAAAQ"`); `key_value` is the raw value at that key
+    /// (hex or base64, or deliberately neither for malformed-payload tests).
+    fn build_claim_response(
+        user_id: &str,
+        device_id: &str,
+        key_id: &str,
+        key_value: &str,
+    ) -> String {
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("failures");
+        w.object_start();
+        w.end();
+        w.key("one_time_keys");
+        w.object_start();
+        w.key(user_id);
+        w.object_start();
+        w.key(device_id);
+        w.object_start();
+        w.key(key_id);
+        w.string_value(key_value);
+        w.end(); // key map
+        w.end(); // device
+        w.end(); // user
+        w.end(); // one_time_keys
+        w.end(); // root
+        w.finish()
+    }
+
+    #[test]
+    fn claim_keys_request_builds_correct_path_and_body() {
+        let client = matrix_client_with_test_credentials();
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+
+        let req = client
+            .build_claim_keys_request(user_id, device_id)
+            .expect("a well-formed target must build a request");
+
+        assert!(req.path.contains("/keys/claim"));
+
+        let has_auth = req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v.contains("Bearer"));
+        assert!(has_auth);
+
+        let body_bytes = req.body.as_deref().unwrap_or(&[]);
+        let body_str = core::str::from_utf8(body_bytes).unwrap_or("");
+        assert!(body_str.contains(user_id), "body must key on the user id");
+        assert!(
+            body_str.contains(device_id),
+            "body must nest the device id under the user"
+        );
+        assert!(
+            body_str.contains(matrix_crypto::ONE_TIME_KEY_ALGORITHM),
+            "body must declare the claimed algorithm"
+        );
+    }
+
+    #[test]
+    fn claim_keys_request_rejects_invalid_user_id() {
+        let client = matrix_client_with_test_credentials();
+        let result = client.build_claim_keys_request("not-a-user-id", "DEVICE1");
+        assert!(
+            matches!(result, Err(MatrixError::InvalidId(_))),
+            "a user id missing the '@' sigil must be rejected before it reaches the request body, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn claim_keys_request_rejects_invalid_device_id() {
+        let client = matrix_client_with_test_credentials();
+        // #373: a CRLF-bearing device id must not reach JSON-key interpolation.
+        let result = client
+            .build_claim_keys_request("@alice:matrix.example.com", "EVIL\r\nX-Injected: evil");
+        assert!(matches!(result, Err(MatrixError::InvalidId(_))));
+    }
+
+    #[test]
+    fn claim_response_happy_path_returns_peer_key() {
+        // The claimed key belongs to the REMOTE device named in the
+        // request -- it is never drawn from this device's own pool, exactly
+        // as a real homeserver response would look (#437 rework: an earlier
+        // version of this test seeded the response from
+        // generate_one_time_keys, which made the fixture a shape a
+        // homeserver would never send).
+        let peer_key = [0xABu8; KEY_SIZE];
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+        let body = build_claim_response(
+            user_id,
+            device_id,
+            "curve25519:AAAAAQ",
+            &hex_encode_bytes(&peer_key),
+        );
+        let response = mock_response(200, &body);
+
+        let result = MatrixClient::process_claim_keys_response(user_id, device_id, &response);
+        assert_eq!(result, Ok(peer_key));
+    }
+
+    #[test]
+    fn claim_response_does_not_touch_this_devices_own_pool() {
+        // process_claim_keys_response takes no `self`, so it cannot reach
+        // this device's own one_time_keys pool by construction -- pinned
+        // here as a concrete regression guard, not just a type-signature
+        // argument. consume_one_time_key belongs to the receive side of key
+        // exchange (an inbound Olm pre-key message naming one of THIS
+        // device's own claimed keys), which does not exist in this tree yet.
+        let mut client = matrix_client_with_test_credentials();
+        let own_keys = client
+            .crypto_mut()
+            .generate_one_time_keys(3)
+            .expect("seeding must succeed");
+
+        let peer_key = [0xCDu8; KEY_SIZE];
+        let user_id = "@bob:matrix.example.com";
+        let device_id = "BOBDEVICE";
+        let body = build_claim_response(
+            user_id,
+            device_id,
+            "curve25519:AAAAAQ",
+            &hex_encode_bytes(&peer_key),
+        );
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
+        assert_eq!(result, Ok(peer_key));
+
+        assert_eq!(
+            client.crypto().one_time_keys(),
+            own_keys.as_slice(),
+            "processing a claim response must never mutate this device's own pool"
+        );
+    }
+
+    #[test]
+    fn claim_response_missing_device_fails_closed() {
+        let user_id = "@alice:matrix.example.com";
+        // Response carries a key, but for a DIFFERENT device than requested.
+        let body = build_claim_response(
+            user_id,
+            "OTHERDEVICE",
+            "curve25519:AAAAAQ",
+            &"11".repeat(32),
+        );
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            "ALICEDEVICE",
+            &mock_response(200, &body),
+        );
+        assert_eq!(result, Err(MatrixError::ClaimedKeyMissing));
+    }
+
+    #[test]
+    fn claim_response_empty_key_map_fails_closed() {
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("one_time_keys");
+        w.object_start();
+        w.key(user_id);
+        w.object_start();
+        w.key(device_id);
+        w.object_start();
+        w.end(); // empty key map -- homeserver had nothing to hand out
+        w.end();
+        w.end();
+        w.end();
+        w.end();
+        let body = w.finish();
+
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
+        assert_eq!(result, Err(MatrixError::ClaimedKeyMissing));
+    }
+
+    #[test]
+    fn claim_response_unsupported_algorithm_fails_closed() {
+        // A homeserver returning only `signed_curve25519` (this simplified
+        // client neither signs nor verifies signed one-time keys) must be
+        // rejected, not misread as a raw key.
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+        let body = build_claim_response(
+            user_id,
+            device_id,
+            "signed_curve25519:AAAAAQ",
+            &"11".repeat(32),
+        );
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
+        assert_eq!(result, Err(MatrixError::UnsupportedKeyAlgorithm));
+    }
+
+    #[test]
+    fn claim_response_malformed_key_value_fails_closed() {
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+        let body = build_claim_response(
+            user_id,
+            device_id,
+            "curve25519:AAAAAQ",
+            "not-a-valid-key-encoding",
+        );
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
+        assert_eq!(result, Err(MatrixError::MalformedClaimedKey));
+    }
+
+    #[test]
+    fn claim_response_non_object_key_value_fails_closed() {
+        // The matching key entry's value must be a string; a JSON number
+        // (or any non-string) must not be coerced or silently skipped past.
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("one_time_keys");
+        w.object_start();
+        w.key(user_id);
+        w.object_start();
+        w.key(device_id);
+        w.object_start();
+        w.key("curve25519:AAAAAQ");
+        w.number_value(12345);
+        w.end();
+        w.end();
+        w.end();
+        w.end();
+        w.end();
+        let body = w.finish();
+
+        let result = MatrixClient::process_claim_keys_response(
+            user_id,
+            device_id,
+            &mock_response(200, &body),
+        );
+        assert_eq!(result, Err(MatrixError::MalformedClaimedKey));
+    }
+
+    #[test]
+    fn claim_response_server_error_propagates() {
+        let body = "{\"errcode\":\"M_NOT_FOUND\",\"error\":\"device not found\"}";
+        let response = mock_response(404, body);
+        let result = MatrixClient::process_claim_keys_response(
+            "@alice:matrix.example.com",
+            "ALICEDEVICE",
+            &response,
+        );
+        assert!(matches!(result, Err(MatrixError::ServerError { .. })));
+    }
+
+    #[test]
+    fn claimed_key_algorithm_splits_on_colon() {
+        assert_eq!(claimed_key_algorithm("curve25519:AAAAAQ"), "curve25519");
+        assert_eq!(
+            claimed_key_algorithm("signed_curve25519:AAAAAQ"),
+            "signed_curve25519"
+        );
+        assert_eq!(claimed_key_algorithm("no-colon-here"), "no-colon-here");
     }
 }

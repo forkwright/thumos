@@ -24,17 +24,23 @@
 //! - AES-CBC: NIST SP 800-38A
 
 // WHY: Matrix crypto created in Phase 09 Wave 3, full integration pending.
-// #437 remnant 3, explicitly re-confirmed deferred (2026-08-04): the
-// /keys/claim round-trip cannot land without the Olm session-establishment
-// path that consumes claimed keys, and X3DH is intentionally not
-// implemented here. Building the claim builder/parser alone would only
-// move the dead call site, not close it — this module stays unreachable
-// until Phase-09 messaging integration lands, at which point
-// `consume_one_time_key` MUST be wired into claimed-key receipt or the
-// one_time_keys pool deadlocks at MAX_ONE_TIME_KEYS (#282 finding 8).
+// #437 remnant 3: `harmostes` builds the /keys/claim request and validates
+// + returns the peer's claimed key (the send side of key exchange -- that
+// key belongs to the remote device, never to this device's own
+// `one_time_keys` pool). `consume_one_time_key` belongs to the RECEIVE
+// side instead: it removes one of THIS device's own uploaded keys once
+// something reports it was claimed by a peer (a dropping
+// `device_one_time_keys_count` on `/sync`, or an inbound Olm pre-key
+// message naming the key). Neither exists in this tree -- `/sync` here
+// reads only room timeline events, and there is no inbound Olm pre-key
+// handler (`OlmSession` is declared, never constructed). Wiring
+// `consume_one_time_key` there is what remains open; without it the
+// one_time_keys pool deadlocks at MAX_ONE_TIME_KEYS once that receive path
+// exists (#282 finding 8). This module stays unreachable until Phase-09
+// messaging integration lands.
 #![expect(
     dead_code,
-    reason = "Matrix crypto unreachable pending Phase-09 messaging integration; /keys/claim wiring explicitly deferred to that epic (#437)"
+    reason = "Matrix crypto unreachable pending Phase-09 messaging integration; consume_one_time_key's receive-side call site does not exist yet (#437)"
 )]
 
 extern crate alloc;
@@ -103,6 +109,14 @@ const MAX_ONE_TIME_KEYS: usize = 100;
 
 /// Maximum number of one-time keys generated in a single batch.
 const MAX_GENERATED_KEYS: usize = 50;
+
+/// The one-time-key algorithm identifier this device generates, uploads, and
+/// claims. Unsigned (raw Curve25519, not `signed_curve25519`) -- this
+/// simplified implementation does not sign one-time keys (#437). Shared
+/// between [`build_one_time_keys_json`] (upload) and `harmostes`'s
+/// `/keys/claim` request/response so the algorithm string exists in exactly
+/// one place.
+pub(crate) const ONE_TIME_KEY_ALGORITHM: &str = "curve25519";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -1026,7 +1040,8 @@ fn build_one_time_keys_json(keys: &[[u8; KEY_SIZE]]) -> String {
     let mut w = JsonWriter::new();
     w.object_start();
     for (i, key) in keys.iter().enumerate() {
-        let mut key_name = String::from("curve25519:AAAAAA");
+        let mut key_name = String::from(ONE_TIME_KEY_ALGORITHM);
+        key_name.push_str(":AAAAAA");
         push_usize(&mut key_name, i);
         w.key(&key_name);
         w.string_value(&hex_encode(key));
@@ -1252,7 +1267,11 @@ fn base64_decode_bytes(s: &str) -> Option<Vec<u8>> {
 ///
 /// Returns `None` if the input doesn't decode to exactly 32 bytes.
 /// Tries hex first (64 chars = 32 bytes), then unpadded base64 (43 chars = 32 bytes).
-fn decode_base64_key(s: &str) -> Option<[u8; KEY_SIZE]> {
+///
+/// `pub(crate)`: also used by `harmostes`'s `/keys/claim` response handling
+/// to decode a claimed one-time key value (#437) -- the same key-encoding
+/// convention as `/keys/query` device keys, one decoder for both.
+pub(crate) fn decode_base64_key(s: &str) -> Option<[u8; KEY_SIZE]> {
     // Try hex decoding first (our own output format).
     if s.len() == 64 {
         return hex_decode_32(s);
