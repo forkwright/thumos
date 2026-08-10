@@ -32,7 +32,12 @@
 //! re-deriving those checks, and is generic over its grant/device/task
 //! inputs -- no qemu or dev-key dependency of its own -- so it is
 //! host-testable unconditionally (see the `tests` module below, which
-//! exercises it without the `qemu` feature).
+//! exercises it without the `qemu` feature). Every failure path (bad
+//! signature, wrong device, expired, capability absent) collapses to the
+//! SAME [`METAXU_DENIED_LOCALLY`] outcome: no variant is treated as
+//! "probably fine" (this repo already fixed three fail-open defects
+//! elsewhere; this path stays fail-closed by construction rather than by
+//! enumerating cases it must remember to deny).
 //!
 //! Split into two syscalls (`MetaxuSubmit`, `MetaxuPoll`) rather than one
 //! blocking call: an SVC handler runs with IRQs masked (`ticks()` frozen --
@@ -195,12 +200,12 @@ fn harmless_task(device: [u8; 32]) -> TaskRequest {
 ///
 /// Reuses [`SignedGrant::verify`] (via [`AuthenticatedSession::open`]) for
 /// the device+expiry check -- no parallel check that could drift from it.
-///
-/// WHY (commit sequencing, #544): this commit wires the device+expiry half
-/// only -- a grant that verifies but lacks the requested capability still
-/// proceeds to encoding. `tests::capability_absent_denies_locally_without_transmitting`
-/// below is written against the FULL contract and is expected to fail
-/// until the next commit adds the capability-presence check.
+/// Capability presence is checked against the grant's OWN verified
+/// capability list (never a self-claimed one) and only once the grant has
+/// already verified. Fail closed: every rejection path -- bad signature,
+/// wrong device, expired, capability absent -- returns the SAME
+/// [`METAXU_DENIED_LOCALLY`], so there is no case this function can forget
+/// to deny.
 ///
 /// This function has no reference to `uart`/`board`/the transport
 /// anywhere in its body. [`submit`] writes a frame ONLY on this function's
@@ -216,6 +221,14 @@ fn evaluate_submission(
     let Ok(session) = AuthenticatedSession::open(signed_grant, device, now_ms) else {
         return Err(METAXU_DENIED_LOCALLY); // bad signature, wrong device, or expired
     };
+    if !session
+        .grant()
+        .grant
+        .capabilities
+        .contains(&task.required_capability())
+    {
+        return Err(METAXU_DENIED_LOCALLY);
+    }
     metaxu_core::session::encode_authenticated_request(&session, task)
         .map_err(|_| METAXU_TRANSPORT_ERROR)
 }
