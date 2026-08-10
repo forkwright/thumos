@@ -70,14 +70,16 @@ fn main() {
     let _ = handle.join(); // kanon:ignore RUST/no-silent-result-swallow -- a panicked pylon thread has nothing further for this process to report; the witness script observes the outcome via the kernel's own boot log, not this process's exit path
 }
 
-/// Flip the response frame's LAST byte (#544 negative case). The envelope
-/// wraps a postcard-encoded `AuthenticatedResponse { response, mac: [u8;
-/// 32] }`; postcard encodes a fixed-size byte array as raw bytes with no
-/// length prefix, so `mac` is always the frame's trailing 32 bytes --
-/// corrupting the last one breaks `AuthenticatedResponse::verify` while
-/// leaving the envelope header and the `response` payload exactly as
-/// `Envelope::decode` and `postcard::from_bytes` expect, so decode still
-/// succeeds and only the MAC comparison fails.
+/// Flip the response frame's LAST byte (#544 negative case).
+///
+/// The envelope wraps a postcard-encoded `AuthenticatedResponse {
+/// response, mac: [u8; 32] }`; postcard encodes a fixed-size byte array
+/// as raw bytes with no length prefix, so `mac` is always the frame's
+/// trailing 32 bytes -- corrupting the last one breaks
+/// `AuthenticatedResponse::verify` while leaving the envelope header and
+/// the `response` payload exactly as `Envelope::decode` and
+/// `postcard::from_bytes` expect, so decode still succeeds and only the
+/// MAC comparison fails.
 fn tamper_response_mac(mut frame: Vec<u8>) -> Vec<u8> {
     if let Some(last) = frame.last_mut() {
         *last ^= 0xFF;

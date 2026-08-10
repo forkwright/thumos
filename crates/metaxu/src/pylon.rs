@@ -186,11 +186,12 @@ pub fn spawn(pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
 }
 
 /// Like [`spawn`], but every outgoing response frame passes through
-/// `transform` before it reaches the wire (#544 negative-case witness: a
-/// tampered-MAC response must surface to the client as a typed MAC
-/// failure, not a silent accept or a transport error). [`spawn`] delegates
-/// here with an identity transform -- one implementation, not two that
-/// could drift.
+/// `transform` before it reaches the wire.
+///
+/// #544 negative-case witness: a tampered-MAC response must surface to the
+/// client as a typed MAC failure, not a silent accept or a transport
+/// error. [`spawn`] delegates here with an identity transform -- one
+/// implementation, not two that could drift.
 pub fn spawn_with_response_transform(
     mut pylon: Pylon,
     n_requests: usize,

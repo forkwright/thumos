@@ -194,11 +194,13 @@ mod dev_identity {
     }
 
     /// #544 negative-case witness: a grant already expired at ANY `now_ms`
-    /// this probe could observe. `expires_at_ms: 0` rather than a
-    /// near-boot-time constant -- `now_ms >= expires_at_ms` is then a
-    /// tautology for the unsigned `now_ms` `evaluate_submission` receives,
-    /// so the case is deterministic regardless of how far uptime has
-    /// advanced by the time `submit` runs, never a timing race.
+    /// this probe could observe.
+    ///
+    /// `expires_at_ms: 0` rather than a near-boot-time constant --
+    /// `now_ms >= expires_at_ms` is then a tautology for the unsigned
+    /// `now_ms` `evaluate_submission` receives, so the case is
+    /// deterministic regardless of how far uptime has advanced by the
+    /// time `submit` runs, never a timing race.
     #[cfg(feature = "metaxu-probe-expired-grant")]
     pub(super) fn dev_grant() -> SignedGrant {
         SignedGrant::issue(
@@ -215,10 +217,12 @@ mod dev_identity {
     }
 
     /// #544 negative-case witness: a grant that verifies (unexpired,
-    /// correctly bound) but never carries `SmsSend` -- `harmless_task`
-    /// always builds a `SendSms` request, so this exercises
-    /// `evaluate_submission`'s capability check specifically, distinct from
-    /// the grant-verification failure the expired variant exercises.
+    /// correctly bound) but never carries `SmsSend`.
+    ///
+    /// `harmless_task` always builds a `SendSms` request, so this
+    /// exercises `evaluate_submission`'s capability check specifically,
+    /// distinct from the grant-verification failure the expired variant
+    /// exercises.
     #[cfg(feature = "metaxu-probe-no-capability")]
     pub(super) fn dev_grant() -> SignedGrant {
         SignedGrant::issue(
