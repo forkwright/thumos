@@ -713,7 +713,21 @@ impl<T: ModemTransport> Telephony<T> {
                     Some(SimPinState::Ready) => {
                         // SIM ready, no PIN required.
                     }
-                    Some(SimPinState::PinRequired | SimPinState::Other) => {
+                    // SECURITY (#696): SimPinState::Pin2Required/Puk2Required
+                    // gate the FDN/PIN2 secondary credential, not the
+                    // primary SIM lock -- this init step only cares whether
+                    // the primary lock blocks normal operation, so a PIN2
+                    // lock (like Other, an unrecognized state) surfaces as
+                    // the generic SimNotReady rather than the PUK-specific
+                    // error. Listing every non-PUK, non-Ready variant by
+                    // name (no wildcard) means a future variant here fails
+                    // to compile instead of silently taking this arm.
+                    Some(
+                        SimPinState::PinRequired
+                        | SimPinState::Pin2Required
+                        | SimPinState::Puk2Required
+                        | SimPinState::Other,
+                    ) => {
                         self.modem_state = ModemState::Error(TelephonyError::SimNotReady);
                         return Err(TelephonyError::SimNotReady);
                     }
@@ -1277,6 +1291,60 @@ mod tests {
             Err(TelephonyError::SimNotReady),
             "SIM PIN required must surface as SimNotReady"
         );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Error(TelephonyError::SimNotReady)
+        );
+    }
+
+    #[test]
+    fn cpin_sim_puk2_does_not_surface_sim_puk_required() {
+        // SECURITY (#696): SIM PUK2 gates the FDN/PIN2 secondary
+        // credential, not the primary SIM lock -- a prefix matcher testing
+        // "SIM PUK" before "SIM PIN" took this response into the PUK arm
+        // and reported SimPukRequired. A PUK has a small (~10) lifetime
+        // attempt limit with no carrier reset; an unlock flow driven by
+        // that misclassification prompts for the SIM PUK and validates
+        // every entry against the wrong credential.
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // Step 1: AT
+        mock.queue_ok(); // Step 2: ATE0
+        mock.queue_ok(); // Step 3: AT+CFUN=1
+        mock.queue_info_ok(b"+CPIN: SIM PUK2");
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert_eq!(
+            result,
+            Err(TelephonyError::SimNotReady),
+            "SIM PUK2 must not surface as SimPukRequired -- it is not the primary-SIM PUK lock"
+        );
+        assert_eq!(
+            tel.modem_state(),
+            ModemState::Error(TelephonyError::SimNotReady)
+        );
+    }
+
+    #[test]
+    fn cpin_sim_pin2_does_not_surface_as_primary_pin_state() {
+        // SECURITY (#696): SIM PIN2 gates the FDN/PIN2 secondary
+        // credential, not the primary SIM lock. Both the pre-fix prefix
+        // match and the post-fix exact match happen to surface
+        // TelephonyError::SimNotReady here -- the observable regression
+        // this test pins is that the classifier underneath now reports a
+        // distinct SimPinState::Pin2Required rather than conflating this
+        // response with SimPinState::PinRequired (see
+        // telephony_parser::parse_cpin_response_distinguishes_pin2_puk2_from_primary,
+        // which asserts that distinction directly).
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // Step 1: AT
+        mock.queue_ok(); // Step 2: ATE0
+        mock.queue_ok(); // Step 3: AT+CFUN=1
+        mock.queue_info_ok(b"+CPIN: SIM PIN2");
+
+        let mut tel = Telephony::new(mock);
+        let result = tel.initialize();
+        assert_eq!(result, Err(TelephonyError::SimNotReady));
         assert_eq!(
             tel.modem_state(),
             ModemState::Error(TelephonyError::SimNotReady)
