@@ -2,6 +2,10 @@
 //!
 //! Supports SMS-DELIVER (MT) and SMS-SUBMIT (MO) message types.
 //! GSM 7-bit and UCS-2 (UTF-16 BE) data encodings are implemented.
+//!
+//! The BCD address digit packing/unpacking is [`klesis_core`], shared with
+//! the thumos kernel's `sms.rs` (#545); this module keeps only the
+//! [`Address`]/[`AddressType`] framing the kernel has no equivalent for.
 
 use crate::error::Result;
 use crate::gsm7;
@@ -84,52 +88,24 @@ pub struct SmsSubmit {
 /// length octet). `type_byte` is the type-of-address octet. `bcd` is the
 /// packed BCD byte slice (`ceil(len_digits` / 2) bytes).
 ///
+/// The digit unpacking and nibble validation are
+/// [`klesis_core::decode_bcd_address`], shared with the kernel; only the
+/// three-way [`AddressType`] classification is klesis-shaped (the kernel
+/// has no equivalent National/Unknown distinction, so it stays local).
+///
 /// # Errors
 ///
 /// Returns [`crate::error::Error::PduDecode`] when a digit nibble falls
 /// outside the valid BCD digit range 0-9 (excluding the 0xF odd-length
-/// filler nibble).
+/// filler nibble), or when `len_digits` exceeds
+/// [`klesis_core::MAX_ADDRESS_DIGITS`].
 fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Result<Address> {
     let type_of_address = match type_byte {
         0x91 => AddressType::International,
         0x81 => AddressType::National,
         _ => AddressType::Unknown,
     };
-
-    let mut number = String::new();
-    if type_of_address == AddressType::International {
-        number.push('+');
-    }
-
-    let digit_count = usize::from(len_digits);
-    for (idx, &byte) in bcd.iter().enumerate() {
-        let lo = byte & 0x0F;
-        let hi = (byte >> 4) & 0x0F;
-
-        // Low nibble always present when we have a BCD byte.
-        let lo_digit_index = idx * 2;
-        if lo_digit_index < digit_count {
-            if lo > 9 {
-                return Err(crate::error::Error::PduDecode {
-                    offset: idx,
-                    message: format!("invalid BCD nibble in originating address: 0x{lo:X}"),
-                });
-            }
-            number.push(char::from(b'0' + lo));
-        }
-        // High nibble may be a filler 0xF for odd-digit numbers.
-        let hi_digit_index = idx * 2 + 1;
-        if hi_digit_index < digit_count && hi != 0x0F {
-            if hi > 9 {
-                return Err(crate::error::Error::PduDecode {
-                    offset: idx,
-                    message: format!("invalid BCD nibble in originating address: 0x{hi:X}"),
-                });
-            }
-            number.push(char::from(b'0' + hi));
-        }
-    }
-
+    let number = klesis_core::decode_bcd_address(len_digits, type_byte, bcd)?;
     Ok(Address {
         number,
         type_of_address,
@@ -138,7 +114,13 @@ fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Result<Addre
 
 /// Encode an [`Address`] INTO the PDU wire format.
 ///
-/// Returns `[length_in_digits, type_byte, bcd_bytes…]`.
+/// Returns `[length_in_digits, type_byte, bcd_bytes…]`. The digit-pair
+/// packing is [`klesis_core::pack_bcd_digits`], shared with the kernel;
+/// only the type-byte selection is klesis-shaped -- it is driven by the
+/// caller-supplied [`AddressType`] (round-tripping a decoded National or
+/// Unknown type-of-address octet), where the kernel and
+/// [`klesis_core::encode_bcd_address`] have no such caller state and infer
+/// international-vs-national from the leading `+` alone.
 fn encode_bcd_address(addr: &Address) -> Result<Vec<u8>> {
     // Strip any leading '+'.
     let digits: &str = addr.number.strip_prefix('+').unwrap_or(&addr.number);
@@ -149,49 +131,15 @@ fn encode_bcd_address(addr: &Address) -> Result<Vec<u8>> {
         _ => 0x80,
     };
 
-    let digit_bytes: Vec<u8> = digits.as_bytes().to_vec();
-    // SECURITY/CORRECTNESS: every byte must be validated before the BCD
-    // packing loop performs `d - b'0'`. An unvalidated non-digit byte
-    // (service char, formatting char, or arbitrary attacker-influenced
-    // byte) underflows in debug builds (panic) or wraps to a silently
-    // corrupted nibble in release builds, while this function still
-    // returns `Ok`.
-    if let Some(&bad) = digit_bytes.iter().find(|&&d| !d.is_ascii_digit()) {
-        return Err(crate::error::Error::PduEncode {
-            message: format!("non-digit character in address: 0x{bad:02X}"),
-        });
-    }
-    let len_digits =
-        u8::try_from(digit_bytes.len()).map_err(|_| crate::error::Error::PduEncode {
-            message: "SMS address exceeds u8 length limit".to_owned(),
-        })?;
-    let bcd_byte_count = usize::from(len_digits.div_ceil(2));
+    let packed = klesis_core::pack_bcd_digits(digits.as_bytes())?;
+    let len_digits = u8::try_from(digits.len()).map_err(|_| crate::error::Error::PduEncode {
+        message: "SMS address exceeds u8 length limit".to_owned(),
+    })?;
 
-    let mut bcd: Vec<u8> = vec![0u8; bcd_byte_count];
-    for (i, &d) in digit_bytes.iter().enumerate() {
-        let nibble = d - b'0';
-        let byte_index = i / 2;
-        if let Some(slot) = bcd.get_mut(byte_index) {
-            if i % 2 == 0 {
-                // Low nibble
-                *slot = nibble;
-            } else {
-                // High nibble
-                *slot |= nibble << 4;
-            }
-        }
-    }
-    // Pad odd-length numbers with 0xF in the final high nibble.
-    if !digit_bytes.len().is_multiple_of(2)
-        && let Some(last) = bcd.last_mut()
-    {
-        *last |= 0xF0;
-    }
-
-    let mut out = Vec::with_capacity(2 + bcd_byte_count);
+    let mut out = Vec::with_capacity(2 + packed.len());
     out.push(len_digits);
     out.push(type_byte);
-    out.extend_from_slice(&bcd);
+    out.extend_from_slice(&packed);
     Ok(out)
 }
 

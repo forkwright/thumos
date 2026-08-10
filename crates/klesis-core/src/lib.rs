@@ -441,6 +441,45 @@ pub fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Result<S
     Ok(out)
 }
 
+/// Pack ASCII decimal digits into TS 23.040 BCD byte pairs.
+///
+/// Each output byte holds two digits, low-nibble-first; an odd digit count
+/// pads the final high nibble with [`BCD_FILLER`]. This is the byte-level
+/// packing shared by every address-encoding caller — [`encode_bcd_address`]
+/// below and the `klesis` workspace crate's own type-of-address-aware
+/// encoder, which need the same packing but derive the type-of-address
+/// octet differently (a leading `+` here vs. an explicit caller-supplied
+/// address type there).
+///
+/// # Errors
+///
+/// - [`CoreError::BcdInvalidDigit`] when a byte is not an ASCII decimal
+///   digit.
+/// - [`CoreError::AddressTooLong`] when `digits.len()` exceeds
+///   [`MAX_ADDRESS_DIGITS`].
+pub fn pack_bcd_digits(digits: &[u8]) -> Result<Vec<u8>> {
+    let mut nibbles: Vec<u8> = Vec::with_capacity(digits.len());
+    for &b in digits {
+        if !b.is_ascii_digit() {
+            return Err(CoreError::BcdInvalidDigit { nibble: b });
+        }
+        nibbles.push(b - b'0');
+    }
+    if nibbles.len() > MAX_ADDRESS_DIGITS {
+        return Err(CoreError::AddressTooLong {
+            digits: nibbles.len(),
+        });
+    }
+
+    let mut packed = Vec::with_capacity(nibbles.len().div_ceil(2));
+    for pair in nibbles.chunks(2) {
+        let lo = pair.first().copied().unwrap_or(BCD_FILLER);
+        let hi = pair.get(1).copied().unwrap_or(BCD_FILLER);
+        packed.push((hi << 4) | lo);
+    }
+    Ok(packed)
+}
+
 /// Encode a digit string as a BCD address field.
 ///
 /// Returns `(type_of_address, packed_bcd)`. A leading `+` selects the
@@ -455,26 +494,7 @@ pub fn encode_bcd_address(number: &str) -> Result<(u8, Vec<u8>)> {
     let (toa, digits_str) = number
         .strip_prefix('+')
         .map_or((0x81, number), |rest| (TOA_INTERNATIONAL, rest));
-
-    let mut digits: Vec<u8> = Vec::with_capacity(digits_str.len());
-    for b in digits_str.bytes() {
-        if !b.is_ascii_digit() {
-            return Err(CoreError::BcdInvalidDigit { nibble: b });
-        }
-        digits.push(b - b'0');
-    }
-    if digits.len() > MAX_ADDRESS_DIGITS {
-        return Err(CoreError::AddressTooLong {
-            digits: digits.len(),
-        });
-    }
-
-    let mut packed = Vec::with_capacity(digits.len().div_ceil(2));
-    for pair in digits.chunks(2) {
-        let lo = pair.first().copied().unwrap_or(BCD_FILLER);
-        let hi = pair.get(1).copied().unwrap_or(BCD_FILLER);
-        packed.push((hi << 4) | lo);
-    }
+    let packed = pack_bcd_digits(digits_str.as_bytes())?;
     Ok((toa, packed))
 }
 
