@@ -19,7 +19,13 @@ use crate::error::{NotReadySnafu, ParseSnafu, Result, UnexpectedResponseSnafu};
 /// result code keeps `AtSession::send_command` looping forever and grows
 /// its `info` `Vec` without bound -- a heap-exhaustion `DoS`. Mirrors
 /// `wait_urc`'s `MAX_ATTEMPTS` below.
-const MAX_INFO_LINES: usize = 64;
+///
+/// WHY: matches the kernel's `telephony::MAX_RESPONSE_LINES`, which was
+/// deliberately narrowed from 64 (issue #282 finding 14) to shrink the
+/// worst-case block time a modem pacing junk lines just under a command's
+/// timeout can impose. A looser bound here would reopen that window on
+/// this side of the split AT-parsing path.
+const MAX_INFO_LINES: usize = 16;
 
 /// Maximum bytes buffered for a single AT line before giving up.
 ///
@@ -421,6 +427,29 @@ mod tests {
         assert!(
             result.is_err(),
             "send_command must error rather than buffer 1000 info lines"
+        );
+    }
+
+    #[test]
+    fn send_command_bounds_matches_kernel_hardened_limit() {
+        // WHY (#685): MAX_INFO_LINES was reconciled to the kernel's
+        // MAX_RESPONSE_LINES = 16 (deliberately narrowed from 64 there, per
+        // issue #282 finding 14, to shrink a modem's worst-case block-time
+        // window). This exercises the boundary directly: a response with
+        // one more info line than the hardened bound, followed by OK, must
+        // still fail -- against the pre-reconciliation bound of 64 this
+        // response fits comfortably and would have succeeded.
+        let mut data = Vec::new();
+        for _ in 0..17 {
+            data.extend_from_slice(b"+CSQ: 1,1\r\n");
+        }
+        data.extend_from_slice(b"OK\r\n");
+        let transport = MockTransport::with_response(&data);
+        let mut session = AtSession::new(transport);
+        let result = session.send_command("AT+CSQ");
+        assert!(
+            result.is_err(),
+            "17 info lines must exceed the hardened 16-line bound shared with the kernel"
         );
     }
 
