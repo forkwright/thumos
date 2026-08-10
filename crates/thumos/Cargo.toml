@@ -59,10 +59,13 @@ aes = { version = "0.8", default-features = false }
 # band boundaries) live in sema-core, shared with the workspace `sema` crate
 # — one implementation, no drifted duplicate in screen_threat.
 sema-core = { path = "../sema-core", default-features = false }
-# WHY (#545): the canonical packet-parse + DNS-surveillance-policy semantics
-# (IPv4/TCP/UDP header fields, QNAME extraction, the blocklist domain list and
-# its suffix-matching rule) live in asphaleia-core, shared with the workspace
-# `asphaleia` crate — one implementation, no drifted duplicate in firewall.rs.
+# WHY (#545): the canonical DNS-surveillance-policy semantics (QNAME
+# extraction, the blocklist domain list, and its suffix-matching rule) live
+# in asphaleia-core, shared with the workspace `asphaleia` crate -- one
+# implementation, no drifted duplicate in firewall.rs. IPv4/TCP/UDP header
+# parsing is NOT yet converged: firewall.rs::parse_packet still does its own
+# header arithmetic (see docs/convergence.toml's "firewall" pair for the
+# tracked disposition).
 asphaleia-core = { path = "../asphaleia-core", default-features = false }
 # WHY (#545, #662): the canonical GSM-7 codec, SMS-PDU byte primitives, and
 # the silent-SMS/WAP-Push classification live in klesis-core, shared with the
