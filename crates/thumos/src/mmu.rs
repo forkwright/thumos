@@ -124,7 +124,7 @@ pub(crate) fn alloc_l2_table() -> Option<usize> {
         let slot = (0u64..L2_POOL_SIZE as u64).find(|&i| mask & (1 << i) == 0)?;
         core::ptr::write_volatile(alloc, mask | (1 << slot));
         let table = &mut (*core::ptr::addr_of_mut!(L2_TABLES))[slot as usize];
-        for entry in table.entries.iter_mut() {
+        for entry in &mut table.entries {
             *entry = 0;
         }
         Some(core::ptr::addr_of!(*table) as usize)
@@ -229,7 +229,7 @@ pub unsafe fn map_page(l1_phys: usize, virt_addr: usize, phys_addr: usize, l2_at
         let l2_phys = if l1_val & 0b11 == page_flags::L1_PAGE_TABLE {
             // L1 already points to an L2 table
             (l1_val & 0xFFFF_FC00) as usize
-        } else if l1_val & 0b11 == 0 {
+        } else if l1_val.trailing_zeros() >= 2 {
             // No mapping exists -- allocate a new L2 table
             let Some(new_l2) = alloc_l2_table() else {
                 return false;
@@ -512,7 +512,7 @@ pub unsafe fn read_l2_phys(l1_phys: usize, virt_addr: usize) -> Option<usize> {
         let l2_entry_ptr = (l2_phys as *const u32).add(l2_index);
         let l2_val = l2_entry_ptr.read_volatile();
 
-        if l2_val & 0b11 == 0 {
+        if l2_val.trailing_zeros() >= 2 {
             return None;
         }
 
@@ -544,7 +544,7 @@ pub unsafe fn update_page_prot(l1_phys: usize, virt_addr: usize, l2_attrs: u32) 
         let l2_entry_ptr = (l2_phys as *mut u32).add(l2_index);
         let old = l2_entry_ptr.read_volatile();
 
-        if old & 0b11 == 0 {
+        if old.trailing_zeros() >= 2 {
             return false; // page not mapped
         }
 
@@ -753,11 +753,12 @@ unsafe fn map_kernel_wx() {
         static __etext: u8;
         static __erodata: u8;
     }
+    const KERNEL_BASE: usize = 0x4000_0000;
+    const PAGE: usize = 4096;
+
     let text_start = core::ptr::addr_of!(__text_start) as usize;
     let etext = core::ptr::addr_of!(__etext) as usize;
     let erodata = core::ptr::addr_of!(__erodata) as usize;
-    const KERNEL_BASE: usize = 0x4000_0000;
-    const PAGE: usize = 4096;
     // SAFETY: KERNEL_L2 is a static mut written once here during early boot
     // with interrupts disabled and no concurrent access.
     let l2 = unsafe { &mut *core::ptr::addr_of_mut!(KERNEL_L2) };
@@ -810,7 +811,7 @@ pub unsafe fn init_and_enable() {
     // disabled and no concurrent readers. addr_of_mut! avoids creating a reference
     // to a static mut, which is UB.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(L1) };
-    for entry in table.entries.iter_mut() {
+    for entry in &mut table.entries {
         *entry = 0;
     }
 
@@ -1043,7 +1044,7 @@ pub fn alloc_addr_space() -> Option<usize> {
         // as a type-level fact instead of a runtime check with a silent
         // fallback.
         let table = &mut (*core::ptr::addr_of_mut!(USER_TABLES))[usize::from(slot)];
-        for entry in table.entries.iter_mut() {
+        for entry in &mut table.entries {
             *entry = 0;
         }
         Some(core::ptr::addr_of!(*table) as usize)
@@ -1439,7 +1440,7 @@ mod tests {
             // The pool must be back to fully available: every slot can be
             // claimed fresh.
             let mut reclaimed = [0usize; L2_POOL_SIZE];
-            for slot in reclaimed.iter_mut() {
+            for slot in &mut reclaimed {
                 *slot = alloc_l2_table()
                     .expect("L2 pool must be fully reclaimed after every region was unmapped");
             }
@@ -1482,7 +1483,7 @@ mod tests {
             // free_addr_space must have walked the L1 and reclaimed every
             // still-referenced L2 table.
             let mut reclaimed = [0usize; L2_POOL_SIZE];
-            for slot in reclaimed.iter_mut() {
+            for slot in &mut reclaimed {
                 *slot = alloc_l2_table()
                     .expect("free_addr_space must reclaim L2 tables left mapped at process exit");
             }
