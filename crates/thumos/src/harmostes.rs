@@ -2427,4 +2427,274 @@ mod tests {
         let bad = alloc::format!("zz{}", "aa".repeat(31));
         assert_eq!(hex_decode_32_bytes(&bad), None);
     }
+
+    // -- /keys/claim (#437) --
+
+    /// Helper: build a minimal `/keys/claim` response body. `key_id` is the
+    /// `"<algorithm>:<id>"` string under the target device (e.g.
+    /// `"curve25519:AAAAAQ"`); `key_value` is the raw value at that key
+    /// (hex or base64, or deliberately neither for malformed-payload tests).
+    fn build_claim_response(
+        user_id: &str,
+        device_id: &str,
+        key_id: &str,
+        key_value: &str,
+    ) -> String {
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("failures");
+        w.object_start();
+        w.end();
+        w.key("one_time_keys");
+        w.object_start();
+        w.key(user_id);
+        w.object_start();
+        w.key(device_id);
+        w.object_start();
+        w.key(key_id);
+        w.string_value(key_value);
+        w.end(); // key map
+        w.end(); // device
+        w.end(); // user
+        w.end(); // one_time_keys
+        w.end(); // root
+        w.finish()
+    }
+
+    #[test]
+    fn claim_keys_request_builds_correct_path_and_body() {
+        let client = matrix_client_with_test_credentials();
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+
+        let req = client
+            .build_claim_keys_request(user_id, device_id)
+            .expect("a well-formed target must build a request");
+
+        assert!(req.path.contains("/keys/claim"));
+
+        let has_auth = req
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v.contains("Bearer"));
+        assert!(has_auth);
+
+        let body_bytes = req.body.as_deref().unwrap_or(&[]);
+        let body_str = core::str::from_utf8(body_bytes).unwrap_or("");
+        assert!(body_str.contains(user_id), "body must key on the user id");
+        assert!(
+            body_str.contains(device_id),
+            "body must nest the device id under the user"
+        );
+        assert!(
+            body_str.contains(matrix_crypto::ONE_TIME_KEY_ALGORITHM),
+            "body must declare the claimed algorithm"
+        );
+    }
+
+    #[test]
+    fn claim_keys_request_rejects_invalid_user_id() {
+        let client = matrix_client_with_test_credentials();
+        let result = client.build_claim_keys_request("not-a-user-id", "DEVICE1");
+        assert!(
+            matches!(result, Err(MatrixError::InvalidId(_))),
+            "a user id missing the '@' sigil must be rejected before it reaches the request body, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn claim_keys_request_rejects_invalid_device_id() {
+        let client = matrix_client_with_test_credentials();
+        // #373: a CRLF-bearing device id must not reach JSON-key interpolation.
+        let result = client
+            .build_claim_keys_request("@alice:matrix.example.com", "EVIL\r\nX-Injected: evil");
+        assert!(matches!(result, Err(MatrixError::InvalidId(_))));
+    }
+
+    #[test]
+    fn claim_response_happy_path_consumes_matching_local_key() {
+        // The single-use tracking this remnant wires is grounded in
+        // consume_one_time_key's existing pool -- seed a known key the same
+        // way consume_one_time_key_frees_capacity_for_regeneration (in
+        // matrix_crypto.rs) does, then verify the claim response round trip
+        // extracts and consumes that exact key.
+        let mut client = matrix_client_with_test_credentials();
+        let key = client
+            .crypto_mut()
+            .generate_one_time_keys(1)
+            .expect("seeding one key must succeed")[0];
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+        let key_hex = hex_encode_bytes(&key);
+        let body = build_claim_response(user_id, device_id, "curve25519:AAAAAQ", &key_hex);
+        let response = mock_response(200, &body);
+
+        let result = client.process_claim_keys_response(user_id, device_id, &response);
+        assert_eq!(result, Ok(key));
+        assert!(
+            !client.crypto().one_time_keys().contains(&key),
+            "a successfully claimed key must be removed from the local pool"
+        );
+    }
+
+    #[test]
+    fn claim_response_rejects_double_consumption_of_same_key() {
+        // The security property this remnant exists for: a one-time key
+        // claimed once must never be usable a second time.
+        let mut client = matrix_client_with_test_credentials();
+        let key = client
+            .crypto_mut()
+            .generate_one_time_keys(1)
+            .expect("seeding one key must succeed")[0];
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+        let key_hex = hex_encode_bytes(&key);
+        let body = build_claim_response(user_id, device_id, "curve25519:AAAAAQ", &key_hex);
+
+        let first =
+            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        assert_eq!(
+            first,
+            Ok(key),
+            "the first consumption of a fresh key must succeed"
+        );
+
+        let second =
+            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        assert_eq!(
+            second,
+            Err(MatrixError::OneTimeKeyAlreadyConsumed),
+            "a second consumption of the identical key must fail closed, not silently succeed"
+        );
+    }
+
+    #[test]
+    fn claim_response_missing_device_fails_closed() {
+        let mut client = matrix_client_with_test_credentials();
+        let user_id = "@alice:matrix.example.com";
+        // Response carries a key, but for a DIFFERENT device than requested.
+        let body = build_claim_response(
+            user_id,
+            "OTHERDEVICE",
+            "curve25519:AAAAAQ",
+            &"11".repeat(32),
+        );
+        let result =
+            client.process_claim_keys_response(user_id, "ALICEDEVICE", &mock_response(200, &body));
+        assert_eq!(result, Err(MatrixError::ClaimedKeyMissing));
+    }
+
+    #[test]
+    fn claim_response_empty_key_map_fails_closed() {
+        let mut client = matrix_client_with_test_credentials();
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("one_time_keys");
+        w.object_start();
+        w.key(user_id);
+        w.object_start();
+        w.key(device_id);
+        w.object_start();
+        w.end(); // empty key map -- homeserver had nothing to hand out
+        w.end();
+        w.end();
+        w.end();
+        w.end();
+        let body = w.finish();
+
+        let result =
+            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        assert_eq!(result, Err(MatrixError::ClaimedKeyMissing));
+    }
+
+    #[test]
+    fn claim_response_unsupported_algorithm_fails_closed() {
+        // A homeserver returning only `signed_curve25519` (this simplified
+        // client neither signs nor verifies signed one-time keys) must be
+        // rejected, not misread as a raw key.
+        let mut client = matrix_client_with_test_credentials();
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+        let body = build_claim_response(
+            user_id,
+            device_id,
+            "signed_curve25519:AAAAAQ",
+            &"11".repeat(32),
+        );
+        let result =
+            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        assert_eq!(result, Err(MatrixError::UnsupportedKeyAlgorithm));
+    }
+
+    #[test]
+    fn claim_response_malformed_key_value_fails_closed() {
+        let mut client = matrix_client_with_test_credentials();
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+        let body = build_claim_response(
+            user_id,
+            device_id,
+            "curve25519:AAAAAQ",
+            "not-a-valid-key-encoding",
+        );
+        let result =
+            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        assert_eq!(result, Err(MatrixError::MalformedClaimedKey));
+    }
+
+    #[test]
+    fn claim_response_non_object_key_value_fails_closed() {
+        // The matching key entry's value must be a string; a JSON number
+        // (or any non-string) must not be coerced or silently skipped past.
+        let mut client = matrix_client_with_test_credentials();
+        let user_id = "@alice:matrix.example.com";
+        let device_id = "ALICEDEVICE";
+
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("one_time_keys");
+        w.object_start();
+        w.key(user_id);
+        w.object_start();
+        w.key(device_id);
+        w.object_start();
+        w.key("curve25519:AAAAAQ");
+        w.number_value(12345);
+        w.end();
+        w.end();
+        w.end();
+        w.end();
+        w.end();
+        let body = w.finish();
+
+        let result =
+            client.process_claim_keys_response(user_id, device_id, &mock_response(200, &body));
+        assert_eq!(result, Err(MatrixError::MalformedClaimedKey));
+    }
+
+    #[test]
+    fn claim_response_server_error_propagates() {
+        let mut client = matrix_client_with_test_credentials();
+        let body = "{\"errcode\":\"M_NOT_FOUND\",\"error\":\"device not found\"}";
+        let response = mock_response(404, body);
+        let result = client.process_claim_keys_response(
+            "@alice:matrix.example.com",
+            "ALICEDEVICE",
+            &response,
+        );
+        assert!(matches!(result, Err(MatrixError::ServerError { .. })));
+    }
+
+    #[test]
+    fn claimed_key_algorithm_splits_on_colon() {
+        assert_eq!(claimed_key_algorithm("curve25519:AAAAAQ"), "curve25519");
+        assert_eq!(
+            claimed_key_algorithm("signed_curve25519:AAAAAQ"),
+            "signed_curve25519"
+        );
+        assert_eq!(claimed_key_algorithm("no-colon-here"), "no-colon-here");
+    }
 }
