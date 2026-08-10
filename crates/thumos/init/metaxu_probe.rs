@@ -140,7 +140,16 @@ pub extern "C" fn _start() -> ! {
     unsafe {
         let submit_rc = sys_metaxu_submit();
         if submit_rc != 0 {
-            let m = b"metaxu: submit failed\n";
+            // Mirrors crate::metaxu_bridge::{METAXU_DENIED_LOCALLY = 5,
+            // METAXU_TRANSPORT_ERROR = 4} -- userspace has no access to the
+            // kernel crate (see EAGAIN's restatement above), and #544's
+            // negative-case witness needs the two distinguished: a local
+            // policy denial must never read the same as a transport fault.
+            let m: &[u8] = match submit_rc {
+                5 => b"metaxu: submit denied locally\n",
+                4 => b"metaxu: submit transport error\n",
+                _ => b"metaxu: submit failed\n",
+            };
             sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
             sys_exit(1);
         }
