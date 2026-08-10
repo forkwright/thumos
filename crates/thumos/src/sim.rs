@@ -474,12 +474,10 @@ fn parse_cpin_sim_pin(line: &[u8]) -> bool {
 /// Convert raw AT+CSQ RSSI value (0-31, 99=unknown) to dBm.
 ///
 /// Formula: dBm = -113 + (rssi * 2), per 3GPP TS 27.007.
-fn rssi_to_dbm(rssi: u8) -> i16 {
-    if rssi == 99 {
-        return -999; // unknown sentinel
-    }
-    -113 + (i16::from(rssi) * 2)
-}
+///
+/// Canonical definition: [`klesis_core::rssi_to_dbm`] (#545), the same
+/// implementation `telephony_parser` and klesis link.
+use klesis_core::rssi_to_dbm;
 
 /// Map signal strength in dBm to bars (0-4).
 ///
