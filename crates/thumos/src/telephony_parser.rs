@@ -661,3 +661,13 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod gate_proof_694 {
+    // WHY: deliberately failing test proving the kernel job blocks a merge
+    // once promoted to a required check. This branch is never merged.
+    #[test]
+    fn deliberately_failing_kernel_test() {
+        assert_eq!(1, 2, "intentional failure proving the required check blocks");
+    }
+}
