@@ -3,7 +3,18 @@ name: Release Please
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: >-
+          Ref (tag/branch/sha) to exercise SBOM generation against. Proves
+          the release-attest job runnable without cutting a release: it
+          generates and validates SBOMs but does not create real
+          attestations (those only ever fire off release-please's own
+          tag_name). Leave empty to just manually re-trigger release-please.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -30,16 +41,46 @@ jobs:
 
   release-attest:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    # WHY (#705): two independent paths land here -- a real release-please
+    # cut (release_created == 'true', ref is the tag it just created) or an
+    # on-demand proof run (workflow_dispatch with a non-empty ref). Neither
+    # path duplicates the step list; the attestation steps below carry their
+    # own `if:` so only the real-release path ever produces a signed
+    # attestation. Dispatching with no ref preserves the pre-existing
+    # behavior of manually re-kicking release-please with nothing downstream.
+    # This is what makes the job provable before a release depends on it --
+    # its previous two breaks (#536's cargo-package incompatibility, and the
+    # --output-file flag fixed here) both shipped through eight releases
+    # because nothing could exercise this job except an actual cut.
+    if: |
+      needs.release-please.outputs.release_created == 'true' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.ref != '')
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       attestations: write
       contents: write
+      issues: write
+    env:
+      # INVARIANT: IS_RELEASE gates the two real attest-* steps and the
+      # failure-issue step. It can only be true off release-please's own
+      # output, never off a dispatch input -- a dispatch-supplied ref cannot
+      # reach any of those regardless of what value it holds.
+      IS_RELEASE: ${{ needs.release-please.outputs.release_created == 'true' }}
+      # WARNING: ATTEST_REF holds an untrusted value on the dispatch path
+      # (workflow_dispatch inputs are attacker-reachable by anyone with
+      # trigger access). Never splice it directly into a `${{ }}` inside a
+      # `run:` shell block -- reference it as the $ATTEST_REF env var there,
+      # so it's a plain value substitution, not re-parsed script text.
+      ATTEST_REF: ${{ needs.release-please.outputs.tag_name || github.event.inputs.ref }}
+      # WHY: filenames/labels derive from run_id on the dispatch path instead
+      # of slugifying an arbitrary ref (which may contain '/'), sidestepping
+      # path-safety entirely rather than sanitizing it.
+      RELEASE_LABEL: ${{ needs.release-please.outputs.tag_name || format('dispatch-{0}', github.run_id) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ env.ATTEST_REF }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -61,26 +102,122 @@ jobs:
       - name: Create deterministic source tarball
         run: |
           git archive --format=tar.gz \
-            --prefix="thumos-${{ needs.release-please.outputs.tag_name }}/" \
-            -o "thumos-${{ needs.release-please.outputs.tag_name }}.tar.gz" \
-            "${{ needs.release-please.outputs.tag_name }}"
-          sha256sum "thumos-${{ needs.release-please.outputs.tag_name }}.tar.gz"
+            --prefix="thumos-${RELEASE_LABEL}/" \
+            -o "thumos-${RELEASE_LABEL}.tar.gz" \
+            "${ATTEST_REF}"
+          sha256sum "thumos-${RELEASE_LABEL}.tar.gz"
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx --locked --quiet
-      # Two SBOMs for full supply-chain coverage (#536): the 13 workspace
-      # crates AND the out-of-workspace bare-metal kernel crate (the
-      # security-critical artifact) — the pre-#536 job covered neither
-      # because it never got past packaging.
+      # WHY (#705): `--output-file` does not exist on cargo-cyclonedx; it was
+      # never the right flag and the job died here on every release.
+      # `--override-filename <NAME>` is the real counterpart, verified by
+      # workflow_dispatch runs 31411641877/31412300484 against this exact
+      # workspace: it sets a shared base filename across every SBOM the
+      # invocation writes, with the bare --format extension appended (no
+      # `.cdx` infix -- `sbom-workspace`, not `sbom-workspace.cdx`, becomes
+      # `sbom-workspace.json`).
+      #
+      # NOTE: cargo-cyclonedx has no workspace-aggregate mode. `--all` and
+      # `--top-level` only control dependency depth within each SBOM, never
+      # file count (confirmed via `cargo cyclonedx --help` in the same
+      # runs); its default `--describe crate` behavior writes one SBOM per
+      # crate manifest, adjacent to that manifest, for every crate the
+      # invocation resolves. Run at the workspace root this produces one
+      # file per workspace member -- crates/*/sbom-workspace.json, 19 files,
+      # not the single sbom-workspace.cdx.json the original job assumed --
+      # which the merge step below consolidates into the artefact the
+      # attest step actually needs.
       - name: Generate CycloneDX SBOM (workspace crates)
-        run: cargo cyclonedx --format json --output-file sbom-workspace.cdx.json
+        run: |
+          cargo cyclonedx --format json --all --override-filename sbom-workspace
+          ls -la crates/*/sbom-workspace.json
+      # Kernel crate is excluded from the workspace (Cargo.toml `exclude`),
+      # so this is its own invocation against a real (non-virtual) manifest
+      # -- one crate in, one file out, no merge needed.
       - name: Generate CycloneDX SBOM (kernel crate)
-        run: cargo cyclonedx --manifest-path crates/thumos/Cargo.toml --format json --output-file sbom-kernel.cdx.json
+        run: |
+          cargo cyclonedx --manifest-path crates/thumos/Cargo.toml --format json --all --override-filename sbom-kernel
+          ls -la crates/thumos/sbom-kernel.json
+      # WHY: cargo-cyclonedx cannot itself produce a single SBOM describing
+      # the whole workspace (see NOTE above), and `actions/attest-sbom`'s
+      # sbom-path takes exactly one file -- its description never mentions a
+      # glob, unlike subject-path's, which explicitly does. cyclonedx-cli is
+      # the CycloneDX project's own tool for combining per-module SBOMs;
+      # `--hierarchical` nests each input as a distinct subcomponent instead
+      # of flat-unioning component lists, which is what keeps the merged
+      # document schema-valid (a plain non-hierarchical merge can produce
+      # duplicate components that fail validation). Binary pinned by
+      # release tag + sha256 digest (matches this file's existing
+      # SHA-pinning convention for GitHub Actions); digest read from the
+      # v0.33.1 GitHub release asset metadata, not computed by us.
+      - name: Install cyclonedx-cli
+        run: |
+          curl -sSfL -o cyclonedx-cli https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.33.1/cyclonedx-linux-x64
+          echo "bfc8b2538da86fe239bc53658bbb63c1c8c510a293c1e6891aa5bea5d3c58746  cyclonedx-cli" | sha256sum -c -
+          chmod +x cyclonedx-cli
+      - name: Merge workspace SBOMs into a single artefact
+        run: |
+          ./cyclonedx-cli merge \
+            --input-files crates/*/sbom-workspace.json \
+            --output-file sbom-workspace.cdx.json \
+            --output-format json \
+            --hierarchical \
+            --name thumos-workspace \
+            --version "${RELEASE_LABEL}"
+          mv crates/thumos/sbom-kernel.json sbom-kernel.cdx.json
+      # NOTE (#705): the check that would have caught the original
+      # --output-file regression. Always runs, gated on nothing, so a broken
+      # flag or a glob that stops matching fails even a bare
+      # workflow_dispatch proof run instead of surfacing only when a real
+      # release depends on it.
+      - name: Validate SBOM artefacts match the attest glob
+        run: |
+          shopt -s nullglob
+          files=(sbom-*.cdx.json)
+          echo "sbom-*.cdx.json matched: ${files[*]}"
+          if [ "${#files[@]}" -ne 2 ]; then
+            echo "::error::expected exactly 2 files matching sbom-*.cdx.json at repo root (sbom-workspace.cdx.json + sbom-kernel.cdx.json), found ${#files[@]}: ${files[*]}"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            ./cyclonedx-cli validate --input-file "$f" --input-format json --fail-on-errors
+          done
       - name: Attest source tarball provenance
+        if: ${{ env.IS_RELEASE == 'true' }}
         uses: actions/attest-build-provenance@10334b5f1e684784025c3fc0a277c88c19089275 # v2
         with:
           subject-path: thumos-*.tar.gz
-      - name: Attest CycloneDX SBOMs
+      # NOTE: two calls, not one glob -- sbom-path takes exactly one file,
+      # and cargo-cyclonedx cannot emit a single combined workspace SBOM
+      # (see NOTE above), so the merge step produces two discrete files that
+      # each need their own attestation call.
+      - name: Attest workspace CycloneDX SBOM
+        if: ${{ env.IS_RELEASE == 'true' }}
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v2
         with:
           subject-path: thumos-*.tar.gz
-          sbom-path: sbom-*.cdx.json
+          sbom-path: sbom-workspace.cdx.json
+      - name: Attest kernel CycloneDX SBOM
+        if: ${{ env.IS_RELEASE == 'true' }}
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v2
+        with:
+          subject-path: thumos-*.tar.gz
+          sbom-path: sbom-kernel.cdx.json
+      # WHY (#705): a red release-attest run reports to nobody who is
+      # looking -- it fires after the tag is already published, is not a
+      # required check, and cannot become one. Files a tracked issue only on
+      # the real-release path (never a dispatch proof run, so iterating on
+      # this job doesn't spam the tracker) so a broken attestation on an
+      # actual release surfaces somewhere a human will see it instead of
+      # staying red for eight releases across two unrelated causes.
+      - name: File an issue if release attestation failed
+        if: ${{ failure() && env.IS_RELEASE == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body=$(printf 'release-attest failed on the real release path for %s.\n\nRun: %s/%s/actions/runs/%s\n\nThe tag and release notes for %s were published regardless -- this job runs after release-please already cut the release. The published release may be missing its source-tarball provenance attestation and/or its CycloneDX SBOM attestations. Investigate before treating this release as fully attested.\n' \
+            "${RELEASE_LABEL}" "${GITHUB_SERVER_URL}" "${GITHUB_REPOSITORY}" "${GITHUB_RUN_ID}" "${RELEASE_LABEL}")
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "release-attest failed for ${RELEASE_LABEL}" \
+            --body "${body}"
