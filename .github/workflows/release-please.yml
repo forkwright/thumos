@@ -203,6 +203,44 @@ jobs:
         with:
           subject-path: thumos-*.tar.gz
           sbom-path: sbom-kernel.cdx.json
+      # WHY (#705): attestation binds a signature to an artefact DIGEST; it does
+      # not publish the artefact. Without this upload the tarball and both SBOMs
+      # exist only inside the runner and are discarded when it terminates, so
+      # `gh attestation verify` -- which requires the file -- has nothing to
+      # check and the release carries zero assets. v0.2.5 is the proof: the job
+      # went green for the first time and the release was still empty.
+      # INVARIANT: every artefact named as an attestation subject-path or
+      # sbom-path above must appear here, or it is signed and undistributed.
+      - name: Upload attested artefacts to the release
+        if: ${{ env.IS_RELEASE == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          gh release upload "$TAG" \
+            thumos-"$TAG".tar.gz \
+            sbom-workspace.cdx.json \
+            sbom-kernel.cdx.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+      # WHY (#705): asserts the release actually carries what was just attested,
+      # rather than trusting that the upload above did anything. A green job that
+      # leaves the release empty is exactly the failure this issue was reopened
+      # for, and it is invisible without this check.
+      - name: Verify the release carries the attested artefacts
+        if: ${{ env.IS_RELEASE == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          names=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          for want in "thumos-$TAG.tar.gz" sbom-workspace.cdx.json sbom-kernel.cdx.json; do
+            printf '%s\n' "$names" | grep -qxF "$want" || {
+              echo "FAIL: release $TAG is missing attested artefact '$want'" >&2
+              echo "carries: $names" >&2
+              exit 1
+            }
+          done
+          echo "release $TAG carries all three attested artefacts"
       # WHY (#705): a red release-attest run reports to nobody who is
       # looking -- it fires after the tag is already published, is not a
       # required check, and cannot become one. Files a tracked issue only on
