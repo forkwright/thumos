@@ -104,6 +104,14 @@ const MAX_ONE_TIME_KEYS: usize = 100;
 /// Maximum number of one-time keys generated in a single batch.
 const MAX_GENERATED_KEYS: usize = 50;
 
+/// The one-time-key algorithm identifier this device generates, uploads, and
+/// claims. Unsigned (raw Curve25519, not `signed_curve25519`) -- this
+/// simplified implementation does not sign one-time keys (#437). Shared
+/// between [`build_one_time_keys_json`] (upload) and `harmostes`'s
+/// `/keys/claim` request/response so the algorithm string exists in exactly
+/// one place.
+pub(crate) const ONE_TIME_KEY_ALGORITHM: &str = "curve25519";
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -1026,7 +1034,8 @@ fn build_one_time_keys_json(keys: &[[u8; KEY_SIZE]]) -> String {
     let mut w = JsonWriter::new();
     w.object_start();
     for (i, key) in keys.iter().enumerate() {
-        let mut key_name = String::from("curve25519:AAAAAA");
+        let mut key_name = String::from(ONE_TIME_KEY_ALGORITHM);
+        key_name.push_str(":AAAAAA");
         push_usize(&mut key_name, i);
         w.key(&key_name);
         w.string_value(&hex_encode(key));
@@ -1252,7 +1261,11 @@ fn base64_decode_bytes(s: &str) -> Option<Vec<u8>> {
 ///
 /// Returns `None` if the input doesn't decode to exactly 32 bytes.
 /// Tries hex first (64 chars = 32 bytes), then unpadded base64 (43 chars = 32 bytes).
-fn decode_base64_key(s: &str) -> Option<[u8; KEY_SIZE]> {
+///
+/// `pub(crate)`: also used by `harmostes`'s `/keys/claim` response handling
+/// to decode a claimed one-time key value (#437) -- the same key-encoding
+/// convention as `/keys/query` device keys, one decoder for both.
+pub(crate) fn decode_base64_key(s: &str) -> Option<[u8; KEY_SIZE]> {
     // Try hex decoding first (our own output format).
     if s.len() == 64 {
         return hex_decode_32(s);

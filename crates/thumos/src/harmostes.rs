@@ -46,7 +46,8 @@ use alloc::vec::Vec;
 use crate::http_client::{self, HttpError, HttpRequest, HttpResponse};
 use crate::json_mini::{JsonError, JsonParser, JsonValue, JsonWriter};
 use crate::matrix_crypto::{self, CryptoError, MatrixCrypto};
-use crate::matrix_ids::{MatrixEventId, MatrixRoomId};
+use crate::matrix_ids::{MatrixDeviceId, MatrixEventId, MatrixRoomId, MatrixUserId};
+use crate::security::KEY_SIZE;
 use crate::security_mode::SecurityMode;
 
 // ---------------------------------------------------------------------------
@@ -123,8 +124,26 @@ pub enum MatrixError {
     RoomCapacityReached,
     /// The outbox has reached [`MAX_OUTBOX_MESSAGES`] pending messages (#365).
     OutboxFull,
-    /// A Matrix identifier (room/event) failed format validation (#373).
+    /// A Matrix identifier (room/event/user/device) failed format validation
+    /// (#373).
     InvalidId(crate::matrix_ids::MatrixIdError),
+    /// A `/keys/claim` response carried no one-time key for the requested
+    /// (`user_id`, `device_id`) -- absent user, absent device, or an empty
+    /// key map (#437).
+    ClaimedKeyMissing,
+    /// None of a `/keys/claim` response's key entries for the requested
+    /// device used [`matrix_crypto::ONE_TIME_KEY_ALGORITHM`] (#437) -- e.g. a
+    /// homeserver returning only `signed_curve25519`, which this simplified
+    /// client does not verify.
+    UnsupportedKeyAlgorithm,
+    /// A `/keys/claim` response's matching key entry was not a string, or
+    /// did not decode to a well-formed key (#437).
+    MalformedClaimedKey,
+    /// A `/keys/claim` response's extracted key was already removed from the
+    /// local one-time-key pool by an earlier claim (#437) -- the single-use
+    /// property a one-time key exists to provide. Fails closed rather than
+    /// treating a replayed/duplicate claim response as reusable.
+    OneTimeKeyAlreadyConsumed,
 }
 
 impl fmt::Display for MatrixError {
@@ -144,6 +163,21 @@ impl fmt::Display for MatrixError {
             Self::RoomCapacityReached => write!(f, "room capacity reached"),
             Self::OutboxFull => write!(f, "outbox capacity reached"),
             Self::InvalidId(e) => write!(f, "invalid Matrix identifier: {e}"),
+            Self::ClaimedKeyMissing => {
+                write!(
+                    f,
+                    "keys/claim response carried no key for the requested device"
+                )
+            }
+            Self::UnsupportedKeyAlgorithm => {
+                write!(f, "keys/claim response used an unsupported key algorithm")
+            }
+            Self::MalformedClaimedKey => {
+                write!(f, "keys/claim response key value is malformed")
+            }
+            Self::OneTimeKeyAlreadyConsumed => {
+                write!(f, "claimed one-time key was already consumed")
+            }
         }
     }
 }
@@ -1017,6 +1051,112 @@ impl MatrixClient {
     }
 
     // -----------------------------------------------------------------------
+    // Key claim (#437)
+    // -----------------------------------------------------------------------
+
+    /// Build a `/keys/claim` HTTP request for a one-time key from a single
+    /// target device.
+    ///
+    /// Uses POST `/_matrix/client/v3/keys/claim` with a
+    /// `{"one_time_keys": {user_id: {device_id: algorithm}}}` body -- the
+    /// Matrix CS API's device→algorithm map, nested under the requested
+    /// user.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::InvalidId`] if `user_id` or `device_id` fails
+    /// identifier validation (#373: rejects a CRLF/NUL-bearing target before
+    /// it is written into the request body).
+    pub(crate) fn build_claim_keys_request(
+        &self,
+        user_id: &str,
+        device_id: &str,
+    ) -> Result<HttpRequest, MatrixError> {
+        MatrixUserId::new(user_id)?;
+        MatrixDeviceId::new(device_id)?;
+
+        let mut path = String::from(API_PREFIX);
+        path.push_str("/keys/claim");
+
+        let json_body = build_claim_keys_body(user_id, device_id);
+        let mut req = http_client::post_json(&self.homeserver, &path, json_body.as_bytes());
+        http_client::with_auth(&mut req, &self.access_token);
+        Ok(req)
+    }
+
+    /// Process a `/keys/claim` HTTP response for the `(user_id, device_id)`
+    /// target requested via [`build_claim_keys_request`].
+    ///
+    /// Extracts the claimed one-time key and marks it consumed via
+    /// [`MatrixCrypto::consume_one_time_key`] -- the structural single-use
+    /// gate this remnant exists to wire (#437, closing #282 finding 8: a
+    /// claimed key that is never consumed permanently counts against
+    /// `MAX_ONE_TIME_KEYS`). A key value no longer present in the local
+    /// pool -- already removed by an earlier claim, or never registered --
+    /// is rejected rather than treated as reusable: `consume_one_time_key`'s
+    /// find-then-remove-once mechanics make a second consumption of the
+    /// same key value structurally impossible, not merely checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::ServerError`] on a non-2xx response.
+    /// Returns [`MatrixError::Json`] if the body is not valid JSON.
+    /// Returns [`MatrixError::ClaimedKeyMissing`] if the response carries no
+    /// key for `user_id`/`device_id` (absent user, absent device, or an
+    /// empty key map).
+    /// Returns [`MatrixError::UnsupportedKeyAlgorithm`] if none of the
+    /// returned key entries for that device use
+    /// [`matrix_crypto::ONE_TIME_KEY_ALGORITHM`].
+    /// Returns [`MatrixError::MalformedClaimedKey`] if the matching entry's
+    /// value is not a string, or does not decode to a well-formed key.
+    /// Returns [`MatrixError::OneTimeKeyAlreadyConsumed`] if the extracted
+    /// key was already removed from the local pool by an earlier claim.
+    pub(crate) fn process_claim_keys_response(
+        &mut self,
+        user_id: &str,
+        device_id: &str,
+        response: &HttpResponse,
+    ) -> Result<[u8; KEY_SIZE], MatrixError> {
+        if !response.is_success() {
+            return Err(parse_error_response(response));
+        }
+
+        let body_str = response
+            .body_as_str()
+            .ok_or(MatrixError::MalformedClaimedKey)?;
+        let root = JsonParser::parse(body_str.as_bytes())?;
+
+        let device_map = root
+            .get("one_time_keys")
+            .and_then(|otk| otk.get(user_id))
+            .and_then(|dev| dev.get(device_id))
+            .ok_or(MatrixError::ClaimedKeyMissing)?;
+
+        let entries = device_map
+            .as_object()
+            .ok_or(MatrixError::ClaimedKeyMissing)?;
+        if entries.is_empty() {
+            return Err(MatrixError::ClaimedKeyMissing);
+        }
+
+        let Some((_, value)) = entries.iter().find(|(key_id, _)| {
+            claimed_key_algorithm(key_id) == matrix_crypto::ONE_TIME_KEY_ALGORITHM
+        }) else {
+            return Err(MatrixError::UnsupportedKeyAlgorithm);
+        };
+
+        let key_value = value.as_str().ok_or(MatrixError::MalformedClaimedKey)?;
+        let key =
+            matrix_crypto::decode_base64_key(key_value).ok_or(MatrixError::MalformedClaimedKey)?;
+
+        if !self.crypto.consume_one_time_key(&key) {
+            return Err(MatrixError::OneTimeKeyAlreadyConsumed);
+        }
+
+        Ok(key)
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
@@ -1097,6 +1237,33 @@ fn build_encrypted_body(ciphertext: &[u8], session_id: &[u8; 32]) -> String {
     w.string_value(&hex_encode_bytes(session_id));
     w.end();
     w.finish()
+}
+
+/// Build the JSON body for `/_matrix/client/v3/keys/claim`.
+///
+/// ```json
+/// {"one_time_keys":{"@alice:example.com":{"DEVICEID":"curve25519"}}}
+/// ```
+fn build_claim_keys_body(user_id: &str, device_id: &str) -> String {
+    let mut w = JsonWriter::new();
+    w.object_start();
+    w.key("one_time_keys");
+    w.object_start();
+    w.key(user_id);
+    w.object_start();
+    w.key(device_id);
+    w.string_value(matrix_crypto::ONE_TIME_KEY_ALGORITHM);
+    w.end(); // device -> algorithm map
+    w.end(); // user -> device map
+    w.end(); // one_time_keys
+    w.end(); // root
+    w.finish()
+}
+
+/// Extract the algorithm portion of a `/keys/claim` response key id
+/// (`"<algorithm>:<key_id>"`, e.g. `"curve25519:AAAAAQ"`).
+fn claimed_key_algorithm(key_id: &str) -> &str {
+    key_id.split_once(':').map_or(key_id, |(algo, _)| algo)
 }
 
 /// Encode a byte slice as lowercase hex string.
