@@ -56,9 +56,7 @@ use crate::security_mode::ModeManager;
 use crate::sim::SimManager;
 use crate::sms::SmsManager;
 use crate::status_bar::{KernelStatusBar, NetworkService, StatusBarState};
-#[cfg(feature = "qemu")]
-use crate::telephony::RadioAccessTech;
-use crate::telephony::{BootModemTransport, RatGeneration, Telephony};
+use crate::telephony::{BootModemTransport, RadioAccessTech, RatGeneration, Telephony};
 use crate::uart::Uart;
 use crate::ui::{Screen, ScreenId, UiManager};
 
