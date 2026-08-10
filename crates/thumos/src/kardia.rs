@@ -295,6 +295,11 @@ impl KernelState {
     /// navigation path (#400). Returns `Some((from, to))` when navigation
     /// changed the active screen, so the caller can log + re-render. On device
     /// this is a no-op until the keypad driver lands (hardware-gated).
+    // WHY: under `feature = "qemu"` this fully uses self (input_cursor, ui,
+    // active_screen_mut()); only the non-qemu build reduces to the
+    // documented `None` stub above, where self genuinely goes unused until
+    // the keypad driver lands. Scope the allow to that build only.
+    #[cfg_attr(not(feature = "qemu"), allow(clippy::unused_self))]
     pub(crate) fn poll_input(&mut self) -> Option<(ScreenId, ScreenId)> {
         #[cfg(feature = "qemu")]
         {
@@ -412,7 +417,7 @@ impl KernelState {
     /// modem is `NoService`.
     fn status_network(&self) -> NetworkService {
         match self.telephony.as_ref() {
-            Some(t) if t.is_registered() => match t.rat().map(|rat| rat.generation()) {
+            Some(t) if t.is_registered() => match t.rat().map(RadioAccessTech::generation) {
                 Some(RatGeneration::TwoG) => NetworkService::Edge,
                 Some(RatGeneration::ThreeG) => NetworkService::ThreeG,
                 Some(RatGeneration::FourG) | None => NetworkService::Lte,
@@ -718,6 +723,13 @@ impl KernelState {
     }
 
     /// Execute pending reflex fast-path events in privileged (loop) context.
+    // WHY: all three arms are TODO stubs today, but two are explicitly
+    // documented to need self once implemented -- the duress arm (#404)
+    // transitions via self.mode + wipe policy, the incoming-ring arm (#398)
+    // routes UI + audio via self's persisted telephony. Called instance-style
+    // (`kernel.handle_reflex(..)`) from the production run loop; dropping
+    // &mut self now would just be re-added when those TODOs land.
+    #[allow(clippy::unused_self)]
     pub(crate) fn handle_reflex(&mut self, pending: reflex::Pending, serial: &mut Uart) {
         if pending.panic_wipe {
             let _ = serial.write_str("[kardia] REFLEX panic-wipe\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write

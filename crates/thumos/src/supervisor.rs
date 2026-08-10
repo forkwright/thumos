@@ -194,12 +194,10 @@ pub(crate) fn register(path: &'static str, pid: Pid) {
     // SAFETY: SERVICES is only touched under LOCK (see `report_fault`).
     unsafe {
         let services = &mut *core::ptr::addr_of_mut!(SERVICES);
-        for slot in services.iter_mut() {
-            if let Some(svc) = slot {
-                if svc.path == path {
-                    svc.current_pid = Some(pid);
-                    return;
-                }
+        for svc in services.iter_mut().flatten() {
+            if svc.path == path {
+                svc.current_pid = Some(pid);
+                return;
             }
         }
         for slot in services.iter_mut() {

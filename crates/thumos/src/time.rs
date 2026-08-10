@@ -236,6 +236,9 @@ pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
 ///
 /// 0 on success (sleep elapsed), EFAULT if `ts_ptr` is invalid.
 pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
+    // tick period = TICK_MS ms = 10 ms. scheduler tick rate = 100 Hz.
+    const TICK_MS: u64 = 10;
+
     let ptr = ts_ptr as usize;
     if !validate_user_buffer(ptr, 8) {
         return EFAULT;
@@ -257,22 +260,15 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     }
 
     // Convert duration to ticks.
-    // tick period = TICK_MS ms = 10 ms. scheduler tick rate = 100 Hz.
     // ticks_needed = ceil(total_ms / TICK_MS)
     //   total_ms = req_secs * 1000 + req_nanos / 1_000_000
     // We use u64 throughout to avoid overflow for large sleep values.
-    const TICK_MS: u64 = 10;
     let total_ms = u64::from(req_secs)
         .saturating_mul(1_000)
         .saturating_add(u64::from(req_nanos) / 1_000_000);
     // Round up: if there is any sub-tick nanosecond remainder, add one tick.
     let sub_tick_ns = u64::from(req_nanos) % (TICK_MS * 1_000_000);
-    let ticks_needed = total_ms / TICK_MS
-        + if sub_tick_ns > 0 || (total_ms % TICK_MS != 0) {
-            1
-        } else {
-            0
-        };
+    let ticks_needed = total_ms / TICK_MS + u64::from(sub_tick_ns > 0 || (total_ms % TICK_MS != 0));
 
     let now_ticks = exceptions::ticks();
     let wake_tick = now_ticks.saturating_add(ticks_needed);
@@ -288,7 +284,12 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     // pattern) from syscall context (single-threaded, IRQs masked under SVC).
     process::set_wake_tick(wake_tick);
     let next = process::schedule();
-    if next != process::current_pid() {
+    if next == process::current_pid() {
+        // No other process to yield to (degenerate: PID 0 is always Ready for a
+        // real userspace caller, so a switch normally occurs) -- restore Running
+        // rather than linger mis-marked Sleeping.
+        process::clear_wake_tick();
+    } else {
         // WHY(#465): deposit the wake-time return value (0) into the live trap
         // frame before switching away, so the woken process's saved frame
         // returns 0 from nanosleep.
@@ -297,11 +298,6 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
         unsafe {
             process::switch_to(next);
         }
-    } else {
-        // No other process to yield to (degenerate: PID 0 is always Ready for a
-        // real userspace caller, so a switch normally occurs) -- restore Running
-        // rather than linger mis-marked Sleeping.
-        process::clear_wake_tick();
     }
     0
 }
@@ -442,12 +438,8 @@ mod tests {
 
         let total_ms = u64::from(req_secs) * 1_000 + u64::from(req_nanos) / 1_000_000;
         let sub_tick_ns = u64::from(req_nanos) % (TICK_MS * 1_000_000);
-        let ticks_needed = total_ms / TICK_MS
-            + if sub_tick_ns > 0 || (total_ms % TICK_MS != 0) {
-                1
-            } else {
-                0
-            };
+        let ticks_needed =
+            total_ms / TICK_MS + u64::from(sub_tick_ns > 0 || (total_ms % TICK_MS != 0));
 
         assert_eq!(ticks_needed, 100, "1 second = 100 ticks at 10 ms/tick");
     }
@@ -462,12 +454,8 @@ mod tests {
 
         let total_ms = u64::from(req_secs) * 1_000 + u64::from(req_nanos) / 1_000_000;
         let sub_tick_ns = u64::from(req_nanos) % (TICK_MS * 1_000_000);
-        let ticks_needed = total_ms / TICK_MS
-            + if sub_tick_ns > 0 || (total_ms % TICK_MS != 0) {
-                1
-            } else {
-                0
-            };
+        let ticks_needed =
+            total_ms / TICK_MS + u64::from(sub_tick_ns > 0 || (total_ms % TICK_MS != 0));
 
         assert_eq!(ticks_needed, 1, "5 ms sleep must round up to 1 tick");
     }

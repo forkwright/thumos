@@ -185,8 +185,8 @@ pub(crate) fn frame_dns_message(dns_message: &[u8]) -> Result<Vec<u8>, DotError>
 ///
 /// Reads the first 2 bytes as a big-endian u16 length value.
 #[must_use]
-pub(crate) fn parse_frame_length(header: &[u8; 2]) -> u16 {
-    u16::from_be_bytes(*header)
+pub(crate) fn parse_frame_length(header: [u8; 2]) -> u16 {
+    u16::from_be_bytes(header)
 }
 
 /// Read a complete `DoT` frame from a TLS transport.
@@ -211,7 +211,7 @@ pub(crate) fn read_dot_frame<T: TlsTransport>(
         received += n;
     }
 
-    let msg_len = parse_frame_length(&header) as usize;
+    let msg_len = parse_frame_length(header) as usize;
     if msg_len > MAX_DNS_MESSAGE_SIZE {
         return Err(DotError::InvalidFrameLength);
     }
@@ -245,6 +245,13 @@ pub(crate) fn read_dot_frame<T: TlsTransport>(
 /// Returns the wire-format query bytes and the transaction ID.
 /// The query has flags RD=1 (recursion desired), QDCOUNT=1.
 pub(crate) fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DotError> {
+    // RFC 1035 section 3.1 caps the total encoded name -- every
+    // length-prefix octet plus every label octet plus the terminating zero
+    // -- at 255 octets; the per-label <= 63 check below alone does not
+    // bound the SUM across many short labels (mirrors dns.rs's
+    // build_dns_query, fixed in an earlier batch).
+    const DNS_MAX_NAME_LEN: usize = 255;
+
     if hostname.is_empty() {
         return Err(DotError::InvalidName);
     }
@@ -260,12 +267,7 @@ pub(crate) fn build_dns_query(hostname: &str, txid: u16) -> Result<Vec<u8>, DotE
     packet.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
     packet.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
 
-    // QNAME: encode hostname as DNS labels. RFC 1035 section 3.1 caps the
-    // total encoded name -- every length-prefix octet plus every label
-    // octet plus the terminating zero -- at 255 octets; the per-label
-    // <= 63 check alone does not bound the SUM across many short labels
-    // (mirrors dns.rs's build_dns_query, fixed in an earlier batch).
-    const DNS_MAX_NAME_LEN: usize = 255;
+    // QNAME: encode hostname as DNS labels.
     let mut qname_len: usize = 0;
     for label in hostname.split('.') {
         if label.is_empty() || label.len() > 63 {
@@ -297,6 +299,12 @@ pub(crate) fn build_dns_query_typed(
     txid: u16,
     record_type: u16,
 ) -> Result<Vec<u8>, DotError> {
+    // RFC 1035 section 3.1: total encoded QNAME (length-prefix octets +
+    // label octets + terminating zero) is capped at 255 octets; the
+    // per-label <= 63 check below alone does not bound the sum (mirrors
+    // build_dns_query above).
+    const DNS_MAX_NAME_LEN: usize = 255;
+
     if hostname.is_empty() {
         return Err(DotError::InvalidName);
     }
@@ -312,11 +320,6 @@ pub(crate) fn build_dns_query_typed(
     packet.extend_from_slice(&0u16.to_be_bytes());
     packet.extend_from_slice(&0u16.to_be_bytes());
 
-    // RFC 1035 section 3.1: total encoded QNAME (length-prefix octets +
-    // label octets + terminating zero) is capped at 255 octets; the
-    // per-label <= 63 check alone does not bound the sum (mirrors
-    // build_dns_query above).
-    const DNS_MAX_NAME_LEN: usize = 255;
     let mut qname_len: usize = 0;
     for label in hostname.split('.') {
         if label.is_empty() || label.len() > 63 {
@@ -700,10 +703,10 @@ mod tests {
 
     #[test]
     fn parse_frame_length_correct() {
-        assert_eq!(parse_frame_length(&[0x00, 0x0C]), 12);
-        assert_eq!(parse_frame_length(&[0x01, 0x00]), 256);
-        assert_eq!(parse_frame_length(&[0xFF, 0xFF]), 65535);
-        assert_eq!(parse_frame_length(&[0x00, 0x00]), 0);
+        assert_eq!(parse_frame_length([0x00, 0x0C]), 12);
+        assert_eq!(parse_frame_length([0x01, 0x00]), 256);
+        assert_eq!(parse_frame_length([0xFF, 0xFF]), 65535);
+        assert_eq!(parse_frame_length([0x00, 0x00]), 0);
     }
 
     // -- Query builder tests --------------------------------------------------

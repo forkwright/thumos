@@ -238,7 +238,7 @@ impl MemBlockDevice {
     }
 
     /// Validate that a buffer has the correct size for the sector count.
-    fn validate_buf_len(&self, buf_len: usize, count: u32) -> Result<(), BlockError> {
+    fn validate_buf_len(buf_len: usize, count: u32) -> Result<(), BlockError> {
         let expected = count as usize * SECTOR_SIZE;
         if buf_len != expected {
             return Err(BlockError::InvalidArgument);
@@ -247,7 +247,7 @@ impl MemBlockDevice {
     }
 
     /// Byte offset for a given LBA.
-    fn offset(&self, lba: u64) -> usize {
+    fn offset(lba: u64) -> usize {
         lba as usize * SECTOR_SIZE
     }
 }
@@ -255,9 +255,9 @@ impl MemBlockDevice {
 impl BlockDevice for MemBlockDevice {
     fn read_sectors(&self, lba: u64, count: u32, buf: &mut [u8]) -> Result<(), BlockError> {
         self.validate_range(lba, count)?;
-        self.validate_buf_len(buf.len(), count)?;
+        Self::validate_buf_len(buf.len(), count)?;
 
-        let start = self.offset(lba);
+        let start = Self::offset(lba);
         let len = count as usize * SECTOR_SIZE;
         buf.copy_from_slice(&self.data[start..start + len]);
         Ok(())
@@ -265,9 +265,9 @@ impl BlockDevice for MemBlockDevice {
 
     fn write_sectors(&mut self, lba: u64, count: u32, buf: &[u8]) -> Result<(), BlockError> {
         self.validate_range(lba, count)?;
-        self.validate_buf_len(buf.len(), count)?;
+        Self::validate_buf_len(buf.len(), count)?;
 
-        let start = self.offset(lba);
+        let start = Self::offset(lba);
         let len = count as usize * SECTOR_SIZE;
         self.data[start..start + len].copy_from_slice(buf);
         Ok(())
@@ -543,7 +543,7 @@ pub(crate) mod tests {
 
     #[test]
     fn partition_view_translates_view_lba_to_physical() {
-        let mut phys = MemBlockDevice::new(32).expect("phys device");
+        let phys = MemBlockDevice::new(32).expect("phys device");
         let mut view = PartitionBlockDevice::new(phys, 10, 5);
 
         // Write two sectors at view lba 1; they must land at physical 11.
