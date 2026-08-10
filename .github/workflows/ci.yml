@@ -182,6 +182,14 @@ jobs:
         # the SAME reference endpoint the crates/metaxu adversarial witness
         # runs against, not a second implementation.
         run: scripts/witness/metaxu.sh
+      - name: Authenticated Aletheia round trip -- negative cases (#544)
+        # WHY (#544 negative-case witness): metaxu.sh proves only the happy
+        # path, which passes against a bridge that accepts anything. Three
+        # distinct typed outcomes: a tampered response reaches MAC_FAILED,
+        # an expired grant is denied locally, and a capability absent from
+        # the grant is denied locally with NOTHING transmitted to the host
+        # bridge.
+        run: scripts/witness/metaxu-negative.sh
       - name: Witness-extraction drift guard (#546)
         # WHY (#546): reds if witness assertions ever re-inline into a CI
         # surface or a stage stops calling the canonical scripts.

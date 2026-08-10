@@ -17,33 +17,12 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 
 witness_deps
 
-# Build + launch the host pylon-bridge FIRST (deterministic ordering).
-(cd "$REPO_ROOT" && cargo build --release --features metaxu/pylon-bin --bin pylon-bridge \
-    --jobs "${THUMOS_BUILD_JOBS:-8}") \
-    || { echo "FAIL: pylon-bridge build failed"; exit 1; }
-PYLON_BIN="$REPO_ROOT/target/release/pylon-bridge"
-[[ -x "$PYLON_BIN" ]] || { echo "FAIL: pylon-bridge binary missing at $PYLON_BIN"; exit 1; }
-
-PYLON_LOG=$(mktemp)
-"$PYLON_BIN" >"$PYLON_LOG" 2>&1 &
-PYLON_PID=$!
-trap 'kill "$PYLON_PID" 2>/dev/null || true; rm -f "$PYLON_LOG"' EXIT
-
-PORT=""
-for _ in $(seq 1 50); do
-    if grep -q '^PYLON_PORT=' "$PYLON_LOG" 2>/dev/null; then
-        PORT=$(grep '^PYLON_PORT=' "$PYLON_LOG" | head -1 | cut -d= -f2)
-        break
-    fi
-    kill -0 "$PYLON_PID" 2>/dev/null || { echo "FAIL: pylon-bridge exited before printing its port"; cat "$PYLON_LOG"; exit 1; }
-    sleep 0.1
-done
-[[ -n "$PORT" ]] || { echo "FAIL: pylon-bridge never printed PYLON_PORT="; cat "$PYLON_LOG"; exit 1; }
-echo "=== pylon-bridge listening on 127.0.0.1:$PORT (pid $PYLON_PID) ==="
+start_pylon_bridge
+trap 'stop_pylon_bridge; rm -f "$PYLON_LOG"' EXIT
 
 build_kernel qemu,metaxu-probe
 mrc=0
-THUMOS_QEMU_METAXU_PORT="$PORT" run_qemu metaxu.log || mrc=$?
+THUMOS_QEMU_METAXU_PORT="$PYLON_PORT" run_qemu metaxu.log || mrc=$?
 echo "=== metaxu round trip: runner rc=$mrc (want 0) ==="
 test "$mrc" -eq 0 || { echo "FAIL #544: runner exit $mrc (0=ok 5=loop-stall 1=panic 2/3/4=abort 124=hang)"; exit 1; }
 grep -q 'THUMOS-QEMU: boot-complete' metaxu.log || { echo 'FAIL #544: boot did not complete'; exit 1; }

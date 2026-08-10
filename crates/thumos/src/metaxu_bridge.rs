@@ -132,18 +132,100 @@ mod dev_identity {
     /// dev-only simulation of what a live Aletheia runtime would provision out
     /// of band); a real epoch source for this probe is out of scope here --
     /// see the PR body for what remains.
+    ///
+    /// Absent under `metaxu-probe-expired-grant` (#544 negative-case
+    /// witness): that variant's `dev_grant` uses a literal, not this
+    /// constant, and an unconditionally-declared, unused item would be a
+    /// dead-code finding in that build's solo clippy pass.
+    #[cfg(not(feature = "metaxu-probe-expired-grant"))]
     pub(super) const DEV_GRANT_EXPIRES_AT_MS: u64 = 4_102_444_800_000;
+
+    // WHY (#544 negative-case witness): restates the crate-wide exclusion
+    // beside the TWO grant variants below, the same defense-in-depth
+    // rationale as the `production` compile_error! above -- a production
+    // image must never contain an already-expired or capability-stripped
+    // dev grant either, not just the well-formed one. Both features already
+    // imply `metaxu-probe` (Cargo.toml), so this is structurally redundant
+    // with the check above; an adversarial diff review sees it anyway,
+    // beside the material it protects, rather than trusting a transitive
+    // Cargo feature edge in a different file.
+    #[cfg(all(
+        any(
+            feature = "metaxu-probe-expired-grant",
+            feature = "metaxu-probe-no-capability"
+        ),
+        feature = "production"
+    ))]
+    compile_error!(
+        "metaxu-probe-expired-grant and metaxu-probe-no-capability are CI negative-case harnesses (an intentionally-invalid dev grant); a production image must never contain either."
+    );
+    // WHY: the two variants select DIFFERENT bodies for the SAME `dev_grant`
+    // function name below -- enabling both at once would attempt to define
+    // it twice. A named compile_error! reads clearer than the resulting
+    // rustc "duplicate definition" diagnostic.
+    #[cfg(all(
+        feature = "metaxu-probe-expired-grant",
+        feature = "metaxu-probe-no-capability"
+    ))]
+    compile_error!(
+        "metaxu-probe-expired-grant and metaxu-probe-no-capability select mutually exclusive dev-grant negative cases; enable at most one."
+    );
 
     /// Self-issue the SAME dev grant every call -- fully deterministic (fixed
     /// seeds, fixed nonce, fixed expiry), so `submit` and `poll` need no
     /// persisted session state between them: each can independently re-derive
     /// the identical `SignedGrant` and its response key.
+    #[cfg(not(any(
+        feature = "metaxu-probe-expired-grant",
+        feature = "metaxu-probe-no-capability"
+    )))]
     pub(super) fn dev_grant() -> SignedGrant {
         SignedGrant::issue(
             Grant {
                 issuer: runtime_signing().verifying_key().to_bytes(),
                 subject: device_signing().verifying_key().to_bytes(),
                 capabilities: alloc::vec![Capability::SmsSend],
+                issued_at_ms: 0,
+                expires_at_ms: DEV_GRANT_EXPIRES_AT_MS,
+                nonce: [0xA5; 16],
+            },
+            &runtime_signing(),
+        )
+    }
+
+    /// #544 negative-case witness: a grant already expired at ANY `now_ms`
+    /// this probe could observe. `expires_at_ms: 0` rather than a
+    /// near-boot-time constant -- `now_ms >= expires_at_ms` is then a
+    /// tautology for the unsigned `now_ms` `evaluate_submission` receives,
+    /// so the case is deterministic regardless of how far uptime has
+    /// advanced by the time `submit` runs, never a timing race.
+    #[cfg(feature = "metaxu-probe-expired-grant")]
+    pub(super) fn dev_grant() -> SignedGrant {
+        SignedGrant::issue(
+            Grant {
+                issuer: runtime_signing().verifying_key().to_bytes(),
+                subject: device_signing().verifying_key().to_bytes(),
+                capabilities: alloc::vec![Capability::SmsSend],
+                issued_at_ms: 0,
+                expires_at_ms: 0,
+                nonce: [0xA5; 16],
+            },
+            &runtime_signing(),
+        )
+    }
+
+    /// #544 negative-case witness: a grant that verifies (unexpired,
+    /// correctly bound) but never carries `SmsSend` -- `harmless_task`
+    /// always builds a `SendSms` request, so this exercises
+    /// `evaluate_submission`'s capability check specifically, distinct from
+    /// the grant-verification failure the expired variant exercises.
+    #[cfg(feature = "metaxu-probe-no-capability")]
+    pub(super) fn dev_grant() -> SignedGrant {
+        SignedGrant::issue(
+            Grant {
+                issuer: runtime_signing().verifying_key().to_bytes(),
+                subject: device_signing().verifying_key().to_bytes(),
+                capabilities: alloc::vec![Capability::CallDial], // never SmsSend
                 issued_at_ms: 0,
                 expires_at_ms: DEV_GRANT_EXPIRES_AT_MS,
                 nonce: [0xA5; 16],

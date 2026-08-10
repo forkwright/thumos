@@ -52,6 +52,24 @@ crashloop-probe = []
 # ONLY when this feature's witness script asks); mutually exclusive with
 # `production` (main.rs compile_error!).
 metaxu-probe = []
+# WHY (#544 negative-case witness): selects an ALREADY-EXPIRED variant of
+# metaxu-probe's dev grant (metaxu_bridge::dev_identity::dev_grant) instead
+# of the default one -- proves evaluate_submission's expiry check denies
+# through the REAL syscall dispatch under a real boot, not just the offline
+# host unit test. Implies `metaxu-probe` (so it inherits both of that
+# feature's compile_error! gates -- production exclusion, qemu requirement
+# -- without restating them); mutually exclusive with
+# `metaxu-probe-no-capability` (metaxu_bridge.rs compile_error!). Never
+# meaningful outside scripts/witness/metaxu-negative.sh.
+metaxu-probe-expired-grant = ["metaxu-probe"]
+# WHY (#544 negative-case witness): selects a variant of metaxu-probe's dev
+# grant that verifies (unexpired, correctly bound) but never carries
+# `SmsSend` -- proves evaluate_submission's capability check denies through
+# the REAL syscall dispatch under a real boot. Implies `metaxu-probe`;
+# mutually exclusive with `metaxu-probe-expired-grant` (metaxu_bridge.rs
+# compile_error!). Never meaningful outside
+# scripts/witness/metaxu-negative.sh.
+metaxu-probe-no-capability = ["metaxu-probe"]
 
 [dependencies]
 aes = { version = "0.8", default-features = false }
