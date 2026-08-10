@@ -196,11 +196,16 @@ mod matrix_crypto;
 mod memguard;
 mod meshtastic;
 // WHY (#544 on-device leg): the metaxu-core authenticated request/response
-// exchange over board::UART1_BASE -- feature-gated (never in `production`
-// or the M7 build, see the compile_error!s above) AND test-gated (host
-// test builds use `uart_stub`, which has no `at()` constructor; this
-// module is integration-only glue, not unit-tested on the host target).
-#[cfg(all(not(test), feature = "metaxu-probe"))]
+// exchange over board::UART1_BASE, gated ITEM-BY-ITEM inside the module
+// rather than at this declaration (#544 steps 1-2): the self-issued dev
+// identity is `#[cfg(feature = "qemu")]` (never in `production` -- see the
+// compile_error!s above AND the one restated inside the module beside the
+// identity material), the UART transport is `#[cfg(all(not(test), feature
+// = "metaxu-probe"))]` (host test builds use `uart_stub`, which has no
+// `at()` constructor), and the local capability decision
+// (`evaluate_submission`) is UNGATED -- generic over its inputs, no
+// qemu/UART dependency, host-testable in every build (see the module's own
+// `tests`).
 mod metaxu_bridge;
 mod mic_audit;
 mod mmio;
