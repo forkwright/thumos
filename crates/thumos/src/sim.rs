@@ -26,7 +26,7 @@
 extern crate alloc;
 
 use crate::telephony::{self, AtResponse, MAX_LINE_LEN, ModemTransport, TelephonyError};
-use crate::telephony_parser;
+use crate::telephony_parser::{self, SimPinState};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -184,10 +184,17 @@ impl SimManager {
 
     /// Check SIM PIN status via `AT+CPIN?`.
     ///
-    /// Updates `sim_info.pin_required` based on the response:
-    /// - `+CPIN: READY` -> no PIN required
-    /// - `+CPIN: SIM PIN` -> PIN required
-    /// - Other responses -> treated as PIN required (not ready)
+    /// Updates `sim_info.pin_required` from [`klesis_core::parse_cpin`]
+    /// (#545, #696) -- the one `+CPIN?` classifier left in the tree, also
+    /// used by [`telephony_parser::parse_cpin_response`]. Only
+    /// `SimPinState::Ready` clears `pin_required`; every other recognized
+    /// or unrecognized state (including SIM PIN2/PUK2, which gate the FDN
+    /// secondary credential rather than the primary SIM lock) is treated
+    /// as "not ready". This boolean makes no PIN-vs-PUK distinction at
+    /// all, so collapsing every non-Ready state here cannot itself route a
+    /// caller to the wrong unlock flow -- that risk lives in the richer
+    /// dispatch in `telephony.rs`, which matches every `SimPinState`
+    /// variant by name for exactly this reason.
     pub(crate) fn check_pin<T: ModemTransport>(
         &mut self,
         transport: &mut T,
@@ -197,9 +204,10 @@ impl SimManager {
         match result {
             AtResponse::Ok if info_len > 0 => {
                 let line = &info_line[..info_len];
-                self.sim_info.pin_required = !parse_cpin_ready(line);
+                let ready = matches!(klesis_core::parse_cpin(line), Some(SimPinState::Ready));
+                self.sim_info.pin_required = !ready;
                 self.sim_checked = true;
-                Ok(!self.sim_info.pin_required)
+                Ok(ready)
             }
             AtResponse::Ok => {
                 // No info line — can't determine status, assume not ready.
@@ -442,32 +450,6 @@ impl SimManager {
 }
 
 // ---------------------------------------------------------------------------
-// AT response parsing helpers
-// ---------------------------------------------------------------------------
-
-/// Parse a +CPIN? response to determine if SIM is ready.
-///
-/// Returns `true` if the response indicates the SIM is ready (no PIN required).
-fn parse_cpin_ready(line: &[u8]) -> bool {
-    if let Some(rest) = strip_prefix(line, b"+CPIN: ") {
-        rest == b"READY"
-    } else {
-        false
-    }
-}
-
-/// Parse a +CPIN? response to determine if a SIM PIN is required.
-///
-/// Returns `true` if the response indicates a PIN is needed.
-fn parse_cpin_sim_pin(line: &[u8]) -> bool {
-    if let Some(rest) = strip_prefix(line, b"+CPIN: ") {
-        starts_with(rest, b"SIM PIN")
-    } else {
-        false
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Signal conversion functions
 // ---------------------------------------------------------------------------
 
@@ -502,11 +484,6 @@ fn strip_prefix<'a>(input: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     } else {
         None
     }
-}
-
-/// Check if `input` starts with `prefix`.
-fn starts_with(input: &[u8], prefix: &[u8]) -> bool {
-    input.len() >= prefix.len() && &input[..prefix.len()] == prefix
 }
 
 /// PIN format per 3GPP: 4-8 ASCII digits. Validated client-side so a
@@ -861,31 +838,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_cpin_ready_recognizes_ready() {
-        assert!(
-            parse_cpin_ready(b"+CPIN: READY"),
-            "must recognize +CPIN: READY"
-        );
-        assert!(
-            !parse_cpin_ready(b"+CPIN: SIM PIN"),
-            "must not recognize SIM PIN as ready"
-        );
-        assert!(
-            !parse_cpin_ready(b"READY"),
-            "must not match without +CPIN: prefix"
-        );
+    fn cpin_sim_puk2_is_not_ready_but_is_not_confused_with_puk() {
+        // SECURITY (#696): check_pin's boolean makes no PIN-vs-PUK
+        // distinction, so SIM PUK2 (an FDN/PIN2 lock, not the primary SIM
+        // lock) correctly reports "not ready" here -- same as SIM PUK would.
+        // The classification that must NOT happen lives one level up: this
+        // pins that check_pin's classifier (klesis_core::parse_cpin) is the
+        // one actually wired in, by asserting the same "not ready" outcome
+        // a pre-#696 caller would have seen, so a regression that makes
+        // check_pin report READY for a PUK2-locked SIM is caught here.
+        let mut transport = MockModemTransport::new();
+        transport.queue_info_ok(b"+CPIN: SIM PUK2");
+
+        let mut sim = SimManager::new();
+        let result = sim.check_pin(&mut transport);
+        assert_eq!(result, Ok(false), "SIM PUK2 must report not-ready");
+        assert!(sim.pin_required(), "pin_required must be true for SIM PUK2");
     }
 
     #[test]
-    fn parse_cpin_sim_pin_recognizes_pin() {
-        assert!(
-            parse_cpin_sim_pin(b"+CPIN: SIM PIN"),
-            "must recognize +CPIN: SIM PIN"
-        );
-        assert!(
-            !parse_cpin_sim_pin(b"+CPIN: READY"),
-            "must not recognize READY as SIM PIN"
-        );
+    fn cpin_sim_pin2_is_not_ready() {
+        let mut transport = MockModemTransport::new();
+        transport.queue_info_ok(b"+CPIN: SIM PIN2");
+
+        let mut sim = SimManager::new();
+        let result = sim.check_pin(&mut transport);
+        assert_eq!(result, Ok(false), "SIM PIN2 must report not-ready");
+        assert!(sim.pin_required(), "pin_required must be true for SIM PIN2");
     }
 
     #[test]

@@ -161,42 +161,20 @@ pub(crate) fn parse_clip_response(
 
 /// SIM card PIN/PUK lock state, parsed from a `+CPIN?` response.
 ///
-/// The +CPIN status vocabulary distinguishes many states (3GPP TS 27.007
-/// §8.3); this enum keeps the practically actionable distinction a caller
-/// needs to route to the correct unlock flow -- entering a PUK as if it
-/// were a PIN (or vice versa) burns limited unlock attempts and can
-/// permanently lock the SIM (issue #282 finding 17).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub(crate) enum SimPinState {
-    /// SIM ready, no PIN required.
-    Ready,
-    /// SIM PIN required.
-    PinRequired,
-    /// SIM PUK required (after too many wrong PIN attempts).
-    PukRequired,
-    /// A recognized but distinct lock state (e.g. PH-SIM PIN, PH-NET PUK) --
-    /// not READY, and not a plain SIM PIN/PUK unlock flow.
-    Other,
-}
+/// Canonical definition: [`klesis_core::SimPinState`] (#545, #696) --
+/// re-exported here so existing `telephony_parser::SimPinState` call sites
+/// (and `crate::sim`, which shares this classifier -- see #696) are
+/// unaffected.
+pub(crate) use klesis_core::SimPinState;
 
 /// Parse a +CPIN? response line: "+CPIN: <status>"
 ///
-/// Distinguishes SIM PIN vs SIM PUK vs other lock states (issue #282
-/// finding 17) -- the old boolean collapsed every non-READY state to a
-/// single "not ready" flag, which cannot tell a caller whether to prompt
-/// for a 4-digit PIN or an 8-digit PUK.
+/// Delegates to [`klesis_core::parse_cpin`] (#545, #696), the exact-match
+/// classifier shared with [`crate::sim::SimManager::check_pin`] -- the only
+/// `+CPIN?` classifier left in the tree. Distinguishes SIM PIN vs SIM PUK
+/// vs SIM PIN2/PUK2 vs other lock states (issue #282 finding 17, #696).
 pub(crate) fn parse_cpin_response(line: &[u8]) -> Option<SimPinState> {
-    let rest = strip_prefix(line, b"+CPIN: ")?;
-    if rest == b"READY" {
-        Some(SimPinState::Ready)
-    } else if starts_with(rest, b"SIM PUK") {
-        Some(SimPinState::PukRequired)
-    } else if starts_with(rest, b"SIM PIN") {
-        Some(SimPinState::PinRequired)
-    } else {
-        Some(SimPinState::Other)
-    }
+    klesis_core::parse_cpin(line)
 }
 
 /// Check if a line is a RING URC.
@@ -376,6 +354,25 @@ mod tests {
             Some(SimPinState::Other)
         );
         assert_eq!(parse_cpin_response(b"garbage"), None);
+    }
+
+    #[test]
+    fn parse_cpin_response_distinguishes_pin2_puk2_from_primary() {
+        // SECURITY (#696): SIM PIN2/PUK2 gate the FDN/PIN2 secondary
+        // credential, not the primary SIM lock -- a prefix matcher testing
+        // "SIM PUK" before "SIM PIN" takes SIM PUK2 into the PUK arm and
+        // reports the primary-SIM PUK state. A PUK has a small lifetime
+        // attempt limit with no carrier reset.
+        assert_eq!(
+            parse_cpin_response(b"+CPIN: SIM PIN2"),
+            Some(SimPinState::Pin2Required),
+            "SIM PIN2 must not classify as the primary SimPinState::PinRequired"
+        );
+        assert_eq!(
+            parse_cpin_response(b"+CPIN: SIM PUK2"),
+            Some(SimPinState::Puk2Required),
+            "SIM PUK2 must not classify as the primary SimPinState::PukRequired"
+        );
     }
 
     #[test]

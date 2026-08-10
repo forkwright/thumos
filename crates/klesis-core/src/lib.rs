@@ -729,16 +729,16 @@ pub fn classify(first_octet: u8, pid: u8, ud_bytes: &[u8]) -> MessageClass {
 }
 
 // ---------------------------------------------------------------------------
-// AT command response parsing (#545, #685)
+// AT command response parsing (#545, #685, #696)
 // ---------------------------------------------------------------------------
 //
 // Byte-slice, allocation-free classification of the AT response grammar
 // (3GPP TS 27.007) that is genuinely identical on both sides: final-result
 // exactness, +CSQ field extraction, the registration-status code table,
-// and the dial-string charset. Composite URC shapes that the two sides
-// consume differently (klesis needs +CREG's `<lac>`/`<ci>`; the kernel
-// needs `<AcT>`) stay implemented on each side, built on the shared
-// primitives here.
+// the +CPIN SIM lock-state vocabulary, and the dial-string charset.
+// Composite URC shapes that the two sides consume differently (klesis
+// needs +CREG's `<lac>`/`<ci>`; the kernel needs `<AcT>`) stay implemented
+// on each side, built on the shared primitives here.
 
 /// Network registration status (3GPP TS 27.007 +CREG).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -847,6 +847,82 @@ pub fn parse_final_result(line: &[u8]) -> Option<FinalResult> {
 #[must_use]
 pub fn is_ring(line: &[u8]) -> bool {
     line == b"RING"
+}
+
+/// SIM card PIN/PUK lock state, parsed from a `+CPIN?` response (3GPP TS
+/// 27.007 §8.3).
+///
+/// The `+CPIN?` status vocabulary distinguishes many values; this enum keeps
+/// the practically actionable distinction a caller needs to route to the
+/// correct unlock flow -- entering a PUK as if it were a PIN (or vice versa)
+/// burns limited unlock attempts and can permanently lock the SIM (#282
+/// finding 17). `SIM PIN2`/`SIM PUK2` are kept distinct from the primary
+/// `SIM PIN`/`SIM PUK` states: they gate the FDN/fixed-dialling secondary
+/// credential, not the primary SIM lock, and conflating them routes a PIN2
+/// lock through the primary unlock flow (#696).
+///
+/// WHY deliberately NOT `#[non_exhaustive]`: this type drives which
+/// credential an unlock flow prompts for, and a PUK has a small (~10)
+/// lifetime attempt limit with no carrier reset -- a caller that dispatches
+/// on this must decide what every value means. A downstream `_` arm would
+/// fold any future enumerated value into whatever the wildcard's neighbor
+/// happens to be, silently misrouting it the same way the pre-#696 prefix
+/// match misrouted `SIM PUK2`. Adding a variant here must break every
+/// consumer that routes on this type (same reasoning as [`MessageClass`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimPinState {
+    /// SIM ready, no PIN required.
+    Ready,
+    /// Primary SIM PIN required.
+    PinRequired,
+    /// Primary SIM PUK required (after too many wrong PIN attempts).
+    PukRequired,
+    /// PIN2 required -- gates the FDN/fixed-dialling secondary credential,
+    /// not the primary SIM lock.
+    Pin2Required,
+    /// PUK2 required -- gates PIN2 unlock (too many wrong PIN2 attempts),
+    /// not the primary SIM lock.
+    Puk2Required,
+    /// A recognized but distinct lock state (e.g. `PH-SIM PIN`, `PH-NET
+    /// PUK`), or a value this parser does not recognize -- not READY, and
+    /// not a primary or secondary PIN/PUK unlock flow.
+    Other,
+}
+
+/// Parse a `+CPIN?` response line: `"+CPIN: <status>"`.
+///
+/// SECURITY (#696): matches the 3GPP TS 27.007 §8.3 enumerated values by
+/// exact equality, not prefix -- the prior implementation matched `SIM
+/// PIN`/`SIM PUK` by prefix, so `+CPIN: SIM PUK2` (a PIN2/FDN lock, a
+/// distinct enumerated value) took the `SIM PUK` arm and reported the
+/// primary-SIM PUK state. A SIM PUK has a small lifetime attempt limit and
+/// no carrier reset; an unlock flow built on that misclassification prompts
+/// for the SIM PUK and validates every entry against the wrong credential,
+/// burning attempts toward the permanent-block limit. Exact equality has no
+/// shadowing order to get wrong: `SIM PUK2` cannot be mistaken for `SIM
+/// PUK` because the two byte strings are never equal.
+///
+/// A value outside this vocabulary -- including a truncated or malformed
+/// one -- classifies as [`SimPinState::Other`] rather than `None`, so a
+/// caller that dispatches on the lock state never mistakes "this parser
+/// doesn't recognize the value" for "the query itself failed", and never
+/// drives a credential prompt from a guess.
+#[must_use]
+pub fn parse_cpin(line: &[u8]) -> Option<SimPinState> {
+    let rest = strip_prefix(line, b"+CPIN: ")?;
+    Some(if rest == b"READY" {
+        SimPinState::Ready
+    } else if rest == b"SIM PIN2" {
+        SimPinState::Pin2Required
+    } else if rest == b"SIM PUK2" {
+        SimPinState::Puk2Required
+    } else if rest == b"SIM PIN" {
+        SimPinState::PinRequired
+    } else if rest == b"SIM PUK" {
+        SimPinState::PukRequired
+    } else {
+        SimPinState::Other
+    })
 }
 
 /// Parse a +CSQ response line: `"+CSQ: <rssi>,<ber>"`.
@@ -1408,6 +1484,82 @@ mod tests {
         assert!(
             !is_ring(b"RINGING"),
             "'RINGING' must not be classified as RING by prefix match"
+        );
+    }
+
+    #[test]
+    fn parse_cpin_recognizes_ready() {
+        assert_eq!(parse_cpin(b"+CPIN: READY"), Some(SimPinState::Ready));
+    }
+
+    #[test]
+    fn parse_cpin_recognizes_primary_pin() {
+        assert_eq!(
+            parse_cpin(b"+CPIN: SIM PIN"),
+            Some(SimPinState::PinRequired)
+        );
+    }
+
+    #[test]
+    fn parse_cpin_recognizes_primary_puk() {
+        assert_eq!(
+            parse_cpin(b"+CPIN: SIM PUK"),
+            Some(SimPinState::PukRequired),
+            "SIM PUK must not collapse to the same state as SIM PIN"
+        );
+    }
+
+    #[test]
+    fn parse_cpin_recognizes_pin2_distinct_from_pin() {
+        // SECURITY (#696): the exact case the prior prefix matcher got
+        // wrong for the milder half of the pair -- SIM PIN2 gates the
+        // FDN/PIN2 secondary credential, not the primary SIM lock.
+        assert_eq!(
+            parse_cpin(b"+CPIN: SIM PIN2"),
+            Some(SimPinState::Pin2Required),
+            "SIM PIN2 must not classify as the primary SimPinState::PinRequired"
+        );
+    }
+
+    #[test]
+    fn parse_cpin_recognizes_puk2_distinct_from_puk() {
+        // SECURITY (#696): the damaging case -- a prefix matcher testing
+        // "SIM PUK" before "SIM PIN" takes SIM PUK2 into the PUK arm and
+        // reports the primary-SIM PUK state. A PUK has a small lifetime
+        // attempt limit with no carrier reset; an unlock flow driven by
+        // this misclassification prompts for the SIM PUK and burns
+        // attempts against the wrong credential.
+        assert_eq!(
+            parse_cpin(b"+CPIN: SIM PUK2"),
+            Some(SimPinState::Puk2Required),
+            "SIM PUK2 must not classify as the primary SimPinState::PukRequired"
+        );
+    }
+
+    #[test]
+    fn parse_cpin_recognizes_ph_lock_as_other() {
+        assert_eq!(
+            parse_cpin(b"+CPIN: PH-NET PIN"),
+            Some(SimPinState::Other),
+            "a recognized-but-distinct lock state must classify as Other, not a guess"
+        );
+    }
+
+    #[test]
+    fn parse_cpin_unrecognized_value_is_other_not_none() {
+        // WHY Other rather than None: a caller that dispatches on the lock
+        // state must never conflate "this parser doesn't recognize the
+        // value" (Other) with "the query itself failed to parse" (None) --
+        // conflating the two risks a fallback path guessing a lock state
+        // for a value nobody has classified.
+        assert_eq!(
+            parse_cpin(b"+CPIN: SOMETHING UNKNOWN"),
+            Some(SimPinState::Other)
+        );
+        assert_eq!(
+            parse_cpin(b"garbage"),
+            None,
+            "a line without the +CPIN: prefix must not parse at all"
         );
     }
 
