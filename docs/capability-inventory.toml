@@ -102,7 +102,7 @@ hardware_reason = "WiFi TX/RX/scan, BT RF, GPS NMEA need the combo chip + antenn
 id = "comms-matrix"
 modules = ["matrix_crypto", "http_client", "json_mini", "harmostes", "matrix_ids"]
 tier = "kernel-wired"
-notes = "Olm/Megolm + HTTP/JSON surfaces compiled; /keys/claim consumption is #437 remnant 3."
+notes = "Olm/Megolm + HTTP/JSON surfaces compiled, including the /keys/claim request/response round trip that validates and returns a peer's key (#437). consume_one_time_key -- removing one of this device's OWN keys once a peer claims it -- stays unwired: that needs a receive-side signal (a dropping device_one_time_keys_count on /sync, or an inbound Olm pre-key message) that does not exist in this tree; X3DH session establishment is also not implemented. Nothing yet drives a claim from kinit/kardia."
 
 [[capability]]
 id = "screens-extended"
