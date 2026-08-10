@@ -27,9 +27,16 @@
 //! - No cookie handling
 
 // WHY: HTTP client created in Phase 09 Wave 1, integration pending in Wave 2.
-#![expect(
-    dead_code,
-    reason = "HTTP client created in Phase 09 Wave 1, harmostes integration pending (#145)"
+// cfg_attr(not(test), ...): the module's own tests now exercise its full
+// surface, so nothing is dead in the test build -- expecting dead_code there
+// makes the expectation unfulfilled. Production reachability is unchanged;
+// the expectation is scoped to the build where it is still real.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "HTTP client created in Phase 09 Wave 1, harmostes integration pending (#145)"
+    )
 )]
 
 extern crate alloc;
@@ -378,26 +385,23 @@ impl HttpResponse {
         // Determine body length from Content-Length header.
         let content_length = find_content_length(&headers)?;
 
-        let body = match content_length {
-            Some(len) => {
-                if len > MAX_BODY_SIZE {
-                    return Err(HttpError::BodyTooLarge);
-                }
-                let available = data.len().saturating_sub(body_start);
-                if available < len {
-                    return Err(HttpError::Incomplete);
-                }
-                data[body_start..body_start + len].to_vec()
+        let body = if let Some(len) = content_length {
+            if len > MAX_BODY_SIZE {
+                return Err(HttpError::BodyTooLarge);
             }
-            None => {
-                // No Content-Length: treat remaining data as body
-                // (connection-close framing).
-                let remaining = &data[body_start..];
-                if remaining.len() > MAX_BODY_SIZE {
-                    return Err(HttpError::BodyTooLarge);
-                }
-                remaining.to_vec()
+            let available = data.len().saturating_sub(body_start);
+            if available < len {
+                return Err(HttpError::Incomplete);
             }
+            data[body_start..body_start + len].to_vec()
+        } else {
+            // No Content-Length: treat remaining data as body
+            // (connection-close framing).
+            let remaining = &data[body_start..];
+            if remaining.len() > MAX_BODY_SIZE {
+                return Err(HttpError::BodyTooLarge);
+            }
+            remaining.to_vec()
         };
 
         let consumed = body_start + body.len();
@@ -528,13 +532,9 @@ fn find_header_end(data: &[u8]) -> Option<usize> {
     if data.len() < 4 {
         return None;
     }
-    for i in 0..data.len() - 3 {
-        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n'
-        {
-            return Some(i);
-        }
-    }
-    None
+    (0..data.len() - 3).find(|&i| {
+        data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n'
+    })
 }
 
 /// Parse the HTTP status line and return (`status_code`, `bytes_consumed`).
@@ -653,12 +653,7 @@ fn find_crlf(data: &[u8]) -> Option<usize> {
     if data.len() < 2 {
         return None;
     }
-    for i in 0..data.len() - 1 {
-        if data[i] == b'\r' && data[i + 1] == b'\n' {
-            return Some(i);
-        }
-    }
-    None
+    (0..data.len() - 1).find(|&i| data[i] == b'\r' && data[i + 1] == b'\n')
 }
 
 /// Find the first occurrence of `needle` in `haystack`.
@@ -1001,7 +996,7 @@ mod tests {
         // header_end (the position of the \r\n\r\n terminator) must exceed
         // MAX_HEADER_BLOCK_SIZE to trip the guard before any header parsing.
         let mut raw = Vec::from(&b"HTTP/1.1 200 OK\r\nX-Pad: "[..]);
-        raw.extend(core::iter::repeat(b'a').take(MAX_HEADER_BLOCK_SIZE + 16));
+        raw.extend(core::iter::repeat_n(b'a', MAX_HEADER_BLOCK_SIZE + 16));
         raw.extend_from_slice(b"\r\n\r\n");
 
         let result = HttpResponse::parse(&raw);
@@ -1034,7 +1029,7 @@ mod tests {
         // raw remaining-bytes size must be checked against MAX_BODY_SIZE
         // too, not just the declared-length path above.
         let mut raw = Vec::from(&b"HTTP/1.1 200 OK\r\nServer: x\r\n\r\n"[..]);
-        raw.extend(core::iter::repeat(b'a').take(MAX_BODY_SIZE + 1));
+        raw.extend(core::iter::repeat_n(b'a', MAX_BODY_SIZE + 1));
 
         let result = HttpResponse::parse(&raw);
         assert_eq!(
@@ -1089,7 +1084,7 @@ mod tests {
         let req = post_json("host.example.com", "/path", b"{}");
         assert_eq!(req.method, HttpMethod::Post);
         assert!(req.body.is_some());
-        assert_eq!(req.body.as_ref().map(Vec::as_slice), Some(b"{}".as_slice()));
+        assert_eq!(req.body.as_deref(), Some(b"{}".as_slice()));
     }
 
     #[test]

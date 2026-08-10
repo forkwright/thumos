@@ -130,7 +130,7 @@ pub(crate) fn find_partition(dev: &dyn BlockDevice, name: &str) -> Result<Partit
         return Err(GptError::BadSignature);
     }
     let header_size = le32(&header, 12) as usize;
-    if header_size < 92 || header_size > SECTOR_SIZE {
+    if !(92..=SECTOR_SIZE).contains(&header_size) {
         return Err(GptError::Malformed);
     }
     let stored_header_crc = le32(&header, 16);
@@ -149,7 +149,7 @@ pub(crate) fn find_partition(dev: &dyn BlockDevice, name: &str) -> Result<Partit
     if entry_count == 0 || entry_count > MAX_ENTRIES {
         return Err(GptError::Malformed);
     }
-    if entry_size < 128 || entry_size as usize > SECTOR_SIZE || entry_size % 8 != 0 {
+    if entry_size < 128 || entry_size as usize > SECTOR_SIZE || !entry_size.is_multiple_of(8) {
         return Err(GptError::Malformed);
     }
     let stored_entries_crc = le32(&header, 88);
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn finds_boot_partition_by_name() {
-        let dev = gpt_device(&[("boot", 2048, 4095), ("userdata", 0x50C000, 0xB0BFDF)]);
+        let dev = gpt_device(&[("boot", 2048, 4095), ("userdata", 0x0050_C000, 0x00B0_BFDF)]);
         let boot = find_partition(&dev, "boot").expect("boot must be found");
         assert_eq!(boot.first_lba, 2048);
         assert_eq!(boot.last_lba, 4095);

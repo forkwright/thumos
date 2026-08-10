@@ -937,9 +937,7 @@ impl WpaHandshake {
                 // Fail closed (#282 batch 3): a missing PTK means no MIC can
                 // be computed -- never emit a frame with a zeroed, spoofable
                 // MIC.
-                let Some(ref ptk) = self.ptk else {
-                    return None;
-                };
+                let ptk = self.ptk.as_ref()?;
                 let key_info = KeyInfo(0x010a); // version=2, pairwise, MIC
                 let mut kf = EapolKeyFrame {
                     descriptor_type: DESCRIPTOR_TYPE_RSN,
@@ -971,9 +969,7 @@ impl WpaHandshake {
                 // Fail closed (#282 batch 3): a missing PTK means no MIC can
                 // be computed -- never emit a frame with a zeroed, spoofable
                 // MIC.
-                let Some(ref ptk) = self.ptk else {
-                    return None;
-                };
+                let ptk = self.ptk.as_ref()?;
                 let key_info = KeyInfo(0x030a); // version=2, pairwise, MIC, secure
                 let mut kf = EapolKeyFrame {
                     descriptor_type: DESCRIPTOR_TYPE_RSN,

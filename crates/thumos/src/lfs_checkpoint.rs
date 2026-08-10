@@ -77,7 +77,7 @@ impl CheckpointHeader {
     /// # Errors
     ///
     /// This method is infallible.
-    pub(crate) fn to_block(&self) -> [u8; BLOCK_SIZE] {
+    pub(crate) fn to_block(self) -> [u8; BLOCK_SIZE] {
         let mut buf = [0u8; BLOCK_SIZE];
         let mut offset = 0;
 
@@ -268,6 +268,10 @@ fn validate_header_geometry(header: &CheckpointHeader, device_blocks: u64) -> Re
 ///
 /// Returns [`LfsError::Corrupt`] if neither checkpoint slot is valid.
 /// Returns [`LfsError::BlockIo`] if block reads fail on both slots.
+// WHY: slot_a_block/slot_b_block mirror this module's own "slot A / slot B"
+// dual-checkpoint terminology (see the module doc comment) — renaming either
+// would obscure which physical slot each argument identifies.
+#[allow(clippy::similar_names)]
 pub(crate) fn pick_latest(
     dev: &mut dyn BlockDevice,
     cache: &mut BlockCache,
@@ -341,7 +345,7 @@ fn read_u64_le(buf: &[u8], offset: &mut usize) -> u64 {
 /// Calculate the number of 4 KiB blocks needed to store `byte_count` bytes.
 fn blocks_needed(byte_count: usize) -> usize {
     let full = byte_count / BLOCK_SIZE;
-    let partial = if byte_count % BLOCK_SIZE != 0 { 1 } else { 0 };
+    let partial = usize::from(!byte_count.is_multiple_of(BLOCK_SIZE));
     full + partial
 }
 

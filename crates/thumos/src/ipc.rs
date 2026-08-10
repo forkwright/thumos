@@ -227,9 +227,8 @@ pub(crate) fn recv() -> Option<Message> {
 /// Check if our inbox has messages. Returns false if the current PID is invalid.
 pub(crate) fn has_messages() -> bool {
     let pid = process::current_pid();
-    let idx = match validate_pid(pid) {
-        Ok(i) => i,
-        Err(_) => return false,
+    let Ok(idx) = validate_pid(pid) else {
+        return false;
     };
     // SAFETY: INBOXES is a static array indexed by PID. addr_of! avoids
     // creating an intermediate reference to the static mut. INBOXES_LOCK
@@ -326,7 +325,7 @@ mod tests {
         assert!(popped.is_some());
         let popped = popped.as_ref();
         assert_eq!(popped.map(|m| m.tag), Some(42));
-        assert_eq!(popped.map(|m| m.payload()), Some(b"hello".as_slice()));
+        assert_eq!(popped.map(Message::payload), Some(b"hello".as_slice()));
         assert!(inbox.is_empty());
     }
 

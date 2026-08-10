@@ -504,7 +504,7 @@ impl MessagesScreen {
             let badge = msg.transport.badge();
             let marker = if msg.read { " " } else { "*" };
             let sender_display = truncate_str(&msg.sender, 22);
-            let line1 = format_entry_line1_with_badge(badge, marker, &sender_display);
+            let line1 = format_entry_line1_with_badge(badge, marker, sender_display);
             let badge_color = transport_badge_color(msg.transport);
             let sender_color = if msg.read {
                 color::WHITE
@@ -532,7 +532,7 @@ impl MessagesScreen {
                 w,
                 4,
                 y + CHAR_HEIGHT + 4,
-                &preview,
+                preview,
                 color::DARK_GREY,
                 color::BLACK,
             );
@@ -570,7 +570,7 @@ impl MessagesScreen {
             w,
             from_x + 6 * CHAR_WIDTH,
             TITLE_Y,
-            &sender_display,
+            sender_display,
             color::WHITE,
             color::BLACK,
         );
@@ -1090,7 +1090,7 @@ mod tests {
         let mut screen = MessagesScreen::new();
         screen.set_messages(make_test_messages());
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
 
         // Should have rendered visible content.
@@ -1170,7 +1170,7 @@ mod tests {
         }]);
         screen.view = MessageView::Detail;
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
 
         let any_set = fb.iter().any(|&px| px != 0);
@@ -1312,7 +1312,7 @@ mod tests {
     #[test]
     fn empty_inbox_renders() {
         let screen = MessagesScreen::new();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "empty inbox must render 'No messages' text");
@@ -1337,7 +1337,7 @@ mod tests {
     fn compose_renders_without_panic() {
         let mut screen = MessagesScreen::new();
         screen.enter_compose();
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "compose screen must render visible content");
@@ -1470,7 +1470,7 @@ mod tests {
         ];
         screen.set_messages(entries);
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
 
         let any_set = fb.iter().any(|&px| px != 0);
@@ -1571,7 +1571,7 @@ mod tests {
              after the list shrinks"
         );
 
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -1671,7 +1671,7 @@ mod tests {
         let mut screen = MessagesScreen::new();
         screen.enter_compose();
         screen.on_key(Key::Star); // -> Matrix
-        let mut fb = [0u16; CONTENT_PIXELS];
+        let mut fb = alloc::vec![0u16; CONTENT_PIXELS];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "compose with Matrix transport must render");

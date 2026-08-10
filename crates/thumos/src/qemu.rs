@@ -1,6 +1,6 @@
 //! QEMU semihosting harness for the `qemu` bring-up feature.
 //!
-//! AArch32 semihosting (`svc #0x123456`) against `qemu-system-arm
+//! `AArch32` semihosting (`svc #0x123456`) against `qemu-system-arm
 //! -semihosting-config enable=on,target=native`. Mirrors the calls proven
 //! by `examples/qemu_smoke.rs`. Compiled only under `--features qemu`.
 //!

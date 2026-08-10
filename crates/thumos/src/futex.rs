@@ -113,15 +113,12 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
         // reference. Single-core cooperative kernel ensures exclusive access here.
         let waiters = unsafe { &mut *core::ptr::addr_of_mut!(FUTEX_WAITERS) };
         let slot = waiters.iter_mut().find(|s| s.is_none());
-        let slot = match slot {
-            Some(s) => s,
-            None => {
-                // Unreachable: the table_full check above already returned
-                // ENOMEM if no slot was free, and the single-core
-                // cooperative kernel guarantees no interleaving mutation
-                // between that check and this one.
-                return ENOMEM;
-            }
+        let Some(slot) = slot else {
+            // Unreachable: the table_full check above already returned
+            // ENOMEM if no slot was free, and the single-core
+            // cooperative kernel guarantees no interleaving mutation
+            // between that check and this one.
+            return ENOMEM;
         };
         *slot = Some(FutexWaiter { addr, pid });
 
@@ -143,7 +140,7 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
         }
 
         // Execution resumes here after FUTEX_WAKE unblocks us.
-        return 0;
+        0
     }
 
     // In test builds the block path is absent; the matching value case returns
@@ -171,24 +168,24 @@ pub fn sys_futex_wake(addr: u32, max_wake: u32) -> u32 {
         if woken >= max_wake {
             break;
         }
-        if let Some(ref w) = *slot {
-            if w.addr == addr {
-                let pid = w.pid as u8;
-                *slot = None;
-                // SAFETY: pid is a valid PID previously registered in
-                // sys_futex_wait; set_state is safe on cooperative single-core.
-                // WHY cfg(not(test)): crate::process is not compiled under test
-                // (requires ARM + full kernel environment). In test builds the
-                // slot is cleared but no process state change occurs, which is
-                // fine because no process was actually blocked.
-                #[cfg(not(test))]
-                unsafe {
-                    crate::process::set_state(pid, crate::process::State::Ready);
-                }
-                #[cfg(test)]
-                let _ = pid; // suppress unused warning in test builds
-                woken += 1;
+        if let Some(ref w) = *slot
+            && w.addr == addr
+        {
+            let pid = w.pid as u8;
+            *slot = None;
+            // SAFETY: pid is a valid PID previously registered in
+            // sys_futex_wait; set_state is safe on cooperative single-core.
+            // WHY cfg(not(test)): crate::process is not compiled under test
+            // (requires ARM + full kernel environment). In test builds the
+            // slot is cleared but no process state change occurs, which is
+            // fine because no process was actually blocked.
+            #[cfg(not(test))]
+            unsafe {
+                crate::process::set_state(pid, crate::process::State::Ready);
             }
+            #[cfg(test)]
+            let _ = pid; // suppress unused warning in test builds
+            woken += 1;
         }
     }
     woken
@@ -273,8 +270,6 @@ mod tests {
 
     #[test]
     fn futex_wait_returns_eagain_on_mismatch() {
-        reset_waiters();
-
         // WHY function-local `static mut`: sys_futex_wait now validates
         // `addr` via validate_user_buffer before dereferencing it. A stack
         // address (e.g. `&word`) falls outside
@@ -283,6 +278,8 @@ mod tests {
         // function-local static lands inside that window (see fd.rs tests
         // for the same pattern).
         static mut WORD: u32 = 42;
+
+        reset_waiters();
         let addr = core::ptr::addr_of!(WORD) as u32;
 
         // val != *addr → should return EAGAIN immediately without blocking.
@@ -311,14 +308,14 @@ mod tests {
         reset_waiters();
 
         let word: u32 = 0;
-        let woken = sys_futex_wake((&word) as *const u32 as u32, 10);
+        let woken = sys_futex_wake((&raw const word) as u32, 10);
         assert_eq!(woken, 0, "no waiters → 0 processes woken");
     }
 
     #[test]
     fn futex_invalid_op_returns_einval() {
         let word: u32 = 0;
-        let result = sys_futex((&word) as *const u32 as u32, 99, 0);
+        let result = sys_futex((&raw const word) as u32, 99, 0);
         assert_eq!(result, EINVAL, "unknown op should return EINVAL");
     }
 
@@ -363,7 +360,7 @@ mod tests {
             );
             assert_eq!(waiters[1].as_ref().map(|w| w.pid), Some(7));
             assert!(
-                waiters.iter().any(|s| s.is_none()),
+                waiters.iter().any(Option::is_none),
                 "a freed slot must be available for reuse"
             );
         }
@@ -371,6 +368,10 @@ mod tests {
 
     #[test]
     fn futex_wait_returns_enomem_when_waiter_table_full() {
+        // WHY function-local `static mut`: mirrors futex_wait_returns_eagain_on_mismatch
+        // -- lands inside the validated user-address window on this host binary.
+        static mut WORD: u32 = 42;
+
         reset_waiters();
         // Fill every slot via the test-only seam (bypasses the
         // #[cfg(not(test))]-gated block path, which needs crate::process).
@@ -378,9 +379,6 @@ mod tests {
             insert_waiter_for_test(0x1000 + i as u32, i as u32);
         }
 
-        // WHY function-local `static mut`: mirrors futex_wait_returns_eagain_on_mismatch
-        // -- lands inside the validated user-address window on this host binary.
-        static mut WORD: u32 = 42;
         let addr = core::ptr::addr_of!(WORD) as u32;
 
         // *addr == val, so this would normally proceed to register a

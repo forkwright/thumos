@@ -326,6 +326,7 @@ impl fmt::Debug for BfuTimer {
             .field("state", &self.state)
             .field("mode", &self.mode)
             .field("fired", &self.fired)
+            .field("paused_ticks", &self.paused_ticks)
             .finish()
     }
 }
@@ -504,7 +505,7 @@ mod tests {
 
         // Tick a few times.
         for _ in 0..100 {
-            timer.tick(&mut km);
+            let _ = timer.tick(&mut km);
         }
         assert_eq!(timer.elapsed_ticks(), 100);
 
@@ -518,7 +519,7 @@ mod tests {
 
         // Resume and tick — should advance again.
         timer.resume();
-        timer.tick(&mut km);
+        let _ = timer.tick(&mut km);
         assert_eq!(timer.elapsed_ticks(), 101);
     }
 
@@ -527,14 +528,14 @@ mod tests {
         let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Daily);
 
-        timer.tick(&mut km);
+        let _ = timer.tick(&mut km);
         assert_eq!(timer.elapsed_ticks(), 1);
 
         timer.pause();
         // Tick past the pause cap; the timer must force itself back to
         // Running rather than staying paused forever.
         for _ in 0..MAX_PAUSE_TICKS {
-            timer.tick(&mut km);
+            let _ = timer.tick(&mut km);
         }
         assert_eq!(
             timer.state(),
@@ -544,7 +545,7 @@ mod tests {
 
         // Elapsed time must resume advancing now that the cap forced a resume.
         let before = timer.elapsed_ticks();
-        timer.tick(&mut km);
+        let _ = timer.tick(&mut km);
         assert_eq!(
             timer.elapsed_ticks(),
             before + 1,
@@ -574,8 +575,8 @@ mod tests {
         let mut timer = BfuTimer::new(SecurityMode::Daily);
 
         // Advance past Sentinel threshold but under Daily threshold.
-        for _ in 0..SENTINEL_THRESHOLD_TICKS + 1 {
-            timer.tick(&mut km);
+        for _ in 0..=SENTINEL_THRESHOLD_TICKS {
+            let _ = timer.tick(&mut km);
         }
         assert!(km.has_keys(), "Daily threshold not reached yet");
 
@@ -624,7 +625,7 @@ mod tests {
         let initial = timer.remaining_ms();
         assert_eq!(initial, DAILY_TIMEOUT_MS);
 
-        timer.tick(&mut km);
+        let _ = timer.tick(&mut km);
         let after_one = timer.remaining_ms();
         assert_eq!(after_one, DAILY_TIMEOUT_MS - TICK_PERIOD_MS);
     }
@@ -633,7 +634,7 @@ mod tests {
     fn remaining_ms_zero_after_expiry() {
         let mut km = key_manager_with_derived_keys();
         let mut timer = BfuTimer::new(SecurityMode::Panic);
-        timer.tick(&mut km);
+        let _ = timer.tick(&mut km);
         assert_eq!(timer.remaining_ms(), 0);
     }
 
@@ -681,7 +682,7 @@ mod tests {
         assert_eq!(km.sleep_tier(), SleepTier::Short);
 
         let mut timer = BfuTimer::new(SecurityMode::Panic);
-        timer.tick(&mut km);
+        let _ = timer.tick(&mut km);
 
         assert_eq!(
             km.sleep_tier(),

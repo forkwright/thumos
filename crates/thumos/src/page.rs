@@ -213,7 +213,7 @@ pub unsafe fn try_free_page(addr: usize) -> bool {
         }
         let offset = addr - FIRST_PAGE;
         // Reject misaligned addresses — they never name a real frame.
-        if offset % PAGE_SIZE != 0 {
+        if !offset.is_multiple_of(PAGE_SIZE) {
             return false;
         }
         let page_num = offset / PAGE_SIZE;
@@ -336,7 +336,7 @@ pub unsafe fn free_contiguous(addr: usize, n: usize) -> bool {
             return false;
         }
         let offset = addr - FIRST_PAGE;
-        if offset % PAGE_SIZE != 0 {
+        if !offset.is_multiple_of(PAGE_SIZE) {
             return false;
         }
         let start = offset / PAGE_SIZE;
@@ -427,7 +427,7 @@ mod tests {
         // SAFETY: TEST_BUF_SINGLE is a private static touched only by this
         // test.
         unsafe {
-            let base = core::ptr::addr_of_mut!(TEST_BUF_SINGLE) as *mut u8 as usize;
+            let base = core::ptr::addr_of_mut!(TEST_BUF_SINGLE).cast::<u8>() as usize;
             let ptr = base as *mut u8;
             for i in 0..PAGE_SIZE {
                 core::ptr::write_volatile(ptr.add(i), 0xAA);
@@ -463,7 +463,7 @@ mod tests {
         // compile-time constant, so use it directly.
         const RANGE_LEN: usize = TEST_RANGE_PAGES * PAGE_SIZE;
         unsafe {
-            let base = core::ptr::addr_of_mut!(TEST_BUF_RANGE) as *mut u8 as usize;
+            let base = core::ptr::addr_of_mut!(TEST_BUF_RANGE).cast::<u8>() as usize;
             let ptr = base as *mut u8;
             for i in 0..RANGE_LEN {
                 core::ptr::write_volatile(ptr.add(i), 0xBB);

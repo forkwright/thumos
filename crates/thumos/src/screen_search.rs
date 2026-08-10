@@ -252,11 +252,11 @@ impl SearchScreen {
     fn rebuild_matches(&mut self) {
         self.match_count = 0;
         for (i, entry) in FUNCTIONS.iter().enumerate() {
-            if fuzzy_match(entry.name, &self.filter, self.filter_len) {
-                if self.match_count < MAX_ENTRIES {
-                    self.matches[self.match_count] = i;
-                    self.match_count += 1;
-                }
+            if fuzzy_match(entry.name, &self.filter, self.filter_len)
+                && self.match_count < MAX_ENTRIES
+            {
+                self.matches[self.match_count] = i;
+                self.match_count += 1;
             }
         }
 
@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn draw_does_not_panic() {
         let screen = SearchScreen::new();
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "search screen must render visible content");
@@ -675,7 +675,7 @@ mod tests {
             screen.match_count() > 0,
             "filter must keep matching entries"
         );
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(
@@ -695,7 +695,7 @@ mod tests {
         screen.rebuild_matches();
         assert_eq!(screen.match_count(), 0, "zzz must match nothing");
 
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
     }
 

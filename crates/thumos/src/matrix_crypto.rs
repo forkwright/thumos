@@ -776,7 +776,7 @@ fn cbc_decrypt(
     iv: &[u8; AES_BLOCK_SIZE],
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
-    if ciphertext.is_empty() || ciphertext.len() % AES_BLOCK_SIZE != 0 {
+    if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(AES_BLOCK_SIZE) {
         return Err(CryptoError::InvalidCiphertextLength);
     }
     let dec =
@@ -1207,7 +1207,7 @@ fn decode_signature(s: &str) -> Option<[u8; ED25519_SIGNATURE_LEN]> {
 
 /// Decode an even-length hex string into a byte vector.
 fn hex_decode_bytes(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let bytes = s.as_bytes();
@@ -1664,7 +1664,7 @@ mod tests {
         // Clone session for decryption (simulates inbound session).
         let session = crypto.find_outbound_megolm(room_id);
         assert!(session.is_some());
-        let inbound = session.map(|s| s.clone()).unwrap_or_else(|| MegolmSession {
+        let inbound = session.cloned().unwrap_or_else(|| MegolmSession {
             session_id: [0u8; KEY_SIZE],
             session_key: [0u8; KEY_SIZE],
             message_index: 0,
@@ -1697,7 +1697,7 @@ mod tests {
 
         let inbound = crypto
             .find_outbound_megolm(room_id)
-            .map(Clone::clone)
+            .cloned()
             .expect("session exists");
 
         let mut ciphertext =
@@ -1725,11 +1725,10 @@ mod tests {
         let _ = crypto.create_outbound_megolm(room_id);
         let inbound = crypto
             .find_outbound_megolm(room_id)
-            .map(Clone::clone)
+            .cloned()
             .expect("session exists");
 
-        let mut oversized = Vec::with_capacity(MEGOLM_MAX_PAYLOAD_LEN + 1);
-        oversized.resize(MEGOLM_MAX_PAYLOAD_LEN + 1, 0u8);
+        let oversized = alloc::vec![0u8; MEGOLM_MAX_PAYLOAD_LEN + 1];
         let result = decrypt_megolm(&inbound, &oversized, room_id);
         assert_eq!(result, Err(CryptoError::MegolmMessageTooLong));
     }
@@ -1742,7 +1741,7 @@ mod tests {
         let _ = crypto.create_outbound_megolm(room_id);
         let inbound = crypto
             .find_outbound_megolm(room_id)
-            .map(Clone::clone)
+            .cloned()
             .expect("session exists");
 
         let mut ct = encrypt_megolm(&mut crypto.megolm_outbound[0], b"tag test").expect("encrypt");
@@ -1763,7 +1762,7 @@ mod tests {
         let _ = crypto.create_outbound_megolm(room_id);
         let inbound = crypto
             .find_outbound_megolm(room_id)
-            .map(Clone::clone)
+            .cloned()
             .expect("session exists");
 
         let ct =
@@ -1787,7 +1786,7 @@ mod tests {
         let _ = crypto.create_outbound_megolm(room_id);
         let inbound = crypto
             .find_outbound_megolm(room_id)
-            .map(Clone::clone)
+            .cloned()
             .expect("session exists");
 
         // Encrypt three messages (indices 0, 1, 2).

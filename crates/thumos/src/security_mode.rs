@@ -1103,7 +1103,8 @@ mod tests {
         let mut pm = PowerManager::new();
 
         // Start in Daily, activate panic at tick 1000.
-        mm.activate_panic(1000, PanicActivation::PttTripleClick, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(1000, PanicActivation::PttTripleClick, &mut km, &mut pm)
             .expect("activate_panic failed");
 
         assert_eq!(mm.mode(), SecurityMode::Panic);
@@ -1125,7 +1126,8 @@ mod tests {
         let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
-        mm.activate_panic(1000, PanicActivation::DuressPin, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(1000, PanicActivation::DuressPin, &mut km, &mut pm)
             .expect("activate_panic failed");
 
         // Try to abort at tick 3000 (2000 ticks later, exceeds 1500-tick window).
@@ -1143,7 +1145,8 @@ mod tests {
         let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
-        mm.activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("activate_panic failed");
         mm.abort_panic(2500, &mut pm)
             .expect("abort at elapsed == PANIC_ABORT_WINDOW_TICKS must succeed");
@@ -1155,7 +1158,8 @@ mod tests {
         let mut km = key_manager_with_derived_keys();
         let mut pm = PowerManager::new();
 
-        mm.activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("activate_panic failed");
         let result = mm.abort_panic(2501, &mut pm);
         assert_eq!(result, Err(ModeTransitionError::AbortWindowExpired));
@@ -1283,7 +1287,8 @@ mod tests {
         let mut mm = mode_manager_with_test_pin();
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
-        mm.activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("activate_panic failed");
         assert_eq!(mm.status_badge(), "PANIC");
     }
@@ -1304,7 +1309,8 @@ mod tests {
 
         // Activate covert lock first, then panic.
         mm.toggle_covert_lock(&mut pm);
-        mm.activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("activate_panic failed");
 
         // Panic overrides covert badge.
@@ -1326,7 +1332,8 @@ mod tests {
             .expect("enter_sentinel failed");
         assert_eq!(mm.mode_char(), 'S');
 
-        mm.activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("activate_panic failed");
         assert_eq!(mm.mode_char(), 'P');
     }
@@ -1352,7 +1359,8 @@ mod tests {
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
 
-        mm.activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("activate_panic failed");
 
         let result = mm.enter_sentinel(&mut km, &mut pm);
@@ -1374,7 +1382,8 @@ mod tests {
         let mut km = KeyManager::new();
         let mut pm = PowerManager::new();
 
-        mm.activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(0, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("first panic");
 
         let result = mm.activate_panic(100, PanicActivation::DuressPin, &mut km, &mut pm);
@@ -1400,7 +1409,8 @@ mod tests {
             .expect("enter_sentinel failed");
         assert_eq!(mm.mode(), SecurityMode::Sentinel);
 
-        mm.activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
+        let _ = mm
+            .activate_panic(1000, PanicActivation::KeyCombo, &mut km, &mut pm)
             .expect("activate_panic failed");
 
         mm.abort_panic(1100, &mut pm).expect("abort_panic failed");

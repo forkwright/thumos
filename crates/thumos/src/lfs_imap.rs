@@ -332,7 +332,7 @@ impl Default for LfsImap {
 /// Calculate the number of 4 KiB blocks needed to store `byte_count` bytes.
 fn blocks_needed(byte_count: usize) -> u32 {
     let full = byte_count / BLOCK_SIZE;
-    let partial = if byte_count % BLOCK_SIZE != 0 { 1 } else { 0 };
+    let partial = usize::from(!byte_count.is_multiple_of(BLOCK_SIZE));
     (full + partial) as u32
 }
 
@@ -569,11 +569,12 @@ mod tests {
         // save_and_load_from_disk_round_trips test only has 50 entries
         // (604 bytes), which fits in a single block and never exercises
         // the multi-block write/read loop.
+        const ENTRY_COUNT: u32 = 1000;
+
         let mut dev = MemBlockDevice::new(65536).expect("create device"); // 32 MiB
         let mut cache = BlockCache::new();
 
         let mut imap = LfsImap::new();
-        const ENTRY_COUNT: u32 = 1000;
         for i in 0..ENTRY_COUNT {
             imap.insert(i, u64::from(i) * 7 + 1000);
         }

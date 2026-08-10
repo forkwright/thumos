@@ -723,7 +723,7 @@ mod tests {
 
         assert_eq!(screen.alarm_entries.len(), 3, "must have 3 alarm entries");
 
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "alarm list must render visible content");
@@ -784,7 +784,7 @@ mod tests {
         screen.tab = Tab::Timer;
         screen.update(&mgr, 0);
 
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "timer tab must render visible content");
@@ -795,7 +795,7 @@ mod tests {
         let mut screen = AlarmScreen::new();
         screen.tab = Tab::Stopwatch;
 
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "stopwatch tab must render visible content");
@@ -848,7 +848,7 @@ mod tests {
         let mut screen = AlarmScreen::new();
         screen.update(&mgr, 0);
 
-        let mut fb = [0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize];
         screen.draw(&mut fb);
         let any_set = fb.iter().any(|&px| px != 0);
         assert!(any_set, "empty alarm list must render placeholder text");
