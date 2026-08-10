@@ -80,6 +80,12 @@ declare -A REQUIRES=(
     [kfault-probe]="qemu"
     [crashloop-probe]="qemu"
     [metaxu-probe]="qemu"
+    # WHY (#544 negative-case witness): both imply metaxu-probe (Cargo.toml
+    # feature dependency), which itself CANNOT build without qemu (main.rs
+    # compile_error!) -- a solo pass would fail at that compile_error!, not
+    # report a lint, so they need the same qemu companion metaxu-probe gets.
+    [metaxu-probe-expired-grant]="qemu"
+    [metaxu-probe-no-capability]="qemu"
 )
 
 declare -a PASS_TAGS=("default")

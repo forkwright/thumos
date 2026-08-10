@@ -22,7 +22,7 @@ for marker in 'painted_px=' 'fork isolation intact' 'init2: reached via exec' 'g
 done
 
 # (b) ci.yml kernel job must call the scripts, per witness.
-for w in boot kfault sleep fork exec forkexec guard brk signal crashloop metaxu; do
+for w in boot kfault sleep fork exec forkexec guard brk signal crashloop metaxu metaxu-negative; do
     grep -q "scripts/witness/$w.sh" "$CI" || { echo "DRIFT: ci.yml no longer calls scripts/witness/$w.sh" >&2; rc=1; }
 done
 grep -q 'scripts/witness/trust-anchor.sh' "$CI" || { echo "DRIFT: ci.yml no longer calls scripts/witness/trust-anchor.sh" >&2; rc=1; }

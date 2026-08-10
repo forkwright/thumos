@@ -181,7 +181,22 @@ impl Pylon {
 ///
 /// Used by the adversarial witness (#544) and, under `pylon-bin`, by
 /// `src/bin/pylon_bridge.rs` for the on-device QEMU round trip.
-pub fn spawn(mut pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
+pub fn spawn(pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
+    spawn_with_response_transform(pylon, n_requests, |response| response)
+}
+
+/// Like [`spawn`], but every outgoing response frame passes through
+/// `transform` before it reaches the wire.
+///
+/// #544 negative-case witness: a tampered-MAC response must surface to the
+/// client as a typed MAC failure, not a silent accept or a transport
+/// error. [`spawn`] delegates here with an identity transform -- one
+/// implementation, not two that could drift.
+pub fn spawn_with_response_transform(
+    mut pylon: Pylon,
+    n_requests: usize,
+    transform: impl Fn(Vec<u8>) -> Vec<u8> + Send + 'static,
+) -> (u16, JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap_or_else(|_| unreachable!());
     let port = listener.local_addr().map(|a| a.port()).unwrap_or_default();
     let handle = std::thread::spawn(move || {
@@ -189,14 +204,15 @@ pub fn spawn(mut pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
             let Ok((mut stream, _)) = listener.accept() else {
                 continue;
             };
-            serve_one(&mut pylon, &mut stream);
+            serve_one(&mut pylon, &mut stream, &transform);
         }
     });
     (port, handle)
 }
 
-/// Read one length-prefixed frame, answer it, write the response frame.
-fn serve_one(pylon: &mut Pylon, stream: &mut TcpStream) {
+/// Read one length-prefixed frame, answer it, write the (possibly
+/// transformed) response frame.
+fn serve_one(pylon: &mut Pylon, stream: &mut TcpStream, transform: &dyn Fn(Vec<u8>) -> Vec<u8>) {
     use std::io::{Read, Write};
     let mut len_buf = [0u8; 4];
     if stream.read_exact(&mut len_buf).is_err() {
@@ -210,7 +226,7 @@ fn serve_one(pylon: &mut Pylon, stream: &mut TcpStream) {
     if stream.read_exact(&mut frame).is_err() {
         return;
     }
-    let response = pylon.handle(&frame);
+    let response = transform(pylon.handle(&frame));
     let out_len = (response.len() as u32).to_le_bytes();
     let _ = stream.write_all(&out_len);
     let _ = stream.write_all(&response);
