@@ -11,7 +11,7 @@
 //! the SAME roles (`[7u8; 32]` = runtime, `[9u8; 32]` = device) --
 //! deliberately public, non-secret, matching `keys/dev/boot-dev.*`'s
 //! convention. It never ships in a `production` build (main.rs
-//! compile_error!, mirrors `kfault-probe`/`crashloop-probe`) and never
+//! `compile_error`!, mirrors `kfault-probe`/`crashloop-probe`) and never
 //! substitutes for a live Aletheia runtime's grant issuance -- see the PR
 //! body for exactly what remains before this leg is production-real.
 //!
