@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/forkwright/thumos/compare/v0.2.6...v0.3.0) (2026-08-10)
+
+
+### Features
+
+* **kernel:** add the Matrix /keys/claim request builder and a claim-response handler that cannot touch the local key pool ([#713](https://github.com/forkwright/thumos/issues/713)) ([6eac467](https://github.com/forkwright/thumos/commit/6eac467e0c5fe5a184d00a4f4203b8e8aa2d79b7))
+
 ## [0.2.6](https://github.com/forkwright/thumos/compare/v0.2.5...v0.2.6) (2026-08-10)
 
 
