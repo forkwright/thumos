@@ -831,16 +831,10 @@ pub fn parse_final_result(line: &[u8]) -> Option<FinalResult> {
         return Some(FinalResult::Error);
     }
     if let Some(rest) = strip_prefix(line, b"+CME ERROR: ") {
-        return Some(match parse_decimal_u32(rest) {
-            Some(code) => FinalResult::CmeError(code),
-            None => FinalResult::Error,
-        });
+        return Some(parse_decimal_u32(rest).map_or(FinalResult::Error, FinalResult::CmeError));
     }
     if let Some(rest) = strip_prefix(line, b"+CMS ERROR: ") {
-        return Some(match parse_decimal_u32(rest) {
-            Some(code) => FinalResult::CmsError(code),
-            None => FinalResult::Error,
-        });
+        return Some(parse_decimal_u32(rest).map_or(FinalResult::Error, FinalResult::CmsError));
     }
     None
 }
