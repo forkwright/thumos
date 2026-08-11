@@ -1,0 +1,42 @@
+# nextest configuration (TESTING/no-nextest-config, thumos#718).
+#
+# WHY these values, not a generic starter template: CI
+# (.github/workflows/ci.yml `workspace` job) invokes plain
+# `cargo nextest run --workspace --build-jobs 8 --test-threads 8` with no
+# `--profile` flag, so [profile.default] below is what both CI and any local
+# run actually use -- there is no separate CI-only profile in play.
+#
+# The workspace suite (crates/*, excluding crates/thumos which is excluded
+# from the workspace and runs its own i686 host-test script) is ~939 tests
+# across 19 crates, almost all synchronous unit tests over pure parsing/codec
+# logic. Two things actually take non-trivial wall-clock time:
+#   - crates/topos/src/nmea.rs: four `proptest!` properties (default 256
+#     cases each) over NMEA sentence parsing -- cheap per-case, but the
+#     slowest tests in the suite by design.
+#   - crates/klesis/src/transport.rs:485 `read_line_times_out_on_slow_trickle`
+#     drives a mock 5ms-per-byte trickle against a test-mode 50ms
+#     READ_LINE_TIMEOUT and asserts `elapsed < 2s` (transport.rs:517) --
+#     wall-clock by construction, self-bounding at ~2s in practice.
+# Neither approaches the job-level 30-minute ceiling (ci.yml:57,
+# .kanon-ci.toml "cargo nextest" timeout_secs = 1800); slow-timeout below is
+# calibrated against that real outlier, not a generic guess.
+[profile.default]
+# WHY 3: TESTING.md's own documented CI-default retry count (this profile
+# IS the CI-invoked one, per the note above). No test in this suite is
+# currently flaky or quarantined -- these retries exist as the standard's
+# diagnostic backstop, not because of a known flake.
+retries = 3
+# WHY 20s/4: ~30x the ~2s worst known outlier (the wall-clock trickle test
+# above), well under the 30-minute job ceiling, and tight enough that a
+# genuinely hung test (not a slow one) still reds well before the job
+# timeout kills the whole run without a named failure.
+slow-timeout = { period = "20s", terminate-after = 4 }
+failure-output = "immediate-final"
+
+[[profile.default.overrides]]
+# WHY: the one test in this suite that is deliberately wall-clock-timed
+# (crates/klesis/src/transport.rs:485-517) -- give it a per-test allowance
+# that reflects its own ~2s design bound plus scheduler-contention margin,
+# rather than inheriting the global slow-timeout meant for everything else.
+filter = "test(read_line_times_out_on_slow_trickle)"
+slow-timeout = { period = "10s", terminate-after = 2 }
