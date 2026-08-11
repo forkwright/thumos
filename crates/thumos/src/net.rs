@@ -292,7 +292,10 @@ impl<H: WifiHwOps> WifiDevice<H> {
     // (`wifi_device.kind()`) alongside `.data_path_ready()` in
     // NetworkReadiness::from_device -- dropping &self would need a matching
     // kinit.rs call-site edit this PR cannot make.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "kind() is called instance-style (wifi_device.kind()) alongside data_path_ready() in NetworkReadiness::from_device; dropping &self would need a matching call-site edit out of this change's scope"
+    )]
     pub(crate) const fn kind(&self) -> NetworkDeviceKind {
         NetworkDeviceKind::Wifi
     }

@@ -186,7 +186,10 @@ impl IoCapability {
 // each is independently meaningful and independently set/read against a
 // single wire byte; folding them into an enum would obscure that 1:1
 // mapping rather than clarify it.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Table 3.5's own bitfield layout; folding independently-meaningful fields into an enum would obscure the 1:1 mapping"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub(crate) struct AuthReq {
@@ -243,7 +246,10 @@ impl AuthReq {
 /// distribute, once for what the responder will).
 // WHY: same rationale as `AuthReq` — this is Table 3.6's own bitfield
 // layout, not application state.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Table 3.6's own bitfield layout, same rationale as AuthReq"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub(crate) struct KeyDistribution {

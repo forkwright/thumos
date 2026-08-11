@@ -267,7 +267,10 @@ impl CapabilityPreset {
     // state lives on the entity, not derivable from the enum variant
     // alone -- see the arm's own comment below). Merging the arms with `|`
     // would erase that distinction for a future reader.
-    #[allow(clippy::match_same_arms)]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "Off and Custom both evaluate to CapabilitySet::NONE for different reasons -- Off is the real documented empty grant, Custom is an unrepresentable placeholder; merging the arms would erase that distinction"
+    )]
     pub(crate) const fn grants(self) -> CapabilitySet {
         const RS: u32 = 1 << NousCapability::ReadState as u32;
         const RCM: u32 = 1 << NousCapability::ReadContactsMetadata as u32;
@@ -432,7 +435,10 @@ pub(crate) struct ActionRequirement {
 // adjacent allowlist edit). Each pair is conceptually distinct and may
 // diverge independently on a future design-table update -- merging the
 // arms with `|` would erase that independence.
-#[allow(clippy::match_same_arms)]
+#[expect(
+    clippy::match_same_arms,
+    reason = "each shared-binding pair shares a requirement for unrelated reasons and may diverge independently on a future design-table update; merging with | would erase that independence"
+)]
 pub(crate) fn action_requirement(action: &str) -> Option<ActionRequirement> {
     use crate::ekphrasis::action_types as at;
     let req = |capability, confirmation| {

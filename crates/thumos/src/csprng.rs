@@ -495,7 +495,10 @@ mod tests {
     // to pin that literal within a sane range as a discoverable, individually
     // reportable host test (not a const-eval assert) so a future edit to the
     // constant fails a named test rather than a silent build-time check.
-    #[allow(clippy::assertions_on_constants)]
+    #[expect(
+        clippy::assertions_on_constants,
+        reason = "pins a compile-time constant to a sane range as a named, individually-reportable host test rather than a silent const-eval assert"
+    )]
     fn csprng_init_timeout_is_sane() {
         assert!(
             CSPRNG_INIT_TIMEOUT_MS >= 5_000,

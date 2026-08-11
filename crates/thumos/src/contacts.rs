@@ -202,7 +202,10 @@ impl core::fmt::Display for Contact {
 // halves of what name_str()/number_str()/matrix_id_str() already decode --
 // dumping the raw arrays alongside the decoded strings would duplicate
 // the same content in a less readable form, not add information.
-#[allow(clippy::missing_fields_in_debug)]
+#[expect(
+    clippy::missing_fields_in_debug,
+    reason = "raw name/number/matrix_id arrays are redundant with the already-decoded name_str()/number_str()/matrix_id_str() fields shown; dumping both would duplicate content, not add it"
+)]
 impl core::fmt::Debug for Contact {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut s = f.debug_struct("Contact");

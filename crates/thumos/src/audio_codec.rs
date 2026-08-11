@@ -263,7 +263,10 @@ pub(crate) trait AudioCodecOps {
 // power-gate flags that can be set in any combination, not a mutually
 // exclusive state machine — a bitflags/enum recast would not simplify
 // the per-flag read/write pattern used against the PMIC registers.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent PMIC power-gate flags, not a state machine; a bitflags/enum recast would not simplify the per-flag register read/write pattern"
+)]
 #[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct Mt6357Codec {
     /// Whether the codec is powered on (LDO active).
