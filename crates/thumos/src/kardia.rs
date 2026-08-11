@@ -53,7 +53,12 @@ use crate::screen_privacy::PrivacyScreen;
 use crate::screen_radio::RadioControlScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
-use crate::screen_threat::{FirewallMode, ThreatAlert, ThreatAlertType, ThreatMonitor};
+use crate::screen_threat::ThreatMonitor;
+// WHY(#737): the alert constructors are reachable only from the qemu boot
+// smoke; production has no detector feeding this screen yet (see the
+// no-detector-vs-no-alerts gap filed alongside this change).
+#[cfg(feature = "qemu")]
+use crate::screen_threat::{FirewallMode, ThreatAlert, ThreatAlertType};
 use crate::screen_unimplemented::UnimplementedScreen;
 use crate::security::{KEY_SIZE, SHA256_DIGEST_LEN};
 use crate::security_mode::ModeManager;
