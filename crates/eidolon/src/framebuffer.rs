@@ -4,6 +4,9 @@
 //! All write operations are bounds-checked and silently ignore out-of-range coordinates,
 //! which is safe for clipped rendering on the 240×320 display.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use crate::color::Rgb565;
 
 const BYTES_PER_PIXEL: usize = 2;

@@ -4,6 +4,10 @@
 //! Call/End action buttons. Digit entry via [`Key`] events; backspace
 //! on the Left key; Call/End on the corresponding physical keys.
 
+use alloc::borrow::ToOwned;
+use alloc::format;
+use alloc::string::String;
+
 use haphe::input::{Key, TouchPoint};
 
 use crate::color::Rgb565;
