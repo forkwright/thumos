@@ -3,6 +3,9 @@
 //! [`TextList`] renders a bounded list of text items and tracks which item
 //! is selected. Navigation is via Up/Down keys or touch tap.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use haphe::input::{Key, TouchPoint};
 
 use crate::color::Rgb565;
@@ -236,6 +239,8 @@ impl Focusable for TextList {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     fn make_list(items: &[&str]) -> TextList {

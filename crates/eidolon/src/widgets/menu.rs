@@ -5,6 +5,9 @@
 //! the caller uses to dispatch work. Navigation is by Up/Down/Select; the
 //! Left key (or a back-button item) pops the navigation stack.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use haphe::input::{Key, TouchPoint};
 
 use crate::color::Rgb565;
@@ -283,6 +286,8 @@ impl Focusable for Menu {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     fn root_items() -> Vec<MenuItem> {
