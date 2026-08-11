@@ -1046,8 +1046,9 @@ fn parse_decimal_u32(input: &[u8]) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
+
+    use super::*;
 
     fn ok<T>(r: Result<T>) -> T {
         match r {

@@ -111,10 +111,11 @@ impl core::fmt::Display for Calibration {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::borrow::ToOwned;
     use alloc::format;
     use alloc::string::ToString;
+
+    use super::*;
 
     #[test]
     fn band_boundaries_are_the_canonical_30_60_80() {

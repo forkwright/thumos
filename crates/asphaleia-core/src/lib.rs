@@ -172,8 +172,8 @@ impl Ipv4Fields {
 
     /// Return the header length in bytes (`ihl * 4`).
     #[must_use]
-    pub const fn header_len(&self) -> usize {
-        (self.ihl as usize) * 4
+    pub fn header_len(&self) -> usize {
+        usize::from(self.ihl) * 4
     }
 }
 
@@ -362,7 +362,7 @@ pub fn extract_query_domain(data: &[u8]) -> Option<String> {
             return None;
         }
 
-        let label_len = len_byte as usize;
+        let label_len = usize::from(len_byte);
         let label_end = pos.checked_add(label_len)?;
         let label_bytes = data.get(pos..label_end)?;
         let label = core::str::from_utf8(label_bytes).ok()?;
@@ -462,9 +462,10 @@ pub fn is_default_surveillance_domain(domain_lowercased: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    use super::*;
 
     fn make_tcp_packet() -> Vec<u8> {
         let mut pkt = vec![0u8; 40];

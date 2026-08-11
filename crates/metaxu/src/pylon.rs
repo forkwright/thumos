@@ -67,14 +67,22 @@ impl Pylon {
     pub fn handle(&mut self, frame_bytes: &[u8]) -> Vec<u8> {
         let response = self.answer(frame_bytes);
         // Wrap the authenticated response in the envelope (kind 5).
-        let payload = postcard::to_allocvec(&response).unwrap_or_default();
+        let payload = postcard::to_allocvec(&response).unwrap_or_default(); // WHY: infallible -- see AuthenticatedResponse::build (metaxu-core session.rs:65 uses the identical pattern for the same type)
         let correlation = frame_bytes
             .get(10..18)
             .and_then(|b| b.try_into().ok().map(u64::from_le_bytes))
             .unwrap_or(0);
+        // WHY unwrap_or_default, not propagated: `handle`'s Vec<u8> return
+        // carries no error channel (#544's serve loop always writes SOME
+        // frame). `answer` only ever constructs DeviceAction::None or a
+        // fixed-string typed rejection (`mod reject`'s consts), so
+        // FrameTooLarge cannot occur today -- and if it ever did, an empty
+        // frame degrades safely: the client's own `Envelope::decode` sees
+        // `bytes.len() < HEADER_LEN` and returns a typed `TruncatedFrame`
+        // error, not a panic or a silent accept.
         Envelope::build(MessageKind::AuthenticatedResponse, correlation, payload)
             .map(|e| e.encode())
-            .unwrap_or_default()
+            .unwrap_or_default() // WHY: see the comment above -- degrades safely, does not mask a reachable failure
     }
 
     /// The verification + answer logic (typed for the witness's assertions).
@@ -198,7 +206,16 @@ pub fn spawn_with_response_transform(
     transform: impl Fn(Vec<u8>) -> Vec<u8> + Send + 'static,
 ) -> (u16, JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap_or_else(|_| unreachable!());
-    let port = listener.local_addr().map(|a| a.port()).unwrap_or_default();
+    // WHY unreachable, not unwrap_or_default: `local_addr` on a socket this
+    // process just bound cannot fail on a live listener (matches the same
+    // pattern metaxu witness.rs uses for the identical call). A silent
+    // `unwrap_or_default` would instead hand back port 0 -- BIND-only
+    // shorthand for "any port", nonsensical as a port a peer connects to --
+    // which surfaces downstream as a confusing connection failure far from
+    // this line rather than an immediate, precise one here.
+    let port = listener
+        .local_addr()
+        .map_or_else(|_| unreachable!(), |a| a.port());
     let handle = std::thread::spawn(move || {
         for _ in 0..n_requests {
             let Ok((mut stream, _)) = listener.accept() else {
@@ -218,7 +235,12 @@ fn serve_one(pylon: &mut Pylon, stream: &mut TcpStream, transform: &dyn Fn(Vec<u
     if stream.read_exact(&mut len_buf).is_err() {
         return;
     }
-    let len = u32::from_le_bytes(len_buf) as usize;
+    // WHY unwrap_or(usize::MAX), not a silent narrowing wrap: on a target
+    // where usize is narrower than u32, saturating to MAX guarantees the
+    // ceiling check immediately below rejects the frame instead of a
+    // wrapped-around length being read as small and plausible (matches
+    // metaxu-core envelope.rs's identical declared-length conversion).
+    let len = usize::try_from(u32::from_le_bytes(len_buf)).unwrap_or(usize::MAX);
     if len > 64 * 1024 {
         return;
     }
@@ -227,9 +249,20 @@ fn serve_one(pylon: &mut Pylon, stream: &mut TcpStream, transform: &dyn Fn(Vec<u
         return;
     }
     let response = transform(pylon.handle(&frame));
-    let out_len = (response.len() as u32).to_le_bytes();
-    let _ = stream.write_all(&out_len);
-    let _ = stream.write_all(&response);
+    // WHY try_from + saturate, not `as`: a wrapped-around length prefix
+    // would desync the peer's length-prefixed framing (it reads a plausible
+    // but wrong byte count); saturating to u32::MAX keeps an implausible
+    // response size visibly extreme instead of a garbled-but-parseable one.
+    let out_len = u32::try_from(response.len())
+        .unwrap_or(u32::MAX)
+        .to_le_bytes();
+    // WHY both discards below: best-effort write back to a test peer that
+    // may have already disconnected; `serve_one` returns () and its
+    // caller's loop moves on to the next request regardless, so there is
+    // no recovery action a propagated error could drive here (same shape
+    // as pylon_bridge.rs's `let _ = handle.join()`).
+    let _ = stream.write_all(&out_len); // kanon:ignore RUST/no-silent-result-swallow -- best-effort, see WHY above
+    let _ = stream.write_all(&response); // kanon:ignore RUST/no-silent-result-swallow -- best-effort, see WHY above
 }
 
 /// The control channel for scripted endpoints (unused by the witness today;

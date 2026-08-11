@@ -558,7 +558,12 @@ fn max_reselections_in_window(timestamps: &mut [Timestamp], window: SignedDurati
         while timestamps[right].duration_since(timestamps[left]) > window {
             left += 1;
         }
-        let count = (right - left + 1) as u32;
+        // WHY try_from + saturate, not `as`: an overflow here would silently
+        // wrap to a small u32 and under-report the reselection count on the
+        // exact metric a threat-detection scorer thresholds against --
+        // saturating to u32::MAX keeps an implausible count visibly extreme
+        // rather than a plausible-looking wrong number.
+        let count = u32::try_from(right - left + 1).unwrap_or(u32::MAX);
         if count > max_count {
             max_count = count;
         }
