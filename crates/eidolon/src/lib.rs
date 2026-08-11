@@ -14,7 +14,7 @@
 //! - [`font`]: 8×16 bitmap font with character and string rendering.
 //! - [`status_bar`]: top status strip (signal, time, battery).
 //! - [`widget`]: [`widget::Widget`] and [`widget::Focusable`] traits for UI components.
-//! - [`widgets`]: concrete widget implementations (list, menu, dialog, dialer).
+//! - [`widgets`]: concrete widget implementations (list, menu, dialog, dialer, keyboard, compose).
 
 extern crate alloc;
 
@@ -30,4 +30,7 @@ pub use font::{CHAR_HEIGHT, CHAR_WIDTH, draw_char, draw_str};
 pub use framebuffer::Framebuffer;
 pub use status_bar::StatusBar;
 pub use widget::{Focusable, Widget};
-pub use widgets::{Dialog, DialogButton, Menu, MenuItem, PhoneDialer, TextList, TextListConfig};
+pub use widgets::{
+    ComposeField, Dialog, DialogButton, Keyboard, KeyboardEvent, Menu, MenuItem, PhoneDialer,
+    TextList, TextListConfig,
+};
