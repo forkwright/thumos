@@ -51,7 +51,7 @@
 // WHY: nous chat screen created in Phase 09 Wave 8, full integration pending.
 #![expect(
     dead_code,
-    reason = "Nous chat screen created in Phase 09 Wave 8, integration pending (#145)"
+    reason = "Nous chat screen created in Phase 09 Wave 8, integration pending (#737)"
 )]
 
 extern crate alloc;

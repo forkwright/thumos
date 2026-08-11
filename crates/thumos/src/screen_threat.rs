@@ -25,10 +25,13 @@
 //! Accessible from `screen_search.rs` via function search "Threat Monitor"
 //! (`ScreenId::ThreatMonitor`), and from the status bar threat indicator.
 
-// WHY: threat monitor screen created in Phase 10 Wave 5, kinit wiring pending.
+// WHY: threat monitor screen created in Phase 10 Wave 5; alert aggregation
+// across the Phase 10 radio-intelligence subsystems and the #555
+// calibrated-score design (score-as-a-lens-over-the-log) are the remaining
+// kinit wiring dependency, tracked under #737.
 #![expect(
     dead_code,
-    reason = "Threat monitor screen created in Phase 10 Wave 5, kinit wiring pending"
+    reason = "Threat monitor screen implemented and tested; kinit wiring depends on #555's calibrated threat scores, tracked under #737"
 )]
 
 extern crate alloc;
