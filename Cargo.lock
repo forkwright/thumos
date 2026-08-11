@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "aither"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "getrandom 0.4.2",
  "hmac 0.12.1",
@@ -59,7 +59,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "asphaleia"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "asphaleia-core",
  "log",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "asphaleia-core"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "atomic-polyfill"
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "eidolon"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "embedded-graphics",
  "embedded-graphics-core",
@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "haphe"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "hash32"
@@ -835,7 +835,7 @@ dependencies = [
 
 [[package]]
 name = "kelyphos"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "log",
  "snafu",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "klesis"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "klesis-core",
  "log",
@@ -854,11 +854,11 @@ dependencies = [
 
 [[package]]
 name = "klesis-core"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "krypta"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek",
@@ -881,7 +881,7 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "leipsanon"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "getrandom 0.4.2",
  "log",
@@ -931,7 +931,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "metaxu"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "compact_str",
  "ed25519-dalek",
@@ -946,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "metaxu-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "compact_str",
  "ed25519-dalek",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "pteron"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes",
  "cmac",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "sema"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "jiff",
  "log",
@@ -1323,7 +1323,7 @@ dependencies = [
 
 [[package]]
 name = "sema-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
 ]
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "sphragis"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "ed25519-dalek",
  "sha2",
@@ -1499,7 +1499,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stegnos"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1607,7 +1607,7 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "topos"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "jiff",
  "log",
@@ -1619,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "topos-core"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "typenum"
