@@ -16,7 +16,7 @@
 // WHY: call screen created in Phase 07 Wave 3, kinit wiring pending.
 #![expect(
     dead_code,
-    reason = "Call screen created in Phase 07 Wave 3, kinit wiring pending (#145)"
+    reason = "Call screen created in Phase 07 Wave 3, kinit wiring pending (#737)"
 )]
 
 use crate::ui::{

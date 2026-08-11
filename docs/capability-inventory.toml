@@ -114,7 +114,8 @@ notes = "screen_calendar renders via the heorte witness; screen_fm is fed by fm-
 id = "screens-compiled-only"
 modules = ["screen_alarm", "screen_call", "screen_contacts", "screen_nous", "screen_privacy", "screen_radio", "screen_threat"]
 tier = "compiled-only"
-notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. Threat screen waits on #555's calibrated scores; alarm/nous/privacy/radio/call/contacts screens wait on their owning subsystems (#145)."
+notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. Threat screen waits on #555's calibrated scores; alarm/nous/privacy/radio/call/contacts screens wait on their owning subsystems reaching the kinit event loop (#737)."
+tracking_reason = "Implemented and unit-tested, not hardware-gated -- kinit route/input wiring tracked under #737 (#145 closed without a successor, which is what #737 corrects). screen_threat's alert aggregation additionally depends on #555's calibrated threat scores."
 
 [[capability]]
 id = "fm-radio"
@@ -128,6 +129,7 @@ id = "apps-compiled-only"
 modules = ["contacts", "t9", "briar", "meshtastic", "ekphrasis", "provision", "encryption", "nous"]
 tier = "compiled-only"
 notes = "No production call path from boot/loop. Owners: encryption #449/#446, nous #552, ekphrasis #553, provision USB OTG (Phase 8 deferral), briar/meshtastic Phase 9 stubs."
+tracking_reason = "Not hardware-gated -- encryption tracked under #449/#446, nous under #552, ekphrasis under #553. contacts and t9 have no open tracking issue for their kinit wiring; their #[expect(dead_code)] reasons still cite the closed #145, the same drift #737 corrects for the screens."
 
 [[capability]]
 id = "hardware-support"

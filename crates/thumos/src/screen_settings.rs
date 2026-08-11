@@ -15,7 +15,9 @@
 //! Subpages receive state snapshots to avoid holding references to
 //! kernel globals.
 
-// WHY: settings screens created in Phase 07 Wave 6, kinit wiring pending.
+// WHY: WifiSettingsScreen/BtSettingsScreen/AboutScreen created in Phase 07
+// Wave 6, kinit wiring pending; SettingsMenuScreen itself is already routed
+// via ui.rs's screen_kind -- only the three sub-screens remain unrouted.
 // cfg_attr(not(test), ...): the module's own tests now exercise its full
 // surface, so nothing is dead in the test build -- expecting dead_code there
 // makes the expectation unfulfilled. Production reachability is unchanged;
@@ -24,7 +26,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Settings screens created in Phase 07 Wave 6, kinit wiring pending (#145)"
+        reason = "WifiSettingsScreen/BtSettingsScreen/AboutScreen created in Phase 07 Wave 6, kinit wiring pending (#737); SettingsMenuScreen is wired"
     )
 )]
 

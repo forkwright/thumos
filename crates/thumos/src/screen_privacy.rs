@@ -26,7 +26,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Privacy dashboard created in Phase 08 Wave 7, kinit wiring pending (#145)"
+        reason = "Privacy dashboard created in Phase 08 Wave 7, kinit wiring pending (#737)"
     )
 )]
 
