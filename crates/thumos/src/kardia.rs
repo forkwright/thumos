@@ -178,7 +178,7 @@ pub(crate) struct KernelState {
     /// (COVERT LOCK / STEALTH / RESTORE); genuinely self-contained --
     /// there is no radio-policy manager anywhere in the kernel that reads
     /// this state and applies it to wifi/gps/bluetooth/cellular hardware
-    /// (wifi.rs/gps.rs are hardware-gated and never touch KernelState even
+    /// (wifi.rs/gps.rs are hardware-gated and never touch `KernelState` even
     /// on the non-qemu boot path; bluetooth's live adapter is likewise
     /// local to kinit). The screen owns and renders its own state, exactly
     /// like Messages/Search/Dialer/Settings before any subsystem fed them.
