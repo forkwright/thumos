@@ -139,6 +139,26 @@ pub enum MatrixError {
     /// A `/keys/claim` response's matching key entry was not a string, or
     /// did not decode to a well-formed key (#437).
     MalformedClaimedKey,
+    /// An inbound to-device `m.room.encrypted` event's `content.algorithm`
+    /// was not [`matrix_crypto::OLM_ALGORITHM`] (#437). Distinct from a
+    /// to-device event whose `type` is not `m.room.encrypted` at all --
+    /// this client has no opinion on other to-device event types and
+    /// skips them without error; an event that DOES present itself as
+    /// `m.room.encrypted` is held to this contract.
+    UnsupportedToDeviceAlgorithm,
+    /// An inbound to-device `m.room.encrypted` event's `content.ciphertext`
+    /// map carried no entry addressed to this device's own Curve25519
+    /// identity key (#437). The homeserver already targets `to_device`
+    /// delivery per-recipient-device, so a genuine message always carries
+    /// our own entry; its absence means a relay defect or a malicious peer.
+    ToDeviceKeyMissing,
+    /// An inbound to-device `m.room.encrypted` event was structurally
+    /// malformed: missing `content`/`content.sender_key`, a `sender_key`
+    /// that did not decode to a well-formed key, a matched ciphertext
+    /// entry whose `type` was not `0` (pre-key -- this client does not yet
+    /// decrypt an established session's `type: 1` messages), or a `body`
+    /// that failed to decode (#437).
+    MalformedToDeviceEvent,
 }
 
 impl fmt::Display for MatrixError {
@@ -170,6 +190,19 @@ impl fmt::Display for MatrixError {
             Self::MalformedClaimedKey => {
                 write!(f, "keys/claim response key value is malformed")
             }
+            Self::UnsupportedToDeviceAlgorithm => {
+                write!(
+                    f,
+                    "to-device event used an unsupported encryption algorithm"
+                )
+            }
+            Self::ToDeviceKeyMissing => {
+                write!(
+                    f,
+                    "to-device event carried no ciphertext entry for this device"
+                )
+            }
+            Self::MalformedToDeviceEvent => write!(f, "to-device event is malformed"),
         }
     }
 }
@@ -218,6 +251,21 @@ pub struct SyncResult {
     /// safely — mirroring the `rooms_over_capacity` rationale (#358), because
     /// aborting the batch would permanently wedge sync on the bad key.
     pub rooms_malformed: u32,
+    /// Number of inbound `to_device` Olm pre-key messages that established
+    /// a new [`OlmSession`](crate::matrix_crypto::OlmSession) this sync
+    /// (#437) -- the production call site for
+    /// [`MatrixCrypto::consume_one_time_key`](crate::matrix_crypto::MatrixCrypto::consume_one_time_key).
+    pub olm_sessions_established: u32,
+    /// Number of inbound `to_device` `m.room.encrypted` events rejected this
+    /// sync (#437): unsupported algorithm, no ciphertext entry addressed to
+    /// this device, a malformed event, or a
+    /// [`process_to_device_event`](MatrixClient::process_to_device_event)
+    /// crypto failure (unknown/replayed one-time key, malformed pre-key
+    /// body, session capacity). Mirrors `rooms_over_capacity`/
+    /// `rooms_malformed`: the sync token still advances safely, because a
+    /// rejected to-device event cannot be recovered by retrying the same
+    /// batch, and aborting the batch would permanently wedge sync on it.
+    pub olm_prekeys_rejected: u32,
     /// The next batch token (opaque, stored for incremental sync).
     pub next_batch: String,
 }
@@ -226,11 +274,13 @@ impl fmt::Display for SyncResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "SyncResult({} messages, {} rooms updated, {} over capacity, {} malformed)",
+            "SyncResult({} messages, {} rooms updated, {} over capacity, {} malformed, {} olm sessions established, {} olm prekeys rejected)",
             self.new_messages.len(),
             self.rooms_updated,
             self.rooms_over_capacity,
             self.rooms_malformed,
+            self.olm_sessions_established,
+            self.olm_prekeys_rejected,
         )
     }
 }
@@ -613,7 +663,8 @@ impl MatrixClient {
     /// Process a `/sync` HTTP response and update internal state.
     ///
     /// Extracts timeline events from joined rooms, updates the room list
-    /// and message caches, and advances the sync token.
+    /// and message caches, processes inbound `to_device` Olm pre-key
+    /// messages (#437), and advances the sync token.
     ///
     /// # Errors
     ///
@@ -646,8 +697,41 @@ impl MatrixClient {
             rooms_updated: 0,
             rooms_over_capacity: 0,
             rooms_malformed: 0,
+            olm_sessions_established: 0,
+            olm_prekeys_rejected: 0,
             next_batch: String::from(next_batch),
         };
+
+        // Extract to_device.events (#437). Processed independently of, and
+        // before, the `rooms` block below: `rooms` is absent from plenty of
+        // real sync responses (nothing joined yet, or this batch carries only
+        // to-device traffic), and the early returns in the `rooms` block must
+        // not skip to-device processing when that happens.
+        //
+        // WHY (count-and-skip, not abort): self.sync_token was already
+        // advanced above. A single malformed/hostile to-device event cannot
+        // be recovered by retrying the same batch, so propagating an Err
+        // here would leave the token advanced while wedging every OTHER
+        // event in the batch behind it — the same rationale already applied
+        // to rooms_over_capacity/rooms_malformed.
+        if let Some(events) = root
+            .get("to_device")
+            .and_then(|td| td.get("events"))
+            .and_then(JsonValue::as_array)
+        {
+            for event in events {
+                match self.process_to_device_event(event) {
+                    Ok(true) => {
+                        result.olm_sessions_established =
+                            result.olm_sessions_established.saturating_add(1);
+                    }
+                    Ok(false) => {}
+                    Err(_) => {
+                        result.olm_prekeys_rejected = result.olm_prekeys_rejected.saturating_add(1);
+                    }
+                }
+            }
+        }
 
         // Extract joined rooms from rooms.join.
         let Some(rooms_obj) = root.get("rooms") else {
@@ -1093,14 +1177,11 @@ impl MatrixClient {
     ///
     /// [`MatrixCrypto::consume_one_time_key`] belongs to the *receive* side
     /// of key exchange instead: it removes one of this device's own
-    /// uploaded keys once something reports it was claimed by a peer (a
-    /// dropping `device_one_time_keys_count` on `/sync`, or an inbound Olm
-    /// pre-key message naming the key). Neither exists in this tree yet
-    /// (#437 remainder): `/sync` here reads only `rooms.join.*.timeline`,
-    /// and there is no inbound Olm pre-key handler -- `OlmSession` is
-    /// declared but never constructed anywhere. Wiring
-    /// `consume_one_time_key` belongs at that future receive-side call
-    /// site, not here.
+    /// uploaded keys once something reports it was claimed by a peer. That
+    /// receive side is [`process_to_device_event`](Self::process_to_device_event),
+    /// reached from [`process_sync_response`](Self::process_sync_response)'s
+    /// `to_device.events` handling -- an inbound Olm pre-key message names
+    /// the local key a peer already claimed and used (#437).
     ///
     /// # Errors
     ///
@@ -1152,6 +1233,110 @@ impl MatrixClient {
             matrix_crypto::decode_base64_key(key_value).ok_or(MatrixError::MalformedClaimedKey)?;
 
         Ok(key)
+    }
+
+    // -----------------------------------------------------------------------
+    // Inbound to-device / Olm pre-key receive (#437)
+    // -----------------------------------------------------------------------
+
+    /// Process a single `to_device.events[]` entry from a `/sync` response.
+    ///
+    /// A to-device event whose `type` is not `m.room.encrypted` is outside
+    /// this client's scope (key-verification requests, dummy events, secret
+    /// sharing, ...) and is skipped, returning `Ok(false)` -- that is not
+    /// "successfully handled", only "nothing here this function is
+    /// responsible for rejecting". An event that DOES present itself as
+    /// `m.room.encrypted` is held to the full fail-closed contract: every
+    /// failure below is a typed [`MatrixError`], never a silent skip.
+    ///
+    /// On success, decodes the pre-key body naming this device's own
+    /// consumed one-time key and calls
+    /// [`MatrixCrypto::process_olm_prekey_message`], which performs the
+    /// actual consume-and-establish -- this is the production call site for
+    /// [`MatrixCrypto::consume_one_time_key`] (#437). Returns `Ok(true)` iff
+    /// a session was established.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatrixError::UnsupportedToDeviceAlgorithm`] if
+    /// `content.algorithm` is present but not
+    /// [`matrix_crypto::OLM_ALGORITHM`].
+    /// Returns [`MatrixError::MalformedToDeviceEvent`] if `content`,
+    /// `content.sender_key`, or `content.ciphertext` is missing or
+    /// malformed, if the matched ciphertext entry's `type` is not `0`
+    /// (pre-key), or if its `body` fails to decode.
+    /// Returns [`MatrixError::ToDeviceKeyMissing`] if no `ciphertext` entry
+    /// is addressed to this device's own Curve25519 identity key.
+    /// Returns [`MatrixError::ServerError`] (via [`crypto_error`]) if
+    /// [`MatrixCrypto::process_olm_prekey_message`] rejects the decoded
+    /// pre-key: malformed body length, a one-time key this device does not
+    /// hold (never generated, or already consumed by an earlier delivery of
+    /// this same pre-key -- the replay case, since [`consume_one_time_key`]
+    /// removes a key from the pool on its first successful use), or Olm
+    /// session capacity.
+    ///
+    /// [`consume_one_time_key`]: crate::matrix_crypto::MatrixCrypto::consume_one_time_key
+    pub(crate) fn process_to_device_event(
+        &mut self,
+        event: &JsonValue,
+    ) -> Result<bool, MatrixError> {
+        if event.get("type").and_then(JsonValue::as_str) != Some("m.room.encrypted") {
+            return Ok(false);
+        }
+
+        let content = event
+            .get("content")
+            .ok_or(MatrixError::MalformedToDeviceEvent)?;
+
+        let algorithm = content.get("algorithm").and_then(JsonValue::as_str);
+        if algorithm != Some(matrix_crypto::OLM_ALGORITHM) {
+            return Err(MatrixError::UnsupportedToDeviceAlgorithm);
+        }
+
+        let sender_key_str = content
+            .get("sender_key")
+            .and_then(JsonValue::as_str)
+            .ok_or(MatrixError::MalformedToDeviceEvent)?;
+        let sender_identity_key = matrix_crypto::decode_base64_key(sender_key_str)
+            .ok_or(MatrixError::MalformedToDeviceEvent)?;
+
+        let ciphertext_map = content
+            .get("ciphertext")
+            .and_then(JsonValue::as_object)
+            .ok_or(MatrixError::MalformedToDeviceEvent)?;
+
+        let our_identity_key = self.crypto.device_keys().curve25519_key;
+        let matched_entry = ciphertext_map
+            .iter()
+            .find_map(|(key_str, entry)| {
+                if matrix_crypto::decode_base64_key(key_str) == Some(our_identity_key) {
+                    Some(entry)
+                } else {
+                    None
+                }
+            })
+            .ok_or(MatrixError::ToDeviceKeyMissing)?;
+
+        // WHY: only ciphertext `type: 0` (pre-key message) is handled --
+        // `type: 1` (an established session's ratcheted message) needs a
+        // session lookup + double-ratchet decrypt this client does not yet
+        // implement. Rejecting rather than skipping: an event that reached
+        // this point IS addressed to us and DOES claim OLM_ALGORITHM, so an
+        // unhandled type is a real gap, not background noise.
+        if matched_entry.get("type").and_then(JsonValue::as_i64) != Some(0) {
+            return Err(MatrixError::MalformedToDeviceEvent);
+        }
+
+        let body_str = matched_entry
+            .get("body")
+            .and_then(JsonValue::as_str)
+            .ok_or(MatrixError::MalformedToDeviceEvent)?;
+        let body = hex_decode_bytes(body_str).ok_or(MatrixError::MalformedToDeviceEvent)?;
+
+        self.crypto
+            .process_olm_prekey_message(&sender_identity_key, &body)
+            .map_err(|e| crypto_error(&e))?;
+        Ok(true)
     }
 
     // -----------------------------------------------------------------------
@@ -2706,5 +2891,368 @@ mod tests {
             "signed_curve25519"
         );
         assert_eq!(claimed_key_algorithm("no-colon-here"), "no-colon-here");
+    }
+
+    // -- Inbound to-device / Olm pre-key receive-path tests (#437) --
+    //
+    // #437 remnant 3: consume_one_time_key has zero production call sites.
+    // This is the falsifier -- an inbound to_device Olm pre-key message must
+    // cause the matching local one-time key to leave the pool and a session
+    // to be established. process_sync_response does not yet look at
+    // `to_device` at all, so this must fail until that wiring lands.
+
+    /// Encode this kernel's pre-key body layout (`base_key || one_time_key`,
+    /// see `OLM_PREKEY_BODY_LEN`) as the hex string a `content.ciphertext.
+    /// <key>.body` field carries on the wire.
+    fn prekey_body_hex(base_key: &[u8; KEY_SIZE], one_time_key: &[u8; KEY_SIZE]) -> String {
+        let mut s = hex_encode_bytes(base_key);
+        s.push_str(&hex_encode_bytes(one_time_key));
+        s
+    }
+
+    /// Write a single `m.room.encrypted` to-device event onto an open
+    /// [`JsonWriter`] context, matching the real Matrix `to_device.events[]`
+    /// shape (spec: "Extensions to /sync", `m.olm.v1.curve25519-aes-sha2`).
+    fn write_olm_prekey_event(
+        w: &mut JsonWriter,
+        sender: &str,
+        algorithm: &str,
+        sender_key: &str,
+        recipient_identity_key: &str,
+        msg_type: i64,
+        body: &str,
+    ) {
+        w.object_start();
+        w.key("sender");
+        w.string_value(sender);
+        w.key("type");
+        w.string_value("m.room.encrypted");
+        w.key("content");
+        w.object_start();
+        w.key("algorithm");
+        w.string_value(algorithm);
+        w.key("sender_key");
+        w.string_value(sender_key);
+        w.key("ciphertext");
+        w.object_start();
+        w.key(recipient_identity_key);
+        w.object_start();
+        w.key("type");
+        w.number_value(msg_type);
+        w.key("body");
+        w.string_value(body);
+        w.end(); // ciphertext entry
+        w.end(); // ciphertext
+        w.end(); // content
+        w.end(); // event
+    }
+
+    /// Build a full `/sync` response body carrying one `to_device` Olm
+    /// pre-key event, for the end-to-end wiring test.
+    fn build_to_device_sync_response(
+        next_batch: &str,
+        sender: &str,
+        algorithm: &str,
+        sender_key: &str,
+        recipient_identity_key: &str,
+        msg_type: i64,
+        body: &str,
+    ) -> String {
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("next_batch");
+        w.string_value(next_batch);
+        w.key("to_device");
+        w.object_start();
+        w.key("events");
+        w.array_start();
+        write_olm_prekey_event(
+            &mut w,
+            sender,
+            algorithm,
+            sender_key,
+            recipient_identity_key,
+            msg_type,
+            body,
+        );
+        w.end(); // events
+        w.end(); // to_device
+        w.end(); // root
+        w.finish()
+    }
+
+    #[test]
+    fn sync_processes_to_device_olm_prekey_and_establishes_session() {
+        let mut client = matrix_client_with_test_credentials();
+        let otk = client
+            .crypto_mut()
+            .generate_one_time_keys(1)
+            .expect("seeding must succeed")[0];
+        let our_key = client.crypto().device_keys().curve25519_key;
+
+        let sender_identity_key = [0x11u8; KEY_SIZE];
+        let base_key = [0x22u8; KEY_SIZE];
+        let sync_json = build_to_device_sync_response(
+            "batch_prekey",
+            "@alice:matrix.example.com",
+            matrix_crypto::OLM_ALGORITHM,
+            &hex_encode_bytes(&sender_identity_key),
+            &hex_encode_bytes(&our_key),
+            0,
+            &prekey_body_hex(&base_key, &otk),
+        );
+
+        let result = client
+            .sync(&mock_response(200, &sync_json), 100)
+            .expect("a well-formed to-device pre-key event must not fail the sync");
+
+        assert_eq!(
+            result.olm_sessions_established, 1,
+            "the production call site must report exactly one established session"
+        );
+        assert_eq!(result.olm_prekeys_rejected, 0);
+        assert_eq!(
+            client.crypto().olm_sessions().len(),
+            1,
+            "the session must actually land in olm_sessions, not just be reported"
+        );
+        assert!(
+            !client.crypto().one_time_keys().contains(&otk),
+            "the named one-time key must leave this device's own pool -- the \
+             production call site for consume_one_time_key (#437)"
+        );
+    }
+
+    /// Build a single `m.room.encrypted` to-device event as a standalone
+    /// JSON object, for tests that call [`MatrixClient::process_to_device_event`]
+    /// directly rather than through a full sync response.
+    fn build_olm_prekey_event(
+        sender: &str,
+        algorithm: &str,
+        sender_key: &str,
+        recipient_identity_key: &str,
+        msg_type: i64,
+        body: &str,
+    ) -> JsonValue {
+        let mut w = JsonWriter::new();
+        write_olm_prekey_event(
+            &mut w,
+            sender,
+            algorithm,
+            sender_key,
+            recipient_identity_key,
+            msg_type,
+            body,
+        );
+        JsonParser::parse(w.finish().as_bytes()).expect("test fixture must be valid JSON")
+    }
+
+    #[test]
+    fn to_device_non_olm_event_is_skipped_without_error() {
+        // A real to-device event type this client has no opinion on (e.g.
+        // a key-sharing request) must not be treated as a rejection --
+        // only events that present themselves as m.room.encrypted are held
+        // to the Olm pre-key contract.
+        let mut client = matrix_client_with_test_credentials();
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("sender");
+        w.string_value("@alice:matrix.example.com");
+        w.key("type");
+        w.string_value("m.room_key_request");
+        w.key("content");
+        w.object_start();
+        w.key("action");
+        w.string_value("request");
+        w.end();
+        w.end();
+        let event = JsonParser::parse(w.finish().as_bytes()).expect("valid JSON");
+
+        let result = client.process_to_device_event(&event);
+        assert_eq!(result, Ok(false));
+        assert!(client.crypto().olm_sessions().is_empty());
+    }
+
+    #[test]
+    fn to_device_prekey_unsupported_algorithm_is_rejected() {
+        let mut client = matrix_client_with_test_credentials();
+        let our_key = client.crypto().device_keys().curve25519_key;
+        let event = build_olm_prekey_event(
+            "@alice:matrix.example.com",
+            "m.some.other.algorithm",
+            &hex_encode_bytes(&[0x11u8; KEY_SIZE]),
+            &hex_encode_bytes(&our_key),
+            0,
+            &prekey_body_hex(&[0x22u8; KEY_SIZE], &[0x33u8; KEY_SIZE]),
+        );
+
+        let result = client.process_to_device_event(&event);
+        assert_eq!(result, Err(MatrixError::UnsupportedToDeviceAlgorithm));
+        assert!(client.crypto().olm_sessions().is_empty());
+    }
+
+    #[test]
+    fn to_device_prekey_missing_addressed_key_is_rejected() {
+        // The ciphertext map carries an entry, but keyed by a device that
+        // is not this one -- a real homeserver only relays to-device events
+        // to their addressed recipient, so this shape means a relay defect,
+        // not a legitimate "nothing for us here".
+        let mut client = matrix_client_with_test_credentials();
+        let someone_elses_key = [0x99u8; KEY_SIZE];
+        let event = build_olm_prekey_event(
+            "@alice:matrix.example.com",
+            matrix_crypto::OLM_ALGORITHM,
+            &hex_encode_bytes(&[0x11u8; KEY_SIZE]),
+            &hex_encode_bytes(&someone_elses_key),
+            0,
+            &prekey_body_hex(&[0x22u8; KEY_SIZE], &[0x33u8; KEY_SIZE]),
+        );
+
+        let result = client.process_to_device_event(&event);
+        assert_eq!(result, Err(MatrixError::ToDeviceKeyMissing));
+        assert!(client.crypto().olm_sessions().is_empty());
+    }
+
+    #[test]
+    fn to_device_prekey_wrong_message_type_is_rejected() {
+        // type: 1 (an established session's ratcheted message) is not
+        // implemented -- this must fail closed, not be treated as a pre-key.
+        let mut client = matrix_client_with_test_credentials();
+        let otk = client
+            .crypto_mut()
+            .generate_one_time_keys(1)
+            .expect("seeding must succeed")[0];
+        let our_key = client.crypto().device_keys().curve25519_key;
+        let event = build_olm_prekey_event(
+            "@alice:matrix.example.com",
+            matrix_crypto::OLM_ALGORITHM,
+            &hex_encode_bytes(&[0x11u8; KEY_SIZE]),
+            &hex_encode_bytes(&our_key),
+            1,
+            &prekey_body_hex(&[0x22u8; KEY_SIZE], &otk),
+        );
+
+        let result = client.process_to_device_event(&event);
+        assert_eq!(result, Err(MatrixError::MalformedToDeviceEvent));
+        assert!(client.crypto().olm_sessions().is_empty());
+        assert!(
+            client.crypto().one_time_keys().contains(&otk),
+            "an unhandled message type must not consume any key"
+        );
+    }
+
+    #[test]
+    fn to_device_prekey_missing_sender_key_is_rejected() {
+        let mut client = matrix_client_with_test_credentials();
+        let our_key = client.crypto().device_keys().curve25519_key;
+
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("sender");
+        w.string_value("@alice:matrix.example.com");
+        w.key("type");
+        w.string_value("m.room.encrypted");
+        w.key("content");
+        w.object_start();
+        w.key("algorithm");
+        w.string_value(matrix_crypto::OLM_ALGORITHM);
+        w.key("ciphertext");
+        w.object_start();
+        w.key(&hex_encode_bytes(&our_key));
+        w.object_start();
+        w.key("type");
+        w.number_value(0);
+        w.key("body");
+        w.string_value(&prekey_body_hex(&[0x22u8; KEY_SIZE], &[0x33u8; KEY_SIZE]));
+        w.end();
+        w.end();
+        w.end(); // content (no sender_key)
+        w.end(); // event
+        let event = JsonParser::parse(w.finish().as_bytes()).expect("valid JSON");
+
+        let result = client.process_to_device_event(&event);
+        assert_eq!(result, Err(MatrixError::MalformedToDeviceEvent));
+    }
+
+    #[test]
+    fn to_device_prekey_malformed_body_hex_is_rejected() {
+        let mut client = matrix_client_with_test_credentials();
+        let our_key = client.crypto().device_keys().curve25519_key;
+        let event = build_olm_prekey_event(
+            "@alice:matrix.example.com",
+            matrix_crypto::OLM_ALGORITHM,
+            &hex_encode_bytes(&[0x11u8; KEY_SIZE]),
+            &hex_encode_bytes(&our_key),
+            0,
+            "not-valid-hex!!",
+        );
+
+        let result = client.process_to_device_event(&event);
+        assert_eq!(result, Err(MatrixError::MalformedToDeviceEvent));
+        assert!(client.crypto().olm_sessions().is_empty());
+    }
+
+    #[test]
+    fn to_device_prekey_unknown_key_is_rejected() {
+        // The named one-time key was never generated by this device.
+        let mut client = matrix_client_with_test_credentials();
+        let our_key = client.crypto().device_keys().curve25519_key;
+        let never_ours = [0x55u8; KEY_SIZE];
+        let event = build_olm_prekey_event(
+            "@alice:matrix.example.com",
+            matrix_crypto::OLM_ALGORITHM,
+            &hex_encode_bytes(&[0x11u8; KEY_SIZE]),
+            &hex_encode_bytes(&our_key),
+            0,
+            &prekey_body_hex(&[0x22u8; KEY_SIZE], &never_ours),
+        );
+
+        let result = client.process_to_device_event(&event);
+        assert_eq!(
+            result,
+            Err(crypto_error(&CryptoError::UnknownOneTimeKey)),
+            "an unknown one-time key must fail closed via the crypto error path"
+        );
+        assert!(client.crypto().olm_sessions().is_empty());
+    }
+
+    #[test]
+    fn to_device_prekey_replay_is_rejected() {
+        // #437: a one-time key is consumed exactly once. The SAME pre-key
+        // message delivered twice (a homeserver-level or attacker-level
+        // replay) must establish a session on the first delivery and be
+        // rejected on the second -- consume_one_time_key already removed
+        // the key from the pool, so the replay finds it gone.
+        let mut client = matrix_client_with_test_credentials();
+        let otk = client
+            .crypto_mut()
+            .generate_one_time_keys(1)
+            .expect("seeding must succeed")[0];
+        let our_key = client.crypto().device_keys().curve25519_key;
+        let event = build_olm_prekey_event(
+            "@alice:matrix.example.com",
+            matrix_crypto::OLM_ALGORITHM,
+            &hex_encode_bytes(&[0x11u8; KEY_SIZE]),
+            &hex_encode_bytes(&our_key),
+            0,
+            &prekey_body_hex(&[0x22u8; KEY_SIZE], &otk),
+        );
+
+        let first = client.process_to_device_event(&event);
+        assert_eq!(first, Ok(true));
+        assert_eq!(client.crypto().olm_sessions().len(), 1);
+
+        let replay = client.process_to_device_event(&event);
+        assert_eq!(
+            replay,
+            Err(crypto_error(&CryptoError::UnknownOneTimeKey)),
+            "a replayed pre-key naming an already-consumed key must be rejected with the same \
+             disposition as a never-valid key -- the pool is the only record of \"used\""
+        );
+        assert_eq!(
+            client.crypto().olm_sessions().len(),
+            1,
+            "a rejected replay must not establish a second session"
+        );
     }
 }
