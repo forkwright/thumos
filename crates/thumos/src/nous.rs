@@ -68,9 +68,6 @@ const MAX_ENTITIES: usize = 16;
 /// Maximum length of an entity name in bytes.
 const MAX_NAME_LEN: usize = 32;
 
-/// Default Matrix homeserver domain for nous entities.
-const DEFAULT_HOMESERVER: &str = "thumos.lan";
-
 // ---------------------------------------------------------------------------
 // Capability model (#552): typed grants are the sole authority
 // ---------------------------------------------------------------------------

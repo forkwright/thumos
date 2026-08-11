@@ -2,31 +2,16 @@
 
 Thumos is a privacy-first Rust mobile OS targeting the AGM M7 (MediaTek MT6739). It is hardware-adjacent and embedded - contributions are welcome from external researchers, radio hackers, and anyone interested in a Rust-from-kernel-to-UI mobile stack.
 
-The repo uses the self-hosted kanon forge as the authoritative PR surface. GitHub stays bidirectionally mirrored for external discoverability, but PRs live on the forge.
-
-## Push target
-
-```
-origin = http://kanon.lan/forkwright/thumos.git   (authoritative)
-github = git@github.com:forkwright/thumos.git     (mirror)
-```
-
-Push to `origin`. The forge post-receive hook runs CI (`.kanon-ci.toml`) and mirrors merge commits to GitHub via the pr-sync worker.
+The repo is public and GitHub is the contribution surface. `origin` is `https://github.com/forkwright/thumos.git`; PRs are opened, reviewed, and merged there, and CI runs on GitHub-hosted runners.
 
 ## Opening a PR
 
-Two paths, same effect:
-
-**Stoa UI.** Open `http://kanon.lan/prs/forkwright/thumos`, click "New PR", pick base + head refs, review diff, submit.
-
-**CLI.**
-
 ```bash
 git push origin HEAD:refs/heads/<branch>
-kanon pr open <branch> --title "..." --body "..."
+gh pr create --base main --head <branch> --title "..." --body "..."
 ```
 
-`kanon pr open` prints the new PR number and its forge URL.
+The title matters: the repo squash-merges, so a PR title becomes `main`'s commit message and release-please parses it for the changelog and the version bump. `.github/workflows/pr-title.yml` validates it against `CLAUDE.md`'s grammar as a required check.
 
 ## Review
 
@@ -34,7 +19,7 @@ Comments and approvals land through stoa. The merge button activates when all ga
 
 - CI status `Pass` (every stage in `.kanon-ci.toml` exits zero, or the stage's `fail_on` predicate reports success).
 - Independent verifier `Ok` (03f-e reproduces the headline claims from a fresh checkout of the head sha).
-- The `Gate Attestation` check (`.github/workflows/gate-attestation.yml`) reports success. A `Gate-Passed: kanon <version>` trailer on the tip commit takes the fast path; without one, the check runs a real `cargo fmt`/`check`/`clippy`/`nextest` build against the branch instead (skipped only for docs-only PRs). The AI-attribution check always runs, trailer or not, and no trailer is appended by the merge itself. **This check, and `.kanon-ci.toml`'s fmt/check/clippy/nextest stages, do not cover the kernel crate** (`crates/thumos`, excluded from the Cargo workspace) — only the separate, non-required `CI` workflow's kernel job (i686 host tests, armv7a cross-compile, QEMU boot) exercises it. A green `Gate Attestation` check does not attest the kernel.
+- The `Gate Attestation` check (`.github/workflows/gate-attestation.yml`) reports success. A `Gate-Passed: kanon <version>` trailer on the tip commit takes the fast path; without one, the check runs a real `cargo fmt`/`check`/`clippy`/`nextest` build against the branch instead (skipped only for docs-only PRs). The AI-attribution check always runs, trailer or not, and no trailer is appended by the merge itself. **This check, and `.kanon-ci.toml`'s fmt/check/clippy/nextest stages, do not cover the kernel crate** (`crates/thumos`, excluded from the Cargo workspace) — the `CI` workflow's `kernel` job exercises it (i686 host tests, armv7a cross-compile, QEMU boot and witnesses, and a zero-warning clippy gate across every declared feature configuration). That job **is** a required check, so a red kernel blocks the merge; but a green `Gate Attestation` on its own still does not attest the kernel, because the two cover different trees.
 
 ## Merging
 
@@ -42,9 +27,9 @@ Comments and approvals land through stoa. The merge button activates when all ga
 kanon pr merge <pr_number>
 ```
 
-or the forge merge button. Default strategy is `squash`; `--strategy ff` or `--strategy rebase` are supported. A squash merge does not carry the source branch's `Gate-Passed` trailer forward — squashing drops per-commit trailers by construction, so no commit on `main` has one. That absence is expected, not a gap: `Gate Attestation`'s `push`-to-`main` trigger re-runs the full build against the merge commit itself, which is what actually attests `main`.
+or the GitHub merge button. Default strategy is `squash`; `--strategy ff` or `--strategy rebase` are supported. A squash merge does not carry the source branch's `Gate-Passed` trailer forward — squashing drops per-commit trailers by construction, so no commit on `main` has one. That absence is expected, not a gap: `Gate Attestation`'s `push`-to-`main` trigger re-runs the full build against the merge commit itself, which is what actually attests `main`.
 
-Do not merge via GitHub. The GitHub mirror is read-only from the contributor's perspective: any merge performed there races the forge pr-sync worker.
+Branch protection gates the merge: `cargo audit`, `cargo deny`, `gate / gate`, `conventional-commit grammar`, and the `kernel` job must all report success, and `enforce_admins` is on, so the checks bind every merge rather than only external ones.
 
 ## Releases
 
@@ -68,18 +53,9 @@ The merge is not the release: release-please's `push`-to-`main` trigger creates 
 
 ## External contributors
 
-Thumos has a real external-contributor path - radio, baseband, and MTK tooling folks without kanon.lan access. The GitHub mirror at `github.com/forkwright/thumos` is fully functional for you:
+Radio, baseband, and MTK tooling folks: there is nothing special to do. Fork on GitHub and open a PR against `forkwright/thumos:main` as you would on any other project. Review, CI, and the merge all happen there.
 
-1. Fork on GitHub, open a PR against `forkwright/thumos:main` as you would on any OSS project.
-2. The 05d bidirectional sync ingests the PR into the forge. Review, CI, and the verifier all run there.
-3. Discussion may happen on either side; the forge thread is authoritative. The mirror sync relays merge state back to GitHub once the forge merges.
-4. The merge always happens on the forge; CI artifacts from that run are preserved there. The merge commit itself carries no `Gate-Passed` trailer — squash merges drop it — so `Gate Attestation` independently re-verifies the merge commit when it lands on `main` via GitHub's `push` trigger. GitHub closes your PR when the mirror sync observes the merge commit on `main`.
-
-You do not need a kanon.lan account to contribute. The GitHub path is a first-class inbound route, not a courtesy.
-
-## Fallback
-
-If the forge is unreachable from within the fleet, push to `github` and open a GitHub PR. When the forge is back, its pr-sync worker picks up the PR and continues from there. This is an escape hatch for fleet operators, not a preferred path - use it only when kanon.lan is actually down.
+The merge commit carries no `Gate-Passed` trailer — squash merges drop per-commit trailers by construction — so `Gate Attestation` re-runs against the merge commit when it lands on `main` via the `push` trigger. That absence is expected, not a gap.
 
 ## CI configuration
 
