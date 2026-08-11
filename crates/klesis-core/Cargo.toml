@@ -7,6 +7,18 @@ license.workspace = true
 publish.workspace = true
 repository.workspace = true
 
+# WHY the explicit path (#718): TESTING/no-benchmarks expects a
+# workspace-root `benches/` directory as a sibling of the root Cargo.toml,
+# not a per-crate one — this target's source lives there while still
+# compiling as part of this package.
+[[bench]]
+name = "klesis_core_pdu_codec"
+harness = false
+path = "../../benches/klesis_core_pdu_codec.rs"
+
+[dev-dependencies]
+criterion = "0.5"
+
 [lints]
 workspace = true
 
