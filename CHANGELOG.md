@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1](https://github.com/forkwright/thumos/compare/v0.5.0...v0.5.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* **kernel:** align the MUSB register map with the MT6739 vendor driver ([#734](https://github.com/forkwright/thumos/issues/734)) ([c7c45cd](https://github.com/forkwright/thumos/commit/c7c45cd325905efea3f7469f7db05713c9649c6e))
+* **kernel:** make screen dispatch exhaustive so an unreachable screen cannot render as Home ([#736](https://github.com/forkwright/thumos/issues/736)) ([ceae188](https://github.com/forkwright/thumos/commit/ceae188a4ad9f8b809089ee63d1bae9da9d75457))
+* **kernel:** supply the nous homeserver at runtime instead of compiling it in ([#733](https://github.com/forkwright/thumos/issues/733)) ([182f0d2](https://github.com/forkwright/thumos/commit/182f0d26b60ea25d453676f03ad8efda55c6c89c)), closes [#723](https://github.com/forkwright/thumos/issues/723)
+
 ## [0.5.0](https://github.com/forkwright/thumos/compare/v0.4.0...v0.5.0) (2026-08-11)
 
 
