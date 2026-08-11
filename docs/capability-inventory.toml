@@ -106,16 +106,16 @@ notes = "Olm/Megolm + HTTP/JSON surfaces compiled, including the /keys/claim req
 
 [[capability]]
 id = "screens-extended"
-modules = ["screen_search", "screen_settings", "screen_dialer", "screen_calendar", "screen_messages", "screen_fm", "screen_unimplemented"]
+modules = ["screen_search", "screen_settings", "screen_dialer", "screen_calendar", "screen_messages", "screen_fm", "screen_privacy", "screen_radio", "screen_unimplemented"]
 tier = "kernel-wired"
-notes = "screen_calendar renders via the heorte witness; screen_fm is fed by fm-radio's smoke witness and (#730) is now routed for BOTH input and render (previously input-only, so the FM screen took keypresses while the framebuffer kept showing Home); screen_unimplemented is the exhaustive not-implemented fallback ui.rs's screen_kind classifier routes every currently-unwired ScreenId through (matched identically by both of kardia.rs's dispatches), naming the requested screen instead of silently rendering Home (#730); search/settings/dialer/messages are routed but unwitnessed. screen_settings also holds WifiSettingsScreen/BtSettingsScreen/AboutScreen, which -- like screen_alarm below -- are compiled but not routed; this module-level tier reflects that SettingsMenuScreen itself is genuinely wired, not that every screen type in the file is."
+notes = "screen_calendar renders via the heorte witness; screen_fm is fed by fm-radio's smoke witness and (#730) is now routed for BOTH input and render (previously input-only, so the FM screen took keypresses while the framebuffer kept showing Home); screen_unimplemented is the exhaustive not-implemented fallback ui.rs's screen_kind classifier routes every currently-unwired ScreenId through (matched identically by both of kardia.rs's dispatches), naming the requested screen instead of silently rendering Home (#730); search/settings/dialer/messages/privacy/radio are routed but unwitnessed. screen_privacy (#737) renders its own self-managed category list (no lfs.rs size feed yet); its purge-confirmation gate is constructed with an intentionally unsatisfiable all-zero hash because no provisioned purge/unlock passphrase reaches KernelState (see kardia.rs's KernelState::privacy field doc) -- PURGE is reachable but permanently fails closed until that credential is threaded through. screen_radio (#737) sets a DESIRED radio preset with no radio-policy manager anywhere in the kernel to apply it -- wifi.rs/gps.rs never reach KernelState even on real hardware, so the screen is genuinely self-contained, same shape as search/dialer/messages before any subsystem fed them. screen_settings also holds WifiSettingsScreen/BtSettingsScreen/AboutScreen, which -- like screen_alarm below -- are compiled but not routed; this module-level tier reflects that SettingsMenuScreen itself is genuinely wired, not that every screen type in the file is."
 
 [[capability]]
 id = "screens-compiled-only"
-modules = ["screen_alarm", "screen_call", "screen_contacts", "screen_nous", "screen_privacy", "screen_radio", "screen_threat"]
+modules = ["screen_alarm", "screen_call", "screen_contacts", "screen_nous"]
 tier = "compiled-only"
-notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. Threat screen waits on #555's calibrated scores; alarm/nous/privacy/radio/call/contacts screens wait on their owning subsystems reaching the kinit event loop (#737)."
-tracking_reason = "Implemented and unit-tested, not hardware-gated -- kinit route/input wiring tracked under #737 (#145 closed without a successor, which is what #737 corrects). screen_threat's alert aggregation additionally depends on #555's calibrated threat scores."
+notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. alarm/nous/call/contacts screens wait on their owning subsystems reaching the kinit event loop (#737)."
+tracking_reason = "Implemented and unit-tested, not hardware-gated -- kinit route/input wiring tracked under #737 (#145 closed without a successor, which is what #737 corrects)."
 
 [[capability]]
 id = "fm-radio"
@@ -123,6 +123,13 @@ modules = ["fm_radio"]
 tier = "emulated-mock-proven"
 witness = ["kardia: fm powered=true"]
 notes = "FmRadio<BootFmHw> in KernelState (NullFmHw under qemu, WMT on device), powered + tuned at boot smoke, FM screen fed from it. Real MT6631 tuner backend validation is hardware-gated."
+
+[[capability]]
+id = "threat-monitor"
+modules = ["screen_threat"]
+tier = "emulated-mock-proven"
+witness = ["kardia: threat alerts="]
+notes = "ThreatMonitor in KernelState (#737): score as a lens over the log, not either alone (operator decision). The alert log is fed from the real SMS surveillance classification path (#662, ThreatAlertType::from_message_class) via a boot-smoke Silent-SMS PDU; the composite score is a log-derived heuristic (recompute_score_from_log), labelled UNCAL in the rendered UI -- NOT sema's detector engine. crates/sema (IMSI-catcher/BLE-tracker/deauth analysis) is not a thumos dependency at all -- only the shared sema-core types crate is -- so ImsiCatcher/BleTracker/DeauthAttack/CcciAnomaly/GeofenceBreach/ModemAnomaly have no producer and stay unconstructed. #555 (closed) calibrated sema's own corpus; it never wired sema into thumos, so its finding stands for this integration."
 
 [[capability]]
 id = "apps-compiled-only"
