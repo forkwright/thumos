@@ -37,14 +37,14 @@ APK decompilation reveals this is far worse than just an OTA update client. The 
 
 Hardcoded domains include: `app-measurement.com`, `googleads.g.doubleclick.net`, `ad.doubleclick.net`, `googlesyndication.com`, `googleadservices.com`, `imasdk.googleapis.com`, `google.com/iid`, `pagead2.googlesyndication.com`
 
-This means: a Chinese OTA framework embeds Google's full advertising and analytics framework. Your "OTA updater" is also an ad platform and telemetry beacon. Adups sends data to their servers in China. Google Analytics/Firebase sends data to Google in the US. Both run on every boot via `BOOT_COMPLETED` receiver.
+This means a Chinese OTA framework embeds Google's full advertising and analytics framework — the "OTA updater" doubles as an ad platform and telemetry beacon. Adups sends data to servers in China. Google Analytics and Firebase send data to Google's US infrastructure. Both run on every boot, triggered by the same `BOOT_COMPLETED` receiver.
 
 The `sysoper` companion package has `RecoveryService` and `SysService`  -  these can flash firmware and trigger recovery mode. Combined with Firebase Cloud Messaging push, this allows remote code execution: push a message to the device, download a binary, flash it via recovery. This is a remote exploitation chain built into the firmware.
 
 **TYD Technology Co., Ltd.** (天意德科技)
 Packages: `com.tyd.customkey`, `com.tydtech.clean`, `freeme` framework, `com.freeme.provider.badge`, `com.freeme.factory`
 
-TYD is the actual ODM (original design manufacturer) behind the AGM M7. AGM is a brand; TYD builds the hardware and software. The `freeme` framework runs at the Android framework level with full system privileges. TYD's `customkey` app handles the physical SOS/function key mapping.
+TYD is the actual ODM (original design manufacturer) behind the AGM M7. AGM is a brand. TYD builds the hardware and software, and its `freeme` framework runs at the Android framework level with full system privileges — enough reach that TYD's own `customkey` app also handles the physical SOS/function key mapping.
 
 The TYD/Freeme packages appear benign (no network services, no hardcoded URLs), but the Freeme framework running at system level means TYD can inject behavior into any Android component.
 
@@ -62,12 +62,12 @@ MediaTek provides the SoC and the entire board support package (BSP). Their pack
 
 MediaTek is a Taiwanese company, but operates significant R&D in mainland China and manufactures exclusively through Chinese foundries (TSMC is Taiwanese, but supply chain dependencies exist). Taiwan's relationship with China means MediaTek's software could be subject to pressure from either government.
 
-The MediaTek packages serve primarily as carrier provisioning tools (OMA-DM, LPPe location). They're designed to let carriers configure and manage devices. The threat model is: if a carrier is compromised or coerced (by any government), these tools become remote surveillance infrastructure.
+The MediaTek packages serve primarily as carrier provisioning tools (OMA-DM, LPPe location) that let carriers configure and manage devices remotely. The threat model: if any government compromises or coerces a carrier, these tools become remote surveillance infrastructure.
 
 ### US-origin threats
 
 **Google LLC**
-No Google Play Services or GMS installed directly, BUT Google's code is embedded inside the Adups FOTA APK:
+No Google Play Services or GMS installed directly, but the Adups FOTA APK embeds Google's code:
 - Firebase Analytics (app-measurement.com)
 - Firebase Cloud Messaging (push notifications)
 - Firebase Instance ID (device fingerprinting)
@@ -99,7 +99,7 @@ The most concerning finding is that Adups FOTA creates a **dual-exfiltration pip
 3. Firebase Cloud Messaging provides a push-based command channel from Google's servers
 4. The sysoper component can flash firmware triggered by push notifications
 
-This means the device is simultaneously reporting to Chinese and American data collection infrastructure, through a single APK, running as a system service that starts on every boot and cannot be disabled.
+This means the device reports simultaneously to Chinese and American data collection infrastructure through a single APK, running as a system service that starts on every boot with no way to disable it.
 
 ## What a nation-state sees
 
