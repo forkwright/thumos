@@ -14,11 +14,12 @@
 //! before each render cycle, avoiding references to kernel globals across
 //! the render boundary.
 
-// WHY: renderable screen exists, but kinit currently renders only the home
-// frame and has no calendar route/input path.
+// WHY: CalendarScreen itself is routed for render and input via ui.rs's
+// screen_kind (#400/#516); selected_event_id is scaffolding for the OK-key
+// event-detail action, a future wave with no implementation yet.
 #![expect(
     dead_code,
-    reason = "Calendar screen is not wired into the kinit UI route (#145)"
+    reason = "Event-detail action (OK key) not yet implemented on the routed calendar screen, tracked under #737"
 )]
 
 extern crate alloc;

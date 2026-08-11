@@ -22,7 +22,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Radio control screen created in Phase 07 Wave 6, kinit wiring pending (#145)"
+        reason = "Radio control screen created in Phase 07 Wave 6, kinit wiring pending (#737)"
     )
 )]
 
