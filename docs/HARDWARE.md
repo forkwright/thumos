@@ -11,7 +11,7 @@
 - Process: 28nm HPC+
 - Kernel: Linux 4.4.x (BSP)
 
-All radios are integrated into the SoC. No discrete connectivity chips.
+The SoC integrates all radios. No discrete connectivity chips exist.
 
 ## LTE bands
 

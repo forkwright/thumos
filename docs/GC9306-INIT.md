@@ -84,7 +84,7 @@ Sleep out (display on):
 
 ## Gamma tuning
 
-Gamma values differ across all four sources. This is expected: each vendor tunes gamma for their specific panel supplier. The values in the main table come from the LuatOS and Fibocom drivers, which agree exactly. The Spreadtrum and Actions drivers use different gamma curves tuned for different panels.
+Gamma values differ across all four sources because each vendor tunes gamma for their specific panel supplier. The values in the main table come from the LuatOS and Fibocom drivers, which agree exactly. The Spreadtrum and Actions drivers use different gamma curves tuned for different panels.
 
 If the M7 display looks washed out or has incorrect contrast, gamma registers 0xF0-0xF5 are the adjustment point. Each register takes six bytes. No public documentation exists for the gamma curve encoding. Tuning requires visual iteration on the physical panel.
 
