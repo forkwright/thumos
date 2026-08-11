@@ -188,6 +188,10 @@ impl EvalReport {
             .iter()
             .filter(|o| o.kind == ScenarioKind::ControlledAttack)
             .count();
+        // INVARIANT: true_pos counts a filtered subset of `detected`, so
+        // true_pos <= detected.len() always -- the quotient is bounded to
+        // [0, 1000] by integer-division identity regardless of corpus size,
+        // well within u32 on any platform.
         Some((true_pos * 1000 / detected.len()) as u32)
     }
 
@@ -206,6 +210,10 @@ impl EvalReport {
             .iter()
             .filter(|o| o.level >= ThreatLevel::Medium)
             .count();
+        // INVARIANT: found counts a filtered subset of `attacks`, so
+        // found <= attacks.len() always -- the quotient is bounded to
+        // [0, 1000] by integer-division identity regardless of corpus size,
+        // well within u32 on any platform.
         Some((found * 1000 / attacks.len()) as u32)
     }
 }

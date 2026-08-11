@@ -76,6 +76,24 @@ RUST/as-cast:crates/eidolon/src/font.rs
 RUST/as-cast:crates/haphe/src/gpio.rs
 RUST/as-cast:crates/haphe/src/input.rs
 RUST/as-cast:crates/kelyphos/src/stp.rs
+RUST/as-cast:crates/pteron/src/hci.rs
+
+# =============================================================================
+# eidolon keyboard widget grid math — const usize row-count into u32 pixel size
+# =============================================================================
+#
+# WHY(#718): crates/eidolon/src/font.rs already carries the identical pattern
+# and is in the RUST/as-cast block above (font.rs:19's own comment: "const
+# context — TryFrom not yet const-stable"). keyboard.rs's row-grid constants
+# are the same shape: MAIN_ROW_COUNT is `usize` (compared against `usize` row
+# indices elsewhere in the same file) and also multiplies a `u32` pixel
+# height in row_y/row_height/KEYBOARD_HEIGHT. No `From<usize> for u32` exists
+# (usize may exceed u32 on some targets) and `TryFrom` is not const-fn-stable
+# on this toolchain, so the only alternative to `as u32` is a runtime
+# fallible path for a value that is a compile-time literal (4) and can never
+# actually be out of range. keyboard.rs:222's `row as u32` is bounded by the
+# same function's own `if row >= MAIN_ROW_COUNT` guard immediately above it.
+RUST/as-cast:crates/eidolon/src/widgets/keyboard.rs
 
 # =============================================================================
 # Files exceeding 800-line limit — split tracked in #131
