@@ -11,7 +11,7 @@ hosted CI on every PR and push to `main` (`.github/workflows/ci.yml`, job
 is authoritative — file an issue.
 
 One caveat governs the whole page: these commands prove the kernel **under
-QEMU emulation only**. The physical device path is unproven — see
+QEMU emulation only**. The physical device path stays unproven — see
 [Hardware path: unproven](#hardware-path-unproven).
 
 ## Toolchain setup
@@ -36,14 +36,14 @@ sudo apt-get install qemu-system-arm  # Debian/Ubuntu
 brew install qemu                     # macOS
 ```
 
-No other system packages are needed: `armv7a-none-eabi` is a bare-metal Rust
-target with no external linker or C toolchain dependency.
+The build needs no other system packages: `armv7a-none-eabi` is a bare-metal
+Rust target with no external linker or C toolchain dependency.
 
 ## Repository layout
 
 - `crates/thumos/` — the kernel crate. Deliberately **excluded** from the
   Cargo workspace (`exclude` in the root `Cargo.toml`) so it can cross-compile
-  to bare metal; workspace-wide invocations (`cargo check --workspace`,
+  to bare metal. Workspace-wide invocations (`cargo check --workspace`,
   `cargo nextest run --workspace`) do not touch it.
 - `crates/thumos/.cargo/config.toml` — pins the default target
   (`armv7a-none-eabi`), the linker script (`link.ld`, kernel `.text` at
@@ -58,8 +58,8 @@ target with no external linker or C toolchain dependency.
 
 NOTE: cargo discovers `.cargo/config.toml` from the current working directory,
 not from `--manifest-path`. Run kernel cargo commands **from `crates/thumos/`**
-(exactly as CI does with `working-directory: crates/thumos`); from the repo
-root the target pin, linker script, zero-warning gate, and QEMU runner
+(exactly as CI does with `working-directory: crates/thumos`). From the repo
+root, the target pin, linker script, zero-warning gate, and QEMU runner
 silently do not apply. The local gate's kernel stage compensates with an
 explicit `RUSTFLAGS` + `--manifest-path` (see `.kanon-ci.toml`) — prefer the
 directory-local form when running by hand.
@@ -67,14 +67,14 @@ directory-local form when running by hand.
 ## Host unit tests (i686)
 
 Kernel unit tests run on 32-bit i686 because the kernel's syscall ABI uses
-u32 addresses; a 64-bit host truncates real pointers and crashes.
+u32 addresses. A 64-bit host truncates real pointers and crashes.
 
 ```bash
 cd crates/thumos
 cargo nextest run --bin thumos --target i686-unknown-linux-gnu
 ```
 
-CI adds `--build-jobs 8 --test-threads 8`; that is a resource cap on the CI
+CI adds `--build-jobs 8 --test-threads 8`. That is a resource cap on the CI
 box, not a requirement.
 
 ## Producing the kernel image
@@ -92,8 +92,8 @@ boot trust anchor directly into the kernel image, and QEMU loads the ELF
 verbatim via `-kernel`. The always-on `-D warnings` rustflag makes this build
 the zero-warning gate (#431): any new warning fails it.
 
-Build features (declared in `crates/thumos/Cargo.toml`; mutually exclusive
-combinations `compile_error!` by design, so `--all-features` never
+Build features (declared in `crates/thumos/Cargo.toml`, where mutually
+exclusive combinations `compile_error!` by design, so `--all-features` never
 accidentally produces a shippable-looking binary):
 
 | Feature | Purpose | Mutually exclusive with |
@@ -116,7 +116,7 @@ THUMOS_QEMU_TIMEOUT=60 ../../scripts/qemu-runner.sh target/armv7a-none-eabi/rele
 ```
 
 The runner boots the ELF under `qemu-system-arm -machine virt -cpu cortex-a7
--m 1024M -nographic` with ARM semihosting enabled; the kernel reports its
+-m 1024M -nographic` with ARM semihosting enabled. The kernel reports its
 outcome via the semihosting `SYS_EXIT` call, and a 60-second watchdog
 (`THUMOS_QEMU_TIMEOUT`) guards against a hung guest.
 
@@ -160,9 +160,9 @@ grep-able boot-log lines, reach for the GDB workflow in `scripts/README.md`
 before adding a UART probe — it attaches a real debugger with symbols against
 the same QEMU boot path used above, with no kernel code changes required.
 
-A lighter smoke check that needs no kernel runtime (boot stub + UART write +
-semihosting exit only) is documented in `scripts/README.md` (a convenience
-example; not wired into CI):
+`scripts/README.md` documents a lighter smoke check that needs no kernel
+runtime (boot stub + UART write + semihosting exit only) — a convenience
+example, not wired into CI:
 
 ```bash
 cd crates/thumos
@@ -181,9 +181,9 @@ verifies:
 cargo run -p sphragis -- <image-in> <seed-hex-file> <image-out>
 ```
 
-For mkbootimg assembly: the combined kernel(+ramdisk) image is sphragis's
-input; its output is what gets flashed to the GPT `boot` partition. The
-dev anchor (`keys/dev/boot-dev.seed`) signs dev images; production keys
+For mkbootimg assembly, the combined kernel(+ramdisk) image is sphragis's
+input, and its output is what gets flashed to the GPT `boot` partition. The
+dev anchor (`keys/dev/boot-dev.seed`) signs dev images. Production keys
 live offline and never enter the repo.
 
 ## Signing and attestation boundary
@@ -197,8 +197,9 @@ today:
   key provisioned by the offline signing infrastructure (Titan security key /
   air-gapped machine) and fails without it. Refused in every configuration:
   the committed dev key under `production`, the RFC 8032 section 7.1
-  test-vector keys (private halves are published, hence forgeable anchors),
-  and any byte string that is not a decompressable curve point.
+  test-vector keys (the spec publishes their private halves, so anchors
+  built from them are forgeable), and any byte string that is not a
+  decompressable curve point.
 - **Dev keypair is public by design** (`crates/thumos/keys/dev/`, AOSP
   test-keys pattern): any developer can build and sign dev images, and host
   tests round-trip sign→verify against the real embedded anchor. No
@@ -207,8 +208,8 @@ today:
 - **Image-resident initramfs.** `build.rs` compiles `init/*.rs` to static
   armv7a ELFs, packs a newc CPIO, and signs it with the dev seed (#480) so
   measured userspace works in dev/QEMU builds. Under a production anchor this
-  dev signature does not verify — the production initramfs is signed offline
-  by the signing infrastructure — and the image falls back to the eMMC
+  dev signature does not verify — the signing infrastructure signs the
+  production initramfs offline — and the image falls back to the eMMC
   secure-boot gate (#217).
 - **Trust stamp.** Every image bakes a grep-able
   `THUMOS-BOOT-TRUST:{PROD|DEV}:<key fingerprint>` into the boot banner, and
@@ -217,11 +218,11 @@ today:
 - **CI attestation, stated precisely.** The Gate Attestation workflow
   (`.github/workflows/gate-attestation.yml`, Gate-Passed trailer / hybrid
   full-gate build) attests the **workspace** fmt/check/clippy/nextest stages
-  only; per its own NOTE it does not attest the excluded kernel crate. The
+  only. Per its own NOTE, it does not attest the excluded kernel crate. The
   kernel's executable witness is the `kernel` job of the CI workflow
   described on this page — there is no cryptographic attestation of a
-  released boot image. Release attestation is broken and tracked in #536. Do
-  not present any current artifact as release-signed or release-attested.
+  released boot image. Release attestation remains broken (tracked in #536).
+  Do not present any current artifact as release-signed or release-attested.
 
 ## Boot passphrase and encrypted userdata (#446)
 
@@ -245,21 +246,21 @@ The boot-time input subsystem behind `passphrase_ok`:
   entered: refused, throttled out, or hardware missing) is never
   plain-mounted and never formatted — the boot falls back to the
   initramfs root, and the throttle/wipe state machine (10 attempts →
-  panic wipe) applies. An unreadable preamble is treated as locked.
+  panic wipe) applies. The boot logic treats an unreadable preamble as locked.
 - **Boot pad binding.** The 4×3 matrix yields digits, Star, Hash only:
   digits append, Star = backspace, Hash = submit/confirm. Boot passphrases
   are digits-only (minimum 6), constrained identically at setup so a
   passphrase is always enterable at boot. Post-boot symbol entry in
-  `lock_screen.rs` is unaffected.
+  `lock_screen.rs` stays unaffected.
 - **One-way transition.** Completing first-boot setup writes the preamble
   sector at the userdata head and formats the payload encrypted. Plain
-  pre-provisioning content does NOT migrate — it is overwritten. qemu and
-  dev-anchor builds never reach the gate (secure boot cannot establish
-  trust there), so CI witnesses and dev iteration are unaffected.
+  pre-provisioning content does NOT migrate — first-boot setup overwrites it.
+  qemu and dev-anchor builds never reach the gate (secure boot cannot
+  establish trust there), so CI witnesses and dev iteration stay unaffected.
 - **Hardware status.** The live GPIO matrix scan, the display render, and
   the on-device verify/mount path are hardware-gated (pin assignments are
-  placeholders pending AGM M7 schematic verification, mirroring haphe);
-  host tests prove the scan/debounce logic, the preamble format, the
+  placeholders pending AGM M7 schematic verification, mirroring haphe).
+  Host tests prove the scan/debounce logic, the preamble format, the
   verifier derivation, and the gate matrices.
 
 ## Hardware path: unproven
@@ -276,10 +277,10 @@ only**. This runbook does not upgrade the hardware status:
   have no executed on-device path.
 - Repository tooling produces **no flashable device package** — no Android
   boot image, no scatter-file integration. There is nothing on this
-  page to flash, and the QEMU image must not be flashed to a device.
+  page to flash, and operators must not flash the QEMU image to a device.
 - The Linux 4.4 BSP build previously documented in this file was exploration
-  against a third-party vendor tree; those images were never flashed either.
-  That path is retired: it is not a fallback, and its steps (vendor
+  against a third-party vendor tree. Those images were never flashed either.
+  The project retired that path: it is not a fallback, and its steps (vendor
   defconfigs, manual in-tree patches, mkbootimg) are not part of the current
   build. The stock kernel config and hardware probe notes survive only as
   frozen reference records (`docs/kernel-config-stock`, `docs/HARDWARE.md`,

@@ -179,7 +179,7 @@ Critical finding: `ro.oem_unlock_supported: 1` means the hardware/firmware suppo
 | `com.mediatek.ims` | IMS (VoLTE) |
 | `com.marshaltec.ime.t9ime` | T9 input method |
 
-Note: `com.android.fmradio` confirms an FM radio receiver is present. This is additional radio hardware not documented in specs.
+Note: `com.android.fmradio` confirms an FM radio receiver — additional hardware the specs omit.
 
 ## Battery
 
@@ -201,7 +201,7 @@ Unlocked via mtkclient BROM exploit. The fastboot  button confirmation is non-fu
 
 **Method**: mtkclient  via BROM mode
 - Required: Vol Up + Vol Down + Power held while connecting USB
-- ModemManager and cdc_acm kernel module must be stopped/removed
+- Stop ModemManager and remove the cdc_acm kernel module
 - mtkclient detected MT6739, used HACC (Hardware AES) to decrypt seccfg
 - V4 lockstate modified and written back
 
