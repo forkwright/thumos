@@ -50,6 +50,7 @@ use crate::screen_fm::FmScreen;
 use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
 use crate::screen_messages::MessagesScreen;
 use crate::screen_privacy::PrivacyScreen;
+use crate::screen_radio::RadioControlScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
 use crate::screen_unimplemented::UnimplementedScreen;
@@ -167,6 +168,15 @@ pub(crate) struct KernelState {
     /// gate fails closed (purge permanently refused) rather than accepting
     /// a fabricated credential.
     privacy: PrivacyScreen,
+    /// Radio control panel (#737): sets a DESIRED radio preset
+    /// (COVERT LOCK / STEALTH / RESTORE); genuinely self-contained --
+    /// there is no radio-policy manager anywhere in the kernel that reads
+    /// this state and applies it to wifi/gps/bluetooth/cellular hardware
+    /// (wifi.rs/gps.rs are hardware-gated and never touch KernelState even
+    /// on the non-qemu boot path; bluetooth's live adapter is likewise
+    /// local to kinit). The screen owns and renders its own state, exactly
+    /// like Messages/Search/Dialer/Settings before any subsystem fed them.
+    radio: RadioControlScreen,
     /// Fallback for any `ScreenId` [`screen_kind`] classifies as
     /// [`ScreenKind::NotImplemented`] (#730): renders an unmistakable,
     /// screen-naming "NOT IMPLEMENTED" state instead of the render
@@ -295,6 +305,7 @@ impl KernelState {
             // so this is an intentionally unsatisfiable placeholder, not a
             // working credential.
             privacy: PrivacyScreen::new([0u8; SHA256_DIGEST_LEN]),
+            radio: RadioControlScreen::new(),
             not_implemented: UnimplementedScreen::new(),
             fb,
             last_second: 0,
@@ -320,6 +331,7 @@ impl KernelState {
             ScreenKind::Calendar => &mut self.calendar,
             ScreenKind::FmRadio => &mut self.fm_screen,
             ScreenKind::Privacy => &mut self.privacy,
+            ScreenKind::RadioControl => &mut self.radio,
             ScreenKind::NotImplemented => {
                 self.not_implemented.set_screen(id);
                 &mut self.not_implemented
@@ -516,6 +528,7 @@ impl KernelState {
             ScreenKind::Calendar => &self.calendar,
             ScreenKind::FmRadio => &self.fm_screen,
             ScreenKind::Privacy => &self.privacy,
+            ScreenKind::RadioControl => &self.radio,
             ScreenKind::NotImplemented => &self.not_implemented,
         };
         self.ui
