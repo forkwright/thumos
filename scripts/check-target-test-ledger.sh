@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # check-target-test-ledger.sh — declared-vs-executed audit for the kernel's
 # test obligations (#551, restoring #124; runnable-derivation #645). Fails
 # when:
@@ -25,7 +27,6 @@
 # here is a cache hit, not a fresh compile — this stage's placement in the
 # pipeline is load-bearing, not incidental. Invoked standalone with no prior
 # build, this script builds first like any other nextest call.
-set -uo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 LEDGER="$REPO_ROOT/docs/target-test-ledger.toml"

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # check-doc-inventory.sh — crate-roster and docs/ manifest drift check.
 # Fails when:
 #   (a) the crate roster derived from Cargo.toml [workspace] members (plus
@@ -11,7 +13,6 @@
 # Cargo.toml is the SSOT for what crates exist; docs/MANIFEST.toml is the
 # SSOT for what files live in docs/. No doc may hand-restate either count —
 # this script is the only thing allowed to know the number.
-set -uo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
