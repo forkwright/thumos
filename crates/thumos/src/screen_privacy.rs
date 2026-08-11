@@ -17,16 +17,18 @@
 //! Accessible from `screen_search.rs` via function search "Privacy"
 //! (`ScreenId::Privacy`), and from the settings menu.
 
-// WHY: privacy dashboard created in Phase 08 Wave 7, kinit wiring pending.
-// cfg_attr(not(test), ...): the module's own tests now exercise its full
-// surface, so nothing is dead in the test build -- expecting dead_code there
-// makes the expectation unfulfilled. Production reachability is unchanged;
-// the expectation is scoped to the build where it is still real.
+// WHY: PrivacyScreen itself is wired into KernelState (#737) and reachable
+// via the screen dispatch. update_size/update_retention/category/
+// total_bytes/purgeable_count and the CATEGORIES cross-check constant stay
+// unreached outside tests -- populating category sizes from lfs.rs inode
+// metadata on screen entry is separate follow-on work, not part of
+// reachability wiring. cfg_attr(not(test), ...): the module's tests
+// exercise these, so expecting dead_code there would be unfulfilled.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "Privacy dashboard created in Phase 08 Wave 7, kinit wiring pending (#737)"
+        reason = "update_size/update_retention/category/total_bytes/purgeable_count/CATEGORIES await the lfs.rs-backed size refresh, not part of #737's reachability wiring"
     )
 )]
 
