@@ -606,6 +606,119 @@ pub enum ScreenId {
     ThreatMonitor,
 }
 
+/// Human-readable name for a `ScreenId`. SSOT for screen naming: the
+/// not-implemented placeholder screen (`screen_unimplemented.rs`) uses this
+/// to name the screen it is standing in for, and the qemu navigation CI
+/// witness (`kardia.rs`) uses it to label the `from`/`to` screens in its
+/// marker line.
+///
+/// Exhaustive over `ScreenId` with NO catch-all: adding a variant without a
+/// label here is a compile error, so a screen can never go silently
+/// unnamed (#730).
+pub(crate) const fn screen_label(id: ScreenId) -> &'static str {
+    match id {
+        ScreenId::Home => "Home",
+        ScreenId::Dialer => "Dialer",
+        ScreenId::Messages => "Messages",
+        ScreenId::Contacts => "Contacts",
+        ScreenId::Settings => "Settings",
+        ScreenId::Search => "Search",
+        ScreenId::Calendar => "Calendar",
+        ScreenId::InCall => "In Call",
+        ScreenId::Timer => "Timer",
+        ScreenId::Stopwatch => "Stopwatch",
+        ScreenId::Alarms => "Alarms",
+        ScreenId::FmRadio => "FM Radio",
+        ScreenId::WifiSettings => "WiFi Settings",
+        ScreenId::BtSettings => "Bluetooth Settings",
+        ScreenId::Privacy => "Privacy",
+        ScreenId::RadioControl => "Radio Control",
+        ScreenId::About => "About",
+        ScreenId::Battery => "Battery",
+        ScreenId::Nous => "Nous",
+        ScreenId::ThreatMonitor => "Threat Monitor",
+    }
+}
+
+/// Which concrete screen family a `ScreenId` maps to -- the SINGLE
+/// classification table `kardia.rs`'s `KernelState::active_screen_mut`
+/// (input dispatch) and `KernelState::render_if_dirty` (render dispatch)
+/// both match on, so the two dispatches can no longer drift apart
+/// independently. That drift is exactly what #730 found: `FmRadio` was in
+/// the input match's arm list but missing from the render match's, so the
+/// FM screen took every keypress while the framebuffer kept showing Home,
+/// and twelve `screen_search.rs` entries had no render arm at all, silently
+/// painting Home when selected.
+///
+/// Lives here (not in `kardia.rs`) because `kardia`'s `mod` declaration is
+/// `#[cfg(not(test))]` (it is the runtime continuation of the hardware boot
+/// path, #420/#528) -- classification logic that must itself be
+/// host-testable cannot live inside a module the host test build never
+/// compiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScreenKind {
+    /// Home/idle screen.
+    Home,
+    /// Message list.
+    Messages,
+    /// Function search ("everything launcher").
+    Search,
+    /// Phone dialer.
+    Dialer,
+    /// Settings menu.
+    Settings,
+    /// Calendar.
+    Calendar,
+    /// FM Radio.
+    FmRadio,
+    /// No screen is wired into `KernelState` for this `ScreenId` yet. Both
+    /// dispatches route this to the not-implemented placeholder screen
+    /// (`screen_unimplemented.rs`), which renders an unmistakable state
+    /// naming the requested screen -- never Home.
+    NotImplemented,
+}
+
+/// Classify a `ScreenId` into its [`ScreenKind`] (#730).
+///
+/// Exhaustive over `ScreenId` with NO catch-all: adding a `ScreenId`
+/// variant fails this match at compile time until it is classified here,
+/// which then fails BOTH of `kardia.rs`'s dispatches at compile time (their
+/// matches over `ScreenKind` have no catch-all either) until each handles
+/// the new kind. That double exhaustiveness is the property the issue
+/// asked for: the divergence between the two dispatches is now a compile
+/// error, not a silent runtime fallback.
+pub(crate) fn screen_kind(id: ScreenId) -> ScreenKind {
+    match id {
+        ScreenId::Home => ScreenKind::Home,
+        ScreenId::Messages => ScreenKind::Messages,
+        ScreenId::Search => ScreenKind::Search,
+        ScreenId::Dialer => ScreenKind::Dialer,
+        ScreenId::Settings => ScreenKind::Settings,
+        ScreenId::Calendar => ScreenKind::Calendar,
+        ScreenId::FmRadio => ScreenKind::FmRadio,
+        // Compiled screens with no route into KernelState yet (#145 tracks
+        // wiring each in): Alarms/Timer/Stopwatch (screen_alarm.rs),
+        // InCall (screen_call.rs), Contacts (screen_contacts.rs),
+        // Nous (screen_nous.rs), Privacy (screen_privacy.rs),
+        // RadioControl (screen_radio.rs), ThreatMonitor (screen_threat.rs),
+        // WifiSettings/BtSettings/About (screen_settings.rs). Battery has no
+        // screen implementation at all yet.
+        ScreenId::Contacts
+        | ScreenId::InCall
+        | ScreenId::Timer
+        | ScreenId::Stopwatch
+        | ScreenId::Alarms
+        | ScreenId::WifiSettings
+        | ScreenId::BtSettings
+        | ScreenId::Privacy
+        | ScreenId::RadioControl
+        | ScreenId::About
+        | ScreenId::Battery
+        | ScreenId::Nous
+        | ScreenId::ThreatMonitor => ScreenKind::NotImplemented,
+    }
+}
+
 /// What the active screen wants the UI manager to do after handling input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1256,5 +1369,64 @@ mod tests {
         let softkey_start = content_end;
         let any_softkey = fb[softkey_start..].iter().any(|&px| px != 0);
         assert!(any_softkey, "softkey zone must contain visible pixels");
+    }
+
+    /// #730: every `ScreenId` with no wired screen must classify as
+    /// `NotImplemented`, never as `Home` -- the exact defect this
+    /// classifier exists to make impossible (`FmRadio` input-wired/
+    /// render-missing, plus the twelve `screen_search.rs` entries with no
+    /// render arm at all, all fell through to the render match's old
+    /// `_ => &self.home` catch-all).
+    #[test]
+    fn unwired_screens_are_not_implemented_not_home() {
+        const UNWIRED: [ScreenId; 13] = [
+            ScreenId::Contacts,
+            ScreenId::InCall,
+            ScreenId::Timer,
+            ScreenId::Stopwatch,
+            ScreenId::Alarms,
+            ScreenId::WifiSettings,
+            ScreenId::BtSettings,
+            ScreenId::Privacy,
+            ScreenId::RadioControl,
+            ScreenId::About,
+            ScreenId::Battery,
+            ScreenId::Nous,
+            ScreenId::ThreatMonitor,
+        ];
+        for id in UNWIRED {
+            let kind = screen_kind(id);
+            assert_eq!(
+                kind,
+                ScreenKind::NotImplemented,
+                "{id:?} has no wired screen; it must classify as NotImplemented rather than fall through to Home"
+            );
+            assert_ne!(
+                kind,
+                ScreenKind::Home,
+                "{id:?} must never be silently indistinguishable from Home (#730)"
+            );
+        }
+    }
+
+    /// Every screen genuinely wired into `KernelState` keeps its own,
+    /// distinct classification. This is the SSOT both of `kardia.rs`'s
+    /// dispatches derive from, so a wired screen accidentally grouped into
+    /// the not-implemented arm list -- or `FmRadio`'s #730 regression in
+    /// reverse -- is caught here.
+    #[test]
+    fn wired_screens_keep_distinct_classification() {
+        const WIRED: [(ScreenId, ScreenKind); 7] = [
+            (ScreenId::Home, ScreenKind::Home),
+            (ScreenId::Messages, ScreenKind::Messages),
+            (ScreenId::Search, ScreenKind::Search),
+            (ScreenId::Dialer, ScreenKind::Dialer),
+            (ScreenId::Settings, ScreenKind::Settings),
+            (ScreenId::Calendar, ScreenKind::Calendar),
+            (ScreenId::FmRadio, ScreenKind::FmRadio),
+        ];
+        for (id, expect) in WIRED {
+            assert_eq!(screen_kind(id), expect, "{id:?} classification drifted");
+        }
     }
 }

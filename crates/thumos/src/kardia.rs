@@ -51,6 +51,7 @@ use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
 use crate::screen_messages::MessagesScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
+use crate::screen_unimplemented::UnimplementedScreen;
 use crate::security::KEY_SIZE;
 use crate::security_mode::ModeManager;
 use crate::sim::SimManager;
@@ -58,7 +59,7 @@ use crate::sms::SmsManager;
 use crate::status_bar::{KernelStatusBar, NetworkService, StatusBarState};
 use crate::telephony::{BootModemTransport, RadioAccessTech, RatGeneration, Telephony};
 use crate::uart::Uart;
-use crate::ui::{Screen, ScreenId, UiManager};
+use crate::ui::{Screen, ScreenId, ScreenKind, UiManager, screen_kind};
 
 /// Timer ticks per wall-clock second (exceptions.rs `TICK_MS` = 10).
 const TICKS_PER_SECOND: u64 = 100;
@@ -135,8 +136,10 @@ pub(crate) struct KernelState {
     home: HomeScreen,
     /// The screens reachable from Home (#400). Each is dependency-free to
     /// construct; subsystem wirings later feed their content (#398 dialer,
-    /// #402 clock into home, etc.). Screens not held here fall back to Home in
-    /// the dispatch match until their subsystem PR adds the field + arm.
+    /// #402 clock into home, etc.). A `ScreenId` not held here as a field
+    /// classifies as [`ScreenKind::NotImplemented`] and renders through
+    /// [`Self::not_implemented`] until its subsystem PR adds the field + arm
+    /// (#730 -- this used to silently fall back to Home instead).
     messages: MessagesScreen,
     search: SearchScreen,
     dialer: DialerScreen,
@@ -149,6 +152,13 @@ pub(crate) struct KernelState {
     /// WMT backend binds on device.
     fm: FmRadio<BootFmHw>,
     fm_screen: FmScreen,
+    /// Fallback for any `ScreenId` [`screen_kind`] classifies as
+    /// [`ScreenKind::NotImplemented`] (#730): renders an unmistakable,
+    /// screen-naming "NOT IMPLEMENTED" state instead of the render
+    /// dispatch silently falling through to Home. `active_screen_mut` and
+    /// `render_if_dirty` both call `set_screen` on this before selecting
+    /// it, so the label always names the screen actually requested.
+    not_implemented: UnimplementedScreen,
     /// Cursor into the qemu synthetic-input script. Real keypad decode is
     /// hardware-gated + net-new (no KPD model on -machine virt, no decoder
     /// in-tree); #400 input dispatch is CI-verified via a scripted key sequence
@@ -265,6 +275,7 @@ impl KernelState {
             calendar: CalendarScreen::new(),
             fm: FmRadio::new(BootFmHw::new()),
             fm_screen: FmScreen::new(),
+            not_implemented: UnimplementedScreen::new(),
             fb,
             last_second: 0,
             #[cfg(feature = "qemu")]
@@ -273,18 +284,25 @@ impl KernelState {
     }
 
     /// The active screen as a `&mut dyn Screen`, for input dispatch (#400).
-    /// Screens not yet wired as fields fall back to Home (their subsystem PR
-    /// adds the field + arm); the qemu input script only navigates to wired
-    /// screens, so the fallback is never exercised in CI.
+    /// Classified through [`screen_kind`] -- the same table `render_if_dirty`
+    /// matches on -- so the input and render dispatches cannot silently
+    /// disagree about which `ScreenId`s are wired (#730: `FmRadio` used to
+    /// take input while Home stayed painted, because this match and the
+    /// render match were two independent, drifted tables).
     fn active_screen_mut(&mut self) -> &mut dyn Screen {
-        match self.ui.active_screen() {
-            ScreenId::Messages => &mut self.messages,
-            ScreenId::Search => &mut self.search,
-            ScreenId::Dialer => &mut self.dialer,
-            ScreenId::Settings => &mut self.settings,
-            ScreenId::Calendar => &mut self.calendar,
-            ScreenId::FmRadio => &mut self.fm_screen,
-            _ => &mut self.home,
+        let id = self.ui.active_screen();
+        match screen_kind(id) {
+            ScreenKind::Home => &mut self.home,
+            ScreenKind::Messages => &mut self.messages,
+            ScreenKind::Search => &mut self.search,
+            ScreenKind::Dialer => &mut self.dialer,
+            ScreenKind::Settings => &mut self.settings,
+            ScreenKind::Calendar => &mut self.calendar,
+            ScreenKind::FmRadio => &mut self.fm_screen,
+            ScreenKind::NotImplemented => {
+                self.not_implemented.set_screen(id);
+                &mut self.not_implemented
+            }
         }
     }
 
@@ -439,6 +457,11 @@ impl KernelState {
         // the fb borrow (both disjoint from self.fb). Cheap for the small event
         // set; keeps the screen current whenever it is the active render target.
         self.calendar.update(&self.heorte, self.wall_clock);
+        let active = self.ui.active_screen();
+        // #730: cheap regardless of whether the placeholder is actually the
+        // render target this pass -- mirrors the calendar.update() pattern
+        // above (feed screens their content before the fb borrow, unconditionally).
+        self.not_implemented.set_screen(active);
         let fb = self.fb.as_deref_mut()?;
         let status = StatusBarState {
             network,
@@ -459,13 +482,19 @@ impl KernelState {
         // navigation stack has selected, not just Home. Inlined (not
         // active_screen_mut) because fb already holds a &mut borrow of self.fb;
         // this immutable match over disjoint screen fields coexists with it.
-        let screen: &dyn Screen = match self.ui.active_screen() {
-            ScreenId::Messages => &self.messages,
-            ScreenId::Search => &self.search,
-            ScreenId::Dialer => &self.dialer,
-            ScreenId::Settings => &self.settings,
-            ScreenId::Calendar => &self.calendar,
-            _ => &self.home,
+        //
+        // Classified through the SAME [`screen_kind`] table `active_screen_mut`
+        // matches on (#730) -- this match has no catch-all, so a `ScreenId`
+        // with no arm here is a compile error, not a silent Home render.
+        let screen: &dyn Screen = match screen_kind(active) {
+            ScreenKind::Home => &self.home,
+            ScreenKind::Messages => &self.messages,
+            ScreenKind::Search => &self.search,
+            ScreenKind::Dialer => &self.dialer,
+            ScreenKind::Settings => &self.settings,
+            ScreenKind::Calendar => &self.calendar,
+            ScreenKind::FmRadio => &self.fm_screen,
+            ScreenKind::NotImplemented => &self.not_implemented,
         };
         self.ui
             .render(screen, |s| KernelStatusBar::draw(s, &status), fb);
@@ -745,19 +774,6 @@ impl KernelState {
             let _ = serial.write_str("[kardia] REFLEX incoming-ring\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write
             // TODO(#398)[deliberate-prudent]: ring UI + audio route via persisted telephony.
         }
-    }
-}
-
-/// Name a `ScreenId` for the #400 qemu navigation CI marker.
-#[cfg(feature = "qemu")]
-fn screen_id_name(id: ScreenId) -> &'static str {
-    match id {
-        ScreenId::Home => "Home",
-        ScreenId::Search => "Search",
-        ScreenId::Messages => "Messages",
-        ScreenId::Dialer => "Dialer",
-        ScreenId::Settings => "Settings",
-        _ => "Other",
     }
 }
 
@@ -1078,8 +1094,8 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
                     &mut serial,
                     format_args!(
                         "kardia: nav {} -> {}\r\n",
-                        screen_id_name(from),
-                        screen_id_name(to)
+                        crate::ui::screen_label(from),
+                        crate::ui::screen_label(to)
                     ),
                 );
             }
