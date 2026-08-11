@@ -265,3 +265,12 @@ RUST/as-cast:crates/pteron/src/smp/pdu.rs
 # metaxu-core's lib.rs is module declarations and re-exports; its submodules
 # carry 19 tests (envelope.rs 10, grants.rs 6, protocol.rs 3).
 TESTING/no-tests:crates/metaxu-core/src/lib.rs
+
+# =============================================================================
+# No standalone glossary — declined, not deferred
+# =============================================================================
+#
+# WHY(#718): thumos's domain vocabulary is defined at its point of use in the
+# code and in ARCHITECTURE.md. A separate GLOSSARY.md would be a second copy
+# of the same facts, and a second copy drifts (one fact, one place).
+ARCHITECTURE/no-glossary:Cargo.toml
