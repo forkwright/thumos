@@ -14,7 +14,7 @@ embedded-graphics-core = { workspace = true }
 # no other source of truth. release-please patches it via the `extra-files`
 # entry in release-please-config.json; if that entry is removed the pin goes
 # stale silently and stops resolving at the next minor bump (#571).
-haphe = { path = "../haphe", version = "0.5.0" }
+haphe = { path = "../haphe", version = "0.5.1" }
 
 [lints]
 workspace = true
