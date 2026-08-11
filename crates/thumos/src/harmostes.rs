@@ -2707,4 +2707,134 @@ mod tests {
         );
         assert_eq!(claimed_key_algorithm("no-colon-here"), "no-colon-here");
     }
+
+    // -- Inbound to-device / Olm pre-key receive-path tests (#437) --
+    //
+    // #437 remnant 3: consume_one_time_key has zero production call sites.
+    // This is the falsifier -- an inbound to_device Olm pre-key message must
+    // cause the matching local one-time key to leave the pool and a session
+    // to be established. process_sync_response does not yet look at
+    // `to_device` at all, so this must fail until that wiring lands.
+
+    /// Encode this kernel's pre-key body layout (`base_key || one_time_key`,
+    /// see `OLM_PREKEY_BODY_LEN`) as the hex string a `content.ciphertext.
+    /// <key>.body` field carries on the wire.
+    fn prekey_body_hex(base_key: &[u8; KEY_SIZE], one_time_key: &[u8; KEY_SIZE]) -> String {
+        let mut s = hex_encode_bytes(base_key);
+        s.push_str(&hex_encode_bytes(one_time_key));
+        s
+    }
+
+    /// Write a single `m.room.encrypted` to-device event onto an open
+    /// [`JsonWriter`] context, matching the real Matrix `to_device.events[]`
+    /// shape (spec: "Extensions to /sync", `m.olm.v1.curve25519-aes-sha2`).
+    fn write_olm_prekey_event(
+        w: &mut JsonWriter,
+        sender: &str,
+        algorithm: &str,
+        sender_key: &str,
+        recipient_identity_key: &str,
+        msg_type: i64,
+        body: &str,
+    ) {
+        w.object_start();
+        w.key("sender");
+        w.string_value(sender);
+        w.key("type");
+        w.string_value("m.room.encrypted");
+        w.key("content");
+        w.object_start();
+        w.key("algorithm");
+        w.string_value(algorithm);
+        w.key("sender_key");
+        w.string_value(sender_key);
+        w.key("ciphertext");
+        w.object_start();
+        w.key(recipient_identity_key);
+        w.object_start();
+        w.key("type");
+        w.number_value(msg_type);
+        w.key("body");
+        w.string_value(body);
+        w.end(); // ciphertext entry
+        w.end(); // ciphertext
+        w.end(); // content
+        w.end(); // event
+    }
+
+    /// Build a full `/sync` response body carrying one `to_device` Olm
+    /// pre-key event, for the end-to-end wiring test.
+    fn build_to_device_sync_response(
+        next_batch: &str,
+        sender: &str,
+        algorithm: &str,
+        sender_key: &str,
+        recipient_identity_key: &str,
+        msg_type: i64,
+        body: &str,
+    ) -> String {
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("next_batch");
+        w.string_value(next_batch);
+        w.key("to_device");
+        w.object_start();
+        w.key("events");
+        w.array_start();
+        write_olm_prekey_event(
+            &mut w,
+            sender,
+            algorithm,
+            sender_key,
+            recipient_identity_key,
+            msg_type,
+            body,
+        );
+        w.end(); // events
+        w.end(); // to_device
+        w.end(); // root
+        w.finish()
+    }
+
+    #[test]
+    fn sync_processes_to_device_olm_prekey_and_establishes_session() {
+        let mut client = matrix_client_with_test_credentials();
+        let otk = client
+            .crypto_mut()
+            .generate_one_time_keys(1)
+            .expect("seeding must succeed")[0];
+        let our_key = client.crypto().device_keys().curve25519_key;
+
+        let sender_identity_key = [0x11u8; KEY_SIZE];
+        let base_key = [0x22u8; KEY_SIZE];
+        let sync_json = build_to_device_sync_response(
+            "batch_prekey",
+            "@alice:matrix.example.com",
+            matrix_crypto::OLM_ALGORITHM,
+            &hex_encode_bytes(&sender_identity_key),
+            &hex_encode_bytes(&our_key),
+            0,
+            &prekey_body_hex(&base_key, &otk),
+        );
+
+        let result = client
+            .sync(&mock_response(200, &sync_json), 100)
+            .expect("a well-formed to-device pre-key event must not fail the sync");
+        assert_eq!(
+            result.rooms_updated, 0,
+            "this fixture carries no room events"
+        );
+
+        assert_eq!(
+            client.crypto().olm_sessions().len(),
+            1,
+            "an inbound Olm pre-key message via to_device must establish a session -- \
+             process_sync_response does not yet read to_device at all"
+        );
+        assert!(
+            !client.crypto().one_time_keys().contains(&otk),
+            "the named one-time key must leave this device's own pool -- the \
+             production call site for consume_one_time_key (#437)"
+        );
+    }
 }
