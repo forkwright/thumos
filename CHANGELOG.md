@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/forkwright/thumos/compare/v0.4.0...v0.5.0) (2026-08-11)
+
+
+### Features
+
+* **kernel:** consume one-time keys from inbound Olm pre-key messages ([#728](https://github.com/forkwright/thumos/issues/728)) ([5c54417](https://github.com/forkwright/thumos/commit/5c544175761dba8908d495572699664d9b3de94b))
+
+
+### Bug Fixes
+
+* **board:** point MUSB_BASE at the controller the MT6739 vendor DT actually declares ([#725](https://github.com/forkwright/thumos/issues/725)) ([277b1d8](https://github.com/forkwright/thumos/commit/277b1d8fecdf5d13b280fe99ebca3434229c2a7d))
+* **scripts:** strict mode, bracket form, and silent-true across the witness and gate scripts ([#726](https://github.com/forkwright/thumos/issues/726)) ([2e4fc19](https://github.com/forkwright/thumos/commit/2e4fc194ad8d86188312a1d66d6b5d48227b492a))
+
 ## [0.4.0](https://github.com/forkwright/thumos/compare/v0.3.0...v0.4.0) (2026-08-10)
 
 
