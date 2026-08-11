@@ -462,9 +462,10 @@ pub fn is_default_surveillance_domain(domain_lowercased: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    use super::*;
 
     fn make_tcp_packet() -> Vec<u8> {
         let mut pkt = vec![0u8; 40];

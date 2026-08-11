@@ -47,9 +47,9 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use core::fmt;
 
+use alloc::vec::Vec;
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
