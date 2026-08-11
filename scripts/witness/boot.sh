@@ -70,6 +70,10 @@ grep -qE 'kardia: firewall rules=[1-9][0-9]* allowed=[1-9][0-9]* denied=[1-9][0-
 # #518 FM radio: FmRadio<BootFmHw> instantiated in KernelState (NullFmHw under
 # qemu), powered + tuned at smoke, FM screen fed from it.
 grep -qE 'kardia: fm powered=true freq_khz=[0-9]+ rssi=-?[0-9]+ volume=[0-9]+' boot.log || { echo 'FAIL #518: FM radio controller not wired (BootFmHw/KernelState/screen feed broken)'; exit 1; }
+# #737 threat monitor: log substrate fed from the real SMS surveillance
+# classification path (#662); composite score is a log-derived heuristic,
+# explicitly uncalibrated (sema stays unwired -- not a thumos dependency).
+grep -qE 'kardia: threat alerts=[1-9][0-9]* score=[0-9]+ uncalibrated=true modem_power=true' boot.log || { echo 'FAIL #737: threat monitor log/score not wired (SMS classification -> alert -> score path broken)'; exit 1; }
 
 # PL0 isolation + graceful user-fault kill (#487 + fault handling): each probe
 # variant attempts one PL0-illegal op; the kernel must fault it, kill only the

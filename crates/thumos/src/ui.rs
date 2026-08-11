@@ -675,6 +675,8 @@ pub(crate) enum ScreenKind {
     Privacy,
     /// Radio control panel.
     RadioControl,
+    /// Threat monitor.
+    ThreatMonitor,
     /// No screen is wired into `KernelState` for this `ScreenId` yet. Both
     /// dispatches route this to the not-implemented placeholder screen
     /// (`screen_unimplemented.rs`), which renders an unmistakable state
@@ -702,12 +704,13 @@ pub(crate) fn screen_kind(id: ScreenId) -> ScreenKind {
         ScreenId::FmRadio => ScreenKind::FmRadio,
         ScreenId::Privacy => ScreenKind::Privacy,
         ScreenId::RadioControl => ScreenKind::RadioControl,
+        ScreenId::ThreatMonitor => ScreenKind::ThreatMonitor,
         // Compiled screens with no route into KernelState yet (#737 tracks
         // wiring each in): Alarms/Timer/Stopwatch (screen_alarm.rs),
         // InCall (screen_call.rs), Contacts (screen_contacts.rs),
-        // Nous (screen_nous.rs), ThreatMonitor (screen_threat.rs),
-        // WifiSettings/BtSettings/About (screen_settings.rs). Battery has
-        // no screen implementation at all yet.
+        // Nous (screen_nous.rs), WifiSettings/BtSettings/About
+        // (screen_settings.rs). Battery has no screen implementation at
+        // all yet.
         ScreenId::Contacts
         | ScreenId::InCall
         | ScreenId::Timer
@@ -717,8 +720,7 @@ pub(crate) fn screen_kind(id: ScreenId) -> ScreenKind {
         | ScreenId::BtSettings
         | ScreenId::About
         | ScreenId::Battery
-        | ScreenId::Nous
-        | ScreenId::ThreatMonitor => ScreenKind::NotImplemented,
+        | ScreenId::Nous => ScreenKind::NotImplemented,
     }
 }
 

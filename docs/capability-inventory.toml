@@ -112,10 +112,10 @@ notes = "screen_calendar renders via the heorte witness; screen_fm is fed by fm-
 
 [[capability]]
 id = "screens-compiled-only"
-modules = ["screen_alarm", "screen_call", "screen_contacts", "screen_nous", "screen_threat"]
+modules = ["screen_alarm", "screen_call", "screen_contacts", "screen_nous"]
 tier = "compiled-only"
-notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. Threat screen waits on #555's calibrated scores; alarm/nous/call/contacts screens wait on their owning subsystems reaching the kinit event loop (#737)."
-tracking_reason = "Implemented and unit-tested, not hardware-gated -- kinit route/input wiring tracked under #737 (#145 closed without a successor, which is what #737 corrects). screen_threat's alert aggregation additionally depends on #555's calibrated threat scores."
+notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. alarm/nous/call/contacts screens wait on their owning subsystems reaching the kinit event loop (#737)."
+tracking_reason = "Implemented and unit-tested, not hardware-gated -- kinit route/input wiring tracked under #737 (#145 closed without a successor, which is what #737 corrects)."
 
 [[capability]]
 id = "fm-radio"
@@ -123,6 +123,13 @@ modules = ["fm_radio"]
 tier = "emulated-mock-proven"
 witness = ["kardia: fm powered=true"]
 notes = "FmRadio<BootFmHw> in KernelState (NullFmHw under qemu, WMT on device), powered + tuned at boot smoke, FM screen fed from it. Real MT6631 tuner backend validation is hardware-gated."
+
+[[capability]]
+id = "threat-monitor"
+modules = ["screen_threat"]
+tier = "emulated-mock-proven"
+witness = ["kardia: threat alerts="]
+notes = "ThreatMonitor in KernelState (#737): score as a lens over the log, not either alone (operator decision). The alert log is fed from the real SMS surveillance classification path (#662, ThreatAlertType::from_message_class) via a boot-smoke Silent-SMS PDU; the composite score is a log-derived heuristic (recompute_score_from_log), labelled UNCAL in the rendered UI -- NOT sema's detector engine. crates/sema (IMSI-catcher/BLE-tracker/deauth analysis) is not a thumos dependency at all -- only the shared sema-core types crate is -- so ImsiCatcher/BleTracker/DeauthAttack/CcciAnomaly/GeofenceBreach/ModemAnomaly have no producer and stay unconstructed. #555 (closed) calibrated sema's own corpus; it never wired sema into thumos, so its finding stands for this integration."
 
 [[capability]]
 id = "apps-compiled-only"

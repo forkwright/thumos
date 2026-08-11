@@ -53,6 +53,7 @@ use crate::screen_privacy::PrivacyScreen;
 use crate::screen_radio::RadioControlScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
+use crate::screen_threat::{FirewallMode, ThreatAlert, ThreatAlertType, ThreatMonitor};
 use crate::screen_unimplemented::UnimplementedScreen;
 use crate::security::{KEY_SIZE, SHA256_DIGEST_LEN};
 use crate::security_mode::ModeManager;
@@ -177,6 +178,16 @@ pub(crate) struct KernelState {
     /// local to kinit). The screen owns and renders its own state, exactly
     /// like Messages/Search/Dialer/Settings before any subsystem fed them.
     radio: RadioControlScreen,
+    /// Threat monitor (#737): score as a lens over the log, not either
+    /// alone (operator decision). The alert log is fed from the real SMS
+    /// surveillance classification path (#662,
+    /// `ThreatAlertType::from_message_class`); the composite score is
+    /// derived from that log by `recompute_score_from_log`, a heuristic
+    /// explicitly labelled "UNCAL" in the rendered UI -- NOT sema's
+    /// detector engine, which is not a thumos dependency and cannot reach
+    /// this state (see `screen_threat.rs`'s module doc; #555 calibrated
+    /// sema's own corpus, it did not wire sema into thumos).
+    threat: ThreatMonitor,
     /// Fallback for any `ScreenId` [`screen_kind`] classifies as
     /// [`ScreenKind::NotImplemented`] (#730): renders an unmistakable,
     /// screen-naming "NOT IMPLEMENTED" state instead of the render
@@ -306,6 +317,7 @@ impl KernelState {
             // working credential.
             privacy: PrivacyScreen::new([0u8; SHA256_DIGEST_LEN]),
             radio: RadioControlScreen::new(),
+            threat: ThreatMonitor::new(),
             not_implemented: UnimplementedScreen::new(),
             fb,
             last_second: 0,
@@ -332,6 +344,7 @@ impl KernelState {
             ScreenKind::FmRadio => &mut self.fm_screen,
             ScreenKind::Privacy => &mut self.privacy,
             ScreenKind::RadioControl => &mut self.radio,
+            ScreenKind::ThreatMonitor => &mut self.threat,
             ScreenKind::NotImplemented => {
                 self.not_implemented.set_screen(id);
                 &mut self.not_implemented
@@ -529,6 +542,7 @@ impl KernelState {
             ScreenKind::FmRadio => &self.fm_screen,
             ScreenKind::Privacy => &self.privacy,
             ScreenKind::RadioControl => &self.radio,
+            ScreenKind::ThreatMonitor => &self.threat,
             ScreenKind::NotImplemented => &self.not_implemented,
         };
         self.ui
@@ -785,6 +799,48 @@ impl KernelState {
         (powered, freq, rssi, volume)
     }
 
+    /// Boot-time threat monitor smoke (#737, qemu): decode a second
+    /// synthetic SMS-DELIVER PDU whose PID marks it Silent (Type 0, the
+    /// covert location-ping -- #662) through the SAME real classification
+    /// path a production incoming SMS takes (`SmsManager::handle_incoming`
+    /// -> `ThreatAlertType::from_message_class`), push the resulting alert
+    /// onto the threat log, and derive the composite score from the log
+    /// via `recompute_score_from_log` -- score as a lens over the log, NOT
+    /// sema (which is not a thumos dependency and cannot reach
+    /// `KernelState`; see `screen_threat.rs`'s module doc). Returns
+    /// (`alert_count`, score, `modem_power`) for the CI witness -- proves
+    /// `ThreatMonitor` is instantiated in `KernelState`, fed from a real
+    /// (if boot-seeded) classification, and its score derives from that
+    /// log rather than an unwired detector.
+    #[cfg(feature = "qemu")]
+    pub(crate) fn threat_boot_smoke(&mut self) -> (usize, u32, bool) {
+        // Identical to sim_sms_boot_smoke's PDU except the PID byte (index
+        // 9): 0x40 marks Type 0 (silent) per #662's classification, the
+        // same PID value sms.rs's
+        // handle_incoming_classifies_silent_sms_and_keeps_the_message
+        // verifies decodes to MessageClass::Silent.
+        const SILENT_SMS_PDU: &[u8] = &[
+            0x00, 0x00, 0x0A, 0x91, 0x21, 0x43, 0x65, 0x87, 0x09, 0x40, 0x00, 0x32, 0x10, 0x51,
+            0x21, 0x03, 0x00, 0x00, 0x05, 0xC8, 0x32, 0x9B, 0xFD, 0x06,
+        ];
+        if let Ok(msg) = SmsManager::handle_incoming(SILENT_SMS_PDU)
+            && let Some(alert_type) = ThreatAlertType::from_message_class(msg.class)
+        {
+            self.threat.push_alert(ThreatAlert::from_sms_classification(
+                self.wall_clock * 1000,
+                alert_type,
+            ));
+        }
+        self.threat.recompute_score_from_log();
+        self.threat
+            .set_modem_status(0, FirewallMode::Open, self.boot.modem_ok);
+        (
+            self.threat.alert_count(),
+            self.threat.threat_score(),
+            self.boot.modem_ok,
+        )
+    }
+
     /// Execute pending reflex fast-path events in privileged (loop) context.
     // WHY: all three arms are TODO stubs today, but two are explicitly
     // documented to need self once implemented -- the duress arm (#404)
@@ -1006,6 +1062,20 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
                 &mut serial,
                 format_args!(
                     "kardia: fm powered={fm_powered} freq_khz={fm_freq} rssi={fm_rssi} volume={fm_vol}\r\n"
+                ),
+            );
+        }
+        // #737: threat monitor fed from the real SMS surveillance
+        // classification path (#662) -- the log is the substrate; the
+        // composite score is a log-derived heuristic, explicitly
+        // uncalibrated (sema stays unwired, not a thumos dependency).
+        #[cfg(feature = "qemu")]
+        {
+            let (threat_alerts, threat_score, threat_modem_power) = kernel.threat_boot_smoke();
+            emit_marker(
+                &mut serial,
+                format_args!(
+                    "kardia: threat alerts={threat_alerts} score={threat_score} uncalibrated=true modem_power={threat_modem_power}\r\n"
                 ),
             );
         }
