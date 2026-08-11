@@ -556,6 +556,11 @@ tests = 18
 mechanism = "host"
 
 [[module]]
+name = "screen_unimplemented"
+tests = 4
+mechanism = "host"
+
+[[module]]
 name = "secure_boot"
 tests = 28
 mechanism = "both"
@@ -687,7 +692,7 @@ mechanism = "host"
 
 [[module]]
 name = "ui"
-tests = 21
+tests = 23
 mechanism = "both"
 witness = "boot.sh"
 
