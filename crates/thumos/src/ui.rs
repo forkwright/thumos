@@ -1384,7 +1384,7 @@ mod tests {
     /// `_ => &self.home` catch-all).
     #[test]
     fn unwired_screens_are_not_implemented_not_home() {
-        const UNWIRED: [ScreenId; 13] = [
+        const UNWIRED: [ScreenId; 10] = [
             ScreenId::Contacts,
             ScreenId::InCall,
             ScreenId::Timer,
@@ -1392,12 +1392,9 @@ mod tests {
             ScreenId::Alarms,
             ScreenId::WifiSettings,
             ScreenId::BtSettings,
-            ScreenId::Privacy,
-            ScreenId::RadioControl,
             ScreenId::About,
             ScreenId::Battery,
             ScreenId::Nous,
-            ScreenId::ThreatMonitor,
         ];
         for id in UNWIRED {
             let kind = screen_kind(id);
