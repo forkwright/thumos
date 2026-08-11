@@ -914,7 +914,7 @@ Source: `video/mt6739/dispsys/ddp_reg_ovl.h:27–59`
 
 8. **Send LCM init commands:** The LCM driver sends a sequence of
    MIPI DSI commands (typically `write_cmd(reg, data...)` via CMDQ or
-   direct DSI command queue). This is panel-specific; see §7.6.
+   direct DSI command queue). This is panel-specific. See §7.6.
 
 9. **Configure MUTEX:** Set mutex module membership and SOF source
    (`DISP_REG_CONFIG_MUTEX_*`), then enable to start frame timing.
