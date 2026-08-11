@@ -54,7 +54,7 @@ The AGM M7 uses direction 0 (`0x48`).
 
 ### Optional commands
 
-Some sources include these. The M7 may or may not need them.
+Some sources include these. Hardware validation on the M7 has not yet confirmed whether it needs them.
 
 | Cmd | Data | Function | When to use |
 |-----|------|----------|-------------|
