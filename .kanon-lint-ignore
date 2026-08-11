@@ -267,10 +267,14 @@ RUST/as-cast:crates/pteron/src/smp/pdu.rs
 TESTING/no-tests:crates/metaxu-core/src/lib.rs
 
 # =============================================================================
-# No standalone glossary — declined, not deferred
+# No standalone glossary — the glossary already exists
 # =============================================================================
 #
-# WHY(#718): thumos's domain vocabulary is defined at its point of use in the
-# code and in ARCHITECTURE.md. A separate GLOSSARY.md would be a second copy
-# of the same facts, and a second copy drifts (one fact, one place).
+# WHY(#718): _llm/glossary.toml IS this repo's domain glossary (47 lines,
+# [[terms]] with canonical flags). The rule searches docs/ and the repo root
+# for a filename containing "glossary"/"lexicon" and does not look in _llm/,
+# which is where the fleet keeps the LLM nav corpus -- so it reports a missing
+# artifact that is present. Writing a second GLOSSARY.md to satisfy it would
+# create the drift the rule exists to prevent (one fact, one place).
+# Rule-side fix: kanon#3203.
 ARCHITECTURE/no-glossary:Cargo.toml
