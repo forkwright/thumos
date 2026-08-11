@@ -26,9 +26,17 @@ impl Uart {
     // binding described above -- callers like console.rs/syscall.rs (out of
     // scope here) call `.putc(..)`/`.getc()` on whichever binding is active.
     // Dropping &self would break that parity.
+    #[expect(
+        clippy::unused_self,
+        reason = "this stub's whole purpose is API parity with uart.rs's real putc(&self, ..)/getc(&self) (both genuine MMIO-register accesses tied to the instance), via the parallel cfg(test)-gated path binding described above -- callers like console.rs/syscall.rs call .putc(..)/.getc() on whichever binding is active; dropping &self would break that parity"
+    )]
     pub(crate) fn putc(&self, _byte: u8) {}
 
     /// Host-test RX stub: no real UART, so no bytes are ever available.
+    #[expect(
+        clippy::unused_self,
+        reason = "same API-parity rationale as putc above -- dropping &self would break parity with uart.rs's real getc(&self)"
+    )]
     pub(crate) fn getc(&self) -> Option<u8> {
         None
     }

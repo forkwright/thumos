@@ -728,6 +728,10 @@ impl KernelState {
     // routes UI + audio via self's persisted telephony. Called instance-style
     // (`kernel.handle_reflex(..)`) from the production run loop; dropping
     // &mut self now would just be re-added when those TODOs land.
+    #[expect(
+        clippy::unused_self,
+        reason = "all three arms are TODO stubs today, but two are explicitly documented to need self once implemented -- the duress arm (#404) transitions via self.mode + wipe policy, the incoming-ring arm (#398) routes UI + audio via self's persisted telephony; called instance-style (kernel.handle_reflex(..)) from the production run loop"
+    )]
     pub(crate) fn handle_reflex(&mut self, pending: reflex::Pending, serial: &mut Uart) {
         if pending.panic_wipe {
             let _ = serial.write_str("[kardia] REFLEX panic-wipe\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write

@@ -490,6 +490,10 @@ unsafe fn map_signal_trampoline(pt: usize) -> Option<usize> {
 // unwrapping this stub to a bare `usize` would break the common call site
 // rather than the mapping being pointless here.
 #[cfg(not(target_arch = "arm"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "this host stub's signature must match the ARM implementation above (Option<usize>, genuinely fallible there) -- callers are shared across both cfgs and are not split per-arch, so unwrapping this stub to a bare usize would break the common call site rather than the mapping being pointless here"
+)]
 unsafe fn map_signal_trampoline(_pt: usize) -> Option<usize> {
     Some(0)
 }
@@ -799,6 +803,10 @@ unsafe fn fork_pl0(
 // which value each name holds. A statement-local allow does not suppress
 // this lint (clippy checks binding similarity over the whole function body),
 // so the allow lives here.
+#[expect(
+    clippy::similar_names,
+    reason = "parent_pid and parent_uid name genuinely distinct fields (which process, which user) -- dropping either the parent_ prefix or the field suffix to defeat the Levenshtein check would lose which value each name holds; a statement-local allow does not suppress this lint since clippy checks binding similarity over the whole function body, so the expect lives here"
+)]
 pub(crate) fn fork() -> Option<Pid> {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on
     // context switch. addr_of_mut! avoids intermediate references to static mut.

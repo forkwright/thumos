@@ -58,6 +58,10 @@ pub(crate) fn flags_to_prot(p_flags: u32) -> u32 {
 // WHY: field names mirror the ELF32 spec's own `e_*` names verbatim, so a
 // reader cross-referencing the spec matches fields by name; stripping the
 // shared prefix would decouple this struct from the spec it exists to mirror.
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the ELF32 spec's own e_* names verbatim, so a reader cross-referencing the spec matches fields by name; stripping the shared prefix would decouple this struct from the spec it exists to mirror"
+)]
 struct Elf32Ehdr {
     // kanon:ignore RUST/struct-too-many-fields -- ELF32 spec layout; see doc comment
     e_ident: [u8; 16],
@@ -81,6 +85,10 @@ struct Elf32Ehdr {
 #[derive(Clone, Copy)]
 // WHY: field names mirror the ELF32 spec's own `p_*` names verbatim; see
 // Elf32Ehdr's identical rationale above.
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the ELF32 spec's own p_* names verbatim; see Elf32Ehdr's identical rationale above"
+)]
 struct Elf32Phdr {
     p_type: u32,
     p_offset: u32,

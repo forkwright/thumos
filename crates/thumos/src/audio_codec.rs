@@ -640,6 +640,10 @@ impl AudioCodecOps for Mt6357Codec {
 // WHY: powered/dac_enabled/adc_enabled/mic_bias mirror the independent
 // hardware power-gate flags of the real codec (see Mt6357Codec) — not a
 // state machine, so no bitflags/enum recast applies here either.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "powered/dac_enabled/adc_enabled/mic_bias mirror the independent hardware power-gate flags of the real codec (see Mt6357Codec) -- not a state machine, so no bitflags/enum recast applies here either"
+)]
 #[cfg(test)]
 pub struct MockCodec {
     /// Whether the codec is powered on.
@@ -873,6 +877,10 @@ impl AudioCodecOps for MockCodec {
 // WHY: powered/dac_enabled/adc_enabled/mic_bias mirror the independent
 // hardware power-gate flags of the real codec (see Mt6357Codec) — not a
 // state machine, so no bitflags/enum recast applies here either.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "powered/dac_enabled/adc_enabled/mic_bias mirror the independent hardware power-gate flags of the real codec (see Mt6357Codec) -- not a state machine, so no bitflags/enum recast applies here either"
+)]
 #[cfg(any(feature = "qemu", test))]
 pub(crate) struct NullCodec {
     powered: bool,

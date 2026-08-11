@@ -326,7 +326,13 @@ fn sha1_compress(state: &mut [u32; 5], block: &[u8; SHA1_BLOCK_SIZE]) {
     // same buffer (i-3, i-8, i-14, i-16) while writing w[i] -- an iterator
     // rewrite would need split-borrow/windows tricks that add real
     // complexity to a hash compression function for no behavior change.
-    #[expect(
+    // NOTE: stays #[allow], not #[expect] -- clippy's needless_range_loop
+    // heuristic never flags this loop shape (a write at w[i] alongside
+    // multiple distinct read offsets w[i-3]/w[i-8]/w[i-14]/w[i-16]) in any
+    // of kernel-clippy.sh's declared feature configurations, so an
+    // #[expect] here is an unconditionally unfulfilled lint expectation
+    // (verified: CI run 31499203998, all 9 configs).
+    #[allow(
         clippy::needless_range_loop,
         reason = "FIPS 180-4's recurrence reads four different past offsets (i-3, i-8, i-14, i-16) of the same buffer while writing w[i]; an iterator rewrite needs split-borrow/windows tricks for no behavior change"
     )]
@@ -340,6 +346,10 @@ fn sha1_compress(state: &mut [u32; 5], block: &[u8; SHA1_BLOCK_SIZE]) {
     // selection via `match i` -- an iterator rewrite still needs i for the
     // match, so the container index would just move into an unused
     // .enumerate() binding for zero simplification.
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "i drives both the w[i] round input AND the (f, k) round-constant selection via match i -- an iterator rewrite still needs i for the match, so the container index would just move into an unused .enumerate() binding for zero simplification"
+    )]
     for i in 0..80 {
         let (f, k) = match i {
             0..=19 => ((wb & wc) | ((!wb) & wd), SHA1_K[0]),

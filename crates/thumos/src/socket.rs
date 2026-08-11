@@ -103,6 +103,10 @@ pub(crate) const FD_KIND_SOCKET: u32 = 0x0002;
 /// `core::net::Ipv4Addr`, which clippy's `ip_constant` lint otherwise
 /// steers callers toward. This is the one place the raw octets are
 /// spelled out; every other use in this file names this constant instead.
+#[expect(
+    clippy::ip_constant,
+    reason = "smoltcp's Ipv4Address carries UNSPECIFIED/BROADCAST but no LOCALHOST -- unlike core::net::Ipv4Addr, which clippy's ip_constant lint otherwise steers callers toward; clippy's suggested Ipv4Address::LOCALHOST fixup does not exist on this type and would not compile. This is the one place the raw octets are spelled out; every other use in this file names this constant instead"
+)]
 pub(crate) const LOOPBACK_ADDR: Ipv4Address = Ipv4Address::new(127, 0, 0, 1);
 
 // ---------------------------------------------------------------------------
@@ -146,6 +150,10 @@ pub struct SocketInfo {
 // `sin_zero`) -- this struct exists to mirror that ABI layout field-for-
 // field; dropping the prefix would decouple the names from the spec they
 // document.
+#[expect(
+    clippy::struct_field_names,
+    reason = "the sin_* prefix on every field is the actual POSIX struct sockaddr_in field naming (sin_family, sin_port, sin_addr, sin_zero) -- this struct exists to mirror that ABI layout field-for-field; dropping the prefix would decouple the names from the spec they document"
+)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SockaddrIn {

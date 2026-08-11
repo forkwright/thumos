@@ -63,6 +63,10 @@ const PRESET_COUNT: usize = 3;
 // WHY: cellular/wifi/bluetooth/gps are four independent radio power flags,
 // not a state machine -- an enum or bitflags wouldn't remove any of the
 // four axes, just rename how each is read.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "cellular/wifi/bluetooth/gps are four independent radio power flags, not a state machine -- an enum or bitflags wouldn't remove any of the four axes, just rename how each is read"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RadioState {
     /// Cellular modem (voice + data).

@@ -252,6 +252,10 @@ pub(crate) const fn passphrase_skip_reason(
 // boot-success flags read individually by the panic handler and degradation
 // logic, not a state machine -- an enum or bitflags wouldn't remove any of
 // the axes, just rename how each is read.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mmu_ok/heap_ok/gic_ok/... are independent, unrelated per-subsystem boot-success flags read individually by the panic handler and degradation logic, not a state machine -- an enum or bitflags wouldn't remove any of the axes, just rename how each is read"
+)]
 pub(crate) struct BootState {
     // kanon:ignore RUST/struct-too-many-fields -- one bool per boot subsystem; grouping would obscure the per-subsystem degradation model
     pub(crate) mmu_ok: bool,
