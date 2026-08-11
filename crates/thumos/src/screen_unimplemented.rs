@@ -79,9 +79,10 @@ impl Screen for UnimplementedScreen {
     }
 
     fn on_key(&mut self, key: Key) -> ScreenAction {
-        match key {
-            Key::Rsk | Key::End => ScreenAction::Back,
-            _ => ScreenAction::None,
+        if matches!(key, Key::Rsk | Key::End) {
+            ScreenAction::Back
+        } else {
+            ScreenAction::None
         }
     }
 
