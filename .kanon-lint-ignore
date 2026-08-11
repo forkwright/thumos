@@ -181,3 +181,45 @@ MANIFEST/package-workspace-inheritance:crates/thumos/Cargo.toml
 # consolidated CI file and does not see the sibling security workflow. The
 # check genuinely runs; it is just not duplicated in ci.yml.
 CI/no-deny-check:.github/workflows/ci.yml
+
+# =============================================================================
+# Post-#130 crates — same pattern, relocated code
+# =============================================================================
+#
+# WHY(#719): the #130 block above suppresses RUST/indexing-slicing for the
+# parser/encoder files that existed when it was written. The crates below
+# postdate it and carry the identical pattern. Two of them carry it because
+# convergence work MOVED the code: klesis/src/pdu.rs and klesis/src/gsm7.rs are
+# both ignored above, and #662/#700/#710 extracted their BCD framing, GSM-7
+# codec, and PDU primitives into klesis-core. The code did not change, only its
+# address. An extraction relocates code out from under its suppressions, and
+# nothing warns that it has.
+#
+# Each site was verified in-place before being listed here: every one is either
+# an index into a fixed-size array with a literal index (no runtime length
+# exists), an index after a length check earlier in the same function that
+# returns a typed error first, or a private helper whose every call site is
+# guarded. `smp/pdu.rs::decode` is representative -- its `expect(want)` tests
+# `body.len() == want`, exact equality, and every decode call sits directly
+# behind it.
+#
+# WHY files, not a `smp/**` glob: a glob would also silence a NEW file in these
+# directories, which nobody has read. Listing files means new code gets its own
+# review rather than inheriting this one.
+#
+# NOT a permanent position. kanon#3176 asks for the rule to resolve caller
+# guards and fixed-size arrays; if that lands, this whole block and #130's
+# should be deleted together rather than left as scar tissue.
+RUST/indexing-slicing:crates/klesis-core/src/lib.rs
+RUST/indexing-slicing:crates/metaxu-core/src/envelope.rs
+RUST/indexing-slicing:crates/metaxu-core/src/protocol.rs
+RUST/indexing-slicing:crates/pteron/src/smp/mod.rs
+RUST/indexing-slicing:crates/pteron/src/smp/pairing.rs
+RUST/indexing-slicing:crates/pteron/src/smp/pdu.rs
+RUST/indexing-slicing:crates/pteron/src/smp/toolbox.rs
+RUST/indexing-slicing:crates/topos-core/src/lib.rs
+
+# WHY(#719): same lib.rs-only heuristic as the TESTING/no-tests block above.
+# metaxu-core's lib.rs is module declarations and re-exports; its submodules
+# carry 19 tests (envelope.rs 10, grants.rs 6, protocol.rs 3).
+TESTING/no-tests:crates/metaxu-core/src/lib.rs
