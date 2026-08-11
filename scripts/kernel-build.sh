@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # kernel-build.sh — canonical kernel cross-compile (#546). crates/thumos/
 # .cargo/config.toml already pins the armv7a target, the link script, and the
 # -D warnings zero-warning gate (#431), so the canonical build is a plain
 # release build from the kernel directory. NEVER pass RUSTFLAGS through the
 # environment — env rustflags CLOBBER the config's and silently drop the
 # zero-warning gate (the live drift this script exists to kill).
-set -uo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 KERNEL_DIR="${THUMOS_KERNEL_DIR:-$REPO_ROOT/crates/thumos}"

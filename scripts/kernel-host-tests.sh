@@ -49,7 +49,7 @@ grep -q 'console::tests' <<<"$out" || {
 # without this check the script's exit code was the grep's, letting a failing
 # test pass ship rc=0 to CI. Both passes run to completion either way (a red
 # main pass must not hide the debug-console witness output).
-if [ "$pass1" -ne 0 ] || [ "$pass2" -ne 0 ]; then
+if [[ "$pass1" -ne 0 ]] || [[ "$pass2" -ne 0 ]]; then
     echo "FAIL: kernel host tests failed (main pass rc=$pass1, debug-console pass rc=$pass2)" >&2
     exit 1
 fi

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # check-convergence.sh — the #545 convergence ratchet. Fails when:
 #   (a) a [[pair]] row lacks disposition/canonical/owner, or names a file
 #       that no longer exists;
@@ -7,7 +9,6 @@
 #       recorded ratchet values (convergence only ever burns down);
 #   (d) any lib.rs still points at closed #126 (the pointer must be the
 #       live ledger, not a closed issue).
-set -uo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 LEDGER="$REPO_ROOT/docs/convergence.toml"

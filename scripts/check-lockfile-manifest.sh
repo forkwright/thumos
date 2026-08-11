@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # check-lockfile-manifest.sh — drift guard for the lockfile scan manifest (#547).
 # Fails when the tracked Cargo.lock set and scripts/lockfile-scan-manifest.txt
 # disagree in either direction: an unscanned new lockfile, or a manifest entry
 # whose lockfile no longer exists.
-set -euo pipefail
 
 repo=$(git rev-parse --show-toplevel)
 manifest="$repo/scripts/lockfile-scan-manifest.txt"

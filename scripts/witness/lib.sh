@@ -82,5 +82,5 @@ start_pylon_bridge() {
 # negative-case witness asserts on its content (or the absence of a marker
 # line) after stopping, before removing it.
 stop_pylon_bridge() {
-    kill "$PYLON_PID" 2>/dev/null || true
+    kill "$PYLON_PID" 2>/dev/null || true  # WHY: idempotent -- PID may already be dead
 }
