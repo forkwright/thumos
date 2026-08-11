@@ -346,7 +346,7 @@ impl Keyboard {
     }
 
     /// Move the highlighted-key cursor left within the current row, clamping at 0.
-    fn move_left(&mut self) {
+    const fn move_left(&mut self) {
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
         }

@@ -156,7 +156,7 @@ impl ComposeField {
     }
 
     /// Move the cursor left one character, clamping at the start.
-    fn cursor_left(&mut self) {
+    const fn cursor_left(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
     }
 
