@@ -617,8 +617,9 @@ fn count_gsm7_septets(text: &str) -> Result<usize> {
     reason = "test code: explicit unwrap_err/expect/panic are intentional for asserting test outcomes"
 )]
 mod tests {
-    use super::*;
     use klesis_core::UdhPorts;
+
+    use super::*;
 
     // ── BCD address tests ─────────────────────────────────────────────────────
 
