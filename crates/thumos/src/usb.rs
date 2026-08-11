@@ -13,9 +13,13 @@
 //!
 //! ## Register reference
 //!
-//! Offsets FROM the MUSB Programmer's Guide, verified against MT6739 BSP
-//! `drivers/usb/musb/musb_core.h` and the `hardware_info` provided in the
-//! dispatch prompt.
+//! Offsets are cited from the MT6739 vendor kernel,
+//! `drivers/misc/mediatek/usb20/mtk_musb_reg.h` (register offsets) and
+//! `musb_core.h` in the same directory (confirms
+//! `MUSB_EP_OFFSET == MUSB_INDEXED_OFFSET`), byte-identical across two
+//! independently hosted mirrors: `github.com/fukehan/kernel-4.4` and
+//! `github.com/iscle/OrangePi_4G-IOT_Android_8.1_BSP` (issue #724).
+//! Correct-by-source; UNTESTED against real silicon.
 
 // ---------------------------------------------------------------------------
 // Base address
@@ -49,53 +53,94 @@ const REG_INTRRXE: usize = 0x08;
 const REG_INTRUSB: usize = 0x0A;
 /// USB interrupt enable mask (8-bit).
 const REG_INTRUSBE: usize = 0x0B;
-/// Current frame number (16-bit).
-const REG_FRAME: usize = 0x0E;
-/// Endpoint index selector  -  selects which EP the banked registers address (8-bit).
-const REG_INDEX: usize = 0x0F;
-/// Test mode control (8-bit).
-const REG_TESTMODE: usize = 0x10;
+/// Current frame number (16-bit). Source: MT6739 vendor kernel
+/// `mtk_musb_reg.h`: `#define MUSB_FRAME 0x0C`.
+const REG_FRAME: usize = 0x0C;
+/// Endpoint index selector  -  selects which EP the indexed window (below)
+/// addresses (8-bit). Source: `mtk_musb_reg.h`: `#define MUSB_INDEX 0x0E`.
+const REG_INDEX: usize = 0x0E;
+/// Test mode control (8-bit). Source: `mtk_musb_reg.h`:
+/// `#define MUSB_TESTMODE 0x0F`.
+const REG_TESTMODE: usize = 0x0F;
 
 // ---------------------------------------------------------------------------
-// Indexed (banked) register offsets
+// Indexed register window
 //
-// These offsets are valid after writing the desired endpoint number to REG_INDEX.
-// EP0 uses REG_EP0_CSR; EP1+ use REG_TXCSR / REG_RXCSR.
+// INVARIANT: these are NOT per-endpoint addresses. MUSB exposes ONE fixed
+// window at MUSB_BASE + 0x10..0x1F; REG_INDEX selects WHICH endpoint's
+// state appears in it. Every access to a register below must be preceded,
+// within the same non-preemptible call chain and with no intervening
+// REG_INDEX write for a DIFFERENT endpoint, by a write to REG_INDEX
+// selecting the intended endpoint -- addressing two endpoints without
+// re-indexing between them silently reads/writes the wrong endpoint's
+// state, not a fault. Source: MT6739 vendor kernel
+// `drivers/misc/mediatek/usb20/mtk_musb_reg.h`:
+//   #define MUSB_TXMAXP  0x00
+//   #define MUSB_TXCSR   0x02
+//   #define MUSB_CSR0    MUSB_TXCSR   /* Re-used for EP0 */
+//   #define MUSB_RXMAXP  0x04
+//   #define MUSB_RXCSR   0x06
+//   #define MUSB_RXCOUNT 0x08
+//   #define MUSB_COUNT0  MUSB_RXCOUNT /* Re-used for EP0 */
+//   #define MUSB_INDEXED_OFFSET(_epnum, _offset) (0x10 + (_offset))
+// cross-checked byte-identical against `musb_core.h`'s
+// `#define MUSB_EP_OFFSET MUSB_INDEXED_OFFSET` in both mirrors named in the
+// module doc comment above.
 // ---------------------------------------------------------------------------
 
+/// `EPx` TX max packet size (16-bit); valid for whichever endpoint
+/// `REG_INDEX` currently selects.
+const REG_TXMAXP: usize = 0x10;
+/// `EPx` TX control/status register (16-bit); valid for whichever endpoint
+/// `REG_INDEX` currently selects.
+const REG_TXCSR: usize = 0x12;
 /// EP0 control/status register (16-bit); valid when `REG_INDEX` == 0.
-const REG_EP0_CSR: usize = 0x110;
-/// `EPx` TX control/status register (16-bit); valid when `REG_INDEX` >= 1.
-const REG_TXCSR: usize = 0x112;
-/// `EPx` RX control/status register (16-bit); valid when `REG_INDEX` >= 1.
-const REG_RXCSR: usize = 0x116;
-/// `EPx` TX max packet size (16-bit).
-const REG_TXMAXP: usize = 0x118;
-/// `EPx` RX max packet size (16-bit).
-const REG_RXMAXP: usize = 0x11A;
-/// `EPx` RX byte count for the last received OUT packet (16-bit); valid
-/// when `REG_INDEX` >= 1. Source: MUSB Programmer's Guide `RxCount`/`COUNT0`
-/// -- may be less than `REG_RXMAXP` for a short packet (issue #221). Placed
-/// immediately after `REG_RXMAXP` to follow this driver's banked-register
-/// layout (which already reorders from the raw Mentor Graphics offsets).
 ///
-/// WARNING: this offset is inferred from the driver's banked layout, NOT
-/// confirmed against the MT6739 BSP header — the drain is clamped to
-/// `EP1_MAX_PKT` so a wrong value cannot overrun the ring buffer, but the
-/// exact offset must be verified before trusting short-packet lengths on
-/// real silicon.
-/// TODO(#221)[deliberate-prudent]: confirm `REG_RXCOUNT` against the MT6739 MUSB BSP header.
-const REG_RXCOUNT: usize = 0x11C;
+/// NOTE: this is the SAME physical register as `REG_TXCSR`, not a distinct
+/// address -- the vendor header names it separately (`MUSB_CSR0`) because
+/// its bit-field ENCODING differs by endpoint context (compare the `EP0_*`
+/// constants below against the `TXCSR_*` constants); the offset is
+/// identical. Kept as its own named constant, matching the vendor's own
+/// `MUSB_CSR0` alias, purely for call-site readability.
+const REG_EP0_CSR: usize = REG_TXCSR;
+/// `EPx` RX max packet size (16-bit); valid for whichever endpoint
+/// `REG_INDEX` currently selects.
+const REG_RXMAXP: usize = 0x14;
+/// `EPx` RX control/status register (16-bit); valid for whichever endpoint
+/// `REG_INDEX` currently selects. EP0 has no RX-side counterpart in this
+/// map (its single `REG_EP0_CSR` covers both directions) -- this driver
+/// never reads `REG_RXCSR` while `REG_INDEX == 0`.
+const REG_RXCSR: usize = 0x16;
+/// RX byte count for the last received OUT packet on the endpoint
+/// currently selected via `REG_INDEX` (16-bit); reused as `COUNT0` when
+/// `REG_INDEX == 0`. May report less than `REG_RXMAXP` for a short packet.
+///
+/// NOTE: issue #221 tracked this offset as unconfirmed, inferred from this
+/// driver's own (architecturally wrong, flat per-endpoint) layout rather
+/// than the vendor header. The offset above is now confirmed against
+/// `mtk_musb_reg.h` (see this section's header comment). The drain is
+/// still clamped to `EP1_MAX_PKT` (`clamp_rx_count`) regardless, since a
+/// correct offset on paper is not the same as having been exercised
+/// against silicon.
+const REG_RXCOUNT: usize = 0x18;
 
 // ---------------------------------------------------------------------------
 // FIFO registers
 //
-// Each endpoint has a 4-byte-aligned FIFO data register. Byte or word writes
-// queue data INTO the FIFO; reads dequeue. MUSB auto-advances on each write.
+// Each endpoint has its OWN fixed 4-byte-aligned FIFO data register --
+// unlike the indexed window above, FIFO access does NOT depend on
+// REG_INDEX. Byte or word writes queue data INTO the FIFO; reads dequeue.
+// MUSB auto-advances on each write. Source: MT6739 vendor kernel
+// `mtk_musb_reg.h`: `#define MUSB_FIFO_OFFSET(epnum) (0x20 + ((epnum) * 4))`.
 // ---------------------------------------------------------------------------
 
-/// EP FIFO base. FIFO for `EPn` is at `MUSB_BASE` + `REG_FIFO_BASE` + n * 4.
-const REG_FIFO_BASE: usize = 0x120;
+/// FIFO register offset for endpoint `epnum`, relative to `MUSB_BASE`.
+/// Mirrors the vendor `MUSB_FIFO_OFFSET` macro exactly (see this section's
+/// header comment) so the arithmetic can be checked against that source at
+/// a glance rather than re-derived from a base constant plus ad hoc offsets.
+const fn reg_fifo(epnum: u8) -> usize {
+    0x20 + (epnum as usize) * 4
+}
 
 // ---------------------------------------------------------------------------
 // REG_POWER bit fields
@@ -998,10 +1043,10 @@ impl UsbController {
 
             // Clamp to one max-packet-size chunk.
             let count = data.len().min(usize::from(EP1_MAX_PKT));
-            let fifo = self.base + REG_FIFO_BASE + 4; // EP1 FIFO = base + 0x124
+            let fifo = self.base + reg_fifo(1); // EP1 FIFO = base + 0x24
 
             for &byte in &data[..count] {
-                // SAFETY: fifo is the EP1 TX FIFO at MUSB_BASE + 0x124, a valid 8-bit MMIO register within the MUSB address space at 0x1121_0000. Volatile semantics required for MMIO.
+                // SAFETY: fifo is the EP1 TX FIFO at MUSB_BASE + 0x24, a valid 8-bit MMIO register within the MUSB address space at 0x1120_0000. Volatile semantics required for MMIO.
                 core::ptr::write_volatile(fifo as *mut u8, byte);
             }
 
@@ -1058,6 +1103,21 @@ impl UsbController {
     // Private: endpoint configuration
     // -----------------------------------------------------------------------
 
+    // NOTE (investigated for #724, not a gap): the vendor MUSB core also
+    // exposes per-endpoint on-chip FIFO RAM allocation registers --
+    // MUSB_TXFIFOSZ/MUSB_RXFIFOSZ (0x62/0x63) and MUSB_TXFIFOADD/
+    // MUSB_RXFIFOADD (0x64/0x66), also INDEX-selected -- which a generic
+    // MUSB bring-up would program once per endpoint to partition shared
+    // FIFO memory. `configure_ep1`/`configure_ep2` below do not touch them.
+    // This is not a divergence: the MT6739 vendor kernel's OWN
+    // `fifo_setup()` (`musb_core.c`) has the equivalent
+    // `musb_write_txfifosz`/`musb_write_txfifoadd`/`musb_write_rxfifosz`/
+    // `musb_write_rxfifoadd` calls commented out and updates only its
+    // driver-internal bookkeeping structs -- i.e. this SoC integration does
+    // not perform runtime FIFO RAM allocation either, consistent with a
+    // fixed/pre-partitioned on-chip FIFO map for this controller instance.
+    // Still unconfirmed against silicon, like the rest of this file.
+
     /// Configure EP1 as bulk IN (TX) and bulk OUT (RX), 64-byte packets.
     ///
     /// # Safety
@@ -1086,7 +1146,13 @@ impl UsbController {
             self.write8(REG_INDEX, 2);
             self.write16(REG_TXMAXP, EP2_MAX_PKT);
             self.write16(REG_TXCSR, TXCSR_CLRDATATOG | TXCSR_FLUSHFIFO);
-            // Return index to 0 (EP0) for subsequent control transfers.
+            // WHY: REG_EP0_CSR aliases this same indexed window (see its doc
+            // comment) -- leaving REG_INDEX at 2 here would make the next
+            // handle_ep0() read/write EP2's TxCSR bits under EP0's bit-field
+            // interpretation instead of EP0's own CSR. init() and
+            // handle_reset() both call configure_ep1() then configure_ep2()
+            // immediately before EP0 traffic can occur, so this reset is
+            // load-bearing, not defensive polish.
             self.write8(REG_INDEX, 0);
         }
     }
@@ -1256,12 +1322,14 @@ impl UsbController {
                     // wLength other than LINE_CODING_LEN is malformed and
                     // must be rejected rather than silently read as if 7
                     // valid bytes were present (issue #282 finding 20).
-                    // This does NOT (yet) validate the ACTUAL FIFO receive
-                    // count against wLength -- that needs an EP0
-                    // byte-count register offset this driver has not
-                    // confirmed against the MT6739 MUSB BSP header (same
-                    // class as the already-tracked TODO(#221) for
-                    // REG_RXCOUNT/EP1+).
+                    // NOTE: this does NOT validate the ACTUAL FIFO receive
+                    // count against wLength. REG_RXCOUNT's offset (reused as
+                    // COUNT0 for EP0 -- see its doc comment) is now
+                    // confirmed against the vendor header, unlike when this
+                    // comment was written; reading it here to cross-check
+                    // the received byte count is a distinct, still-
+                    // unimplemented behavioral gap, not part of the
+                    // register-map fix in #724.
                     if !line_coding_length_is_valid(setup.w_length) {
                         self.ep0_stall();
                         return;
@@ -1344,7 +1412,7 @@ impl UsbController {
         unsafe {
             let remaining = self.ep0_buf_len - self.ep0_buf_pos;
             let chunk = remaining.min(usize::from(EP0_MAX_PKT));
-            let fifo = self.base + REG_FIFO_BASE; // EP0 FIFO at base + 0x120
+            let fifo = self.base + reg_fifo(0); // EP0 FIFO at base + 0x20
 
             for i in 0..chunk {
                 // SAFETY: ep0_buf_pos + i < EP0_BUF_LEN by construction.
@@ -1372,7 +1440,7 @@ impl UsbController {
     unsafe fn handle_ep0_data_out(&mut self) {
         // SAFETY: FIFO reads and register writes.
         unsafe {
-            let fifo = self.base + REG_FIFO_BASE;
+            let fifo = self.base + reg_fifo(0);
             let mut tmp = [0u8; 7];
             for slot in &mut tmp {
                 *slot = core::ptr::read_volatile(fifo as *const u8);
@@ -1400,7 +1468,7 @@ impl UsbController {
                 return;
             }
 
-            let fifo = self.base + REG_FIFO_BASE + 4; // EP1 FIFO
+            let fifo = self.base + reg_fifo(1); // EP1 FIFO
 
             // WHY: RxCount reports the actual number of bytes the host sent
             // in this OUT packet, which may be less than EP1_MAX_PKT for a
@@ -1444,7 +1512,7 @@ impl UsbController {
     /// EP0 FIFO must contain a valid SETUP packet (`RxPktRdy` SET).
     unsafe fn read_ep0_fifo_setup(&self) -> SetupPacket {
         // SAFETY: FIFO read; caller ensures SETUP packet is ready.
-        let fifo = self.base + REG_FIFO_BASE;
+        let fifo = self.base + reg_fifo(0);
         let mut buf = [0u8; 8];
         for slot in &mut buf {
             *slot = unsafe { core::ptr::read_volatile(fifo as *const u8) };
@@ -1463,7 +1531,7 @@ impl UsbController {
     /// `offset` must be a valid 8-bit MUSB register offset.
     #[inline]
     unsafe fn read8(&self, offset: usize) -> u8 {
-        // SAFETY: caller verifies offset is a valid 8-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
+        // SAFETY: caller verifies offset is a valid 8-bit MUSB register within the MUSB address space at 0x1120_0000. Volatile access is required for hardware registers.
         unsafe { core::ptr::read_volatile((self.base + offset) as *const u8) }
     }
 
@@ -1474,7 +1542,7 @@ impl UsbController {
     /// `offset` must be a valid 8-bit MUSB register offset.
     #[inline]
     unsafe fn write8(&self, offset: usize, val: u8) {
-        // SAFETY: caller verifies offset is a valid 8-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
+        // SAFETY: caller verifies offset is a valid 8-bit MUSB register within the MUSB address space at 0x1120_0000. Volatile access is required for hardware registers.
         unsafe { core::ptr::write_volatile((self.base + offset) as *mut u8, val) }
     }
 
@@ -1485,7 +1553,7 @@ impl UsbController {
     /// `offset` must be a valid 16-bit MUSB register, 2-byte aligned.
     #[inline]
     unsafe fn read16(&self, offset: usize) -> u16 {
-        // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
+        // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1120_0000. Volatile access is required for hardware registers.
         unsafe { core::ptr::read_volatile((self.base + offset) as *const u16) }
     }
 
@@ -1496,7 +1564,7 @@ impl UsbController {
     /// `offset` must be a valid 16-bit MUSB register, 2-byte aligned.
     #[inline]
     unsafe fn write16(&self, offset: usize, val: u16) {
-        // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1121_0000. Volatile access is required for hardware registers.
+        // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1120_0000. Volatile access is required for hardware registers.
         unsafe { core::ptr::write_volatile((self.base + offset) as *mut u16, val) }
     }
 
@@ -1514,7 +1582,7 @@ impl UsbController {
     #[inline]
     unsafe fn wait_bits_clear16(&self, offset: usize, bits: u16, max_iterations: u32) -> bool {
         for _ in 0..max_iterations {
-            // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1121_0000.
+            // SAFETY: caller verifies offset is a valid 2-byte-aligned 16-bit MUSB register within the MUSB address space at 0x1120_0000.
             if unsafe { self.read16(offset) } & bits == 0 {
                 return true;
             }
@@ -1681,7 +1749,9 @@ mod tests {
 
     #[test]
     fn register_offsets_match_spec() {
-        // Verify documented offsets are encoded correctly.
+        // Common block. Source: MT6739 vendor kernel `mtk_musb_reg.h`
+        // (issue #724) -- see the module doc comment for the exact path
+        // and cross-checked mirrors.
         assert_eq!(REG_FADDR, 0x00, "FAddr OFFSET must be 0x00");
         assert_eq!(REG_POWER, 0x01, "Power OFFSET must be 0x01");
         assert_eq!(REG_INTRTX, 0x02, "IntrTx OFFSET must be 0x02");
@@ -1690,16 +1760,47 @@ mod tests {
         assert_eq!(REG_INTRRXE, 0x08, "IntrRxE OFFSET must be 0x08");
         assert_eq!(REG_INTRUSB, 0x0A, "IntrUSB OFFSET must be 0x0A");
         assert_eq!(REG_INTRUSBE, 0x0B, "IntrUSBE OFFSET must be 0x0B");
-        assert_eq!(REG_FRAME, 0x0E, "Frame OFFSET must be 0x0E");
-        assert_eq!(REG_INDEX, 0x0F, "Index OFFSET must be 0x0F");
-        assert_eq!(REG_TESTMODE, 0x10, "Testmode OFFSET must be 0x10");
-        assert_eq!(REG_EP0_CSR, 0x110, "EP0 CSR OFFSET must be 0x110");
-        assert_eq!(REG_TXCSR, 0x112, "TxCSR OFFSET must be 0x112");
-        assert_eq!(REG_RXCSR, 0x116, "RxCSR OFFSET must be 0x116");
-        assert_eq!(REG_TXMAXP, 0x118, "TxMaxP OFFSET must be 0x118");
-        assert_eq!(REG_RXMAXP, 0x11A, "RxMaxP OFFSET must be 0x11A");
-        assert_eq!(REG_RXCOUNT, 0x11C, "RxCount OFFSET must be 0x11C");
-        assert_eq!(REG_FIFO_BASE, 0x120, "FIFO base OFFSET must be 0x120");
+        assert_eq!(REG_FRAME, 0x0C, "Frame OFFSET must be 0x0C");
+        assert_eq!(REG_INDEX, 0x0E, "Index OFFSET must be 0x0E");
+        assert_eq!(REG_TESTMODE, 0x0F, "Testmode OFFSET must be 0x0F");
+
+        // Indexed window: fixed offsets, valid for whichever endpoint
+        // REG_INDEX currently selects -- NOT a per-endpoint address.
+        assert_eq!(REG_TXMAXP, 0x10, "TxMaxP OFFSET must be 0x10");
+        assert_eq!(REG_TXCSR, 0x12, "TxCSR OFFSET must be 0x12");
+        assert_eq!(REG_RXMAXP, 0x14, "RxMaxP OFFSET must be 0x14");
+        assert_eq!(REG_RXCSR, 0x16, "RxCSR OFFSET must be 0x16");
+        assert_eq!(REG_RXCOUNT, 0x18, "RxCount OFFSET must be 0x18");
+    }
+
+    #[test]
+    fn ep0_csr_aliases_txcsr_offset() {
+        // INVARIANT documented on REG_EP0_CSR: the vendor header's
+        // MUSB_CSR0 is MUSB_TXCSR under a different name, not a distinct
+        // register -- a future edit that moves one without the other would
+        // silently reintroduce the #724 architectural bug for EP0.
+        assert_eq!(
+            REG_EP0_CSR, REG_TXCSR,
+            "REG_EP0_CSR must stay the same physical offset as REG_TXCSR (vendor MUSB_CSR0 == MUSB_TXCSR)"
+        );
+    }
+
+    #[test]
+    fn reg_fifo_matches_vendor_formula() {
+        // Source: MT6739 vendor kernel `mtk_musb_reg.h`:
+        // `#define MUSB_FIFO_OFFSET(epnum) (0x20 + ((epnum) * 4))`. This is
+        // the one piece of address arithmetic in the MUSB map that DOES
+        // depend on endpoint number -- unlike the indexed window above,
+        // where endpoint selection happens via the value written to
+        // REG_INDEX rather than via the address itself.
+        assert_eq!(reg_fifo(0), 0x20, "EP0 FIFO must be at base + 0x20");
+        assert_eq!(reg_fifo(1), 0x24, "EP1 FIFO must be at base + 0x24");
+        assert_eq!(reg_fifo(2), 0x28, "EP2 FIFO must be at base + 0x28");
+        assert_eq!(
+            reg_fifo(3),
+            0x2C,
+            "reg_fifo must generalize past the endpoints this driver currently uses"
+        );
     }
 
     // --- RX byte-count clamping (issue #221) ---
