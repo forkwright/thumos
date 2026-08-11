@@ -4,9 +4,10 @@
 //! so the two cannot drift (#545, #662). This module adapts it to the
 //! crate's error type; it holds no tables and no bit-packing of its own.
 
-use crate::error::Result;
 use alloc::string::String;
 use alloc::vec::Vec;
+
+use crate::error::Result;
 
 extern crate alloc;
 

@@ -76,6 +76,24 @@ RUST/as-cast:crates/eidolon/src/font.rs
 RUST/as-cast:crates/haphe/src/gpio.rs
 RUST/as-cast:crates/haphe/src/input.rs
 RUST/as-cast:crates/kelyphos/src/stp.rs
+RUST/as-cast:crates/pteron/src/hci.rs
+
+# =============================================================================
+# eidolon keyboard widget grid math — const usize row-count into u32 pixel size
+# =============================================================================
+#
+# WHY(#718): crates/eidolon/src/font.rs already carries the identical pattern
+# and is in the RUST/as-cast block above (font.rs:19's own comment: "const
+# context — TryFrom not yet const-stable"). keyboard.rs's row-grid constants
+# are the same shape: MAIN_ROW_COUNT is `usize` (compared against `usize` row
+# indices elsewhere in the same file) and also multiplies a `u32` pixel
+# height in row_y/row_height/KEYBOARD_HEIGHT. No `From<usize> for u32` exists
+# (usize may exceed u32 on some targets) and `TryFrom` is not const-fn-stable
+# on this toolchain, so the only alternative to `as u32` is a runtime
+# fallible path for a value that is a compile-time literal (4) and can never
+# actually be out of range. keyboard.rs:222's `row as u32` is bounded by the
+# same function's own `if row >= MAIN_ROW_COUNT` guard immediately above it.
+RUST/as-cast:crates/eidolon/src/widgets/keyboard.rs
 
 # =============================================================================
 # Files exceeding 800-line limit — split tracked in #131
@@ -218,6 +236,30 @@ RUST/indexing-slicing:crates/pteron/src/smp/pairing.rs
 RUST/indexing-slicing:crates/pteron/src/smp/pdu.rs
 RUST/indexing-slicing:crates/pteron/src/smp/toolbox.rs
 RUST/indexing-slicing:crates/topos-core/src/lib.rs
+
+# WHY(#718): RUST/string-slice and RUST/as-cast are the same lint shape as
+# RUST/indexing-slicing (range-slice / narrowing-cast on data whose bound is
+# proven earlier in the SAME function), against these SAME already-verified
+# files. Each site below was individually re-checked for #718: `&s[..pos]`
+# after `.position()` on that exact slice, `&s[..n]` after a preceding
+# length/`expect(want)` guard, slicing into a locally-declared fixed-size
+# array, or a narrowing cast (`as u8`/`as u16`/`as u32`) immediately preceded
+# by an INVARIANT comment and a range check proving the value fits. None
+# involve externally-unbounded input reaching an unchecked bound.
+RUST/string-slice:crates/klesis-core/src/lib.rs
+RUST/string-slice:crates/metaxu-core/src/envelope.rs
+RUST/string-slice:crates/metaxu-core/src/protocol.rs
+RUST/string-slice:crates/pteron/src/smp/pdu.rs
+RUST/string-slice:crates/pteron/src/smp/toolbox.rs
+RUST/string-slice:crates/topos-core/src/lib.rs
+RUST/as-cast:crates/klesis-core/src/lib.rs
+RUST/as-cast:crates/topos-core/src/lib.rs
+# WHY(#718): pteron smp/pdu.rs::io_cap_for_check is `const fn`; its single
+# as-cast site is `self.oob_data_present as u8` on a `bool` field --
+# provably lossless (bool -> u8 is always 0 or 1) but `u8::from(bool)` is
+# not const-fn-stable on this toolchain, same constraint as the const-fn
+# integer-widening cases above.
+RUST/as-cast:crates/pteron/src/smp/pdu.rs
 
 # WHY(#719): same lib.rs-only heuristic as the TESTING/no-tests block above.
 # metaxu-core's lib.rs is module declarations and re-exports; its submodules

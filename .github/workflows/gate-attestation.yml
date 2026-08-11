@@ -43,20 +43,12 @@ on:
   push:
     branches: [main]
 
-# WHY cancel-in-progress: true even on the push trigger: this workflow
-# verifies ref-tip state (fmt/check/clippy/nextest against a specific commit),
-# not a state mutation -- unlike release-please.yml (cancel-in-progress:
-# false), which creates/tags a release mid-run and would corrupt that if
-# interrupted. A gate-attestation run superseded by a newer push or a newer
-# commit on main has nothing worth finishing: the next PR always merges
-# against the LATEST main tip, so an in-flight attestation for a SHA that
-# is no longer any ref's tip has no consumer. Same group-key convention and
-# same trade-off as ci.yml/security.yml, which share this workflow's exact
-# pull_request+push trigger pair.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
+# NOTE: no concurrency block here by design. hybrid-gate.yml defines the group
+# itself (github.workflow-github.ref, which resolve to THIS caller's context in
+# a reusable call) and its own comment forbids callers from setting the same
+# key. A caller block whose group matches on push makes the run cancel itself:
+# it reports as a failure with zero jobs, and only on push, because on
+# pull_request the two groups differ. That took main's gate down silently.
 permissions:
   contents: read
 

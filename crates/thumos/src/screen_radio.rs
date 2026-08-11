@@ -13,19 +13,6 @@
 //! separation keeps the UI decoupled from driver initialization
 //! sequences and error handling.
 
-// WHY: radio control screen created in Phase 07 Wave 6, kinit wiring pending.
-// cfg_attr(not(test), ...): the module's own tests now exercise its full
-// surface, so nothing is dead in the test build -- expecting dead_code there
-// makes the expectation unfulfilled. Production reachability is unchanged;
-// the expectation is scoped to the build where it is still real.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Radio control screen created in Phase 07 Wave 6, kinit wiring pending (#737)"
-    )
-)]
-
 use crate::ui::{
     self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };

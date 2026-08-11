@@ -19,9 +19,9 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use core::fmt;
 
+use alloc::vec::Vec;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
