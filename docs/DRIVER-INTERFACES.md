@@ -275,10 +275,10 @@ Full list is in `eccci/inc/ccci_core.h:46+`. Key channels:
 
 ### 1.8 Interrupt Handling
 
-**CLDMA IRQ** (one IRQ, level-triggered): Read `CLDMA_AP_L2TISAR0` (TX) or
-`CLDMA_AP_L2RISAR0` (RX). Write the same bit back to acknowledge. If L3 is
-needed, read `CLDMA_AP_L3TISAR0/1` or `L3RISAR0/1` for per-queue detail.
-Mask future interrupts by writing to `L2TIMCR0` / `L2RIMCR0`.
+**CLDMA IRQ** (one IRQ, level-triggered): read `CLDMA_AP_L2TISAR0` (TX) or
+`CLDMA_AP_L2RISAR0` (RX), then write the same bit back to acknowledge. For
+per-queue detail, read `CLDMA_AP_L3TISAR0/1` or `L3RISAR0/1` at L3. Mask
+future interrupts by writing to `L2TIMCR0` / `L2RIMCR0`.
 
 **CCIF IRQ** (two IRQs  -  one per direction): Read `APCCIF_RCHNUM` to get the
 set of triggered MD→AP channels. Write the bitmask to `APCCIF_ACK` to clear.
