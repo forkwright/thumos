@@ -24,23 +24,22 @@
 //! - AES-CBC: NIST SP 800-38A
 
 // WHY: Matrix crypto created in Phase 09 Wave 3, full integration pending.
-// #437 remnant 3: `harmostes` builds the /keys/claim request and validates
-// + returns the peer's claimed key (the send side of key exchange -- that
-// key belongs to the remote device, never to this device's own
-// `one_time_keys` pool). `consume_one_time_key` belongs to the RECEIVE
-// side instead: it removes one of THIS device's own uploaded keys once
-// something reports it was claimed by a peer (a dropping
-// `device_one_time_keys_count` on `/sync`, or an inbound Olm pre-key
-// message naming the key). Neither exists in this tree -- `/sync` here
-// reads only room timeline events, and there is no inbound Olm pre-key
-// handler (`OlmSession` is declared, never constructed). Wiring
-// `consume_one_time_key` there is what remains open; without it the
-// one_time_keys pool deadlocks at MAX_ONE_TIME_KEYS once that receive path
-// exists (#282 finding 8). This module stays unreachable until Phase-09
-// messaging integration lands.
+// #437: `harmostes` builds the /keys/claim request and validates + returns
+// the peer's claimed key (the send side of key exchange -- that key
+// belongs to the remote device, never to this device's own
+// `one_time_keys` pool). `consume_one_time_key`'s production call site is
+// on the RECEIVE side instead, and now lives there:
+// `harmostes::MatrixClient::process_to_device_event` extracts the local
+// one-time key an inbound Olm pre-key message names and calls
+// [`MatrixCrypto::process_olm_prekey_message`], which consumes it and
+// establishes the resulting `OlmSession`. `process_sync_response` reaches
+// that path via a `to_device.events` block. This module stays unreachable
+// from `kernel_main` regardless -- `MatrixClient` itself is not yet
+// constructed anywhere outside tests, a separate, broader integration
+// (#145) this issue does not close.
 #![expect(
     dead_code,
-    reason = "Matrix crypto unreachable pending Phase-09 messaging integration; consume_one_time_key's receive-side call site does not exist yet (#437)"
+    reason = "MatrixClient (and therefore MatrixCrypto) is not yet constructed from kernel_main; unreachable pending Phase-09 unified-inbox integration (#145)"
 )]
 
 extern crate alloc;
@@ -98,6 +97,17 @@ const ED25519_SIGNATURE_LEN: usize = 64;
 /// Maximum number of Olm sessions tracked simultaneously.
 const MAX_OLM_SESSIONS: usize = 64;
 
+/// Byte length of this kernel's inbound Olm pre-key message body once
+/// hex-decoded: `base_key (32) || one_time_key (32)`. Matrix does not
+/// standardize the *contents* of an Olm ciphertext body -- that is the
+/// sending/receiving Olm implementations' own wire format, invisible to the
+/// homeserver that merely relays it -- and this module's device keys are
+/// HKDF-derived values rather than real Curve25519 points (module docs), so
+/// there is no libolm TLV encoding to interoperate with here; this is a
+/// kernel-internal format for talking to a future encrypt side of this same
+/// implementation (#437).
+const OLM_PREKEY_BODY_LEN: usize = KEY_SIZE * 2;
+
 /// Maximum number of outbound Megolm sessions (one per room).
 const MAX_MEGOLM_OUTBOUND: usize = 32;
 
@@ -117,6 +127,16 @@ const MAX_GENERATED_KEYS: usize = 50;
 /// `/keys/claim` request/response so the algorithm string exists in exactly
 /// one place.
 pub(crate) const ONE_TIME_KEY_ALGORITHM: &str = "curve25519";
+
+/// The Olm to-device encryption algorithm identifier (Matrix spec:
+/// `m.olm.v1.curve25519-aes-sha2`) -- the top-level `content.algorithm`
+/// value on an `m.room.encrypted` **to-device** event. Distinct from
+/// [`ONE_TIME_KEY_ALGORITHM`], which names the per-key algorithm inside a
+/// `/keys/claim` request/response, not the encrypted-payload algorithm.
+/// Shared between [`build_device_keys_json`]'s advertised algorithm list
+/// and `harmostes`'s inbound to-device filter (#437) so the string exists
+/// in exactly one place.
+pub(crate) const OLM_ALGORITHM: &str = "m.olm.v1.curve25519-aes-sha2";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -173,6 +193,19 @@ pub enum CryptoError {
     /// further would reuse a (key, IV) pair (issue #282 finding 9). The
     /// session must be rotated.
     MegolmIndexExhausted,
+    /// An inbound Olm pre-key message's body did not decode to the expected
+    /// `base_key || one_time_key` layout -- wrong length after decoding, or
+    /// not decodable at all (#437).
+    MalformedPreKeyMessage,
+    /// An inbound Olm pre-key message named a one-time key this device's
+    /// local pool does not currently hold. Covers BOTH a key this device
+    /// never generated AND a replay of a key an earlier pre-key message
+    /// already consumed (#437) -- deliberately the same disposition: the
+    /// pool itself is the only record of "used", so there is no separate
+    /// "already consumed" bookkeeping that could fall out of sync with it,
+    /// and a caller cannot distinguish "never valid" from "already spent"
+    /// by the error alone.
+    UnknownOneTimeKey,
 }
 
 impl From<csprng::CsprngError> for CryptoError {
@@ -230,6 +263,15 @@ impl fmt::Display for CryptoError {
                 write!(
                     f,
                     "Megolm session message index exhausted -- rotate the session"
+                )
+            }
+            Self::MalformedPreKeyMessage => {
+                write!(f, "Olm pre-key message body is malformed")
+            }
+            Self::UnknownOneTimeKey => {
+                write!(
+                    f,
+                    "Olm pre-key message named a one-time key not held locally"
                 )
             }
         }
@@ -496,6 +538,90 @@ impl MatrixCrypto {
         } else {
             false
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Olm pre-key receive path (#437)
+    // -----------------------------------------------------------------------
+
+    /// Process an inbound Olm **pre-key** message (`to_device` event type
+    /// `m.room.encrypted`, `content.algorithm ==` [`OLM_ALGORITHM`],
+    /// ciphertext `type: 0`) addressed to this device: extract the local
+    /// one-time key its sender used, consume it, and record the resulting
+    /// [`OlmSession`].
+    ///
+    /// This is the RECEIVE side of Matrix key exchange (#437): a
+    /// `/keys/claim` response (the send side, `harmostes`'s
+    /// `process_claim_keys_response`) carries a *remote* device's key and
+    /// never touches this pool. A pre-key message instead names one of
+    /// THIS device's own uploaded keys, reporting that a peer already
+    /// claimed and used it -- this is the only production call site for
+    /// [`consume_one_time_key`].
+    ///
+    /// `sender_identity_key` is the sending device's Curve25519 identity key
+    /// (the envelope's `content.sender_key`, already decoded by the caller).
+    /// `body` is the already-decoded bytes of the matching
+    /// `ciphertext.<our device key>.body` entry. Its layout is
+    /// `base_key (32) || one_time_key (32)` -- see [`OLM_PREKEY_BODY_LEN`]
+    /// for why this is a kernel-internal format rather than libolm's own
+    /// encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CryptoError::MalformedPreKeyMessage`] if `body` is not
+    /// exactly [`OLM_PREKEY_BODY_LEN`] bytes.
+    /// Returns [`CryptoError::SessionCapacityReached`] if [`MAX_OLM_SESSIONS`]
+    /// is already reached -- checked BEFORE consuming the named one-time
+    /// key, so a session that cannot be recorded does not needlessly burn
+    /// real key material this device can never get back (unlike CSPRNG
+    /// output, a one-time key is not cheaply regenerable once a peer has
+    /// already claimed it from the homeserver).
+    /// Returns [`CryptoError::UnknownOneTimeKey`] if the named key is not
+    /// present in the local pool -- this is the structural single-use
+    /// enforcement: [`consume_one_time_key`] removes the key from the pool
+    /// on its first successful use, so a replayed pre-key naming the same
+    /// key finds the pool already empty of it and fails with the identical
+    /// error a never-valid key would, with no separate "already consumed"
+    /// state to go stale.
+    /// Returns [`CryptoError::KeyDerivationFailed`] if HKDF fails (defensive;
+    /// unreachable in practice at a 32-byte output length, mirroring
+    /// [`derive_megolm_message_keys`]'s identical guard).
+    ///
+    /// [`consume_one_time_key`]: Self::consume_one_time_key
+    pub(crate) fn process_olm_prekey_message(
+        &mut self,
+        sender_identity_key: &[u8; KEY_SIZE],
+        body: &[u8],
+    ) -> Result<(), CryptoError> {
+        if body.len() != OLM_PREKEY_BODY_LEN {
+            return Err(CryptoError::MalformedPreKeyMessage);
+        }
+        let mut base_key = [0u8; KEY_SIZE];
+        let mut one_time_key = [0u8; KEY_SIZE];
+        base_key.copy_from_slice(&body[..KEY_SIZE]);
+        one_time_key.copy_from_slice(&body[KEY_SIZE..]);
+
+        // WHY (capacity before consume): see the doc comment above -- a
+        // session we cannot record must not cost this device a one-time key
+        // it cannot recover.
+        if self.olm_sessions.len() >= MAX_OLM_SESSIONS {
+            return Err(CryptoError::SessionCapacityReached);
+        }
+
+        if !self.consume_one_time_key(&one_time_key) {
+            return Err(CryptoError::UnknownOneTimeKey);
+        }
+
+        let ratchet_key =
+            derive_olm_initial_ratchet_key(sender_identity_key, &base_key, &one_time_key)?;
+        let session_id = security::sha256(&ratchet_key);
+
+        self.olm_sessions.push(OlmSession {
+            session_id,
+            ratchet_key,
+            chain_index: 0,
+        });
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -1011,6 +1137,37 @@ fn derive_megolm_message_keys(
     })
 }
 
+/// Derive a new Olm session's initial ratchet key from an inbound pre-key
+/// message's key material (#437).
+///
+/// A simplified X3DH substitute: this module's device/one-time keys are
+/// CSPRNG-derived values used directly as HKDF input rather than real
+/// Curve25519 points (module docs), so there are no DH outputs to combine --
+/// the three key values (sender identity, sender ephemeral, and the
+/// consumed local one-time key) are concatenated as HKDF input key material
+/// instead, matching this module's existing departure from full X3DH.
+///
+/// # Errors
+///
+/// Returns [`CryptoError::KeyDerivationFailed`] if HKDF fails (defensive;
+/// unreachable at this fixed 32-byte output length).
+fn derive_olm_initial_ratchet_key(
+    sender_identity_key: &[u8; KEY_SIZE],
+    base_key: &[u8; KEY_SIZE],
+    one_time_key: &[u8; KEY_SIZE],
+) -> Result<[u8; KEY_SIZE], CryptoError> {
+    const LABEL: &[u8] = b"olm-prekey-session";
+    let mut ikm = [0u8; KEY_SIZE * 3];
+    ikm[..KEY_SIZE].copy_from_slice(sender_identity_key);
+    ikm[KEY_SIZE..KEY_SIZE * 2].copy_from_slice(base_key);
+    ikm[KEY_SIZE * 2..].copy_from_slice(one_time_key);
+
+    let mut ratchet_key = [0u8; KEY_SIZE];
+    security::hkdf_sha256(&ikm, &[], LABEL, &mut ratchet_key)
+        .map_err(|_| CryptoError::KeyDerivationFailed)?;
+    Ok(ratchet_key)
+}
+
 // ---------------------------------------------------------------------------
 // JSON helpers
 // ---------------------------------------------------------------------------
@@ -1021,7 +1178,7 @@ fn build_device_keys_json(keys: &DeviceKeys) -> String {
     w.object_start();
     w.key("algorithms");
     w.array_start();
-    w.string_value("m.olm.v1.curve25519-aes-sha2");
+    w.string_value(OLM_ALGORITHM);
     w.string_value("m.megolm.v1.aes-sha2");
     w.end(); // algorithms
     w.key("keys");
@@ -1537,6 +1694,148 @@ mod tests {
             !crypto.consume_one_time_key(&claimed),
             "consuming an already-removed key must return false, not panic"
         );
+    }
+
+    // -- Olm pre-key receive-path tests (#437) --
+
+    /// Build a wire body matching this kernel's pre-key layout:
+    /// `base_key || one_time_key`.
+    fn prekey_body(base_key: &[u8; KEY_SIZE], one_time_key: &[u8; KEY_SIZE]) -> Vec<u8> {
+        let mut body = Vec::with_capacity(OLM_PREKEY_BODY_LEN);
+        body.extend_from_slice(base_key);
+        body.extend_from_slice(one_time_key);
+        body
+    }
+
+    #[test]
+    fn process_olm_prekey_message_consumes_named_key_and_establishes_session() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let otk = crypto
+            .generate_one_time_keys(1)
+            .expect("seeding must succeed")[0];
+
+        let sender_identity_key = [0x11u8; KEY_SIZE];
+        let base_key = [0x22u8; KEY_SIZE];
+        let body = prekey_body(&base_key, &otk);
+
+        let result = crypto.process_olm_prekey_message(&sender_identity_key, &body);
+        assert!(result.is_ok(), "a valid pre-key message must be accepted");
+        assert!(
+            !crypto.one_time_keys().contains(&otk),
+            "the claimed key must leave the local pool"
+        );
+        assert_eq!(
+            crypto.olm_sessions().len(),
+            1,
+            "a valid pre-key message must establish exactly one session"
+        );
+    }
+
+    #[test]
+    fn process_olm_prekey_message_rejects_replay() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let otk = crypto
+            .generate_one_time_keys(1)
+            .expect("seeding must succeed")[0];
+        let sender_identity_key = [0x33u8; KEY_SIZE];
+        let base_key = [0x44u8; KEY_SIZE];
+        let body = prekey_body(&base_key, &otk);
+
+        assert!(
+            crypto
+                .process_olm_prekey_message(&sender_identity_key, &body)
+                .is_ok(),
+            "the first delivery of a valid pre-key message must succeed"
+        );
+        assert_eq!(crypto.olm_sessions().len(), 1);
+
+        let replay = crypto.process_olm_prekey_message(&sender_identity_key, &body);
+        assert_eq!(
+            replay,
+            Err(CryptoError::UnknownOneTimeKey),
+            "a replayed pre-key message naming an already-consumed key must be rejected"
+        );
+        assert_eq!(
+            crypto.olm_sessions().len(),
+            1,
+            "a rejected replay must not establish a second session"
+        );
+    }
+
+    #[test]
+    fn process_olm_prekey_message_rejects_unknown_key() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        // Never generated or uploaded by this device.
+        let never_ours = [0x55u8; KEY_SIZE];
+        let sender_identity_key = [0x66u8; KEY_SIZE];
+        let base_key = [0x77u8; KEY_SIZE];
+        let body = prekey_body(&base_key, &never_ours);
+
+        let result = crypto.process_olm_prekey_message(&sender_identity_key, &body);
+        assert_eq!(result, Err(CryptoError::UnknownOneTimeKey));
+        assert!(
+            crypto.olm_sessions().is_empty(),
+            "an unknown-key pre-key message must not establish a session"
+        );
+    }
+
+    #[test]
+    fn process_olm_prekey_message_rejects_malformed_body_length() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let sender_identity_key = [0x88u8; KEY_SIZE];
+
+        let short_body = alloc::vec![0u8; OLM_PREKEY_BODY_LEN - 1];
+        assert_eq!(
+            crypto.process_olm_prekey_message(&sender_identity_key, &short_body),
+            Err(CryptoError::MalformedPreKeyMessage)
+        );
+
+        let long_body = alloc::vec![0u8; OLM_PREKEY_BODY_LEN + 1];
+        assert_eq!(
+            crypto.process_olm_prekey_message(&sender_identity_key, &long_body),
+            Err(CryptoError::MalformedPreKeyMessage)
+        );
+
+        assert!(crypto.olm_sessions().is_empty());
+    }
+
+    #[test]
+    fn process_olm_prekey_message_enforces_session_capacity_without_burning_key() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+
+        for i in 0..MAX_OLM_SESSIONS {
+            let otk = crypto
+                .generate_one_time_keys(1)
+                .expect("filling below capacity must succeed")[0];
+            let sender_byte = u8::try_from(i).expect("MAX_OLM_SESSIONS fits in u8 range");
+            let sender_identity_key = [sender_byte; KEY_SIZE];
+            let base_key = [0xAAu8; KEY_SIZE];
+            let body = prekey_body(&base_key, &otk);
+            crypto
+                .process_olm_prekey_message(&sender_identity_key, &body)
+                .expect("filling below capacity must succeed");
+        }
+        assert_eq!(crypto.olm_sessions().len(), MAX_OLM_SESSIONS);
+
+        let overflow_otk = crypto
+            .generate_one_time_keys(1)
+            .expect("seeding must succeed")[0];
+        let before = crypto.one_time_keys().len();
+        let body = prekey_body(&[0xBBu8; KEY_SIZE], &overflow_otk);
+        let result = crypto.process_olm_prekey_message(&[0xFFu8; KEY_SIZE], &body);
+
+        assert_eq!(result, Err(CryptoError::SessionCapacityReached));
+        assert_eq!(
+            crypto.one_time_keys().len(),
+            before,
+            "a session that cannot be recorded must not consume the one-time key"
+        );
+        assert_eq!(crypto.olm_sessions().len(), MAX_OLM_SESSIONS);
     }
 
     // -- Encrypt/decrypt round-trip tests --
