@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # check-kernel-lockfile-versions.sh — the kernel lockfile's first-party crates
 # must carry the workspace version.
 #
@@ -17,7 +19,6 @@
 #
 # WHY `thumos` is exempt: its 0.1.0 in crates/thumos/Cargo.toml is its own
 # version, deliberately not workspace-inherited, so it must NOT track releases.
-set -uo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 

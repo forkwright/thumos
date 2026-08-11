@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # check-pr-title.sh — validates a PR title against the conventional-commit
 # grammar (#665). The repo squash-merges, so the title becomes main's commit
 # message and release-please parses it for the changelog and version bump;
 # an unvalidated title is silently invisible to both.
 # WHY: `type` is derived from CLAUDE.md's `commit_types:` frontmatter line —
 # the sole declaration — so this script never hand-carries its own copy.
-set -uo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 TITLE="${1:-}"

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # check-witness-extraction.sh — drift guard for the witness extraction (#546).
 # Kernel witness logic must live ONLY in scripts/witness/*.sh; ci.yml and
 # .kanon-ci.toml call those scripts, never inline the assertions. Fails when:
@@ -6,7 +8,6 @@
 #       (assertion logic living outside the scripts), or
 #   (b) ci.yml's kernel steps stop calling the scripts, or
 #   (c) .kanon-ci.toml loses the kernel stages.
-set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 CI="$REPO_ROOT/.github/workflows/ci.yml"

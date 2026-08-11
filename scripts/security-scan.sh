@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # security-scan.sh <deny|audit|osv> [osv-binary] — run one scanner over every
 # graph in scripts/lockfile-scan-manifest.txt (#547). One code path per tool so
 # findings are attributed per-graph and no graph can be silently skipped.
 # Exclusion lines (`| excluded: reason`) are honored and reported, not scanned.
-set -euo pipefail
 
 mode="${1:?usage: security-scan.sh <deny|audit|osv> [osv-binary]}"
 repo=$(git rev-parse --show-toplevel)

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # check-wiring-inventory.sh [boot.log] — capability-reachability drift check
 # (#550). Fails when:
 #   (a) a main.rs module is not classified in docs/capability-inventory.toml
@@ -8,7 +10,6 @@
 #       pass --no-log to skip (c) when no boot has run yet)
 # The inventory is the SSOT for capability reachability; README's capability
 # section and docs/KERNEL-WIRING-AUDIT.md's successor point at it.
-set -uo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 INV="$REPO_ROOT/docs/capability-inventory.toml"

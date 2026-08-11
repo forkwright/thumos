@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # check-board-seam.sh — the #534 standing invariant, enforced as source
 # structure rather than prose. Fails when:
 #   (a) an `MT6739_*` identifier appears anywhere in the kernel crate outside
@@ -11,7 +13,6 @@
 #       are allowed.
 # Board constants live only under board::*; board selection happens once, in
 # board/mod.rs.
-set -uo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 SRC="$REPO_ROOT/crates/thumos/src"
