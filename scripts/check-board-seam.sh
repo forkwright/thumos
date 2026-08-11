@@ -24,7 +24,7 @@ rc=0
 hits=$(grep -rn 'MT6739_[A-Z0-9_]\+' "$SRC" --include='*.rs' \
     | grep -v '/board/m7.rs:' \
     | grep -v '/ccci.rs:' | grep -v '/ccci_logger.rs:' || true)
-if [ -n "$hits" ]; then
+if [[ -n "$hits" ]]; then
     echo "SEAM DRIFT: MT6739_* identifier outside board::m7 (kernel core must name the board seam, not the SoC):" >&2
     echo "$hits" >&2
     rc=1
@@ -38,7 +38,7 @@ for hex in 0x1800_0000 0x180F_0000 0x1123_0000 0x1121_0000 0x1400_0000 \
            0x1100_3000 0x77EE_0000 0x1100_2000 0x0C00_0000 0x0C00_2000; do
     hits=$(grep -rn "const [A-Z0-9_]*: usize = $hex" "$SRC" --include='*.rs' \
         | grep -v '/board/' || true)
-    if [ -n "$hits" ]; then
+    if [[ -n "$hits" ]]; then
         echo "SEAM DRIFT: board MMIO value $hex re-declared as a const outside board/:" >&2
         echo "$hits" >&2
         rc=1

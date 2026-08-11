@@ -91,7 +91,7 @@ declare -A REQUIRES=(
 declare -a PASS_TAGS=("default")
 declare -a PASS_FEATURES=("")
 for f in "${KERNEL_FEATURES[@]}"; do
-    if [ -n "${REQUIRES[$f]:-}" ]; then
+    if [[ -n "${REQUIRES[$f]:-}" ]]; then
         PASS_TAGS+=("${REQUIRES[$f]}+$f")
         PASS_FEATURES+=("${REQUIRES[$f]},$f")
     else
@@ -110,7 +110,7 @@ done
 # `production` pass is actually in the list above) and scoped to this run.
 PRODUCTION_KEY_DIR=""
 production_key() {
-    if [ -z "$PRODUCTION_KEY_DIR" ]; then
+    if [[ -z "$PRODUCTION_KEY_DIR" ]]; then
         PRODUCTION_KEY_DIR=$(mktemp -d)
         openssl genpkey -algorithm ed25519 -out "$PRODUCTION_KEY_DIR/ci-boot.pem" 2>/dev/null
         openssl pkey -in "$PRODUCTION_KEY_DIR/ci-boot.pem" -pubout -outform DER \
@@ -137,7 +137,7 @@ for i in "${!PASS_TAGS[@]}"; do
     label=$(printf '[%s]' "$tag")
     label=$(printf '%-*s' "$((tagwidth + 3))" "$label")
 
-    if [ "$tag" = "production" ]; then
+    if [[ "$tag" = "production" ]]; then
         out=$(cd "$KERNEL_DIR" && THUMOS_BOOT_KEY_PUB="$(production_key)" cargo clippy --bin thumos --tests \
             --features "$features" --target i686-unknown-linux-gnu -- -D warnings 2>&1)
     elif [ -n "$features" ]; then
@@ -157,7 +157,7 @@ for i in "${!PASS_TAGS[@]}"; do
     [ "${RCS[$i]}" -ne 0 ] && failures+=("${PASS_TAGS[$i]} rc=${RCS[$i]}")
 done
 
-if [ "${#failures[@]}" -gt 0 ]; then
+if [[ "${#failures[@]}" -gt 0 ]]; then
     IFS=', '
     echo "FAIL: kernel clippy failed (${failures[*]})" >&2
     exit 1

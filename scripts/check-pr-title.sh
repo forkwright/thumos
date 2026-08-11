@@ -11,13 +11,13 @@ set -euo pipefail
 REPO_ROOT=$(git rev-parse --show-toplevel)
 TITLE="${1:-}"
 
-if [ -z "$TITLE" ]; then
+if [[ -z "$TITLE" ]]; then
     echo "PR TITLE: no title given" >&2
     exit 1
 fi
 
 type_csv=$(sed -n 's/^commit_types: *//p' "$REPO_ROOT/CLAUDE.md")
-if [ -z "$type_csv" ]; then
+if [[ -z "$type_csv" ]]; then
     echo "PR TITLE: CLAUDE.md has no 'commit_types:' line to derive the accepted type list from" >&2
     exit 1
 fi
