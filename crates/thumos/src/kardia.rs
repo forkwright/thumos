@@ -49,10 +49,11 @@ use crate::screen_dialer::DialerScreen;
 use crate::screen_fm::FmScreen;
 use crate::screen_home::{HomeScreen, HomeScreenState, OperatingMode};
 use crate::screen_messages::MessagesScreen;
+use crate::screen_privacy::PrivacyScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
 use crate::screen_unimplemented::UnimplementedScreen;
-use crate::security::KEY_SIZE;
+use crate::security::{KEY_SIZE, SHA256_DIGEST_LEN};
 use crate::security_mode::ModeManager;
 use crate::sim::SimManager;
 use crate::sms::SmsManager;
@@ -152,6 +153,20 @@ pub(crate) struct KernelState {
     /// WMT backend binds on device.
     fm: FmRadio<BootFmHw>,
     fm_screen: FmScreen,
+    /// Privacy dashboard (#737): the data-category list is self-managed
+    /// (no subsystem feeds it yet -- populating sizes from `lfs.rs` inode
+    /// metadata is separate follow-on work). The purge-confirmation gate
+    /// needs a SHA-256 hash of the device's configured purge passphrase to
+    /// compare against; no such passphrase reaches `KernelState` today (the
+    /// boot-time passphrase subsystem, #446/#618, runs only on real
+    /// hardware under `secure_boot_ok` and never persists its key material
+    /// past `kinit`'s local scope -- see `kinit.rs`'s own `LockScreen::new`
+    /// call sites, which face the identical gap and use the same all-zero
+    /// placeholder for the same reason). `[0u8; SHA256_DIGEST_LEN]` cannot
+    /// be produced by hashing any digit sequence a user could enter, so the
+    /// gate fails closed (purge permanently refused) rather than accepting
+    /// a fabricated credential.
+    privacy: PrivacyScreen,
     /// Fallback for any `ScreenId` [`screen_kind`] classifies as
     /// [`ScreenKind::NotImplemented`] (#730): renders an unmistakable,
     /// screen-naming "NOT IMPLEMENTED" state instead of the render
@@ -275,6 +290,11 @@ impl KernelState {
             calendar: CalendarScreen::new(),
             fm: FmRadio::new(BootFmHw::new()),
             fm_screen: FmScreen::new(),
+            // WHY the all-zero hash: see the `privacy` field doc above --
+            // no provisioned purge/unlock passphrase reaches KernelState,
+            // so this is an intentionally unsatisfiable placeholder, not a
+            // working credential.
+            privacy: PrivacyScreen::new([0u8; SHA256_DIGEST_LEN]),
             not_implemented: UnimplementedScreen::new(),
             fb,
             last_second: 0,
@@ -299,6 +319,7 @@ impl KernelState {
             ScreenKind::Settings => &mut self.settings,
             ScreenKind::Calendar => &mut self.calendar,
             ScreenKind::FmRadio => &mut self.fm_screen,
+            ScreenKind::Privacy => &mut self.privacy,
             ScreenKind::NotImplemented => {
                 self.not_implemented.set_screen(id);
                 &mut self.not_implemented
@@ -494,6 +515,7 @@ impl KernelState {
             ScreenKind::Settings => &self.settings,
             ScreenKind::Calendar => &self.calendar,
             ScreenKind::FmRadio => &self.fm_screen,
+            ScreenKind::Privacy => &self.privacy,
             ScreenKind::NotImplemented => &self.not_implemented,
         };
         self.ui
