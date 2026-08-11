@@ -936,6 +936,7 @@ mod tests {
     use alloc::string::{String, ToString};
 
     use super::*;
+    use crate::nous::TEST_HOMESERVER;
     use crate::ui::CONTENT_PIXELS;
 
     #[test]
@@ -1245,7 +1246,7 @@ mod tests {
     #[test]
     fn sync_from_manager() {
         let mut screen = NousChatScreen::new();
-        let mgr = NousManager::new();
+        let mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         screen.sync_from_manager(&mgr);
         assert_eq!(screen.active_entity_name, "Syn");
         assert_eq!(screen.active_preset_label, "ADVISOR");
@@ -1254,7 +1255,7 @@ mod tests {
     #[test]
     fn sync_from_manager_no_active_entity() {
         let mut screen = NousChatScreen::new();
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         // WHY: discard the removed entity -- only the deselect side
         // effect on the manager's active selection matters here (#453).
         let _ = mgr.remove_entity(0); // removes the active entity (Syn)
