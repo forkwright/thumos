@@ -250,7 +250,7 @@ mechanism = "host"
 
 [[module]]
 name = "harmostes"
-tests = 48
+tests = 57
 mechanism = "host"
 
 [[module]]
@@ -377,7 +377,7 @@ fidelity = "module wiring only — the boot witness is its proof"
 
 [[module]]
 name = "matrix_crypto"
-tests = 37
+tests = 42
 mechanism = "host"
 
 [[module]]
