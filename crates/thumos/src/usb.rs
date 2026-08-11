@@ -1103,6 +1103,21 @@ impl UsbController {
     // Private: endpoint configuration
     // -----------------------------------------------------------------------
 
+    // NOTE (investigated for #724, not a gap): the vendor MUSB core also
+    // exposes per-endpoint on-chip FIFO RAM allocation registers --
+    // MUSB_TXFIFOSZ/MUSB_RXFIFOSZ (0x62/0x63) and MUSB_TXFIFOADD/
+    // MUSB_RXFIFOADD (0x64/0x66), also INDEX-selected -- which a generic
+    // MUSB bring-up would program once per endpoint to partition shared
+    // FIFO memory. `configure_ep1`/`configure_ep2` below do not touch them.
+    // This is not a divergence: the MT6739 vendor kernel's OWN
+    // `fifo_setup()` (`musb_core.c`) has the equivalent
+    // `musb_write_txfifosz`/`musb_write_txfifoadd`/`musb_write_rxfifosz`/
+    // `musb_write_rxfifoadd` calls commented out and updates only its
+    // driver-internal bookkeeping structs -- i.e. this SoC integration does
+    // not perform runtime FIFO RAM allocation either, consistent with a
+    // fixed/pre-partitioned on-chip FIFO map for this controller instance.
+    // Still unconfirmed against silicon, like the rest of this file.
+
     /// Configure EP1 as bulk IN (TX) and bulk OUT (RX), 64-byte packets.
     ///
     /// # Safety
