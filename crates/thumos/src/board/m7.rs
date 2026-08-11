@@ -63,10 +63,30 @@ pub(crate) const LFS_PREAMBLE_SECTORS: u64 = 1;
 // USB
 // ---------------------------------------------------------------------------
 
-/// MUSB OTG USB controller MMIO base (device-tree node `usb@11210000`).
-/// NOTE: the pre-#534 device registry carried a stale `0x1120_0000` entry
-/// for `musb-hdrc`; the DT node and the usb.rs driver agree on this value.
-pub(crate) const MUSB_BASE: usize = 0x1121_0000;
+/// MUSB OTG USB controller MMIO base, from the `MediaTek` MT6739 vendor
+/// device tree's `usb0@11200000` node: `compatible = "mediatek,mt6739-usb20"`,
+/// `reg = <0 0x11200000 0 0x10000>, <0 0x11CC0000 0 0x10000>`. Two
+/// independently hosted copies agree byte-for-byte
+/// (github.com/fukehan/kernel-4.4,
+/// github.com/iscle/OrangePi_4G-IOT_Android_8.1_BSP), and `0x11210000`
+/// appears nowhere in either 2499-line tree.
+///
+/// WHY this replaced `0x1121_0000` (#676): that address is real in this SoC
+/// family but belongs to a different device. Mainline
+/// `arch/arm/boot/dts/mediatek/mt2701.dtsi` splits the pair explicitly --
+/// `usb@11200000` is the `mtk-musb` controller, `t-phy@11210000` is the
+/// T-PHY, whose registers are PHY tuning and carry no FADDR/POWER/INTRTX or
+/// EP CSRs. MT6739 breaks the family's controller+0x10000 pattern by moving
+/// its second region to `0x11CC0000`, so following that pattern lands on
+/// nothing. `usb.rs` drives MUSB-core operations, so it needs the controller.
+///
+/// WARNING: source-resolved, NOT hardware-confirmed. `usb::init_controller`'s
+/// `POWER` readback (`UsbInitError::NotResponding`) is the falsifier, and it
+/// reads a register inside the byte range `usb.rs` gets right -- test this
+/// base alone before concluding anything about #724's register-map
+/// divergence, or a failure downstream of `POWER` gets misattributed back
+/// to this value.
+pub(crate) const MUSB_BASE: usize = 0x1120_0000;
 
 /// MUSB OTG controller GIC interrupt (raw GIC INTID, the form
 /// `gic::enable_irq` and the IRQ-dispatch comparison in `exceptions.rs`
@@ -80,12 +100,14 @@ pub(crate) const MUSB_BASE: usize = 0x1121_0000;
 /// (github.com/fukehan/kernel-4.4, github.com/iscle/OrangePi_4G-IOT_Android_8.1_BSP)
 /// carry a `usb0@11200000` node -- `compatible = "mediatek,mt6739-usb20"`,
 /// `interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL_LOW>` (INTID 32+73 = 105) -- but
-/// that node's `reg` base is `0x1120_0000`, not the `0x1121_0000` `MUSB_BASE`
-/// carries above. `MUSB_BASE`'s own doc comment attributes `0x1121_0000` to
-/// "the DT node", and the #534 PR that moved it here repeats that claim,
-/// but neither cites a source beyond the other -- there is no artifact in
-/// this repo's history that independently confirms either address against
-/// real AGM M7 hardware or an authoritative MT6739 datasheet. Wiring a real
+/// `MUSB_BASE` above now carries that same node's `reg` base, so the address
+/// conflict this comment was written against is resolved by source (#676).
+/// What is still missing is a hardware artifact: nothing confirms INTID 105
+/// on real AGM M7 silicon, and a vendor DT is the same evidence class that
+/// carried the wrong base for two releases -- right about the base, unproven
+/// about this. The asymmetry is deliberate: a wrong base fails loudly and
+/// detectably at the `POWER` readback, while a wrongly-enabled IRQ wedges the
+/// interrupt path in ways that are far harder to attribute. Wiring a real
 /// GIC INTID into a live `enable_irq` call on that contested foundation
 /// would be a fabricated fact wearing a hardware-verified constant's
 /// clothes, not an engineering shortcut -- so this stays `None` (a
