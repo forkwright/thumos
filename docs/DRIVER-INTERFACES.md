@@ -1,12 +1,12 @@
 # Driver Interface Specification  -  MT6739 Hardware Subsystems
 
-The MT6739 ships with eight core driver subsystems; this page specifies each
-one's hardware interface on the AGM M7. Content is derived entirely from BSP
-kernel source at `kernel-wiite/drivers/misc/mediatek/` and
-`kernel-wiite/drivers/mmc/host/`. Every claim cites a source file and line.
+The MT6739 ships with eight core driver subsystems, and this page specifies
+each one's hardware interface on the AGM M7. BSP kernel source at
+`kernel-wiite/drivers/misc/mediatek/` and `kernel-wiite/drivers/mmc/host/`
+supplies all content here. Every claim cites a source file and line.
 
-This specification is the input for Waves 3–5 of the Rust kernel layer. No
-Android framework dependency is assumed; these are bare-metal register and
+This specification is the input for Waves 3–5 of the Rust kernel layer. It
+assumes no Android framework dependency: these are bare-metal register and
 protocol descriptions.
 
 ---
@@ -275,10 +275,10 @@ Full list is in `eccci/inc/ccci_core.h:46+`. Key channels:
 
 ### 1.8 Interrupt Handling
 
-**CLDMA IRQ** (one IRQ, level-triggered): Read `CLDMA_AP_L2TISAR0` (TX) or
-`CLDMA_AP_L2RISAR0` (RX). Write the same bit back to acknowledge. If L3 is
-needed, read `CLDMA_AP_L3TISAR0/1` or `L3RISAR0/1` for per-queue detail.
-Mask future interrupts by writing to `L2TIMCR0` / `L2RIMCR0`.
+**CLDMA IRQ** (one IRQ, level-triggered): read `CLDMA_AP_L2TISAR0` (TX) or
+`CLDMA_AP_L2RISAR0` (RX), then write the same bit back to acknowledge. For
+per-queue detail, read `CLDMA_AP_L3TISAR0/1` or `L3RISAR0/1` at L3. Mask
+future interrupts by writing to `L2TIMCR0` / `L2RIMCR0`.
 
 **CCIF IRQ** (two IRQs  -  one per direction): Read `APCCIF_RCHNUM` to get the
 set of triggered MD→AP channels. Write the bitmask to `APCCIF_ACK` to clear.
@@ -522,7 +522,7 @@ Source: `connectivity/wlan/gen2/include/nic/hif_rx.h`
 
 ### 3.5 Command / Event Protocol
 
-Commands (`WIFI_CMD_T`) are sent AP→FW via TX queue. Events (`WIFI_EVENT_T`)
+The AP sends commands (`WIFI_CMD_T`) to FW via TX queue. Events (`WIFI_EVENT_T`)
 return FW→AP via RX ring. Both carry a `ucCID` (command/event ID byte), a
 `u2Length`, and a `ucSeqNum` for matching.
 
@@ -615,7 +615,7 @@ Source: `connectivity/bt/stp_chrdev_bt.c:60–63`
 
 ### 4.3 HCI Transport over STP
 
-BT is STP function type 0. All HCI packets are encapsulated in STP frames
+BT is STP function type 0. STP encapsulates all HCI packets in STP frames
 (see §2.7) directed to function 0. The character device read path:
 
 1. STP delivers a complete frame from the receive ring.
@@ -639,7 +639,7 @@ Source: `connectivity/bt/stp_chrdev_bt.c:94–131`
 
 The WMT core (not the BT character driver) loads BT firmware. The WMT
 `wmt_ic_soc.c` handles patch loading via the `wmt_lib` patch infrastructure.
-Patch file suffix is determined by IC family (`wmt_ic.h`).
+IC family determines the patch file suffix (`wmt_ic.h`).
 
 ---
 
@@ -811,8 +811,8 @@ Source: `connectivity/fmradio/inc/fm_ioctl.h`
 3. Poll `FM_MAIN_INTR (0x69)` for `FM_INTR_STC_DONE (bit 0)`.
 4. Read `FM_RSSI_IND (0x6C)` to confirm signal strength.
 
-Desense frequencies that need special handling are listed in
-`mt6631_fm_lib.c`: 6910, 6920, 7680, 7800, 8450, 9210–9230, 9590–9600,
+`mt6631_fm_lib.c` lists desense frequencies that need special handling:
+6910, 6920, 7680, 7800, 8450, 9210–9230, 9590–9600,
 9830, 9900, 9980–9990, 10400, 10750–10760 (all ×100 Hz).
 
 ---
@@ -914,7 +914,7 @@ Source: `video/mt6739/dispsys/ddp_reg_ovl.h:27–59`
 
 8. **Send LCM init commands:** The LCM driver sends a sequence of
    MIPI DSI commands (typically `write_cmd(reg, data...)` via CMDQ or
-   direct DSI command queue). This is panel-specific; see §7.6.
+   direct DSI command queue). This is panel-specific. See §7.6.
 
 9. **Configure MUTEX:** Set mutex module membership and SOF source
    (`DISP_REG_CONFIG_MUTEX_*`), then enable to start frame timing.
@@ -1090,10 +1090,11 @@ Source: `drivers/mmc/host/mediatek/ComboA/msdc_reg.h` (MSDC_INT_* defines)
 ### 8.5 Auto-Tuning
 
 After power-up MSDC performs window-based auto-tuning (`autok.c`) to
-determine optimal PAD delay values for each data rate. The results are stored
-in platform-specific structs and written back to `MSDC_PAD_TUNE0/1` and the
-`EMMC50_PAD_*_TUNE` registers. DVFS transitions re-trigger auto-tuning via
-`autok_dvfs.c`. Source: `drivers/mmc/host/mediatek/ComboA/mt6739/autok_cust.h`
+determine optimal PAD delay values for each data rate. MSDC stores the
+results in platform-specific structs and writes them back to
+`MSDC_PAD_TUNE0/1` and the `EMMC50_PAD_*_TUNE` registers. DVFS transitions
+re-trigger auto-tuning via `autok_dvfs.c`. Source:
+`drivers/mmc/host/mediatek/ComboA/mt6739/autok_cust.h`
 
 ---
 

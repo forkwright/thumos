@@ -10,5 +10,5 @@ kernel-wired / emulated-mock-proven / hardware-proven, and
 `scripts/check-wiring-inventory.sh` fails CI on drift in either direction
 (unclassified modules, phantom entries, witness markers claimed but not
 asserted, or asserted but not fired in the QEMU boot log). Its accounting
-rules are unchanged: compiled+tested means the Rust surface exists; it does
+rules stay fixed: compiled+tested means the Rust surface exists. It does
 not imply boot, userspace, or hardware readiness.
