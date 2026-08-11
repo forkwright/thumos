@@ -8,6 +8,9 @@ set -euo pipefail
 #       (the witness is claimed but nothing asserts it), or
 #   (c) a witness marker is absent from the QEMU boot log (default ./boot.log;
 #       pass --no-log to skip (c) when no boot has run yet)
+#   (d) a compiled-only capability has neither hardware_reason nor a
+#       tracking_reason naming a live issue (#737: a dead_code suppression
+#       that cites nothing checkable reads as vestigial to a cleanup sweep)
 # The inventory is the SSOT for capability reachability; README's capability
 # section and docs/KERNEL-WIRING-AUDIT.md's successor point at it.
 
@@ -73,7 +76,40 @@ if log_path:
             if w not in log:
                 fail(f"witness '{w}' (capability {cid}) did not fire in the boot log")
 
+
+# (d) every compiled-only capability names why it stays unwired: either a
+# hardware gate (hardware_reason -- physically blocked, no issue needed) or
+# a tracking_reason citing a live issue (implemented-but-unwired -- these
+# are different facts, per #737). Presence-only: confirming the cited issue
+# is still OPEN needs the GitHub API, which this offline gate refuses to
+# require. A closed-issue citation with no successor is exactly the failure
+# mode #737 exists to correct (#145 closed while nine screens kept citing
+# it) -- this check cannot see that, only that some live-looking reference
+# exists at all, which is the offline-checkable half of the problem.
+TRACKER_RE = re.compile(r'#\d+')
+compiled_only = [c for c in caps if c.get("tier") == "compiled-only"]
+for c in compiled_only:
+    hw = (c.get("hardware_reason") or "").strip()
+    tr = (c.get("tracking_reason") or "").strip()
+    if hw:
+        continue
+    if not tr:
+        fail(
+            f"capability '{c['id']}' is compiled-only but has neither hardware_reason nor "
+            "tracking_reason -- add hardware_reason if hardware-gated, or tracking_reason "
+            "citing a live issue (e.g. '#737') if implemented-but-unwired"
+        )
+    elif not TRACKER_RE.search(tr):
+        fail(
+            f"capability '{c['id']}' has a tracking_reason but it names no issue "
+            f"(expected a '#NNN' reference): '{tr}'"
+        )
+
 if rc == 0:
-    print(f"wiring inventory: {len(mods)} modules classified in {len(caps)} capabilities, {len(markers)} witness markers verified")
+    print(
+        f"wiring inventory: {len(mods)} modules classified in {len(caps)} capabilities, "
+        f"{len(markers)} witness markers verified, {len(compiled_only)} compiled-only "
+        "capabilities have a hardware or tracking reason"
+    )
 sys.exit(rc)
 PYEOF
