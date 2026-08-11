@@ -37,11 +37,12 @@
 //!
 //! # Matrix integration
 //!
-//! Each entity has a Matrix user ID (`@syn:thumos.lan`, etc.) on the
-//! local conduwuit instance. Messages are exchanged via dedicated
-//! Matrix rooms — one per entity. The [`crate::harmostes`] module
-//! handles the CS API transport; nous only manages identity and
-//! capability gating.
+//! Each entity has a Matrix user ID (`@syn:<homeserver>`, etc.) on the
+//! configured conduwuit instance. The homeserver domain is deployment
+//! configuration (#723) -- supplied by the caller, never compiled in.
+//! Messages are exchanged via dedicated Matrix rooms — one per entity.
+//! The [`crate::harmostes`] module handles the CS API transport; nous
+//! only manages identity and capability gating.
 
 // WHY: nous created in Phase 09 Wave 8, full Matrix room wiring pending.
 #![expect(
@@ -585,6 +586,11 @@ pub enum NousError {
     },
     /// The entity's Matrix user id failed format validation (#373).
     InvalidMatrixId(crate::matrix_ids::MatrixIdError),
+    /// The supplied homeserver domain was empty (#723). A Matrix
+    /// homeserver is deployment configuration; construction requires a
+    /// non-empty value rather than silently falling back to a compiled-in
+    /// domain.
+    EmptyHomeserver,
 }
 
 impl fmt::Display for NousError {
@@ -608,6 +614,7 @@ impl fmt::Display for NousError {
                 write!(f, "{entity} requires {required} capability, has {current}")
             }
             Self::InvalidMatrixId(e) => write!(f, "invalid Matrix user id: {e}"),
+            Self::EmptyHomeserver => write!(f, "homeserver domain must not be empty"),
         }
     }
 }
@@ -629,7 +636,8 @@ pub struct NousEntity {
     /// code set it past the backing buffer's length, causing an
     /// out-of-bounds slice panic in `name_str()`/`PartialEq`.
     name_len: u8,
-    /// Matrix user ID (e.g., "@syn:thumos.lan").
+    /// Matrix user ID (e.g., `@syn:<homeserver>`; #723 -- the homeserver
+    /// domain is supplied, never compiled in).
     pub matrix_id: MatrixUserId,
     /// The capability set -- the SOLE authority over this entity's actions
     /// (#552). Presets only ever construct this; they never rank it.
@@ -766,40 +774,65 @@ impl Eq for NousEntity {}
 // Default entities
 // ---------------------------------------------------------------------------
 
-/// Create the default Syn entity (primary general-purpose assistant).
+/// Build a homeserver-qualified Matrix user id (`@{local_part}:{homeserver}`)
+/// for a default nous entity.
+///
+/// The homeserver is deployment configuration (#723) -- a Matrix homeserver
+/// is where the device's provisioned identity actually lives, not a fact
+/// this crate compiles in. [`crate::provision::ProvisionBundle`] carries the
+/// same `homeserver` field for the operator's own provisioned identity.
 ///
 /// # Errors
 ///
-/// Returns [`NousError`] if the trusted default identifiers ever fail
-/// validation — unreachable for the compile-time constants below, but the
-/// fallible signature keeps the no-panic contract without an infallible
-/// identifier constructor (#373).
-pub(crate) fn default_syn() -> Result<NousEntity, NousError> {
-    NousEntity::new("Syn", "@syn:thumos.lan", CapabilityPreset::Advisor)
+/// Returns [`NousError::EmptyHomeserver`] if `homeserver` is empty -- a
+/// missing value fails typed rather than silently substituting a
+/// placeholder domain.
+fn homeserver_matrix_id(local_part: &str, homeserver: &str) -> Result<String, NousError> {
+    if homeserver.is_empty() {
+        return Err(NousError::EmptyHomeserver);
+    }
+    Ok(alloc::format!("@{local_part}:{homeserver}"))
 }
 
-/// Create the default Phrouros entity (security/field operations).
+/// Create the default Syn entity (primary general-purpose assistant) on
+/// `homeserver`.
+///
+/// # Errors
+///
+/// Returns [`NousError::EmptyHomeserver`] if `homeserver` is empty (#723).
+/// Returns [`NousError::InvalidMatrixId`] if the constructed Matrix user id
+/// fails format validation (#373).
+pub(crate) fn default_syn(homeserver: &str) -> Result<NousEntity, NousError> {
+    NousEntity::new(
+        "Syn",
+        &homeserver_matrix_id("syn", homeserver)?,
+        CapabilityPreset::Advisor,
+    )
+}
+
+/// Create the default Phrouros entity (security/field operations) on
+/// `homeserver`.
 ///
 /// # Errors
 ///
 /// See [`default_syn`].
-pub(crate) fn default_phrouros() -> Result<NousEntity, NousError> {
+pub(crate) fn default_phrouros(homeserver: &str) -> Result<NousEntity, NousError> {
     NousEntity::new(
         "Phrouros",
-        "@phrouros:thumos.lan",
+        &homeserver_matrix_id("phrouros", homeserver)?,
         CapabilityPreset::Observer,
     )
 }
 
-/// Create the default Paideia entity (learning/research).
+/// Create the default Paideia entity (learning/research) on `homeserver`.
 ///
 /// # Errors
 ///
 /// See [`default_syn`].
-pub(crate) fn default_paideia() -> Result<NousEntity, NousError> {
+pub(crate) fn default_paideia(homeserver: &str) -> Result<NousEntity, NousError> {
     NousEntity::new(
         "Paideia",
-        "@paideia:thumos.lan",
+        &homeserver_matrix_id("paideia", homeserver)?,
         CapabilityPreset::Assistant,
     )
 }
@@ -827,25 +860,30 @@ pub(crate) struct NousManager {
 }
 
 impl NousManager {
-    /// Create a new manager with the three default entities.
+    /// Create a new manager with the three default entities (Syn, Phrouros,
+    /// Paideia) on `homeserver`.
     ///
     /// Syn is the default active entity (index 0).
-    #[must_use]
-    pub(crate) fn new() -> Self {
-        // WHY(#373): the defaults are trusted compile-time constants that
-        // always validate; `flatten` keeps each successfully-built entity and
-        // drops the unreachable error case, preserving the no-panic contract
-        // without an infallible identifier constructor.
-        let entities = [default_syn(), default_phrouros(), default_paideia()]
-            .into_iter()
-            .flatten()
-            .collect();
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NousError::EmptyHomeserver`] if `homeserver` is empty
+    /// (#723) -- a missing homeserver fails construction rather than
+    /// silently falling back to a compiled-in domain. Returns
+    /// [`NousError::InvalidMatrixId`] if a constructed default id somehow
+    /// fails Matrix id validation (#373).
+    pub(crate) fn new(homeserver: &str) -> Result<Self, NousError> {
+        let entities = alloc::vec![
+            default_syn(homeserver)?,
+            default_phrouros(homeserver)?,
+            default_paideia(homeserver)?,
+        ];
+        Ok(Self {
             entities,
             active_entity: Some(0),
             receipts: Vec::new(),
             dropped_receipts: 0,
-        }
+        })
     }
 
     /// Create an empty manager with no entities.
@@ -1197,6 +1235,13 @@ impl fmt::Display for NousManager {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Placeholder homeserver domain for tests (#723). RFC 2606 reserves
+/// `.invalid` for exactly this -- guaranteed never a real, reachable
+/// domain, unlike the fleet-internal domain this crate must never compile
+/// in. Shared with [`crate::screen_nous`]'s tests.
+#[cfg(test)]
+pub(crate) const TEST_HOMESERVER: &str = "example.invalid";
+
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
@@ -1398,8 +1443,9 @@ mod tests {
         // #552 adversarial: panic/wipe/security-disable/keys/SIGINT action
         // strings deny on EVERY grant state, Autonomous included.
         let mut mgr = NousManager::empty();
-        let mut all_grant = NousEntity::new("max", "@max:thumos.lan", CapabilityPreset::Autonomous)
-            .expect("valid entity");
+        let mut all_grant =
+            NousEntity::new("max", "@max:example.invalid", CapabilityPreset::Autonomous)
+                .expect("valid entity");
         for cap in [
             NousCapability::ToggleModeConfirmed,
             NousCapability::ToggleRadiosConfirmed,
@@ -1443,7 +1489,7 @@ mod tests {
 
     #[test]
     fn unknown_actions_deny_fail_closed() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         let proposal = crate::ekphrasis::ActionProposal::new(
             String::from("exfiltrate_everything"),
             Vec::new(),
@@ -1461,7 +1507,7 @@ mod tests {
     #[test]
     fn stale_grant_denies_after_revoke() {
         // #552 adversarial: a revoked (stale) grant must not authorize.
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         let proposal = crate::ekphrasis::ActionProposal::new(
             String::from(crate::ekphrasis::action_types::DRAFT_SMS),
             Vec::new(),
@@ -1488,7 +1534,7 @@ mod tests {
 
     #[test]
     fn confirmation_discipline_per_rule() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         let sms = crate::ekphrasis::ActionProposal::new(
             String::from(crate::ekphrasis::action_types::DRAFT_SMS),
             Vec::new(),
@@ -1512,7 +1558,7 @@ mod tests {
 
     #[test]
     fn every_decision_receipts() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         let good = crate::ekphrasis::ActionProposal::new(
             String::from(crate::ekphrasis::action_types::DRAFT_SMS),
             Vec::new(),
@@ -1554,8 +1600,8 @@ mod tests {
             p = p.next_grantable();
         }
         // The opt-in path requires the explicit confirmation flag.
-        let mut e =
-            NousEntity::new("e", "@e:thumos.lan", CapabilityPreset::Agent).expect("valid entity");
+        let mut e = NousEntity::new("e", "@e:example.invalid", CapabilityPreset::Agent)
+            .expect("valid entity");
         e.opt_in_autonomous(false);
         assert_ne!(
             e.preset(),
@@ -1572,7 +1618,7 @@ mod tests {
 
     #[test]
     fn custom_edits_flip_label() {
-        let mut e = NousEntity::new("e", "@e:thumos.lan", CapabilityPreset::Observer)
+        let mut e = NousEntity::new("e", "@e:example.invalid", CapabilityPreset::Observer)
             .expect("valid entity");
         assert_eq!(e.capability_label(), "OBSERVER");
         e.grant(NousCapability::ReadCalendar);
@@ -1606,20 +1652,20 @@ mod tests {
     fn entity_creation() {
         let entity = NousEntity::new(
             "TestBot",
-            "@testbot:thumos.lan",
+            "@testbot:example.invalid",
             CapabilityPreset::Assistant,
         );
         assert!(entity.is_ok());
         let entity = entity.unwrap_or_else(|_| unreachable!());
         assert_eq!(entity.name_str(), "TestBot");
-        assert_eq!(entity.matrix_id, "@testbot:thumos.lan");
+        assert_eq!(entity.matrix_id, "@testbot:example.invalid");
         assert_eq!(entity.preset(), CapabilityPreset::Assistant);
     }
 
     #[test]
     fn entity_name_too_long() {
         let long_name = "a]".repeat(20); // 40 bytes > MAX_NAME_LEN (32)
-        let result = NousEntity::new(&long_name, "@long:thumos.lan", CapabilityPreset::Off);
+        let result = NousEntity::new(&long_name, "@long:example.invalid", CapabilityPreset::Off);
         assert!(result.is_err());
         match result {
             Err(NousError::NameTooLong { len }) => {
@@ -1633,7 +1679,7 @@ mod tests {
     fn entity_max_name_length() {
         // Exactly MAX_NAME_LEN bytes should succeed.
         let name: String = core::iter::repeat_n('x', MAX_NAME_LEN).collect();
-        let result = NousEntity::new(&name, "@max:thumos.lan", CapabilityPreset::Off);
+        let result = NousEntity::new(&name, "@max:example.invalid", CapabilityPreset::Off);
         assert!(result.is_ok(), "exactly MAX_NAME_LEN must succeed");
     }
 
@@ -1644,11 +1690,11 @@ mod tests {
         // -- `tests` is a descendant module of `nous`) to prove the read
         // path stays fail-closed even if that invariant is ever violated
         // again, rather than panicking on an out-of-bounds slice index.
-        let mut entity = NousEntity::new("Bot", "@bot:thumos.lan", CapabilityPreset::Off)
+        let mut entity = NousEntity::new("Bot", "@bot:example.invalid", CapabilityPreset::Off)
             .unwrap_or_else(|_| unreachable!());
         entity.name_len = 200;
 
-        let other = NousEntity::new("Bot", "@bot:thumos.lan", CapabilityPreset::Off)
+        let other = NousEntity::new("Bot", "@bot:example.invalid", CapabilityPreset::Off)
             .unwrap_or_else(|_| unreachable!());
 
         let name = entity.name_str();
@@ -1661,22 +1707,22 @@ mod tests {
 
     #[test]
     fn entity_propose_reflects_preset() {
-        let observer = NousEntity::new("Obs", "@obs:thumos.lan", CapabilityPreset::Observer)
+        let observer = NousEntity::new("Obs", "@obs:example.invalid", CapabilityPreset::Observer)
             .unwrap_or_else(|_| unreachable!());
         assert!(!observer.can_propose());
 
-        let assistant = NousEntity::new("Ast", "@ast:thumos.lan", CapabilityPreset::Assistant)
+        let assistant = NousEntity::new("Ast", "@ast:example.invalid", CapabilityPreset::Assistant)
             .unwrap_or_else(|_| unreachable!());
         assert!(assistant.can_propose());
     }
 
     #[test]
     fn entity_display() {
-        let entity = default_syn().expect("default syn valid");
+        let entity = default_syn(TEST_HOMESERVER).expect("default syn valid");
         let display = alloc::format!("{entity}");
         assert!(display.contains("Syn"), "display must contain name");
         assert!(
-            display.contains("@syn:thumos.lan"),
+            display.contains("@syn:example.invalid"),
             "display must contain matrix id"
         );
         assert!(display.contains("ADVISOR"), "display must contain preset");
@@ -1684,11 +1730,11 @@ mod tests {
 
     #[test]
     fn entity_equality() {
-        let a = default_syn().expect("default syn valid");
-        let b = default_syn().expect("default syn valid");
+        let a = default_syn(TEST_HOMESERVER).expect("default syn valid");
+        let b = default_syn(TEST_HOMESERVER).expect("default syn valid");
         assert_eq!(a, b, "identical entities must be equal");
 
-        let c = default_phrouros().expect("default phrouros valid");
+        let c = default_phrouros(TEST_HOMESERVER).expect("default phrouros valid");
         assert_ne!(a, c, "different entities must not be equal");
     }
 
@@ -1696,7 +1742,7 @@ mod tests {
 
     #[test]
     fn default_entities_valid() {
-        let syn = default_syn().expect("default syn valid");
+        let syn = default_syn(TEST_HOMESERVER).expect("default syn valid");
         assert_eq!(syn.name_str(), "Syn");
         assert_eq!(syn.preset(), CapabilityPreset::Advisor);
         assert!(syn.can_propose());
@@ -1704,23 +1750,44 @@ mod tests {
         // per-capability, opt-in) — it proposes with confirmation only.
         assert!(!syn.can_auto_execute());
 
-        let phrouros = default_phrouros().expect("default phrouros valid");
+        let phrouros = default_phrouros(TEST_HOMESERVER).expect("default phrouros valid");
         assert_eq!(phrouros.name_str(), "Phrouros");
         assert_eq!(phrouros.preset(), CapabilityPreset::Observer);
         assert!(!phrouros.can_propose());
 
-        let paideia = default_paideia().expect("default paideia valid");
+        let paideia = default_paideia(TEST_HOMESERVER).expect("default paideia valid");
         assert_eq!(paideia.name_str(), "Paideia");
         assert_eq!(paideia.preset(), CapabilityPreset::Assistant);
         assert!(paideia.can_propose());
         assert!(!paideia.can_auto_execute());
     }
 
+    #[test]
+    fn default_entities_require_nonempty_homeserver() {
+        // #723: the homeserver is supplied deployment configuration, not a
+        // compiled-in literal -- a missing value must fail typed, never
+        // silently substitute a fallback domain.
+        assert_eq!(default_syn(""), Err(NousError::EmptyHomeserver));
+        assert_eq!(default_phrouros(""), Err(NousError::EmptyHomeserver));
+        assert_eq!(default_paideia(""), Err(NousError::EmptyHomeserver));
+    }
+
+    #[test]
+    fn manager_new_requires_nonempty_homeserver() {
+        // #723: NousManager::new propagates the same typed failure instead
+        // of silently constructing its default entities against a
+        // placeholder domain.
+        assert!(matches!(
+            NousManager::new(""),
+            Err(NousError::EmptyHomeserver)
+        ));
+    }
+
     // --- NousManager tests ---
 
     #[test]
     fn manager_defaults() {
-        let mgr = NousManager::new();
+        let mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         assert_eq!(mgr.entity_count(), 3, "must have 3 default entities");
         assert_eq!(mgr.active_index(), Some(0), "Syn must be active by default");
 
@@ -1744,7 +1811,7 @@ mod tests {
 
     #[test]
     fn manager_switch() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         assert!(mgr.switch(1).is_ok(), "switch to index 1 must succeed");
         assert_eq!(
             mgr.active().map(NousEntity::name_str),
@@ -1769,7 +1836,7 @@ mod tests {
 
     #[test]
     fn manager_cycle_next() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         assert_eq!(mgr.active_index(), Some(0));
 
         mgr.cycle_next();
@@ -1791,8 +1858,8 @@ mod tests {
 
     #[test]
     fn manager_add_entity() {
-        let mut mgr = NousManager::new();
-        let custom = NousEntity::new("Custom", "@custom:thumos.lan", CapabilityPreset::Agent)
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
+        let custom = NousEntity::new("Custom", "@custom:example.invalid", CapabilityPreset::Agent)
             .unwrap_or_else(|_| unreachable!());
 
         assert!(mgr.add_entity(custom).is_ok());
@@ -1801,8 +1868,8 @@ mod tests {
 
     #[test]
     fn manager_add_duplicate_name() {
-        let mut mgr = NousManager::new();
-        let dup = NousEntity::new("Syn", "@syn2:thumos.lan", CapabilityPreset::Off)
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
+        let dup = NousEntity::new("Syn", "@syn2:example.invalid", CapabilityPreset::Off)
             .unwrap_or_else(|_| unreachable!());
 
         let err = mgr.add_entity(dup);
@@ -1811,7 +1878,7 @@ mod tests {
 
     #[test]
     fn manager_remove_entity() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         assert_eq!(mgr.entity_count(), 3);
 
         let removed = mgr.remove_entity(1);
@@ -1825,7 +1892,7 @@ mod tests {
 
     #[test]
     fn manager_remove_active_adjusts() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         // Switch to last entity (index 2 = Paideia).
         mgr.switch(2).unwrap_or_else(|_| unreachable!());
         assert_eq!(mgr.active_index(), Some(2));
@@ -1848,7 +1915,7 @@ mod tests {
         // whatever entity Vec::remove shifted down into that slot --
         // that would substitute a different entity's capability preset
         // for a selection the caller never made.
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         // Syn (Advisor) at 0, Phrouros (Observer) at 1, Paideia (Assistant) at 2.
         mgr.switch(1).unwrap_or_else(|_| unreachable!()); // active = Phrouros
         assert_eq!(mgr.active().map(NousEntity::name_str), Some("Phrouros"));
@@ -1870,7 +1937,7 @@ mod tests {
 
     #[test]
     fn manager_remove_invalid_index() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         let err = mgr.remove_entity(99);
         assert!(matches!(
             err,
@@ -1880,7 +1947,7 @@ mod tests {
 
     #[test]
     fn manager_set_preset() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         assert!(mgr.set_preset(0, CapabilityPreset::Agent).is_ok());
         assert_eq!(
             mgr.entity(0).map(NousEntity::preset),
@@ -1890,7 +1957,7 @@ mod tests {
 
     #[test]
     fn manager_set_preset_invalid_index() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         let err = mgr.set_preset(99, CapabilityPreset::Off);
         assert!(matches!(
             err,
@@ -1900,7 +1967,7 @@ mod tests {
 
     #[test]
     fn manager_find_by_name() {
-        let mgr = NousManager::new();
+        let mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         let result = mgr.find_by_name("Phrouros");
         assert!(result.is_some());
         assert_eq!(result.map(|(i, _)| i), Some(1));
@@ -1909,23 +1976,23 @@ mod tests {
 
     #[test]
     fn manager_find_by_matrix_id() {
-        let mgr = NousManager::new();
-        let result = mgr.find_by_matrix_id("@paideia:thumos.lan");
+        let mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
+        let result = mgr.find_by_matrix_id("@paideia:example.invalid");
         assert!(result.is_some());
         assert_eq!(result.map(|(i, _)| i), Some(2));
-        assert!(mgr.find_by_matrix_id("@unknown:thumos.lan").is_none());
+        assert!(mgr.find_by_matrix_id("@unknown:example.invalid").is_none());
     }
 
     #[test]
     fn manager_active_can_propose() {
-        let mgr = NousManager::new();
+        let mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         // Syn is Advisor, which can propose.
         assert!(mgr.active_can_propose());
     }
 
     #[test]
     fn manager_active_can_auto_execute() {
-        let mgr = NousManager::new();
+        let mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         // #552: Syn (Advisor) holds NO autonomous grant — auto-execution is
         // per-capability (autonomous classes), never a preset rank.
         assert!(!mgr.active_can_auto_execute());
@@ -1933,7 +2000,7 @@ mod tests {
 
     #[test]
     fn manager_active_observer_cannot_propose() {
-        let mut mgr = NousManager::new();
+        let mut mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         // Switch to Phrouros (Observer).
         mgr.switch(1).unwrap_or_else(|_| unreachable!());
         assert!(!mgr.active_can_propose());
@@ -1942,7 +2009,7 @@ mod tests {
 
     #[test]
     fn manager_display() {
-        let mgr = NousManager::new();
+        let mgr = NousManager::new(TEST_HOMESERVER).expect("test homeserver must construct");
         let display = alloc::format!("{mgr}");
         assert!(display.contains("3 entities"));
         assert!(display.contains("Syn"));
