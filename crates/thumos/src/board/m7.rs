@@ -71,7 +71,7 @@ pub(crate) const LFS_PREAMBLE_SECTORS: u64 = 1;
 /// github.com/iscle/OrangePi_4G-IOT_Android_8.1_BSP), and `0x11210000`
 /// appears nowhere in either 2499-line tree.
 ///
-/// WHY this replaced `0x1121_0000` (#676): that address is real in this SoC
+/// WHY this replaced `0x1121_0000` (#676): that address is real in this `SoC`
 /// family but belongs to a different device. Mainline
 /// `arch/arm/boot/dts/mediatek/mt2701.dtsi` splits the pair explicitly --
 /// `usb@11200000` is the `mtk-musb` controller, `t-phy@11210000` is the
