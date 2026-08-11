@@ -237,6 +237,30 @@ RUST/indexing-slicing:crates/pteron/src/smp/pdu.rs
 RUST/indexing-slicing:crates/pteron/src/smp/toolbox.rs
 RUST/indexing-slicing:crates/topos-core/src/lib.rs
 
+# WHY(#718): RUST/string-slice and RUST/as-cast are the same lint shape as
+# RUST/indexing-slicing (range-slice / narrowing-cast on data whose bound is
+# proven earlier in the SAME function), against these SAME already-verified
+# files. Each site below was individually re-checked for #718: `&s[..pos]`
+# after `.position()` on that exact slice, `&s[..n]` after a preceding
+# length/`expect(want)` guard, slicing into a locally-declared fixed-size
+# array, or a narrowing cast (`as u8`/`as u16`/`as u32`) immediately preceded
+# by an INVARIANT comment and a range check proving the value fits. None
+# involve externally-unbounded input reaching an unchecked bound.
+RUST/string-slice:crates/klesis-core/src/lib.rs
+RUST/string-slice:crates/metaxu-core/src/envelope.rs
+RUST/string-slice:crates/metaxu-core/src/protocol.rs
+RUST/string-slice:crates/pteron/src/smp/pdu.rs
+RUST/string-slice:crates/pteron/src/smp/toolbox.rs
+RUST/string-slice:crates/topos-core/src/lib.rs
+RUST/as-cast:crates/klesis-core/src/lib.rs
+RUST/as-cast:crates/topos-core/src/lib.rs
+# WHY(#718): pteron smp/pdu.rs::io_cap_for_check is `const fn`; its single
+# as-cast site is `self.oob_data_present as u8` on a `bool` field --
+# provably lossless (bool -> u8 is always 0 or 1) but `u8::from(bool)` is
+# not const-fn-stable on this toolchain, same constraint as the const-fn
+# integer-widening cases above.
+RUST/as-cast:crates/pteron/src/smp/pdu.rs
+
 # WHY(#719): same lib.rs-only heuristic as the TESTING/no-tests block above.
 # metaxu-core's lib.rs is module declarations and re-exports; its submodules
 # carry 19 tests (envelope.rs 10, grants.rs 6, protocol.rs 3).
