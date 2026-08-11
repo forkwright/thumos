@@ -4,6 +4,10 @@
 //! buttons (OK, Cancel, Yes, No) at the bottom. The caller queries
 //! [`Dialog::take_result`] to learn which button was activated.
 
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
 use haphe::input::{Key, TouchPoint};
 
 use crate::color::Rgb565;

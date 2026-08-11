@@ -1,3 +1,4 @@
+#![no_std]
 #![deny(missing_docs)]
 #![expect(
     dead_code,
@@ -14,6 +15,8 @@
 //! - [`status_bar`]: top status strip (signal, time, battery).
 //! - [`widget`]: [`widget::Widget`] and [`widget::Focusable`] traits for UI components.
 //! - [`widgets`]: concrete widget implementations (list, menu, dialog, dialer).
+
+extern crate alloc;
 
 pub mod color;
 pub mod font;

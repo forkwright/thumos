@@ -3,7 +3,7 @@
 //! The `GC9306` DBI controller uses `RGB565` format: 5 red bits, 6 green bits, 5 blue bits
 //! packed INTO a 16-bit little-endian word.
 
-use std::fmt;
+use core::fmt;
 
 const RED_BITS: u8 = 5;
 const GREEN_BITS: u8 = 6;
@@ -59,6 +59,8 @@ impl fmt::Display for Rgb565 {
 
 #[cfg(test)]
 mod tests {
+    use alloc::format;
+
     use super::*;
 
     #[test]
