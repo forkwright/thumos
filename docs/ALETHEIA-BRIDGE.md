@@ -20,7 +20,7 @@ boundary for constrained Thumos clients, not an embedded cognition runtime.
 
 Thumos targets constrained mobile hardware and already has separate local
 surfaces for voice transcription (`ekphrasis`) and nous action proposals. The
-Aletheia runtime is expected to be heavier than the device boundary should own:
+Aletheia runtime likely outweighs what the device boundary should own:
 it may need model orchestration, tool scheduling, long-lived memory, and
 fleet-level context. Keeping that runtime off-device preserves the Thumos
 resource budget and keeps the device boundary focused on typed, auditable
@@ -29,13 +29,13 @@ actions.
 The thin-client design also keeps capability enforcement local to Thumos. A
 runtime request can carry grant claims, but the device side remains responsible
 for verifying policy before sending SMS, placing calls, reading contacts, or
-opening audio sessions. Device identity is represented by opaque handles and
-attestation digests; raw IMEI, IMSI, WiFi MAC, Bluetooth address, and similar
+opening audio sessions. Opaque handles and attestation digests represent
+device identity. Raw IMEI, IMSI, WiFi MAC, Bluetooth address, and similar
 hardware identifiers must not cross this bridge.
 
 ## Current Surface
 
-- `crates/metaxu` is registered as a workspace crate.
+- The root `Cargo.toml` registers `crates/metaxu` as a workspace member.
 - Requests and responses serialize with `postcard`, framed in a versioned
   envelope (magic + schema + major/minor + kind + correlation ID + declared
   length, checked before any payload decode) so thumos and aletheia never
@@ -60,10 +60,10 @@ hardware identifiers must not cross this bridge.
 
 ## What Remains
 
-The verified protocol path above is proven against a reference endpoint
-double (`pylon`) inside the `metaxu` crate itself -- a stand-in for the real
-Aletheia runtime, not a live one. Outstanding for a genuinely live round
-trip:
+A witness test inside the `metaxu` crate itself proves the verified protocol
+path above against a reference endpoint double (`pylon`) -- a stand-in for
+the real Aletheia runtime, not a live one. Outstanding for a genuinely live
+round trip:
 
 - **Done in QEMU (#544):** `board::UART1_BASE` (the qemu-virt second PL011,
   present under `-machine virt,secure=on`) carries an authenticated request
@@ -77,7 +77,7 @@ trip:
   std-only client/transport layer, so it links `metaxu-core` (the shared
   no_std+alloc extraction, #545) instead. WiFi on hardware, and routing
   the transport through firewall policy (meaningful for an IP-based
-  transport; the UART leg is not one), remain unaddressed.
+  transport -- the UART leg is not one) remain unaddressed.
 - Stand up (or point at) an actual Aletheia-side endpoint implementing the
   pylon's verification contract, so the pinned runtime key is a real
   runtime's key, not a witness fixture.
@@ -86,14 +86,14 @@ trip:
   leg does the latter, clearly labeled dev-only).
 - Connect nous capability presets to concrete `metaxu` grant issuance.
 - Route accepted device actions through the existing confirmation UI and
-  local service APIs (criterion 4 of #544; untouched).
+  local service APIs (criterion 4 of #544, untouched).
 - Cross-link the corresponding Aletheia-side runtime endpoint when it
   exists.
 
 ## Non-Goals
 
-- No Aletheia runtime is embedded in Thumos.
-- No live LTE, mesh, SMS, Matrix, or socket transport is wired by this decision.
-- No network or firewall boot path changes are part of this bridge decision.
-- No userspace spawn or init path changes are part of this bridge decision.
-- No dependency on a C toolchain or heavyweight runtime library is introduced.
+- This decision embeds no Aletheia runtime in Thumos.
+- This decision wires no live LTE, mesh, SMS, Matrix, or socket transport.
+- This decision makes no network or firewall boot path changes.
+- This decision makes no userspace spawn or init path changes.
+- This decision introduces no dependency on a C toolchain or heavyweight runtime library.
