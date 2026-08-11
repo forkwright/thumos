@@ -240,7 +240,10 @@ pub(crate) fn is_write_end(flags: u32) -> bool {
 // standard POSIX fd/ofd terminology naming two genuinely distinct values --
 // renaming either pair to defeat the Levenshtein check would decouple the
 // names from the concepts they name.
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "read_ofd/write_ofd (open-file-description table indices) and read_fd/write_fd (the per-process fd numbers derived from them) are standard POSIX fd/ofd terminology naming two genuinely distinct values -- renaming either pair to defeat the Levenshtein check would decouple the names from the concepts they name"
+)]
 pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     if fds_ptr == 0 {
         return EFAULT;

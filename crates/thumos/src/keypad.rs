@@ -183,7 +183,25 @@ impl BootKeypad {
     // self, but kinit.rs (out of this change's scope) calls this as
     // `keypad.init()` alongside the rest of BootKeypad's per-instance API --
     // dropping &self would require a matching kinit.rs call-site edit.
-    #[allow(clippy::unused_self)]
+    // NOTE: cfg_attr split, not a bare expect (#718 trap) -- clippy's
+    // unused_self does not fire on this body under the qemu feature
+    // (verified: CI run 31499203998), so an unconditional #[expect] is
+    // unfulfilled there while fulfilled under every non-qemu, non-test
+    // kernel configuration.
+    #[cfg_attr(
+        not(feature = "qemu"),
+        expect(
+            clippy::unused_self,
+            reason = "the body only touches board:: constants and MMIO registers, not self, but kinit.rs calls this as keypad.init() alongside the rest of BootKeypad's per-instance API -- dropping &self would require a matching kinit.rs call-site edit"
+        )
+    )]
+    #[cfg_attr(
+        feature = "qemu",
+        allow(
+            clippy::unused_self,
+            reason = "same instance-method-parity rationale as the non-qemu expect above; clippy's unused_self does not fire on this body under qemu"
+        )
+    )]
     pub(crate) fn init(&self) {
         for &pin in &board::KEYPAD_ROW_PINS {
             let (dir_addr, dir_mask) = gpio_reg(board::GPIO_DIR_BASE, pin);

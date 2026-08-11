@@ -937,7 +937,25 @@ impl<L: LcmDriver> DisplayDriver<L> {
     // DisplayDriver instance-style via `display.state()`). Dropping
     // &mut self would turn a pipeline-instance method into a free
     // function and misrepresent the state precondition as global.
-    #[allow(clippy::unused_self)]
+    // NOTE: cfg_attr split, not a bare expect (#718 trap) -- clippy's
+    // unused_self does not fire on this exact body under the qemu feature
+    // (verified: CI run 31499203998), so an unconditional #[expect] is
+    // unfulfilled there while fulfilled under every non-qemu kernel
+    // configuration.
+    #[cfg_attr(
+        not(feature = "qemu"),
+        expect(
+            clippy::unused_self,
+            reason = "the body only touches global MMIO today, but this is a documented instance method on the pipeline handle (its safety contract is stated in terms of self's Active state) meant to be called as display.write_framebuffer(..) alongside this same struct's other &mut self steps; dropping &mut self would turn a pipeline-instance method into a free function and misrepresent the state precondition as global"
+        )
+    )]
+    #[cfg_attr(
+        feature = "qemu",
+        allow(
+            clippy::unused_self,
+            reason = "same instance-method-parity rationale as the non-qemu expect above; clippy's unused_self does not fire on this body under qemu"
+        )
+    )]
     pub unsafe fn write_framebuffer(&mut self, addr: usize, stride: u32) {
         debug_assert!(
             is_fb_addr_aligned(addr),

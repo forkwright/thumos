@@ -157,7 +157,10 @@ impl DhcpClient {
     // only a transitive dependency (via smoltcp), not a direct one this
     // crate can name. Adding it as a direct dependency just to spell a
     // method path is out of scope for a lint fix.
-    #[allow(clippy::redundant_closure_for_method_calls)]
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "clippy's suggested Vec::clear names heapless::vec::Vec, a transitive smoltcp dependency this crate cannot name directly"
+    )]
     pub(crate) fn poll<D: Device>(&mut self, stack: &mut NetworkStack<D>) -> DhcpEvent {
         // WHY: Extract all data from the DHCP config *before* calling any
         // methods on `stack`, to avoid overlapping mutable borrows. The

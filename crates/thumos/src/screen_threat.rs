@@ -103,7 +103,10 @@ impl ThreatLevelScreenExt for ThreatLevel {
     // but for different reasons -- High is orange on its own merits, the
     // wildcard is a defensive "unknown future band renders as attention,
     // never fine". Merging them into one arm would blur that distinction.
-    #[allow(clippy::match_same_arms)]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "High and the non_exhaustive wildcard both resolve to COLOR_ORANGE, but for different reasons -- High is orange on its own merits, the wildcard is a defensive unknown-future-band-renders-as-attention-never-fine; merging them into one arm would blur that distinction"
+    )]
     fn color(self) -> u16 {
         match self {
             Self::Low => color::GREEN,
@@ -601,7 +604,10 @@ impl Screen for ThreatMonitor {
     // but the explicit Lsk arm documents that LSK is intentionally a no-op
     // (detail view pending, not a forgotten key) rather than silently
     // falling through the same as any unhandled key.
-    #[allow(clippy::match_same_arms)]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "Key::Lsk's arm documents LSK as an intentional no-op (detail view pending) rather than silently falling through the wildcard like any unhandled key"
+    )]
     fn on_key(&mut self, key: Key) -> ScreenAction {
         match key {
             Key::Up => {

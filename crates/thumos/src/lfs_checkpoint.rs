@@ -271,7 +271,10 @@ fn validate_header_geometry(header: &CheckpointHeader, device_blocks: u64) -> Re
 // WHY: slot_a_block/slot_b_block mirror this module's own "slot A / slot B"
 // dual-checkpoint terminology (see the module doc comment) — renaming either
 // would obscure which physical slot each argument identifies.
-#[allow(clippy::similar_names)]
+#[expect(
+    clippy::similar_names,
+    reason = "slot_a_block/slot_b_block mirror this module's own slot-A/slot-B dual-checkpoint terminology (see the module doc comment) -- renaming either would obscure which physical slot each argument identifies"
+)]
 pub(crate) fn pick_latest(
     dev: &mut dyn BlockDevice,
     cache: &mut BlockCache,
