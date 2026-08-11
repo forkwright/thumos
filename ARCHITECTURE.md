@@ -96,7 +96,7 @@ eidolon --> haphe    (UI reads input events)
 
 All other workspace crates are independent of each other. External dependencies flow downward: crates use RustCrypto, `nom`, `smoltcp`, `snafu`, etc. but never import from higher layers. `metaxu` is a protocol boundary only; it does not embed the Aletheia runtime or wire a live network transport.
 
-**Rule**: lower layers do not import from higher layers. `haphe` does not depend on `eidolon`. Radio crates do not depend on security crates. The kernel depends on nothing in the workspace.
+**Rule**: lower layers do not import from higher layers. `haphe` does not depend on `eidolon`, radio crates do not depend on security crates, and the kernel depends on nothing in the workspace — each layer compiles and tests without pulling in the ones above it.
 
 ## Layer diagram
 
