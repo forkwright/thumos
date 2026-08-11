@@ -631,7 +631,7 @@ impl fmt::Display for AudioCaptureConfig {
 pub(crate) struct Ekphrasis {
     /// Current state of the voice-to-text pipeline.
     state: EkphrasisState,
-    /// Aletheia STT endpoint hostname (e.g., "stt.example.lan" or Tailscale IP).
+    /// Aletheia STT endpoint hostname, supplied by the caller (a hostname or an IP).
     aletheia_host: String,
     /// Aletheia STT endpoint port.
     aletheia_port: u16,
