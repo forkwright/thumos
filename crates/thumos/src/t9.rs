@@ -28,10 +28,10 @@
 //! key sequence, all words whose letter-to-key mapping matches the pressed
 //! keys as a prefix are returned as candidates.
 
-// WHY: T9 input created in Phase 07 Wave 5, kinit wiring pending (#145).
+// WHY: T9 input exists; kinit wiring pending (tier in docs/capability-inventory.toml).
 #![expect(
     dead_code,
-    reason = "T9 input created in Phase 07 Wave 5, kinit wiring pending (#145)"
+    reason = "T9 input exists; kinit wiring pending (tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;

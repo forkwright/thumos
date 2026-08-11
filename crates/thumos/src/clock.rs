@@ -24,7 +24,7 @@
 // syscalls still use the lower-level timer/time paths.
 #![expect(
     dead_code,
-    reason = "Clock trust manager is not wired into kernel time (#145)"
+    reason = "Clock trust manager is not wired into kernel time (tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;
@@ -363,7 +363,7 @@ pub(crate) fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
 #[must_use]
 pub(crate) fn calculate_ntp_offset(local_send_secs: u64, server_transmit_epoch: u64) -> i64 {
     // INVARIANT: unlike the other u64 -> i64 sites in this module, this
-    // function has no wired-in caller yet (#145 -- the clock trust manager
+    // function has no wired-in caller yet (the clock trust manager
     // is not wired into kernel time) to bound `local_send_secs` by
     // construction, and `server_transmit_epoch` is meant to carry a value
     // parsed from a network-supplied NTP packet (see `parse_ntp_response`).

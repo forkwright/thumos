@@ -23,7 +23,7 @@
 // WHY: A2DP profile not yet wired to audio session manager (Wave 8, kinit pending).
 #![expect(
     dead_code,
-    reason = "A2DP profile created in Phase 07 Wave 8, audio manager wiring pending (#145)"
+    reason = "A2DP profile exists; audio manager wiring pending (tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;
