@@ -140,7 +140,6 @@ impl SlabClass {
             // multiple-of-4 proof in the INVARIANT above, which is exactly
             // what discharges the alignment obligation the lint exists to
             // demand.
-            #[allow(clippy::cast_ptr_alignment)]
             let node_ptr = unsafe { page_ptr.add(i * self.obj_size).cast::<FreeNode>() };
             unsafe {
                 (*node_ptr).next = self.free_list;
@@ -207,7 +206,6 @@ impl SlabClass {
         // WHY the allow: see `refill`'s identical `cast_ptr_alignment` note
         // -- the lint fires on `.cast()` too and cannot see the INVARIANT
         // above that discharges it.
-        #[allow(clippy::cast_ptr_alignment)]
         let node = ptr.cast::<FreeNode>();
         unsafe {
             (*node).next = self.free_list;

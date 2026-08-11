@@ -728,7 +728,6 @@ impl KernelState {
     // routes UI + audio via self's persisted telephony. Called instance-style
     // (`kernel.handle_reflex(..)`) from the production run loop; dropping
     // &mut self now would just be re-added when those TODOs land.
-    #[allow(clippy::unused_self)]
     pub(crate) fn handle_reflex(&mut self, pending: reflex::Pending, serial: &mut Uart) {
         if pending.panic_wipe {
             let _ = serial.write_str("[kardia] REFLEX panic-wipe\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write

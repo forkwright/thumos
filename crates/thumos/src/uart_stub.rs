@@ -26,11 +26,9 @@ impl Uart {
     // binding described above -- callers like console.rs/syscall.rs (out of
     // scope here) call `.putc(..)`/`.getc()` on whichever binding is active.
     // Dropping &self would break that parity.
-    #[allow(clippy::unused_self)]
     pub(crate) fn putc(&self, _byte: u8) {}
 
     /// Host-test RX stub: no real UART, so no bytes are ever available.
-    #[allow(clippy::unused_self)]
     pub(crate) fn getc(&self) -> Option<u8> {
         None
     }

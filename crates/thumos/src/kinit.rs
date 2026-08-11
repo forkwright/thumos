@@ -498,7 +498,6 @@ fn debug_console_gate(serial: &mut Uart, mode_mgr: &crate::security_mode::ModeMa
 // of new `unsafe fn` boundaries -- each needing its own safety contract --
 // purely to satisfy a line count, while making the top-to-bottom boot order
 // this function exists to keep auditable harder to read in one pass.
-#[allow(clippy::too_many_lines)]
 pub unsafe fn run() -> ! {
     let mut serial = Uart::new();
     let mut state = BootState::new();
@@ -1270,7 +1269,6 @@ pub unsafe fn run() -> ! {
     // would separate this declaration from its use two lines below by
     // hundreds of lines, for the same audit-ability reason `run()` itself
     // carries a `too_many_lines` allow above.
-    #[allow(clippy::items_after_statements)]
     static INITRAMFS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/initramfs.cpio"));
     let boot_cpio = if lfs_root.is_none() {
         Some(INITRAMFS)
@@ -1668,7 +1666,6 @@ pub unsafe fn run() -> ! {
     // WHY the allow: see `INITRAMFS`'s identical note above -- hoisting out of
     // `run()`'s boot narrative to satisfy a line-position lint would separate
     // this from its use three lines below by well over a thousand lines.
-    #[allow(clippy::items_after_statements)]
     static INITRAMFS_SIG: &[u8; 64] =
         include_bytes!(concat!(env!("OUT_DIR"), "/initramfs_sig.bin"));
     let userspace_image_verified =

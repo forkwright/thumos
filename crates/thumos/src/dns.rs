@@ -557,7 +557,6 @@ impl DnsResolver {
     // test exercises it that way (`resolver.build_query(..)` in a loop over
     // one `DnsResolver::new(..)` instance). Dropping &mut self would force
     // restructuring that test's instance shape for no functional benefit.
-    #[allow(clippy::unused_self)]
     pub(crate) fn build_query(&mut self, hostname: &str) -> Result<(Vec<u8>, u16), DnsError> {
         let txid = random_txid();
         let packet = build_dns_query(hostname, txid)?;

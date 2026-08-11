@@ -103,7 +103,6 @@ pub(crate) const FD_KIND_SOCKET: u32 = 0x0002;
 /// `core::net::Ipv4Addr`, which clippy's `ip_constant` lint otherwise
 /// steers callers toward. This is the one place the raw octets are
 /// spelled out; every other use in this file names this constant instead.
-#[allow(clippy::ip_constant)]
 pub(crate) const LOOPBACK_ADDR: Ipv4Address = Ipv4Address::new(127, 0, 0, 1);
 
 // ---------------------------------------------------------------------------
@@ -147,7 +146,6 @@ pub struct SocketInfo {
 // `sin_zero`) -- this struct exists to mirror that ABI layout field-for-
 // field; dropping the prefix would decouple the names from the spec they
 // document.
-#[allow(clippy::struct_field_names)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SockaddrIn {

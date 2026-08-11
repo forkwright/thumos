@@ -340,7 +340,6 @@ fn sha1_compress(state: &mut [u32; 5], block: &[u8; SHA1_BLOCK_SIZE]) {
     // selection via `match i` -- an iterator rewrite still needs i for the
     // match, so the container index would just move into an unused
     // .enumerate() binding for zero simplification.
-    #[allow(clippy::needless_range_loop)]
     for i in 0..80 {
         let (f, k) = match i {
             0..=19 => ((wb & wc) | ((!wb) & wd), SHA1_K[0]),

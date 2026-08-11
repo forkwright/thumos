@@ -183,7 +183,6 @@ impl BootKeypad {
     // self, but kinit.rs (out of this change's scope) calls this as
     // `keypad.init()` alongside the rest of BootKeypad's per-instance API --
     // dropping &self would require a matching kinit.rs call-site edit.
-    #[allow(clippy::unused_self)]
     pub(crate) fn init(&self) {
         for &pin in &board::KEYPAD_ROW_PINS {
             let (dir_addr, dir_mask) = gpio_reg(board::GPIO_DIR_BASE, pin);

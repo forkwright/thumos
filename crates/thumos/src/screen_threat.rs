@@ -103,7 +103,6 @@ impl ThreatLevelScreenExt for ThreatLevel {
     // but for different reasons -- High is orange on its own merits, the
     // wildcard is a defensive "unknown future band renders as attention,
     // never fine". Merging them into one arm would blur that distinction.
-    #[allow(clippy::match_same_arms)]
     fn color(self) -> u16 {
         match self {
             Self::Low => color::GREEN,

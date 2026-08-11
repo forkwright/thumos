@@ -937,7 +937,6 @@ impl<L: LcmDriver> DisplayDriver<L> {
     // DisplayDriver instance-style via `display.state()`). Dropping
     // &mut self would turn a pipeline-instance method into a free
     // function and misrepresent the state precondition as global.
-    #[allow(clippy::unused_self)]
     pub unsafe fn write_framebuffer(&mut self, addr: usize, stride: u32) {
         debug_assert!(
             is_fb_addr_aligned(addr),
