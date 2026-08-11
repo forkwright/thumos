@@ -72,7 +72,7 @@ trip:
   (`pylon-bridge`, the SAME `pylon` reference endpoint this doc's witness
   already used, not a live runtime). The kernel side calls
   `metaxu-core`'s session primitives directly (`AuthenticatedSession`,
-  `encode_authenticated_request`) rather than `BridgeClient::
+  `encode_authenticated_request`) instead of `BridgeClient::
   submit_authenticated` -- the `no_std` kernel cannot depend on `metaxu`'s
   std-only client/transport layer, so it links `metaxu-core` (the shared
   no_std+alloc extraction, #545) instead. WiFi on hardware, and routing
@@ -81,7 +81,7 @@ trip:
 - Stand up (or point at) an actual Aletheia-side endpoint implementing the
   pylon's verification contract, so the pinned runtime key is a real
   runtime's key, not a witness fixture.
-- Provision the device's grant from a real Aletheia-side issuer rather than
+- Provision the device's grant from a real Aletheia-side issuer instead of
   having the kernel self-issue a dev-seed grant to itself (#544's on-device
   leg does the latter, clearly labeled dev-only).
 - Connect nous capability presets to concrete `metaxu` grant issuance.
