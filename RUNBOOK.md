@@ -116,7 +116,7 @@ the boot-image signing key. `crates/thumos/build.rs` embeds one Ed25519
 public key (the boot trust anchor) into every image. The committed dev
 keypair (`crates/thumos/keys/dev/`) is deliberately public — anyone can
 build and sign a dev image — and no production key is ever committed
-(`keys/.gitignore` blocks it). Rotating to a production key means building
+(`crates/thumos/keys/.gitignore` blocks it). Rotating to a production key means building
 with `--features production` and `THUMOS_BOOT_KEY_PUB=<file>` naming a key
 provisioned by offline signing infrastructure; the build refuses to
 proceed without it, refuses the dev key, and refuses RFC 8032's published
