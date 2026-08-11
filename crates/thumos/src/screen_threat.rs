@@ -24,14 +24,41 @@
 //!
 //! Accessible from `screen_search.rs` via function search "Threat Monitor"
 //! (`ScreenId::ThreatMonitor`), and from the status bar threat indicator.
+//!
+//! ## Score as a lens over the log (#737)
+//!
+//! The design is BOTH the audit trail and the composite score, not either
+//! alone: the alert log is the substrate (specific, attributable events),
+//! and the top-bar score is a derived VIEW over that log, explicitly
+//! labelled "UNCAL" in the rendered UI. The score is NOT sema's detector
+//! engine -- `crates/sema` (IMSI-catcher/BLE-tracker/deauth analysis,
+//! `crates/sema/src/{cell,wifi_analysis}.rs`) is not a thumos dependency at
+//! all (only the shared `sema-core` types crate is), so its detectors
+//! cannot reach `KernelState`; #555 calibrated sema's OWN corpus and never
+//! wired sema into the kernel. Until that integration exists,
+//! [`ThreatMonitor::recompute_score_from_log`] derives the score as a
+//! simple volume/severity heuristic over whatever real alerts the log
+//! holds -- currently only the SMS surveillance classification path
+//! (`ThreatAlertType::from_message_class`, #662). `ImsiCatcher`,
+//! `BleTracker`, `DeauthAttack`, `CcciAnomaly`, `GeofenceBreach`, and
+//! `ModemAnomaly` have no producer yet and stay unconstructed outside
+//! tests.
 
-// WHY: threat monitor screen created in Phase 10 Wave 5; alert aggregation
-// across the Phase 10 radio-intelligence subsystems and the #555
-// calibrated-score design (score-as-a-lens-over-the-log) are the remaining
-// kinit wiring dependency, tracked under #737.
-#![expect(
-    dead_code,
-    reason = "Threat monitor screen implemented and tested; kinit wiring depends on #555's calibrated threat scores, tracked under #737"
+// WHY: ThreatMonitor itself is wired into KernelState (#737), fed from the
+// real SMS surveillance classification path (#662). ImsiCatcher/
+// BleTracker/DeauthAttack/CcciAnomaly/GeofenceBreach/ModemAnomaly and
+// FirewallMode::Restricted/Blocked stay unconstructed outside tests: sema
+// (crates/sema) is not a thumos dependency, so its detectors cannot reach
+// KernelState (see the module doc), and no firewall-mode switch exists
+// anywhere in the kernel. cfg_attr(not(test), ...): the module's tests
+// construct every variant, so expecting dead_code there would be
+// unfulfilled.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "sema (crates/sema) is not a thumos dependency, so ImsiCatcher/BleTracker/DeauthAttack/CcciAnomaly/GeofenceBreach/ModemAnomaly have no producer; FirewallMode::Restricted/Blocked have no switch anywhere in the kernel"
+    )
 )]
 
 extern crate alloc;
@@ -132,6 +159,23 @@ impl ThreatLevelScreenExt for ThreatLevel {
             // unknown, not as a fabricated level name.
             _ => "?",
         }
+    }
+}
+
+/// Baseline weight a [`ThreatLevel`] contributes to
+/// [`ThreatMonitor::recompute_score_from_log`]'s uncalibrated composite
+/// score. A volume/severity heuristic, not sema's calibrated engine --
+/// see the module doc.
+const fn severity_weight(level: ThreatLevel) -> u32 {
+    match level {
+        ThreatLevel::Low => 15,
+        ThreatLevel::Medium => 40,
+        ThreatLevel::Critical => 95,
+        // High and the non_exhaustive wildcard both read as "elevated but
+        // not confirmed critical" -- same defensive shape as
+        // ThreatLevelScreenExt::color above, merged into one arm since
+        // both share this exact weight.
+        ThreatLevel::High | _ => 70,
     }
 }
 
@@ -272,6 +316,38 @@ pub struct ThreatAlert {
     pub severity: ThreatLevel,
 }
 
+impl ThreatAlert {
+    /// Build the alert an SMS surveillance classification raises (#662,
+    /// #737): shared by the qemu boot smoke (`kardia.rs::threat_boot_smoke`)
+    /// and, once a production incoming-SMS event loop exists (there is none
+    /// today -- `TelephonyEvent` has no SMS-received variant), the live
+    /// receive path. One construction site for what an SMS classification
+    /// means as a threat log entry, rather than each caller inventing its
+    /// own description/severity mapping.
+    ///
+    /// `Medium` for both mapped alert types: neither a silent (Type 0) SMS
+    /// nor an unsolicited WAP Push / OMA-CP message alone proves a
+    /// targeted attack (both have benign carrier uses), but both are the
+    /// standard covert-surveillance delivery mechanisms and belong in the
+    /// log rather than silently filed as ordinary mail (#662).
+    pub(crate) fn from_sms_classification(timestamp: u64, alert_type: ThreatAlertType) -> Self {
+        let description = match alert_type {
+            ThreatAlertType::SilentSms => "Silent SMS (Type 0) received",
+            ThreatAlertType::WapPushRejected => "WAP Push / OMA-CP message received",
+            // WHY a catch-all: from_message_class only ever returns these
+            // two variants (see its match arms above); a future addition
+            // there must not silently mis-describe as one of these two.
+            _ => "SMS classification alert",
+        };
+        Self {
+            timestamp,
+            alert_type,
+            description: String::from(description),
+            severity: ThreatLevel::Medium,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Threat monitor state
 // ---------------------------------------------------------------------------
@@ -357,6 +433,29 @@ impl ThreatMonitor {
         self.current_score = score.min(100);
         // #545: the canonical 30/60/80 band function, shared with sema.
         self.current_level = sema_core::level_from_score(self.current_score);
+    }
+
+    /// Derive the composite score PURELY from the alert log's own contents
+    /// (#737) -- score as a lens over the log, not an independent number.
+    /// This is a volume/severity heuristic, NOT sema's calibrated detector
+    /// engine (sema is not a thumos dependency; see the module doc): the
+    /// peak severity present sets a baseline, and each additional alert
+    /// (up to 5) adds a small bump, capped at 100. The rendered UI labels
+    /// the score "UNCAL" so it is never mistaken for a validated risk
+    /// assessment. Call after any log mutation (`push_alert`) to keep the
+    /// score current.
+    pub(crate) fn recompute_score_from_log(&mut self) {
+        let Some(peak) = self
+            .alerts
+            .iter()
+            .map(|a| severity_weight(a.severity))
+            .max()
+        else {
+            self.set_score(0);
+            return;
+        };
+        let volume_bump = (self.alerts.len().saturating_sub(1)).min(5) as u32 * 3;
+        self.set_score(peak + volume_bump);
     }
 
     /// Update modem status fields.
@@ -465,6 +564,22 @@ impl Screen for ThreatMonitor {
             label_y,
             score_str,
             color::BLACK,
+            level_color,
+        );
+
+        // #737: the score is a log-derived heuristic
+        // (recompute_score_from_log), NOT sema's calibrated detector engine
+        // -- sema is not a thumos dependency and cannot reach KernelState
+        // (see the module doc). Labelled directly on the readout so it is
+        // never mistaken for a validated risk assessment.
+        let uncal_x = score_x + 3 * 8 + 8;
+        ui::draw_str(
+            fb,
+            w,
+            uncal_x,
+            label_y,
+            "UNCAL",
+            color::DARK_GREY,
             level_color,
         );
 
