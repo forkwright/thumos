@@ -725,7 +725,10 @@ impl UiManager {
     // a different reason (documented per-arm below: real UI exit vs. a
     // privileged hardware action vs. yielding to the panic sequence).
     // Merging them into one arm would blur those distinct rationales.
-    #[allow(clippy::match_same_arms)]
+    #[expect(
+        clippy::match_same_arms,
+        reason = "Exit, KillModem, and Duress all return true for different reasons -- real UI exit vs. a privileged hardware action vs. yielding to the panic sequence; merging would blur those distinct rationales"
+    )]
     pub(crate) fn apply_action(&mut self, action: ScreenAction) -> bool {
         match action {
             ScreenAction::None => false,

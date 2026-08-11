@@ -87,7 +87,10 @@ impl VfsError {
         // RequiresMut deliberately reuses it because no POSIX code fits
         // "wrong access mode used internally" (see RequiresMut's own doc
         // above). Keeping the arms separate documents both reasons in place.
-        #[allow(clippy::match_same_arms)]
+        #[expect(
+            clippy::match_same_arms,
+            reason = "IoError and RequiresMut both resolve to EIO for distinct reasons -- IoError is EIO's natural POSIX meaning, RequiresMut reuses it because no POSIX code fits an internal wrong-access-mode error; keeping the arms separate documents both"
+        )]
         let raw = match self {
             Self::NotFound => 2,
             Self::NotADirectory => 20,

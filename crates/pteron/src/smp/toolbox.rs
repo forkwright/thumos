@@ -53,7 +53,10 @@ fn aes_cmac(key: &[u8; 16], message: &[u8]) -> [u8; 16] {
 // WHY: parameter names deliberately match the spec's own U/V/X/Z notation
 // (Vol 3, Part H §2.2.6) — matching the formula verbatim is more
 // auditable than inventing longer names for four single-letter terms.
-#[allow(clippy::many_single_char_names)]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "parameter names deliberately match Vol 3, Part H §2.2.6's own U/V/X/Z notation; matching the formula verbatim is more auditable than inventing longer names for four single-letter terms"
+)]
 pub(crate) fn f4(u: &[u8; 32], v: &[u8; 32], x: &[u8; 16], z: u8) -> [u8; 16] {
     let mut m = [0u8; 65];
     m[..32].copy_from_slice(u);
@@ -146,7 +149,10 @@ pub(crate) fn f6(
 /// convention closely enough that a future Numeric Comparison IO
 /// capability can reuse it directly.
 // WHY: same rationale as `f4` — U/V/X/Y match the spec's own notation.
-#[allow(clippy::many_single_char_names)]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "same rationale as f4 -- U/V/X/Y match Vol 3, Part H §2.2.9's own notation"
+)]
 pub(crate) fn g2(u: &[u8; 32], v: &[u8; 32], x: &[u8; 16], y: &[u8; 16]) -> u32 {
     let mut m = [0u8; 80];
     m[0..32].copy_from_slice(u);

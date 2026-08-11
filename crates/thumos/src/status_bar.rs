@@ -64,7 +64,10 @@ impl NetworkService {
 // unrelated per-radio/per-condition display flags snapshotted each render
 // cycle, not a state machine -- collapsing them into an enum or bitflags
 // would not remove any of the four axes, just rename how each is read.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent per-radio/per-condition display flags snapshotted each render cycle, not a state machine; collapsing to an enum or bitflags would not remove any axis"
+)]
 pub(crate) struct StatusBarState {
     /// Cellular network service level.
     pub network: NetworkService,
