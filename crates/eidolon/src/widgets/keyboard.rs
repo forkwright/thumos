@@ -714,11 +714,12 @@ mod tests {
     fn space_row_collapses_and_recenters_from_its_own_width() {
         let mut k = Keyboard::new(240);
         k.set_focused(true);
-        // From row 2 col 9 (period), Down into row 3: the single full-width
-        // key absorbs every incoming column.
+        // Row 0 col 9 -> row 1 col 9 -> row 2 col 9 (period) -> row 3: the
+        // single full-width key absorbs every incoming column.
         for _ in 0..9 {
             k.on_key(Key::Right);
         }
+        k.on_key(Key::Down);
         k.on_key(Key::Down);
         k.on_key(Key::Down);
         k.on_key(Key::Select);
