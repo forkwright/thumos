@@ -5,7 +5,7 @@
 # child HAS its own copy — the fix); 0x07 = TRANSLATION fault (the page was
 # DROPPED from the deep-copy — the #496 bug regressed). The parent reaps
 # (SIGSEGV=139) and mprotects NONE->READ.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps
@@ -20,7 +20,7 @@ grep -q 'init: guard mapped' guard.log || { echo 'FAIL #496: mmap(PROT_NONE) was
 ! grep -q 'init: guard NOT enforced' guard.log || { echo 'FAIL #496: the child READ the PROT_NONE guard without faulting -- PL0 access was not denied (SECURITY)'; exit 1; }
 grep -Eq 'USERFAULT: pid=[0-9]+ kind=data-abort addr=0x20000000 status=0x0000000f killed' guard.log || { echo 'FAIL #496: no PERMISSION data-abort at the guard VA -- the forked child did not get its own PROT_NONE page'; exit 1; }
 ! grep -q 'USERFAULT.*addr=0x20000000 status=0x00000007' guard.log || { echo 'FAIL #496: TRANSLATION fault at the guard VA -- fork DROPPED the PROT_NONE page from the deep-copy (the #496 bug regressed)'; exit 1; }
-gufc=$(grep -c 'USERFAULT:' guard.log)
+gufc=$(grep -c 'USERFAULT:' guard.log || true)
 test "$gufc" -eq 1 || { echo "FAIL #496: expected exactly 1 USERFAULT, got $gufc"; exit 1; }
 grep -q 'init: guard child killed status=139' guard.log || { echo 'FAIL #496: the guard-faulting child did not exit SIGSEGV(139) / was not reaped by the parent'; exit 1; }
 grep -q 'init: guard readable after mprotect' guard.log || { echo 'FAIL #496: mprotect(PROT_NONE -> PROT_READ) failed, or the guard frame did not survive'; exit 1; }

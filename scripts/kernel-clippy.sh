@@ -3,7 +3,7 @@
 # excluded from the workspace, so every --workspace clippy invocation in the
 # repo silently skips it. Shared by ci.yml and .kanon-ci.toml so the
 # admission gate and the PR gate execute the identical check.
-set -uo pipefail
+set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 KERNEL_DIR="${THUMOS_KERNEL_DIR:-$REPO_ROOT/crates/thumos}"
@@ -139,17 +139,23 @@ for i in "${!PASS_TAGS[@]}"; do
     label=$(printf '[%s]' "$tag")
     label=$(printf '%-*s' "$((tagwidth + 3))" "$label")
 
+    # WHY the explicit `|| rc=$?`, not a trailing `rc=$?` after the fi: under
+    # `set -e`, an unguarded `out=$(...)` failing inside an if/elif/else BODY
+    # (not its condition) aborts the whole script at the first red feature
+    # pass -- before the remaining passes run and before the aggregate
+    # failures[] report below ever prints (#704's whole point is seeing every
+    # feature's result together).
+    rc=0
     if [[ "$tag" = "production" ]]; then
         out=$(cd "$KERNEL_DIR" && THUMOS_BOOT_KEY_PUB="$(production_key)" cargo clippy --bin thumos --tests \
-            --features "$features" --target i686-unknown-linux-gnu -- -D warnings 2>&1)
+            --features "$features" --target i686-unknown-linux-gnu -- -D warnings 2>&1) || rc=$?
     elif [ -n "$features" ]; then
         out=$(cd "$KERNEL_DIR" && cargo clippy --bin thumos --tests \
-            --features "$features" --target i686-unknown-linux-gnu -- -D warnings 2>&1)
+            --features "$features" --target i686-unknown-linux-gnu -- -D warnings 2>&1) || rc=$?
     else
         out=$(cd "$KERNEL_DIR" && cargo clippy --bin thumos --tests \
-            --target i686-unknown-linux-gnu -- -D warnings 2>&1)
+            --target i686-unknown-linux-gnu -- -D warnings 2>&1) || rc=$?
     fi
-    rc=$?
     printf '%s\n' "$out" | sed "s/^/${label}/"
     RCS+=("$rc")
 done

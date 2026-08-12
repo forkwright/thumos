@@ -5,7 +5,7 @@
 # so ticks() froze and the WHOLE kernel hung. The sleep /init variant sleeps
 # 30ms between "sleeping" and "woke": a real yield lets the service loop run
 # meanwhile and /init resume; a busy-wait hangs the kernel -> runner timeout.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

@@ -26,7 +26,7 @@
 # so the kernel never touches UART1 regardless of feature -- pylon-bridge
 # runs unmodified and its silence (no "PYLON: frame received" line) is the
 # proof nothing crossed the wire.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

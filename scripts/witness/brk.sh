@@ -5,7 +5,7 @@
 # overlay a section, so brk growth failed on every real boot while host tests
 # (absent-entry fixture) stayed green. This witness is the only real-table
 # proof for heap growth: grow two pages, canary R/W at PL0, shrink back.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

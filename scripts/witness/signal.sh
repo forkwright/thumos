@@ -7,7 +7,7 @@
 # marker must appear AFTER USR1's -- its pending bit surviving USR1's
 # delivery is the exact-clear contract (the old clear-any-pending could wipe
 # the wrong signal).
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

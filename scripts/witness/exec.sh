@@ -4,7 +4,7 @@
 # the NEW image's _start runs (remap + ACTIVE_FRAME install), its privileged
 # cp15 read UNDEF-faults at PL0 (unprivileged proof), the OLD image is gone,
 # and the kernel survives.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

@@ -10,8 +10,17 @@
 #   THUMOS_QEMU_TIMEOUT — runner timeout seconds (default: 60)
 #   THUMOS_INIT_VARIANT — init-harness variant for probe scripts
 # Exit codes: 0 pass; non-zero fail with a named assertion (never a bare timeout).
+#
+# WARNING: under `set -e`, `x=$(grep -c pat log)` or a piped
+# `x=$(grep -oE pat log | head -1 | grep -oE '[0-9]+')` aborts the WHOLE
+# script at the assignment when the pattern has zero matches (grep's/the
+# pipe's nonzero status is the assignment's own status) — before the
+# caller's own `test "$x" -eq N || { echo FAIL...; exit 1; }` ever runs,
+# losing the named assertion. Callers that read a count/value this way
+# before testing it guard the assignment with `|| true` so the intended
+# custom FAIL message still fires.
 
-set -uo pipefail
+set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 KERNEL_DIR="${THUMOS_KERNEL_DIR:-$REPO_ROOT/crates/thumos}"

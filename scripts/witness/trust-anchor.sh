@@ -4,7 +4,7 @@
 # must REFUSE the committed (deliberately public) dev key, and must BUILD
 # with a real key — proven here with an ephemeral one. Dev/qemu/host builds
 # keep building keylessly.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 cd "$KERNEL_DIR"

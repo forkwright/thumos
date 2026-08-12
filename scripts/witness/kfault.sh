@@ -4,7 +4,7 @@
 # boot-complete must take the KERNEL branch: qemu exit 4, no service-loop
 # resume. If fault handling ever wrongly "recovers" a kernel fault, the boot
 # continues to ticks=/exit 0 and this reds.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

@@ -10,7 +10,7 @@
 # chardev connects OUT to that port as a client (THUMOS_QEMU_METAXU_PORT,
 # read by scripts/qemu-runner.sh), so the guest never races an unbound
 # host socket.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
