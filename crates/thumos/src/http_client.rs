@@ -35,7 +35,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "HTTP client created in Phase 09 Wave 1, harmostes integration pending (#145)"
+        reason = "HTTP client exists; harmostes integration pending (tier in docs/capability-inventory.toml)"
     )
 )]
 

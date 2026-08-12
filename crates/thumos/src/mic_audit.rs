@@ -39,7 +39,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Mic audit log created in Phase 07 Wave 8, audio manager wiring pending (#145)"
+        reason = "Mic audit log exists; audio manager wiring pending (tier in docs/capability-inventory.toml)"
     )
 )]
 

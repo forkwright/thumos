@@ -48,7 +48,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "audio manager API created in Phase 07 Wave 4, kinit wiring pending (#145)"
+        reason = "audio manager API exists; kinit wiring pending (tier in docs/capability-inventory.toml)"
     )
 )]
 

@@ -46,7 +46,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Ekphrasis created in Phase 09 Wave 6, audio pipeline integration pending (#145)"
+        reason = "Ekphrasis exists; audio pipeline integration pending (tier in docs/capability-inventory.toml)"
     )
 )]
 
