@@ -189,7 +189,7 @@ impl Pylon {
 ///
 /// Used by the adversarial witness (#544) and, under `pylon-bin`, by
 /// `src/bin/pylon_bridge.rs` for the on-device QEMU round trip.
-pub fn spawn(pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
+pub(crate) fn spawn(pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
     spawn_with_response_transform(pylon, n_requests, |response| response)
 }
 

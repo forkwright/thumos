@@ -67,20 +67,20 @@ pub const MAJOR: u8 = 1;
 pub const MINOR: u8 = 1;
 
 /// Fixed header length in bytes.
-pub const HEADER_LEN: usize = 22;
+pub(crate) const HEADER_LEN: usize = 22;
 
 /// Per-kind payload ceilings (v1). Derived from content classes:
 /// - STT text is one utterance: 4 KiB.
 /// - Task requests/responses carry summaries, drafts, small batches: 32 KiB.
-pub const MAX_STT_PAYLOAD: u32 = 4 * 1024;
+pub(crate) const MAX_STT_PAYLOAD: u32 = 4 * 1024;
 /// Task request payload ceiling.
-pub const MAX_TASK_REQUEST_PAYLOAD: u32 = 32 * 1024;
+pub(crate) const MAX_TASK_REQUEST_PAYLOAD: u32 = 32 * 1024;
 /// Task response payload ceiling.
-pub const MAX_TASK_RESPONSE_PAYLOAD: u32 = 32 * 1024;
+pub(crate) const MAX_TASK_RESPONSE_PAYLOAD: u32 = 32 * 1024;
 
 /// Authenticated request payload ceiling: the task ceiling plus room for
 /// the grant wrapper (~256 B) (#544).
-pub const MAX_AUTH_REQUEST_PAYLOAD: u32 = 34 * 1024;
+pub(crate) const MAX_AUTH_REQUEST_PAYLOAD: u32 = 34 * 1024;
 
 /// Authenticated response payload ceiling (response + 32 B MAC) (#544).
 pub const MAX_AUTH_RESPONSE_PAYLOAD: u32 = 33 * 1024;

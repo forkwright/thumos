@@ -101,7 +101,7 @@ impl DnsBlocklist {
 /// compression pointer (which should not appear in query QNAMEs but can appear
 /// in malformed or spoofed packets).
 #[must_use]
-pub fn extract_query_domain(data: &[u8]) -> Option<String> {
+pub(crate) fn extract_query_domain(data: &[u8]) -> Option<String> {
     asphaleia_core::extract_query_domain(data)
 }
 

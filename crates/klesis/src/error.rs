@@ -140,4 +140,4 @@ impl From<klesis_core::CoreError> for Error {
 }
 
 /// Result type for telephony operations.
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;

@@ -22,7 +22,7 @@ pub(crate) use klesis_core::{EXT_TABLE, GSM_TO_UNICODE};
 ///
 /// [`crate::error::Error::Gsm7Encode`] when a character has no GSM-7
 /// representation.
-pub fn encode(text: &str) -> Result<Vec<u8>> {
+pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
     Ok(klesis_core::encode(text)?)
 }
 
@@ -35,7 +35,7 @@ pub fn encode(text: &str) -> Result<Vec<u8>> {
 ///
 /// [`crate::error::Error::PduDecode`] when the data is truncated or ends on
 /// a dangling ESC septet.
-pub fn decode(data: &[u8], num_chars: usize) -> Result<String> {
+pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
     Ok(klesis_core::decode(data, num_chars)?)
 }
 
@@ -48,7 +48,7 @@ pub fn decode(data: &[u8], num_chars: usize) -> Result<String> {
 /// # Errors
 ///
 /// As [`decode`].
-pub fn decode_from(data: &[u8], start_septet: usize, num_chars: usize) -> Result<String> {
+pub(crate) fn decode_from(data: &[u8], start_septet: usize, num_chars: usize) -> Result<String> {
     Ok(klesis_core::decode_from(data, start_septet, num_chars)?)
 }
 

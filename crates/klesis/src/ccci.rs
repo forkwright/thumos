@@ -17,15 +17,15 @@ use crate::error::{ParseSnafu, Result};
 /// Maximum CCCI message payload size (bytes).
 ///
 /// Source: `eccci/mt6739/ccci_config.h`
-pub const CCCI_MTU: usize = 3456;
+pub(crate) const CCCI_MTU: usize = 3456;
 
 /// Magic value placed in `data[0]` to mark an internal control message.
 ///
 /// Source: `eccci/inc/ccci_core.h:33`
-pub const CCCI_MAGIC_NUM: u32 = 0xFFFF_FFFF;
+pub(crate) const CCCI_MAGIC_NUM: u32 = 0xFFFF_FFFF;
 
 /// Wire size of a [`CcciHeader`] in bytes.
-pub const HEADER_SIZE: usize = 16;
+pub(crate) const HEADER_SIZE: usize = 16;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

@@ -120,7 +120,7 @@ where
 {
     /// Build a transport error from an implementation-specific cause.
     #[must_use]
-    pub fn transport(source: E) -> Self {
+    pub(crate) fn transport(source: E) -> Self {
         Self::Transport {
             source,
             location: Location::generate(),

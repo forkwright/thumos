@@ -157,7 +157,7 @@ pub fn hkdf_sha256(ikm: &[u8; 16], info: &[u8]) -> [u8; 32] {
 }
 
 /// HMAC-SHA256 over `parts` under `key` (response authentication).
-pub fn response_mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
+pub(crate) fn response_mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     let mut h = <Hmac<Sha256> as Mac>::new_from_slice(key).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key

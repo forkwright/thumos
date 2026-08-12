@@ -376,7 +376,7 @@ impl TaskResponse {
 /// A ULID's leading 48 bits are its timestamp; the next bits are
 /// randomness -- 64 bits total is ample correlation space, documented in
 /// the envelope contract.
-pub fn correlation_of(id: ulid::Ulid) -> u64 {
+pub(crate) fn correlation_of(id: ulid::Ulid) -> u64 {
     let bytes = id.to_bytes();
     u64::from_le_bytes(bytes[..8].try_into().unwrap_or([0; 8]))
 }
