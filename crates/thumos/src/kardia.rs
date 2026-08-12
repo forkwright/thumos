@@ -819,11 +819,6 @@ impl KernelState {
     /// log rather than an unwired detector.
     #[cfg(feature = "qemu")]
     pub(crate) fn threat_boot_smoke(&mut self) -> (bool, usize, u32, bool) {
-        // WHY(#743): captured BEFORE seeding. A fresh ThreatMonitor has no
-        // detector, and the witness asserts that state as well as the
-        // seeded one -- otherwise the no-detector path is never exercised
-        // and could regress to rendering a reassuring score silently.
-        let detector_before = self.threat.detector_online();
         // Identical to sim_sms_boot_smoke's PDU except the PID byte (index
         // 9): 0x40 marks Type 0 (silent) per #662's classification, the
         // same PID value sms.rs's
@@ -833,6 +828,11 @@ impl KernelState {
             0x00, 0x00, 0x0A, 0x91, 0x21, 0x43, 0x65, 0x87, 0x09, 0x40, 0x00, 0x32, 0x10, 0x51,
             0x21, 0x03, 0x00, 0x00, 0x05, 0xC8, 0x32, 0x9B, 0xFD, 0x06,
         ];
+        // WHY(#743): captured BEFORE seeding. A fresh ThreatMonitor has no
+        // detector, and the witness asserts that state as well as the
+        // seeded one -- otherwise the no-detector path is never exercised
+        // and could regress to rendering a reassuring score silently.
+        let detector_before = self.threat.detector_online();
         if let Ok(msg) = SmsManager::handle_incoming(SILENT_SMS_PDU)
             && let Some(alert_type) = ThreatAlertType::from_message_class(msg.class)
         {
