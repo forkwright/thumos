@@ -143,8 +143,8 @@ impl WipeEngine {
     /// in `actions_missing` — NOT as completed and NOT as failed, because a
     /// missing target was never destroyed by this run (#280).
     ///
-    /// Time: O(a + Σ len_i) where a is `plan.len()` and, in non-dry-run
-    /// mode, len_i is the i-th target's byte length being overwritten
+    /// Time: O(a + Σ `len_i`) where a is `plan.len()` and, in non-dry-run
+    /// mode, `len_i` is the i-th target's byte length being overwritten
     /// (`wipe_file_blocking`'s loop, chunked by `self.chunk_size`) — the
     /// total cost is dominated by the SUM of every wiped target's length,
     /// not merely the action count, so a plan with one large block-device
