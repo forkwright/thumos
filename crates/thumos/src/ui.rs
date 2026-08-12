@@ -40,8 +40,13 @@ use alloc::vec::Vec;
 // were duplicated here and in eidolon with STATUS_BAR_HEIGHT disagreeing by
 // 4px -- a divergence that shifts CONTENT_Y and every zone boundary without
 // panicking, failing a test, or producing any signal at all.
+// NOTE: CONTENT_Y is deliberately not re-exported -- the kernel has no use
+// for it. It was a dead constant here, invisible because the crate-level
+// dead_code expectation covered it; as a re-export it is an unused IMPORT,
+// which that expectation does not cover, so the compiler surfaced it. It
+// still lives in eidolon-core, where the zone arithmetic is tested.
 pub(crate) use eidolon_core::{
-    CONTENT_HEIGHT, CONTENT_PIXELS, CONTENT_Y, SCREEN_HEIGHT, SCREEN_WIDTH, SOFTKEY_BAR_HEIGHT,
+    CONTENT_HEIGHT, CONTENT_PIXELS, SCREEN_HEIGHT, SCREEN_WIDTH, SOFTKEY_BAR_HEIGHT,
     STATUS_BAR_HEIGHT,
 };
 
