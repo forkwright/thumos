@@ -57,7 +57,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "sema (crates/sema) is not a thumos dependency, so ImsiCatcher/BleTracker/DeauthAttack/CcciAnomaly/GeofenceBreach/ModemAnomaly have no producer; FirewallMode::Restricted/Blocked have no switch anywhere in the kernel"
+        reason = "(#753) sema (crates/sema) is not a thumos dependency, so ImsiCatcher/BleTracker/DeauthAttack/CcciAnomaly/GeofenceBreach/ModemAnomaly have no producer; FirewallMode::Restricted/Blocked have no switch anywhere in the kernel"
     )
 )]
 

@@ -33,7 +33,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Battery monitor exists; kinit wiring pending (tier in docs/capability-inventory.toml)"
+        reason = "Battery monitor exists; kinit wiring pending (#753; tier in docs/capability-inventory.toml)"
     )
 )]
 

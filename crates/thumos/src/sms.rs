@@ -36,7 +36,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "SMS API exists; kinit wiring pending (tier in docs/capability-inventory.toml)"
+        reason = "SMS API exists; kinit wiring pending (#753; tier in docs/capability-inventory.toml)"
     )
 )]
 

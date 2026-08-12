@@ -25,7 +25,7 @@
 // dispatch through UiManager are still pending.
 #![expect(
     dead_code,
-    reason = "UI framework has only initial home-frame kinit wiring (tier in docs/capability-inventory.toml)"
+    reason = "UI framework has only initial home-frame kinit wiring (#753; tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;

@@ -19,7 +19,7 @@
 // WHY: contacts module created in Phase 07 Wave 5, kinit wiring pending.
 #![expect(
     dead_code,
-    reason = "Contacts module exists; kinit wiring pending (tier in docs/capability-inventory.toml)"
+    reason = "Contacts module exists; kinit wiring pending (#753; tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;
