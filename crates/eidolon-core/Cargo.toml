@@ -1,11 +1,11 @@
 [package]
 name = "eidolon-core"
-version = "0.1.0"
+description = "no_std display layout geometry for the AGM M7 panel (the canonical zone heights, shared by eidolon and the kernel)"
+version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
+publish.workspace = true
 repository.workspace = true
-description = "Canonical display layout geometry shared by the thumos kernel UI and eidolon."
 
 [lints]
 workspace = true
