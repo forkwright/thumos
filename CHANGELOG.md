@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2](https://github.com/forkwright/thumos/compare/v0.6.1...v0.6.2) (2026-08-12)
+
+
+### Bug Fixes
+
+* **thumos:** resolve SHELL/* lint classes (set-euo-pipefail, strict-mode, missing-local) ([#758](https://github.com/forkwright/thumos/issues/758)) ([1e32d68](https://github.com/forkwright/thumos/commit/1e32d68b0aecee0317e7c62fde9219c3fbafbbe1))
+
 ## [0.6.1](https://github.com/forkwright/thumos/compare/v0.6.0...v0.6.1) (2026-08-12)
 
 
