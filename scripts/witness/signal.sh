@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/signal.sh — userspace signal delivery end-to-end (#446), verbatim
 # from ci.yml. /init installs SIGUSR1/SIGUSR2 handlers, raises BOTH against
 # itself, then yields. The kernel must rewrite the IRQ trap frame into the
@@ -7,7 +9,6 @@
 # marker must appear AFTER USR1's -- its pending bit surviving USR1's
 # delivery is the exact-clear contract (the old clear-any-pending could wipe
 # the wrong signal).
-set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

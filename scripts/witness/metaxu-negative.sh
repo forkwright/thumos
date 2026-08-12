@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/metaxu-negative.sh — the #544 negative-case coverage metaxu.sh
 # does not exercise: metaxu.sh proves the happy path only, which passes
 # against a bridge that accepts anything. Three distinct outcomes, one
@@ -26,7 +28,7 @@
 # so the kernel never touches UART1 regardless of feature -- pylon-bridge
 # runs unmodified and its silence (no "PYLON: frame received" line) is the
 # proof nothing crossed the wire.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

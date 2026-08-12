@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/kfault.sh — kernel-fault halts witness (#546), verbatim from ci.yml.
 # The other half of the safety property: a deliberate PL1 `udf` after
 # boot-complete must take the KERNEL branch: qemu exit 4, no service-loop
 # resume. If fault handling ever wrongly "recovers" a kernel fault, the boot
 # continues to ticks=/exit 0 and this reds.
-set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

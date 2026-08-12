@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/metaxu.sh — the #544 on-device round trip: a real Thumos
 # userspace process (/metaxu_probe) drives an authenticated metaxu-core
 # request over the second PL011 to a real host `pylon-bridge` process (the
@@ -10,7 +12,7 @@
 # chardev connects OUT to that port as a client (THUMOS_QEMU_METAXU_PORT,
 # read by scripts/qemu-runner.sh), so the guest never races an unbound
 # host socket.
-set -uo pipefail
+set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 REPO_ROOT=$(git rev-parse --show-toplevel)

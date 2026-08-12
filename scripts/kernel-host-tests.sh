@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # kernel-host-tests.sh — kernel i686 host test suite (#546). The kernel crate
 # is excluded from the workspace, so its host unit tests (i686, u32-faithful
 # ABI) run against the 32-bit target. Shared by ci.yml and .kanon-ci.toml so
 # the admission gate and the PR gate execute the identical suite.
-set -uo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 KERNEL_DIR="${THUMOS_KERNEL_DIR:-$REPO_ROOT/crates/thumos}"
@@ -45,10 +46,11 @@ grep -q 'console::tests' <<<"$out" || {
     echo "FAIL #459: --features debug-console pass ran zero console::tests — the tests are dead again" >&2
     exit 1
 }
-# WHY (#616): no `set -e` here, so a red pass does not abort the script — and
-# without this check the script's exit code was the grep's, letting a failing
-# test pass ship rc=0 to CI. Both passes run to completion either way (a red
-# main pass must not hide the debug-console witness output).
+# WHY (#616): pass1/pass2 are captured via `|| pass=$?`, not left to fall out
+# the bottom — without that, the script's own exit code was the grep's,
+# letting a failing test pass ship rc=0 to CI. The explicit capture is also
+# what keeps both passes running to completion under `set -e` (a red main
+# pass must not hide the debug-console witness output).
 if [[ "$pass1" -ne 0 ]] || [[ "$pass2" -ne 0 ]]; then
     echo "FAIL: kernel host tests failed (main pass rc=$pass1, debug-console pass rc=$pass2)" >&2
     exit 1

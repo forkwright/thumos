@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/sleep.sh — userspace sleep really yields (#477), verbatim from ci.yml.
 # A userspace nanosleep/Sleep must YIELD (switch away, resume after the
 # interval), not busy-wait. The old busy-wait ran IRQ-masked in the SVC trap,
 # so ticks() froze and the WHOLE kernel hung. The sleep /init variant sleeps
 # 30ms between "sleeping" and "woke": a real yield lets the service loop run
 # meanwhile and /init resume; a busy-wait hangs the kernel -> runner timeout.
-set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/forkexec.sh — QEMU fork+exec composes, per-process images (#502),
 # verbatim from ci.yml. /init forks; the CHILD execs /init2 (its OWN image,
 # not a re-run of /init — the fork bomb is dead); the exec marker appears
 # EXACTLY ONCE; the parent's own image frame is never touched.
-set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps
@@ -17,7 +18,7 @@ grep -q 'forkexec: parent waiting' forkexec.log || { echo 'FAIL forkexec: no par
 ! grep -q 'forkexec: fork FAILED' forkexec.log || { echo 'FAIL forkexec: fork returned an error'; exit 1; }
 ! grep -q 'forkexec: child exec FAILED' forkexec.log || { echo 'FAIL forkexec: the child execve returned an error (per-process image load broken)'; exit 1; }
 grep -q 'init2: reached via exec' forkexec.log || { echo 'FAIL forkexec: the child never ran /init2 -- exec did not load the new per-process image'; exit 1; }
-xc=$(grep -c 'forkexec: child exec-ing /init2' forkexec.log)
+xc=$(grep -c 'forkexec: child exec-ing /init2' forkexec.log || true)
 test "$xc" -eq 1 || { echo "FAIL forkexec: the exec marker appeared $xc times (want 1) -- a FORK BOMB re-ran /init instead of /init2 (#502 regressed)"; exit 1; }
 grep -q 'forkexec: parent integrity ok' forkexec.log || { echo 'FAIL forkexec: parent .data was corrupted by the child exec (per-process image isolation broken)'; exit 1; }
 ! grep -q 'forkexec: parent integrity BROKEN' forkexec.log || { echo 'FAIL forkexec: explicit parent-integrity break'; exit 1; }
