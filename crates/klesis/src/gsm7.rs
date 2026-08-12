@@ -22,7 +22,13 @@ pub(crate) use klesis_core::{EXT_TABLE, GSM_TO_UNICODE};
 ///
 /// [`crate::error::Error::Gsm7Encode`] when a character has no GSM-7
 /// representation.
-pub fn encode(text: &str) -> Result<Vec<u8>> {
+///
+/// Time: O(n) where n is the number of `char`s in `text` — one constant-time
+/// table lookup per character to produce its septet(s), then one
+/// constant-time bit-pack step per septet produced (at most 2n).
+/// Space: O(n) — an intermediate septet buffer of up to 2n bytes, then a
+/// packed output buffer of roughly 7n/8 bytes.
+pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
     Ok(klesis_core::encode(text)?)
 }
 
@@ -35,6 +41,19 @@ pub fn encode(text: &str) -> Result<Vec<u8>> {
 ///
 /// [`crate::error::Error::PduDecode`] when the data is truncated or ends on
 /// a dangling ESC septet.
+///
+/// Time: O(m) where m is `num_chars` — despite the name, this value is
+/// passed straight through as the SEPTET count `klesis_core::decode`
+/// consumes FROM `data` (extension characters consume two septets per
+/// output char, so the septet count is not the output character count);
+/// each of the m septets costs one constant-time table lookup.
+/// Space: O(m) — the output `String`'s capacity is sized to `num_chars`,
+/// an upper bound on the character count actually produced.
+// NOTE(#718): kept `pub` deliberately. Narrowing this to pub(crate)
+// showed its only callers are this module's own tests -- after #662 moved
+// GSM-7 into klesis-core, the wrapper lost its production consumers. That
+// makes it a deletion candidate, not a visibility fix, and deleting a
+// public API belongs in its own change rather than inside a lint pass.
 pub fn decode(data: &[u8], num_chars: usize) -> Result<String> {
     Ok(klesis_core::decode(data, num_chars)?)
 }
@@ -48,7 +67,12 @@ pub fn decode(data: &[u8], num_chars: usize) -> Result<String> {
 /// # Errors
 ///
 /// As [`decode`].
-pub fn decode_from(data: &[u8], start_septet: usize, num_chars: usize) -> Result<String> {
+///
+/// Time: O(m) where m is `num_chars` — as [`decode`], this is the septet
+/// count consumed starting at `start_septet`, not the output character
+/// count.
+/// Space: O(m) — the output `String`'s capacity is sized to `num_chars`.
+pub(crate) fn decode_from(data: &[u8], start_septet: usize, num_chars: usize) -> Result<String> {
     Ok(klesis_core::decode_from(data, start_septet, num_chars)?)
 }
 

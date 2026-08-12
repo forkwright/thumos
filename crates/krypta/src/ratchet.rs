@@ -54,6 +54,10 @@ pub(crate) struct RatchetState {
 
 impl RatchetState {
     /// Initialises a ratchet FROM a 32-byte root key.
+    ///
+    /// Time: O(1) — builds a fixed-field struct; no loop or recursion.
+    /// Space: O(1) — `skipped` starts as `Vec::new()`, which allocates
+    /// nothing until the first push.
     pub(crate) const fn new(root_key: [u8; 32]) -> Self {
         Self {
             chain_key: root_key,
@@ -122,6 +126,20 @@ pub(crate) fn encrypt(state: &mut RatchetState, plaintext: &[u8]) -> Result<Ciph
 /// Returns [`Error::InvalidKey`] if a derived message key is malformed.
 /// Returns [`Error::Decryption`] if authentication fails, the counter is
 /// unknown/replayed, or the forward jump exceeds [`MAX_SKIP_AHEAD`].
+///
+/// Time: O(g + L) where L is `msg.ciphertext.len()` (the AES-256-GCM
+/// authenticate-and-decrypt cost, in [`aead_open`]) and g is either the
+/// forward counter gap `msg.counter - state.counter` when the message is
+/// ahead of the chain (one HMAC-SHA256 key derivation per skipped step,
+/// each O(1)) or the current skipped-key cache size when the message is
+/// behind it (a linear [`decrypt_from_skipped`] scan). Both are bounded by
+/// the compile-time constants [`MAX_SKIP_AHEAD`] and [`MAX_SKIPPED_KEYS`]
+/// (1024 each) — the forward-gap check runs BEFORE the derivation loop, so
+/// g never exceeds 1024 in practice — but L is genuinely unbounded and
+/// dominates for larger payloads.
+/// Space: O(g + L) — a working copy of the ciphertext (L bytes, in
+/// [`aead_open`]) plus up to g pending [`SkippedKey`] entries before they
+/// are folded into the bounded skipped-key cache.
 pub(crate) fn decrypt(state: &mut RatchetState, msg: &CiphertextMessage) -> Result<Vec<u8>> {
     // Behind the chain: only the skipped-key cache can decrypt it.
     if msg.counter < state.counter {

@@ -312,6 +312,10 @@ pub(crate) struct WifiCommand {
 
 impl WifiCommand {
     /// Construct a command with no payload.
+    ///
+    /// Time: O(1) — builds a fixed-field struct; `payload` starts as an
+    /// empty `Vec::new()`, which performs no allocation.
+    /// Space: O(1) — no heap allocation.
     #[must_use]
     pub(crate) const fn new(cid: CommandId, seq_num: u8) -> Self {
         Self {
@@ -897,6 +901,13 @@ impl WiFiMacDriver {
     ///
     /// Wires the locally-administered MAC through to `wpa::derive_ptk` so that
     /// the PTK is bound to the per-connection identity.
+    ///
+    /// Time: O(1) — every input (`pmk`, `anonce`, `snonce`, `ap_mac`, and the
+    /// driver's own MAC) is a fixed-size array, and `wpa::derive_ptk`'s
+    /// PRF-384 expansion runs a fixed `ceil(PTK_LEN / 20) = 3` HMAC-SHA1
+    /// rounds to fill the compile-time-constant `PTK_LEN` = 48-byte output.
+    /// Space: O(1) — the PRF input buffer and PTK output are fixed-size,
+    /// bounded by the compile-time constants above.
     #[must_use]
     pub(crate) fn derive_ptk(
         &self,

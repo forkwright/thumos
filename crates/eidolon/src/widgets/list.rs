@@ -69,6 +69,10 @@ pub struct TextList {
 
 impl TextList {
     /// Create a new, empty list with the given configuration.
+    ///
+    /// Time: O(1) — builds a fixed-field struct; `items` starts as an
+    /// empty `Vec::new()`, which performs no allocation.
+    /// Space: O(1) — no heap allocation.
     #[must_use]
     pub(crate) const fn new(config: TextListConfig) -> Self {
         Self {
@@ -90,11 +94,20 @@ impl TextList {
     }
 
     /// Append an item to the list.
+    ///
+    /// Time: O(k) where k is the byte length of `item` — dominated by the
+    /// `Into<String>` conversion (a copy when `item` is a `&str`, a no-op
+    /// move when it is already a `String`); the `Vec::push` itself is
+    /// amortized O(1).
+    /// Space: O(k) — grows `self.items` by one owned `String` of length k.
     pub(crate) fn push(&mut self, item: impl Into<String>) {
         self.items.push(item.into());
     }
 
     /// Return the currently selected item text, if any items exist.
+    ///
+    /// Time: O(1) — a single `Vec::get` index lookup.
+    /// Space: O(1) — returns a borrowed `&str`, no allocation.
     #[must_use]
     pub(crate) fn selected_item(&self) -> Option<&str> {
         self.items.get(self.selected).map(String::as_str)
@@ -107,12 +120,19 @@ impl TextList {
     }
 
     /// Number of items in the list.
+    ///
+    /// Time: O(1) — `Vec::len` reads the stored length field; it does not
+    /// count elements.
+    /// Space: O(1).
     #[must_use]
     pub(crate) const fn len(&self) -> usize {
         self.items.len()
     }
 
     /// Whether the list is empty.
+    ///
+    /// Time: O(1) — `Vec::is_empty` checks the stored length field.
+    /// Space: O(1).
     #[must_use]
     pub(crate) const fn is_empty(&self) -> bool {
         self.items.is_empty()

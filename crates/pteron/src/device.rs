@@ -76,6 +76,14 @@ impl DeviceList {
     /// A brand-new address inserted at [`MAX_TRACKED_DEVICES`] capacity
     /// evicts the single oldest-`last_seen` entry first, bounding memory
     /// under a burst of spoofed/rotating BLE advertisements.
+    ///
+    /// Time: O(1) — the update path is a single average-case hash-map
+    /// lookup/insert. The (rare) eviction path scans at most
+    /// [`MAX_TRACKED_DEVICES`] (256) entries to find the oldest, which is a
+    /// fixed compile-time-constant bound, not a function of unbounded input
+    /// (this function is itself what enforces the map never grows past it).
+    /// Space: O(1) amortized — one new map entry (the map's total size is
+    /// capped at `MAX_TRACKED_DEVICES` by the eviction above).
     pub(crate) fn add_or_update(&mut self, device: BluetoothDevice) {
         if let Some(existing) = self.devices.get_mut(&device.address) {
             existing.rssi = device.rssi;
@@ -102,6 +110,11 @@ impl DeviceList {
 
     /// Return all devices whose `last_seen` timestamp is older than `max_age`
     /// relative to the current wall-clock time.
+    ///
+    /// Time: O(d) where d is the number of tracked devices in the list —
+    /// every entry is visited once.
+    /// Space: O(k) where k is the number of stale devices returned — a new
+    /// `Vec` of references, bounded above by d.
     pub(crate) fn stale_devices(&self, max_age: SignedDuration) -> Vec<&BluetoothDevice> {
         let now = Timestamp::now();
         self.devices
@@ -123,16 +136,27 @@ impl DeviceList {
     }
 
     /// Return the number of devices currently tracked.
+    ///
+    /// Time: O(1) — returns the map's stored element count; no iteration.
+    /// Space: O(1) — no allocation.
     pub(crate) fn len(&self) -> usize {
         self.devices.len()
     }
 
     /// Return `true` if no devices are tracked.
+    ///
+    /// Time: O(1) — compares the map's stored element count to zero; no
+    /// iteration.
+    /// Space: O(1) — no allocation.
     pub(crate) fn is_empty(&self) -> bool {
         self.devices.is_empty()
     }
 
     /// Look up a device by address.
+    ///
+    /// Time: O(1) average — a single hash-map lookup keyed on the
+    /// fixed-size (6-byte) [`BdAddr`].
+    /// Space: O(1) — no allocation.
     pub(crate) fn get(&self, address: &BdAddr) -> Option<&BluetoothDevice> {
         self.devices.get(address)
     }

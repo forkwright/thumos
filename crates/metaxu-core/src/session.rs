@@ -61,6 +61,12 @@ impl AuthenticatedResponse {
     }
 
     /// Verify the response MAC under `signed_grant`'s response key.
+    ///
+    /// Time: O(r) where r is the postcard-encoded size of `self.response`
+    /// -- dominated by encoding the response and computing the HMAC over
+    /// it, each linear in r; the final constant-time comparison is over
+    /// the two fixed 32-byte MACs, O(1).
+    /// Space: O(r) -- allocates the postcard-encoded payload.
     pub fn verify(&self, signed_grant: &SignedGrant) -> bool {
         let payload = postcard::to_allocvec(&self.response).unwrap_or_default(); // WHY: infallible -- see AuthenticatedResponse::build
         let expected = crate::grants::response_mac(&signed_grant.response_key(), &[&payload]);

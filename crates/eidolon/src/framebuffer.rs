@@ -51,6 +51,11 @@ impl Framebuffer {
     }
 
     /// Fill a rectangular region with `color`. Clips to the framebuffer boundary.
+    ///
+    /// Time: O(w * h) where w and h are the clipped rectangle's pixel width
+    /// and height (`x_end - x` and `y_end - y`) — one write per pixel in
+    /// the region.
+    /// Space: O(1) — writes into the pre-allocated `buf`, no new allocation.
     pub(crate) fn fill_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: Rgb565) {
         let bytes = color.0.to_le_bytes();
         let y_end = y.saturating_add(h).min(self.height);
@@ -70,6 +75,11 @@ impl Framebuffer {
     }
 
     /// Fill the entire framebuffer with `color`.
+    ///
+    /// Time: O(p) where p is the number of pixels in the framebuffer
+    /// (`self.buf.len() / BYTES_PER_PIXEL`, fixed at construction by
+    /// `width * height`) — one write per pixel.
+    /// Space: O(1) — writes into the pre-allocated `buf`, no new allocation.
     pub(crate) fn clear(&mut self, color: Rgb565) {
         let bytes = color.0.to_le_bytes();
         for chunk in self.buf.chunks_exact_mut(BYTES_PER_PIXEL) {

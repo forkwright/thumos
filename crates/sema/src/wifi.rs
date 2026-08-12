@@ -99,6 +99,13 @@ impl Bssid {
     ///
     /// Internal callers parse display-order addresses such as
     /// `AA:BB:CC:DD:EE:FF`.
+    ///
+    /// Time: O(L) where L is the length of `s` — [`FromStr::from_str`] splits
+    /// the string on `:` in one scan, then does a fixed [`MAC_BYTE_COUNT`]
+    /// (6)-iteration hex-decode of the resulting segments.
+    /// Space: O(L) — the intermediate `Vec<&str>` of colon-separated
+    /// segments (bounded by the input length in the degenerate case of many
+    /// colons; six segments in a well-formed address).
     pub(crate) fn parse(s: &str) -> Result<Self, ParseError> {
         s.parse()
     }

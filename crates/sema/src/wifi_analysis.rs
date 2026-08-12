@@ -16,6 +16,15 @@ use crate::wifi::{AccessPoint, Bssid, Encryption};
 ///
 /// Internal callers pass scan results and receive every same-SSID pair with
 /// distinct BSSIDs.
+///
+/// Time: O(n^2) where n is `aps.len()`. APs are first grouped by SSID in
+/// O(n), but every SSID group of size g is then compared pairwise in O(g^2);
+/// summed over groups this is bounded by O(n^2) and collapses to exactly
+/// that in the worst case — many APs sharing one SSID, which is precisely
+/// the evil-twin scenario this function looks for.
+/// Space: O(n + p) — the `by_ssid` grouping holds every AP reference once
+/// (O(n)), and `pairs` holds one entry per matched pair (p, bounded above by
+/// O(n^2) in the same worst case).
 #[must_use]
 pub(crate) fn detect_evil_twin(aps: &[AccessPoint]) -> Vec<(&AccessPoint, &AccessPoint)> {
     let mut by_ssid: HashMap<&str, Vec<&AccessPoint>> = HashMap::new();
@@ -40,6 +49,13 @@ pub(crate) fn detect_evil_twin(aps: &[AccessPoint]) -> Vec<(&AccessPoint, &Acces
 ///
 /// Internal callers compare scan results against a trusted BSSID set and get
 /// only APs absent from that set.
+///
+/// Time: O(n*k) where n is `aps.len()` and k is `known_bssids.len()` — for
+/// every AP, `known_bssids.contains()` does a linear scan of `known_bssids`
+/// (a slice, not a set); this degrades to O(n^2) when the known-good list
+/// scales with the scan size.
+/// Space: O(m) where m is the number of rogue APs returned (a new `Vec` of
+/// references, bounded above by n).
 #[must_use]
 pub(crate) fn detect_rogue_ap<'a>(
     aps: &'a [AccessPoint],
@@ -56,6 +72,12 @@ pub(crate) fn detect_rogue_ap<'a>(
 /// may be congested, leading to interference.
 ///
 /// Internal callers use the returned map to find crowded channels.
+///
+/// Time: O(n) where n is `aps.len()` — one average-case hash-map
+/// entry-or-insert per AP.
+/// Space: O(c) where c is the number of distinct channels observed (bounded
+/// above by n; in practice bounded by the small set of legal `WiFi` channel
+/// numbers).
 #[must_use]
 pub(crate) fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
     let mut counts: HashMap<u8, usize> = HashMap::new();
@@ -72,6 +94,10 @@ pub(crate) fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
 /// the last is the weakest.
 ///
 /// Internal callers use the first returned AP as the strongest signal.
+///
+/// Time: O(n log n) where n is `aps.len()` — collecting references is O(n),
+/// dominated by the `sort_by_key` comparison sort.
+/// Space: O(n) — the collected/sorted `Vec` of references.
 #[must_use]
 pub(crate) fn signal_map(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
     let mut sorted: Vec<&AccessPoint> = aps.iter().collect();
@@ -85,6 +111,10 @@ pub(crate) fn signal_map(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
 /// misconfigured corporate APs.
 ///
 /// Internal callers use this list as the open-network risk subset.
+///
+/// Time: O(n) where n is `aps.len()` — a single filtering pass.
+/// Space: O(m) where m is the number of open APs returned (a new `Vec` of
+/// references, bounded above by n).
 #[must_use]
 pub(crate) fn open_networks(aps: &[AccessPoint]) -> Vec<&AccessPoint> {
     aps.iter()

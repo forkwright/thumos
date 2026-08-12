@@ -245,6 +245,12 @@ pub(crate) fn score_threat(alerts: &[ImsiCatcherAlert]) -> ThreatScore {
 /// repeat without minting another hand-maintained constant. Distinct kinds
 /// still sum fully (a cipher downgrade AND a sudden tower change ARE
 /// independent signals).
+///
+/// Time: O(a) where a is `alerts.len()` — one pass, O(1) work per alert
+/// (the per-kind occurrence count is a fixed 5-slot array indexed by a
+/// compile-time-known discriminant).
+/// Space: O(a) — the returned `factors: Vec<ThreatFactor>` holds one entry
+/// per alert.
 pub(crate) fn score_threat_with_config(
     alerts: &[ImsiCatcherAlert],
     config: &Config,
@@ -414,6 +420,14 @@ pub(crate) fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert>
 /// neighbours used to evaluate subsequent handovers. Reselection timestamps are sorted
 /// independently of event order before the window scan, so out-of-order or
 /// reordered timestamps do not affect the result.
+///
+/// Time: O(e log e) where e is `events.len()`. The main scan over `events` is
+/// O(e) (average-case `HashSet` operations per event); the dominant cost is
+/// [`max_reselections_in_window`] sorting the collected reselection
+/// timestamps (at most e of them) before its O(e) two-pointer window scan.
+/// Space: O(e) — `alerts`, the `seen_tower_ids`/`known_neighbor_ids`
+/// `HashSet`s, and `reselection_timestamps` each hold at most one entry per
+/// event.
 #[must_use]
 pub(crate) fn detect_imsi_catcher_with_config(
     events: &[CellEvent],

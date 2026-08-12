@@ -156,6 +156,12 @@ pub const ESC_SEPTET: u8 = 0x1B;
 ///
 /// Returns `(is_extension, septet_code)`, or `None` when the character has
 /// no GSM-7 representation.
+///
+/// Time: O(1) -- the two loops are bounded by the compile-time-fixed
+/// lengths of [`EXT_TABLE`] (10 entries) and [`GSM_TO_UNICODE`] (128
+/// entries); neither bound depends on `c`, so every call touches at most
+/// 138 table entries regardless of input.
+/// Space: O(1) -- no allocation.
 #[must_use]
 pub fn char_to_septet(c: char) -> Option<(bool, u8)> {
     // Extension table first: it holds characters absent from the base table.
@@ -186,6 +192,10 @@ pub fn char_to_septet(c: char) -> Option<(bool, u8)> {
 /// # Errors
 ///
 /// [`CoreError::Gsm7Encode`] when a character has no GSM-7 representation.
+///
+/// Time: O(n) where n is the number of `char`s in `text` -- one
+/// [`char_to_septet`] call per character, each O(1).
+/// Space: O(1) -- only a running counter, no allocation.
 pub fn count_septets(text: &str) -> Result<usize> {
     let mut count = 0usize;
     for c in text.chars() {
@@ -202,6 +212,12 @@ pub fn count_septets(text: &str) -> Result<usize> {
 /// # Errors
 ///
 /// [`CoreError::Gsm7Encode`] when a character has no GSM-7 representation.
+///
+/// Time: O(n) where n is the number of `char`s in `text` -- one
+/// [`char_to_septet`] call per character (O(1) each) to build up to 2n
+/// septets, then one O(1) bit-pack step per septet.
+/// Space: O(n) -- an intermediate `septets` `Vec` of up to 2n bytes, then a
+/// packed `result` buffer of roughly 7n/8 bytes.
 pub fn encode(text: &str) -> Result<Vec<u8>> {
     let mut septets: Vec<u8> = Vec::with_capacity(text.len());
     for c in text.chars() {
@@ -255,6 +271,10 @@ pub fn decode(data: &[u8], num_septets: usize) -> Result<String> {
     decode_from(data, 0, num_septets)
 }
 
+#[expect(
+    clippy::as_conversions,
+    reason = "septet is masked to 7 bits (0x7F), so the value is always 0-127 and fits u8"
+)]
 /// Decode `num_septets` septets beginning at septet index `start_septet`.
 ///
 /// WHY this exists (#662): a User Data Header occupies whole octets at the
@@ -275,10 +295,13 @@ pub fn decode(data: &[u8], num_septets: usize) -> Result<String> {
 /// # Errors
 ///
 /// As [`decode`].
-#[expect(
-    clippy::as_conversions,
-    reason = "septet is masked to 7 bits (0x7F), so the value is always 0-127 and fits u8"
-)]
+///
+/// Time: O(m) where m is `num_septets` -- the loop consumes exactly
+/// `num_septets` septets FROM `data` (regardless of how many collapse into
+/// extension characters), each iteration doing O(1) fixed-table lookups
+/// and bit-unpacking of at most 2 bytes.
+/// Space: O(m) -- `out` is allocated with capacity `num_septets`, an upper
+/// bound on the number of characters actually produced.
 pub fn decode_from(data: &[u8], start_septet: usize, num_septets: usize) -> Result<String> {
     if num_septets == 0 {
         return Ok(String::new());
@@ -349,6 +372,10 @@ pub const fn hex_nibble(b: u8) -> Option<u8> {
 }
 
 /// Encode bytes as an uppercase hex string.
+///
+/// Time: O(n) where n is `data.len()` -- one O(1) pair of [`HEX_CHARS`]
+/// lookups per input byte.
+/// Space: O(n) -- `out` is allocated with capacity `data.len() * 2`.
 #[must_use]
 pub fn hex_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len() * 2);
@@ -370,6 +397,10 @@ pub fn hex_encode(data: &[u8]) -> String {
 /// # Errors
 ///
 /// [`CoreError::HexInvalid`] on odd length or a non-hex character.
+///
+/// Time: O(n) where n is `s.len()` -- one `chunks_exact(2)` pass, each pair
+/// costing two O(1) [`hex_nibble`] lookups.
+/// Space: O(n) -- `out` is allocated with capacity `s.len() / 2`.
 pub fn hex_decode(s: &[u8]) -> Result<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return Err(CoreError::HexInvalid { offset: s.len() });
@@ -416,6 +447,13 @@ const BCD_FILLER: u8 = 0x0F;
 /// - [`CoreError::AddressTooLong`] when `len_digits` exceeds
 ///   [`MAX_ADDRESS_DIGITS`].
 /// - [`CoreError::BcdInvalidDigit`] when a nibble is not a decimal digit.
+///
+/// Time: O(d) where d is `len_digits` -- each of the d nibbles costs O(1).
+/// `d` is checked against the compile-time constant [`MAX_ADDRESS_DIGITS`]
+/// (20) and rejected BEFORE the loop runs, so in practice d never exceeds
+/// 20.
+/// Space: O(d) -- `out` is allocated with capacity `digits + 1`, bounded by
+/// the same check.
 pub fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Result<String> {
     let digits = usize::from(len_digits);
     if digits > MAX_ADDRESS_DIGITS {
@@ -457,6 +495,16 @@ pub fn decode_bcd_address(len_digits: u8, type_byte: u8, bcd: &[u8]) -> Result<S
 ///   digit.
 /// - [`CoreError::AddressTooLong`] when `digits.len()` exceeds
 ///   [`MAX_ADDRESS_DIGITS`].
+///
+/// Time: O(m) where m is `digits.len()` -- UNLIKE [`decode_bcd_address`],
+/// the [`MAX_ADDRESS_DIGITS`] length check runs AFTER the first loop has
+/// already scanned the whole input into `nibbles`, so this is not bounded
+/// to a small constant: an oversized `digits` slice is still fully scanned
+/// (and allocated into) before being rejected. The second loop packs the
+/// (now length-checked) nibbles two at a time, O(m).
+/// Space: O(m) -- `nibbles` is allocated with capacity `digits.len()`
+/// (built to full input length before the bound check), plus `packed` at
+/// roughly half that.
 pub fn pack_bcd_digits(digits: &[u8]) -> Result<Vec<u8>> {
     let mut nibbles: Vec<u8> = Vec::with_capacity(digits.len());
     for &b in digits {
@@ -948,6 +996,11 @@ pub fn parse_cpin(line: &[u8]) -> Option<SimPinState> {
 /// Parse a +CSQ response line: `"+CSQ: <rssi>,<ber>"`.
 ///
 /// Returns `(rssi_raw, ber)` where `rssi_raw` is 0-31 or 99 (unknown).
+///
+/// Time: O(n) where n is `line.len()` -- one linear scan FOR the comma
+/// separator, then two [`parse_decimal_u8`] passes over the two fields;
+/// together these touch each byte of `line` a constant number of times.
+/// Space: O(1) -- no allocation; returns a fixed-size tuple.
 #[must_use]
 pub fn parse_csq(line: &[u8]) -> Option<(u8, u8)> {
     let rest = strip_prefix(line, b"+CSQ: ")?;

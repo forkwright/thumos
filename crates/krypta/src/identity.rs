@@ -117,6 +117,13 @@ impl IdentityKeyPair {
     /// # Errors
     ///
     /// Returns [`Error::InvalidKey`] if the stored key bytes are malformed.
+    ///
+    /// Time: O(m) where m is `data.len()` — `SigningKey::from_bytes` parses
+    /// a fixed 32-byte key (O(1)); the dominant cost is `ed25519_dalek`'s
+    /// Ed25519 signing, which hashes the full message with SHA-512
+    /// internally.
+    /// Space: O(1) — the returned signature is a fixed 64 bytes regardless
+    /// of `data.len()`, only converted to a heap `Vec`.
     pub(crate) fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
         let key_pair = SigningKey::from_bytes(&self.private_key_bytes);
         Ok(key_pair.sign(data).to_bytes().to_vec())
