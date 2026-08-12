@@ -118,7 +118,9 @@ production_key() {
     fi
     printf '%s' "$PRODUCTION_KEY_DIR/ci-boot.pub"
 }
-cleanup() { [ -n "$PRODUCTION_KEY_DIR" ] && rm -rf "$PRODUCTION_KEY_DIR"; }
+cleanup() {
+    [ -n "$PRODUCTION_KEY_DIR" ] && rm -rf "$PRODUCTION_KEY_DIR"
+}
 trap cleanup EXIT
 
 # WHY dynamic column width, not the original hand-picked padding (#704):
