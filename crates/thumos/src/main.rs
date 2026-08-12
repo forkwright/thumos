@@ -8,13 +8,23 @@
 #![cfg_attr(not(test), no_main)]
 // WHY (#431): the kernel carries a large compiled-and-tested surface that is
 // not yet boot-wired (radio/messaging/UI subsystems built ahead of the boot
-// path). That is a deliberate, tracked state (#145 wiring audit, #420
-// boot-wiring), not cruft, so dead_code is expected crate-wide rather than
-// annotated at ~715 sites. WHY expect not allow: the wiring waves progressively
-// consume the surface, and once it is fully wired this expectation goes
+// path). That is a deliberate, RECORDED state, not cruft: every module's
+// reachability tier lives in docs/capability-inventory.toml, and
+// scripts/check-wiring-inventory.sh fails the gate on a compiled-only entry
+// with no stated reason. That inventory is the tracker -- a machine-checked
+// file, not an issue -- so this exemption cites it rather than a ticket that
+// can close while the surface it described still exists.
+// WHY crate-wide rather than ~715 per-item annotations: deadness here is
+// per-feature-configuration (an item live under `qemu` is dead under
+// `production`), so a per-item #[expect] is unfulfilled in some of the nine
+// configurations the gate lints and cannot be written correctly.
+// WHY expect not allow: as wiring consumes the surface this expectation goes
 // unfulfilled and prompts its own removal. All OTHER warning classes stay live
 // under the -D warnings gate.
-#![expect(dead_code, reason = "compiled-but-unwired surface, tracked #145/#420")]
+#![expect(
+    dead_code,
+    reason = "compiled-but-unwired surface; per-module tiers in docs/capability-inventory.toml, enforced by scripts/check-wiring-inventory.sh"
+)]
 // WHY: unwrap_used/expect_used are denied crate-wide (Cargo.toml) to keep
 // panics out of shipping kernel paths, where a panic is a crash. In a test,
 // an unwrap()/expect() panic IS the assertion -- the failure signal the test

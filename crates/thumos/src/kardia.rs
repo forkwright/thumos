@@ -14,7 +14,7 @@
 //! userspace, `process::switch_to`'s taken branch runs, the process faults, the
 //! kernel kills + reaps it, and control round-robins back to this loop (which
 //! then services ticks to the cap). That is the two-process preempt-and-return
-//! soak TODO(#420) asked for, now permanent in CI.
+//! soak, permanent in CI.
 //!
 //! WHY WFI (not WFE) for the phone idle (#461): WFE has no configured event
 //! source (no SEV/SEVONPEND) and parks forever under qemu-virt; WFI wakes on

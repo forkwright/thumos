@@ -94,15 +94,15 @@ const REG_SDC_RESP3: usize = 0x4C;
 const REG_SDC_BLK_NUM: usize = 0x50;
 
 /// Card status.
-#[expect(dead_code, reason = "reserved for future status readback (#145)")]
+#[expect(dead_code, reason = "reserved for future status readback")]
 const REG_SDC_CSTS: usize = 0x58;
 
 /// Data CRC status per DAT line.
-#[expect(dead_code, reason = "reserved for future CRC diagnostics (#145)")]
+#[expect(dead_code, reason = "reserved for future CRC diagnostics")]
 const REG_SDC_DCRC_STS: usize = 0x60;
 
 /// Advanced config 0.
-#[expect(dead_code, reason = "reserved for future tuning (#145)")]
+#[expect(dead_code, reason = "reserved for future tuning")]
 const REG_SDC_ADV_CFG0: usize = 0x64;
 
 /// eMMC config 0: boot mode, part access.
@@ -112,7 +112,7 @@ const REG_SDC_ADV_CFG0: usize = 0x64;
 // exactly there so it stays fulfilled in both configurations.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "reserved for boot mode configuration (#145)")
+    expect(dead_code, reason = "reserved for boot mode configuration")
 )]
 const REG_EMMC_CFG0: usize = 0x70;
 
@@ -120,7 +120,7 @@ const REG_EMMC_CFG0: usize = 0x70;
 // WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "reserved for boot mode configuration (#145)")
+    expect(dead_code, reason = "reserved for boot mode configuration")
 )]
 const REG_EMMC_CFG1: usize = 0x74;
 
@@ -128,23 +128,20 @@ const REG_EMMC_CFG1: usize = 0x74;
 // WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "reserved for boot status readback (#145)")
+    expect(dead_code, reason = "reserved for boot status readback")
 )]
 const REG_EMMC_STS: usize = 0x78;
 
 /// eMMC I/O control.
 // WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "reserved for eMMC I/O tuning (#145)")
-)]
+#[cfg_attr(not(test), expect(dead_code, reason = "reserved for eMMC I/O tuning"))]
 const REG_EMMC_IOCON: usize = 0x7C;
 
 /// DMA start address [35:32] (4 MSB).
 // WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "MT6739 is 32-bit; high bits unused (#145)")
+    expect(dead_code, reason = "MT6739 is 32-bit; high bits unused")
 )]
 const REG_MSDC_DMA_SA_HIGH: usize = 0x8C;
 
@@ -155,7 +152,7 @@ const REG_MSDC_DMA_SA: usize = 0x90;
 // WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "reserved for DMA progress monitoring (#145)")
+    expect(dead_code, reason = "reserved for DMA progress monitoring")
 )]
 const REG_MSDC_DMA_CA: usize = 0x94;
 
@@ -169,20 +166,17 @@ const REG_MSDC_DMA_CFG: usize = 0x9C;
 // WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "length encoded in GPD/BD descriptors (#145)")
+    expect(dead_code, reason = "length encoded in GPD/BD descriptors")
 )]
 const REG_MSDC_DMA_LEN: usize = 0xA8;
 
 /// Patch register 0 (tuning overrides).
-#[expect(dead_code, reason = "reserved for auto-tuning (#145)")]
+#[expect(dead_code, reason = "reserved for auto-tuning")]
 const REG_MSDC_PATCH_BIT0: usize = 0xB0;
 
 /// Version register.
 // WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "reserved for version readback (#145)")
-)]
+#[cfg_attr(not(test), expect(dead_code, reason = "reserved for version readback"))]
 const REG_MSDC_VERSION: usize = 0x114;
 
 // NOTE: source `drivers/mmc/host/mediatek/ComboA/msdc_reg.h:75–221`
@@ -191,7 +185,7 @@ const REG_MSDC_VERSION: usize = 0x114;
 // WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "reserved for encrypted storage layer (#145)")
+    expect(dead_code, reason = "reserved for encrypted storage layer")
 )]
 const REG_MSDC_AES_SEL: usize = 0x280;
 
@@ -212,7 +206,7 @@ const CFG_BUSWIDTH_1: u32 = 0b00 << 20;
 // WHY cfg_attr(not(test)): see REG_EMMC_CFG0 above -- same reasoning.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "eMMC uses 8-bit; kept for SD card support (#145)")
+    expect(dead_code, reason = "eMMC uses 8-bit; kept for SD card support")
 )]
 const CFG_BUSWIDTH_4: u32 = 0b01 << 20;
 
@@ -243,7 +237,7 @@ const CMD_RSPTYP_NONE: u32 = 0b00 << 7;
 const CMD_RSPTYP_R1: u32 = 0b01 << 7;
 
 /// Response type: R2 (136-bit).
-#[expect(dead_code, reason = "reserved for CID/CSD readback (#145)")]
+#[expect(dead_code, reason = "reserved for CID/CSD readback")]
 const CMD_RSPTYP_R2: u32 = 0b10 << 7;
 
 /// Response type: R3/R4 (48-bit, no CRC).
@@ -256,7 +250,7 @@ const CMD_DTYPE_READ: u32 = 0b01 << 11;
 const CMD_DTYPE_WRITE: u32 = 0b10 << 11;
 
 /// Block length shift for `SDC_CMD` (bits [31:16] in some configs).
-#[expect(dead_code, reason = "block length SET via SDC_CFG on MT6739 (#145)")]
+#[expect(dead_code, reason = "block length SET via SDC_CFG on MT6739")]
 const CMD_BLK_LEN_SHIFT: u32 = 16;
 
 // ---------------------------------------------------------------------------
@@ -270,7 +264,7 @@ const DMA_CTRL_START: u32 = 1 << 0;
 const DMA_CTRL_STOP: u32 = 1 << 1;
 
 /// DMA mode: basic (single buffer).
-#[expect(dead_code, reason = "descriptor mode used for scatter-gather (#145)")]
+#[expect(dead_code, reason = "descriptor mode used for scatter-gather")]
 const DMA_CTRL_MODE_BASIC: u32 = 0b00 << 8;
 
 /// DMA mode: descriptor (GPD/BD chain).
@@ -413,7 +407,7 @@ const CMD0_GO_IDLE: u32 = 0;
 const CMD1_SEND_OP_COND: u32 = 1;
 
 /// CMD2: `ALL_SEND_CID`  -  request card identification.
-#[expect(dead_code, reason = "reserved for CID readback (#145)")]
+#[expect(dead_code, reason = "reserved for CID readback")]
 const CMD2_ALL_SEND_CID: u32 = 2;
 
 /// CMD3: `SET_RELATIVE_ADDR`  -  assign relative card address.
@@ -423,11 +417,11 @@ const CMD3_SET_RELATIVE_ADDR: u32 = 3;
 const CMD7_SELECT_CARD: u32 = 7;
 
 /// CMD8: `SEND_EXT_CSD`  -  read extended CSD register.
-#[expect(dead_code, reason = "reserved for EXT_CSD readback (#145)")]
+#[expect(dead_code, reason = "reserved for EXT_CSD readback")]
 const CMD8_SEND_EXT_CSD: u32 = 8;
 
 /// CMD13: `SEND_STATUS`  -  read card status register.
-#[expect(dead_code, reason = "reserved for status polling (#145)")]
+#[expect(dead_code, reason = "reserved for status polling")]
 const CMD13_SEND_STATUS: u32 = 13;
 
 /// CMD16: `SET_BLOCKLEN`  -  SET block length to 512 bytes.

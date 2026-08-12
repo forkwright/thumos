@@ -36,10 +36,10 @@
 // that path via a `to_device.events` block. This module stays unreachable
 // from `kernel_main` regardless -- `MatrixClient` itself is not yet
 // constructed anywhere outside tests, a separate, broader integration
-// (#145) this issue does not close.
+// this issue does not close.
 #![expect(
     dead_code,
-    reason = "MatrixClient (and therefore MatrixCrypto) is not yet constructed from kernel_main; unreachable pending Phase-09 unified-inbox integration (#145)"
+    reason = "MatrixClient (and therefore MatrixCrypto) is not yet constructed from kernel_main; unreachable pending Phase-09 unified-inbox integration (tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;

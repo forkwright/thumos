@@ -215,7 +215,7 @@ impl ThreatAlertType {
     /// its icon, and its tests described an event that could never occur.
     /// This is the seam that lets a decode result reach the screen. The
     /// remaining step is the kinit event loop, which does not yet reach the
-    /// SMS path at all (#145).
+    /// SMS path at all.
     #[must_use]
     pub(crate) const fn from_message_class(class: klesis_core::MessageClass) -> Option<Self> {
         match class {

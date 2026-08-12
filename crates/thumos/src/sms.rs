@@ -36,7 +36,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "SMS API created in Phase 07 Wave 3, kinit wiring pending (#145)"
+        reason = "SMS API exists; kinit wiring pending (tier in docs/capability-inventory.toml)"
     )
 )]
 
@@ -795,7 +795,8 @@ mod tests {
         // WHY (#662): ThreatAlertType::SilentSms existed with an icon, a
         // Display impl, and tests -- and no producer anywhere in the
         // kernel. This is the seam that gives a decode result somewhere to
-        // go. Wiring it into the live event loop is #145.
+        // go. Wiring it into the live event loop is tracked by this module's
+        // tier in docs/capability-inventory.toml.
         use crate::screen_threat::ThreatAlertType;
         assert_eq!(
             ThreatAlertType::from_message_class(MessageClass::Silent { pid: 0x40 }),
