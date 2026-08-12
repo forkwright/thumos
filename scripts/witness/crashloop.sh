@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/crashloop.sh — QEMU PID-0 fault supervisor + crash-loop rate limit
 # (#492), verbatim from ci.yml. The crashloop-probe feature makes kinit spawn
 # + supervise /crasher, a program that data-aborts on EVERY launch: launch,
 # restart x3, give up — the counts are the assertion. #526 reconciliation: a
 # CLEAN exit (/shell) must NEVER be restarted; /init is deliberately
 # unsupervised and must be unaffected.
-set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

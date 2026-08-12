@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/exec.sh — QEMU exec correctness + PL0 (#489), verbatim from ci.yml.
 # PL0 execve must REPLACE the caller's image with a new one that runs at PL0:
 # the NEW image's _start runs (remap + ACTIVE_FRAME install), its privileged
 # cp15 read UNDEF-faults at PL0 (unprivileged proof), the OLD image is gone,
 # and the kernel survives.
-set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

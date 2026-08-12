@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/guard.sh — QEMU PROT_NONE guard pages survive fork (#496), verbatim
 # from ci.yml. /init mmaps a PROT_NONE guard, forks, and the CHILD reads it.
 # The load-bearing assertion is the DFSR status: 0x0f = PERMISSION fault (the
 # child HAS its own copy — the fix); 0x07 = TRANSLATION fault (the page was
 # DROPPED from the deep-copy — the #496 bug regressed). The parent reaps
 # (SIGSEGV=139) and mprotects NONE->READ.
-set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

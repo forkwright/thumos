@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/fork.sh — QEMU fork correctness + isolation (#478), verbatim from
 # ci.yml. A PL0 fork must give the child its OWN deep-copied memory: distinct
 # parent/child markers prove the r0 split; the child mutates canaries the
 # parent then verifies untouched; child exit + waitpid proves exit_cleanup
 # freed the CHILD's frames, not the parent's.
-set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

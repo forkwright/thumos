@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/forkexec.sh — QEMU fork+exec composes, per-process images (#502),
 # verbatim from ci.yml. /init forks; the CHILD execs /init2 (its OWN image,
 # not a re-run of /init — the fork bomb is dead); the exec marker appears
 # EXACTLY ONCE; the parent's own image frame is never touched.
-set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # kernel-host-tests.sh — kernel i686 host test suite (#546). The kernel crate
 # is excluded from the workspace, so its host unit tests (i686, u32-faithful
 # ABI) run against the 32-bit target. Shared by ci.yml and .kanon-ci.toml so
 # the admission gate and the PR gate execute the identical suite.
-set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 KERNEL_DIR="${THUMOS_KERNEL_DIR:-$REPO_ROOT/crates/thumos}"

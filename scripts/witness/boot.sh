@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/boot.sh — kernel QEMU boot + service-loop witness (#546), extracted
 # verbatim from the ci.yml kernel job. The `qemu` feature retargets peripherals
 # to the virt board; the REAL kinit boots, hands off to kardia (PID 0), and
@@ -6,7 +8,6 @@
 # a named assertion from the original inline block — same markers, same counts.
 # Runner exit codes: 0=loop ran; 5=service-loop stalled (#461 tick-source
 # class); 1=panic; 2/3/4=aborts; 124=hang (runner timeout).
-set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

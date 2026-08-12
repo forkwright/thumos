@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/metaxu.sh — the #544 on-device round trip: a real Thumos
 # userspace process (/metaxu_probe) drives an authenticated metaxu-core
 # request over the second PL011 to a real host `pylon-bridge` process (the

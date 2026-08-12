@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/lib.sh — shared helpers for the kernel QEMU witness scripts (#546).
 # Source, don't execute. Every witness script preserves the exact assertions of
 # the ci.yml kernel job it was extracted from; edit assertions in ONE place

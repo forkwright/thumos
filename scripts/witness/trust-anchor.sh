@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/trust-anchor.sh — trust-anchor build guard (#233), verbatim from
 # ci.yml. A production image must FAIL to build without a provisioned key,
 # must REFUSE the committed (deliberately public) dev key, and must BUILD
 # with a real key — proven here with an ephemeral one. Dev/qemu/host builds
 # keep building keylessly.
-set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 cd "$KERNEL_DIR"

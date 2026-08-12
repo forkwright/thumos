@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/metaxu-negative.sh — the #544 negative-case coverage metaxu.sh
 # does not exercise: metaxu.sh proves the happy path only, which passes
 # against a bridge that accepts anything. Three distinct outcomes, one
