@@ -89,6 +89,10 @@ pub struct PhoneDialer {
 
 impl PhoneDialer {
     /// Create a new dialer with the given pixel width.
+    ///
+    /// Time: O(1) — builds a fixed-field struct; `digits` starts as an
+    /// empty `String::new()`, which performs no allocation.
+    /// Space: O(1) — no heap allocation.
     #[must_use]
     pub(crate) const fn new(width: u32) -> Self {
         Self {

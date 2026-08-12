@@ -216,6 +216,15 @@ impl TouchscreenDriver {
     ///
     /// Returns an error if the I2C bus transaction fails or the
     /// hardware reports an impossible touch count.
+    ///
+    /// Time: O(1) — `count` is a runtime value read from hardware, but is
+    /// rejected above `MAX_TOUCH_POINTS` = 10 before any iteration, so the
+    /// per-touch loop runs at most 10 times; the tracking-ID sweep is a
+    /// second loop fixed at `TRACKING_ID_MAX + 1` = 10 iterations. Both
+    /// bounds are the compile-time-constant hardware protocol limits, not
+    /// caller-supplied.
+    /// Space: O(1) — `raw_buf` is a fixed `[u8; MAX_TOUCH_POINTS *
+    /// BYTES_PER_TOUCH]` stack array (60 bytes); no heap allocation.
     pub(crate) fn poll<B: I2cBus>(
         &mut self,
         bus: &mut B,

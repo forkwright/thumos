@@ -21,22 +21,22 @@ type HmacSha1 = Hmac<Sha1>;
 const PBKDF2_ITERS: NonZeroU32 = NonZeroU32::MIN.saturating_add(4095);
 
 /// PMK/PSK output length in bytes.
-pub const PMK_LEN: usize = 32;
+pub(crate) const PMK_LEN: usize = 32;
 
 /// Key Confirmation Key length in bytes.
-pub const KCK_LEN: usize = 16;
+pub(crate) const KCK_LEN: usize = 16;
 
 /// Key Encryption Key length in bytes.
-pub const KEK_LEN: usize = 16;
+pub(crate) const KEK_LEN: usize = 16;
 
 /// Temporal Key length in bytes (WPA2-CCMP).
-pub const TK_LEN: usize = 16;
+pub(crate) const TK_LEN: usize = 16;
 
 /// Total PTK length: KCK + KEK + TK (WPA2-CCMP, 384 bits).
-pub const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
+pub(crate) const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
 
 /// MIC length in bytes.
-pub const MIC_LEN: usize = 16;
+pub(crate) const MIC_LEN: usize = 16;
 
 /// Pairwise Transient Key components.
 ///

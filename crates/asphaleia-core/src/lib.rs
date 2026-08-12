@@ -327,6 +327,13 @@ const MAX_LABELS: usize = 128;
 /// case-normalized blocklist (see [`domain_matches_suffix`]), and
 /// lowercasing once here — instead of once per caller — avoids a second
 /// per-packet allocation on the hot path.
+///
+/// Time: O(n) where n is `data.len()` — walks the QNAME label-by-label in a
+/// single pass, visiting and lowercasing each label byte exactly once
+/// (additionally capped by the fixed `MAX_LABELS` = 128 guard against
+/// malformed input, but the byte walk over `data` dominates).
+/// Space: O(n) — builds the returned `domain` `String` one lowercased byte
+/// at a time, bounded above by the QNAME length within `data`.
 #[must_use]
 pub fn extract_query_domain(data: &[u8]) -> Option<String> {
     if data.len() < DNS_HEADER_LEN {
@@ -449,6 +456,12 @@ pub fn normalize_suffix(entry: &str) -> &str {
 
 /// Check whether `domain` (already lowercased) matches any entry in
 /// [`SURVEILLANCE_DOMAINS`].
+///
+/// Time: O(d) where d is `domain_lowercased.len()` — iterates the fixed
+/// 12-entry `SURVEILLANCE_DOMAINS` compile-time constant array (a constant
+/// factor) and each `domain_matches_suffix` comparison costs O(d) for the
+/// suffix strip/compare.
+/// Space: O(1) — no allocation; operates on borrowed string slices.
 #[must_use]
 pub fn is_default_surveillance_domain(domain_lowercased: &str) -> bool {
     SURVEILLANCE_DOMAINS

@@ -56,6 +56,15 @@ pub(crate) struct WipeAction {
 ///
 /// Keys are always included at priority 1 (wiped first) regardless of level.
 /// The returned list is ordered by ascending priority.
+///
+/// Time: O(1) — `level` selects among 5 fixed branches, none of which scan
+/// any caller-supplied collection; the one recursive call
+/// (`Everything` → `plan(UserData)`) is a single fixed level deep (the
+/// `UserData` branch never recurses further), and every branch builds FROM
+/// a hardcoded, compile-time-fixed number of `WipeAction` entries (at most
+/// 8, FOR `Everything`).
+/// Space: O(1) — the returned `Vec` holds at most 8 fixed-size
+/// `WipeAction`s, each with a short hardcoded path literal.
 #[must_use]
 pub(crate) fn plan(level: WipeLevel) -> Vec<WipeAction> {
     match level {

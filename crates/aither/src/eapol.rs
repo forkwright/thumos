@@ -14,13 +14,13 @@ const EAPOL_HEADER_LEN: usize = 4;
 const EAPOL_KEY_FIXED_LEN: usize = 95;
 
 /// Length of the MIC field.
-pub const MIC_LEN: usize = 16;
+pub(crate) const MIC_LEN: usize = 16;
 
 /// Length of the nonce field.
-pub const NONCE_LEN: usize = 32;
+pub(crate) const NONCE_LEN: usize = 32;
 
 /// Length of the IV field.
-pub const IV_LEN: usize = 16;
+pub(crate) const IV_LEN: usize = 16;
 
 /// RSN key descriptor type (WPA2/WPA3).
 pub(crate) const DESCRIPTOR_TYPE_RSN: u8 = 0x02;

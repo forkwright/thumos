@@ -36,4 +36,4 @@ impl fmt::Display for CoreError {
 impl core::error::Error for CoreError {}
 
 /// Result type for metaxu-core's encode/decode functions.
-pub type Result<T> = core::result::Result<T, CoreError>;
+pub(crate) type Result<T> = core::result::Result<T, CoreError>;

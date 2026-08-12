@@ -55,6 +55,11 @@ pub struct Pylon {
 impl Pylon {
     /// Create a pylon for the runtime identity `runtime_key`, evaluating
     /// expiry at `now_ms`.
+    ///
+    /// Time: O(1) -- constructs two scalar fields and an empty `HashSet`
+    /// (no entries, no iteration).
+    /// Space: O(1) -- the empty `HashSet` allocates no backing storage
+    /// until its first insert.
     pub fn new(runtime_key: ed25519_dalek::VerifyingKey, now_ms: u64) -> Self {
         Self {
             runtime_key,
@@ -64,6 +69,15 @@ impl Pylon {
     }
 
     /// Verify + answer one authenticated request frame (#544).
+    ///
+    /// Time: O(n) where n is `frame_bytes.len()` -- envelope decode and
+    /// postcard deserialization of the `AuthenticatedRequest` copy the
+    /// frame once, and the grant's capability-set scan and Ed25519
+    /// signature verification are each bounded by the (smaller) size of
+    /// the embedded grant, which cannot exceed n.
+    /// Space: O(n) -- the decoded envelope payload, the deserialized
+    /// request/grant, and the encoded response are each proportional to
+    /// the frame size.
     pub fn handle(&mut self, frame_bytes: &[u8]) -> Vec<u8> {
         let response = self.answer(frame_bytes);
         // Wrap the authenticated response in the envelope (kind 5).
@@ -189,7 +203,7 @@ impl Pylon {
 ///
 /// Used by the adversarial witness (#544) and, under `pylon-bin`, by
 /// `src/bin/pylon_bridge.rs` for the on-device QEMU round trip.
-pub fn spawn(pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
+pub(crate) fn spawn(pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
     spawn_with_response_transform(pylon, n_requests, |response| response)
 }
 
@@ -200,6 +214,15 @@ pub fn spawn(pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
 /// client as a typed MAC failure, not a silent accept or a transport
 /// error. [`spawn`] delegates here with an identity transform -- one
 /// implementation, not two that could drift.
+///
+/// Time: O(1) for this function's own synchronous work (bind + spawn); it
+/// returns before serving any request. The spawned background thread it
+/// launches separately performs O(n) work, where n is `n_requests` -- one
+/// `serve_one` call per accepted connection, each bounded by the 64 KiB
+/// frame ceiling enforced in `serve_one`.
+/// Space: O(1) for this function's own stack frame; the spawned thread
+/// reuses one frame buffer per iteration rather than accumulating across
+/// iterations.
 pub fn spawn_with_response_transform(
     mut pylon: Pylon,
     n_requests: usize,

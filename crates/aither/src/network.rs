@@ -91,6 +91,15 @@ impl NetworkConfig {
 /// the entry with the highest `priority` is chosen; ties are broken by RSSI.
 ///
 /// Returns `None` when no configured network is visible in the scan results.
+///
+/// Time: O(s * c) where s is `scan_results.len()` and c is
+/// `config.networks.len()` — every scan result is compared against every
+/// configured network; each comparison additionally costs O(k) for the SSID
+/// byte-slice equality check, where k is the SSID length, so the strict
+/// bound is O(s * c * k).
+/// Space: O(1) auxiliary — tracks only a `best` reference pair; no new
+/// allocation persists (the `String::from_utf8_lossy` in the debug log line
+/// is transient and does not survive the call).
 #[must_use]
 pub(crate) fn select_network<'a>(
     scan_results: &[ScanResult],

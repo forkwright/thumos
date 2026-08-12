@@ -134,6 +134,10 @@ const fn parse_hex_byte(hi: u8, lo: u8) -> Option<u8> {
 
 /// Compute the NMEA XOR checksum of a sentence body (the bytes between `$`
 /// and `*`, exclusive of both).
+///
+/// Time: O(n) where n is `body.len()` -- a single linear XOR fold over
+/// every byte.
+/// Space: O(1) -- a single accumulator byte, no allocation.
 #[must_use]
 pub fn compute_checksum(body: &[u8]) -> u8 {
     body.iter().fold(0u8, |acc, &b| acc ^ b)
@@ -150,6 +154,12 @@ pub fn compute_checksum(body: &[u8]) -> u8 {
 /// `&str` slice) accepts a single leftover digit as if it were the whole
 /// checksum, silently validating a sentence whose checksum lost its leading
 /// zero in transit (#545).
+///
+/// Time: O(n) where n is `sentence.len()` -- scanning for the `*`
+/// delimiter and computing the XOR checksum over the body are each a
+/// single linear pass.
+/// Space: O(1) -- the returned body is a borrowed slice of the input; no
+/// bytes are copied.
 ///
 /// # Errors
 ///
@@ -198,6 +208,13 @@ pub fn checksum_body(sentence: &[u8]) -> Result<&[u8]> {
 /// Split an NMEA sentence body (already stripped of `$...*XX`) into
 /// comma-separated fields.
 ///
+/// Time: O(n) where n is `body.len()` -- a single linear scan, splitting
+/// on each comma byte.
+/// Space: O(f) where f is the number of fields produced -- each pushed
+/// element is a borrowed slice of the input (no byte copies), but the
+/// `Vec` of slices itself grows with the field count, which is bounded by
+/// n in the worst case of an all-comma body.
+///
 /// # Panics
 ///
 /// Does not panic: `start` and `i` are always indices produced by
@@ -221,6 +238,10 @@ pub fn split_fields(body: &[u8]) -> Vec<&[u8]> {
 // ---------------------------------------------------------------------------
 
 /// Parse a byte slice of ASCII digits into a `u32`.
+///
+/// Time: O(n) where n is `bytes.len()` -- a single linear scan; exits
+/// early only on a non-digit byte or on `u32` overflow.
+/// Space: O(1) -- a single `u32` accumulator, no allocation.
 #[must_use]
 pub fn parse_uint(bytes: &[u8]) -> Option<u32> {
     if bytes.is_empty() {
@@ -286,6 +307,16 @@ fn scaled_fraction(frac_bytes: &[u8], scale: u32) -> Result<i64> {
 ///
 /// Handles an optional leading `-` -- a below-sea-level altitude (e.g.
 /// Death Valley, -86 m) is a legitimate NMEA value, not a malformed one.
+///
+/// Time: O(n) where n is `bytes.len()` -- one linear scan to locate the
+/// decimal point, plus parsing the integer and fractional digit runs (each
+/// via `parse_uint`), together a single pass over the input. Note the
+/// fractional-digit-count guard (`FractionalDigitsExceeded`) is checked
+/// only AFTER `parse_uint` has already scanned the full fractional part,
+/// so it bounds the magnitude computation, not this function's cost --
+/// an adversarial all-digit fractional field is scanned in full regardless
+/// of length.
+/// Space: O(1) -- all slicing is by reference; no allocation.
 ///
 /// # Errors
 ///

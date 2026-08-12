@@ -213,6 +213,12 @@ pub(crate) fn parse_ad_structures(data: &[u8]) -> Vec<AdStructure> {
 /// Searches the AD structures for a `ManufacturerData` entry that matches the
 /// iBeacon format (Apple company ID `0x004C`, type `0x02`, length `0x15`).
 /// Returns `None` if no iBeacon is found.
+///
+/// Time: O(s) where s is the number of AD structures in `ad.structures` —
+/// each structure is checked once, and `try_parse_ibeacon` does a fixed
+/// number of comparisons against the (constant-size) iBeacon layout.
+/// Space: O(1) — no allocation; the returned [`IBeacon`] is a fixed-size
+/// value copied out of the matched structure's bytes.
 pub(crate) fn is_ibeacon(ad: &AdvertisingData) -> Option<IBeacon> {
     for structure in &ad.structures {
         if structure.ad_type != AdType::ManufacturerData {

@@ -428,6 +428,13 @@ impl PowerOnStep {
     ///
     /// `clock_type` is an out-parameter updated during
     /// [`DetectClockType`](Self::DetectClockType).
+    ///
+    /// Time: O(p) where p is `poll_timeout_iters`. Exactly one match arm runs
+    /// per call (`self` selects a single step); most arms do O(1) register
+    /// I/O, but the four polling steps (`PollPowerAck`, `PollShadowAck`,
+    /// `DisableAxiProtect`, `PollChipId`) spin up to p times waiting for a
+    /// hardware ack bit.
+    /// Space: O(1) — a fixed number of local scalars; no allocation.
     pub(crate) fn execute_and_advance_with_poll<R: RegisterIo>(
         self,
         io: &mut R,
@@ -777,6 +784,11 @@ impl<R: RegisterIo> WmtManager<R> {
     }
 
     /// Reverse shutdown sequence  -  mirrors power-on in reverse ORDER.
+    ///
+    /// Time: O(1) — a fixed sequence of register writes plus a loop over the
+    /// four [`Subsystem`] variants (`Bt`, `Fm`, `Gps`, `Wifi`), a hardcoded
+    /// literal array unrelated to any runtime input.
+    /// Space: O(1) — no allocation.
     #[must_use = "power-off failure must be handled"]
     pub(crate) fn power_off(&mut self) -> Result<(), WmtError> {
         if self.power == PowerState::Off {
