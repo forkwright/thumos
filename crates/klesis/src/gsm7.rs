@@ -49,7 +49,12 @@ pub(crate) fn encode(text: &str) -> Result<Vec<u8>> {
 /// each of the m septets costs one constant-time table lookup.
 /// Space: O(m) — the output `String`'s capacity is sized to `num_chars`,
 /// an upper bound on the character count actually produced.
-pub(crate) fn decode(data: &[u8], num_chars: usize) -> Result<String> {
+// NOTE(#718): kept `pub` deliberately. Narrowing this to pub(crate)
+// showed its only callers are this module's own tests -- after #662 moved
+// GSM-7 into klesis-core, the wrapper lost its production consumers. That
+// makes it a deletion candidate, not a visibility fix, and deleting a
+// public API belongs in its own change rather than inside a lint pass.
+pub fn decode(data: &[u8], num_chars: usize) -> Result<String> {
     Ok(klesis_core::decode(data, num_chars)?)
 }
 

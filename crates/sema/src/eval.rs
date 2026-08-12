@@ -237,10 +237,10 @@ impl EvalReport {
 /// scenario's alerts are mapped once and scored via
 /// [`score_threat_with_config`], whose cost is linear in that scenario's
 /// alert count.
-/// Space: O(n + a_max) — the returned `outcomes`/`false_positives`/
+/// Space: O(n + `a_max`) — the returned `outcomes`/`false_positives`/
 /// `false_negatives` vectors hold at most one entry per scenario (O(n)),
 /// plus a transient per-scenario `alerts` `Vec` sized by that scenario's own
-/// alert count (a_max being the largest such count in the corpus).
+/// alert count (`a_max` being the largest such count in the corpus).
 pub(crate) fn evaluate(scenarios: &[Scenario], config: &Config) -> EvalReport {
     let mut outcomes = Vec::new();
     let mut false_positives = Vec::new();

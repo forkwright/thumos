@@ -119,8 +119,11 @@ where
     E: std::error::Error + 'static,
 {
     /// Build a transport error from an implementation-specific cause.
+    // NOTE(#718): kept `pub` deliberately -- same finding as klesis's
+    // gsm7::decode. Its only callers are this module's own tests, which
+    // makes it a deletion candidate rather than a visibility fix.
     #[must_use]
-    pub(crate) fn transport(source: E) -> Self {
+    pub fn transport(source: E) -> Self {
         Self::Transport {
             source,
             location: Location::generate(),

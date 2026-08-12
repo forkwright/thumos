@@ -76,7 +76,7 @@ pub(crate) fn detect_rogue_ap<'a>(
 /// Time: O(n) where n is `aps.len()` — one average-case hash-map
 /// entry-or-insert per AP.
 /// Space: O(c) where c is the number of distinct channels observed (bounded
-/// above by n; in practice bounded by the small set of legal WiFi channel
+/// above by n; in practice bounded by the small set of legal `WiFi` channel
 /// numbers).
 #[must_use]
 pub(crate) fn channel_utilization(aps: &[AccessPoint]) -> HashMap<u8, usize> {
