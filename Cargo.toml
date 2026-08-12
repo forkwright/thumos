@@ -5,6 +5,7 @@ members = [
     "crates/asphaleia",
     "crates/asphaleia-core",
     "crates/eidolon",
+    "crates/eidolon-core",
     "crates/haphe",
     "crates/kelyphos",
     "crates/klesis",

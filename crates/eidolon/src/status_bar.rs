@@ -5,11 +5,14 @@
 //! boundary through [`Framebuffer::set_pixel`].
 
 use crate::color::Rgb565;
-use crate::font::{CHAR_HEIGHT, draw_str, str_pixel_width};
+use crate::font::{draw_str, str_pixel_width};
 use crate::framebuffer::Framebuffer;
 
-/// Height of the status bar in pixels. Matches one font row (`CHAR_HEIGHT`).
-pub(crate) const STATUS_BAR_HEIGHT: u32 = CHAR_HEIGHT;
+/// Height of the status bar in pixels.
+// WHY(#740): the canonical value lives in eidolon-core, shared with the
+// kernel's ui.rs. It was CHAR_HEIGHT (16) here and 20 in the kernel; the
+// kernel's is what renders on the device, and every zone derives from it.
+pub(crate) const STATUS_BAR_HEIGHT: u32 = eidolon_core::STATUS_BAR_HEIGHT as u32;
 
 /// Number of signal bar columns rendered.
 const SIGNAL_BAR_COUNT: u8 = 4;

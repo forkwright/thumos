@@ -76,6 +76,11 @@ aes = { version = "0.8", default-features = false }
 # WHY (#545): the canonical threat-semantics types (ThreatLevel/Calibration/
 # band boundaries) live in sema-core, shared with the workspace `sema` crate
 # — one implementation, no drifted duplicate in screen_threat.
+# WHY (#740/#545): the display layout geometry (screen size, the three
+# zone heights, and everything derived from them) lives in eidolon-core,
+# shared with eidolon. Two definitions of STATUS_BAR_HEIGHT disagreed by
+# 4px, which shifts every zone boundary without failing anything.
+eidolon-core = { path = "../eidolon-core" }
 sema-core = { path = "../sema-core", default-features = false }
 # WHY (#545): the canonical DNS-surveillance-policy semantics (QNAME
 # extraction, the blocklist domain list, and its suffix-matching rule) live

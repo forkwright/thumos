@@ -35,27 +35,39 @@ use alloc::vec::Vec;
 // Display layout constants
 // ---------------------------------------------------------------------------
 
+// WHY(#740): these ALIAS eidolon-core, they do not redefine it. eidolon-core
+// owns the panel geometry and eidolon renders its status bar from the same
+// constants; changing a value there changes it here, so the two cannot
+// diverge the way STATUS_BAR_HEIGHT did (20 in the kernel, 16 in eidolon --
+// a 4px shift in CONTENT_Y and every zone boundary, with nothing to
+// announce it).
+//
+// WHY aliases rather than `pub(crate) use`: the kernel is built in nine
+// feature configurations and several of these are used in only some of them.
+// An unused `const` is dead_code, which the crate-level expectation in
+// main.rs covers; an unused `use` is unused_imports, which it does not. A
+// re-export therefore fails the zero-warning gate in whichever
+// configurations happen not to touch it, and no suppression fixes that
+// honestly. CONTENT_Y is absent on purpose: the kernel has no consumer for
+// it at all.
+
 /// Display width in pixels (AGM M7 QVGA).
-pub(crate) const SCREEN_WIDTH: u16 = 240;
+pub(crate) const SCREEN_WIDTH: u16 = eidolon_core::SCREEN_WIDTH;
 
 /// Display height in pixels (AGM M7 QVGA).
-pub(crate) const SCREEN_HEIGHT: u16 = 320;
+pub(crate) const SCREEN_HEIGHT: u16 = eidolon_core::SCREEN_HEIGHT;
 
-/// Status bar height in pixels. Fits one font row (16px) plus 4px padding.
-pub(crate) const STATUS_BAR_HEIGHT: u16 = 20;
+/// Status bar height in pixels.
+pub(crate) const STATUS_BAR_HEIGHT: u16 = eidolon_core::STATUS_BAR_HEIGHT;
 
-/// Softkey bar height in pixels. Fits one font row (16px) plus 14px padding.
-pub(crate) const SOFTKEY_BAR_HEIGHT: u16 = 30;
+/// Softkey bar height in pixels.
+pub(crate) const SOFTKEY_BAR_HEIGHT: u16 = eidolon_core::SOFTKEY_BAR_HEIGHT;
 
 /// Content area height, derived from total minus status bar and softkey bar.
-pub(crate) const CONTENT_HEIGHT: u16 = SCREEN_HEIGHT - STATUS_BAR_HEIGHT - SOFTKEY_BAR_HEIGHT;
-
-/// Y-offset where the content area begins.
-pub(crate) const CONTENT_Y: u16 = STATUS_BAR_HEIGHT;
+pub(crate) const CONTENT_HEIGHT: u16 = eidolon_core::CONTENT_HEIGHT;
 
 /// Content framebuffer size in pixels (width * content height).
-pub(crate) const CONTENT_PIXELS: usize = SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize;
-
+pub(crate) const CONTENT_PIXELS: usize = eidolon_core::CONTENT_PIXELS;
 // ---------------------------------------------------------------------------
 // Font constants (matching eidolon 8x16 bitmap font)
 // ---------------------------------------------------------------------------
