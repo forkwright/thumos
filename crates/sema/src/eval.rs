@@ -175,6 +175,12 @@ pub(crate) struct EvalReport {
 impl EvalReport {
     /// Precision at the corpus level: detected-as-attack scenarios that are
     /// attack scenarios. `None` when nothing was detected as attack.
+    ///
+    /// Time: O(o) where o is `self.outcomes.len()` — one filtering pass to
+    /// build `detected`, then one more over `detected` (bounded by o) to
+    /// count true positives.
+    /// Space: O(d) where d is `detected.len()` (the filtered `Vec` of
+    /// references, bounded above by o).
     pub(crate) fn precision_milli(&self) -> Option<u32> {
         let detected: Vec<&ScenarioOutcome> = self
             .outcomes
@@ -197,6 +203,12 @@ impl EvalReport {
 
     /// Recall at the corpus level: attack scenarios detected as attack.
     /// `None` when the corpus has no attack scenarios.
+    ///
+    /// Time: O(o) where o is `self.outcomes.len()` — one filtering pass to
+    /// build `attacks`, then one more over `attacks` (bounded by o) to count
+    /// how many were flagged.
+    /// Space: O(k) where k is `attacks.len()` (the filtered `Vec` of
+    /// references, bounded above by o).
     pub(crate) fn recall_milli(&self) -> Option<u32> {
         let attacks: Vec<&ScenarioOutcome> = self
             .outcomes
@@ -219,6 +231,16 @@ impl EvalReport {
 }
 
 /// Replay every scenario through the scorer at `config` and report outcomes.
+///
+/// Time: O(n + A) where n is `scenarios.len()` and A is the total number of
+/// alerts across every scenario (`sum(scenario.alerts.len())`) — each
+/// scenario's alerts are mapped once and scored via
+/// [`score_threat_with_config`], whose cost is linear in that scenario's
+/// alert count.
+/// Space: O(n + a_max) — the returned `outcomes`/`false_positives`/
+/// `false_negatives` vectors hold at most one entry per scenario (O(n)),
+/// plus a transient per-scenario `alerts` `Vec` sized by that scenario's own
+/// alert count (a_max being the largest such count in the corpus).
 pub(crate) fn evaluate(scenarios: &[Scenario], config: &Config) -> EvalReport {
     let mut outcomes = Vec::new();
     let mut false_positives = Vec::new();

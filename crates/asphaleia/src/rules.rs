@@ -214,6 +214,12 @@ impl RuleSet {
 
     /// Evaluate all rules against `info`. Returns the first matching rule's
     /// action, or [`Action::Deny`] if no rule matches (default-deny policy).
+    ///
+    /// Time: O(r) where r is `self.rules.len()` — scans rules in insertion
+    /// order until the first match; worst case (no match) visits all r
+    /// rules. Each `rule_matches` check is itself O(1): a fixed number of
+    /// scalar/mask comparisons, no nested iteration.
+    /// Space: O(1) — no allocation.
     #[must_use]
     pub fn evaluate(&self, info: &PacketInfo) -> Action {
         for rule in &self.rules {

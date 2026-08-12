@@ -375,6 +375,10 @@ impl Envelope {
     }
 
     /// Serialize the frame (header + payload).
+    ///
+    /// Time: O(p) where p is `self.payload.len()` -- the fixed 22-byte
+    /// header is a constant-size copy; the payload bytes are copied once.
+    /// Space: O(p) -- allocates a new `Vec` of length `HEADER_LEN + p`.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_LEN + self.payload.len());
         out.extend_from_slice(&self.header.encode());

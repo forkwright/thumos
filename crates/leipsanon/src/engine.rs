@@ -142,6 +142,18 @@ impl WipeEngine {
     /// wiped. In real mode, actions on paths that do not exist are counted
     /// in `actions_missing` — NOT as completed and NOT as failed, because a
     /// missing target was never destroyed by this run (#280).
+    ///
+    /// Time: O(a + Σ len_i) where a is `plan.len()` and, in non-dry-run
+    /// mode, len_i is the i-th target's byte length being overwritten
+    /// (`wipe_file_blocking`'s loop, chunked by `self.chunk_size`) — the
+    /// total cost is dominated by the SUM of every wiped target's length,
+    /// not merely the action count, so a plan with one large block-device
+    /// target costs far more than a alone. Dry-run mode short-circuits to
+    /// O(a), since no I/O is performed.
+    /// Space: O(1) auxiliary beyond the fixed summary counters — the
+    /// `chunk_size`-byte overwrite buffer allocated in
+    /// `wipe_file_blocking` is reused across all chunks of one target and
+    /// is not proportional to a target's length or to a.
     pub(crate) fn execute(&mut self, plan: &[WipeAction]) -> WipeResult {
         let start = Instant::now();
         let mut completed: usize = 0;

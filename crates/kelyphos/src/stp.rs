@@ -180,6 +180,10 @@ const fn compute_header_checksum(hdr: StpHeader) -> u8 {
 /// Shared by the TX encode path ([`compute_crc`]) and the RX integrity check
 /// in [`crate::transport::RxParser`], which recomputes this over raw received
 /// bytes to detect corrupted or injected frames.
+///
+/// Time: O(h + p) where h is the length of `header_bytes` and p is the
+/// length of `payload` — each byte is folded into the running CRC exactly once.
+/// Space: O(1) — only the running CRC accumulator; no allocation.
 pub(crate) fn compute_crc_over(header_bytes: &[u8], payload: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
 

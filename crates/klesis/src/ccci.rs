@@ -265,6 +265,10 @@ impl CcciMessage {
     }
 
     /// Encode header followed by payload INTO a single byte buffer.
+    ///
+    /// Time: O(p) where p is `self.payload.len()` — the header encode is a
+    /// fixed [`HEADER_SIZE`] (16-byte) copy; the payload is copied once.
+    /// Space: O(p) — allocates a new `Vec` of length `HEADER_SIZE + p`.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_SIZE + self.payload.len());
@@ -280,6 +284,14 @@ impl CcciMessage {
     ///
     /// Returns [`crate::error::Error::Parse`] when `buf` is shorter than
     /// [`HEADER_SIZE`], or when the payload exceeds [`CCCI_MTU`].
+    ///
+    /// Time: O(p) where p is the resulting payload length
+    /// (`buf.len() - HEADER_SIZE`) — the header parse reads a fixed
+    /// [`HEADER_SIZE`] set of offsets, then the payload is copied once. The
+    /// oversize check runs BEFORE the copy, so p never exceeds the
+    /// compile-time constant [`CCCI_MTU`] (3456 bytes) on the success path.
+    /// Space: O(p) for the same reason — `payload.to_vec()` allocates a
+    /// buffer bounded by [`CCCI_MTU`].
     pub fn from_bytes(buf: &[u8]) -> Result<Self> {
         let header = CcciHeader::from_bytes(buf)?;
         let payload = buf.get(HEADER_SIZE..).unwrap_or(&[]);

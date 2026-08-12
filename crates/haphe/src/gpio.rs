@@ -268,6 +268,11 @@ pub(crate) struct GpioKeypad {
 
 impl GpioKeypad {
     /// Create a new, uninitialised keypad driver.
+    ///
+    /// Time: O(1) — initializes a `[Debounce; KEY_COUNT]` array whose
+    /// length is the compile-time constant `KEY_COUNT` = `ROW_COUNT *
+    /// COL_COUNT` = 12, unrelated to any runtime input.
+    /// Space: O(1) — fixed-size array, no heap allocation.
     pub(crate) const fn new() -> Self {
         const DB: Debounce = Debounce::new();
         Self {
@@ -279,6 +284,12 @@ impl GpioKeypad {
     /// as inputs with pull-up.
     ///
     /// NOTE: No-op in test builds  -  MMIO is unavailable on the host.
+    ///
+    /// Time: O(1) — two loops bounded by the compile-time constants
+    /// `ROW_COUNT` = 4 and `COL_COUNT` = 3 (`ROW_PINS`/`COL_PINS` are
+    /// fixed-size arrays), so every call does the same fixed 7 MMIO writes
+    /// regardless of runtime state.
+    /// Space: O(1) — no allocation.
     #[cfg(not(test))]
     pub(crate) fn init(&self) {
         let _ = self;

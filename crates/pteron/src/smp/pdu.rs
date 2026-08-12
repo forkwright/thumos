@@ -577,6 +577,11 @@ pub(crate) enum PairingPdu {
 /// PDU layout requires — SMP has no variable-length fields, so any
 /// mismatch here is a malformed PDU by construction, never a valid one
 /// this decoder doesn't yet understand.
+///
+/// Time: O(1) — dispatches over a fixed set of ≤15 known opcodes; every arm
+/// copies a bounded, spec-fixed number of bytes (at most 32, for
+/// [`PublicKey`]'s X/Y coordinates), never a caller-controlled length.
+/// Space: O(1) — fixed-size stack buffers only; no heap allocation.
 pub(crate) fn decode(data: &[u8]) -> Result<PairingPdu> {
     let (&opcode, body) = data.split_first().ok_or(Error::Empty)?;
 

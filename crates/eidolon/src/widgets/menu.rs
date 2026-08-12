@@ -106,6 +106,12 @@ pub struct Menu {
 
 impl Menu {
     /// Create a new menu with the given root items and pixel width.
+    ///
+    /// Time: O(1) — takes ownership of the already-built `items` `Vec` by
+    /// move; it is not iterated or copied.
+    /// Space: O(1) auxiliary — `nav_stack` starts as an empty `Vec::new()`,
+    /// which performs no allocation (the memory backing `items` was already
+    /// allocated by the caller and is only moved, not duplicated).
     #[must_use]
     pub(crate) const fn new(items: Vec<MenuItem>, width: u32) -> Self {
         Self {

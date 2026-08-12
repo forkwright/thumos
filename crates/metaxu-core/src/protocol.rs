@@ -18,6 +18,12 @@ mod ulid_bytes {
     use serde::{Deserialize as _, Serialize as _, Serializer};
     use ulid::Ulid;
 
+    /// Serialize a ULID as its fixed 16-byte array (the wire representation
+    /// used by every `#[serde(with = "ulid_bytes")]` field).
+    ///
+    /// Time: O(1) -- a ULID is always exactly 16 bytes, a compile-time
+    /// constant; there is no iteration proportional to any runtime input.
+    /// Space: O(1) -- the byte array is stack-allocated and fixed size.
     pub(crate) fn serialize<S>(id: &Ulid, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -25,6 +31,11 @@ mod ulid_bytes {
         id.to_bytes().serialize(serializer)
     }
 
+    /// Deserialize a ULID from its fixed 16-byte wire representation.
+    ///
+    /// Time: O(1) -- reads a fixed 16-byte array; a ULID's size is a
+    /// compile-time constant, not dependent on any runtime input.
+    /// Space: O(1) -- fixed-size stack array, no heap allocation.
     pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Ulid, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -273,6 +284,11 @@ impl TaskRequest {
     ///
     /// This is a local preflight check only. It does not prove authorization or
     /// enforce expiration; the runtime/policy verifier remains authoritative.
+    ///
+    /// Time: O(g) where g is the number of capability grants attached to
+    /// this task (`self.grants().len()`) -- a linear scan that stops at the
+    /// first match but must visit all g grants in the worst case.
+    /// Space: O(1) -- no allocation; returns a `bool`.
     #[must_use]
     pub fn has_required_capability(&self) -> bool {
         let required = self.required_capability();

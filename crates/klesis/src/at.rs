@@ -126,6 +126,12 @@ impl From<u8> for SignalStrength {
 /// byte-slice classifier shared with the kernel, which enforces that
 /// exactly (#685). AT response text is pure ASCII, so the `&str` -> `&[u8]`
 /// view loses nothing.
+///
+/// Time: O(n) where n is `input.len()` -- the `"OK"`/`"ERROR"` and
+/// `"+CME ERROR: "`/`"+CMS ERROR: "` prefix checks are O(1) fixed-length
+/// comparisons, but a matched CME/CMS prefix scans the remaining digit run
+/// once via `parse_decimal_u32`.
+/// Space: O(1) -- no allocation; returns an enum by value.
 #[must_use]
 pub fn parse_final_result(input: &str) -> Option<Response> {
     match klesis_core::parse_final_result(input.as_bytes())? {
@@ -141,6 +147,11 @@ pub fn parse_final_result(input: &str) -> Option<Response> {
 }
 
 /// Parse a +CSQ response: +CSQ: <rssi>,<ber>
+///
+/// Time: O(n) where n is `input.len()` -- `klesis_core::parse_csq` scans FOR
+/// the comma separator and then parses each of the two decimal fields,
+/// together touching each byte of `input` a constant number of times.
+/// Space: O(1) -- no allocation; returns a fixed-size tuple.
 #[must_use]
 pub fn parse_csq(input: &str) -> Option<(u8, u8)> {
     klesis_core::parse_csq(input.as_bytes())
@@ -236,6 +247,12 @@ pub(crate) fn build_cmd(cmd: &str) -> String {
 /// (3GPP TS 27.007 dial-string charset) -- the charset itself is
 /// [`klesis_core::is_valid_dial_byte`] (#545), shared with the kernel's
 /// `+CLIP` caller-ID validation.
+///
+/// Time: O(n) where n is `s.len()` -- `.all()` scans until the first
+/// invalid byte or the end of the string.
+/// Space: O(1) on the accepted path (returns a borrowed `&str`); the
+/// rejection path allocates an O(n) `String` echoing the invalid number
+/// into the error message.
 pub(crate) fn validate_phone_number(s: &str) -> Result<&str> {
     if !s.bytes().all(klesis_core::is_valid_dial_byte) {
         return Err(Error::Parse {

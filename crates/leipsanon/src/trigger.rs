@@ -61,6 +61,14 @@ impl TriggerConfig {
     ///
     /// Returns the [`WipeLevel`] for the first matching trigger, or `None` if
     /// no trigger matches.
+    ///
+    /// Time: O(e * k) where e is the number of registered entries in
+    /// `self.entries` scanned before the first match (or all of them, if
+    /// none match) and k is the length of the longest
+    /// `PanicTrigger::KeyCombo` key vector compared along the way —
+    /// `trigger_matches`'s `KeyCombo` arm does a slice-equality check that
+    /// is O(k), while its `Remote`/`Timer` arms are O(1) each.
+    /// Space: O(1) — no allocation; returns a copied `Option<WipeLevel>`.
     #[must_use]
     pub(crate) fn check_trigger(&self, input: &TriggerInput<'_>) -> Option<WipeLevel> {
         for (trigger, level) in &self.entries {

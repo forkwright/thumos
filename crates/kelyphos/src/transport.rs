@@ -348,6 +348,11 @@ impl StpTransport {
     ///
     /// Returns the slot index on success, or [`TransportError::WindowFull`]
     /// when all [`WINDOW_SIZE`] slots are occupied.
+    ///
+    /// Time: O(1) — scans the fixed [`WINDOW_SIZE`] (7)-slot array for a free
+    /// slot; `WINDOW_SIZE` is a compile-time protocol constant, not a
+    /// function of runtime input.
+    /// Space: O(1) — writes into an existing array slot; no allocation.
     #[must_use = "enqueue failure must be handled"]
     pub(crate) fn enqueue(&mut self, frame: &StpFrame) -> Result<usize, TransportError> {
         for (idx, slot) in self.tx_window.iter_mut().enumerate() {
@@ -364,6 +369,10 @@ impl StpTransport {
     ///
     /// Frees the corresponding window slot. Returns [`TransportError::StaleAck`]
     /// if `seq` is not present in the current window.
+    ///
+    /// Time: O(1) — scans the fixed [`WINDOW_SIZE`] (7)-slot array;
+    /// `WINDOW_SIZE` is a compile-time protocol constant.
+    /// Space: O(1) — no allocation.
     #[must_use = "ack failure must be handled"]
     pub(crate) fn acknowledge(&mut self, seq: u8) -> Result<(), TransportError> {
         for slot in &mut self.tx_window {
@@ -382,6 +391,11 @@ impl StpTransport {
     /// Increments its retry counter. Returns [`TransportError::RetryLimitExceeded`]
     /// when the counter reaches the configured [`Config::retry_limit`], or
     /// [`TransportError::StaleAck`] if `seq` is not in the window.
+    ///
+    /// Time: O(1) — `position()` scans the fixed [`WINDOW_SIZE`] (7)-slot
+    /// array; `WINDOW_SIZE` is a compile-time protocol constant.
+    /// Space: O(1) — no allocation; returns a borrow of the existing
+    /// [`TxEntry`] buffer.
     #[must_use = "retransmit failure must be handled"]
     pub(crate) fn retransmit(&mut self, seq: u8) -> Result<&[u8], TransportError> {
         let limit = self.retry_limit;
@@ -429,6 +443,10 @@ impl StpTransport {
     }
 
     /// Number of in-flight frames currently occupying window slots.
+    ///
+    /// Time: O(1) — counts occupied slots in the fixed [`WINDOW_SIZE`]
+    /// (7)-slot array; `WINDOW_SIZE` is a compile-time protocol constant.
+    /// Space: O(1) — no allocation.
     pub(crate) fn in_flight(&self) -> usize {
         self.tx_window.iter().filter(|s| s.is_some()).count()
     }
@@ -439,6 +457,9 @@ impl StpTransport {
     }
 
     /// Count of received frames discarded due to a CRC-16 CCITT mismatch.
+    ///
+    /// Time: O(1) — returns the RX parser's stored counter; no iteration.
+    /// Space: O(1) — no allocation.
     pub(crate) const fn crc_errors(&self) -> u32 {
         self.rx_parser.crc_errors()
     }

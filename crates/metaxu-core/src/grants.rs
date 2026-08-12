@@ -157,6 +157,13 @@ pub fn hkdf_sha256(ikm: &[u8; 16], info: &[u8]) -> [u8; 32] {
 }
 
 /// HMAC-SHA256 over `parts` under `key` (response authentication).
+///
+/// Time: O(m) where m is the sum of `parts[i].len()` over all slices in
+/// `parts` -- one streaming HMAC update per part, each linear in that
+/// part's length.
+/// Space: O(1) -- the HMAC state is fixed-size (SHA-256 block/state
+/// buffers) and the returned MAC is a fixed 32-byte array, independent of
+/// input size.
 pub(crate) fn response_mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;

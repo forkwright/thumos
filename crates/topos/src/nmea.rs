@@ -27,6 +27,15 @@ fn field(sentence: &str, index: usize) -> Option<&str> {
 /// Parse a GGA sentence (Global Positioning System Fix Data).
 ///
 /// Format: `$GPGGA,hhmmss.ss,llll.ll,a,yyyyy.yy,a,x,xx,x.x,x.x,M,x.x,M,x.x,xxxx*hh`
+///
+/// Time: O(n) where n is `sentence.len()` in bytes -- `topos_core::parse_gga`
+/// makes one checksum + one field-split pass over the sentence, and the
+/// local `field` helper re-derives HDOP by repeating both passes; a
+/// constant number of linear passes is still O(n).
+/// Space: O(f) where f is the number of comma-separated fields the
+/// sentence splits into (each `split_fields` call allocates a `Vec` of
+/// field slices that borrow the original bytes rather than copying them;
+/// f is bounded by n in the worst case of an all-comma input).
 pub(crate) fn parse_gga(sentence: &str) -> error::Result<Fix> {
     let core_fix = topos_core::parse_gga(sentence.as_bytes())?;
     let mut position = Position::from(core_fix.position);
@@ -49,6 +58,14 @@ pub(crate) fn parse_gga(sentence: &str) -> error::Result<Fix> {
 /// Returns the fix alongside the extracted UTC date/time -- a capability
 /// this crate did not have before #545 converged it with the kernel's GPS
 /// driver, which uses RMC time for clock synchronization.
+///
+/// Time: O(n) where n is `sentence.len()` in bytes -- `topos_core::parse_rmc`
+/// makes one checksum + one field-split pass, and the local `field` helper
+/// repeats both passes once per extracted field (speed, course); a
+/// constant number of linear passes is still O(n).
+/// Space: O(f) where f is the number of comma-separated fields the
+/// sentence splits into (each `split_fields` call allocates a `Vec` of
+/// borrowed field slices; f is bounded by n in the worst case).
 pub(crate) fn parse_rmc(sentence: &str) -> error::Result<(Fix, topos_core::DateTime)> {
     let (core_fix, time) = topos_core::parse_rmc(sentence.as_bytes())?;
 

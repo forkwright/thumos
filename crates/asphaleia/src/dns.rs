@@ -37,6 +37,13 @@ impl DnsBlocklist {
 
     /// Create a blocklist pre-populated with the canonical surveillance
     /// domains ([`asphaleia_core::SURVEILLANCE_DOMAINS`], #545).
+    ///
+    /// Time: O(1) — iterates the fixed 12-entry `SURVEILLANCE_DOMAINS`
+    /// compile-time constant array; the work done does not depend on any
+    /// runtime input.
+    /// Space: O(1) — allocates at most 12 owned `String` suffixes into
+    /// `self.patterns`, a count bounded by the compile-time-constant
+    /// `SURVEILLANCE_DOMAINS.len()`.
     #[must_use]
     pub fn with_surveillance_defaults() -> Self {
         let mut bl = Self::new();
@@ -100,6 +107,12 @@ impl DnsBlocklist {
 /// Returns `None` if the message is malformed, truncated, or contains a
 /// compression pointer (which should not appear in query QNAMEs but can appear
 /// in malformed or spoofed packets).
+///
+/// Time: O(n) where n is `data.len()` — delegates to
+/// [`asphaleia_core::extract_query_domain`], which walks the QNAME once,
+/// lowercasing each label byte as it goes.
+/// Space: O(n) — the returned domain `String` is built from the QNAME
+/// labels, bounded above by `data.len()`.
 #[must_use]
 pub(crate) fn extract_query_domain(data: &[u8]) -> Option<String> {
     asphaleia_core::extract_query_domain(data)

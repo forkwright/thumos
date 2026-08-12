@@ -56,6 +56,15 @@ pub(crate) struct WipePath {
 /// Returns paths in priority ORDER (lowest number = highest priority). The caller
 /// is responsible for executing the wipe in priority ORDER and applying the
 /// specified method to each path.
+///
+/// Time: O(1) — `target` selects one of five fixed match arms, each building
+/// a small hardcoded literal list (at most 9 entries, for `Everything`,
+/// which itself recurses exactly one level into `AllUserData`); the final
+/// sort is over that same bounded-size list. Nothing here scales with
+/// caller-supplied input — the function takes none beyond the enum
+/// selector.
+/// Space: O(1) — the returned plan's size is bounded by the same
+/// compile-time-fixed per-variant path counts.
 #[must_use]
 pub(crate) fn wipe_plan(target: WipeTarget) -> Vec<WipePath> {
     let mut plan = match target {

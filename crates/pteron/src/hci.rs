@@ -350,6 +350,13 @@ impl BdAddr {
     ///
     /// Internal callers use this parser for display-order addresses such as
     /// `AA:BB:CC:DD:EE:FF`.
+    ///
+    /// Time: O(L) where L is the length of `s` — [`FromStr::from_str`] splits
+    /// the string on `:` in one scan, then does a fixed [`BD_ADDR_LEN`]
+    /// (6)-iteration hex-decode of the resulting segments.
+    /// Space: O(L) — the intermediate `Vec<&str>` of colon-separated
+    /// segments (bounded by the input length in the degenerate case of many
+    /// colons; six segments in a well-formed address).
     pub(crate) fn parse(s: &str) -> Result<Self> {
         s.parse()
     }

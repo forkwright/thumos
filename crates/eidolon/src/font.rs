@@ -220,6 +220,12 @@ static FONT_DATA: [[u8; 16]; FONT_CHAR_COUNT] = [
 ///
 /// Characters outside the printable ASCII range are silently skipped.
 /// Out-of-bounds pixels are clipped by [`Framebuffer::set_pixel`].
+///
+/// Time: O(1) — the nested loop is bounded by the compile-time constants
+/// `CHAR_HEIGHT` = 16 and the literal 8-wide bit scan (`0u8..8`), so every
+/// call touches exactly 128 pixels regardless of any runtime input; each
+/// `set_pixel` call is itself O(1).
+/// Space: O(1) — no allocation.
 pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg: Rgb565) {
     let code = u32::from(ch);
     if !(FONT_FIRST..=FONT_LAST).contains(&code) {
@@ -241,6 +247,10 @@ pub fn draw_char(fb: &mut Framebuffer, x: u32, y: u32, ch: char, fg: Rgb565, bg:
 ///
 /// Characters are placed LEFT-to-RIGHT with no wrapping. Pixels that fall
 /// outside the framebuffer boundary are clipped.
+///
+/// Time: O(n) where n is the number of `char`s in `s` — one `draw_char`
+/// call per character, each of which is O(1) (see [`draw_char`]).
+/// Space: O(1) — iterates `s.chars()` in place, no allocation.
 pub fn draw_str(fb: &mut Framebuffer, x: u32, y: u32, s: &str, fg: Rgb565, bg: Rgb565) {
     for (i, ch) in s.chars().enumerate() {
         // WHY: i exceeds u32 only for >4 GiB strings, impossible on this device;

@@ -295,6 +295,10 @@ impl RingBuffer {
     ///
     /// Returns `false` if there is insufficient space; no bytes are written in
     /// that case.
+    ///
+    /// Time: O(b) where b is `data.len()` — each byte is written once.
+    /// Space: O(1) — writes into the pre-allocated fixed-size ring buffer;
+    /// no allocation.
     pub(crate) fn push(&mut self, data: &[u8]) -> bool {
         let free = RING_BUF_SIZE - 1 - self.len();
         if data.len() > free {
@@ -324,6 +328,10 @@ impl RingBuffer {
     ///
     /// Returns `false` if fewer than `n` bytes are available; no bytes are
     /// consumed in that case.
+    ///
+    /// Time: O(b) where b is `out.len()` — each byte is copied once.
+    /// Space: O(1) — writes into the caller-supplied `out` slice; no
+    /// allocation.
     pub(crate) fn drain_into(&mut self, out: &mut [u8]) -> bool {
         if out.len() > self.len() {
             return false;

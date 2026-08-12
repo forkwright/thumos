@@ -90,6 +90,11 @@ impl IpHeader {
     /// shorter than the length encoded in the IHL field.
     /// Returns [`ParseError::InvalidVersion`] if the version is not 4.
     /// Returns [`ParseError::InvalidIhl`] if IHL is less than 5.
+    ///
+    /// Time: O(1) — reads a fixed set of byte offsets within the IPv4
+    /// header (at most 60 bytes, bounded by the 4-bit IHL field);
+    /// `data.len()` is only compared, never iterated.
+    /// Space: O(1) — returns a fixed-size struct by value, no allocation.
     pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
         let fields = asphaleia_core::Ipv4Fields::parse(data)?;
         Ok(Self {
@@ -118,6 +123,10 @@ impl TcpHeader {
     /// # Errors
     ///
     /// Returns [`ParseError::TooShort`] if `data` is shorter than 20 bytes.
+    ///
+    /// Time: O(1) — reads a fixed set of byte offsets within the 20-byte
+    /// minimum TCP header.
+    /// Space: O(1) — returns a fixed-size struct by value, no allocation.
     pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
         let fields = asphaleia_core::TcpFields::parse(data)?;
         Ok(Self {
@@ -140,6 +149,10 @@ impl UdpHeader {
     /// # Errors
     ///
     /// Returns [`ParseError::TooShort`] if `data` is shorter than 8 bytes.
+    ///
+    /// Time: O(1) — reads a fixed set of byte offsets within the 8-byte UDP
+    /// header.
+    /// Space: O(1) — returns a fixed-size struct by value, no allocation.
     pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
         let fields = asphaleia_core::UdpFields::parse(data)?;
         Ok(Self {
