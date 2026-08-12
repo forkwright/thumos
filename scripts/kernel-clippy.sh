@@ -110,14 +110,25 @@ done
 # proves a real key is accepted with, generated lazily (only if a
 # `production` pass is actually in the list above) and scoped to this run.
 PRODUCTION_KEY_DIR=""
-production_key() {
+# WHY a plain function, not one invoked via $(...): a command substitution
+# runs in a subshell, so an assignment to PRODUCTION_KEY_DIR made only
+# inside `$(production_key)` never reaches this shell -- the variable
+# stays "" here regardless of whether the key was generated. Under `set
+# -e` that silently starves cleanup()'s EXIT trap: its `[ -n
+# "$PRODUCTION_KEY_DIR" ]` reads false, the trap's last command is that
+# failing test, and a failing trap's exit status becomes the WHOLE
+# script's exit status -- turning a fully green run into a reported
+# failure with no FAIL message anywhere (found live in CI: every one of
+# the 9 feature passes compiled clean, then the script still exited 1).
+# Call ensure_production_key as a bare statement so the assignment lands
+# in this shell, then read PRODUCTION_KEY_DIR directly.
+ensure_production_key() {
     if [[ -z "$PRODUCTION_KEY_DIR" ]]; then
         PRODUCTION_KEY_DIR=$(mktemp -d)
         openssl genpkey -algorithm ed25519 -out "$PRODUCTION_KEY_DIR/ci-boot.pem" 2>/dev/null
         openssl pkey -in "$PRODUCTION_KEY_DIR/ci-boot.pem" -pubout -outform DER \
             | tail -c 32 | od -An -tx1 | tr -d ' \n' > "$PRODUCTION_KEY_DIR/ci-boot.pub"
     fi
-    printf '%s' "$PRODUCTION_KEY_DIR/ci-boot.pub"
 }
 cleanup() {
     [ -n "$PRODUCTION_KEY_DIR" ] && rm -rf "$PRODUCTION_KEY_DIR"
@@ -148,7 +159,8 @@ for i in "${!PASS_TAGS[@]}"; do
     # feature's result together).
     rc=0
     if [[ "$tag" = "production" ]]; then
-        out=$(cd "$KERNEL_DIR" && THUMOS_BOOT_KEY_PUB="$(production_key)" cargo clippy --bin thumos --tests \
+        ensure_production_key
+        out=$(cd "$KERNEL_DIR" && THUMOS_BOOT_KEY_PUB="$PRODUCTION_KEY_DIR/ci-boot.pub" cargo clippy --bin thumos --tests \
             --features "$features" --target i686-unknown-linux-gnu -- -D warnings 2>&1) || rc=$?
     elif [ -n "$features" ]; then
         out=$(cd "$KERNEL_DIR" && cargo clippy --bin thumos --tests \
