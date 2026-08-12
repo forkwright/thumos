@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/brk.sh — QEMU brk heap growth on a real page table (#533), verbatim
 # from ci.yml. sys_brk growth maps into the heap window (mb 0x100), covered by
 # a 1 MB identity SECTION on every real process L1 — and map_page refuses to
 # overlay a section, so brk growth failed on every real boot while host tests
 # (absent-entry fixture) stayed green. This witness is the only real-table
 # proof for heap growth: grow two pages, canary R/W at PL0, shrink back.
-set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # witness/boot.sh — kernel QEMU boot + service-loop witness (#546), extracted
 # verbatim from the ci.yml kernel job. The `qemu` feature retargets peripherals
 # to the virt board; the REAL kinit boots, hands off to kardia (PID 0), and
@@ -6,7 +8,6 @@
 # a named assertion from the original inline block — same markers, same counts.
 # Runner exit codes: 0=loop ran; 5=service-loop stalled (#461 tick-source
 # class); 1=panic; 2/3/4=aborts; 124=hang (runner timeout).
-set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 witness_deps
@@ -29,17 +30,17 @@ grep -q 'init: hello from userspace' boot.log || { echo 'FAIL: userspace /init d
 grep -q '/shell spawned PL0' boot.log || { echo 'FAIL #526: /shell did not spawn (absent from ramfs or spawn regressed)'; exit 1; }
 grep -q 'shell: hello from userspace' boot.log || { echo 'FAIL #526: /shell did not run + syscall from its own frame'; exit 1; }
 grep -q '2 userspace ELF processes running' boot.log || { echo 'FAIL #526: kinit did not report both userspace processes running'; exit 1; }
-ic=$(grep -c 'init: hello from userspace' boot.log); test "$ic" -eq 1 || { echo "FAIL #526: 'init: hello' x$ic (want 1) -- per-process image-frame clobber regressed (#502)"; exit 1; }
-sc=$(grep -c 'shell: hello from userspace' boot.log); test "$sc" -eq 1 || { echo "FAIL #526: 'shell: hello' x$sc (want 1) -- per-process image-frame clobber regressed (#502)"; exit 1; }
+ic=$(grep -c 'init: hello from userspace' boot.log || true); test "$ic" -eq 1 || { echo "FAIL #526: 'init: hello' x$ic (want 1) -- per-process image-frame clobber regressed (#502)"; exit 1; }
+sc=$(grep -c 'shell: hello from userspace' boot.log || true); test "$sc" -eq 1 || { echo "FAIL #526: 'shell: hello' x$sc (want 1) -- per-process image-frame clobber regressed (#502)"; exit 1; }
 # #400 render foundation through the real screen-dispatch path.
 grep -q 'kardia: frame rendered painted_px=' boot.log || { echo 'FAIL #400: service loop never rendered a frame (render path dead)'; exit 1; }
-px=$(grep -oE 'painted_px=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+'); test "${px:-0}" -gt 0 || { echo "FAIL #400: rendered frame is BLANK (painted_px=${px:-0}) -- screen draw produced nothing"; exit 1; }
+px=$(grep -oE 'painted_px=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+' || true); test "${px:-0}" -gt 0 || { echo "FAIL #400: rendered frame is BLANK (painted_px=${px:-0}) -- screen draw produced nothing"; exit 1; }
 # #400 input + navigation round trip.
 grep -q 'kardia: nav Home -> Search' boot.log || { echo 'FAIL #400: synthetic input did not navigate Home->Search (input dispatch / on_key broken)'; exit 1; }
 grep -q 'kardia: nav Search -> Home' boot.log || { echo 'FAIL #400: back-navigation did not return to Home (screen stack broken)'; exit 1; }
 # #402 clock trust hierarchy wired + seeded + driving the display.
 grep -q 'kardia: clock src=manual' boot.log || { echo 'FAIL #402: ClockManager not wired/seeded (no manual source)'; exit 1; }
-wall=$(grep -oE 'clock src=manual wall=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+$'); test "${wall:-0}" -gt 1700000000 || { echo "FAIL #402: wall clock is not a real epoch (wall=${wall:-0}) -- ClockManager not driving time"; exit 1; }
+wall=$(grep -oE 'clock src=manual wall=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+$' || true); test "${wall:-0}" -gt 1700000000 || { echo "FAIL #402: wall clock is not a real epoch (wall=${wall:-0}) -- ClockManager not driving time"; exit 1; }
 # #461 clock health witness: elapsed_ms must advance under virt (measured
 # root cause 2026-08-04); a counter/frequency regression reds here instead
 # of silently hanging the wait loops that consume elapsed_ms.
@@ -48,7 +49,7 @@ grep -q 'kardia: timer elapsed_ms=advancing' boot.log || { echo 'FAIL #461: elap
 # ClockManager time into set_realtime_offset; the emitted offset must be a
 # real ~2025+ epoch (an unwired offset would stay at its small default).
 grep -qE 'kardia: realtime offset=[0-9]+' boot.log || { echo 'FAIL #506: kardia never emitted its realtime offset (set_realtime_offset not wired)'; exit 1; }
-off=$(grep -oE 'kardia: realtime offset=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+$'); test "${off:-0}" -gt 1700000000 || { echo "FAIL #506: realtime offset is not the ClockManager epoch (offset=${off:-0})"; exit 1; }
+off=$(grep -oE 'kardia: realtime offset=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+$' || true); test "${off:-0}" -gt 1700000000 || { echo "FAIL #506: realtime offset is not the ClockManager epoch (offset=${off:-0})"; exit 1; }
 # #398 telephony: seeded mock transport, LIVE stack, Registered.
 grep -q 'kardia: modem ready state=Registered' boot.log || { echo 'FAIL #398: Telephony did not initialize to Registered (AT state machine / mock wiring broken)'; exit 1; }
 # #399 audio session manager + mic audit.
@@ -93,7 +94,7 @@ for probe in kread:data-abort kwrite:data-abort kexec:prefetch-abort cp15:undefi
     grep -q '/init spawned PL0' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /init did not spawn PL0 (cannot test isolation)"; exit 1; }
     grep -q "PROBE: $variant" "probe-$variant.log" || { echo "FAIL isolation[$variant]: the wrong probe variant was built (no 'PROBE: $variant' marker -- a cfg mixup)"; exit 1; }
     grep -Eq "USERFAULT: pid=[0-9]+ kind=$kind .*killed" "probe-$variant.log" || { echo "FAIL isolation[$variant]: no USERFAULT $kind kill marker -- PL0 op did not fault (ISOLATION BROKEN) or the kill path broke"; exit 1; }
-    ufc=$(grep -c 'USERFAULT:' "probe-$variant.log")
+    ufc=$(grep -c 'USERFAULT:' "probe-$variant.log" || true)
     test "$ufc" -eq 1 || { echo "FAIL isolation[$variant]: expected exactly 1 USERFAULT, got $ufc (a re-fault loop or double kill)"; exit 1; }
     grep -q 'kardia: reaped .* fault-killed' "probe-$variant.log" || { echo "FAIL isolation[$variant]: fault-killed process was not reaped (PCB-slot leak -- table exhausts at MAX_PROCS)"; exit 1; }
     ! grep -q 'init: hello from userspace' "probe-$variant.log" || { echo "FAIL isolation[$variant]: /init reached the write -- the PL0 op did NOT fault (ISOLATION BROKEN)"; exit 1; }
