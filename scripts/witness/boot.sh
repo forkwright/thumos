@@ -77,7 +77,7 @@ grep -qE 'kardia: fm powered=true freq_khz=[0-9]+ rssi=-?[0-9]+ volume=[0-9]+' b
 # modem boot and modem_ok stays false (kinit.rs, cfg(qemu) arm). false is also
 # the DISCRIMINATING value -- ThreatMonitor::new defaults modem_power to true,
 # so asserting true would pass even if set_modem_status never ran.
-grep -qE 'kardia: threat alerts=[1-9][0-9]* score=[0-9]+ uncalibrated=true modem_power=false' boot.log || { echo 'FAIL #737: threat monitor log/score not wired (SMS classification -> alert -> score path broken)'; exit 1; }
+grep -qE 'kardia: threat detector_before=false alerts=[1-9][0-9]* score=[0-9]+ uncalibrated=true modem_power=false' boot.log || { echo 'FAIL #737: threat monitor log/score not wired (SMS classification -> alert -> score path broken)'; exit 1; }
 
 # PL0 isolation + graceful user-fault kill (#487 + fault handling): each probe
 # variant attempts one PL0-illegal op; the kernel must fault it, kill only the

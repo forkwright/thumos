@@ -818,7 +818,7 @@ impl KernelState {
     /// (if boot-seeded) classification, and its score derives from that
     /// log rather than an unwired detector.
     #[cfg(feature = "qemu")]
-    pub(crate) fn threat_boot_smoke(&mut self) -> (usize, u32, bool) {
+    pub(crate) fn threat_boot_smoke(&mut self) -> (bool, usize, u32, bool) {
         // Identical to sim_sms_boot_smoke's PDU except the PID byte (index
         // 9): 0x40 marks Type 0 (silent) per #662's classification, the
         // same PID value sms.rs's
@@ -828,6 +828,11 @@ impl KernelState {
             0x00, 0x00, 0x0A, 0x91, 0x21, 0x43, 0x65, 0x87, 0x09, 0x40, 0x00, 0x32, 0x10, 0x51,
             0x21, 0x03, 0x00, 0x00, 0x05, 0xC8, 0x32, 0x9B, 0xFD, 0x06,
         ];
+        // WHY(#743): captured BEFORE seeding. A fresh ThreatMonitor has no
+        // detector, and the witness asserts that state as well as the
+        // seeded one -- otherwise the no-detector path is never exercised
+        // and could regress to rendering a reassuring score silently.
+        let detector_before = self.threat.detector_online();
         if let Ok(msg) = SmsManager::handle_incoming(SILENT_SMS_PDU)
             && let Some(alert_type) = ThreatAlertType::from_message_class(msg.class)
         {
@@ -840,6 +845,7 @@ impl KernelState {
         self.threat
             .set_modem_status(0, FirewallMode::Open, self.boot.modem_ok);
         (
+            detector_before,
             self.threat.alert_count(),
             self.threat.threat_score(),
             self.boot.modem_ok,
@@ -1076,11 +1082,12 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // uncalibrated (sema stays unwired, not a thumos dependency).
         #[cfg(feature = "qemu")]
         {
-            let (threat_alerts, threat_score, threat_modem_power) = kernel.threat_boot_smoke();
+            let (threat_detector_before, threat_alerts, threat_score, threat_modem_power) =
+                kernel.threat_boot_smoke();
             emit_marker(
                 &mut serial,
                 format_args!(
-                    "kardia: threat alerts={threat_alerts} score={threat_score} uncalibrated=true modem_power={threat_modem_power}\r\n"
+                    "kardia: threat detector_before={threat_detector_before} alerts={threat_alerts} score={threat_score} uncalibrated=true modem_power={threat_modem_power}\r\n"
                 ),
             );
         }
