@@ -369,6 +369,14 @@ pub(crate) struct ThreatMonitor {
     firewall_mode: FirewallMode,
     /// Whether the modem is powered on.
     modem_power: bool,
+    /// Whether any detector has ever reported to this monitor (#743).
+    ///
+    /// INVARIANT: false means "nothing is watching", which is NOT the same
+    /// state as "watching, nothing found". Only a real detector report sets
+    /// it -- see `mark_detector_online`. While false the screen suppresses
+    /// the score entirely rather than rendering 0, because a score is a
+    /// claim and there is nothing to claim.
+    detector_online: bool,
     /// Scroll offset in the alert list.
     scroll_offset: usize,
     /// Currently selected alert index.
@@ -398,14 +406,32 @@ impl ThreatMonitor {
             modem_channels: 0,
             firewall_mode: FirewallMode::Open,
             modem_power: true,
+            detector_online: false,
             scroll_offset: 0,
             cursor: 0,
         }
     }
 
+    /// Record that a detector is reporting to this monitor (#743).
+    ///
+    /// A detector that has scanned and found nothing MUST call this, so the
+    /// screen can distinguish that from no detector running at all. Pushing
+    /// an alert implies it; this exists for the found-nothing case, which
+    /// otherwise looks identical to silence.
+    pub(crate) fn mark_detector_online(&mut self) {
+        self.detector_online = true;
+    }
+
+    /// Whether any detector has reported (#743).
+    pub(crate) const fn detector_online(&self) -> bool {
+        self.detector_online
+    }
+
     /// Add a new alert, maintaining newest-first order and the
     /// `MAX_ALERTS` capacity limit.
     pub(crate) fn push_alert(&mut self, mut alert: ThreatAlert) {
+        // An alert IS a detector report (#743).
+        self.detector_online = true;
         // Enforce MAX_DESC_LEN here (not just at render time) so a single
         // oversized attacker-controlled description cannot inflate ring
         // buffer memory (#396).
@@ -544,47 +570,82 @@ impl Screen for ThreatMonitor {
         ui::fill_rect(fb, w, h, 0, 0, w, h, color::BLACK);
 
         // --- Top bar: threat level color bar + numeric score ---
-        let level_color = self.current_level.color();
+        // WHY(#743): with no detector reporting, the level and the score are
+        // both unfounded -- current_level is Low and current_score is 0
+        // because nothing has ever written them, not because the radio
+        // environment is clean. Rendering the normal readout in that state
+        // tells the operator "you are safe" on the authority of an empty
+        // log. The bar goes neutral, the score is suppressed entirely, and
+        // the label says so.
+        let level_color = if self.detector_online {
+            self.current_level.color()
+        } else {
+            color::DARK_GREY
+        };
         // Fill the entire top bar with the threat level color.
         ui::fill_rect(fb, w, h, 0, 0, w, TOP_BAR_HEIGHT, level_color);
 
         // Draw threat level label (centered, black text on colored bar).
-        let label = self.current_level.label();
+        let label = if self.detector_online {
+            self.current_level.label()
+        } else {
+            "NO DETECTOR"
+        };
         let label_y = (TOP_BAR_HEIGHT.saturating_sub(CHAR_HEIGHT)) / 2;
         ui::draw_str_centered(fb, w, 0, w / 2, label_y, label, color::BLACK, level_color);
 
-        // Draw numeric score on the right side of the bar.
-        let score_buf = self.score_text();
-        let score_str = core::str::from_utf8(&score_buf[..3]).unwrap_or("  0");
-        let score_x = w / 2 + 20;
-        ui::draw_str(
-            fb,
-            w,
-            score_x,
-            label_y,
-            score_str,
-            color::BLACK,
-            level_color,
-        );
+        // Draw numeric score on the right side of the bar -- only when a
+        // detector has reported (#743). A score is a claim; with nothing
+        // watching there is nothing to claim, so no number is drawn at all
+        // rather than a reassuring zero.
+        if self.detector_online {
+            let score_buf = self.score_text();
+            let score_str = core::str::from_utf8(&score_buf[..3]).unwrap_or("  0");
+            let score_x = w / 2 + 20;
+            ui::draw_str(
+                fb,
+                w,
+                score_x,
+                label_y,
+                score_str,
+                color::BLACK,
+                level_color,
+            );
 
-        // #737: the score is a log-derived heuristic
-        // (recompute_score_from_log), NOT sema's calibrated detector engine
-        // -- sema is not a thumos dependency and cannot reach KernelState
-        // (see the module doc). Labelled directly on the readout so it is
-        // never mistaken for a validated risk assessment.
-        let uncal_x = score_x + 3 * 8 + 8;
-        ui::draw_str(
-            fb,
-            w,
-            uncal_x,
-            label_y,
-            "UNCAL",
-            color::DARK_GREY,
-            level_color,
-        );
+            // #737: the score is a log-derived heuristic
+            // (recompute_score_from_log), NOT sema's calibrated detector engine
+            // -- sema is not a thumos dependency and cannot reach KernelState
+            // (see the module doc). Labelled directly on the readout so it is
+            // never mistaken for a validated risk assessment.
+            let uncal_x = score_x + 3 * 8 + 8;
+            ui::draw_str(
+                fb,
+                w,
+                uncal_x,
+                label_y,
+                "UNCAL",
+                color::DARK_GREY,
+                level_color,
+            );
+        }
 
         // --- Alert list ---
-        if self.alerts.is_empty() {
+        if !self.detector_online {
+            // WHY(#743): "No alerts" is true here and misleading -- it reads
+            // as a finding when it is the absence of a search. Say which one
+            // it is.
+            let msg_y = ALERT_LIST_Y + ALERT_LIST_HEIGHT / 2 - CHAR_HEIGHT / 2;
+            ui::draw_str_centered(
+                fb,
+                w,
+                0,
+                w,
+                msg_y,
+                "Monitoring unavailable",
+                color::DARK_GREY,
+                color::BLACK,
+            );
+        } else if self.alerts.is_empty() {
             // Show "No alerts" message.
             let no_alerts_y = ALERT_LIST_Y + ALERT_LIST_HEIGHT / 2 - CHAR_HEIGHT / 2;
             ui::draw_str_centered(
@@ -1090,5 +1151,52 @@ mod tests {
             );
             seen[icon] = true;
         }
+    }
+
+    /// #743: a fresh monitor has no detector. This is the state a production
+    /// build sits in today, and it must be distinguishable from a clean scan.
+    #[test]
+    fn fresh_monitor_reports_no_detector() {
+        let monitor = ThreatMonitor::new();
+        assert!(
+            !monitor.detector_online(),
+            "a monitor nothing has reported to must not claim a detector"
+        );
+        assert_eq!(
+            monitor.threat_score(),
+            0,
+            "score is 0 because nothing wrote it, which is exactly why the \
+             render path must not draw it while detector_online is false"
+        );
+    }
+
+    /// #743: an alert IS a detector report.
+    #[test]
+    fn pushing_an_alert_marks_the_detector_online() {
+        let mut monitor = ThreatMonitor::new();
+        monitor.push_alert(ThreatAlert::from_sms_classification(
+            1_000,
+            ThreatAlertType::SilentSms,
+        ));
+        assert!(monitor.detector_online());
+    }
+
+    /// #743: the distinction the whole issue turns on -- a detector that ran
+    /// and found nothing is NOT the same as no detector. Both have an empty
+    /// log and a zero score; only this flag separates them.
+    #[test]
+    fn a_clean_scan_is_distinguishable_from_no_detector() {
+        let absent = ThreatMonitor::new();
+
+        let mut clean = ThreatMonitor::new();
+        clean.mark_detector_online();
+
+        assert_eq!(absent.alert_count(), clean.alert_count());
+        assert_eq!(absent.threat_score(), clean.threat_score());
+        assert!(
+            !absent.detector_online() && clean.detector_online(),
+            "identical log and score, opposite meaning -- if this ever \
+             collapses, the screen reports 'safe' when nothing is watching"
+        );
     }
 }

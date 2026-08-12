@@ -552,7 +552,7 @@ mechanism = "host"
 
 [[module]]
 name = "screen_threat"
-tests = 18
+tests = 21
 mechanism = "host"
 
 [[module]]
