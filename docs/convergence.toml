@@ -98,7 +98,7 @@ name = "ui"
 kernel = "ui.rs, screen_dialer.rs (font behavior, dialer rendering ported from eidolon/haphe)"
 workspace = "eidolon, haphe"
 disposition = "extract-core"
-canonical = "pending: glyph/widget core shared by the kernel UI and eidolon"
+canonical = "eidolon-core for display layout geometry (#740); glyph/widget core still pending"
 owner = "unscheduled"
 notes = "Live 'ported from' comment: screen_dialer.rs:11. eidolon -> haphe is the one real internal edge; the kernel consumes neither today. ui::Key vs haphe::input::Key (#615): the digit/star/hash/d-pad prefix (0-15) is genuine shared vocabulary, pinned by ui::tests::shared_prefix_discriminants_match_haphe against the real haphe crate; the extended range (16-21) is two independent button sets that happen to share a numeric range and is deliberately NOT asserted equal."
 
