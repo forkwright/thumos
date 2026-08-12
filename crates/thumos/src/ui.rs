@@ -35,26 +35,15 @@ use alloc::vec::Vec;
 // Display layout constants
 // ---------------------------------------------------------------------------
 
-/// Display width in pixels (AGM M7 QVGA).
-pub(crate) const SCREEN_WIDTH: u16 = 240;
-
-/// Display height in pixels (AGM M7 QVGA).
-pub(crate) const SCREEN_HEIGHT: u16 = 320;
-
-/// Status bar height in pixels. Fits one font row (16px) plus 4px padding.
-pub(crate) const STATUS_BAR_HEIGHT: u16 = 20;
-
-/// Softkey bar height in pixels. Fits one font row (16px) plus 14px padding.
-pub(crate) const SOFTKEY_BAR_HEIGHT: u16 = 30;
-
-/// Content area height, derived from total minus status bar and softkey bar.
-pub(crate) const CONTENT_HEIGHT: u16 = SCREEN_HEIGHT - STATUS_BAR_HEIGHT - SOFTKEY_BAR_HEIGHT;
-
-/// Y-offset where the content area begins.
-pub(crate) const CONTENT_Y: u16 = STATUS_BAR_HEIGHT;
-
-/// Content framebuffer size in pixels (width * content height).
-pub(crate) const CONTENT_PIXELS: usize = SCREEN_WIDTH as usize * CONTENT_HEIGHT as usize;
+// WHY(#740): re-exported, not redefined. eidolon-core owns the panel
+// geometry; eidolon renders its status bar from the same constants. These
+// were duplicated here and in eidolon with STATUS_BAR_HEIGHT disagreeing by
+// 4px -- a divergence that shifts CONTENT_Y and every zone boundary without
+// panicking, failing a test, or producing any signal at all.
+pub(crate) use eidolon_core::{
+    CONTENT_HEIGHT, CONTENT_PIXELS, CONTENT_Y, SCREEN_HEIGHT, SCREEN_WIDTH, SOFTKEY_BAR_HEIGHT,
+    STATUS_BAR_HEIGHT,
+};
 
 // ---------------------------------------------------------------------------
 // Font constants (matching eidolon 8x16 bitmap font)

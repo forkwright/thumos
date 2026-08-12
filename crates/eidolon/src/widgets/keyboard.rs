@@ -56,7 +56,10 @@ const GRID_UNITS: u32 = 10;
 const KEY_ROW_H: u32 = 57;
 
 /// Height of the softkey bar.
-const SOFTKEY_ROW_H: u32 = 30;
+// WHY(#740): the same zone the kernel calls SOFTKEY_BAR_HEIGHT. It was a
+// third independent 30 -- this one happened to agree, which is how a
+// duplicate survives until the day it does not.
+const SOFTKEY_ROW_H: u32 = eidolon_core::SOFTKEY_BAR_HEIGHT as u32;
 
 /// Number of main (non-softkey) rows.
 const MAIN_ROW_COUNT: usize = 4;
