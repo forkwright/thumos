@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/forkwright/thumos/compare/v0.5.1...v0.6.0) (2026-08-12)
+
+
+### Features
+
+* **eidolon:** add the on-screen keyboard and compose-field widgets ([#741](https://github.com/forkwright/thumos/issues/741)) ([7e897a7](https://github.com/forkwright/thumos/commit/7e897a7e9183f4278536592df2d16ab9143a0d43))
+* **kernel:** wire the three counter-surveillance screens into KernelState ([#746](https://github.com/forkwright/thumos/issues/746)) ([0452206](https://github.com/forkwright/thumos/commit/0452206a988f7b7f27ea4a553a92d5195f95fbd7))
+
+
+### Bug Fixes
+
+* **ci:** stop gate-attestation from cancelling its own push runs ([#745](https://github.com/forkwright/thumos/issues/745)) ([a964e67](https://github.com/forkwright/thumos/commit/a964e67930d54bd62b2a35eb0860e9c35eabafc7)), closes [#718](https://github.com/forkwright/thumos/issues/718)
+* **kernel:** cite the wiring inventory instead of two closed issues ([#749](https://github.com/forkwright/thumos/issues/749)) ([752607f](https://github.com/forkwright/thumos/commit/752607f5fb42f4434c598f7f2a3df939e4700d6f)), closes [#738](https://github.com/forkwright/thumos/issues/738)
+* **kernel:** point the dead-code exemptions at a live tracker and gate the inventory on it ([#739](https://github.com/forkwright/thumos/issues/739)) ([1117520](https://github.com/forkwright/thumos/commit/1117520da7473a96557e3c94c275ff9dd11fb5d2))
+* **ui:** give the display layout one definition in eidolon-core ([#751](https://github.com/forkwright/thumos/issues/751)) ([c1a4805](https://github.com/forkwright/thumos/commit/c1a4805ed2accae70baf9094c48aa218e48125d0))
+* **ui:** stop the threat monitor reporting safety with no detector running ([#750](https://github.com/forkwright/thumos/issues/750)) ([e4e915b](https://github.com/forkwright/thumos/commit/e4e915b8d4a78af5d67b88268116ffc1a64d7bc1))
+* **workspace:** resolve lint classes across the 18 workspace crates ([#744](https://github.com/forkwright/thumos/issues/744)) ([ea4bc27](https://github.com/forkwright/thumos/commit/ea4bc273703259d642637d98a317aca1478c41f8))
+
 ## [0.5.1](https://github.com/forkwright/thumos/compare/v0.5.0...v0.5.1) (2026-08-11)
 
 
