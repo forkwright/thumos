@@ -23,7 +23,7 @@
 // under the -D warnings gate.
 #![expect(
     dead_code,
-    reason = "compiled-but-unwired surface; per-module tiers in docs/capability-inventory.toml, enforced by scripts/check-wiring-inventory.sh"
+    reason = "compiled-but-unwired surface (#753); per-module tiers in docs/capability-inventory.toml, enforced by scripts/check-wiring-inventory.sh"
 )]
 // WHY: unwrap_used/expect_used are denied crate-wide (Cargo.toml) to keep
 // panics out of shipping kernel paths, where a panic is a crash. In a test,

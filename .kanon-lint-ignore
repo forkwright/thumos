@@ -1,9 +1,10 @@
-# release-please auto-generates CHANGELOG.md from conventional commits.
-# REPO-SETUP.md says to omit it, but release-please creates it automatically
-# and removing it would break the release workflow.
-RELEASES/changelog-present:CHANGELOG.md
-# DISCLAIMER.md is required by thumos's legal status (research/educational software).
-RELEASES/disclaimer-present:DISCLAIMER.md
+# CHANGELOG.md and DISCLAIMER.md are both present, so RELEASES/changelog-present
+# and RELEASES/disclaimer-present do not fire and no entry is needed. The
+# patterns that used to sit here matched nothing and kanon warned on them each
+# run. Kept as a note because the reasons are not obvious: release-please
+# generates CHANGELOG.md automatically even though REPO-SETUP.md says to omit
+# it, and DISCLAIMER.md is required by thumos's legal status as research and
+# educational software.
 
 # =============================================================================
 # Workspace library crates — public API for the out-of-workspace kernel binary
@@ -277,4 +278,8 @@ TESTING/no-tests:crates/metaxu-core/src/lib.rs
 # artifact that is present. Writing a second GLOSSARY.md to satisfy it would
 # create the drift the rule exists to prevent (one fact, one place).
 # Rule-side fix: kanon#3203.
-ARCHITECTURE/no-glossary:Cargo.toml
+#
+# No ignore pattern here on purpose: the rule reports against no path this
+# file can key on, so an entry matches nothing and kanon warns that it is
+# dead. The finding is Info severity and does not reach the gate; this
+# comment is the record.

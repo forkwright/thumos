@@ -33,7 +33,7 @@
 // WHY: Matrix client created in Phase 09 Wave 2, full integration pending in Wave 5.
 #![expect(
     dead_code,
-    reason = "Matrix client exists; unified inbox integration pending (tier in docs/capability-inventory.toml)"
+    reason = "Matrix client exists; unified inbox integration pending (#753; tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;

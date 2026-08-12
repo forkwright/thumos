@@ -28,7 +28,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "A2DP profile exists; audio manager wiring pending (tier in docs/capability-inventory.toml)"
+        reason = "A2DP profile exists; audio manager wiring pending (#753; tier in docs/capability-inventory.toml)"
     )
 )]
 
