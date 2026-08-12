@@ -34,7 +34,7 @@
 // protocol implementation via akroasis kerykeion pending.
 #![expect(
     dead_code,
-    reason = "Meshtastic transport stub exists; serial protocol pending (tier in docs/capability-inventory.toml)"
+    reason = "Meshtastic transport stub exists; serial protocol pending (#753; tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;

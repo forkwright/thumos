@@ -24,7 +24,7 @@
 // syscalls still use the lower-level timer/time paths.
 #![expect(
     dead_code,
-    reason = "Clock trust manager is not wired into kernel time (tier in docs/capability-inventory.toml)"
+    reason = "Clock trust manager is not wired into kernel time (#753; tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;

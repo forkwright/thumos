@@ -26,7 +26,7 @@
 // frame TX/RX, scan, and association are implemented on the target.
 #![expect(
     dead_code,
-    reason = "WiFi hardware data path not yet implemented on target (tier in docs/capability-inventory.toml)"
+    reason = "WiFi hardware data path not yet implemented on target (#753; tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;
