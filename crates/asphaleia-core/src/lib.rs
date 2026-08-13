@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(missing_docs)]
 //! asphaleia-core: the canonical packet-parse and DNS-surveillance-policy
 //! semantics (#545).
 //!
