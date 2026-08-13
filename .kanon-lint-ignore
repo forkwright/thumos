@@ -346,3 +346,19 @@ STANDARDS/deprecated-term:crates/pteron/src/smp/pdu.rs
 # `test_`-prefixed helper-naming convention; renaming this one instance to
 # satisfy the rule would contradict the standard the rule exists to enforce.
 TESTING/test-naming:crates/pteron/src/smp/pairing.rs
+
+# =============================================================================
+# Rust code quoted in prose, not a TOML inline table (#756)
+# =============================================================================
+#
+# WHY(#756): convergence.toml's check is a raw brace-pair scan -- any
+# key = "..." line containing both { and } past 80 columns reads as an
+# inline table, with no awareness that a single-line "..." string (unlike a
+# """...""" one) can be inside it. `[[pair]]`'s `notes` fields are free-text
+# rationale that sometimes quote Rust syntax (`InputEvent::Key { key, state:
+# ... }`), so a brace pair inside ordinary prose trips the same check a real
+# `dep = { version = "1", ... }` table would. This schema has no `key = {`
+# tables at all -- every field is a plain string -- so the false-positive
+# mechanism can recur for any future long `notes`/`canonical` field that
+# quotes braced code, not just today's one instance.
+TOML/inline-table-too-long:docs/convergence.toml
