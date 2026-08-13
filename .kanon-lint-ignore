@@ -302,3 +302,18 @@ TESTING/no-tests:crates/metaxu-core/src/lib.rs
 RUST/unreachable-in-match:crates/thumos/build.rs
 RUST/unreachable-in-match:crates/pteron/src/smp/toolbox.rs
 RUST/unreachable-in-match:crates/pteron/src/l2cap.rs
+
+# =============================================================================
+# #[allow] where #[expect] would be a guaranteed unfulfilled expectation (#756)
+# =============================================================================
+#
+# WHY(#756): security.rs's needless_range_loop allow already carries its own
+# in-file NOTE explaining why it stays #[allow]: verified (CI run
+# 31499203998) that clippy's needless_range_loop heuristic never fires on
+# this loop shape -- a write at w[i] alongside reads at four distinct past
+# offsets (i-3/i-8/i-14/i-16) -- in any of kernel-clippy.sh's declared
+# feature configurations. #[expect] on a lint that structurally cannot fire
+# is not a stricter #[allow]; it is an unconditional
+# `unfulfilled_lint_expectations` failure. The rule has no way to know a
+# specific clippy lint never fires for a specific loop shape.
+RUST/allow-not-expect:crates/thumos/src/security.rs
