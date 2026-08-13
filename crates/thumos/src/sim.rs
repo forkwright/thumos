@@ -545,9 +545,10 @@ fn send_with_info<T: ModemTransport>(
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::*;
     use crate::telephony::MockModemTransport;
-    use alloc::vec::Vec;
 
     #[test]
     fn cpin_ready_means_no_pin_required() {

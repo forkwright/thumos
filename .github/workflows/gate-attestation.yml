@@ -56,7 +56,7 @@ permissions:
 
 jobs:
   gate:
-    uses: forkwright/.github/.github/workflows/hybrid-gate.yml@main
+    uses: forkwright/.github/.github/workflows/hybrid-gate.yml@54f1af7c711546304409593695e1258a91004453 # main
     with:
       fmt_cmd: "cargo fmt --all -- --check"
       check_cmd: "cargo check --workspace --all-targets --locked --jobs 8"

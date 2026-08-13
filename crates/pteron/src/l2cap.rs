@@ -236,10 +236,10 @@ impl AclReassembler {
         }
 
         // WHY: a fresh start fragment always replaces any prior in-progress
-        // reassembly for this handle — receiving a new start can only mean
-        // the previous PDU (if any) was abandoned by the peer, and holding
-        // onto it would either leak memory or let stray continuation bytes
-        // splice onto the wrong PDU.
+        // reassembly on this handle — receiving a new start can only mean
+        // the previous PDU, when one exists, was abandoned by the peer, and
+        // holding onto it would either leak memory or allow stray
+        // continuation bytes to splice onto the wrong PDU.
         self.partials.remove(&pkt.handle);
 
         let body = pkt.data.get(L2CAP_HEADER_LEN..).unwrap_or(&[]);
