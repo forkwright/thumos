@@ -220,9 +220,29 @@ today:
   full-gate build) attests the **workspace** fmt/check/clippy/nextest stages
   only. Per its own NOTE, it does not attest the excluded kernel crate. The
   kernel's executable witness is the `kernel` job of the CI workflow
-  described on this page — there is no cryptographic attestation of a
-  released boot image. Release attestation remains broken (tracked in #536).
-  Do not present any current artifact as release-signed or release-attested.
+  described on this page.
+- **Release attestation (#536, fixed by #609).** The `release-please.yml`
+  workflow's `release-attest` job attests the **release artifacts**: a
+  deterministic `git archive` source tarball of the repo at the release tag
+  (`thumos-vX.Y.Z.tar.gz`), plus two CycloneDX SBOMs — one for the workspace
+  crates, one for the excluded kernel crate. Both are signed via
+  `actions/attest-build-provenance` and `actions/attest-sbom` (SLSA v1
+  provenance) and are independently verifiable:
+  `gh attestation verify thumos-vX.Y.Z.tar.gz --repo forkwright/thumos`.
+  Live and verified on v0.5.1, v0.6.0, v0.6.1, and v0.6.2 — each ships a
+  tarball whose published sha256 matches a real, signed provenance
+  statement.
+
+  **What this does and does not prove.** The attestation subject is the
+  git tree at the tag, not a compiled artifact — it proves the source you
+  can rebuild from, and that GitHub Actions (not some other pipeline)
+  produced the tarball and SBOMs from that exact commit. It says nothing
+  about any specific *flashed* image: nothing in this repo's CI builds,
+  signs, or attests a boot image, and the trust anchor described above is
+  an independent mechanism (an Ed25519 key baked in at build time, checked
+  at boot). Do not present a flashed/on-device boot image as
+  release-attested — only the source tarball and its two SBOMs carry that
+  attestation.
 
 ## Boot passphrase and encrypted userdata (#446)
 

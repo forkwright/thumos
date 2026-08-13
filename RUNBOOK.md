@@ -24,9 +24,10 @@ those). Two directories matter operationally:
   Cargo workspace (bare-metal target), so its build, its host tests, and
   its lint pass each need their own invocation — see Start/stop and
   Common issues.
-- The 19 workspace library crates under `crates/` (`klesis`, `klesis-core`,
-  `aither`, `pteron`, ... — full list in `Cargo.toml`'s `members`) — a
-  normal `cargo`-buildable workspace, one host toolchain, one test runner.
+- The workspace library crates under `crates/` (`klesis`, `klesis-core`,
+  `aither`, `pteron`, ... — full list in `Cargo.toml`'s `members`, verified
+  1:1 against `ARCHITECTURE.md`'s crate map by `scripts/check-doc-inventory.sh`)
+  — a normal `cargo`-buildable workspace, one host toolchain, one test runner.
 
 ## Start/stop (build and boot)
 
