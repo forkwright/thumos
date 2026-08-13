@@ -429,6 +429,7 @@ pub(crate) fn detect_imsi_catcher(events: &[CellEvent]) -> Vec<ImsiCatcherAlert>
 /// `HashSet`s, and `reselection_timestamps` each hold at most one entry per
 /// event.
 #[must_use]
+// kanon:ignore RUST/doc-promised-observability -- false positive: the doc's "event"/"log" are domain nouns (CellEvent variants, the threat log), not a tracing::event!/log! promise
 pub(crate) fn detect_imsi_catcher_with_config(
     events: &[CellEvent],
     config: &Config,
@@ -564,6 +565,7 @@ pub(crate) fn detect_imsi_catcher_with_config(
 /// treated as inside the window (inclusive boundary). An empty slice yields
 /// `0`.
 fn max_reselections_in_window(timestamps: &mut [Timestamp], window: SignedDuration) -> u32 {
+    // kanon:ignore RUST/doc-promised-observability -- false positive: the doc's "event"/"log"/"span" are domain nouns (reselection events, event log, time span), not a tracing::event!/log!/span! promise
     timestamps.sort_unstable();
 
     let mut max_count: u32 = 0;

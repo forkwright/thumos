@@ -272,10 +272,26 @@ fn boot_verify_loop(
                                 };
                                 halt_boot(serial, display_ok);
                             }
-                            _ => {}
+                            // NOTE: WrongPassphrase / Throttled -- no-op by
+                            // design. The lock screen's own state (attempt
+                            // count, throttle countdown) already renders on
+                            // the next `lock.draw()`; this loop just needs to
+                            // keep polling. DuressDetected / WrongPin are
+                            // unreachable through THIS path: the closure
+                            // above only ever compares a PBKDF2 passphrase
+                            // verifier, never a PIN, and boot-passphrase mode
+                            // has no duress variant today. If boot-passphrase
+                            // duress support is ever added, this arm must be
+                            // split to handle it explicitly rather than
+                            // silently swallowing it here.
+                            _ => {} // NOTE: see block comment above -- WrongPassphrase/Throttled no-op; Duress/WrongPin unreachable here
                         }
                     }
-                    _ => {}
+                    // NOTE: D-pad/softkey/call/end/power -- every UI key
+                    // besides digits, Star, and Hash is a deliberate no-op on
+                    // the boot lock screen; there is no navigation target
+                    // here.
+                    _ => {} // NOTE: see comment above -- non-digit/Star/Hash keys are a deliberate no-op here
                 },
             }
             lock.draw(&mut fb[..crate::ui::CONTENT_PIXELS]);
@@ -372,7 +388,11 @@ fn boot_setup_loop(
                             serial.log(" Passphrase too short (6+ digits)\r\n");
                         }
                     }
-                    _ => {}
+                    // NOTE: D-pad/softkey/call/end/power -- every UI key
+                    // besides digits, Star, and Hash is a deliberate no-op on
+                    // the boot setup screen; there is no navigation target
+                    // here.
+                    _ => {} // NOTE: see comment above -- non-digit/Star/Hash keys are a deliberate no-op here
                 },
             }
             lock.draw(&mut fb[..crate::ui::CONTENT_PIXELS]);

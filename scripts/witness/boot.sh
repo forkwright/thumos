@@ -69,8 +69,11 @@ grep -qE 'kardia: heorte events=[1-9][0-9]* alarms=[1-9][0-9]* calendar_rows=[1-
 # #403 loop-persistent firewall + verified HMAC audit chain.
 grep -qE 'kardia: firewall rules=[1-9][0-9]* allowed=[1-9][0-9]* denied=[1-9][0-9]* audit_events=2 chain=ok' boot.log || { echo 'FAIL #403: firewall not loop-persistent / policy+audit path broken'; exit 1; }
 # #518 FM radio: FmRadio<BootFmHw> instantiated in KernelState (NullFmHw under
-# qemu), powered + tuned at smoke, FM screen fed from it.
-grep -qE 'kardia: fm powered=true freq_khz=[0-9]+ rssi=-?[0-9]+ volume=[0-9]+' boot.log || { echo 'FAIL #518: FM radio controller not wired (BootFmHw/KernelState/screen feed broken)'; exit 1; }
+# qemu), powered + tuned at smoke, FM screen fed from it. `tuned=true` is
+# checked explicitly (not just the freq_khz value's shape) so a tune()
+# regression fails this witness instead of printing a passing-looking line
+# with a stale/zero frequency.
+grep -qE 'kardia: fm powered=true tuned=true freq_khz=[0-9]+ rssi=-?[0-9]+ volume=[0-9]+' boot.log || { echo 'FAIL #518: FM radio controller not wired, or seeded tune failed (BootFmHw/KernelState/screen feed broken)'; exit 1; }
 # #737 threat monitor: log substrate fed from the real SMS surveillance
 # classification path (#662); composite score is a log-derived heuristic,
 # explicitly uncalibrated (sema stays unwired -- not a thumos dependency).
