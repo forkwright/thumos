@@ -32,6 +32,14 @@ grep -q 'shell: hello from userspace' boot.log || { echo 'FAIL #526: /shell did 
 grep -q '2 userspace ELF processes running' boot.log || { echo 'FAIL #526: kinit did not report both userspace processes running'; exit 1; }
 ic=$(grep -c 'init: hello from userspace' boot.log || true); test "$ic" -eq 1 || { echo "FAIL #526: 'init: hello' x$ic (want 1) -- per-process image-frame clobber regressed (#502)"; exit 1; }
 sc=$(grep -c 'shell: hello from userspace' boot.log || true); test "$sc" -eq 1 || { echo "FAIL #526: 'shell: hello' x$sc (want 1) -- per-process image-frame clobber regressed (#502)"; exit 1; }
+# #458 boot splash: kinit paints the Ardent mark once into the same fb
+# kardia is about to hand off to (before kardia's own #400 first-frame
+# render below), proving the splash draw path produces real pixels rather
+# than merely not panicking. `splash_px=` (not `painted_px=`) so this line
+# cannot collide with the #400 check's unanchored painted_px extraction
+# below -- this marker lands earlier in the log than kardia's own render.
+grep -q 'kardia: splash rendered splash_px=' boot.log || { echo 'FAIL #458: boot splash never rendered (splash draw path dead)'; exit 1; }
+spx=$(grep -oE 'splash_px=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+' || true); test "${spx:-0}" -gt 0 || { echo "FAIL #458: boot splash rendered BLANK (splash_px=${spx:-0})"; exit 1; }
 # #400 render foundation through the real screen-dispatch path.
 grep -q 'kardia: frame rendered painted_px=' boot.log || { echo 'FAIL #400: service loop never rendered a frame (render path dead)'; exit 1; }
 px=$(grep -oE 'painted_px=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+' || true); test "${px:-0}" -gt 0 || { echo "FAIL #400: rendered frame is BLANK (painted_px=${px:-0}) -- screen draw produced nothing"; exit 1; }

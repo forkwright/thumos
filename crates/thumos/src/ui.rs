@@ -314,6 +314,202 @@ pub(crate) fn draw_scaled_str_centered(
 }
 
 // ---------------------------------------------------------------------------
+// Boot splash (#458)
+// ---------------------------------------------------------------------------
+//
+// WHY splash-only, never lock screen / status bar / running UI: the Ardent
+// mark is a brand element, not a UI affordance -- every OTHER surface in
+// this module (status bar, softkeys, screens) is state the running kernel
+// re-draws every dirty tick, and none of them may grow a dependency on
+// branding. `draw_splash`/`draw_splash_mono` are called from exactly one
+// site (kinit, once, before kardia's first `render_if_dirty`) and nothing
+// else in this crate references [`SPLASH_ROWS`].
+//
+// WHY ASCII-through-the-existing-font, not a bitmap asset: this kernel is
+// bare-metal (`#![no_std]`, no filesystem-backed asset loader) and every
+// byte here ships in the kernel image. A bitmap would need its own decode
+// path, its own pipeline to regenerate from source art, and RGB565 pixel
+// bytes proportional to its resolution; the glyph shape below is a `&str`
+// array the linker folds into `.rodata`, drawn with the same `draw_str`
+// blitter every other kernel string already uses -- zero new kernel bytes
+// beyond the ~180-byte const array itself.
+
+/// Number of character columns the boot splash occupies.
+const SPLASH_COLS: u16 = 15;
+
+/// Number of character rows the boot splash occupies.
+const SPLASH_ROW_COUNT: u16 = 12;
+
+/// Character-cell column the splash's left edge starts at.
+///
+/// Deliberately short of true centering (`(SCREEN_WIDTH / CHAR_WIDTH -
+/// SPLASH_COLS) / 2` would be col 7.5, i.e. col 7 or 8) -- issue #458 fixes
+/// this at col 7 rather than deriving it, so the placement stays exactly
+/// the reviewed art's framing rather than drifting if the panel geometry
+/// ever changes.
+const SPLASH_ORIGIN_COL: u16 = 7;
+
+/// Character-cell row the splash's top edge starts at (see
+/// [`SPLASH_ORIGIN_COL`] -- same reasoning, fixed by #458, not derived).
+const SPLASH_ORIGIN_ROW: u16 = 3;
+
+/// Splash origin in pixels, derived from the character-cell origin and the
+/// canonical font-cell size -- never a raw pixel literal.
+const SPLASH_ORIGIN_X: u16 = SPLASH_ORIGIN_COL * CHAR_WIDTH;
+const SPLASH_ORIGIN_Y: u16 = SPLASH_ORIGIN_ROW * CHAR_HEIGHT;
+
+// The splash must fit inside the panel in character cells. SCREEN_WIDTH/
+// SCREEN_HEIGHT/CHAR_WIDTH/CHAR_HEIGHT are eidolon-core aliases (see the WHY
+// note at the top of this file); this check fails to COMPILE, not just to
+// lint, if the panel geometry ever shrinks under the fixed origin above.
+const _: () = assert!(
+    SPLASH_ORIGIN_COL + SPLASH_COLS <= SCREEN_WIDTH / CHAR_WIDTH,
+    "boot splash exceeds panel width in character cells"
+);
+const _: () = assert!(
+    SPLASH_ORIGIN_ROW + SPLASH_ROW_COUNT <= SCREEN_HEIGHT / CHAR_HEIGHT,
+    "boot splash exceeds panel height in character cells"
+);
+
+/// The Ardent mark, verbatim from issue #458 -- 15 columns x 12 rows,
+/// glyph set `{space, (, ), /, #, *}` (all in the font's 0x20-0x7E range).
+/// Rows are right-padded with spaces to [`SPLASH_COLS`] so every row draws
+/// the same pixel width regardless of its glyph content.
+///
+/// Two properties are load-bearing and must survive any future edit:
+/// - **The lean.** The tip (`*`, row 0) sits at column 12; the base (rows
+///   9-10) sits at column 4. Centering each row independently would erase
+///   this asymmetry and the mark would read as a campfire, not a flame.
+/// - **The inner curl.** The blank cells inside rows 5 and 6 (`(##( #)`,
+///   `(##)##)`) are negative space carving the mark's signature inner void
+///   -- not a misaligned typo to "fix". See
+///   `splash_inner_curl_rows_are_not_typos` below.
+const SPLASH_ROWS: [&str; SPLASH_ROW_COUNT as usize] = [
+    "            *  ",
+    "          /#)  ",
+    "         /##)  ",
+    "        /###)  ",
+    "       (####)  ",
+    "      (##( #)  ",
+    "      (##)##)  ",
+    "     (#####)   ",
+    "     (#####)   ",
+    "    (#####)    ",
+    "    (#####)    ",
+    "     (###)     ",
+];
+
+/// Tip colour (row 0) for the gradient enhancement: pale, warm white -- the
+/// thinnest, brightest part of a flame.
+const SPLASH_TIP_RGB: (u8, u8, u8) = (255, 224, 180);
+
+/// Base colour (last row) for the gradient enhancement: deep red -- the
+/// coolest, densest part of a flame. Deliberately darker than
+/// [`color::RED`] so the gradient reads as depth, not a flat hue swap.
+const SPLASH_BASE_RGB: (u8, u8, u8) = (139, 0, 0);
+
+/// Linear-interpolate one 8-bit colour channel from `a` (row 0) to `b` (the
+/// last row) at `row`. Integer math only -- this is kernel code with no
+/// FPU dependency assumed. `a`/`b` may fall either direction (the tip is
+/// brighter in every channel here, but nothing requires that), so the
+/// intermediate delta is computed in `i32` rather than `u8` to avoid an
+/// underflow panic on a descending channel.
+fn splash_lerp_channel(a: u8, b: u8, row: usize, last_row: usize) -> u8 {
+    let delta = i32::from(b) - i32::from(a);
+    // row <= last_row always (splash_row_color's only caller bounds it via
+    // SPLASH_ROWS' own length), so the result stays within [a, b] and fits
+    // back into u8 without truncation.
+    (i32::from(a) + (delta * row as i32) / last_row as i32) as u8
+}
+
+/// Heat-gradient colour for row `row` of [`SPLASH_ROWS`]: pale at the tip,
+/// deep red at the base. Enhancement over [`draw_splash_mono`]'s single
+/// colour -- per #458, "colour is not the carrier": the mark must read as
+/// a flame in mono first, and this only finishes it.
+fn splash_row_color(row: usize) -> u16 {
+    let last_row = (SPLASH_ROWS.len() - 1).max(1);
+    let (tip_r, tip_g, tip_b) = SPLASH_TIP_RGB;
+    let (base_r, base_g, base_b) = SPLASH_BASE_RGB;
+    color::from_rgb(
+        splash_lerp_channel(tip_r, base_r, row, last_row),
+        splash_lerp_channel(tip_g, base_g, row, last_row),
+        splash_lerp_channel(tip_b, base_b, row, last_row),
+    )
+}
+
+/// Count non-`bg` pixels inside the splash's own bounding box. Scoped to
+/// the box (not a whole-framebuffer scan) so the count is meaningful
+/// regardless of what the rest of `fb` holds -- on device `fb` is a live
+/// hardware framebuffer that may carry stale content outside the splash
+/// region.
+fn splash_painted_pixels(fb: &[u16], fb_width: u16, bg: u16) -> usize {
+    let w = usize::from(SPLASH_COLS) * usize::from(CHAR_WIDTH);
+    let h = usize::from(SPLASH_ROW_COUNT) * usize::from(CHAR_HEIGHT);
+    let mut count = 0;
+    for row in 0..h {
+        let py = usize::from(SPLASH_ORIGIN_Y) + row;
+        for col in 0..w {
+            let px = usize::from(SPLASH_ORIGIN_X) + col;
+            let idx = py * usize::from(fb_width) + px;
+            if fb.get(idx).is_some_and(|&v| v != bg) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Draw every row of [`SPLASH_ROWS`], colouring row `i` with
+/// `color_for_row(i)`. Shared by [`draw_splash_mono`] and [`draw_splash`]
+/// so both draw the identical glyph geometry -- only the colour input
+/// differs.
+fn draw_splash_rows<F>(fb: &mut [u16], fb_width: u16, color_for_row: F, bg: u16)
+where
+    F: Fn(usize) -> u16,
+{
+    for (row, text) in SPLASH_ROWS.iter().copied().enumerate() {
+        let ry = SPLASH_ORIGIN_Y.saturating_add((row as u16).saturating_mul(CHAR_HEIGHT));
+        draw_str(
+            fb,
+            fb_width,
+            SPLASH_ORIGIN_X,
+            ry,
+            text,
+            color_for_row(row),
+            bg,
+        );
+    }
+}
+
+/// Render the boot splash in a single foreground colour.
+///
+/// This is the verified baseline (#458: "the shape must read in a single
+/// foreground colour... implement and verify the single-colour case
+/// first"). [`draw_splash`]'s gradient is built on the identical row/column
+/// geometry this function draws, so a shape regression is visible here
+/// first, independent of colour.
+///
+/// `fb` must be `SCREEN_WIDTH * SCREEN_HEIGHT` pixels (a full-panel
+/// framebuffer, matching [`SCREEN_WIDTH`] as `fb_width`). Returns the
+/// number of non-`bg` pixels painted, for the caller's boot witness.
+pub(crate) fn draw_splash_mono(fb: &mut [u16], fg: u16, bg: u16) -> usize {
+    draw_splash_rows(fb, SCREEN_WIDTH, |_row| fg, bg);
+    splash_painted_pixels(fb, SCREEN_WIDTH, bg)
+}
+
+/// Render the boot splash with the [`splash_row_color`] heat gradient: pale
+/// at the tip, deep red at the base. This is what kinit paints at boot
+/// (#458) -- the gradient is a finish over [`draw_splash_mono`]'s verified
+/// shape, not a different shape.
+///
+/// `fb` must be `SCREEN_WIDTH * SCREEN_HEIGHT` pixels. Returns the number
+/// of non-`bg` pixels painted, for the caller's boot witness.
+pub(crate) fn draw_splash(fb: &mut [u16]) -> usize {
+    draw_splash_rows(fb, SCREEN_WIDTH, splash_row_color, color::BLACK);
+    splash_painted_pixels(fb, SCREEN_WIDTH, color::BLACK)
+}
+
+// ---------------------------------------------------------------------------
 // Input event types (kernel-side, mirroring haphe::input::Key)
 // ---------------------------------------------------------------------------
 
@@ -1306,5 +1502,108 @@ mod tests {
         for (id, expect) in WIRED {
             assert_eq!(screen_kind(id), expect, "{id:?} classification drifted");
         }
+    }
+
+    #[test]
+    fn splash_rows_are_padded_to_15_columns() {
+        for (i, row) in SPLASH_ROWS.iter().enumerate() {
+            assert_eq!(
+                row.chars().count(),
+                usize::from(SPLASH_COLS),
+                "SPLASH_ROWS[{i}] must be padded to {SPLASH_COLS} columns"
+            );
+        }
+    }
+
+    #[test]
+    fn splash_lean_tip_near_col12_base_near_col4() {
+        // #458: "the tip sits near column 12 and the base near column 4 --
+        // that asymmetry is what makes it read as flame rather than
+        // campfire." Pin both ends of the lean directly against the art.
+        let leading_spaces = |row: &str| row.chars().take_while(|&c| c == ' ').count();
+        assert_eq!(
+            leading_spaces(SPLASH_ROWS[0]),
+            12,
+            "tip row (row 0) must start at column 12"
+        );
+        let base_col = SPLASH_ROWS
+            .iter()
+            .copied()
+            .map(leading_spaces)
+            .min()
+            .expect("SPLASH_ROWS is a non-empty const array");
+        assert_eq!(base_col, 4, "the widest (base) row must start at column 4");
+    }
+
+    #[test]
+    fn splash_inner_curl_rows_are_not_typos() {
+        // #458: "the blank cells inside rows 5-6 are negative space
+        // carving the mark's signature inner void. Do not 'fix' them as
+        // typos." Pin the exact glyph content so a future edit that
+        // "aligns" these rows fails here instead of silently flattening
+        // the mark.
+        assert_eq!(
+            SPLASH_ROWS[5].trim_end(),
+            "      (##( #)",
+            "row 5 must keep its inner blank cell (the curl's void)"
+        );
+        assert_eq!(
+            SPLASH_ROWS[6].trim_end(),
+            "      (##)##)",
+            "row 6 must keep its inner closing paren (the curl's void)"
+        );
+    }
+
+    #[test]
+    fn draw_splash_mono_paints_nonzero_pixels() {
+        let mut fb = alloc::vec![0u16; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize];
+        let painted = draw_splash_mono(&mut fb, color::RED, color::BLACK);
+        assert!(painted > 0, "mono splash must paint visible pixels");
+        assert!(
+            fb.iter().any(|&px| px == color::RED),
+            "mono splash must use the single requested foreground colour"
+        );
+    }
+
+    #[test]
+    fn draw_splash_gradient_paints_same_shape_as_mono() {
+        // #458: "colour is not the carrier" -- the gradient enhancement
+        // must not change WHICH pixels are foreground, only what colour
+        // they are. A shape regression in either function shows up as a
+        // painted-pixel-count mismatch here.
+        let mut fb_mono = alloc::vec![0u16; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize];
+        let mono_count = draw_splash_mono(&mut fb_mono, color::RED, color::BLACK);
+
+        let mut fb_gradient = alloc::vec![0u16; SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize];
+        let gradient_count = draw_splash(&mut fb_gradient);
+
+        assert_eq!(
+            mono_count, gradient_count,
+            "gradient and mono splash must paint the identical pixel count"
+        );
+        assert!(
+            gradient_count > 0,
+            "gradient splash must paint visible pixels"
+        );
+    }
+
+    #[test]
+    fn draw_splash_stays_out_of_status_and_softkey_zones() {
+        // #458: splash-only -- never the status bar or softkey bar. The
+        // fixed origin (col 7, row 3) must land entirely inside the
+        // content zone; this pins that as a running invariant rather than
+        // leaving it to the compile-time panel-fit check alone (which only
+        // proves the splash fits ON the panel, not that it avoids the
+        // status/softkey bands within it).
+        let top = SPLASH_ORIGIN_Y;
+        let bottom = SPLASH_ORIGIN_Y + SPLASH_ROW_COUNT * CHAR_HEIGHT;
+        assert!(
+            top >= STATUS_BAR_HEIGHT,
+            "splash must start below the status bar"
+        );
+        assert!(
+            bottom <= STATUS_BAR_HEIGHT + CONTENT_HEIGHT,
+            "splash must end above the softkey bar"
+        );
     }
 }

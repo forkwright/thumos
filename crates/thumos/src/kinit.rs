@@ -1886,9 +1886,9 @@ pub unsafe fn run() -> ! {
     // heap buffer -- so render_if_dirty actually runs and the UI surface is
     // CI-verifiable in emulation (the render path was dead under qemu before).
     #[cfg(feature = "qemu")]
-    let fb: Option<&'static mut [u16]> = Some(alloc::vec![0u16; FRAMEBUFFER_PIXELS].leak());
+    let mut fb: Option<&'static mut [u16]> = Some(alloc::vec![0u16; FRAMEBUFFER_PIXELS].leak());
     #[cfg(not(feature = "qemu"))]
-    let fb: Option<&'static mut [u16]> = if state.display_ok {
+    let mut fb: Option<&'static mut [u16]> = if state.display_ok {
         // SAFETY: display_ok is set only after display.init(FB_BASE) mapped
         // FB_BASE as a writable RGB565 framebuffer of FRAMEBUFFER_PIXELS pixels.
         Some(unsafe {
@@ -1897,6 +1897,51 @@ pub unsafe fn run() -> ! {
     } else {
         None
     };
+
+    // -----------------------------------------------------------------------
+    // Boot splash (#458)
+    // -----------------------------------------------------------------------
+    // WHY here, not Step 8 (display init): on device the panel is already
+    // live at Step 8 and painting the splash there would hold it on screen
+    // for the whole remaining boot -- but `fb` above is the one binding that
+    // exists identically on BOTH targets (Step 8's DDP/DSI writes are
+    // skipped entirely under qemu, which has no display model; `fb` is a
+    // synthetic heap buffer there instead). Painting here, once, right
+    // before this same buffer is handed to kardia, is the only insertion
+    // point that covers hardware and the CI-verifiable emulation with one
+    // code path, and it runs before kardia's OWN first frame -- the
+    // `render_if_dirty` call at the top of `kardia::service_loop` (#400) --
+    // so the splash is strictly the first thing painted, never a frame
+    // fighting the running UI for the buffer.
+    //
+    // WHY splash-only (never lock screen / status bar / running UI) and
+    // ASCII-through-the-existing-font (never a bitmap asset): see the WHY
+    // block above `ui::draw_splash` -- this is the mark's only call site,
+    // by design.
+    if let Some(fb) = fb.as_deref_mut() {
+        let splash_painted = ui::draw_splash(fb);
+        // Witness marker (#458), qemu-only like every other loop-entry
+        // witness in this boot path (scripts/witness/boot.sh has no
+        // observer on real hardware). WHY `splash_px=` and not
+        // `painted_px=`: the #400 witness extracts its pixel count with an
+        // UNANCHORED `grep -oE 'painted_px=[0-9]+' | head -1` -- a shared
+        // field name would make it silently pick up THIS line instead
+        // (this one lands earlier in the log than kardia's own frame
+        // render), passing while checking the wrong render entirely.
+        #[cfg(feature = "qemu")]
+        boot_log!(
+            serial,
+            "kardia: splash rendered splash_px={splash_painted}\r\n"
+        );
+        // WHY discarded here: real hardware has no CI witness to feed (see
+        // above); this keeps the binding used on both targets without a
+        // leading-underscore name (`_splash_painted` would trip
+        // clippy::used_underscore_binding the moment the qemu branch reads
+        // it, since pedantic is warn-level crate-wide).
+        #[cfg(not(feature = "qemu"))]
+        let _ = splash_painted;
+    }
+
     // #398: bring up the AT/call telephony stack on the modem transport. Under
     // qemu a seeded mock runs the real 10-step init + state machines; on device
     // the CCCI transport (init succeeds only once its wire protocol lands --
