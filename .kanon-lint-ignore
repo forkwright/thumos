@@ -317,3 +317,19 @@ RUST/unreachable-in-match:crates/pteron/src/l2cap.rs
 # `unfulfilled_lint_expectations` failure. The rule has no way to know a
 # specific clippy lint never fires for a specific loop shape.
 RUST/allow-not-expect:crates/thumos/src/security.rs
+
+# =============================================================================
+# Bluetooth Core Spec PDU name, not master/slave role language (#756)
+# =============================================================================
+#
+# WHY(#756): "Master Identification" (pdu.rs:976) is the Bluetooth Core
+# Specification's own name for SMP PDU 0x07 (Vol 3, Part H §3.3, Table 3.7,
+# already cited at the top of this file) -- the same term this file already
+# carries unsuppressed as the identifier `OP_MASTER_IDENTIFICATION` (the
+# rule's `\b` word-boundary regex does not match inside an underscored
+# identifier, so only the free-standing prose use at line 976 fires).
+# Renaming the prose away from the spec's own PDU name would break
+# traceability for anyone cross-referencing the spec -- the same reasoning
+# the rule itself already applies via its `git.*master`/`origin/master`
+# skip patterns.
+STANDARDS/deprecated-term:crates/pteron/src/smp/pdu.rs
