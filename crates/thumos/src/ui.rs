@@ -1560,7 +1560,7 @@ mod tests {
         let painted = draw_splash_mono(&mut fb, color::RED, color::BLACK);
         assert!(painted > 0, "mono splash must paint visible pixels");
         assert!(
-            fb.iter().any(|&px| px == color::RED),
+            fb.contains(&color::RED),
             "mono splash must use the single requested foreground colour"
         );
     }
