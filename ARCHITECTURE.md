@@ -32,6 +32,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 | Crate | Description |
 |-------|-------------|
 | `eidolon` | Framebuffer UI: 240x320 rendering, widgets, T9 input, status bar |
+| `eidolon-core` | Canonical display layout geometry (screen size, the three zone heights, and everything derived from them), shared no_std with the kernel's `ui.rs` (#545, #740) |
 
 **Input**
 
@@ -88,15 +89,37 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 
 ## Dependency direction
 
-The kernel (`thumos`) is a standalone `no_std` binary with no workspace dependencies. Workspace crates depend on each other as follows:
+Workspace crates depend on each other as follows:
 
 ```
 eidolon --> haphe    (UI reads input events)
 ```
 
-All other workspace crates are independent of each other. External dependencies flow downward: crates use RustCrypto, `nom`, `smoltcp`, `snafu`, etc. but never import from higher layers. `metaxu` is a protocol boundary only; it does not embed the Aletheia runtime or wire a live network transport.
+That is the only cross-domain edge. Six domain crates additionally split off
+a `no_std`(+alloc) `-core` sibling that both the workspace crate and the
+kernel depend on directly, so the shared semantics have exactly one
+implementation (the #545 convergence pattern described above): `eidolon` ->
+`eidolon-core`, `asphaleia` -> `asphaleia-core`, `klesis` -> `klesis-core`,
+`sema` -> `sema-core`, `topos` -> `topos-core`, `metaxu` -> `metaxu-core`.
+These are same-layer splits, not cross-layer imports. Beyond `eidolon -->
+haphe` and the six `-core` splits, workspace crates are independent of each
+other. External dependencies flow downward: crates use RustCrypto, `nom`,
+`smoltcp`, `snafu`, etc. but never import from higher layers. `metaxu` is a
+protocol boundary only; it does not embed the Aletheia runtime or wire a
+live network transport.
 
-**Rule**: lower layers do not import from higher layers. `haphe` does not depend on `eidolon`, radio crates do not depend on security crates, and the kernel depends on nothing in the workspace — each layer compiles and tests without pulling in the ones above it.
+The kernel (`thumos`) is `no_std` and excluded from the workspace, but it is
+not dependency-free: it path-links all six `-core` crates directly as real
+`[dependencies]` (compiled into the release build) plus `haphe` as a
+`[dev-dependencies]`-only pin used to cross-check `ui.rs`'s local `Key` enum
+against the real one in host tests (#615) — excluded from the shipped
+armv7a-none-eabi binary.
+
+**Rule**: lower layers do not import from higher layers. `haphe` does not
+depend on `eidolon`, radio crates do not depend on security crates, and the
+kernel takes no *workspace-crate* dependency beyond the `-core` splits and
+its test-only `haphe` pin — each layer compiles and tests without pulling in
+the ones above it.
 
 ## Layer diagram
 

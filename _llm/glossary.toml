@@ -38,7 +38,7 @@ canonical = true
 
 [[terms]]
 term = "krypta"
-definition = "Hidden; Signal protocol and encrypted messaging crate."
+definition = "Hidden; X3DH + directional symmetric chain-ratchet encrypted messaging crate (NOT Signal's Double Ratchet -- no DH ratchet, #543)."
 canonical = true
 
 [[terms]]

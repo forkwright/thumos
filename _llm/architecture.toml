@@ -92,7 +92,7 @@ role = "Canonical GSM-7 codec, SMS-PDU byte primitives, and silent-SMS/WAP-Push 
 [[architecture.crates]]
 name = "krypta"
 path = "crates/krypta"
-role = "Signal protocol, X3DH, double ratchet, and sessions."
+role = "X3DH key exchange, directional symmetric chain ratchets (NOT the Signal Double Ratchet — no DH ratchet, #543), session management."
 
 [[architecture.crates]]
 name = "sema"
@@ -103,6 +103,11 @@ role = "Radio analysis, WiFi/BT/cell scanning, IMSI-catcher and rogue-AP detecti
 name = "eidolon"
 path = "crates/eidolon"
 role = "Framebuffer UI, widgets, status bar, dialer, and T9 rendering."
+
+[[architecture.crates]]
+name = "eidolon-core"
+path = "crates/eidolon-core"
+role = "no_std display layout geometry: screen size and the three zone heights (status bar, content, softkey bar); consumed by both eidolon and the kernel's ui.rs so the two cannot drift (#740, #545)."
 
 [[architecture.crates]]
 name = "sema-core"
