@@ -1,6 +1,6 @@
 [package]
 name = "eidolon-core"
-description = "no_std display layout geometry for the AGM M7 panel (the canonical zone heights, shared by eidolon and the kernel)"
+description = "no_std display layout geometry and font table for the AGM M7 panel (the canonical zone heights and 8x16 bitmap font, shared by eidolon and the kernel)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
