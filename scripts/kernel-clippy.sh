@@ -5,6 +5,10 @@ set -euo pipefail
 # excluded from the workspace, so every --workspace clippy invocation in the
 # repo silently skips it. Shared by ci.yml and .kanon-ci.toml so the
 # admission gate and the PR gate execute the identical check.
+#
+# WHY --locked (#757): crates/thumos keeps its own lockfile; without --locked
+# a manifest/lock disagreement here is silently resolved and rewritten
+# instead of failing the build.
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 KERNEL_DIR="${THUMOS_KERNEL_DIR:-$REPO_ROOT/crates/thumos}"
@@ -160,13 +164,13 @@ for i in "${!PASS_TAGS[@]}"; do
     rc=0
     if [[ "$tag" = "production" ]]; then
         ensure_production_key
-        out=$(cd "$KERNEL_DIR" && THUMOS_BOOT_KEY_PUB="$PRODUCTION_KEY_DIR/ci-boot.pub" cargo clippy --bin thumos --tests \
+        out=$(cd "$KERNEL_DIR" && THUMOS_BOOT_KEY_PUB="$PRODUCTION_KEY_DIR/ci-boot.pub" cargo clippy --bin thumos --tests --locked \
             --features "$features" --target i686-unknown-linux-gnu -- -D warnings 2>&1) || rc=$?
     elif [ -n "$features" ]; then
-        out=$(cd "$KERNEL_DIR" && cargo clippy --bin thumos --tests \
+        out=$(cd "$KERNEL_DIR" && cargo clippy --bin thumos --tests --locked \
             --features "$features" --target i686-unknown-linux-gnu -- -D warnings 2>&1) || rc=$?
     else
-        out=$(cd "$KERNEL_DIR" && cargo clippy --bin thumos --tests \
+        out=$(cd "$KERNEL_DIR" && cargo clippy --bin thumos --tests --locked \
             --target i686-unknown-linux-gnu -- -D warnings 2>&1) || rc=$?
     fi
     printf '%s\n' "$out" | sed "s/^/${label}/"
