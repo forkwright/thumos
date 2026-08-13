@@ -331,6 +331,7 @@ impl ThreatAlert {
     /// standard covert-surveillance delivery mechanisms and belong in the
     /// log rather than silently filed as ordinary mail (#662).
     pub(crate) fn from_sms_classification(timestamp: u64, alert_type: ThreatAlertType) -> Self {
+        // kanon:ignore RUST/doc-promised-observability -- false positive: the doc's "log"/"event" are domain nouns (the threat log ring buffer, the hypothetical SMS event loop), not a tracing::log!/event! promise; this constructor returns a plain struct.
         let description = match alert_type {
             ThreatAlertType::SilentSms => "Silent SMS (Type 0) received",
             ThreatAlertType::WapPushRejected => "WAP Push / OMA-CP message received",

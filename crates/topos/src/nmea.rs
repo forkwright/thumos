@@ -218,6 +218,14 @@ mod tests {
     // byte-range slice inside a multi-byte sequence). These properties
     // confirm arbitrary Unicode input -- not just arbitrary ASCII -- still
     // never panics through the delegating wrapper.
+    //
+    // NOTE: no `prop_assert!` follows each call. The property under test is
+    // "does not panic", which proptest's harness already enforces by running
+    // the body and catching any panic as a shrunk failing case -- a
+    // `result.is_ok() || result.is_err()` line would be true for every
+    // possible `Result`, asserting nothing beyond what the harness already
+    // guarantees. The `Result` is deliberately discarded: both outcomes are
+    // valid for arbitrary/fuzzed input.
     mod proptest_fuzz {
         use proptest::prelude::*;
 
@@ -226,31 +234,31 @@ mod tests {
         proptest! {
             #[test]
             fn parse_gga_never_panics(data in "\\PC{0,200}") {
-                let result = parse_gga(&data);
-                prop_assert!(result.is_ok() || result.is_err());
+                // kanon:ignore TESTING/tautological-test -- proptest's harness IS the verification signal for "never panics" (see NOTE above); no `should_panic`-shaped carve-out exists for the inverse (never-panics) case, so this documents the equivalent invariant explicitly.
+                let _ = parse_gga(&data);
             }
 
             #[test]
             fn parse_rmc_never_panics(data in "\\PC{0,200}") {
-                let result = parse_rmc(&data);
-                prop_assert!(result.is_ok() || result.is_err());
+                // kanon:ignore TESTING/tautological-test -- proptest's harness IS the verification signal for "never panics" (see NOTE above).
+                let _ = parse_rmc(&data);
             }
 
             #[test]
             fn checksum_body_never_panics(data in "\\PC{0,200}") {
-                let result = topos_core::checksum_body(data.as_bytes());
-                prop_assert!(result.is_ok() || result.is_err());
+                // kanon:ignore TESTING/tautological-test -- proptest's harness IS the verification signal for "never panics" (see NOTE above).
+                let _ = topos_core::checksum_body(data.as_bytes());
             }
 
             #[test]
             fn parse_gga_never_panics_on_valid_checksum_multibyte_coordinate(c in "\\PC") {
+                // kanon:ignore TESTING/tautological-test -- proptest's harness IS the verification signal for "never panics" (see NOTE above).
                 // WHY: the random-byte proptests above fail checksum validation
                 // before reaching the slice, so they never exercise a
                 // valid-checksum sentence with a multi-byte coordinate field.
                 let body = format!("GPGGA,092750.000,{c}21.6802,N,00630.3372,W,1,8,1.03,61.7,M,55.2,M,,");
                 let sentence = nmea_sentence(&body);
-                let result = parse_gga(&sentence);
-                prop_assert!(result.is_ok() || result.is_err());
+                let _ = parse_gga(&sentence);
             }
         }
     }
