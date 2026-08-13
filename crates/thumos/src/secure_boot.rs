@@ -4,7 +4,7 @@
 //! Ed25519ph (prehashed, RFC 8032) signature against an embedded public
 //! key. The signature is the last 64 bytes of the on-disk region; the
 //! signed payload is everything preceding it (zero-padded so the signature
-//! lands on the sector boundary, matching the sphragis signing tool).
+//! lands on the sector boundary, matching the hypographe signing tool).
 //!
 //! ## Signature format
 //!
@@ -1012,7 +1012,7 @@ mod tests {
 
     fn signed_dev_image(payload: &[u8]) -> alloc::vec::Vec<u8> {
         // #467: the boot gate verifies Ed25519ph (prehashed SHA-512), so the
-        // fixture signs with sign_prehashed — the same scheme the sphragis
+        // fixture signs with sign_prehashed — the same scheme the hypographe
         // tool produces for real boot partitions.
         use ed25519_dalek::SigningKey;
         use sha2::Digest as _;

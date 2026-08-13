@@ -85,7 +85,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 
 | Crate | Description |
 |-------|-------------|
-| `sphragis` | Boot-image signing tool: streamed Ed25519ph signer producing the payload‖signature layout the kernel's boot gate verifies (#467) |
+| `hypographe` | Boot-image signing tool: streamed Ed25519ph signer producing the payload‖signature layout the kernel's boot gate verifies (#467) |
 
 ## Dependency direction
 

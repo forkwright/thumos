@@ -922,6 +922,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypographe"
+version = "0.7.0"
+dependencies = [
+ "ed25519-dalek",
+ "sha2",
+]
+
+[[package]]
 name = "id-arena"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1739,14 +1747,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "sphragis"
-version = "0.7.0"
-dependencies = [
- "ed25519-dalek",
- "sha2",
 ]
 
 [[package]]
