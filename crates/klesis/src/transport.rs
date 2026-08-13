@@ -9,7 +9,7 @@
 use snafu::ensure;
 
 use crate::at::{self, Response, Urc};
-use crate::error::{NotReadySnafu, ParseSnafu, Result, UnexpectedResponseSnafu};
+use crate::error::{NotReadySnafu, ParseSnafu, Result, TimeoutSnafu, UnexpectedResponseSnafu};
 
 /// Maximum informational lines collected before a final result code, per
 /// AT command.
@@ -115,6 +115,8 @@ impl<T: ModemTransport> AtSession<T> {
     /// - [`crate::error::Error::Ccci`] / [`crate::error::Error::NotReady`]
     ///   on transport failure.
     /// - [`crate::error::Error::Parse`] on malformed line data.
+    /// - [`crate::error::Error::Timeout`] when a line does not complete
+    ///   before [`READ_LINE_TIMEOUT`].
     pub(crate) fn send_command(&mut self, cmd: &str) -> Result<CommandResponse> {
         let frame = format!("{cmd}\r\n");
         self.transport.send(frame.as_bytes())?;
@@ -156,6 +158,8 @@ impl<T: ModemTransport> AtSession<T> {
     ///   no data available (transient; retry).
     /// - [`crate::error::Error::Ccci`] on a hard transport failure.
     /// - [`crate::error::Error::Parse`] on malformed line data.
+    /// - [`crate::error::Error::Timeout`] when a line does not complete
+    ///   before [`READ_LINE_TIMEOUT`].
     /// - [`crate::error::Error::UnexpectedResponse`] when `MAX_ATTEMPTS`
     ///   unmatched lines are read without finding a URC.
     pub(crate) fn wait_urc(&mut self) -> Result<Urc> {
@@ -201,7 +205,10 @@ impl<T: ModemTransport> AtSession<T> {
     /// # Errors
     ///
     /// - [`crate::error::Error::NotReady`] when the transport returns 0 bytes.
-    /// - [`crate::error::Error::Parse`] on non-UTF-8 byte sequences.
+    /// - [`crate::error::Error::Parse`] on non-UTF-8 byte sequences or a line
+    ///   exceeding [`MAX_LINE_LEN`].
+    /// - [`crate::error::Error::Timeout`] when no complete line arrives
+    ///   before [`READ_LINE_TIMEOUT`].
     fn read_line(&mut self) -> Result<String> {
         let deadline = std::time::Instant::now() + READ_LINE_TIMEOUT;
         let mut byte = [0u8; 1];
@@ -231,8 +238,13 @@ impl<T: ModemTransport> AtSession<T> {
             }
             if std::time::Instant::now() >= deadline {
                 self.rx_buf.clear();
-                return ParseSnafu {
-                    message: "AT line read timed out".to_owned(),
+                return TimeoutSnafu {
+                    // WHY try_from + saturate, not `as`: READ_LINE_TIMEOUT is
+                    // a compile-time Duration (30s or the cfg(test) 50ms);
+                    // try_from cannot fail for either, but a fallback keeps
+                    // this total rather than reachable-panicking on a future
+                    // constant change.
+                    timeout_ms: u64::try_from(READ_LINE_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
                 }
                 .fail();
             }
@@ -507,15 +519,18 @@ mod tests {
 
         let transport = SlowTrickle { remaining: 1000 };
         let mut session = AtSession::new(transport);
-        let start = std::time::Instant::now();
         let result = session.send_command("AT");
+        // WHY a variant match, not a wall-clock bound: the structural
+        // property under test is "the READ_LINE_TIMEOUT deadline branch
+        // fired", not "the test finished quickly". `Error::Timeout` is only
+        // reachable from that branch -- the 1000-byte budget (which would
+        // instead surface `Error::NotReady` once SlowTrickle exhausts and
+        // returns `Ok(0)`) is never reached at 5ms/byte against a 50ms
+        // deadline, so this also proves the timeout fired well before the
+        // budget, without measuring elapsed time to prove it.
         assert!(
-            result.is_err(),
-            "a slow byte trickle that never completes a line must time out"
-        );
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(2),
-            "the test-mode deadline must trip well within a couple seconds"
+            matches!(result, Err(crate::error::Error::Timeout { .. })),
+            "a slow byte trickle that never completes a line must time out: {result:?}"
         );
     }
 }
