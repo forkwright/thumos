@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/forkwright/thumos/compare/v0.6.2...v0.7.0) (2026-08-13)
+
+
+### Features
+
+* **lint:** enable deny(missing_docs) across the five -core crates ([#771](https://github.com/forkwright/thumos/issues/771)) ([427d235](https://github.com/forkwright/thumos/commit/427d235718baa0fd958aba7b0d6e6a4d4e82d12d))
+* **thumos:** render the Ardent boot splash before kardia's first frame ([#770](https://github.com/forkwright/thumos/issues/770)) ([ed07c24](https://github.com/forkwright/thumos/commit/ed07c2454a8a718d165bf181f9f722b9347e6a40))
+
+
+### Bug Fixes
+
+* **ci:** resolve every kernel/workspace dependency graph with --locked ([#769](https://github.com/forkwright/thumos/issues/769)) ([f4a53ad](https://github.com/forkwright/thumos/commit/f4a53add2f1bd08e2248aaac586941c19eead4ac))
+* **docs:** close the CI gate gap + doc-truth pass on eidolon-core/attestation/krypta/counts ([#765](https://github.com/forkwright/thumos/issues/765)) ([499dc48](https://github.com/forkwright/thumos/commit/499dc486b834742bb4f4b1fc79fc7589404c6322))
+* **errors:** report read timeouts as Timeout, and stop discarding Results ([#767](https://github.com/forkwright/thumos/issues/767)) ([54cfaab](https://github.com/forkwright/thumos/commit/54cfaabb1f1a0254fe926562630b2526cfda925f))
+* **lint:** resolve mechanical findings for [#756](https://github.com/forkwright/thumos/issues/756) ([#766](https://github.com/forkwright/thumos/issues/766)) ([6e26a2d](https://github.com/forkwright/thumos/commit/6e26a2d88cff8d4b754f4cc1c2b0434f8cb3d2c4))
+* **ui:** clip x in set_pixel, matching eidolon's framebuffer ([#762](https://github.com/forkwright/thumos/issues/762)) ([c138ce3](https://github.com/forkwright/thumos/commit/c138ce3df4b4f9ce5cd61477d45ed5c0df0afd78))
+* **witness:** keep the ephemeral boot key out of a predictable shared path ([#761](https://github.com/forkwright/thumos/issues/761)) ([1f66e85](https://github.com/forkwright/thumos/commit/1f66e85432cb9518eb37baa3a555cd6568913117)), closes [#756](https://github.com/forkwright/thumos/issues/756)
+
 ## [0.6.2](https://github.com/forkwright/thumos/compare/v0.6.1...v0.6.2) (2026-08-12)
 
 

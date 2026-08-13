@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "asphaleia-core"
-version = "0.6.2"
+version = "0.7.0"
 
 [[package]]
 name = "bitflags"
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "eidolon-core"
-version = "0.6.2"
+version = "0.7.0"
 
 [[package]]
 name = "embedded-io"
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "haphe"
-version = "0.6.2"
+version = "0.7.0"
 
 [[package]]
 name = "hash32"
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "klesis-core"
-version = "0.6.2"
+version = "0.7.0"
 
 [[package]]
 name = "libc"
@@ -373,7 +373,7 @@ checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 
 [[package]]
 name = "metaxu-core"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "compact_str",
  "ed25519-dalek",
@@ -483,7 +483,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sema-core"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "serde",
 ]
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "thumos"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "aes",
  "asphaleia-core",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "topos-core"
-version = "0.6.2"
+version = "0.7.0"
 
 [[package]]
 name = "typenum"
