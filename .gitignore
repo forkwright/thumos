@@ -13,6 +13,13 @@ blobs/
 __pycache__/
 *.pyc
 
+# Kanon local state: the fjall on-disk KV substrate written by `kanon gate`,
+# `kanon lint`, and the kanon MCP server. Per-machine, never source. The
+# trailing slash matters — it scopes this to the directory and leaves the
+# tracked `.kanon-ci.toml`, `.kanon-lint-baseline.toml`, and
+# `.kanon-lint-ignore` config files alone.
+.kanon/
+
 # IDE
 .vscode/
 .idea/

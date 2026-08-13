@@ -47,9 +47,18 @@ gh run list --repo forkwright/thumos --branch release-please--branches--main \
 gh run rerun <id> --repo forkwright/thumos   # once per suppressed run
 ```
 
-Then merge on green, as with any PR. The three required contexts are `cargo audit`, `cargo deny`, and `gate / gate` — read them from branch protection rather than trusting this list. `Dependabot Auto-Merge` stays `action_required` and is *not* required, so `UNSTABLE` with those three green is the expected terminal state for a release PR.
+Then merge on green, as with any PR. The required contexts are `cargo audit`, `cargo deny`, `gate / gate`, `conventional-commit grammar`, and `kernel (i686 tests + armv7a build)` — read them from branch protection rather than trusting this list. `Dependabot Auto-Merge` stays `action_required` and is *not* required, so `UNSTABLE` with those five green is the expected terminal state for a release PR.
 
 The merge is not the release: release-please's `push`-to-`main` trigger creates the tag and GitHub release afterwards, and that run is not suppressed because a real user performed the merge. Confirm the tag exists before calling a release done.
+
+### `extra-files` jsonpath limitation: no `@.name` equality filters against TOML
+
+`release-please-config.json`'s `extra-files` entries patch first-party version pins in `Cargo.lock`/`Cargo.toml` on every release. For a TOML target, an `@.name == '...'`/`@.name != '...'` equality-or-inequality filter against a `[[package]]` array silently does not do what it looks like it does — release-please's TOML jsonpath evaluation does not correctly compare `@.name` against a string literal there (upstream: [googleapis/release-please#2455](https://github.com/googleapis/release-please/issues/2455), confirmed against an equivalent case on `uv.lock`). Two symptoms follow from the same defect depending on where the broken clause sits:
+
+- As the **sole** predicate (`fuzz/Cargo.lock`'s three original per-crate entries, #768): the filter matches nothing, the extra-file update is a silent no-op, and the field is never touched — proven here across two real releases (0.6.1, 0.6.2) that landed after the selector existed and never touched the file.
+- As a **secondary clause in a compound filter** (`crates/thumos/Cargo.lock`'s old `!@.source && @.name != 'thumos'`, #650/#757): the broken comparison makes the exclusion clause always pass, so the intended-to-be-excluded entry gets swept in with everything else anyway — proven by watching `thumos`'s own lock entry get bumped despite the `!= 'thumos'` clause.
+
+Use only existence-style predicates (`!@.source`) for these files, never a name comparison. If one entry in the array (a crate's own self-package, e.g. `thumos`/`peirama`) must not silently drift when the existence-only wildcard sweeps it in too, give that crate's own `Cargo.toml` its own `extra-files` entry (`$.package.version`) so its manifest tracks the same version the wildcard is going to set the lock to — don't try to exclude it from the lock's own selector.
 
 ## External contributors
 

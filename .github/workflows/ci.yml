@@ -104,7 +104,11 @@ jobs:
     # unit tests (i686, u32-faithful ABI) and its real-target cross-compile
     # (armv7a-none-eabi) need a dedicated job. The .cargo/config.toml inside
     # crates/thumos pins the armv7a target + linker script, so the build step
-    # only needs to run from that directory.
+    # only needs to run from that directory. This job's name is also the
+    # required branch-protection check, which is why the fuzz/ lockfile step
+    # below rides along here (#768) rather than in a new job: a new job's
+    # check name is not required until branch protection is updated
+    # separately, and this job already has the toolchain fuzz/'s check needs.
     name: kernel (i686 tests + armv7a build)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -156,7 +160,20 @@ jobs:
         # once named a single crate by hand, so six first-party versions sat
         # three releases behind while cargo rewrote the file underfoot on every
         # build. An enumeration of things that grow goes stale quietly.
-        run: scripts/check-kernel-lockfile-versions.sh
+        run: scripts/check-external-lockfile-versions.sh crates/thumos/Cargo.lock
+      - name: Fuzz lockfile version drift (#768)
+        # WHY (#768): fuzz/ is a THIRD standalone lockfile (its own
+        # `[workspace]`, excluded from both the root workspace and
+        # crates/thumos) parked in this job for the same reason the kernel
+        # check above is — it needs no toolchain beyond what this job already
+        # sets up, and this job is the one required check both non-workspace
+        # graphs can piggyback on. It carries no kernel-specific meaning.
+        # cargo-fuzz's own CLI has no --locked flag to forward (checked:
+        # `cargo fuzz run --help` against 0.13.2), so this step, not a fuzz.yml
+        # change, is what makes fuzz/Cargo.lock drift fail a PR instead of
+        # only being caught (if at all) by the weekly fuzz.yml run against an
+        # ephemeral runner that never commits the drift back.
+        run: scripts/check-external-lockfile-versions.sh fuzz/Cargo.lock
       - name: Kernel cross-compile (armv7a) + zero-warning gate (#431)
         # WHY (#431): the zero-warning gate lives in crates/thumos/.cargo/
         # config.toml's rustflags; scripts/kernel-build.sh builds through it
