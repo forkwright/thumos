@@ -283,3 +283,22 @@ TESTING/no-tests:crates/metaxu-core/src/lib.rs
 # file can key on, so an entry matches nothing and kanon warns that it is
 # dead. The finding is Info severity and does not reach the gate; this
 # comment is the record.
+
+# =============================================================================
+# unreachable!() proven unreachable by an adjacent invariant (#756)
+# =============================================================================
+#
+# WHY(#756): Each unreachable!() below is preceded by (or embeds) the proof of
+# its own unreachability, individually verified rather than pattern-matched:
+# a fixed-size CMAC key that `Cmac::<Aes128>::new_from_slice` cannot reject
+# (toolbox.rs's `aes_cmac`, INVARIANT-tagged), a `core::fmt::Write` into a
+# `String` that the standard library defines as infallible (build.rs, both
+# the `infallible_write!` macro definition and the equivalent non-macro call
+# in `hex()`), and a `HashMap::remove` on a key resolved by `get_mut` two
+# lines earlier with nothing else touching the map in between (l2cap.rs's
+# `feed_continuation`). build.rs also flags on comment prose that contains
+# the literal text "unreachable!(" while explaining this same idiom -- the
+# rule has no way to see that occurrence is inside a comment, not code.
+RUST/unreachable-in-match:crates/thumos/build.rs
+RUST/unreachable-in-match:crates/pteron/src/smp/toolbox.rs
+RUST/unreachable-in-match:crates/pteron/src/l2cap.rs
