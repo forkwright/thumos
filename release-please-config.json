@@ -65,22 +65,17 @@
         {
           "type": "toml",
           "path": "fuzz/Cargo.lock",
-          "jsonpath": "$.package[?(@.name == 'aither')].version"
+          "jsonpath": "$.package[?(!@.source)].version"
         },
         {
           "type": "toml",
-          "path": "fuzz/Cargo.lock",
-          "jsonpath": "$.package[?(@.name == 'asphaleia')].version"
-        },
-        {
-          "type": "toml",
-          "path": "fuzz/Cargo.lock",
-          "jsonpath": "$.package[?(@.name == 'klesis')].version"
+          "path": "fuzz/Cargo.toml",
+          "jsonpath": "$.package.version"
         },
         {
           "type": "toml",
           "path": "crates/thumos/Cargo.lock",
-          "jsonpath": "$.package[?(!@.source && @.name != 'thumos')].version"
+          "jsonpath": "$.package[?(!@.source)].version"
         },
         {
           "type": "toml",

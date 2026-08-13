@@ -2,13 +2,20 @@
 
 [package]
 name = "peirama"
-version = "0.0.0"
+version = "0.6.2"
 publish = false
 edition = "2024"
 # WHY: cargo-fuzz requires nightly; this crate is never published.
 # WHY: first-party test crate takes the repo license (root workspace is
 # PolyForm Shield); cargo-deny warns on a missing license field (#547).
 license = "LicenseRef-PolyForm-Shield-1.0.0"
+# WHY this tracks the workspace release version, not a fixed 0.0.0 (#768):
+# release-please-config.json's fuzz/Cargo.lock selector is a bare
+# `!@.source` existence filter (a `@.name`-equality exclusion for this
+# crate does not work -- see the note in CONTRIBUTING.md's Releases
+# section) and so unconditionally sweeps this package's own Cargo.lock
+# entry to the release version too. Pinning this field lets that lock
+# entry stay self-consistent instead of drifting from it every release.
 
 [[bin]]
 name = "fuzz_eapol"

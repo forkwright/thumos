@@ -142,7 +142,18 @@ timeout_secs = 300
 # while cargo silently rewrote the file on every build. An enumeration of
 # things that grow goes stale quietly; this makes it loud.
 [stages."kernel lockfile versions"]
-cmd = "scripts/check-kernel-lockfile-versions.sh"
+cmd = "scripts/check-external-lockfile-versions.sh crates/thumos/Cargo.lock"
+timeout_secs = 60
+
+# WHY (#768): fuzz/ is a second standalone resolution root (its own
+# `[workspace]`) with the same shape of risk as the kernel lockfile above —
+# and it hit the identical drift independently: three first-party crates sat
+# nine releases stale and two real path-deps (asphaleia-core, klesis-core)
+# were entirely absent from the lock, so cargo-audit/cargo-deny never scanned
+# them. See scripts/check-external-lockfile-versions.sh's header for why the
+# same script now covers both files instead of a second hand copy.
+[stages."fuzz lockfile versions"]
+cmd = "scripts/check-external-lockfile-versions.sh fuzz/Cargo.lock"
 timeout_secs = 60
 
 [stages."cargo clippy"]
