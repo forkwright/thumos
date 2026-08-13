@@ -81,7 +81,7 @@ Categories: hw (hardware-dependent), crypto (needs crypto primitives), phase07/p
 
 ## Build
 
-Workspace compiles on host (`cargo check/test`). Kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` in `crates/thumos/` (the bare-metal kernel binary, excluded from the main workspace). Boot image created with mkbootimg, flashed via mtkclient BROM exploit. Kernel-state debugging entry point: `THUMOS_QEMU_GDB=1` + `scripts/gdb-thumos.sh` (see `scripts/README.md`).
+Workspace compiles on host (`cargo check/test`). Kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` in `crates/thumos/` (the bare-metal kernel binary, excluded from the main workspace). Boot image created with mkbootimg, flashed via mtkclient BROM exploit. Kernel-state debugging entry point: `THUMOS_QEMU_GDB=1` + `scripts/gdb-thumos.sh` (see `scripts/README.md`). Full build/boot-witness/diagnose procedures: `RUNBOOK.md`.
 
 ## Standards
 
