@@ -17,10 +17,14 @@
 #
 # NOTE: the excluded bare-metal kernel crate (crates/thumos, `exclude`d from
 # [workspace]) is covered by neither this gate NOR .kanon-ci.toml's fmt/
-# check/clippy/nextest stages -- only by the separate, non-required "CI"
-# workflow's dedicated kernel job (i686 host tests + armv7a cross-compile +
-# QEMU boot). A Gate-Passed trailer does not attest the kernel crate at all;
-# that gap predates this adoption and is unchanged by it.
+# check/clippy/nextest stages -- only by the "CI" workflow's `kernel` job
+# (i686 host tests + armv7a cross-compile + QEMU boot). Unlike that
+# workflow's `fmt`/`workspace` jobs, `kernel (i686 tests + armv7a build)` IS
+# independently required by branch protection, so this gate not attesting
+# the kernel crate does not leave it unenforced. fuzz/ (its own standalone
+# `[workspace]`, #768) is in the same position: not attested by this gate,
+# covered instead by a lockfile-drift step riding in that same required
+# `kernel` job.
 #
 # system_packages empty: no native -sys dependency anywhere in the workspace
 # Cargo.toml tree (verified by grep). The kernel crate's own cross-compile

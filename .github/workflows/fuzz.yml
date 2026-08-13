@@ -56,6 +56,15 @@ jobs:
         # WHY: seeds from canonical test vectors live in fuzz/corpus/<target>;
         # the run starts from them, so regressions replay immediately instead
         # of waiting for rediscovery. A nonzero exit = crash or timeout bug.
+        #
+        # WHY no --locked here (#768, evaluated not just deferred): cargo-fuzz
+        # 0.13.2's `run` subcommand has no --locked flag and no passthrough for
+        # arbitrary extra `cargo build` args (checked: `cargo fuzz run --help`
+        # lists none). Lock/manifest drift for this graph is instead caught at
+        # PR time by ci.yml's "Fuzz lockfile version drift" step, which is
+        # strictly better coverage than --locked here would be: this job only
+        # runs weekly (or on manual dispatch) against an ephemeral runner that
+        # never commits a drift-revealing rewrite back to the repo.
         run: cargo +nightly fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=300
       - name: Upload crash artifacts
         if: failure()
