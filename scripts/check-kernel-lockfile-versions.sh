@@ -17,8 +17,9 @@ set -euo pipefail
 # An enumeration of things that grow goes stale silently. This check is what
 # makes the staleness loud.
 #
-# WHY `thumos` is exempt: its 0.1.0 in crates/thumos/Cargo.toml is its own
-# version, deliberately not workspace-inherited, so it must NOT track releases.
+# `thumos` is checked like every other first-party crate here (#757):
+# crates/thumos/Cargo.toml's version is now in release-please's rewrite set
+# alongside the lock, so it tracks the workspace version too.
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
@@ -50,8 +51,6 @@ for block in lock.split("[[package]]")[1:]:
     if not name or not ver:
         continue
     if re.search(r"^source\s*=", block, re.M):
-        continue
-    if name.group(1) == "thumos":
         continue
     checked += 1
     if ver.group(1) != want:

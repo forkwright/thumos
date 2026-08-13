@@ -27,6 +27,10 @@ set -euo pipefail
 # here is a cache hit, not a fresh compile — this stage's placement in the
 # pipeline is load-bearing, not incidental. Invoked standalone with no prior
 # build, this script builds first like any other nextest call.
+#
+# WHY --locked (#757): crates/thumos keeps its own lockfile; without --locked
+# a manifest/lock disagreement here is silently resolved and rewritten
+# instead of failing the build.
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 LEDGER="$REPO_ROOT/docs/target-test-ledger.toml"
@@ -48,13 +52,13 @@ trap 'rm -f "$LIST_DEFAULT" "$LIST_DEBUG" "$LIST_DEFAULT.err" "$LIST_DEBUG.err"'
 # default features, then --features debug-console (the only feature that
 # gates in extra host-testable modules -- console). Their union is the
 # runnable set this ledger is checked against.
-if ! (cd "$KERNEL_DIR" && cargo nextest list --bin thumos --target i686-unknown-linux-gnu \
+if ! (cd "$KERNEL_DIR" && cargo nextest list --bin thumos --target i686-unknown-linux-gnu --locked \
         --build-jobs "${THUMOS_BUILD_JOBS:-8}" --message-format json) >"$LIST_DEFAULT" 2>"$LIST_DEFAULT.err"; then
     cat "$LIST_DEFAULT.err" >&2
     echo "LEDGER DRIFT: cargo nextest list (default features) failed -- cannot derive runnable test counts" >&2
     exit 1
 fi
-if ! (cd "$KERNEL_DIR" && cargo nextest list --bin thumos --target i686-unknown-linux-gnu \
+if ! (cd "$KERNEL_DIR" && cargo nextest list --bin thumos --target i686-unknown-linux-gnu --locked \
         --features debug-console --build-jobs "${THUMOS_BUILD_JOBS:-8}" --message-format json) >"$LIST_DEBUG" 2>"$LIST_DEBUG.err"; then
     cat "$LIST_DEBUG.err" >&2
     echo "LEDGER DRIFT: cargo nextest list (--features debug-console) failed -- cannot derive runnable test counts" >&2
