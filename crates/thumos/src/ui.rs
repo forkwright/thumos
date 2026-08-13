@@ -1281,8 +1281,7 @@ mod tests {
         let mut fb = [0u16; 4 * 2];
         draw_str(&mut fb, 4, 4, 0, " ", color::BLACK, color::WHITE);
         assert_eq!(
-            fb,
-            [0u16; 8],
+            fb, [0u16; 8],
             "a glyph drawn entirely past fb_width must write nothing -- \
              row 1 must not pick up row 0's overflow"
         );
