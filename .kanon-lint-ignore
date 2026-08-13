@@ -333,3 +333,16 @@ RUST/allow-not-expect:crates/thumos/src/security.rs
 # the rule itself already applies via its `git.*master`/`origin/master`
 # skip patterns.
 STANDARDS/deprecated-term:crates/pteron/src/smp/pdu.rs
+
+# =============================================================================
+# Test-module helper named like a fixture, not a #[test] function (#756)
+# =============================================================================
+#
+# WHY(#756): pairing.rs's `test_addr()` is a synthetic-`BdAddr` helper called
+# by tests, not itself `#[test]`-annotated -- the rule flags every `fn
+# test_*` inside a `#[cfg(test)]` module regardless of whether it carries
+# `#[test]`. TESTING.md's own worked examples (`test_app()`,
+# `test_event_system()`, `test_worktree()`) use the identical
+# `test_`-prefixed helper-naming convention; renaming this one instance to
+# satisfy the rule would contradict the standard the rule exists to enforce.
+TESTING/test-naming:crates/pteron/src/smp/pairing.rs
