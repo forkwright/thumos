@@ -43,9 +43,12 @@ witness_deps() {
 }
 
 # build_kernel <feature-flags> — release cross-compile for the qemu board.
+# WHY --locked (#757): crates/thumos keeps its own lockfile; without --locked
+# a manifest/lock disagreement here is silently resolved and rewritten
+# instead of failing the build.
 build_kernel() {
     local features="${1:-qemu}"
-    (cd "$KERNEL_DIR" && cargo build --release --target armv7a-none-eabi --features "$features" --jobs "${THUMOS_BUILD_JOBS:-8}") \
+    (cd "$KERNEL_DIR" && cargo build --release --target armv7a-none-eabi --locked --features "$features" --jobs "${THUMOS_BUILD_JOBS:-8}") \
         || { echo "FAIL: kernel build failed (features=$features)"; exit 1; }
 }
 
@@ -66,8 +69,12 @@ run_qemu() {
 # host socket. Extra args pass through to the pylon-bridge binary (e.g.
 # --tamper-mac, #544 negative-case witness). Sets PYLON_LOG, PYLON_PID,
 # PYLON_PORT for the caller.
+#
+# WHY --locked (#757): this resolves against the root workspace lockfile;
+# without --locked a manifest/lock disagreement is silently resolved and
+# rewritten instead of failing the build.
 start_pylon_bridge() {
-    (cd "$REPO_ROOT" && cargo build --release --features metaxu/pylon-bin --bin pylon-bridge \
+    (cd "$REPO_ROOT" && cargo build --release --locked --features metaxu/pylon-bin --bin pylon-bridge \
         --jobs "${THUMOS_BUILD_JOBS:-8}") \
         || { echo "FAIL: pylon-bridge build failed"; exit 1; }
     local bin="$REPO_ROOT/target/release/pylon-bridge"

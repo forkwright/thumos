@@ -68,6 +68,12 @@ jobs:
   workspace:
     # WHY: clippy (deny warnings) + the workspace test suite for the 13
     # library crates. Concurrency pinned to 8 per CI.md § kanon-ci caps.
+    #
+    # WHY --locked (#757): without it, a dependency-resolving step silently
+    # regenerates Cargo.lock when a manifest and the committed lock disagree
+    # -- the lock never fails, and whatever drifted in is never scanned by
+    # cargo-audit/cargo-deny. --locked (not --frozen, which also forbids
+    # network) turns that drift into a build failure instead.
     name: workspace clippy + tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -83,15 +89,15 @@ jobs:
         with:
           key: workspace
       - name: clippy
-        run: cargo clippy --workspace --all-targets --jobs 8 -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked --jobs 8 -- -D warnings
       - name: Install cargo-nextest
         run: cargo install cargo-nextest --locked --version ^0.9
       - name: nextest
-        run: cargo nextest run --workspace --build-jobs 8 --test-threads 8
+        run: cargo nextest run --workspace --locked --build-jobs 8 --test-threads 8
       - name: doctests
         # WHY: cargo nextest does not run doctests; this covers them (and is
         # the workspace's `cargo test` gate step).
-        run: cargo test --doc --workspace --jobs 8
+        run: cargo test --doc --workspace --locked --jobs 8
 
   kernel:
     # WHY: the bare-metal kernel is excluded from the workspace, so its host

@@ -5,6 +5,10 @@ set -euo pipefail
 # is excluded from the workspace, so its host unit tests (i686, u32-faithful
 # ABI) run against the 32-bit target. Shared by ci.yml and .kanon-ci.toml so
 # the admission gate and the PR gate execute the identical suite.
+#
+# WHY --locked (#757): crates/thumos keeps its own lockfile; without --locked
+# a manifest/lock disagreement here is silently resolved and rewritten
+# instead of failing the build.
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 KERNEL_DIR="${THUMOS_KERNEL_DIR:-$REPO_ROOT/crates/thumos}"
@@ -28,7 +32,7 @@ rm -rf "$probe_dir"
 command -v cargo-nextest >/dev/null || { echo "FAIL: cargo-nextest not installed" >&2; exit 1; }
 
 pass1=0
-(cd "$KERNEL_DIR" && cargo nextest run --bin thumos --target i686-unknown-linux-gnu \
+(cd "$KERNEL_DIR" && cargo nextest run --bin thumos --target i686-unknown-linux-gnu --locked \
     --build-jobs "${THUMOS_BUILD_JOBS:-8}" --test-threads "${THUMOS_TEST_THREADS:-8}") || pass1=$?
 
 # WHY (#459): the debug console is now host-testable (heap/page/process stub
@@ -36,7 +40,7 @@ pass1=0
 # second pass runs them — and asserts they actually execute, since this class
 # of bug is "tests never ran" (the gate left them dead source for weeks).
 pass2=0
-out=$(cd "$KERNEL_DIR" && cargo nextest run --bin thumos --target i686-unknown-linux-gnu \
+out=$(cd "$KERNEL_DIR" && cargo nextest run --bin thumos --target i686-unknown-linux-gnu --locked \
     --features debug-console --build-jobs "${THUMOS_BUILD_JOBS:-8}" --test-threads "${THUMOS_TEST_THREADS:-8}" 2>&1) || pass2=$?
 printf '%s\n' "$out"
 # WHY a herestring, not a pipe: under `set -o pipefail`, `printf | grep -q`

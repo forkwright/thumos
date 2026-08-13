@@ -11,7 +11,9 @@
 # trailer and a green full-gate-build attest the identical stages, per the
 # reusable workflow's own contract. --jobs 8 / --build-jobs 8 --test-threads 8
 # match .kanon-ci.toml's concurrency cap (OOM guard on the local gate box;
-# harmless headroom on the hosted runner).
+# harmless headroom on the hosted runner). --locked (#757) must stay in sync
+# with .kanon-ci.toml too -- it is what makes a Cargo.lock inconsistent with
+# its manifests fail here instead of being silently regenerated.
 #
 # NOTE: the excluded bare-metal kernel crate (crates/thumos, `exclude`d from
 # [workspace]) is covered by neither this gate NOR .kanon-ci.toml's fmt/
@@ -54,12 +56,12 @@ permissions:
 
 jobs:
   gate:
-    uses: forkwright/.github/.github/workflows/hybrid-gate.yml@main
+    uses: forkwright/.github/.github/workflows/hybrid-gate.yml@54f1af7c711546304409593695e1258a91004453 # main
     with:
       fmt_cmd: "cargo fmt --all -- --check"
-      check_cmd: "cargo check --workspace --all-targets --jobs 8"
-      clippy_cmd: "cargo clippy --workspace --all-targets --jobs 8 -- -D warnings"
-      nextest_cmd: "cargo nextest run --workspace --build-jobs 8 --test-threads 8"
+      check_cmd: "cargo check --workspace --all-targets --locked --jobs 8"
+      clippy_cmd: "cargo clippy --workspace --all-targets --locked --jobs 8 -- -D warnings"
+      nextest_cmd: "cargo nextest run --workspace --locked --build-jobs 8 --test-threads 8"
       doctest_cmd: ""
       system_packages: ""
       needs_fleet_repo_token: false

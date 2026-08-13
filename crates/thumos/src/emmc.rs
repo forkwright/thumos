@@ -1656,7 +1656,8 @@ mod tests {
             (0x4000_1000, 512),
             (0x4000_2000, 512),
         ];
-        let (gpd, bds) = build_bd_chain(&segments).unwrap_or_default();
+        let (gpd, bds) = build_bd_chain(&segments)
+            .expect("build_bd_chain must succeed for 3 valid (1..=8) segments");
 
         assert!(gpd.is_hw_owned(), "GPD must be HWO");
         assert!(gpd.has_bd(), "GPD must have BDP");

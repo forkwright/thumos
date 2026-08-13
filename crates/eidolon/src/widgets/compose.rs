@@ -27,10 +27,10 @@
 //! the physical keypad has no letter keys ([`haphe::input::Key`] is digits,
 //! `*`/`#`, and d-pad/action buttons only), so the only sources of
 //! characters are the [`crate::widgets::Keyboard`] widget's [`take_event`]
-//! and T9 (kernel-side, out of scope here). Whatever assembles the compose
-//! screen calls [`ComposeField::insert_char`] / [`ComposeField::backspace`]
-//! with the drained events; this widget does not know or care where a
-//! character came from.
+//! and T9 (implemented kernel-side, not by this widget). Whatever
+//! assembles the compose screen calls [`ComposeField::insert_char`] /
+//! [`ComposeField::backspace`] with the drained events; this widget does
+//! not know or care where a character came from.
 //!
 //! ## Coverage cost
 //!
