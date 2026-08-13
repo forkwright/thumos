@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(missing_docs)]
 //! topos-core: the canonical NMEA 0183 checksum, coordinate, and fix-quality
 //! semantics (#545).
 //!
