@@ -1099,6 +1099,7 @@ fn parse_decimal_u32(input: &[u8]) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
     use alloc::vec;
 
     use super::*;
@@ -1403,10 +1404,7 @@ mod tests {
 
     #[test]
     fn reg_status_display_is_human_readable() {
-        assert_eq!(
-            alloc::format!("{}", RegStatus::RegisteredHome),
-            "registered (home)"
-        );
+        assert_eq!(RegStatus::RegisteredHome.to_string(), "registered (home)");
     }
 
     #[test]

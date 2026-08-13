@@ -215,9 +215,10 @@ pub(crate) fn find_partition(dev: &dyn BlockDevice, name: &str) -> Result<Partit
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::block::MemBlockDevice;
-    use alloc::vec;
 
     /// CRC32 known answer: IEEE check value for "123456789".
     #[test]

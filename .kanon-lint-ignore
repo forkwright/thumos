@@ -283,3 +283,82 @@ TESTING/no-tests:crates/metaxu-core/src/lib.rs
 # file can key on, so an entry matches nothing and kanon warns that it is
 # dead. The finding is Info severity and does not reach the gate; this
 # comment is the record.
+
+# =============================================================================
+# unreachable!() proven unreachable by an adjacent invariant (#756)
+# =============================================================================
+#
+# WHY(#756): Each unreachable!() below is preceded by (or embeds) the proof of
+# its own unreachability, individually verified rather than pattern-matched:
+# a fixed-size CMAC key that `Cmac::<Aes128>::new_from_slice` cannot reject
+# (toolbox.rs's `aes_cmac`, INVARIANT-tagged), a `core::fmt::Write` into a
+# `String` that the standard library defines as infallible (build.rs, both
+# the `infallible_write!` macro definition and the equivalent non-macro call
+# in `hex()`), and a `HashMap::remove` on a key resolved by `get_mut` two
+# lines earlier with nothing else touching the map in between (l2cap.rs's
+# `feed_continuation`). build.rs also flags on comment prose that contains
+# the literal text "unreachable!(" while explaining this same idiom -- the
+# rule has no way to see that occurrence is inside a comment, not code.
+RUST/unreachable-in-match:crates/thumos/build.rs
+RUST/unreachable-in-match:crates/pteron/src/smp/toolbox.rs
+RUST/unreachable-in-match:crates/pteron/src/l2cap.rs
+
+# =============================================================================
+# #[allow] where #[expect] would be a guaranteed unfulfilled expectation (#756)
+# =============================================================================
+#
+# WHY(#756): security.rs's needless_range_loop allow already carries its own
+# in-file NOTE explaining why it stays #[allow]: verified (CI run
+# 31499203998) that clippy's needless_range_loop heuristic never fires on
+# this loop shape -- a write at w[i] alongside reads at four distinct past
+# offsets (i-3/i-8/i-14/i-16) -- in any of kernel-clippy.sh's declared
+# feature configurations. #[expect] on a lint that structurally cannot fire
+# is not a stricter #[allow]; it is an unconditional
+# `unfulfilled_lint_expectations` failure. The rule has no way to know a
+# specific clippy lint never fires for a specific loop shape.
+RUST/allow-not-expect:crates/thumos/src/security.rs
+
+# =============================================================================
+# Bluetooth Core Spec PDU name, not master/slave role language (#756)
+# =============================================================================
+#
+# WHY(#756): "Master Identification" (pdu.rs:976) is the Bluetooth Core
+# Specification's own name for SMP PDU 0x07 (Vol 3, Part H §3.3, Table 3.7,
+# already cited at the top of this file) -- the same term this file already
+# carries unsuppressed as the identifier `OP_MASTER_IDENTIFICATION` (the
+# rule's `\b` word-boundary regex does not match inside an underscored
+# identifier, so only the free-standing prose use at line 976 fires).
+# Renaming the prose away from the spec's own PDU name would break
+# traceability for anyone cross-referencing the spec -- the same reasoning
+# the rule itself already applies via its `git.*master`/`origin/master`
+# skip patterns.
+STANDARDS/deprecated-term:crates/pteron/src/smp/pdu.rs
+
+# =============================================================================
+# Test-module helper named like a fixture, not a #[test] function (#756)
+# =============================================================================
+#
+# WHY(#756): pairing.rs's `test_addr()` is a synthetic-`BdAddr` helper called
+# by tests, not itself `#[test]`-annotated -- the rule flags every `fn
+# test_*` inside a `#[cfg(test)]` module regardless of whether it carries
+# `#[test]`. TESTING.md's own worked examples (`test_app()`,
+# `test_event_system()`, `test_worktree()`) use the identical
+# `test_`-prefixed helper-naming convention; renaming this one instance to
+# satisfy the rule would contradict the standard the rule exists to enforce.
+TESTING/test-naming:crates/pteron/src/smp/pairing.rs
+
+# =============================================================================
+# Rust code quoted in prose, not a TOML inline table (#756)
+# =============================================================================
+#
+# WHY(#756): convergence.toml's check is a raw brace-pair scan -- any
+# key = "..." line containing both { and } past 80 columns reads as an
+# inline table, with no awareness that a single-line "..." string (unlike a
+# """...""" one) can be inside it. `[[pair]]`'s `notes` fields are free-text
+# rationale that sometimes quote Rust syntax (`InputEvent::Key { key, state:
+# ... }`), so a brace pair inside ordinary prose trips the same check a real
+# `dep = { version = "1", ... }` table would. This schema has no `key = {`
+# tables at all -- every field is a plain string -- so the false-positive
+# mechanism can recur for any future long `notes`/`canonical` field that
+# quotes braced code, not just today's one instance.
+TOML/inline-table-too-long:docs/convergence.toml
