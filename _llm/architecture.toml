@@ -105,6 +105,11 @@ path = "crates/eidolon"
 role = "Framebuffer UI, widgets, status bar, dialer, and T9 rendering."
 
 [[architecture.crates]]
+name = "eidolon-core"
+path = "crates/eidolon-core"
+role = "no_std display layout geometry: screen size and the three zone heights (status bar, content, softkey bar); consumed by both eidolon and the kernel's ui.rs so the two cannot drift (#740, #545)."
+
+[[architecture.crates]]
 name = "sema-core"
 path = "crates/sema-core"
 role = "no_std+alloc threat-semantics core: canonical ThreatLevel/Calibration types shared by sema and the kernel."
