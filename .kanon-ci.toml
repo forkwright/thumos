@@ -34,6 +34,7 @@ stages = [
     "wiring inventory",
     "doc inventory",
     "kernel lockfile versions",
+    "fuzz lockfile versions",
     "target test ledger",
     "cargo clippy",
     "cargo nextest",
