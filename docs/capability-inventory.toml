@@ -48,8 +48,8 @@ notes = "NullCodec in emulation; MT6357 codec + BT HCI are hardware-gated."
 id = "ui"
 modules = ["ui", "status_bar", "screen_home"]
 tier = "emulated-mock-proven"
-witness = ["kardia: frame rendered painted_px=", "kardia: nav Home -> Search", "kardia: nav Search -> Home", "kardia: statusbar net=Lte"]
-notes = "Render + input dispatch + navigation through the real screen path (#400)."
+witness = ["kardia: splash rendered splash_px=", "kardia: frame rendered painted_px=", "kardia: nav Home -> Search", "kardia: nav Search -> Home", "kardia: statusbar net=Lte"]
+notes = "Render + input dispatch + navigation through the real screen path (#400). Boot splash (#458) paints once from kinit before kardia's first frame; the mark's only call site -- never the lock screen, status bar, or a running Screen impl."
 
 [[capability]]
 id = "heorte"
