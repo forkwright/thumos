@@ -141,14 +141,23 @@ mod tests {
     }
 
     #[test]
-    fn ah_is_deterministic_and_prand_sensitive() {
+    fn ah_is_prand_and_irk_sensitive() {
         let prand = [0x70, 0x81, 0x94];
-        assert_eq!(ah(&APPENDIX_D_IRK, &prand), ah(&APPENDIX_D_IRK, &prand));
-        let other = [0x70, 0x81, 0x95];
+        let other_prand = [0x70, 0x81, 0x95];
         assert_ne!(
             ah(&APPENDIX_D_IRK, &prand),
-            ah(&APPENDIX_D_IRK, &other),
+            ah(&APPENDIX_D_IRK, &other_prand),
             "a one-bit prand change must change the hash (it is an AES block)"
+        );
+        let other_irk = {
+            let mut irk = APPENDIX_D_IRK;
+            irk[0] ^= 0x01;
+            irk
+        };
+        assert_ne!(
+            ah(&APPENDIX_D_IRK, &prand),
+            ah(&other_irk, &prand),
+            "a one-bit IRK change must change the hash (it is the AES key)"
         );
     }
 

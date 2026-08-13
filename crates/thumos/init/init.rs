@@ -608,9 +608,19 @@ pub extern "C" fn _start() -> ! {
         {
             let pid = sys_getpid();
             // SAFETY: both handlers are PL0-executable functions in this
-            // image; the casts take their PL0 VAs (usize == u32 on armv7a).
-            let h1 = usr1_handler as usize as u32;
-            let h2 = usr2_handler as usize as u32;
+            // image; the pointer-to-usize cast takes their PL0 VA (no
+            // TryFrom exists for a pointer, so `as` is the only route).
+            // WARNING: usize == u32 on armv7a so the narrowing below is
+            // provably lossless, but that is a target fact, not one the
+            // type system checks. Fail closed to SIG_DFL (0) rather than
+            // trust an `as` truncation to silently wrap into a bogus VA:
+            // sys_sigaction never validates a nonzero handler address, so a
+            // wrapped pointer would be stored and only fault on delivery,
+            // whereas SIG_DFL takes the signal's default action -- observable
+            // here as "flows complete" never printing, instead of a jump to
+            // unrelated PL0 code.
+            let h1 = u32::try_from(usr1_handler as usize).unwrap_or(0);
+            let h2 = u32::try_from(usr2_handler as usize).unwrap_or(0);
             if sys_sigaction(10, h1) != 0 || sys_sigaction(12, h2) != 0 {
                 let m = b"signal: sigaction FAILED\n";
                 sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));

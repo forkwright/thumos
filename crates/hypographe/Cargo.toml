@@ -1,5 +1,5 @@
 [package]
-name = "sphragis"
+name = "hypographe"
 description = "Boot-image signing tool: streamed Ed25519ph signer producing the payload||signature layout the kernel's boot gate verifies (#467)"
 version.workspace = true
 edition.workspace = true

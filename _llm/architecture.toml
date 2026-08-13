@@ -125,8 +125,8 @@ path = "crates/metaxu-core"
 role = "no_std+alloc envelope framing, signed-grant verification, and typed task/response payloads; consumed by both metaxu and the kernel's metaxu_bridge.rs so the wire format cannot drift (#544, #545)."
 
 [[architecture.crates]]
-name = "sphragis"
-path = "crates/sphragis"
+name = "hypographe"
+path = "crates/hypographe"
 role = "Boot-image signing tool: streamed Ed25519ph signer for the kernel boot gate's payload/signature layout."
 
 [[interfaces]]
