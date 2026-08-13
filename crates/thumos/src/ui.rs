@@ -414,20 +414,30 @@ const SPLASH_BASE_RGB: (u8, u8, u8) = (139, 0, 0);
 /// brighter in every channel here, but nothing requires that), so the
 /// intermediate delta is computed in `i32` rather than `u8` to avoid an
 /// underflow panic on a descending channel.
-fn splash_lerp_channel(a: u8, b: u8, row: usize, last_row: usize) -> u8 {
+fn splash_lerp_channel(a: u8, b: u8, row: u16, last_row: u16) -> u8 {
     let delta = i32::from(b) - i32::from(a);
-    // row <= last_row always (splash_row_color's only caller bounds it via
-    // SPLASH_ROWS' own length), so the result stays within [a, b] and fits
-    // back into u8 without truncation.
-    (i32::from(a) + (delta * row as i32) / last_row as i32) as u8
+    let scaled = i32::from(a) + (delta * i32::from(row)) / i32::from(last_row);
+    // INVARIANT: row <= last_row, so `scaled` stays within [min(a,b), max(a,b)]
+    // -- both u8, so the conversion cannot fail. The else arm is a fail-closed
+    // floor rather than a panic: the kernel denies unwrap/expect on production
+    // paths (#663), and a splash pixel is never worth aborting a boot for.
+    let Ok(channel) = u8::try_from(scaled) else {
+        return b;
+    };
+    channel
 }
 
 /// Heat-gradient colour for row `row` of [`SPLASH_ROWS`]: pale at the tip,
 /// deep red at the base. Enhancement over [`draw_splash_mono`]'s single
 /// colour -- per #458, "colour is not the carrier": the mark must read as
 /// a flame in mono first, and this only finishes it.
-fn splash_row_color(row: usize) -> u16 {
-    let last_row = (SPLASH_ROWS.len() - 1).max(1);
+fn splash_row_color(row: u16) -> u16 {
+    // WHY u16 throughout: SPLASH_ROWS is a dozen rows, so every index fits
+    // losslessly and `i32::from` replaces a `usize as i32` cast that
+    // clippy::cast_possible_wrap denies under the zero-warning gate (#663).
+    let last_row = u16::try_from(SPLASH_ROWS.len().saturating_sub(1))
+        .unwrap_or(1)
+        .max(1);
     let (tip_r, tip_g, tip_b) = SPLASH_TIP_RGB;
     let (base_r, base_g, base_b) = SPLASH_BASE_RGB;
     color::from_rgb(
@@ -465,10 +475,18 @@ fn splash_painted_pixels(fb: &[u16], fb_width: u16, bg: u16) -> usize {
 /// differs.
 fn draw_splash_rows<F>(fb: &mut [u16], fb_width: u16, color_for_row: F, bg: u16)
 where
-    F: Fn(usize) -> u16,
+    F: Fn(u16) -> u16,
 {
-    for (row, text) in SPLASH_ROWS.iter().copied().enumerate() {
-        let ry = SPLASH_ORIGIN_Y.saturating_add((row as u16).saturating_mul(CHAR_HEIGHT));
+    // WHY u16 rather than the enumerate index: the whole splash path is u16 so
+    // it needs no numeric casts, which clippy::cast_possible_wrap and
+    // cast_possible_truncation both deny under the zero-warning gate (#663).
+    // SPLASH_ROWS is a dozen rows, so the conversion cannot fail; breaking is a
+    // fail-closed floor rather than a panic on a decorative surface.
+    for (idx, text) in SPLASH_ROWS.iter().copied().enumerate() {
+        let Ok(row) = u16::try_from(idx) else {
+            break;
+        };
+        let ry = SPLASH_ORIGIN_Y.saturating_add(row.saturating_mul(CHAR_HEIGHT));
         draw_str(
             fb,
             fb_width,
