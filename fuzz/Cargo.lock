@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aither"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "getrandom 0.4.2",
  "hmac",
@@ -30,7 +30,7 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
 name = "asphaleia"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "asphaleia-core",
  "log",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "asphaleia-core"
-version = "0.6.2"
+version = "0.7.0"
 
 [[package]]
 name = "bitflags"
@@ -265,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "klesis"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "klesis-core",
  "log",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "klesis-core"
-version = "0.6.2"
+version = "0.7.0"
 
 [[package]]
 name = "leb128fmt"
