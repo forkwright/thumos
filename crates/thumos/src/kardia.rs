@@ -459,7 +459,7 @@ impl KernelState {
             // is the hostile-modem guard: fail closed, keep the old offset.
             // SAFETY: called from the loop's privileged context, single-core.
             unsafe {
-                let _ = crate::time::set_realtime_offset(self.wall_clock);
+                let _ = crate::time::set_realtime_offset(self.wall_clock); // kanon:ignore RUST/no-silent-result-swallow -- fail-closed by design: an ImplausibleEpoch rejection (see WHY above) keeps the prior offset, nothing to do with an error here
             }
             // #400: check scheduled alarms against the fresh wall time + advance
             // the countdown timer. The firing IDs / expiry have no sink yet
@@ -790,7 +790,15 @@ impl KernelState {
     #[cfg(feature = "qemu")]
     pub(crate) fn fm_boot_smoke(&mut self) -> (bool, u32, i8, u8) {
         let powered = self.fm.power_on().is_ok();
-        let _ = self.fm.tune(103_300);
+        // WHY: expect, not discard -- scripts/witness/boot.sh only greps the
+        // line SHAPE (`freq_khz=[0-9]+`), not the seeded value, so a silently
+        // swallowed tune() failure would still report a passing witness with
+        // a stale/zero frequency. This smoke's entire job (#518) is proving
+        // the tune path works; a failure here must panic the boot, not hide
+        // behind a witness line that still matches the loose regex.
+        self.fm
+            .tune(103_300)
+            .expect("qemu boot smoke: seeded FM tune (#518) must succeed");
         let freq = self.fm.frequency().unwrap_or(0);
         let rssi = self.fm.rssi();
         let volume = self.fm.volume();
@@ -1007,7 +1015,7 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // basis is sound; an ImplausibleEpoch rejection fails closed.
         // SAFETY: loop start, single-core, before userspace runs.
         unsafe {
-            let _ = crate::time::set_realtime_offset(kernel.wall_clock);
+            let _ = crate::time::set_realtime_offset(kernel.wall_clock); // kanon:ignore RUST/no-silent-result-swallow -- fail-closed by design: an ImplausibleEpoch rejection (see WHY above) keeps the prior offset, nothing to do with an error here
         }
 
         // Emit each witness line atomically (emit_marker masks IRQs per line)
