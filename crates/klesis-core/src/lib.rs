@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(missing_docs)]
 //! klesis-core: the canonical GSM-7, SMS-PDU, and AT-response semantics
 //! (#545, #662, #685).
 //!
