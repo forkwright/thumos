@@ -92,7 +92,7 @@ role = "Canonical GSM-7 codec, SMS-PDU byte primitives, and silent-SMS/WAP-Push 
 [[architecture.crates]]
 name = "krypta"
 path = "crates/krypta"
-role = "Signal protocol, X3DH, double ratchet, and sessions."
+role = "X3DH key exchange, directional symmetric chain ratchets (NOT the Signal Double Ratchet — no DH ratchet, #543), session management."
 
 [[architecture.crates]]
 name = "sema"
