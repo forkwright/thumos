@@ -45,8 +45,8 @@ Full Rust from kernel to UI. No C we author, no Linux in the final system. Monol
 - Lint surface: the workspace is clean under `cargo clippy --workspace`. The kernel crate (`crates/thumos`) is excluded from the workspace, so no `--workspace` invocation reaches it; `scripts/kernel-clippy.sh` covers it separately and is clean across **every declared feature configuration**, with the pass list parsed from `Cargo.toml`'s `[features]` so a new feature cannot be added without a pass. The `kernel` CI job is a required status check and blocks a merge, which is what makes the above enforceable rather than aspirational.
 - Phase 10 (radio intelligence + counter-surveillance) compiled/tested surface is complete. End-to-end boot and userspace wiring gaps are tracked in README Known gaps.
 - 1 GB RAM: every megabyte matters. No unnecessary services.
-- 240x320 display: no standard Android UI. Custom framebuffer or TUI.
-- Keypad + touchscreen input. T9-style or menu navigation.
+- 240x320 display: no standard Android UI. Custom framebuffer, three-zone layout.
+- **Physical keys are the primary interaction.** The keypad and its key combinations drive navigation and every routine action, and T9 is the text-entry method. The capacitive touchscreen is present and driven (mtk-tpd, 10-point), but it is reserved for the few surfaces that genuinely want direct manipulation — composing a message is the standard example. The falsifiable form: **a function reachable only by touch is a defect**, because this is a rugged phone that has to work with gloves on, with wet hands, and with the screen unreadable in direct sun. Touch is an accelerator for the cases that deserve it, never the only path to a capability.
 - MT6739 vendor blobs: binary-only for modem, WiFi, BT, GPS. Cannot be replaced.
 - 32-bit ARM build (armv7-a-neon) despite 64-bit capable SoC.
 
