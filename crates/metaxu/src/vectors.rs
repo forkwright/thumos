@@ -64,9 +64,9 @@ pub(crate) static GOLDEN_VECTORS: &[GoldenVector] = &[
 
 #[cfg(test)]
 mod tests {
+    use compact_str::CompactString;
     use super::*;
     use crate::envelope::{Envelope, EnvelopeError, MessageKind, SttErrorCode, SttEvent};
-    use compact_str::CompactString;
 
     #[test]
     fn golden_vectors_decode_and_reencode_identically() {

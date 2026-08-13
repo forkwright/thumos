@@ -45,6 +45,26 @@ pub(crate) enum ScenarioKind {
     ControlledAttack,
 }
 
+/// A corpus scenario identifier — a newtype over the raw string so a
+/// scenario id cannot be confused with any other domain string (e.g. a
+/// provenance note) at the type level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct ScenarioId(String);
+
+impl ScenarioId {
+    /// Borrow the id as a plain string slice (comparisons, formatting).
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl core::fmt::Display for ScenarioId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A corpus scenario: a replayable alert sequence plus the labeled truth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,7 +72,7 @@ pub(crate) struct Scenario {
     /// Corpus schema version (1).
     pub(crate) schema_version: u32,
     /// Unique scenario identifier.
-    pub(crate) id: String,
+    pub(crate) id: ScenarioId,
     /// Scenario kind (drives the positive/negative classification).
     pub(crate) kind: ScenarioKind,
     /// Where this trace came from — "synthetic" entries say so loudly;
@@ -147,7 +167,7 @@ impl AlertSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScenarioOutcome {
     /// Scenario id.
-    pub(crate) id: String,
+    pub(crate) id: ScenarioId,
     /// Scenario kind.
     pub(crate) kind: ScenarioKind,
     /// Score the current weights produce.
@@ -167,9 +187,9 @@ pub(crate) struct EvalReport {
     /// Per-scenario outcomes, corpus order.
     pub(crate) outcomes: Vec<ScenarioOutcome>,
     /// Benign scenarios whose level exceeded the target (false positives).
-    pub(crate) false_positives: Vec<String>,
+    pub(crate) false_positives: Vec<ScenarioId>,
     /// Attack scenarios whose level fell below the target (false negatives).
-    pub(crate) false_negatives: Vec<String>,
+    pub(crate) false_negatives: Vec<ScenarioId>,
 }
 
 impl EvalReport {
@@ -198,7 +218,10 @@ impl EvalReport {
         // true_pos <= detected.len() always -- the quotient is bounded to
         // [0, 1000] by integer-division identity regardless of corpus size,
         // well within u32 on any platform.
-        Some((true_pos * 1000 / detected.len()) as u32)
+        // WARNING: the bound above is a proof, not a compiler-checked fact --
+        // fail closed (report 0 rather than a wrapped/overstated score) if it
+        // is ever violated instead of trusting an `as` truncation.
+        Some(u32::try_from(true_pos * 1000 / detected.len()).unwrap_or(0))
     }
 
     /// Recall at the corpus level: attack scenarios detected as attack.
@@ -226,7 +249,10 @@ impl EvalReport {
         // found <= attacks.len() always -- the quotient is bounded to
         // [0, 1000] by integer-division identity regardless of corpus size,
         // well within u32 on any platform.
-        Some((found * 1000 / attacks.len()) as u32)
+        // WARNING: the bound above is a proof, not a compiler-checked fact --
+        // fail closed (report 0 rather than a wrapped/overstated score) if it
+        // is ever violated instead of trusting an `as` truncation.
+        Some(u32::try_from(found * 1000 / attacks.len()).unwrap_or(0))
     }
 }
 
@@ -390,12 +416,15 @@ mod tests {
             report
                 .false_positives
                 .iter()
-                .any(|id| id == "dense-urban-01"),
+                .any(|id| id.as_str() == "dense-urban-01"),
             "dense-urban must be counted as a residual FP: {:?}",
             report.false_positives
         );
         assert!(
-            report.false_positives.iter().any(|id| id == "roaming-01"),
+            report
+                .false_positives
+                .iter()
+                .any(|id| id.as_str() == "roaming-01"),
             "roaming must be counted as a residual FP: {:?}",
             report.false_positives
         );
@@ -430,7 +459,7 @@ mod tests {
         // Critical. This test pins the MODEL's effect, not the constants.
         let scenario = Scenario {
             schema_version: 1,
-            id: "dense-urban-model-check".to_owned(),
+            id: ScenarioId("dense-urban-model-check".to_owned()),
             kind: ScenarioKind::DenseUrban,
             provenance: "synthetic (#555)".to_owned(),
             target_level: ThreatLevel::Low,

@@ -1742,14 +1742,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sphragis"
-version = "0.7.0"
-dependencies = [
- "ed25519-dalek",
- "sha2",
-]
-
-[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

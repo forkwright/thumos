@@ -1,15 +1,16 @@
-//! sphragis — boot-image signing tool (#467).
+//! hypographe — boot-image signing tool (#467).
 //!
-//! σφραγίς = "signet, seal". Signs a boot image with Ed25519ph, producing
-//! the `payload || zero-pad || signature(64)` layout the kernel's streamed
-//! boot gate verifies: the payload is zero-padded so the 64-byte signature
-//! ends EXACTLY on a 512-byte sector boundary (the on-disk region's final
-//! bytes), and the SHA-512 prehash covers payload+pad. The prehash is fed
-//! in bounded chunks — the same shape as the kernel's `verify_image_streamed`
-//! (the tool itself holds the image in memory; it is a build-host tool
-//! without the kernel's heap constraint).
+//! ὑπογραφή = "signature" (literally "underwriting"). Signs a boot image
+//! with Ed25519ph, producing the `payload || zero-pad || signature(64)`
+//! layout the kernel's streamed boot gate verifies: the payload is
+//! zero-padded so the 64-byte signature ends EXACTLY on a 512-byte sector
+//! boundary (the on-disk region's final bytes), and the SHA-512 prehash
+//! covers payload+pad. The prehash is fed in bounded chunks — the same
+//! shape as the kernel's `verify_image_streamed` (the tool itself holds
+//! the image in memory; it is a build-host tool without the kernel's heap
+//! constraint).
 //!
-//! Usage: sphragis <image-in> <seed-hex-file> <image-out>
+//! Usage: hypographe <image-in> <seed-hex-file> <image-out>
 //!   The seed file holds the 32-byte Ed25519 seed as 64 lowercase hex chars
 //!   (e.g. crates/thumos/keys/dev/boot-dev.seed for dev builds; production
 //!   keys live outside the repo).
@@ -62,34 +63,34 @@ fn parse_seed(text: &str) -> Option<[u8; 32]> {
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 4 {
-        eprintln!("usage: sphragis <image-in> <seed-hex-file> <image-out>");
+        eprintln!("usage: hypographe <image-in> <seed-hex-file> <image-out>");
         return std::process::ExitCode::from(2);
     }
     let payload = match std::fs::read(&args[1]) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("sphragis: cannot read {}: {e}", args[1]);
+            eprintln!("hypographe: cannot read {}: {e}", args[1]);
             return std::process::ExitCode::from(1);
         }
     };
     let seed_text = match std::fs::read_to_string(&args[2]) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("sphragis: cannot read seed {}: {e}", args[2]);
+            eprintln!("hypographe: cannot read seed {}: {e}", args[2]);
             return std::process::ExitCode::from(1);
         }
     };
     let Some(seed) = parse_seed(&seed_text) else {
-        eprintln!("sphragis: seed file must hold 32 bytes as 64 lowercase hex chars");
+        eprintln!("hypographe: seed file must hold 32 bytes as 64 lowercase hex chars");
         return std::process::ExitCode::from(1);
     };
     let image = sign_image(&payload, &seed);
     if let Err(e) = std::fs::write(&args[3], &image) {
-        eprintln!("sphragis: cannot write {}: {e}", args[3]);
+        eprintln!("hypographe: cannot write {}: {e}", args[3]);
         return std::process::ExitCode::from(1);
     }
     println!(
-        "sphragis: signed {} -> {} ({} payload bytes, {} image bytes)",
+        "hypographe: signed {} -> {} ({} payload bytes, {} image bytes)",
         args[1],
         args[3],
         payload.len(),
@@ -124,7 +125,7 @@ mod tests {
 
     #[test]
     fn tool_output_verifies_under_the_kernel_prehashed_strict_path() {
-        // The differential proof (#467): what sphragis signs, the kernel
+        // The differential proof (#467): what hypographe signs, the kernel
         // accepts — same Ed25519ph + SHA-512 + verify_prehashed_strict the
         // kernel's secure_boot uses.
         let payload: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();

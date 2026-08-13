@@ -7,18 +7,18 @@ license.workspace = true
 publish.workspace = true
 repository.workspace = true
 
-[features]
-# WHY (#544 on-device leg): gates `mod pylon` visible (not `pub(crate)`) and
-# the `pylon-bridge` binary below into existence. Off by default -- the
-# reference endpoint double never ships as part of a normal `cargo build`;
-# it exists only for `cargo test` (unit tests) and this opt-in feature (a
-# real host process the QEMU witness launches).
-pylon-bin = []
-
 [[bin]]
 name = "pylon-bridge"
 path = "src/bin/pylon_bridge.rs"
 required-features = ["pylon-bin"]
+
+[features]
+# WHY (#544 on-device leg): gates `mod pylon` visible (not `pub(crate)`) and
+# the `pylon-bridge` binary above into existence. Off by default -- the
+# reference endpoint double never ships as part of a normal `cargo build`;
+# it exists only for `cargo test` (unit tests) and this opt-in feature (a
+# real host process the QEMU witness launches).
+pylon-bin = []
 
 [dependencies]
 compact_str = { workspace = true, features = ["serde"] }

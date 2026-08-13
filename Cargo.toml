@@ -17,7 +17,7 @@ members = [
     "crates/pteron",
     "crates/sema",
     "crates/sema-core",
-    "crates/sphragis",
+    "crates/hypographe",
     "crates/stegnos",
     "crates/topos",
     "crates/topos-core",
