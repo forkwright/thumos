@@ -48,6 +48,22 @@ jobs:
       - run: cargo fmt --all --check
       # WHY: the kernel crate is excluded from the workspace, so --all misses it.
       - run: cargo fmt --manifest-path crates/thumos/Cargo.toml --check
+      - name: Doc inventory check (#641)
+        # WHY (#641): the crate roster (ARCHITECTURE.md's crate map table +
+        # _llm/architecture.toml's [[architecture.crates]]) and the docs/
+        # manifest are derived from Cargo.toml workspace members and
+        # `find docs -type f` respectively -- this is the only thing that
+        # checks the hand-restatements still agree with the source. Declared
+        # as a `.kanon-ci.toml` stage since #642 but never invoked by this
+        # workflow, so GitHub-hosted CI never ran it and drift merged
+        # silently on green (eidolon-core missing from both docs, caught
+        # only by a later audit). Placed here rather than in the `kernel`
+        # job: it is source-level and cheap (no build/boot artifact
+        # dependency, unlike the target-test-ledger and wiring-inventory
+        # checks below), so it belongs in the fastest job per this file's
+        # own "fastest check first" rule rather than waiting behind the
+        # kernel job's ~20-minute build+QEMU-witness chain for nothing.
+        run: scripts/check-doc-inventory.sh
 
   workspace:
     # WHY: clippy (deny warnings) + the workspace test suite for the 13
