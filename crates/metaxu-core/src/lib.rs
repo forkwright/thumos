@@ -17,27 +17,33 @@
 
 extern crate alloc;
 
-/// The versioned wire envelope (magic, schema, major/minor, kind,
-/// correlation ID, declared length) that every Aletheia-facing frame
-/// travels inside — validated before any payload allocation or decode.
+/// The versioned wire envelope every Aletheia-facing frame travels inside.
+///
+/// Magic, schema, major/minor, kind, correlation ID, and declared length --
+/// validated before any payload allocation or decode.
 pub mod envelope;
 
-/// The encode/decode error type for this crate's wire functions --
-/// deliberately narrower than `metaxu`'s own `Error<E>`, which wraps this
+/// The encode/decode error type for this crate's wire functions.
+///
+/// Deliberately narrower than `metaxu`'s own `Error<E>`, which wraps this
 /// type at the crate boundary rather than re-deriving it.
 pub mod error;
 
-/// Cryptographically verified, expiring capability grants: an Aletheia
-/// runtime's signed, time-bounded authorization for one device to request
-/// specific capabilities, plus the response-authentication key they derive.
+/// Cryptographically verified, expiring capability grants.
+///
+/// An Aletheia runtime's signed, time-bounded authorization for one device
+/// to request specific capabilities, plus the response-authentication key
+/// they derive.
 pub mod grants;
 
-/// Wire protocol types for the Aletheia/Thumos bridge: typed task
-/// requests, capability grants, and responses, encoded inside the
-/// versioned [`envelope`].
+/// Wire protocol types for the Aletheia/Thumos bridge.
+///
+/// Typed task requests, capability grants, and responses, encoded inside
+/// the versioned [`envelope`].
 pub mod protocol;
 
-/// The authenticated session layer: one mutually authenticated
-/// Thumos-to-Aletheia round trip, built on a verified
+/// The authenticated session layer between Thumos and Aletheia.
+///
+/// One mutually authenticated round trip, built on a verified
 /// [`grants::SignedGrant`] over the versioned [`envelope`].
 pub mod session;
