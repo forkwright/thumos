@@ -24,4 +24,5 @@ Structured LLM corpus:
 - [ARCHITECTURE.md](ARCHITECTURE.md): crate tree and dependency direction
 - [CLAUDE.md](CLAUDE.md): agent orientation and build constraints
 - [AGENTS.md](AGENTS.md): cross-tool build/lint/test commands
+- [RUNBOOK.md](RUNBOOK.md): build, boot-witness, and diagnostic operational procedures
 - [docs/](docs/): hardware, driver, probe, kernel build, and surveillance audit docs
