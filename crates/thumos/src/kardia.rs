@@ -784,21 +784,21 @@ impl KernelState {
 
     /// Boot-time FM smoke (#518, qemu): power on via the `BootFmHw` path, tune
     /// to a seeded frequency, feed the FM screen from the controller state,
-    /// and return (powered, `freq_khz`, rssi, volume) for the CI witness --
-    /// proves `FmRadio<BootFmHw>` is instantiated in `KernelState` and the FM
-    /// screen renders its state. Pure state logic; no hardware.
+    /// and return (powered, tuned, `freq_khz`, rssi, volume) for the CI
+    /// witness -- proves `FmRadio<BootFmHw>` is instantiated in
+    /// `KernelState` and the FM screen renders its state. Pure state logic;
+    /// no hardware.
     #[cfg(feature = "qemu")]
-    pub(crate) fn fm_boot_smoke(&mut self) -> (bool, u32, i8, u8) {
+    pub(crate) fn fm_boot_smoke(&mut self) -> (bool, bool, u32, i8, u8) {
         let powered = self.fm.power_on().is_ok();
-        // WHY: expect, not discard -- scripts/witness/boot.sh only greps the
-        // line SHAPE (`freq_khz=[0-9]+`), not the seeded value, so a silently
-        // swallowed tune() failure would still report a passing witness with
-        // a stale/zero frequency. This smoke's entire job (#518) is proving
-        // the tune path works; a failure here must panic the boot, not hide
-        // behind a witness line that still matches the loose regex.
-        self.fm
-            .tune(103_300)
-            .expect("qemu boot smoke: seeded FM tune (#518) must succeed");
+        // WHY: kernel code denies clippy::expect-used (zero-panic policy,
+        // #663) -- an `.expect()` here would fail the kernel clippy gate,
+        // not just be poor style. Captured as a bool and threaded into the
+        // witness line instead: scripts/witness/boot.sh now asserts
+        // `tuned=true` explicitly, so a tune() regression fails the CI
+        // witness on the exact signal, rather than being masked by a
+        // freq_khz value the old regex only checked the SHAPE of.
+        let tuned = self.fm.tune(103_300).is_ok();
         let freq = self.fm.frequency().unwrap_or(0);
         let rssi = self.fm.rssi();
         let volume = self.fm.volume();
@@ -809,7 +809,7 @@ impl KernelState {
         let preset_count = self.fm.preset_count();
         self.fm_screen
             .update_from_state(self.fm.state(), rssi, &presets_u32, preset_count, volume);
-        (powered, freq, rssi, volume)
+        (powered, tuned, freq, rssi, volume)
     }
 
     /// Boot-time threat monitor smoke (#737, qemu): decode a second
@@ -1076,11 +1076,11 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // qemu), powered + tuned at smoke, and the FM screen fed from it.
         #[cfg(feature = "qemu")]
         {
-            let (fm_powered, fm_freq, fm_rssi, fm_vol) = kernel.fm_boot_smoke();
+            let (fm_powered, fm_tuned, fm_freq, fm_rssi, fm_vol) = kernel.fm_boot_smoke();
             emit_marker(
                 &mut serial,
                 format_args!(
-                    "kardia: fm powered={fm_powered} freq_khz={fm_freq} rssi={fm_rssi} volume={fm_vol}\r\n"
+                    "kardia: fm powered={fm_powered} tuned={fm_tuned} freq_khz={fm_freq} rssi={fm_rssi} volume={fm_vol}\r\n"
                 ),
             );
         }
