@@ -81,6 +81,11 @@
           "type": "toml",
           "path": "crates/thumos/Cargo.lock",
           "jsonpath": "$.package[?(!@.source && @.name != 'thumos')].version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/thumos/Cargo.toml",
+          "jsonpath": "$.package.version"
         }
       ]
     }
