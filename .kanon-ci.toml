@@ -49,8 +49,13 @@ stages = [
 cmd = "cargo fmt --all -- --check"
 timeout_secs = 300
 
+# WHY --locked (#757): without it, a dependency-resolving stage silently
+# regenerates Cargo.lock when a manifest and the committed lock disagree --
+# the drift never fails, and whatever it pulled in is never scanned by
+# cargo-audit/cargo-deny. --locked (not --frozen, which also forbids network)
+# turns that drift into a stage failure instead.
 [stages."cargo check"]
-cmd = "cargo check --workspace --all-targets --jobs 8"
+cmd = "cargo check --workspace --all-targets --locked --jobs 8"
 timeout_secs = 900
 
 # WHY (#546): the canonical build is scripts/kernel-build.sh — crates/thumos/
@@ -141,11 +146,11 @@ cmd = "scripts/check-kernel-lockfile-versions.sh"
 timeout_secs = 60
 
 [stages."cargo clippy"]
-cmd = "cargo clippy --workspace --all-targets --jobs 8 -- -D warnings"
+cmd = "cargo clippy --workspace --all-targets --locked --jobs 8 -- -D warnings"
 timeout_secs = 900
 
 [stages."cargo nextest"]
-cmd = "cargo nextest run --workspace --build-jobs 8 --test-threads 8"
+cmd = "cargo nextest run --workspace --locked --build-jobs 8 --test-threads 8"
 timeout_secs = 1800
 
 [stages."kanon lint"]
