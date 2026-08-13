@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(missing_docs)]
 //! sema-core: the canonical threat-semantics types (#545).
 //!
 //! This crate is the single home of [`ThreatLevel`], [`Calibration`], and
