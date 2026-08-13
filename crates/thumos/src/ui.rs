@@ -326,8 +326,19 @@ pub(crate) mod color {
 
 /// Set a single pixel in a flat `u16` framebuffer.
 ///
-/// Out-of-bounds coordinates are silently ignored.
+/// Out-of-bounds coordinates are silently ignored. `x` is clipped against
+/// `fb_width` explicitly below -- without that check, `x >= fb_width` still
+/// yields a flat index that is valid for every row but the last, so the
+/// pixel would alias into the start of the row below instead of being
+/// dropped (#760). `y` needs no equivalent check here: this function takes
+/// no `fb_height`, so an out-of-range `y` is caught the same way it always
+/// was, by the flat index exceeding `fb.len()`. Matches
+/// `eidolon::framebuffer::Framebuffer::set_pixel`, the other side of the
+/// #545 duplication.
 pub(crate) fn set_pixel(fb: &mut [u16], fb_width: u16, x: u16, y: u16, color: u16) {
+    if x >= fb_width {
+        return;
+    }
     let idx = y as usize * fb_width as usize + x as usize;
     if let Some(px) = fb.get_mut(idx) {
         *px = color;
@@ -384,7 +395,9 @@ pub(crate) fn draw_char(fb: &mut [u16], fb_width: u16, x: u16, y: u16, ch: char,
 /// Render a string starting at pixel position `(x, y)`.
 ///
 /// Characters are placed left-to-right with no wrapping. Out-of-bounds
-/// pixels are clipped by [`set_pixel`].
+/// pixels are clipped by [`set_pixel`], which checks `x` against `fb_width`
+/// explicitly (#760) -- a glyph that runs past the right edge is cut off
+/// there, not bled into the row below.
 pub(crate) fn draw_str(fb: &mut [u16], fb_width: u16, x: u16, y: u16, s: &str, fg: u16, bg: u16) {
     for (i, ch) in s.chars().enumerate() {
         let cx = x.saturating_add((i as u16).saturating_mul(CHAR_WIDTH));
@@ -1249,6 +1262,37 @@ mod tests {
         // Fill that extends past bounds must not panic.
         fill_rect(&mut fb, 10, 10, 5, 5, 100, 100, color::WHITE);
         assert_eq!(fb.len(), 100, "framebuffer size must not change");
+    }
+
+    #[test]
+    fn draw_str_clips_x_instead_of_bleeding_into_next_row() {
+        // Regression for #760: set_pixel computed a flat index from
+        // (x, y) and only bounds-checked the result against fb.len(),
+        // so x >= fb_width landed on a VALID index in the following
+        // row for every row but the last, instead of being dropped.
+        //
+        // 4-wide, 2-row framebuffer. A one-character string drawn at
+        // x == fb_width starts fully past the right edge: every
+        // column the glyph would touch (x + 0..8) is out of bounds.
+        // Space is used because its glyph is all-zero bits, so every
+        // pixel in its 8x16 box resolves to `bg` (WHITE) rather than
+        // `fg` -- an unclipped write is unambiguously visible against
+        // an untouched (0x0000) buffer.
+        let mut fb = [0u16; 4 * 2];
+        draw_str(&mut fb, 4, 4, 0, " ", color::BLACK, color::WHITE);
+        assert_eq!(
+            fb, [0u16; 8],
+            "a glyph drawn entirely past fb_width must write nothing -- \
+             row 1 must not pick up row 0's overflow"
+        );
+
+        // An in-bounds glyph still renders normally in the same framebuffer.
+        draw_str(&mut fb, 4, 0, 0, " ", color::BLACK, color::WHITE);
+        assert_eq!(
+            fb[0],
+            color::WHITE,
+            "an in-bounds glyph must still write its pixels"
+        );
     }
 
     #[test]
