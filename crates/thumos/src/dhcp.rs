@@ -156,7 +156,7 @@ impl DhcpClient {
     // `heapless::Vec<IpCidr, IFACE_MAX_ADDR_COUNT>` alias, and `heapless` is
     // only a transitive dependency (via smoltcp), not a direct one this
     // crate can name. Adding it as a direct dependency just to spell a
-    // method path is out of scope for a lint fix.
+    // method path is not worth the coupling for a lint fix.
     #[expect(
         clippy::redundant_closure_for_method_calls,
         reason = "clippy's suggested Vec::clear names heapless::vec::Vec, a transitive smoltcp dependency this crate cannot name directly"

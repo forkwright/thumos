@@ -1037,8 +1037,8 @@ mod tests {
     #[test]
     fn rapid_reselection_repeated_identical_tower_not_counted() {
         // WHY(#554): a re-report of the same serving cell is not a
-        // reselection; the id-change guard must still hold once counting
-        // moved from a plain increment to timestamp collection.
+        // reselection; the id-change guard must still hold now that
+        // counting is timestamp-based rather than a plain increment.
         let events = [
             CellEvent::Connected(tower_at(1, -70, CellTechnology::Lte, ts_offset(0))),
             CellEvent::Connected(tower_at(1, -70, CellTechnology::Lte, ts_offset(10))),
