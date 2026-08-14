@@ -90,7 +90,7 @@ sha2 = "0.11"
 x25519-dalek = { version = "3", features = ["static_secrets", "zeroize"] }
 
 # Networking
-smoltcp = { version = "0.12", default-features = false, features = [
+smoltcp = { version = "0.13", default-features = false, features = [
     "medium-ethernet",
     "proto-ipv4",
     "proto-ipv6",
@@ -111,17 +111,17 @@ serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 
 # Errors
-snafu = "0.8"
+snafu = "0.9"
 
 # Logging
 log = "0.4"
 
 # Time
 jiff = "0.2"
-ulid = { version = "1", default-features = false }
+ulid = { version = "3", default-features = false }
 
 # Strings
-compact_str = "0.8"
+compact_str = "0.10"
 
 # Async (for userspace daemons)
 tokio = { version = "1", features = [
