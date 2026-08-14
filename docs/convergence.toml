@@ -126,6 +126,15 @@ canonical = "pending #545 sign-off on end-state design"
 owner = "#545 (design pending operator sign-off)"
 notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. encryption.rs and stegnos/src/cipher.rs both build Xts128<Aes256>; security.rs's PBKDF2_ITERATIONS doc comment records the passphrase-derived-key parameter as matching stegnos. Recorded as pending rather than forced into a disposition ahead of #545's end-state design."
 
+[[pair]]
+name = "skipped-key-cache"
+kernel = "matrix_crypto.rs (MEGOLM_MAX_SKIP_AHEAD :114, MegolmSkipAheadTooFar :230, store_skipped_megolm :1385)"
+workspace = "krypta (ratchet.rs: MAX_SKIP_AHEAD, MAX_SKIPPED_KEYS, store_skipped)"
+disposition = "pending"
+canonical = "undecided -- the two ratchet ALGORITHMS genuinely differ, so the shared thing is the bounding policy, not the derivation"
+owner = "#830 (introduced the second instance) / #545 (decides the shape)"
+notes = "Introduced by #830's Megolm ratchet fix, which needed a skipped-key cache to preserve out-of-order delivery once the root stopped being recoverable, and deliberately mirrored krypta's existing bounds rather than inventing new ones. What is duplicated is the POLICY and its mechanics -- cap how far forward an attacker-named index may force derivation, cap the cache, evict the oldest entry and volatile-zero it on the way out -- not the ratchet itself: krypta advances a directional symmetric chain (no DH ratchet, #543) while matrix_crypto advances a group session key, so an extract-core of the derivation is wrong by construction. The kernel does not link krypta (grep '^krypta' crates/thumos/Cargo.toml = 0), so these are two independent implementations of one security bound, and a correction to either -- a wrong cap, a missed zeroization on the evict path -- does not reach the other. That is exactly the divergence risk this ledger exists to hold. Recorded as pending rather than forced: the honest options are a shared bounded-cache primitive (needs a krypta-core, since krypta is std today) or an explicit not-duplicated with the bound values pinned by a cross-crate test, and choosing between them is #545 end-state work rather than something to settle inside a crypto fix."
+
 # The #126 ratchet: the dead-code expectations pointing at closed #126
 # (one per workspace crate lib.rs) now point here. They burn down as each
 # pair converges — the checker fails if the count ever increases.
@@ -140,5 +149,15 @@ rule = "duplication-markers-and-126-expectations-never-increase"
 # 3 of them (crates/thumos/src/board/m7.rs) sat in a directory the old glob
 # never opened at all. This is not a regression and is not license to relax
 # the ratchet back down later: 17 is, and was, the true count.
-duplication_markers = 17
+#
+# WHY 20, not 17: #830's Megolm ratchet fix added three comments naming krypta
+# as the precedent for its DoS bounds. They are honest cross-references to a
+# real second implementation of one policy, and the `skipped-key-cache` pair
+# above now holds that. Deleting the comments would have silenced the counter
+# while leaving the duplication -- the ratchet would read as holding precisely
+# because the evidence was removed, which is the failure this instrument
+# exists to prevent. Raising the number is the honest move ONLY because a
+# ledger row accompanies it; an increase without one is a regression and the
+# check should keep failing on it.
+duplication_markers = 20
 stale_126_expectations = 0    # all workspace lib.rs pointers now name this ledger, not closed #126
