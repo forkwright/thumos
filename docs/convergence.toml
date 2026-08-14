@@ -1,8 +1,10 @@
 # Convergence ledger (issue #545) — the machine-checked record of the
 # kernel↔workspace duplication and its dispositions. scripts/check-convergence.sh
-# enforces: every pair here has a disposition + owner, every "ported from"
-# comment names a live pair below, and the #126 dead-code expectations only
-# ever burn DOWN (the ratchet — the counts below may not increase).
+# enforces: every pair here has a disposition + owner, every live duplication
+# marker (a comment naming a crate plus an intent verb — "ported from",
+# "mirrors", "mirroring", "matches", "match the") names a live pair below, and
+# the #126 dead-code expectations only ever burn DOWN (the ratchet — the
+# counts below may not increase).
 #
 # Dispositions:
 #   converged        — one canonical implementation owns the invariant (name it)
@@ -12,8 +14,12 @@
 #                      deletes when its consumers are gone (topology 2)
 #   workspace-owned  — the workspace crate is canonical; the kernel copy is a
 #                      transport/board adapter only
+#   pending          — duplication found, end-state disposition not yet
+#                      decided; 'owner' must name the issue that will decide
+#                      it (e.g. "#545"), so discovery doesn't force an
+#                      immediate architectural commitment (#820)
 #
-# The ratchet: [ratchet].ported_from_comments below is the count, and
+# The ratchet: [ratchet].duplication_markers below is the count, and
 # scripts/check-convergence.sh derives the live figure from the tree and fails
 # if it ever rises. WHY this header names no number: a count restated here is a
 # second copy that drifts the moment a pair converges — this one said 6 while
@@ -102,10 +108,37 @@ canonical = "eidolon-core for display layout geometry (#740) and the 8x16 bitmap
 owner = "unscheduled"
 notes = "Live 'ported from' comment: screen_dialer.rs:11. eidolon -> haphe is the one real internal edge; the kernel consumes neither today. ui::Key vs haphe::input::Key (#615): the digit/star/hash/d-pad prefix (0-15) is genuine shared vocabulary, pinned by ui::tests::shared_prefix_discriminants_match_haphe against the real haphe crate; the extended range (16-21) is two independent button sets that happen to share a numeric range and is deliberately NOT asserted equal. Converged (#545, this slice): FONT_DATA (95 glyphs, verified byte-identical between ui.rs and eidolon/src/font.rs before the move -- the only prior difference was a `pub(crate)` visibility modifier) and its five dimension constants. Both sides now alias eidolon_core's copy via the same const-derivation pattern #740 established for the layout constants, never `pub(crate) use`: the kernel's nine feature configurations turn an unused re-export's `unused_imports` into a build failure that the crate-level `dead_code` expectation in main.rs does not cover. Also corrected three doc comments that had survived #731/#732 claiming eidolon or haphe 'cannot be linked' into the `#![no_std]` kernel because of a `std` dependency -- both crates have been `#![no_std]` since #732 (eidolon) and their first commit (haphe), and the kernel already path-links eidolon-core (and haphe as a dev-dependency, #615); the real reasons the colour type and ui::Key stay duplicated are unrelated to std and are unaffected by this slice (see below). NOT converged, deliberately: the colour type (Rgb565 lives in `eidolon`, which the kernel does not link -- only `eidolon-core` -- and converging it would ripple across ~19 kernel call sites that pass a raw u16 fg/bg); set_pixel/draw_char/draw_str/draw_char_scaled and ui.rs's test module (owned by a parallel lane fixing a live defect in the drawing primitives, #760); and ui::Key (vocabulary divergence above discriminant 15, as above)."
 
+[[pair]]
+name = "leipsanon"
+kernel = "panic_wipe.rs (priority ordering mirrors leipsanon's scheme, :55; target-layout paths match leipsanon, :91)"
+workspace = "leipsanon"
+disposition = "pending"
+canonical = "pending #545 sign-off on end-state design"
+owner = "#545 (design pending operator sign-off)"
+notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. panic_wipe.rs's priority-ordering logic is live today; only the underlying filesystem write is a stub, so this is not yet a full duplicate ready to converge, extract, or assign ownership of. Recorded as pending rather than forced into a disposition ahead of that decision."
+
+[[pair]]
+name = "stegnos"
+kernel = "security.rs (passphrase-derived-key parameter matches stegnos, :24), encryption.rs (Xts128<Aes256>)"
+workspace = "stegnos (cipher.rs, Xts128<Aes256>)"
+disposition = "pending"
+canonical = "pending #545 sign-off on end-state design"
+owner = "#545 (design pending operator sign-off)"
+notes = "Discovered widening the port-marker detector past literal 'ported from' phrasing (#820) -- previously invisible to the ratchet entirely, despite naming live duplication. encryption.rs and stegnos/src/cipher.rs both build Xts128<Aes256>; security.rs's PBKDF2_ITERATIONS doc comment records the passphrase-derived-key parameter as matching stegnos. Recorded as pending rather than forced into a disposition ahead of #545's end-state design."
+
 # The #126 ratchet: the dead-code expectations pointing at closed #126
 # (one per workspace crate lib.rs) now point here. They burn down as each
 # pair converges — the checker fails if the count ever increases.
 [ratchet]
-rule = "port-markers-and-126-expectations-never-increase"
-ported_from_comments = 2      # firewall (packet parse), screen_dialer
+rule = "duplication-markers-and-126-expectations-never-increase"
+# WHY 17, not 2: the count rises because the INSTRUMENT improved (#820), not
+# because duplication grew. The old check matched only the literal phrase
+# "ported from", over crates/*/src/*.rs (one directory level, non-recursive).
+# The new check matches crate name + intent verb ("ported from"/"mirrors"/
+# "mirroring"/"matches"/"match the") on comment lines, over the full
+# recursive crate tree. 15 markers that were always live went uncounted --
+# 3 of them (crates/thumos/src/board/m7.rs) sat in a directory the old glob
+# never opened at all. This is not a regression and is not license to relax
+# the ratchet back down later: 17 is, and was, the true count.
+duplication_markers = 17
 stale_126_expectations = 0    # all workspace lib.rs pointers now name this ledger, not closed #126
