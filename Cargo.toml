@@ -111,7 +111,7 @@ serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 
 # Errors
-snafu = "0.8"
+snafu = "0.9"
 
 # Logging
 log = "0.4"
