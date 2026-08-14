@@ -2,7 +2,7 @@
 scope: thumos repo cross-tool agent guide (Claude Code, Kimi, Codex, Cursor, Windsurf, Copilot)
 generated_by: kanon docs sync
 defers_to: CLAUDE.md for Claude Code-specific behavior; ~/menos-ops/CLAUDE.md for machine + service topology
-tightens: workflow/AGENTS-mcp-tools.md catalog routing; ~/metis-ops/projects/kanon/crates/basanos/standards/AGENT-DOCS.md authoring rules
+tightens: ~/metis-ops/projects/kanon/workflow/AGENTS-mcp-tools.md catalog routing; ~/metis-ops/projects/kanon/crates/basanos/standards/AGENT-DOCS.md authoring rules
 -->
 
 # thumos
@@ -23,7 +23,7 @@ build, test, and lint commands from this repository root.
 - `kanon docs sync --apply --repo thumos` - regenerate derived bootstrap docs
 
 For agent-native operations, prefer the `mcp__kanon__*` tool family. See
-[workflow/AGENTS-mcp-tools.md](workflow/AGENTS-mcp-tools.md) for routing and fallback rules.
+[~/metis-ops/projects/kanon/workflow/AGENTS-mcp-tools.md](~/metis-ops/projects/kanon/workflow/AGENTS-mcp-tools.md) for routing and fallback rules.
 
 ## Standards
 
