@@ -1,7 +1,7 @@
 //! Symmetric ratchet: HMAC-SHA256 chain key advancement, AES-256-GCM message encryption.
 
+use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{AeadInOut, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -97,7 +97,7 @@ pub(crate) fn encrypt(state: &mut RatchetState, plaintext: &[u8]) -> Result<Ciph
 
     let mut in_out = plaintext.to_vec();
     cipher
-        .encrypt_in_place(Nonce::from_slice(&nonce), b"", &mut in_out)
+        .encrypt_in_place((&nonce).into(), b"", &mut in_out)
         .map_err(|_| EncryptionSnafu.build())?;
 
     let counter = state.counter;
@@ -211,7 +211,7 @@ fn aead_open(message_key: &[u8; 32], msg: &CiphertextMessage) -> Result<Vec<u8>>
     let cipher = make_aes_cipher(message_key)?;
     let mut in_out = msg.ciphertext.clone();
     cipher
-        .decrypt_in_place(Nonce::from_slice(&nonce), b"", &mut in_out)
+        .decrypt_in_place((&nonce).into(), b"", &mut in_out)
         .map_err(|_| DecryptionSnafu.build())?;
     Ok(in_out)
 }
