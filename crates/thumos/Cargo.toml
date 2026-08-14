@@ -123,7 +123,7 @@ metaxu-core = { path = "../metaxu-core", default-features = false }
 # dependency's types without declaring the dependency itself. Versions
 # match metaxu-core's workspace pins (compact_str "0.8", ulid "1"
 # default-features=false).
-compact_str = { version = "0.8", default-features = false, features = [
+compact_str = { version = "0.10", default-features = false, features = [
     "serde",
 ] }
 ulid = { version = "1", default-features = false }

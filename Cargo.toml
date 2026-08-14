@@ -121,7 +121,7 @@ jiff = "0.2"
 ulid = { version = "1", default-features = false }
 
 # Strings
-compact_str = "0.8"
+compact_str = "0.10"
 
 # Async (for userspace daemons)
 tokio = { version = "1", features = [

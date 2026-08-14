@@ -124,6 +124,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "compact_str"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79fcda08c33bb58b97008b2cdada6622500e949e060f5913361763121abd2416"
+dependencies = [
+ "castaway",
+ "cfg-if",
+ "itoa",
+ "serde",
+ "static_assertions",
+ "zmij",
+]
+
+[[package]]
 name = "cpubits"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -400,7 +414,7 @@ checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 name = "metaxu-core"
 version = "0.7.1"
 dependencies = [
- "compact_str",
+ "compact_str 0.8.2",
  "ed25519-dalek",
  "hmac",
  "postcard",
@@ -666,7 +680,7 @@ dependencies = [
  "aes",
  "asphaleia-core",
  "cbc",
- "compact_str",
+ "compact_str 0.10.0",
  "ed25519-dalek",
  "eidolon-core",
  "haphe",
@@ -796,3 +810,9 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "zmij"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
