@@ -1,6 +1,6 @@
 //! Symmetric ratchet: HMAC-SHA256 chain key advancement, AES-256-GCM message encryption.
 
-use aes_gcm::aead::{AeadInPlace, KeyInit};
+use aes_gcm::aead::{AeadInOut, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -225,7 +225,7 @@ fn derive_next_chain_key(chain_key: &[u8; 32]) -> Result<[u8; 32]> {
 }
 
 fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> Result<[u8; 32]> {
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).map_err(|_| InvalidKeySnafu.build())?;
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(key).map_err(|_| InvalidKeySnafu.build())?;
     mac.update(data);
     let tag = mac.finalize().into_bytes();
     let mut out = [0u8; 32];
