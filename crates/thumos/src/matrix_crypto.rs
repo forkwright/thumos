@@ -51,8 +51,14 @@ use alloc::vec::Vec;
 
 use aes::Aes256;
 use aes::cipher::block_padding::Pkcs7;
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+// NOTE: cipher 0.5 renamed the block-mode traits (`BlockEncryptMut` ->
+// `BlockModeEncrypt`, `BlockDecryptMut` -> `BlockModeDecrypt`) and dropped
+// `generic_array` (replaced crate-wide by `hybrid-array`'s `Array`, re-exported
+// as `aes::cipher::array::Array`/`aes::cipher::Array`). This module only ever
+// builds `Array` references from already-fixed-size `&[u8; N]` inputs via the
+// infallible `From<&[T; N]> for &Array<T, U>` impl (`.into()` below), so the
+// `Array` type itself is never named directly.
+use aes::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use cbc::{Decryptor as CbcDecryptor, Encryptor as CbcEncryptor};
 use ed25519_dalek::{Signature, VerifyingKey};
 use subtle::ConstantTimeEq;
@@ -899,9 +905,12 @@ fn generate_device_keys() -> Result<DeviceKeys, CryptoError> {
 /// IV is a caller responsibility (derived, for Megolm; prepended, for the
 /// standalone helper below).
 fn cbc_encrypt(key: &[u8; KEY_SIZE], iv: &[u8; AES_BLOCK_SIZE], plaintext: &[u8]) -> Vec<u8> {
-    let enc =
-        CbcEncryptor::<Aes256>::new(GenericArray::from_slice(key), GenericArray::from_slice(iv));
-    enc.encrypt_padded_vec_mut::<Pkcs7>(plaintext)
+    // NOTE: `encrypt_padded_vec` (cipher 0.5, no `_mut` suffix -- the
+    // `BlockModeEncrypt` convenience methods now take `self` by value rather
+    // than `&mut self`); `key`/`iv` convert via the infallible
+    // `&[u8; N] -> &Array<u8, N>` `Into` impl, matching the cbc crate's own
+    // doc example.
+    CbcEncryptor::<Aes256>::new(key.into(), iv.into()).encrypt_padded_vec::<Pkcs7>(plaintext)
 }
 
 /// AES-256-CBC decrypt with an explicit IV, validating + stripping PKCS#7.
@@ -919,9 +928,10 @@ fn cbc_decrypt(
     if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(AES_BLOCK_SIZE) {
         return Err(CryptoError::InvalidCiphertextLength);
     }
-    let dec =
-        CbcDecryptor::<Aes256>::new(GenericArray::from_slice(key), GenericArray::from_slice(iv));
-    dec.decrypt_padded_vec_mut::<Pkcs7>(ciphertext)
+    // NOTE: see cbc_encrypt's NOTE -- `decrypt_padded_vec` (no `_mut`), same
+    // `&[u8; N] -> &Array<u8, N>` conversion.
+    CbcDecryptor::<Aes256>::new(key.into(), iv.into())
+        .decrypt_padded_vec::<Pkcs7>(ciphertext)
         .map_err(|_| CryptoError::InvalidPadding)
 }
 

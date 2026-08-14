@@ -70,7 +70,7 @@ pub(crate) fn encrypt_block(
     }
 
     ciphertext.copy_from_slice(plaintext);
-    make_xts(key)?.encrypt_sector(ciphertext, block_number_to_tweak(block_number));
+    make_xts(key)?.encrypt_sector(ciphertext, block_number_to_tweak(block_number).into());
     Ok(())
 }
 
@@ -109,7 +109,7 @@ pub(crate) fn decrypt_block(
     }
 
     plaintext.copy_from_slice(ciphertext);
-    make_xts(key)?.decrypt_sector(plaintext, block_number_to_tweak(block_number));
+    make_xts(key)?.decrypt_sector(plaintext, block_number_to_tweak(block_number).into());
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 //! Symmetric ratchet: HMAC-SHA256 chain key advancement, AES-256-GCM message encryption.
 
-use aes_gcm::aead::{AeadInPlace, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm::Aes256Gcm;
+use aes_gcm::aead::{AeadInOut, KeyInit};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -97,7 +97,7 @@ pub(crate) fn encrypt(state: &mut RatchetState, plaintext: &[u8]) -> Result<Ciph
 
     let mut in_out = plaintext.to_vec();
     cipher
-        .encrypt_in_place(Nonce::from_slice(&nonce), b"", &mut in_out)
+        .encrypt_in_place((&nonce).into(), b"", &mut in_out)
         .map_err(|_| EncryptionSnafu.build())?;
 
     let counter = state.counter;
@@ -211,7 +211,7 @@ fn aead_open(message_key: &[u8; 32], msg: &CiphertextMessage) -> Result<Vec<u8>>
     let cipher = make_aes_cipher(message_key)?;
     let mut in_out = msg.ciphertext.clone();
     cipher
-        .decrypt_in_place(Nonce::from_slice(&nonce), b"", &mut in_out)
+        .decrypt_in_place((&nonce).into(), b"", &mut in_out)
         .map_err(|_| DecryptionSnafu.build())?;
     Ok(in_out)
 }
@@ -225,7 +225,8 @@ fn derive_next_chain_key(chain_key: &[u8; 32]) -> Result<[u8; 32]> {
 }
 
 fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> Result<[u8; 32]> {
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).map_err(|_| InvalidKeySnafu.build())?;
+    let mut mac =
+        <HmacSha256 as KeyInit>::new_from_slice(key).map_err(|_| InvalidKeySnafu.build())?;
     mac.update(data);
     let tag = mac.finalize().into_bytes();
     let mut out = [0u8; 32];

@@ -22,7 +22,7 @@
 //! rather than a hand-transcribed constant.
 
 use aes::Aes128;
-use cmac::{Cmac, Mac};
+use cmac::{Cmac, KeyInit, Mac};
 use p256::elliptic_curve::Generate;
 use p256::elliptic_curve::point::AffineCoordinates;
 use rand_core::{Infallible, TryCryptoRng, TryRng};

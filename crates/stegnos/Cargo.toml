@@ -8,7 +8,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-aes = "0.8"
+aes = "0.9"
 aes-gcm = { workspace = true }
 getrandom = { workspace = true }
 jiff = { workspace = true }
@@ -17,7 +17,7 @@ rustix = { workspace = true }
 sha2 = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
-xts-mode = "0.5"
+xts-mode = "0.6"
 zeroize = "1"
 
 [lints]
