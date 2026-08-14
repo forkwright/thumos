@@ -207,6 +207,14 @@ jobs:
         # only being caught (if at all) by the weekly fuzz.yml run against an
         # ephemeral runner that never commits the drift back.
         run: scripts/check-external-lockfile-versions.sh fuzz/Cargo.lock
+      - name: Fuzz target coverage check (#819)
+        # WHY (#819): the WPA, EAPOL and CCCI targets fuzz implementations the
+        # kernel does not link, so the shipped radio and modem-boundary parsers
+        # have no fuzz coverage while a green run reads as though they do. Graded
+        # per module, because one crate can have both a module that delegates
+        # into the shared core and one that does not. Fails on any gap not listed
+        # with its cause, and on any listed gap that has since been closed.
+        run: scripts/check-fuzz-target-coverage.sh
       - name: Kernel build entrypoint check (#546)
         # WHY it runs BEFORE the build: it is a source-level grep that names the
         # CAUSE of the failure the next steps would otherwise report as
