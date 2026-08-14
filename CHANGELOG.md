@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2](https://github.com/forkwright/thumos/compare/v0.7.1...v0.7.2) (2026-08-14)
+
+
+### Bug Fixes
+
+* **docs:** stop the LLM corpus presenting closed issues as live blockers ([ea266f2](https://github.com/forkwright/thumos/commit/ea266f24751f980d34f1cc4abead507a82aaa646))
+* **docs:** stop the LLM corpus presenting closed issues as live blockers ([#818](https://github.com/forkwright/thumos/issues/818)) ([ea266f2](https://github.com/forkwright/thumos/commit/ea266f24751f980d34f1cc4abead507a82aaa646))
+* **lint:** resolve the five real findings; 81 of 86 are rule defects ([#814](https://github.com/forkwright/thumos/issues/814)) ([be350a8](https://github.com/forkwright/thumos/commit/be350a8cac513681565e3ea70b300b3bc584e5e9))
+
 ## [0.7.1](https://github.com/forkwright/thumos/compare/v0.7.0...v0.7.1) (2026-08-13)
 
 
