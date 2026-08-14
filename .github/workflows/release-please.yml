@@ -82,7 +82,9 @@ jobs:
         with:
           ref: ${{ env.ATTEST_REF }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
       - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           key: release-attest
