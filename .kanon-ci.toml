@@ -33,6 +33,7 @@ stages = [
     "kernel qemu witnesses",
     "wiring inventory",
     "doc inventory",
+    "pin parity",
     "kernel lockfile versions",
     "fuzz lockfile versions",
     "target test ledger",
@@ -136,6 +137,16 @@ timeout_secs = 300
 [stages."doc inventory"]
 cmd = "scripts/check-doc-inventory.sh"
 timeout_secs = 300
+
+# WHY: metaxu-core and the excluded kernel crate cannot inherit every
+# dependency, so both restate versions the workspace also declares.
+# metaxu-core's header asserts they match exactly; that was false twice in one
+# day (ed25519-dalek 2 against a workspace on 3, compact_str 0.8 against 0.10)
+# and two majors of one crate are two distinct types across a boundary these
+# crates exchange values over. Source-level, cheap.
+[stages."pin parity"]
+cmd = "scripts/check-pin-parity.sh"
+timeout_secs = 120
 
 # WHY (#688): crates/thumos is excluded from the workspace and carries its own
 # lockfile. release-please updates it through an explicit selector that once
