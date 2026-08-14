@@ -124,7 +124,14 @@ pub(crate) fn sha256(data: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
 /// zero-padded), so construction never fails.
 #[must_use]
 pub(crate) fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; SHA256_DIGEST_LEN] {
-    use hmac::{Hmac, Mac};
+    // NOTE: `new_from_slice` is provided by `KeyInit` (hmac 0.13 / digest
+    // 0.11 split it out of `Mac`), not `Mac` itself -- both must be in
+    // scope. Imported from `hmac`'s own re-export (`hmac::{KeyInit, Mac}`,
+    // itself re-exporting `digest::{KeyInit, Mac}`) rather than a transitive
+    // path through a sibling crate (e.g. `hkdf::HmacImpl`, which the
+    // compiler's own diagnostic suggests but which is hkdf's internal HMAC
+    // abstraction, not this crate's).
+    use hmac::{Hmac, KeyInit, Mac};
     // INVARIANT: HMAC keys may be any length, so `new_from_slice` cannot
     // return an error here; the zero fallback only preserves totality of the
     // signature and is never reached.

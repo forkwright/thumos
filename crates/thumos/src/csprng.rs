@@ -43,7 +43,11 @@
 //!     called concurrently on this single-core kernel.
 
 use rand_chacha::ChaCha20Rng;
-use rand_core::{RngCore, SeedableRng};
+// WHY: rand_core 0.10 renamed the infallible-fill trait `RngCore` -> `Rng`
+// (old `Rng` became `RngExt`, in the `rand` crate, unused here). `fill_bytes`
+// stays the same infallible `fn fill_bytes(&mut self, dst: &mut [u8])` --
+// no Result, no new panic path -- just re-homed onto the renamed trait.
+use rand_core::{Rng, SeedableRng};
 
 // ---------------------------------------------------------------------------
 // Policy constants

@@ -82,8 +82,13 @@ impl<'a> EncryptedBlockDevice<'a> {
         data: &mut [u8; BLOCK_SIZE],
     ) -> Result<(), BlockError> {
         let xts = self.make_xts()?;
+        // WHY: xts-mode 0.6 (cipher 0.5 / hybrid-array) takes the tweak as
+        // `hybrid_array::Array<u8, U16>` instead of a bare `[u8; 16]`. The
+        // exact-length `From<[T; N]>` impl on `Array` makes `.into()` an
+        // infallible, non-truncating conversion -- the tweak bytes
+        // (LE sector index) are unchanged.
         let tweak = Self::block_to_tweak(block_num);
-        xts.encrypt_sector(data, tweak);
+        xts.encrypt_sector(data, tweak.into());
         Ok(())
     }
 
@@ -94,8 +99,9 @@ impl<'a> EncryptedBlockDevice<'a> {
         data: &mut [u8; BLOCK_SIZE],
     ) -> Result<(), BlockError> {
         let xts = self.make_xts()?;
+        // WHY: see encrypt_block_inplace -- same Array<u8, U16> conversion.
         let tweak = Self::block_to_tweak(block_num);
-        xts.decrypt_sector(data, tweak);
+        xts.decrypt_sector(data, tweak.into());
         Ok(())
     }
 }
@@ -176,8 +182,9 @@ impl BlockDevice for EncryptedBlockDevice<'_> {
 
             // Decrypt the block.
             let xts = self.make_xts()?;
+            // WHY: see encrypt_block_inplace -- same Array<u8, U16> conversion.
             let tweak = Self::block_to_tweak(block_num);
-            xts.decrypt_sector(&mut block_buf, tweak);
+            xts.decrypt_sector(&mut block_buf, tweak.into());
 
             // Copy the relevant sectors from the decrypted block to buf.
             let sectors_available = SECTORS_PER_BLOCK - offset_in_block;
