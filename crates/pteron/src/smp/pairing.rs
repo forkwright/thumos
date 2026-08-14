@@ -145,24 +145,20 @@ pub(crate) struct BondingRecord {
     pub(crate) peer_irk: Irk,
 }
 
-/// One SMP pairing procedure's full cryptographic state.
+/// [`PairingSession`]'s Phase 2/3 cryptographic secret material — ECDH
+/// key-agreement state, the derived `MacKey`/`LTK`, and the peer's
+/// not-yet-bonded IRK — under one owner, so the zeroize-on-drop posture
+/// [`Irk`] already established has exactly one place to reach from
+/// instead of being scattered across [`PairingSession`]'s field list.
 ///
-/// Borrows the device's persistent [`Irk`] rather than owning or
-/// generating one — a device's IRK must stay the SAME across every
-/// bonding for `generate_rpa` to remain resolvable by every peer it
-/// distributes to, so provisioning it is the caller's job (kernel-side,
-/// once at boot), not this session's.
-pub(crate) struct PairingSession<'a> {
-    role: Role,
-    state: PairingState,
-
-    our_features: PairingFeatures,
-    peer_features: Option<PairingFeatures>,
-
-    our_address: (u8, BdAddr),
-    peer_address: (u8, BdAddr),
-    our_irk: &'a Irk,
-
+/// [`EcdhKeyPair`]'s inner `p256::ecdh::EphemeralSecret` already
+/// zeroizes itself via its own `Drop` impl, so `ecdh` needs no explicit
+/// clearing here. `peer_public_x` (the peer's ECDH public-key
+/// x-coordinate) and `responder_confirm` (`Cb`) are both values the peer
+/// transmits in cleartext over the SMP channel, not secrets, so neither
+/// is zeroized here either — matching the coverage `PairingSession`'s
+/// `Drop` had before this material moved into its own owner.
+struct SessionSecrets {
     ecdh: Option<EcdhKeyPair>,
     peer_public_x: Option<[u8; 32]>,
     dhkey: Option<[u8; 32]>,
@@ -177,25 +173,36 @@ pub(crate) struct PairingSession<'a> {
     mackey: Option<[u8; 16]>,
     ltk: Option<[u8; 16]>,
 
-    will_send_irk: bool,
-    will_recv_irk: bool,
-    sent_our_identity: bool,
     /// Holds the peer's IRK between its Identity Information PDU and the
     /// Identity Address Information PDU that must immediately follow it
     /// (Vol 3, Part H §3.6.1 order) — a lone Identity Information never
     /// becomes a [`BondingRecord`] on its own.
     pending_peer_irk: Option<[u8; 16]>,
-    bonding_record: Option<BondingRecord>,
 }
 
-impl Drop for PairingSession<'_> {
+impl SessionSecrets {
+    const fn new() -> Self {
+        Self {
+            ecdh: None,
+            peer_public_x: None,
+            dhkey: None,
+            our_nonce: None,
+            peer_nonce: None,
+            responder_confirm: None,
+            mackey: None,
+            ltk: None,
+            pending_peer_irk: None,
+        }
+    }
+}
+
+impl Drop for SessionSecrets {
     fn drop(&mut self) {
         // WHY: every intermediate secret this session ever holds (nonces,
         // the DHKey, MacKey, LTK) must not outlive the session in memory,
         // matching the zeroize-on-drop posture `Irk` already established.
-        // `EcdhKeyPair`'s inner `p256::ecdh::EphemeralSecret` and any
-        // `BondingRecord`'s `Irk` already zeroize themselves via their
-        // own `Drop` impls.
+        // `EcdhKeyPair`'s inner `p256::ecdh::EphemeralSecret` already
+        // zeroizes itself via its own `Drop` impl.
         if let Some(dhkey) = self.dhkey.as_mut() {
             dhkey.zeroize();
         }
@@ -215,6 +222,33 @@ impl Drop for PairingSession<'_> {
             irk.zeroize();
         }
     }
+}
+
+/// One SMP pairing procedure's full cryptographic state.
+///
+/// Borrows the device's persistent [`Irk`] rather than owning or
+/// generating one — a device's IRK must stay the SAME across every
+/// bonding for `generate_rpa` to remain resolvable by every peer it
+/// distributes to, so provisioning it is the caller's job (kernel-side,
+/// once at boot), not this session's.
+pub(crate) struct PairingSession<'a> {
+    role: Role,
+    state: PairingState,
+
+    our_features: PairingFeatures,
+    peer_features: Option<PairingFeatures>,
+
+    our_address: (u8, BdAddr),
+    peer_address: (u8, BdAddr),
+    our_irk: &'a Irk,
+
+    /// Phase 2/3 cryptographic secret material — see [`SessionSecrets`].
+    secrets: SessionSecrets,
+
+    will_send_irk: bool,
+    will_recv_irk: bool,
+    sent_our_identity: bool,
+    bonding_record: Option<BondingRecord>,
 }
 
 impl<'a> PairingSession<'a> {
@@ -251,18 +285,10 @@ impl<'a> PairingSession<'a> {
             our_address,
             peer_address,
             our_irk,
-            ecdh: None,
-            peer_public_x: None,
-            dhkey: None,
-            our_nonce: None,
-            peer_nonce: None,
-            responder_confirm: None,
-            mackey: None,
-            ltk: None,
+            secrets: SessionSecrets::new(),
             will_send_irk: false,
             will_recv_irk: false,
             sent_our_identity: false,
-            pending_peer_irk: None,
             bonding_record: None,
         }
     }
@@ -401,7 +427,7 @@ impl<'a> PairingSession<'a> {
 
             let ecdh = EcdhKeyPair::generate(random);
             let response = pdu::encode_pairing_response(self.our_features).to_vec();
-            self.ecdh = Some(ecdh);
+            self.secrets.ecdh = Some(ecdh);
             self.state = PairingState::AwaitingPeerPublicKey;
             return vec![response];
         };
@@ -422,7 +448,7 @@ impl<'a> PairingSession<'a> {
 
             let ecdh = EcdhKeyPair::generate(random);
             let our_key = pdu::encode_public_key(*ecdh.public_x(), *ecdh.public_y()).to_vec();
-            self.ecdh = Some(ecdh);
+            self.secrets.ecdh = Some(ecdh);
             self.state = PairingState::AwaitingPeerPublicKey;
             return vec![our_key];
         };
@@ -445,14 +471,14 @@ impl<'a> PairingSession<'a> {
     // ── Phase 2 ──
 
     fn on_public_key(&mut self, pk: PublicKey, random: &mut dyn FnMut(&mut [u8])) -> Outbound {
-        let Some(ecdh) = self.ecdh.as_ref() else {
+        let Some(ecdh) = self.secrets.ecdh.as_ref() else {
             return self.fail(PairingFailReason::Unspecified);
         };
         let Some(agreed) = ecdh.agree(&pk.x, &pk.y) else {
             return self.fail(PairingFailReason::InvalidParameters);
         };
-        self.peer_public_x = Some(agreed.peer_x);
-        self.dhkey = Some(agreed.shared);
+        self.secrets.peer_public_x = Some(agreed.peer_x);
+        self.secrets.dhkey = Some(agreed.shared);
 
         match self.role {
             Role::Initiator => {
@@ -462,12 +488,12 @@ impl<'a> PairingSession<'a> {
             Role::Responder => {
                 let mut nonce = [0u8; 16];
                 random(&mut nonce);
-                self.our_nonce = Some(nonce);
+                self.secrets.our_nonce = Some(nonce);
 
-                let Some(ecdh) = self.ecdh.as_ref() else {
+                let Some(ecdh) = self.secrets.ecdh.as_ref() else {
                     return self.fail(PairingFailReason::Unspecified);
                 };
-                let Some(peer_x) = self.peer_public_x else {
+                let Some(peer_x) = self.secrets.peer_public_x else {
                     return self.fail(PairingFailReason::Unspecified);
                 };
                 // Cb = f4(PKb_x, PKa_x, Nb, 0) — the responder commits
@@ -475,7 +501,7 @@ impl<'a> PairingSession<'a> {
                 // ordering property Just Works/Numeric Comparison relies
                 // on for security).
                 let cb = toolbox::f4(ecdh.public_x(), &peer_x, &nonce, ASSOCIATION_Z);
-                self.responder_confirm = Some(cb);
+                self.secrets.responder_confirm = Some(cb);
 
                 let our_key = pdu::encode_public_key(*ecdh.public_x(), *ecdh.public_y()).to_vec();
                 let confirm = pdu::encode_pairing_confirm(cb).to_vec();
@@ -492,10 +518,10 @@ impl<'a> PairingSession<'a> {
     ) -> Outbound {
         // Initiator only (state guard in `dispatch`): store Cb — now safe
         // to reveal Na, since the responder has already committed to Nb.
-        self.responder_confirm = Some(confirm.value);
+        self.secrets.responder_confirm = Some(confirm.value);
         let mut nonce = [0u8; 16];
         random(&mut nonce);
-        self.our_nonce = Some(nonce);
+        self.secrets.our_nonce = Some(nonce);
         self.state = PairingState::AwaitingResponderRandom;
         vec![pdu::encode_pairing_random(nonce).to_vec()]
     }
@@ -503,12 +529,12 @@ impl<'a> PairingSession<'a> {
     fn on_responder_random(&mut self, rand: PairingRandom) -> Outbound {
         // Initiator only (state guard): Nb has arrived — verify Cb
         // against it before trusting anything derived from it.
-        self.peer_nonce = Some(rand.value);
+        self.secrets.peer_nonce = Some(rand.value);
         let (Some(ecdh), Some(peer_x), Some(nb), Some(cb)) = (
-            self.ecdh.as_ref(),
-            self.peer_public_x,
-            self.peer_nonce,
-            self.responder_confirm,
+            self.secrets.ecdh.as_ref(),
+            self.secrets.peer_public_x,
+            self.secrets.peer_nonce,
+            self.secrets.responder_confirm,
         ) else {
             return self.fail(PairingFailReason::Unspecified);
         };
@@ -523,8 +549,8 @@ impl<'a> PairingSession<'a> {
         // Responder only (state guard): Na has arrived. Nb (our_nonce)
         // was already generated in `on_public_key`. Send Nb, then derive
         // keys and wait for the initiator's DHKey Check.
-        self.peer_nonce = Some(rand.value);
-        let Some(nb) = self.our_nonce else {
+        self.secrets.peer_nonce = Some(rand.value);
+        let Some(nb) = self.secrets.our_nonce else {
             return self.fail(PairingFailReason::Unspecified);
         };
         let random_pdu = pdu::encode_pairing_random(nb).to_vec();
@@ -543,7 +569,7 @@ impl<'a> PairingSession<'a> {
     /// `Eb` — see [`Self::on_initiator_dhkey_check`]).
     fn derive_mackey_ltk_and_send_dhkey_check(&mut self) -> Outbound {
         let (Some(dhkey), Some(na), Some(nb)) = (
-            self.dhkey,
+            self.secrets.dhkey,
             self.our_nonce_for_role(),
             self.peer_nonce_for_role(),
         ) else {
@@ -551,8 +577,8 @@ impl<'a> PairingSession<'a> {
         };
         let (a1, a2) = self.initiator_then_responder_addresses();
         let (mackey, ltk) = toolbox::f5(&dhkey, &na, &nb, &a1, &a2);
-        self.mackey = Some(mackey);
-        self.ltk = Some(ltk);
+        self.secrets.mackey = Some(mackey);
+        self.secrets.ltk = Some(ltk);
 
         match self.role {
             Role::Initiator => {
@@ -575,16 +601,16 @@ impl<'a> PairingSession<'a> {
     /// responder's stored copy of the initiator's nonce.
     const fn our_nonce_for_role(&self) -> Option<[u8; 16]> {
         match self.role {
-            Role::Initiator => self.our_nonce,
-            Role::Responder => self.peer_nonce,
+            Role::Initiator => self.secrets.our_nonce,
+            Role::Responder => self.secrets.peer_nonce,
         }
     }
 
     /// `Nb` for whichever role we are.
     const fn peer_nonce_for_role(&self) -> Option<[u8; 16]> {
         match self.role {
-            Role::Initiator => self.peer_nonce,
-            Role::Responder => self.our_nonce,
+            Role::Initiator => self.secrets.peer_nonce,
+            Role::Responder => self.secrets.our_nonce,
         }
     }
 
@@ -613,8 +639,11 @@ impl<'a> PairingSession<'a> {
 
     fn on_responder_dhkey_check(&mut self, check: DhKeyCheck) -> Outbound {
         // Initiator only (state guard): verify the responder's Eb.
-        let (Some(mackey), Some(na), Some(nb)) = (self.mackey, self.our_nonce, self.peer_nonce)
-        else {
+        let (Some(mackey), Some(na), Some(nb)) = (
+            self.secrets.mackey,
+            self.secrets.our_nonce,
+            self.secrets.peer_nonce,
+        ) else {
             return self.fail(PairingFailReason::Unspecified);
         };
         let (a1, a2) = self.initiator_then_responder_addresses();
@@ -633,8 +662,11 @@ impl<'a> PairingSession<'a> {
     fn on_initiator_dhkey_check(&mut self, check: DhKeyCheck) -> Outbound {
         // Responder only (state guard): verify the initiator's Ea, then
         // send our own Eb.
-        let (Some(mackey), Some(na), Some(nb)) = (self.mackey, self.peer_nonce, self.our_nonce)
-        else {
+        let (Some(mackey), Some(na), Some(nb)) = (
+            self.secrets.mackey,
+            self.secrets.peer_nonce,
+            self.secrets.our_nonce,
+        ) else {
             return self.fail(PairingFailReason::Unspecified);
         };
         let (a1, a2) = self.initiator_then_responder_addresses();
@@ -668,12 +700,12 @@ impl<'a> PairingSession<'a> {
         if !self.will_recv_irk {
             return self.fail(PairingFailReason::InvalidParameters);
         }
-        self.pending_peer_irk = Some(info.irk);
+        self.secrets.pending_peer_irk = Some(info.irk);
         Vec::new()
     }
 
     fn on_identity_address_information(&mut self, info: IdentityAddressInformation) -> Outbound {
-        let Some(irk_bytes) = self.pending_peer_irk.take() else {
+        let Some(irk_bytes) = self.secrets.pending_peer_irk.take() else {
             // Identity Address Information without a preceding Identity
             // Information: the spec-mandated pair order was violated.
             return self.fail(PairingFailReason::InvalidParameters);
