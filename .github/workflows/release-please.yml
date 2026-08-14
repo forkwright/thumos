@@ -184,7 +184,7 @@ jobs:
           done
       - name: Attest source tarball provenance
         if: ${{ env.IS_RELEASE == 'true' }}
-        uses: actions/attest-build-provenance@10334b5f1e684784025c3fc0a277c88c19089275 # v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
         with:
           subject-path: thumos-*.tar.gz
       # NOTE: two calls, not one glob -- sbom-path takes exactly one file,
