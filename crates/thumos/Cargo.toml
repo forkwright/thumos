@@ -131,7 +131,7 @@ ed25519-dalek = { version = "2", default-features = false, features = [
     "digest",
     "serde",
 ] }
-hkdf = { version = "0.12", default-features = false }
+hkdf = { version = "0.13", default-features = false }
 hmac = { version = "0.12", default-features = false }
 pbkdf2 = { version = "0.12", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
