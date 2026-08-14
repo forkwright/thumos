@@ -85,7 +85,7 @@ getrandom = "0.4"
 hkdf = "0.12"
 hmac = "0.12"
 pbkdf2 = "0.12"
-sha1 = "0.10"
+sha1 = "0.11"
 sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 
