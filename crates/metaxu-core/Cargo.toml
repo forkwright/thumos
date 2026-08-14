@@ -21,11 +21,11 @@ repository.workspace = true
 compact_str = { version = "0.8", default-features = false, features = [
     "serde",
 ] }
-ed25519-dalek = { version = "2", default-features = false, features = [
+ed25519-dalek = { version = "3", default-features = false, features = [
     "serde",
 ] }
-hmac = { version = "0.12", default-features = false }
-sha2 = { version = "0.10", default-features = false }
+hmac = { version = "0.13", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = [
     "derive",
