@@ -41,7 +41,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # PROJECT: security hardening — never expose token to steps
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      # WHY: previously dtolnay/rust-toolchain @ "# stable" floated to whatever
+      # Rust was current at run time. With no toolchain: input this fleet
+      # action instead installs the rust-toolchain.toml pin (1.94) -- the same
+      # version CI actually gates against, not an unpinned floor. Deliberate,
+      # not an oversight; same applies to the cargo-audit job below and
+      # release-please.yml's release-attest job.
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
       - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           key: cargo-deny
@@ -54,7 +62,14 @@ jobs:
         # WHY (#586): 0.20 moved --config from the check subcommand to the
         # global position (`cargo-deny --config <path> check ...`, not
         # `check --config <path>`); scripts/security-scan.sh passes it there.
-        run: cargo install cargo-deny --locked --version ^0.20
+        #
+        # WHY prebuilt, not `cargo install` (kanon#2385): a source build
+        # couples cargo-deny's climbing MSRV to this repo's pinned toolchain.
+        # Exact version pinned deliberately -- a database-format bump must be
+        # a reviewed change, never an implicit floor from a caret range.
+        uses: taiki-e/install-action@1beb33eee6d086258184383af9a538940be190ed # v2.85.6
+        with:
+          tool: cargo-deny@0.20.2
       - name: cargo deny (all graphs)
         # WHY (#547): advisories/licenses/bans/sources over EVERY graph in
         # the lockfile manifest (workspace, kernel, fuzz) — one script and
@@ -72,12 +87,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
       - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           key: cargo-audit
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked --version ^0.22
+        # WHY prebuilt, not `cargo install` (kanon#2385): a source build
+        # couples cargo-audit's climbing MSRV to this repo's pinned toolchain.
+        # Exact version pinned deliberately -- a database-format bump must be
+        # a reviewed change, never an implicit floor from a caret range.
+        uses: taiki-e/install-action@1beb33eee6d086258184383af9a538940be190ed # v2.85.6
+        with:
+          tool: cargo-audit@0.22.2
       - name: cargo audit (all graphs)
         # WHY: -D unmaintained,unsound,yanked escalates those categories
         # to errors (default is warning only). Suppressions go through
