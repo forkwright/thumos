@@ -4,8 +4,10 @@ set -euo pipefail
 # check-convergence.sh — the #545 convergence ratchet. Fails when:
 #   (a) a [[pair]] row lacks disposition/canonical/owner, or names a file
 #       that no longer exists;
-#   (b) a live "ported from" comment names a crate pair with no ledger row;
-#   (c) the port-marker or stale-expectation counts INCREASE over the
+#   (b) a live duplication-marker comment (a crate name plus an intent verb —
+#       "ported from", "mirrors", "mirroring", "matches", "match the") names
+#       a crate pair with no ledger row;
+#   (c) the duplication-marker or stale-expectation counts INCREASE over the
 #       recorded ratchet values (convergence only ever burns down);
 #   (d) any lib.rs still points at closed #126 (the pointer must be the
 #       live ledger, not a closed issue).
@@ -45,32 +47,65 @@ for p in pairs:
     for key in ("kernel", "workspace", "disposition", "canonical", "owner"):
         if not p.get(key):
             fail(f"pair '{name}' missing '{key}'")
-    if p.get("disposition") not in ("converged", "extract-core", "kernel-owned", "workspace-owned"):
+    if p.get("disposition") not in ("converged", "extract-core", "kernel-owned", "workspace-owned", "pending"):
         fail(f"pair '{name}' has invalid disposition '{p.get('disposition')}'")
+    if p.get("disposition") == "pending" and not re.search(r'#\d+', p.get("owner", "")):
+        fail(f"pair '{name}' has disposition 'pending' but 'owner' does not name the issue that will decide it")
     for side in ("kernel", "workspace"):
         ref = p.get(side, "")
         for m in re.finditer(r'([a-z0-9_]+\.rs)', ref):
-            if not glob.glob(os.path.join(root, "crates", "*", "src", m.group(1))):
+            if not glob.glob(os.path.join(root, "crates", "*", "src", "**", m.group(1)), recursive=True):
                 fail(f"pair '{name}' {side} references missing file {m.group(1)}")
 
-# (b) every live "ported from" comment must name a crate the ledger covers.
-covered = set()
-for p in pairs:
-    for m in re.finditer(r'`?([a-z]+(?:-[a-z]+)?)`?(?:\s|$|,|\.|/)', p.get("workspace", "")):
-        covered.add(m.group(1))
-    covered.add(p.get("workspace", "").split(",")[0].strip())
+# Workspace crate names, derived from the workspace manifest's own member
+# list (never hardcoded) -- a new crate is covered the day it joins
+# `[workspace].members`. This naturally excludes crates/thumos: the root
+# Cargo.toml `exclude`s it (it is the no_std kernel binary, the place a
+# marker is WRITTEN, never a crate a marker names as its source). Including
+# it produced a real false positive on this tree --
+# crates/metaxu/src/bin/pylon_bridge.rs:15 says "mirrors
+# `crates/thumos/keys/dev/boot-dev.*`", a dev-keypair file-path mention with
+# no duplicated logic behind it.
+workspace_manifest = tomllib.load(open(os.path.join(root, "Cargo.toml"), "rb"))
+crate_names = []
+for member in workspace_manifest.get("workspace", {}).get("members", []):
+    member_cargo = os.path.join(root, member, "Cargo.toml")
+    try:
+        crate_names.append(tomllib.load(open(member_cargo, "rb"))["package"]["name"])
+    except Exception as e:
+        fail(f"{os.path.relpath(member_cargo, root)} is not parseable TOML: {e}")
+
+# (b) every live duplication marker must name a crate the ledger covers.
+#
+# A marker is a crate name plus an intent verb ("ported from", "mirrors",
+# "mirroring", "matches", "match the"), restricted to comment lines -- a
+# marker is always prose, so this is what keeps a Rust `match` EXPRESSION
+# (`match klesis_core::parse_final_result(..)`) from matching. The trailing
+# `\b` stops a substring collision (`sema` inside "semantics"). Names are
+# tried longest-first so `eidolon-core` cannot be swallowed by `eidolon`.
+# Verified against this tree (#820): 17 markers, 0 false positives.
+names_by_length = sorted(crate_names, key=len, reverse=True)
+MARKER = re.compile(
+    r'(?<![a-z])(?:ported from|mirrors?|mirroring|matches|match the)\s+'
+    r'(?:the\s+)?`?(?:crates/)?(' + "|".join(re.escape(n) for n in names_by_length) + r')\b',
+    re.IGNORECASE,
+)
+COMMENT = re.compile(r'^\s*(?://|/\*|\*)')
+
 live_ports = []
-for f in glob.glob(os.path.join(root, "crates", "*", "src", "*.rs")):
+for f in glob.glob(os.path.join(root, "crates", "*", "src", "**", "*.rs"), recursive=True):
     for i, line in enumerate(open(f, errors="ignore"), 1):
-        m = re.search(r'(?<![a-z])ported from `?(?:crates/)?([a-z-]+)', line)
+        if not COMMENT.match(line):
+            continue
+        m = MARKER.search(line)
         if m:
             live_ports.append((f, i, m.group(1)))
             if not any(m.group(1) in p.get("workspace", "") for p in pairs):
-                fail(f"{os.path.relpath(f, root)}:{i} 'ported from {m.group(1)}' has no ledger row")
+                fail(f"{os.path.relpath(f, root)}:{i} duplication marker naming '{m.group(1)}' has no ledger row")
 
 # (c) the ratchet: counts may only decrease.
-if len(live_ports) > ratchet.get("ported_from_comments", 0):
-    fail(f"'ported from' comments increased: {len(live_ports)} > ratchet {ratchet.get('ported_from_comments')} (convergence only burns down)")
+if len(live_ports) > ratchet.get("duplication_markers", 0):
+    fail(f"duplication markers increased: {len(live_ports)} > ratchet {ratchet.get('duplication_markers')} (convergence only burns down)")
 
 stale = 0
 for f in glob.glob(os.path.join(root, "crates", "*", "src", "lib.rs")):
@@ -130,6 +165,6 @@ for f in glob.glob(os.path.join(root, "crates", "*", "src", "lib.rs")):
         fail(f"{os.path.relpath(f, root)} still references closed #126 — point at docs/convergence.toml (#545)")
 
 if rc == 0:
-    print(f"convergence ledger: {len(pairs)} pairs classified, {len(live_ports)} port markers, 0 stale #126 pointers, ratchet holding")
+    print(f"convergence ledger: {len(pairs)} pairs classified, {len(live_ports)} duplication markers, 0 stale #126 pointers, ratchet holding")
 sys.exit(rc)
 PYEOF
