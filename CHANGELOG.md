@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1](https://github.com/forkwright/thumos/compare/v0.7.0...v0.7.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **lint:** resolve the singleton findings and rename the crate colliding with forkwright/sphragis ([#779](https://github.com/forkwright/thumos/issues/779)) ([8d44402](https://github.com/forkwright/thumos/commit/8d444021e1fb5febbcd46b35cdc2cf656c75a75a))
+* **release:** regenerate fuzz/Cargo.lock and cover it by pattern, not enumeration ([#772](https://github.com/forkwright/thumos/issues/772)) ([1b52d87](https://github.com/forkwright/thumos/commit/1b52d87cfa0c737a13994693f2a02b9c662fe7cd))
+
 ## [0.7.0](https://github.com/forkwright/thumos/compare/v0.6.2...v0.7.0) (2026-08-13)
 
 
