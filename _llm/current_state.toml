@@ -10,7 +10,7 @@ source_docs = [
 [state]
 summary = "Thumos has a broad compiled/tested Phase 10 code catalog and an emulation-verified userspace process model; Phase 11 hardware validation and several boot/userspace wiring paths remain open."
 current_phase = "Phase 11: System Qualification."
-updated = "2026-07-16"
+updated = "2026-08-14"
 
 [[recent]]
 date = "2026-07-16"
@@ -24,17 +24,19 @@ item = "Software phases 03-10 produced compiled/tested surfaces; end-to-end wiri
 date = "2026-04-12"
 item = "Factory firmware mismatch identified as the hardware-validation blocker."
 
+# WHY only hardware-gated threads are named here: an issue number written into
+# a doc is a fact with no owner and it decays silently. This block previously
+# listed three threads and two of them (#461 QEMU timing fidelity, #528 dead
+# boot-orchestration tests) had been closed for weeks while llms.txt still
+# pointed agents here for "phase, blockers, and open threads". The live list is
+# a query -- `gh issue list --repo forkwright/thumos` -- and only threads whose
+# blocker is PHYSICAL belong here, because those cannot be resolved by reading
+# the tree and an agent needs to know about them before planning work.
+#
+# scripts/check-llm-issue-refs.sh enforces that every issue named below is
+# still open, so this decays loudly now instead of silently.
+
 [[open_threads]]
 name = "Hardware validation"
 issue = 467
 status = "Needs a BROM session and a flash of the eight stock partitions before proof-of-life kernel testing. Live-eMMC boot-partition read + streaming verify is tracked in #467."
-
-[[open_threads]]
-name = "QEMU timing fidelity"
-issue = 461
-status = "elapsed_ms()/CNTPCT and wfe-wait behave differently under qemu-virt, so timeout-dependent paths are not faithfully exercised by the emulation harness every other CI witness depends on."
-
-[[open_threads]]
-name = "Dead boot-orchestration tests"
-issue = 528
-status = "kinit and kardia are cfg(not(test)), so their unit tests never compile or run -- spawn-planning and boot-step invariants are unguarded."
