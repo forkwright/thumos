@@ -38,13 +38,34 @@ import pathlib
 root = pathlib.Path(sys.argv[1])
 
 def parse_deps(text, section_names):
-    """Map dependency name -> literal version string, for one manifest."""
+    """Map dependency name -> literal version string, for one manifest.
+
+    WHY three forms and not two: TOML lets a dependency be declared as a bare
+    string (`name = "1"`), an inline table (`name = { version = "1", ... }`),
+    OR as its own dotted-header table (`[workspace.dependencies.name]` with
+    `version = "1"` beneath). A parser keyed on an exact section name sees only
+    the first two and silently drops every dep declared the third way -- which
+    is the same shape as the defect this whole check exists to catch, one level
+    up: a scanner that misses a valid spelling and reports green. aletheia
+    declares `regex` and `serde` this way today, so the form is in live fleet
+    use, not hypothetical.
+    """
     out = {}
     section = None
+    dotted = None          # dep name when inside [<section>.<name>]
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1]
+            dotted = None
+            for base in section_names:
+                if section.startswith(base + "."):
+                    dotted = section[len(base) + 1:].strip('"')
+            continue
+        if dotted is not None:
+            vm = re.match(r'^version\s*=\s*"([^"]+)"', line)
+            if vm:
+                out[dotted] = vm.group(1)
             continue
         if section not in section_names:
             continue
