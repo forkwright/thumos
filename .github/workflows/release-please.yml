@@ -33,7 +33,7 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:
           config-file: release-please-config.json
@@ -78,7 +78,7 @@ jobs:
       # path-safety entirely rather than sanitizing it.
       RELEASE_LABEL: ${{ needs.release-please.outputs.tag_name || format('dispatch-{0}', github.run_id) }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.ATTEST_REF }}
           persist-credentials: false
@@ -186,7 +186,7 @@ jobs:
           done
       - name: Attest source tarball provenance
         if: ${{ env.IS_RELEASE == 'true' }}
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: thumos-*.tar.gz
       # NOTE: two calls, not one glob -- sbom-path takes exactly one file,
@@ -195,13 +195,13 @@ jobs:
       # each need their own attestation call.
       - name: Attest workspace CycloneDX SBOM
         if: ${{ env.IS_RELEASE == 'true' }}
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v2
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: thumos-*.tar.gz
           sbom-path: sbom-workspace.cdx.json
       - name: Attest kernel CycloneDX SBOM
         if: ${{ env.IS_RELEASE == 'true' }}
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v2
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: thumos-*.tar.gz
           sbom-path: sbom-kernel.cdx.json
