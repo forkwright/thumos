@@ -51,7 +51,7 @@ name = "aither"
 version = "0.7.1"
 dependencies = [
  "getrandom 0.4.3",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "log",
  "nom",
  "pbkdf2",
@@ -1081,7 +1081,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.3",
  "hkdf 0.12.4",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "log",
  "postcard",
  "serde",
@@ -1146,7 +1146,7 @@ version = "0.7.1"
 dependencies = [
  "compact_str",
  "ed25519-dalek",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "metaxu-core",
  "postcard",
  "serde",
@@ -1161,7 +1161,7 @@ version = "0.7.1"
 dependencies = [
  "compact_str",
  "ed25519-dalek",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "postcard",
  "serde",
  "sha2",
