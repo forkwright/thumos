@@ -141,6 +141,18 @@ jobs:
         with:
           target: i686-unknown-linux-gnu, armv7a-none-eabi
           cache: false
+          # WHY rustflags is emptied HERE and nowhere else (#546): this action
+          # exports RUSTFLAGS="-D warnings" by default, and an env RUSTFLAGS
+          # REPLACES the rustflags in crates/thumos/.cargo/config.toml rather
+          # than merging with them — dropping `-C link-arg=-Tlink.ld` and the
+          # -D warnings gate (#431) the config owns. Every step in this job runs
+          # cargo against the kernel crate, whose flags are config-owned; the
+          # other jobs build the root workspace, which declares no config
+          # rustflags, so there `-D warnings` is the only source and is wanted.
+          # Empty means UNSET, not set-to-empty: the action skips the export
+          # entirely, and cargo treats a set-but-empty RUSTFLAGS as an override
+          # to nothing, which would clobber just the same.
+          rustflags: ""
       - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           key: kernel
@@ -195,6 +207,13 @@ jobs:
         # only being caught (if at all) by the weekly fuzz.yml run against an
         # ephemeral runner that never commits the drift back.
         run: scripts/check-external-lockfile-versions.sh fuzz/Cargo.lock
+      - name: Kernel build entrypoint check (#546)
+        # WHY it runs BEFORE the build: it is a source-level grep that names the
+        # CAUSE of the failure the next steps would otherwise report as
+        # undefined linker symbols. A kernel build that inherits an env
+        # RUSTFLAGS loses the link script and the warning gate together, and
+        # only the link loss is loud.
+        run: scripts/check-kernel-build-entrypoint.sh
       - name: Kernel cross-compile (armv7a) + zero-warning gate (#431)
         # WHY (#431): the zero-warning gate lives in crates/thumos/.cargo/
         # config.toml's rustflags; scripts/kernel-build.sh builds through it

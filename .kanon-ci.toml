@@ -25,6 +25,9 @@
 stages = [
     "cargo fmt",
     "cargo check",
+    # WHY before "kernel build": a source-level grep that names the CAUSE of the
+    # link failure the next stage would otherwise report as undefined symbols.
+    "kernel build entrypoint",
     "kernel build",
     "kernel trust anchor",
     "kernel host tests",
@@ -60,6 +63,16 @@ timeout_secs = 300
 [stages."cargo check"]
 cmd = "cargo check --workspace --all-targets --locked --jobs 8"
 timeout_secs = 900
+
+# WHY (#546): env RUSTFLAGS REPLACES the rustflags in crates/thumos/.cargo/
+# config.toml rather than merging, so a kernel build that inherits the variable
+# loses the link script AND the -D warnings gate (#431). kernel-build.sh strips
+# it; this stage keeps that from being the only guarded site, because one
+# stripped invocation beside an unstripped one is a coincidence, not a guard.
+# Only the link loss is loud — a dropped warning gate ships green.
+[stages."kernel build entrypoint"]
+cmd = "scripts/check-kernel-build-entrypoint.sh"
+timeout_secs = 120
 
 # WHY (#546): the canonical build is scripts/kernel-build.sh — crates/thumos/
 # .cargo/config.toml pins target + link script + the -D warnings gate (#431).
