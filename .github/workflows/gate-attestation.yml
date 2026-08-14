@@ -15,6 +15,13 @@
 # with .kanon-ci.toml too -- it is what makes a Cargo.lock inconsistent with
 # its manifests fail here instead of being silently regenerated.
 #
+# WHY(#775): doctest_cmd mirrors ci.yml's `doctests` step verbatim instead of
+# .kanon-ci.toml, which has no doctest stage (nextest does not run doctests;
+# ci.yml's `workspace` job is the only other place they run, and that job is
+# NOT a required check) -- leaving doctest_cmd empty meant this gate attested
+# nothing about doctests at all. Keep both commands in sync by hand; there is
+# no single source both workflows read.
+#
 # NOTE: the excluded bare-metal kernel crate (crates/thumos, `exclude`d from
 # [workspace]) is covered by neither this gate NOR .kanon-ci.toml's fmt/
 # check/clippy/nextest stages -- only by the "CI" workflow's `kernel` job
@@ -66,7 +73,7 @@ jobs:
       check_cmd: "cargo check --workspace --all-targets --locked --jobs 8"
       clippy_cmd: "cargo clippy --workspace --all-targets --locked --jobs 8 -- -D warnings"
       nextest_cmd: "cargo nextest run --workspace --locked --build-jobs 8 --test-threads 8"
-      doctest_cmd: ""
+      doctest_cmd: "cargo test --doc --workspace --locked --jobs 8"
       system_packages: ""
       needs_fleet_repo_token: false
       rust_cache_key: "gate-attestation"
