@@ -18,7 +18,7 @@ repository.workspace = true
 # declaration already sets `default-features = false` (metaxu's own
 # no-override need, pre-dating this crate).
 [dependencies]
-compact_str = { version = "0.8", default-features = false, features = [
+compact_str = { version = "0.10", default-features = false, features = [
     "serde",
 ] }
 ed25519-dalek = { version = "3", default-features = false, features = [

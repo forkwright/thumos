@@ -33,7 +33,7 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4
         id: release
         with:
           config-file: release-please-config.json
@@ -184,7 +184,7 @@ jobs:
           done
       - name: Attest source tarball provenance
         if: ${{ env.IS_RELEASE == 'true' }}
-        uses: actions/attest-build-provenance@10334b5f1e684784025c3fc0a277c88c19089275 # v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
         with:
           subject-path: thumos-*.tar.gz
       # NOTE: two calls, not one glob -- sbom-path takes exactly one file,

@@ -64,6 +64,17 @@ jobs:
         # own "fastest check first" rule rather than waiting behind the
         # kernel job's ~20-minute build+QEMU-witness chain for nothing.
         run: scripts/check-doc-inventory.sh
+      - name: Literal pin parity
+        # WHY: crates/metaxu-core and crates/thumos cannot inherit every
+        # dependency -- the first needs `default-features = false` (which
+        # cargo refuses as a member override), the second is excluded from
+        # the workspace entirely -- so both restate versions the workspace
+        # also declares. metaxu-core's header asserts those match; it has
+        # been false twice (ed25519-dalek 2 vs 3, compact_str 0.8 vs 0.10),
+        # and two majors of one crate are two distinct types across a
+        # boundary these crates exchange values over. Source-level and
+        # cheap, so it rides in the fastest job like the check above.
+        run: scripts/check-pin-parity.sh
 
   workspace:
     # WHY: clippy (deny warnings) + the workspace test suite for the 13
