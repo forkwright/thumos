@@ -17,7 +17,7 @@ rustix = { workspace = true }
 sha2 = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
-xts-mode = "0.5"
+xts-mode = "0.6"
 zeroize = "1"
 
 [lints]
