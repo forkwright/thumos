@@ -75,6 +75,16 @@ jobs:
         # boundary these crates exchange values over. Source-level and
         # cheap, so it rides in the fastest job like the check above.
         run: scripts/check-pin-parity.sh
+      - name: LLM corpus issue refs
+        # WHY: llms.txt points agents at _llm/current_state.toml for "phase,
+        # blockers, and open threads", and that file is hand-maintained. Its
+        # open-threads block named three issues and two of them (#461, #528)
+        # had been closed for weeks. A machine-readable file reads as data
+        # rather than prose, so a stale entry there is trusted harder than the
+        # same claim in a paragraph. One API call per named issue.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/check-llm-issue-refs.sh
 
   workspace:
     # WHY: clippy (deny warnings) + the workspace test suite for the 13

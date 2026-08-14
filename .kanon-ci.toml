@@ -34,6 +34,7 @@ stages = [
     "wiring inventory",
     "doc inventory",
     "pin parity",
+    "llm issue refs",
     "kernel lockfile versions",
     "fuzz lockfile versions",
     "target test ledger",
@@ -146,6 +147,14 @@ timeout_secs = 300
 # crates exchange values over. Source-level, cheap.
 [stages."pin parity"]
 cmd = "scripts/check-pin-parity.sh"
+timeout_secs = 120
+
+# WHY: llms.txt directs agents to _llm/current_state.toml for current blockers,
+# and that file is hand-maintained. Its open-threads block named three issues,
+# two of them closed for weeks. A machine-readable file reads as data, so a
+# stale entry there misdirects harder than the same claim in prose would.
+[stages."llm issue refs"]
+cmd = "scripts/check-llm-issue-refs.sh"
 timeout_secs = 120
 
 # WHY (#688): crates/thumos is excluded from the workspace and carries its own
