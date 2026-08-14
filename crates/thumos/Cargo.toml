@@ -72,7 +72,7 @@ metaxu-probe-expired-grant = ["metaxu-probe"]
 metaxu-probe-no-capability = ["metaxu-probe"]
 
 [dependencies]
-aes = { version = "0.8", default-features = false }
+aes = { version = "0.9", default-features = false }
 # WHY (#545): the canonical threat-semantics types (ThreatLevel/Calibration/
 # band boundaries) live in sema-core, shared with the workspace `sema` crate
 # — one implementation, no drifted duplicate in screen_threat.
@@ -107,7 +107,7 @@ topos-core = { path = "../topos-core", default-features = false }
 # WHY: Megolm needs AES-256-CBC (audit #231). Use the audited RustCrypto `cbc`
 # mode crate rather than hand-rolled chaining/padding. no_std verified for
 # i686 + armv7a-none-eabi (crate is `no-std` categorised, alloc-only feature set).
-cbc = { version = "0.1", default-features = false, features = [
+cbc = { version = "0.2", default-features = false, features = [
     "alloc",
     "block-padding",
 ] }
@@ -127,17 +127,17 @@ compact_str = { version = "0.8", default-features = false, features = [
     "serde",
 ] }
 ulid = { version = "1", default-features = false }
-ed25519-dalek = { version = "2", default-features = false, features = [
+ed25519-dalek = { version = "3", default-features = false, features = [
     "digest",
     "serde",
 ] }
-hkdf = { version = "0.12", default-features = false }
-hmac = { version = "0.12", default-features = false }
-pbkdf2 = { version = "0.12", default-features = false }
+hkdf = { version = "0.13", default-features = false }
+hmac = { version = "0.13", default-features = false }
+pbkdf2 = { version = "0.13", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
-rand_chacha = { version = "0.3", default-features = false }
-rand_core = { version = "0.6", default-features = false }
-sha2 = { version = "0.10", default-features = false }
+rand_chacha = { version = "0.10", default-features = false }
+rand_core = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 subtle = { version = "2", default-features = false }
 serde = { version = "1", default-features = false, features = [
     "derive",
@@ -152,7 +152,7 @@ smoltcp = { version = "0.12", default-features = false, features = [
     "socket-dhcpv4",
     "alloc",
 ] }
-xts-mode = { version = "0.5", default-features = false }
+xts-mode = { version = "0.6", default-features = false }
 
 # WHY (#233): build.rs sources the boot trust anchor (env-provisioned under
 # `production`, the committed deliberately-public dev key otherwise), refuses
@@ -161,7 +161,7 @@ xts-mode = { version = "0.5", default-features = false }
 # validates point decompression host-side with the same crate the kernel
 # verifies with.
 [build-dependencies]
-ed25519-dalek = { version = "2", default-features = false }
+ed25519-dalek = { version = "3", default-features = false }
 
 # WHY (#615): dev-only so ui.rs's kernel-local `Key` enum can be pinned
 # against the REAL `haphe::input::Key` in a host test, instead of a
