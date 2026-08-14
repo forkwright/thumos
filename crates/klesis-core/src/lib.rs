@@ -135,7 +135,7 @@ pub type Result<T> = core::result::Result<T, CoreError>;
 /// Unwrap a [`Result`] in a test, panicking with the error's `Debug` output.
 ///
 /// WHY crate-visible rather than duplicated per module: several of the
-/// split-out test modules (gsm7, hex, bcd_address, cursor) need this exact
+/// split-out test modules (`gsm7`, `hex`, `bcd_address`, `cursor`) need this exact
 /// helper; defining it once here keeps every module's tests identical in
 /// failure-message shape rather than drifting copy to copy.
 #[cfg(test)]
