@@ -225,7 +225,8 @@ fn derive_next_chain_key(chain_key: &[u8; 32]) -> Result<[u8; 32]> {
 }
 
 fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> Result<[u8; 32]> {
-    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(key).map_err(|_| InvalidKeySnafu.build())?;
+    let mut mac =
+        <HmacSha256 as KeyInit>::new_from_slice(key).map_err(|_| InvalidKeySnafu.build())?;
     mac.update(data);
     let tag = mac.finalize().into_bytes();
     let mut out = [0u8; 32];
