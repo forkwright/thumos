@@ -201,10 +201,14 @@ impl Pylon {
 /// `n_requests` frames then stopping. Returns the bound port and the join
 /// handle.
 ///
-/// Used by the adversarial witness (#544) and, under `pylon-bin`, by
-/// `src/bin/pylon_bridge.rs` for the on-device QEMU round trip.
+/// Used only by the adversarial witness (#544), which is `#[cfg(test)]`
+/// end to end -- a bind failure here can only abort a test process, never
+/// a boot, so it stays infallible-by-panic like the rest of witness.rs's
+/// setup helpers (the crate denies `unwrap`/`expect`, so `unreachable!()`
+/// is the only assertion form left).
 pub(crate) fn spawn(pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
     spawn_with_response_transform(pylon, n_requests, |response| response)
+        .unwrap_or_else(|e| unreachable!("loopback bind/local_addr in a test setup: {e}"))
 }
 
 /// Like [`spawn`], but every outgoing response frame passes through
@@ -214,6 +218,13 @@ pub(crate) fn spawn(pylon: Pylon, n_requests: usize) -> (u16, JoinHandle<()>) {
 /// client as a typed MAC failure, not a silent accept or a transport
 /// error. [`spawn`] delegates here with an identity transform -- one
 /// implementation, not two that could drift.
+///
+/// Errors: bind/`local_addr` failures on the loopback listener propagate
+/// as `io::Error` rather than panicking -- unlike [`spawn`], this function
+/// is also called from `src/bin/pylon_bridge.rs`'s `main`, a real host
+/// process the on-device QEMU witness launches (#544), where resource
+/// exhaustion (e.g. fd limits) is a reachable failure, not an invariant
+/// violation, and its caller can report it and exit instead of aborting.
 ///
 /// Time: O(1) for this function's own synchronous work (bind + spawn); it
 /// returns before serving any request. The spawned background thread it
@@ -227,18 +238,9 @@ pub fn spawn_with_response_transform(
     mut pylon: Pylon,
     n_requests: usize,
     transform: impl Fn(Vec<u8>) -> Vec<u8> + Send + 'static,
-) -> (u16, JoinHandle<()>) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap_or_else(|_| unreachable!());
-    // WHY unreachable, not unwrap_or_default: `local_addr` on a socket this
-    // process just bound cannot fail on a live listener (matches the same
-    // pattern metaxu witness.rs uses for the identical call). A silent
-    // `unwrap_or_default` would instead hand back port 0 -- BIND-only
-    // shorthand for "any port", nonsensical as a port a peer connects to --
-    // which surfaces downstream as a confusing connection failure far from
-    // this line rather than an immediate, precise one here.
-    let port = listener
-        .local_addr()
-        .map_or_else(|_| unreachable!(), |a| a.port());
+) -> std::io::Result<(u16, JoinHandle<()>)> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let port = listener.local_addr()?.port();
     let handle = std::thread::spawn(move || {
         for _ in 0..n_requests {
             let Ok((mut stream, _)) = listener.accept() else {
@@ -247,7 +249,7 @@ pub fn spawn_with_response_transform(
             serve_one(&mut pylon, &mut stream, &transform);
         }
     });
-    (port, handle)
+    Ok((port, handle))
 }
 
 /// Read one length-prefixed frame, answer it, write the (possibly

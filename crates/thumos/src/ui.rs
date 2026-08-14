@@ -111,8 +111,9 @@ pub(crate) static FONT_DATA: [[u8; 16]; FONT_CHAR_COUNT] = eidolon_core::FONT_DA
 /// since #732) -- the kernel deliberately links only `eidolon-core`, not
 /// `eidolon` itself, and `Rgb565` lives in `eidolon`. Converging the type
 /// would ripple across the ~19 kernel call sites (`set_pixel`, `draw_char`,
-/// `draw_str`, every `screen_*` renderer) that pass a raw `u16` fg/bg today;
-/// tracked in `docs/convergence.toml`'s `ui` pair, out of scope here.
+/// `draw_str`, every `screen_*` renderer) that pass a raw `u16` fg/bg today.
+/// `docs/convergence.toml`'s `ui` pair carries this disposition as
+/// `owner = "unscheduled"` -- no issue exists for it yet.
 pub(crate) mod color {
     /// Black (0x0000).
     pub(crate) const BLACK: u16 = 0x0000;
