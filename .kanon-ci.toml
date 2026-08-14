@@ -40,6 +40,7 @@ stages = [
     "llm issue refs",
     "kernel lockfile versions",
     "fuzz lockfile versions",
+    "fuzz target coverage",
     "target test ledger",
     "cargo clippy",
     "cargo nextest",
@@ -189,6 +190,16 @@ timeout_secs = 60
 [stages."fuzz lockfile versions"]
 cmd = "scripts/check-external-lockfile-versions.sh fuzz/Cargo.lock"
 timeout_secs = 60
+
+# WHY (#819): a fuzz target that imports a workspace crate the kernel does not
+# link certifies a path that never runs on a device — worse than no signal,
+# because a green fuzz run reads as coverage. Graded per MODULE: one crate can
+# have both a module that delegates into the shared core and one that does not.
+# The exemption table is a ratchet — an unlisted gap fails, and so does a listed
+# gap that has since been fixed.
+[stages."fuzz target coverage"]
+cmd = "scripts/check-fuzz-target-coverage.sh"
+timeout_secs = 120
 
 [stages."cargo clippy"]
 cmd = "cargo clippy --workspace --all-targets --locked --jobs 8 -- -D warnings"
