@@ -4,12 +4,22 @@
 //! cryptographic primitives (`security.rs` SHA-256/HMAC/HKDF, `csprng.rs`
 //! `ChaCha20` CSPRNG, `aes` crate for AES-256).
 //!
-//! This is a **simplified** implementation suitable for the Thumos kernel's
-//! bare-metal environment. It implements the core cryptographic operations
-//! (key generation, AES-256-CBC encrypt/decrypt, session management) without
-//! the full libolm/vodozemac state machine. Key exchange uses HKDF-derived
-//! keys rather than full X3DH, and Megolm ratcheting is hash-based rather
-//! than the full 4-part ratchet.
+//! This is a **simplified, non-interoperable** implementation suitable for
+//! the Thumos kernel's bare-metal environment. It implements the core
+//! cryptographic operations (key generation, AES-256-CBC encrypt/decrypt,
+//! session management) without the full libolm/vodozemac state machine, and
+//! is not wire-compatible with real Matrix clients: [`DeviceKeys`] are
+//! CSPRNG-derived HKDF inputs rather than real Curve25519 points, key
+//! exchange uses HKDF-derived keys rather than full X3DH, and the Megolm
+//! wire payload (`message_index || AES-CBC ciphertext || 8-byte MAC`) is
+//! this kernel's own layout rather than the spec's. `MegolmSession` is
+//! never populated from a real peer's `m.room_key` event (#437 tracks that
+//! integration) -- today it only talks to a future encrypt-side peer of
+//! this same implementation. Megolm ratcheting is a one-way HMAC/HKDF hash
+//! chain (not the Matrix spec's 4-part ratchet): the ratchet key advances
+//! irreversibly after each message it authenticates, with superseded key
+//! material volatile-zeroed, and a bounded skipped-key cache serves
+//! out-of-order delivery without weakening that guarantee (#830).
 //!
 //! # Architecture
 //!
@@ -96,6 +106,20 @@ const MEGOLM_INDEX_LEN: usize = 4;
 /// allocation on every device in the room. 64 KiB is generous for any real
 /// text/media-key event on this device's 1 GB RAM budget.
 const MEGOLM_MAX_PAYLOAD_LEN: usize = 65536;
+
+/// Maximum forward gap `decrypt_megolm` will walk to reach a message's
+/// index from the receiving session's current ratchet position (#830).
+/// Without this bound, a room member who holds the (shared, group) session
+/// key can name an arbitrarily large index, forcing unbounded forward HKDF
+/// derivation per message -- mirrors `krypta::ratchet::MAX_SKIP_AHEAD`
+/// (#212's DoS-bound pattern).
+const MEGOLM_MAX_SKIP_AHEAD: u32 = 1024;
+
+/// Maximum number of skipped message keys cached per Megolm session
+/// (#830). The oldest entry is evicted (and volatile-zeroed) past this, so
+/// cache growth is provably bounded regardless of traffic -- mirrors
+/// `krypta::ratchet::MAX_SKIPPED_KEYS`.
+const MEGOLM_MAX_SKIPPED_KEYS: usize = 1024;
 
 /// Ed25519 signature length in bytes.
 const ED25519_SIGNATURE_LEN: usize = 64;
@@ -199,6 +223,12 @@ pub enum CryptoError {
     /// further would reuse a (key, IV) pair (issue #282 finding 9). The
     /// session must be rotated.
     MegolmIndexExhausted,
+    /// An inbound Megolm message named an index too far ahead of the
+    /// receiving session's ratchet position (#830). Rejected before the
+    /// forward-derivation walk that would otherwise be needed to reach it,
+    /// bounding per-message CPU/allocation cost against a forged high index
+    /// -- mirrors `krypta::ratchet`'s `MAX_SKIP_AHEAD` bound (#212).
+    MegolmSkipAheadTooFar,
     /// An inbound Olm pre-key message's body did not decode to the expected
     /// `base_key || one_time_key` layout -- wrong length after decoding, or
     /// not decodable at all (#437).
@@ -271,6 +301,12 @@ impl fmt::Display for CryptoError {
                     "Megolm session message index exhausted -- rotate the session"
                 )
             }
+            Self::MegolmSkipAheadTooFar => {
+                write!(
+                    f,
+                    "Megolm message index too far ahead of the receiving session's ratchet"
+                )
+            }
             Self::MalformedPreKeyMessage => {
                 write!(f, "Olm pre-key message body is malformed")
             }
@@ -324,9 +360,16 @@ impl fmt::Display for DeviceKeys {
 
 /// Simplified Olm session for 1:1 encrypted messaging.
 ///
-/// Tracks a symmetric ratchet key and chain index. Each message
-/// advances the ratchet via HKDF, providing forward secrecy within
-/// the session.
+/// Tracks a symmetric ratchet key and chain index established at session
+/// creation ([`derive_olm_initial_ratchet_key`]).
+///
+/// WARNING: unlike [`MegolmSession`] (#830), `ratchet_key` does NOT
+/// currently advance per message -- no production code path mutates it or
+/// `chain_index` after [`MatrixCrypto::process_olm_prekey_message`]
+/// constructs the session. There is no per-message Olm encrypt/decrypt path
+/// yet (#437 tracks establishing sessions; message use is a separate,
+/// unimplemented step), so this session provides no forward secrecy within
+/// itself today -- `chain_index` is retained for that future ratchet step.
 // WHY: no derived `Debug` — a derive would print `ratchet_key` in the clear
 // (audit #268). Fields are `pub(crate)`, not `pub`, so key material cannot
 // escape the crate. The manual `Debug`/`Display` impls redact the key.
@@ -370,35 +413,64 @@ impl fmt::Display for OlmSession {
 /// Simplified Megolm session for group (room) encrypted messaging.
 ///
 /// Each room has one outbound session (for sending) and potentially
-/// multiple inbound sessions (one per remote device). The session key
-/// is used for AES-256-CBC encryption, and the message index provides
-/// ordering and replay protection.
-// WHY: no derived `Debug` — a derive would print `session_key` in the clear
-// (audit #268). Fields are `pub(crate)`, not `pub`. The manual `Debug`/`Display`
-// impls redact the key.
+/// multiple inbound sessions (one per remote device). `session_key` is the
+/// CURRENT position of a one-way ratchet, not a static root: every
+/// [`encrypt_megolm`]/[`decrypt_megolm`] call that successfully authors or
+/// authenticates a message advances it via [`advance_megolm_ratchet_key`]
+/// and volatile-zeroes the superseded value, so no past message key is
+/// recoverable from the session once advanced (#830). `message_index` is
+/// the ratchet's current position (the next fresh index on the send side;
+/// one past the highest index consumed in order on the receive side).
+/// `skipped` is a bounded cache of message keys for indices the ratchet has
+/// advanced past but that have not yet been decrypted, enabling
+/// out-of-order delivery without retaining reversible ratchet state.
+// WHY: no derived `Debug` — a derive would print `session_key` (and cached
+// skipped-key material) in the clear (audit #268). Fields are `pub(crate)`,
+// not `pub`. The manual `Debug`/`Display` impls redact all key material.
 #[derive(Clone, PartialEq, Eq)]
 #[must_use]
 #[non_exhaustive]
 pub struct MegolmSession {
     /// Unique session identifier.
     pub(crate) session_id: [u8; KEY_SIZE],
-    /// AES-256 encryption key (256 bits).
+    /// Current Megolm ratchet key (256 bits) -- see struct docs (#830).
     pub(crate) session_key: [u8; KEY_SIZE],
-    /// Number of messages encrypted with this session.
+    /// Current ratchet position (see struct docs).
     pub(crate) message_index: u32,
     /// The Matrix room ID this session is bound to.
     pub(crate) room_id: MatrixRoomId,
+    /// Bounded cache of message keys for indices the ratchet has advanced
+    /// past but that remain undelivered (#830). See
+    /// [`MEGOLM_MAX_SKIPPED_KEYS`].
+    pub(crate) skipped: Vec<SkippedMegolmKey>,
 }
 
 impl fmt::Debug for MegolmSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // WARNING: never print `session_key` — redacted to prevent key leakage.
+        // WARNING: never print `session_key` or any `skipped` entry's key
+        // material — redacted to prevent key leakage.
         f.debug_struct("MegolmSession")
             .field("session_id", &SessionIdRedact(&self.session_id))
             .field("session_key", &"<redacted>")
             .field("message_index", &self.message_index)
             .field("room_id", &self.room_id)
+            .field("skipped_keys", &self.skipped.len())
             .finish()
+    }
+}
+
+impl Drop for MegolmSession {
+    fn drop(&mut self) {
+        // WHY: write_volatile prevents the compiler from eliding the zeroing
+        // as a dead store (audit #268 zeroization idiom, matching
+        // `wifi::Ptk`'s `Drop`). Covers the live ratchet key AND every
+        // cached skipped-message key -- #830's out-of-order support means
+        // key material for not-yet-delivered messages also lives on this
+        // struct, and it must not outlive the session either.
+        zeroize_bytes(&mut self.session_key);
+        for skipped in &mut self.skipped {
+            zeroize_message_keys(&mut skipped.keys);
+        }
     }
 }
 
@@ -786,6 +858,7 @@ impl MatrixCrypto {
             session_key,
             message_index: 0,
             room_id: validated_room,
+            skipped: Vec::new(),
         };
 
         // Replace existing session for this room, or add new one.
@@ -850,6 +923,21 @@ impl MatrixCrypto {
     ) -> Option<&MegolmSession> {
         self.megolm_inbound
             .iter()
+            .find(|s| &s.session_id == session_id)
+    }
+
+    /// Find an inbound Megolm session by session ID, mutably.
+    ///
+    /// [`decrypt_megolm`] needs `&mut MegolmSession` (#830): a successful
+    /// decrypt advances the session's ratchet and/or consumes a cached
+    /// skipped key, so the caller (the receive path in `harmostes`) must
+    /// hold a mutable borrow through the call.
+    pub(crate) fn find_inbound_megolm_mut(
+        &mut self,
+        session_id: &[u8; KEY_SIZE],
+    ) -> Option<&mut MegolmSession> {
+        self.megolm_inbound
+            .iter_mut()
             .find(|s| &s.session_id == session_id)
     }
 
@@ -986,7 +1074,7 @@ fn aes256_cbc_decrypt(key: &[u8; KEY_SIZE], data: &[u8]) -> Result<Vec<u8>, Cryp
 //   message_index (4 bytes, big-endian) || AES-CBC ciphertext || MAC (8 bytes)
 //
 // The AES key, HMAC key, and IV are the three sections of the 80-byte
-// HKDF-SHA256 expansion of the ratchet key at `message_index` — so the IV is
+// HKDF-SHA256 expansion of the ratchet key AT `message_index` — so the IV is
 // derived, never transmitted, and unique per (key, index). The MAC is the
 // first 8 bytes of HMAC-SHA256 over the transmitted body preceding the tag
 // (`message_index || ciphertext`, matching libolm which MACs the whole message
@@ -994,8 +1082,21 @@ fn aes256_cbc_decrypt(key: &[u8; KEY_SIZE], data: &[u8]) -> Result<Vec<u8>, Cryp
 // the index selector). Decrypt verifies the MAC in constant time BEFORE
 // touching the ciphertext, which closes the padding-oracle / bit-flipping /
 // forgery classes.
+//
+// #830: "the ratchet key at `message_index`" is now literal, not aspirational
+// -- `MegolmSession::session_key` is a one-way ratchet position, not a static
+// root. `encrypt_megolm`/`decrypt_megolm` derive this message's keys from the
+// CURRENT ratchet key, then irreversibly advance it via
+// `advance_megolm_ratchet_key` (a domain-separated HKDF step, so a message
+// key can never be inverted back into ratchet state) and volatile-zero the
+// superseded value. Out-of-order delivery is served by a bounded
+// `session.skipped` cache of already-derived message keys for indices the
+// ratchet has advanced past but not yet delivered -- the ratchet itself only
+// ever moves forward, so no past ratchet state is retained in reversible
+// form.
 
 /// The three key sections derived from a Megolm ratchet key for one message.
+#[derive(Clone, PartialEq, Eq)]
 struct MegolmMessageKeys {
     /// AES-256-CBC encryption key.
     aes_key: [u8; KEY_SIZE],
@@ -1005,11 +1106,47 @@ struct MegolmMessageKeys {
     iv: [u8; AES_BLOCK_SIZE],
 }
 
+/// A message key retained for an out-of-order Megolm message whose index the
+/// ratchet has advanced past but that has not yet been decrypted (#830).
+/// Consumed (removed) on first successful use, matching
+/// `krypta::ratchet::SkippedKey`'s single-use semantics.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SkippedMegolmKey {
+    /// The message index this cached key belongs to.
+    index: u32,
+    /// The AES/HMAC/IV material for that index.
+    keys: MegolmMessageKeys,
+}
+
+/// Overwrite `buf` with zeros using a volatile write per byte.
+///
+/// Matches the zeroization idiom already used in this repo (`wifi::Ptk`'s
+/// `Drop`, `krypta::ratchet`): `write_volatile` prevents the compiler from
+/// eliding the store as a dead write, so superseded key material does not
+/// linger in memory after a ratchet advances or a cache entry is evicted.
+fn zeroize_bytes(buf: &mut [u8]) {
+    for byte in buf.iter_mut() {
+        // SAFETY: byte is a valid mutable reference to initialized memory.
+        unsafe {
+            core::ptr::write_volatile(byte, 0);
+        }
+    }
+}
+
+/// Zero every key field of a [`MegolmMessageKeys`] in place.
+fn zeroize_message_keys(keys: &mut MegolmMessageKeys) {
+    zeroize_bytes(&mut keys.aes_key);
+    zeroize_bytes(&mut keys.hmac_key);
+    zeroize_bytes(&mut keys.iv);
+}
+
 /// Encrypt a plaintext message with a Megolm session (AES-256-CBC + HMAC-SHA256).
 ///
-/// Produces the authenticated wire payload described above and advances the
-/// session's message index. The receiver reads the embedded index to derive
-/// the correct per-message keys (audit #250).
+/// Produces the authenticated wire payload described above, then advances
+/// the session's ratchet (#830): the key just used is never re-derivable
+/// from the session's post-send state, and the superseded value is
+/// volatile-zeroed rather than merely overwritten. The receiver reads the
+/// embedded index to derive the matching per-message keys (audit #250).
 ///
 /// # Errors
 ///
@@ -1050,16 +1187,39 @@ pub(crate) fn encrypt_megolm(
     payload.extend_from_slice(&body);
     payload.extend_from_slice(&tag[..MEGOLM_MAC_LEN]);
 
+    // #830: advance the ratchet irreversibly now that the message this
+    // index's key encrypted has been produced -- `next_key` is a one-way
+    // HKDF step domain-separated from message-key derivation (see
+    // `advance_megolm_ratchet_key`), and the superseded key is
+    // volatile-zeroed, not merely overwritten (matches `wifi::Ptk::drop`).
+    let next_key = advance_megolm_ratchet_key(&session.session_key)?;
+    zeroize_bytes(&mut session.session_key);
+    session.session_key = next_key;
     session.message_index = next_index;
     Ok(payload)
 }
 
 /// Decrypt and authenticate a Megolm wire payload against a session.
 ///
-/// Verifies, in order: the session is bound to `expected_room_id` (audit #229),
-/// the payload carries an index + MAC (audit #250), and the MAC matches in
-/// constant time BEFORE any decryption (audit #231). Only then is the AES-CBC
-/// ciphertext decrypted.
+/// Verifies, in order: the session is bound to `expected_room_id` (audit
+/// #229), the payload carries an index + MAC (audit #250), and the MAC
+/// matches in constant time BEFORE any decryption (audit #231). Only then is
+/// the AES-CBC ciphertext decrypted.
+///
+/// Handles three cases relative to the session's current ratchet position
+/// (#830):
+/// - **In order** (`index == session.message_index`): decrypts directly and
+///   advances the ratchet by one step.
+/// - **Ahead** (`index > session.message_index`, within
+///   [`MEGOLM_MAX_SKIP_AHEAD`]): walks the ratchet forward on a trial copy,
+///   caching each intermediate message key in `session.skipped` (bounded by
+///   [`MEGOLM_MAX_SKIPPED_KEYS`]) for messages that have not yet arrived,
+///   then decrypts at the target index and commits the advance. Nothing is
+///   mutated unless the target message authenticates.
+/// - **Behind** (`index < session.message_index`): served from
+///   `session.skipped` if a cached key for that index exists; the cached key
+///   is consumed (removed) on success, giving replay rejection for an
+///   already-decrypted index.
 ///
 /// `expected_room_id` is the room the event actually arrived in (from the sync
 /// response grouping), NOT a value taken from the untrusted event body.
@@ -1068,11 +1228,16 @@ pub(crate) fn encrypt_megolm(
 ///
 /// [`CryptoError::RoomIdMismatch`] on cross-room confusion;
 /// [`CryptoError::MegolmMessageTooShort`] on a truncated payload;
-/// [`CryptoError::MacVerificationFailed`] on a forged / tampered MAC;
+/// [`CryptoError::MegolmMessageTooLong`] on an oversized payload;
+/// [`CryptoError::MegolmSkipAheadTooFar`] if `index` is too far ahead of the
+/// ratchet to reach;
+/// [`CryptoError::MacVerificationFailed`] on a forged / tampered MAC, an
+/// index behind the ratchet with no cached key, or a replayed already-consumed
+/// index;
 /// [`CryptoError::KeyDerivationFailed`] / [`CryptoError::InvalidCiphertextLength`]
 /// / [`CryptoError::InvalidPadding`] on structural failures.
 pub(crate) fn decrypt_megolm(
-    session: &MegolmSession,
+    session: &mut MegolmSession,
     payload: &[u8],
     expected_room_id: &str,
 ) -> Result<Vec<u8>, CryptoError> {
@@ -1098,17 +1263,135 @@ pub(crate) fn decrypt_megolm(
     let index = u32::from_be_bytes(index_bytes);
     let ciphertext = &body[MEGOLM_INDEX_LEN..];
 
-    // #250: derive the keys for the message's OWN index, not a stale counter.
-    let keys = derive_megolm_message_keys(&session.session_key, index)?;
+    // #830: an index behind the ratchet can only be served from the skipped
+    // cache -- the ratchet itself never moves backward.
+    if index < session.message_index {
+        return decrypt_megolm_from_skipped(session, index, body, tag, ciphertext);
+    }
+
+    // WHY(#830): bound the forward jump so a forged high index cannot force
+    // unbounded key derivation (mirrors #212's MAX_SKIP_AHEAD bound).
+    let gap = index - session.message_index;
+    if gap > MEGOLM_MAX_SKIP_AHEAD {
+        return Err(CryptoError::MegolmSkipAheadTooFar);
+    }
+
+    // Trial-walk the ratchet forward on a working copy; nothing on `session`
+    // is mutated until the target message authenticates.
+    let mut work_key = session.session_key;
+    let mut pending: Vec<SkippedMegolmKey> = Vec::with_capacity(gap as usize);
+    let mut idx = session.message_index;
+    while idx < index {
+        let msg_keys = derive_megolm_message_keys(&work_key, idx)?;
+        pending.push(SkippedMegolmKey {
+            index: idx,
+            keys: msg_keys,
+        });
+        let next = advance_megolm_ratchet_key(&work_key)?;
+        // WHY: `work_key` is a stack-local trial copy of ratchet state that
+        // is about to be superseded -- zero it before overwriting so an
+        // intermediate step does not linger in memory even on this
+        // not-yet-committed path.
+        zeroize_bytes(&mut work_key);
+        work_key = next;
+        idx += 1;
+    }
+
+    let target_keys = derive_megolm_message_keys(&work_key, index)?;
 
     // #231: verify the MAC in constant time BEFORE decrypting. `body` is
     // `index || ciphertext`; the transmitted tag is the first 8 HMAC bytes.
-    let expected = security::hmac_sha256(&keys.hmac_key, body);
+    let expected = security::hmac_sha256(&target_keys.hmac_key, body);
+    if !bool::from(expected[..MEGOLM_MAC_LEN].ct_eq(tag)) {
+        zeroize_bytes(&mut work_key);
+        return Err(CryptoError::MacVerificationFailed);
+    }
+
+    let plaintext = match cbc_decrypt(&target_keys.aes_key, &target_keys.iv, ciphertext) {
+        Ok(p) => p,
+        Err(e) => {
+            zeroize_bytes(&mut work_key);
+            return Err(e);
+        }
+    };
+
+    // Authenticated: commit the skipped keys and advance the ratchet one
+    // step past the message just decrypted, so an in-order follow-up needs
+    // no re-derivation.
+    for skipped in pending {
+        store_skipped_megolm(session, skipped);
+    }
+    let post = advance_megolm_ratchet_key(&work_key)?;
+    zeroize_bytes(&mut work_key);
+    zeroize_bytes(&mut session.session_key);
+    session.session_key = post;
+    // WHY: saturate rather than wrap at `u32::MAX` -- `encrypt_megolm`
+    // refuses to ever PRODUCE that index (`MegolmIndexExhausted`, issue #282
+    // finding 9's (key, IV)-reuse concern), so a message claiming it can
+    // only be a forgery from a peer that already holds the session key.
+    // Wrapping to 0 here would let that forgery reset this session's ratchet
+    // position and desynchronize it from the real sender; saturating instead
+    // freezes the session at its terminal index, matching "must be rotated".
+    session.message_index = index.checked_add(1).unwrap_or(u32::MAX);
+
+    Ok(plaintext)
+}
+
+/// Decrypt a Megolm message whose index is behind the session's ratchet,
+/// using the bounded skipped-key cache (#830). The cached key is consumed
+/// (removed and zeroed) only on successful authentication -- single-use,
+/// giving replay rejection for an already-decrypted index -- mirroring
+/// `krypta::ratchet::decrypt_from_skipped`.
+///
+/// A missing cache entry (never skipped, or already consumed) is reported
+/// identically to a forged MAC: from the caller's perspective both mean
+/// "this message cannot be authenticated with this session right now", and
+/// this module already applies that same-disposition policy elsewhere (see
+/// [`CryptoError::UnknownOneTimeKey`]'s doc).
+fn decrypt_megolm_from_skipped(
+    session: &mut MegolmSession,
+    index: u32,
+    body: &[u8],
+    tag: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let cache_idx = session
+        .skipped
+        .iter()
+        .position(|k| k.index == index)
+        .ok_or(CryptoError::MacVerificationFailed)?;
+
+    let expected = security::hmac_sha256(&session.skipped[cache_idx].keys.hmac_key, body);
     if !bool::from(expected[..MEGOLM_MAC_LEN].ct_eq(tag)) {
         return Err(CryptoError::MacVerificationFailed);
     }
 
-    cbc_decrypt(&keys.aes_key, &keys.iv, ciphertext)
+    let plaintext = cbc_decrypt(
+        &session.skipped[cache_idx].keys.aes_key,
+        &session.skipped[cache_idx].keys.iv,
+        ciphertext,
+    )?;
+
+    // Consume: remove and zero, so a replay of this index finds no cache
+    // entry (same disposition as any other unrecoverable index).
+    let mut consumed = session.skipped.remove(cache_idx);
+    zeroize_message_keys(&mut consumed.keys);
+
+    Ok(plaintext)
+}
+
+/// Insert a skipped Megolm message key, evicting (and zeroing) the oldest
+/// entry beyond [`MEGOLM_MAX_SKIPPED_KEYS`] so the cache is provably bounded
+/// regardless of traffic (#830, mirrors `krypta::ratchet::store_skipped`).
+fn store_skipped_megolm(session: &mut MegolmSession, key: SkippedMegolmKey) {
+    session.skipped.push(key);
+    while session.skipped.len() > MEGOLM_MAX_SKIPPED_KEYS {
+        // WHY: zero the evicted entry's key material before dropping it --
+        // a plain `remove` would let the compiler treat the freed bytes as
+        // dead and skip clearing them.
+        let mut evicted = session.skipped.remove(0);
+        zeroize_message_keys(&mut evicted.keys);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1145,6 +1428,23 @@ fn derive_megolm_message_keys(
         hmac_key,
         iv,
     })
+}
+
+/// One-way step: derive the NEXT Megolm ratchet key from the current one via
+/// HKDF-SHA256, under a label distinct from [`derive_megolm_message_keys`]
+/// (#830). This domain separation means a message key can never be mistaken
+/// for -- or algebraically related to -- ratchet state: HKDF-Expand is a PRF,
+/// so recovering `ratchet_key` from `next` (or from any message key derived
+/// under the OTHER label) is computationally infeasible. Once the caller
+/// volatile-zeroes the prior `ratchet_key` after this call, no message key at
+/// or before this step is reproducible from the session -- the forward-secrecy
+/// property this module's docs claim.
+fn advance_megolm_ratchet_key(ratchet_key: &[u8; KEY_SIZE]) -> Result<[u8; KEY_SIZE], CryptoError> {
+    const LABEL: &[u8] = b"megolm-ratchet-advance";
+    let mut next = [0u8; KEY_SIZE];
+    security::hkdf_sha256(ratchet_key, &[], LABEL, &mut next)
+        .map_err(|_| CryptoError::KeyDerivationFailed)?;
+    Ok(next)
 }
 
 /// Derive a new Olm session's initial ratchet key from an inbound pre-key
@@ -1592,6 +1892,7 @@ mod tests {
             session_key: [1u8; KEY_SIZE],
             message_index: u32::MAX,
             room_id: MatrixRoomId::new("!test:matrix.example.com").expect("valid test room id"),
+            skipped: Vec::new(),
         };
 
         let result = encrypt_megolm(&mut session, b"one message too many");
@@ -1992,11 +2293,12 @@ mod tests {
         // Clone session for decryption (simulates inbound session).
         let session = crypto.find_outbound_megolm(room_id);
         assert!(session.is_some());
-        let inbound = session.cloned().unwrap_or_else(|| MegolmSession {
+        let mut inbound = session.cloned().unwrap_or_else(|| MegolmSession {
             session_id: [0u8; KEY_SIZE],
             session_key: [0u8; KEY_SIZE],
             message_index: 0,
             room_id: MatrixRoomId::new("!fallback:test").expect("valid test room id"),
+            skipped: Vec::new(),
         });
 
         // Get mutable reference to the outbound session.
@@ -2011,7 +2313,7 @@ mod tests {
         assert_eq!(outbound.message_index, 1);
 
         // Decrypt with the inbound copy (self-describing payload carries index).
-        let decrypted = decrypt_megolm(&inbound, &ciphertext, room_id);
+        let decrypted = decrypt_megolm(&mut inbound, &ciphertext, room_id);
         assert!(decrypted.is_ok());
         assert_eq!(decrypted.unwrap_or_default().as_slice(), plaintext);
     }
@@ -2023,7 +2325,7 @@ mod tests {
         let room_id = "!mac:matrix.example.com";
         let _ = crypto.create_outbound_megolm(room_id);
 
-        let inbound = crypto
+        let mut inbound = crypto
             .find_outbound_megolm(room_id)
             .cloned()
             .expect("session exists");
@@ -2037,7 +2339,7 @@ mod tests {
         let flip = 4 + 1;
         ciphertext[flip] ^= 0x01;
 
-        let result = decrypt_megolm(&inbound, &ciphertext, room_id);
+        let result = decrypt_megolm(&mut inbound, &ciphertext, room_id);
         assert_eq!(
             result,
             Err(CryptoError::MacVerificationFailed),
@@ -2051,13 +2353,13 @@ mod tests {
         let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let room_id = "!oversized:matrix.example.com";
         let _ = crypto.create_outbound_megolm(room_id);
-        let inbound = crypto
+        let mut inbound = crypto
             .find_outbound_megolm(room_id)
             .cloned()
             .expect("session exists");
 
         let oversized = alloc::vec![0u8; MEGOLM_MAX_PAYLOAD_LEN + 1];
-        let result = decrypt_megolm(&inbound, &oversized, room_id);
+        let result = decrypt_megolm(&mut inbound, &oversized, room_id);
         assert_eq!(result, Err(CryptoError::MegolmMessageTooLong));
     }
 
@@ -2067,7 +2369,7 @@ mod tests {
         let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let room_id = "!tag:matrix.example.com";
         let _ = crypto.create_outbound_megolm(room_id);
-        let inbound = crypto
+        let mut inbound = crypto
             .find_outbound_megolm(room_id)
             .cloned()
             .expect("session exists");
@@ -2077,7 +2379,7 @@ mod tests {
         ct[last] ^= 0xff;
 
         assert_eq!(
-            decrypt_megolm(&inbound, &ct, room_id),
+            decrypt_megolm(&mut inbound, &ct, room_id),
             Err(CryptoError::MacVerificationFailed)
         );
     }
@@ -2088,7 +2390,7 @@ mod tests {
         let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let room_id = "!bound:matrix.example.com";
         let _ = crypto.create_outbound_megolm(room_id);
-        let inbound = crypto
+        let mut inbound = crypto
             .find_outbound_megolm(room_id)
             .cloned()
             .expect("session exists");
@@ -2099,11 +2401,11 @@ mod tests {
         // The session is bound to `room_id`; decrypting as if the event arrived
         // in a different room must be rejected before any MAC/crypto work.
         assert_eq!(
-            decrypt_megolm(&inbound, &ct, "!attacker:matrix.example.com"),
+            decrypt_megolm(&mut inbound, &ct, "!attacker:matrix.example.com"),
             Err(CryptoError::RoomIdMismatch)
         );
         // Correct room still decrypts.
-        assert!(decrypt_megolm(&inbound, &ct, room_id).is_ok());
+        assert!(decrypt_megolm(&mut inbound, &ct, room_id).is_ok());
     }
 
     #[test]
@@ -2112,7 +2414,7 @@ mod tests {
         let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let room_id = "!ooo:matrix.example.com";
         let _ = crypto.create_outbound_megolm(room_id);
-        let inbound = crypto
+        let mut inbound = crypto
             .find_outbound_megolm(room_id)
             .cloned()
             .expect("session exists");
@@ -2123,24 +2425,37 @@ mod tests {
         let c2 = encrypt_megolm(&mut crypto.megolm_outbound[0], b"third").expect("encrypt 2");
         assert_eq!(crypto.megolm_outbound[0].message_index, 3);
 
-        // Decrypt out of order — each payload carries its own index (audit #250).
+        // Decrypt out of order — each payload carries its own index (audit
+        // #250). #830: c2 arriving first is served directly and caches
+        // message keys for indices 0 and 1 in `inbound.skipped` as the
+        // ratchet walks forward past them; c0 and c1 are then served from
+        // that cache (single-use, consumed on read).
         assert_eq!(
-            decrypt_megolm(&inbound, &c2, room_id)
+            decrypt_megolm(&mut inbound, &c2, room_id)
                 .expect("d2")
                 .as_slice(),
             b"third"
         );
         assert_eq!(
-            decrypt_megolm(&inbound, &c0, room_id)
+            inbound.skipped.len(),
+            2,
+            "decrypting index 2 first must cache message keys for the skipped indices 0 and 1"
+        );
+        assert_eq!(
+            decrypt_megolm(&mut inbound, &c0, room_id)
                 .expect("d0")
                 .as_slice(),
             b"first"
         );
         assert_eq!(
-            decrypt_megolm(&inbound, &c1, room_id)
+            decrypt_megolm(&mut inbound, &c1, room_id)
                 .expect("d1")
                 .as_slice(),
             b"second"
+        );
+        assert!(
+            inbound.skipped.is_empty(),
+            "both skipped keys must be consumed after their messages decrypt"
         );
     }
 
@@ -2447,7 +2762,7 @@ mod tests {
         // so the failure is the MAC, not the room check) — the wrong session key
         // yields a wrong HMAC key, so the MAC must reject it.
         let result = decrypt_megolm(
-            &crypto.megolm_outbound[1],
+            &mut crypto.megolm_outbound[1],
             &ciphertext,
             "!room2:example.com",
         );
@@ -2511,6 +2826,7 @@ mod tests {
             session_key: [0xFF; KEY_SIZE],
             message_index: 0,
             room_id: MatrixRoomId::new("!room:example.com").expect("valid test room id"),
+            skipped: Vec::new(),
         };
 
         let result = crypto.add_inbound_megolm(session);
@@ -2537,6 +2853,7 @@ mod tests {
                 session_key: [0xFF; KEY_SIZE],
                 message_index: 0,
                 room_id: room_a.clone(),
+                skipped: Vec::new(),
             };
             assert!(crypto.add_inbound_megolm(session).is_ok());
         }
@@ -2551,6 +2868,7 @@ mod tests {
             session_key: [0xEE; KEY_SIZE],
             message_index: 0,
             room_id: room_b,
+            skipped: Vec::new(),
         };
         assert!(
             crypto.add_inbound_megolm(fresh).is_ok(),
@@ -2572,6 +2890,7 @@ mod tests {
                 session_key: [0xFF; KEY_SIZE],
                 message_index: 0,
                 room_id: room.clone(),
+                skipped: Vec::new(),
             };
             assert!(
                 crypto.add_inbound_megolm(session).is_ok(),
@@ -2585,6 +2904,7 @@ mod tests {
             session_key: [0xBB; KEY_SIZE],
             message_index: 0,
             room_id: room,
+            skipped: Vec::new(),
         };
         assert_eq!(
             crypto.add_inbound_megolm(overflow),
@@ -2592,5 +2912,160 @@ mod tests {
             "a genuinely new session_id past capacity must be rejected, not silently evict"
         );
         assert_eq!(crypto.megolm_inbound().len(), MAX_MEGOLM_INBOUND);
+    }
+
+    // -- Ratchet / forward-secrecy tests (#830) --
+
+    #[test]
+    fn megolm_ratchet_key_advances_after_encrypt() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let room_id = "!ratchet:matrix.example.com";
+        let _ = crypto.create_outbound_megolm(room_id);
+
+        let key_before = crypto.megolm_outbound[0].session_key;
+        let _ = encrypt_megolm(&mut crypto.megolm_outbound[0], b"advance me").expect("encrypt");
+        let key_after = crypto.megolm_outbound[0].session_key;
+
+        assert_ne!(
+            key_before, key_after,
+            "the session's ratchet key must change after encrypting a message"
+        );
+    }
+
+    #[test]
+    fn megolm_message_key_at_index_not_reproducible_from_post_advance_state() {
+        // The defining forward-secrecy property (#830): once the ratchet has
+        // advanced past an index, that index's message key must not be
+        // re-derivable from the session's current state.
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let room_id = "!forward-secrecy:matrix.example.com";
+        let _ = crypto.create_outbound_megolm(room_id);
+
+        // The ratchet key actually used to derive index 0's message key,
+        // captured BEFORE any advance.
+        let root_at_0 = crypto.megolm_outbound[0].session_key;
+        let keys0_actual = derive_megolm_message_keys(&root_at_0, 0).expect("derive");
+
+        // Advance the ratchet past indices 0 and 1.
+        let _ = encrypt_megolm(&mut crypto.megolm_outbound[0], b"first").expect("encrypt 0");
+        let _ = encrypt_megolm(&mut crypto.megolm_outbound[0], b"second").expect("encrypt 1");
+
+        // Attempt to reconstruct index 0's message key from the session's
+        // CURRENT (post-advance) ratchet key.
+        let root_after_advance = crypto.megolm_outbound[0].session_key;
+        let keys0_from_post_advance =
+            derive_megolm_message_keys(&root_after_advance, 0).expect("derive");
+
+        assert!(
+            keys0_actual != keys0_from_post_advance,
+            "index 0's message key must not be reconstructable from the \
+             ratchet's post-advance state -- a reversible advance is not a \
+             ratchet"
+        );
+    }
+
+    #[test]
+    fn megolm_skip_ahead_beyond_bound_is_rejected() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let room_id = "!skip-bound:matrix.example.com";
+        let _ = crypto.create_outbound_megolm(room_id);
+        let mut inbound = crypto
+            .find_outbound_megolm(room_id)
+            .cloned()
+            .expect("session exists");
+
+        // A genuine message, with its wire index forged far beyond the
+        // receiving session's ratchet position. The skip-ahead bound is
+        // checked before any MAC/key derivation work, so the forgery
+        // doesn't need a valid MAC for this index to prove the point.
+        let mut ct =
+            encrypt_megolm(&mut crypto.megolm_outbound[0], b"forged index").expect("encrypt");
+        let forged_index = (MEGOLM_MAX_SKIP_AHEAD + 5).to_be_bytes();
+        ct[..MEGOLM_INDEX_LEN].copy_from_slice(&forged_index);
+
+        let result = decrypt_megolm(&mut inbound, &ct, room_id);
+        assert_eq!(result, Err(CryptoError::MegolmSkipAheadTooFar));
+        assert_eq!(
+            inbound.message_index, 0,
+            "a rejected over-long jump must not advance the ratchet"
+        );
+        assert!(
+            inbound.skipped.is_empty(),
+            "a rejected over-long jump must not populate the skipped-key cache"
+        );
+    }
+
+    #[test]
+    fn megolm_skipped_key_is_single_use() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let room_id = "!skip-once:matrix.example.com";
+        let _ = crypto.create_outbound_megolm(room_id);
+        let mut inbound = crypto
+            .find_outbound_megolm(room_id)
+            .cloned()
+            .expect("session exists");
+
+        let c0 = encrypt_megolm(&mut crypto.megolm_outbound[0], b"zero").expect("encrypt 0");
+        let c1 = encrypt_megolm(&mut crypto.megolm_outbound[0], b"one").expect("encrypt 1");
+
+        // c1 arrives first: the ratchet walks past index 0, caching its key.
+        assert_eq!(
+            decrypt_megolm(&mut inbound, &c1, room_id)
+                .expect("d1")
+                .as_slice(),
+            b"one"
+        );
+        // c0 is served from the skipped cache.
+        assert_eq!(
+            decrypt_megolm(&mut inbound, &c0, room_id)
+                .expect("d0")
+                .as_slice(),
+            b"zero"
+        );
+        // Replaying c0 must fail: the cached key was consumed on first use.
+        assert_eq!(
+            decrypt_megolm(&mut inbound, &c0, room_id),
+            Err(CryptoError::MacVerificationFailed),
+            "a consumed skipped key must not decrypt again (replay)"
+        );
+    }
+
+    #[test]
+    fn megolm_decrypt_does_not_mutate_session_on_mac_failure() {
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let room_id = "!no-mutate:matrix.example.com";
+        let _ = crypto.create_outbound_megolm(room_id);
+        let mut inbound = crypto
+            .find_outbound_megolm(room_id)
+            .cloned()
+            .expect("session exists");
+
+        let mut ct = encrypt_megolm(&mut crypto.megolm_outbound[0], b"tamper me").expect("encrypt");
+        let last = ct.len() - 1;
+        ct[last] ^= 0xff; // corrupt the MAC tag
+
+        let index_before = inbound.message_index;
+        let key_before = inbound.session_key;
+        assert_eq!(
+            decrypt_megolm(&mut inbound, &ct, room_id),
+            Err(CryptoError::MacVerificationFailed)
+        );
+        assert_eq!(
+            inbound.message_index, index_before,
+            "a failed decrypt must not advance the ratchet position"
+        );
+        assert_eq!(
+            inbound.session_key, key_before,
+            "a failed decrypt must not roll the ratchet key"
+        );
+        assert!(
+            inbound.skipped.is_empty(),
+            "a failed decrypt must not populate the skipped-key cache"
+        );
     }
 }
