@@ -45,7 +45,12 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn main() {
+// WHY `-> io::Result<()>`, not a panicking `unwrap`/`expect`: this is a real
+// host process the on-device QEMU witness launches (#544), where a bind
+// failure (e.g. fd exhaustion) is a reachable environment condition, not
+// an invariant violation -- `main` returning `Err` reports it via the
+// standard `Debug`-printed-to-stderr + nonzero-exit path instead of a panic.
+fn main() -> std::io::Result<()> {
     let tamper_mac = std::env::args().any(|a| a == "--tamper-mac");
     let pylon = Pylon::new(runtime_signing().verifying_key(), now_ms());
     let (port, handle) = spawn_with_response_transform(pylon, 1, move |response| {
@@ -61,13 +66,14 @@ fn main() {
         } else {
             response
         }
-    });
+    })?;
     // WHY this exact line shape: scripts/witness/metaxu.sh (and
     // metaxu-negative.sh) grep stdout for it to learn the port before
     // launching qemu -- the orchestration contract between the two, kept
     // in one place.
     println!("PYLON_PORT={port}");
     let _ = handle.join(); // kanon:ignore RUST/no-silent-result-swallow -- a panicked pylon thread has nothing further for this process to report; the witness script observes the outcome via the kernel's own boot log, not this process's exit path
+    Ok(())
 }
 
 /// Flip the response frame's LAST byte (#544 negative case).
