@@ -1,8 +1,8 @@
 //! Key management: PBKDF2 key derivation, AES-256-GCM primary key seal/unseal.
 
 use aes_gcm::{
-    Aes256Gcm, Nonce,
-    aead::{AeadInPlace, KeyInit},
+    Aes256Gcm,
+    aead::{AeadInOut, KeyInit},
 };
 use jiff::Timestamp;
 use pbkdf2::pbkdf2_hmac;
@@ -200,10 +200,11 @@ pub(crate) fn seal_key_with_config(
 
     let sealing_key =
         Aes256Gcm::new_from_slice(derived.key.as_slice()).map_err(|_| InvalidKeySnafu.build())?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
     let mut buf = primary_key.to_vec();
-    let encrypt_result = sealing_key.encrypt_in_place(nonce, b"", &mut buf);
+    // WHY: hybrid-array deprecates Array::from_slice; the exact-length
+    // `From<&[u8; N]>` impl is compile-time checked, so this conversion
+    // cannot truncate and adds no error path to the seal routine.
+    let encrypt_result = sealing_key.encrypt_in_place((&nonce_bytes).into(), b"", &mut buf);
 
     if encrypt_result.is_err() {
         // WHY: buf may still hold plaintext or partially-transformed data
@@ -257,10 +258,8 @@ pub(crate) fn unseal_key(slot: &KeySlot, passphrase: &[u8]) -> Result<[u8; KEY_L
 
     let opening_key =
         Aes256Gcm::new_from_slice(derived.key.as_slice()).map_err(|_| InvalidKeySnafu.build())?;
-    let nonce = Nonce::from_slice(&slot.nonce);
-
     let mut buf = slot.ciphertext.to_vec();
-    let decrypt_result = opening_key.decrypt_in_place(nonce, b"", &mut buf);
+    let decrypt_result = opening_key.decrypt_in_place((&slot.nonce).into(), b"", &mut buf);
 
     // WHY: buf holds the decrypted plaintext primary key from this point
     // regardless of outcome below; zero it before returning on every path

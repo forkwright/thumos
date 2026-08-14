@@ -8,12 +8,12 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-aes = "0.8"
+aes = "0.9"
 zeroize = "1"
 jiff = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
-cmac = "0.7"
+cmac = "0.8"
 rand_core = { version = "0.10.1", default-features = false }
 
 [dependencies.p256]

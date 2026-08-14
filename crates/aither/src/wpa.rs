@@ -7,7 +7,10 @@
 
 use std::num::NonZeroU32;
 
-use hmac::{Hmac, Mac};
+// WHY: digest 0.11 removed `new_from_slice` from the `Mac` trait itself
+// (it now lives solely on `KeyInit`, which `hmac` re-exports) -- `Mac`
+// alone no longer brings the constructor into scope.
+use hmac::{Hmac, KeyInit, Mac};
 use pbkdf2::pbkdf2_hmac;
 use sha1::Sha1;
 

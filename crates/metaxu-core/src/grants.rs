@@ -143,14 +143,14 @@ impl SignedGrant {
 
 /// HKDF-SHA256 extract+expand to a 32-byte key (single block).
 pub fn hkdf_sha256(ikm: &[u8; 16], info: &[u8]) -> [u8; 32] {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
     // extract: PRK = HMAC(salt=zero, IKM); expand: OKM = HMAC(PRK, info||0x01).
     let mut h =
-        <Hmac<Sha256> as Mac>::new_from_slice(&[0u8; 32]).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key
+        <Hmac<Sha256> as KeyInit>::new_from_slice(&[0u8; 32]).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key
     h.update(ikm);
     let prk = h.finalize().into_bytes();
-    let mut e = <Hmac<Sha256> as Mac>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key
+    let mut e = <Hmac<Sha256> as KeyInit>::new_from_slice(&prk).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key
     e.update(info);
     e.update(&[0x01]);
     e.finalize().into_bytes().into()
@@ -165,9 +165,9 @@ pub fn hkdf_sha256(ikm: &[u8; 16], info: &[u8]) -> [u8; 32] {
 /// buffers) and the returned MAC is a fixed 32-byte array, independent of
 /// input size.
 pub(crate) fn response_mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
-    let mut h = <Hmac<Sha256> as Mac>::new_from_slice(key).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key
+    let mut h = <Hmac<Sha256> as KeyInit>::new_from_slice(key).unwrap_or_else(|_| unreachable!()); // INVARIANT: RustCrypto hmac's new_from_slice never errs on any key
     for part in parts {
         h.update(part);
     }
