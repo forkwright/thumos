@@ -80,7 +80,7 @@ rustix = { version = "1", features = [
 
 # Crypto
 aes-gcm = "0.10"
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 getrandom = "0.4"
 hkdf = "0.12"
 hmac = "0.12"
