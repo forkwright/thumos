@@ -137,7 +137,7 @@ pbkdf2 = { version = "0.12", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 rand_chacha = { version = "0.3", default-features = false }
 rand_core = { version = "0.6", default-features = false }
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 subtle = { version = "2", default-features = false }
 serde = { version = "1", default-features = false, features = [
     "derive",
