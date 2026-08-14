@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3](https://github.com/forkwright/thumos/compare/v0.7.2...v0.7.3) (2026-08-14)
+
+
+### Bug Fixes
+
+* **ci:** pin parity was blind to the dotted-header dependency form ([0f04e03](https://github.com/forkwright/thumos/commit/0f04e0395280b2cc8adc38ea06f536748d867a50))
+* **ci:** pin parity was blind to the dotted-header dependency form ([#824](https://github.com/forkwright/thumos/issues/824)) ([0f04e03](https://github.com/forkwright/thumos/commit/0f04e0395280b2cc8adc38ea06f536748d867a50))
+* **convergence:** the ratchet saw 2 of 17 duplication markers ([1c72a3d](https://github.com/forkwright/thumos/commit/1c72a3d7c73b224c64a7ef456e9c7dbbe3bfd8f2)), closes [#820](https://github.com/forkwright/thumos/issues/820)
+* **convergence:** the ratchet saw 2 of 17 duplication markers ([#821](https://github.com/forkwright/thumos/issues/821)) ([1c72a3d](https://github.com/forkwright/thumos/commit/1c72a3d7c73b224c64a7ef456e9c7dbbe3bfd8f2))
+
 ## [0.7.2](https://github.com/forkwright/thumos/compare/v0.7.1...v0.7.2) (2026-08-14)
 
 
