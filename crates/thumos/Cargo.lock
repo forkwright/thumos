@@ -14,6 +14,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aither-core"
+version = "0.7.3"
+dependencies = [
+ "hmac",
+ "pbkdf2",
+ "sha1",
+]
+
+[[package]]
 name = "asphaleia-core"
 version = "0.7.3"
 
@@ -553,6 +562,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -657,6 +677,7 @@ name = "thumos"
 version = "0.7.3"
 dependencies = [
  "aes",
+ "aither-core",
  "asphaleia-core",
  "cbc",
  "compact_str",
@@ -673,6 +694,7 @@ dependencies = [
  "rand_core",
  "sema-core",
  "serde",
+ "sha1",
  "sha2",
  "smoltcp",
  "subtle",

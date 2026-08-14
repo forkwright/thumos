@@ -9,10 +9,14 @@ repository.workspace = true
 
 [dependencies]
 getrandom = { workspace = true }
-hmac = { workspace = true }
+# WHY (#545, #819): the canonical EAPOL frame parse/encode, PMK/PTK
+# derivation, MIC, and 4-way handshake state machine live in aither-core,
+# shared no_std+alloc with the kernel -- one implementation on both sides,
+# fuzzed (fuzz_wpa/fuzz_eapol import this crate, which now delegates).
+# hmac/pbkdf2/sha1 moved with them; nothing else in this crate uses those
+# crates directly.
+aither-core = { path = "../aither-core" }
 nom = { workspace = true }
-pbkdf2 = { workspace = true }
-sha1 = { workspace = true }
 smoltcp = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }

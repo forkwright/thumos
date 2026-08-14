@@ -56,12 +56,12 @@ notes = "Converged: $...*XX checksum framing, ddmm.mmmm coordinate conversion, F
 
 [[pair]]
 name = "wifi"
-kernel = "wifi.rs (ported from aither)"
+kernel = "wifi.rs (EAPOL/WPA2 delegated to aither-core; scan/association state machine still kernel-local)"
 workspace = "aither"
 disposition = "extract-core"
-canonical = "pending: aither-core (scan/association state machine)"
-owner = "unscheduled"
-notes = "wifi.rs:3 doc header records the port."
+canonical = "aither-core (EAPOL frame types/parse/encode, PMK/PTK derivation, MIC, and the supplicant-side 4-way handshake state machine); scan/association state machine still pending"
+owner = "#545, #819, #837"
+notes = "Converged (#819): EapolType/KeyInfo/EapolKeyFrame/EapolFrame, eapol::parse/encode, PMK/PTK derivation (derive_pmk/derive_ptk), MIC (compute_mic/verify_mic), and the supplicant-side 4-way handshake state machine (HandshakeState/WpaHandshake -- previously kernel-only, fuzzed nowhere) all moved into aither-core; the kernel's own hand-rolled SHA-1/HMAC-SHA1/PBKDF2-HMAC-SHA1/PRF-384 (security.rs) is deleted in favor of the audited RustCrypto sha1/hmac/pbkdf2 crates aither-core uses, the same backend metaxu-core already proved in this kernel. Two live divergences were found and resolved on the way: aither's pre-convergence eapol::parse accepted any EAPOL-Key descriptor-type byte unchecked, where the kernel rejected anything but RSN (0x02) -- aither-core now enforces the kernel's gate, so fuzz_eapol/fuzz_wpa (which import aither, now delegating) reach code that actually ships; and aither's pre-convergence eapol::encode declared a truncated body_len/key_data_length field for an oversized input but wrote the full untruncated bytes anyway -- the same class of bug the kernel's own audit #282 finding 5 had already fixed on its side, which never reached aither. Also resolved (#837): the kernel's PBKDF2-HMAC-SHA1 PMK derivation truncated an over-32-byte SSID salt to 32 bytes before hashing (`salt.len().min(32)`), silently deriving a different PMK than a compliant supplicant would for the same passphrase/SSID pair; the audited pbkdf2 crate's salt handling has no such cap. WpaHandshake::process_message no longer draws its own SNonce via CSPRNG internally -- aither-core is no_std and cannot link the kernel's hardware-bound, fail-closed CSPRNG, so the caller (wifi.rs::generate_snonce) draws it and passes it in. NOT converged, deliberately: WifiConfig/ScanResult (fixed-array kernel storage), WifiHwOps/WifiHw/MockWifiHw/WifiDriver (MMIO hardware), generate_random_mac (CSPRNG-bound), and aither's own mac.rs/network.rs driver glue -- the scan/association half of this pair, unrelated to the EAPOL/WPA half this slice converged."
 
 [[pair]]
 name = "bluetooth"
