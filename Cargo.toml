@@ -118,7 +118,7 @@ log = "0.4"
 
 # Time
 jiff = "0.2"
-ulid = { version = "1", default-features = false }
+ulid = { version = "3", default-features = false }
 
 # Strings
 compact_str = "0.8"
