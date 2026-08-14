@@ -40,7 +40,7 @@ pub(crate) mod pdu;
 pub(crate) mod toolbox;
 
 use aes::Aes128;
-use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+use aes::cipher::{BlockCipherEncrypt, KeyInit};
 use zeroize::Zeroize;
 
 /// The `ah()` random-address hash function (Vol 3, Part H §2.2.2):
@@ -57,8 +57,8 @@ pub(crate) fn ah(irk: &[u8; 16], prand: &[u8; 3]) -> [u8; 3] {
     m[13..].copy_from_slice(prand);
     // Aes128::new takes the 16-byte key by reference — no fallible slice
     // conversion, so no unwrap/expect anywhere in the primitive.
-    let cipher = Aes128::new(GenericArray::from_slice(irk));
-    let mut block = *GenericArray::from_slice(&m);
+    let cipher = Aes128::new(irk.into());
+    let mut block = m.into();
     cipher.encrypt_block(&mut block);
     // mod 2^24: the least significant 24 bits of the big-endian output —
     // the last three octets of the ciphertext block.
