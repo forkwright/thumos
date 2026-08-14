@@ -43,12 +43,16 @@ witness_deps() {
 }
 
 # build_kernel <feature-flags> — release cross-compile for the qemu board.
-# WHY --locked (#757): crates/thumos keeps its own lockfile; without --locked
-# a manifest/lock disagreement here is silently resolved and rewritten
-# instead of failing the build.
+#
+# WHY it delegates rather than calling cargo: kernel-build.sh is the one place
+# the kernel is built, because it strips RUSTFLAGS from the environment. An env
+# RUSTFLAGS REPLACES the rustflags in crates/thumos/.cargo/config.toml rather
+# than merging, so a direct cargo call here builds without the link script and
+# without the -D warnings gate whenever the caller's environment carries one.
+# The --target, --locked (#757) and jobs handling live there too.
 build_kernel() {
     local features="${1:-qemu}"
-    (cd "$KERNEL_DIR" && cargo build --release --target armv7a-none-eabi --locked --features "$features" --jobs "${THUMOS_BUILD_JOBS:-8}") \
+    "$REPO_ROOT/scripts/kernel-build.sh" "$features" \
         || { echo "FAIL: kernel build failed (features=$features)"; exit 1; }
 }
 
