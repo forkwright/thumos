@@ -72,7 +72,7 @@ metaxu-probe-expired-grant = ["metaxu-probe"]
 metaxu-probe-no-capability = ["metaxu-probe"]
 
 [dependencies]
-aes = { version = "0.8", default-features = false }
+aes = { version = "0.9", default-features = false }
 # WHY (#545): the canonical threat-semantics types (ThreatLevel/Calibration/
 # band boundaries) live in sema-core, shared with the workspace `sema` crate
 # — one implementation, no drifted duplicate in screen_threat.
