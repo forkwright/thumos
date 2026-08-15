@@ -39,8 +39,6 @@ root = sys.argv[1]
 # issue that will close it. Remove the row when the gap closes; the check fails
 # on a row that no longer describes a gap.
 EXEMPT = {
-    ("aither", "wpa"): "#819 — no aither-core exists; the kernel parses WPA in crates/thumos/src/wifi.rs",
-    ("aither", "eapol"): "#819 — no aither-core exists; the kernel parses EAPOL in crates/thumos/src/wifi.rs",
     ("asphaleia", "filter"): "#819 — the kernel filters packets in crates/thumos/src/firewall.rs",
     ("asphaleia", "rules"): "#819 — the kernel's rule evaluation lives in crates/thumos/src/firewall.rs",
     ("klesis", "ccci"): "#819 — the kernel frames CCCI in crates/thumos/src/ccci.rs (its own CcciHeader)",

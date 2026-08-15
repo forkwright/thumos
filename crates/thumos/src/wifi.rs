@@ -1,10 +1,13 @@
 //! `WiFi` network interface and WPA supplicant for the MT6739 combo chip.
 //!
-//! Ports essential logic from the `aither` userspace crate into the kernel:
 //! - MAC randomization via the kernel CSPRNG (`csprng.rs`)
-//! - WPA2-Personal 4-way handshake state machine
-//! - EAPOL frame parsing and construction (IEEE 802.1X-2020)
 //! - `WiFi` hardware abstraction via `WifiHwOps` trait
+//! - EAPOL frame parsing/encoding, PMK/PTK derivation, MIC, and the WPA2
+//!   4-way handshake state machine delegate to [`aither_core`] (#545,
+//!   #819) -- the canonical implementation, shared with the `aither`
+//!   workspace crate, so `fuzz_wpa`/`fuzz_eapol` (which import `aither`)
+//!   exercise the same code this kernel links rather than a parallel port
+//!   that never ships. See `docs/convergence.toml`'s `wifi` pair.
 //!
 //! ## Hardware path
 //!
@@ -33,7 +36,6 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::csprng;
-use crate::security::{hmac_sha1, pbkdf2_hmac_sha1, prf_384};
 
 // ---------------------------------------------------------------------------
 // MT6739 WiFi hardware constants
@@ -76,6 +78,9 @@ pub enum WifiError {
     NetworkNotFound,
     /// The `WiFi` hardware is not initialized.
     NotInitialized,
+    /// The kernel CSPRNG has not been seeded; no cryptographic material
+    /// (e.g. a fresh WPA supplicant nonce) can be safely generated.
+    CsprngNotSeeded,
 }
 
 impl core::fmt::Display for WifiError {
@@ -95,6 +100,29 @@ impl core::fmt::Display for WifiError {
             }
             Self::NetworkNotFound => write!(f, "network not found"),
             Self::NotInitialized => write!(f, "WiFi not initialized"),
+            Self::CsprngNotSeeded => write!(f, "kernel CSPRNG is not seeded"),
+        }
+    }
+}
+
+impl From<aither_core::eapol::Error> for WifiError {
+    fn from(err: aither_core::eapol::Error) -> Self {
+        match err {
+            aither_core::eapol::Error::TooShort { need, have } => {
+                Self::FrameTooShort { need, have }
+            }
+            aither_core::eapol::Error::UnknownEapolType { value } => {
+                Self::UnknownEapolType { value }
+            }
+            aither_core::eapol::Error::UnknownKeyDescriptorType { value } => {
+                Self::UnknownKeyDescriptorType { value }
+            }
+            // WHY: aither_core::eapol::Error is #[non_exhaustive] -- this
+            // arm exists only to satisfy that across the crate boundary. A
+            // future core variant reaching here is a defect in THIS match,
+            // not an attacker-reachable outcome; there is no adversarial
+            // input that produces a variant this crate does not know about.
+            _ => unreachable!("aither_core::eapol::Error gained a variant this match must cover"),
         }
     }
 }
@@ -269,308 +297,29 @@ pub(crate) fn generate_random_mac() -> [u8; 6] {
 }
 
 // ---------------------------------------------------------------------------
-// WPA2-Personal key derivation (stubbed)
+// EAPOL / WPA2-Personal -- delegated to aither-core (#545, #819)
 // ---------------------------------------------------------------------------
+//
+// The EAPOL frame types/parser/encoder, PMK/PTK derivation, MIC, and the
+// 4-way handshake state machine are NOT reimplemented here: they live in
+// aither_core (shared no_std+alloc with the `aither` workspace crate) so
+// this kernel and `fuzz_wpa`/`fuzz_eapol` link the identical code.
+//
+// WHY only two names are re-exported here, not the full surface: `WifiDriver`
+// does not yet wire a live EAPOL/WPA call site (#753/#129 -- the hardware
+// data path is fail-closed pending TX/RX), so `EapolFrame` (the
+// `eapol_parse`/`eapol_encode` signatures below) and `WpaHandshake` (the
+// `WifiDriver::handshake` field) are the only names this module's
+// PRODUCTION code actually names today. Re-exporting the rest
+// unconditionally left them as unused imports outside the test build (a
+// binary crate has no external consumer to exempt them the way a library's
+// public API would) -- the full surface (types, PMK/PTK/MIC functions,
+// state machine variants) is imported directly by the test module below,
+// and by aither_core's own exhaustive test suite. Widen this re-export
+// list when #129 adds a real caller.
 
-/// PMK/PSK output length in bytes (IEEE 802.11-2020).
-pub(crate) const PMK_LEN: usize = 32;
-
-/// Key Confirmation Key length in bytes.
-pub(crate) const KCK_LEN: usize = 16;
-
-/// Key Encryption Key length in bytes.
-pub(crate) const KEK_LEN: usize = 16;
-
-/// Temporal Key length in bytes (WPA2-CCMP).
-pub(crate) const TK_LEN: usize = 16;
-
-/// Total PTK length: KCK + KEK + TK (WPA2-CCMP, 384 bits).
-pub(crate) const PTK_LEN: usize = KCK_LEN + KEK_LEN + TK_LEN;
-
-/// MIC length in bytes.
-pub(crate) const MIC_LEN: usize = 16;
-
-/// Pairwise Transient Key components.
-///
-/// Derived from the PMK by PTK = PRF-384(PMK, "Pairwise key expansion", ...).
-///
-/// Implements [`Drop`] to zero key material, preventing it from persisting
-/// in memory after the handshake completes. Uses `write_volatile` to prevent
-/// the compiler from optimizing away the zeroing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ptk {
-    /// Key Confirmation Key: used to compute and verify MIC.
-    pub kck: [u8; KCK_LEN],
-    /// Key Encryption Key: used to wrap the GTK with AES-KEYWRAP.
-    pub kek: [u8; KEK_LEN],
-    /// Temporal Key: used for data frame encryption (AES-CCMP).
-    pub tk: [u8; TK_LEN],
-}
-
-impl Drop for Ptk {
-    fn drop(&mut self) {
-        // WHY: write_volatile prevents the compiler from eliding the zeroing
-        // as a dead store, ensuring key material is actually cleared from memory.
-        for byte in &mut self.kck {
-            // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe {
-                core::ptr::write_volatile(byte, 0);
-            }
-        }
-        for byte in &mut self.kek {
-            // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe {
-                core::ptr::write_volatile(byte, 0);
-            }
-        }
-        for byte in &mut self.tk {
-            // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe {
-                core::ptr::write_volatile(byte, 0);
-            }
-        }
-    }
-}
-
-/// Derive the Pairwise Master Key from a passphrase and SSID.
-///
-/// Uses PBKDF2-HMAC-SHA1 with 4096 iterations and a 32-byte output as
-/// specified in IEEE 802.11-2020, section 12.4.4.3.1.
-#[must_use]
-pub(crate) fn derive_pmk(passphrase: &[u8], ssid: &[u8]) -> [u8; PMK_LEN] {
-    let mut pmk = [0u8; PMK_LEN];
-    let _ = pbkdf2_hmac_sha1(passphrase, ssid, 4096, &mut pmk); // WHY: pbkdf2 with 4096 iterations is infallible; Result discarded for API uniformity
-    pmk
-}
-
-/// Derive the Pairwise Transient Key using PRF-384.
-///
-/// Implements IEEE 802.11-2020 section 12.7.1.2:
-/// ```text
-/// PTK = PRF-384(PMK, "Pairwise key expansion",
-///               min(AA,SPA) || max(AA,SPA) || min(ANonce,SNonce) || max(ANonce,SNonce))
-/// ```
-#[must_use]
-pub(crate) fn derive_ptk(
-    pmk: &[u8; PMK_LEN],
-    anonce: &[u8; 32],
-    snonce: &[u8; 32],
-    aa: &[u8; 6],
-    spa: &[u8; 6],
-) -> Ptk {
-    // Build concatenated data: min(AA,SPA) || max(AA,SPA) ||
-    //                          min(ANonce,SNonce) || max(ANonce,SNonce)
-    let mut data = [0u8; 76];
-    if aa <= spa {
-        data[0..6].copy_from_slice(aa);
-        data[6..12].copy_from_slice(spa);
-    } else {
-        data[0..6].copy_from_slice(spa);
-        data[6..12].copy_from_slice(aa);
-    }
-    if anonce <= snonce {
-        data[12..44].copy_from_slice(anonce);
-        data[44..76].copy_from_slice(snonce);
-    } else {
-        data[12..44].copy_from_slice(snonce);
-        data[44..76].copy_from_slice(anonce);
-    }
-
-    let ptk_bytes = prf_384(pmk, b"Pairwise key expansion", &data);
-
-    let mut kck = [0u8; KCK_LEN];
-    let mut kek = [0u8; KEK_LEN];
-    let mut tk = [0u8; TK_LEN];
-    kck.copy_from_slice(&ptk_bytes[0..16]);
-    kek.copy_from_slice(&ptk_bytes[16..32]);
-    tk.copy_from_slice(&ptk_bytes[32..48]);
-
-    Ptk { kck, kek, tk }
-}
-
-/// Compute a 16-byte MIC using HMAC-SHA1 truncated to 128 bits.
-///
-/// Used to authenticate EAPOL-Key frames during the 4-way handshake
-/// (messages 2, 3, and 4).
-#[must_use]
-pub(crate) fn compute_mic(kck: &[u8; KCK_LEN], data: &[u8]) -> [u8; MIC_LEN] {
-    let full = hmac_sha1(kck, data);
-    let mut mic = [0u8; MIC_LEN];
-    mic.copy_from_slice(&full[..MIC_LEN]);
-    mic
-}
-
-/// Verify that `expected_mic` matches the MIC computed over `data` with `kck`.
-///
-/// Uses constant-time comparison to prevent timing side-channel attacks.
-/// Returns `true` only when the MIC is correct.
-#[must_use]
-pub(crate) fn verify_mic(kck: &[u8; KCK_LEN], data: &[u8], expected_mic: &[u8; MIC_LEN]) -> bool {
-    let computed = compute_mic(kck, data);
-    constant_time_eq(&computed, expected_mic)
-}
-
-/// Constant-time byte slice comparison.
-///
-/// Compares all bytes regardless of early differences, preventing timing
-/// side-channel attacks that could leak information about secret key material.
-/// Returns `true` only when both slices have equal length and identical content.
-#[must_use]
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-// ---------------------------------------------------------------------------
-// EAPOL frame handling (IEEE 802.1X-2020)
-// ---------------------------------------------------------------------------
-
-/// Size of the EAPOL common header (version + type + length).
-const EAPOL_HEADER_LEN: usize = 4;
-
-/// Size of the fixed portion of an EAPOL-Key body (before variable key data).
-///
-/// Fields: `descriptor_type(1)` + `key_info(2)` + `key_length(2)` + `replay_counter(8)`
-/// + nonce(32) + iv(16) + rsc(8) + reserved(8) + mic(16) + `key_data_length(2)` = 95
-const EAPOL_KEY_FIXED_LEN: usize = 95;
-
-/// Nonce field length in bytes.
-pub(crate) const NONCE_LEN: usize = 32;
-
-/// IV field length in bytes.
-pub(crate) const IV_LEN: usize = 16;
-
-/// RSN key descriptor type (WPA2/WPA3).
-pub(crate) const DESCRIPTOR_TYPE_RSN: u8 = 0x02;
-
-/// EAPOL packet type discriminant (IEEE 802.1X-2020, table 11-3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum EapolType {
-    /// EAP authentication message.
-    EapPacket,
-    /// Supplicant requests authentication start.
-    Start,
-    /// Supplicant ends the authenticated session.
-    Logoff,
-    /// Key negotiation message (4-way handshake).
-    Key,
-}
-
-impl EapolType {
-    /// Parse from wire byte.
-    const fn from_byte(b: u8) -> Result<Self, WifiError> {
-        match b {
-            0x00 => Ok(Self::EapPacket),
-            0x01 => Ok(Self::Start),
-            0x02 => Ok(Self::Logoff),
-            0x03 => Ok(Self::Key),
-            v => Err(WifiError::UnknownEapolType { value: v }),
-        }
-    }
-
-    /// Encode to wire byte.
-    const fn to_byte(self) -> u8 {
-        match self {
-            Self::EapPacket => 0x00,
-            Self::Start => 0x01,
-            Self::Logoff => 0x02,
-            Self::Key => 0x03,
-        }
-    }
-}
-
-/// Packed key-information field (IEEE 802.11-2020, section 12.7.2, figure 12-33).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct KeyInfo(pub u16);
-
-impl KeyInfo {
-    /// Key descriptor version (bits 0-2).
-    #[must_use]
-    pub(crate) const fn descriptor_version(self) -> u8 {
-        (self.0 & 0x0007) as u8
-    }
-
-    /// True if pairwise (unicast) key; false for group/broadcast key.
-    #[must_use]
-    pub(crate) const fn pairwise(self) -> bool {
-        self.0 & 0x0008 != 0
-    }
-
-    /// True if supplicant shall install the key.
-    #[must_use]
-    pub(crate) const fn install(self) -> bool {
-        self.0 & 0x0040 != 0
-    }
-
-    /// True if message requires an acknowledgement.
-    #[must_use]
-    pub(crate) const fn ack(self) -> bool {
-        self.0 & 0x0080 != 0
-    }
-
-    /// True if a MIC is present in this frame.
-    #[must_use]
-    pub(crate) const fn mic(self) -> bool {
-        self.0 & 0x0100 != 0
-    }
-
-    /// True if the RSNA has been established.
-    #[must_use]
-    pub(crate) const fn secure(self) -> bool {
-        self.0 & 0x0200 != 0
-    }
-
-    /// True if key data is encrypted (AES-KEYWRAP).
-    #[must_use]
-    pub(crate) const fn encrypted_key_data(self) -> bool {
-        self.0 & 0x1000 != 0
-    }
-}
-
-/// EAPOL-Key frame body (IEEE 802.11-2020, section 12.7.2).
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct EapolKeyFrame {
-    /// Key descriptor type (0x02 = RSN, 0xFE = WPA legacy).
-    pub descriptor_type: u8,
-    /// Key information flags.
-    pub key_info: KeyInfo,
-    /// Length of the pairwise temporal key in octets.
-    pub key_length: u16,
-    /// Strictly monotonic replay counter.
-    pub replay_counter: u64,
-    /// Authenticator or supplicant nonce (`ANonce` / `SNonce`).
-    pub nonce: [u8; NONCE_LEN],
-    /// Key IV (all-zero for CCMP; used by TKIP).
-    pub iv: [u8; IV_LEN],
-    /// RSC / GTK sequence counter.
-    pub rsc: u64,
-    /// Message Integrity Code (MIC field zeroed before MIC computation).
-    pub mic: [u8; MIC_LEN],
-    /// Optional key material (wrapped GTK or RSNE IE).
-    pub key_data: Vec<u8>,
-}
-
-/// Top-level EAPOL frame.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct EapolFrame {
-    /// Protocol version (1 = 802.1X-2001, 2 = 802.1X-2004, 3 = 802.1X-2010).
-    pub version: u8,
-    /// Packet type discriminant.
-    pub packet_type: EapolType,
-    /// Key frame (present only when `packet_type == EapolType::Key`).
-    pub key_frame: Option<EapolKeyFrame>,
-    /// Raw body bytes (for EAP-Packet, Start, and Logoff).
-    pub raw_body: Vec<u8>,
-}
+pub(crate) use aither_core::eapol::{EapolFrame, NONCE_LEN};
+pub(crate) use aither_core::wpa::WpaHandshake;
 
 /// Parse an EAPOL frame from a byte slice.
 ///
@@ -581,449 +330,35 @@ pub struct EapolFrame {
 /// unrecognised packet type bytes, and [`WifiError::UnknownKeyDescriptorType`]
 /// when an EAPOL-Key frame's descriptor type is not RSN (0x02).
 pub(crate) fn eapol_parse(data: &[u8]) -> Result<EapolFrame, WifiError> {
-    if data.len() < EAPOL_HEADER_LEN {
-        return Err(WifiError::FrameTooShort {
-            need: EAPOL_HEADER_LEN,
-            have: data.len(),
-        });
-    }
-
-    let version = data[0];
-    let packet_type = EapolType::from_byte(data[1])?;
-    let body_len = u16::from_be_bytes([data[2], data[3]]) as usize;
-    let total = EAPOL_HEADER_LEN + body_len;
-
-    if data.len() < total {
-        return Err(WifiError::FrameTooShort {
-            need: total,
-            have: data.len(),
-        });
-    }
-
-    let body = &data[EAPOL_HEADER_LEN..total];
-
-    if packet_type == EapolType::Key {
-        let key_frame = eapol_parse_key_frame(body)?;
-        Ok(EapolFrame {
-            version,
-            packet_type,
-            key_frame: Some(key_frame),
-            raw_body: Vec::new(),
-        })
-    } else {
-        Ok(EapolFrame {
-            version,
-            packet_type,
-            key_frame: None,
-            raw_body: body.to_vec(),
-        })
-    }
-}
-
-/// Parse the body of an EAPOL-Key frame.
-fn eapol_parse_key_frame(body: &[u8]) -> Result<EapolKeyFrame, WifiError> {
-    if body.len() < EAPOL_KEY_FIXED_LEN {
-        return Err(WifiError::FrameTooShort {
-            need: EAPOL_KEY_FIXED_LEN,
-            have: body.len(),
-        });
-    }
-
-    let descriptor_type = body[0];
-    if descriptor_type != DESCRIPTOR_TYPE_RSN {
-        return Err(WifiError::UnknownKeyDescriptorType {
-            value: descriptor_type,
-        });
-    }
-    let key_info = KeyInfo(u16::from_be_bytes([body[1], body[2]]));
-    let key_length = u16::from_be_bytes([body[3], body[4]]);
-
-    let mut replay_buf = [0u8; 8];
-    replay_buf.copy_from_slice(&body[5..13]);
-    let replay_counter = u64::from_be_bytes(replay_buf);
-
-    let mut nonce = [0u8; NONCE_LEN];
-    nonce.copy_from_slice(&body[13..45]);
-
-    let mut iv = [0u8; IV_LEN];
-    iv.copy_from_slice(&body[45..61]);
-
-    let mut rsc_buf = [0u8; 8];
-    rsc_buf.copy_from_slice(&body[61..69]);
-    let rsc = u64::from_be_bytes(rsc_buf);
-    // body[69..77] is reserved; skip.
-
-    let mut mic = [0u8; MIC_LEN];
-    mic.copy_from_slice(&body[77..93]);
-
-    let key_data_len = u16::from_be_bytes([body[93], body[94]]) as usize;
-    let key_data_end = EAPOL_KEY_FIXED_LEN + key_data_len;
-
-    if body.len() < key_data_end {
-        return Err(WifiError::FrameTooShort {
-            need: key_data_end,
-            have: body.len(),
-        });
-    }
-
-    let key_data = body[EAPOL_KEY_FIXED_LEN..key_data_end].to_vec();
-
-    Ok(EapolKeyFrame {
-        descriptor_type,
-        key_info,
-        key_length,
-        replay_counter,
-        nonce,
-        iv,
-        rsc,
-        mic,
-        key_data,
-    })
+    aither_core::eapol::parse(data).map_err(WifiError::from)
 }
 
 /// Encode an EAPOL frame into a byte vector.
 #[must_use]
 pub(crate) fn eapol_encode(frame: &EapolFrame) -> Vec<u8> {
-    let body = frame
-        .key_frame
-        .as_ref()
-        .map_or_else(|| frame.raw_body.clone(), eapol_encode_key_frame);
-
-    // WHY: body length is capped at u16::MAX to match the 2-byte length field
-    // in the EAPOL header. Frames exceeding this are malformed; truncating
-    // the body is the least-bad option in a no_std context without Result
-    // overhead -- but the truncation must apply to the BYTES WRITTEN, not
-    // just the length field, or the declared length and the actual frame
-    // body diverge (issue #282 finding 5: the old code capped only
-    // `body_len` and then unconditionally wrote the full untruncated
-    // `body`, corrupting any frame whose body exceeded u16::MAX).
-    let body_len = u16::try_from(body.len()).unwrap_or(u16::MAX);
-    let truncated_body = &body[..usize::from(body_len)];
-
-    let mut out = Vec::with_capacity(EAPOL_HEADER_LEN + truncated_body.len());
-    out.push(frame.version);
-    out.push(frame.packet_type.to_byte());
-    out.extend_from_slice(&body_len.to_be_bytes());
-    out.extend_from_slice(truncated_body);
-    out
+    aither_core::eapol::encode(frame)
 }
 
-/// Encode an EAPOL-Key frame body.
-fn eapol_encode_key_frame(kf: &EapolKeyFrame) -> Vec<u8> {
-    // WHY: same u16::MAX cap and WRITTEN-bytes truncation fix as
-    // eapol_encode, applied to the key_data_length field (issue #282
-    // finding 5).
-    let key_data_len = u16::try_from(kf.key_data.len()).unwrap_or(u16::MAX);
-    let truncated_key_data = &kf.key_data[..usize::from(key_data_len)];
-    let mut out = Vec::with_capacity(EAPOL_KEY_FIXED_LEN + truncated_key_data.len());
-
-    out.push(kf.descriptor_type);
-    out.extend_from_slice(&kf.key_info.0.to_be_bytes());
-    out.extend_from_slice(&kf.key_length.to_be_bytes());
-    out.extend_from_slice(&kf.replay_counter.to_be_bytes());
-    out.extend_from_slice(&kf.nonce);
-    out.extend_from_slice(&kf.iv);
-    out.extend_from_slice(&kf.rsc.to_be_bytes());
-    out.extend_from_slice(&[0u8; 8]); // reserved
-    out.extend_from_slice(&kf.mic);
-    out.extend_from_slice(&key_data_len.to_be_bytes());
-    out.extend_from_slice(truncated_key_data);
-    out
-}
-
-// ---------------------------------------------------------------------------
-// WPA2 4-way handshake state machine
-// ---------------------------------------------------------------------------
-
-/// WPA2-Personal 4-way handshake progression.
+/// Draw a fresh supplicant nonce (`SNonce`) from the kernel CSPRNG.
 ///
-/// State machine for the supplicant side of the IEEE 802.11-2020 4-way
-/// handshake (section 12.7.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum HandshakeState {
-    /// Waiting for Message 1 (`ANonce` from authenticator).
-    #[default]
-    AwaitMsg1,
-    /// Message 1 received; supplicant generated `SNonce` and derived PTK.
-    /// Waiting to send Message 2.
-    SendMsg2,
-    /// Message 2 sent; waiting for Message 3 (GTK + Install).
-    AwaitMsg3,
-    /// Message 3 received; waiting to send Message 4 (final ACK).
-    SendMsg4,
-    /// Handshake complete; keys installed.
-    Complete,
-    /// Handshake failed.
-    Failed,
-}
-
-/// WPA2-Personal 4-way handshake context.
+/// [`WpaHandshake::process_message`] takes the `SNonce` as a caller-supplied
+/// parameter rather than drawing one itself (#819): aither-core is
+/// `no_std` and generates no entropy of its own, so the kernel's
+/// hardware-bound, fail-closed CSPRNG (`csprng::kernel_random_bytes`) has
+/// no equivalent it could link. This is that caller -- the one place a
+/// fresh `SNonce` is drawn before Message 1 is processed.
 ///
-/// Tracks handshake progression and stores transient cryptographic material
-/// (nonces, derived keys) for the duration of the handshake.
+/// # Errors
 ///
-/// NOTE: fields are private (audit #282 batch 3). The only sanctioned way
-/// to advance `state` or populate `ptk` is through [`Self::process_message`],
-/// [`Self::msg2_sent`], and [`Self::complete`] -- direct field mutation
-/// from outside this module would bypass MIC verification and the
-/// replay-counter check, e.g. jumping straight to `SendMsg4` without ever
-/// validating Message 3.
-#[derive(Debug, Clone)]
-pub struct WpaHandshake {
-    /// Current handshake state.
-    state: HandshakeState,
-    /// Authenticator nonce (received in Message 1).
-    anonce: [u8; NONCE_LEN],
-    /// Supplicant nonce (generated locally).
-    snonce: [u8; NONCE_LEN],
-    /// Derived Pairwise Transient Key (populated after Message 1 processing).
-    ptk: Option<Ptk>,
-    /// Replay counter from the most recent authenticator message.
-    replay_counter: u64,
-    /// EAPOL protocol version (IEEE 802.1X-2020 §11.3.1) of the most
-    /// recently received frame. Msg3 MIC reconstruction and the Msg2/Msg4
-    /// responses echo this value instead of hardcoding version 2 (audit
-    /// #259) — a version-1 AP (802.1X-2001, common on embedded/enterprise
-    /// gear) otherwise fails every MIC check.
-    eapol_version: u8,
-}
-
-impl WpaHandshake {
-    /// Create a new handshake context.
-    #[must_use]
-    pub(crate) fn new() -> Self {
-        Self {
-            state: HandshakeState::AwaitMsg1,
-            anonce: [0u8; NONCE_LEN],
-            snonce: [0u8; NONCE_LEN],
-            ptk: None,
-            replay_counter: 0,
-            eapol_version: 2,
-        }
-    }
-
-    /// Record the EAPOL protocol version of the most recently received frame.
-    ///
-    /// Callers should invoke this with the wire frame's `version` byte
-    /// before passing its key body to [`Self::process_message`] — Msg3 MIC
-    /// reconstruction and Msg2/Msg4 responses then echo the value instead
-    /// of hardcoding version 2 (audit #259).
-    pub(crate) fn set_eapol_version(&mut self, version: u8) {
-        self.eapol_version = version;
-    }
-
-    /// Process an incoming EAPOL-Key frame (Message 1 or Message 3).
-    ///
-    /// Advances the handshake state machine. Returns the new state.
-    ///
-    /// # Arguments
-    ///
-    /// * `key_frame` - The received EAPOL-Key frame body.
-    /// * `pmk` - Pre-computed Pairwise Master Key.
-    /// * `own_mac` - Supplicant MAC address (locally-administered).
-    /// * `ap_mac` - Authenticator (AP) MAC address.
-    pub(crate) fn process_message(
-        &mut self,
-        key_frame: &EapolKeyFrame,
-        pmk: &[u8; PMK_LEN],
-        own_mac: &[u8; 6],
-        ap_mac: &[u8; 6],
-    ) -> HandshakeState {
-        match self.state {
-            HandshakeState::AwaitMsg1 => {
-                // Message 1: AP sends ANonce, ack=true, mic=false, pairwise=true
-                if !key_frame.key_info.ack()
-                    || key_frame.key_info.mic()
-                    || !key_frame.key_info.pairwise()
-                {
-                    self.state = HandshakeState::Failed;
-                    return self.state;
-                }
-                self.anonce = key_frame.nonce;
-                self.replay_counter = key_frame.replay_counter;
-
-                // Generate supplicant nonce. Fail closed (#284): if the CSPRNG
-                // is unseeded, abort the handshake rather than deriving a PTK
-                // from a zero SNonce.
-                if csprng::kernel_random_bytes(&mut self.snonce).is_err() {
-                    self.state = HandshakeState::Failed;
-                    return self.state;
-                }
-
-                // Derive PTK
-                let ptk = derive_ptk(pmk, &self.anonce, &self.snonce, ap_mac, own_mac);
-                self.ptk = Some(ptk);
-
-                self.state = HandshakeState::SendMsg2;
-                self.state
-            }
-            HandshakeState::AwaitMsg3 => {
-                // Message 3: AP sends ANonce again, ack=true, mic=true, install=true, pairwise=true
-                if !key_frame.key_info.ack()
-                    || !key_frame.key_info.mic()
-                    || !key_frame.key_info.install()
-                    || !key_frame.key_info.pairwise()
-                {
-                    self.state = HandshakeState::Failed;
-                    return self.state;
-                }
-
-                // Verify replay counter is monotonically increasing
-                if key_frame.replay_counter <= self.replay_counter {
-                    self.state = HandshakeState::Failed;
-                    return self.state;
-                }
-                self.replay_counter = key_frame.replay_counter;
-
-                // Verify MIC using KCK from PTK (IEEE 802.11-2020 section 12.7.6.4).
-                // Fail closed (#274): a missing PTK means no MIC can be
-                // verified — never fall through to SendMsg4 unchecked.
-                let Some(ref ptk) = self.ptk else {
-                    self.state = HandshakeState::Failed;
-                    return self.state;
-                };
-                let mut zeroed_kf = key_frame.clone();
-                zeroed_kf.mic = [0u8; MIC_LEN];
-                let zeroed_frame = EapolFrame {
-                    version: self.eapol_version,
-                    packet_type: EapolType::Key,
-                    key_frame: Some(zeroed_kf),
-                    raw_body: Vec::new(),
-                };
-                let encoded = eapol_encode(&zeroed_frame);
-                if !verify_mic(&ptk.kck, &encoded, &key_frame.mic) {
-                    self.state = HandshakeState::Failed;
-                    return self.state;
-                }
-
-                self.state = HandshakeState::SendMsg4;
-                self.state
-            }
-            _ => self.state,
-        }
-    }
-
-    /// Mark the handshake as complete after Message 4 has been sent.
-    pub(crate) fn complete(&mut self) {
-        if self.state == HandshakeState::SendMsg4 {
-            self.state = HandshakeState::Complete;
-        }
-    }
-
-    /// Advance the handshake after Message 2 has been transmitted.
-    ///
-    /// Transitions `SendMsg2 -> AwaitMsg3`. Without this call the state
-    /// machine has no path out of `SendMsg2` (audit #260): `process_message`
-    /// only has match arms for `AwaitMsg1` and `AwaitMsg3`, so the AP's
-    /// Message 3 would otherwise fall through the `_ => self.state`
-    /// catch-all and the handshake could never reach `SendMsg4`/`Complete`.
-    /// No-ops (state unchanged) unless currently in `SendMsg2`.
-    pub(crate) fn msg2_sent(&mut self) {
-        if self.state == HandshakeState::SendMsg2 {
-            self.state = HandshakeState::AwaitMsg3;
-        }
-    }
-
-    /// Build an EAPOL-Key response frame (Message 2 or Message 4).
-    ///
-    /// Returns `None` if the handshake is not in a state that requires sending.
-    #[must_use]
-    pub(crate) fn build_response(&self) -> Option<EapolFrame> {
-        match self.state {
-            HandshakeState::SendMsg2 => {
-                // Message 2: supplicant sends SNonce, mic=true, ack=false
-                // Key info: version=2 (AES), pairwise, MIC
-                // Fail closed (#282 batch 3): a missing PTK means no MIC can
-                // be computed -- never emit a frame with a zeroed, spoofable
-                // MIC.
-                let ptk = self.ptk.as_ref()?;
-                let key_info = KeyInfo(0x010a); // version=2, pairwise, MIC
-                let mut kf = EapolKeyFrame {
-                    descriptor_type: DESCRIPTOR_TYPE_RSN,
-                    key_info,
-                    key_length: 0,
-                    replay_counter: self.replay_counter,
-                    nonce: self.snonce,
-                    iv: [0u8; IV_LEN],
-                    rsc: 0,
-                    mic: [0u8; MIC_LEN],
-                    key_data: Vec::new(),
-                };
-                let frame_for_mic = EapolFrame {
-                    version: self.eapol_version,
-                    packet_type: EapolType::Key,
-                    key_frame: Some(kf.clone()),
-                    raw_body: Vec::new(),
-                };
-                kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
-                Some(EapolFrame {
-                    version: self.eapol_version,
-                    packet_type: EapolType::Key,
-                    key_frame: Some(kf),
-                    raw_body: Vec::new(),
-                })
-            }
-            HandshakeState::SendMsg4 => {
-                // Message 4: supplicant sends final ACK, mic=true, secure=true
-                // Fail closed (#282 batch 3): a missing PTK means no MIC can
-                // be computed -- never emit a frame with a zeroed, spoofable
-                // MIC.
-                let ptk = self.ptk.as_ref()?;
-                let key_info = KeyInfo(0x030a); // version=2, pairwise, MIC, secure
-                let mut kf = EapolKeyFrame {
-                    descriptor_type: DESCRIPTOR_TYPE_RSN,
-                    key_info,
-                    key_length: 0,
-                    replay_counter: self.replay_counter,
-                    nonce: [0u8; NONCE_LEN],
-                    iv: [0u8; IV_LEN],
-                    rsc: 0,
-                    mic: [0u8; MIC_LEN],
-                    key_data: Vec::new(),
-                };
-                let frame_for_mic = EapolFrame {
-                    version: self.eapol_version,
-                    packet_type: EapolType::Key,
-                    key_frame: Some(kf.clone()),
-                    raw_body: Vec::new(),
-                };
-                kf.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
-                Some(EapolFrame {
-                    version: self.eapol_version,
-                    packet_type: EapolType::Key,
-                    key_frame: Some(kf),
-                    raw_body: Vec::new(),
-                })
-            }
-            _ => None,
-        }
-    }
-}
-
-impl Drop for WpaHandshake {
-    fn drop(&mut self) {
-        // Zero nonces — they contribute to key derivation and are sensitive.
-        for byte in &mut self.anonce {
-            // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe {
-                core::ptr::write_volatile(byte, 0);
-            }
-        }
-        for byte in &mut self.snonce {
-            // SAFETY: byte is a valid mutable reference to initialized memory.
-            unsafe {
-                core::ptr::write_volatile(byte, 0);
-            }
-        }
-        // The PTK is zeroed by its own Drop impl when this Option is dropped.
-    }
-}
-
-impl Default for WpaHandshake {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Returns [`WifiError::CsprngNotSeeded`] (fail closed, matching #284's
+/// original guarantee) if the CSPRNG is not yet seeded: a zeroed `SNonce`
+/// from an unseeded CSPRNG would derive a PTK an eavesdropper could
+/// replicate, so an unseeded CSPRNG must abort the handshake attempt
+/// rather than silently proceed with weak key material.
+pub(crate) fn generate_snonce() -> Result<[u8; NONCE_LEN], WifiError> {
+    let mut snonce = [0u8; NONCE_LEN];
+    csprng::kernel_random_bytes(&mut snonce).map_err(|_| WifiError::CsprngNotSeeded)?;
+    Ok(snonce)
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,12 +601,26 @@ impl WifiHwOps for MockWifiHw {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+//
+// EAPOL parsing/encoding and WPA2 PMK/PTK/MIC/handshake correctness are
+// exhaustively tested in `aither_core` (shared with the kernel; see
+// crates/aither-core/src/eapol.rs and wpa.rs). The tests below cover only
+// what is genuinely kernel-local: the driver/hardware state machine, MAC
+// randomization, and the two pieces this module adds around the shared
+// core (WifiError conversion, CSPRNG-sourced SNonce generation) -- plus a
+// small number of adapter-boundary sanity checks confirming the
+// delegation is wired correctly, matching the established `klesis`/
+// `asphaleia` pattern.
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-
     use super::*;
+    use aither_core::eapol::{
+        DESCRIPTOR_TYPE_RSN, EapolKeyFrame, EapolType, IV_LEN, KeyInfo, MIC_LEN,
+    };
+    use aither_core::wpa::{
+        HandshakeState, KCK_LEN, KEK_LEN, PMK_LEN, TK_LEN, derive_pmk, derive_ptk,
+    };
 
     // Seed the kernel CSPRNG for deterministic test output.
     fn setup_csprng() {
@@ -1351,209 +700,6 @@ mod tests {
         );
     }
 
-    // --- EAPOL frame parsing ---
-
-    #[test]
-    fn eapol_frame_parse_valid() {
-        // version=2, type=Start(0x01), length=0
-        let data = [0x02, 0x01, 0x00, 0x00];
-        let frame = eapol_parse(&data);
-        assert!(frame.is_ok(), "valid Start frame must parse successfully");
-        let frame = frame.ok();
-        assert!(frame.is_some(), "parsed frame must be Some");
-        let frame = frame.as_ref();
-        assert_eq!(frame.map(|f| f.version), Some(2), "version must be 2");
-        assert_eq!(
-            frame.map(|f| f.packet_type),
-            Some(EapolType::Start),
-            "packet type must be Start"
-        );
-        assert!(
-            frame.is_some_and(|f| f.key_frame.is_none()),
-            "Start frame must have no key frame"
-        );
-    }
-
-    #[test]
-    fn eapol_parse_rejects_unknown_packet_type() {
-        // NOTE: version=2, type=0x04 (undefined EAPOL type byte), length=0.
-        let data = [0x02, 0x04, 0x00, 0x00];
-        let result = eapol_parse(&data);
-        match result {
-            Err(WifiError::UnknownEapolType { value }) => {
-                assert_eq!(value, 0x04, "error must report the offending type byte");
-            }
-            _ => panic!("must return UnknownEapolType for an unrecognised packet type byte"),
-        }
-    }
-
-    #[test]
-    fn eapol_frame_parse_short_returns_error() {
-        // Only 3 bytes: too short for EAPOL header
-        let data = [0x02, 0x01, 0x00];
-        let result = eapol_parse(&data);
-        assert!(result.is_err(), "truncated frame must return error");
-        match result {
-            Err(WifiError::FrameTooShort { need, have }) => {
-                assert_eq!(need, EAPOL_HEADER_LEN, "need must be EAPOL_HEADER_LEN");
-                assert_eq!(have, 3, "have must be 3");
-            }
-            _ => panic!("must return FrameTooShort variant"),
-        }
-    }
-
-    #[test]
-    fn eapol_parse_rejects_declared_body_length_exceeding_buffer() {
-        // NOTE: version=2, type=Start(0x01), declared body length=10, but
-        // only 2 bytes of body actually follow the header.
-        let data = [0x02, 0x01, 0x00, 0x0a, 0xAB, 0xCD];
-        let result = eapol_parse(&data);
-        match result {
-            Err(WifiError::FrameTooShort { need, have }) => {
-                assert_eq!(
-                    need,
-                    EAPOL_HEADER_LEN + 10,
-                    "need must be header length plus the declared body length"
-                );
-                assert_eq!(have, 6, "have must be the actual buffer length");
-            }
-            _ => {
-                panic!("must return FrameTooShort when the declared body length exceeds the buffer")
-            }
-        }
-    }
-
-    // --- EAPOL key frame roundtrip ---
-
-    #[test]
-    fn eapol_key_frame_roundtrips() {
-        let kf = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x008a),
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: vec![0x01, 0x02, 0x03, 0x04],
-        };
-        let frame = EapolFrame {
-            version: 2,
-            packet_type: EapolType::Key,
-            key_frame: Some(kf.clone()),
-            raw_body: Vec::new(),
-        };
-        let encoded = eapol_encode(&frame);
-        let parsed = eapol_parse(&encoded);
-        assert!(parsed.is_ok(), "roundtrip must succeed");
-        let parsed = parsed.ok();
-        assert_eq!(
-            parsed.as_ref().and_then(|f| f.key_frame.as_ref()),
-            Some(&kf),
-            "key frame must survive encode/parse roundtrip"
-        );
-    }
-
-    #[test]
-    fn eapol_key_frame_rejects_non_rsn_descriptor_type() {
-        let kf = EapolKeyFrame {
-            descriptor_type: 0xFE, // WPA legacy descriptor, not RSN
-            key_info: KeyInfo(0x008a),
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-        let frame = EapolFrame {
-            version: 2,
-            packet_type: EapolType::Key,
-            key_frame: Some(kf),
-            raw_body: Vec::new(),
-        };
-        let encoded = eapol_encode(&frame);
-        let result = eapol_parse(&encoded);
-        match result {
-            Err(WifiError::UnknownKeyDescriptorType { value }) => {
-                assert_eq!(
-                    value, 0xFE,
-                    "error must report the offending descriptor type"
-                );
-            }
-            _ => panic!("must return UnknownKeyDescriptorType for a non-RSN descriptor"),
-        }
-    }
-
-    #[test]
-    fn eapol_parse_key_frame_rejects_key_data_length_exceeding_buffer() {
-        let kf = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x008a),
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: vec![0x01, 0x02, 0x03],
-        };
-        let frame = EapolFrame {
-            version: 2,
-            packet_type: EapolType::Key,
-            key_frame: Some(kf),
-            raw_body: Vec::new(),
-        };
-        let mut encoded = eapol_encode(&frame);
-
-        // WHY: corrupt key_data_length to claim more bytes than actually
-        // follow it, without touching the outer EAPOL body_len field or
-        // the buffer length -- the last two bytes of the fixed key-frame
-        // portion, at offset EAPOL_HEADER_LEN + EAPOL_KEY_FIXED_LEN - 2.
-        let key_data_len_offset = EAPOL_HEADER_LEN + EAPOL_KEY_FIXED_LEN - 2;
-        encoded[key_data_len_offset..key_data_len_offset + 2].copy_from_slice(&50u16.to_be_bytes());
-
-        let result = eapol_parse(&encoded);
-        match result {
-            Err(WifiError::FrameTooShort { need, have }) => {
-                assert_eq!(
-                    need,
-                    EAPOL_KEY_FIXED_LEN + 50,
-                    "need must reflect the corrupted key_data_length"
-                );
-                assert_eq!(
-                    have,
-                    EAPOL_KEY_FIXED_LEN + 3,
-                    "have must be the actual key-frame body length"
-                );
-            }
-            _ => {
-                panic!("must return FrameTooShort when key_data_length exceeds the remaining body")
-            }
-        }
-    }
-
-    #[test]
-    fn eapol_encode_truncates_body_bytes_to_match_declared_length_field() {
-        let oversized_len = usize::from(u16::MAX) + 100;
-        let frame = EapolFrame {
-            version: 2,
-            packet_type: EapolType::Start,
-            key_frame: None,
-            raw_body: vec![0xAB; oversized_len],
-        };
-        let encoded = eapol_encode(&frame);
-        let declared_len = u16::from_be_bytes([encoded[2], encoded[3]]);
-        assert_eq!(declared_len, u16::MAX, "length field must be capped");
-        assert_eq!(
-            encoded.len(),
-            EAPOL_HEADER_LEN + usize::from(u16::MAX),
-            "encoded frame length must match the declared length field, not the untruncated body"
-        );
-    }
-
     // --- Scan result ---
 
     #[test]
@@ -1600,406 +746,6 @@ mod tests {
         );
     }
 
-    // --- WPA handshake state machine ---
-
-    #[test]
-    fn handshake_starts_awaiting_msg1() {
-        let hs = WpaHandshake::new();
-        assert_eq!(
-            hs.state,
-            HandshakeState::AwaitMsg1,
-            "initial handshake state must be AwaitMsg1"
-        );
-    }
-
-    #[test]
-    fn handshake_transitions_to_send_msg2_on_valid_msg1() {
-        setup_csprng();
-        let mut hs = WpaHandshake::new();
-        let pmk = [0u8; PMK_LEN];
-        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-
-        // Simulate Message 1: ack=true, mic=false
-        let msg1 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x008a), // version=2, pairwise, ack
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-
-        let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-        assert_eq!(
-            state,
-            HandshakeState::SendMsg2,
-            "must transition to SendMsg2 after valid Message 1"
-        );
-        assert!(hs.ptk.is_some(), "PTK must be derived after Message 1");
-    }
-
-    #[test]
-    fn handshake_rejects_msg1_with_mic_set() {
-        setup_csprng();
-        let mut hs = WpaHandshake::new();
-        let pmk = [0u8; PMK_LEN];
-        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-
-        // Invalid Message 1: has MIC set (Message 1 must not have MIC)
-        let msg1 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x018a), // version=2, pairwise, ack, MIC (invalid)
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-
-        let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-        assert_eq!(
-            state,
-            HandshakeState::Failed,
-            "must reject Message 1 that has MIC set"
-        );
-    }
-
-    #[test]
-    fn handshake_rejects_msg1_with_pairwise_bit_clear() {
-        setup_csprng();
-        let mut hs = WpaHandshake::new();
-        let pmk = [0u8; PMK_LEN];
-        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-
-        // Group-key frame: ack=true, mic=false, pairwise=false (invalid as Msg1).
-        let msg1 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x0082), // version=2, ack; pairwise CLEAR
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-
-        let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-        assert_eq!(
-            state,
-            HandshakeState::Failed,
-            "must reject a group-key (pairwise=0) frame as Message 1"
-        );
-    }
-
-    #[test]
-    fn handshake_rejects_msg3_with_pairwise_bit_clear() {
-        setup_csprng();
-        let mut hs = WpaHandshake::new();
-        let pmk = [0u8; PMK_LEN];
-        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-
-        let msg1 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x008a),
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-        hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-        // NOTE: `state` is module-private, not pub (audit #282 batch 3);
-        // this write is legal only because `tests` is a submodule of `wifi`.
-        // Drive to AwaitMsg3 directly, independent of whether audit #260's
-        // msg2_sent() transition has landed.
-        hs.state = HandshakeState::AwaitMsg3;
-
-        // Group-key frame masquerading as Msg3: ack, mic, install set,
-        // pairwise CLEAR (0x01c2 = version=2 | install | ack | mic).
-        let msg3 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x01c2),
-            key_length: 16,
-            replay_counter: 2,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-
-        let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
-        assert_eq!(
-            state,
-            HandshakeState::Failed,
-            "must reject a group-key (pairwise=0) frame as Message 3"
-        );
-    }
-
-    #[test]
-    fn handshake_builds_msg2_response() {
-        setup_csprng();
-        let mut hs = WpaHandshake::new();
-        let pmk = [0u8; PMK_LEN];
-        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-
-        let msg1 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x008a),
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-        hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-
-        let response = hs.build_response();
-        assert!(response.is_some(), "must produce Message 2 response");
-        let response = response.as_ref();
-        assert_eq!(
-            response.map(|f| f.packet_type),
-            Some(EapolType::Key),
-            "response must be a Key frame"
-        );
-        // The response nonce must be the supplicant nonce (non-zero from CSPRNG)
-        let resp_kf = response.and_then(|f| f.key_frame.as_ref());
-        assert!(resp_kf.is_some(), "response must have key frame");
-        assert_eq!(
-            resp_kf.map(|kf| kf.nonce),
-            Some(hs.snonce),
-            "response nonce must be the supplicant nonce"
-        );
-    }
-
-    #[test]
-    fn handshake_completes_full_round_trip_after_msg2_sent() {
-        setup_csprng();
-        let mut hs = WpaHandshake::new();
-        let pmk = [0u8; PMK_LEN];
-        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-
-        let msg1 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x008a),
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-        let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-        assert_eq!(
-            state,
-            HandshakeState::SendMsg2,
-            "Message 1 must yield SendMsg2"
-        );
-
-        assert!(
-            hs.build_response().is_some(),
-            "SendMsg2 must produce a Message 2 response"
-        );
-        hs.msg2_sent();
-        assert_eq!(
-            hs.state,
-            HandshakeState::AwaitMsg3,
-            "msg2_sent must transition SendMsg2 -> AwaitMsg3"
-        );
-
-        // Message 3: ack=true, mic=true, install=true, pairwise=true.
-        let mut msg3 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x01ca),
-            key_length: 16,
-            replay_counter: 2,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-        assert!(hs.ptk.is_some(), "PTK must be derived after Message 1");
-        if let Some(ptk) = hs.ptk.clone() {
-            let zeroed_frame = EapolFrame {
-                version: 2,
-                packet_type: EapolType::Key,
-                key_frame: Some(msg3.clone()),
-                raw_body: Vec::new(),
-            };
-            msg3.mic = compute_mic(&ptk.kck, &eapol_encode(&zeroed_frame));
-        }
-
-        let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
-        assert_eq!(
-            state,
-            HandshakeState::SendMsg4,
-            "Message 3 after msg2_sent must be processed and yield SendMsg4"
-        );
-    }
-
-    // --- Key info flags ---
-
-    #[test]
-    fn key_info_decodes_flags() {
-        // 0x008a = pairwise(bit3) | ack(bit7) | descriptor_version=2
-        let ki = KeyInfo(0x008a);
-        assert_eq!(ki.descriptor_version(), 2, "descriptor version must be 2");
-        assert!(ki.pairwise(), "pairwise bit must be set");
-        assert!(ki.ack(), "ack bit must be set");
-        assert!(!ki.install(), "install bit must be clear");
-        assert!(!ki.mic(), "MIC bit must be clear");
-    }
-
-    #[test]
-    fn build_response_fails_closed_without_ptk() {
-        let mut hs = WpaHandshake::new();
-
-        // Driver misuse: reach SendMsg2/SendMsg4 without ever deriving a
-        // PTK. `state` is module-private but settable here because `tests`
-        // is a submodule of `wifi` -- see
-        // handshake_fails_closed_when_awaiting_msg3_without_ptk for the
-        // equivalent process_message-side guard (audit #282 batch 3).
-        hs.state = HandshakeState::SendMsg2;
-        assert!(hs.ptk.is_none(), "PTK must be None on this path");
-        assert!(
-            hs.build_response().is_none(),
-            "SendMsg2 with ptk == None must not emit a zero-MIC frame"
-        );
-
-        hs.state = HandshakeState::SendMsg4;
-        assert!(
-            hs.build_response().is_none(),
-            "SendMsg4 with ptk == None must not emit a zero-MIC frame"
-        );
-    }
-
-    #[test]
-    fn handshake_builds_msg4_response_and_completes_after_valid_msg3() {
-        setup_csprng();
-        let mut hs = WpaHandshake::new();
-        let pmk = [0u8; PMK_LEN];
-        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-
-        let msg1 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x008a),
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-        hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-        hs.msg2_sent();
-
-        let mut msg3 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x01ca),
-            key_length: 16,
-            replay_counter: 2,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0u8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-        if let Some(ptk) = hs.ptk.clone() {
-            let zeroed_frame = EapolFrame {
-                version: 2,
-                packet_type: EapolType::Key,
-                key_frame: Some(msg3.clone()),
-                raw_body: Vec::new(),
-            };
-            msg3.mic = compute_mic(&ptk.kck, &eapol_encode(&zeroed_frame));
-        }
-
-        let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
-        assert_eq!(
-            state,
-            HandshakeState::SendMsg4,
-            "Message 3 with a valid MIC must yield SendMsg4"
-        );
-
-        let response = hs.build_response();
-        assert!(
-            response.is_some(),
-            "SendMsg4 with a derived PTK must produce a Message 4 response"
-        );
-        let kf = response.and_then(|f| f.key_frame);
-        assert!(kf.is_some(), "Message 4 response must carry a key frame");
-        if let Some(kf) = kf {
-            assert!(kf.key_info.secure(), "Message 4 must set the secure bit");
-            assert!(kf.key_info.mic(), "Message 4 must set the MIC bit");
-            assert!(!kf.key_info.install(), "Message 4 must not set install");
-            assert_ne!(
-                kf.mic, [0u8; MIC_LEN],
-                "Message 4 MIC must be computed, not zeroed"
-            );
-        }
-
-        hs.complete();
-        assert_eq!(
-            hs.state,
-            HandshakeState::Complete,
-            "complete() must transition SendMsg4 -> Complete"
-        );
-    }
-
-    #[test]
-    fn handshake_fails_closed_when_awaiting_msg3_without_ptk() {
-        let mut hs = WpaHandshake::new();
-        let pmk = [0u8; PMK_LEN];
-        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-
-        // NOTE: `state` is module-private, not pub (audit #282 batch 3);
-        // this write is legal only because `tests` is a submodule of `wifi`.
-        // Driver misuse: reach AwaitMsg3 without ever processing Message 1,
-        // so `ptk` is still None.
-        hs.state = HandshakeState::AwaitMsg3;
-        assert!(hs.ptk.is_none(), "PTK must be None on this path");
-
-        let msg3 = EapolKeyFrame {
-            descriptor_type: DESCRIPTOR_TYPE_RSN,
-            key_info: KeyInfo(0x01ca), // version=2, pairwise, install, ack, MIC
-            key_length: 16,
-            replay_counter: 1,
-            nonce: [0xaa; NONCE_LEN],
-            iv: [0u8; IV_LEN],
-            rsc: 0,
-            mic: [0xffu8; MIC_LEN],
-            key_data: Vec::new(),
-        };
-
-        let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
-        assert_eq!(
-            state,
-            HandshakeState::Failed,
-            "entering AwaitMsg3 with ptk == None must fail closed, never reach SendMsg4"
-        );
-    }
-
     // --- Error path coverage ---
 
     #[test]
@@ -2031,32 +777,66 @@ mod tests {
         );
     }
 
-    // -- WPA2 crypto tests --
+    // --- Delegation adapter-boundary sanity (exhaustive coverage lives in
+    //     aither_core; see crates/aither-core/src/eapol.rs and wpa.rs) ---
 
     #[test]
-    fn derive_pmk_ieee_annex_j3() {
-        // IEEE 802.11-2020 Annex J.3: passphrase="password", SSID="IEEE"
-        let pmk = derive_pmk(b"password", b"IEEE");
-        let expected = [
-            0xf4, 0x2c, 0x6f, 0xc5, 0x2d, 0xf0, 0xeb, 0xef, 0x9e, 0xbb, 0x4b, 0x90, 0xb3, 0x8a,
-            0x5f, 0x90, 0x2e, 0x83, 0xfe, 0x1b, 0x13, 0x5a, 0x70, 0xe2, 0x3a, 0xed, 0x76, 0x2e,
-            0x97, 0x10, 0xa1, 0x2e,
-        ];
-        assert_eq!(pmk, expected, "PMK must match IEEE 802.11-2020 Annex J.3");
+    fn eapol_parse_rejects_non_rsn_descriptor_type_through_the_kernel_adapter() {
+        // WHY (#819): this is the regression that motivated the whole
+        // convergence -- the kernel enforced this gate, the fuzzed
+        // `aither::eapol::parse` did not. Kept here (not just in
+        // aither_core) to prove the KERNEL's own linked path -- not merely
+        // the shared crate in isolation -- rejects a non-RSN descriptor.
+        let kf = EapolKeyFrame {
+            descriptor_type: aither_core::eapol::DESCRIPTOR_TYPE_WPA,
+            key_info: KeyInfo(0x008a),
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+        let frame = EapolFrame {
+            version: 2,
+            packet_type: EapolType::Key,
+            key_frame: Some(kf),
+            raw_body: Vec::new(),
+        };
+        let encoded = eapol_encode(&frame);
+        let result = eapol_parse(&encoded);
+        assert_eq!(
+            result,
+            Err(WifiError::UnknownKeyDescriptorType {
+                value: aither_core::eapol::DESCRIPTOR_TYPE_WPA
+            }),
+            "the kernel's eapol_parse must reject a non-RSN descriptor type"
+        );
     }
 
     #[test]
-    fn derive_pmk_differs_by_ssid() {
-        let pmk1 = derive_pmk(b"password", b"Network1");
-        let pmk2 = derive_pmk(b"password", b"Network2");
-        assert_ne!(pmk1, pmk2, "different SSIDs must produce different PMKs");
+    fn eapol_encode_parse_roundtrips_through_the_kernel_adapter() {
+        let frame = EapolFrame {
+            version: 2,
+            packet_type: EapolType::Start,
+            key_frame: None,
+            raw_body: alloc::vec![0xde, 0xad, 0xbe, 0xef],
+        };
+        let encoded = eapol_encode(&frame);
+        let parsed = eapol_parse(&encoded);
+        assert_eq!(
+            parsed,
+            Ok(frame),
+            "encode -> parse must round-trip through the kernel's delegated adapter"
+        );
     }
 
     #[test]
-    fn derive_ptk_produces_nonzero_keys() {
+    fn derive_pmk_and_ptk_resolve_through_the_kernel_adapter() {
         let pmk = derive_pmk(b"password", b"TestSSID");
-        let anonce = [0xAAu8; 32];
-        let snonce = [0xBBu8; 32];
+        let anonce = [0xAAu8; NONCE_LEN];
+        let snonce = [0xBBu8; NONCE_LEN];
         let aa = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
         let spa = [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
         let ptk = derive_ptk(&pmk, &anonce, &snonce, &aa, &spa);
@@ -2065,207 +845,87 @@ mod tests {
         assert_ne!(ptk.tk, [0u8; TK_LEN], "TK must not be zero");
     }
 
-    #[test]
-    fn derive_ptk_normalizes_reversed_aa_spa_and_nonce_order() {
-        let pmk = derive_pmk(b"password", b"TestSSID");
-        let low_mac = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
-        let high_mac = [0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
-        let low_nonce = [0xAAu8; 32];
-        let high_nonce = [0xBBu8; 32];
-
-        // NOTE: canonical order (aa <= spa, anonce <= snonce) exercises the
-        // already-sorted `if` branches.
-        let sorted = derive_ptk(&pmk, &low_nonce, &high_nonce, &low_mac, &high_mac);
-        // NOTE: reversed order (aa > spa, anonce > snonce) forces both
-        // `else` branches to swap back to the canonical min-first order.
-        let swapped = derive_ptk(&pmk, &high_nonce, &low_nonce, &high_mac, &low_mac);
-
-        assert_eq!(
-            sorted, swapped,
-            "PTK must be identical regardless of AA/SPA and ANonce/SNonce argument order"
-        );
-
-        // WHY: cross-check against PRF-384 computed directly over the
-        // canonical min(AA,SPA) || max(AA,SPA) || min(ANonce,SNonce) ||
-        // max(ANonce,SNonce) concatenation, confirming the swapped call
-        // normalized to that order rather than merely being self-consistent.
-        let mut data = [0u8; 76];
-        data[0..6].copy_from_slice(&low_mac);
-        data[6..12].copy_from_slice(&high_mac);
-        data[12..44].copy_from_slice(&low_nonce);
-        data[44..76].copy_from_slice(&high_nonce);
-        let expected = prf_384(&pmk, b"Pairwise key expansion", &data);
-        assert_eq!(
-            &expected[0..16],
-            &swapped.kck,
-            "swapped-order KCK must match the canonical PRF-384 output"
-        );
-        assert_eq!(
-            &expected[16..32],
-            &swapped.kek,
-            "swapped-order KEK must match the canonical PRF-384 output"
-        );
-        assert_eq!(
-            &expected[32..48],
-            &swapped.tk,
-            "swapped-order TK must match the canonical PRF-384 output"
-        );
-    }
-
-    /// IEEE Std 802.11i-2004, Table H.13 / Table H.15 (Annex H.7.1,
-    /// "Pairwise key derivation") — the standard's own published PTK
-    /// worked example. Note the published SNonce/ANonce are 20 bytes each
-    /// (not the 32-byte EAPOL Key Nonce field), as printed in Table H.13;
-    /// this test exercises `prf_384` directly with the literal published
-    /// B-string rather than `derive_ptk`'s 32-byte-nonce typed wrapper,
-    /// since 20-byte values cannot be passed through that signature
-    /// without altering the vector.
-    #[test]
-    // WHY: expected_kck/expected_kek/expected_tk mirror the IEEE standard's
-    // own KCK/KEK/TK terminology (Table H.15) — renaming would obscure the
-    // cross-reference to the source table.
-    #[allow(clippy::similar_names)]
-    fn prf384_matches_ieee_802_11i_h7_1_vector() {
-        let pmk: [u8; PMK_LEN] = [
-            0x0d, 0xc0, 0xd6, 0xeb, 0x90, 0x55, 0x5e, 0xd6, 0x41, 0x97, 0x56, 0xb9, 0xa1, 0x5e,
-            0xc3, 0xe3, 0x20, 0x9b, 0x63, 0xdf, 0x70, 0x7d, 0xd5, 0x08, 0xd1, 0x45, 0x81, 0xf8,
-            0x98, 0x27, 0x21, 0xaf,
-        ];
-        let aa: [u8; 6] = [0xa0, 0xa1, 0xa1, 0xa3, 0xa4, 0xa5];
-        let spa: [u8; 6] = [0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5];
-        let snonce: [u8; 20] = [
-            0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xd0, 0xd1, 0xd2, 0xd3,
-            0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9,
-        ];
-        let anonce: [u8; 20] = [
-            0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xf0, 0xf1, 0xf2, 0xf3,
-            0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9,
-        ];
-
-        // B = Min(AA,SPA) || Max(AA,SPA) || Min(ANonce,SNonce) || Max(ANonce,SNonce)
-        let (mac_lo, mac_hi) = if aa <= spa { (aa, spa) } else { (spa, aa) };
-        let (nonce_lo, nonce_hi) = if anonce <= snonce {
-            (anonce, snonce)
-        } else {
-            (snonce, anonce)
-        };
-        let mut data = Vec::with_capacity(6 + 6 + 20 + 20);
-        data.extend_from_slice(&mac_lo);
-        data.extend_from_slice(&mac_hi);
-        data.extend_from_slice(&nonce_lo);
-        data.extend_from_slice(&nonce_hi);
-
-        let ptk_bytes = prf_384(&pmk, b"Pairwise key expansion", &data);
-
-        let expected_kck: [u8; KCK_LEN] = [
-            0xaa, 0x7c, 0xfc, 0x85, 0x60, 0x25, 0x1e, 0x4b, 0xc6, 0x87, 0xe0, 0xcb, 0x8d, 0x29,
-            0x83, 0x63,
-        ];
-        let expected_kek: [u8; KEK_LEN] = [
-            0xba, 0x53, 0x16, 0x3d, 0xf3, 0x2a, 0x86, 0x38, 0xf4, 0x79, 0xab, 0xe3, 0x4b, 0xfd,
-            0x2b, 0xc8,
-        ];
-        let expected_tk: [u8; TK_LEN] = [
-            0x8c, 0xb7, 0x78, 0x33, 0x2e, 0x94, 0xac, 0xa6, 0xd3, 0x0b, 0x89, 0xcb, 0xe8, 0x2a,
-            0x9c, 0xa9,
-        ];
-
-        assert_eq!(
-            &ptk_bytes[0..16],
-            &expected_kck,
-            "KCK must match IEEE 802.11i-2004 Table H.15"
-        );
-        assert_eq!(
-            &ptk_bytes[16..32],
-            &expected_kek,
-            "KEK must match IEEE 802.11i-2004 Table H.15"
-        );
-        assert_eq!(
-            &ptk_bytes[32..48],
-            &expected_tk,
-            "TK must match IEEE 802.11i-2004 Table H.15 / Table H.14"
-        );
-    }
+    // --- generate_snonce: the one CSPRNG-facing piece aither_core cannot
+    //     link, so it stays kernel-local and needs its own coverage ---
 
     #[test]
-    fn compute_mic_is_16_bytes_nonzero() {
-        let kck = [0xCCu8; KCK_LEN];
-        let data = b"test eapol frame data";
-        let mic = compute_mic(&kck, data);
-        assert_ne!(mic, [0u8; MIC_LEN], "MIC must not be zero");
-    }
-
-    #[test]
-    fn verify_mic_accepts_correct_mic() {
-        let kck = [0xCCu8; KCK_LEN];
-        let data = b"test eapol frame data";
-        let mic = compute_mic(&kck, data);
-        assert!(verify_mic(&kck, data, &mic), "correct MIC must verify");
-    }
-
-    #[test]
-    fn verify_mic_rejects_wrong_mic() {
-        let kck = [0xCCu8; KCK_LEN];
-        let data = b"test eapol frame data";
-        let mut bad_mic = compute_mic(&kck, data);
-        bad_mic[0] ^= 0xFF; // flip one byte
-        assert!(
-            !verify_mic(&kck, data, &bad_mic),
-            "wrong MIC must not verify"
-        );
-    }
-
-    #[test]
-    fn handshake_verifies_msg3_mic_using_received_eapol_version() {
+    fn generate_snonce_fails_closed_when_csprng_unseeded() {
+        // WHY: the kernel CSPRNG's `seed_for_test` is global (module
+        // static, no per-test isolation) and other tests in this file --
+        // and in files run in the same process -- seed it. This test
+        // therefore does not assert unseeded behavior directly; that
+        // invariant is asserted at the CSPRNG's own layer
+        // (csprng.rs::tests) and by generate_random_mac's #284 NOTE above.
+        // What this DOES assert: a seeded CSPRNG produces a non-zero,
+        // correctly-sized SNonce through generate_snonce's public surface.
         setup_csprng();
-        for version in [1u8, 2u8] {
-            let mut hs = WpaHandshake::new();
-            hs.set_eapol_version(version);
-            let pmk = [0u8; PMK_LEN];
-            let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
-            let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-
-            let msg1 = EapolKeyFrame {
-                descriptor_type: DESCRIPTOR_TYPE_RSN,
-                key_info: KeyInfo(0x008a),
-                key_length: 16,
-                replay_counter: 1,
-                nonce: [0xaa; NONCE_LEN],
-                iv: [0u8; IV_LEN],
-                rsc: 0,
-                mic: [0u8; MIC_LEN],
-                key_data: Vec::new(),
-            };
-            hs.process_message(&msg1, &pmk, &own_mac, &ap_mac);
-            hs.state = HandshakeState::AwaitMsg3;
-
-            let mut msg3 = EapolKeyFrame {
-                descriptor_type: DESCRIPTOR_TYPE_RSN,
-                key_info: KeyInfo(0x01ca),
-                key_length: 16,
-                replay_counter: 2,
-                nonce: [0xaa; NONCE_LEN],
-                iv: [0u8; IV_LEN],
-                rsc: 0,
-                mic: [0u8; MIC_LEN],
-                key_data: Vec::new(),
-            };
-            if let Some(ptk) = hs.ptk.clone() {
-                let frame_for_mic = EapolFrame {
-                    version,
-                    packet_type: EapolType::Key,
-                    key_frame: Some(msg3.clone()),
-                    raw_body: Vec::new(),
-                };
-                msg3.mic = compute_mic(&ptk.kck, &eapol_encode(&frame_for_mic));
-            }
-
-            let state = hs.process_message(&msg3, &pmk, &own_mac, &ap_mac);
-            assert_eq!(
-                state,
-                HandshakeState::SendMsg4,
-                "Message 3 MIC must verify using the received EAPOL version {version}"
+        let snonce = generate_snonce();
+        assert!(
+            snonce.is_ok(),
+            "a seeded CSPRNG must produce a SNonce, not CsprngNotSeeded"
+        );
+        if let Ok(snonce) = snonce {
+            assert_ne!(
+                snonce, [0u8; NONCE_LEN],
+                "a seeded CSPRNG must not produce an all-zero SNonce"
             );
         }
+    }
+
+    #[test]
+    fn generate_snonce_produces_distinct_values_across_calls() {
+        setup_csprng();
+        let a = generate_snonce();
+        let b = generate_snonce();
+        assert!(a.is_ok() && b.is_ok(), "both draws must succeed");
+        assert_ne!(
+            a, b,
+            "two consecutive SNonce draws from a seeded CSPRNG must differ"
+        );
+    }
+
+    // --- Handshake integration: proves the kernel wires generate_snonce()
+    //     into aither_core::wpa::WpaHandshake correctly. Exhaustive
+    //     state-machine coverage (MIC verification, replay counter,
+    //     malformed-message rejection, ...) lives in aither_core. ---
+
+    #[test]
+    fn handshake_processes_msg1_using_a_kernel_generated_snonce() {
+        setup_csprng();
+        let mut hs = WpaHandshake::new();
+        let pmk = [0u8; PMK_LEN];
+        let own_mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let ap_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+        let msg1 = EapolKeyFrame {
+            descriptor_type: DESCRIPTOR_TYPE_RSN,
+            key_info: KeyInfo(0x008a), // version=2, pairwise, ack
+            key_length: 16,
+            replay_counter: 1,
+            nonce: [0xaa; NONCE_LEN],
+            iv: [0u8; IV_LEN],
+            rsc: 0,
+            mic: [0u8; MIC_LEN],
+            key_data: Vec::new(),
+        };
+
+        let snonce = generate_snonce();
+        assert!(snonce.is_ok(), "a seeded CSPRNG must produce a SNonce");
+        let Ok(snonce) = snonce else {
+            return;
+        };
+
+        let state = hs.process_message(&msg1, &pmk, &own_mac, &ap_mac, snonce);
+        assert_eq!(
+            state,
+            HandshakeState::SendMsg2,
+            "must transition to SendMsg2 after valid Message 1"
+        );
+        assert!(hs.ptk().is_some(), "PTK must be derived after Message 1");
+        assert_eq!(
+            hs.snonce(),
+            snonce,
+            "the kernel-generated SNonce must be the one the handshake recorded"
+        );
     }
 }
