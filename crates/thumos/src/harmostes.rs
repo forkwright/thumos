@@ -780,7 +780,7 @@ impl MatrixClient {
             result.rooms_updated = result.rooms_updated.saturating_add(1);
 
             for event in &events {
-                let msg = parse_timeline_event(event, room_id, &self.crypto);
+                let msg = parse_timeline_event(event, room_id, &mut self.crypto);
                 if let Some(msg) = msg {
                     let incoming = IncomingMessage {
                         // WHY(#373): reuse the already-validated room id stored
@@ -1488,7 +1488,7 @@ fn extract_timeline_events(room_data: &JsonValue) -> Vec<&JsonValue> {
 fn parse_timeline_event(
     event: &JsonValue,
     room_id: &str,
-    crypto: &MatrixCrypto,
+    crypto: &mut MatrixCrypto,
 ) -> Option<MatrixMessage> {
     let event_type = event.get("type")?.as_str()?;
 
@@ -1519,8 +1519,10 @@ fn parse_timeline_event(
 
                 match (ct_bytes, sid_bytes) {
                     (Some(ct), Some(sid)) => {
-                        // Look up the inbound session.
-                        match crypto.find_inbound_megolm(&sid) {
+                        // Look up the inbound session. #830: mutable -- a
+                        // successful decrypt advances the session's ratchet
+                        // and/or consumes a cached skipped key.
+                        match crypto.find_inbound_megolm_mut(&sid) {
                             Some(session) => {
                                 // #229: bind the session to the room the event
                                 // actually arrived in (from the sync grouping,
