@@ -59,6 +59,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 | Crate | Description |
 |-------|-------------|
 | `aither` | WiFi MAC driver, WPA2/WPA3 supplicant, EAPOL handshake |
+| `aither-core` | Canonical EAPOL frame parse/encode, PMK/PTK/MIC derivation, and the WPA2 4-way handshake state machine, shared no_std with the kernel (#545, #819) |
 | `pteron` | Bluetooth HCI over STP, BLE scanning, LE Privacy address rotation |
 | `kelyphos` | WMT combo chip manager: firmware loading, STP framing, power control |
 | `sema` | Radio analysis: WiFi/BT/cell scanning, IMSI catcher detection |
