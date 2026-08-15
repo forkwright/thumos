@@ -60,6 +60,11 @@ path = "crates/aither"
 role = "WiFi MAC driver, MAC randomization, scanning, and WPA supplicant behavior."
 
 [[architecture.crates]]
+name = "aither-core"
+path = "crates/aither-core"
+role = "Canonical EAPOL frame parse/encode, PMK/PTK/MIC derivation, and the WPA2 4-way handshake state machine; no_std, consumed by both the kernel WiFi path and aither so the two cannot drift, and so the fuzz targets reach shipped code (#545, #819)."
+
+[[architecture.crates]]
 name = "pteron"
 path = "crates/pteron"
 role = "Bluetooth HCI and LE Privacy behavior."

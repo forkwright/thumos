@@ -1,0 +1,28 @@
+[package]
+name = "aither-core"
+description = "no_std + alloc core for WPA2-Personal EAPOL and 4-way-handshake semantics (the canonical EAPOL frame parse/encode, PMK/PTK derivation, MIC, and 4-way handshake state machine, shared by aither and the kernel)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+# WHY plain version pins, not `{ workspace = true }` (mirrors metaxu-core):
+# every one of these needs `default-features = false` for a no_std build,
+# but the workspace-level declarations (hmac/pbkdf2/sha1) fix
+# default-features implicitly TRUE for `aither` (std) and every other
+# workspace crate that uses them -- cargo refuses a member override
+# (`default-features = false` cannot override the workspace's
+# `default-features`). Versions match the workspace pins exactly.
+[dependencies]
+hmac = { version = "0.13", default-features = false }
+pbkdf2 = { version = "0.13", default-features = false }
+sha1 = { version = "0.11", default-features = false }
+
+[lints]
+workspace = true
+
+[package.metadata.kanon]
+maturity = "alpha"
+since = "2026-08-14"
+exit-criteria = "operator-reviewed hardware validation and release-readiness gate"

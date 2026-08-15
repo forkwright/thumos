@@ -50,14 +50,21 @@ dependencies = [
 name = "aither"
 version = "0.7.3"
 dependencies = [
+ "aither-core",
  "getrandom 0.4.3",
- "hmac",
  "log",
  "nom",
- "pbkdf2",
- "sha1",
  "smoltcp",
  "snafu",
+]
+
+[[package]]
+name = "aither-core"
+version = "0.7.3"
+dependencies = [
+ "hmac",
+ "pbkdf2",
+ "sha1",
 ]
 
 [[package]]

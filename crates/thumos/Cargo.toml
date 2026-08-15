@@ -73,6 +73,16 @@ metaxu-probe-no-capability = ["metaxu-probe"]
 
 [dependencies]
 aes = { version = "0.9", default-features = false }
+# WHY (#545, #819): the canonical EAPOL frame parse/encode, PMK/PTK
+# derivation, MIC, and 4-way handshake state machine live in aither-core,
+# shared no_std+alloc with the `aither` workspace crate -- one
+# implementation, so `fuzz_wpa`/`fuzz_eapol` (which import `aither`)
+# exercise the code this kernel actually links. The kernel's own
+# hand-rolled SHA-1/HMAC-SHA1/PBKDF2-HMAC-SHA1/PRF-384 (security.rs) and
+# EAPOL descriptor-type-unchecked parser divergence are both deleted; the
+# converged descriptor-type gate and un-truncated PBKDF2 salt (#837) are
+# what aither-core now enforces for both sides.
+aither-core = { path = "../aither-core", default-features = false }
 # WHY (#545): the canonical threat-semantics types (ThreatLevel/Calibration/
 # band boundaries) live in sema-core, shared with the workspace `sema` crate
 # — one implementation, no drifted duplicate in screen_threat.
@@ -137,6 +147,11 @@ pbkdf2 = { version = "0.13", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 rand_chacha = { version = "0.10", default-features = false }
 rand_core = { version = "0.10", default-features = false }
+# WHY: `security::sha1` is a thin one-shot wrapper over this audited crate,
+# kept solely for `ekphrasis`'s WebSocket `Sec-WebSocket-Accept` hash
+# (RFC 6455 section 1.3) -- unrelated to WPA2, whose SHA-1 usage (HMAC-SHA1,
+# PBKDF2-HMAC-SHA1, PRF-384) lives in `aither_core::wpa` (#819).
+sha1 = { version = "0.11", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 subtle = { version = "2", default-features = false }
 serde = { version = "1", default-features = false, features = [

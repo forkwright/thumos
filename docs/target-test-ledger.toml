@@ -574,7 +574,7 @@ fidelity = "provision/read proven on the RAM double; eMMC persistence + the 8d c
 
 [[module]]
 name = "security"
-tests = 29
+tests = 19
 mechanism = "host"
 
 [[module]]
@@ -720,6 +720,6 @@ mechanism = "host"
 
 [[module]]
 name = "wifi"
-tests = 37
+tests = 15
 mechanism = "host"
 fidelity = "WPA/PTK logic is host+fuzz covered; radio I/O is hardware-gated"
