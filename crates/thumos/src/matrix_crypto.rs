@@ -1332,7 +1332,7 @@ pub(crate) fn decrypt_megolm(
     // Wrapping to 0 here would let that forgery reset this session's ratchet
     // position and desynchronize it from the real sender; saturating instead
     // freezes the session at its terminal index, matching "must be rotated".
-    session.message_index = index.checked_add(1).unwrap_or(u32::MAX);
+    session.message_index = index.saturating_add(1);
 
     Ok(plaintext)
 }
