@@ -27,9 +27,13 @@ For agent-native operations, prefer the `mcp__kanon__*` tool family. See
 
 ## Standards
 
-Read `crates/basanos/standards/STANDARDS.md` § Philosophy before writing code. Key principles:
-no workarounds, define once, reference everywhere, no shortcuts, no compromise on quality.
-Rust work also reads `crates/basanos/standards/RUST.md` before editing Rust code.
+The standards are not in this repository. CLAUDE.md § Standards names where they live; read them
+there. Restating the path here is what let it rot into `crates/basanos/standards/`, a directory
+thumos has never contained.
+
+Read `STANDARDS.md` § Philosophy before writing code, and `RUST.md` before editing Rust. Key
+principles: no workarounds, define once, reference everywhere, no shortcuts, no compromise on
+quality.
 
 ## Rules
 
