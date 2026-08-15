@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/forkwright/thumos/compare/v0.7.3...v0.8.0) (2026-08-15)
+
+
+### Features
+
+* **aither-core:** extract the WPA/EAPOL core, so the fuzzers reach shipped code ([#845](https://github.com/forkwright/thumos/issues/845)) ([7530b0c](https://github.com/forkwright/thumos/commit/7530b0c9de44cf96daf20b2cf0c0961293e518c2))
+
+
+### Bug Fixes
+
+* **matrix_crypto:** the Megolm ratchet never advanced, so no message had forward secrecy ([#843](https://github.com/forkwright/thumos/issues/843)) ([b934a4e](https://github.com/forkwright/thumos/commit/b934a4e816df4d60b0c6d80ade506d981100654d))
+* **signal:** sigreturn restored CPSR from user-writable memory, so any process could return to PL1 ([#846](https://github.com/forkwright/thumos/issues/846)) ([e5e78aa](https://github.com/forkwright/thumos/commit/e5e78aad728ba7929bf0e31f8dca47eebf990a57))
+
 ## [0.7.3](https://github.com/forkwright/thumos/compare/v0.7.2...v0.7.3) (2026-08-14)
 
 
