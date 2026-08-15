@@ -67,7 +67,38 @@ pub enum FaultDisposition {
 /// CPSR mode field mask (ARM ARM B1.3.1, M[4:0]).
 const CPSR_MODE_MASK: u32 = 0x1F;
 /// User mode (PL0) CPSR mode value.
-const CPSR_MODE_USER: u32 = 0x10;
+pub(crate) const CPSR_MODE_USER: u32 = 0x10;
+
+/// The CPSR bits a PL0 process may legitimately choose for itself: the APSR
+/// condition flags (N/Z/C/V/Q), the SIMD `GE` field, both halves of the
+/// IT-block state, the endianness bit (`SETEND` is a User-mode instruction),
+/// and the Thumb bit. ARM ARM B1.3.3.
+///
+/// # Safety-critical
+///
+/// Everything OUTSIDE this mask is the kernel's to dictate, and the mode field
+/// `M[4:0]` is why: a CPSR restored wholesale from memory the process can write
+/// lets it name its own privilege level. Any path that rebuilds a user CPSR
+/// from untrusted bytes must mask with this and OR in [`CPSR_MODE_USER`],
+/// never adopt the word as given (#838).
+pub(crate) const CPSR_USER_SETTABLE: u32 = 0xF800_0000 // N Z C V Q
+    | 0x0600_0000 // IT[1:0]
+    | 0x000F_0000 // GE[3:0]
+    | 0x0000_FC00 // IT[7:2]
+    | 0x0000_0200 // E (endianness)
+    | 0x0000_0020; // T (Thumb)
+
+/// Rebuild a User-mode CPSR from an untrusted saved value, keeping only the
+/// bits a process may choose and forcing the rest.
+///
+/// Forcing rather than validating is deliberate: a validate-then-reject path
+/// has to decide what to do with a rejected frame mid-return, and every answer
+/// to that is worse than simply resuming the process in the only mode it was
+/// ever entitled to. The interrupt masks land clear, matching what
+/// [`Context::initial`] gives a freshly spawned process.
+pub(crate) fn sanitize_user_cpsr(untrusted: u32) -> u32 {
+    (untrusted & CPSR_USER_SETTABLE) | CPSR_MODE_USER
+}
 
 /// Kill-vs-halt decision for a fault, from the SAVED CPSR in the trap frame.
 ///
