@@ -160,6 +160,12 @@ pub(crate) unsafe fn write_trampoline_page(_phys: usize) {}
 /// # Safety
 ///
 /// `frame` must be the SVC trap frame built from the sigreturn trampoline.
+///
+/// The frame's CONTENTS are attacker-controlled and must never be trusted:
+/// it sits on the process's own stack, so the process can rewrite every word
+/// of it before invoking sigreturn. Being PL0-*mapped* establishes that the
+/// read is sound, not that the values mean anything. Register values are the
+/// process's own business, but the saved CPSR is not -- see below (#838).
 pub(crate) unsafe fn sigreturn_frame(frame: &mut crate::process::Context) {
     let src = frame.sp as *const u32;
     // SAFETY: the trampoline's user sp is the signal frame deliver() built;
@@ -171,7 +177,14 @@ pub(crate) unsafe fn sigreturn_frame(frame: &mut crate::process::Context) {
         frame.sp = src.add(13).read_volatile();
         frame.lr = src.add(14).read_volatile();
         frame.pc = src.add(15).read_volatile();
-        frame.cpsr = src.add(16).read_volatile();
+        // WHY sanitized, not restored (#838): the SVC epilogue loads this word
+        // straight into SPSR with `msr spsr_cxsf` and returns via `movs pc, lr`,
+        // which commits SPSR into CPSR -- mode bits included. Adopting the saved
+        // word as given would let a process write M[4:0] = 0x13 into its own
+        // stack, call sigreturn, and resume at a PC of its choosing in PL1,
+        // past every isolation property this kernel has. Only the bits a
+        // process may legitimately choose survive; the mode is forced to User.
+        frame.cpsr = crate::process::sanitize_user_cpsr(src.add(16).read_volatile());
     }
 }
 
@@ -743,5 +756,87 @@ mod tests {
             "pc restored to the interrupted instruction"
         );
         assert_eq!(trap.cpsr, 0x10, "cpsr restored");
+    }
+
+    /// Lay out a signal frame whose saved CPSR is `cpsr`, run sigreturn
+    /// against it, and hand back the CPSR the process would resume with.
+    fn sigreturn_with_saved_cpsr(frame: &mut [u32; 21], cpsr: u32) -> u32 {
+        let base: *mut u32 = frame.as_mut_ptr();
+        // SAFETY: `frame` is a live 21-word buffer owned by the caller; the
+        // 17 words written here are the layout deliver() builds.
+        unsafe {
+            for i in 0..13 {
+                base.add(i).write_volatile(0);
+            }
+            base.add(13).write_volatile(0x7777);
+            base.add(14).write_volatile(0x6666);
+            base.add(15).write_volatile(0x5555);
+            base.add(16).write_volatile(cpsr);
+        }
+        let mut trap = crate::process::Context {
+            r: [0; 13],
+            sp: base as u32,
+            lr: 0,
+            pc: 0,
+            cpsr: 0,
+        };
+        // SAFETY: trap.sp points at the frame built above.
+        unsafe { sigreturn_frame(&mut trap) };
+        trap.cpsr
+    }
+
+    /// #838: the saved CPSR lives on the process's OWN stack, so the process
+    /// can name any mode it likes before invoking sigreturn. Every privileged
+    /// mode must come back as User; anything else is a PL0 -> PL1 escalation.
+    #[test]
+    fn sigreturn_forces_user_mode_whatever_the_frame_claims() {
+        // ARM ARM B1.3.1: FIQ, IRQ, Supervisor, Monitor, Abort, Hyp,
+        // Undefined, System. Every one of these is PL1 or above.
+        for forged in [0x11, 0x12, 0x13, 0x16, 0x17, 0x1A, 0x1B, 0x1F] {
+            let mut frame = [0u32; 21];
+            let resumed = sigreturn_with_saved_cpsr(&mut frame, forged);
+            assert_eq!(
+                resumed & 0x1F,
+                0x10,
+                "a frame claiming mode {forged:#04x} must resume in User mode"
+            );
+        }
+    }
+
+    /// The interrupt masks are the kernel's to set, not the process's: a
+    /// process that returns with I/F/A set would run PL0 code with interrupts
+    /// disabled and never yield.
+    #[test]
+    fn sigreturn_clears_interrupt_masks_the_frame_tries_to_set() {
+        let mut frame = [0u32; 21];
+        // I (0x80) | F (0x40) | A (0x100), on top of a legitimate User mode.
+        let resumed = sigreturn_with_saved_cpsr(&mut frame, 0x10 | 0x80 | 0x40 | 0x100);
+        assert_eq!(resumed & (0x80 | 0x40 | 0x100), 0, "I/F/A must be cleared");
+        assert_eq!(resumed & 0x1F, 0x10, "still User mode");
+    }
+
+    /// Sanitizing must not break legitimate resumption: the condition flags,
+    /// GE field, IT state, endianness and Thumb bit are the process's own.
+    #[test]
+    fn sigreturn_preserves_the_bits_a_process_may_choose() {
+        let mut frame = [0u32; 21];
+        // N|Z|C|V|Q, GE[3:0], both IT halves, E, T -- with a forged Supervisor
+        // mode underneath, to prove preservation and forcing are independent.
+        let claimed = 0xF800_0000 | 0x0600_0000 | 0x000F_0000 | 0x0000_FC00 | 0x0000_0200 | 0x20;
+        let resumed = sigreturn_with_saved_cpsr(&mut frame, claimed | 0x13);
+        assert_eq!(
+            resumed,
+            claimed | 0x10,
+            "user bits kept, mode forced to User"
+        );
+    }
+
+    /// A Thumb-mode process must resume in Thumb; dropping the T bit would
+    /// return it to ARM decoding at a Thumb PC.
+    #[test]
+    fn sigreturn_keeps_the_thumb_bit() {
+        let mut frame = [0u32; 21];
+        let resumed = sigreturn_with_saved_cpsr(&mut frame, 0x10 | 0x20);
+        assert_eq!(resumed & 0x20, 0x20, "Thumb bit survives");
     }
 }

@@ -133,6 +133,23 @@ unsafe fn usr1_handler() {
     }
 }
 
+/// #838 attacker: forge a privileged mode into this process's OWN saved CPSR,
+/// then return through the trampoline so sigreturn restores it.
+///
+/// `deliver()` sets the handler's entry sp to the signal frame base
+/// (`frame.sp = frame_addr`), so word 16 -- the saved CPSR -- is at `[sp, #64]`.
+/// NAKED is load-bearing: a normal Rust prologue would push registers and move
+/// sp before the store, and the offset would no longer name the CPSR word.
+///
+/// `bx lr` returns to `SIGNAL_TRAMPOLINE_VA`, whose `mov r7, #81; svc #0`
+/// drives sigreturn. A kernel that restores the frame verbatim resumes this
+/// process in System mode (0x1F); one that sanitizes forces User.
+#[cfg(thumos_init_signal)]
+#[unsafe(naked)]
+unsafe extern "C" fn forge_mode_handler() {
+    core::arch::naked_asm!("mov r1, #0x1f", "str r1, [sp, #64]", "bx lr");
+}
+
 /// The SIGUSR2 handler (#446): its marker MUST appear only if SIGUSR2's
 /// pending bit survived SIGUSR1's delivery + sigreturn — the exact-clear
 /// contract (the old clear-any-pending could clear the wrong signal).
@@ -672,6 +689,56 @@ pub extern "C" fn _start() -> ! {
                 b"signal: trampoline rx enforced\n"
             } else {
                 b"signal: trampoline rx probe WRONG status\n"
+            };
+            sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+
+            // #838 escalation probe: the saved CPSR sits in the signal frame on
+            // this process's OWN stack, so a handler can rewrite it. The child's
+            // handler forges System mode (0x1F) into it and returns through the
+            // trampoline; sigreturn must force User mode back. The child then
+            // reads the kernel load address, which PL0 cannot: if the mode was
+            // forced, that read data-aborts and the child dies 139. If the
+            // escalation worked, the child is in PL1, the read SUCCEEDS, and it
+            // prints the marker the witness treats as a security failure.
+            let esc = sys_fork();
+            if esc == 0 {
+                let hf = u32::try_from(forge_mode_handler as usize).unwrap_or(0);
+                if hf == 0 || sys_sigaction(10, hf) != 0 {
+                    let m = b"signal: escalation-probe sigaction FAILED\n";
+                    sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                    sys_exit(1);
+                }
+                if sys_kill(sys_getpid(), 10) != 0 {
+                    let m = b"signal: escalation-probe kill FAILED\n";
+                    sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                    sys_exit(1);
+                }
+                // Yield so the kernel delivers, the handler forges, and
+                // sigreturn restores. Control resumes on the next line.
+                sys_sleep(30);
+                // PL1-only in every process page table (#482) -- the same
+                // address the `kread` variant proves a PL0 read cannot touch.
+                core::ptr::read_volatile(0x4000_8000 as *const u32);
+                let m = b"signal: PL1 ESCALATION via sigreturn CPSR\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(3);
+            }
+            if esc == u32::MAX {
+                let m = b"signal: escalation-probe fork FAILED\n";
+                sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
+                sys_exit(1);
+            }
+            let esc_status = loop {
+                let s = sys_waitpid(esc);
+                if s != u32::MAX {
+                    break s;
+                }
+                sys_sleep(10);
+            };
+            let m: &[u8] = if esc_status == 139 {
+                b"signal: sigreturn mode enforced\n"
+            } else {
+                b"signal: sigreturn escalation probe WRONG status\n"
             };
             sys_write(1, m.as_ptr(), u32::try_from(m.len()).unwrap_or(0));
         }

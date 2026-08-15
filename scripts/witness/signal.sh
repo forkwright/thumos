@@ -31,5 +31,25 @@ test "$usr2_line" -lt "$flows_line" || { echo "FAIL signal: flows complete prece
 grep -qE 'USERFAULT: pid=[0-9]+ kind=data-abort addr=0x7feff000 status=0x0000080f killed' signal.log || { echo 'FAIL signal: the trampoline-page write did not die to a write-denied data-abort PERMISSION fault (page missing, or W^X broken)'; exit 1; }
 grep -q 'signal: trampoline rx enforced' signal.log || { echo 'FAIL signal: rx probe child was not fault-killed with status 139 (trampoline page writable?)'; exit 1; }
 grep -q 'signal: trampoline WRITEABLE' signal.log && { echo 'FAIL signal: PL0 wrote the sigreturn trampoline page — W^X broken'; exit 1; }
+# #838: the fifth PL0 isolation probe. A child's handler forges System mode
+# (0x1F) into its OWN saved CPSR -- the signal frame sits on its stack -- and
+# returns through the trampoline. sigreturn must force User mode back. The
+# child then reads the kernel load address, which PL0 cannot: a forced mode
+# means a data-abort and a 139 death; a restored mode means the child is in
+# PL1, the read succeeds, and it prints the escalation marker.
+#
+# The marker's ABSENCE is deliberately NOT the assertion on its own: a child
+# that died for an unrelated reason would also omit it, and the probe would
+# pass while proving nothing. The DFSR signature and the 139 reap are what
+# establish the privilege test actually ran and actually failed closed.
+grep -q 'signal: PL1 ESCALATION via sigreturn CPSR' signal.log && { echo 'FAIL #838: a PL0 process forged its saved CPSR and returned to PL1 -- sigreturn is restoring the mode field from user-writable memory (SECURITY)'; exit 1; }
+! grep -q 'signal: escalation-probe' signal.log || { echo 'FAIL #838: the escalation probe could not set up (fork/sigaction/kill failed) -- the probe did not run'; exit 1; }
+# The status is deliberately NOT pinned: the kernel image is mapped in 1MB
+# sections, so a PL0 permission fault there is a SECTION fault (DFSR 0x0d),
+# not the page fault (0x0f) the guard-page probe sees. boot.sh's kread probe
+# leaves it unpinned for the same reason; asserting a status not actually
+# observed would make this check fail on a working kernel.
+grep -Eq 'USERFAULT: pid=[0-9]+ kind=data-abort addr=0x40008000 .*killed' signal.log || { echo 'FAIL #838: no data-abort at the kernel load address -- the escalation probe never reached its privilege test, so nothing was proven'; exit 1; }
+grep -q 'signal: sigreturn mode enforced' signal.log || { echo 'FAIL #838: the escalation-probe child was not fault-killed (139) -- either it escalated, or the probe did not run'; exit 1; }
 grep -q 'THUMOS-QEMU: service-loop ticks=' signal.log || { echo 'FAIL signal: service loop did not run (kernel hung during the yield windows)'; exit 1; }
 echo "signal witness: PASS"
