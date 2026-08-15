@@ -586,7 +586,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "signal"
-tests = 11
+tests = 15
 mechanism = "both"
 witness = "signal.sh"
 
