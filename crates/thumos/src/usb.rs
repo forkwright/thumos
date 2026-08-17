@@ -53,14 +53,15 @@ const REG_INTRRXE: usize = 0x08;
 const REG_INTRUSB: usize = 0x0A;
 /// USB interrupt enable mask (8-bit).
 const REG_INTRUSBE: usize = 0x0B;
-/// Current frame number (16-bit). Source: MT6739 vendor kernel
-/// `mtk_musb_reg.h`: `#define MUSB_FRAME 0x0C`.
+/// Current frame number (16-bit), the MUSB `FRAME` register at offset 0x0C.
+/// Cross-checked against the MT6739 vendor kernel's `mtk_musb_reg.h`.
 const REG_FRAME: usize = 0x0C;
 /// Endpoint index selector  -  selects which EP the indexed window (below)
-/// addresses (8-bit). Source: `mtk_musb_reg.h`: `#define MUSB_INDEX 0x0E`.
+/// addresses (8-bit) — the MUSB `INDEX` register at offset 0x0E, per
+/// `mtk_musb_reg.h`.
 const REG_INDEX: usize = 0x0E;
-/// Test mode control (8-bit). Source: `mtk_musb_reg.h`:
-/// `#define MUSB_TESTMODE 0x0F`.
+/// Test mode control (8-bit) — the MUSB `TESTMODE` register at offset 0x0F,
+/// per `mtk_musb_reg.h`.
 const REG_TESTMODE: usize = 0x0F;
 
 // ---------------------------------------------------------------------------
@@ -73,19 +74,23 @@ const REG_TESTMODE: usize = 0x0F;
 // REG_INDEX write for a DIFFERENT endpoint, by a write to REG_INDEX
 // selecting the intended endpoint -- addressing two endpoints without
 // re-indexing between them silently reads/writes the wrong endpoint's
-// state, not a fault. Source: MT6739 vendor kernel
-// `drivers/misc/mediatek/usb20/mtk_musb_reg.h`:
-//   #define MUSB_TXMAXP  0x00
-//   #define MUSB_TXCSR   0x02
-//   #define MUSB_CSR0    MUSB_TXCSR   /* Re-used for EP0 */
-//   #define MUSB_RXMAXP  0x04
-//   #define MUSB_RXCSR   0x06
-//   #define MUSB_RXCOUNT 0x08
-//   #define MUSB_COUNT0  MUSB_RXCOUNT /* Re-used for EP0 */
-//   #define MUSB_INDEXED_OFFSET(_epnum, _offset) (0x10 + (_offset))
-// cross-checked byte-identical against `musb_core.h`'s
-// `#define MUSB_EP_OFFSET MUSB_INDEXED_OFFSET` in both mirrors named in the
-// module doc comment above.
+// state, not a fault.
+//
+// Within the indexed window the offsets are: TX max-packet at 0x00, TX control and
+// status at 0x02, RX max-packet at 0x04, RX control and status at 0x06, and RX byte
+// count at 0x08. Endpoint 0 has no registers of its own — its control/status and byte
+// count are the TX-control and RX-count registers at 0x02 and 0x08 respectively,
+// reached through the same window with REG_INDEX selecting endpoint 0. The window
+// itself begins at 0x10 and an endpoint's register address does not depend on which
+// endpoint is selected, only on the offset — selection happens entirely through
+// REG_INDEX, which is what makes the ordering rule above load-bearing.
+//
+// These offsets are properties of the MUSB controller, cross-checked between the
+// MT6739 vendor kernel's `drivers/misc/mediatek/usb20/mtk_musb_reg.h` and mainline
+// Linux's own `musb_core.h`, which agree on the indexed-window layout across both
+// mirrors named in the module doc comment above. Stated here as prose rather than
+// reproduced as source: the numbers are facts about the silicon, while the upstream
+// file's macro spelling and its authors' inline remarks are theirs.
 // ---------------------------------------------------------------------------
 
 /// `EPx` TX max packet size (16-bit); valid for whichever endpoint
@@ -130,8 +135,8 @@ const REG_RXCOUNT: usize = 0x18;
 // Each endpoint has its OWN fixed 4-byte-aligned FIFO data register --
 // unlike the indexed window above, FIFO access does NOT depend on
 // REG_INDEX. Byte or word writes queue data INTO the FIFO; reads dequeue.
-// MUSB auto-advances on each write. Source: MT6739 vendor kernel
-// `mtk_musb_reg.h`: `#define MUSB_FIFO_OFFSET(epnum) (0x20 + ((epnum) * 4))`.
+// MUSB auto-advances on each write. Each endpoint's FIFO sits at 0x20 plus four
+// bytes per endpoint number, per the MT6739 vendor kernel's `mtk_musb_reg.h`.
 // ---------------------------------------------------------------------------
 
 /// FIFO register offset for endpoint `epnum`, relative to `MUSB_BASE`.
@@ -1787,8 +1792,8 @@ mod tests {
 
     #[test]
     fn reg_fifo_matches_vendor_formula() {
-        // Source: MT6739 vendor kernel `mtk_musb_reg.h`:
-        // `#define MUSB_FIFO_OFFSET(epnum) (0x20 + ((epnum) * 4))`. This is
+        // Per the MT6739 vendor kernel's `mtk_musb_reg.h`, an endpoint's FIFO sits
+        // at 0x20 plus four bytes per endpoint number. This is
         // the one piece of address arithmetic in the MUSB map that DOES
         // depend on endpoint number -- unlike the indexed window above,
         // where endpoint selection happens via the value written to

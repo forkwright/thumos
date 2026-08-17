@@ -4,7 +4,17 @@
 //! stops petting it within the configured timeout. This provides a safety
 //! net against kernel hangs (infinite loops, deadlocks, interrupt starvation).
 //!
-//! Register map (base `0x1000_7000`, per MTK BSP reference):
+//! Register map (base `0x1000_7000`). Cross-checked against mainline Linux's own
+//! `drivers/watchdog/mtk_wdt.c`, which carries the same base and the same restart
+//! key, and against several MediaTek vendor-kernel forks spanning MT6582, MT6739 and
+//! MT8163 — the values are identical across all of them, which is what establishes
+//! them as properties of the SoC rather than one vendor's choice.
+//!
+//! WHY the citation is explicit here rather than "per BSP reference": every sibling
+//! driver in this crate names its source file and line, and this one named a category
+//! instead. A provenance audit could not verify the constants from this crate alone
+//! and flagged it — not because anything looked copied, but because an unverifiable
+//! claim and a false one are indistinguishable from the outside.
 //!
 //! | Offset | Register    | Description                              |
 //! |--------|-------------|------------------------------------------|

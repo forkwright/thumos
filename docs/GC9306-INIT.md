@@ -116,7 +116,23 @@ The AGM M7 BSP configures `gc9306_dbi_c_qvgal`, indicating DBI (parallel) interf
 
 ## Sources
 
-Four independent driver implementations, all GPL-2.0 or Apache-2.0 licensed:
+Four independent driver implementations. **Their licenses differ and one is proprietary** — the
+per-source line below is authoritative, not this paragraph. An earlier version of this sentence said
+all four were GPL-2.0 or Apache-2.0, which contradicted the list directly beneath it and was wrong in
+the permissive direction about a source that grants no reuse rights at all.
+
+Why four are listed when only one is used: **independent convergence is the evidence**. Four unrelated
+vendors, on four unrelated host platforms, emitting the same command bytes is what establishes that the
+sequence is dictated by the GC9306 controller rather than authored by any of them — a hardware fact,
+not expression. The commands that are not GC9306-specific match the public MIPI DCS specification,
+reaching the same conclusion a second way.
+
+Where the sources genuinely **disagree** is the gamma table (0xF0–0xF5): three of the four differ, so
+those bytes are panel-tuning choices rather than device-mandated. The 36 bytes used here trace to
+source 1, LuatOS, which is MIT — permissive, requiring only that notice be kept, which naming it here
+does. **No bytes are taken from source 3**, and none may be: RDA Technologies' driver is proprietary
+and is cited purely as a convergence witness — evidence that a value is common across the ecosystem,
+never as something to copy from.
 
 1. **LuatOS** (`openLuat/luatos-soc-rtt`): `components/lcd/luat_lcd_gc9306.c`
    SPI driver for Air101/Air103 MCUs. MIT license.
