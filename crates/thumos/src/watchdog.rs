@@ -6,9 +6,9 @@
 //!
 //! Register map (base `0x1000_7000`). Cross-checked against mainline Linux's own
 //! `drivers/watchdog/mtk_wdt.c`, which carries the same base and the same restart
-//! key, and against several MediaTek vendor-kernel forks spanning MT6582, MT6739 and
+//! key, and against several `MediaTek` vendor-kernel forks spanning MT6582, MT6739 and
 //! MT8163 — the values are identical across all of them, which is what establishes
-//! them as properties of the SoC rather than one vendor's choice.
+//! them as properties of the `SoC` rather than one vendor's choice.
 //!
 //! WHY the citation is explicit here rather than "per BSP reference": every sibling
 //! driver in this crate names its source file and line, and this one named a category
