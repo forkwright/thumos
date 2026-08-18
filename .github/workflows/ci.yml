@@ -132,7 +132,9 @@ jobs:
     # separately, and this job already has the toolchain fuzz/'s check needs.
     name: kernel (i686 tests + armv7a build)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # WHY 60m: warm p95 is already 26m of 30m (measured across six runs); a
+    # cold cache puts the cross-compile past the budget (kanon#10081 audit).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
