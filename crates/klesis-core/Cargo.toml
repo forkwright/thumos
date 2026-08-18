@@ -17,7 +17,7 @@ harness = false
 path = "../../benches/klesis_core_pdu_codec.rs"
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 
 [lints]
 workspace = true
