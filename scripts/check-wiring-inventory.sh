@@ -11,8 +11,8 @@ set -euo pipefail
 #   (d) a compiled-only capability has neither hardware_reason nor a
 #       tracking_reason naming a live issue (#737: a dead_code suppression
 #       that cites nothing checkable reads as vestigial to a cleanup sweep)
-# The inventory is the SSOT for capability reachability; README's capability
-# section and docs/KERNEL-WIRING-AUDIT.md's successor point at it.
+# The inventory is the SSOT for capability reachability; README and the
+# kernel-build runbook point directly at it.
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 INV="$REPO_ROOT/docs/capability-inventory.toml"

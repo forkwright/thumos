@@ -289,8 +289,9 @@ Everything on this page proves the kernel **under QEMU `-machine virt`
 only**. This runbook does not upgrade the hardware status:
 
 - The Rust kernel has **never booted on the physical AGM M7 / MT6739**.
-  Hardware validation remains pending (see README and
-  `docs/KERNEL-WIRING-AUDIT.md` for the compiled-but-unwired surface).
+  Hardware validation remains pending; the machine-checked
+  [`capability-inventory.toml`](capability-inventory.toml) is the canonical
+  record of each capability's reachability tier and hardware gate.
 - The `qemu` feature exists precisely because the emulated board lacks the
   hardware: it no-ops SoC-only MMIO (watchdog, DVFS, MCDI, DSI) and skips
   eMMC, display (GC9306), keypad, USB, and CCCI/modem init. Those drivers
