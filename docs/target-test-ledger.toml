@@ -13,9 +13,9 @@
 # behavior was broken on every boot — host tests are structurally blind to
 # the section-overlay class. The 'both' rows are where that class lives.
 # #619/#631/#645 are the proof-by-incident for the tests-count rule itself:
-# emmc (31 tests) and watchdog (3 tests) were both cfg'd out of every test
-# build, so their tests existed as text, were counted as coverage, and had
-# never once been compiled -- exactly the failure mode a text-based count
+# emmc (31 tests) and the then-three watchdog tests were both cfg'd out of
+# every test build. Their tests existed as text, were counted as coverage, and
+# had never once been compiled -- exactly the failure mode a text-based count
 # cannot see.
 
 [[module]]
@@ -710,7 +710,7 @@ mechanism = "host"
 
 [[module]]
 name = "watchdog"
-tests = 3
+tests = 4
 mechanism = "host"
 fidelity = "watchdog peripheral is hardware-gated; host tests cover arming logic"
 

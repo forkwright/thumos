@@ -14,9 +14,9 @@ set -euo pipefail
 #
 # (d) used to count `#[test]` occurrences in source TEXT (#124's original
 # design). #619/#631/#645 are the proof that text is the wrong basis: emmc
-# (31 tests) and watchdog (3 tests) were both `#[cfg]`-excluded from every
-# test build, so their tests existed as text, were counted as coverage, and
-# had never once been compiled. (d) now derives its count from
+# (31 tests) and the then-three watchdog tests were both `#[cfg]`-excluded
+# from every test build, so their tests existed as text, were counted as
+# coverage, and had never once been compiled. (d) now derives its count from
 # `cargo nextest list` — the tests the i686 binary genuinely contains — so a
 # module that stops compiling reds immediately instead of reporting its old
 # count forever (Done-when in #645).

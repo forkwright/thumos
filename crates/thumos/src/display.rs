@@ -628,9 +628,9 @@ impl LcmControl for Gc9306 {
     }
 
     unsafe fn init(&self) -> Result<(), DsiTimeout> {
-        // GC9306 init sequence derived from four independent GPL/Apache
-        // driver sources. See docs/GC9306-INIT.md for provenance and
-        // per-source gamma differences.
+        // GC9306 init sequence cross-checked against four independent driver
+        // implementations with different licenses. See docs/GC9306-INIT.md
+        // for per-source provenance and gamma differences.
         // SAFETY: DSI0 is configured with clock and data lanes active per caller contract. All DCS commands are routed through dcs_write_* helpers which access valid DSI0 MMIO registers.
         unsafe {
             // Inter register enable (GC-specific page unlock)
@@ -670,7 +670,7 @@ impl LcmControl for Gc9306 {
             // Memory write start
             dcs_write_cmd0(0x2C)?;
 
-            // Gamma correction (LuatOS/Fibocom values; may need panel tuning)
+            // Gamma correction (LuatOS values; may need panel tuning)
             dcs_write_long(0xF0, &[0x02, 0x00, 0x00, 0x1B, 0x1F, 0x0B])?; // Positive gamma 1
             dcs_write_long(0xF1, &[0x01, 0x03, 0x00, 0x28, 0x2B, 0x0E])?; // Positive gamma 2
             dcs_write_long(0xF2, &[0x0B, 0x08, 0x3B, 0x04, 0x03, 0x4C])?; // Positive gamma 3
