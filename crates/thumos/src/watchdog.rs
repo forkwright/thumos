@@ -8,7 +8,7 @@
 //! places TOPRGU/WDT at `0x1000_7000`, and its WDT header defines the offsets and
 //! write keys below. Mainline Linux's `drivers/watchdog/mtk_wdt.c` independently
 //! matches those offsets and keys, while correctly obtaining the base from the
-//! platform resource rather than hard-coding a SoC address.
+//! platform resource rather than hard-coding a `SoC` address.
 //!
 //! WHY the citation is explicit here rather than "per BSP reference": every sibling
 //! driver in this crate names its source file and line, and this one named a category
