@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1](https://github.com/forkwright/thumos/compare/v0.8.0...v0.8.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **watchdog:** correct the mode key and hardware provenance ([#850](https://github.com/forkwright/thumos/issues/850)) ([b1e72e7](https://github.com/forkwright/thumos/commit/b1e72e7f256bfcdad50d3b10e3e2a9f9225ac783))
+
 ## [0.8.0](https://github.com/forkwright/thumos/compare/v0.7.3...v0.8.0) (2026-08-15)
 
 
