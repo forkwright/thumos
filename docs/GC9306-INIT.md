@@ -116,39 +116,43 @@ The AGM M7 BSP configures `gc9306_dbi_c_qvgal`, indicating DBI (parallel) interf
 
 ## Sources
 
-Four independent driver implementations. **Their licenses differ and one is proprietary** — the
-per-source line below is authoritative, not this paragraph. An earlier version of this sentence said
-all four were GPL-2.0 or Apache-2.0, which contradicted the list directly beneath it and was wrong in
-the permissive direction about a source that grants no reuse rights at all.
+Four independent driver implementations. Their licenses differ, and one grants no reuse rights.
+They are cited as convergence evidence, not as though citation itself were a license grant. An
+earlier version grouped them all as GPL-2.0 or Apache-2.0 even while the list beneath it identified
+one as proprietary.
 
 Why four are listed when only one is used: **independent convergence is the evidence**. Four unrelated
-vendors, on four unrelated host platforms, emitting the same command bytes is what establishes that the
-sequence is dictated by the GC9306 controller rather than authored by any of them — a hardware fact,
-not expression. The commands that are not GC9306-specific match the public MIPI DCS specification,
+vendors, on four unrelated host platforms, emitting the same command bytes establishes that the
+GC9306 controller dictates the sequence; none of the four sources authored it. The sequence is a
+hardware fact, not expression. The commands that are not GC9306-specific match the public MIPI DCS specification,
 reaching the same conclusion a second way.
 
 Where the sources genuinely **disagree** is the gamma table (0xF0–0xF5): three of the four differ, so
-those bytes are panel-tuning choices rather than device-mandated. The 36 bytes used here trace to
-source 1, LuatOS, which is MIT — permissive, requiring only that notice be kept, which naming it here
-does. **No bytes are taken from source 3**, and none may be: RDA Technologies' driver is proprietary
-and is cited purely as a convergence witness — evidence that a value is common across the ecosystem,
-never as something to copy from.
+those bytes are panel-tuning choices, not device-mandated values. The 36 bytes used here match both
+LuatOS and Fibocom/RDA; equality alone does not establish historical provenance. This repository
+therefore grounds its maintained table in the pinned LuatOS source under Apache-2.0 and carries that
+license and attribution in `THIRD-PARTY-NOTICES.md`. Fibocom/RDA's proprietary implementation is a
+comparison only and supplies no permission basis.
 
-1. **LuatOS** (`openLuat/luatos-soc-rtt`): `components/lcd/luat_lcd_gc9306.c`
-   SPI driver for Air101/Air103 MCUs. MIT license.
-   https://github.com/openLuat/luatos-soc-rtt
+1. **LuatOS** (`openLuat/luatos-soc-rtt`):
+   [`components/lcd/luat_lcd_gc9306.c` at `8001c7cd`](https://github.com/openLuat/luatos-soc-rtt/blob/8001c7cd33c96755f8b7c68250681f479e90ff32/components/lcd/luat_lcd_gc9306.c),
+   an SPI driver for Air101/Air103 MCUs. The repository's
+   [license at that same commit](https://github.com/openLuat/luatos-soc-rtt/blob/8001c7cd33c96755f8b7c68250681f479e90ff32/LICENSE)
+   is Apache-2.0.
 
-2. **Spreadtrum u-boot** (`yonglongliu/u-boot15`): `drivers/video/sprdfb/lcd/lcd_gc9306_spi.c`
-   SPI driver for SC6531E feature phones. GPL-2.0.
-   https://github.com/yonglongliu/u-boot15
+2. **Spreadtrum u-boot** (`yonglongliu/u-boot15`):
+   [`drivers/video/sprdfb/lcd/lcd_gc9306_spi.c` at `b2abd80f`](https://github.com/yonglongliu/u-boot15/blob/b2abd80f0b1f872889ba857b8f9abce8c4dcf405/drivers/video/sprdfb/lcd/lcd_gc9306_spi.c),
+   an SPI driver for SC6531E feature phones whose file header grants GPL-2.0.
 
-3. **Fibocom/RDA** (`VyshakApmTech/fibocom_vts`): `components/lcdpanel/src/panel_gc9306.c`
-   SPI driver for RDA8910 LTE modules. Proprietary (RDA Technologies).
-   https://github.com/VyshakApmTech/fibocom_vts
+3. **Fibocom/RDA** (`VyshakApmTech/fibocom_vts`):
+   [`components/lcdpanel/src/panel_gc9306.c` at `ebdc4a1d`](https://github.com/VyshakApmTech/fibocom_vts/blob/ebdc4a1d065f6eaeb13fa9448840a3aab47ab8fc/components/lcdpanel/src/panel_gc9306.c),
+   an SPI driver for RDA8910 LTE modules. Its header reserves all rights and
+   conveys no license.
 
-4. **Actions Semiconductor** (`kongqj1234/git_kong`): `drivers/display/panel_gc9306_320x240.c`
-   SPI driver for Actions S200 Zephyr platform. Apache-2.0.
-   https://github.com/kongqj1234/git_kong
+4. **Actions Semiconductor** (`kongqj1234/git_kong`):
+   [`drivers/display/panel_gc9306_320x240.c` at `5edf593c`](https://github.com/kongqj1234/git_kong/blob/5edf593cdea22e7e00b53a23976cfec40605cc76/drivers/display/panel_gc9306_320x240.c),
+   an SPI driver for the Actions S200 Zephyr platform with an Apache-2.0 file
+   header.
 
 Additional reference: Spreadtrum device tree (`iscle/android_kernel_spreadtrum_sc9853`):
 `arch/arm/boot/dts/lcd/lcd_gc9306_spi_qvga.dtsi`

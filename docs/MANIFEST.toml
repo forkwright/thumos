@@ -32,7 +32,7 @@ decided = "2026-03-18"
 path = "docs/GC9306-INIT.md"
 type = "spec"
 evergreen = true
-description = "GC9306 QVGA TFT controller MIPI DCS init register sequence, derived from four sources."
+description = "GC9306 QVGA TFT controller MIPI DCS init sequence, grounded in an Apache-2.0 source and cross-checked against three independent implementations."
 
 [[doc]]
 path = "docs/HARDWARE.md"
