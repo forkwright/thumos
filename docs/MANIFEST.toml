@@ -82,12 +82,6 @@ evergreen = true
 description = "This inventory: every tracked file under docs/, kept in sync by scripts/check-doc-inventory.sh."
 
 [[doc]]
-path = "docs/KERNEL-WIRING-AUDIT.md"
-type = "decision-record"
-evergreen = true
-description = "Superseded pointer to docs/capability-inventory.toml (#550), the machine-checked capability-reachability inventory that replaced this doc's hand counts."
-
-[[doc]]
 path = "docs/convergence.toml"
 type = "decision-record"
 evergreen = true
