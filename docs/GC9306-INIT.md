@@ -4,7 +4,10 @@ The GC9306 is a GalaxyCore 240x320 QVGA TFT controller used in the AGM M7. It ac
 
 ## Register sequence
 
-Derived from four independent sources. The core register structure is identical across all four. Gamma values (0xF0-0xF5) vary per panel and may need tuning on the M7.
+Four independent implementations were compared. They share core command families and many values,
+but differ in ordering, optional commands, and several payloads. The table records this repository's
+selected sequence; it is not a claim that all four sources are byte-identical. Gamma values
+(0xF0-0xF5) vary per panel and may need tuning on the M7.
 
 Each row is one DCS transaction: command byte, then zero or more data bytes, then an optional delay.
 
@@ -84,7 +87,9 @@ Sleep out (display on):
 
 ## Gamma tuning
 
-Gamma values differ across all four sources because each vendor tunes gamma for their specific panel supplier. The values in the main table come from the LuatOS and Fibocom drivers, which agree exactly. The Spreadtrum and Actions drivers use different gamma curves tuned for different panels.
+The four sources contain three distinct gamma tables. The maintained values use the pinned LuatOS
+table; the proprietary Fibocom comparison matches it exactly. Spreadtrum and Actions each use a
+different table.
 
 If the M7 display looks washed out or has incorrect contrast, gamma registers 0xF0-0xF5 are the adjustment point. Each register takes six bytes. No public documentation exists for the gamma curve encoding. Tuning requires visual iteration on the physical panel.
 
@@ -92,8 +97,8 @@ If the M7 display looks washed out or has incorrect contrast, gamma registers 0x
 
 | Source | F0 | F1 | F2 | F3 | F4 | F5 |
 |--------|----|----|----|----|----|----|
-| LuatOS / Fibocom | 02 00 00 1B 1F 0B | 01 03 00 28 2B 0E | 0B 08 3B 04 03 4C | 0E 07 46 04 05 51 | 08 15 15 1F 22 0F | 0B 13 11 1F 21 0F |
-| Spreadtrum (SPRD) | 02 01 00 0A 10 11 | 01 02 00 14 1C 09 | 12 09 40 03 03 50 | 0B 09 3E 03 04 4B | 0C 1A 1A 22 22 0F | 0B 17 15 18 19 0F |
+| LuatOS (Fibocom comparison matches) | 02 00 00 1B 1F 0B | 01 03 00 28 2B 0E | 0B 08 3B 04 03 4C | 0E 07 46 04 05 51 | 08 15 15 1F 22 0F | 0B 13 11 1F 21 0F |
+| Spreadtrum (SPRD) | 02 00 00 02 06 00 | 01 02 00 05 16 16 | 11 0A 3A 04 04 4B | 0C 08 44 04 03 52 | 0C 18 17 20 3B 0F | 06 12 12 21 3B 0F |
 | Actions (Zephyr) | 02 00 00 00 00 04 | 01 02 00 05 1A 15 | 06 06 20 05 05 31 | 15 0B 55 02 02 65 | 0E 1C 1A 03 05 0F | 06 13 15 33 31 0F |
 
 ## Hardware reset sequence
@@ -112,7 +117,9 @@ Read ID command `0x04` returns three bytes. The GC9306 device ID is `0x009306` (
 
 ## Interface
 
-The AGM M7 BSP configures `gc9306_dbi_c_qvgal`, indicating DBI (parallel) interface in command mode. Panel init sequence stays the same regardless of physical interface (SPI vs DBI parallel). Transport layer differs but the DCS commands are identical.
+The AGM M7 BSP configures `gc9306_dbi_c_qvgal`, indicating DBI (parallel) interface in command mode.
+The controller exposes the same command-register interface over SPI and DBI; the transport layer
+differs.
 
 ## Sources
 
@@ -121,13 +128,13 @@ They are cited as convergence evidence, not as though citation itself were a lic
 earlier version grouped them all as GPL-2.0 or Apache-2.0 even while the list beneath it identified
 one as proprietary.
 
-Why four are listed when only one is used: **independent convergence is the evidence**. Four unrelated
-vendors, on four unrelated host platforms, emitting the same command bytes establishes that the
-GC9306 controller dictates the sequence; none of the four sources authored it. The sequence is a
-hardware fact, not expression. The commands that are not GC9306-specific match the public MIPI DCS specification,
-reaching the same conclusion a second way.
+Why four are listed when the maintained gamma table uses one: shared command families and repeated
+values provide independent comparison evidence for the controller's common structure. The sources
+also disagree beyond gamma, including frame-rate payloads and optional commands, so this document
+records those values as source-specific instead of treating the implementations as byte-identical.
+The standardized DCS commands provide separate support for the interface-level operations.
 
-Where the sources genuinely **disagree** is the gamma table (0xF0–0xF5): three of the four differ, so
+Gamma (0xF0–0xF5) has the widest divergence: the four sources contain three distinct tables, so
 those bytes are panel-tuning choices, not device-mandated values. The 36 bytes used here match both
 LuatOS and Fibocom/RDA; equality alone does not establish historical provenance. This repository
 therefore grounds its maintained table in the pinned LuatOS source under Apache-2.0 and carries that
