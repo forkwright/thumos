@@ -106,7 +106,7 @@ jobs:
         with:
           components: clippy
           cache: false
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: workspace
       - name: clippy
@@ -132,7 +132,9 @@ jobs:
     # separately, and this job already has the toolchain fuzz/'s check needs.
     name: kernel (i686 tests + armv7a build)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # WHY 60m: warm p95 is already 26m of 30m (measured across six runs); a
+    # cold cache puts the cross-compile past the budget (kanon#10081 audit).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -153,7 +155,7 @@ jobs:
           # entirely, and cargo treats a set-but-empty RUSTFLAGS as an override
           # to nothing, which would clobber just the same.
           rustflags: ""
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           key: kernel
           workspaces: crates/thumos
