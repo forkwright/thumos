@@ -16,12 +16,12 @@
 //! and flagged it — not because anything looked copied, but because an unverifiable
 //! claim and a false one are indistinguishable from the outside.
 //!
-//! | Offset | Register    | Description                              |
-//! |--------|-------------|------------------------------------------|
-//! | 0x00   | `WDT_MODE`    | Enable/disable, auto-restart mode        |
-//! | 0x04   | `WDT_LENGTH`  | Timeout value (encoded, see below)       |
-//! | 0x08   | `WDT_RESTART` | Write 0x1971 to reset the countdown      |
-//! | 0x0C   | `WDT_STA`     | Status register (bit 0 = WDT reset flag) |
+//! | Offset | Register      | Description                                    |
+//! |--------|---------------|------------------------------------------------|
+//! | 0x00   | `WDT_MODE`    | Enable, IRQ/dual, and platform reset policy     |
+//! | 0x04   | `WDT_LENGTH`  | Timeout value (encoded, see below)             |
+//! | 0x08   | `WDT_RESTART` | Write 0x1971 to reset the countdown            |
+//! | 0x0C   | `WDT_STATUS`  | Reset cause; HW/SW/IRQ WDT are bits 31/30/29   |
 //!
 //! Timeout encoding (`WDT_LENGTH)`:
 //!   bits [15:5] = timeout in units of 512/32768 s ≈ 15.6 ms per unit
@@ -31,16 +31,23 @@
 //!
 //! `WDT_MODE` fields used here:
 //!   bit 0  = `WDT_EN` (1 = enabled)
+//!   bit 3  = `WDT_IRQ` (interrupt mode; cleared during initialization)
 //!   bit 6  = `WDT_DUAL_MODE` (IRQ followed by reset; left clear here)
 //!   write key = `0x2200_0000` (required on every mode write)
+//!
+//! The MT6739 vendor and mainline drivers both update `WDT_MODE` with a
+//! read-modify-write. Thumos owns enable plus the IRQ/dual selection and
+//! preserves every other field, including boot-platform reset policy.
 //!
 //! WHY 5-second timeout: long enough for the scheduler to complete a full
 //! tick cycle even under heavy load, short enough to recover from a hang
 //! before userspace notices a frozen system.
 //!
 //! [MT6739 device tree]: https://github.com/fukehan/kernel-4.4/blob/b698b8dbb7fb0c7326a1121bbce72fdd3db6d3d8/arch/arm/boot/dts/mt6739.dts#L464-L468
-//! [MT6739 WDT header]: https://github.com/fukehan/kernel-4.4/blob/b698b8dbb7fb0c7326a1121bbce72fdd3db6d3d8/drivers/watchdog/mediatek/wdt/common/wdt_v1/mtk_wdt.h#L17-L52
-//! [mainline WDT driver]: https://github.com/torvalds/linux/blob/98f21c54f99519329c18e2625b0ea6db14524d09/drivers/watchdog/mtk_wdt.c#L37-L57
+//! [MT6739 WDT header]: https://github.com/fukehan/kernel-4.4/blob/b698b8dbb7fb0c7326a1121bbce72fdd3db6d3d8/drivers/watchdog/mediatek/wdt/common/wdt_v1/mtk_wdt.h#L17-L62
+//! [MT6739 mode update]: https://github.com/fukehan/kernel-4.4/blob/b698b8dbb7fb0c7326a1121bbce72fdd3db6d3d8/drivers/watchdog/mediatek/wdt/common/wdt_v1/mtk_wdt_v1.c#L194-L266
+//! [mainline WDT constants]: https://github.com/torvalds/linux/blob/98f21c54f99519329c18e2625b0ea6db14524d09/drivers/watchdog/mtk_wdt.c#L37-L57
+//! [mainline mode update]: https://github.com/torvalds/linux/blob/98f21c54f99519329c18e2625b0ea6db14524d09/drivers/watchdog/mtk_wdt.c#L301-L336
 
 use crate::mmio;
 
@@ -63,14 +70,27 @@ const WDT_RESTART_KEY: u32 = 0x1971;
 /// `WDT_MODE` enable bit (bit 0).
 const WDT_MODE_EN: u32 = 1 << 0;
 
+/// `WDT_MODE` interrupt-mode bit (bit 3).
+const WDT_MODE_IRQ: u32 = 1 << 3;
+
+/// `WDT_MODE` dual IRQ-then-reset bit (bit 6).
+const WDT_MODE_DUAL_MODE: u32 = 1 << 6;
+
 /// `WDT_MODE` write key: must accompany every mode-register write.
 const WDT_MODE_KEY: u32 = 0x2200_0000;
 
-/// Complete mode value used to enable the watchdog without IRQ/dual mode.
-const WDT_MODE_ENABLE_VAL: u32 = WDT_MODE_KEY | WDT_MODE_EN;
+/// Fields initialization intentionally controls.
+const WDT_MODE_INIT_FIELDS: u32 = WDT_MODE_EN | WDT_MODE_IRQ | WDT_MODE_DUAL_MODE;
 
-/// Complete mode value used to disable the watchdog.
-const WDT_MODE_DISABLE_VAL: u32 = WDT_MODE_KEY;
+/// Build a non-IRQ reset-mode write while preserving platform-owned fields.
+const fn mode_enable_value(current: u32) -> u32 {
+    (current & !WDT_MODE_INIT_FIELDS) | WDT_MODE_KEY | WDT_MODE_EN
+}
+
+/// Build a disable write while preserving every field except enable.
+const fn mode_disable_value(current: u32) -> u32 {
+    (current & !WDT_MODE_EN) | WDT_MODE_KEY
+}
 
 /// `WDT_LENGTH` key bits [4:0]: must be 0x08 to commit a length write.
 const WDT_LENGTH_KEY: u32 = 0x08;
@@ -100,12 +120,16 @@ pub unsafe fn init() {
     unsafe {
         // Step 1: program timeout before enabling
         mmio::write32(WDT_LENGTH, WDT_LENGTH_VAL);
+        // Start the new interval from a known full countdown. Mainline does
+        // the same restart write after programming WDT_LENGTH.
+        mmio::write32(WDT_RESTART, WDT_RESTART_KEY);
 
-        // Step 2: enable WDT (non-auto-restart mode; kernel pets it explicitly)
-        // WHY: auto-restart would re-arm on every IRQ ACK, masking scheduler
-        // hangs that don't produce IRQs. Explicit petting ensures the scheduler
-        // loop is alive.
-        mmio::write32(WDT_MODE, WDT_MODE_ENABLE_VAL);
+        // Step 2: enable WDT on the reset path, without an IRQ pretimeout.
+        // WHY: clear only the IRQ/dual fields Thumos deliberately owns. The
+        // bootloader may have configured external-reset polarity, bypass-power-key,
+        // or counter-selection policy; both cited drivers preserve those fields.
+        let current_mode = mmio::read32(WDT_MODE);
+        mmio::write32(WDT_MODE, mode_enable_value(current_mode));
     }
 }
 
@@ -136,10 +160,11 @@ pub unsafe fn pet() {
 ///
 /// Writes to `WDT_MODE`. Safe after `init()` has been called.
 pub unsafe fn disable() {
-    // SAFETY: WDT_MODE is an MMIO register at the MT6739 WDT base. Writing
-    // the full write key with WDT_MODE_EN clear disables the WDT.
+    // SAFETY: WDT_MODE is a readable MMIO register at the MT6739 WDT base.
+    // The read-modify-write clears only WDT_MODE_EN and carries the full key.
     unsafe {
-        mmio::write32(WDT_MODE, WDT_MODE_DISABLE_VAL);
+        let current_mode = mmio::read32(WDT_MODE);
+        mmio::write32(WDT_MODE, mode_disable_value(current_mode));
     }
 }
 
@@ -167,24 +192,28 @@ mod tests {
         assert_eq!(WDT_RESTART_KEY, 0x1971, "WDT_RESTART_KEY must be 0x1971");
     }
 
-    /// Verify mode writes carry the full MediaTek write key rather than
-    /// confusing bit 6 (`DUAL_MODE`) for that key.
+    /// Verify mode writes carry the full key and preserve unowned policy.
     #[test]
-    fn watchdog_mode_values_include_full_write_key() {
+    fn watchdog_mode_values_preserve_platform_fields() {
         assert_eq!(
             WDT_MODE_KEY, 0x2200_0000,
             "WDT_MODE writes must carry the full 0x22000000 key"
         );
+
+        let platform_fields = (1 << 1) | (1 << 2) | (1 << 4) | (1 << 8);
+        let current = platform_fields | WDT_MODE_EN | WDT_MODE_IRQ | WDT_MODE_DUAL_MODE;
         assert_eq!(
-            WDT_MODE_ENABLE_VAL, 0x2200_0001,
-            "enable must combine the full key with bit 0"
+            mode_enable_value(current),
+            platform_fields | WDT_MODE_KEY | WDT_MODE_EN,
+            "enable must clear IRQ/dual and preserve every platform field"
         );
         assert_eq!(
-            WDT_MODE_DISABLE_VAL, 0x2200_0000,
-            "disable must retain the full key with enable clear"
+            mode_disable_value(current),
+            platform_fields | WDT_MODE_IRQ | WDT_MODE_DUAL_MODE | WDT_MODE_KEY,
+            "disable must clear only enable and preserve every other field"
         );
         assert_eq!(
-            WDT_MODE_KEY & (1 << 6),
+            WDT_MODE_KEY & WDT_MODE_DUAL_MODE,
             0,
             "bit 6 is DUAL_MODE, not the mode write key"
         );
