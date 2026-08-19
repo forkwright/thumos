@@ -4,11 +4,11 @@
 //! stops petting it within the configured timeout. This provides a safety
 //! net against kernel hangs (infinite loops, deadlocks, interrupt starvation).
 //!
-//! Register map (base `0x1000_7000`). Cross-checked against mainline Linux's own
-//! `drivers/watchdog/mtk_wdt.c`, which carries the same base and the same restart
-//! key, and against several `MediaTek` vendor-kernel forks spanning MT6582, MT6739 and
-//! MT8163 — the values are identical across all of them, which is what establishes
-//! them as properties of the `SoC` rather than one vendor's choice.
+//! Register facts have two independent grounds. The MT6739 vendor device tree
+//! places TOPRGU/WDT at `0x1000_7000`, and its WDT header defines the offsets and
+//! write keys below. Mainline Linux's `drivers/watchdog/mtk_wdt.c` independently
+//! matches those offsets and keys, while correctly obtaining the base from the
+//! platform resource rather than hard-coding a SoC address.
 //!
 //! WHY the citation is explicit here rather than "per BSP reference": every sibling
 //! driver in this crate names its source file and line, and this one named a category
@@ -29,14 +29,18 @@
 //!
 //! For a 5-second timeout: 5 / (512/32768) ≈ 320 units → 320 << 5 | 0x08.
 //!
-//! `WDT_MODE` bit fields:
-//!   bit 0  = `WDT_EN`   (1 = enabled)
-//!   bit 1  = `WDT_AUTO` (1 = auto-restart on IRQ ACK; we leave this 0)
-//!   bit 6  = `WDT_KEY`  (always write 1 to commit mode changes)
+//! `WDT_MODE` fields used here:
+//!   bit 0  = `WDT_EN` (1 = enabled)
+//!   bit 6  = `WDT_DUAL_MODE` (IRQ followed by reset; left clear here)
+//!   write key = `0x2200_0000` (required on every mode write)
 //!
 //! WHY 5-second timeout: long enough for the scheduler to complete a full
 //! tick cycle even under heavy load, short enough to recover from a hang
 //! before userspace notices a frozen system.
+//!
+//! [MT6739 device tree]: https://github.com/fukehan/kernel-4.4/blob/b698b8dbb7fb0c7326a1121bbce72fdd3db6d3d8/arch/arm/boot/dts/mt6739.dts#L464-L468
+//! [MT6739 WDT header]: https://github.com/fukehan/kernel-4.4/blob/b698b8dbb7fb0c7326a1121bbce72fdd3db6d3d8/drivers/watchdog/mediatek/wdt/common/wdt_v1/mtk_wdt.h#L17-L52
+//! [mainline WDT driver]: https://github.com/torvalds/linux/blob/98f21c54f99519329c18e2625b0ea6db14524d09/drivers/watchdog/mtk_wdt.c#L37-L57
 
 use crate::mmio;
 
@@ -59,8 +63,14 @@ const WDT_RESTART_KEY: u32 = 0x1971;
 /// `WDT_MODE` enable bit (bit 0).
 const WDT_MODE_EN: u32 = 1 << 0;
 
-/// `WDT_MODE` key bit (bit 6): must be set to commit any mode write.
-const WDT_MODE_KEY: u32 = 1 << 6;
+/// `WDT_MODE` write key: must accompany every mode-register write.
+const WDT_MODE_KEY: u32 = 0x2200_0000;
+
+/// Complete mode value used to enable the watchdog without IRQ/dual mode.
+const WDT_MODE_ENABLE_VAL: u32 = WDT_MODE_KEY | WDT_MODE_EN;
+
+/// Complete mode value used to disable the watchdog.
+const WDT_MODE_DISABLE_VAL: u32 = WDT_MODE_KEY;
 
 /// `WDT_LENGTH` key bits [4:0]: must be 0x08 to commit a length write.
 const WDT_LENGTH_KEY: u32 = 0x08;
@@ -95,7 +105,7 @@ pub unsafe fn init() {
         // WHY: auto-restart would re-arm on every IRQ ACK, masking scheduler
         // hangs that don't produce IRQs. Explicit petting ensures the scheduler
         // loop is alive.
-        mmio::write32(WDT_MODE, WDT_MODE_EN | WDT_MODE_KEY);
+        mmio::write32(WDT_MODE, WDT_MODE_ENABLE_VAL);
     }
 }
 
@@ -127,9 +137,9 @@ pub unsafe fn pet() {
 /// Writes to `WDT_MODE`. Safe after `init()` has been called.
 pub unsafe fn disable() {
     // SAFETY: WDT_MODE is an MMIO register at the MT6739 WDT base. Writing
-    // only the key bit (WDT_MODE_KEY) with WDT_MODE_EN clear disables the WDT.
+    // the full write key with WDT_MODE_EN clear disables the WDT.
     unsafe {
-        mmio::write32(WDT_MODE, WDT_MODE_KEY);
+        mmio::write32(WDT_MODE, WDT_MODE_DISABLE_VAL);
     }
 }
 
@@ -155,6 +165,29 @@ mod tests {
         // WHY: the magic value 0x1971 is required by the MT6739 WDT hardware
         // to accept a restart command. Any other value is ignored.
         assert_eq!(WDT_RESTART_KEY, 0x1971, "WDT_RESTART_KEY must be 0x1971");
+    }
+
+    /// Verify mode writes carry the full MediaTek write key rather than
+    /// confusing bit 6 (`DUAL_MODE`) for that key.
+    #[test]
+    fn watchdog_mode_values_include_full_write_key() {
+        assert_eq!(
+            WDT_MODE_KEY, 0x2200_0000,
+            "WDT_MODE writes must carry the full 0x22000000 key"
+        );
+        assert_eq!(
+            WDT_MODE_ENABLE_VAL, 0x2200_0001,
+            "enable must combine the full key with bit 0"
+        );
+        assert_eq!(
+            WDT_MODE_DISABLE_VAL, 0x2200_0000,
+            "disable must retain the full key with enable clear"
+        );
+        assert_eq!(
+            WDT_MODE_KEY & (1 << 6),
+            0,
+            "bit 6 is DUAL_MODE, not the mode write key"
+        );
     }
 
     /// Verify the encoded timeout value is correct for a 5-second timeout.
