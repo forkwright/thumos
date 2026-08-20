@@ -2,13 +2,18 @@
 //!
 //! Wraps a [`BlockDevice`] with transparent AES-256-XTS encryption.
 //! Reads decrypt ciphertext from the underlying device; writes encrypt
-//! plaintext before storing to the device. Uses the sector LBA as the
-//! XTS tweak, matching dm-crypt behavior.
+//! plaintext before storing to the device. The current implementation uses one
+//! 4 KiB logical block number as the XTS data-unit tweak across eight sectors;
+//! it does not implement dm-crypt's 512-byte sector-tweak semantics (#837).
 //!
 //! The encryption operates at 4 KiB block granularity (8 sectors per
 //! block). Individual sector reads/writes are buffered into full 4 KiB
 //! blocks for encryption/decryption, since AES-XTS operates on complete
 //! blocks.
+//!
+//! XTS provides confidentiality only. It does not authenticate ciphertext or
+//! reject an older valid volume; #878 owns integrity, freshness, and rollback
+//! resistance for security-sensitive persistent state.
 
 extern crate alloc;
 
@@ -26,9 +31,8 @@ use crate::security::{SecurityError, XTS_KEY_SIZE};
 /// A block device wrapper that transparently encrypts/decrypts data
 /// using AES-256-XTS.
 ///
-/// The XTS tweak is derived from the logical block number, matching
-/// dm-crypt sector-level encryption semantics. Each 4 KiB block is
-/// encrypted independently with the block number as tweak.
+/// Each 4 KiB block is encrypted independently with its logical block number
+/// as the data-unit tweak across all eight underlying sectors (#837).
 ///
 /// # Key format
 ///
@@ -68,7 +72,7 @@ impl<'a> EncryptedBlockDevice<'a> {
         Ok(Xts128::new(c1, c2))
     }
 
-    /// Convert a block number to an XTS tweak (16-byte LE sector index).
+    /// Convert a 4 KiB logical block number to a 16-byte LE XTS tweak.
     fn block_to_tweak(block_num: u64) -> [u8; 16] {
         let mut tweak = [0u8; 16];
         tweak[..8].copy_from_slice(&block_num.to_le_bytes());
@@ -86,7 +90,7 @@ impl<'a> EncryptedBlockDevice<'a> {
         // `hybrid_array::Array<u8, U16>` instead of a bare `[u8; 16]`. The
         // exact-length `From<[T; N]>` impl on `Array` makes `.into()` an
         // infallible, non-truncating conversion -- the tweak bytes
-        // (LE sector index) are unchanged.
+        // (LE logical block number) are unchanged.
         let tweak = Self::block_to_tweak(block_num);
         xts.encrypt_sector(data, tweak.into());
         Ok(())

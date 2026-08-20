@@ -18,18 +18,22 @@
 //!
 //! ## Integration
 //!
-//! Boot integration deferred to Wave 3 (telephony + UI merge via `kinit.rs`).
-//! For now, modules are independently testable via mock `ModemTransport`.
+//! `kardia` owns and polls `Telephony` plus `SimManager`; QEMU exercises the
+//! path through a mock `ModemTransport`. The non-test `CcciModemTransport`
+//! remains a hard software stub (#398); implement and host-test that bridge
+//! before asking the device to witness real CCCI/AT behavior.
 //!
 //! ## Module structure
 //!
 //! AT response parsers are in [`crate::telephony_parser`].
 //! Mock transport for testing is in [`crate::telephony_mock`].
 
-// WHY: hardware driver API not yet wired to upper layers (Wave 3 integration).
+// WHY: boot/service integration consumes only part of the API; remaining
+// device-facing operations await the software CCCI/AT transport (#398) and
+// then its hardware witness.
 #![expect(
     dead_code,
-    reason = "Telephony driver API not yet wired to kinit (#753; tier in docs/capability-inventory.toml)"
+    reason = "Telephony is boot/service wired; the live CCCI-to-AT adapter remains software work (#398/#753)"
 )]
 
 // Re-export parser functions so external callers can still use crate::telephony::*.
@@ -502,8 +506,8 @@ fn send_with_info<T: ModemTransport>(
 /// The modem transport the booted kernel wires into its Telephony stack (#398).
 /// A build-time choice so `KernelState` (a concrete struct) can hold a
 /// `Telephony<BootModemTransport>` without going generic: the seeded mock under
-/// qemu (no CCCI/CLDMA model on -machine virt), the real CCCI transport on
-/// device.
+/// qemu (no CCCI/CLDMA model on -machine virt), the fail-closed #398 CCCI
+/// transport seam on device.
 #[cfg(any(feature = "qemu", test))]
 pub(crate) type BootModemTransport = crate::telephony_mock::MockModemTransport;
 #[cfg(not(any(feature = "qemu", test)))]
@@ -1153,10 +1157,12 @@ impl<T: ModemTransport> Telephony<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Real hardware implementation (non-test only)
+// Production CCCI transport seam (non-test stub)
 // ---------------------------------------------------------------------------
 
-/// Real modem transport via the kernel CCCI driver (Uart1 channel).
+/// Intended modem transport via the kernel CCCI Uart1 channel.
+///
+/// Every operation currently fails closed; #398 owns the CCCI-to-AT bridge.
 #[cfg(not(test))]
 pub struct CcciModemTransport {
     /// Receive line buffer for accumulating bytes.
@@ -1180,8 +1186,8 @@ impl CcciModemTransport {
 #[cfg(not(test))]
 impl ModemTransport for CcciModemTransport {
     fn send_at(&mut self, command: &str) -> Result<(), TelephonyError> {
-        // WHY: Wave 3 will wire this to the CCCI Uart1Tx channel.
-        // For now, the transport is structurally complete but not connected.
+        // WHY: #398 will wire this to the CCCI Uart1Tx channel. Until then,
+        // the production transport is an explicit software stub.
         let _ = command;
         Err(TelephonyError::TransportError)
     }

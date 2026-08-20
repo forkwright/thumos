@@ -297,7 +297,7 @@ const FIFOCS_CLR: u32 = 1 << 0;
 /// citation, not independently re-derived against the BSP header. The
 /// per-word poll is bounded by `POLL_TIMEOUT` so a wrong field position
 /// degrades to a `DataTimeout` (safe), but must be verified before silicon.
-/// TODO(#293)[deliberate-prudent]: confirm FIFOCS RXCNT field position against the MT6739 BSP.
+/// TODO(#870)[deliberate-prudent]: confirm FIFOCS RXCNT field position against pinned MT6739 source; #293 only added the bounded poll.
 const FIFOCS_RXCNT_SHIFT: u32 = 16;
 
 /// RX FIFO word-count field mask (8 bits at [23:16]).

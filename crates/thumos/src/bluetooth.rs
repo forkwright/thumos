@@ -11,16 +11,18 @@
 //!
 //! The MT6739 Bluetooth hardware is accessed through the WMT combo chip:
 //! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, `board::m7` #534)
-//! - Data path goes through WMT STP framing (kelyphos handles the transport)
+//! - The intended data path uses WMT/STP framing; no sibling transport crate
+//!   is linked here, and the production operations remain #129 stubs
 //!
 //! ## Integration
 //!
 //! Boot integration via `kinit.rs` Step 13b. Device node at `/dev/bt0`.
 
-// WHY: hardware driver API not yet wired to upper layers (kinit integration pending).
+// WHY: kinit constructs the adapter, but the production WMT/STP command, ACL,
+// receive, and power operations remain fail-closed software work under #129.
 #![expect(
     dead_code,
-    reason = "BT driver API wired in kinit but not yet called from userspace (#753; tier in docs/capability-inventory.toml)"
+    reason = "BT production WMT/STP backend is not implemented (#129; tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;
@@ -361,8 +363,9 @@ pub(crate) fn generate_random_address() -> [u8; 6] {
 
 /// Hardware operations trait for BT driver abstraction.
 ///
-/// Allows test-friendly mocking of WMT STP transport access. The real
-/// implementation uses MMIO through the combo chip; tests provide a mock.
+/// Allows test-friendly mocking of the intended WMT/STP transport. The
+/// production-target implementation remains a fail-closed #129 stub; tests
+/// provide a mock.
 pub(crate) trait BtHwOps {
     /// Send an HCI command via WMT STP transport.
     fn send_command(&mut self, data: &[u8]) -> Result<(), BtError>;
@@ -385,10 +388,10 @@ pub(crate) trait BtHwOps {
 }
 
 // ---------------------------------------------------------------------------
-// Real hardware implementation (non-test only)
+// Production-target hardware seam (non-test stub)
 // ---------------------------------------------------------------------------
 
-/// Real BT hardware access via WMT STP on the MT6739 combo chip.
+/// Production-target BT handle for a future WMT/STP backend under #129.
 /// WHY not(qemu): virt has no combo chip -- the type must not exist there.
 #[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct BtHw {
@@ -438,8 +441,8 @@ impl BtHwOps for BtHw {
 }
 
 /// A no-op BT HCI transport for qemu (#401). The MT6739 WMT/CONSYS combo-chip
-/// MMIO is unmodeled on -machine virt, so the real `BtHw` STP transport would
-/// data-abort. `NullBtHw` lets the A2DP profile's local state machine + SBC
+/// MMIO is unmodeled on -machine virt; the production-target `BtHw` seam is
+/// excluded there and remains a #129 stub. `NullBtHw` lets the A2DP profile's local state machine + SBC
 /// framing run in emulation; it acknowledges commands without a controller
 /// (`recv_event` yields nothing, so no connection ever completes).
 #[cfg(any(feature = "qemu", test))]
@@ -472,7 +475,8 @@ impl BtHwOps for NullBtHw {
 }
 
 /// The BT HCI transport the booted kernel wires into its A2DP profile (#401):
-/// the no-op `NullBtHw` under qemu/test, the real `BtHw` on device.
+/// the no-op `NullBtHw` under qemu/test, the production-target #129 stub
+/// `BtHw` on device.
 #[cfg(any(feature = "qemu", test))]
 pub(crate) type BootBtHw = NullBtHw;
 #[cfg(not(any(feature = "qemu", test)))]

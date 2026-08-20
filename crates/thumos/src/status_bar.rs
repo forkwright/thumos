@@ -1,8 +1,9 @@
 //! Kernel-side status bar renderer for the 240x20 top strip.
 //!
-//! Pulls state from the kernel's radio modules (`WiFi`, Bluetooth, GPS) and
-//! renders connectivity indicators, battery percentage, and operating mode
-//! into the status bar zone of the framebuffer.
+//! Renders a caller-supplied snapshot of connectivity, battery, and operating
+//! mode into the status-bar zone. Current production rendering supplies
+//! defaults for WiFi/BT/GPS and battery; #129 owns radio backends, #877 owns
+//! the battery source/model, and #753 owns service-loop reachability.
 //!
 //! ## Layout (left to right)
 //!
@@ -58,8 +59,8 @@ impl NetworkService {
 
 /// Snapshot of system state needed to render the status bar.
 ///
-/// Updated each render cycle from kernel globals. Separates the status bar
-/// rendering from direct coupling to radio module internals.
+/// Supplied each render cycle by the service loop. Separates rendering from
+/// direct coupling to subsystem internals; not every field has a live producer.
 // WHY: wifi_connected/bt_active/gps_fix/threat_high are four independent,
 // unrelated per-radio/per-condition display flags snapshotted each render
 // cycle, not a state machine -- collapsing them into an enum or bitflags
@@ -77,7 +78,8 @@ pub(crate) struct StatusBarState {
     pub bt_active: bool,
     /// Whether GPS has a fix (maps from `GpsState::FixAcquired`).
     pub gps_fix: bool,
-    /// Battery percentage (0-100). Populated from `battery::BatteryMonitor`.
+    /// Battery percentage (0-100). Currently passed as zero; #877 owns the
+    /// source-grounded PMIC/cell model and #753 owns service-loop delivery.
     pub battery_pct: u8,
     /// Mode indicator character ("D" for Daily, "S" for Sentinel, "P" for Panic).
     pub mode_char: char,

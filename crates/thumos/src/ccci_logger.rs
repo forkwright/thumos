@@ -835,14 +835,11 @@ impl fmt::Display for CcciFirewall {
 // Modem power cut
 // ---------------------------------------------------------------------------
 
-/// PMIC VMODEM LDO register address on MT6739.
+/// Invalid legacy VMODEM address construction retained pending #862.
 ///
-/// The VMODEM LDO supplies the modem core.  Clearing the enable bit
-/// physically removes power from the modem -- a hard kill that software
-/// on the modem side cannot prevent or recover from.
-///
-/// Source: MT6357 PMIC datasheet, `VMODEM_CON0` register.
-/// Derived from the board's PWRAP base (#534) — one MMIO truth.
+/// Adding a PMIC register offset to the AP PWRAP controller base is not a
+/// PWRAP transaction; this value aliases `board::MCDI_BASE`. It must not be
+/// treated as a VMODEM register or physical-power receipt.
 #[cfg(not(feature = "qemu"))]
 const PMIC_VMODEM_CON0: usize = crate::board::PWRAP_BASE + 0x0C00;
 
@@ -850,10 +847,11 @@ const PMIC_VMODEM_CON0: usize = crate::board::PWRAP_BASE + 0x0C00;
 #[cfg(not(feature = "qemu"))]
 const VMODEM_EN_BIT: u32 = 1 << 0;
 
-/// Execute a hardware modem power cut via PMIC VMODEM LDO disable.
+/// Legacy modem-power write pending replacement by #862's PWRAP seam.
 ///
-/// This is a hard power kill -- the modem core loses all power and cannot
-/// recover without a full system reboot.  Intended for:
+/// This function does not establish a hard power kill and is unsafe to use on
+/// an M7 until #862 replaces the invalid address/transaction model. Intended
+/// policy callers include:
 /// - Critical IMSI catcher threat score
 /// - CCCI anomaly exceeding threshold
 /// - Manual kill from threat monitor
@@ -861,15 +859,14 @@ const VMODEM_EN_BIT: u32 = 1 << 0;
 ///
 /// # Safety
 ///
-/// PMIC registers must be mapped.  Caller must be in privileged context
-/// (kernel mode, IRQs may be disabled).  After this call, all modem
-/// communication channels are dead.
+/// The caller must be in privileged context. This legacy implementation has
+/// no valid PMIC transaction or readback and therefore provides no modem-power
+/// or channel-death postcondition; calling it on an M7 is unsafe pending #862.
 ///
 /// In test builds the MMIO write is skipped (no hardware available).
 #[cfg(not(feature = "qemu"))]
 pub unsafe fn modem_power_cut() {
-    // SAFETY: PMIC_VMODEM_CON0 is a valid PMIC register on the MT6739.
-    // Clearing the enable bit disables the VMODEM LDO.
+    // FIXME(#862): this is not a valid PMIC transaction and aliases MCDI.
     #[cfg(not(test))]
     unsafe {
         crate::mmio::clear_bits(PMIC_VMODEM_CON0, VMODEM_EN_BIT);

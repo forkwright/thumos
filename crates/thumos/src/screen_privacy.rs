@@ -28,7 +28,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "update_size/update_retention/category/total_bytes/purgeable_count/CATEGORIES await the lfs.rs-backed size refresh, not part of #737's reachability wiring"
+        reason = "LFS-backed size/retention refresh remains compiled-only under #753"
     )
 )]
 

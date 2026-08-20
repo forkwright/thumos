@@ -14,18 +14,19 @@
 //! - `PacketDeny` — firewall packet rejection
 //! - `PanicTrigger` — panic mode activation
 //! - `IdentityLeak` — potential identity information leak detected
-//! - `SwitchChange` — hardware kill switch state change
-//! - `BootVerify` — measured boot signature verification result
+//! - `SwitchChange` — requested radio-policy marker change (legacy name)
+//! - `BootVerify` — post-entry boot-region signature verification result
 //! - `ModeChange` — security mode transition (Daily/Sentinel/Panic)
 //! - `DuressAttempt` — duress PIN entry detected
 //!
 //! ## HMAC key
 //!
-//! The HMAC key is derived from the key hierarchy's audit sub-key
-//! (`key_manager.audit_key()`), which uses the HKDF label
-//! `"thumos-audit-v1"`.  This key survives selective wipe (only
-//! zeroized on full panic or long-sleep), allowing the chain to be
-//! verified after partial data purges.
+//! The current service loop supplies a volatile per-boot CSPRNG key. The
+//! intended persistent key-hierarchy audit sub-key, authenticated head/epoch,
+//! and restart/rollback behavior are not wired; #863 owns them. Therefore the
+//! live chain can detect mutation/reordering among retained entries in this
+//! boot, but cannot prove persistence, tail truncation, rollback, wholesale
+//! replacement, or genesis reset.
 //!
 //! ## Ring buffer
 //!
@@ -92,9 +93,9 @@ pub enum AuditEventType {
     PanicTrigger,
     /// Potential identity information leak detected.
     IdentityLeak,
-    /// Hardware kill switch state changed.
+    /// Requested radio-policy marker changed; not physical-switch readback.
     SwitchChange,
-    /// Measured boot verification result.
+    /// Post-entry boot-region signature verification result.
     BootVerify,
     /// Security mode transition.
     ModeChange,

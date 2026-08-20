@@ -48,10 +48,11 @@
 //! CANCEL/CONFIRM buttons. The user navigates with Left (cancel) or
 //! Right (confirm).
 
-// WHY: nous chat screen created in Phase 09 Wave 8, full integration pending.
+// WHY: the nous chat screen is compiled and host-tested, but no production
+// route/input path reaches it.
 #![expect(
     dead_code,
-    reason = "Nous chat screen created in Phase 09 Wave 8, integration pending (#737)"
+    reason = "Nous chat screen remains compiled-only; service-loop routing is #753"
 )]
 
 extern crate alloc;

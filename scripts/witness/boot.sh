@@ -46,7 +46,7 @@ px=$(grep -oE 'painted_px=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+' || true
 # #400 input + navigation round trip.
 grep -q 'kardia: nav Home -> Search' boot.log || { echo 'FAIL #400: synthetic input did not navigate Home->Search (input dispatch / on_key broken)'; exit 1; }
 grep -q 'kardia: nav Search -> Home' boot.log || { echo 'FAIL #400: back-navigation did not return to Home (screen stack broken)'; exit 1; }
-# #402 clock trust hierarchy wired + seeded + driving the display.
+# #402 clock source-precedence policy wired + seeded + driving the display.
 grep -q 'kardia: clock src=manual' boot.log || { echo 'FAIL #402: ClockManager not wired/seeded (no manual source)'; exit 1; }
 wall=$(grep -oE 'clock src=manual wall=[0-9]+' boot.log | head -1 | grep -oE '[0-9]+$' || true); test "${wall:-0}" -gt 1700000000 || { echo "FAIL #402: wall clock is not a real epoch (wall=${wall:-0}) -- ClockManager not driving time"; exit 1; }
 # #461 clock health witness: elapsed_ms must advance under virt (measured
@@ -85,11 +85,11 @@ grep -qE 'kardia: fm powered=true tuned=true freq_khz=[0-9]+ rssi=-?[0-9]+ volum
 # #737 threat monitor: log substrate fed from the real SMS surveillance
 # classification path (#662); composite score is a log-derived heuristic,
 # explicitly uncalibrated (sema stays unwired -- not a thumos dependency).
-# WHY modem_power=false: qemu virt models no CCCI/CLDMA block, so kinit skips
-# modem boot and modem_ok stays false (kinit.rs, cfg(qemu) arm). false is also
-# the DISCRIMINATING value -- ThreatMonitor::new defaults modem_power to true,
-# so asserting true would pass even if set_modem_status never ran.
-grep -qE 'kardia: threat detector_before=false alerts=[1-9][0-9]* score=[0-9]+ uncalibrated=true modem_power=false' boot.log || { echo 'FAIL #737: threat monitor log/score not wired (SMS classification -> alert -> score path broken)'; exit 1; }
+# WHY modem_path_available=false: qemu virt models no CCCI/CLDMA block, so
+# kinit skips modem boot and modem_ok stays false (kinit.rs, cfg(qemu) arm).
+# The receipt reads the monitor's stored path status; constructor/setter tests
+# separately cover both true and false states.
+grep -qE 'kardia: threat detector_before=false alerts=[1-9][0-9]* score=[0-9]+ uncalibrated=true modem_path_available=false' boot.log || { echo 'FAIL #737: threat monitor log/score not wired (SMS classification -> alert -> score path broken)'; exit 1; }
 
 # PL0 isolation + graceful user-fault kill (#487 + fault handling): each probe
 # variant attempts one PL0-illegal op; the kernel must fault it, kill only the

@@ -15,9 +15,9 @@
 //! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, `board::m7` #534)
 //! - `board::WLAN_BASE  = 0x180F_0000` (`WiFi` MMIO region, `board::m7` #534)
 //!
-//! Data path goes through WMT STP framing (kelyphos handles the transport).
-//! The `WifiHw` struct provides `#[cfg(not(test))]` MMIO access with a
-//! test-friendly abstraction via `WifiHwOps`.
+//! The intended data path uses WMT/STP framing. No sibling transport crate is
+//! linked into this kernel, and the production `WifiHw` operations remain
+//! fail-closed stubs under #129. `WifiHwOps` provides the test seam.
 //!
 //! ## Integration plan
 //!
@@ -29,7 +29,7 @@
 // frame TX/RX, scan, and association are implemented on the target.
 #![expect(
     dead_code,
-    reason = "WiFi hardware data path not yet implemented on target (#753; tier in docs/capability-inventory.toml)"
+    reason = "WiFi production WMT/STP data path not yet implemented (#129; tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;
@@ -167,7 +167,7 @@ pub enum WifiSecurity {
     /// WPA2-Personal (PSK / CCMP).
     Wpa2Personal,
     /// WPA3-Personal (SAE).
-    /// TODO(#84)[deliberate-prudent]: WPA3-SAE handshake -- enum variant defined but exchange not implemented
+    /// TODO(#864)[deliberate-prudent]: WPA3-SAE handshake -- enum variant defined but exchange not implemented
     Wpa3Sae,
 }
 
@@ -367,8 +367,9 @@ pub(crate) fn generate_snonce() -> Result<[u8; NONCE_LEN], WifiError> {
 
 /// Hardware operations trait for `WiFi` driver abstraction.
 ///
-/// Allows test-friendly mocking of MMIO access. The real implementation
-/// (`WifiHw`) uses `#[cfg(not(test))]` MMIO; tests provide a mock.
+/// Allows test-friendly mocking of the intended production transport. The
+/// production `WifiHw` type is selected outside test/QEMU but remains a
+/// fail-closed #129 stub; tests provide a mock.
 pub(crate) trait WifiHwOps {
     /// Return true once the `WiFi` data path can exchange Ethernet frames.
     ///
@@ -394,10 +395,10 @@ pub(crate) trait WifiHwOps {
     fn associate(&mut self, ssid: &[u8], bssid: &[u8; 6]) -> Result<(), WifiError>;
 }
 
-/// `WiFi` hardware driver for the MT6739 WMT combo chip.
+/// Production-target `WiFi` seam for the MT6739 WMT combo chip.
 ///
-/// Provides MMIO-based access to the `WiFi` hardware on the real target,
-/// and a mock-friendly scan result buffer for testing.
+/// It retains source-grounded base addresses and a scan-result buffer, but its
+/// WMT/STP operations do not perform MMIO until #129 lands.
 #[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct WifiHw {
     /// WLAN MMIO base address.
@@ -429,8 +430,8 @@ impl WifiHwOps for WifiHw {
 
     fn send_frame(&mut self, _data: &[u8]) -> Result<(), WifiError> {
         // TODO(#129)[deliberate-prudent]: implement WMT STP frame TX via MMIO write to WLAN registers.
-        // The data path goes through the WMT combo-chip transport layer
-        // (kelyphos handles STP framing).
+        // The intended data path goes through the WMT combo-chip transport;
+        // no linked implementation handles STP framing yet.
         Err(WifiError::NotInitialized)
     }
 

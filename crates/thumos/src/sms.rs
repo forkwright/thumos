@@ -27,7 +27,9 @@
 //! Used by the UI screens (messages, notifications) and the telephony poll loop
 //! for handling incoming `+CMT` URCs.
 
-// WHY: SMS API not yet wired to kinit event loop (Wave 4 integration).
+// WHY: kardia owns SmsManager and the QEMU boot smoke exercises send, decode,
+// and inbox storage. Production modem-URC/service-loop delivery remains
+// software work under #398/#753.
 // cfg_attr(not(test), ...): the module's own tests now exercise its full
 // surface, so nothing is dead in the test build -- expecting dead_code there
 // makes the expectation unfulfilled. Production reachability is unchanged;
@@ -36,7 +38,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "SMS API exists; kinit wiring pending (#753; tier in docs/capability-inventory.toml)"
+        reason = "SMS is QEMU-wired; unused operations await production modem-URC/service-loop integration (#398/#753)"
     )
 )]
 

@@ -75,10 +75,10 @@ pub unsafe fn init() {
 
         // Enable the MUSB serial RX IRQ in the GIC (#666), alongside the
         // timer registration above -- same call site, same mechanism, no
-        // second registration path. board::m7::MUSB_IRQ is `None` until
-        // hardware-confirmed (see its doc comment), so this is a no-op on
-        // every build today; flipping the board constant to `Some(n)` is
-        // the entire remaining step. Safe to enable before
+        // second registration path. board::m7::MUSB_IRQ is `None` pending
+        // #676's source-evidence adjudication or a hardware witness (see its
+        // doc comment), so this is a no-op on every build today. Safe to
+        // enable before
         // usb::init_controller() runs later in kinit: a MUSB interrupt
         // reaching the CPU here can only come from a genuine bus event
         // (SOFTCONN, set inside init(), is what attaches D+/D- to the bus
@@ -339,10 +339,12 @@ fn irq_handler_body() {
             csprng::collect_timer_entropy();
         }
 
-        // Pet the watchdog to prevent hardware reset.
+        // Current blind spot: this unconditional pre-scheduler pet keeps the
+        // watchdog alive even if scheduler/service-loop progress is deadlocked.
+        // #875 owns moving to a verified progress-coupled pet.
         // SAFETY: watchdog::pet() writes to WDT_RESTART MMIO. Called from
         // the timer IRQ handler at 100 Hz, well within the 5-second WDT
-        // timeout. Safe after watchdog::init() has been called in kinit.
+        // timeout. Safe after watchdog::init(), but not yet a liveness proof.
         unsafe {
             watchdog::pet();
         }
@@ -395,10 +397,10 @@ fn irq_handler_body() {
         // at the next return.
     }
 
-    // #666: MUSB serial RX. board::m7::MUSB_IRQ is `None` until
-    // hardware-confirmed, so `Some(irq) == board::MUSB_IRQ` is always false
-    // today and this branch never dispatches -- see MUSB_IRQ's doc comment
-    // and exceptions::init()'s registration above.
+    // #666: MUSB serial RX. board::m7::MUSB_IRQ is `None` pending #676's
+    // source-evidence adjudication or a hardware witness, so
+    // `Some(irq) == board::MUSB_IRQ` is always false today and this branch
+    // never dispatches -- see MUSB_IRQ's doc comment and init registration.
     #[cfg(not(feature = "qemu"))]
     if Some(irq) == board::MUSB_IRQ {
         usb::handle_musb_interrupt();

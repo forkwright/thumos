@@ -2,18 +2,18 @@
 
 > Sovereign Rust mobile OS for the AGM M7.
 
-Thumos replaces Android/Linux on the AGM M7 with a Rust kernel and userspace for counter-surveillance, secure communication, identity protection, and operator-controlled mobile computing.
+Thumos replaces Android/Linux on the AGM M7 with a Rust kernel, embedded programs, and Rust domain libraries for counter-surveillance, secure communication, identity protection, and operator-controlled mobile computing.
 
 ## Binary
 
 `crates/thumos` - bare-metal ARM kernel built for `armv7a-none-eabi`.
 
-Workspace userspace crates cover input, radios, telephony, security, crypto, radio tools, and UI.
+The kernel build script compiles `/init`, `/shell`, and probe binaries directly for `armv7a-none-eabi`. Workspace crates are host-tested domain libraries, a cognition-bridge protocol surface, and a signing tool; they do not imply a Linux userspace runtime.
 
 ## Architecture
 
 Structured LLM corpus:
-- [_llm/architecture.toml](_llm/architecture.toml): kernel/userspace layers and crate roles
+- [_llm/architecture.toml](_llm/architecture.toml): kernel, embedded-program, library, bridge, and tooling roles
 - [_llm/current_state.toml](_llm/current_state.toml): phase, blockers, and open threads
 - [_llm/decisions.toml](_llm/decisions.toml): accepted OS architecture decisions
 - [_llm/glossary.toml](_llm/glossary.toml): thumos vocabulary

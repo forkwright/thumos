@@ -811,11 +811,11 @@ pub(crate) struct UsbController {
 /// (#437 remnant 2). The ISR path (`handle_ep1_rx`) and the reader path
 /// (`read_serial`) previously shared the controller's raw fields with
 /// nothing enforcing they could not interleave; the ring now lives behind
-/// an `irq::IrqSpinlock` (the ipc.rs/mmu.rs pattern). The MUSB IRQ is
-/// registered with the GIC as of #666 (`exceptions::init()`,
-/// `board::m7::MUSB_IRQ`) -- `handle_musb_interrupt` now dispatches into
-/// this ring's ISR-side push path for real, gated only on the real GIC
-/// INTID remaining unconfirmed (see `MUSB_IRQ`'s doc comment).
+/// an `irq::IrqSpinlock` (the ipc.rs/mmu.rs pattern). #666 implemented the
+/// conditional GIC registration and ISR dispatch path, but
+/// `board::m7::MUSB_IRQ` remains `None` pending #676, so neither is active on
+/// current builds. Once the board constant is justified, the existing
+/// `handle_musb_interrupt` path will push into this ring from IRQ context.
 struct SerialRxRing {
     /// Byte storage.
     buf: [u8; SERIAL_RX_BUF_LEN],
@@ -1601,9 +1601,9 @@ impl UsbController {
 // ---------------------------------------------------------------------------
 
 /// WHY (#322/#331 class, same reasoning as `SERIAL_RX_RING_LOCK` above): an
-/// `irq::IrqSpinlock`, not bare single-core-cooperative reasoning -- once
-/// the MUSB IRQ is registered with the GIC (`board::m7::MUSB_IRQ`, `None`
-/// until hardware-confirmed), `handle_musb_interrupt` runs in interrupt
+/// `irq::IrqSpinlock`, not bare single-core-cooperative reasoning -- if
+/// `board::m7::MUSB_IRQ` is justified and registered with the GIC (#676),
+/// `handle_musb_interrupt` runs in interrupt
 /// context while `init_controller` and any future ordinary-context caller
 /// (`write_serial`) run in ordinary kernel code, and nothing previously
 /// enforced they could not interleave. `UsbController` was a `kinit` stack
@@ -1615,13 +1615,13 @@ static USB_CONTROLLER_LOCK: irq::IrqSpinlock = irq::IrqSpinlock::new();
 static mut USB_CONTROLLER: UsbController = UsbController::new();
 
 /// True once [`init_controller`] has run to completion. Gates
-/// [`handle_musb_interrupt`] against a MUSB interrupt reaching the CPU
-/// before the controller is configured -- `exceptions::init()` enables the
-/// MUSB IRQ at the GIC well before kinit's USB step runs
-/// `init_controller`, so a stale latched interrupt condition surviving the
-/// bootloader handoff could in principle fire in that window. Without this
-/// gate that would dispatch into a controller whose endpoints have never
-/// been configured; with it, a pre-ready fire is a controlled no-op.
+/// [`handle_musb_interrupt`] against a MUSB interrupt reaching the CPU before
+/// the controller is configured. The current board constant is `None`, so no
+/// IRQ is enabled today. If #676 later supplies `Some(n)`,
+/// `exceptions::init()` will enable it before kinit reaches
+/// `init_controller`; a stale bootloader-latched condition could then fire in
+/// that window. Without this gate that would dispatch into an unconfigured
+/// controller; with it, a pre-ready fire is a controlled no-op.
 static USB_CONTROLLER_READY: AtomicBool = AtomicBool::new(false);
 
 /// Run `f` on the shared USB controller under the IRQ-safe lock. Single

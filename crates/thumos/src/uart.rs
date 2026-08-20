@@ -8,7 +8,7 @@
 //! - 0x00: RBR/THR (receive buffer / transmit holding)
 //! - 0x04: IER (interrupt enable)
 //! - 0x14: LSR (line status)
-//!   - bit 0: DR (receiver data ready) -- TODO(#459)[deliberate-prudent]: unverified against the
+//!   - bit 0: DR (receiver data ready) -- TODO(#865)[deliberate-prudent]: unverified against the
 //!     MT6739 TRM, see `Uart::getc`
 //!   - bit 5: THRE (transmit holding register empty)
 //!   - bit 6: TEMT (transmitter empty)
@@ -32,7 +32,7 @@ const LSR: usize = 0x14;
 const LSR_THRE: u32 = 1 << 5;
 
 /// LSR bit: receiver data ready.
-/// TODO(#459)[deliberate-prudent]: unverified against the MT6739 TRM -- see `Uart::getc`.
+/// TODO(#865)[deliberate-prudent]: unverified against authoritative MT6739 source -- see `Uart::getc`.
 const LSR_DR: u32 = 1 << 0;
 
 /// Bound on `putc`'s TX-ready poll, in iterations (not wall-clock time --
@@ -153,11 +153,11 @@ impl Uart {
     /// Non-blocking receive: returns the next byte if the RX FIFO has one
     /// ready, `None` otherwise.
     ///
-    /// TODO(#459)[deliberate-prudent]: `LSR_DR` (bit 0, "data ready") is the standard 16550-style
+    /// TODO(#865)[deliberate-prudent]: `LSR_DR` (bit 0, "data ready") is the standard 16550-style
     /// position and matches this module's existing THR/LSR offset layout,
     /// but has not been independently confirmed against the MT6739 TRM for
-    /// this UART instance -- verify on real hardware before any boot-path
-    /// behavior depends on RX timing (issue #372,
+    /// this UART instance -- source-ground it before using hardware as a later
+    /// qualification witness (issue #372,
     /// `console::wait_for_physical_presence`).
     pub(crate) fn getc(&self) -> Option<u8> {
         // SAFETY: MMIO register access at known physical address. The UART

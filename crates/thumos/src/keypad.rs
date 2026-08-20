@@ -1,15 +1,19 @@
-//! Boot-time keypad matrix reader (#446).
+//! Boot-time keypad matrix reader (#446, source-grounding blocker #880).
 //!
-//! Poll-based GPIO matrix scan for the boot passphrase gate. The kernel
-//! cannot link haphe (a std workspace crate), so this mirrors haphe's
-//! proven scan/debounce algorithm (`crates/haphe/src/gpio.rs`) against the
-//! kernel's [`crate::ui::Key`] vocabulary. The KPD hardware block at
+//! Poll-based GPIO matrix scan for the boot passphrase gate. `haphe` is
+//! `no_std` and linked only as a dev-dependency for host-test vocabulary
+//! cross-checks, but its private,
+//! queued pressed/released event shape does not fit this synchronous boot
+//! gate's first-confirmed-press interface. This module mirrors haphe's proven scan/debounce algorithm
+//! (`crates/haphe/src/gpio.rs`) against the kernel's [`crate::ui::Key`]
+//! vocabulary. The KPD hardware block at
 //! `board::KPD_BASE` is only *enabled* by kinit (Step 8a) — no verified
 //! read-out register map exists for it — so the boot path scans the raw
 //! GPIO matrix directly, exactly as the userspace driver does.
 //!
-//! Pin assignments are placeholders pending AGM M7 schematic verification
-//! (the same caveat haphe carries); the board facts live in `board::m7`.
+//! Pin assignments and the generic GPIO transaction model are placeholders.
+//! The current non-QEMU boot path can execute them; #880 requires fail-closed
+//! disablement plus accepted AGM M7/MT6739 evidence before any device run.
 //!
 //! Simplifications versus haphe, deliberate for the boot path: no input
 //! queue and no release/held events — the boot loop polls on a ~10 ms

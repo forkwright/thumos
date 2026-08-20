@@ -20,10 +20,11 @@
 //! Byte 2+: Signal-specific parameters
 //! ```
 
-// WHY: A2DP profile not yet wired to audio session manager (Wave 8, kinit pending).
+// WHY: kardia owns the A2DP profile and QEMU reaches configuration; remaining
+// signaling/transport surface is incomplete alongside #401/#129.
 #![expect(
     dead_code,
-    reason = "A2DP profile exists; audio manager wiring pending (#753; tier in docs/capability-inventory.toml)"
+    reason = "A2DP is configuration-wired; live signaling/transport remains #401/#129"
 )]
 
 extern crate alloc;

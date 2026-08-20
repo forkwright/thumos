@@ -131,7 +131,7 @@ metaxu-core = { path = "../metaxu-core", default-features = false }
 # these types directly, so `metaxu_bridge.rs` (which builds them) needs its
 # own direct dependency -- Rust does not let a crate name a transitive
 # dependency's types without declaring the dependency itself. Versions
-# match metaxu-core's workspace pins (compact_str "0.8", ulid "1"
+# match metaxu-core's workspace pins (compact_str "0.10", ulid "3"
 # default-features=false).
 compact_str = { version = "0.10", default-features = false, features = [
     "serde",

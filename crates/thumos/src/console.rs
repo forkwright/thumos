@@ -26,8 +26,8 @@ const PRESENCE_SEQUENCE: &[u8] = b"THUMOS-UNLOCK\r";
 /// (not wall-clock time -- mirrors `uart::Uart`'s `UART_TX_TIMEOUT_SPINS`:
 /// this runs before any timer dependency is guaranteed available, so a raw
 /// iteration bound is the correct choice, not an elapsed-ticks check).
-/// TODO(#459)[deliberate-prudent]: the wall-clock window this represents is uncalibrated against
-/// real UART polling throughput; tune once measured on hardware.
+/// TODO(#865)[deliberate-prudent]: the wall-clock window this represents is uncalibrated against
+/// real UART polling throughput; derive a bounded timebase before hardware qualification.
 const PRESENCE_POLL_SPINS: u32 = 1_000_000;
 
 /// Kernel debug console.

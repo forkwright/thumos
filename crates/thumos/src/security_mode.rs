@@ -1,7 +1,8 @@
 //! Security mode state machine.
 //!
 //! Implements the Daily/Sentinel/Panic mode system with Covert Lock,
-//! enforced transitions, and radio control policies.
+//! transition rules, and requested radio policies. Current radio-state changes
+//! are in-memory requests, not physical actuation/readback (#874).
 //!
 //! ## Mode transitions
 //!
@@ -16,14 +17,18 @@
 //!
 //! ## Covert Lock
 //!
-//! Independent RF-kill toggle. When active, kills all radios except mesh
-//! (`LoRa`). Toggled via PTT long-press or menu action.
+//! Independent requested-policy toggle. When active, it requests every radio
+//! except mesh (`LoRa`) disabled. It does not prove RF silence.
 //!
-//! ## Panic activation paths
+//! ## Represented panic activation inputs
 //!
-//! 1. Key combo: star + hash + power held 3 s
-//! 2. PTT triple-click
-//! 3. Duress PIN (detected in Wave 3 lock screen)
+//! 1. Candidate key combo: star + hash + power held 3 s
+//! 2. Candidate PTT triple-click
+//! 3. Duress PIN policy event
+//!
+//! These labels can be injected into policy/tests, but no accepted physical
+//! side-button/PTT producer exists. #881 owns the source-grounded adapter and
+//! safe gesture policy; #880 separately owns the front keypad matrix.
 //!
 //! Panic immediately zeroizes all keys via [`KeyManager::zeroize_all`] and
 //! emits a [`PanicEvent`] for the Wave 4 wipe integration to handle.
@@ -78,13 +83,13 @@ const PIN_PBKDF2_SALT: &[u8] = b"thumos-sentinel-pin-salt-v1";
 #[must_use]
 #[non_exhaustive]
 pub enum SecurityMode {
-    /// Normal operation. All radios enabled, short sleep, 60 s scan.
+    /// Normal policy: request all radios enabled, short sleep, 60 s scan.
     #[default]
     Daily,
-    /// Heightened awareness. Cellular/WiFi/BT off, GPS+mesh on, long
-    /// sleep, 10 s scan.
+    /// Heightened policy: request cellular/WiFi/BT off and GPS+mesh on,
+    /// long sleep, 10 s scan.
     Sentinel,
-    /// Emergency. All radios off, keys zeroized, wipe initiated.
+    /// Emergency policy: request all radios off, zeroize keys, initiate wipe.
     Panic,
 }
 
@@ -102,7 +107,7 @@ impl fmt::Display for SecurityMode {
 // ModePolicy
 // ---------------------------------------------------------------------------
 
-/// Radio and behavior policy for a given security mode.
+/// Requested radio and behavior policy for a given security mode.
 ///
 /// Each mode maps to a fixed policy. Covert Lock overrides radio fields
 /// independently (see [`ModeManager::effective_policy`]).
@@ -113,15 +118,15 @@ impl fmt::Display for SecurityMode {
     reason = "radio enable/disable states are inherently boolean"
 )]
 pub(crate) struct ModePolicy {
-    /// Whether the cellular modem is enabled.
+    /// Whether policy requests the cellular modem enabled.
     pub cellular_enabled: bool,
-    /// Whether `WiFi` is enabled.
+    /// Whether policy requests `WiFi` enabled.
     pub wifi_enabled: bool,
-    /// Whether Bluetooth is enabled.
+    /// Whether policy requests Bluetooth enabled.
     pub bluetooth_enabled: bool,
-    /// Whether GPS is enabled.
+    /// Whether policy requests GPS enabled.
     pub gps_enabled: bool,
-    /// Whether mesh (`LoRa`) networking is enabled.
+    /// Whether policy requests mesh (`LoRa`) networking enabled.
     pub mesh_enabled: bool,
     /// Sleep tier controlling key lifecycle.
     pub sleep_tier: SleepTier,
@@ -261,9 +266,9 @@ impl fmt::Display for ModeTransitionError {
 #[must_use]
 #[non_exhaustive]
 pub enum PanicActivation {
-    /// Star + hash + power held 3 seconds.
+    /// Represented star + hash + power gesture; physical producer is #881/#880.
     KeyCombo,
-    /// PTT triple-click.
+    /// Represented PTT triple-click; no production input producer yet (#881).
     PttTripleClick,
     /// Duress PIN entered at lock screen.
     DuressPin,
@@ -291,7 +296,7 @@ impl fmt::Display for PanicActivation {
 pub(crate) struct ModeManager {
     /// Current security mode.
     mode: SecurityMode,
-    /// Covert Lock: independent RF-kill (all radios except mesh).
+    /// Covert Lock requested-policy flag (request all radios except mesh off).
     covert_lock: bool,
     /// Tick at which panic was activated (for abort window).
     /// `None` when not in panic or after abort window closes.
@@ -445,8 +450,10 @@ impl ModeManager {
 
     /// Activate Panic mode.
     ///
-    /// Immediately zeroizes all keys, disables all radios, and emits a
-    /// [`PanicEvent`]. The 15-second abort window begins at `current_tick`.
+    /// Immediately zeroizes all keys, requests every radio disabled, and emits
+    /// a [`PanicEvent`]. The 15-second abort window begins at `current_tick`.
+    /// The radio state here is requested policy only; #874 owns physical-state
+    /// separation and #862 blocks the legacy PMIC path.
     ///
     /// Returns the emitted [`PanicEvent`].
     ///
@@ -471,7 +478,7 @@ impl ModeManager {
         // Zeroize all cryptographic key material.
         key_manager.zeroize_all();
 
-        // Kill all radios.
+        // Record a request for every radio to be disabled.
         self.apply_radio_policy(power_manager);
 
         let event = PanicEvent {
@@ -523,8 +530,8 @@ impl ModeManager {
 
     /// Toggle Covert Lock on/off.
     ///
-    /// When activating: kills cellular, `WiFi`, BT, GPS. Mesh stays on.
-    /// When deactivating: restores radio state per current mode policy.
+    /// When activating: requests cellular, `WiFi`, BT, and GPS off; mesh
+    /// remains per policy. When deactivating: restores requested mode policy.
     pub(crate) fn toggle_covert_lock(&mut self, power_manager: &mut PowerManager) {
         self.covert_lock = !self.covert_lock;
         self.apply_radio_policy(power_manager);
@@ -546,7 +553,7 @@ impl ModeManager {
     pub(crate) fn effective_policy(&self) -> ModePolicy {
         let mut policy = base_policy(self.mode);
 
-        // Covert Lock overrides: kill all RF except mesh.
+        // Covert Lock override: request every radio except mesh disabled.
         if self.covert_lock {
             policy.cellular_enabled = false;
             policy.wifi_enabled = false;
@@ -764,14 +771,14 @@ const fn mode_name(mode: SecurityMode) -> &'static str {
 // Threat response integration (Phase 10 Wave 3)
 // ---------------------------------------------------------------------------
 
-/// Threat response action taken by the security mode system.
+/// Legacy threat response attempted by the security mode system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 #[non_exhaustive]
 pub enum ThreatResponse {
-    /// Firewall switched to restricted (Sentinel) whitelist.
+    /// Firewall restriction was requested/applied in memory.
     FirewallRestricted,
-    /// Modem power cut via PMIC.
+    /// A modem-cut request was recorded and the unsafe legacy path attempted.
     ModemPowerCut,
     /// No action needed (threat below threshold).
     None,
@@ -781,19 +788,22 @@ impl fmt::Display for ThreatResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::FirewallRestricted => write!(f, "firewall restricted"),
-            Self::ModemPowerCut => write!(f, "modem power cut"),
+            Self::ModemPowerCut => write!(f, "modem cut requested (unverified)"),
             Self::None => write!(f, "none"),
         }
     }
 }
 
-/// Evaluate a threat score and apply the appropriate response.
+/// Legacy uncalibrated threat-score response path.
 ///
-/// - Score >= `critical_threshold`: trigger modem power cut.
+/// - Score >= `critical_threshold`: currently attempts a modem power cut.
 /// - Sentinel mode active: restrict firewall to Sentinel whitelist.
 /// - Below threshold: no action.
 ///
-/// Returns the action taken for audit logging.
+/// This compiled path is not a safe accepted policy: #874 owns removing or
+/// redesigning the automatic action, and #862 blocks its PMIC write. It is not
+/// evidence that any threshold is calibrated or any modem rail changed.
+/// Returns the action attempted for audit logging.
 pub(crate) fn evaluate_threat(
     mode: SecurityMode,
     threat_score: u32,
@@ -803,11 +813,12 @@ pub(crate) fn evaluate_threat(
 ) -> ThreatResponse {
     use crate::ccci_logger::FirewallMode;
 
-    // Critical threat score: modem power cut.
+    // FIXME(#874): an uncalibrated score must not autonomously request a cut.
     if threat_score >= critical_threshold {
         firewall.apply_mode(FirewallMode::Panic);
-        // SAFETY: PMIC registers must be mapped. This is only called from
-        // kernel context where PMIC is accessible.
+        // FIXME(#862): the current implementation is a known-invalid direct
+        // PWRAP-base write and has no safety argument. #874 must also remove
+        // this automatic policy path before any M7 execution.
         unsafe {
             power_manager.modem_power_cut();
         }
@@ -1080,7 +1091,7 @@ mod tests {
         assert!(event.keys_zeroized);
         assert_eq!(event.triggered_at, 1000);
 
-        // All radios must be off, including Mesh/LoRa (#254).
+        // Requested policy marks every radio off, including Mesh/LoRa (#254).
         assert_eq!(pm.state(Radio::Cellular), PowerState::Off);
         assert_eq!(pm.state(Radio::Wifi), PowerState::Off);
         assert_eq!(pm.state(Radio::Bluetooth), PowerState::Off);
@@ -1088,7 +1099,7 @@ mod tests {
         assert_eq!(
             pm.state(Radio::Mesh),
             PowerState::Off,
-            "Panic must leave the Mesh/LoRa transceiver off (#254)"
+            "Panic must request the Mesh/LoRa transceiver off (#254)"
         );
     }
 
@@ -1167,11 +1178,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Covert Lock toggles RF
+    // Covert Lock toggles requested radio policy
     // -----------------------------------------------------------------------
 
     #[test]
-    fn covert_lock_toggles_rf() {
+    fn covert_lock_toggles_requested_policy() {
         let mut mm = mode_manager_with_test_pin();
         let mut pm = PowerManager::new();
         pm.apply_mode(crate::power::PowerMode::Full);
@@ -1254,10 +1265,13 @@ mod tests {
         mm.toggle_covert_lock(&mut pm);
 
         let policy = mm.effective_policy();
-        assert!(!policy.cellular_enabled, "Covert must kill cellular");
-        assert!(!policy.wifi_enabled, "Covert must kill WiFi");
-        assert!(!policy.bluetooth_enabled, "Covert must kill Bluetooth");
-        assert!(!policy.gps_enabled, "Covert must kill GPS");
+        assert!(!policy.cellular_enabled, "Covert must request cellular off");
+        assert!(!policy.wifi_enabled, "Covert must request WiFi off");
+        assert!(
+            !policy.bluetooth_enabled,
+            "Covert must request Bluetooth off"
+        );
+        assert!(!policy.gps_enabled, "Covert must request GPS off");
         // Mesh stays per mode policy (Daily = on).
         assert!(policy.mesh_enabled, "Covert must keep mesh on");
     }
@@ -1542,14 +1556,17 @@ mod tests {
         assert_eq!(
             response,
             ThreatResponse::ModemPowerCut,
-            "critical score must trigger modem power cut"
+            "legacy critical branch currently records a modem-cut request (#874)"
         );
         assert_eq!(
             fw.mode(),
             FirewallMode::Panic,
             "firewall must switch to Panic on critical"
         );
-        assert!(pm.is_modem_pmic_killed(), "modem must be PMIC-killed");
+        assert!(
+            pm.is_modem_pmic_killed(),
+            "legacy branch records the sticky cut-request marker, not PMIC readback"
+        );
     }
 
     #[test]
@@ -1632,7 +1649,7 @@ mod tests {
         );
         assert!(
             pm.is_modem_pmic_killed(),
-            "modem must be PMIC-killed at the exact threshold"
+            "legacy path records a modem-off request at the exact threshold"
         );
     }
 
@@ -1655,7 +1672,7 @@ mod tests {
     #[test]
     fn threat_response_display() {
         let cut = ThreatResponse::ModemPowerCut.to_string();
-        assert!(cut.contains("power cut"));
+        assert!(cut.contains("cut requested"));
 
         let restrict = ThreatResponse::FirewallRestricted.to_string();
         assert!(restrict.contains("restricted"));

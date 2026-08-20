@@ -1,6 +1,6 @@
-//! Measured boot with Ed25519ph signature verification.
+//! Post-entry boot-region signature verification with Ed25519ph.
 //!
-//! Verifies the integrity of the boot image at boot by checking an
+//! Checks the selected boot region by verifying an
 //! Ed25519ph (prehashed, RFC 8032) signature against an embedded public
 //! key. The signature is the last 64 bytes of the on-disk region; the
 //! signed payload is everything preceding it (zero-padded so the signature
@@ -16,18 +16,25 @@
 //! Ed25519 so verification streams over bounded sector reads — a multi-MB
 //! boot image never needs a contiguous buffer (#467).
 //!
+//! This code runs after the kernel has entered. It can gate later filesystem
+//! access and image selection, but it is not measured boot and cannot
+//! authenticate the kernel that is already executing. #467 retains the
+//! packaging and pre-entry boot-chain prerequisite.
+//!
 //! ## Boot integration
 //!
 //! Runs in `kinit.rs` after display initialization (so errors can be
-//! rendered) but before filesystem mount (so a tampered kernel cannot
-//! access encrypted data). On failure, the boot process halts with a
+//! rendered) but before filesystem mount. Assuming the executing kernel is
+//! trusted and honors the result, it gates later key and storage access. A
+//! tampered executing kernel could bypass it; only #467's pre-entry chain can
+//! authenticate that kernel. On failure, this implementation halts with a
 //! visible error.
 //!
 //! ## Key management
 //!
-//! The public key is embedded as a compile-time constant. The
-//! corresponding private key lives offline (Titan security key or
-//! air-gapped machine) and is used by a build-side signing tool.
+//! The public key is embedded as a compile-time constant. Production key
+//! generation, offline custody, rotation, and signing require separate
+//! operator-owned receipts; this module does not establish them.
 //!
 //! ## Ed25519 implementation
 //!
@@ -39,21 +46,16 @@
 //!
 //! ## Trust root (per #467's review item)
 //!
-//! This gate is a LINK in the boot chain, not the sole root: the chain is
-//! BROM (mask ROM, reads the preloader) -> preloader/LK (loads the boot
-//! image) -> this kernel's gate (verifies the boot image's Ed25519ph
-//! signature against the embedded anchor before any decrypt/mount/
-//! userspace step). What verifies THE KERNEL IMAGE is therefore the
-//! preloader's verified-boot configuration on the device — on the AGM M7
-//! as currently operated, that upstream link is NOT established by this
-//! repository (the stock device's verified-boot state is an
-//! operator/hardware fact, hardware-ledger work). Until it is, this gate
-//! honestly bounds its own claim: it proves the boot image is the one the
-//! signing key holder built, given a kernel that already started — it
-//! cannot by itself defeat a compromised preloader. That boundary is why
-//! `secure_boot_ok` reads as "verified against the production anchor" and
-//! no more, and why the fail-closed invariant (present-but-unreadable ->
-//! Halt) matters: the gate's value is that it never WIDENS what booted.
+//! This gate is not itself a pre-entry link: BROM/preloader/LK have already
+//! loaded and entered this kernel. It verifies bytes in the selected boot
+//! region against the embedded anchor before this kernel permits later
+//! decrypt/mount/userspace steps. A trusted executing kernel can therefore
+//! use it as a local fail-closed policy gate, but a compromised kernel can
+//! bypass it. #467 must establish the separate pre-entry configuration that
+//! authenticates the kernel before entry. That boundary is why
+//! `secure_boot_ok` means only "the running kernel accepted the selected
+//! region against the production anchor" and why present-but-unreadable maps
+//! to Halt rather than widening later access.
 
 use core::fmt;
 
@@ -167,15 +169,14 @@ pub(crate) fn verify_kernel_signature(
 /// Verify that an image-resident userspace payload (the boot initramfs) was
 /// signed by the embedded boot anchor (#480).
 ///
-/// WHY: establishes `userspace_image_verified` so a cryptographically-verified
+/// WHY: establishes `userspace_image_verified` so a signature-checked
 /// image-resident userspace may spawn even when no boot MEDIUM was verified
-/// (`secure_boot_ok == false`, e.g. the eMMC-less QEMU boot). This FULFILLS the
-/// #217 requirement that userspace runs only when trust is cryptographically
-/// established -- for the image-resident case -- rather than weakening it: the
-/// blanket refusal existed only because no verification mechanism did. build.rs
-/// signs the initramfs with the dev seed, so this verifies under the dev/qemu
+/// (`secure_boot_ok == false`, e.g. the eMMC-less QEMU boot). This check gates
+/// the image bytes only if the already executing kernel honors the result; it
+/// does not authenticate that kernel. build.rs signs the initramfs with the dev seed,
+/// so this verifies under the dev/qemu
 /// anchor; under a production anchor the dev signature does NOT verify, so a
-/// production image correctly falls back to the eMMC secure-boot gate.
+/// production image correctly falls back to the eMMC post-entry signature gate.
 #[must_use]
 pub(crate) fn verify_userspace_image(image: &[u8], signature: &[u8; SIGNATURE_LEN]) -> bool {
     verify_kernel_signature(image, signature).is_ok()
@@ -402,13 +403,14 @@ pub(crate) enum BootImageSource<'a> {
     Absent,
 }
 
-/// Outcome of the secure-boot gate.
+/// Outcome of the post-entry boot-region signature gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub(crate) enum SecureBootDecision {
     /// Continue booting. `verified` is the sole input to
     /// `BootState::secure_boot_ok` and is true only on cryptographic
-    /// success.
+    /// success for the selected region. It is not proof about the executing
+    /// kernel.
     Proceed {
         /// True only when the boot image verified against the embedded key.
         verified: bool,
@@ -419,9 +421,9 @@ pub(crate) enum SecureBootDecision {
     Halt(SecureBootError),
 }
 
-/// Evaluate the fail-closed secure-boot gate (#217).
+/// Evaluate the fail-closed post-entry signature gate (#217).
 ///
-/// - `Present` + valid signature: proceed, trusted.
+/// - `Present` + valid signature: proceed with the selected region verified.
 /// - `Present` + anything else: halt (fail closed).
 /// - `Absent` (no boot medium): proceed UNTRUSTED — `secure_boot_ok` stays
 ///   false and every downstream trust gate (LFS mount, passphrase,
@@ -1029,12 +1031,12 @@ mod tests {
     }
 
     #[test]
-    fn gate_verified_image_proceeds_trusted() {
+    fn gate_verified_image_proceeds_with_region_verified() {
         let image = signed_dev_image(&[0xA5u8; 32]);
         assert_eq!(
             evaluate_boot_image(&BootImageSource::Present(&image)),
             SecureBootDecision::Proceed { verified: true },
-            "a validly signed present image must proceed trusted"
+            "a validly signed present region must proceed as verified"
         );
     }
 

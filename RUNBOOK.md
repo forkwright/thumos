@@ -24,7 +24,7 @@ those). Two directories matter operationally:
   Cargo workspace (bare-metal target), so its build, its host tests, and
   its lint pass each need their own invocation — see Start/stop and
   Common issues.
-- The workspace library crates under `crates/` (`klesis`, `klesis-core`,
+- The workspace crates under `crates/` (`klesis`, `klesis-core`,
   `aither`, `pteron`, ... — full list in `Cargo.toml`'s `members`, verified
   1:1 against `ARCHITECTURE.md`'s crate map by `scripts/check-doc-inventory.sh`)
   — a normal `cargo`-buildable workspace, one host toolchain, one test runner.
@@ -89,7 +89,7 @@ grep 'THUMOS-QEMU: service-loop ticks=' boot.log  # PID 0 serviced real ticks
 ```
 
 `scripts/witness/boot.sh` asserts far more than that (fail-closed degraded
-boot, measured userspace, `/init` + `/shell` per-process isolation, render,
+boot, signed image-resident userspace, `/init` + `/shell` per-process isolation, render,
 input, clock, telephony/audio/SIM/BT/firewall state machines, and the PL0
 isolation probes) — read it directly for the full assertion list rather
 than trusting a paraphrase here.

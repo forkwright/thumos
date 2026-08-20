@@ -1,4 +1,4 @@
-//! Kernel CSPRNG — `RustCrypto` `ChaCha20Rng`, seeded from ARM generic timer jitter.
+//! Kernel CSPRNG — `RustCrypto` `ChaCha20Rng` with a provisional timer-derived seed gate.
 //!
 //! Architecture mirrors Linux kernel random.c:
 //!   entropy pool (256 bits) → `ChaCha20` key → keystream output
@@ -25,13 +25,13 @@
 //! and leaves the caller buffer untouched. Callers must handle the error rather
 //! than consuming silent all-zero key material.
 //!
-//! # Seededness (audit #304)
+//! # Seededness (audits #304 and #840)
 //!
-//! The pool is "seeded" only once it has accumulated a conservative
-//! `SEED_ENTROPY_BITS` estimate of *actual* entropy. Timer samples earn credit
-//! solely from the bit-flips in their low (jitter) band relative to the previous
-//! sample, so a constant / stuck timer credits zero and can never satisfy the
-//! gate.
+//! A constant sample earns no credit, but the current low-bit XOR-popcount
+//! estimator can credit a perfectly deterministic fixed timer increment. Its
+//! `SEED_ENTROPY_BITS` counter is therefore not a conservative lower bound on
+//! actual entropy. #840 owns an estimator/health-test correction before this
+//! gate may authorize production key generation.
 //!
 //! # Safety model
 //!
@@ -56,23 +56,22 @@ use rand_core::{Rng, SeedableRng};
 /// Reseed threshold: reseed after this many bytes generated.
 const RESEED_THRESHOLD: u64 = 1 << 20; // 1 MiB
 
-/// Estimated accumulated entropy (bits) required before the pool is seeded.
-/// 256 bits = full pool width; fail-closed gate for #284/#304.
+/// Provisional accumulated-credit threshold before the pool reports seeded.
+/// #840 establishes that current credits do not lower-bound actual entropy.
 const SEED_ENTROPY_BITS: u32 = 256;
 
-/// Low-bit mask isolating the ARM generic timer's interrupt-latency jitter
-/// band. Higher bits track the deterministic tick period and carry no fresh
-/// entropy, so only bit-flips within this mask are credited.
+/// Low-bit mask used by the current timer estimator.
+///
+/// This does not isolate jitter: the fixed per-tick increment also changes
+/// bits inside the mask. #840 owns replacing this provisional credit model.
 const TIMER_JITTER_MASK: u32 = 0x0000_0FFF;
 
 /// Maximum wall-clock time `init()` will spin waiting for
 /// `SEED_ENTROPY_BITS` before giving up and reporting failure.
 ///
-/// WHY 30s: at the 10ms scheduler tick period even a single flipped
-/// jitter bit per tick reaches 256 bits in ~2.6s; 30s is a generous
-/// multiple that tolerates a noisy/slow timer without masking a
-/// genuinely dead entropy source (a permanent unbounded `wfi` loop here
-/// was a permanent boot hang if the timer ISR never delivered a sample).
+/// WHY 30s: at the 10ms scheduler tick period, one low-bit flip per tick reaches
+/// 256 credits in ~2.6s. The 30s bound prevents a dead credit source from
+/// hanging boot; it does not validate those credits as entropy (#840).
 const CSPRNG_INIT_TIMEOUT_MS: u64 = 30_000;
 
 // ---------------------------------------------------------------------------
@@ -103,14 +102,13 @@ struct Csprng {
 // Entropy pool
 // ---------------------------------------------------------------------------
 
-/// 256-bit entropy accumulator with a conservative entropy estimate.
+/// 256-bit accumulator with a provisional, known-overcrediting counter (#840).
 ///
-/// Entropy is mixed in via XOR at a rotating cursor. `entropy_bits` tracks a
-/// conservative bit estimate; the pool is seeded once it reaches
-/// `SEED_ENTROPY_BITS`. Only timer-jitter variation earns credit.
+/// Samples are mixed via XOR at a rotating cursor. `entropy_bits` is the legacy
+/// field name for low-bit flip credits; it is not a lower bound on entropy.
 struct EntropyPool {
     pool: [u8; 32],
-    /// Conservative running estimate of accumulated entropy, in bits.
+    /// Provisional low-bit flip credits, not measured entropy (#840).
     entropy_bits: u32,
     /// Previous timer sample, for delta-based (jitter) crediting.
     last_sample: u32,
@@ -140,15 +138,15 @@ impl EntropyPool {
         }
     }
 
-    /// Mix a timer sample and credit entropy from its jitter-band variation.
+    /// Mix a timer sample and apply the current provisional low-bit credit.
     ///
-    /// A repeated sample (`sample == last_sample`) flips no bits in the jitter
-    /// band and credits zero — closing #304 (a stuck/constant timer can never
-    /// seed the pool).
+    /// A repeated sample credits zero, but deterministic nonzero deltas can
+    /// still satisfy the gate; #840 owns that unresolved production blocker.
     fn add_timer_sample(&mut self, sample: u32) {
         self.mix_bytes(&sample.to_le_bytes());
         if self.have_sample {
-            // Credit only the bits that actually flipped inside the jitter band.
+            // Provisional only: raw low-bit flips are not an entropy estimate
+            // because a deterministic timer increment contributes to them (#840).
             let flips = ((sample ^ self.last_sample) & TIMER_JITTER_MASK).count_ones();
             self.entropy_bits = self.entropy_bits.saturating_add(flips);
         }
@@ -156,16 +154,16 @@ impl EntropyPool {
         self.have_sample = true;
     }
 
-    /// True once a conservative `SEED_ENTROPY_BITS` estimate has accumulated.
+    /// True once the provisional credit counter reaches its threshold (#840).
     fn is_seeded(&self) -> bool {
         self.entropy_bits >= SEED_ENTROPY_BITS
     }
 
     /// Deterministically seed the pool for QEMU bring-up (feature `qemu`).
     ///
-    /// WHY(qemu): a deterministic emulator has no hardware entropy source --
-    /// timer-jitter is the entire entropy model, and QEMU's CP15 counter
-    /// advances predictably, so `add_timer_sample` never credits
+    /// WHY(qemu): a deterministic emulator has no hardware entropy source.
+    /// Its CP15 counter advances predictably, so the current estimator may not
+    /// reliably reach
     /// `SEED_ENTROPY_BITS` and `init`'s seed loop cannot make progress. This
     /// fills the pool from a fixed vector and marks it seeded so the boot
     /// proceeds. NOT cryptographically secure; compiled ONLY under
@@ -206,11 +204,11 @@ static mut INITIALIZED: bool = false;
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Collect entropy from the ARM generic timer (CNTPCT via mrrc p15,0,…,c14).
+/// Collect a timer sample from CNTPCT and mix it into the provisional pool.
 ///
-/// Called from the timer IRQ handler. Reads the physical counter's low word and
-/// mixes it; the timing jitter between successive interrupts is the actual
-/// entropy source.
+/// Called from the timer IRQ handler. The current credit estimator cannot
+/// distinguish deterministic counter advance from jitter; #840 blocks treating
+/// its seededness result as production entropy acceptance.
 ///
 /// # Safety
 ///
@@ -236,7 +234,8 @@ pub unsafe fn collect_timer_entropy() {
             );
         }
         // NOTE: `hi` changes far too slowly to carry per-tick jitter; the low
-        // word `lo` is the jitter signal used for both mixing and crediting.
+        // word `lo` is the provisional input used for mixing and crediting.
+        // #840 establishes that this does not isolate unpredictable jitter.
         let _ = hi;
 
         // SAFETY: ENTROPY is only accessed from IRQ context (this function).
@@ -253,8 +252,9 @@ pub unsafe fn collect_timer_entropy() {
 ///
 /// Called from drivers with access to additional entropy sources (e.g. eMMC
 /// CID registers). The bytes are mixed but earn NO seededness credit: only the
-/// hardware timer jitter is trusted to satisfy the fail-closed gate, so
-/// caller-supplied data can never (falsely) seed the pool.
+/// current timer estimator drives the gate. #840 establishes that
+/// this estimator can seed on deterministic increments, so neither this API
+/// nor the gate is production entropy evidence yet.
 ///
 /// # Safety
 ///
@@ -270,10 +270,10 @@ pub unsafe fn add_entropy(data: &[u8]) {
 
 /// Initialize the CSPRNG from the accumulated entropy pool.
 ///
-/// Call this from kinit after the timer has been running long enough to
-/// accumulate `SEED_ENTROPY_BITS` of jitter entropy. If the pool is not yet
-/// seeded, spins (busy-polls) until it is — the timer ISR is running at this
-/// point and will call `collect_timer_entropy()` each tick.
+/// Call this from kinit after the timer has begun feeding provisional credits.
+/// If the counter has not reached `SEED_ENTROPY_BITS`, this busy-polls while
+/// the timer ISR calls `collect_timer_entropy()` each tick. #840 establishes
+/// that reaching the counter is not production entropy readiness.
 ///
 /// Bounded by `CSPRNG_INIT_TIMEOUT_MS`, measured against the free-running
 /// CNTPCT counter (`crate::timer::elapsed_ms()`) rather than the IRQ-
@@ -284,14 +284,14 @@ pub unsafe fn add_entropy(data: &[u8]) {
 /// on timeout and leaves the CSPRNG unseeded; `kernel_random_bytes()`
 /// then fails closed with `CsprngError::NotSeeded` forever, exactly as
 /// it already does before `init()` runs. The only behavior change is
-/// that a starved entropy source degrades the boot (per the kinit
+/// that a starved provisional credit source degrades the boot (per the kinit
 /// Hubris fault-isolation model) instead of hanging it.
 ///
 /// # Safety
 ///
 /// Must be called exactly once from kinit, after `exceptions::init()` (timer
 /// running), before any driver calls `kernel_random_bytes()`. IRQs must be
-/// enabled at call time so the timer ISR can supply entropy.
+/// enabled at call time so the timer ISR can supply samples.
 #[must_use = "a `false` return means the CSPRNG is unseeded; the caller must record and report the degraded boot state"]
 pub unsafe fn init() -> bool {
     // SAFETY: elapsed_ms() only reads the free-running CP15 CNTPCT/CNTFRQ
@@ -301,7 +301,7 @@ pub unsafe fn init() -> bool {
 
     // WHY(qemu): deterministic emulator has no hardware entropy; inject a
     // fixed seed so is_seeded() passes on the first check below and boot
-    // proceeds instead of spinning on jitter that never accumulates.
+    // proceeds instead of spinning on a provisional counter.
     // SAFETY: ENTROPY is written only from the timer IRQ handler; this runs
     // before IRQs deliver entropy and is non-reentrant on single-core ARMv7.
     #[cfg(feature = "qemu")]
@@ -309,7 +309,7 @@ pub unsafe fn init() -> bool {
         (*core::ptr::addr_of_mut!(ENTROPY)).seed_deterministic_qemu();
     }
 
-    // Spin until the entropy pool has accumulated a full seed estimate,
+    // Spin until the provisional credit counter reaches its threshold,
     // or until CSPRNG_INIT_TIMEOUT_MS elapses.
     // WHY: in host test builds the #[cfg(test)] arm below always breaks on
     // the first pass (test host bypasses real entropy collection), so this
@@ -373,7 +373,12 @@ pub unsafe fn init() -> bool {
     true
 }
 
-/// Generate `buf.len()` cryptographically random bytes.
+/// Generate `buf.len()` bytes from the `ChaCha20` DRBG after the current gate.
+///
+/// #840 blocks treating that gate as a production entropy proof, and #873
+/// blocks treating reset/reseed state as non-repeating. Callers still fail
+/// closed when the gate is not reached, but success is not yet cryptographic
+/// readiness evidence.
 ///
 /// Fail-closed (audit #284): if the CSPRNG is not yet seeded this returns
 /// `Err(CsprngError::NotSeeded)` and leaves `buf` untouched — it never emits
@@ -546,18 +551,22 @@ mod tests {
     }
 
     #[test]
-    fn entropy_pool_varying_samples_seed() {
-        // Distinct samples that flip jitter-band bits accumulate real credit.
+    fn regular_delta_reaches_provisional_gate_exposing_840() {
+        // This perfectly regular arithmetic progression has no unpredictability,
+        // yet the current estimator credits it and reaches the gate (#840).
         let mut pool = EntropyPool::new();
         let mut sample: u32 = 0;
         let mut ticks = 0;
         while !pool.is_seeded() && ticks < 100_000 {
-            // Vary the low (jitter) bits each tick.
+            // Advance by one fixed public delta each tick.
             sample = sample.wrapping_add(0x0000_0ABF);
             pool.add_timer_sample(sample);
             ticks += 1;
         }
-        assert!(pool.is_seeded(), "varying timer jitter must seed the pool");
+        assert!(
+            pool.is_seeded(),
+            "known-bad estimator currently admits a deterministic delta (#840)"
+        );
         assert!(pool.entropy_bits >= SEED_ENTROPY_BITS);
     }
 

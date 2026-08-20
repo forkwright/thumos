@@ -6,7 +6,6 @@ source_docs = [
   "README.md",
   "CLAUDE.md",
   "<canonical-state-doc>/STATE.md",
-  "_llm/decisions.toml",
 ]
 
 [decisions]
@@ -17,7 +16,7 @@ id = "D-full-rust"
 title = "Full Rust from kernel to UI"
 status = "accepted"
 context = "The stock Android/Linux stack and BSP blobs are unauditable for the threat model."
-decision = "Author no C and replace Linux/Android with a Rust kernel and userspace."
+decision = "Author no C and replace Linux/Android with a Rust kernel, embedded programs, and Rust domain libraries."
 consequences = "Hardware bring-up is harder, but the audit boundary is controlled."
 
 [[decision]]
@@ -32,8 +31,8 @@ consequences = "IPC overhead stays low; clean crate boundaries preserve future s
 id = "D-armv7-target"
 title = "Target 32-bit armv7"
 status = "accepted"
-context = "MT6739 is 64-bit capable, but stock firmware and bootloader expect a 32-bit image."
-decision = "Build the kernel for armv7a-none-eabi and userspace for armv7 Linux musleabihf where applicable."
+context = "MT6739 is 64-bit capable, but the stock firmware and bootloader expect a 32-bit image."
+decision = "Build the kernel and rustc-direct embedded programs for armv7a-none-eabi; workspace libraries and host tools do not imply a Linux runtime target."
 consequences = "Boot compatibility takes precedence over theoretical 64-bit capability."
 
 [[decision]]
@@ -41,13 +40,13 @@ id = "D-modem-hostile"
 title = "Treat modem as hostile"
 status = "accepted"
 context = "The modem is a separate processor with binary firmware."
-decision = "Firewall CCCI at the kernel boundary, filter IMEI/IMSI, and log modem identity transmissions."
-consequences = "Modem access is capability-gated and auditable."
+decision = "Firewall instrumented CCCI endpoints and constrain/audit AP-visible IMEI/IMSI access where the pinned protocol exposes it."
+consequences = "The AP-visible CCCI path is capability-gated; modem-to-SIM, modem-to-radio, and uninstrumented shared-memory traffic remain outside that evidence boundary."
 
 [[decision]]
 id = "D-device-identity"
 title = "Enforce identity protection in drivers"
 status = "accepted"
 context = "Userspace spoofing can be bypassed by compromised components."
-decision = "Randomize WiFi MAC per connection, rotate BT LE Privacy addresses, passively scan by default, and log identity transmissions."
-consequences = "RF fingerprint remains an accepted M7 hardware risk, but software identifiers are protected at lower layers."
+decision = "Require a randomized WiFi MAC, BLE-only private-address rotation, passive WiFi scanning, and explicit treatment of Classic BT and AP-visible modem identity."
+consequences = "Policy and host logic exist, but production WiFi/BT application remains #129 software work; RF, Classic BT, modem-to-SIM, and modem-to-radio identity remain explicit boundaries."

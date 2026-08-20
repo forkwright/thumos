@@ -1,8 +1,8 @@
 //! Panic wipe integration.
 //!
-//! Wires the leipsanon [`WipeEngine`] to the kernel's security subsystem
-//! for emergency data destruction. Builds a priority-ordered wipe plan
-//! matching REQ-10:
+//! Implements the kernel-local emergency data-destruction plan. No
+//! `leipsanon` runtime is linked; persisted-target I/O and reflex effects
+//! remain incomplete under #863. The local priority order is:
 //!
 //! | Priority | Target         | Rationale                                     |
 //! |----------|----------------|-----------------------------------------------|
@@ -26,9 +26,9 @@
 //!
 //! ## Distress mesh beacon
 //!
-//! On panic activation, a one-shot distress packet is emitted as a kernel
-//! event. The actual `LoRa` transmission is a future-wave concern; this
-//! module emits the event for the mesh subsystem to consume.
+//! On panic activation, a one-shot distress payload is constructed and then
+//! discarded. No kernel event or radio transmission consumes it yet; #863
+//! owns that software integration before any over-air witness.
 
 extern crate alloc;
 
@@ -208,7 +208,7 @@ pub struct WipeResult {
     /// WHY (SECURITY, finding 14, info): tracked separately from
     /// `failed_targets`'s entry for `WipeTarget::Keys`, which reflects
     /// ONLY the on-disk key-file overwrite (defense-in-depth, currently
-    /// always fails per #324/#129) -- conflating the two under one bit
+    /// always fails per #324/#863) -- conflating the two under one bit
     /// would let a reader mistake "Keys in `failed_targets`" for "the
     /// encryption keys are still recoverable" when the in-memory keys
     /// (the actual protection) are already destroyed. Set inside the
@@ -275,7 +275,7 @@ pub(crate) fn build_panic_plan() -> WipePlan {
 /// Execute the panic wipe sequence.
 ///
 /// 1. Zeroize keys in memory via `key_manager` (immediate, priority 1).
-/// 2. Build and queue a distress mesh beacon (placeholder).
+/// 2. Build a distress mesh payload, but do not queue or transmit it (#863).
 /// 3. Execute remaining wipe targets (filesystem overwrites — these are
 ///    defense-in-depth since key zeroization already makes data
 ///    unrecoverable).
@@ -343,8 +343,7 @@ pub(crate) unsafe fn execute_panic_wipe(
 
     // Step 2: Build the distress beacon payload. WHY (SECURITY, finding
     // 10): emit_distress_beacon only constructs the in-memory payload --
-    // the actual mesh/LoRa transmission is not yet wired (same class as
-    // #129's wipe_target_path stub), so this function never hands the
+    // the actual transmission is not yet wired (#863), so this function never hands the
     // beacon to a radio driver. beacon_emitted below must report false
     // rather than claiming a distress signal was actually transmitted.
     let _beacon = emit_distress_beacon(triggered_at, !key_manager.has_keys());
@@ -385,8 +384,9 @@ pub(crate) unsafe fn execute_panic_wipe(
 /// # Safety
 ///
 /// See [`page::zero_usable_range`]. This must be the last action taken
-/// before an immediate halt/reboot; it is not yet wired into a live
-/// boot/panic path (Wave 8 integration item).
+/// before an immediate halt/reboot. The boot passphrase attempt-limit path
+/// invokes it with `dry_run=false`; the broader production panic/duress
+/// reflex integration remains incomplete under #863.
 pub(crate) unsafe fn scrub_user_pages() -> bool {
     // SAFETY: propagated from this function's own `# Safety` contract.
     let zeroed = unsafe { page::zero_usable_range() };
@@ -414,7 +414,7 @@ fn emit_distress_beacon(triggered_at: u64, keys_zeroized: bool) -> DistressBeaco
 /// target it never touched would tell the caller a persisted key/data
 /// store was destroyed when it was not (#324).
 fn wipe_target_path(_path: &str) -> bool {
-    // TODO(#129)[deliberate-prudent]: wire to lfs::overwrite_path() when filesystem
+    // TODO(#863)[deliberate-prudent]: wire to lfs::overwrite_path() when filesystem
     // runtime I/O is available from the security subsystem. Until then this
     // MUST return false — see the WHY above.
     false
@@ -613,7 +613,7 @@ mod tests {
     fn keys_zeroized_in_memory_is_tracked_separately_from_file_tally() {
         // SECURITY (finding 14, info): WipeTarget::Keys' entry in
         // failed_targets reflects ONLY the on-disk key-file overwrite
-        // (currently always fails: #324/#129's wipe_target_path stub).
+        // (currently always fails: #324/#863's wipe_target_path stub).
         // The in-memory zeroization in Step 1 is unconditional and
         // infallible, and must be visible independent of that filesystem
         // tally so a reader cannot mistake "Keys in failed_targets" for
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn wipe_target_path_reports_not_implemented() {
-        // Regression test for #324: the LFS wipe backend (#129) is not yet
+        // Regression test for #324: the LFS wipe backend (#863) is not yet
         // wired, so wipe_target_path must not claim success for filesystem
         // targets it never actually overwrote.
         assert!(!wipe_target_path("/data/keys"));
@@ -726,7 +726,7 @@ mod tests {
     fn execute_wipe_records_which_targets_failed() {
         // SECURITY (finding 9): a bare failure count cannot tell an
         // operator WHICH category of sensitive data survived an
-        // incomplete panic wipe. With the LFS wipe backend absent (#129),
+        // incomplete panic wipe. With the LFS wipe backend absent (#863),
         // every filesystem target fails, so failed_targets must name each
         // one individually.
         let mut km = key_manager_with_derived_keys();
@@ -756,7 +756,7 @@ mod tests {
 
     #[test]
     fn execute_wipe_real_run_reports_filesystem_targets_as_failed() {
-        // Regression test for #324: with the LFS backend absent (#129), a
+        // Regression test for #324: with the LFS backend absent (#863), a
         // real (non-dry-run) panic wipe must not claim the filesystem
         // targets completed — it never overwrote them. The in-memory key
         // zeroization (step 1) still happens independently and is verified

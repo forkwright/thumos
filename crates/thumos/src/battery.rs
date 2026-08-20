@@ -1,9 +1,9 @@
 //! Battery monitoring for `LiPo` cells.
 //!
-//! Provides [`BatteryInfo`] snapshots and a [`BatteryMonitor`] that polls
-//! hardware via the [`BatteryHwOps`] trait. Voltage-to-percentage conversion
-//! uses a piecewise-linear lookup table matching typical 3.7V `LiPo` discharge
-//! curves.
+//! Provides [`BatteryInfo`] snapshots and a [`BatteryMonitor`] over an injected
+//! [`BatteryHwOps`] source. The current voltage-to-percentage table is a generic,
+//! uncalibrated host-test model—not an accepted AGM M7 cell or PMIC fact. #877
+//! owns the source-grounded interface, cell model, calibration, and uncertainty.
 //!
 //! ## Voltage table (3.7V single-cell `LiPo`)
 //!
@@ -20,11 +20,12 @@
 //!
 //! ## Polling
 //!
-//! The monitor polls every 60 seconds. Each poll reads voltage, current,
-//! temperature, and charging state from the hardware abstraction. The
-//! [`BatteryInfo`] snapshot is updated atomically (no partial reads).
+//! The generic monitor policy polls every 60 seconds. Each poll asks its
+//! abstraction for voltage, current, temperature, and charging state; no
+//! production boot/service-loop path constructs it today (#753, #877).
 
-// WHY: battery monitor created in Phase 07 Wave 5, kinit wiring pending.
+// WHY: generic battery monitor exists, but #877 owns its source/model and #753
+// owns production construction/service-loop wiring.
 // cfg_attr(not(test), ...): the module's own tests now exercise its full
 // surface, so nothing is dead in the test build -- expecting dead_code there
 // makes the expectation unfulfilled. Production reachability is unchanged;
@@ -33,7 +34,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Battery monitor exists; kinit wiring pending (#753; tier in docs/capability-inventory.toml)"
+        reason = "Generic battery monitor exists; source/model #877 and service-loop wiring #753 remain (tier in docs/capability-inventory.toml)"
     )
 )]
 
@@ -50,7 +51,7 @@ struct LookupEntry {
     percentage: u8,
 }
 
-/// `LiPo` discharge curve lookup table.
+/// Generic, uncalibrated `LiPo` discharge curve used by host tests (#877).
 ///
 /// Sorted descending by voltage. Linear interpolation is used between
 /// adjacent entries.

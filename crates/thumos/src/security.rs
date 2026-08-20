@@ -25,8 +25,11 @@ use core::fmt;
 // Public constants
 // ---------------------------------------------------------------------------
 
-/// PBKDF2 iteration count (NIST SP 800-132 recommends >= 1000; 100K is a
-/// practical minimum for passphrase-derived keys). Matches stegnos.
+/// Current compatibility PBKDF2 iteration count.
+///
+/// This fixed value is not an accepted security minimum. #872 owns versioned
+/// KDF parameters derived from the offline-attack model and measured platform
+/// cost; no work factor repairs a low-entropy boot secret.
 pub(crate) const PBKDF2_ITERATIONS: u32 = 100_000;
 
 /// Symmetric key size in bytes (AES-256).

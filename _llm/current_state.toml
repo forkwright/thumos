@@ -4,39 +4,45 @@ repo = "forkwright/thumos"
 generated = false
 source_docs = [
   "README.md",
+  "docs/capability-inventory.toml",
   "<canonical-state-doc>/STATE.md",
 ]
 
 [state]
-summary = "Thumos has a broad compiled/tested Phase 10 code catalog and an emulation-verified userspace process model; Phase 11 hardware validation and several boot/userspace wiring paths remain open."
-current_phase = "Phase 11: System Qualification."
-updated = "2026-08-14"
+summary = "Thumos has emulation-proven kernel and embedded-program paths plus machine-tracked compiled-but-unwired capabilities. Software acceptance across Phases 03-11 remains open; no capability is hardware-proven on the AGM M7."
+current_phase = "Phases 03-11: software acceptance in progress; AGM M7 qualification blocked."
+updated = "2026-08-19"
 
 [[recent]]
 date = "2026-07-16"
-item = "Userspace process model is emulation-verified: each process loads into its OWN image frame, so fork+exec compose and /init + /shell coexist; PROT_NONE guard pages survive fork; PID 0 drains a fault ring, audit-logs every fault, and restarts a supervised service with crash-loop rate limiting. Each behaviour is pinned by a QEMU boot witness in CI."
+item = "Selected userspace process behavior is emulation-verified: each process loads into its own image frame, fork+exec compose, /init and /shell coexist, guard pages survive fork, and PID 0 drains/audits faults with crash-loop limiting. These witnesses do not establish syscall caller-pointer isolation: #871 owns caller-VAS and permission-aware copyin/copyout."
 
 [[recent]]
 date = "2026-04-12"
-item = "Software phases 03-10 produced compiled/tested surfaces; end-to-end wiring gaps remain tracked in repo issues."
+item = "Phases 03-10 produced compiled and host-tested surfaces, but implementation does not establish phase acceptance; service-loop integration and other software paths remain open."
 
 [[recent]]
 date = "2026-04-12"
-item = "Factory firmware mismatch identified as the hardware-validation blocker."
+item = "The prior bring-up record identified a firmware-image mismatch. Live phone and firmware state must be re-observed before a hardware session; repository planning does not own that mutable device state."
 
-# WHY only hardware-gated threads are named here: an issue number written into
-# a doc is a fact with no owner and it decays silently. This block previously
+# WHY only hardware-frontier threads are named here: an issue number written
+# into a doc is a fact with no owner and it decays silently. This block previously
 # listed three threads and two of them (#461 QEMU timing fidelity, #528 dead
 # boot-orchestration tests) had been closed for weeks while llms.txt still
-# pointed agents here for "phase, blockers, and open threads". The live list is
-# a query -- `gh issue list --repo forkwright/thumos` -- and only threads whose
-# blocker is PHYSICAL belong here, because those cannot be resolved by reading
-# the tree and an agent needs to know about them before planning work.
+# pointed agents here for "phase, blockers, and open threads". The complete
+# live list is a tracker query -- `gh issue list --repo forkwright/thumos`.
+# These selected rows name the boundary between remaining software prerequisites
+# and operator-owned physical witnesses; they are not a substitute for that query.
 #
 # scripts/check-llm-issue-refs.sh enforces that every issue named below is
 # still open, so this decays loudly now instead of silently.
 
 [[open_threads]]
-name = "Hardware validation"
+name = "Boot-image packaging and hardware validation"
 issue = 467
-status = "Needs a BROM session and a flash of the eight stock partitions before proof-of-life kernel testing. Live-eMMC boot-partition read + streaming verify is tracked in #467."
+status = "The kernel-side GPT lookup, streamed verification, and signing primitive exist, but the repository still produces no Android boot image or scatter-integrated device package. Complete that software path first; then an operator-owned AGM M7 session must prove live-eMMC initialization, production-signature acceptance, and fail-closed halt on a corrupted signature."
+
+[[open_threads]]
+name = "BLE encryption wiring and hardware validation"
+issue = 671
+status = "Host proofs cover pairing, bidirectional IRK distribution, and RPA resolution. Software must still wire HCI_LE_Start_Encryption and controller LTK-request handling; only then can an operator-owned controller/peer session witness encryption establishment and bidirectional over-air RPA resolution."

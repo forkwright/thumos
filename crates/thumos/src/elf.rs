@@ -1,8 +1,9 @@
 //! Minimal ELF loader for userspace binaries.
 //!
 //! Parses ELF32 headers and loads `PT_LOAD` segments INTO memory.
-//! Only supports statically-linked ARM ELF binaries (what our userspace
-//! crates compile to with `armv7-unknown-linux-musleabihf` target).
+//! Only supports statically-linked ARM ELF binaries. `build.rs` compiles the
+//! embedded `/init`, `/shell`, and probe programs directly with rustc for the
+//! same `armv7a-none-eabi` bare-metal target as the kernel.
 //!
 //! The loader validates a per-image page budget (#327) and writes each
 //! segment's data directly to its identity-mapped virtual address (#318),

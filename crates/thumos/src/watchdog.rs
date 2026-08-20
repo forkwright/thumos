@@ -1,8 +1,9 @@
 //! MT6739 Watchdog Timer (WDT) driver.
 //!
-//! The MT6739 WDT is a hardware timer that resets the `SoC` if the kernel
-//! stops petting it within the configured timeout. This provides a safety
-//! net against kernel hangs (infinite loops, deadlocks, interrupt starvation).
+//! The MT6739 WDT resets the `SoC` if software stops petting it within the
+//! configured timeout. The current timer IRQ pets before scheduler/service-loop
+//! progress, so it catches interrupt starvation but can mask a live-IRQ
+//! scheduler deadlock. #875 owns progress-coupled liveness.
 //!
 //! Register facts have two independent grounds. The MT6739 vendor device tree
 //! places TOPRGU/WDT at `0x1000_7000`, and its WDT header defines the offsets and
@@ -135,9 +136,9 @@ pub unsafe fn init() {
 
 /// Pet (restart) the watchdog, resetting the countdown to 5 seconds.
 ///
-/// Must be called from the scheduler tick or main idle loop at a rate
-/// faster than the 5-second timeout. The scheduler calls this on every
-/// timer interrupt (every 10 ms), well within the budget.
+/// Currently called unconditionally from every timer interrupt (10 ms), before
+/// scheduler work. #875 must gate it on verified scheduler/service-loop
+/// progress so the watchdog detects deadlocks rather than merely a stopped IRQ.
 ///
 /// # Safety
 ///

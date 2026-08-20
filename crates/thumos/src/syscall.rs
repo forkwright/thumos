@@ -500,8 +500,8 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
                 if !validate_user_buffer(ptr, capped_len) {
                     return EFAULT;
                 }
-                // SAFETY: validate_user_buffer confirmed [ptr, ptr+capped_len)
-                // is within user-accessible DRAM.
+                // SAFETY: the current guard bounds this to configured DRAM;
+                // #871 owns caller-VAS/read-permission validation.
                 unsafe { core::slice::from_raw_parts(ptr as *const u8, capped_len) }
             } else {
                 &[]
@@ -680,8 +680,8 @@ fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
             if !validate_user_buffer(ptr, len) {
                 return EFAULT;
             }
-            // SAFETY: validate_user_buffer confirmed [ptr, ptr+len) is within
-            // user-accessible DRAM.
+            // SAFETY: the current guard bounds this to configured DRAM;
+            // #871 owns caller-VAS/read-permission validation.
             let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
             let serial = Uart::new();
             for &byte in slice {
@@ -756,8 +756,8 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         let mut len = 0usize;
         let ptr = path_ptr as *const u8;
         while len < MAX_PATH {
-            // SAFETY: [path_ptr, path_ptr+MAX_PATH) was validated above to
-            // lie entirely within user-accessible DRAM.
+            // SAFETY: the current guard bounds this to configured DRAM;
+            // #871 owns caller-VAS/read-permission validation.
             let byte = unsafe { ptr.add(len).read_volatile() };
             if byte == 0 {
                 break;
@@ -770,9 +770,10 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         len
     };
 
-    // Construct path &str from the validated region.
-    // SAFETY: path_ptr is in user DRAM (validated above); path_len bytes
-    // were just scanned without trapping. The slice lifetime is local.
+    // Construct path &str from the numerically bounded region.
+    // SAFETY: the current guard bounds path_len bytes to configured DRAM and
+    // the scan completed; #871 owns caller-VAS/read-permission validation.
+    // The slice lifetime is local.
     let path_bytes = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len) };
     let Ok(path) = core::str::from_utf8(path_bytes) else {
         return ENOENT;
@@ -792,8 +793,8 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // on the loaded segments -- BUT the load-time write is itself confined
     // because elf::validate rejects any segment outside sanctioned user DRAM
     // (#318), and every authored image links at USER_TEXT_BASE (init.ld). The
-    // measured-boot chain (#480) is the primary guarantee: only signed ramfs
-    // images ever reach here.
+    // post-entry image/initramfs signature checks (#480) restrict what this
+    // kernel accepts; they do not authenticate the already executing kernel.
 
     // WHY contiguous (#489): the new stack must be a single run -- new_stack_top
     // arithmetic and exec_replace_context's map_user_stack both assume
@@ -829,7 +830,8 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
             if !validate_user_buffer(entry_addr, 4) {
                 break;
             }
-            // SAFETY: entry_addr is in user DRAM (validated above).
+            // SAFETY: the current guard bounds this four-byte entry to
+            // configured DRAM; #871 owns caller-VAS/read-permission validation.
             let str_ptr = unsafe { core::ptr::read_unaligned(entry_addr as *const u32) } as usize;
             if str_ptr == 0 {
                 break; // null terminator of argv[]
@@ -840,7 +842,10 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
             // Copy up to MAX_ARG_LEN-1 bytes of the string.
             let mut slen = 0usize;
             while slen < MAX_ARG_LEN - 1 {
-                // SAFETY: str_ptr is in user DRAM (validated above).
+                // SAFETY DEBT (#871): only the first byte is numerically bounded
+                // above, while this loop may read up to MAX_ARG_LEN - 1 bytes.
+                // #871 owns a full-range, fault-contained copyin replacement;
+                // current source has no complete safety argument for this read.
                 let byte = unsafe { (str_ptr as *const u8).add(slen).read_volatile() };
                 if byte == 0 {
                     break;

@@ -106,9 +106,9 @@ fn compute_realtime_offset(unix_now_secs: u64, elapsed_secs: u64) -> Option<u64>
 /// `unix_now_secs` is the current Unix timestamp in seconds. This function
 /// back-calculates the boot epoch by subtracting the elapsed monotonic time.
 /// Rejects `unix_now_secs` outside `[MIN_VALID_EPOCH, MAX_VALID_EPOCH]` and
-/// leaves `REALTIME_OFFSET_SECS` unchanged -- a hostile modem RTC (the
-/// lowest-trust source per the clock hierarchy) must not be able to set the
-/// clock to an implausible date (#374).
+/// leaves `REALTIME_OFFSET_SECS` unchanged. Modem RTC is an unauthenticated,
+/// low-precedence input, not a trusted source; it must not be able to set an
+/// implausible date (#374/#861).
 ///
 /// # Errors
 ///
@@ -208,8 +208,8 @@ pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
     };
 
     // Write the two u32 fields to user space.
-    // SAFETY: validate_user_buffer confirmed [ptr, ptr+8) is within
-    // user-accessible DRAM (see KERNEL_END/RAM_END in kconfig). The pointer
+    // SAFETY: the current guard bounds [ptr, ptr+8) to configured DRAM only;
+    // #871 owns caller-VAS/write-permission validation. The pointer
     // alignment is NOT guaranteed by the ABI (POSIX allows any alignment for
     // char-typed buffers), so we use write_unaligned to be safe.
     unsafe {
@@ -245,8 +245,9 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     }
 
     // Read duration from user space.
-    // SAFETY: validate_user_buffer confirmed [ptr, ptr+8) is within user DRAM.
-    // write_unaligned safety reasoning applies in reverse for read_unaligned.
+    // SAFETY: the current guard bounds [ptr, ptr+8) to configured DRAM only;
+    // #871 owns caller-VAS/read-permission validation. The unaligned-write
+    // reasoning applies in reverse for read_unaligned.
     let (req_secs, req_nanos): (u32, u32) = unsafe {
         let s = core::ptr::read_unaligned(ptr as *const u32);
         let n = core::ptr::read_unaligned((ptr + 4) as *const u32);

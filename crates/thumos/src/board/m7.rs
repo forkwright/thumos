@@ -102,24 +102,20 @@ pub(crate) const MUSB_BASE: usize = 0x1120_0000;
 /// `interrupts = <GIC_SPI 73 IRQ_TYPE_LEVEL_LOW>` (INTID 32+73 = 105) -- but
 /// `MUSB_BASE` above now carries that same node's `reg` base, so the address
 /// conflict this comment was written against is resolved by source (#676).
-/// What is still missing is a hardware artifact: nothing confirms INTID 105
-/// on real AGM M7 silicon, and a vendor DT is the same evidence class that
-/// carried the wrong base for two releases -- right about the base, unproven
-/// about this. The asymmetry is deliberate: a wrong base fails loudly and
-/// detectably at the `POWER` readback, while a wrongly-enabled IRQ wedges the
-/// interrupt path in ways that are far harder to attribute. Wiring a real
-/// GIC INTID into a live `enable_irq` call on that contested foundation
-/// would be a fabricated fact wearing a hardware-verified constant's
-/// clothes, not an engineering shortcut -- so this stays `None` (a
-/// no-op at the `exceptions::init()` call site) until #676 closes the gap
-/// by hardware probe or a source that resolves the base-address conflict.
-/// Flipping this to `Some(105)` (the one researched candidate, unverified)
-/// is then the ENTIRE remaining step -- see `exceptions::init()` and
-/// `exceptions::irq_handler_body()`, both already written against this
-/// constant.
-/// TODO(#676)[deliberate-prudent]: confirm the AGM M7 MUSB GIC INTID (candidate:
-/// 105) against real hardware or a source that resolves the `MUSB_BASE`
-/// 0x1121_0000-vs-0x1120_0000 conflict noted above, then set this to Some(n).
+/// A later #676 comment cited two AGM-M7-labelled third-party TWRP prebuilt
+/// kernels as byte-identical, stock-derived corroboration. The pinned GitHub
+/// objects are not identical (different blob ids and sizes), and neither repo
+/// carries a reproducible stock-extraction provenance receipt. Do not elevate
+/// either artifact to an OEM/stock DTB witness without replayable evidence.
+/// The generic MT6739 vendor node still makes INTID 105 the researched source
+/// candidate, but enabling a hard-to-diagnose IRQ needs #676 to adjudicate that
+/// evidence or record a physical witness. Until then this remains `None`, so
+/// registration and dispatch are deliberately inactive even though their code
+/// paths are already present.
+/// TODO(#676)[deliberate-prudent]: adjudicate candidate INTID 105 from the cited
+/// MT6739 vendor DTS; if a recovery artifact is relied on, reproduce its FDT
+/// extraction and provenance, otherwise confirm the line on hardware, then set
+/// this to Some(n).
 pub(crate) const MUSB_IRQ: Option<u32> = None;
 
 // ---------------------------------------------------------------------------
@@ -165,10 +161,10 @@ pub(crate) const KPD_DEBOUNCE: usize = 0x18;
 
 /// GPIO controller MMIO base (`MT67xx` standard bank base).
 ///
-/// NOTE: standard `MT67xx` base — verify against the MT6739 TRM GPIO section.
-/// Mirrors haphe's `GPIO_BASE` (crates/haphe/src/gpio.rs); the #446 boot
-/// keypad reader scans the matrix through these registers because the KPD
-/// hardware block has no verified read-out register map.
+/// NOTE: generic `MT67xx` assumption, not an accepted AGM M7 board fact.
+/// The #446 boot reader currently scans through it because the KPD block has
+/// no verified read-out map; #880 requires source grounding and fail-closed
+/// device use before these transactions may execute.
 pub(crate) const GPIO_BASE: usize = 0x1000_5000;
 
 /// GPIO direction register bank offset (0 = input, 1 = output).
@@ -188,15 +184,15 @@ pub(crate) const GPIO_PULLSEL_BASE: usize = 0x400;
 
 /// Keypad matrix row GPIO pins (driven low in turn during a scan).
 ///
-/// NOTE: placeholder values pending AGM M7 schematic verification —
-/// mirrors haphe's `ROW_PINS`.
+/// NOTE: unsafe placeholder copied from haphe; #880 blocks device use until
+/// the AGM M7 matrix and pinmux are source-grounded.
 pub(crate) const KEYPAD_ROW_PINS: [u8; 4] = [40, 41, 42, 43];
 
 /// Keypad matrix column GPIO pins (inputs with pull-up; a pressed key
 /// shorts the driven-low row to the column, reading low).
 ///
-/// NOTE: placeholder values pending AGM M7 schematic verification —
-/// mirrors haphe's `COL_PINS`.
+/// NOTE: unsafe placeholder copied from haphe; #880 blocks device use until
+/// the AGM M7 matrix and pinmux are source-grounded.
 pub(crate) const KEYPAD_COL_PINS: [u8; 3] = [44, 45, 46];
 
 // ---------------------------------------------------------------------------
@@ -326,8 +322,9 @@ mod tests {
         assert!(!BOARD_NAME.is_empty());
     }
 
-    /// WHY (#666): `MUSB_IRQ` is `None` until hardware-confirmed (see its doc
-    /// comment). Guards the day it flips to `Some(n)` -- n must be a real
+    /// WHY (#666): `MUSB_IRQ` is `None` pending #676's source-evidence
+    /// adjudication or a hardware witness (see its doc comment). Guards the day
+    /// it flips to `Some(n)` -- n must be a real
     /// SPI (INTID >= 32; 0..31 are SGI/PPI, never a peripheral line), so a
     /// typo during the eventual hardware-confirmed edit cannot silently
     /// enable a reserved software/private interrupt line instead of a real

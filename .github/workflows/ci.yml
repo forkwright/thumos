@@ -87,8 +87,9 @@ jobs:
         run: scripts/check-llm-issue-refs.sh
 
   workspace:
-    # WHY: clippy (deny warnings) + the workspace test suite for the 13
-    # library crates. Concurrency pinned to 8 per CI.md § kanon-ci caps.
+    # WHY: clippy (deny warnings) + the workspace test suite for all 21
+    # workspace members (20 libraries plus the hypographe host tool).
+    # Concurrency pinned to 8 per CI.md § kanon-ci caps.
     #
     # WHY --locked (#757): without it, a dependency-resolving step silently
     # regenerates Cargo.lock when a manifest and the committed lock disagree

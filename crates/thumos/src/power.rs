@@ -1,13 +1,16 @@
-//! Power management: radio kill switches and CPU power governor.
+//! Power management: requested radio policy and CPU power governor.
 //!
 //! Two concerns live here:
 //!
-//! 1. **Radio kill switches** — GPIO-controlled power gates for cellular,
-//!    `WiFi`, BT, GPS, FM.  When off the hardware is physically disconnected
-//!    from power; software cannot override a hardware kill.
+//! 1. **Radio policy state** — requested states for cellular, `WiFi`, BT,
+//!    GPS, FM, and mesh. These are in-memory today, not GPIO/physical kills.
+//!    The M7 has no established physical switches, and #862 owns a valid
+//!    PWRAP/driver enforcement seam before any PMIC claim.
 //!
-//! 2. **CPU power governor** (REQ-19) — DVFS, core parking, and display
-//!    backlight timeout for the MT6739 Cortex-A53 cluster.
+//! 2. **CPU power governor** (REQ-19) — pure policy plus unsafe legacy DVFS/
+//!    MCDI device writes. The OPP/efuse/voltage/PLL and MCDI transaction
+//!    contracts are not source-grounded; #879 requires fail-closed actuation
+//!    before hardware use.
 //!
 //! ## MT6739 register map (governor)
 //!
@@ -17,10 +20,8 @@
 //! | `MCDI_BASE`     | `0x1000_DC00`   | Multi-Core Deep Idle control block   |
 //! | `MCDI_CORE_EN`  | `0x1000_DC04`   | Per-core power-down enable bitmask   |
 //!
-//! `ARMPLL_CON1` encoding used here matches the four frequency steps
-//! supported by the MT6739 stock DVFS table (1500 / 1200 / 900 / 600 MHz).
-//! The exact PCW (post-divider control word) values are documented in the
-//! MT6739 Clock Management Unit (CMU) specification rev 1.3 §4.2.
+//! These addresses and the four approximate values below are unverified
+//! scaffolding, not an accepted MT6739 OPP/transition contract (#879).
 
 // ---------------------------------------------------------------------------
 // MT6739 governor registers
@@ -32,9 +33,9 @@
 
 /// CPU frequency operating points.
 ///
-/// `repr(u32)` values are written directly to `ARMPLL_CON1`.  The PCW
-/// values are truncated approximations; a production kernel reads the
-/// exact values from the efuse OPP table during boot.
+/// `repr(u32)` values are approximate scaffolding and are still written by
+/// the legacy device path. The source does not read efuse/bin OPP data or
+/// perform the required voltage/clock transition; #879 makes this a device STOP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum CpuFreq {
@@ -179,7 +180,8 @@ pub(crate) fn idle() {
 /// * load > 70% → step frequency up one OPP
 /// * 30%–70% → hold current OPP
 ///
-/// The new OPP is written to `ARMPLL_CON1`.
+/// The legacy device path writes the approximate value directly to
+/// `ARMPLL_CON1`. This is not accepted or safe hardware actuation (#879).
 ///
 /// # Safety
 ///
@@ -194,9 +196,9 @@ pub(crate) fn evaluate_dvfs(load_percent: u8) {
         // WHY(qemu): virt models no MT6739 CMU; the ARMPLL write would
         // data-abort inside the timer IRQ. Governor state still updates.
         #[cfg(not(feature = "qemu"))]
-        // SAFETY: board::ARMPLL_CON1 is a valid MMIO register on the MT6739
-        // CMU block at 0x1000_C104.  Volatile write is required for hardware
-        // registers.  Called with IRQs disabled so no torn write.
+        // FIXME(#879): approximate PCW without efuse/voltage/clock switching
+        // must be disabled before an M7 run. This legacy write is not a
+        // source-grounded safe transition.
         unsafe {
             crate::mmio::write32(crate::board::ARMPLL_CON1, new_freq as u32);
         }
@@ -205,12 +207,11 @@ pub(crate) fn evaluate_dvfs(load_percent: u8) {
 
 /// Core-parking governor: power down unused secondary cores.
 ///
-/// When only one process is runnable, cores 1-3 can be parked.  The
-/// `cores_active` bitmask is updated and stubbed MCDI register writes
-/// are issued.  Bit 0 (core 0) is never cleared — the boot core always
-/// stays on.
+/// Pure policy updates `cores_active`; the legacy device path then issues an
+/// ungrounded one-shot MCDI write. It lacks the required acknowledgement,
+/// wakeup, rollback, and concurrency protocol (#879).
 ///
-/// MT6739 MCDI register addresses:
+/// Unverified candidate MT6739 MCDI addresses:
 /// * `0x1000_DC00` — `MCDI_BASE`
 /// * `0x1000_DC04` — `MCDI_CORE_EN`: bit N=1 powers down core N
 ///
@@ -231,10 +232,8 @@ pub(crate) fn evaluate_core_parking(runnable_count: usize) {
         // data-abort inside the timer IRQ. Governor state still updates.
         #[cfg(feature = "qemu")]
         let _ = park_mask;
-        // SAFETY: MCDI_CORE_EN is a valid MMIO register on the MT6739 MCDI
-        // block at 0x1000_DC04.  Stub write — production MCDI handshake
-        // requires additional synchronisation with each core's reset handler,
-        // which is not yet wired.
+        // FIXME(#879): this one-shot candidate-register write is not a valid
+        // source-grounded MCDI transaction and must be disabled before M7 use.
         #[cfg(not(feature = "qemu"))]
         unsafe {
             crate::mmio::write32(crate::board::MCDI_CORE_EN, park_mask);
@@ -371,28 +370,33 @@ pub enum Radio {
     All,
 }
 
-/// Power state of a radio.
+/// Requested/recorded policy state for a radio.
+///
+/// The variant names predate the current truth boundary. No variant is
+/// physical readback: On/Off are desired states and the two *Killed variants
+/// are sticky software markers. #862 owns PMIC/driver actuation and
+/// observation; #874 owns requested/applied/observed/failed state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PowerState {
-    /// Powered on and active.
+    /// Requested enabled.
     On,
-    /// Powered off (kill switch or software).
+    /// Requested disabled.
     Off,
-    /// Hardware kill switch active (software cannot override).
+    /// Sticky simulated/future-switch marker; not current GPIO readback.
     HardwareKilled,
-    /// Power cut via PMIC LDO disable (hardware kill, requires reboot).
+    /// Sticky modem-cut request marker; not proof that a PMIC rail changed.
     PmicKilled,
 }
 
-/// System power mode.
+/// Requested system radio-policy mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerMode {
-    /// All radios on, full performance.
+    /// Request all radios enabled and full performance.
     Full,
-    /// Cellular only, everything else off.
+    /// Request cellular enabled and the other radios disabled.
     CellOnly,
-    /// All radios off, RF silent.
+    /// Request every radio disabled; this does not prove RF silence.
     Silent,
     /// Airplane mode with `WiFi` (for local network only).
     LocalOnly,
@@ -405,7 +409,7 @@ pub(crate) struct PowerManager {
 }
 
 impl PowerManager {
-    /// Create a new power manager with all radios off.
+    /// Create a new power manager with every radio marked requested-off.
     pub(crate) fn new() -> Self {
         Self {
             states: [
@@ -420,10 +424,10 @@ impl PowerManager {
         }
     }
 
-    /// Get the power state of a radio.
+    /// Get the recorded requested/marker state of a radio.
     pub(crate) fn state(&self, radio: Radio) -> PowerState {
         if radio == Radio::All {
-            // All is "on" only if every radio is on
+            // All is recorded On only if every radio is recorded On.
             if self.states.iter().all(|(_, s)| *s == PowerState::On) {
                 PowerState::On
             } else {
@@ -437,8 +441,8 @@ impl PowerManager {
         }
     }
 
-    /// Set the power state of a radio.
-    /// Returns false if hardware kill switch or PMIC kill prevents the change.
+    /// Set the recorded policy state of a radio.
+    /// Returns false if a sticky simulated/future-kill marker prevents it.
     ///
     /// INVARIANT: once a radio reaches [`PowerState::HardwareKilled`] or
     /// [`PowerState::PmicKilled`], no software `set_state` call — for ANY
@@ -461,9 +465,8 @@ impl PowerManager {
 
         for (r, s) in &mut self.states {
             if *r == radio {
-                // INVARIANT: hardware/PMIC kill cannot be overridden by
-                // software, for any target state (not just On) — see the
-                // doc comment above.
+                // INVARIANT: the sticky simulated/future-kill marker cannot be
+                // overwritten through this in-memory policy API.
                 if *s == PowerState::HardwareKilled || *s == PowerState::PmicKilled {
                     return state == *s;
                 }
@@ -474,13 +477,11 @@ impl PowerManager {
         false
     }
 
-    /// Apply a power mode preset.
+    /// Record a requested power-mode preset.
     ///
-    /// Returns `true` if every radio in the preset reached its target
-    /// state. Returns `false` if any radio (typically one already
-    /// hardware/PMIC-killed) could not be moved -- in that case `mode()`
-    /// is left at its previous value instead of recording a mode that was
-    /// only partially applied.
+    /// Returns true if every in-memory entry accepted its target marker.
+    /// This is not an actuation/readback receipt. A sticky marker can reject
+    /// the request; then `mode()` retains the prior requested preset.
     pub(crate) fn apply_mode(&mut self, mode: PowerMode) -> bool {
         let all_ok = match mode {
             PowerMode::Full => self.set_state(Radio::All, PowerState::On),
@@ -516,8 +517,8 @@ impl PowerManager {
         self.mode
     }
 
-    /// Simulate hardware kill switch activation for a radio.
-    /// Once killed by hardware, only hardware can re-enable.
+    /// Record a simulated hardware-kill state for policy/tests.
+    /// This performs no GPIO or power operation.
     pub(crate) fn hardware_kill(&mut self, radio: Radio) {
         if radio == Radio::All {
             for (_, s) in &mut self.states {
@@ -532,40 +533,42 @@ impl PowerManager {
         }
     }
 
-    /// Execute a modem PMIC power cut.
+    /// Record a modem-cut request and invoke the unsafe legacy PMIC path.
     ///
-    /// Sets the cellular radio to [`PowerState::PmicKilled`] and triggers
-    /// the hardware power cut via PMIC VMODEM LDO disable.  After this call
-    /// the modem is physically unpowered and cannot be restarted without a
-    /// full system reboot.
+    /// Sets the cellular radio to [`PowerState::PmicKilled`] and invokes the
+    /// currently invalid direct-MMIO path tracked by #862. The state value is
+    /// not evidence that the modem is physically unpowered.
     ///
     /// # Safety
     ///
-    /// PMIC registers must be mapped.  Caller must be in privileged context.
+    /// No valid device-side safety argument exists for the current direct
+    /// PWRAP-base write. #862 must replace or disable it before M7 execution;
+    /// privileged context and address mapping alone do not make it valid.
     pub unsafe fn modem_power_cut(&mut self) {
         for (r, s) in &mut self.states {
             if *r == Radio::Cellular {
                 *s = PowerState::PmicKilled;
             }
         }
-        // WHY not(qemu): virt has no PMIC; the kill write would be a
-        // fictitious MMIO touch. The PmicKilled bookkeeping above is
-        // board-neutral and still records the kill.
-        // SAFETY: caller guarantees PMIC registers are mapped.
+        // WHY not(qemu): virt has no PMIC; the write would be a fictitious
+        // MMIO touch. PmicKilled records only that software requested a cut,
+        // never that hardware applied one.
+        // FIXME(#862): unsafe legacy call retained for current-tree truth;
+        // it must be fail-closed or source-grounded before device execution.
         #[cfg(not(feature = "qemu"))]
         unsafe {
             crate::ccci_logger::modem_power_cut();
         }
     }
 
-    /// Whether the modem has been PMIC-killed.
+    /// Whether software recorded the sticky modem-cut request marker.
     pub(crate) fn is_modem_pmic_killed(&self) -> bool {
         self.states
             .iter()
             .any(|(r, s)| *r == Radio::Cellular && *s == PowerState::PmicKilled)
     }
 
-    /// Count radios currently on.
+    /// Count radios currently marked requested-on.
     pub(crate) fn active_count(&self) -> usize {
         self.states
             .iter()
@@ -580,7 +583,7 @@ impl Default for PowerManager {
     }
 }
 
-/// Apply a security mode's radio policy to a power manager.
+/// Record a security mode's requested radio policy in a power manager.
 ///
 /// Maps boolean enable/disable flags from a [`ModePolicy`] to
 /// [`PowerState::On`] / [`PowerState::Off`] and calls
@@ -589,8 +592,8 @@ impl Default for PowerManager {
 /// security-relevant radio).
 ///
 /// Used by the boot sequence (Wave 8) and by [`ModeManager`] on mode
-/// transitions to enforce radio policy without coupling `security_mode`
-/// directly to `PowerManager` internals.
+/// transitions to record policy without coupling `security_mode` directly to
+/// `PowerManager` internals. No driver or PMIC actuation occurs here (#874).
 pub(crate) fn apply_mode_policy(policy: &crate::security_mode::ModePolicy, pm: &mut PowerManager) {
     let to_state = |enabled: bool| -> PowerState {
         if enabled {
@@ -1159,7 +1162,7 @@ mod tests {
         let pm = PowerManager::new();
         assert!(
             !pm.is_modem_pmic_killed(),
-            "modem not PMIC-killed initially"
+            "no modem-cut request marker initially"
         );
     }
 
@@ -1171,7 +1174,10 @@ mod tests {
                 *s = PowerState::PmicKilled;
             }
         }
-        assert!(pm.is_modem_pmic_killed(), "modem must be PMIC-killed");
+        assert!(
+            pm.is_modem_pmic_killed(),
+            "legacy state records the modem-cut request marker"
+        );
     }
 
     #[test]
@@ -1190,7 +1196,7 @@ mod tests {
         assert_eq!(
             pm.state(Radio::Cellular),
             PowerState::PmicKilled,
-            "PMIC-killed radio must stay killed"
+            "sticky modem-cut request marker must reject an On request"
         );
     }
 }

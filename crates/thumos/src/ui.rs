@@ -24,11 +24,11 @@
 //! `[u16]` framebuffer with `u16` RGB565 colors (see the `color` module
 //! below), a shape not yet shared with eidolon's `Framebuffer`/`Rgb565`.
 
-// WHY: kinit renders one initial home frame; full screen routing and input
-// dispatch through UiManager are still pending.
+// WHY: kardia owns the screen stack and exercises routing/input under QEMU,
+// but some screens and the non-qemu service-loop input source remain #753 work.
 #![expect(
     dead_code,
-    reason = "UI framework has only initial home-frame kinit wiring (#753; tier in docs/capability-inventory.toml)"
+    reason = "UI routing is kernel-wired, with incomplete screens and non-qemu input integration tracked by #753"
 )]
 
 extern crate alloc;
@@ -765,7 +765,7 @@ pub(crate) fn screen_kind(id: ScreenId) -> ScreenKind {
         ScreenId::Privacy => ScreenKind::Privacy,
         ScreenId::RadioControl => ScreenKind::RadioControl,
         ScreenId::ThreatMonitor => ScreenKind::ThreatMonitor,
-        // Compiled screens with no route into KernelState yet (#737 tracks
+        // Compiled screens with no route into KernelState yet (#753 tracks
         // wiring each in): Alarms/Timer/Stopwatch (screen_alarm.rs),
         // InCall (screen_call.rs), Contacts (screen_contacts.rs),
         // Nous (screen_nous.rs), WifiSettings/BtSettings/About
@@ -796,7 +796,8 @@ pub enum ScreenAction {
     Back,
     /// Exit the UI (return to kernel idle).
     Exit,
-    /// Trigger modem PMIC power cut (emergency kill).
+    /// Request that the privileged policy layer turn the modem off.
+    /// This is not evidence of PMIC actuation or readback (#874, #862).
     KillModem,
     /// Duress authentication detected — start the silent panic/wipe sequence.
     /// The unlock looks normal on screen; this is the only navigation-channel
@@ -901,11 +902,11 @@ impl UiManager {
     /// Returns `true` if the UI should exit (e.g., from `ScreenAction::Exit`).
     // WHY: Exit, KillModem, and Duress all return true, but each does so for
     // a different reason (documented per-arm below: real UI exit vs. a
-    // privileged hardware action vs. yielding to the panic sequence).
+    // privileged policy request vs. yielding to the panic sequence).
     // Merging them into one arm would blur those distinct rationales.
     #[expect(
         clippy::match_same_arms,
-        reason = "Exit, KillModem, and Duress all return true for different reasons -- real UI exit vs. a privileged hardware action vs. yielding to the panic sequence; merging would blur those distinct rationales"
+        reason = "Exit, KillModem, and Duress all return true for different reasons -- real UI exit vs. a privileged policy request vs. yielding to the panic sequence; merging would blur those distinct rationales"
     )]
     pub(crate) fn apply_action(&mut self, action: ScreenAction) -> bool {
         match action {
@@ -919,10 +920,10 @@ impl UiManager {
                 false
             }
             ScreenAction::Exit => true,
-            // WHY: KillModem is a hardware action dispatched by the kernel
-            // event loop, not a navigation action. The UI manager signals
-            // it upward by returning true (same as Exit) so the caller can
-            // execute the PMIC power cut in privileged context.
+            // WHY: KillModem is a legacy name for a requested policy action,
+            // not proof of hardware effect. The UI manager signals it upward
+            // so #874's policy layer can authorize/record it; #862 separately
+            // blocks the current invalid PMIC write.
             ScreenAction::KillModem => true,
             // WHY: Duress, like KillModem, is a privileged action the kernel
             // event loop executes (start panic/wipe) in privileged context.
