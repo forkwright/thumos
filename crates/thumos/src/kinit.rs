@@ -621,6 +621,7 @@ pub unsafe fn run() -> ! {
     // Step 5: Exception handlers + timer
     // -----------------------------------------------------------------------
     serial.log("[init] Exceptions + timer\r\n");
+    serial.log(" CPU DVFS/core parking unavailable (no source-grounded actuator, #879)\r\n");
     // SAFETY: called once after GIC and process init. exceptions::init() installs
     // the vector table and enables IRQ delivery; the GIC and process table must
     // already be initialized before interrupts are unmasked.

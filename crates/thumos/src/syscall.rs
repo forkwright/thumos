@@ -441,12 +441,11 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
         Syscall::Uptime => crate::exceptions::uptime_ms() as u32,
         Syscall::Sleep => {
             const TICK_MS: u64 = 10;
-            // WHY (#264): mirror sys_nanosleep's pattern instead of a bare
+            // WHY: #264 mirrors sys_nanosleep's pattern instead of a bare
             // uptime_ms() busy-wait that never touched process state — mark
-            // the process Sleeping with its wake tick before waiting so
-            // runnable_count() and any Sleeping-aware scheduler logic see
-            // this process as blocked for the sleep window, not spuriously
-            // Running.
+            // the process Sleeping with its wake tick before waiting so the
+            // scheduler sees this process as blocked for the sleep window,
+            // not spuriously Running.
             let ms = u64::from(arg0);
             let ticks_needed = ms.saturating_add(TICK_MS - 1) / TICK_MS;
             let wake_tick = crate::exceptions::ticks().saturating_add(ticks_needed);

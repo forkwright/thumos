@@ -352,17 +352,11 @@ fn irq_handler_body() {
         // Reset timer for next tick
         timer::set_ms(TICK_MS);
 
-        // REQ-19b: DVFS — estimate load as a simple binary sample.
-        // WHY: a single-tick sample (running vs idle) is the coarsest
-        // estimate available without per-process accounting.  The rolling
-        // average inside evaluate_dvfs smooths over LOAD_HISTORY_LEN ticks.
-        let runnable = process::runnable_count();
-        // 100 if any non-idle work exists, 0 if only the idle process runs.
-        let load_sample: u8 = if runnable > 1 { 100 } else { 0 };
-        power::evaluate_dvfs(load_sample);
-
-        // REQ-19c: core parking.
-        power::evaluate_core_parking(runnable);
+        // SAFETY: #879 keeps CPU DVFS/core-parking calls absent. The previous
+        // path issued approximate ARMPLL/MCDI writes from this early-boot IRQ
+        // without a source-grounded transition contract. #879 owns any future
+        // actuator; a static gate rejects known legacy identifiers and
+        // exact-form values.
 
         // REQ-19d: display backlight timeout.
         let now = ticks();

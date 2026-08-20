@@ -212,15 +212,6 @@ pub(crate) const WLAN_BASE: usize = 0x180F_0000;
 /// Watchdog (WDT) controller MMIO base.
 pub(crate) const WDT_BASE: usize = 0x1000_7000;
 
-/// ARMPLL control register 1 (DVFS clock source switch).
-pub(crate) const ARMPLL_CON1: usize = 0x1000_C104;
-
-/// MCDI (multi-core deep-idle) controller MMIO base.
-pub(crate) const MCDI_BASE: usize = 0x1000_DC00;
-
-/// MCDI per-core enable register (MCDI + 0x04).
-pub(crate) const MCDI_CORE_EN: usize = MCDI_BASE + 0x04;
-
 /// PMIC wrapper (PWRAP, MT6357 access path) MMIO base.
 pub(crate) const PWRAP_BASE: usize = 0x1000_D000;
 
@@ -318,7 +309,6 @@ mod tests {
     #[test]
     fn derived_register_addresses_are_self_consistent() {
         assert_eq!(DSI0_CMD_FIFO, 0x1400_D200);
-        assert_eq!(MCDI_CORE_EN, 0x1000_DC04);
         assert!(!BOARD_NAME.is_empty());
     }
 

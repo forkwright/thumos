@@ -181,9 +181,11 @@ jobs:
         # separate compile — placement in the job matters.
         run: scripts/check-target-test-ledger.sh
       - name: Board-seam invariant check (#534)
-        # WHY (#534): the two-board reality is structural, not prose — reds
-        # on any MT6739_* identifier outside board::m7 or any board-MMIO
-        # value re-declared as a const outside board/. Cheap, source-level.
+        # WHY: #534 makes the two-board reality structural, not prose — reds
+        # on any MT6739_* identifier outside board::m7, any board-MMIO value
+        # re-declared as a const outside board/, or known exact-form PWRAP/
+        # legacy CPU-power spellings and common two-literal expressions before
+        # #862/#879 land. Cheap, source-level.
         run: scripts/check-board-seam.sh
       - name: Convergence ratchet check (#545)
         # WHY (#545): kernel↔workspace duplication only ever burns down —
