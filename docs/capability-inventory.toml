@@ -89,7 +89,7 @@ tracking_reason = "Production timeout/action integration is software work tracke
 id = "power-policy"
 modules = ["power"]
 tier = "kernel-wired"
-notes = "PowerManager policy state is boot/service-loop reachable, but radio state changes are in-memory requests only. A modem-cut request now records a sticky marker without PMIC/AP MMIO; #862 owns source-grounded actuation and readback. #874 owns requested/applied/observed/failed semantics and removal of the uncalibrated automatic request. Approximate DVFS/MCDI device writes are not source-grounded (#879). All three are software STOPs before hardware."
+notes = "PowerManager policy state is boot/service-loop reachable, but radio state changes are in-memory requests only. A modem-cut request records a sticky marker without PMIC/AP MMIO; #862 owns source-grounded actuation and readback. #874 owns requested/applied/observed/failed semantics and removal of the uncalibrated automatic request. CPU performance/core policy is a host-test-only candidate; runtime DVFS/MCDI requests and actuation are absent, with #879 still owning source-grounded policy, transaction, readback, and qualification. All three are software STOPs before hardware."
 
 [[capability]]
 id = "watchdog"

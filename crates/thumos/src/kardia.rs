@@ -122,11 +122,12 @@ const QEMU_WAKE_CEILING: u32 = 5_000_000;
 /// plus one non-blocking step in [`Self::poll_all`] -- subject to the
 /// invariant above.
 ///
-/// NOTE (power split-brain, #879): `power` is persisted here, but the timer
-/// IRQ independently drives DVFS/core-parking/backlight on `power`-module
-/// statics. #879 owns safe source-grounded CPU actuation and one policy owner;
-/// #874 owns requested/applied/observed radio state. #862 is limited to the
-/// PMIC/PWRAP transaction seam.
+/// NOTE: Power policy is held here, while the timer IRQ
+/// independently owns only display-timeout request bookkeeping in
+/// `power`-module statics.
+/// CPU DVFS/core-parking calls are absent pending #879's source-grounded
+/// policy and actuator. #874 owns requested/applied/observed radio state;
+/// #862 is limited to the PMIC/PWRAP transaction seam.
 pub(crate) struct KernelState {
     pub(crate) boot: BootState,
     #[expect(

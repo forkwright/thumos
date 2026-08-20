@@ -24,11 +24,12 @@ debug-console = []
 production = []
 # WHY: QEMU `-machine virt` bring-up harness -- remaps UART/GIC base constants
 # (kconfig.rs), swaps the MTK UART driver for a PL011 (uart_pl011.rs), no-ops
-# SoC-only MMIO on the timer-IRQ path (watchdog/DVFS/MCDI/DSI), skips init of
-# hardware virt does not model (eMMC/display/keypad/USB/CCCI), and reports
+# modeled watchdog/display operations, skips init of hardware virt does not
+# model (eMMC/display/keypad/USB/CCCI), and reports
 # boot outcome via semihosting exit codes. Never enabled by default; the
-# MT6739 build is unchanged without it. Mutually exclusive with `production`
-# (see main.rs compile_error!).
+# MT6739 build is unchanged without it. CPU DVFS/core-parking actuation is
+# absent from every runtime build pending #879. Mutually exclusive with
+# `production` (see main.rs compile_error!).
 qemu = []
 # WHY (#487 fault-handling): CI fault-injection harness -- executes a deliberate
 # PL1 `udf` after boot-complete so CI permanently pins the kernel-fault-HALTS

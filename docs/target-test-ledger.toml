@@ -453,9 +453,9 @@ fidelity = "#868 owns sys_pipe's unchecked output range; #871 owns caller-VAS an
 
 [[module]]
 name = "power"
-tests = 29
+tests = 30
 mechanism = "host"
-fidelity = "In-memory policy is host-covered; #874 owns requested/applied/observed semantics and removes automatic cuts, #862 owns valid PWRAP actuation, and #879 owns safe source-grounded DVFS/MCDI before hardware"
+fidelity = "Radio request policy and a test-only logical CPU policy candidate are host-covered. Runtime CPU requests/actuation are absent; #879 owns source-grounded policy, transactions, readback, and qualification. #874 owns radio requested/applied/observed semantics and automatic-request removal; #862 owns valid PWRAP actuation."
 
 [[module]]
 name = "process"

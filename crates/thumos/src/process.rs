@@ -1268,24 +1268,6 @@ pub(crate) fn current_pid() -> Pid {
     unsafe { CURRENT }
 }
 
-/// Count processes in Ready or Running state.
-///
-/// Used by the power governor to decide how many cores to keep active.
-/// Called from the timer IRQ handler with interrupts disabled — safe to
-/// read PROCS without a lock on single-core `ARMv7`.
-pub(crate) fn runnable_count() -> usize {
-    // SAFETY: called from timer IRQ handler (single-core, IRQs disabled).
-    // addr_of! avoids an intermediate reference to the static mut.
-    unsafe {
-        let procs = &*core::ptr::addr_of!(PROCS);
-        procs
-            .iter()
-            .flatten()
-            .filter(|p| p.state == State::Ready || p.state == State::Running)
-            .count()
-    }
-}
-
 /// Simple round-robin scheduler. Called FROM the timer tick handler.
 /// Returns the PID to switch to (may be the same as current).
 ///

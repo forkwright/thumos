@@ -1,4 +1,4 @@
-//! Power management: requested radio policy and CPU power governor.
+//! Power management: requested radio policy and display timeout requests.
 //!
 //! Two concerns live here:
 //!
@@ -7,67 +7,92 @@
 //!    The M7 has no established physical switches, and #862 owns a valid
 //!    PWRAP/driver enforcement seam before any PMIC claim.
 //!
-//! 2. **CPU power governor** (REQ-19) — pure policy plus unsafe legacy DVFS/
-//!    MCDI device writes. The OPP/efuse/voltage/PLL and MCDI transaction
-//!    contracts are not source-grounded; #879 requires fail-closed actuation
-//!    before hardware use.
-//!
-//! ## MT6739 register map (governor)
-//!
-//! | Register      | Address       | Purpose                              |
-//! |---------------|---------------|--------------------------------------|
-//! | `ARMPLL_CON1`   | `0x1000_C104`   | CPU PLL divider → frequency          |
-//! | `MCDI_BASE`     | `0x1000_DC00`   | Multi-Core Deep Idle control block   |
-//! | `MCDI_CORE_EN`  | `0x1000_DC04`   | Per-core power-down enable bitmask   |
-//!
-//! These addresses and the four approximate values below are unverified
-//! scaffolding, not an accepted MT6739 OPP/transition contract (#879).
+//! 2. **Display timeout requests** — an input hook can record activity, but no
+//!    production input caller is wired yet (#753). The timer IRQ records a
+//!    sleep request before the unresolved display transport runs (#854); this
+//!    module has no panel/backlight readback. CPU DVFS and core-parking
+//!    actuation are absent from every runtime build: #879 must source-ground
+//!    the OPP, efuse/binning, voltage/clock, acknowledgement, timeout,
+//!    rollback, and readback contracts before a device backend exists.
 
-// ---------------------------------------------------------------------------
-// MT6739 governor registers
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// CPU frequency steps
-// ---------------------------------------------------------------------------
-
-/// CPU frequency operating points.
-///
-/// `repr(u32)` values are approximate scaffolding and are still written by
-/// the legacy device path. The source does not read efuse/bin OPP data or
-/// perform the required voltage/clock transition; #879 makes this a device STOP.
+/// Logical performance levels used only to test the unaccepted policy
+/// candidate. They do not name frequencies or encode device register values.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum CpuFreq {
-    /// 1 500 MHz — full performance (PCW `0x009_6000` ≈ `0x0096_0000`).
-    Mhz1500 = 0x0096_0000,
-    /// 1 200 MHz — mid-high (PCW ≈ `0x0078_0000`).
-    Mhz1200 = 0x0078_0000,
-    /// 900 MHz — mid-low (PCW ≈ `0x005A_0000`).
-    Mhz900 = 0x005A_0000,
-    /// 600 MHz — low power (PCW ≈ `0x003C_0000`).
-    Mhz600 = 0x003C_0000,
+enum CandidatePerformanceLevel {
+    Minimum,
+    Reduced,
+    Elevated,
+    Maximum,
 }
 
-impl CpuFreq {
-    /// Return the next lower frequency step, or `None` if already minimum.
+#[cfg(test)]
+impl CandidatePerformanceLevel {
+    /// Return the next lower logical level, or `None` if already minimum.
     fn step_down(self) -> Option<Self> {
         match self {
-            Self::Mhz1500 => Some(Self::Mhz1200),
-            Self::Mhz1200 => Some(Self::Mhz900),
-            Self::Mhz900 => Some(Self::Mhz600),
-            Self::Mhz600 => None,
+            Self::Maximum => Some(Self::Elevated),
+            Self::Elevated => Some(Self::Reduced),
+            Self::Reduced => Some(Self::Minimum),
+            Self::Minimum => None,
         }
     }
 
-    /// Return the next higher frequency step, or `None` if already maximum.
+    /// Return the next higher logical level, or `None` if already maximum.
     fn step_up(self) -> Option<Self> {
         match self {
-            Self::Mhz600 => Some(Self::Mhz900),
-            Self::Mhz900 => Some(Self::Mhz1200),
-            Self::Mhz1200 => Some(Self::Mhz1500),
-            Self::Mhz1500 => None,
+            Self::Minimum => Some(Self::Reduced),
+            Self::Reduced => Some(Self::Elevated),
+            Self::Elevated => Some(Self::Maximum),
+            Self::Maximum => None,
         }
+    }
+}
+
+/// Logical core request used only by the test-only policy candidate.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateCoreRequest {
+    BootCoreOnly,
+    AllAvailable,
+}
+
+/// Rolling load history depth for the test-only candidate.
+#[cfg(test)]
+const LOAD_HISTORY_LEN: usize = 4;
+
+/// Host-test-only CPU policy candidate.
+///
+/// This state is deliberately separate from runtime display/power state so no
+/// device or QEMU build can treat an unaccepted heuristic as requested or
+/// applied CPU behavior (#879).
+#[cfg(test)]
+struct CandidateCpuPolicy {
+    requested_performance: CandidatePerformanceLevel,
+    requested_cores: CandidateCoreRequest,
+    load_history: [u8; LOAD_HISTORY_LEN],
+    load_idx: usize,
+    load_samples: usize,
+}
+
+#[cfg(test)]
+impl CandidateCpuPolicy {
+    const fn new() -> Self {
+        Self {
+            requested_performance: CandidatePerformanceLevel::Maximum,
+            requested_cores: CandidateCoreRequest::AllAvailable,
+            load_history: [0u8; LOAD_HISTORY_LEN],
+            load_idx: 0,
+            load_samples: 0,
+        }
+    }
+
+    fn requested_performance(&self) -> CandidatePerformanceLevel {
+        self.requested_performance
+    }
+
+    fn requested_cores(&self) -> CandidateCoreRequest {
+        self.requested_cores
     }
 }
 
@@ -78,80 +103,39 @@ impl CpuFreq {
 /// Default backlight timeout: 30 seconds at 10 ms per tick.
 const BACKLIGHT_TIMEOUT_TICKS: u64 = 3_000;
 
-// ---------------------------------------------------------------------------
-// CPU governor state
-// ---------------------------------------------------------------------------
-
-/// Rolling load history depth (ticks).
-const LOAD_HISTORY_LEN: usize = 4;
-
-/// CPU governor and display timeout state.
+/// Display timeout request bookkeeping, not physical panel/backlight state.
 ///
-/// One global instance is accessed from the timer IRQ handler only
-/// (single-core `ARMv7`, IRQs disabled during the handler).  No lock needed.
-pub(crate) struct CpuGovernor {
-    /// Current CPU frequency operating point.
-    current_freq: CpuFreq,
-    /// Active core bitmask.  Bit 0 = core 0 (always on), bits 1-3 = secondary.
-    cores_active: u8,
-    /// Display backlight on/off.
-    backlight_on: bool,
+/// One global instance is accessed only from non-reentrant IRQ context on
+/// single-core `ARMv7`; IRQs are disabled during each handler, so no lock is
+/// needed. The timer IRQ is wired; [`notify_input`] remains an unwired hook.
+struct DisplayTimeoutState {
+    /// Last recorded backlight request; not hardware readback.
+    backlight_requested_on: bool,
     /// Tick timestamp of the last input event.
     last_input_tick: u64,
     /// Backlight off timeout in ticks.
     backlight_timeout_ticks: u64,
-    /// Rolling CPU load history (load % per tick, most-recent last).
-    load_history: [u8; LOAD_HISTORY_LEN],
-    /// Write pointer into `load_history` (circular).
-    load_idx: usize,
-    /// Number of valid samples in `load_history` (saturates at
-    /// `LOAD_HISTORY_LEN` once the ring buffer has filled once after boot).
-    load_samples: usize,
 }
 
-impl CpuGovernor {
-    /// Create a new governor starting at full performance, all cores active,
-    /// backlight on.
-    pub(crate) const fn new() -> Self {
+impl DisplayTimeoutState {
+    /// Create timeout bookkeeping with an initial requested-on state.
+    const fn new() -> Self {
         Self {
-            current_freq: CpuFreq::Mhz1500,
-            cores_active: 0b0000_1111, // cores 0-3 active
-            backlight_on: true,
+            backlight_requested_on: true,
             last_input_tick: 0,
             backlight_timeout_ticks: BACKLIGHT_TIMEOUT_TICKS,
-            load_history: [0u8; LOAD_HISTORY_LEN],
-            load_idx: 0,
-            load_samples: 0,
         }
     }
 
-    /// Current CPU frequency.
-    pub(crate) fn current_freq(&self) -> CpuFreq {
-        self.current_freq
-    }
-
-    /// Current active-core bitmask.
-    pub(crate) fn cores_active(&self) -> u8 {
-        self.cores_active
-    }
-
-    /// Whether the display backlight is on.
-    pub(crate) fn backlight_on(&self) -> bool {
-        self.backlight_on
+    /// Last recorded backlight request; not applied or observed state.
+    #[cfg(test)]
+    fn backlight_requested_on(&self) -> bool {
+        self.backlight_requested_on
     }
 }
 
-// ---------------------------------------------------------------------------
-// Global governor instance
-// ---------------------------------------------------------------------------
-
-/// Global CPU governor.  Written only from the timer IRQ handler on a
-/// single-core `ARMv7` with interrupts disabled — no lock needed.
-static mut GOVERNOR: CpuGovernor = CpuGovernor::new();
-
-// ---------------------------------------------------------------------------
-// Public API — called from scheduler / timer IRQ handler
-// ---------------------------------------------------------------------------
+/// Global display-timeout requests, written only from IRQ context.
+static mut DISPLAY_TIMEOUT: DisplayTimeoutState = DisplayTimeoutState::new();
 
 /// Execute `wfi` and suspend the CPU until the next interrupt.
 ///
@@ -171,89 +155,20 @@ pub(crate) fn idle() {
     }
 }
 
-/// DVFS governor: adjust CPU frequency based on load.
+/// Record input and request the backlight on.
 ///
-/// `load_percent` is the fraction of the last tick the CPU was running a
-/// non-idle process (0–100).  The threshold governor:
-///
-/// * load < 30% → step frequency down one OPP
-/// * load > 70% → step frequency up one OPP
-/// * 30%–70% → hold current OPP
-///
-/// The legacy device path writes the approximate value directly to
-/// `ARMPLL_CON1`. This is not accepted or safe hardware actuation (#879).
-///
-/// # Safety
-///
-/// Called from the timer IRQ handler (interrupts disabled, single-core).
-pub(crate) fn evaluate_dvfs(load_percent: u8) {
-    // SAFETY: GOVERNOR is only accessed from the timer IRQ handler.
-    let gov = unsafe { &mut *core::ptr::addr_of_mut!(GOVERNOR) };
-    let prev_freq = gov.current_freq;
-    let new_freq = gov.apply_dvfs(load_percent);
-
-    if new_freq != prev_freq {
-        // WHY(qemu): virt models no MT6739 CMU; the ARMPLL write would
-        // data-abort inside the timer IRQ. Governor state still updates.
-        #[cfg(not(feature = "qemu"))]
-        // FIXME(#879): approximate PCW without efuse/voltage/clock switching
-        // must be disabled before an M7 run. This legacy write is not a
-        // source-grounded safe transition.
-        unsafe {
-            crate::mmio::write32(crate::board::ARMPLL_CON1, new_freq as u32);
-        }
-    }
-}
-
-/// Core-parking governor: power down unused secondary cores.
-///
-/// Pure policy updates `cores_active`; the legacy device path then issues an
-/// ungrounded one-shot MCDI write. It lacks the required acknowledgement,
-/// wakeup, rollback, and concurrency protocol (#879).
-///
-/// Unverified candidate MT6739 MCDI addresses:
-/// * `0x1000_DC00` — `MCDI_BASE`
-/// * `0x1000_DC04` — `MCDI_CORE_EN`: bit N=1 powers down core N
-///
-/// # Safety
-///
-/// Called from the timer IRQ handler (interrupts disabled, single-core).
-pub(crate) fn evaluate_core_parking(runnable_count: usize) {
-    // SAFETY: GOVERNOR is only accessed from the timer IRQ handler.
-    let gov = unsafe { &mut *core::ptr::addr_of_mut!(GOVERNOR) };
-    let prev_mask = gov.cores_active;
-    let new_mask = gov.apply_core_parking(runnable_count);
-
-    if new_mask != prev_mask {
-        // Write inverse mask to MCDI_CORE_EN: bit N=1 → power down core N.
-        // Core 0 is never set here (bit 0 of the inverse is always 0).
-        let park_mask = u32::from(!new_mask & 0b0000_1110);
-        // WHY(qemu): virt models no MT6739 MCDI block; the write would
-        // data-abort inside the timer IRQ. Governor state still updates.
-        #[cfg(feature = "qemu")]
-        let _ = park_mask;
-        // FIXME(#879): this one-shot candidate-register write is not a valid
-        // source-grounded MCDI transaction and must be disabled before M7 use.
-        #[cfg(not(feature = "qemu"))]
-        unsafe {
-            crate::mmio::write32(crate::board::MCDI_CORE_EN, park_mask);
-        }
-    }
-}
-
-/// Reset the backlight timeout on keypad or touch input.
-///
-/// Call this from the keypad / touch interrupt handler whenever the user
-/// produces input.
+/// No production caller is wired yet (#753). A future keypad/touch IRQ path
+/// may call this only after its input producer and display transport are
+/// accepted; the request is not panel/backlight readback (#854).
 ///
 /// # Safety
 ///
 /// Called from an IRQ handler (interrupts disabled, single-core).
 pub(crate) fn notify_input(current_tick: u64) {
-    // SAFETY: GOVERNOR is only accessed from IRQ context.
-    let gov = unsafe { &mut *core::ptr::addr_of_mut!(GOVERNOR) };
-    let woke = gov.apply_notify_input(current_tick);
-    if woke {
+    // SAFETY: DISPLAY_TIMEOUT is only accessed from non-reentrant IRQ context.
+    let state = unsafe { &mut *core::ptr::addr_of_mut!(DISPLAY_TIMEOUT) };
+    let wake_requested = state.record_input_request(current_tick);
+    if wake_requested {
         // SAFETY: DSI0 is active when display is in Suspended state and
         // the display subsystem has been initialised.  The resume sequence
         // exits Sleep-In mode per GC9306 datasheet §8.2.
@@ -263,7 +178,7 @@ pub(crate) fn notify_input(current_tick: u64) {
     }
 }
 
-/// Check whether the backlight timeout has elapsed and sleep the display.
+/// Check whether the timeout elapsed and record a display-sleep request.
 ///
 /// Call this once per scheduler tick.
 ///
@@ -271,10 +186,10 @@ pub(crate) fn notify_input(current_tick: u64) {
 ///
 /// Called from the timer IRQ handler (interrupts disabled, single-core).
 pub(crate) fn check_backlight_timeout(current_tick: u64) {
-    // SAFETY: GOVERNOR is only accessed from the timer IRQ handler.
-    let gov = unsafe { &mut *core::ptr::addr_of_mut!(GOVERNOR) };
-    let turned_off = gov.apply_backlight_timeout(current_tick);
-    if turned_off {
+    // SAFETY: DISPLAY_TIMEOUT is only accessed from the timer IRQ handler.
+    let state = unsafe { &mut *core::ptr::addr_of_mut!(DISPLAY_TIMEOUT) };
+    let sleep_requested = state.record_timeout_request(current_tick);
+    if sleep_requested {
         // SAFETY: DSI0 is active and the display pipeline is in Active state.
         // Sleep-In sequence follows GC9306 datasheet §8.1.
         unsafe {
@@ -399,7 +314,7 @@ impl PowerState {
 /// Requested system radio-policy mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerMode {
-    /// Request all radios enabled and full performance.
+    /// Request all radios enabled.
     Full,
     /// Request cellular enabled and the other radios disabled.
     CellOnly,
@@ -607,77 +522,74 @@ pub(crate) fn apply_mode_policy(policy: &crate::security_mode::ModePolicy, pm: &
     pm.set_state(Radio::Fm, PowerState::Off);
 }
 
-// ---------------------------------------------------------------------------
-// Testable governor logic (no MMIO side-effects)
-// ---------------------------------------------------------------------------
-
-impl CpuGovernor {
-    /// Apply DVFS logic and return the new frequency without touching hardware.
+#[cfg(test)]
+impl CandidateCpuPolicy {
+    /// Update the logical performance request without touching hardware.
     ///
-    /// Used by unit tests and as the pure core called by `evaluate_dvfs`.
-    pub(crate) fn apply_dvfs(&mut self, load_percent: u8) -> CpuFreq {
+    /// This four-sample, 30/70 deadband policy is a candidate retained for host
+    /// tests only. It is not compiled into QEMU or device runtimes and is not
+    /// an accepted MT6739 request or actuation contract (#879).
+    fn update_performance_request(&mut self, load_percent: u8) -> CandidatePerformanceLevel {
         self.load_history[self.load_idx] = load_percent;
         self.load_idx = (self.load_idx + 1) % LOAD_HISTORY_LEN;
         if self.load_samples < LOAD_HISTORY_LEN {
             self.load_samples += 1;
         }
 
-        // WHY rolling average over the filled portion of load_history, not
-        // raw load_percent: a single-tick sample is the coarsest estimate
-        // available; averaging over load_samples ticks is what
-        // load_history exists for -- using the instantaneous sample
-        // directly (the previous behavior) left load_history write-only
-        // and defeated the smoothing exceptions.rs's DVFS call-site doc
-        // already claims happens here. Averaging only over load_samples
-        // (not the fixed LOAD_HISTORY_LEN) avoids diluting the first few
-        // post-boot samples with phantom zeros from the not-yet-filled
-        // window -- load_idx writes sequentially from 0 during warm-up, so
-        // [..load_samples] is exactly the written slots.
+        // WHY: averaging the filled portion preserves the candidate's intended
+        // smoothing without diluting warm-up samples with phantom zeros. During
+        // warm-up, load_idx writes sequentially from zero, so [..load_samples]
+        // contains exactly the initialized slots.
         let sum: usize = self.load_history[..self.load_samples]
             .iter()
             .map(|&l| usize::from(l))
             .sum();
         let avg_load = sum / self.load_samples;
 
-        let new_freq = if avg_load < 30 {
-            self.current_freq.step_down().unwrap_or(self.current_freq)
+        let new_request = if avg_load < 30 {
+            self.requested_performance
+                .step_down()
+                .unwrap_or(self.requested_performance)
         } else if avg_load > 70 {
-            self.current_freq.step_up().unwrap_or(self.current_freq)
+            self.requested_performance
+                .step_up()
+                .unwrap_or(self.requested_performance)
         } else {
-            self.current_freq
+            self.requested_performance
         };
-        self.current_freq = new_freq;
-        new_freq
+        self.requested_performance = new_request;
+        new_request
     }
 
-    /// Apply core-parking logic and return the new bitmask without touching hardware.
-    pub(crate) fn apply_core_parking(&mut self, runnable_count: usize) -> u8 {
-        let new_mask: u8 = if runnable_count <= 1 {
-            0b0000_0001
+    /// Update the logical core request without touching hardware.
+    fn update_core_request(&mut self, runnable_count: usize) -> CandidateCoreRequest {
+        let new_request = if runnable_count <= 1 {
+            CandidateCoreRequest::BootCoreOnly
         } else {
-            0b0000_1111
+            CandidateCoreRequest::AllAvailable
         };
-        self.cores_active = new_mask;
-        new_mask
+        self.requested_cores = new_request;
+        new_request
     }
+}
 
-    /// Apply backlight timeout logic.  Returns `true` if the backlight just
-    /// turned off.
-    pub(crate) fn apply_backlight_timeout(&mut self, current_tick: u64) -> bool {
-        if self.backlight_on
+impl DisplayTimeoutState {
+    /// Record timeout policy. Returns `true` for a new sleep request.
+    fn record_timeout_request(&mut self, current_tick: u64) -> bool {
+        if self.backlight_requested_on
             && current_tick.saturating_sub(self.last_input_tick) > self.backlight_timeout_ticks
         {
-            self.backlight_on = false;
+            self.backlight_requested_on = false;
             return true;
         }
         false
     }
 
-    /// Record input and return `true` if the display was woken.
-    pub(crate) fn apply_notify_input(&mut self, current_tick: u64) -> bool {
+    /// Record input policy. Returns `true` for a new wake request.
+    fn record_input_request(&mut self, current_tick: u64) -> bool {
         self.last_input_tick = current_tick;
-        if !self.backlight_on {
-            self.backlight_on = true;
+        if !self.backlight_requested_on {
+            self.backlight_requested_on = true;
             return true;
         }
         false
@@ -688,184 +600,237 @@ impl CpuGovernor {
 mod tests {
     use super::*;
 
-    // -----------------------------------------------------------------------
-    // Governor tests (REQ-19)
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn dvfs_scales_down_on_low_load() {
-        let mut gov = CpuGovernor::new();
-        assert_eq!(gov.current_freq(), CpuFreq::Mhz1500);
-        let freq = gov.apply_dvfs(20); // load 20% < 30%
-        assert_eq!(freq, CpuFreq::Mhz1200, "low load must step frequency down");
-    }
-
-    #[test]
-    fn dvfs_scales_up_on_high_load() {
-        let mut gov = CpuGovernor::new();
-        // Start at minimum so there is room to scale up.
-        gov.current_freq = CpuFreq::Mhz600;
-        let freq = gov.apply_dvfs(80); // load 80% > 70%
-        assert_eq!(freq, CpuFreq::Mhz900, "high load must step frequency up");
-    }
-
-    #[test]
-    fn dvfs_holds_on_mid_load() {
-        let mut gov = CpuGovernor::new();
-        gov.current_freq = CpuFreq::Mhz1200;
-        let freq = gov.apply_dvfs(50); // 30% ≤ 50% ≤ 70%
+    fn candidate_policy_steps_down_on_low_load() {
+        let mut gov = CandidateCpuPolicy::new();
         assert_eq!(
-            freq,
-            CpuFreq::Mhz1200,
-            "mid load must hold current frequency"
+            gov.requested_performance(),
+            CandidatePerformanceLevel::Maximum
+        );
+        let request = gov.update_performance_request(20);
+        assert_eq!(
+            request,
+            CandidatePerformanceLevel::Elevated,
+            "low load must step the logical request down"
         );
     }
 
     #[test]
-    fn dvfs_floor_at_minimum() {
-        let mut gov = CpuGovernor::new();
-        gov.current_freq = CpuFreq::Mhz600;
-        let freq = gov.apply_dvfs(0); // already at minimum, cannot go lower
-        assert_eq!(freq, CpuFreq::Mhz600, "frequency must not go below minimum");
-    }
-
-    #[test]
-    fn dvfs_ceiling_at_maximum() {
-        let mut gov = CpuGovernor::new(); // starts at Mhz1500
-        let freq = gov.apply_dvfs(100); // already at maximum
-        assert_eq!(freq, CpuFreq::Mhz1500, "frequency must not exceed maximum");
-    }
-
-    #[test]
-    fn core_parking_disables_cores_when_one_runnable() {
-        let mut gov = CpuGovernor::new();
+    fn candidate_policy_steps_up_on_high_load() {
+        let mut gov = CandidateCpuPolicy::new();
+        gov.requested_performance = CandidatePerformanceLevel::Minimum;
+        let request = gov.update_performance_request(80);
         assert_eq!(
-            gov.cores_active(),
-            0b0000_1111,
-            "all cores active initially"
-        );
-        let mask = gov.apply_core_parking(1);
-        assert_eq!(mask, 0b0000_0001, "only core 0 must remain active");
-    }
-
-    #[test]
-    fn core_parking_keeps_all_cores_when_multiple_runnable() {
-        let mut gov = CpuGovernor::new();
-        gov.apply_core_parking(1); // park first
-        let mask = gov.apply_core_parking(4); // then unpark
-        assert_eq!(
-            mask, 0b0000_1111,
-            "all cores must be active for >1 runnable"
+            request,
+            CandidatePerformanceLevel::Reduced,
+            "high load must step the logical request up"
         );
     }
 
     #[test]
-    fn backlight_timeout_triggers() {
-        let mut gov = CpuGovernor::new();
-        gov.last_input_tick = 0;
-        gov.backlight_timeout_ticks = 3_000;
-        // At tick 3_001 the timeout threshold (> 3_000) is crossed.
-        let turned_off = gov.apply_backlight_timeout(3_001);
-        assert!(turned_off, "backlight must turn off after timeout");
-        assert!(!gov.backlight_on(), "backlight_on must be false");
-    }
-
-    #[test]
-    fn backlight_no_timeout_before_threshold() {
-        let mut gov = CpuGovernor::new();
-        gov.last_input_tick = 0;
-        gov.backlight_timeout_ticks = 3_000;
-        // Exactly at the boundary (== 3_000) the condition is `> 3_000` → false.
-        let turned_off = gov.apply_backlight_timeout(3_000);
-        assert!(!turned_off, "backlight must not turn off before threshold");
-        assert!(gov.backlight_on(), "backlight_on must still be true");
-    }
-
-    #[test]
-    fn input_resets_backlight_timer() {
-        let mut gov = CpuGovernor::new();
-        // Simulate the backlight having been off.
-        gov.backlight_on = false;
-        gov.last_input_tick = 0;
-        let woke = gov.apply_notify_input(5_000);
-        assert!(woke, "input must wake the display");
-        assert!(gov.backlight_on(), "backlight must be on after input");
+    fn candidate_policy_holds_on_mid_load() {
+        let mut gov = CandidateCpuPolicy::new();
+        gov.requested_performance = CandidatePerformanceLevel::Elevated;
+        let request = gov.update_performance_request(50);
         assert_eq!(
-            gov.last_input_tick, 5_000,
+            request,
+            CandidatePerformanceLevel::Elevated,
+            "mid load must hold the logical request"
+        );
+    }
+
+    #[test]
+    fn candidate_policy_floor_at_minimum() {
+        let mut gov = CandidateCpuPolicy::new();
+        gov.requested_performance = CandidatePerformanceLevel::Minimum;
+        let request = gov.update_performance_request(0);
+        assert_eq!(
+            request,
+            CandidatePerformanceLevel::Minimum,
+            "logical request must not step below minimum"
+        );
+    }
+
+    #[test]
+    fn candidate_policy_ceiling_at_maximum() {
+        let mut gov = CandidateCpuPolicy::new();
+        let request = gov.update_performance_request(100);
+        assert_eq!(
+            request,
+            CandidatePerformanceLevel::Maximum,
+            "logical request must not step above maximum"
+        );
+    }
+
+    #[test]
+    fn candidate_core_policy_requests_boot_core_when_one_runnable() {
+        let mut gov = CandidateCpuPolicy::new();
+        assert_eq!(
+            gov.requested_cores(),
+            CandidateCoreRequest::AllAvailable,
+            "candidate initially requests all available cores"
+        );
+        let request = gov.update_core_request(1);
+        assert_eq!(request, CandidateCoreRequest::BootCoreOnly);
+    }
+
+    #[test]
+    fn candidate_core_policy_requests_all_when_multiple_runnable() {
+        let mut gov = CandidateCpuPolicy::new();
+        gov.update_core_request(1);
+        let request = gov.update_core_request(4);
+        assert_eq!(request, CandidateCoreRequest::AllAvailable);
+    }
+
+    #[test]
+    fn timeout_records_display_sleep_request() {
+        let mut state = DisplayTimeoutState::new();
+        state.last_input_tick = 0;
+        state.backlight_timeout_ticks = 3_000;
+        // WHY: Tick 3_001 crosses the configured `> 3_000` threshold.
+        let requested = state.record_timeout_request(3_001);
+        assert!(requested, "timeout must record a new sleep request");
+        assert!(
+            !state.backlight_requested_on(),
+            "recorded request must be off"
+        );
+    }
+
+    #[test]
+    fn timeout_boundary_keeps_display_wake_request() {
+        let mut state = DisplayTimeoutState::new();
+        state.last_input_tick = 0;
+        state.backlight_timeout_ticks = 3_000;
+        // WHY: At the exact boundary the `> 3_000` condition remains false.
+        let requested = state.record_timeout_request(3_000);
+        assert!(!requested, "boundary must not record a sleep request");
+        assert!(
+            state.backlight_requested_on(),
+            "recorded request must remain on"
+        );
+    }
+
+    #[test]
+    fn input_records_display_wake_request_and_resets_timer() {
+        let mut state = DisplayTimeoutState::new();
+        // WHY: Start from a previously recorded display-sleep request.
+        state.backlight_requested_on = false;
+        state.last_input_tick = 0;
+        let requested = state.record_input_request(5_000);
+        assert!(requested, "input must record a new wake request");
+        assert!(
+            state.backlight_requested_on(),
+            "recorded request must be on after input"
+        );
+        assert_eq!(
+            state.last_input_tick, 5_000,
             "last_input_tick must be updated"
         );
     }
 
     #[test]
-    fn input_while_backlight_on_just_updates_tick() {
-        let mut gov = CpuGovernor::new();
-        // Backlight already on.
-        let woke = gov.apply_notify_input(500);
-        assert!(!woke, "no wake event when backlight is already on");
-        assert_eq!(gov.last_input_tick, 500);
+    fn input_while_wake_already_requested_only_updates_tick() {
+        let mut state = DisplayTimeoutState::new();
+        // WHY: The initial request already keeps the display awake.
+        let requested = state.record_input_request(500);
+        assert!(!requested, "no new wake request when already requested on");
+        assert_eq!(state.last_input_tick, 500);
     }
 
     #[test]
-    fn dvfs_averages_across_ticks_instead_of_reacting_to_a_single_spike() {
-        let mut gov = CpuGovernor::new();
-        gov.current_freq = CpuFreq::Mhz900;
-        // Three steady-state ticks (hold band), then one single high spike
-        // -- the rolling average over LOAD_HISTORY_LEN=4 keeps the spike
-        // from single-handedly stepping the frequency up: avg =
+    fn candidate_policy_averages_instead_of_reacting_to_a_single_spike() {
+        let mut gov = CandidateCpuPolicy::new();
+        gov.requested_performance = CandidatePerformanceLevel::Reduced;
+        // WHY: Three steady-state samples followed by one high spike exercise
+        // the four-sample rolling average. The average keeps the spike from
+        // single-handedly stepping the logical request up: avg =
         // (50+50+50+100)/4 = 62, still inside the 30-70 hold band. The
         // previous (buggy) instantaneous-load logic would have reacted to
-        // the raw 100% sample alone and stepped up to Mhz1200.
-        gov.apply_dvfs(50);
-        gov.apply_dvfs(50);
-        gov.apply_dvfs(50);
-        let freq = gov.apply_dvfs(100);
+        // the raw 100% sample alone and stepped up a logical level.
+        gov.update_performance_request(50);
+        gov.update_performance_request(50);
+        gov.update_performance_request(50);
+        let request = gov.update_performance_request(100);
         assert_eq!(
-            freq,
-            CpuFreq::Mhz900,
+            request,
+            CandidatePerformanceLevel::Reduced,
             "a single-tick spike must be smoothed by the rolling average, not react raw"
         );
     }
 
     #[test]
-    fn dvfs_multi_step_scaling_chain_walks_down_then_up_through_every_opp() {
-        let mut gov = CpuGovernor::new();
-        assert_eq!(gov.current_freq(), CpuFreq::Mhz1500);
-
-        // Sustained low load steps down through every OPP, one step per
-        // tick, because the rolling window starts at zero (already below
-        // the new sample) so the average tracks the new sample immediately.
-        assert_eq!(gov.apply_dvfs(10), CpuFreq::Mhz1200);
-        assert_eq!(gov.apply_dvfs(10), CpuFreq::Mhz900);
-        assert_eq!(gov.apply_dvfs(10), CpuFreq::Mhz600);
+    fn candidate_policy_walks_down_then_up_through_every_logical_level() {
+        let mut gov = CandidateCpuPolicy::new();
         assert_eq!(
-            gov.apply_dvfs(10),
-            CpuFreq::Mhz600,
-            "must not step below the minimum OPP"
+            gov.requested_performance(),
+            CandidatePerformanceLevel::Maximum
         );
 
-        // Sustained high load must first flush the stale low-load window
+        // WHY: Sustained low samples remain below the threshold throughout
+        // warm-up because the average includes only initialized slots. The
+        // candidate therefore steps through one logical level per sample.
+        assert_eq!(
+            gov.update_performance_request(10),
+            CandidatePerformanceLevel::Elevated
+        );
+        assert_eq!(
+            gov.update_performance_request(10),
+            CandidatePerformanceLevel::Reduced
+        );
+        assert_eq!(
+            gov.update_performance_request(10),
+            CandidatePerformanceLevel::Minimum
+        );
+        assert_eq!(
+            gov.update_performance_request(10),
+            CandidatePerformanceLevel::Minimum,
+            "must not step below the minimum logical level"
+        );
+
+        // WHY: sustained high load must first flush the stale low-load window
         // (LOAD_HISTORY_LEN ticks) before the rolling average clears the
-        // >70 step-up threshold, then walk back up through every OPP.
+        // >70 step-up threshold, then walk back up through every level.
         for _ in 0..LOAD_HISTORY_LEN {
-            gov.apply_dvfs(90);
+            gov.update_performance_request(90);
         }
         assert_eq!(
-            gov.current_freq(),
-            CpuFreq::Mhz900,
+            gov.requested_performance(),
+            CandidatePerformanceLevel::Reduced,
             "after the window flushes to sustained high load, must have stepped up once"
         );
-        assert_eq!(gov.apply_dvfs(90), CpuFreq::Mhz1200);
-        assert_eq!(gov.apply_dvfs(90), CpuFreq::Mhz1500);
         assert_eq!(
-            gov.apply_dvfs(90),
-            CpuFreq::Mhz1500,
-            "must not step above the maximum OPP"
+            gov.update_performance_request(90),
+            CandidatePerformanceLevel::Elevated
+        );
+        assert_eq!(
+            gov.update_performance_request(90),
+            CandidatePerformanceLevel::Maximum
+        );
+        assert_eq!(
+            gov.update_performance_request(90),
+            CandidatePerformanceLevel::Maximum,
+            "must not step above the maximum logical level"
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Original PowerManager tests (radio kill switches)
-    // -----------------------------------------------------------------------
+    #[test]
+    fn candidate_policy_holds_at_exact_deadband_boundaries() {
+        let mut lower = CandidateCpuPolicy::new();
+        lower.requested_performance = CandidatePerformanceLevel::Elevated;
+        assert_eq!(
+            lower.update_performance_request(30),
+            CandidatePerformanceLevel::Elevated,
+            "exactly 30 must hold"
+        );
+
+        let mut upper = CandidateCpuPolicy::new();
+        upper.requested_performance = CandidatePerformanceLevel::Reduced;
+        assert_eq!(
+            upper.update_performance_request(70),
+            CandidatePerformanceLevel::Reduced,
+            "exactly 70 must hold"
+        );
+    }
 
     #[test]
     fn starts_silent() {

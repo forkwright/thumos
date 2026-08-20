@@ -117,9 +117,11 @@ timeout_secs = 600
 cmd = "scripts/check-target-test-ledger.sh"
 timeout_secs = 300
 
-# WHY (#534): the board seam is a structural invariant, not a promise —
-# reds on an MT6739_* identifier outside board::m7 or a board-MMIO value
-# re-declared outside board/. Source-level, cheap.
+# WHY: #534/#862/#879 make the board seam a structural invariant, not a
+# promise — reds on an MT6739_* identifier outside board::m7, a board-MMIO
+# value re-declared outside board/, or known exact-form PWRAP/legacy CPU-power
+# spellings and common two-literal expressions before an accepted transaction
+# exists. Source-level, cheap.
 [stages."board seam"]
 cmd = "scripts/check-board-seam.sh"
 timeout_secs = 300
