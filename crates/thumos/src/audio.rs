@@ -27,7 +27,7 @@
 //!
 //! The MT6357 codec LDO is enabled on first session open (refcount 0 -> 1)
 //! and disabled on last session close (refcount -> 0) through `AudioCodecOps`.
-//! QEMU proves the requested state through NullCodec, not physical PMIC state.
+//! QEMU proves the requested state through `NullCodec`, not physical PMIC state.
 //!
 //! ## Mic security
 //!

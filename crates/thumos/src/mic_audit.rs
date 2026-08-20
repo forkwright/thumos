@@ -17,7 +17,7 @@
 //! ## Threat model
 //!
 //! The desired invariant is that no mic power transition can occur without a
-//! matching audit transition. The current AudioManager holds no MicAuditLog;
+//! matching audit transition. The current `AudioManager` holds no `MicAuditLog`;
 //! #399 owns coupling them and proving fail-closed ordering.
 //!
 //! ## Integration

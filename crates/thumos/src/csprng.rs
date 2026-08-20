@@ -373,7 +373,7 @@ pub unsafe fn init() -> bool {
     true
 }
 
-/// Generate `buf.len()` bytes from the ChaCha20 DRBG after the current gate.
+/// Generate `buf.len()` bytes from the `ChaCha20` DRBG after the current gate.
 ///
 /// #840 blocks treating that gate as a production entropy proof, and #873
 /// blocks treating reset/reseed state as non-repeating. Callers still fail

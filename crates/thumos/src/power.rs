@@ -481,7 +481,7 @@ impl PowerManager {
     ///
     /// Returns true if every in-memory entry accepted its target marker.
     /// This is not an actuation/readback receipt. A sticky marker can reject
-    /// the request; then mode() retains the prior requested preset.
+    /// the request; then `mode()` retains the prior requested preset.
     pub(crate) fn apply_mode(&mut self, mode: PowerMode) -> bool {
         let all_ok = match mode {
             PowerMode::Full => self.set_state(Radio::All, PowerState::On),
@@ -592,8 +592,8 @@ impl Default for PowerManager {
 /// security-relevant radio).
 ///
 /// Used by the boot sequence (Wave 8) and by [`ModeManager`] on mode
-/// transitions to record policy without coupling security_mode directly to
-/// PowerManager internals. No driver or PMIC actuation occurs here (#874).
+/// transitions to record policy without coupling `security_mode` directly to
+/// `PowerManager` internals. No driver or PMIC actuation occurs here (#874).
 pub(crate) fn apply_mode_policy(policy: &crate::security_mode::ModePolicy, pm: &mut PowerManager) {
     let to_state = |enabled: bool| -> PowerState {
         if enabled {

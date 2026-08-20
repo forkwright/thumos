@@ -234,10 +234,10 @@ pub(crate) struct KernelState {
     /// Audio route arbitration (earpiece/speaker/BT/...) for the audio manager.
     route: RouteManager,
     /// Microphone audit object (#399). The QEMU smoke records one row manually;
-    /// AudioManager does not yet enforce an audit record on every mic transition.
+    /// `AudioManager` does not yet enforce an audit record on every mic transition.
     mic_audit: MicAuditLog,
-    /// Bluetooth A2DP profile (#401): QEMU reaches configuration over NullBtHw.
-    /// StubSbcEncoder still emits zero audio, and #129 owns the non-test HCI/ACL
+    /// Bluetooth A2DP profile (#401): QEMU reaches configuration over `NullBtHw`.
+    /// `StubSbcEncoder` still emits zero audio, and #129 owns the non-test HCI/ACL
     /// backend before any WMT/STP/RF qualification.
     bt_audio: A2dpProfile<BootBtHw>,
     /// Calendar/alarm/timer/stopwatch manager (#400): holds scheduled events +

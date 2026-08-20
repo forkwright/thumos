@@ -29,7 +29,7 @@
 //! | `AUD_TOP_LDO_CON0`   | 0x2100   | Audio LDO enable                    |
 //!
 //! These are PMIC-space offsets, not AP MMIO offsets. Adding them to
-//! `PWRAP_BASE` is invalid and may address unrelated SoC registers (#862).
+//! `PWRAP_BASE` is invalid and may address unrelated `SoC` registers (#862).
 //!
 //! ## Integration
 //!
