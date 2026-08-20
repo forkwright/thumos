@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4](https://github.com/forkwright/thumos/compare/v0.8.3...v0.8.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **power:** disable ungrounded CPU actuation ([#887](https://github.com/forkwright/thumos/issues/887)) ([2bdeba0](https://github.com/forkwright/thumos/commit/2bdeba0522fb8a1596bd375110b2c7f09d4f31bb))
+
 ## [0.8.3](https://github.com/forkwright/thumos/compare/v0.8.2...v0.8.3) (2026-08-20)
 
 

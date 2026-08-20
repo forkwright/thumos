@@ -2,7 +2,7 @@
 
 [package]
 name = "peirama"
-version = "0.8.3"
+version = "0.8.4"
 publish = false
 edition = "2024"
 # WHY: cargo-fuzz requires nightly; this crate is never published.
