@@ -1,35 +1,13 @@
-//! MT6357 PMIC audio codec driver.
+//! Fail-closed MT6357 PMIC audio codec adapter.
 //!
 //! Hardware abstraction for the MT6357 analog codec on the AGM M7.
 //! The codec handles DAC (output), ADC (mic input), amplifier routing,
 //! volume control, and mic bias voltage generation.
 //!
-//! ## Hardware path
-//!
 //! The MT6357 PMIC requires transactions through the MT6739 PWRAP
-//! controller. The current production-target implementation incorrectly
-//! dereferences `PWRAP_BASE + pmic_offset`; #862 owns a fail-closed,
-//! source-grounded transaction seam before any M7 use.
-//!
-//! ## PMIC audio register map (MT6357)
-//!
-//! | Register           | Offset   | Purpose                              |
-//! |--------------------|----------|--------------------------------------|
-//! | `AUD_TOP_CON0`       | 0x2000   | Audio top-level power control        |
-//! | `AFE_UL_DL_CON0`     | 0x2004   | UL/DL path enable                   |
-//! | `AFE_DL_CON0`        | 0x2008   | Downlink (DAC) control               |
-//! | `AFE_UL_CON0`        | 0x200C   | Uplink (ADC) control                 |
-//! | `AFE_DL_GAIN`        | 0x2010   | DAC digital gain (volume)            |
-//! | `AFE_UL_GAIN`        | 0x2014   | ADC digital gain                     |
-//! | `AUDDEC_ANA_CON0`    | 0x2080   | Decoder analog control 0 (HPL/HPR)   |
-//! | `AUDDEC_ANA_CON1`    | 0x2084   | Decoder analog control 1 (earpiece)  |
-//! | `AUDDEC_ANA_CON6`    | 0x2098   | Decoder analog control 6 (speaker)   |
-//! | `AUDENC_ANA_CON0`    | 0x20C0   | Encoder analog control (mic preamp)  |
-//! | `AUDENC_ANA_CON9`    | 0x20E4   | Mic bias voltage control             |
-//! | `AUD_TOP_LDO_CON0`   | 0x2100   | Audio LDO enable                    |
-//!
-//! These are PMIC-space offsets, not AP MMIO offsets. Adding them to
-//! `PWRAP_BASE` is invalid and may address unrelated `SoC` registers (#862).
+//! controller. Until #862 lands a source-grounded, bounded transaction seam,
+//! the device adapter returns [`AudioError::PmicUnavailable`] and performs no
+//! AP or PMIC MMIO. QEMU retains its state-only codec for session testing.
 //!
 //! ## Integration
 //!
@@ -47,102 +25,11 @@ extern crate alloc;
 
 use super::audio_route::AudioRoute;
 
-// ---------------------------------------------------------------------------
-// MT6357 PMIC audio registers
-// ---------------------------------------------------------------------------
-
-/// PWRAP (PMIC Wrapper) controller base address on MT6739.
+/// Maximum logical volume accepted by the codec API.
 ///
-/// PMIC offsets cannot be added to this controller base. They require the
-/// source-grounded wrapper transaction that #862 owns.
-/// Audio top-level power control register offset.
-const AUD_TOP_CON0: u16 = 0x2000;
-
-/// UL/DL path enable register offset.
-const AFE_UL_DL_CON0: u16 = 0x2004;
-
-/// Downlink (DAC) control register offset.
-const AFE_DL_CON0: u16 = 0x2008;
-
-/// Uplink (ADC) control register offset.
-const AFE_UL_CON0: u16 = 0x200C;
-
-/// DAC digital gain (volume) register offset.
-const AFE_DL_GAIN: u16 = 0x2010;
-
-/// ADC digital gain register offset.
-#[expect(
-    dead_code,
-    reason = "register constant reserved for future gain control (#753; tier in docs/capability-inventory.toml)"
-)]
-const AFE_UL_GAIN: u16 = 0x2014;
-
-/// Decoder analog control 0: HPL/HPR (headphone left/right) amplifier.
-const AUDDEC_ANA_CON0: u16 = 0x2080;
-
-/// Decoder analog control 1: earpiece receiver amplifier.
-const AUDDEC_ANA_CON1: u16 = 0x2084;
-
-/// Decoder analog control 6: loudspeaker amplifier.
-const AUDDEC_ANA_CON6: u16 = 0x2098;
-
-/// Encoder analog control 0: mic preamp enable.
-const AUDENC_ANA_CON0: u16 = 0x20C0;
-
-/// Mic bias voltage control register.
-const AUDENC_ANA_CON9: u16 = 0x20E4;
-
-/// Audio LDO enable register.
-const AUD_TOP_LDO_CON0: u16 = 0x2100;
-
-// ---------------------------------------------------------------------------
-// Register bit definitions
-// ---------------------------------------------------------------------------
-
-/// `AUD_TOP_CON0`: audio subsystem power-on bit.
-const AUD_TOP_POWER_ON: u32 = 1 << 0;
-
-/// `AUD_TOP_LDO_CON0`: audio LDO enable bit.
-const AUD_LDO_ENABLE: u32 = 1 << 0;
-
-/// `AFE_UL_DL_CON0`: downlink path enable.
-const AFE_DL_EN: u32 = 1 << 0;
-
-/// `AFE_UL_DL_CON0`: uplink path enable.
-const AFE_UL_EN: u32 = 1 << 1;
-
-/// `AFE_DL_CON0`: DAC enable bit.
-const DAC_ENABLE: u32 = 1 << 0;
-
-/// `AFE_UL_CON0`: ADC enable bit.
-const ADC_ENABLE: u32 = 1 << 0;
-
-/// `AUDDEC_ANA_CON0`: headphone left amplifier enable.
-const HPL_AMP_EN: u32 = 1 << 0;
-
-/// `AUDDEC_ANA_CON0`: headphone right amplifier enable.
-const HPR_AMP_EN: u32 = 1 << 1;
-
-/// `AUDDEC_ANA_CON1`: earpiece receiver amplifier enable.
-const EARPIECE_AMP_EN: u32 = 1 << 0;
-
-/// `AUDDEC_ANA_CON6`: loudspeaker amplifier enable.
-const SPEAKER_AMP_EN: u32 = 1 << 0;
-
-/// `AUDENC_ANA_CON0`: mic preamp enable.
-const MIC_PREAMP_EN: u32 = 1 << 0;
-
-/// `AUDENC_ANA_CON9`: mic bias voltage enable.
-const MIC_BIAS_EN: u32 = 1 << 0;
-
-/// Maximum hardware volume level (4-bit, 0-15).
+/// The eventual hardware gain mapping remains part of #862's source-grounded
+/// PMIC integration.
 const MAX_VOLUME: u8 = 15;
-
-/// Volume step in hardware gain units.
-///
-/// Each step is approximately 1 dB.  The MT6357 `AFE_DL_GAIN` register
-/// uses a 16-bit value; we map 0-15 linearly into the usable range.
-const VOLUME_STEP: u32 = 0x0800;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -156,10 +43,12 @@ pub enum AudioError {
     CodecNotPowered,
     /// DAC is not enabled (cannot set output route).
     DacNotEnabled,
-    /// Invalid volume level (exceeds hardware maximum).
+    /// Invalid volume level (exceeds the logical API range).
     InvalidVolume,
     /// Hardware register access failed.
     HardwareError,
+    /// No source-grounded PMIC/PWRAP transport is available (#862).
+    PmicUnavailable,
     /// The requested route is not available.
     RouteUnavailable,
     /// The requested session was not found.
@@ -175,6 +64,7 @@ impl core::fmt::Display for AudioError {
             Self::DacNotEnabled => write!(f, "DAC not enabled"),
             Self::InvalidVolume => write!(f, "invalid volume level"),
             Self::HardwareError => write!(f, "hardware error"),
+            Self::PmicUnavailable => write!(f, "PMIC transport unavailable"),
             Self::RouteUnavailable => write!(f, "route unavailable"),
             Self::SessionNotFound => write!(f, "session not found"),
             Self::AdcNotEnabled => write!(f, "ADC not enabled"),
@@ -190,14 +80,12 @@ impl core::fmt::Display for AudioError {
 ///
 /// Provides a uniform interface for an eventual source-grounded MT6357 PMIC
 /// seam and for mock verification in tests. The current production-target
-/// implementation uses invalid direct PWRAP-base arithmetic and is unsafe
-/// pending #862.
+/// implementation is deliberately fail-closed pending #862.
 pub(crate) trait AudioCodecOps {
-    /// Power on the audio codec: enable LDO, wait for stabilization,
-    /// enable top-level power.
+    /// Request that the codec power on.
     fn power_on(&mut self) -> Result<(), AudioError>;
 
-    /// Power off the audio codec: disable top-level power, disable LDO.
+    /// Request that the codec power off.
     fn power_off(&mut self) -> Result<(), AudioError>;
 
     /// Enable the DAC (digital-to-analog converter) for audio output.
@@ -223,8 +111,8 @@ pub(crate) trait AudioCodecOps {
 
     /// Set the output volume level (0-15).
     ///
-    /// Values above 15 are clamped to 15.  Level 0 is the minimum
-    /// audible output (not mute — use `disable_dac` for silence).
+    /// Values above 15 are clamped to 15 by stateful test/emulation codecs.
+    /// The device mapping remains undefined until #862 lands.
     fn set_volume(&mut self, level: u8) -> Result<(), AudioError>;
 
     /// Enable mic bias voltage for electret condenser microphones.
@@ -236,16 +124,16 @@ pub(crate) trait AudioCodecOps {
     /// Disable mic bias voltage.
     fn disable_mic_bias(&mut self) -> Result<(), AudioError>;
 
-    /// Return whether the codec is currently powered on.
+    /// Return the adapter's recorded powered state, not physical readback.
     fn is_powered(&self) -> bool;
 
-    /// Return whether the DAC is currently enabled.
+    /// Return the adapter's recorded DAC state, not physical readback.
     fn is_dac_enabled(&self) -> bool;
 
-    /// Return whether the ADC is currently enabled.
+    /// Return the adapter's recorded ADC state, not physical readback.
     fn is_adc_enabled(&self) -> bool;
 
-    /// Return whether mic bias is currently enabled.
+    /// Return the adapter's recorded mic-bias state, not physical readback.
     fn is_mic_bias_enabled(&self) -> bool;
 
     /// Return the current volume level (0-15).
@@ -256,378 +144,89 @@ pub(crate) trait AudioCodecOps {
 }
 
 // ---------------------------------------------------------------------------
-// Production-target legacy MT6357 seam (non-test only)
+// Production-target fail-closed MT6357 seam
 // ---------------------------------------------------------------------------
 
-/// Production-target MT6357 codec seam with an unsafe legacy access model.
+/// Production-target MT6357 codec seam without a PMIC transport.
 ///
-/// Until #862 replaces direct base-plus-offset MMIO with a grounded PWRAP
-/// transaction, its booleans are cached requested state rather than PMIC
-/// readback and this type must not run on hardware.
-// WHY: powered/dac_enabled/adc_enabled/mic_bias are independent cached
-// requested-state flags, not a mutually exclusive state machine.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent PMIC power-gate flags, not a state machine; a bitflags/enum recast would not simplify the per-flag register read/write pattern"
-)]
-#[cfg(not(any(test, feature = "qemu")))]
-pub(crate) struct Mt6357Codec {
-    /// Whether software recorded a successful power-on request.
-    powered: bool,
-    /// Whether software recorded a successful DAC-enable request.
-    dac_enabled: bool,
-    /// Whether software recorded a successful ADC-enable request.
-    adc_enabled: bool,
-    /// Whether software recorded a successful mic-bias request.
-    mic_bias: bool,
-    /// Current volume level (0-15).
-    vol: u8,
-    /// Current output route.
-    route: AudioRoute,
-}
+/// Every mutating operation returns [`AudioError::PmicUnavailable`]. The type
+/// is compiled in tests so the device-side fail-closed contract is directly
+/// verifiable. #862 remains open for the bounded, source-grounded PWRAP seam.
+pub(crate) struct Mt6357Codec;
 
-#[cfg(not(any(test, feature = "qemu")))]
 impl Mt6357Codec {
-    /// Create a new MT6357 codec handle.
+    /// Create a fail-closed MT6357 codec handle.
     ///
-    /// The codec starts unpowered; call `power_on()` before any other
-    /// operation.
+    /// Construction performs no AP or PMIC MMIO.
     #[must_use]
     pub(crate) const fn new() -> Self {
-        Self {
-            powered: false,
-            dac_enabled: false,
-            adc_enabled: false,
-            mic_bias: false,
-            vol: 0,
-            route: AudioRoute::Speaker,
-        }
-    }
-
-    /// Legacy direct-MMIO write pending #862's PWRAP transaction seam.
-    ///
-    /// # Safety
-    ///
-    /// This construction is not a valid PMIC transaction and must not be used
-    /// on hardware until #862 replaces it.
-    #[inline]
-    unsafe fn pmic_write(offset: u16, value: u32) {
-        let addr = crate::board::PWRAP_BASE + offset as usize;
-        // FIXME(#862): a PMIC offset cannot be dereferenced at PWRAP_BASE.
-        unsafe {
-            core::ptr::write_volatile(addr as *mut u32, value);
-        }
-    }
-
-    /// Legacy direct-MMIO read pending #862's PWRAP transaction seam.
-    ///
-    /// # Safety
-    ///
-    /// This construction is not a valid PMIC transaction and must not be used
-    /// on hardware until #862 replaces it.
-    #[inline]
-    unsafe fn pmic_read(offset: u16) -> u32 {
-        let addr = crate::board::PWRAP_BASE + offset as usize;
-        // FIXME(#862): a PMIC offset cannot be dereferenced at PWRAP_BASE.
-        unsafe { core::ptr::read_volatile(addr as *const u32) }
-    }
-
-    /// Set bits in a PMIC register (read-modify-write).
-    ///
-    /// # Safety
-    ///
-    /// Even a valid PMIC offset cannot make the current direct-MMIO access a
-    /// PWRAP transaction; hardware use is blocked on #862.
-    unsafe fn pmic_set_bits(offset: u16, bits: u32) {
-        // WHY: mask IRQ delivery around the read-modify-write -- an
-        // interrupt firing between the read and the write here could
-        // itself touch the same PMIC register, and this write would
-        // clobber whatever change the interrupt made (the same
-        // preemption-corruption class crate::irq::IrqGuard exists for,
-        // see irq.rs's #322/#331 module docs).
-        let _irq_guard = crate::irq::IrqGuard::new();
-        // SAFETY: legacy nested unsafe call only; #862 blocks hardware use.
-        unsafe {
-            let current = Self::pmic_read(offset);
-            Self::pmic_write(offset, current | bits);
-        }
-    }
-
-    /// Clear bits in a PMIC register (read-modify-write).
-    ///
-    /// # Safety
-    ///
-    /// Even a valid PMIC offset cannot make the current direct-MMIO access a
-    /// PWRAP transaction; hardware use is blocked on #862.
-    unsafe fn pmic_clear_bits(offset: u16, bits: u32) {
-        // WHY: IRQ-safe RMW -- see pmic_set_bits.
-        let _irq_guard = crate::irq::IrqGuard::new();
-        // SAFETY: legacy nested unsafe call only; #862 blocks hardware use.
-        unsafe {
-            let current = Self::pmic_read(offset);
-            Self::pmic_write(offset, current & !bits);
-        }
-    }
-
-    /// Disable all output amplifiers (earpiece, speaker).
-    ///
-    /// # Safety
-    ///
-    /// Must only be called when the codec is powered on.
-    unsafe fn disable_all_amps() {
-        // SAFETY: legacy call shape only; #862 must replace the invalid PWRAP
-        // access before this path is permitted on hardware.
-        unsafe {
-            Self::pmic_clear_bits(AUDDEC_ANA_CON1, EARPIECE_AMP_EN);
-            Self::pmic_clear_bits(AUDDEC_ANA_CON6, SPEAKER_AMP_EN);
-            Self::pmic_clear_bits(AUDDEC_ANA_CON0, HPL_AMP_EN | HPR_AMP_EN);
-        }
+        Self
     }
 }
 
-#[cfg(not(any(test, feature = "qemu")))]
 impl AudioCodecOps for Mt6357Codec {
     fn power_on(&mut self) -> Result<(), AudioError> {
-        if self.powered {
-            return Ok(());
-        }
-
-        // SAFETY: legacy call shape only; direct PWRAP-base arithmetic is not
-        // a valid PMIC transaction and remains blocked on #862.
-        unsafe {
-            // Step 1: Enable audio LDO.
-            Self::pmic_set_bits(AUD_TOP_LDO_CON0, AUD_LDO_ENABLE);
-
-            // Step 2: Wait for LDO voltage stabilization (~10 ms).
-            // NOTE: in a real kernel this would use a timer; for now we
-            // spin-wait with a volatile barrier.
-            for _ in 0..100_000 {
-                core::hint::spin_loop();
-            }
-
-            // Step 3: Enable audio top-level power.
-            Self::pmic_set_bits(AUD_TOP_CON0, AUD_TOP_POWER_ON);
-        }
-
-        self.powered = true;
-        Ok(())
+        Err(AudioError::PmicUnavailable)
     }
 
     fn power_off(&mut self) -> Result<(), AudioError> {
-        if !self.powered {
-            return Ok(());
-        }
-
-        // Disable active paths first.
-        if self.dac_enabled {
-            self.disable_dac()?;
-        }
-        if self.adc_enabled {
-            self.disable_adc()?;
-        }
-        if self.mic_bias {
-            self.disable_mic_bias()?;
-        }
-
-        // SAFETY: legacy call shape only; hardware use remains blocked on #862.
-        unsafe {
-            // Disable all amplifiers.
-            Self::disable_all_amps();
-
-            // Disable top-level power.
-            Self::pmic_clear_bits(AUD_TOP_CON0, AUD_TOP_POWER_ON);
-
-            // Disable LDO.
-            Self::pmic_clear_bits(AUD_TOP_LDO_CON0, AUD_LDO_ENABLE);
-        }
-
-        self.powered = false;
-        Ok(())
+        Err(AudioError::PmicUnavailable)
     }
 
     fn enable_dac(&mut self) -> Result<(), AudioError> {
-        if !self.powered {
-            return Err(AudioError::CodecNotPowered);
-        }
-        if self.dac_enabled {
-            return Ok(());
-        }
-
-        // SAFETY: legacy call shape only; hardware use is blocked on #862.
-        unsafe {
-            Self::pmic_set_bits(AFE_UL_DL_CON0, AFE_DL_EN);
-            Self::pmic_set_bits(AFE_DL_CON0, DAC_ENABLE);
-        }
-
-        self.dac_enabled = true;
-        Ok(())
+        Err(AudioError::PmicUnavailable)
     }
 
     fn enable_adc(&mut self) -> Result<(), AudioError> {
-        if !self.powered {
-            return Err(AudioError::CodecNotPowered);
-        }
-        if self.adc_enabled {
-            return Ok(());
-        }
-
-        // SAFETY: legacy call shape only; hardware use is blocked on #862.
-        unsafe {
-            Self::pmic_set_bits(AFE_UL_DL_CON0, AFE_UL_EN);
-            Self::pmic_set_bits(AFE_UL_CON0, ADC_ENABLE);
-            Self::pmic_set_bits(AUDENC_ANA_CON0, MIC_PREAMP_EN);
-        }
-
-        self.adc_enabled = true;
-        Ok(())
+        Err(AudioError::PmicUnavailable)
     }
 
     fn disable_dac(&mut self) -> Result<(), AudioError> {
-        if !self.dac_enabled {
-            return Ok(());
-        }
-
-        // SAFETY: legacy call shape only; hardware use is blocked on #862.
-        unsafe {
-            Self::disable_all_amps();
-            Self::pmic_clear_bits(AFE_DL_CON0, DAC_ENABLE);
-            Self::pmic_clear_bits(AFE_UL_DL_CON0, AFE_DL_EN);
-        }
-
-        self.dac_enabled = false;
-        Ok(())
+        Err(AudioError::PmicUnavailable)
     }
 
     fn disable_adc(&mut self) -> Result<(), AudioError> {
-        if !self.adc_enabled {
-            return Ok(());
-        }
-
-        // SAFETY: legacy call shape only; hardware use is blocked on #862.
-        unsafe {
-            Self::pmic_clear_bits(AUDENC_ANA_CON0, MIC_PREAMP_EN);
-            Self::pmic_clear_bits(AFE_UL_CON0, ADC_ENABLE);
-            Self::pmic_clear_bits(AFE_UL_DL_CON0, AFE_UL_EN);
-        }
-
-        self.adc_enabled = false;
-        Ok(())
+        Err(AudioError::PmicUnavailable)
     }
 
-    fn set_output(&mut self, route: AudioRoute) -> Result<(), AudioError> {
-        if !self.powered {
-            return Err(AudioError::CodecNotPowered);
-        }
-        if !self.dac_enabled {
-            return Err(AudioError::DacNotEnabled);
-        }
-
-        // SAFETY: legacy call shape only; hardware use is blocked on #862.
-        unsafe {
-            // Disable all amps first, then enable the target.
-            Self::disable_all_amps();
-
-            match route {
-                AudioRoute::Earpiece => {
-                    Self::pmic_set_bits(AUDDEC_ANA_CON1, EARPIECE_AMP_EN);
-                }
-                AudioRoute::Speaker => {
-                    Self::pmic_set_bits(AUDDEC_ANA_CON6, SPEAKER_AMP_EN);
-                }
-                AudioRoute::Headset => {
-                    // Wired headset uses the HPL/HPR amplifiers.
-                    Self::pmic_set_bits(AUDDEC_ANA_CON0, HPL_AMP_EN | HPR_AMP_EN);
-                }
-                AudioRoute::BluetoothA2dp | AudioRoute::UsbDac => {
-                    // BT and USB DAC are digital outputs — no analog amp needed.
-                    // The codec DAC feeds the AFE which routes to the digital path.
-                }
-            }
-        }
-
-        self.route = route;
-        Ok(())
+    fn set_output(&mut self, _route: AudioRoute) -> Result<(), AudioError> {
+        Err(AudioError::PmicUnavailable)
     }
 
-    fn set_volume(&mut self, level: u8) -> Result<(), AudioError> {
-        if !self.powered {
-            return Err(AudioError::CodecNotPowered);
-        }
-
-        let clamped = level.min(MAX_VOLUME);
-        let gain = u32::from(clamped) * VOLUME_STEP;
-
-        // SAFETY: legacy call shape only; hardware use is blocked on #862.
-        unsafe {
-            Self::pmic_write(AFE_DL_GAIN, gain);
-        }
-
-        self.vol = clamped;
-        Ok(())
+    fn set_volume(&mut self, _level: u8) -> Result<(), AudioError> {
+        Err(AudioError::PmicUnavailable)
     }
 
     fn enable_mic_bias(&mut self) -> Result<(), AudioError> {
-        if !self.powered {
-            return Err(AudioError::CodecNotPowered);
-        }
-        // WHY: enforce the documented precondition -- AudioError::AdcNotEnabled
-        // exists specifically for "mic bias requires ADC to be enabled", but
-        // no implementation actually checked it, so a caller reaching the
-        // codec directly (bypassing AudioManager's enable_adc-then-
-        // enable_mic_bias ordering) could power the mic bias FET preamp
-        // with the ADC never enabled (#397).
-        if !self.adc_enabled {
-            return Err(AudioError::AdcNotEnabled);
-        }
-        if self.mic_bias {
-            return Ok(());
-        }
-
-        // SAFETY: legacy call shape only; hardware use is blocked on #862.
-        unsafe {
-            Self::pmic_set_bits(AUDENC_ANA_CON9, MIC_BIAS_EN);
-        }
-
-        self.mic_bias = true;
-        Ok(())
+        Err(AudioError::PmicUnavailable)
     }
 
     fn disable_mic_bias(&mut self) -> Result<(), AudioError> {
-        if !self.mic_bias {
-            return Ok(());
-        }
-
-        // SAFETY: legacy call shape only; hardware use is blocked on #862.
-        unsafe {
-            Self::pmic_clear_bits(AUDENC_ANA_CON9, MIC_BIAS_EN);
-        }
-
-        self.mic_bias = false;
-        Ok(())
+        Err(AudioError::PmicUnavailable)
     }
 
     fn is_powered(&self) -> bool {
-        self.powered
+        false
     }
 
     fn is_dac_enabled(&self) -> bool {
-        self.dac_enabled
+        false
     }
 
     fn is_adc_enabled(&self) -> bool {
-        self.adc_enabled
+        false
     }
 
     fn is_mic_bias_enabled(&self) -> bool {
-        self.mic_bias
+        false
     }
 
     fn volume(&self) -> u8 {
-        self.vol
+        0
     }
 
     fn current_route(&self) -> AudioRoute {
-        self.route
+        AudioRoute::Speaker
     }
 }
 
@@ -870,12 +469,11 @@ impl AudioCodecOps for MockCodec {
     }
 }
 
-/// A no-op audio codec for qemu (#399). The MT6357 PMIC/PWRAP MMIO is unmodeled
-/// on -machine virt, so the legacy `Mt6357Codec` register writes would
-/// data-abort. `NullCodec` tracks the power/enable/route state the `AudioManager`
-/// session logic reads, but touches no hardware -- so the session / priority /
-/// route state machine runs in emulation. Distinct from the test-only
-/// `MockCodec` (which carries fail-injection knobs).
+/// A state-only audio codec for qemu (#399). The MT6357 PMIC/PWRAP interface is
+/// unmodeled on -machine virt. `NullCodec` tracks the power/enable/route state
+/// the `AudioManager` session logic reads, but touches no hardware, so the
+/// session/priority/route state machine runs in emulation. Distinct from the
+/// test-only `MockCodec` (which carries fail-injection knobs).
 // WHY: powered/dac_enabled/adc_enabled/mic_bias mirror independent interface
 // states, not a state machine, so no bitflags/enum recast applies here.
 #[expect(
@@ -940,7 +538,7 @@ impl AudioCodecOps for NullCodec {
         Ok(())
     }
     fn set_volume(&mut self, level: u8) -> Result<(), AudioError> {
-        self.volume = level;
+        self.volume = level.min(MAX_VOLUME);
         Ok(())
     }
     fn enable_mic_bias(&mut self) -> Result<(), AudioError> {
@@ -972,9 +570,9 @@ impl AudioCodecOps for NullCodec {
 }
 
 /// The codec type the booted kernel wires into its `AudioManager` (#399): the
-/// no-op `NullCodec` under qemu/test (no PMIC model on -machine virt), and the
-/// production-target `Mt6357Codec` seam on device. The latter is not accepted
-/// hardware access until #862 replaces its invalid PWRAP transaction model.
+/// state-only `NullCodec` under qemu/test (no PMIC model on -machine virt), and
+/// the fail-closed `Mt6357Codec` on device. The latter performs no PMIC access
+/// until #862 supplies an accepted PWRAP transaction seam.
 #[cfg(any(feature = "qemu", test))]
 pub(crate) type BootCodec = NullCodec;
 #[cfg(not(any(feature = "qemu", test)))]
@@ -987,6 +585,39 @@ pub(crate) type BootCodec = Mt6357Codec;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_codec_fails_closed_without_pwrap_transport() {
+        let mut codec = Mt6357Codec::new();
+
+        assert_eq!(codec.power_on(), Err(AudioError::PmicUnavailable));
+        assert_eq!(codec.power_off(), Err(AudioError::PmicUnavailable));
+        assert_eq!(codec.enable_dac(), Err(AudioError::PmicUnavailable));
+        assert_eq!(codec.enable_adc(), Err(AudioError::PmicUnavailable));
+        assert_eq!(codec.disable_dac(), Err(AudioError::PmicUnavailable));
+        assert_eq!(codec.disable_adc(), Err(AudioError::PmicUnavailable));
+        assert_eq!(
+            codec.set_output(AudioRoute::Earpiece),
+            Err(AudioError::PmicUnavailable)
+        );
+        assert_eq!(codec.set_volume(7), Err(AudioError::PmicUnavailable));
+        assert_eq!(codec.enable_mic_bias(), Err(AudioError::PmicUnavailable));
+        assert_eq!(codec.disable_mic_bias(), Err(AudioError::PmicUnavailable));
+        assert!(!codec.is_powered());
+        assert!(!codec.is_dac_enabled());
+        assert!(!codec.is_adc_enabled());
+        assert!(!codec.is_mic_bias_enabled());
+        assert_eq!(codec.volume(), 0);
+        assert_eq!(codec.current_route(), AudioRoute::Speaker);
+    }
+
+    #[test]
+    fn qemu_codec_clamps_volume_to_logical_range() {
+        let mut codec = NullCodec::new();
+
+        assert_eq!(codec.set_volume(u8::MAX), Ok(()));
+        assert_eq!(codec.volume(), MAX_VOLUME);
+    }
 
     #[test]
     fn mock_codec_starts_unpowered() {
@@ -1269,8 +900,8 @@ mod tests {
 
     #[test]
     fn adc_not_enabled_error_display() {
-        // AdcNotEnabled is defined for the case where mic bias is requested
-        // without ADC being enabled first. The real Mt6357Codec checks this;
+        // AdcNotEnabled represents a mic-bias request made before ADC enable.
+        // Stateful mock/emulation adapters enforce that interface precondition;
         // here we verify the variant is constructable and has correct Display.
         let err = AudioError::AdcNotEnabled;
         let msg = alloc::format!("{err}");

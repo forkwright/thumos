@@ -373,7 +373,7 @@ pub enum Radio {
 /// Requested/recorded policy state for a radio.
 ///
 /// The variant names predate the current truth boundary. No variant is
-/// physical readback: On/Off are desired states and the two *Killed variants
+/// physical readback: On/Off are desired states and the two terminal variants
 /// are sticky software markers. #862 owns PMIC/driver actuation and
 /// observation; #874 owns requested/applied/observed/failed state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,7 +386,14 @@ pub enum PowerState {
     /// Sticky simulated/future-switch marker; not current GPIO readback.
     HardwareKilled,
     /// Sticky modem-cut request marker; not proof that a PMIC rail changed.
-    PmicKilled,
+    PowerCutRequested,
+}
+
+impl PowerState {
+    /// Whether this sticky terminal marker must survive later policy requests.
+    const fn is_terminal(self) -> bool {
+        matches!(self, Self::HardwareKilled | Self::PowerCutRequested)
+    }
 }
 
 /// Requested system radio-policy mode.
@@ -442,17 +449,17 @@ impl PowerManager {
     }
 
     /// Set the recorded policy state of a radio.
-    /// Returns false if a sticky simulated/future-kill marker prevents it.
+    /// Returns false if a sticky terminal marker prevents it.
     ///
-    /// INVARIANT: once a radio reaches [`PowerState::HardwareKilled`] or
-    /// [`PowerState::PmicKilled`], no software `set_state` call — for ANY
-    /// target state, not only `On` — can move it out of that state (#345).
-    /// Only a fresh [`PowerManager`] (i.e. a reboot) clears a kill.
+    /// INVARIANT: the first [`PowerState::HardwareKilled`] or
+    /// [`PowerState::PowerCutRequested`] marker wins. No later policy or
+    /// terminal-marker request can replace it (#345). Only a fresh
+    /// [`PowerManager`] (i.e. a reboot) clears it.
     pub(crate) fn set_state(&mut self, radio: Radio, state: PowerState) -> bool {
         if radio == Radio::All {
             let mut all_ok = true;
             for (_, s) in &mut self.states {
-                if *s == PowerState::HardwareKilled || *s == PowerState::PmicKilled {
+                if s.is_terminal() {
                     if state != *s {
                         all_ok = false;
                     }
@@ -465,9 +472,9 @@ impl PowerManager {
 
         for (r, s) in &mut self.states {
             if *r == radio {
-                // INVARIANT: the sticky simulated/future-kill marker cannot be
-                // overwritten through this in-memory policy API.
-                if *s == PowerState::HardwareKilled || *s == PowerState::PmicKilled {
+                // INVARIANT: a sticky terminal marker cannot be overwritten
+                // through this in-memory policy API.
+                if s.is_terminal() {
                     return state == *s;
                 }
                 *s = state;
@@ -522,50 +529,38 @@ impl PowerManager {
     pub(crate) fn hardware_kill(&mut self, radio: Radio) {
         if radio == Radio::All {
             for (_, s) in &mut self.states {
-                *s = PowerState::HardwareKilled;
+                if !s.is_terminal() {
+                    *s = PowerState::HardwareKilled;
+                }
             }
         } else {
             for (r, s) in &mut self.states {
-                if *r == radio {
+                if *r == radio && !s.is_terminal() {
                     *s = PowerState::HardwareKilled;
                 }
             }
         }
     }
 
-    /// Record a modem-cut request and invoke the unsafe legacy PMIC path.
+    /// Record a sticky modem-cut request without touching hardware.
     ///
-    /// Sets the cellular radio to [`PowerState::PmicKilled`] and invokes the
-    /// currently invalid direct-MMIO path tracked by #862. The state value is
-    /// not evidence that the modem is physically unpowered.
-    ///
-    /// # Safety
-    ///
-    /// No valid device-side safety argument exists for the current direct
-    /// PWRAP-base write. #862 must replace or disable it before M7 execution;
-    /// privileged context and address mapping alone do not make it valid.
-    pub unsafe fn modem_power_cut(&mut self) {
+    /// Sets the cellular radio to [`PowerState::PowerCutRequested`] as
+    /// requested-state bookkeeping. #862 must provide a source-grounded PWRAP
+    /// transaction and independent readback before any caller may report a
+    /// physical modem cut.
+    pub(crate) fn request_modem_power_cut(&mut self) {
         for (r, s) in &mut self.states {
-            if *r == Radio::Cellular {
-                *s = PowerState::PmicKilled;
+            if *r == Radio::Cellular && !s.is_terminal() {
+                *s = PowerState::PowerCutRequested;
             }
-        }
-        // WHY not(qemu): virt has no PMIC; the write would be a fictitious
-        // MMIO touch. PmicKilled records only that software requested a cut,
-        // never that hardware applied one.
-        // FIXME(#862): unsafe legacy call retained for current-tree truth;
-        // it must be fail-closed or source-grounded before device execution.
-        #[cfg(not(feature = "qemu"))]
-        unsafe {
-            crate::ccci_logger::modem_power_cut();
         }
     }
 
     /// Whether software recorded the sticky modem-cut request marker.
-    pub(crate) fn is_modem_pmic_killed(&self) -> bool {
+    pub(crate) fn is_modem_cut_requested(&self) -> bool {
         self.states
             .iter()
-            .any(|(r, s)| *r == Radio::Cellular && *s == PowerState::PmicKilled)
+            .any(|(r, s)| *r == Radio::Cellular && *s == PowerState::PowerCutRequested)
     }
 
     /// Count radios currently marked requested-on.
@@ -924,7 +919,7 @@ mod tests {
     #[test]
     fn hardware_kill_survives_software_off_then_on() {
         // Regression test for #345: previously any set_state call with a
-        // target other than On silently erased HardwareKilled/PmicKilled.
+        // target other than On silently erased terminal request markers.
         let mut pm = PowerManager::new();
         pm.apply_mode(PowerMode::Full);
         pm.hardware_kill(Radio::Cellular);
@@ -944,6 +939,13 @@ mod tests {
         let on_result = pm.set_state(Radio::Cellular, PowerState::On);
         assert!(!on_result);
         assert_eq!(pm.state(Radio::Cellular), PowerState::HardwareKilled);
+
+        pm.request_modem_power_cut();
+        assert_eq!(
+            pm.state(Radio::Cellular),
+            PowerState::HardwareKilled,
+            "a later modem-cut request must not replace the first terminal marker"
+        );
     }
 
     #[test]
@@ -1139,63 +1141,63 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // PmicKilled tests (Phase 10 Wave 3)
+    // Modem power-cut request tests (Phase 10 Wave 3)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn pmic_killed_prevents_software_on() {
+    fn cut_request_prevents_individual_software_on() {
         let mut pm = PowerManager::new();
-        // Simulate PMIC kill on cellular.
-        for (r, s) in &mut pm.states {
-            if *r == Radio::Cellular {
-                *s = PowerState::PmicKilled;
-            }
-        }
-        assert_eq!(pm.state(Radio::Cellular), PowerState::PmicKilled);
+        pm.request_modem_power_cut();
+        assert_eq!(pm.state(Radio::Cellular), PowerState::PowerCutRequested);
         let result = pm.set_state(Radio::Cellular, PowerState::On);
-        assert!(!result, "cannot override PMIC kill via software");
-        assert_eq!(pm.state(Radio::Cellular), PowerState::PmicKilled);
+        assert!(!result, "cannot erase the sticky request via software");
+        assert_eq!(pm.state(Radio::Cellular), PowerState::PowerCutRequested);
     }
 
     #[test]
-    fn is_modem_pmic_killed_false_initially() {
+    fn modem_cut_request_is_false_initially() {
         let pm = PowerManager::new();
         assert!(
-            !pm.is_modem_pmic_killed(),
+            !pm.is_modem_cut_requested(),
             "no modem-cut request marker initially"
         );
     }
 
     #[test]
-    fn is_modem_pmic_killed_after_kill() {
+    fn modem_cut_request_is_sticky_after_recording() {
         let mut pm = PowerManager::new();
-        for (r, s) in &mut pm.states {
-            if *r == Radio::Cellular {
-                *s = PowerState::PmicKilled;
-            }
-        }
+        pm.request_modem_power_cut();
         assert!(
-            pm.is_modem_pmic_killed(),
-            "legacy state records the modem-cut request marker"
+            pm.is_modem_cut_requested(),
+            "request must record the sticky modem-cut marker"
+        );
+        assert_eq!(pm.state(Radio::Cellular), PowerState::PowerCutRequested);
+        assert!(
+            !pm.set_state(Radio::Cellular, PowerState::On),
+            "ordinary policy updates must not erase the cut request"
+        );
+        pm.hardware_kill(Radio::Cellular);
+        assert_eq!(
+            pm.state(Radio::Cellular),
+            PowerState::PowerCutRequested,
+            "a later simulated hardware marker must not replace the first terminal marker"
         );
     }
 
     #[test]
-    fn pmic_killed_all_prevents_individual_on() {
+    fn cut_request_prevents_all_radios_on() {
         let mut pm = PowerManager::new();
         pm.apply_mode(PowerMode::Full);
-        // PMIC kill on cellular only.
-        for (r, s) in &mut pm.states {
-            if *r == Radio::Cellular {
-                *s = PowerState::PmicKilled;
-            }
-        }
+        pm.request_modem_power_cut();
         // Attempt to turn all on.
         let result = pm.set_state(Radio::All, PowerState::On);
-        assert!(!result, "cannot set_state All On when one is PmicKilled");
+        assert!(
+            !result,
+            "cannot set_state All On when one has a sticky cut request"
+        );
         assert_eq!(
             pm.state(Radio::Cellular),
-            PowerState::PmicKilled,
+            PowerState::PowerCutRequested,
             "sticky modem-cut request marker must reject an On request"
         );
     }
