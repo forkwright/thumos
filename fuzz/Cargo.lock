@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aither"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "aither-core",
  "getrandom 0.4.3",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "aither-core"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "hmac",
  "pbkdf2",
@@ -31,7 +31,7 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
 name = "asphaleia"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "asphaleia-core",
  "log",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "asphaleia-core"
-version = "0.8.2"
+version = "0.8.3"
 
 [[package]]
 name = "bitflags"
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "klesis"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "klesis-core",
  "log",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "klesis-core"
-version = "0.8.2"
+version = "0.8.3"
 
 [[package]]
 name = "libc"
@@ -299,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "peirama"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "aither",
  "asphaleia",
