@@ -228,8 +228,8 @@ pub(crate) struct KernelState {
     /// modem transport.
     sms: SmsManager,
     /// Audio session manager (#399): priority-preemptive sessions over the
-    /// codec (`NullCodec` under qemu, MT6357 operations on the m7 target).
-    /// Event-driven; no M7 codec/PMIC behavior is yet qualified.
+    /// codec (`NullCodec` under qemu; fail-closed `Mt6357Codec` on M7 until
+    /// #862 provides a source-grounded PMIC transport).
     audio: AudioManager<BootCodec>,
     /// Audio route arbitration (earpiece/speaker/BT/...) for the audio manager.
     route: RouteManager,

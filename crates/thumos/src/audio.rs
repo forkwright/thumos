@@ -1,7 +1,7 @@
 //! Phthongos audio session manager.
 //!
-//! Session-based audio management with priority preemption and PMIC power
-//! gating for the MT6357 codec.  Every audio use (call, music, alarm,
+//! Session-based audio management with priority preemption and codec power
+//! requests. Every audio use (call, music, alarm,
 //! ringtone, notification, FM radio) is an explicit session with
 //! open/close lifecycle. The manager requests codec disablement when no
 //! sessions are active (refcount == 0); no M7 physical-power claim follows
@@ -23,11 +23,12 @@
 //! When a high-priority session closes, preempted sessions resume
 //! automatically.  Multiple sessions at the same priority: most recent wins.
 //!
-//! ## PMIC power gating
+//! ## Codec power requests
 //!
-//! The MT6357 codec LDO is enabled on first session open (refcount 0 -> 1)
-//! and disabled on last session close (refcount -> 0) through `AudioCodecOps`.
-//! QEMU proves the requested state through `NullCodec`, not physical PMIC state.
+//! The manager requests codec power on first session open (refcount 0 -> 1)
+//! and power off on last session close (refcount -> 0) through `AudioCodecOps`.
+//! QEMU exercises those state transitions through `NullCodec`. The device
+//! adapter fails closed without PMIC access until #862 lands.
 //!
 //! ## Mic security
 //!
@@ -231,9 +232,9 @@ impl<C: AudioCodecOps> AudioManager<C> {
     /// - When the preempting session closes, preempted sessions resume.
     /// # Errors
     ///
-    /// - [`AudioError::PowerError`] -- codec power-on failed.
-    /// - [`AudioError::RouteError`] -- output route configuration failed.
-    /// - [`AudioError::AdcNotEnabled`] -- mic ADC enable failed for voice call.
+    /// Propagates any codec error from power, DAC, volume, route, or microphone
+    /// setup. The device adapter currently returns
+    /// [`AudioError::PmicUnavailable`] before opening a session (#862).
     pub(crate) fn open_session(
         &mut self,
         kind: SessionKind,
@@ -342,8 +343,8 @@ impl<C: AudioCodecOps> AudioManager<C> {
     /// 1. If this is the last session (refcount -> 0), power down mic,
     ///    disable the DAC, and power off the codec BEFORE removing the
     ///    session from the list -- a hardware failure here leaves the
-    ///    session tracked so `codec_powered`/`mic_powered` still match
-    ///    reality and the close can be retried.
+    ///    session tracked so `codec_powered`/`mic_powered` still match the
+    ///    adapter result and the close can be retried.
     /// 2. Otherwise, remove the session; if it was the highest priority,
     ///    resume the next-highest-priority session (most recently opened
     ///    at that level).
@@ -352,7 +353,8 @@ impl<C: AudioCodecOps> AudioManager<C> {
     /// # Errors
     ///
     /// - [`AudioError::SessionNotFound`] -- no session with the given ID.
-    /// - [`AudioError::PowerError`] -- codec power-off failed.
+    /// - Any codec teardown error, including [`AudioError::PmicUnavailable`]
+    ///   on the current device adapter.
     pub(crate) fn close_session(&mut self, id: u32) -> Result<(), AudioError> {
         let pos = self
             .sessions
@@ -403,7 +405,8 @@ impl<C: AudioCodecOps> AudioManager<C> {
     /// # Errors
     ///
     /// - [`AudioError::SessionNotFound`] -- no session with the given ID.
-    /// - [`AudioError::RouteError`] -- output route configuration failed.
+    /// - Any codec route error, including [`AudioError::RouteUnavailable`] or
+    ///   [`AudioError::PmicUnavailable`].
     pub(crate) fn set_route(&mut self, id: u32, route: AudioRoute) -> Result<(), AudioError> {
         let session = self
             .sessions
@@ -428,12 +431,13 @@ impl<C: AudioCodecOps> AudioManager<C> {
     ///
     /// # Errors
     ///
-    /// - [`AudioError::VolumeError`] -- codec volume write failed.
+    /// Propagates a codec volume error, including
+    /// [`AudioError::PmicUnavailable`] on the current device adapter.
     pub(crate) fn set_volume(&mut self, level: u8) -> Result<(), AudioError> {
-        // WHY: write the hardware first, then update the cached field --
+        // WHY: update the codec adapter first, then the manager's cached field --
         // previously self.volume was updated unconditionally before the
-        // hardware write, so a failed write left the cached value
-        // diverged from the codec's actual (unchanged) volume.
+        // adapter call, so a failed request left the cached value diverged
+        // from the adapter's unchanged volume.
         let clamped = level.min(15);
         if self.codec_powered {
             self.codec.set_volume(clamped)?;

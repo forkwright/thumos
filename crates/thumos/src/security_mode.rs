@@ -453,7 +453,7 @@ impl ModeManager {
     /// Immediately zeroizes all keys, requests every radio disabled, and emits
     /// a [`PanicEvent`]. The 15-second abort window begins at `current_tick`.
     /// The radio state here is requested policy only; #874 owns physical-state
-    /// separation and #862 blocks the legacy PMIC path.
+    /// separation and #862 owns any future PMIC actuation/readback.
     ///
     /// Returns the emitted [`PanicEvent`].
     ///
@@ -778,8 +778,8 @@ const fn mode_name(mode: SecurityMode) -> &'static str {
 pub enum ThreatResponse {
     /// Firewall restriction was requested/applied in memory.
     FirewallRestricted,
-    /// A modem-cut request was recorded and the unsafe legacy path attempted.
-    ModemPowerCut,
+    /// A modem-cut request was recorded; no PMIC transaction was attempted.
+    ModemCutRequested,
     /// No action needed (threat below threshold).
     None,
 }
@@ -788,7 +788,7 @@ impl fmt::Display for ThreatResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::FirewallRestricted => write!(f, "firewall restricted"),
-            Self::ModemPowerCut => write!(f, "modem cut requested (unverified)"),
+            Self::ModemCutRequested => write!(f, "modem cut requested (unapplied)"),
             Self::None => write!(f, "none"),
         }
     }
@@ -796,14 +796,15 @@ impl fmt::Display for ThreatResponse {
 
 /// Legacy uncalibrated threat-score response path.
 ///
-/// - Score >= `critical_threshold`: currently attempts a modem power cut.
+/// - Score >= `critical_threshold`: records an unapplied modem-cut request.
 /// - Sentinel mode active: restrict firewall to Sentinel whitelist.
 /// - Below threshold: no action.
 ///
 /// This compiled path is not a safe accepted policy: #874 owns removing or
-/// redesigning the automatic action, and #862 blocks its PMIC write. It is not
-/// evidence that any threshold is calibrated or any modem rail changed.
-/// Returns the action attempted for audit logging.
+/// redesigning the automatic action. #862 keeps the request fail-closed until
+/// a source-grounded PMIC transaction exists. It is not evidence that any
+/// threshold is calibrated or any modem rail changed. Returns the policy
+/// request for audit logging.
 pub(crate) fn evaluate_threat(
     mode: SecurityMode,
     threat_score: u32,
@@ -816,13 +817,10 @@ pub(crate) fn evaluate_threat(
     // FIXME(#874): an uncalibrated score must not autonomously request a cut.
     if threat_score >= critical_threshold {
         firewall.apply_mode(FirewallMode::Panic);
-        // FIXME(#862): the current implementation is a known-invalid direct
-        // PWRAP-base write and has no safety argument. #874 must also remove
-        // this automatic policy path before any M7 execution.
-        unsafe {
-            power_manager.modem_power_cut();
-        }
-        return ThreatResponse::ModemPowerCut;
+        // FIXME(#874): remove this automatic policy path before any M7
+        // execution. #862 keeps the recorded request unapplied meanwhile.
+        power_manager.request_modem_power_cut();
+        return ThreatResponse::ModemCutRequested;
     }
 
     // Sentinel mode: restrict firewall.
@@ -1538,7 +1536,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn evaluate_threat_critical_triggers_power_cut() {
+    fn evaluate_threat_critical_records_unapplied_cut_request() {
         use crate::ccci_logger::{CcciFirewall, FirewallMode};
 
         let mut fw = CcciFirewall::new(FirewallMode::Daily);
@@ -1555,7 +1553,7 @@ mod tests {
 
         assert_eq!(
             response,
-            ThreatResponse::ModemPowerCut,
+            ThreatResponse::ModemCutRequested,
             "legacy critical branch currently records a modem-cut request (#874)"
         );
         assert_eq!(
@@ -1564,7 +1562,7 @@ mod tests {
             "firewall must switch to Panic on critical"
         );
         assert!(
-            pm.is_modem_pmic_killed(),
+            pm.is_modem_cut_requested(),
             "legacy branch records the sticky cut-request marker, not PMIC readback"
         );
     }
@@ -1639,7 +1637,7 @@ mod tests {
 
         assert_eq!(
             response,
-            ThreatResponse::ModemPowerCut,
+            ThreatResponse::ModemCutRequested,
             "score exactly equal to critical_threshold must be classified critical"
         );
         assert_eq!(
@@ -1648,8 +1646,8 @@ mod tests {
             "firewall must switch to Panic, not Sentinel, when the score meets the threshold exactly"
         );
         assert!(
-            pm.is_modem_pmic_killed(),
-            "legacy path records a modem-off request at the exact threshold"
+            pm.is_modem_cut_requested(),
+            "legacy path records an unapplied modem-cut request at the exact threshold"
         );
     }
 
@@ -1671,8 +1669,8 @@ mod tests {
 
     #[test]
     fn threat_response_display() {
-        let cut = ThreatResponse::ModemPowerCut.to_string();
-        assert!(cut.contains("cut requested"));
+        let cut = ThreatResponse::ModemCutRequested.to_string();
+        assert!(cut.contains("unapplied"));
 
         let restrict = ThreatResponse::FirewallRestricted.to_string();
         assert!(restrict.contains("restricted"));

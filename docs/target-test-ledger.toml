@@ -27,10 +27,10 @@ fidelity = "QEMU exercises AudioManager with NullCodec; #876 owns the source-gro
 
 [[module]]
 name = "audio_codec"
-tests = 16
+tests = 18
 mechanism = "both"
 witness = "boot.sh"
-fidelity = "QEMU uses NullCodec; the non-QEMU Mt6357Codec direct PWRAP-base access is invalid and blocked on #862"
+fidelity = "QEMU uses NullCodec; the non-QEMU Mt6357Codec now returns PmicUnavailable without PMIC/AP MMIO, while #862 owns the source-grounded PWRAP transaction seam"
 
 [[module]]
 name = "audio_route"

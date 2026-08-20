@@ -923,7 +923,7 @@ impl UiManager {
             // WHY: KillModem is a legacy name for a requested policy action,
             // not proof of hardware effect. The UI manager signals it upward
             // so #874's policy layer can authorize/record it; #862 separately
-            // blocks the current invalid PMIC write.
+            // keeps device actuation fail-closed pending a valid PMIC seam.
             ScreenAction::KillModem => true,
             // WHY: Duress, like KillModem, is a privileged action the kernel
             // event loop executes (start panic/wipe) in privileged context.

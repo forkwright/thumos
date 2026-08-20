@@ -9,8 +9,11 @@ set -euo pipefail
 #   (b) a canonical board-MMIO hex value is re-DECLARED as a const outside
 #       board/ (the pre-#534 duplication class: five CONSYS copies, three
 #       UART0 copies). Literal appearances in comments and host-test fault
-#       fixtures (arbitrary-MMIIO-address probes) are not declarations and
-#       are allowed.
+#       fixtures (arbitrary-MMIO-address probes) are not declarations and are
+#       allowed;
+#   (c) the `PWRAP_BASE` identifier or canonical `0x1000_d000` literal is used
+#       outside board/m7.rs. Until #862 lands one reviewed PWRAP transaction
+#       module, those direct construction forms are forbidden.
 # Board constants live only under board::*; board selection happens once, in
 # board/mod.rs.
 
@@ -45,5 +48,24 @@ for hex in 0x1800_0000 0x180F_0000 0x1123_0000 0x1121_0000 0x1400_0000 \
     fi
 done
 
-[ "$rc" -eq 0 ] && echo "board seam: no MT6739_* outside board::m7, no re-declared board consts"
+# (c) No PWRAP symbol or canonical address-literal consumer until #862 supplies
+# the one accepted transaction seam. Future work must narrow this exclusion to
+# that module, not re-admit arbitrary call sites.
+pwrap_pattern='PWRAP_BASE|0[xX]1000_?[dD]000'
+for fixture in 'PWRAP_BASE + offset' '0x1000_d000 + offset' '0X1000D000usize'; do
+    if ! grep -Eq "$pwrap_pattern" <<<"$fixture"; then
+        echo "SEAM CHECK BUG: PWRAP detector missed negative fixture: $fixture" >&2
+        rc=1
+    fi
+done
+
+hits=$(grep -Ern "$pwrap_pattern" "$SRC" --include='*.rs' \
+    | grep -v '/board/m7.rs:' || true)
+if [[ -n "$hits" ]]; then
+    echo "SEAM DRIFT: PWRAP symbol/address used outside board::m7 before #862's accepted transaction seam:" >&2
+    echo "$hits" >&2
+    rc=1
+fi
+
+[ "$rc" -eq 0 ] && echo "board seam: no MT6739_* outside board::m7, no re-declared board consts, no PWRAP symbol/address consumer"
 exit "$rc"

@@ -42,7 +42,7 @@ id = "audio"
 modules = ["audio", "audio_codec", "audio_route", "bt_audio", "avdtp", "sbc", "mic_audit"]
 tier = "emulated-mock-proven"
 witness = ["kardia: audio ready sessions=", "kardia: bt_audio sample_rate=44100 channels=2"]
-notes = "QEMU witnesses AudioManager/RouteManager with NullCodec plus A2DP configuration. MicAuditLog is only manually paired with the smoke, not coupled to every audio transition (#399). A2DP still emits zero-audio through StubSbcEncoder (#401), and the live Bluetooth backend remains #129 software work. The non-QEMU MT6357 path uses invalid direct PWRAP-base arithmetic (#862), while the modem/call-audio route and AEC criterion lack source/calibration (#876); both precede hardware qualification."
+notes = "QEMU witnesses AudioManager/RouteManager with NullCodec plus A2DP configuration. MicAuditLog is only manually paired with the smoke, not coupled to every audio transition (#399). A2DP still emits zero-audio through StubSbcEncoder (#401), and the live Bluetooth backend remains #129 software work. The non-QEMU MT6357 path fails closed with PmicUnavailable and performs no PMIC/AP MMIO; #862 owns the source-grounded PWRAP seam. The modem/call-audio route and AEC criterion lack source/calibration (#876); both precede hardware qualification."
 
 [[capability]]
 id = "ui"
@@ -89,7 +89,7 @@ tracking_reason = "Production timeout/action integration is software work tracke
 id = "power-policy"
 modules = ["power"]
 tier = "kernel-wired"
-notes = "PowerManager policy state is boot/service-loop reachable, but radio state changes are in-memory requests only. #874 owns requested/applied/observed/failed semantics and removes uncalibrated automatic modem cuts. The current direct PMIC access is invalid and may alias unrelated SoC MMIO (#862). Approximate DVFS/MCDI device writes are not source-grounded (#879). All three are software STOPs before hardware."
+notes = "PowerManager policy state is boot/service-loop reachable, but radio state changes are in-memory requests only. A modem-cut request now records a sticky marker without PMIC/AP MMIO; #862 owns source-grounded actuation and readback. #874 owns requested/applied/observed/failed semantics and removal of the uncalibrated automatic request. Approximate DVFS/MCDI device writes are not source-grounded (#879). All three are software STOPs before hardware."
 
 [[capability]]
 id = "watchdog"
