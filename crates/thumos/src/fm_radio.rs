@@ -12,9 +12,8 @@
 //! - WMT channel 0x04 for FM radio commands
 //! - FM register block at offset `0x6000` within the combo chip
 //!
-//! The FM receiver uses the headset wire or internal trace as antenna.
-//! On the AGM M7, the internal antenna trace provides adequate reception
-//! for local FM stations.
+//! The board's FM antenna path and reception remain unqualified on the AGM
+//! M7; driver presence does not establish an internal trace or usable signal.
 //!
 //! ## Frequency range
 //!
@@ -28,9 +27,9 @@
 //! (`audio.rs`) with `SessionKind::FmRadio`.  Boot integration via
 //! `kinit.rs` Step 13d.
 
-// WHY: FM radio driver is wired to the boot path (#518): NullFmHw under
-// qemu/test, the real WMT backend on device, FmRadio<BootFmHw> in
-// KernelState, and the FM screen fed each tick — no dead surface remains.
+// WHY: FM radio is boot/service-loop reachable (#518), with NullFmHw under
+// qemu/test. The production FmHw seam still fabricates power/tune success and
+// lacks seek/RSSI under #129, so reachability is not backend completion.
 
 extern crate alloc;
 
@@ -201,10 +200,10 @@ pub(crate) trait FmHwOps {
 }
 
 // ---------------------------------------------------------------------------
-// Real FM hardware implementation (non-test only)
+// Production-target FM hardware seam (non-test stub)
 // ---------------------------------------------------------------------------
 
-/// Real FM hardware access via WMT STP on the MT6739 combo chip.
+/// Production-target FM handle for a future WMT/STP backend under #129.
 #[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct FmHw {
     /// WMT combo-chip MMIO base address.
@@ -266,8 +265,8 @@ impl FmHwOps for FmHw {
 // ---------------------------------------------------------------------------
 
 /// A no-op FM backend for qemu (#518). The combo chip's CONSYS register
-/// block is unmodeled on -machine virt, so the real `FmHw`'s MMIO would
-/// data-abort. `NullFmHw` tracks the power/tune/seek state the `FmRadio`
+/// block is unmodeled on -machine virt; the production-target `FmHw` seam is
+/// excluded there and remains a #129 stub. `NullFmHw` tracks the power/tune/seek state the `FmRadio`
 /// controller and FM screen read — the controller state machine and the
 /// screen's render path run in emulation. Distinct from `MockFmHw`
 /// (test-only fail-injection knobs); seeks step deterministically by
@@ -337,7 +336,8 @@ impl FmHwOps for NullFmHw {
 }
 
 /// The FM backend the booted kernel wires into `FmRadio` (#518): the no-op
-/// `NullFmHw` under qemu/test, the real `FmHw` (WMT) on device.
+/// `NullFmHw` under qemu/test, the production-target #129 stub `FmHw` on
+/// device.
 #[cfg(any(feature = "qemu", test))]
 pub(crate) type BootFmHw = NullFmHw;
 #[cfg(not(any(feature = "qemu", test)))]

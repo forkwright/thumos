@@ -10,27 +10,23 @@
 //!
 //! ## Access
 //!
-//! The audit log is accessible via the function search ("mic log") which
-//! displays a list of recent mic sessions with timestamps and durations.
-//! This gives the user full visibility into when and why the microphone
-//! was active.
+//! The intended UI/search and persistent-log access are not wired today.
+//! QEMU manually records one smoke entry; this is an in-memory component,
+//! not yet a complete user-visible audit trail (#399).
 //!
 //! ## Threat model
 //!
-//! The mic audit log defends against silent mic activation by rogue
-//! kernel modules or compromised drivers.  Since all mic power gating
-//! goes through `audio.rs` -> `audio_codec.rs` -> PMIC, and the audit
-//! log is called from `audio.rs` on every mic power transition, any
-//! mic activation that bypasses the audit log would also bypass the
-//! PMIC and thus produce no audio.
+//! The desired invariant is that no mic power transition can occur without a
+//! matching audit transition. The current AudioManager holds no MicAuditLog;
+//! #399 owns coupling them and proving fail-closed ordering.
 //!
 //! ## Integration
 //!
-//! Called from `audio.rs` (`AudioManager::open_session` / `close_session`)
-//! when sessions with mic access (currently: `SessionKind::VoiceCall`)
-//! are opened or closed.
+//! `kardia` currently calls this object only in its QEMU boot smoke. It is not
+//! called automatically by `AudioManager::open_session` / `close_session`.
 
-// WHY: mic audit log not yet wired to audio manager (Wave 8, wiring pending).
+// WHY: MicAuditLog is service-loop-owned and smoke-witnessed, but not enforced
+// at the AudioManager transition boundary (#399).
 // cfg_attr(not(test), ...): the module's own tests now exercise its full
 // surface, so nothing is dead in the test build -- expecting dead_code there
 // makes the expectation unfulfilled. Production reachability is unchanged;
@@ -39,7 +35,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Mic audit log exists; audio manager wiring pending (#753; tier in docs/capability-inventory.toml)"
+        reason = "MicAuditLog is smoke-wired; enforced transition coupling remains #399"
     )
 )]
 

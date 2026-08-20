@@ -62,8 +62,8 @@ static mut FUTEX_WAITERS: [Option<FutexWaiter>; MAX_FUTEX_WAITERS] = {
 /// `FUTEX_WAIT`: if `*addr == val`, block the current process.
 ///
 /// Returns 0 after being woken, EAGAIN if `*addr != val`, or EINVAL if
-/// `addr` does not lie within user-accessible DRAM (see
-/// `memguard::validate_user_buffer`) — checked before any dereference.
+/// `addr` does not lie within the configured DRAM window (see
+/// `memguard::validate_user_buffer`). #871 owns caller-VAS/permission checks.
 ///
 /// WHY split: the value-mismatch fast path does not call `crate::process` and
 /// is therefore testable on the host. The register-and-block path is gated
@@ -79,8 +79,8 @@ pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
     }
 
     // Read the current value atomically (single-core: no racing stores).
-    // SAFETY: validate_user_buffer confirmed [addr, addr+4) lies within
-    // user-accessible DRAM.
+    // SAFETY: the current guard bounds [addr, addr+4) to configured DRAM only;
+    // #871 owns caller-VAS/read-permission validation.
     let current_val = unsafe { core::ptr::read_volatile(addr as *const u32) };
 
     if current_val != val {

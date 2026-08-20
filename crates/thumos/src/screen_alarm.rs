@@ -14,7 +14,7 @@
 // frame and has no alarm/timer route/input path.
 #![expect(
     dead_code,
-    reason = "Alarm screen is not wired into the kinit UI route (#737)"
+    reason = "Alarm screen is not wired into the service-loop UI route (#753)"
 )]
 
 extern crate alloc;

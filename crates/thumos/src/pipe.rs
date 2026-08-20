@@ -245,6 +245,8 @@ pub(crate) fn is_write_end(flags: u32) -> bool {
     reason = "read_ofd/write_ofd (open-file-description table indices) and read_fd/write_fd (the per-process fd numbers derived from them) are standard POSIX fd/ofd terminology naming two genuinely distinct values -- renaming either pair to defeat the Levenshtein check would decouple the names from the concepts they name"
 )]
 pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
+    // FIXME(#868): null-only validation is insufficient. Validate the full
+    // writable caller-VAS range through #871 before allocating any state.
     if fds_ptr == 0 {
         return EFAULT;
     }
@@ -305,14 +307,13 @@ pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     let (read_fd, write_fd) = (read_fd as u32, write_fd as u32);
 
     // Write the two fd numbers to userspace.
-    // SAFETY: fds_ptr is validated non-null above. We write 8 bytes (two
+    // SAFETY DEBT (#868/#871): fds_ptr is only checked non-null above. We write 8 bytes (two
     // u32s). The pointer alignment is NOT guaranteed by the ABI (POSIX
     // allows any alignment for char-typed buffers -- the same reasoning
     // time::sys_clock_gettime documents for its own userspace writes), so
     // write_unaligned is required: a plain core::ptr::write on a
     // misaligned fds_ptr is undefined behavior and can fault on ARM.
-    // Wave 4 will add proper bounds validation; this matches the existing
-    // syscall pattern in fd.rs (TODO(#84): plan gaps).
+    // Do not treat this as a valid userspace boundary until #868/#871 land.
     unsafe {
         let fds = fds_ptr as *mut u32;
         core::ptr::write_unaligned(fds, read_fd);
@@ -348,16 +349,16 @@ pub(crate) fn sys_pipe_read(pipe_idx: usize, buf_ptr: u32, count: u32) -> u32 {
         return EAGAIN;
     }
 
-    // Validate the full [buf_ptr, buf_ptr+count) range lies within user DRAM
-    // before constructing the slice — rejects kernel/MMIO/unmapped targets and
-    // count-driven overflow (e.g. count == u32::MAX). Placed after the
+    // Bound [buf_ptr, buf_ptr+count) to the broad configured DRAM window
+    // before constructing the slice; #871 still owns caller-VAS/permission
+    // validation. Placed after the
     // EOF/EAGAIN early returns so a bad pointer is only rejected once the read
     // would actually dereference it.
     if !crate::memguard::validate_user_buffer(buf_ptr as usize, count) {
         return EFAULT;
     }
-    // SAFETY: buf_ptr + count validated to lie within user DRAM; count bytes
-    // are available.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS/write-permission validation. Count bytes are available.
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count) };
     buf.read(dst) as u32
 }
@@ -400,14 +401,14 @@ pub(crate) fn sys_pipe_write(pipe_idx: usize, buf_ptr: u32, count: u32, writer_p
         return EAGAIN;
     }
 
-    // Validate the full [buf_ptr, buf_ptr+count) range lies within user DRAM
-    // before constructing the slice — rejects kernel/MMIO/unmapped targets and
-    // count-driven overflow. Placed after the EPIPE/EAGAIN early returns.
+    // Bound [buf_ptr, buf_ptr+count) to the broad configured DRAM window
+    // before constructing the slice; #871 still owns caller-VAS/permission
+    // validation. Placed after the EPIPE/EAGAIN early returns.
     if !crate::memguard::validate_user_buffer(buf_ptr as usize, count) {
         return EFAULT;
     }
-    // SAFETY: buf_ptr + count validated to lie within user DRAM; count bytes
-    // available in src.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS/read-permission validation. Count bytes are available.
     let src = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, count) };
     buf.write(src) as u32
 }

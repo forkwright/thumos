@@ -33,10 +33,11 @@
 //! module). LAN queries (`*.lan`) bypass `DoT` and use plain UDP to the
 //! local `AdGuard` instance.
 
-// WHY: DNS-over-TLS created in Phase 08 Wave 7, integration pending.
+// WHY: DNS-over-TLS framing and pin checks are host-tested, but no production
+// network path drives DotClient yet.
 #![expect(
     dead_code,
-    reason = "DNS-over-TLS created in Phase 08 Wave 7, network integration pending (#442)"
+    reason = "DNS-over-TLS production network integration remains #753"
 )]
 
 extern crate alloc;

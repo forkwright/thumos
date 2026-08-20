@@ -9,9 +9,11 @@
 //! - **CLDMA** — ring-buffer DMA for data channels (network, audio, logging)
 //! - **CCIF** — low-latency mailbox for control messages (24 channels, 512-byte SRAM)
 //!
-//! SECURITY: The MT6739 has no IOMMU. Validation at this boundary is the only
-//! defense against modem-initiated attacks. All shared memory is treated as
-//! untrusted input — data is copied out before processing to prevent TOCTOU.
+//! SECURITY: the stock config exposes no verified ARM SMMU path, but it does
+//! enable MediaTek EMI-MPU support. Thumos currently configures neither, so
+//! modem DMA isolation is unverified and tracked by #860. CCCI validation is
+//! still required inside any eventual shared-memory window: all modem data is
+//! untrusted and copied out before processing to prevent TOCTOU.
 
 use core::fmt;
 

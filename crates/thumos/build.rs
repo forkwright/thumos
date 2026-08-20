@@ -92,7 +92,8 @@ fn main() {
         Err(_) if production => die(&format!(
             "#233: a production image needs a real trust anchor. Set {KEY_ENV} to the \
              hex-encoded Ed25519 public key file produced by the offline signing \
-             infrastructure (Titan / air-gapped machine). The committed dev key and \
+             infrastructure under an operator-owned offline-custody receipt. The \
+             committed dev key and \
              the RFC 8032 placeholder are refused for production builds; no \
              production key is ever committed to this repo."
         )),
@@ -337,8 +338,10 @@ fn generate_initramfs(manifest_dir: &Path, out_dir: &Path) {
     // e.g. the eMMC-less QEMU boot). The signature verifies under the dev/qemu
     // anchor (BOOT_PUBLIC_KEY = the committed dev key); under a production
     // anchor it does NOT verify (build.rs has no production seal), so a
-    // production image correctly falls back to the eMMC secure-boot gate. The
-    // real signing infrastructure signs the production initramfs offline.
+    // production image correctly falls back to the eMMC post-entry signature
+    // gate. That in-kernel gate cannot authenticate the already executing
+    // kernel; #467 owns the pre-entry chain. Operator-controlled signing
+    // infrastructure must sign the production initramfs offline.
     let seed = read_hex_key(&manifest_dir.join("keys/dev/boot-dev.seed"));
     let signature = SigningKey::from_bytes(&seed).sign(&archive);
     if let Err(e) = fs::write(out_dir.join("initramfs_sig.bin"), signature.to_bytes()) {

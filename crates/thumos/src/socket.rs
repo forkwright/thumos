@@ -362,7 +362,7 @@ unsafe fn alloc_ephemeral_port() -> Option<u16> {
 /// # Returns
 /// File descriptor number on success, negative errno on failure.
 pub(crate) fn sys_socket(domain: u32, sock_type: u32, _protocol: u32) -> u32 {
-    // TODO(#84)[deliberate-prudent]: IPv6 (AF_INET6) -- only AF_INET supported
+    // TODO(#864)[deliberate-prudent]: IPv6 (AF_INET6) -- only AF_INET supported
     if domain != AF_INET {
         return EAFNOSUPPORT;
     }
@@ -447,8 +447,8 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     }
 
     // Read the sockaddr_in.
-    // SAFETY: validate_user_buffer confirmed [addr_ptr, addr_ptr+addr_size)
-    // lies within user-accessible DRAM.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS/read-permission validation.
     let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
 
     if sockaddr.sin_family != AF_INET as u16 {
@@ -523,7 +523,7 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
             // client socket into an unintended listener (issue #307).
             // sys_connect() reads bound_port to build the local endpoint
             // passed to connect(); an actual LISTEN transition belongs in
-            // sys_listen() (currently EOPNOTSUPP, TODO(#84)).
+            // sys_listen() (currently EOPNOTSUPP, TODO(#864)).
         }
         SocketType::Udp => {
             let udp_socket: &mut udp::Socket<'_> = stack.sockets_mut().get_mut(socket_handle);
@@ -545,7 +545,7 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
 /// # Returns
 /// EOPNOTSUPP — full listen/accept is deferred to a future phase.
 ///
-/// TODO(#84)[deliberate-prudent]: listen/accept -- currently returns EOPNOTSUPP
+/// TODO(#864)[deliberate-prudent]: listen/accept -- currently returns EOPNOTSUPP
 pub(crate) fn sys_listen(_fd: u32, _backlog: u32) -> u32 {
     EOPNOTSUPP
 }
@@ -555,7 +555,7 @@ pub(crate) fn sys_listen(_fd: u32, _backlog: u32) -> u32 {
 /// # Returns
 /// EOPNOTSUPP — full listen/accept is deferred to a future phase.
 ///
-/// TODO(#84)[deliberate-prudent]: listen/accept -- currently returns EOPNOTSUPP
+/// TODO(#864)[deliberate-prudent]: listen/accept -- currently returns EOPNOTSUPP
 pub(crate) fn sys_accept(_fd: u32, _addr_ptr: u32, _addr_len_ptr: u32) -> u32 {
     EOPNOTSUPP
 }
@@ -587,8 +587,8 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     }
 
     // Read the sockaddr_in.
-    // SAFETY: validate_user_buffer confirmed [addr_ptr, addr_ptr+addr_size)
-    // lies within user-accessible DRAM.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS/read-permission validation.
     let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
 
     if sockaddr.sin_family != AF_INET as u16 {
@@ -776,8 +776,8 @@ pub(crate) fn sys_sendto(
         return fd::EBADF;
     };
 
-    // SAFETY: validate_user_buffer confirmed [buf_ptr, buf_ptr+len) lies
-    // within user-accessible DRAM.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS/read-permission validation.
     let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
 
     // SAFETY: single-core cooperative kernel; init_network_stack called.
@@ -809,9 +809,8 @@ pub(crate) fn sys_sendto(
                     dest_addr_ptr as usize,
                     core::mem::size_of::<SockaddrIn>(),
                 ) {
-                // SAFETY: validate_user_buffer confirmed
-                // [dest_addr_ptr, dest_addr_ptr+size_of::<SockaddrIn>()) lies
-                // within user-accessible DRAM.
+                // SAFETY: the current guard bounds this to configured DRAM;
+                // #871 owns caller-VAS/read-permission validation.
                 let sa = unsafe { core::ptr::read_unaligned(dest_addr_ptr as *const SockaddrIn) };
                 IpEndpoint::new(IpAddress::Ipv4(sa.ipv4_addr()), sa.port())
             } else if let Some((ip, port)) = info.peer_addr {
@@ -909,8 +908,8 @@ pub(crate) fn sys_recvfrom(
         return fd::EBADF;
     };
 
-    // SAFETY: validate_user_buffer confirmed [buf_ptr, buf_ptr+len) lies
-    // within user-accessible DRAM.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS/write-permission validation.
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
 
     // SAFETY: single-core cooperative kernel; init_network_stack called.
@@ -959,9 +958,8 @@ pub(crate) fn sys_recvfrom(
                             _ => Ipv4Address::UNSPECIFIED,
                         };
                         let sa = SockaddrIn::new(meta.endpoint.port, src_ip);
-                        // SAFETY: validate_user_buffer confirmed
-                        // [src_addr_ptr, src_addr_ptr+size_of::<SockaddrIn>())
-                        // lies within user-accessible DRAM.
+                        // SAFETY: the current guard bounds this to configured
+                        // DRAM; #871 owns caller-VAS/write-permission validation.
                         unsafe {
                             core::ptr::write_unaligned(src_addr_ptr as *mut SockaddrIn, sa);
                         }

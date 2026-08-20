@@ -16,10 +16,10 @@
 //! (everything before the checksum) and is integrity-only: it travels inside
 //! the same untrusted bundle it protects, so it catches corruption but proves
 //! nothing about origin. The Ed25519 signature covers the same magic + length
-//! + payload region and is the sole authenticity guarantee — verified against
-//!   [`PROVISION_PUBLIC_KEY`], a compile-time-embedded public key whose
-//!   corresponding private key is held offline by the operator, mirroring the
-//!   secure-boot Ed25519 key custody model (see [`secure_boot`]).
+//! + payload region and is intended to be the authenticity gate. The compiled
+//!   [`PROVISION_PUBLIC_KEY`] is currently RFC 8032 Test 2, whose private key is
+//!   public; it provides no operator authenticity. #869 owns production key
+//!   injection, test-key rejection, identity, freshness, and replay semantics.
 //!
 //! ## Provisioning flow
 //!
@@ -81,13 +81,11 @@ const RECV_BUF_CAPACITY: usize = HEADER_SIZE + MAX_PAYLOAD_SIZE + SHA256_LEN + S
 
 /// Embedded Ed25519 public key for provisioning bundle authenticity.
 ///
-/// TODO(#270)[deliberate-prudent]: this is the RFC 8032 section 7.1 Test 2
+/// TODO(#869)[deliberate-prudent]: this is the RFC 8032 section 7.1 Test 2
 /// public key, NOT a real trust anchor. It must be replaced with the
-/// production provisioning key injected by the offline signing
-/// infrastructure before any release build. The corresponding private key
-/// is held offline by the operator (same custody model as
-/// [`secure_boot`]'s boot key) and used by the menos-side provisioning
-/// tool to sign bundles — it never touches this crate's compiled artifact.
+/// production provisioning key injected by an operator-accepted authority
+/// before any live integration. The current corresponding private key is
+/// published in the RFC, so this constant authenticates nobody.
 /// Deliberately a distinct key from the boot key: provisioning-bundle
 /// authenticity and kernel-image authenticity are separate trust domains.
 const PROVISION_PUBLIC_KEY: [u8; secure_boot::PUBLIC_KEY_LEN] = [
@@ -415,10 +413,9 @@ impl Provisioner {
         }
 
         // Verify the Ed25519 signature over the same region. This is the
-        // sole authenticity guarantee: only a host holding the offline
-        // provisioning private key can produce a signature
-        // provision_public_key accepts, closing the "any host can inject
-        // credentials" gap the checksum alone left open (#270).
+        // intended authenticity gate. With the compiled RFC test key, anyone
+        // knows the matching private key; #869 must provision and bind the
+        // real authority before this path becomes reachable.
         let mut signature = [0u8; SIGNATURE_LEN];
         signature.copy_from_slice(&self.buffer[signature_start..signature_start + SIGNATURE_LEN]);
         secure_boot::verify_message_signature(data_region, &signature, &self.provision_public_key)
@@ -461,8 +458,9 @@ impl fmt::Display for Provisioner {
 /// Returns the complete byte sequence: magic + length + postcard payload +
 /// SHA-256 checksum + Ed25519 signature. `signature` must be computed by
 /// the caller over the magic + length + payload bytes (the same region
-/// [`Provisioner::try_finalize`] verifies) under the provisioning private
-/// key held offline by the operator. This function never touches
+/// [`Provisioner::try_finalize`] verifies). The accepted production workflow
+/// must inject a non-test trust anchor and keep its signing key under the
+/// operator-approved custody defined by #869. This function never touches
 /// signing-key material itself — it only appends a caller-supplied
 /// signature — so the menos-side provisioning tool (or a test, via a
 /// locally generated keypair) computes the signature with its own crypto
@@ -517,7 +515,7 @@ mod tests {
     ///
     /// Its public half is injected into [`harness_provisioner`] via
     /// [`Provisioner::new_with_key`], so a locally computed signature verifies
-    /// without the offline production key behind [`PROVISION_PUBLIC_KEY`].
+    /// without relying on the public RFC test anchor in [`PROVISION_PUBLIC_KEY`].
     fn harness_signing_key() -> SigningKey {
         SigningKey::from_bytes(&[0x42; 32])
     }
@@ -999,7 +997,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Signature authenticity (#270)
+    // Signature-verification mechanics (historical #270); production anchor #869.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1039,8 +1037,9 @@ mod tests {
 
     #[test]
     fn hash_only_forgery_rejected() {
-        // The core #270 property: an attacker who does NOT hold the trusted
-        // provisioning key signs the bundle with a DIFFERENT key.
+        // The signature-verification property from historical #270: a signer
+        // that does NOT hold the key trusted by this test provisioner uses a
+        // DIFFERENT key.
         // encode_bundle recomputes a correct SHA-256, so the integrity
         // checksum is genuinely valid — yet the provisioner, trusting only
         // harness_signing_key's public half, refuses the wrong-key signature. A
@@ -1065,7 +1064,7 @@ mod tests {
         assert_eq!(
             *state,
             ProvisionState::Error(ProvisionError::SignatureInvalid),
-            "valid hash + wrong signing key must be rejected (#270)"
+            "valid hash + wrong signing key must be rejected (#869)"
         );
     }
 

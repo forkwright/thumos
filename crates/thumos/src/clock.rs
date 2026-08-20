@@ -1,18 +1,20 @@
-//! Clock trust hierarchy: GPS > NTP > modem RTC.
+//! Clock source selector: GPS > NTP > modem RTC (provisional; #861).
 //!
-//! Provides wall-clock time to the kernel by selecting the most trustworthy
-//! available source. GPS-derived time (atomic clocks on satellites) is always
-//! preferred. NTP is accepted when GPS is stale. Modem RTC (carrier-provided,
-//! potentially hostile) is the lowest-trust automatic source.
+//! Provides wall-clock time to the kernel using the current freshness-based
+//! selector. The implemented order is not a validated security trust model:
+//! GPS/NMEA and plain NTP are unauthenticated, and either may be spoofed or
+//! supplied by hostile firmware. #861 owns separating authentication,
+//! freshness, precision, and disagreement handling before automatic source
+//! acquisition is wired.
 //!
 //! ## Trust model
 //!
 //! | Source     | Trust   | Rationale                                          |
 //! |------------|---------|---------------------------------------------------|
-//! | GPS        | Highest | Atomic clocks on satellites, verified by fix       |
-//! | NTP        | Medium  | Cryptographically authenticated (future NTS)       |
-//! | Modem RTC  | Lowest  | Carrier-provided, potentially hostile               |
-//! | Manual     | None    | User-set, no trust                                 |
+//! | GPS        | Unauthenticated | Current selector prefers a fresh fix; #861 |
+//! | NTP        | Unauthenticated | Packet validation only; NTS is not implemented |
+//! | Modem RTC  | Unauthenticated | Carrier/firmware supplied                  |
+//! | Manual     | Seed            | User/build supplied; no external freshness |
 //!
 //! ## NTP client
 //!
@@ -20,11 +22,11 @@
 //! server, parses the response for server transmit timestamp, and computes
 //! the clock offset. Uses the socket syscall layer (Wave 4) for UDP.
 
-// WHY: clock module provides wall-clock policy, but kernel time and userspace
-// syscalls still use the lower-level timer/time paths.
+// WHY: the service loop owns ClockManager and seeds CLOCK_REALTIME from it;
+// automatic GPS, NTP, and modem-time acquisition paths remain unused.
 #![expect(
     dead_code,
-    reason = "Clock trust manager is not wired into kernel time (#753; tier in docs/capability-inventory.toml)"
+    reason = "ClockManager is service-loop/syscall wired; automatic source acquisition remains unwired (#753)"
 )]
 
 extern crate alloc;
@@ -56,18 +58,19 @@ const NTP_PORT: u16 = 123;
 const NTP_UNIX_OFFSET: u64 = 2_208_988_800;
 
 // ---------------------------------------------------------------------------
-// Clock source hierarchy
+// Clock source precedence
 // ---------------------------------------------------------------------------
 
-/// Clock source with trust ranking.
+/// Clock source with provisional precedence.
 ///
-/// Variants are ordered by trust level (highest first).
+/// Variants are ordered by selection priority (highest first). GPS, NTP, and
+/// modem RTC are unauthenticated; ordering does not confer trust (#861).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum ClockSource {
-    /// GPS-derived time — atomic clocks on satellites.
+    /// GPS-derived time — currently first in the selector, but unauthenticated (#861).
     Gps,
-    /// NTP-derived time — cryptographically authenticated (future NTS).
+    /// Plain-NTP-derived time — unauthenticated; NTS remains future work (#861).
     Ntp,
     /// Modem RTC — carrier-provided, potentially hostile.
     ModemRtc,
@@ -93,9 +96,10 @@ impl core::fmt::Display for ClockSource {
 // Clock manager
 // ---------------------------------------------------------------------------
 
-/// Manages the system wall clock using a trust hierarchy of time sources.
+/// Manages the system wall clock using a source-precedence policy.
 ///
-/// Selects the most trustworthy available source and tracks staleness.
+/// Selects the highest-precedence available source and tracks staleness. GPS,
+/// NTP, and modem RTC are unauthenticated inputs; precedence is not trust (#861).
 /// The monotonic kernel tick counter is used to determine when sources
 /// become stale.
 pub(crate) struct ClockManager {
@@ -151,8 +155,8 @@ impl ClockManager {
 
     /// Update from GPS time.
     ///
-    /// GPS is the highest-trust source. Always accepted regardless of
-    /// other sources.
+    /// GPS currently has first priority and is accepted regardless of other
+    /// sources. This is provisional, not an authentication claim (#861).
     pub(crate) fn update_from_gps(&mut self, time: GpsTime, current_tick_ms: u64) {
         self.gps_time = Some(time);
         self.gps_update_tick = current_tick_ms;
@@ -162,8 +166,9 @@ impl ClockManager {
 
     /// Update from NTP offset.
     ///
-    /// NTP is medium-trust. Only accepted if GPS is stale (> 60s since
-    /// last GPS update) or if no GPS time has ever been received.
+    /// Plain NTP currently has second priority. It is accepted only if GPS is
+    /// stale (> 60s since last update) or absent; neither source is authenticated
+    /// by this implementation (#861).
     ///
     /// Returns `true` if the update was accepted.
     pub(crate) fn update_from_ntp(&mut self, offset: i64, current_tick_ms: u64) -> bool {
@@ -180,7 +185,7 @@ impl ClockManager {
 
     /// Update from modem RTC epoch.
     ///
-    /// Modem RTC is lowest-trust automatic source. Only accepted if both
+    /// Modem RTC is the lowest-precedence automatic source. Only accepted if both
     /// GPS and NTP are stale.
     ///
     /// Returns `true` if the update was accepted.
@@ -199,7 +204,8 @@ impl ClockManager {
     /// Set manual time (user-provided).
     ///
     /// Manual time is accepted unconditionally but ranked lowest in the
-    /// trust hierarchy. A subsequent GPS or NTP update will override it.
+    /// source order. A subsequent GPS or NTP update will override it, but neither
+    /// input is authenticated; #861 owns the required policy and safeguards.
     pub(crate) fn set_manual(&mut self, epoch: u64, current_tick_ms: u64) {
         self.manual_epoch = Some(epoch);
         // Only set source to Manual if nothing better is active.
@@ -229,12 +235,13 @@ impl ClockManager {
 
     /// Get the best-known wall clock time as Unix epoch seconds.
     ///
-    /// Returns the time from the highest-trust available source.
-    /// Falls back through the hierarchy: GPS > NTP > RTC > Manual.
+    /// Returns time from the first fresh source in the current provisional
+    /// order: GPS > plain NTP > RTC > Manual. This is not an authentication
+    /// ranking; #861 owns that correction.
     /// Returns 0 if no time source is available.
     #[must_use]
     pub(crate) fn get_wall_clock(&self, current_tick_ms: u64) -> u64 {
-        // Try sources in trust order.
+        // Try sources in provisional precedence order (#861).
         if let Some(ref gps_time) = self.gps_time
             && self.gps_is_fresh(current_tick_ms)
         {
@@ -363,8 +370,7 @@ pub(crate) fn parse_ntp_response(packet: &[u8]) -> Option<u64> {
 #[must_use]
 pub(crate) fn calculate_ntp_offset(local_send_secs: u64, server_transmit_epoch: u64) -> i64 {
     // INVARIANT: unlike the other u64 -> i64 sites in this module, this
-    // function has no wired-in caller yet (the clock trust manager
-    // is not wired into kernel time) to bound `local_send_secs` by
+    // function has no wired-in NTP caller yet to bound `local_send_secs` by
     // construction, and `server_transmit_epoch` is meant to carry a value
     // parsed from a network-supplied NTP packet (see `parse_ntp_response`).
     // A bare `as i64` on either operand would silently flip sign for an

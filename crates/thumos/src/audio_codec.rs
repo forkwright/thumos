@@ -6,9 +6,10 @@
 //!
 //! ## Hardware path
 //!
-//! The MT6357 PMIC is accessed via the PMIC wrapper bus (PWRAP) on the
-//! MT6739 `SoC`.  Register writes go through PWRAP MMIO at `0x1000_D000`,
-//! which bridges to the PMIC I2C/SPI bus.
+//! The MT6357 PMIC requires transactions through the MT6739 PWRAP
+//! controller. The current production-target implementation incorrectly
+//! dereferences `PWRAP_BASE + pmic_offset`; #862 owns a fail-closed,
+//! source-grounded transaction seam before any M7 use.
 //!
 //! ## PMIC audio register map (MT6357)
 //!
@@ -27,18 +28,19 @@
 //! | `AUDENC_ANA_CON9`    | 0x20E4   | Mic bias voltage control             |
 //! | `AUD_TOP_LDO_CON0`   | 0x2100   | Audio LDO enable                    |
 //!
-//! These offsets are within the PMIC register space; actual access goes
-//! through PWRAP at `PWRAP_BASE + offset`.
+//! These are PMIC-space offsets, not AP MMIO offsets. Adding them to
+//! `PWRAP_BASE` is invalid and may address unrelated SoC registers (#862).
 //!
 //! ## Integration
 //!
 //! Used by [`super::audio::AudioManager`] for codec power management and
 //! route switching.  The `AudioCodecOps` trait enables mock-based testing.
 
-// WHY: audio codec API not yet wired to kinit (Wave 4 integration pending).
+// WHY: kardia constructs AudioManager<BootCodec> and the QEMU witness exercises
+// its state machine, but real MT6357 codec/PMIC behavior remains unqualified.
 #![expect(
     dead_code,
-    reason = "audio codec API exists; kinit wiring pending (#753; tier in docs/capability-inventory.toml)"
+    reason = "audio codec API is QEMU-wired; unused operations await accepted production integration and M7 qualification (#753)"
 )]
 
 extern crate alloc;
@@ -49,9 +51,10 @@ use super::audio_route::AudioRoute;
 // MT6357 PMIC audio registers
 // ---------------------------------------------------------------------------
 
-/// PWRAP (PMIC Wrapper) base address on MT6739.
+/// PWRAP (PMIC Wrapper) controller base address on MT6739.
 ///
-/// All PMIC register accesses go through PWRAP MMIO.
+/// PMIC offsets cannot be added to this controller base. They require the
+/// source-grounded wrapper transaction that #862 owns.
 /// Audio top-level power control register offset.
 const AUD_TOP_CON0: u16 = 0x2000;
 
@@ -185,8 +188,10 @@ impl core::fmt::Display for AudioError {
 
 /// Hardware-abstracted audio codec operations.
 ///
-/// Provides a uniform interface for the MT6357 PMIC codec, allowing
-/// real hardware access in production and mock verification in tests.
+/// Provides a uniform interface for an eventual source-grounded MT6357 PMIC
+/// seam and for mock verification in tests. The current production-target
+/// implementation uses invalid direct PWRAP-base arithmetic and is unsafe
+/// pending #862.
 pub(crate) trait AudioCodecOps {
     /// Power on the audio codec: enable LDO, wait for stabilization,
     /// enable top-level power.
@@ -251,31 +256,29 @@ pub(crate) trait AudioCodecOps {
 }
 
 // ---------------------------------------------------------------------------
-// Real MT6357 codec implementation (non-test only)
+// Production-target legacy MT6357 seam (non-test only)
 // ---------------------------------------------------------------------------
 
-/// MT6357 PMIC audio codec driver.
+/// Production-target MT6357 codec seam with an unsafe legacy access model.
 ///
-/// Accesses PMIC registers through the PWRAP bus on the MT6739.
-/// Manages LDO power gating, DAC/ADC enable, amplifier routing,
-/// volume control, and mic bias.
-// WHY: powered/dac_enabled/adc_enabled/mic_bias are independent hardware
-// power-gate flags that can be set in any combination, not a mutually
-// exclusive state machine — a bitflags/enum recast would not simplify
-// the per-flag read/write pattern used against the PMIC registers.
+/// Until #862 replaces direct base-plus-offset MMIO with a grounded PWRAP
+/// transaction, its booleans are cached requested state rather than PMIC
+/// readback and this type must not run on hardware.
+// WHY: powered/dac_enabled/adc_enabled/mic_bias are independent cached
+// requested-state flags, not a mutually exclusive state machine.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent PMIC power-gate flags, not a state machine; a bitflags/enum recast would not simplify the per-flag register read/write pattern"
 )]
 #[cfg(not(any(test, feature = "qemu")))]
 pub(crate) struct Mt6357Codec {
-    /// Whether the codec is powered on (LDO active).
+    /// Whether software recorded a successful power-on request.
     powered: bool,
-    /// Whether the DAC is enabled.
+    /// Whether software recorded a successful DAC-enable request.
     dac_enabled: bool,
-    /// Whether the ADC is enabled.
+    /// Whether software recorded a successful ADC-enable request.
     adc_enabled: bool,
-    /// Whether mic bias is enabled.
+    /// Whether software recorded a successful mic-bias request.
     mic_bias: bool,
     /// Current volume level (0-15).
     vol: u8,
@@ -301,33 +304,31 @@ impl Mt6357Codec {
         }
     }
 
-    /// Write a 32-bit value to a PMIC register via PWRAP.
+    /// Legacy direct-MMIO write pending #862's PWRAP transaction seam.
     ///
     /// # Safety
     ///
-    /// The caller must ensure `offset` is a valid MT6357 register offset
-    /// and that PWRAP is initialized.
+    /// This construction is not a valid PMIC transaction and must not be used
+    /// on hardware until #862 replaces it.
     #[inline]
     unsafe fn pmic_write(offset: u16, value: u32) {
         let addr = crate::board::PWRAP_BASE + offset as usize;
-        // SAFETY: board::PWRAP_BASE + offset is a valid MMIO address in the
-        // MT6739 address map.  Volatile write ensures the compiler does
-        // not reorder or elide the store.
+        // FIXME(#862): a PMIC offset cannot be dereferenced at PWRAP_BASE.
         unsafe {
             core::ptr::write_volatile(addr as *mut u32, value);
         }
     }
 
-    /// Read a 32-bit value from a PMIC register via PWRAP.
+    /// Legacy direct-MMIO read pending #862's PWRAP transaction seam.
     ///
     /// # Safety
     ///
-    /// The caller must ensure `offset` is a valid MT6357 register offset
-    /// and that PWRAP is initialized.
+    /// This construction is not a valid PMIC transaction and must not be used
+    /// on hardware until #862 replaces it.
     #[inline]
     unsafe fn pmic_read(offset: u16) -> u32 {
         let addr = crate::board::PWRAP_BASE + offset as usize;
-        // SAFETY: same as pmic_write; volatile read ensures no elision.
+        // FIXME(#862): a PMIC offset cannot be dereferenced at PWRAP_BASE.
         unsafe { core::ptr::read_volatile(addr as *const u32) }
     }
 
@@ -335,7 +336,8 @@ impl Mt6357Codec {
     ///
     /// # Safety
     ///
-    /// The caller must ensure `offset` is a valid MT6357 register offset.
+    /// Even a valid PMIC offset cannot make the current direct-MMIO access a
+    /// PWRAP transaction; hardware use is blocked on #862.
     unsafe fn pmic_set_bits(offset: u16, bits: u32) {
         // WHY: mask IRQ delivery around the read-modify-write -- an
         // interrupt firing between the read and the write here could
@@ -344,7 +346,7 @@ impl Mt6357Codec {
         // preemption-corruption class crate::irq::IrqGuard exists for,
         // see irq.rs's #322/#331 module docs).
         let _irq_guard = crate::irq::IrqGuard::new();
-        // SAFETY: caller guarantees valid register offset.
+        // SAFETY: legacy nested unsafe call only; #862 blocks hardware use.
         unsafe {
             let current = Self::pmic_read(offset);
             Self::pmic_write(offset, current | bits);
@@ -355,11 +357,12 @@ impl Mt6357Codec {
     ///
     /// # Safety
     ///
-    /// The caller must ensure `offset` is a valid MT6357 register offset.
+    /// Even a valid PMIC offset cannot make the current direct-MMIO access a
+    /// PWRAP transaction; hardware use is blocked on #862.
     unsafe fn pmic_clear_bits(offset: u16, bits: u32) {
         // WHY: IRQ-safe RMW -- see pmic_set_bits.
         let _irq_guard = crate::irq::IrqGuard::new();
-        // SAFETY: caller guarantees valid register offset.
+        // SAFETY: legacy nested unsafe call only; #862 blocks hardware use.
         unsafe {
             let current = Self::pmic_read(offset);
             Self::pmic_write(offset, current & !bits);
@@ -372,7 +375,8 @@ impl Mt6357Codec {
     ///
     /// Must only be called when the codec is powered on.
     unsafe fn disable_all_amps() {
-        // SAFETY: codec is powered, PWRAP is active, register offsets are valid.
+        // SAFETY: legacy call shape only; #862 must replace the invalid PWRAP
+        // access before this path is permitted on hardware.
         unsafe {
             Self::pmic_clear_bits(AUDDEC_ANA_CON1, EARPIECE_AMP_EN);
             Self::pmic_clear_bits(AUDDEC_ANA_CON6, SPEAKER_AMP_EN);
@@ -388,8 +392,8 @@ impl AudioCodecOps for Mt6357Codec {
             return Ok(());
         }
 
-        // SAFETY: PWRAP is initialized during kinit; register offsets are
-        // valid MT6357 audio registers documented in the header.
+        // SAFETY: legacy call shape only; direct PWRAP-base arithmetic is not
+        // a valid PMIC transaction and remains blocked on #862.
         unsafe {
             // Step 1: Enable audio LDO.
             Self::pmic_set_bits(AUD_TOP_LDO_CON0, AUD_LDO_ENABLE);
@@ -425,7 +429,7 @@ impl AudioCodecOps for Mt6357Codec {
             self.disable_mic_bias()?;
         }
 
-        // SAFETY: PWRAP initialized, valid register offsets.
+        // SAFETY: legacy call shape only; hardware use remains blocked on #862.
         unsafe {
             // Disable all amplifiers.
             Self::disable_all_amps();
@@ -449,7 +453,7 @@ impl AudioCodecOps for Mt6357Codec {
             return Ok(());
         }
 
-        // SAFETY: codec powered, valid registers.
+        // SAFETY: legacy call shape only; hardware use is blocked on #862.
         unsafe {
             Self::pmic_set_bits(AFE_UL_DL_CON0, AFE_DL_EN);
             Self::pmic_set_bits(AFE_DL_CON0, DAC_ENABLE);
@@ -467,7 +471,7 @@ impl AudioCodecOps for Mt6357Codec {
             return Ok(());
         }
 
-        // SAFETY: codec powered, valid registers.
+        // SAFETY: legacy call shape only; hardware use is blocked on #862.
         unsafe {
             Self::pmic_set_bits(AFE_UL_DL_CON0, AFE_UL_EN);
             Self::pmic_set_bits(AFE_UL_CON0, ADC_ENABLE);
@@ -483,8 +487,7 @@ impl AudioCodecOps for Mt6357Codec {
             return Ok(());
         }
 
-        // SAFETY: codec powered (checked by enable_dac precondition),
-        // valid registers.
+        // SAFETY: legacy call shape only; hardware use is blocked on #862.
         unsafe {
             Self::disable_all_amps();
             Self::pmic_clear_bits(AFE_DL_CON0, DAC_ENABLE);
@@ -500,7 +503,7 @@ impl AudioCodecOps for Mt6357Codec {
             return Ok(());
         }
 
-        // SAFETY: codec powered, valid registers.
+        // SAFETY: legacy call shape only; hardware use is blocked on #862.
         unsafe {
             Self::pmic_clear_bits(AUDENC_ANA_CON0, MIC_PREAMP_EN);
             Self::pmic_clear_bits(AFE_UL_CON0, ADC_ENABLE);
@@ -519,7 +522,7 @@ impl AudioCodecOps for Mt6357Codec {
             return Err(AudioError::DacNotEnabled);
         }
 
-        // SAFETY: codec powered, DAC enabled, valid registers.
+        // SAFETY: legacy call shape only; hardware use is blocked on #862.
         unsafe {
             // Disable all amps first, then enable the target.
             Self::disable_all_amps();
@@ -554,7 +557,7 @@ impl AudioCodecOps for Mt6357Codec {
         let clamped = level.min(MAX_VOLUME);
         let gain = u32::from(clamped) * VOLUME_STEP;
 
-        // SAFETY: codec powered, valid register.
+        // SAFETY: legacy call shape only; hardware use is blocked on #862.
         unsafe {
             Self::pmic_write(AFE_DL_GAIN, gain);
         }
@@ -580,7 +583,7 @@ impl AudioCodecOps for Mt6357Codec {
             return Ok(());
         }
 
-        // SAFETY: codec powered, valid register.
+        // SAFETY: legacy call shape only; hardware use is blocked on #862.
         unsafe {
             Self::pmic_set_bits(AUDENC_ANA_CON9, MIC_BIAS_EN);
         }
@@ -594,7 +597,7 @@ impl AudioCodecOps for Mt6357Codec {
             return Ok(());
         }
 
-        // SAFETY: codec powered, valid register.
+        // SAFETY: legacy call shape only; hardware use is blocked on #862.
         unsafe {
             Self::pmic_clear_bits(AUDENC_ANA_CON9, MIC_BIAS_EN);
         }
@@ -637,12 +640,11 @@ impl AudioCodecOps for Mt6357Codec {
 /// Records all operations in order for test verification.  Controllable
 /// failure injection via the `fail_*` flags.
 // kanon:ignore RUST/struct-too-many-fields -- test-only mock: one state flag + one fail-injection flag per codec hardware operation; each field targets a distinct operation's failure path
-// WHY: powered/dac_enabled/adc_enabled/mic_bias mirror the independent
-// hardware power-gate flags of the real codec (see Mt6357Codec) — not a
-// state machine, so no bitflags/enum recast applies here either.
+// WHY: powered/dac_enabled/adc_enabled/mic_bias mirror independent interface
+// states, not a state machine, so no bitflags/enum recast applies here.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "powered/dac_enabled/adc_enabled/mic_bias mirror the independent hardware power-gate flags of the real codec (see Mt6357Codec) -- not a state machine, so no bitflags/enum recast applies here either"
+    reason = "powered/dac_enabled/adc_enabled/mic_bias mirror independent codec interface states, not a state machine"
 )]
 #[cfg(test)]
 pub struct MockCodec {
@@ -819,7 +821,7 @@ impl AudioCodecOps for MockCodec {
         if !self.powered {
             return Err(AudioError::CodecNotPowered);
         }
-        // WHY: mirror the real Mt6357Codec's ADC-enabled precondition
+        // WHY: mirror the production-target interface's ADC-enabled precondition
         // (#397) so a test exercising this invariant at the MockCodec
         // level actually observes the enforced behavior.
         if !self.adc_enabled {
@@ -869,17 +871,16 @@ impl AudioCodecOps for MockCodec {
 }
 
 /// A no-op audio codec for qemu (#399). The MT6357 PMIC/PWRAP MMIO is unmodeled
-/// on -machine virt, so the real `Mt6357Codec`'s register writes would
+/// on -machine virt, so the legacy `Mt6357Codec` register writes would
 /// data-abort. `NullCodec` tracks the power/enable/route state the `AudioManager`
 /// session logic reads, but touches no hardware -- so the session / priority /
 /// route state machine runs in emulation. Distinct from the test-only
 /// `MockCodec` (which carries fail-injection knobs).
-// WHY: powered/dac_enabled/adc_enabled/mic_bias mirror the independent
-// hardware power-gate flags of the real codec (see Mt6357Codec) — not a
-// state machine, so no bitflags/enum recast applies here either.
+// WHY: powered/dac_enabled/adc_enabled/mic_bias mirror independent interface
+// states, not a state machine, so no bitflags/enum recast applies here.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "powered/dac_enabled/adc_enabled/mic_bias mirror the independent hardware power-gate flags of the real codec (see Mt6357Codec) -- not a state machine, so no bitflags/enum recast applies here either"
+    reason = "powered/dac_enabled/adc_enabled/mic_bias mirror independent codec interface states, not a state machine"
 )]
 #[cfg(any(feature = "qemu", test))]
 pub(crate) struct NullCodec {
@@ -970,9 +971,10 @@ impl AudioCodecOps for NullCodec {
     }
 }
 
-/// The codec the booted kernel wires into its `AudioManager` (#399): the no-op
-/// `NullCodec` under qemu/test (no PMIC model on -machine virt), the real
-/// `Mt6357Codec` on device.
+/// The codec type the booted kernel wires into its `AudioManager` (#399): the
+/// no-op `NullCodec` under qemu/test (no PMIC model on -machine virt), and the
+/// production-target `Mt6357Codec` seam on device. The latter is not accepted
+/// hardware access until #862 replaces its invalid PWRAP transaction model.
 #[cfg(any(feature = "qemu", test))]
 pub(crate) type BootCodec = NullCodec;
 #[cfg(not(any(feature = "qemu", test)))]

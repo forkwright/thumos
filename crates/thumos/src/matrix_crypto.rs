@@ -13,7 +13,7 @@
 //! exchange uses HKDF-derived keys rather than full X3DH, and the Megolm
 //! wire payload (`message_index || AES-CBC ciphertext || 8-byte MAC`) is
 //! this kernel's own layout rather than the spec's. `MegolmSession` is
-//! never populated from a real peer's `m.room_key` event (#437 tracks that
+//! never populated from a real peer's `m.room_key` event (#753 tracks runtime
 //! integration) -- today it only talks to a future encrypt-side peer of
 //! this same implementation. Megolm ratcheting is a one-way HMAC/HKDF hash
 //! chain (not the Matrix spec's 4-part ratchet): the ratchet key advances
@@ -367,8 +367,8 @@ impl fmt::Display for DeviceKeys {
 /// currently advance per message -- no production code path mutates it or
 /// `chain_index` after [`MatrixCrypto::process_olm_prekey_message`]
 /// constructs the session. There is no per-message Olm encrypt/decrypt path
-/// yet (#437 tracks establishing sessions; message use is a separate,
-/// unimplemented step), so this session provides no forward secrecy within
+/// yet (#844 tracks the missing per-message ratchet/encrypt/decrypt path), so
+/// this session provides no forward secrecy within
 /// itself today -- `chain_index` is retained for that future ratchet step.
 // WHY: no derived `Debug` — a derive would print `ratchet_key` in the clear
 // (audit #268). Fields are `pub(crate)`, not `pub`, so key material cannot
@@ -379,7 +379,7 @@ impl fmt::Display for DeviceKeys {
 pub struct OlmSession {
     /// Unique session identifier (SHA-256 of initial key material).
     pub(crate) session_id: [u8; KEY_SIZE],
-    /// Current ratchet key (256 bits), advanced after each message.
+    /// Initial ratchet key (256 bits); per-message advancement is not implemented (#844).
     pub(crate) ratchet_key: [u8; KEY_SIZE],
     /// Number of messages sent/received in this session.
     pub(crate) chain_index: u32,

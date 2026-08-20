@@ -11,8 +11,9 @@
 //! Key hierarchy labels (HKDF info strings):
 //! - `"thumos-data-v1"` — partition encryption key
 //! - `"thumos-audit-v1"` — audit log HMAC key
-//! - `"thumos-csprng-v1"` — CSPRNG seed key
-//! - `"thumos-session-v1"` — ephemeral session key
+//! - `"thumos-csprng-v1"` — stable domain-separated reseed input; never a
+//!   standalone seed (#873)
+//! - `"thumos-session-v1"` — stable session-key wrapper input
 
 extern crate alloc;
 
@@ -30,10 +31,10 @@ const LABEL_DATA: &[u8] = b"thumos-data-v1";
 /// HKDF info label for the audit log HMAC key.
 const LABEL_AUDIT: &[u8] = b"thumos-audit-v1";
 
-/// HKDF info label for the CSPRNG seed key.
+/// HKDF info label for the stable CSPRNG reseed input (#873).
 const LABEL_CSPRNG: &[u8] = b"thumos-csprng-v1";
 
-/// HKDF info label for ephemeral session keys.
+/// HKDF info label for the stable session-key wrapper input.
 const LABEL_SESSION: &[u8] = b"thumos-session-v1";
 
 /// HKDF info label for the boot passphrase verifier (#446).
@@ -146,9 +147,9 @@ pub(crate) struct KeySet {
     pub data_key: SecureKey<XTS_KEY_SIZE>,
     /// Audit log HMAC key.
     pub audit_key: SecureKey<KEY_SIZE>,
-    /// CSPRNG seed key.
+    /// Stable CSPRNG reseed input; unsafe as a standalone reset seed (#873).
     pub csprng_key: SecureKey<KEY_SIZE>,
-    /// Ephemeral session key.
+    /// Stable session-key wrapper input; not itself an ephemeral session key.
     pub session_key: SecureKey<KEY_SIZE>,
 }
 
@@ -185,9 +186,9 @@ pub(crate) struct KeyManager {
     data_key: Option<SecureKey<XTS_KEY_SIZE>>,
     /// Audit log HMAC key.
     audit_key: Option<SecureKey<KEY_SIZE>>,
-    /// CSPRNG seed key.
+    /// Stable CSPRNG reseed input (#873).
     csprng_key: Option<SecureKey<KEY_SIZE>>,
-    /// Ephemeral session key.
+    /// Stable session-key wrapper input.
     session_key: Option<SecureKey<KEY_SIZE>>,
     /// Current sleep tier.
     sleep_tier: SleepTier,
@@ -243,8 +244,9 @@ impl KeyManager {
     /// Derives four sub-keys with distinct labels:
     /// - `data_key` (64 bytes, XTS): partition encryption
     /// - `audit_key` (32 bytes): audit log HMAC
-    /// - `csprng_key` (32 bytes): CSPRNG seeding
-    /// - `session_key` (32 bytes): ephemeral session operations
+    /// - `csprng_key` (32 bytes): one stable reseed input that must be mixed
+    ///   with fresh credited entropy or authenticated non-repeating state (#873)
+    /// - `session_key` (32 bytes): stable wrapper input for ephemeral sessions
     ///
     /// Stores the keys internally and marks the manager as initialized.
     /// The primary key should be dropped (zeroized) after this call.

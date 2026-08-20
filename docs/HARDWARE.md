@@ -33,7 +33,8 @@ The SoC integrates all radios. No discrete connectivity chips exist.
 ## Input
 
 - Physical keypad (T9 layout)
-- No touchscreen
+- Capacitive touchscreen (`mtk-tpd`, 10-point), observed in the 2026-03-18
+  read-only device probe (`docs/PROBE.md`)
 
 ## Durability
 
@@ -48,28 +49,35 @@ The SoC integrates all radios. No discrete connectivity chips exist.
 
 ## Stock firmware
 
-- Android 8.1 Oreo (full AOSP, not Go edition)
-- ODM: Droi Technology
-- Build: `PQ1181CWE25A.AGM.O1.QV.KFS39SST.210623.V3.11`
-- 37 partitions (scatter file documented)
-- Pre-installed: Facebook, WhatsApp, Skype, TikTok, Zello
+- Android 8.1.0 (SDK 27), observed during the 2026-03-18 read-only probe
+- ODM: TYD Technology (`ro.fota.oem=tydtech6739_8.1`), not Droi
+- Build: `PQ1181WAA39A.AGM.O1.QV.KFS39SST.220323.V3.07`
+- 35 observed eMMC partitions; this repository does not contain a scatter file
+
+These are dated observations from `docs/PROBE.md`, not a claim about the
+phone's current live firmware or lock state. Re-observe either before relying
+on it for a device operation.
 
 ## Access paths
 
 | Method | Status | Notes |
 |--------|--------|-------|
-| ADB | Confirmed | Standard USB debug, works out of box |
-| SP Flash Tool | Confirmed | Scatter file available, full partition read/write |
-| BROM exploit | Likely | mtkclient supports MT6739, budget OEMs rarely burn eFuses |
-| Fastboot OEM unlock | Unlikely | Failed on AGM M5 (same family), AGM doesn't support |
-| TWRP | Partial | Device tree exists (github.com/OsciX/twrp_device_agm_m7) |
+| ADB | Observed 2026-03-18 | Used for the read-only probe; current authorization/state is not asserted |
+| SP Flash Tool | Unverified | No scatter or device-package path exists in this repository (#467) |
+| BROM / mtkclient | Historically observed | Used on 2026-03-18 to change the then-observed lock state; this is not a current-state receipt |
+| Fastboot OEM unlock | Non-functional in the observed session | The LK confirmation screen did not respond to physical keys |
+| TWRP | Unverified third-party lead | #676 records the unresolved provenance of AGM-M7 recovery artifacts |
 
 ## Known quirks
 
 - 32-bit build despite 64-bit capable SoC
-- Display goes white in bootloader/recovery (missing early-boot display driver)
-- Anti-rollback protection present (TWRP tree hacks around it)
-- Verified Boot (AVB 2.0) with vbmeta and dm-verity
+- A white recovery display was reported in the dated 2026-03-18 session; its
+  mechanism and current reproducibility are unverified (#676)
+- Anti-rollback behavior is an unverified third-party recovery-tree lead, not
+  a local device receipt
+- The dated probe observed `verifiedbootstate=green` and
+  `veritymode=enforcing`; the AVB version, `vbmeta` layout, and current
+  pre-entry verification chain remain unverified (#467)
 - TEE partitions (tee1/tee2) for trusted execution
 
 ## Kernel sources (from other MT6739 devices)

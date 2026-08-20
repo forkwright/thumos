@@ -1,17 +1,17 @@
 //! Radio control panel for the thumos kernel UI.
 //!
-//! Displays per-radio ON/OFF status for all wireless subsystems
+//! Displays per-radio requested enable/disable state for wireless subsystems
 //! (cellular, `WiFi`, Bluetooth, GPS) and provides quick-action
 //! presets for privacy-oriented operation:
 //!
-//! - **COVERT LOCK**: all radios off (full RF silence)
-//! - **STEALTH**: cellular off, `WiFi` + BT on (local-only connectivity)
-//! - **RESTORE**: all radios on (normal operation)
+//! - **COVERT LOCK**: request every radio disabled
+//! - **STEALTH**: request cellular/GPS disabled and `WiFi`/BT enabled
+//! - **RESTORE**: request every radio enabled
 //!
-//! The screen does not directly control hardware; it sets a desired
-//! [`RadioState`] that the kernel radio manager applies. This
-//! separation keeps the UI decoupled from driver initialization
-//! sequences and error handling.
+//! The screen does not control hardware. It stores a desired [`RadioState`],
+//! and no current kernel manager applies or observes it. #874 owns the
+//! requested/applied/observed/failed state path. Labels therefore say REQ and
+//! never claim physical RF silence.
 
 use crate::ui::{
     self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
@@ -33,8 +33,8 @@ const ROW_HEIGHT: u16 = CHAR_HEIGHT + 10;
 /// Y offset for the preset indicator.
 const PRESET_Y: u16 = RADIO_START_Y + ROW_HEIGHT * 4 + 16;
 
-/// X offset for ON/OFF status text (right-aligned area).
-const STATUS_X: u16 = SCREEN_WIDTH - PADDING_X - 3 * CHAR_WIDTH;
+/// X offset for the longest requested-state label (right-aligned area).
+const STATUS_X: u16 = SCREEN_WIDTH - PADDING_X - 7 * CHAR_WIDTH;
 
 /// Number of preset modes.
 const PRESET_COUNT: usize = 3;
@@ -43,10 +43,10 @@ const PRESET_COUNT: usize = 3;
 // Radio state
 // ---------------------------------------------------------------------------
 
-/// Aggregate state of all wireless radios.
+/// Aggregate desired state of all wireless radios.
 ///
-/// Each field represents the desired power state of a radio subsystem.
-/// `true` = powered on, `false` = powered off.
+/// Each field represents a request, not applied or observed power state.
+/// `true` = request enabled, `false` = request disabled.
 // WHY: cellular/wifi/bluetooth/gps are four independent radio power flags,
 // not a state machine -- an enum or bitflags wouldn't remove any of the
 // four axes, just rename how each is read.
@@ -67,7 +67,7 @@ pub struct RadioState {
 }
 
 impl RadioState {
-    /// All radios on (normal operation).
+    /// Request all radios enabled.
     pub(crate) const ALL_ON: Self = Self {
         cellular: true,
         wifi: true,
@@ -75,7 +75,7 @@ impl RadioState {
         gps: true,
     };
 
-    /// All radios off (RF silence / COVERT LOCK).
+    /// Request all radios disabled (COVERT LOCK policy).
     pub(crate) const ALL_OFF: Self = Self {
         cellular: false,
         wifi: false,
@@ -83,7 +83,7 @@ impl RadioState {
         gps: false,
     };
 
-    /// Stealth mode: cellular + GPS off, `WiFi` + BT on.
+    /// Stealth request: cellular + GPS disabled, `WiFi` + BT enabled.
     pub(crate) const STEALTH: Self = Self {
         cellular: false,
         wifi: true,
@@ -140,7 +140,7 @@ pub(crate) struct RadioControlScreen {
 }
 
 impl RadioControlScreen {
-    /// Create a new radio control screen with all radios on.
+    /// Create a new radio control screen requesting all radios enabled.
     pub(crate) fn new() -> Self {
         Self {
             state: RadioState::default(),
@@ -214,11 +214,11 @@ impl Screen for RadioControlScreen {
             // Radio name.
             ui::draw_str(fb, w, PADDING_X, row_y, label, color::WHITE, color::BLACK);
 
-            // ON/OFF status.
+            // Desired-state label; this is not actuation or readback.
             let (status_text, status_color) = if enabled {
-                ("ON", color::GREEN)
+                ("REQ ON", color::GREEN)
             } else {
-                ("OFF", color::RED)
+                ("REQ OFF", color::RED)
             };
             ui::draw_str(
                 fb,
@@ -430,7 +430,7 @@ mod tests {
         let off_status_rendered = fb.contains(&color::RED);
         assert!(
             off_status_rendered,
-            "covert lock must render OFF radio status text"
+            "covert lock must render requested-off radio status text"
         );
     }
 

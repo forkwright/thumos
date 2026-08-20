@@ -19,7 +19,8 @@
 //! analysis filterbank (8 subbands, polyphase), scale factor calculation,
 //! bit allocation, quantization, and bitstream packing.
 
-// WHY: A2DP profile not yet wired to audio session manager (Wave 8, kinit pending).
+// WHY: kardia owns the A2DP profile, but it still uses this zero-audio stub;
+// #401 owns a real encoder and live transport acceptance.
 // cfg_attr(not(test), ...): the module's own tests now exercise its full
 // surface, so nothing is dead in the test build -- expecting dead_code there
 // makes the expectation unfulfilled. Production reachability is unchanged;
@@ -28,7 +29,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "A2DP profile exists; audio manager wiring pending (#753; tier in docs/capability-inventory.toml)"
+        reason = "A2DP is configuration-wired; real SBC encoding remains #401"
     )
 )]
 

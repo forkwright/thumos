@@ -1,8 +1,8 @@
 # Architecture
 
-Thumos is a full-Rust small-mobile OS. No C authored, no Linux in the final system. Monolithic kernel. It boots one kernel on two boards:
+Thumos is a full-Rust small-mobile OS. No C authored, no Linux in the final system. Its monolithic kernel builds for two static board configurations; only `virt` has a boot receipt:
 
-- **m7** — the AGM M7 feature phone (MT6739 SoC), the field board;
+- **m7** — the AGM M7 feature phone (MT6739 SoC), the unqualified field-board target;
 - **virt** — QEMU `-machine virt` (armv7a), the dev board every CI witness boots on (selected by the kernel's `qemu` feature).
 
 Board specifics (MMIO maps, device set, bring-up behavior) live behind the `board::` module seam in the kernel crate — `board::m7` and `board::virt`, selected at one point in `board/mod.rs`. The standing invariant is structural, not prose: no `MT6739_*` identifier exists outside `board::m7`, and no board-MMIO value is re-declared as a constant outside `board/` (`scripts/check-board-seam.sh` reds on drift). Per-subsystem `HwOps` traits remain the driver seam; there is deliberately no mega-HAL, no device-tree parser, and no runtime board detection — two static boards want static config (#534).
@@ -25,7 +25,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 |-------|-------------|
 | `thumos` | Bare-metal ARM kernel: MMU, scheduler, syscalls, IPC, VFS, drivers, network stack |
 
-### Workspace library crates
+### Workspace crates
 
 **UI**
 
@@ -58,7 +58,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 
 | Crate | Description |
 |-------|-------------|
-| `aither` | WiFi MAC driver, WPA2/WPA3 supplicant, EAPOL handshake |
+| `aither` | WiFi library with WPA2/EAPOL logic; WPA3-SAE remains unimplemented under #864 |
 | `aither-core` | Canonical EAPOL frame parse/encode, PMK/PTK/MIC derivation, and the WPA2 4-way handshake state machine, shared no_std with the kernel (#545, #819) |
 | `pteron` | Bluetooth HCI over STP, BLE scanning, LE Privacy address rotation |
 | `kelyphos` | WMT combo chip manager: firmware loading, STP framing, power control |
@@ -72,7 +72,7 @@ it live in `docs/convergence.toml` + `scripts/check-convergence.sh`.
 | Crate | Description |
 |-------|-------------|
 | `asphaleia` | Packet filter firewall, DNS blocklist, capability enforcement |
-| `asphaleia-core` | Canonical packet-parse + DNS-policy semantics, shared no_std with the kernel (#545) |
+| `asphaleia-core` | Canonical DNS parsing and blocklist policy shared no_std with the kernel; IPv4/TCP/UDP packet parsing remains duplicated and tracked for extraction (#545) |
 | `leipsanon` | Panic mode: priority-ordered wipe, trigger system, memory scrubbing |
 
 **Cognition bridge**
@@ -96,21 +96,24 @@ Workspace crates depend on each other as follows:
 eidolon --> haphe    (UI reads input events)
 ```
 
-That is the only cross-domain edge. Six domain crates additionally split off
+That is the only cross-domain edge. Seven domain crates additionally split off
 a `no_std`(+alloc) `-core` sibling that both the workspace crate and the
-kernel depend on directly, so the shared semantics have exactly one
-implementation (the #545 convergence pattern described above): `eidolon` ->
-`eidolon-core`, `asphaleia` -> `asphaleia-core`, `klesis` -> `klesis-core`,
-`sema` -> `sema-core`, `topos` -> `topos-core`, `metaxu` -> `metaxu-core`.
+kernel depend on directly. The semantics actually named by each core have one
+implementation (the #545 convergence pattern described above); the firewall
+packet parser remains the declared exception in `docs/convergence.toml`:
+`aither` ->
+`aither-core`, `eidolon` -> `eidolon-core`, `asphaleia` ->
+`asphaleia-core`, `klesis` -> `klesis-core`, `sema` -> `sema-core`, `topos`
+-> `topos-core`, `metaxu` -> `metaxu-core`.
 These are same-layer splits, not cross-layer imports. Beyond `eidolon -->
-haphe` and the six `-core` splits, workspace crates are independent of each
+haphe` and the seven `-core` splits, workspace crates are independent of each
 other. External dependencies flow downward: crates use RustCrypto, `nom`,
 `smoltcp`, `snafu`, etc. but never import from higher layers. `metaxu` is a
 protocol boundary only; it does not embed the Aletheia runtime or wire a
 live network transport.
 
 The kernel (`thumos`) is `no_std` and excluded from the workspace, but it is
-not dependency-free: it path-links all six `-core` crates directly as real
+not dependency-free: it path-links all seven `-core` crates directly as real
 `[dependencies]` (compiled into the release build) plus `haphe` as a
 `[dev-dependencies]`-only pin used to cross-check `ui.rs`'s local `Key` enum
 against the real one in host tests (#615) — excluded from the shipped
@@ -150,10 +153,10 @@ the ones above it.
 ## Extension points
 
 - **New kernel subsystem**: add a module inside `crates/thumos/src/`. The kernel is monolithic; subsystems are modules, not separate crates.
-- **New userspace domain**: add a new workspace crate in `crates/`. Register it in `Cargo.toml` workspace members. Follow naming convention (Greek, per `gnomon.md`).
+- **New workspace domain library**: add a new workspace crate in `crates/`. Register it in `Cargo.toml` workspace members. Follow Kanon's [naming standard](https://github.com/forkwright/kanon/blob/main/crates/basanos/standards/NAMING.md) and [Gnomon structural-color standard](https://github.com/forkwright/kanon/blob/main/crates/basanos/standards/GNOMON.md).
 - **New driver**: implement in the kernel crate if it touches hardware registers. Implement as a workspace crate if it operates at a higher abstraction (like `aither` or `pteron` which define protocol logic).
 - **Aletheia bridge task**: extend `metaxu` protocol types first. Wire live transports separately through existing network and policy layers; do not bypass firewall boot sequencing or userspace spawn work.
 
 ## Build
 
-Workspace crates compile and test on the host: `cargo check --workspace`, `cargo test --workspace`. The kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` inside `crates/thumos/` — the same source builds both boards: default is the m7 field board, `--features qemu` selects the virt dev board (CI boots that image on every push). Boot image is created with `mkbootimg` and flashed via mtkclient BROM exploit.
+Workspace libraries and the signing tool compile and test on the host: `cargo check --workspace`, `cargo test --workspace`. The kernel cross-compiles for `armv7a-none-eabi` via `cargo build --release` inside `crates/thumos/`; its build script compiles the embedded `/init`, `/shell`, and probe programs directly for the same bare-metal target. The kernel source builds both boards: default is the m7 field board, while `--features qemu` selects the virt dev board. CI boots that image on pull requests targeting `main`, pushes to `main`, and manual dispatches. QEMU build, boot-witness, and diagnosis procedures live in `RUNBOOK.md`. The repository does not yet produce an Android boot image or scatter-integrated device package; #467 owns that software prerequisite and its subsequent operator-owned device witness.

@@ -19,7 +19,7 @@
 // event-detail action, a future wave with no implementation yet.
 #![expect(
     dead_code,
-    reason = "Event-detail action (OK key) not yet implemented on the routed calendar screen, tracked under #737"
+    reason = "Event-detail action (OK key) remains compiled-only under #753"
 )]
 
 extern crate alloc;

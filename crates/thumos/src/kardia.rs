@@ -53,12 +53,12 @@ use crate::screen_privacy::PrivacyScreen;
 use crate::screen_radio::RadioControlScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
-use crate::screen_threat::ThreatMonitor;
+use crate::screen_threat::{ThreatLevel, ThreatMonitor};
 // WHY(#737): the alert constructors are reachable only from the qemu boot
 // smoke; production has no detector feeding this screen yet (see the
 // no-detector-vs-no-alerts gap filed alongside this change).
 #[cfg(feature = "qemu")]
-use crate::screen_threat::{FirewallMode, ThreatAlert, ThreatAlertType};
+use crate::screen_threat::{ThreatAlert, ThreatAlertType};
 use crate::screen_unimplemented::UnimplementedScreen;
 use crate::security::{KEY_SIZE, SHA256_DIGEST_LEN};
 use crate::security_mode::ModeManager;
@@ -78,9 +78,10 @@ const TICKS_PER_SECOND: u64 = 100;
 const TICK_MS: u64 = 10;
 
 /// Boot wall-clock epoch (2025-01-01 UTC) -- matches `time::REALTIME_OFFSET_SECS`.
-/// Seeds `ClockManager` as a Manual (lowest-trust) source until a trusted source
-/// (GPS #129 / NTP / modem RTC #398) lands; on device the modem RTC replaces
-/// this at boot.
+/// Seeds `ClockManager` as its lowest-precedence Manual source until another
+/// source explicitly updates it. GPS, NTP, and modem RTC are all unauthenticated
+/// inputs (#861), and no production call site supplies any of them today;
+/// modem transport/source acquisition remain #398/#753 work.
 const BOOT_WALL_EPOCH: u64 = 1_735_603_200;
 
 /// QEMU CI cap: serviced ticks before a clean semihosting-exit 0. Proves the
@@ -117,24 +118,25 @@ const QEMU_WAKE_CEILING: u32 = 5_000_000;
 /// an ISR both touching the same object. IRQ handlers communicate with this
 /// struct through reflex flags ONLY.
 ///
-/// Follow-on wirings (#398, #400-#404) each add their subsystem as a field
+/// Follow-on wirings (#398, #753, #862, #863, #874, #879) add or complete their subsystem
 /// plus one non-blocking step in [`Self::poll_all`] -- subject to the
 /// invariant above.
 ///
-/// NOTE (power split-brain, #404): `power` is persisted here, but the timer
+/// NOTE (power split-brain, #879): `power` is persisted here, but the timer
 /// IRQ independently drives DVFS/core-parking/backlight on `power`-module
-/// statics. #404 must unify these into a single owner (loop-owned here, IRQ
-/// enqueuing) rather than double-managing two `PowerManager`s.
+/// statics. #879 owns safe source-grounded CPU actuation and one policy owner;
+/// #874 owns requested/applied/observed radio state. #862 is limited to the
+/// PMIC/PWRAP transaction seam.
 pub(crate) struct KernelState {
     pub(crate) boot: BootState,
     #[expect(
         dead_code,
-        reason = "device lifecycle steps land with the subsystem wirings (#398, #400-#404)"
+        reason = "device lifecycle steps land with the subsystem wirings (#398, #753, #862, #863, #874, #879)"
     )]
     pub(crate) devices: DeviceRegistry,
     #[expect(
         dead_code,
-        reason = "radio-policy service steps land with the security-mode wiring (#404)"
+        reason = "radio-policy effects require requested/applied/observed wiring (#874) and a valid PWRAP seam (#862)"
     )]
     pub(crate) power: PowerManager,
     pub(crate) mode: ModeManager,
@@ -156,8 +158,8 @@ pub(crate) struct KernelState {
     /// the screen stack; content comes from the heorte manager each render.
     calendar: CalendarScreen,
     /// FM radio controller + screen (#518): the `FmRadio<BootFmHw>` state
-    /// machine runs under emulation (`NullFmHw`) and feeds `fm_screen`; the real
-    /// WMT backend binds on device.
+    /// machine runs under emulation (`NullFmHw`) and feeds `fm_screen`; the
+    /// non-test WMT backend is still a software stub tracked by #129.
     fm: FmRadio<BootFmHw>,
     fm_screen: FmScreen,
     /// Privacy dashboard (#737): the data-category list is self-managed
@@ -177,10 +179,10 @@ pub(crate) struct KernelState {
     /// Radio control panel (#737): sets a DESIRED radio preset
     /// (COVERT LOCK / STEALTH / RESTORE); genuinely self-contained --
     /// there is no radio-policy manager anywhere in the kernel that reads
-    /// this state and applies it to wifi/gps/bluetooth/cellular hardware
-    /// (wifi.rs/gps.rs are hardware-gated and never touch `KernelState` even
-    /// on the non-qemu boot path; bluetooth's live adapter is likewise
-    /// local to kinit). The screen owns and renders its own state, exactly
+    /// this state and applies it to wifi/gps/bluetooth/cellular hardware.
+    /// WiFi/GPS/Bluetooth production backends remain software work under #129
+    /// before hardware qualification, and none touches `KernelState`; the
+    /// Bluetooth adapter is local to kinit. The screen owns and renders its own state, exactly
     /// like Messages/Search/Dialer/Settings before any subsystem fed them.
     radio: RadioControlScreen,
     /// Threat monitor (#737): score as a lens over the log, not either
@@ -200,15 +202,17 @@ pub(crate) struct KernelState {
     /// `render_if_dirty` both call `set_screen` on this before selecting
     /// it, so the label always names the screen actually requested.
     not_implemented: UnimplementedScreen,
-    /// Cursor into the qemu synthetic-input script. Real keypad decode is
-    /// hardware-gated + net-new (no KPD model on -machine virt, no decoder
-    /// in-tree); #400 input dispatch is CI-verified via a scripted key sequence
+    /// Cursor into the qemu synthetic-input script. The non-qemu service-loop
+    /// input path is still a software stub (#753); later M7 qualification also
+    /// needs the physical KPD because -machine virt has no KPD model. #400 input
+    /// dispatch is CI-verified via a scripted key sequence
     /// under qemu, exercising the exact `on_key` -> `ScreenAction` -> `apply_action`
     /// -> navigation path the real keypad will drive.
     #[cfg(feature = "qemu")]
     input_cursor: usize,
-    /// Wall clock (#402): the trust-hierarchy time source (GPS > NTP > modem
-    /// RTC > Manual). Seeded Manual at boot; the loop evaluates it each second.
+    /// Wall clock (#402): current freshness selector (GPS > plain NTP > modem
+    /// RTC > Manual). Its external inputs are unauthenticated; #861 owns the
+    /// trust-policy correction before automatic acquisition is wired.
     clock: ClockManager,
     /// Last computed wall-clock epoch (seconds), fed to the home-screen display
     /// each render. Replaces the previously-hardcoded 0.
@@ -224,18 +228,17 @@ pub(crate) struct KernelState {
     /// modem transport.
     sms: SmsManager,
     /// Audio session manager (#399): priority-preemptive sessions over the
-    /// codec (`NullCodec` under qemu, real MT6357 on device). Event-driven -- no
-    /// tick source; sessions open on ring/media/alarm events.
+    /// codec (`NullCodec` under qemu, MT6357 operations on the m7 target).
+    /// Event-driven; no M7 codec/PMIC behavior is yet qualified.
     audio: AudioManager<BootCodec>,
     /// Audio route arbitration (earpiece/speaker/BT/...) for the audio manager.
     route: RouteManager,
-    /// Microphone access audit trail (#399): every mic-using session is
-    /// recorded for the privacy dashboard.
+    /// Microphone audit object (#399). The QEMU smoke records one row manually;
+    /// AudioManager does not yet enforce an audit record on every mic transition.
     mic_audit: MicAuditLog,
-    /// Bluetooth A2DP audio profile (#401): SBC-encoded stereo streaming over
-    /// the BT HCI transport (`NullBtHw` under qemu; real WMT/STP on device -- the
-    /// RF/HCI link is hardware-gated, so only the local profile state machine +
-    /// SBC framing run in emulation).
+    /// Bluetooth A2DP profile (#401): QEMU reaches configuration over NullBtHw.
+    /// StubSbcEncoder still emits zero audio, and #129 owns the non-test HCI/ACL
+    /// backend before any WMT/STP/RF qualification.
     bt_audio: A2dpProfile<BootBtHw>,
     /// Calendar/alarm/timer/stopwatch manager (#400): holds scheduled events +
     /// alarms; the loop checks alarms once per second and the calendar screen
@@ -251,13 +254,14 @@ pub(crate) struct KernelState {
     /// its ISR MUST deposit frames into an `IrqSpinlock`/reflex ring that the
     /// loop drains -- this field never becomes IRQ-touched.
     net: NetworkStack<FirewallDevice<BootNetDevice>>,
-    /// Tamper-evident kernel audit trail (#403): HMAC-chain log, loop-owned.
+    /// Per-boot HMAC-chain audit trail (#403), loop-owned. #863 owns the
+    /// persistent key/head/epoch needed for rollback and truncation evidence.
     /// Firewall Log/Deny events drain into it each tick.
     audit: AuditLog,
     /// Interim session audit HMAC key (#403): CSPRNG-seeded in kinit, volatile
     /// (RAM-only, zeroized on drop). All-zero when the CSPRNG was unavailable --
     /// `log_event` then fails closed (`NoKey`). Replaced by the key-hierarchy
-    /// audit key when the passphrase flow lands (#217).
+    /// audit key when persistent audit integration lands (#863).
     audit_key: SecureKey<KEY_SIZE>,
     /// Render target: the hardware framebuffer (`FB_BASE`) on device, a synthetic
     /// heap buffer under qemu (the virt machine models no display), or None when
@@ -283,6 +287,11 @@ impl KernelState {
         net: NetworkStack<FirewallDevice<BootNetDevice>>,
         audit_key: [u8; KEY_SIZE],
     ) -> Self {
+        // #874: CCCI boot-path availability is the only status known here.
+        // Initialize it on every target; the monitor's fail-closed default is
+        // only for callers with no boot receipt.
+        let threat = ThreatMonitor::new_with_modem_path(boot.modem_ok);
+
         Self {
             boot,
             devices,
@@ -294,7 +303,7 @@ impl KernelState {
             ui: UiManager::new(),
             clock: {
                 // Seed Manual at boot (tick_ms 0) so QEMU + a fresh device have
-                // a wall clock before any trusted source is available.
+                // a wall clock before any higher-precedence source is available.
                 let mut c = ClockManager::new();
                 c.set_manual(BOOT_WALL_EPOCH, 0);
                 c
@@ -322,7 +331,7 @@ impl KernelState {
             // working credential.
             privacy: PrivacyScreen::new([0u8; SHA256_DIGEST_LEN]),
             radio: RadioControlScreen::new(),
-            threat: ThreatMonitor::new(),
+            threat,
             not_implemented: UnimplementedScreen::new(),
             fb,
             last_second: 0,
@@ -361,11 +370,12 @@ impl KernelState {
     /// screen's `on_key` -> `ScreenAction` -> `UiManager::apply_action`
     /// navigation path (#400). Returns `Some((from, to))` when navigation
     /// changed the active screen, so the caller can log + re-render. On device
-    /// this is a no-op until the keypad driver lands (hardware-gated).
+    /// this remains a software no-op until the service-loop input path is wired
+    /// to the existing boot-time keypad path (#753), before M7 qualification.
     // WHY: under `feature = "qemu"` this fully uses self (input_cursor, ui,
     // active_screen_mut()); only the non-qemu build reduces to the
     // documented `None` stub above, where self genuinely goes unused until
-    // the keypad driver lands. Scope the allow to that build only.
+    // the service-loop input path lands. Scope the allow to that build only.
     #[cfg_attr(not(feature = "qemu"), allow(clippy::unused_self))]
     pub(crate) fn poll_input(&mut self) -> Option<(ScreenId, ScreenId)> {
         #[cfg(feature = "qemu")]
@@ -446,12 +456,13 @@ impl KernelState {
         let second = now / TICKS_PER_SECOND;
         if second != self.last_second {
             self.last_second = second;
-            // #402: advance the trust-hierarchy clock and cache the wall time
-            // for the render. evaluate() re-checks source validity/staleness.
+            // #402: apply the clock's source-precedence policy and cache the wall
+            // time for the render. evaluate() re-checks validity/staleness; it
+            // does not authenticate GPS, NTP, or modem RTC (#861).
             self.clock.evaluate(now_ms);
             self.wall_clock = self.clock.get_wall_clock(now_ms);
             // #506: keep the userspace CLOCK_REALTIME view unified with the
-            // ClockManager trust hierarchy — sys_clock_gettime(CLOCK_REALTIME)
+            // ClockManager source selection — sys_clock_gettime(CLOCK_REALTIME)
             // must read this same wall time, not an independently-seeded
             // offset. The #461 Step-5 witness proves the CNTPCT and IRQ-tick
             // bases agree under virt, so set_realtime_offset's internal
@@ -498,8 +509,8 @@ impl KernelState {
     /// is no render target.
     ///
     /// The status badge + operating mode are read LIVE from the security-mode
-    /// manager (#404), and the wall-clock epoch from the `ClockManager` trust
-    /// hierarchy (#402) -- both formerly hardcoded.
+    /// manager (#404), and the wall-clock epoch from `ClockManager`'s provisional
+    /// source precedence (#402/#861) -- both formerly hardcoded.
     pub(crate) fn render_if_dirty(&mut self) -> Option<usize> {
         // Computed before the fb borrow: status_network() reads &self as a whole
         // (returns a Copy), which cannot coexist with the &mut self.fb below.
@@ -520,7 +531,14 @@ impl KernelState {
             mode_char: self.mode.mode_char(),
             mode_badge: Some(self.mode.status_badge()),
             mode_badge_color: Some(self.mode.status_badge_color()),
-            threat_high: !self.boot.modem_ok,
+            // #874: CCCI boot-path availability is not a threat level or a
+            // modem-rail observation. Only an online detector's High/Critical
+            // state drives the threat indicator.
+            threat_high: self.threat.detector_online()
+                && matches!(
+                    self.threat.threat_level(),
+                    ThreatLevel::High | ThreatLevel::Critical
+                ),
             ..StatusBarState::default()
         };
         self.home.update_state(HomeScreenState {
@@ -668,9 +686,9 @@ impl KernelState {
 
     /// Boot-time BT A2DP smoke (#401, qemu): configure the A2DP profile (SBC
     /// framing at 44.1 kHz stereo) and report the resulting sample rate and
-    /// channels. Proves the profile state machine and SBC encoder are
-    /// instantiated and functional; the RF/HCI link is hardware-gated
-    /// (`NullBtHw` yields no controller events, so no connection completes).
+    /// channels. Proves only construction and local configuration: the encoder
+    /// remains a zero-audio stub (#401), while the non-test HCI/ACL backend is
+    /// software work under #129 before any RF witness.
     #[cfg(feature = "qemu")]
     pub(crate) fn bt_audio_boot_smoke(&mut self) -> (u32, u8) {
         self.bt_audio.configure(44_100, 2).ok();
@@ -821,7 +839,8 @@ impl KernelState {
     /// via `recompute_score_from_log` -- score as a lens over the log, NOT
     /// sema (which is not a thumos dependency and cannot reach
     /// `KernelState`; see `screen_threat.rs`'s module doc). Returns
-    /// (`alert_count`, score, `modem_power`) for the CI witness -- proves
+    /// (`detector_before`, `alert_count`, score, `modem_path_available`) for
+    /// the CI witness -- proves
     /// `ThreatMonitor` is instantiated in `KernelState`, fed from a real
     /// (if boot-seeded) classification, and its score derives from that
     /// log rather than an unwired detector.
@@ -850,35 +869,33 @@ impl KernelState {
             ));
         }
         self.threat.recompute_score_from_log();
-        self.threat
-            .set_modem_status(0, FirewallMode::Open, self.boot.modem_ok);
         (
             detector_before,
             self.threat.alert_count(),
             self.threat.threat_score(),
-            self.boot.modem_ok,
+            self.threat.modem_path_available(),
         )
     }
 
     /// Execute pending reflex fast-path events in privileged (loop) context.
     // WHY: all three arms are TODO stubs today, but two are explicitly
-    // documented to need self once implemented -- the duress arm (#404)
+    // documented to need self once implemented -- the duress arm (#863)
     // transitions via self.mode + wipe policy, the incoming-ring arm (#398)
     // routes UI + audio via self's persisted telephony. Called instance-style
     // (`kernel.handle_reflex(..)`) from the production run loop; dropping
     // &mut self now would just be re-added when those TODOs land.
     #[expect(
         clippy::unused_self,
-        reason = "all three arms are TODO stubs today, but two are explicitly documented to need self once implemented -- the duress arm (#404) transitions via self.mode + wipe policy, the incoming-ring arm (#398) routes UI + audio via self's persisted telephony; called instance-style (kernel.handle_reflex(..)) from the production run loop"
+        reason = "all three arms are TODO stubs today, but two are explicitly documented to need self once implemented -- the duress arm (#863) transitions via self.mode + wipe policy, the incoming-ring arm (#398) routes UI + audio via self's persisted telephony; called instance-style (kernel.handle_reflex(..)) from the production run loop"
     )]
     pub(crate) fn handle_reflex(&mut self, pending: reflex::Pending, serial: &mut Uart) {
         if pending.panic_wipe {
             let _ = serial.write_str("[kardia] REFLEX panic-wipe\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write
-            // TODO(#404)[deliberate-prudent]: invoke panic_wipe via the persisted key manager.
+            // TODO(#863)[deliberate-prudent]: invoke panic_wipe via the persisted key manager.
         }
         if pending.duress {
             let _ = serial.write_str("[kardia] REFLEX duress\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write
-            // TODO(#404)[deliberate-prudent]: duress transition via self.mode + wipe policy.
+            // TODO(#863)[deliberate-prudent]: duress transition via self.mode + wipe policy.
         }
         if pending.incoming_ring {
             let _ = serial.write_str("[kardia] REFLEX incoming-ring\r\n"); // WHY: best-effort loop diagnostic; must not block on a failed UART write
@@ -976,7 +993,7 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // #400: paint the initial home frame immediately (not waiting for the
         // first once-per-second dirty tick).
         let painted = kernel.render_if_dirty();
-        // #402: trust-hierarchy clock wired + seeded (source None -> Manual, a
+        // #402: source-precedence clock wired + seeded (source None -> Manual, a
         // real ~2025 epoch driving the home display). Per-second advancement is
         // a get_wall_clock property (unit tested); the boot proves the WIRING.
         let clock_src = kernel.clock.current_source();
@@ -994,7 +1011,8 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         let (iccid_len, sms_inbox, sim_ready, signal_bars, operator_len, sms_sent) =
             kernel.sim_sms_boot_smoke();
         // #401: BT A2DP profile wired + its SBC/config state machine runs
-        // (44.1 kHz stereo). RF/HCI is hardware-gated.
+        // (44.1 kHz stereo). The non-test HCI/ACL backend is software work under
+        // #129 before RF/PMIC/antenna qualification.
         let (bt_rate, bt_ch) = kernel.bt_audio_boot_smoke();
         // #404: status-bar network label derived from the parsed +CREG <AcT>
         // (EUtran can only come from the parse path), not a constant.
@@ -1090,12 +1108,12 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // uncalibrated (sema stays unwired, not a thumos dependency).
         #[cfg(feature = "qemu")]
         {
-            let (threat_detector_before, threat_alerts, threat_score, threat_modem_power) =
+            let (threat_detector_before, threat_alerts, threat_score, modem_path_available) =
                 kernel.threat_boot_smoke();
             emit_marker(
                 &mut serial,
                 format_args!(
-                    "kardia: threat detector_before={threat_detector_before} alerts={threat_alerts} score={threat_score} uncalibrated=true modem_power={threat_modem_power}\r\n"
+                    "kardia: threat detector_before={threat_detector_before} alerts={threat_alerts} score={threat_score} uncalibrated=true modem_path_available={modem_path_available}\r\n"
                 ),
             );
         }

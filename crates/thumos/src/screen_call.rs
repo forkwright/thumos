@@ -13,10 +13,11 @@
 //! The call duration is displayed as `MM:SS` (e.g., `01:05` for 65 seconds).
 //! The kernel tick counter (milliseconds) is used to compute elapsed time.
 
-// WHY: call screen created in Phase 07 Wave 3, kinit wiring pending.
+// WHY: the call screen is compiled and host-tested, but no production route
+// connects it to the service-loop telephony state.
 #![expect(
     dead_code,
-    reason = "Call screen created in Phase 07 Wave 3, kinit wiring pending (#737)"
+    reason = "Call screen remains compiled-only; service-loop routing is #753"
 )]
 
 use crate::ui::{

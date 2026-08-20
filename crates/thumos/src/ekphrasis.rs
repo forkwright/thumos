@@ -1,16 +1,17 @@
-//! Ekphrasis: voice-to-text via aletheia STT.
+//! Ekphrasis: compiled voice-to-text protocol seam.
 //!
 //! ἔκφρασις = "speaking-out-of, bringing into words." Classical rhetoric
-//! term for vivid verbal description. For thumos: captures voice audio,
-//! streams it to aletheia's STT endpoint over WebSocket, and returns
-//! transcribed text.
+//! term for vivid verbal description. The state machine frames captured audio
+//! for a caller-configured WebSocket transcription service and accepts typed
+//! transcription events. No production caller, accepted Aletheia endpoint, or
+//! live route exists today (#544/#753).
 //!
 //! # Architecture
 //!
-//! Pure transcription only — no local command parsing. When Cody wants
-//! to execute actions via voice, he speaks to nous. Nous interprets
-//! intent and proposes actions via structured JSON blocks in Matrix
-//! messages. The [`ActionProposal`] parser handles that path.
+//! Pure transcription only — no local command parsing. [`ActionProposal`]
+//! parses a candidate typed proposal shape, but no message protocol is selected
+//! and a proposal requires separate identity, replay, local-capability, and
+//! confirmation enforcement before any action path (#544).
 //!
 //! Audio capture uses the Phase 07 audio subsystem (via `audio.rs`).
 //! Network transport builds HTTP upgrade + WebSocket frames for the
@@ -20,24 +21,24 @@
 //! # WebSocket framing
 //!
 //! Implements a minimal RFC 6455 frame parser/builder sufficient for
-//! streaming binary audio to aletheia and receiving text transcriptions
-//! back. Client-to-server frames are masked (per spec); server-to-client
+//! streaming binary audio to a configured service and receiving text
+//! transcriptions back. Client-to-server frames are masked (per spec); server-to-client
 //! frames are unmasked.
 //!
 //! # Offline behaviour
 //!
-//! When aletheia is unreachable, voice input is unavailable and the
+//! When the configured service is unreachable, voice input is unavailable and the
 //! state machine reports [`EkphrasisState::Idle`] with
 //! [`Ekphrasis::is_available`] returning false. T9 fallback for typing.
 //!
 //! # Action proposals from nous
 //!
-//! Nous can propose thumos actions via structured JSON fence blocks in
-//! Matrix messages. [`parse_action_proposal`] detects and parses these
-//! blocks into [`ActionProposal`] structs for the confirmation UI
-//! (full rendering is Wave 8).
+//! [`parse_action_proposal`] detects candidate structured JSON fence blocks and
+//! parses them into [`ActionProposal`] values. Parsing supplies no authority;
+//! production identity/capability/confirmation wiring remains #544/#753 work.
 
-// WHY: ekphrasis created in Phase 09 Wave 6, audio pipeline integration pending.
+// WHY: ekphrasis is compiled and host-tested but has no production service-loop,
+// audio, network, identity, or confirmation integration (#544/#753).
 // cfg_attr(not(test), ...): the module's own tests now exercise its full
 // surface, so nothing is dead in the test build -- expecting dead_code there
 // makes the expectation unfulfilled. Production reachability is unchanged;
@@ -46,7 +47,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Ekphrasis exists; audio pipeline integration pending (#753; tier in docs/capability-inventory.toml)"
+        reason = "Ekphrasis is compiled-only; production audio/network/identity/confirmation integration remains #544/#753 work"
     )
 )]
 

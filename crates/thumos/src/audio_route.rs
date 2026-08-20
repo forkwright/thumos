@@ -13,22 +13,23 @@
 //! 4. Calls -> earpiece
 //! 5. Everything else (ringtones, alarms, music, FM) -> loudspeaker
 //!
-//! ## No 3.5mm jack on M7
+//! ## Native headset boundary on M7
 //!
-//! The AGM M7 has no 3.5mm headphone jack.  ACCDET hardware is unwired.
-//! The `Headset` route exists for future devices but is never auto-selected
-//! on the M7 unless explicitly connected via USB-C adapter (which would
-//! appear as `UsbDac`).
+//! Repository evidence does not establish whether the AGM M7 exposes a native
+//! 3.5mm jack; ACCDET driver presence alone is not physical proof. The
+//! `Headset` route therefore exists but is never auto-selected on the M7. A
+//! USB-C audio adapter appears separately as `UsbDac`.
 //!
 //! ## Integration
 //!
 //! Used by [`super::audio::AudioManager`] to determine the default route
 //! when opening a session and to react to peripheral connect/disconnect.
 
-// WHY: route manager API not yet wired to kinit (Wave 4 integration pending).
+// WHY: kardia owns RouteManager and QEMU exercises its mock route state; some
+// producer/hot-plug paths remain unused in production.
 #![expect(
     dead_code,
-    reason = "audio route API exists; kinit wiring pending (#753; tier in docs/capability-inventory.toml)"
+    reason = "Audio routing is service-loop wired; unused producer/hot-plug paths remain #753"
 )]
 
 extern crate alloc;
@@ -57,7 +58,7 @@ pub enum AudioRoute {
     UsbDac,
     /// Wired headset via USB-C adapter (appears as USB audio device).
     ///
-    /// Not natively available on the M7 (no 3.5mm jack).
+    /// Native M7 availability is unverified; never auto-selected by default.
     Headset,
 }
 

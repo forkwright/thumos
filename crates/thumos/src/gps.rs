@@ -21,7 +21,8 @@
 //!
 //! The MT6739 GPS hardware is accessed through the WMT combo chip:
 //! - `board::CONSYS_BASE = 0x1800_0000` (combo-chip base, `board::m7` #534)
-//! - Data path goes through WMT STP framing (kelyphos handles the transport)
+//! - The intended data path uses WMT/STP framing; no sibling transport crate
+//!   is linked here, and the production operations remain #129 stubs
 //!
 //! ## Design
 //!
@@ -33,10 +34,11 @@
 //!
 //! Boot integration via `kinit.rs` Step 13c. Device node at `/dev/gps0`.
 
-// WHY: hardware driver API not yet wired to upper layers (kinit integration pending).
+// WHY: kinit constructs the adapter, but the production WMT/STP receive and
+// power operations remain fail-closed software work under #129.
 #![expect(
     dead_code,
-    reason = "GPS driver API wired in kinit but not yet called from userspace (#753; tier in docs/capability-inventory.toml)"
+    reason = "GPS production WMT/STP backend is not implemented (#129; tier in docs/capability-inventory.toml)"
 )]
 
 extern crate alloc;
@@ -357,10 +359,10 @@ pub(crate) trait GpsHwOps {
 }
 
 // ---------------------------------------------------------------------------
-// Real hardware implementation
+// Production-target hardware seam
 // ---------------------------------------------------------------------------
 
-/// Real GPS hardware access via WMT STP on the MT6739 combo chip.
+/// Production-target GPS handle for a future WMT/STP backend under #129.
 #[cfg(not(feature = "qemu"))]
 pub(crate) struct GpsHw {
     /// WMT combo-chip MMIO base address.
@@ -844,10 +846,9 @@ mod tests {
         );
     }
 
-    // WHY the gate: GpsHw is #[cfg(not(feature = "qemu"))] (real hardware
-    // access via WMT STP on the MT6739 combo chip, which qemu's virt board
-    // does not model) -- this test exercises a type that does not exist in
-    // a qemu build.
+    // WHY the gate: GpsHw is #[cfg(not(feature = "qemu"))] because qemu's
+    // virt board has no MT6739 combo chip. The type is a fail-closed #129
+    // production seam, not completed WMT/STP access.
     #[cfg(not(feature = "qemu"))]
     #[test]
     fn production_gps_hw_fails_closed_without_wmt_transport() {

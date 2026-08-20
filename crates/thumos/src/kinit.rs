@@ -136,7 +136,9 @@ pub(crate) unsafe fn fill_framebuffer(fb_addr: usize, width: u32, height: u32, c
 /// no passphrase entry, no decrypt, no mount, no userspace can ever run
 /// (`process::enable_scheduling()` is only reached at the end of `run`).
 ///
-/// WHY IRQs stay enabled: the timer ISR keeps petting the 5 s watchdog, so
+/// WHY IRQs stay enabled: the timer ISR currently keeps petting the 5 s
+/// watchdog. This is an intentional halt path, not scheduler liveness; #875
+/// owns progress-coupled petting for normal operation.
 #[cfg(not(feature = "qemu"))]
 /// Map a keypad matrix key to its ASCII digit — the boot passphrase entry
 /// alphabet (#446). Star/Hash are control keys at boot (backspace/submit),
@@ -434,7 +436,8 @@ fn halt_boot(serial: &mut Uart, display_ok: bool) -> ! {
     crate::qemu::request_exit(6);
     loop {
         // SAFETY: WFI is a hint instruction; no memory is accessed. The CPU
-        // sleeps until the next interrupt (the timer tick pets the WDT).
+        // sleeps until the next interrupt (the timer tick currently pets the
+        // WDT; #875 owns the normal-operation progress gate).
         unsafe {
             core::arch::asm!("wfi");
         }
@@ -483,9 +486,10 @@ fn debug_console_gate(serial: &mut Uart, mode_mgr: &crate::security_mode::ModeMa
     // prompt appears, so merely compiling and booting a debug-console build
     // does not hand a shell to whoever has a serial cable.
     //
-    // TODO(#459)[deliberate-prudent]: `Console::wait_for_physical_presence` depends on
+    // TODO(#865)[deliberate-prudent]: `Console::wait_for_physical_presence` depends on
     // `Uart::getc`, whose RX "data ready" bit position is unverified
-    // against the MT6739 TRM (see uart.rs) -- confirm on real hardware.
+    // against authoritative MT6739 source (see uart.rs) -- source-ground and
+    // host-test it before a later hardware receipt.
     serial.log("[init] Debug console armed -- awaiting physical-presence sequence\r\n");
     if !Console::wait_for_physical_presence(serial) {
         serial.log("[init] Debug console presence sequence not received\r\n");
@@ -667,23 +671,21 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 5b: CSPRNG (ChaCha20, seeded from timer entropy; fault-tolerant
-    // with timeout)
+    // Step 5b: CSPRNG (ChaCha20, provisional timer-derived gate with timeout;
+    // #840 blocks treating it as production entropy acceptance)
     // -----------------------------------------------------------------------
     serial.log("[init] CSPRNG (ChaCha20)\r\n");
     // SAFETY: called once after exceptions::init() (timer running, IRQs enabled).
-    // csprng::init() spins on WFI until the entropy pool accumulates a full
-    // SEED_ENTROPY_BITS estimate of timer-jitter entropy, then seeds the
-    // ChaCha20Rng DRBG and sets INITIALIZED -- bounded by a wall-clock
-    // timeout so a dead timer ISR degrades the boot instead of hanging it.
+    // csprng::init() spins on WFI until the provisional credit counter reaches
+    // SEED_ENTROPY_BITS, then seeds ChaCha20Rng and sets INITIALIZED. #840
+    // establishes that deterministic timer increments can satisfy that counter;
+    // the wall-clock bound only prevents a dead timer ISR from hanging boot.
     // Must complete before any radio driver init.
     state.csprng_ok = unsafe { csprng::init() };
     if state.csprng_ok {
-        serial.log(" CSPRNG ready\r\n");
+        serial.log(" CSPRNG gate reached (entropy UNQUALIFIED, #840)\r\n");
     } else {
-        serial.log(
-            " WARN CSPRNG timed out waiting for timer entropy -- random bytes unavailable\r\n",
-        );
+        serial.log(" WARN CSPRNG timed out waiting for timer credits -- bytes unavailable\r\n");
         serial.log(" Radio identity randomization disabled\r\n");
     }
 
@@ -692,8 +694,9 @@ pub unsafe fn run() -> ! {
     // -----------------------------------------------------------------------
     serial.log("[init] Watchdog (WDT, 5s)\r\n");
     // SAFETY: called once after MMU init (device MMIO is identity-mapped).
-    // Configures the MT6739 WDT with a 5-second timeout. The scheduler tick
-    // handler pets the watchdog on every timer interrupt (every 10 ms).
+    // Configures the MT6739 WDT with a 5-second timeout. The timer handler
+    // currently pets it every 10 ms before scheduler progress; #875 owns the
+    // required progress-coupled liveness gate.
     unsafe {
         watchdog::init();
     }
@@ -809,7 +812,7 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 8b: Measured boot (Ed25519 signature verification)
+    // Step 8b: Post-entry boot-region signature verification (Ed25519)
     // -----------------------------------------------------------------------
     serial.log("[init] Secure boot verification\r\n");
     {
@@ -818,7 +821,7 @@ pub unsafe fn run() -> ! {
         // Display availability only controls *how* a failure is reported
         // (rendered vs UART-only); gating the verification call itself on
         // state.display_ok let a display-init failure silently bypass the
-        // kernel's only measured-boot gate (#361).
+        // kernel's post-entry signature gate (#361).
         //
         // WHY the source derives from the medium (#467): qemu models no
         // MSDC, and an eMMC that failed init exposes no partitions -- no
@@ -894,9 +897,10 @@ pub unsafe fn run() -> ! {
     // probed here, READ-ONLY and ahead of the mount, and the mount plan
     // keys off what it found.
     //
-    // WHY the trust gate is checked first (#217): key derivation must never
-    // run on an unverified image — a tampered kernel could exfiltrate the
-    // passphrase.
+    // WHY this post-entry gate is checked first (#217): this implementation
+    // does not derive keys after its signature check fails. It cannot defend
+    // against a tampered executing kernel, which could bypass the branch and
+    // exfiltrate the passphrase; #467's pre-entry chain must authenticate it.
     //
     // Boot pad binding (the 4x3 matrix yields only digits/Star/Hash):
     // digits append, Star = backspace, Hash = submit/confirm. First-boot
@@ -1056,8 +1060,10 @@ pub unsafe fn run() -> ! {
     // does not end with a durably mounted filesystem.
     #[cfg_attr(feature = "qemu", allow(unused_mut))]
     let mut lfs_root: Option<alloc::boxed::Box<dyn crate::vfs::Filesystem>> = None;
-    // WHY (#217): persistent storage mounts ONLY on a verified boot -- a
-    // tampered kernel must never reach user data. WHY fail-closed on a
+    // WHY (#217): this implementation mounts persistent storage only after
+    // its post-entry signature check succeeds. That is a conditional software
+    // gate, not protection from a tampered executing kernel; #467 owns the
+    // pre-entry chain. WHY fail-closed on a
     // provisioned-or-unreadable preamble (#446): the payload is ciphertext
     // under a key this boot does not have — plain-mounting it reads garbage
     // and the InvalidSuperblock reformat path would DESTROY it, so the only
@@ -1087,15 +1093,16 @@ pub unsafe fn run() -> ! {
                                 lfs_root = Some(alloc::boxed::Box::new(fs));
                                 state.encryption_ok = true;
                             }
-                            // A missing/invalid superblock on the encrypted
-                            // view means the payload was never formatted
-                            // encrypted (the first boot after provisioning) —
-                            // format and remount. Any OTHER error (Corrupt,
-                            // BlockIo) must not trigger a reformat: that
-                            // would silently destroy user data (#360), the
-                            // same rule as the plain path.
+                            // CURRENT UNSAFE COMPATIBILITY (#360): this result
+                            // covers both a never-formatted payload and damaged
+                            // or version-incompatible existing metadata. No
+                            // independent first-provisioning marker exists, yet
+                            // this branch still formats and remounts. Device use
+                            // is blocked until those states are distinguished.
                             Err(LfsError::InvalidSuperblock) => {
-                                serial.log(" Encrypted LFS unformatted, formatting\r\n");
+                                serial.log(
+                                    " CRIT Ambiguous encrypted LFS superblock; legacy auto-format path (#360)\r\n",
+                                );
                                 if let Some(mut fmt_enc) = encrypted_payload_device(&data_key) {
                                     if lfs::format(&mut fmt_enc).is_ok() {
                                         serial.log(" Encrypted LFS formatted\r\n");
@@ -1185,14 +1192,16 @@ pub unsafe fn run() -> ! {
                             serial.log(" LFS mounted OK\r\n");
                             lfs_root = Some(alloc::boxed::Box::new(fs));
                         }
-                        // A missing/invalid superblock means a genuine first
-                        // boot (or a never-formatted partition) -- format and
-                        // remount. Any OTHER error (Corrupt, BlockIo) is NOT
-                        // first boot and must not trigger a reformat: that
-                        // would silently destroy user data on a bit flip or a
-                        // transient I/O fault (#360).
+                        // CURRENT UNSAFE COMPATIBILITY (#360): this result does
+                        // not prove first boot. It also covers damaged or
+                        // version-incompatible existing metadata, but this
+                        // branch still formats. Production must distinguish an
+                        // authenticated first-provisioning state or require an
+                        // explicit operator-confirmed format action.
                         Err(LfsError::InvalidSuperblock) => {
-                            serial.log(" LFS mount failed (no superblock), formatting\r\n");
+                            serial.log(
+                                " CRIT Ambiguous LFS superblock; legacy auto-format path (#360)\r\n",
+                            );
                             let fmt_uninit = MsdcBlockDeviceUninit::new(
                                 board::LFS_PARTITION_START + sector_count,
                             );
@@ -1281,8 +1290,9 @@ pub unsafe fn run() -> ! {
     // is available so writes survive a reboot; falls back to a fresh ramfs
     // root otherwise (#343). With the trust gate above, a persistent root --
     // and therefore userspace loaded from persistent storage -- is only
-    // reachable on a verified boot; the ramfs fallback is image-resident and
-    // shares the kernel's own trust domain.
+    // reachable only after the running kernel accepts the selected boot region;
+    // the ramfs fallback is image-resident and separately signature-checked.
+    // Neither post-entry check authenticates the executing kernel (#467).
     // WHY(#474): with no LFS-backed root (QEMU / unverified eMMC) the boot root
     // would be an empty ramfs and /init unfindable. Mount the image-resident
     // initramfs -- the /init ELF wrapped in a newc CPIO, built by build.rs into
@@ -1343,9 +1353,9 @@ pub unsafe fn run() -> ! {
         // power manager was not constructed until Step 12, well after
         // both radios had already started, leaving PowerManager state at
         // its all-Off default the whole time radios were live (a
-        // policy/reality mismatch for any later mode-transition or
-        // threat-response code that reads PowerManager state as ground
-        // truth). A full passphrase-derived pin_hash is not threaded
+        // policy/reality mismatch for code that once treated PowerManager as
+        // ground truth. It is now explicitly desired state only (#874).
+        // A full passphrase-derived pin_hash is not threaded
         // through yet (Step 8c derives the keys; the mode manager's
         // pin-hash provisioning is separate work), so
         // ModeManager::default() is used: unprovisioned, but still Daily
@@ -1356,21 +1366,21 @@ pub unsafe fn run() -> ! {
         // let bfu = BfuTimer::new(SecurityMode::Daily);
         crate::power::apply_mode_policy(&mode_mgr.effective_policy(), &mut pm);
         state.security_mode_ok = true;
-        serial.log(" Security mode: Daily policy applied\r\n");
+        serial.log(" Security mode: Daily policy requested (actuation unverified)\r\n");
     }
 
     // -----------------------------------------------------------------------
     // Step 9: USB ACM serial (primary debug console)
     // -----------------------------------------------------------------------
     serial.log("[init] USB ACM serial\r\n");
-    // WHY(qemu): virt models no MUSB controller at 0x1121_0000; the init
+    // WHY(qemu): virt models no MUSB controller at 0x1120_0000; the init
     // would data-abort. usb_ok stays false (existing degradation path).
     #[cfg(feature = "qemu")]
     serial.log(" Skipped (qemu: no MUSB model)\r\n");
     #[cfg(not(feature = "qemu"))]
     {
         // SAFETY: init_controller() programs the MUSB MMIO registers at
-        // their known physical address (0x1121_0000) on the shared static
+        // their source-resolved physical address (0x1120_0000) on the shared static
         // controller (#666, promoted off this stack frame so
         // exceptions::irq_handler_body's ISR path can reach it). Called
         // once, here, after heap and GIC init -- the sole init call site.
@@ -1437,7 +1447,7 @@ pub unsafe fn run() -> ! {
     serial.log("[init] Power manager\r\n");
     boot_log!(
         serial,
-        " {} radios active per Daily policy (applied at security-mode init)\r\n",
+        " {} radios requested active by Daily policy (actuation unverified)\r\n",
         pm.active_count()
     );
 
@@ -1677,17 +1687,15 @@ pub unsafe fn run() -> ! {
     // Step 14: Spawn packaged userspace processes FROM mounted root ramfs
     // -----------------------------------------------------------------------
     serial.log("[init] Spawning userspace processes\r\n");
-    // WHY (#217 + #480): userspace may run only when trust is cryptographically
-    // established -- EITHER a verified boot medium (secure_boot_ok, the
-    // persistent-storage/LFS path) OR a cryptographically-verified
-    // image-resident initramfs. The initramfs is signed by the boot anchor
-    // (build.rs, dev seed) and verified here against BOOT_PUBLIC_KEY; a valid
-    // signature means this userspace shares the kernel's own signed trust
-    // domain, which satisfies #217's requirement for the image-resident case
-    // (the prior blanket refusal existed only because no verification mechanism
-    // did). A production image's initramfs carries a dev signature that does
+    // WHY (#217 + #480): the running kernel gates userspace on EITHER a
+    // signature-checked boot medium (secure_boot_ok, the persistent-storage/LFS
+    // path) OR a signature-checked image-resident initramfs. The initramfs is
+    // signed by the build anchor (build.rs, dev seed) and checked here against
+    // BOOT_PUBLIC_KEY. Because this check runs post-entry, it authenticates
+    // neither the executing kernel nor a trust domain that includes it; #467
+    // owns that pre-entry chain. A production image's initramfs carries a dev signature that does
     // NOT verify under the production anchor, so it correctly falls back to the
-    // eMMC secure-boot gate. secure_boot_ok stays false here (no medium), so
+    // eMMC post-entry signature gate. secure_boot_ok stays false here (no medium), so
     // every OTHER trust-dependent step (passphrase, audit, persistent decrypt)
     // remains fail-closed.
     //
@@ -1964,8 +1972,8 @@ pub unsafe fn run() -> ! {
 
     // #398: bring up the AT/call telephony stack on the modem transport. Under
     // qemu a seeded mock runs the real 10-step init + state machines; on device
-    // the CCCI transport (init succeeds only once its wire protocol lands --
-    // hardware-gated) -- the WIRING is present either way.
+    // the CCCI transport cannot initialize until its software wire protocol
+    // lands under #398; only then can the same wiring reach M7 qualification.
     #[cfg(feature = "qemu")]
     let telephony = {
         let mut t = crate::telephony::Telephony::new(
@@ -2002,7 +2010,7 @@ pub unsafe fn run() -> ! {
     let mut audit_key = [0u8; crate::security::KEY_SIZE];
     if state.csprng_ok {
         crate::csprng::kernel_random_bytes(&mut audit_key).ok();
-        serial.log(" Audit trail: interim session key (persistent key PENDING #217)\r\n");
+        serial.log(" Audit trail: interim session key (persistent key PENDING #863)\r\n");
     }
     let kernel = crate::kardia::KernelState::new(
         state, devices, pm, mode_mgr, fb, telephony, net, audit_key,

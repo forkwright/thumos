@@ -8,8 +8,9 @@
 //! - **Timer**: single countdown from a set duration
 //! - **Stopwatch**: count-up with lap recording
 //!
-//! The calendar is a local cache; authoritative state lives in aletheia.
-//! Alarms, timer, and stopwatch are fully local.
+//! Calendar, alarm, timer, and stopwatch state is local and currently in-memory.
+//! A remote calendar authority/sync contract is not accepted or wired; any such
+//! integration is separate cross-repository work.
 //!
 //! ## Module structure
 //!

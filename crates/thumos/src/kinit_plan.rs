@@ -55,7 +55,7 @@ pub(crate) enum BootStep {
     Display = 8,
     /// GPIO keypad scanning (relocated before the passphrase gate, #344).
     GpioInput = 9,
-    /// Measured boot signature verification (Ed25519).
+    /// Post-entry boot-region signature verification (Ed25519).
     SecureBoot = 10,
     /// Passphrase entry and key derivation (#446: runs BEFORE any mount —
     /// once provisioned, the payload is ciphertext and only the derived
@@ -183,8 +183,9 @@ pub(crate) enum MountPlan {
     /// Wrap the payload view in `EncryptedBlockDevice` with the derived
     /// data key; LFS mounts one sector past the preamble.
     Encrypted,
-    /// Unprovisioned device: the plain LFS mount at the partition head
-    /// (the dev/transition path, byte-compatible with pre-#446 images).
+    /// Unprovisioned device: the plain LFS mount at the partition head.
+    /// This legacy dev/transition path is not protected-storage acceptance and
+    /// must be removed or made impossible in production under #866.
     Plain,
     /// No persistent mount; the VFS root falls back to the initramfs.
     RamfsFallback,
@@ -221,9 +222,9 @@ pub(crate) const fn mount_plan(
 
 /// Minimum boot passphrase length (digits) accepted at first-boot setup
 /// (#446). The boot pad alphabet is digits-only (Star/Hash are the
-/// backspace/submit control keys), so this floor is the brute-force
-/// margin alongside PBKDF2-100k, throttle escalation, and the 10-attempt
-/// wipe; it matches the PIN posture (`REQUIRED_PIN_LEN`).
+/// backspace/submit control keys). Six digits is only the current compatibility
+/// floor, not an offline brute-force margin: #872 owns the effective-entropy,
+/// recovery, input, and KDF policy needed before production acceptance.
 pub(crate) const MIN_BOOT_PASSPHRASE_LEN: u8 = 6;
 
 /// The boot-log line for a skipped passphrase step (#446) — one source for

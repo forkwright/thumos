@@ -719,8 +719,8 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
         return EFAULT;
     }
 
-    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
-    // within user-accessible DRAM.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS mapping and permission validation.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let Ok(path) = core::str::from_utf8(path_slice) else {
         return EINVAL;
@@ -816,8 +816,8 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
         return EBADF;
     };
 
-    // SAFETY: buf_ptr + count validated by validate_user_buffer above
-    // (before the fd/mount-table lookups) to lie within user-accessible DRAM.
+    // SAFETY: the current guard bounds buf_ptr + count to configured DRAM;
+    // #871 owns caller-VAS mapping and write-permission validation.
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count) };
 
     match fs.read_mut(inode_id, offset, dst) {
@@ -884,8 +884,8 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
         return EBADF;
     };
 
-    // SAFETY: buf_ptr + count validated by validate_user_buffer above
-    // (before the fd/mount-table lookups) to lie within user-accessible DRAM.
+    // SAFETY: the current guard bounds buf_ptr + count to configured DRAM;
+    // #871 owns caller-VAS mapping and read-permission validation.
     let src = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, count) };
 
     match fs.write(inode_id, offset, src) {
@@ -950,8 +950,8 @@ pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
         return EFAULT;
     }
 
-    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
-    // within user-accessible DRAM.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS mapping and permission validation.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let Ok(path) = core::str::from_utf8(path_slice) else {
         return EINVAL;
@@ -986,7 +986,8 @@ pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
         file_type,
     };
 
-    // SAFETY: stat_buf_ptr is validated non-null above.
+    // SAFETY: the current guard bounds the full StatBuf to configured DRAM;
+    // #871 owns caller-VAS mapping and write-permission validation.
     unsafe {
         let dst = stat_buf_ptr as *mut StatBuf;
         core::ptr::write(dst, stat);
@@ -1078,7 +1079,8 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
         file_type,
     };
 
-    // SAFETY: stat_buf_ptr is validated non-null above.
+    // SAFETY: the current guard bounds the full StatBuf to configured DRAM;
+    // #871 owns caller-VAS mapping and write-permission validation.
     unsafe {
         let dst = stat_buf_ptr as *mut StatBuf;
         core::ptr::write(dst, stat);
@@ -1386,8 +1388,8 @@ pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
         return EINVAL;
     }
 
-    // SAFETY: validate_user_buffer confirmed [buf_ptr, buf_ptr+size) lies
-    // within user-accessible DRAM; size is sufficient for cwd_bytes plus the
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS/write-permission validation. Size covers cwd_bytes plus the
     // null terminator (checked above).
     unsafe {
         let dst = buf_ptr as *mut u8;
@@ -1423,8 +1425,8 @@ pub(crate) fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
         return EFAULT;
     }
 
-    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
-    // within user-accessible DRAM.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS mapping and permission validation.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let Ok(path) = core::str::from_utf8(path_slice) else {
         return EINVAL;
@@ -1484,8 +1486,8 @@ pub(crate) fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
         return EFAULT;
     }
 
-    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
-    // within user-accessible DRAM.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS mapping and permission validation.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let Ok(path) = core::str::from_utf8(path_slice) else {
         return EINVAL;
@@ -1542,8 +1544,8 @@ pub(crate) fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
         return EFAULT;
     }
 
-    // SAFETY: validate_user_buffer confirmed [path_ptr, path_ptr+len) lies
-    // within user-accessible DRAM.
+    // SAFETY: the current guard bounds this to configured DRAM only; #871
+    // owns caller-VAS mapping and permission validation.
     let path_slice = unsafe { core::slice::from_raw_parts(path_ptr as *const u8, len) };
     let Ok(path) = core::str::from_utf8(path_slice) else {
         return EINVAL;
@@ -1848,7 +1850,7 @@ mod tests {
 
     // -- VFS-backed syscall tests --
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1885,7 +1887,7 @@ mod tests {
         }
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1902,7 +1904,7 @@ mod tests {
         assert_eq!(result, ENOENT);
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1932,7 +1934,7 @@ mod tests {
         assert_eq!(&buf[..14], b"Hello, thumos!");
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1957,7 +1959,7 @@ mod tests {
         assert_eq!(bytes_read, 0, "read at EOF must return 0");
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -1980,7 +1982,7 @@ mod tests {
         assert_eq!(result, EBADF, "read after close must return EBADF");
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2007,7 +2009,7 @@ mod tests {
         assert_eq!(&buf[..7], b"thumos!");
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2032,7 +2034,7 @@ mod tests {
         assert_eq!(bytes_read, 0, "read at EOF (via SEEK_END) must return 0");
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2075,7 +2077,7 @@ mod tests {
         assert_eq!(&*buf2, b", thumo");
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2105,7 +2107,7 @@ mod tests {
         assert_eq!(&*buf, b"Hello");
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2134,7 +2136,7 @@ mod tests {
         assert_eq!(stat.file_type, S_IFREG);
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2161,7 +2163,7 @@ mod tests {
         assert_eq!(result, ENOENT);
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2231,7 +2233,7 @@ mod tests {
         );
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2274,7 +2276,7 @@ mod tests {
 
     // -- New VFS-specific tests --
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2309,7 +2311,7 @@ mod tests {
         assert_eq!(&buf[..12], b"written data");
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2326,7 +2328,7 @@ mod tests {
         assert!(fd < MAX_FDS as u32, "opening /dev/null should succeed");
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2356,7 +2358,7 @@ mod tests {
         );
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2388,7 +2390,7 @@ mod tests {
         assert_eq!(stat.file_type, S_IFDIR);
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2416,7 +2418,7 @@ mod tests {
         assert_eq!(fd2, ENOENT);
     }
 
-    // TODO(#129)[deliberate-prudent]: gated on 32-bit pointer width — this test uses
+    // WHY(CI): exercised by the required i686 host-test profile; this test uses
     // `path.as_ptr() as u32` / `buf.as_mut_ptr() as u32` which is the
     // real kernel syscall ABI (ARMv7). On x86_64 host it truncates
     // 64-bit pointers and dereferences garbage. Revisit with
@@ -2741,8 +2743,8 @@ mod tests {
     //
     // Every case here is rejected before any pointer is dereferenced, so
     // these tests are host-safe and pointer-width-independent (unlike the
-    // VFS-backed tests above, gated #[cfg(target_pointer_width = "32")] per
-    // #129). validate_user_buffer's own null/overflow/boundary behavior is
+    // VFS-backed tests above, gated #[cfg(target_pointer_width = "32")] and
+    // exercised by the required i686 host-test profile). validate_user_buffer's own null/overflow/boundary behavior is
     // covered by memguard's tests; these confirm each fd-layer entry point
     // actually calls it.
 

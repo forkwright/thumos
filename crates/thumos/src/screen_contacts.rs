@@ -17,10 +17,11 @@
 //! | Detail  | CALL   | BACK   | Select action      |
 //! | Add     | SAVE   | BACK   | N/A                |
 
-// WHY: contacts screen created in Phase 07 Wave 5, kinit wiring pending.
+// WHY: the contacts screen is compiled and host-tested, but no production
+// route/input path reaches it.
 #![expect(
     dead_code,
-    reason = "Contacts screen created in Phase 07 Wave 5, kinit wiring pending (#737)"
+    reason = "Contacts screen remains compiled-only; service-loop routing is #753"
 )]
 
 extern crate alloc;

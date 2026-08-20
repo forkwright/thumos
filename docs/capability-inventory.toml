@@ -15,34 +15,34 @@ id = "kernel-core"
 modules = ["kinit", "kinit_plan", "kardia", "exceptions", "irq", "gic", "mmu", "slab", "page", "heap", "process", "fd", "signal", "elf", "futex", "ipc", "pipe", "socket", "supervisor", "syscall", "reflex", "mmio", "memguard", "board"]
 tier = "emulated-mock-proven"
 witness = ["THUMOS-QEMU: boot-complete", "THUMOS-QEMU: service-loop ticks=", "/init spawned", "shell: hello from userspace", "USERFAULT:"]
-notes = "PL0 isolation, graceful kill, fork/exec/brk/guard witnesses live in the per-probe scripts (kfault/sleep/fork/exec/forkexec/guard/brk/crashloop)."
+notes = "Selected PL0 image, fault, graceful-kill, fork/exec/brk, and guard-page behavior is witnessed in the per-probe scripts (kfault/sleep/fork/exec/forkexec/guard/brk/crashloop). This is not complete process isolation: #871 owns caller-VAS and direction-specific permission validation for syscall copyin/copyout, and #868 owns sys_pipe's currently unchecked output write."
 
 [[capability]]
 id = "memory-fs"
-modules = ["block", "cache", "vfs", "devfs", "lfs", "lfs_imap", "lfs_segment", "lfs_checkpoint", "lfs_writer", "lfs_compact", "emmc", "ramfs"]
+modules = ["block", "cache", "vfs", "devfs", "lfs", "lfs_imap", "lfs_segment", "lfs_checkpoint", "lfs_writer", "lfs_compact", "emmc", "ramfs", "encryption"]
 tier = "kernel-wired"
-notes = "LFS mounts at boot (kinit Step 8d, encrypted when provisioned per #446); no witness marker asserts persistence behavior in emulation yet."
+notes = "LFS mounts at boot, encrypted when provisioned but still plaintext under the live Unprovisioned compatibility path (#866); no witness marker asserts persistence behavior. #360 owns the current ambiguous InvalidSuperblock auto-format/data-loss path, #867 owns the 48 KiB direct-block file ceiling, #870 owns unverified MSDC RX-count semantics, #837 owns the XTS logical-block/tweak description, and #878 owns authenticated/versioned integrity and rollback rejection beyond XTS confidentiality."
 
 [[capability]]
 id = "time"
 modules = ["timer", "time", "clock"]
 tier = "emulated-mock-proven"
 witness = ["kardia: clock src=manual"]
-notes = "ClockManager trust hierarchy wired + seeded (#402). sys_clock_gettime unification is #506; QEMU timer fidelity is #461."
+notes = "The service loop drives ClockManager from the timer IRQ, and the QEMU witness seeds a manual epoch. GPS, NTP, and modem time acquisition are not exercised in emulation."
 
 [[capability]]
 id = "telephony"
 modules = ["telephony", "telephony_parser", "telephony_mock", "sim", "sms", "ccci", "ccci_logger"]
 tier = "emulated-mock-proven"
 witness = ["kardia: modem ready state=Registered", "kardia: incoming call -> ringtone", "kardia: sim iccid_len="]
-notes = "Seeded mock transport; the live CCCI wire is hardware-gated. SIM PIN/PUK unlock is #517."
+notes = "One SimManager holds one seeded mock SimInfo in emulation; PIN/PUK transitions are host-tested. The non-test CcciModemTransport still hard-fails every operation, so #398 owns the software CCCI-to-AT bridge before any modem witness. Two-slot state/routing is tracked by #858."
 
 [[capability]]
 id = "audio"
 modules = ["audio", "audio_codec", "audio_route", "bt_audio", "avdtp", "sbc", "mic_audit"]
 tier = "emulated-mock-proven"
 witness = ["kardia: audio ready sessions=", "kardia: bt_audio sample_rate=44100 channels=2"]
-notes = "NullCodec in emulation; MT6357 codec + BT HCI are hardware-gated."
+notes = "QEMU witnesses AudioManager/RouteManager with NullCodec plus A2DP configuration. MicAuditLog is only manually paired with the smoke, not coupled to every audio transition (#399). A2DP still emits zero-audio through StubSbcEncoder (#401), and the live Bluetooth backend remains #129 software work. The non-QEMU MT6357 path uses invalid direct PWRAP-base arithmetic (#862), while the modem/call-audio route and AEC criterion lack source/calibration (#876); both precede hardware qualification."
 
 [[capability]]
 id = "ui"
@@ -63,86 +63,119 @@ id = "firewall"
 modules = ["firewall"]
 tier = "emulated-mock-proven"
 witness = ["kardia: firewall rules="]
-notes = "Loop-persistent policy + verified HMAC audit chain (#403)."
+notes = "Loop-persistent firewall policy is witnessed. Its audit sink uses a volatile per-boot CSPRNG key; the retained live HMAC chain has no persistent rollback/truncation anchor. #863 owns durable audit integration."
 
 [[capability]]
-id = "secure-boot"
+id = "post-entry-image-verification"
 modules = ["secure_boot"]
 tier = "emulated-mock-proven"
 witness = ["Secure boot: DEGRADED", "image-resident initramfs signature verified"]
-notes = "Fail-closed medium trust; production-signed verified boot on live eMMC is #467 (hardware-gated)."
+notes = "The in-kernel Ed25519 checks gate later behavior only if the already executing kernel honors them; they are not measured boot and cannot authenticate that kernel. #467 first owns deterministic Android boot-image/scatter packaging plus a pre-entry verification chain. Only after that software path lands can an operator-owned live-eMMC production-signature witness run."
 
 [[capability]]
 id = "security-subsystems"
-modules = ["security", "security_mode", "lock_screen", "key_manager", "audit", "capability", "panic_wipe", "bfu_timer", "csprng", "secrets", "gpt"]
+modules = ["security", "security_mode", "lock_screen", "key_manager", "audit", "capability", "panic_wipe", "csprng", "secrets", "gpt"]
 tier = "kernel-wired"
-notes = "Security-mode manager drives the status bar (#404); encryption/key paths land with the boot-time passphrase subsystem (#446); the per-device salt + secrets preamble are #449 (this PR)."
-hardware_reason = "panic wipe + tamper evidence need the physical eMMC/sensors"
+notes = "Boot passphrase, salt/preamble, key hierarchy, security modes, and the dry-run/key-zeroization panic path are reachable. #840 owns the timer estimator that can credit deterministic increments as entropy; #872 owns the offline-resistant boot-secret/KDF policy; #873 owns non-repeating CSPRNG wake/reboot reseeding; #841 owns the weak latent lock-screen verifier; #863 owns persisted wipe/distress/reflex/audit-head work; #878 owns authenticated/versioned persistent-data rollback resistance; #881 owns physical side-button/PTT producers and safe gestures. None is discharged by eMMC or sensor qualification."
 
 [[capability]]
-id = "power"
-modules = ["power", "battery", "watchdog"]
+id = "bfu-timer"
+modules = ["bfu_timer"]
+tier = "compiled-only"
+notes = "BfuTimer is host-tested, but its only boot construction is commented out and the service loop never ticks it."
+tracking_reason = "Production timeout/action integration is software work tracked by #863."
+
+[[capability]]
+id = "power-policy"
+modules = ["power"]
 tier = "kernel-wired"
-hardware_reason = "PMIC/battery telemetry needs the physical device"
+notes = "PowerManager policy state is boot/service-loop reachable, but radio state changes are in-memory requests only. #874 owns requested/applied/observed/failed semantics and removes uncalibrated automatic modem cuts. The current direct PMIC access is invalid and may alias unrelated SoC MMIO (#862). Approximate DVFS/MCDI device writes are not source-grounded (#879). All three are software STOPs before hardware."
+
+[[capability]]
+id = "watchdog"
+modules = ["watchdog"]
+tier = "kernel-wired"
+notes = "The MT6739 watchdog path is boot-reachable, but the timer IRQ currently pets it before scheduler/service-loop progress; #875 owns progress-coupled liveness so a deadlocked kernel is not kept alive."
+hardware_reason = "After #875 lands, an operator-owned physical reset/deadline receipt is still required."
+
+[[capability]]
+id = "battery-monitor"
+modules = ["battery"]
+tier = "compiled-only"
+notes = "BatteryMonitor and its generic conversion/polling policy are host-tested, but no production kinit or service-loop path constructs or polls it. #877 owns a source-grounded PMIC interface and versioned state-of-charge model with explicit uncertainty."
+tracking_reason = "Software model plus boot/service integration (#877 and #753) precede PMIC telemetry qualification."
 
 [[capability]]
 id = "display-input"
 modules = ["display", "keypad"]
 tier = "kernel-wired"
-notes = "Rendered via the ui capability's synthetic framebuffer in emulation; the DDP pipeline is hardware-gated. keypad (boot matrix reader, #446) is host-tested on injected matrices; the live GPIO scan is hardware-gated."
+notes = "Rendered via the UI capability's synthetic framebuffer in emulation. #854 must resolve and source-ground the DBI/DSI GC9306 transport before a panel receipt. The boot keypad matrix is host-tested on injected rows, but #880 owns the placeholder AGM M7 pins, generic GPIO transaction model, and fail-closed device adapter before any keypad receipt; #753 then owns non-QEMU service-loop delivery."
 
 [[capability]]
 id = "connectivity"
-modules = ["wifi", "bluetooth", "gps", "net", "dns", "dns_tls", "dhcp"]
+modules = ["net", "dns", "dhcp"]
 tier = "kernel-wired"
-notes = "State machines + parsers wired; packet filter consumes them. Radio I/O is hardware-gated (fail-closed loopback in emulation)."
-hardware_reason = "WiFi TX/RX/scan, BT RF, GPS NMEA need the combo chip + antennas"
+notes = "The kernel/service-loop network, DHCP, and plain-DNS surfaces are wired; live packet I/O still depends on the separate radio-driver capability. #864 owns WPA3-SAE, AF_INET6, and listen/accept software paths omitted by the closed historical owner."
+
+[[capability]]
+id = "dns-tls"
+modules = ["dns_tls"]
+tier = "compiled-only"
+notes = "DotClient framing, pinning, and transport logic are host-tested, but every construction site is test-only and no production resolver/network path drives it."
+tracking_reason = "Software service-loop/resolver integration is tracked by #753 before live transport qualification."
+
+[[capability]]
+id = "radio-drivers"
+modules = ["wifi", "bluetooth", "gps"]
+tier = "kernel-wired"
+notes = "kinit constructs and readiness-checks the non-test WiFi, Bluetooth, and GPS adapters, so they are boot-reachable. Their production backends are still software stubs: WiFi rejects TX/scan/association, Bluetooth rejects command/ACL TX and returns no RX, and GPS returns no RX and rejects power-on. #129 owns those WMT/STP paths before operator-owned M7 RF qualification."
 
 [[capability]]
 id = "comms-matrix"
 modules = ["matrix_crypto", "http_client", "json_mini", "harmostes", "matrix_ids"]
-tier = "kernel-wired"
-notes = "Olm/Megolm + HTTP/JSON surfaces compiled, including the /keys/claim request/response round trip that validates and returns a peer's key (#437). consume_one_time_key -- removing one of this device's OWN keys once a peer claims it -- stays unwired: that needs a receive-side signal (a dropping device_one_time_keys_count on /sync, or an inbound Olm pre-key message) that does not exist in this tree; X3DH session establishment is also not implemented. Nothing yet drives a claim from kinit/kardia."
+tier = "compiled-only"
+notes = "HTTP/JSON plus this kernel's simplified, non-interoperable Olm/Megolm surfaces are compiled and host-tested. The inbound to-device pre-key path consumes a local one-time key and establishes an OlmSession, but MatrixClient is never constructed from kernel_main, so no production boot/service-loop path reaches it. Per-message Olm ratchet advancement remains absent (#844)."
+tracking_reason = "Unified-inbox and MatrixClient integration is software work tracked by #753."
 
 [[capability]]
 id = "screens-extended"
 modules = ["screen_search", "screen_settings", "screen_dialer", "screen_calendar", "screen_messages", "screen_fm", "screen_privacy", "screen_radio", "screen_unimplemented"]
 tier = "kernel-wired"
-notes = "screen_calendar renders via the heorte witness; screen_fm is fed by fm-radio's smoke witness and (#730) is now routed for BOTH input and render (previously input-only, so the FM screen took keypresses while the framebuffer kept showing Home); screen_unimplemented is the exhaustive not-implemented fallback ui.rs's screen_kind classifier routes every currently-unwired ScreenId through (matched identically by both of kardia.rs's dispatches), naming the requested screen instead of silently rendering Home (#730); search/settings/dialer/messages/privacy/radio are routed but unwitnessed. screen_privacy (#737) renders its own self-managed category list (no lfs.rs size feed yet); its purge-confirmation gate is constructed with an intentionally unsatisfiable all-zero hash because no provisioned purge/unlock passphrase reaches KernelState (see kardia.rs's KernelState::privacy field doc) -- PURGE is reachable but permanently fails closed until that credential is threaded through. screen_radio (#737) sets a DESIRED radio preset with no radio-policy manager anywhere in the kernel to apply it -- wifi.rs/gps.rs never reach KernelState even on real hardware, so the screen is genuinely self-contained, same shape as search/dialer/messages before any subsystem fed them. screen_settings also holds WifiSettingsScreen/BtSettingsScreen/AboutScreen, which -- like screen_alarm below -- are compiled but not routed; this module-level tier reflects that SettingsMenuScreen itself is genuinely wired, not that every screen type in the file is."
+notes = "screen_calendar renders via the heorte witness; screen_fm is fed by fm-radio's smoke witness and (#730) is routed for input and render; screen_unimplemented is the exhaustive fallback for currently unwired ScreenIds. Search/settings/dialer/messages/privacy/radio are routed but unwitnessed. screen_privacy's purge gate remains intentionally unsatisfiable until a provisioned credential reaches KernelState. screen_radio stores only a desired preset: no manager applies or observes it, and #874 owns requested/applied/observed/failed UI semantics. screen_settings also contains WifiSettingsScreen/BtSettingsScreen/AboutScreen that are compiled but not routed; the module tier does not promote every contained screen."
 
 [[capability]]
 id = "screens-compiled-only"
 modules = ["screen_alarm", "screen_call", "screen_contacts", "screen_nous"]
 tier = "compiled-only"
-notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. alarm/nous/call/contacts screens wait on their owning subsystems reaching the kinit event loop (#737)."
-tracking_reason = "Implemented and unit-tested, not hardware-gated -- kinit route/input wiring tracked under #737 (#145 closed without a successor, which is what #737 corrects)."
+notes = "No route/input path reaches them today -- selecting their ScreenId renders the screen_unimplemented placeholder instead (#730). screen_alarm was previously (incorrectly) listed under screens-extended as 'routed but unwitnessed'; no route to it exists in kardia.rs at all, which is the drift #730 found and this entry corrects. alarm/nous/call/contacts screens wait on their owning subsystems reaching the service loop (#753)."
+tracking_reason = "Implemented and unit-tested, not hardware-gated; service-loop route/input integration is tracked by #753."
 
 [[capability]]
 id = "fm-radio"
 modules = ["fm_radio"]
 tier = "emulated-mock-proven"
 witness = ["kardia: fm powered=true"]
-notes = "FmRadio<BootFmHw> in KernelState (NullFmHw under qemu, WMT on device), powered + tuned at boot smoke, FM screen fed from it. Real MT6631 tuner backend validation is hardware-gated."
+notes = "FmRadio<BootFmHw> in KernelState uses NullFmHw under QEMU and is powered/tuned in the boot smoke. The non-test backend still fabricates power/tune success and lacks seek/RSSI, so #129 owns software implementation before MT6631 qualification."
 
 [[capability]]
 id = "threat-monitor"
 modules = ["screen_threat"]
 tier = "emulated-mock-proven"
 witness = ["kardia: threat detector_before=false", "kardia: threat detector_before=false alerts="]
-notes = "ThreatMonitor in KernelState (#737): score as a lens over the log, not either alone (operator decision). The alert log is fed from the real SMS surveillance classification path (#662, ThreatAlertType::from_message_class) via a boot-smoke Silent-SMS PDU; the composite score is a log-derived heuristic (recompute_score_from_log), labelled UNCAL in the rendered UI -- NOT sema's detector engine. crates/sema (IMSI-catcher/BLE-tracker/deauth analysis) is not a thumos dependency at all -- only the shared sema-core types crate is -- so ImsiCatcher/BleTracker/DeauthAttack/CcciAnomaly/GeofenceBreach/ModemAnomaly have no producer and stay unconstructed. #555 (closed) calibrated sema's own corpus; it never wired sema into thumos, so its finding stands for this integration. #743: with no detector reporting, the screen suppresses the score entirely and renders NO DETECTOR / Monitoring unavailable rather than 'No alerts' and 0, which read as a clean result. The witness asserts detector_before=false (captured before the boot smoke seeds its classification) so the no-detector path is exercised, not merely present."
+notes = "ThreatMonitor is reached and the boot smoke feeds the SMS surveillance classification path, but the composite score is a log-derived UNCAL heuristic, not sema's detector engine; only sema-core types are linked and the other detector producers remain absent. With no detector report, #743 suppresses the score and renders NO DETECTOR. The modem status input is CCCI boot-path availability, not rail state; #874 owns that requested/applied/observed distinction and forbids automatic radio-cut action from an uncalibrated score."
 
 [[capability]]
 id = "apps-compiled-only"
-modules = ["contacts", "t9", "briar", "meshtastic", "ekphrasis", "provision", "encryption", "nous"]
+modules = ["contacts", "t9", "briar", "meshtastic", "ekphrasis", "provision", "nous"]
 tier = "compiled-only"
-notes = "No production call path from boot/loop. Owners: encryption #449/#446, nous #552, ekphrasis #553, provision USB OTG (Phase 8 deferral), briar/meshtastic Phase 9 stubs."
-tracking_reason = "Not hardware-gated -- encryption tracked under #449/#446, nous under #552, ekphrasis under #553. contacts and t9 have no open tracking issue for their kinit wiring; their #[expect(dead_code)] reasons still cite the closed #145, the same drift #737 corrects for the screens."
+notes = "No production call path from boot/service loop. Provisioning additionally embeds a public RFC 8032 test trust anchor; #869 owns production key injection, test-key rejection, identity/freshness/replay semantics, and custody before reachability. Briar and Meshtastic remain Phase-09 surfaces."
+tracking_reason = "Software reachability is tracked by #753; provisioning trust is separately blocked by #869."
 
 [[capability]]
 id = "hardware-support"
 modules = ["qemu", "console", "uart", "usb"]
 tier = "kernel-wired"
-notes = "console host-testability is #459; USB EP1 ISR is registered with the GIC and reader/ISR sync is locked + concurrency-tested (#666), gated on board::m7::MUSB_IRQ pending hardware confirmation of the interrupt number."
+notes = "USB controller base 0x1120_0000 is source-resolved. The EP1 ISR, GIC dispatch, and reader/ISR synchronization are host-tested, but board::m7::MUSB_IRQ remains None; #676 owns source adjudication and any physical witness. UART RX-ready semantics/presence timing remain source-first under #865."
 
 [[capability]]
 id = "board-platform"
@@ -158,6 +191,6 @@ notes = "#544 on-device leg: the authenticated metaxu-core round trip over board
 
 # Accounting rules retained from the retired hand-maintained audit (#550):
 # - compiled+tested means the Rust surface exists; it does not imply boot,
-#   userspace, or hardware readiness.
+#   embedded-program, service-loop, or hardware readiness.
 # - A capability is hardware-ready only with a production call path and
 #   identity-protection behavior at the driver boundary.

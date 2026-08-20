@@ -1,7 +1,9 @@
 //! User-pointer memory guards shared across syscall entry points.
 //!
-//! Every syscall that dereferences a userspace-supplied pointer must first
-//! confirm the whole buffer lies inside user-accessible DRAM. This logic lives
+//! The current guard only confirms that a numeric range lies inside the broad
+//! allocatable DRAM window. It does not prove that the calling process maps the
+//! pages with the required PL0 permissions; #871 owns that security boundary.
+//! This logic lives
 //! here, in an always-compiled module (not the hardware-coupled `syscall`
 //! module, which is excluded from host test builds), so that pointer-taking
 //! subsystems (`pipe`, `fd`, `socket`, `time`, ...) can call it and — crucially
@@ -9,19 +11,22 @@
 
 use crate::board;
 
-/// Validate that a user-supplied buffer `[ptr, ptr+len)` lies entirely
-/// within user-accessible DRAM and does not overlap kernel-reserved memory.
+/// Validate that a user-supplied numeric buffer range `[ptr, ptr+len)` lies
+/// inside the broad DRAM window and avoids statically reserved kernel memory.
+/// This is not caller-VAS or permission validation; callers remain unsafe until
+/// #871 supplies copyin/copyout against the current process mappings.
 ///
 /// # Memory layout (MT6739)
 ///
 /// - `0x0000_0000 - 0x3FFF_FFFF`: device MMIO (boot ROM, peripherals, modem)
 /// - `0x4000_0000 - 0x4000_7FFF`: DRAM below kernel load (reserved)
 /// - `0x4000_8000 - 0x400F_FFFF`: kernel image + reserved (`KERNEL_LOAD..KERNEL_END`)
-/// - `0x4010_0000 - 0x7FFF_FFFF`: user-accessible DRAM
+/// - `0x4010_0000 - 0x7FFF_FFFF`: broad allocatable DRAM window
 /// - `0x8000_0000 - 0xFFFF_FFFF`: unmapped
 ///
-/// Returns `true` if the entire buffer falls within user-accessible DRAM.
-/// Returns `false` for null, overflow, kernel-space, device, or unmapped addresses.
+/// Returns `true` if the entire numeric buffer falls within that broad window.
+/// It does not prove caller mapping or permissions (#871). Returns `false` for
+/// null, overflow, kernel-reserved, device, or out-of-DRAM addresses.
 pub(crate) fn validate_user_buffer(ptr: usize, len: usize) -> bool {
     // Null pointer
     if ptr == 0 {
@@ -35,7 +40,8 @@ pub(crate) fn validate_user_buffer(ptr: usize, len: usize) -> bool {
     let Some(end) = ptr.checked_add(len) else {
         return false;
     };
-    // Entire range must be within user DRAM: [KERNEL_END, RAM_END)
+    // Entire range must be within broad allocatable DRAM: [KERNEL_END, RAM_END).
+    // This is not caller-VAS/permission validation (#871).
     // WHY: KERNEL_END is the first byte after kernel-reserved memory;
     // RAM_END is one past the last byte of physical DRAM.
     ptr >= board::KERNEL_END && end <= board::RAM_END

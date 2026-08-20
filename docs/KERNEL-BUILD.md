@@ -143,9 +143,9 @@ Runner exit codes:
 
 The CI kernel job asserts the full witness set on every PR, beyond the
 minimum above: fail-closed degraded boot with no boot medium (`Secure boot:
-DEGRADED`, passphrase refused, audit deferred — #217), measured userspace
-(`image-resident initramfs signature verified`; `/init` and `/shell` both
-running from their own per-process frames — #480/#526), UI render and
+DEGRADED`, passphrase refused, audit deferred — #217), signed image-resident
+userspace (`image-resident initramfs signature verified`; `/init` and `/shell`
+both running from their own per-process frames — #480/#526), UI render and
 input/navigation, clock, telephony/audio/SIM/SMS/Bluetooth state machines
 against mock transports, and the firewall policy+audit path. It also runs the
 dedicated probe harnesses — `THUMOS_INIT_VARIANT=kread|kwrite|kexec|cp15|sleep|fork|exec|forkexec|guard`
@@ -174,8 +174,10 @@ cargo run --example qemu_smoke --release   # prints "qemu_smoke: pass"
 `crates/hypographe` is the boot-image signing tool: it streams an image
 through SHA-512 in bounded reads, Ed25519ph-signs with the anchor's seed,
 and emits the `payload || zero-pad || signature(64)` sector-aligned layout
-the kernel's streamed boot gate (`secure_boot::verify_image_streamed`)
-verifies:
+the kernel's streamed post-entry image gate
+(`secure_boot::verify_image_streamed`) verifies. Because that verifier runs
+inside the kernel, it cannot authenticate or measure the kernel that is
+already executing:
 
 ```
 cargo run -p hypographe -- <image-in> <seed-hex-file> <image-out>
@@ -183,8 +185,10 @@ cargo run -p hypographe -- <image-in> <seed-hex-file> <image-out>
 
 For mkbootimg assembly, the combined kernel(+ramdisk) image is hypographe's
 input, and its output is what gets flashed to the GPT `boot` partition. The
-dev anchor (`keys/dev/boot-dev.seed`) signs dev images. Production keys
-live offline and never enter the repo.
+dev anchor (`keys/dev/boot-dev.seed`) signs dev images. A production signing
+key requires an operator-owned offline-custody receipt and must never enter
+the repo; this repository does not itself prove that such custody currently
+exists.
 
 ## Signing and attestation boundary
 
@@ -194,8 +198,9 @@ today:
 - **Boot trust anchor (Ed25519).** `crates/thumos/build.rs` (#233) embeds
   exactly one public key into the image. A `--features production` build
   requires `THUMOS_BOOT_KEY_PUB=<file>` naming a hex-encoded 32-byte public
-  key provisioned by the offline signing infrastructure (Titan security key /
-  air-gapped machine) and fails without it. Refused in every configuration:
+  key provisioned by operator-controlled offline signing infrastructure and
+  fails without it. The exact custody mechanism requires a separate operator
+  receipt. Refused in every configuration:
   the committed dev key under `production`, the RFC 8032 section 7.1
   test-vector keys (the spec publishes their private halves, so anchors
   built from them are forgeable), and any byte string that is not a
@@ -207,10 +212,13 @@ today:
   and `*.pem`).
 - **Image-resident initramfs.** `build.rs` compiles `init/*.rs` to static
   armv7a ELFs, packs a newc CPIO, and signs it with the dev seed (#480) so
-  measured userspace works in dev/QEMU builds. Under a production anchor this
-  dev signature does not verify — the signing infrastructure signs the
-  production initramfs offline — and the image falls back to the eMMC
-  secure-boot gate (#217).
+  signed image-resident userspace works in dev/QEMU builds. This is signature
+  verification, not a TPM-style measurement or measurement log. Under a
+  production anchor the dev signature does not verify; operator-controlled
+  signing infrastructure must sign the production initramfs offline. The
+  image then falls back to the eMMC post-entry signature gate (#217), which
+  still cannot authenticate the already executing kernel. #467 owns the
+  pre-entry chain.
 - **Trust stamp.** Every image bakes a grep-able
   `THUMOS-BOOT-TRUST:{PROD|DEV}:<key fingerprint>` into the boot banner, and
   `secure_boot_ok` is only ever set when the anchor is a production key: a
@@ -258,7 +266,10 @@ The boot-time input subsystem behind `passphrase_ok`:
   mounts the userdata payload through `EncryptedBlockDevice` (AES-256-XTS)
   one sector past the preamble. An unprovisioned device runs first-boot
   setup instead: enter, confirm, store the verifier, derive, mount
-  encrypted (formatting the payload on that first encrypted mount).
+  encrypted. Current source auto-formats on `InvalidSuperblock`, but that result
+  also covers damaged/version-incompatible existing metadata; #360 blocks device
+  use until an authenticated first-provisioning marker or separately confirmed
+  format action distinguishes those states.
 - **The verifier is not a fast oracle.** It is a PBKDF2-strength derived
   value, never `SHA-256(passphrase)` — a disk image buys an attacker the
   same per-guess cost as attacking the ciphertext itself.
@@ -277,11 +288,12 @@ The boot-time input subsystem behind `passphrase_ok`:
   pre-provisioning content does NOT migrate — first-boot setup overwrites it.
   qemu and dev-anchor builds never reach the gate (secure boot cannot
   establish trust there), so CI witnesses and dev iteration stay unaffected.
-- **Hardware status.** The live GPIO matrix scan, the display render, and
-  the on-device verify/mount path are hardware-gated (pin assignments are
-  placeholders pending AGM M7 schematic verification, mirroring haphe).
-  Host tests prove the scan/debounce logic, the preamble format, the
-  verifier derivation, and the gate matrices.
+- **Acceptance status.** Host tests prove scan/debounce logic, preamble format,
+  verifier derivation, and gate matrices. Software/source prerequisites remain:
+  #854 owns the display transport, #841/#872 own accepted unlock/KDF policy,
+  #866 retires the plaintext compatibility mount, and #870 owns eMMC RX-count
+  semantics. Only after those land do GPIO/panel/eMMC/verify-mount paths enter
+  operator-owned AGM M7 qualification.
 
 ## Hardware path: unproven
 

@@ -11,9 +11,10 @@ source_docs = [
 ]
 
 [architecture]
-summary = "Rust mobile OS for the AGM M7: one bare-metal kernel plus userspace crates for input, radios, telephony, security, crypto, UI, and radio tools."
+summary = "Rust mobile OS for the AGM M7: one bare-metal kernel, rustc-direct embedded programs, workspace domain libraries, a cognition bridge, and host build tooling."
 layers = [
   "kernel",
+  "embedded-userspace",
   "input",
   "security",
   "radio",
@@ -21,6 +22,8 @@ layers = [
   "crypto",
   "radio-tools",
   "ui",
+  "cognition-bridge",
+  "build-tooling",
   "hardware-reference",
 ]
 
@@ -42,7 +45,7 @@ role = "Packet filter firewall, DNS blocklist, capability enforcement, and packe
 [[architecture.crates]]
 name = "asphaleia-core"
 path = "crates/asphaleia-core"
-role = "Canonical IPv4/TCP/UDP parse + DNS blocklist semantics; no_std, consumed by both the kernel firewall and asphaleia so the two cannot drift (#545)."
+role = "Canonical DNS QNAME parsing and blocklist policy; no_std and consumed by both the kernel firewall and asphaleia. IPv4/TCP/UDP packet parsing is still duplicated and tracked for extraction (#545)."
 
 [[architecture.crates]]
 name = "stegnos"

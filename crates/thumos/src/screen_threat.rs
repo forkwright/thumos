@@ -12,12 +12,13 @@
 //! |------------------|--------|---------------------------------------------|
 //! | Top bar          | 40px   | Threat level color bar + numeric score       |
 //! | Alert list       | 200px  | Scrollable recent alerts, newest first       |
-//! | Modem status     | 30px   | Channel count, firewall mode, power state    |
+//! | Modem status     | 30px   | Channel count, firewall mode, path status    |
 //!
 //! ## Softkeys
 //!
 //! - LSK: "DETAILS" — show full alert info for selected entry
-//! - RSK: "KILL MODEM" — trigger modem PMIC power cut via power.rs
+//! - RSK: "REQ MODEM OFF" — record a requested policy change; #874 owns
+//!   authorization/state separation and #862 owns valid actuation/readback
 //! - End: BACK
 //!
 //! ## Integration
@@ -368,8 +369,8 @@ pub(crate) struct ThreatMonitor {
     modem_channels: u8,
     /// Current firewall operating mode.
     firewall_mode: FirewallMode,
-    /// Whether the modem is powered on.
-    modem_power: bool,
+    /// Whether the CCCI/modem path initialized; not PMIC rail readback.
+    modem_path_available: bool,
     /// Whether any detector has ever reported to this monitor (#743).
     ///
     /// INVARIANT: false means "nothing is watching", which is NOT the same
@@ -397,16 +398,35 @@ fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Render contract for CCCI boot-path availability (#874).
+///
+/// This intentionally describes the transport path, never modem rail state.
+const fn modem_path_display(path_available: bool) -> (&'static str, u16) {
+    if path_available {
+        ("CCCI OK", color::GREEN)
+    } else {
+        ("NO CCCI", color::RED)
+    }
+}
+
 impl ThreatMonitor {
-    /// Create a new threat monitor with no alerts and default state.
+    /// Create a new threat monitor with no alerts and no established CCCI path.
+    ///
+    /// Callers that own a boot receipt must set the path status explicitly;
+    /// absence of that receipt fails closed as unavailable (#874).
     pub(crate) fn new() -> Self {
+        Self::new_with_modem_path(false)
+    }
+
+    /// Create a monitor initialized from an explicit CCCI boot-path receipt.
+    pub(crate) fn new_with_modem_path(path_available: bool) -> Self {
         Self {
             alerts: Vec::new(),
             current_score: 0,
             current_level: ThreatLevel::Low,
             modem_channels: 0,
             firewall_mode: FirewallMode::Open,
-            modem_power: true,
+            modem_path_available: path_available,
             detector_online: false,
             scroll_offset: 0,
             cursor: 0,
@@ -426,6 +446,13 @@ impl ThreatMonitor {
     /// Whether any detector has reported (#743).
     pub(crate) const fn detector_online(&self) -> bool {
         self.detector_online
+    }
+
+    /// Whether the CCCI/modem boot path initialized.
+    ///
+    /// This is not PMIC rail readback or continuing link-health evidence.
+    pub(crate) const fn modem_path_available(&self) -> bool {
+        self.modem_path_available
     }
 
     /// Add a new alert, maintaining newest-first order and the
@@ -485,11 +512,19 @@ impl ThreatMonitor {
         self.set_score(peak + volume_bump);
     }
 
-    /// Update modem status fields.
-    pub(crate) fn set_modem_status(&mut self, channels: u8, mode: FirewallMode, power: bool) {
+    /// Update CCCI/modem-path status fields.
+    ///
+    /// `path_available` is boot-path availability, not physical power state
+    /// or evidence that a modem-cut request was applied (#874).
+    pub(crate) fn set_modem_status(
+        &mut self,
+        channels: u8,
+        mode: FirewallMode,
+        path_available: bool,
+    ) {
         self.modem_channels = channels;
         self.firewall_mode = mode;
-        self.modem_power = power;
+        self.modem_path_available = path_available;
     }
 
     /// Get the current threat level.
@@ -770,14 +805,18 @@ impl Screen for ThreatMonitor {
             color::BLACK,
         );
 
-        // Power state.
-        let (pwr_label, pwr_color) = if self.modem_power {
-            ("ON", color::GREEN)
-        } else {
-            ("KILLED", color::RED)
-        };
-        let pwr_x = w - PADDING_X - (pwr_label.len() as u16) * 8;
-        ui::draw_str(fb, w, pwr_x, status_y, pwr_label, pwr_color, color::BLACK);
+        // CCCI path availability, not modem rail state.
+        let (path_label, path_color) = modem_path_display(self.modem_path_available);
+        let path_x = w - PADDING_X - (path_label.len() as u16) * 8;
+        ui::draw_str(
+            fb,
+            w,
+            path_x,
+            status_y,
+            path_label,
+            path_color,
+            color::BLACK,
+        );
     }
 
     // WHY: Key::Lsk's arm and the wildcard both return ScreenAction::None,
@@ -806,7 +845,8 @@ impl Screen for ThreatMonitor {
             }
             // LSK: DETAILS — for now, a no-op (detail view is a future wave).
             Key::Lsk => ScreenAction::None,
-            // RSK: KILL MODEM — triggers modem power cut.
+            // RSK records a modem-off request; #874 owns authenticated policy
+            // and #862 owns any valid actuation/readback.
             Key::Rsk => ScreenAction::KillModem,
             // End: BACK.
             Key::End => ScreenAction::Back,
@@ -819,7 +859,7 @@ impl Screen for ThreatMonitor {
     }
 
     fn softkey_right(&self) -> &'static str {
-        "KILL MODEM"
+        "REQ MODEM OFF"
     }
 
     fn title(&self) -> &'static str {
@@ -1111,7 +1151,7 @@ mod tests {
     fn softkeys_correct() {
         let monitor = ThreatMonitor::new();
         assert_eq!(monitor.softkey_left(), "DETAILS");
-        assert_eq!(monitor.softkey_right(), "KILL MODEM");
+        assert_eq!(monitor.softkey_right(), "REQ MODEM OFF");
     }
 
     #[test]
@@ -1126,7 +1166,33 @@ mod tests {
         monitor.set_modem_status(3, FirewallMode::Restricted, false);
         assert_eq!(monitor.modem_channels, 3);
         assert_eq!(monitor.firewall_mode, FirewallMode::Restricted);
-        assert!(!monitor.modem_power);
+        assert!(!monitor.modem_path_available);
+
+        monitor.set_modem_status(1, FirewallMode::Open, true);
+        assert_eq!(monitor.modem_channels, 1);
+        assert_eq!(monitor.firewall_mode, FirewallMode::Open);
+        assert!(monitor.modem_path_available);
+    }
+
+    #[test]
+    fn fresh_monitor_does_not_invent_a_modem_path() {
+        let monitor = ThreatMonitor::new();
+        assert!(
+            !monitor.modem_path_available,
+            "CCCI availability requires an explicit boot-path receipt (#874)"
+        );
+
+        let initialized = ThreatMonitor::new_with_modem_path(true);
+        assert!(
+            initialized.modem_path_available(),
+            "an explicit successful boot-path receipt must be preserved"
+        );
+    }
+
+    #[test]
+    fn modem_path_display_distinguishes_both_boot_receipts() {
+        assert_eq!(modem_path_display(true), ("CCCI OK", color::GREEN));
+        assert_eq!(modem_path_display(false), ("NO CCCI", color::RED));
     }
 
     #[test]

@@ -6,8 +6,8 @@
 //!   inode map, segment-based allocation.
 //! - **Read path**: inode lookup via imap, direct block reads for file data,
 //!   directory entry parsing for lookup/readdir.
-//! - **Write path**: deferred to Wave 5. All write operations currently
-//!   return [`VfsError::IoError`].
+//! - **Write path**: direct-block create/write/truncate/unlink plus cache,
+//!   checkpoint, and compaction support; indirect blocks remain #867.
 //!
 //! # On-disk layout
 //!
@@ -94,7 +94,7 @@ pub(crate) const DIRECT_BLOCK_COUNT: usize = 12;
 /// but not yet consumed by `read()`/`write()`/`truncate()` -- until it
 /// is, every size-setting path must fail closed at this bound rather
 /// than let `stat()` promise data the direct pointers cannot back
-/// (#620).
+/// (#620 enforced the bound; #867 owns indirect blocks or the retained limit).
 pub(crate) const LFS_MAX_FILE_SIZE: u64 = (DIRECT_BLOCK_COUNT * BLOCK_SIZE) as u64;
 
 /// Size of a serialized on-disk inode in bytes.

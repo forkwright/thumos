@@ -3,8 +3,9 @@
 //! Session-based audio management with priority preemption and PMIC power
 //! gating for the MT6357 codec.  Every audio use (call, music, alarm,
 //! ringtone, notification, FM radio) is an explicit session with
-//! open/close lifecycle.  The codec is physically powered off when no
-//! sessions are active (refcount == 0).
+//! open/close lifecycle. The manager requests codec disablement when no
+//! sessions are active (refcount == 0); no M7 physical-power claim follows
+//! without an applied-state witness.
 //!
 //! ## Session model
 //!
@@ -25,21 +26,22 @@
 //! ## PMIC power gating
 //!
 //! The MT6357 codec LDO is enabled on first session open (refcount 0 -> 1)
-//! and disabled on last session close (refcount -> 0).  No "running but
-//! muted" state — the hardware is physically off when idle.
+//! and disabled on last session close (refcount -> 0) through `AudioCodecOps`.
+//! QEMU proves the requested state through NullCodec, not physical PMIC state.
 //!
 //! ## Mic security
 //!
-//! Voice call sessions automatically power the mic (ADC + mic bias).
-//! The mic is powered down when no voice session is active.  All mic
-//! activity is auditable via the session log.
+//! Voice-call sessions request mic enable/disable through the codec. The
+//! separate `MicAuditLog` is not yet coupled to these transitions; #399 owns
+//! making the audit inseparable from the power action.
 //!
 //! ## Integration
 //!
-//! Used by telephony (klesis), UI screens, and future music/FM modules.
-//! Boot integration via `kinit.rs`.
+//! `kardia` owns the manager and QEMU witnesses a mock session. Not every
+//! telephony/UI/media producer is connected to it yet.
 
-// WHY: audio manager API not yet wired to kinit (Wave 4 integration pending).
+// WHY: the service loop owns and witnesses a subset of AudioManager; remaining
+// producers and the enforced mic-audit coupling stay incomplete (#399/#753).
 // cfg_attr(not(test), ...): the module's own tests now exercise its full
 // surface, so nothing is dead in the test build -- expecting dead_code there
 // makes the expectation unfulfilled. Production reachability is unchanged;
@@ -48,7 +50,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "audio manager API exists; kinit wiring pending (#753; tier in docs/capability-inventory.toml)"
+        reason = "AudioManager is service-loop wired; unused producers/audit coupling remain #399/#753"
     )
 )]
 

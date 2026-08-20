@@ -23,12 +23,14 @@ name = "audio"
 tests = 29
 mechanism = "both"
 witness = "boot.sh"
+fidelity = "QEMU exercises AudioManager with NullCodec; #876 owns the source-grounded modem/call-audio path and calibrated echo criterion"
 
 [[module]]
 name = "audio_codec"
 tests = 16
 mechanism = "both"
 witness = "boot.sh"
+fidelity = "QEMU uses NullCodec; the non-QEMU Mt6357Codec direct PWRAP-base access is invalid and blocked on #862"
 
 [[module]]
 name = "audio_route"
@@ -40,6 +42,7 @@ witness = "boot.sh"
 name = "audit"
 tests = 27
 mechanism = "host"
+fidelity = "Live-loop HMAC chaining uses a volatile per-boot key; #863 owns persistent key/head/epoch and #878 owns storage rollback resistance"
 
 [[module]]
 name = "avdtp"
@@ -50,6 +53,7 @@ mechanism = "host"
 name = "battery"
 tests = 11
 mechanism = "host"
+fidelity = "Generic lookup/poll logic only; #877 owns a source-grounded PMIC interface and calibrated state-of-charge model before production wiring"
 
 [[module]]
 name = "bfu_timer"
@@ -65,7 +69,7 @@ mechanism = "host"
 name = "gpt"
 tests = 8
 mechanism = "host"
-fidelity = "parse logic proven on synthetic GPT images host-side; the live eMMC GPT read is the m7 boot path (hardware-gated)"
+fidelity = "Parse logic is proven on synthetic GPT images host-side; #870 must source-ground FIFOCS.RXCNT before the live eMMC GPT read may execute, after which an operator-owned M7 receipt can qualify it"
 
 [[module]]
 name = "bluetooth"
@@ -97,7 +101,7 @@ mechanism = "host"
 name = "ccci"
 tests = 77
 mechanism = "host"
-fidelity = "host tests cover frame codec; the live channel is hardware-gated"
+fidelity = "Host tests cover the frame codec; #398 must implement the current hard-stubbed CCCI-to-AT transport before an operator-owned modem/M7 receipt"
 
 [[module]]
 name = "ccci_logger"
@@ -114,7 +118,7 @@ witness = "boot.sh"
 name = "console"
 tests = 4
 mechanism = "host"
-fidelity = "host-testability + presence-sequence resurrection is #459"
+fidelity = "Host-testability and the historical #459 presence-sequence repair are covered; #865 owns the remaining MT6739 RX-ready/FIFO and presence-timing source acceptance"
 
 [[module]]
 name = "contacts"
@@ -126,7 +130,7 @@ name = "csprng"
 tests = 15
 mechanism = "both"
 witness = "boot.sh"
-fidelity = "host tests use the deterministic seed path; hardware entropy health is device-bound"
+fidelity = "Host tests use the deterministic seed path; #840 first owns the estimator that currently credits deterministic timer increments, and #873 owns non-repeating reseed state before any device-bound entropy health receipt"
 
 [[module]]
 name = "devfs"
@@ -165,7 +169,7 @@ mechanism = "host"
 name = "display"
 tests = 32
 mechanism = "host"
-fidelity = "DDP pipeline hardware-gated; the synthetic framebuffer covers the render witness"
+fidelity = "Synthetic framebuffer covers rendering; #854 must resolve/source-ground the DBI/DSI GC9306 transport before any DDP/panel hardware witness"
 
 [[module]]
 name = "dns"
@@ -194,13 +198,13 @@ name = "emmc"
 tests = 42
 mechanism = "both"
 witness = "boot.sh"
-fidelity = "driver register paths are hardware-gated; host tests cover protocol logic"
+fidelity = "Host tests cover protocol logic; #870 must source-ground FIFOCS.RXCNT before PIO reads, then an operator-owned eMMC receipt may qualify device behavior"
 
 [[module]]
 name = "encryption"
 tests = 14
 mechanism = "host"
-fidelity = "cipher/KDF correctness is host+fuzz covered; on-device key/salt persistence is #449"
+fidelity = "XTS confidentiality mechanics are host+fuzz covered; #866 owns the plaintext compatibility mount and #878 owns persistent integrity/freshness/rollback resistance before device qualification"
 
 [[module]]
 name = "exceptions"
@@ -313,13 +317,13 @@ fidelity = "constant table only — nothing target-executed to diverge"
 name = "key_manager"
 tests = 16
 mechanism = "host"
-fidelity = "KDF correctness is host-covered; on-device salt persistence is #449"
+fidelity = "Deterministic KDF mechanics are host-covered; #872 owns boot-secret/KDF acceptance and #873 owns non-repeating CSPRNG reseed state before device qualification"
 
 [[module]]
 name = "keypad"
 tests = 6
 mechanism = "host"
-fidelity = "scan/debounce logic proven on injected matrices host-side; the live GPIO matrix read + pin assignments are the m7 boot path (hardware-gated, placeholders pending the AGM M7 schematic)"
+fidelity = "Scan/debounce logic is proven on injected matrices host-side; #880 owns source-grounded AGM M7 pins, GPIO transactions, pin-conflict/ghosting cases, and fail-closed disablement of the current placeholder adapter before an operator-owned keypad receipt"
 
 [[module]]
 name = "kinit"
@@ -336,6 +340,7 @@ mechanism = "host"
 name = "lfs"
 tests = 49
 mechanism = "host"
+fidelity = "Host LFS behavior is covered, but boot currently auto-formats on ambiguous InvalidSuperblock; #360 must distinguish authenticated first provisioning from corrupt/version-incompatible existing storage before any device persistence receipt"
 
 [[module]]
 name = "lfs_checkpoint"
@@ -366,7 +371,7 @@ mechanism = "host"
 name = "lock_screen"
 tests = 24
 mechanism = "host"
-fidelity = "policy logic host-covered; boot-time passphrase input is #446"
+fidelity = "Policy logic is host-covered; #841 owns the weak latent lock-screen verifier and #872 owns accepted boot/long-sleep secret and KDF policy"
 
 [[module]]
 name = "main"
@@ -444,12 +449,13 @@ mechanism = "host"
 name = "pipe"
 tests = 12
 mechanism = "host"
+fidelity = "#868 owns sys_pipe's unchecked output range; #871 owns caller-VAS and permission-aware copyin/copyout used by all pointer paths"
 
 [[module]]
 name = "power"
 tests = 29
 mechanism = "host"
-fidelity = "PMIC/DVFS telemetry and control are hardware-gated"
+fidelity = "In-memory policy is host-covered; #874 owns requested/applied/observed semantics and removes automatic cuts, #862 owns valid PWRAP actuation, and #879 owns safe source-grounded DVFS/MCDI before hardware"
 
 [[module]]
 name = "process"
@@ -553,7 +559,7 @@ mechanism = "host"
 
 [[module]]
 name = "screen_threat"
-tests = 21
+tests = 23
 mechanism = "host"
 
 [[module]]
@@ -571,7 +577,7 @@ witness = "boot.sh"
 name = "secrets"
 tests = 10
 mechanism = "host"
-fidelity = "provision/read proven on the RAM double; eMMC persistence + the 8d consumption path are the m7 boot (hardware-gated)"
+fidelity = "Provision/read is proven on the RAM double; #866 blocks plaintext userdata setup, #870 blocks the ungrounded eMMC read field, #878 owns authenticated/versioned rollback-resistant persistence, and #872 owns boot-secret acceptance before an operator-owned M7 receipt"
 
 [[module]]
 name = "security"
@@ -583,6 +589,7 @@ name = "security_mode"
 tests = 38
 mechanism = "both"
 witness = "boot.sh"
+fidelity = "Policy transitions are host/QEMU-covered, but #874 blocks automatic modem-cut semantics and requested/applied/observed conflation; #881 owns the absent physical side-button/PTT producer and safe gesture policy"
 
 [[module]]
 name = "signal"
@@ -658,14 +665,14 @@ mechanism = "host"
 name = "time"
 tests = 13
 mechanism = "host"
-fidelity = "CLOCK_REALTIME/ClockManager unification is #506 (blocked by #461); host tests cover offset math"
+fidelity = "ClockManager wiring and offset math are host/QEMU covered; #861 owns source/authentication/freshness policy and explicit unavailable civil time"
 
 [[module]]
 name = "timer"
 tests = 0
 mechanism = "target"
 witness = "boot.sh"
-fidelity = "host tests exercise the stub surface (timer_stub); CNTPCT/elapsed_ms semantics under QEMU are #461; the tick-driven loop is boot-witnessed"
+fidelity = "Host tests exercise timer_stub; the tick-driven QEMU loop is boot-witnessed, while physical CNTPCT/timer behavior remains a later operator receipt"
 
 [[module]]
 name = "timer_stub"
@@ -678,13 +685,13 @@ name = "uart"
 tests = 0
 mechanism = "target"
 witness = "boot.sh"
-fidelity = "production UART is hardware-gated; the stub covers host tests"
+fidelity = "The stub covers host tests; #865 must source-ground RX-ready/FIFO semantics and presence timing before physical UART qualification"
 
 [[module]]
 name = "uart_pl011"
 tests = 0
 mechanism = "host"
-fidelity = "production UART runs only on the qemu board (boot witness)"
+fidelity = "PL011 is the QEMU-only board path exercised by the boot witness; non-QEMU M7 builds select the MediaTek UART path tracked by #865"
 
 [[module]]
 name = "uart_stub"
@@ -701,7 +708,7 @@ witness = "boot.sh"
 name = "usb"
 tests = 34
 mechanism = "host"
-fidelity = "MMIO/GIC dispatch is not exercised host-side (no real MUSB IRQ fires until board::m7::MUSB_IRQ is hardware-confirmed, #666); the SERIAL_RX_RING_LOCK contention it depends on IS exercised host-side, under real OS-thread concurrency, not single-core simulation"
+fidelity = "MMIO/GIC dispatch is not exercised host-side: board::m7::MUSB_IRQ remains None until #676 accepts source provenance for candidate INTID 105 or records a physical witness. SERIAL_RX_RING_LOCK contention is exercised host-side under real OS-thread concurrency, not single-core simulation."
 
 [[module]]
 name = "vfs"
@@ -712,7 +719,7 @@ mechanism = "host"
 name = "watchdog"
 tests = 4
 mechanism = "host"
-fidelity = "watchdog peripheral is hardware-gated; host tests cover arming logic"
+fidelity = "Host tests cover register/arming logic; #875 must couple petting to scheduler/service-loop progress before a physical reset/deadline receipt"
 
 [[module]]
 name = "watchdog_qemu"
@@ -723,4 +730,4 @@ mechanism = "host"
 name = "wifi"
 tests = 15
 mechanism = "host"
-fidelity = "WPA/PTK logic is host+fuzz covered; radio I/O is hardware-gated"
+fidelity = "WPA/PTK logic is host+fuzz covered; #129 production WMT/STP radio I/O is missing before hardware qualification"
