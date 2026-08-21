@@ -1907,13 +1907,9 @@ mod tests {
         // process would already own them. Without this each call returns
         // EFAULT and the fd-isolation assertions never get to run.
         crate::process::map_user_buffer_for_test(data.as_ptr() as usize, data.len());
-        // SAFETY: test-only statics; single-threaded per test.
-        let (recv_addr, addr2_addr) = unsafe {
-            (
-                core::ptr::addr_of!(RECV_BUF) as usize,
-                core::ptr::addr_of!(ADDR2) as usize,
-            )
-        };
+        // Taking the address of a static is safe; only dereferencing it is not.
+        let recv_addr = core::ptr::addr_of!(RECV_BUF) as usize;
+        let addr2_addr = core::ptr::addr_of!(ADDR2) as usize;
         crate::process::map_user_buffer_for_test(recv_addr, 4);
         crate::process::map_user_buffer_for_test(addr2_addr, core::mem::size_of::<SockaddrIn>());
         assert_eq!(

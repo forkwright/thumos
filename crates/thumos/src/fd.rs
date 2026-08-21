@@ -2976,8 +2976,8 @@ mod tests {
         // The child owns its own address space; map both buffers it will use
         // (the mapping persists across the later switch back to this child).
         crate::process::map_user_buffer_for_test(buf2.as_ptr() as usize, buf2.len());
-        // SAFETY: test-only static; single-threaded per test.
-        let buf3_addr = unsafe { core::ptr::addr_of!(BUF3) } as usize;
+        // Taking the address of a static is safe; only dereferencing it is not.
+        let buf3_addr = core::ptr::addr_of!(BUF3) as usize;
         crate::process::map_user_buffer_for_test(buf3_addr, 2);
         let n2 = sys_read(fd, buf2.as_mut_ptr() as u32, 7);
         assert_eq!(
@@ -3039,8 +3039,8 @@ mod tests {
         // The child owns its own address space, so both the path it passes to
         // open() and the buffer it reads into have to be mapped in it.
         crate::process::map_user_buffer_for_test(path.as_ptr() as usize, path.len());
-        // SAFETY: test-only static; single-threaded per test.
-        let buf2_addr = unsafe { core::ptr::addr_of!(BUF2) } as usize;
+        // Taking the address of a static is safe; only dereferencing it is not.
+        let buf2_addr = core::ptr::addr_of!(BUF2) as usize;
         crate::process::map_user_buffer_for_test(buf2_addr, 5);
 
         // Child opens the SAME path fresh -- a brand-new OFD at offset 0,
