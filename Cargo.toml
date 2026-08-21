@@ -100,6 +100,10 @@ aes-gcm = { version = "0.11", features = ["zeroize"] }
 # Not used directly by any crate: declared so a consumer of `aes-gcm` can turn
 # on the GHASH half, which `aes-gcm` does not forward.
 ghash = { version = "0.6", features = ["zeroize"] }
+# WHY declared here rather than per-crate: five crates hold key material and
+# each needs the same scrubbing primitive. A version this repo pins in five
+# places is a version it can disagree with itself about.
+zeroize = { version = "1", default-features = false }
 ed25519-dalek = "3"
 getrandom = "0.4"
 hkdf = "0.13"

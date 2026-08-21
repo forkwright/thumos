@@ -5,6 +5,8 @@ use aes_gcm::aead::{AeadInOut, KeyInit};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
+use zeroize::{Zeroize, Zeroizing};
+
 use crate::error::{DecryptionSnafu, EncryptionSnafu, InvalidKeySnafu, Result};
 
 const NONCE_LEN: usize = 12;
@@ -27,10 +29,16 @@ const MAX_SKIP_AHEAD: u32 = 1024;
 const MAX_SKIPPED_KEYS: usize = 1024;
 
 /// A message key retained for an out-of-order/dropped message, keyed by counter.
+///
+/// WHY `Zeroizing` rather than a bare array (#828): every exit from this cache
+/// is a drop -- single-use consumption in [`decrypt_from_skipped`] and
+/// oldest-first eviction in [`store_skipped`] -- so the wrapper's `Drop` is
+/// what actually scrubs the key. A `[u8; 32]` has no destructor, so removal
+/// simply abandoned the bytes.
 #[derive(Clone)]
 struct SkippedKey {
     counter: u32,
-    message_key: [u8; 32],
+    message_key: Zeroizing<[u8; 32]>,
 }
 
 /// Encrypted message produced by [`encrypt`].
@@ -43,9 +51,17 @@ pub(crate) struct CiphertextMessage {
 }
 
 /// Ratchet state: current chain key, message counter, and skipped-key cache.
+///
+/// WHY `Zeroizing` on the chain key (#828): the send and receive paths both
+/// advance by ASSIGNING a successor over it, and assignment drops the previous
+/// value. With a bare `[u8; 32]` that drop does nothing, so every superseded
+/// chain key stayed resident and the count grew with each ratchet step --
+/// handing a memory-dump attacker exactly the keys forward secrecy is supposed
+/// to have put beyond reach. The wrapper makes the existing assignments scrub
+/// the outgoing key with no separate step to remember.
 #[derive(Clone)]
 pub(crate) struct RatchetState {
-    chain_key: [u8; 32],
+    chain_key: Zeroizing<[u8; 32]>,
     pub(crate) counter: u32,
     /// Bounded cache of message keys for skipped/out-of-order messages (#212).
     /// Only the receive path populates this; the send path leaves it empty.
@@ -58,9 +74,9 @@ impl RatchetState {
     /// Time: O(1) — builds a fixed-field struct; no loop or recursion.
     /// Space: O(1) — `skipped` starts as `Vec::new()`, which allocates
     /// nothing until the first push.
-    pub(crate) const fn new(root_key: [u8; 32]) -> Self {
+    pub(crate) fn new(root_key: [u8; 32]) -> Self {
         Self {
-            chain_key: root_key,
+            chain_key: Zeroizing::new(root_key),
             counter: 0,
             skipped: Vec::new(),
         }
@@ -101,6 +117,8 @@ pub(crate) fn encrypt(state: &mut RatchetState, plaintext: &[u8]) -> Result<Ciph
         .map_err(|_| EncryptionSnafu.build())?;
 
     let counter = state.counter;
+    // Assigning over the chain key drops the outgoing one, which is what
+    // scrubs it now that the field is `Zeroizing` (#828).
     state.chain_key = next_chain_key;
     state.counter = state.counter.wrapping_add(1);
 
@@ -154,7 +172,9 @@ pub(crate) fn decrypt(state: &mut RatchetState, msg: &CiphertextMessage) -> Resu
     }
 
     // Trial-decrypt on a working chain copy; commit only on authentication.
-    let mut work_chain_key = state.chain_key;
+    // The copy is as sensitive as the field it came from, and it is superseded
+    // once per skipped counter, so it carries the same wrapper (#828).
+    let mut work_chain_key = state.chain_key.clone();
     let mut pending: Vec<SkippedKey> = Vec::with_capacity(gap as usize);
     let mut counter = state.counter;
     while counter < msg.counter {
@@ -187,13 +207,17 @@ fn decrypt_from_skipped(state: &mut RatchetState, msg: &CiphertextMessage) -> Re
         .iter()
         .position(|k| k.counter == msg.counter)
         .ok_or_else(|| DecryptionSnafu.build())?;
-    let message_key = state
+    // WHY borrowed rather than copied out: a copy would be a second live key
+    // for the rest of this frame, and the point of removing the entry is that
+    // exactly one copy exists and it is scrubbed on removal (#828). The borrow
+    // ends when `aead_open` returns, which is what lets `remove` take `&mut`.
+    let entry = state
         .skipped
         .get(index)
-        .ok_or_else(|| DecryptionSnafu.build())?
-        .message_key;
-    let plaintext = aead_open(&message_key, msg)?;
-    state.skipped.remove(index);
+        .ok_or_else(|| DecryptionSnafu.build())?;
+    let plaintext = aead_open(&entry.message_key, msg)?;
+    // Dropping the removed entry scrubs its key.
+    drop(state.skipped.remove(index));
     Ok(plaintext)
 }
 
@@ -216,21 +240,28 @@ fn aead_open(message_key: &[u8; 32], msg: &CiphertextMessage) -> Result<Vec<u8>>
     Ok(in_out)
 }
 
-fn derive_message_key(chain_key: &[u8; 32]) -> Result<[u8; 32]> {
+fn derive_message_key(chain_key: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>> {
     hmac_sha256(chain_key, MK_LABEL)
 }
 
-fn derive_next_chain_key(chain_key: &[u8; 32]) -> Result<[u8; 32]> {
+fn derive_next_chain_key(chain_key: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>> {
     hmac_sha256(chain_key, CK_LABEL)
 }
 
-fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> Result<[u8; 32]> {
+/// WHY the output is wrapped here rather than at each call site (#828): every
+/// value this function returns is a chain or message key, so wrapping at the
+/// source means no caller can hold one unwrapped by forgetting to.
+fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     let mut mac =
         <HmacSha256 as KeyInit>::new_from_slice(key).map_err(|_| InvalidKeySnafu.build())?;
     mac.update(data);
-    let tag = mac.finalize().into_bytes();
-    let mut out = [0u8; 32];
+    // The HMAC tag IS the derived key. It cannot be wrapped in `Zeroizing`
+    // -- that needs `Zeroize`, which the MAC's `GenericArray` output does not
+    // implement -- so it is scrubbed explicitly through its slice.
+    let mut tag = mac.finalize().into_bytes();
+    let mut out = Zeroizing::new([0u8; 32]);
     out.copy_from_slice(&tag);
+    tag.zeroize();
     Ok(out)
 }
 
@@ -307,7 +338,9 @@ mod tests {
             *byte ^= 0xFF;
         }
         let counter_before = recv.counter;
-        let chain_key_before = recv.chain_key;
+        // `Zeroizing` is not `Copy` (#828), so the snapshot is an explicit
+        // clone; it scrubs itself when this frame ends.
+        let chain_key_before = recv.chain_key.clone();
         assert!(
             decrypt(&mut recv, &msg).is_err(),
             "tampered in-order message must fail authentication"
@@ -317,12 +350,111 @@ mod tests {
             "a failed in-order decrypt must not advance the receive counter"
         );
         assert_eq!(
-            recv.chain_key, chain_key_before,
+            *recv.chain_key, *chain_key_before,
             "a failed in-order decrypt must not roll the receive chain key"
         );
         assert!(
             recv.skipped.is_empty(),
             "a failed in-order decrypt must not populate the skipped-key cache"
+        );
+        Ok(())
+    }
+
+    /// Compile-time proof that a value scrubs itself when dropped. A field
+    /// changed back to a bare `[u8; 32]` fails to satisfy this bound, so the
+    /// tests below stop compiling rather than silently stop protecting
+    /// anything (#828).
+    fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+
+    #[test]
+    fn ratchet_key_material_scrubs_itself_on_drop() {
+        // WHY a type-level assertion and not a read of freed memory: observing
+        // a buffer after its owner drops is undefined behaviour, so there is
+        // no sound runtime observation to make. What CAN be pinned is that the
+        // types carrying key material are ones whose `Drop` scrubs -- which is
+        // the property, and the only thing a future edit could remove.
+        let state = RatchetState::new(root_key(0x5A));
+        assert_zeroize_on_drop(&state.chain_key);
+
+        let skipped = SkippedKey {
+            counter: 0,
+            message_key: Zeroizing::new([0x5Au8; 32]),
+        };
+        assert_zeroize_on_drop(&skipped.message_key);
+    }
+
+    #[test]
+    fn derived_keys_scrub_themselves_on_drop() -> Result<()> {
+        // Same property one level down: the derivation primitives hand back
+        // wrapped values, so no caller can hold a chain or message key
+        // unwrapped by forgetting to wrap it.
+        let chain = root_key(0x77);
+        let message_key = derive_message_key(&chain)?;
+        let next_chain = derive_next_chain_key(&chain)?;
+        assert_zeroize_on_drop(&message_key);
+        assert_zeroize_on_drop(&next_chain);
+        Ok(())
+    }
+
+    #[test]
+    fn zeroizing_a_chain_key_clears_it() {
+        // The observable half, matching stegnos's
+        // `derived_key_zeroizes_on_manual_zeroize`: the wrapper's scrub really
+        // clears the bytes rather than merely being present.
+        let mut state = RatchetState::new(root_key(0xC3));
+        assert!(
+            state.chain_key.iter().any(|&b| b != 0),
+            "the chain key must be non-zero before scrubbing"
+        );
+        state.chain_key.zeroize();
+        assert!(
+            state.chain_key.iter().all(|&b| b == 0),
+            "scrubbing must clear every byte of the chain key"
+        );
+    }
+
+    #[test]
+    fn advancing_the_chain_supersedes_the_previous_key() -> Result<()> {
+        // The overwrite site #828 names: the send path advances by ASSIGNING
+        // over the chain key, and assignment drops the outgoing value. This
+        // pins that the assignment really happens and lands on the derived
+        // successor -- if it ever stopped, the superseded key would never be
+        // dropped and so never scrubbed.
+        let root = root_key(0x99);
+        let expected = derive_next_chain_key(&root)?;
+        let mut state = RatchetState::new(root);
+        let _ = encrypt(&mut state, b"one message")?;
+        assert_eq!(
+            *state.chain_key, *expected,
+            "the send path must advance to the derived successor chain key"
+        );
+        assert_ne!(
+            *state.chain_key, root,
+            "the send path must not leave the previous chain key in place"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn consuming_a_skipped_key_removes_its_entry() -> Result<()> {
+        // The cache is single-use, and removal is what runs the wrapper's
+        // scrub (#828). `cached_skipped_key_is_single_use` covers the replay
+        // rejection; this covers the entry actually leaving the cache, which
+        // is the step that scrubs.
+        let root = root_key(0x3C);
+        let mut send = RatchetState::new(root);
+        let mut recv = RatchetState::new(root);
+        let first = encrypt(&mut send, b"first")?;
+        let second = encrypt(&mut send, b"second")?;
+
+        // Deliver out of order so `first`'s key is cached.
+        decrypt(&mut recv, &second)?;
+        assert_eq!(recv.skipped.len(), 1, "the skipped key must be cached");
+
+        decrypt(&mut recv, &first)?;
+        assert!(
+            recv.skipped.is_empty(),
+            "consuming a cached key must remove its entry, which is what scrubs it"
         );
         Ok(())
     }
