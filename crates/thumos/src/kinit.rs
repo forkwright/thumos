@@ -1039,6 +1039,12 @@ pub unsafe fn run() -> ! {
                 ) {
                     state.passphrase_ok = true;
                     state.preamble = crate::kinit_plan::PreambleLoad::Provisioned;
+                    // WHY (#360): the line above overwrites the `Unprovisioned`
+                    // that made this a first boot, so record the fact here
+                    // while it is still known. The encrypted mount uses it to
+                    // tell an LFS that does not exist yet from one that is
+                    // damaged — after this point `preamble` cannot.
+                    state.provisioned_this_boot = true;
                     serial.log(" Passphrase: SET (userdata encrypted)\r\n");
                 }
             }
@@ -1094,15 +1100,26 @@ pub unsafe fn run() -> ! {
                                 lfs_root = Some(alloc::boxed::Box::new(fs));
                                 state.encryption_ok = true;
                             }
-                            // CURRENT UNSAFE COMPATIBILITY (#360): this result
-                            // covers both a never-formatted payload and damaged
-                            // or version-incompatible existing metadata. No
-                            // independent first-provisioning marker exists, yet
-                            // this branch still formats and remounts. Device use
-                            // is blocked until those states are distinguished.
+                            // #360: this result covers a never-formatted payload
+                            // AND damaged or version-incompatible existing
+                            // metadata. `kinit_plan::may_format_encrypted_lfs`
+                            // separates them on the only fact that can: whether
+                            // this boot provisioned the device. Formatting a
+                            // device provisioned earlier destroys userdata still
+                            // encrypted under a salt the preamble still holds.
+                            Err(LfsError::InvalidSuperblock)
+                                if !crate::kinit_plan::may_format_encrypted_lfs(
+                                    state.preamble,
+                                    state.provisioned_this_boot,
+                                ) =>
+                            {
+                                serial.log(
+                                    " CRIT Encrypted LFS superblock unreadable on a previously provisioned device -- not formatting, data at risk (#360)\r\n",
+                                );
+                            }
                             Err(LfsError::InvalidSuperblock) => {
                                 serial.log(
-                                    " CRIT Ambiguous encrypted LFS superblock; legacy auto-format path (#360)\r\n",
+                                    " First boot: formatting encrypted LFS (provisioned this boot)\r\n",
                                 );
                                 if let Some(mut fmt_enc) = encrypted_payload_device(&data_key) {
                                     if lfs::format(&mut fmt_enc).is_ok() {
@@ -1199,6 +1216,18 @@ pub unsafe fn run() -> ! {
                         // branch still formats. Production must distinguish an
                         // authenticated first-provisioning state or require an
                         // explicit operator-confirmed format action.
+                        //
+                        // WHY this arm is still ungated while the encrypted one
+                        // above is not: the encrypted mount is reached only
+                        // after a passphrase verifies, so `provisioned_this_boot`
+                        // separates a device provisioned moments ago from one
+                        // provisioned earlier. This arm is reached only when the
+                        // preamble is `Unprovisioned` — a device that has never
+                        // held a passphrase — so no such marker exists to
+                        // consult, and nothing on the medium distinguishes a
+                        // never-formatted plain LFS from a damaged one. Closing
+                        // it needs a durable formatted-before marker, which is
+                        // the remaining half of #360.
                         Err(LfsError::InvalidSuperblock) => {
                             serial.log(
                                 " CRIT Ambiguous LFS superblock; legacy auto-format path (#360)\r\n",

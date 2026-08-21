@@ -333,8 +333,9 @@ witness = "boot.sh"
 
 [[module]]
 name = "kinit_plan"
-tests = 25
+tests = 29
 mechanism = "host"
+fidelity = "The boot decisions here are pure functions over observed state, so host tests prove them exactly — including #360's encrypted-format gate, whose load-bearing case is a device provisioned in an EARLIER boot being refused. What host tests cannot reach is whether kinit.rs feeds these functions the right state on real hardware: `provisioned_this_boot` is set inside the non-QEMU first-boot-setup arm, which no host or QEMU profile executes. boot.sh witnesses kinit, not that arm."
 
 [[module]]
 name = "lfs"
