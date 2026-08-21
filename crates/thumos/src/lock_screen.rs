@@ -12,7 +12,9 @@
 //! - Adaptive throttling: delays escalate from 0s to 1h over 10 attempts
 //! - After 5 wrong attempts: force long-sleep (zeroize session keys)
 //! - After 10 wrong attempts: trigger full wipe
-//! - Constant-time hash comparison for both PIN and passphrase
+//! - PIN entry verifies against a salted, iterated verifier record with a
+//!   constant-time compare; passphrase entry is verified by the layer that
+//!   owns the [`KeyManager`], at the same strength boot uses
 //! - Tiered sleep: PIN allowed under 5 min since lock, passphrase otherwise
 //!
 //! Implements the [`Screen`] trait from `ui.rs` for rendering the passphrase
@@ -22,11 +24,9 @@ extern crate alloc;
 
 use core::fmt;
 
-use subtle::ConstantTimeEq;
-
 use crate::audit::{AuditEventType, AuditLog};
 use crate::key_manager::KeyManager;
-use crate::security::{self, KEY_SIZE, SHA256_DIGEST_LEN};
+use crate::security::{KEY_SIZE, PinVerifier};
 use crate::ui::{
     self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
@@ -135,27 +135,6 @@ impl fmt::Display for UnlockResult {
 }
 
 // ---------------------------------------------------------------------------
-// Constant-time comparison
-// ---------------------------------------------------------------------------
-
-/// Constant-time byte-slice comparison.
-///
-/// Compares all bytes regardless of early differences, preventing timing
-/// side-channel attacks. Returns `true` only when both slices have equal
-/// length and identical content.
-///
-/// WHY: backed by `subtle::ConstantTimeEq`, which inserts optimization barriers
-/// the compiler cannot elide — a hand-rolled XOR loop can be defeated by an
-/// optimizing backend. The lock screen is the duress/coercion surface, so a
-/// timing oracle on PIN/passphrase hashes must not exist.
-#[must_use]
-pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    // Slice `ct_eq` returns Choice(0) on a length mismatch (lengths here are
-    // fixed 32-byte SHA-256 digests, so length is not secret).
-    a.ct_eq(b).unwrap_u8() == 1
-}
-
-// ---------------------------------------------------------------------------
 // Throttle delay
 // ---------------------------------------------------------------------------
 
@@ -207,15 +186,20 @@ pub(crate) struct LockScreen {
     /// Tick until which input is throttled (no attempts accepted).
     throttle_until_tick: u64,
     /// The current monotonic tick, as last reported by [`Self::advance_tick`].
-    /// `on_key` forwards this to `submit_pin`/`submit_passphrase` instead of
-    /// a hardcoded value, so throttle deadlines actually advance (#388).
+    /// `on_key` forwards this to `submit_pin` instead of a hardcoded value,
+    /// so throttle deadlines actually advance (#388).
     current_tick: u64,
-    /// SHA-256 hash of the real PIN (set during provisioning).
-    pin_hash: [u8; SHA256_DIGEST_LEN],
-    /// SHA-256 hash of the duress PIN (checked before real PIN).
-    duress_pin_hash: [u8; SHA256_DIGEST_LEN],
-    /// SHA-256 hash of the passphrase (for verification).
-    passphrase_hash: [u8; SHA256_DIGEST_LEN],
+    /// Verifier for the real unlock PIN, or `None` when this screen has
+    /// never been provisioned.
+    ///
+    /// `None` rather than an all-zero placeholder: a derivation colliding
+    /// with all-zero is cryptographically negligible, so a placeholder would
+    /// be indistinguishable from unprovisioned yet behave as provisioned --
+    /// permanently failing every future check (the #282 lesson, applied here
+    /// by #841).
+    pin: Option<PinVerifier>,
+    /// Verifier for the duress PIN, checked alongside the real one.
+    duress_pin: Option<PinVerifier>,
     /// Tick when the device was last locked (for tiered sleep).
     locked_at_tick: u64,
     /// Last result for display feedback.
@@ -227,15 +211,13 @@ pub(crate) struct LockScreen {
 impl LockScreen {
     /// Create a new lock screen in boot passphrase mode.
     ///
-    /// Stored hashes are for the real PIN, duress PIN, and passphrase.
-    /// These would be provisioned during device setup and persisted in
-    /// secure storage.
+    /// `pin` and `duress_pin` are the provisioned verifier records, or `None`
+    /// on a device where PIN provisioning has not run. There is deliberately
+    /// no passphrase parameter: passphrase entry is verified at boot strength
+    /// by the layer that owns the [`KeyManager`], through
+    /// [`Self::submit_passphrase_with`] (#841).
     #[must_use]
-    pub(crate) fn new(
-        pin_hash: [u8; SHA256_DIGEST_LEN],
-        duress_pin_hash: [u8; SHA256_DIGEST_LEN],
-        passphrase_hash: [u8; SHA256_DIGEST_LEN],
-    ) -> Self {
+    pub(crate) fn new(pin: Option<PinVerifier>, duress_pin: Option<PinVerifier>) -> Self {
         Self {
             mode: LockMode::BootPassphrase,
             pin_buffer: [0u8; MAX_PIN_LEN],
@@ -246,23 +228,25 @@ impl LockScreen {
             last_attempt_tick: 0,
             throttle_until_tick: 0,
             current_tick: 0,
-            pin_hash,
-            duress_pin_hash,
-            passphrase_hash,
+            pin,
+            duress_pin,
             locked_at_tick: 0,
             last_result: None,
             long_sleep_forced: false,
         }
     }
 
-    /// Create a lock screen for testing with pre-set hashes derived from
-    /// known PIN/passphrase values.
+    /// Create a lock screen for testing, provisioned with verifiers for known
+    /// PIN values.
+    ///
+    /// No passphrase parameter: passphrase entry has no stored value on this
+    /// screen at all, so a test drives it through
+    /// [`Self::submit_passphrase_with`] exactly as production does.
     #[cfg(test)]
-    pub fn new_for_test(pin: &[u8], duress_pin: &[u8], passphrase: &[u8]) -> Self {
+    pub fn new_for_test(pin: &[u8], duress_pin: &[u8]) -> Self {
         Self::new(
-            security::sha256(pin),
-            security::sha256(duress_pin),
-            security::sha256(passphrase),
+            Some(PinVerifier::derive_for_test(pin)),
+            Some(PinVerifier::derive_for_test(duress_pin)),
         )
     }
 
@@ -298,7 +282,7 @@ impl LockScreen {
     ///
     /// The event loop must call this (or otherwise keep it current) before
     /// dispatching key events, so `on_key` can pass a real monotonic tick
-    /// to `submit_pin`/`submit_passphrase` instead of a frozen constant.
+    /// to `submit_pin` instead of a frozen constant.
     /// Without this, the throttle deadline computed in `on_failure` never
     /// advances relative to what `on_key` checks against, and after 3
     /// failures every later attempt — including the correct PIN — is
@@ -391,30 +375,19 @@ impl LockScreen {
         }
     }
 
-    /// Submit the current passphrase for verification.
-    ///
-    /// Returns the unlock result. On success, resets attempt counters.
-    /// On failure, increments attempts and applies throttling.
-    ///
-    /// The caller is responsible for calling `KeyManager::derive_from_passphrase`
-    /// on success — this method only verifies the hash.
-    pub fn submit_passphrase(&mut self, current_tick: u64) -> UnlockResult {
-        let expected = self.passphrase_hash;
-        self.submit_passphrase_with(current_tick, move |entered| {
-            constant_time_eq(&security::sha256(entered), &expected)
-        })
-    }
-
     /// Submit the current passphrase against a caller-supplied verification
     /// strategy (#446).
     ///
-    /// Identical throttle / attempt / wipe bookkeeping to
-    /// [`Self::submit_passphrase`]; only the verification differs. The boot
-    /// passphrase gate verifies at PBKDF2 strength — derive from the entered
-    /// bytes, compare the boot verifier constant-time — because no usable
-    /// hash store exists before the encrypted fs is mounted. `verify`
-    /// receives the entered passphrase bytes and must perform any
-    /// constant-time comparison itself.
+    /// The only passphrase path. `verify` receives the entered bytes and must
+    /// perform any constant-time comparison itself; this method owns the
+    /// throttle / attempt / wipe bookkeeping around it.
+    ///
+    /// WHY the strategy is injected rather than stored (#841): boot verifies
+    /// at PBKDF2 strength — derive the master key from the entered bytes,
+    /// compare `KeyManager::derive_boot_verifier`'s output constant-time —
+    /// which needs the `KeyManager` this screen does not own, and no usable
+    /// hash store exists before the encrypted fs is mounted. A stored digest
+    /// here could only be a faster, weaker check standing beside that one.
     pub fn submit_passphrase_with(
         &mut self,
         current_tick: u64,
@@ -472,12 +445,14 @@ impl LockScreen {
         }
 
         let entered = &self.pin_buffer[..self.pin_len as usize];
-        let hash = security::sha256(entered);
 
-        // WHY: check duress FIRST (constant-time). Both checks always run
-        // to prevent timing side-channel from revealing which hash matched.
-        let is_duress = constant_time_eq(&hash, &self.duress_pin_hash);
-        let is_real = constant_time_eq(&hash, &self.pin_hash);
+        // WHY two separate bindings rather than `||` or an early return: each
+        // `verify` is a full KDF run, so short-circuiting on the duress match
+        // would make duress and a wrong PIN distinguishable by wall time --
+        // the tell the duress PIN exists to avoid. Both always run, and the
+        // branch below reads two already-computed booleans (#841).
+        let is_duress = self.duress_pin.is_some_and(|v| v.verify(entered));
+        let is_real = self.pin.is_some_and(|v| v.verify(entered));
 
         if is_duress {
             // Duress detected — visual feedback is identical to success.
@@ -770,8 +745,15 @@ impl Screen for LockScreen {
                 }
                 match key {
                     Key::Ok | Key::Rsk => {
-                        let _ = self.submit_passphrase(self.current_tick);
-                        ScreenAction::None
+                        // WHY this screen does not verify: boot-strength
+                        // verification derives the master key from the entered
+                        // bytes and compares KeyManager::derive_boot_verifier's
+                        // output, which needs the KeyManager this screen does
+                        // not own. Signalling submission lets the privileged
+                        // layer drive submit_passphrase_with, the same path
+                        // kinit::boot_verify_loop already uses. The entered
+                        // buffer is left intact for it to read (#841).
+                        ScreenAction::PassphraseSubmitted
                     }
                     Key::End => {
                         self.clear_passphrase();
@@ -840,7 +822,7 @@ impl fmt::Display for LockScreen {
 
 /// Log an authentication event to the audit log.
 ///
-/// Called after [`LockScreen::submit_passphrase`] or
+/// Called after [`LockScreen::submit_passphrase_with`] or
 /// [`LockScreen::submit_pin`] to record the outcome. The caller
 /// provides the audit log, HMAC key, and current timestamp.
 ///
@@ -931,7 +913,7 @@ mod tests {
     const TEST_PASSPHRASE: &[u8] = b"correct horse battery staple";
 
     fn make_screen() -> LockScreen {
-        LockScreen::new_for_test(TEST_PIN, TEST_DURESS_PIN, TEST_PASSPHRASE)
+        LockScreen::new_for_test(TEST_PIN, TEST_DURESS_PIN)
     }
 
     #[test]
@@ -944,6 +926,12 @@ mod tests {
         );
     }
 
+    /// The verification production injects, standing in for
+    /// `kinit::boot_verify_loop`'s PBKDF2-strength derive-and-compare.
+    fn accepts_test_passphrase(entered: &[u8]) -> bool {
+        entered == TEST_PASSPHRASE
+    }
+
     #[test]
     fn correct_passphrase_returns_success() {
         let mut screen = make_screen();
@@ -951,7 +939,7 @@ mod tests {
         for &byte in TEST_PASSPHRASE {
             screen.push_passphrase_byte(byte);
         }
-        let result = screen.submit_passphrase(100);
+        let result = screen.submit_passphrase_with(100, accepts_test_passphrase);
         assert_eq!(result, UnlockResult::Success);
         assert_eq!(screen.attempts(), 0, "attempts must reset on success");
     }
@@ -962,9 +950,37 @@ mod tests {
         for &byte in b"wrong passphrase entirely" {
             screen.push_passphrase_byte(byte);
         }
-        let result = screen.submit_passphrase(100);
+        let result = screen.submit_passphrase_with(100, accepts_test_passphrase);
         assert_eq!(result, UnlockResult::WrongPassphrase);
         assert_eq!(screen.attempts(), 1);
+    }
+
+    #[test]
+    fn the_screen_has_no_way_to_verify_a_passphrase_itself() {
+        // #841: submitting a passphrase must reach the privileged layer
+        // rather than being decided here. There is no stored passphrase
+        // value on this screen to compare against, so pressing OK reports
+        // the submission and leaves the entered bytes for the layer that
+        // owns the KeyManager to verify at boot strength.
+        let mut screen = make_screen();
+        for &byte in TEST_PASSPHRASE {
+            screen.push_passphrase_byte(byte);
+        }
+        let before = screen.passphrase_len();
+
+        let action = screen.on_key(Key::Ok);
+
+        assert_eq!(action, ScreenAction::PassphraseSubmitted);
+        assert_eq!(
+            screen.attempts(),
+            0,
+            "the screen must not score an attempt it did not adjudicate"
+        );
+        assert_eq!(
+            screen.passphrase_len(),
+            before,
+            "the entered bytes must survive for the verifying layer to read"
+        );
     }
 
     #[test]
@@ -1173,7 +1189,7 @@ mod tests {
     #[test]
     fn on_key_forwards_a_real_tick_so_unlock_recovers_after_throttle() {
         // Regression test for #388: on_key previously called
-        // submit_pin(0)/submit_passphrase(0) unconditionally. Since
+        // submit_pin(0)/submit_passphrase_with(0, ..) unconditionally. Since
         // is_throttled compares against a frozen tick of 0, once 3
         // failures set throttle_until_tick = 5, EVERY later on_key call
         // (still passing 0) hit the throttled early-return in submit_pin
@@ -1311,7 +1327,8 @@ mod tests {
             for &byte in b"wrong passphrase" {
                 screen.push_passphrase_byte(byte);
             }
-            let result = screen.submit_passphrase(1000 + (i as u64) * 10000);
+            let result =
+                screen.submit_passphrase_with(1000 + (i as u64) * 10000, accepts_test_passphrase);
 
             if i < 9 {
                 assert_ne!(
@@ -1385,15 +1402,6 @@ mod tests {
     }
 
     #[test]
-    fn constant_time_eq_works() {
-        assert!(constant_time_eq(b"hello", b"hello"));
-        assert!(!constant_time_eq(b"hello", b"world"));
-        assert!(!constant_time_eq(b"hello", b"hell"));
-        assert!(!constant_time_eq(b"", b"x"));
-        assert!(constant_time_eq(b"", b""));
-    }
-
-    #[test]
     fn throttle_prevents_rapid_attempts() {
         let mut screen = make_screen();
 
@@ -1402,7 +1410,7 @@ mod tests {
             for &byte in b"wrong" {
                 screen.push_passphrase_byte(byte);
             }
-            let _ = screen.submit_passphrase(100 + (i as u64) * 100);
+            let _ = screen.submit_passphrase_with(100 + (i as u64) * 100, accepts_test_passphrase);
         }
 
         // 4th attempt should now have a 5-second throttle.
@@ -1410,7 +1418,7 @@ mod tests {
         for &byte in TEST_PASSPHRASE {
             screen.push_passphrase_byte(byte);
         }
-        let result = screen.submit_passphrase(301);
+        let result = screen.submit_passphrase_with(301, accepts_test_passphrase);
         assert!(
             matches!(result, UnlockResult::Throttled { .. }),
             "should be throttled at tick 301 (throttle until 305)"
