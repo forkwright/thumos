@@ -21,7 +21,7 @@ notes = "Selected PL0 image, fault, graceful-kill, fork/exec/brk, and guard-page
 id = "memory-fs"
 modules = ["block", "cache", "vfs", "devfs", "lfs", "lfs_imap", "lfs_segment", "lfs_checkpoint", "lfs_writer", "lfs_compact", "emmc", "ramfs", "encryption"]
 tier = "kernel-wired"
-notes = "LFS mounts at boot, encrypted when provisioned but still plaintext under the live Unprovisioned compatibility path (#866); no witness marker asserts persistence behavior. #360 owns the current ambiguous InvalidSuperblock auto-format/data-loss path, #867 owns the 48 KiB direct-block file ceiling, #870 owns unverified MSDC RX-count semantics, #837 owns the XTS logical-block/tweak description, and #878 owns authenticated/versioned integrity and rollback rejection beyond XTS confidentiality."
+notes = "LFS mounts at boot only through the AES-XTS wrapper; the plaintext Unprovisioned compatibility mount is gone (#866), so an unprovisioned device with no verified passphrase falls back to the initramfs rather than creating a plaintext root. No witness marker asserts persistence behavior. #360 owns the current ambiguous InvalidSuperblock auto-format/data-loss path, #867 owns the 48 KiB direct-block file ceiling, #870 owns unverified MSDC RX-count semantics, #837 owns the XTS logical-block/tweak description, and #878 owns authenticated/versioned integrity and rollback rejection beyond XTS confidentiality."
 
 [[capability]]
 id = "time"
@@ -93,9 +93,9 @@ notes = "PowerManager policy state is boot/service-loop reachable, but radio sta
 
 [[capability]]
 id = "watchdog"
-modules = ["watchdog"]
+modules = ["watchdog", "liveness"]
 tier = "kernel-wired"
-notes = "The MT6739 watchdog path is boot-reachable, but the timer IRQ currently pets it before scheduler/service-loop progress; #875 owns progress-coupled liveness so a deadlocked kernel is not kept alive."
+notes = "The MT6739 watchdog path is boot-reachable and the timer IRQ pets it only while every liveness owner is still advancing (#875) -- the scheduler round and the PID-0 service loop, each with its own stall deadline well inside the 5-second hardware period. Withholding is how the reset happens; the gate never disables the watchdog. No live-hardware receipt asserts the physical reset."
 hardware_reason = "After #875 lands, an operator-owned physical reset/deadline receipt is still required."
 
 [[capability]]

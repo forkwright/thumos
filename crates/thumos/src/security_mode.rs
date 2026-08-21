@@ -788,8 +788,38 @@ pub enum ThreatResponse {
     FirewallRestricted,
     /// A modem-cut request was recorded; no PMIC transaction was attempted.
     ModemCutRequested,
+    /// The score crossed the threshold and nothing was actuated, because
+    /// policy forbids acting on it. Carries which policy refused.
+    Advisory(AdvisoryReason),
     /// No action needed (threat below threshold).
     None,
+}
+
+/// Why a threshold crossing produced advice instead of an action (#874).
+///
+/// These are different states and a caller must be able to tell them apart:
+/// one says the detector cannot be believed yet, the other says it can and
+/// nobody has agreed to let it cut a radio. Collapsing them would make the
+/// eventual arrival of calibration look like nothing changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+#[non_exhaustive]
+pub enum AdvisoryReason {
+    /// The score came from an uncalibrated detector, so it names a band and
+    /// not a validated severity.
+    Uncalibrated,
+    /// The detector is calibrated, but no operator-accepted authorization
+    /// covers a radio-affecting action.
+    NotAuthorized,
+}
+
+impl fmt::Display for AdvisoryReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uncalibrated => write!(f, "detector uncalibrated"),
+            Self::NotAuthorized => write!(f, "no operator authorization"),
+        }
+    }
 }
 
 impl fmt::Display for ThreatResponse {
@@ -797,36 +827,77 @@ impl fmt::Display for ThreatResponse {
         match self {
             Self::FirewallRestricted => write!(f, "firewall restricted"),
             Self::ModemCutRequested => write!(f, "modem cut requested (unapplied)"),
+            Self::Advisory(reason) => write!(f, "advisory only ({reason})"),
             Self::None => write!(f, "none"),
         }
     }
 }
 
-/// Legacy uncalibrated threat-score response path.
+/// Whether an operator has accepted that a detector may drive a radio-affecting
+/// action (#874).
 ///
-/// - Score >= `critical_threshold`: records an unapplied modem-cut request.
-/// - Sentinel mode active: restrict firewall to Sentinel whitelist.
-/// - Below threshold: no action.
+/// There is deliberately no `Default` and no constructor that derives this from
+/// a score: the whole failure this prevents is a detector authorizing itself.
+/// `OperatorAccepted` exists so the plumbing is written and testable; no
+/// production path can produce one today, because no operator-acceptance
+/// mechanism exists yet. When one lands it constructs this, and nothing else
+/// needs to change to let the action through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum RadioCutAuthorization {
+    /// No authorization. Radio-affecting actions are refused.
+    Withheld,
+    /// An operator accepted this class of action.
+    OperatorAccepted,
+}
+
+/// Decide what a threat score may do.
 ///
-/// This compiled path is not a safe accepted policy: #874 owns removing or
-/// redesigning the automatic action. #862 keeps the request fail-closed until
-/// a source-grounded PMIC transaction exists. It is not evidence that any
-/// threshold is calibrated or any modem rail changed. Returns the policy
-/// request for audit logging.
+/// Two gates stand between a score and any radio-affecting action, and both
+/// must pass. `sema_core::Calibration`'s own doc states the first as canon:
+/// "Any future automatic response must match on `Calibrated` before it may
+/// act." An uncalibrated score names a band, not a validated severity -- the
+/// bands are provisional score ranges (#555), so a threshold crossing is a
+/// statement about arithmetic and not about the world.
+///
+/// The second gate is authorization. A calibrated detector that is right most
+/// of the time is still not a thing that gets to disconnect someone's phone on
+/// its own; that is an operator's decision, and [`RadioCutAuthorization`] is
+/// where it enters. Both refusals return [`ThreatResponse::Advisory`] with the
+/// reason, because "not believable yet" and "believable but unauthorized" are
+/// different states that will resolve at different times.
+///
+/// Sentinel-mode firewall restriction is NOT gated: it follows the operating
+/// mode the operator selected rather than a detector score, restricts rather
+/// than severs, and is reversible by leaving the mode.
+///
+/// Returns the outcome for audit logging. It is not evidence that any modem
+/// rail changed -- #862 keeps the recorded request unapplied until a
+/// source-grounded PMIC transaction exists.
 pub(crate) fn evaluate_threat(
     mode: SecurityMode,
     threat_score: u32,
     critical_threshold: u32,
+    calibration: &sema_core::Calibration,
+    authorization: RadioCutAuthorization,
     firewall: &mut crate::ccci_logger::CcciFirewall,
     power_manager: &mut PowerManager,
 ) -> ThreatResponse {
     use crate::ccci_logger::FirewallMode;
 
-    // FIXME(#874): an uncalibrated score must not autonomously request a cut.
     if threat_score >= critical_threshold {
+        // WHY the calibration check precedes the authorization check: an
+        // operator who authorized action on a calibrated detector did not
+        // thereby authorize action on an uncalibrated one, and reporting
+        // NotAuthorized for an uncalibrated score would name the wrong
+        // missing thing.
+        if matches!(calibration, sema_core::Calibration::Uncalibrated) {
+            return ThreatResponse::Advisory(AdvisoryReason::Uncalibrated);
+        }
+        if authorization != RadioCutAuthorization::OperatorAccepted {
+            return ThreatResponse::Advisory(AdvisoryReason::NotAuthorized);
+        }
         firewall.apply_mode(FirewallMode::Panic);
-        // FIXME(#874): remove this automatic policy path before any M7
-        // execution. #862 keeps the recorded request unapplied meanwhile.
         power_manager.request_modem_power_cut();
         return ThreatResponse::ModemCutRequested;
     }
@@ -1475,8 +1546,128 @@ mod tests {
     // Threat response tests (Phase 10 Wave 3)
     // -----------------------------------------------------------------------
 
+    /// A calibrated detector fixture. The values name a corpus rather than
+    /// describing one -- what is under test is the GATE, and the gate matches
+    /// on the variant.
+    fn calibrated() -> sema_core::Calibration {
+        use alloc::string::ToString as _;
+        sema_core::Calibration::Calibrated {
+            corpus: "test-corpus-v1".to_string(),
+            operating_point: "test-operating-point".to_string(),
+            error_budget_per_mille: (10, 20),
+        }
+    }
+
     #[test]
-    fn evaluate_threat_critical_records_unapplied_cut_request() {
+    fn an_uncalibrated_score_is_advisory_however_high_it_is() {
+        // The canon is sema_core::Calibration's own doc: "Any future automatic
+        // response must match on Calibrated before it may act." A band edge is
+        // a statement about arithmetic until a corpus says what it separates.
+        use crate::ccci_logger::{CcciFirewall, FirewallMode};
+
+        let mut fw = CcciFirewall::new(FirewallMode::Daily);
+        let mut pm = PowerManager::new();
+        pm.apply_mode(crate::power::PowerMode::Full);
+
+        let response = evaluate_threat(
+            SecurityMode::Daily,
+            u32::MAX,
+            80,
+            &sema_core::Calibration::Uncalibrated,
+            RadioCutAuthorization::OperatorAccepted,
+            &mut fw,
+            &mut pm,
+        );
+
+        assert_eq!(
+            response,
+            ThreatResponse::Advisory(AdvisoryReason::Uncalibrated),
+            "an uncalibrated score is advice, even at the maximum and even with \
+             an operator authorization standing"
+        );
+        assert_eq!(
+            fw.mode(),
+            FirewallMode::Daily,
+            "an uncalibrated score must not drive the firewall either"
+        );
+        assert!(
+            !pm.is_modem_cut_requested(),
+            "no cut request may be recorded from an uncalibrated score"
+        );
+    }
+
+    #[test]
+    fn a_calibrated_score_without_authorization_is_advisory() {
+        // The second gate, and the one that outlives calibration: a detector
+        // that is right most of the time still does not get to disconnect
+        // someone's phone by itself.
+        use crate::ccci_logger::{CcciFirewall, FirewallMode};
+
+        let mut fw = CcciFirewall::new(FirewallMode::Daily);
+        let mut pm = PowerManager::new();
+        pm.apply_mode(crate::power::PowerMode::Full);
+
+        let response = evaluate_threat(
+            SecurityMode::Daily,
+            100,
+            80,
+            &calibrated(),
+            RadioCutAuthorization::Withheld,
+            &mut fw,
+            &mut pm,
+        );
+
+        assert_eq!(
+            response,
+            ThreatResponse::Advisory(AdvisoryReason::NotAuthorized),
+            "a believable score still needs an operator to have accepted the action"
+        );
+        assert_eq!(fw.mode(), FirewallMode::Daily);
+        assert!(!pm.is_modem_cut_requested());
+    }
+
+    #[test]
+    fn the_two_refusals_are_distinguishable() {
+        // They resolve at different times -- calibration arrives from an
+        // evaluation harness, authorization from an operator -- so a caller
+        // that could not tell them apart would report no change when the first
+        // one landed.
+        use crate::ccci_logger::{CcciFirewall, FirewallMode};
+
+        let mut fw = CcciFirewall::new(FirewallMode::Daily);
+        let mut pm = PowerManager::new();
+
+        let uncalibrated = evaluate_threat(
+            SecurityMode::Daily,
+            100,
+            80,
+            &sema_core::Calibration::Uncalibrated,
+            RadioCutAuthorization::Withheld,
+            &mut fw,
+            &mut pm,
+        );
+        let unauthorized = evaluate_threat(
+            SecurityMode::Daily,
+            100,
+            80,
+            &calibrated(),
+            RadioCutAuthorization::Withheld,
+            &mut fw,
+            &mut pm,
+        );
+
+        assert_ne!(uncalibrated, unauthorized);
+        assert_eq!(
+            uncalibrated,
+            ThreatResponse::Advisory(AdvisoryReason::Uncalibrated),
+            "an uncalibrated score names the missing calibration, not the \
+             missing authorization -- an operator who authorized action on a \
+             calibrated detector did not authorize it on this one"
+        );
+    }
+
+    #[test]
+    fn a_calibrated_and_authorized_critical_score_records_an_unapplied_cut_request() {
         use crate::ccci_logger::{CcciFirewall, FirewallMode};
 
         let mut fw = CcciFirewall::new(FirewallMode::Daily);
@@ -1487,28 +1678,30 @@ mod tests {
             SecurityMode::Daily,
             100, // score
             80,  // threshold
+            &calibrated(),
+            RadioCutAuthorization::OperatorAccepted,
             &mut fw,
             &mut pm,
         );
 
-        assert_eq!(
-            response,
-            ThreatResponse::ModemCutRequested,
-            "legacy critical branch currently records a modem-cut request (#874)"
-        );
+        assert_eq!(response, ThreatResponse::ModemCutRequested);
         assert_eq!(
             fw.mode(),
             FirewallMode::Panic,
-            "firewall must switch to Panic on critical"
+            "firewall must switch to Panic on an authorized critical score"
         );
         assert!(
             pm.is_modem_cut_requested(),
-            "legacy branch records the sticky cut-request marker, not PMIC readback"
+            "the branch records the sticky cut-request marker, not PMIC readback"
         );
     }
 
     #[test]
     fn evaluate_threat_sentinel_restricts_firewall() {
+        // Sentinel restriction is NOT gated: it follows the operating mode the
+        // operator selected, restricts rather than severs, and is reversible by
+        // leaving the mode. An uncalibrated detector is passed here on purpose
+        // to pin that the gates cover radio-affecting action, not every effect.
         use crate::ccci_logger::{CcciFirewall, FirewallMode};
 
         let mut fw = CcciFirewall::new(FirewallMode::Daily);
@@ -1518,6 +1711,8 @@ mod tests {
             SecurityMode::Sentinel,
             10, // score below threshold
             80,
+            &sema_core::Calibration::Uncalibrated,
+            RadioCutAuthorization::Withheld,
             &mut fw,
             &mut pm,
         );
@@ -1541,12 +1736,20 @@ mod tests {
         let mut fw = CcciFirewall::new(FirewallMode::Daily);
         let mut pm = PowerManager::new();
 
-        let response = evaluate_threat(SecurityMode::Daily, 10, 80, &mut fw, &mut pm);
+        let response = evaluate_threat(
+            SecurityMode::Daily,
+            10,
+            80,
+            &calibrated(),
+            RadioCutAuthorization::OperatorAccepted,
+            &mut fw,
+            &mut pm,
+        );
 
         assert_eq!(
             response,
             ThreatResponse::None,
-            "below threshold in Daily must take no action"
+            "below threshold in Daily must take no action even when both gates pass"
         );
         assert_eq!(
             fw.mode(),
@@ -1571,6 +1774,8 @@ mod tests {
             SecurityMode::Sentinel,
             80, // score == threshold
             80, // threshold
+            &calibrated(),
+            RadioCutAuthorization::OperatorAccepted,
             &mut fw,
             &mut pm,
         );
@@ -1587,7 +1792,7 @@ mod tests {
         );
         assert!(
             pm.is_modem_cut_requested(),
-            "legacy path records an unapplied modem-cut request at the exact threshold"
+            "an authorized path records an unapplied modem-cut request at the exact threshold"
         );
     }
 

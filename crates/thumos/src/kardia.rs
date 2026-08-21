@@ -53,7 +53,7 @@ use crate::screen_privacy::PrivacyScreen;
 use crate::screen_radio::RadioControlScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
-use crate::screen_threat::{ThreatLevel, ThreatMonitor};
+use crate::screen_threat::ThreatMonitor;
 // WHY(#737): the alert constructors are reachable only from the qemu boot
 // smoke; production has no detector feeding this screen yet (see the
 // no-detector-vs-no-alerts gap filed alongside this change).
@@ -531,13 +531,13 @@ impl KernelState {
             mode_badge: Some(self.mode.status_badge()),
             mode_badge_color: Some(self.mode.status_badge_color()),
             // #874: CCCI boot-path availability is not a threat level or a
-            // modem-rail observation. Only an online detector's High/Critical
-            // state drives the threat indicator.
-            threat_high: self.threat.detector_online()
-                && matches!(
-                    self.threat.threat_level(),
-                    ThreatLevel::High | ThreatLevel::Critical
-                ),
+            // modem-rail observation. The rule lives in screen_threat, where a
+            // cross-product test guards it -- inline here it was a correct
+            // expression nothing could catch reverting.
+            threat_high: crate::screen_threat::threat_indicator(
+                self.threat.detector_online(),
+                self.threat.threat_level(),
+            ),
             ..StatusBarState::default()
         };
         self.home.update_state(HomeScreenState {
@@ -1142,6 +1142,17 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
                 crate::qemu::request_exit(5);
             }
         }
+
+        // This loop is one of the watchdog's two liveness owners (#875).
+        // Recorded at the TOP of the body rather than the bottom, because the
+        // body has `continue` paths: recording at the end would make a busy
+        // reflex-drain sequence -- which is the loop working hard, not
+        // stalling -- read as no progress at all.
+        //
+        // An idle iteration counts. A device asleep with nothing queued is
+        // healthy, and a gate that could not tell that from a hang would reset
+        // an idle phone every two seconds.
+        crate::liveness::record_progress(crate::liveness::ProgressOwner::ServiceLoop);
 
         // Reflex fast-path FIRST -- drained on every wake, ahead of the tick
         // test, so a raised flag is handled promptly. Re-loop after handling
