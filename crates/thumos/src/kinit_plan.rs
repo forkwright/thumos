@@ -220,6 +220,32 @@ pub(crate) const fn mount_plan(
     }
 }
 
+/// Whether an ambiguous LFS superblock on the ENCRYPTED payload may be
+/// resolved by formatting (#360).
+///
+/// `LfsError::InvalidSuperblock` means "never formatted **or** unreadable",
+/// and the encrypted mount is reached only once a passphrase has verified — so
+/// the device is provisioned in both cases and [`PreambleLoad`] cannot separate
+/// them. Formatting the wrong one destroys userdata that is still encrypted
+/// under a salt the preamble still holds, which is recoverable right up until
+/// the format.
+///
+/// The one fact that does separate them is whether provisioning happened in
+/// THIS boot. A device that set its passphrase moments ago has no encrypted LFS
+/// yet, so a missing superblock is expected. A device provisioned in an earlier
+/// boot has one, so a missing superblock is damage.
+///
+/// Formatting is therefore permitted only when this boot both provisioned the
+/// device and observed the preamble as provisioned afterwards. Every other
+/// combination refuses, including `Corrupt` and `ReadFailed` — an unreadable
+/// preamble is an UNKNOWN state, and unknown is locked.
+pub(crate) const fn may_format_encrypted_lfs(
+    preamble: PreambleLoad,
+    provisioned_this_boot: bool,
+) -> bool {
+    provisioned_this_boot && matches!(preamble, PreambleLoad::Provisioned)
+}
+
 /// Minimum boot passphrase length (digits) accepted at first-boot setup
 /// (#446). The boot pad alphabet is digits-only (Star/Hash are the
 /// backspace/submit control keys). Six digits is only the current compatibility
@@ -272,6 +298,16 @@ pub(crate) struct BootState {
     /// gate's fail-closed signal. Not an ok-flag: excluded from
     /// `ok_count`/`total_subsystems` (it is not a subsystem).
     pub(crate) preamble: PreambleLoad,
+    /// True only when THIS boot ran first-boot setup and wrote the preamble
+    /// (#360). Not an ok-flag: excluded from `ok_count`/`total_subsystems`.
+    ///
+    /// WHY a separate field rather than reading `preamble`: first-boot setup
+    /// sets `preamble = Provisioned` on success, overwriting the
+    /// `Unprovisioned` that distinguished it. After that step a device
+    /// provisioned moments ago and one provisioned months ago are identical in
+    /// `preamble`, so the encrypted mount cannot tell whether an absent LFS is
+    /// expected or is damage.
+    pub(crate) provisioned_this_boot: bool,
     pub(crate) encryption_ok: bool,
     pub(crate) audit_ok: bool,
     pub(crate) security_mode_ok: bool,
@@ -301,6 +337,7 @@ impl BootState {
             secure_boot_ok: false,
             passphrase_ok: false,
             preamble: PreambleLoad::NotRead,
+            provisioned_this_boot: false,
             encryption_ok: false,
             audit_ok: false,
             security_mode_ok: false,
@@ -920,6 +957,57 @@ mod tests {
             boot_passphrase_plan(true, true, true, PreambleLoad::Corrupt),
             BootPassphrasePlan::Skip,
             "corrupt preamble must never be treated as first boot (#621)"
+        );
+    }
+
+    /// The case that would pass against the defect, so it is the one that
+    /// carries the fix: a device provisioned in an EARLIER boot reaches the
+    /// encrypted mount with `preamble == Provisioned`, exactly like a device
+    /// provisioned moments ago. Formatting it destroys userdata still
+    /// encrypted under a salt the preamble still holds.
+    #[test]
+    fn encrypted_format_refused_for_a_device_provisioned_in_an_earlier_boot() {
+        assert!(
+            !may_format_encrypted_lfs(PreambleLoad::Provisioned, false),
+            "an unreadable LFS on an already-provisioned device is damage, not first boot"
+        );
+    }
+
+    #[test]
+    fn encrypted_format_allowed_only_on_the_boot_that_provisioned_the_device() {
+        assert!(
+            may_format_encrypted_lfs(PreambleLoad::Provisioned, true),
+            "a device provisioned this boot has no encrypted LFS yet"
+        );
+    }
+
+    #[test]
+    fn encrypted_format_refused_for_every_non_provisioned_preamble() {
+        // `Corrupt` and `ReadFailed` are UNKNOWN, and unknown is locked — even
+        // if some path were to claim provisioning happened this boot, an
+        // unreadable preamble must never authorise a format.
+        for preamble in [
+            PreambleLoad::NotRead,
+            PreambleLoad::Unprovisioned,
+            PreambleLoad::ReadFailed,
+            PreambleLoad::Corrupt,
+        ] {
+            assert!(
+                !may_format_encrypted_lfs(preamble, false),
+                "{preamble:?} must not authorise an encrypted format"
+            );
+            assert!(
+                !may_format_encrypted_lfs(preamble, true),
+                "{preamble:?} must not authorise an encrypted format even with provisioned_this_boot"
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_boot_state_has_not_provisioned_this_boot() {
+        assert!(
+            !BootState::new().provisioned_this_boot,
+            "the flag must default false so a boot that never provisions cannot format"
         );
     }
 
