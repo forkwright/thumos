@@ -40,6 +40,9 @@ pub(crate) const EBADF: u32 = crate::fd::EBADF;
 /// EFAULT — bad address (two's complement -14, Linux ARM convention).
 pub(crate) const EFAULT: u32 = crate::fd::EFAULT;
 
+/// Byte length of the two-`u32` fd pair `sys_pipe` writes back to the caller.
+const FDS_OUT_LEN: usize = 2 * core::mem::size_of::<u32>();
+
 /// A pipe's internal ring buffer.
 pub(crate) struct PipeBuffer {
     data: [u8; PIPE_BUF_SIZE],
@@ -244,9 +247,6 @@ pub(crate) fn is_write_end(flags: u32) -> bool {
     clippy::similar_names,
     reason = "read_ofd/write_ofd (open-file-description table indices) and read_fd/write_fd (the per-process fd numbers derived from them) are standard POSIX fd/ofd terminology naming two genuinely distinct values -- renaming either pair to defeat the Levenshtein check would decouple the names from the concepts they name"
 )]
-/// Byte length of the two-`u32` fd pair written back to the caller.
-const FDS_OUT_LEN: usize = 2 * core::mem::size_of::<u32>();
-
 pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     // Write: both fd numbers are copied INTO the caller's buffer, so the whole
     // eight-byte range must be mapped by this process and PL0-writable.
