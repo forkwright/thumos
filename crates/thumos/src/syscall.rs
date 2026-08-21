@@ -29,7 +29,12 @@ use crate::capability;
 use crate::fd;
 use crate::futex;
 use crate::ipc;
-use crate::memguard::{Access, validate_user_buffer, validate_user_range};
+// The numeric gate has no production caller left in this module — every
+// syscall path now goes through `validate_user_range`. Its own tests still
+// exercise it directly, so the import is test-only, matching `board` above.
+#[cfg(test)]
+use crate::memguard::validate_user_buffer;
+use crate::memguard::{Access, validate_user_range};
 use crate::mmu;
 use crate::page;
 use crate::pipe;
