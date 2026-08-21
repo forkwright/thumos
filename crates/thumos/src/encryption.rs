@@ -171,11 +171,18 @@ impl BlockDevice for EncryptedBlockDevice<'_> {
             return Ok(());
         }
 
-        // Check bounds.
+        // WHY the bound is this type's own sector_count and not the inner
+        // device's (#842): `sector_count` rounds DOWN to whole blocks, since a
+        // partial trailing block cannot be encrypted. Checking against the
+        // inner count admitted I/O into exactly that trailing region -- the
+        // type advertised 8 sectors and accepted access to 12. A view whose
+        // advertised extent and accepted extent disagree is worse than either
+        // bound alone: a caller that respects `sector_count` is correct, and
+        // one that probes past it is also served.
         let end_lba = lba
             .checked_add(u64::from(count))
             .ok_or(BlockError::OutOfBounds)?;
-        if end_lba > self.inner.sector_count() {
+        if end_lba > self.sector_count() {
             return Err(BlockError::OutOfBounds);
         }
 
@@ -244,11 +251,18 @@ impl BlockDevice for EncryptedBlockDevice<'_> {
             return Ok(());
         }
 
-        // Check bounds.
+        // WHY the bound is this type's own sector_count and not the inner
+        // device's (#842): `sector_count` rounds DOWN to whole blocks, since a
+        // partial trailing block cannot be encrypted. Checking against the
+        // inner count admitted I/O into exactly that trailing region -- the
+        // type advertised 8 sectors and accepted access to 12. A view whose
+        // advertised extent and accepted extent disagree is worse than either
+        // bound alone: a caller that respects `sector_count` is correct, and
+        // one that probes past it is also served.
         let end_lba = lba
             .checked_add(u64::from(count))
             .ok_or(BlockError::OutOfBounds)?;
-        if end_lba > self.inner.sector_count() {
+        if end_lba > self.sector_count() {
             return Err(BlockError::OutOfBounds);
         }
 
@@ -573,6 +587,31 @@ mod tests {
         let buf = vec![0u8; SECTOR_SIZE];
         let result = enc.write_sectors(TEST_SECTORS, 1, &buf);
         assert_eq!(result, Err(BlockError::OutOfBounds));
+    }
+
+    #[test]
+    fn io_is_refused_past_the_advertised_sector_count() {
+        // #842: `sector_count` rounds DOWN to whole blocks because a partial
+        // trailing block cannot be encrypted, but the bound check used the
+        // INNER count -- so the type advertised 8 sectors and accepted access
+        // to 12, into exactly the region it says it cannot encrypt.
+        let mut dev = MemBlockDevice::new(13).expect("create device");
+        let key = sample_xts_key();
+        let enc = EncryptedBlockDevice::new(&mut dev, key);
+
+        let usable = enc.sector_count();
+        assert_eq!(usable, 8, "13 sectors round down to one full block");
+
+        let mut buf = vec![0u8; SECTOR_SIZE];
+        assert_eq!(
+            enc.read_sectors(usable, 1, &mut buf),
+            Err(BlockError::OutOfBounds),
+            "the first sector past the advertised count must be refused"
+        );
+        assert!(
+            enc.read_sectors(usable - 1, 1, &mut buf).is_ok(),
+            "the last advertised sector must still be readable"
+        );
     }
 
     #[test]

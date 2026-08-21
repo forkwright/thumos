@@ -344,6 +344,55 @@ pub unsafe fn add_entropy(data: &[u8]) {
     }
 }
 
+/// Mask IRQs, returning the previous CPSR.I state so it can be restored.
+///
+/// WHY save-and-restore rather than a bare enable afterwards: `init` runs with
+/// interrupts already on, but a caller that masked them itself would have them
+/// silently re-enabled underneath it.
+///
+/// # Safety
+///
+/// Alters the interrupt mask. The caller must restore it via
+/// [`restore_irqs`] before returning.
+#[cfg(not(test))]
+unsafe fn mask_irqs() -> u32 {
+    let cpsr: u32;
+    // SAFETY: reading CPSR and setting the I bit are unprivileged-safe
+    // operations at PL1; no memory is touched.
+    unsafe {
+        core::arch::asm!("mrs {}, cpsr", out(reg) cpsr, options(nomem, nostack));
+        core::arch::asm!("cpsid i", options(nomem, nostack));
+    }
+    cpsr & (1 << 7)
+}
+
+/// Restore the IRQ mask saved by [`mask_irqs`].
+///
+/// # Safety
+///
+/// `saved` must be the value a matching [`mask_irqs`] returned.
+#[cfg(not(test))]
+unsafe fn restore_irqs(saved: u32) {
+    if saved == 0 {
+        // SAFETY: clearing the I bit is unprivileged-safe at PL1 and touches
+        // no memory. Only reached when IRQs were enabled before masking.
+        unsafe {
+            core::arch::asm!("cpsie i", options(nomem, nostack));
+        }
+    }
+}
+
+/// Host stub: there is no interrupt to mask, and the ISR that motivates the
+/// mask does not exist off-target.
+#[cfg(test)]
+const unsafe fn mask_irqs() -> u32 {
+    0
+}
+
+/// Host stub. See [`mask_irqs`].
+#[cfg(test)]
+const unsafe fn restore_irqs(_saved: u32) {}
+
 /// Initialize the CSPRNG from the accumulated entropy pool.
 ///
 /// Call this from kinit after the timer has begun feeding credits. If the
@@ -431,10 +480,26 @@ pub unsafe fn init() -> bool {
     }
 
     // Seed the DRBG from the entropy pool.
-    // SAFETY: ENTROPY is read once here; no concurrent writer is possible because
-    // we only reach this point after `is_seeded()` returns true, and init() is
-    // called exactly once.
-    let pool_snapshot = unsafe { (*core::ptr::addr_of!(ENTROPY)).pool };
+    //
+    // WHY interrupts are masked for the read (#842): the previous claim here
+    // was that no concurrent writer exists "because we only reach this point
+    // after is_seeded() returns true". That does not follow -- the gate going
+    // true does not stop the timer ISR, which keeps calling add_timer_sample
+    // and writing ENTROPY throughout. A comment whose stated reason does not
+    // hold is worse than none: a reader who checks it cannot tell whether the
+    // code is wrong or the comment is. Masking makes the claim true instead of
+    // rewording it into something weaker.
+    //
+    // SAFETY: CPSR.I is set for the duration of the copy, so the timer ISR --
+    // the only writer of ENTROPY -- cannot run between the first and last byte.
+    // The prior value is restored rather than assumed, since init() runs with
+    // interrupts already enabled and must leave them that way.
+    let pool_snapshot = unsafe {
+        let restore = mask_irqs();
+        let snapshot = (*core::ptr::addr_of!(ENTROPY)).pool;
+        restore_irqs(restore);
+        snapshot
+    };
     let csprng = Csprng {
         rng: ChaCha20Rng::from_seed(pool_snapshot),
         bytes_generated: 0,
@@ -503,6 +568,12 @@ pub fn kernel_random_bytes(buf: &mut [u8]) -> Result<(), CsprngError> {
         }
         csprng.rng = ChaCha20Rng::from_seed(new_seed);
         csprng.bytes_generated = 0;
+        // Both buffers ARE the new DRBG key -- `new_seed` after mixing, and
+        // `mixer` as keystream drawn from the live generator. Leaving either
+        // on the stack hands a later frame the seed of the stream it is
+        // reading (#842).
+        crate::key_manager::volatile_zero(&mut new_seed);
+        crate::key_manager::volatile_zero(&mut mixer);
     }
 
     Ok(())
