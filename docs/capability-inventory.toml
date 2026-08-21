@@ -21,7 +21,7 @@ notes = "Selected PL0 image, fault, graceful-kill, fork/exec/brk, and guard-page
 id = "memory-fs"
 modules = ["block", "cache", "vfs", "devfs", "lfs", "lfs_imap", "lfs_segment", "lfs_checkpoint", "lfs_writer", "lfs_compact", "emmc", "ramfs", "encryption"]
 tier = "kernel-wired"
-notes = "LFS mounts at boot, encrypted when provisioned but still plaintext under the live Unprovisioned compatibility path (#866); no witness marker asserts persistence behavior. #360 owns the current ambiguous InvalidSuperblock auto-format/data-loss path, #867 owns the 48 KiB direct-block file ceiling, #870 owns unverified MSDC RX-count semantics, #837 owns the XTS logical-block/tweak description, and #878 owns authenticated/versioned integrity and rollback rejection beyond XTS confidentiality."
+notes = "LFS mounts at boot only through the AES-XTS wrapper; the plaintext Unprovisioned compatibility mount is gone (#866), so an unprovisioned device with no verified passphrase falls back to the initramfs rather than creating a plaintext root. No witness marker asserts persistence behavior. #360 owns the current ambiguous InvalidSuperblock auto-format/data-loss path, #867 owns the 48 KiB direct-block file ceiling, #870 owns unverified MSDC RX-count semantics, #837 owns the XTS logical-block/tweak description, and #878 owns authenticated/versioned integrity and rollback rejection beyond XTS confidentiality."
 
 [[capability]]
 id = "time"
