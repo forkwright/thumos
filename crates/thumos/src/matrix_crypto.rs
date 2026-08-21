@@ -2802,28 +2802,76 @@ mod tests {
         (ed_hex, hex_encode(&sig.to_bytes()))
     }
 
-    /// Splice two single-user `/keys/query` responses into one covering both.
+    /// Write one device object into `w`, in exactly the shape
+    /// `key_query_response` produces.
     ///
-    /// WHY textual rather than a second builder: `key_query_response` is the
-    /// shape the verifier signs over, and re-deriving it for the multi-user
-    /// case risks the two drifting -- at which point the signatures stop
-    /// verifying and the test fails for a reason unrelated to what it asserts.
-    fn merge_key_query_users(first: &str, second: &str) -> String {
-        let open = "\"device_keys\":{";
-        let (_, first_users) = first
-            .split_once(open)
-            .expect("fixture must contain a device_keys object");
-        let (_, second_users) = second
-            .split_once(open)
-            .expect("fixture must contain a device_keys object");
-        // Each tail is `<users>}}`; join the two user maps into one object.
-        let mut merged = String::from("{");
-        merged.push_str(open);
-        merged.push_str(first_users.trim_end_matches("}}"));
-        merged.push(',');
-        merged.push_str(second_users.trim_end_matches("}}"));
-        merged.push_str("}}");
-        merged
+    /// WHY factored rather than duplicated: the verifier canonicalises the
+    /// device object and checks the signature over those bytes, so a
+    /// multi-user fixture that builds the object even slightly differently
+    /// fails signature verification and the test then reports "no devices
+    /// verified" for a reason unrelated to what it asserts.
+    fn write_device_object(
+        w: &mut JsonWriter,
+        user_id: &str,
+        device_id: &str,
+        ed_hex: &str,
+        curve_hex: &str,
+        signature_hex: Option<&str>,
+    ) {
+        let mut curve_name = String::from("curve25519:");
+        curve_name.push_str(device_id);
+        let mut ed_name = String::from("ed25519:");
+        ed_name.push_str(device_id);
+
+        w.object_start(); // device_info
+        w.key("algorithms");
+        w.array_start();
+        w.string_value("m.olm.v1.curve25519-aes-sha2");
+        w.string_value("m.megolm.v1.aes-sha2");
+        w.end();
+        w.key("device_id");
+        w.string_value(device_id);
+        w.key("keys");
+        w.object_start();
+        w.key(&curve_name);
+        w.string_value(curve_hex);
+        w.key(&ed_name);
+        w.string_value(ed_hex);
+        w.end(); // keys
+        if let Some(sig) = signature_hex {
+            w.key("signatures");
+            w.object_start();
+            w.key(user_id);
+            w.object_start();
+            w.key(&ed_name);
+            w.string_value(sig);
+            w.end();
+            w.end();
+        }
+        w.key("user_id");
+        w.string_value(user_id);
+        w.end(); // device_info
+    }
+
+    /// A `/keys/query` response covering two users, one device each.
+    fn two_user_key_query_response(
+        first: (&str, &str, &str, &str, &str),
+        second: (&str, &str, &str, &str, &str),
+    ) -> String {
+        let mut w = JsonWriter::new();
+        w.object_start();
+        w.key("device_keys");
+        w.object_start();
+        for (user_id, device_id, ed_hex, curve_hex, sig) in [first, second] {
+            w.key(user_id);
+            w.object_start();
+            w.key(device_id);
+            write_device_object(&mut w, user_id, device_id, ed_hex, curve_hex, Some(sig));
+            w.end(); // device map
+        }
+        w.end(); // device_keys
+        w.end(); // root
+        w.finish()
     }
 
     #[test]
@@ -2862,13 +2910,18 @@ mod tests {
         let (alice_ed, alice_sig) = sign_device(alice, device, &alice_curve, &[0x11u8; 32]);
         let (bob_ed, bob_sig) = sign_device(bob, device, &bob_curve, &[0x22u8; 32]);
 
-        // Two single-user responses merged into one two-user object.
-        let alice_json =
-            key_query_response(alice, device, &alice_ed, &alice_curve, Some(&alice_sig));
-        let bob_json = key_query_response(bob, device, &bob_ed, &bob_curve, Some(&bob_sig));
-        let merged = merge_key_query_users(&alice_json, &bob_json);
+        let merged = two_user_key_query_response(
+            (alice, device, &alice_ed, &alice_curve, &alice_sig),
+            (bob, device, &bob_ed, &bob_curve, &bob_sig),
+        );
 
-        let devices = MatrixCrypto::process_key_query_response(&merged).unwrap_or_default();
+        // WHY the error is surfaced rather than defaulted: `unwrap_or_default`
+        // turns a parse failure into an empty list, which then reads as "no
+        // device verified" -- a fixture bug wearing the costume of the defect
+        // under test.
+        let parsed = MatrixCrypto::process_key_query_response(&merged);
+        assert!(parsed.is_ok(), "the two-user fixture must parse");
+        let devices = parsed.unwrap_or_default();
         assert_eq!(devices.len(), 2, "both users' devices must verify");
 
         let alice_entry = devices
