@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0](https://github.com/forkwright/thumos/compare/v0.8.7...v0.9.0) (2026-08-21)
+
+
+### Features
+
+* **security:** derive secret verifiers with Argon2id from page-backed memory ([#915](https://github.com/forkwright/thumos/issues/915)) ([4667bb8](https://github.com/forkwright/thumos/commit/4667bb8b86984a4dee9b5a89d9af3f9ee691d801)), closes [#272](https://github.com/forkwright/thumos/issues/272)
+* **security:** enforce the ~77-bit boot-secret floor at first-boot setup ([#912](https://github.com/forkwright/thumos/issues/912)) ([f071f42](https://github.com/forkwright/thumos/commit/f071f4297c56684c3efa58af13422606e1a93236))
+* **watchdog:** pet only while every liveness owner is still advancing ([#920](https://github.com/forkwright/thumos/issues/920)) ([33791a8](https://github.com/forkwright/thumos/commit/33791a8fea1a3153f0914b60fdaade522b84a5c7)), closes [#875](https://github.com/forkwright/thumos/issues/875)
+
+
+### Bug Fixes
+
+* **ci:** count the ledger's runnable tests after combining profiles, not before ([#916](https://github.com/forkwright/thumos/issues/916)) ([653e0df](https://github.com/forkwright/thumos/commit/653e0df913dd4b7d714a30add03617e740d37121)), closes [#855](https://github.com/forkwright/thumos/issues/855)
+* **clock:** separate authentication from precedence and refuse implausible time ([#906](https://github.com/forkwright/thumos/issues/906)) ([b7f9205](https://github.com/forkwright/thumos/commit/b7f9205a44534008c05a342e9894a106dae4c4ca))
+* **crypto:** enable zeroize on every keyed cipher crate and prove it at compile time ([#900](https://github.com/forkwright/thumos/issues/900)) ([e2218fc](https://github.com/forkwright/thumos/commit/e2218fcfce1ac84f489778257e0ef8f075155ae9))
+* **csprng:** credit cadence departure, not raw sample-to-sample bit flips ([#901](https://github.com/forkwright/thumos/issues/901)) ([7b01d75](https://github.com/forkwright/thumos/commit/7b01d75a8ec0ae51c146532583fd9e23dca0152e))
+* **kernel:** map the whole reserved window, and derive its bound from one place ([#918](https://github.com/forkwright/thumos/issues/918)) ([25ccf87](https://github.com/forkwright/thumos/commit/25ccf879eeb5a779512f3e6ae48d2425a74d5f07)), closes [#917](https://github.com/forkwright/thumos/issues/917)
+* **klesis-core:** reject an out-of-domain CSQ reading and cover the six untested guards ([#909](https://github.com/forkwright/thumos/issues/909)) ([1f174d6](https://github.com/forkwright/thumos/commit/1f174d6218c238f2e35facd7b3094cd1e124630a))
+* **krypta:** hold ratchet key material in a type whose drop scrubs it ([#904](https://github.com/forkwright/thumos/issues/904)) ([0c7f6df](https://github.com/forkwright/thumos/commit/0c7f6df1467df3d68e675409d8983b41b2f31563))
+* **krypta:** make the ratchet commit atomic and stop it being duplicable ([#908](https://github.com/forkwright/thumos/issues/908)) ([dd3ba99](https://github.com/forkwright/thumos/commit/dd3ba99d522a35092f6b093b131adc8207cba1f9))
+* **matrix_crypto:** drop the Olm ratchet fields nothing can advance, scrub what the handshake used ([#903](https://github.com/forkwright/thumos/issues/903)) ([d733857](https://github.com/forkwright/thumos/commit/d73385731091559712f82f7021431804ff34933c))
+* **matrix_crypto:** name the Olm pre-key derivation for what it is ([#913](https://github.com/forkwright/thumos/issues/913)) ([8c217c2](https://github.com/forkwright/thumos/commit/8c217c223370b0fcbf889718ecb11f2e75c9ec56))
+* **pteron:** close the four remaining SMP findings ([#910](https://github.com/forkwright/thumos/issues/910)) ([e96b7c7](https://github.com/forkwright/thumos/commit/e96b7c75c13f93594dc7edeee4e4248a705ae75c))
+* **security_mode:** store a versioned Sentinel-exit PIN verifier with a per-device salt ([#896](https://github.com/forkwright/thumos/issues/896)) ([bbf9c86](https://github.com/forkwright/thumos/commit/bbf9c8671e1e1e696d217f7701d8f66ec88f6563))
+* **security:** delete the plaintext LFS mount rather than gate it ([#919](https://github.com/forkwright/thumos/issues/919)) ([cff4e35](https://github.com/forkwright/thumos/commit/cff4e352c22d4600aad8504290e33b2beb8f4b2f)), closes [#866](https://github.com/forkwright/thumos/issues/866)
+* **security:** gate radio-affecting threat action on calibration and authorization ([#921](https://github.com/forkwright/thumos/issues/921)) ([c9562fd](https://github.com/forkwright/thumos/commit/c9562fd2254b7e9c9c344c91c6ea58d8f95cfab5))
+* **security:** require a real provisioning anchor, or carry none at all ([#922](https://github.com/forkwright/thumos/issues/922)) ([a5016e8](https://github.com/forkwright/thumos/commit/a5016e869a4cf21bf9f6c61962c2c004342a36c4))
+* **security:** verify every stored secret through one salted, iterated record ([#898](https://github.com/forkwright/thumos/issues/898)) ([b5cb2c2](https://github.com/forkwright/thumos/commit/b5cb2c2e143c206742e353c144f55b72efe50876))
+* **sms:** apply the SCTS timezone octet so decoded timestamps are UTC ([#905](https://github.com/forkwright/thumos/issues/905)) ([ad048fe](https://github.com/forkwright/thumos/commit/ad048febf6bd91c4991e1ad7164703b8c256b57d))
+* **stegnos:** reject a persisted PBKDF2 iteration count above the maximum ([#899](https://github.com/forkwright/thumos/issues/899)) ([87fdfad](https://github.com/forkwright/thumos/commit/87fdfad2bf2315d7714f092871954faace4b70c4))
+* **thumos:** close all eight findings in the low-severity kernel batch ([#911](https://github.com/forkwright/thumos/issues/911)) ([8160589](https://github.com/forkwright/thumos/commit/8160589388e8b13fa4359272f172ebcab02a562d))
+* **thumos:** close the three live findings in the wave-1 batch ([#907](https://github.com/forkwright/thumos/issues/907)) ([891da7e](https://github.com/forkwright/thumos/commit/891da7ec26e7779f3db1e2d96b124fac8a63019e))
+
 ## [0.8.7](https://github.com/forkwright/thumos/compare/v0.8.6...v0.8.7) (2026-08-21)
 
 
