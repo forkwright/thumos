@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 aes-gcm = { workspace = true }
+ghash = { workspace = true }
 ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }
 hkdf = { workspace = true }

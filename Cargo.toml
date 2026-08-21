@@ -80,7 +80,26 @@ rustix = { version = "1", features = [
 ] }
 
 # Crypto
-aes-gcm = "0.11"
+#
+# WHY `zeroize` on all three, and why all three (#835/#836): an AES round-key
+# schedule is trivially reversible to the key that produced it, so leaving one
+# resident defeats the `Zeroizing` discipline the crypto crates already apply
+# to the key bytes themselves. `aes-gcm`'s own `zeroize` feature is NOT
+# sufficient and does not make `Aes256Gcm: ZeroizeOnDrop` -- read at
+# aes-gcm-0.11.0 `src/lib.rs:233`, it clears only the `ghash_key` temporary
+# during construction, and `AesGcm` has no `Drop` of its own. Its two keyed
+# fields scrub themselves only through their OWN features: `aes/zeroize` gives
+# `Aes256: ZeroizeOnDrop` (aes-0.9.2 `src/lib.rs:437-445`), and `ghash/zeroize`
+# forwards to `polyval/zeroize`, which is what arms the otherwise-empty `Drop`
+# body at polyval-0.7.3 `src/lib.rs:111-119`. Enabling any one of the three
+# leaves keyed state resident, which is why they are declared together here
+# rather than per-crate. `scripts/check-crypto-zeroize-features.sh` fails on a
+# manifest that adds one of these without the feature.
+aes = { version = "0.9", features = ["zeroize"] }
+aes-gcm = { version = "0.11", features = ["zeroize"] }
+# Not used directly by any crate: declared so a consumer of `aes-gcm` can turn
+# on the GHASH half, which `aes-gcm` does not forward.
+ghash = { version = "0.6", features = ["zeroize"] }
 ed25519-dalek = "3"
 getrandom = "0.4"
 hkdf = "0.13"
