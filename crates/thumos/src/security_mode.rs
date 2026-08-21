@@ -63,13 +63,136 @@ const SCAN_INTERVAL_SENTINEL_MS: u32 = 10_000;
 /// Scan interval for Panic mode (0 — no scanning).
 const SCAN_INTERVAL_PANIC_MS: u32 = 0;
 
-/// Salt for the Sentinel-exit PIN PBKDF2 derivation.
+/// Length of a per-device Sentinel-exit PIN salt, in bytes (#272).
 ///
-/// NOTE: fixed (not per-device random) for determinism, mirroring the
-/// `PBKDF2_SALT` pattern in `key_manager.rs`, until the key-slot
-/// provisioning infrastructure (kinit.rs Step 8f, currently PENDING) wires
-/// a per-device random salt into persistent storage.
-const PIN_PBKDF2_SALT: &[u8] = b"thumos-sentinel-pin-salt-v1";
+/// 128 bits: enough that two devices never collide, which is the entire
+/// property a salt provides here. A shared salt makes one precomputed table
+/// work against every device in the fleet.
+pub(crate) const PIN_SALT_LEN: usize = 16;
+
+/// Which key-derivation function produced a [`PinVerifier`]'s digest, and the
+/// parameters it used (#272).
+///
+/// WHY the parameters live in the record rather than in a constant: raising
+/// cost later must not invalidate every device already provisioned. A stored
+/// digest with implicit parameters cannot be migrated — nothing knows what
+/// produced it — so the verifier would have to be reset on every device.
+/// Carrying the parameters makes the cost a value that can change while old
+/// records stay verifiable.
+///
+/// This is also the seam for Argon2id: it lands as a second variant with its
+/// own cost parameters, and `v1` records keep verifying against PBKDF2 through
+/// the same dispatch. See #272 for the operator decision and the page-allocator
+/// memory constraint that governs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PinKdf {
+    /// PBKDF2-HMAC-SHA256 (RFC 8018) at the recorded iteration count.
+    Pbkdf2Sha256 {
+        /// Iterations this record's digest was derived with.
+        iterations: u32,
+    },
+}
+
+/// Why provisioning a Sentinel-exit PIN verifier failed (#272).
+///
+/// Provisioning draws its salt from the kernel CSPRNG, which is fallible by
+/// construction, so this is a `Result` rather than a value that quietly
+/// substitutes a constant when entropy is unavailable. A caller that cannot
+/// provision must leave the manager unprovisioned, not provision it weakly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum PinProvisionError {
+    /// Salt entropy was unavailable — the CSPRNG is not yet seeded.
+    Entropy,
+    /// The drawn salt failed validation.
+    WeakSalt,
+    /// Key derivation over a valid salt failed.
+    Derivation,
+}
+
+impl fmt::Display for PinProvisionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Entropy => write!(f, "PIN salt entropy unavailable (CSPRNG not seeded)"),
+            Self::WeakSalt => write!(f, "PIN salt failed validation"),
+            Self::Derivation => write!(f, "PIN key derivation failed"),
+        }
+    }
+}
+
+/// A provisioned Sentinel-exit PIN verifier: the salt, the parameters, and the
+/// digest they produced (#272).
+///
+/// Constructing one requires a caller-supplied per-device salt. There is
+/// deliberately no constant to fall back on — the compile-time salt this
+/// replaced meant every device derived the same digest from the same PIN, so
+/// one precomputed table covered the fleet (CWE-760).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PinVerifier {
+    kdf: PinKdf,
+    salt: [u8; PIN_SALT_LEN],
+    digest: [u8; KEY_SIZE],
+}
+
+impl PinVerifier {
+    /// Derive a verifier for `pin` under `salt` using PBKDF2-HMAC-SHA256.
+    ///
+    /// Returns `None` when the derivation itself fails, so a caller cannot
+    /// provision a record whose digest was never computed.
+    pub(crate) fn derive_pbkdf2(pin: &[u8], salt: [u8; PIN_SALT_LEN]) -> Option<Self> {
+        let iterations = crate::security::PBKDF2_ITERATIONS;
+        let mut digest = [0u8; KEY_SIZE];
+        crate::security::pbkdf2_sha256(pin, &salt, iterations, &mut digest).ok()?;
+        Some(Self {
+            kdf: PinKdf::Pbkdf2Sha256 { iterations },
+            salt,
+            digest,
+        })
+    }
+
+    /// Provision a verifier for `pin` with a fresh per-device salt drawn from
+    /// the kernel CSPRNG.
+    ///
+    /// This is the production path: the salt is device-specific and never a
+    /// compile-time value, which is what stops one precomputed table covering
+    /// every device (CWE-760, #272).
+    ///
+    /// # Errors
+    ///
+    /// [`PinProvisionError::Entropy`] when the CSPRNG is not seeded,
+    /// [`PinProvisionError::WeakSalt`] when the drawn salt fails validation,
+    /// and [`PinProvisionError::Derivation`] when the KDF itself fails. Every
+    /// arm leaves the caller with no verifier rather than a weak one.
+    pub(crate) fn provision(pin: &[u8]) -> Result<Self, PinProvisionError> {
+        let mut salt = [0u8; PIN_SALT_LEN];
+        crate::csprng::kernel_random_bytes(&mut salt).map_err(|_| PinProvisionError::Entropy)?;
+        // WHY reject all-zero: as a CSPRNG draw it is a 2^-128 event, so
+        // refusing it costs nothing, while as a symptom it is exactly what a
+        // stuck or zero-filling entropy source produces. The check is cheap
+        // and catches the failure that matters.
+        if salt.iter().all(|&b| b == 0) {
+            return Err(PinProvisionError::WeakSalt);
+        }
+        Self::derive_pbkdf2(pin, salt).ok_or(PinProvisionError::Derivation)
+    }
+
+    /// Constant-time check of `pin` against this record, deriving with the
+    /// record's own salt and parameters rather than any ambient constant.
+    fn verify(&self, pin: &[u8]) -> bool {
+        match self.kdf {
+            PinKdf::Pbkdf2Sha256 { iterations } => {
+                let mut derived = [0u8; KEY_SIZE];
+                let ok = crate::security::pbkdf2_sha256(pin, &self.salt, iterations, &mut derived)
+                    .is_ok();
+                let matched = ok && constant_time_eq(&derived, &self.digest);
+                // The derived value is PIN-equivalent material; do not leave it
+                // on the stack for the next frame to inherit (#828/#836 class).
+                crate::key_manager::volatile_zero(&mut derived);
+                matched
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // SecurityMode
@@ -236,7 +359,7 @@ pub enum ModeTransitionError {
     /// finding 11).
     NotInPanic,
     /// Sentinel exit was attempted before a real PIN was provisioned
-    /// (`pin_hash` is `None`) -- distinct from `PinMismatch` so an
+    /// (`verifier` is `None`) -- distinct from `PinMismatch` so an
     /// unprovisioned manager fails closed instead of silently accepting or
     /// permanently masquerading as a wrong-PIN lockout (issue #282,
     /// `security_mode.rs`).
@@ -305,33 +428,35 @@ pub(crate) struct ModeManager {
     pre_panic_mode: SecurityMode,
     /// Most recent panic event, if any.
     last_panic_event: Option<PanicEvent>,
-    /// PBKDF2-HMAC-SHA256 derived value for Sentinel exit PIN verification
-    /// (RFC 8018, salted + iterated — see [`ModeManager::exit_sentinel`]).
+    /// The provisioned Sentinel-exit PIN verifier — salt, KDF parameters and
+    /// digest together (#272) — or `None` when this manager has never been
+    /// provisioned.
     ///
-    /// `None` means this manager has never been provisioned with a real
-    /// PIN. Tracked as an explicit state rather than storing an all-zero
-    /// placeholder: a PBKDF2-HMAC-SHA256 output colliding with all-zero is
-    /// cryptographically negligible, so an all-zero `pin_hash` would be
-    /// indistinguishable from "unprovisioned" yet would silently behave as
-    /// if provisioned -- permanently failing every future PIN check
-    /// (issue #282, `security_mode.rs`).
-    pin_hash: Option<[u8; 32]>,
+    /// `None` is an explicit state rather than an all-zero placeholder: a
+    /// derivation colliding with all-zero is cryptographically negligible, so
+    /// an all-zero digest would be indistinguishable from "unprovisioned" yet
+    /// would silently behave as if provisioned — permanently failing every
+    /// future PIN check (issue #282, `security_mode.rs`).
+    verifier: Option<PinVerifier>,
 }
 
 impl ModeManager {
-    /// Create a new `ModeManager` starting in Daily mode.
+    /// Create a new `ModeManager` starting in Daily mode, provisioned with
+    /// `verifier`.
     ///
-    /// `pin_hash` is the PBKDF2-HMAC-SHA256 derived value of the user's PIN
-    /// for Sentinel exit verification (see [`ModeManager::exit_sentinel`]).
+    /// Takes the whole record rather than a bare digest so the salt and
+    /// parameters that produced it travel with it. A constructor accepting
+    /// only a digest would have to assume which salt and cost produced it,
+    /// which is what made the previous compile-time salt load-bearing (#272).
     #[must_use]
-    pub(crate) const fn new(pin_hash: [u8; 32]) -> Self {
+    pub(crate) const fn new(verifier: PinVerifier) -> Self {
         Self {
             mode: SecurityMode::Daily,
             covert_lock: false,
             panic_initiated_tick: None,
             pre_panic_mode: SecurityMode::Daily,
             last_panic_event: None,
-            pin_hash: Some(pin_hash),
+            verifier: Some(verifier),
         }
     }
 
@@ -384,12 +509,12 @@ impl ModeManager {
 
     /// Transition from Sentinel back to Daily mode.
     ///
-    /// Requires PIN confirmation. The provided `pin` is derived with
-    /// PBKDF2-HMAC-SHA256 (RFC 8018, `PIN_PBKDF2_SALT`,
-    /// `security::PBKDF2_ITERATIONS` rounds) and compared in constant time
-    /// against the stored derived value — a single fast unsalted hash is
-    /// brute-forceable offline in milliseconds over the PIN's small
-    /// candidate space (CWE-916 / CWE-759).
+    /// Requires PIN confirmation. The provided `pin` is derived using the
+    /// stored [`PinVerifier`]'s own per-device salt and recorded KDF
+    /// parameters, then compared in constant time against its digest — a
+    /// single fast unsalted hash is brute-forceable offline in milliseconds
+    /// over the PIN's small candidate space (CWE-916 / CWE-759), and a shared
+    /// salt makes one precomputed table serve every device (CWE-760).
     ///
     /// # Errors
     ///
@@ -418,28 +543,20 @@ impl ModeManager {
         // fail closed and distinguishably from a wrong-PIN guess -- never
         // silently accept, and never present as a permanent PinMismatch
         // that looks like an ordinary typo (issue #282, security_mode.rs).
-        let Some(stored_hash) = self.pin_hash else {
+        let Some(verifier) = self.verifier.as_ref() else {
             return Err(ModeTransitionError::NotProvisioned);
         };
 
-        // WHY: PBKDF2-HMAC-SHA256 (RFC 8018) replaces the prior single-round
-        // unsalted SHA-256 hash — a 4-6 digit PIN has only 1e4-1e6
-        // candidates, exhaustively searchable offline in milliseconds
-        // against a fast unsalted hash and reusable across every device via
-        // one precomputed table (CWE-916 / CWE-759). The salted, iterated
-        // derivation costs a full PBKDF2 round per guess.
-        let mut derived_pin = [0u8; KEY_SIZE];
-        // INVARIANT: PBKDF2_ITERATIONS is a nonzero constant, so
-        // ZeroIterations is unreachable here; mapped to PinMismatch
-        // (fail-closed) rather than unwrapped.
-        let derive_ok = crate::security::pbkdf2_sha256(
-            pin,
-            PIN_PBKDF2_SALT,
-            crate::security::PBKDF2_ITERATIONS,
-            &mut derived_pin,
-        )
-        .is_ok();
-        if !derive_ok || !constant_time_eq(&derived_pin, &stored_hash) {
+        // WHY the record verifies itself rather than this function deriving:
+        // the salt and cost that produced the stored digest are carried in the
+        // record, so verification cannot silently use a different salt than
+        // provisioning did. The previous form derived against a compile-time
+        // constant, which made every device's digest identical for a given PIN
+        // and one precomputed table sufficient for the fleet (#272).
+        //
+        // A derivation failure is mapped to PinMismatch rather than unwrapped:
+        // fail-closed, and indistinguishable from a wrong guess to a caller.
+        if !verifier.verify(pin) {
             return Err(ModeTransitionError::PinMismatch);
         }
 
@@ -635,18 +752,18 @@ impl ModeManager {
 impl Default for ModeManager {
     fn default() -> Self {
         // INVARIANT: default-constructed managers are explicitly
-        // unprovisioned (`pin_hash: None`), not a `Some([0u8; 32])`
-        // placeholder -- the latter would silently look provisioned and
-        // permanently fail every future Sentinel-exit PIN check, since a
-        // real PBKDF2-HMAC-SHA256 derivation colliding with all-zero is
-        // cryptographically negligible (issue #282, security_mode.rs).
+        // unprovisioned (`verifier: None`), not a placeholder record --
+        // the latter would silently look provisioned and permanently fail
+        // every future Sentinel-exit PIN check, since a real derivation
+        // colliding with all-zero is cryptographically negligible (issue
+        // #282, security_mode.rs).
         Self {
             mode: SecurityMode::Daily,
             covert_lock: false,
             panic_initiated_tick: None,
             pre_panic_mode: SecurityMode::Daily,
             last_panic_event: None,
-            pin_hash: None,
+            verifier: None,
         }
     }
 }
@@ -878,24 +995,19 @@ mod tests {
 
     use super::*;
 
-    /// Helper: derive the PBKDF2-HMAC-SHA256 value of a test PIN, matching
-    /// `ModeManager::exit_sentinel`'s verification derivation exactly (same
-    /// salt + iteration count) so the stored fixture round-trips.
-    fn derive_test_pin_hash(pin: &[u8]) -> [u8; 32] {
-        let mut derived = [0u8; 32];
-        crate::security::pbkdf2_sha256(
-            pin,
-            PIN_PBKDF2_SALT,
-            crate::security::PBKDF2_ITERATIONS,
-            &mut derived,
-        )
-        .expect("pbkdf2 derivation failed in test");
-        derived
+    /// A fixed per-device salt standing in for provisioned entropy. Tests need
+    /// determinism; production takes its salt from the CSPRNG, which is what
+    /// makes two devices differ (see the salt-uniqueness test below).
+    const TEST_SALT: [u8; PIN_SALT_LEN] = *b"test-device-salt";
+
+    /// Helper: derive a verifier for a test PIN under [`TEST_SALT`].
+    fn derive_test_pin_verifier(pin: &[u8]) -> PinVerifier {
+        PinVerifier::derive_pbkdf2(pin, TEST_SALT).expect("pbkdf2 derivation failed in test")
     }
 
     /// Helper: create a `ModeManager` with a known test PIN.
     fn mode_manager_with_test_pin() -> ModeManager {
-        ModeManager::new(derive_test_pin_hash(b"123456"))
+        ModeManager::new(derive_test_pin_verifier(b"123456"))
     }
 
     /// Helper: create a `KeyManager` with loaded keys for testing.
@@ -1012,7 +1124,7 @@ mod tests {
         // PIN via a single-round, unsalted SHA-256 hash. Proves the
         // stored/derived value is now the PBKDF2-HMAC-SHA256 derivation,
         // not a bare SHA-256 digest of the same PIN.
-        let derived = derive_test_pin_hash(b"123456");
+        let derived = derive_test_pin_verifier(b"123456").digest;
         let bare_sha256 = crate::security::sha256(b"123456");
         assert_ne!(
             derived, bare_sha256,
@@ -1026,27 +1138,118 @@ mod tests {
         // rainbow-table attack. Confirm the salt is load-bearing: a
         // different salt must produce a different derived value for the
         // same PIN.
-        let mut with_salt = [0u8; 32];
-        crate::security::pbkdf2_sha256(
-            b"123456",
-            PIN_PBKDF2_SALT,
-            crate::security::PBKDF2_ITERATIONS,
-            &mut with_salt,
-        )
-        .expect("pbkdf2 failed");
-
-        let mut different_salt = [0u8; 32];
-        crate::security::pbkdf2_sha256(
-            b"123456",
-            b"a-different-salt",
-            crate::security::PBKDF2_ITERATIONS,
-            &mut different_salt,
-        )
-        .expect("pbkdf2 failed");
+        let baseline = derive_test_pin_verifier(b"123456");
+        let elsewhere = PinVerifier::derive_pbkdf2(b"123456", *b"a-different-salt")
+            .expect("pbkdf2 derivation failed in test");
 
         assert_ne!(
-            with_salt, different_salt,
+            baseline.digest, elsewhere.digest,
             "different salts must produce different derived PIN values"
+        );
+    }
+
+    #[test]
+    fn same_pin_on_two_devices_derives_different_verifiers() {
+        // #272 acceptance: the salt is per-device, so two devices whose
+        // owners chose the same PIN must not share a derived value. A
+        // build-wide constant salt made one precomputed table serve the
+        // entire fleet (CWE-760); this is the property that closes it.
+        let first_device = PinVerifier::derive_pbkdf2(b"123456", *b"device-a-saltxxx")
+            .expect("pbkdf2 derivation failed in test");
+        let second_device = PinVerifier::derive_pbkdf2(b"123456", *b"device-b-saltxxx")
+            .expect("pbkdf2 derivation failed in test");
+
+        assert_ne!(
+            first_device.salt, second_device.salt,
+            "two provisioned devices must not share a PIN salt"
+        );
+        assert_ne!(
+            first_device.digest, second_device.digest,
+            "same PIN on two devices must not derive the same verifier digest"
+        );
+    }
+
+    #[test]
+    fn verification_uses_the_record_salt_not_a_build_constant() {
+        // The record carries its own salt, so a manager provisioned under
+        // one salt verifies against that salt. If verification re-derived
+        // against some fixed value instead, the correct PIN would fail.
+        let verifier = PinVerifier::derive_pbkdf2(b"246810", *b"an-unusual-saltx")
+            .expect("pbkdf2 derivation failed in test");
+        let mut mm = ModeManager::new(verifier);
+        let mut km = key_manager_with_derived_keys();
+        let mut pm = PowerManager::new();
+
+        mm.enter_sentinel(&mut km, &mut pm)
+            .expect("enter_sentinel failed");
+        mm.exit_sentinel(b"246810", &mut pm)
+            .expect("correct PIN must verify against the record's own salt");
+        assert_eq!(mm.mode(), SecurityMode::Daily);
+    }
+
+    #[test]
+    fn verifier_accepts_only_the_pin_it_was_derived_from() {
+        // The record verifies at its own level, independent of ModeManager
+        // state: the PIN it was derived from passes, any other fails.
+        let verifier = PinVerifier::derive_pbkdf2(b"123456", *b"device-a-saltxxx")
+            .expect("pbkdf2 derivation failed in test");
+
+        assert!(verifier.verify(b"123456"), "correct PIN must verify");
+        assert!(
+            !verifier.verify(b"654321"),
+            "a different PIN must not verify"
+        );
+    }
+
+    #[test]
+    fn provisioning_draws_a_distinct_salt_per_call() {
+        // The production path: two provisionings of the same PIN must not
+        // produce the same record, because the salt comes from the CSPRNG
+        // rather than from a build constant. Under nextest each test is its
+        // own process, so seeding here cannot leak into another test.
+        crate::csprng::seed_for_test(&[0x42u8; 32], &[0u8; 8], 0);
+
+        let first = PinVerifier::provision(b"123456").expect("provisioning failed");
+        let second = PinVerifier::provision(b"123456").expect("provisioning failed");
+
+        assert_ne!(
+            first.salt, second.salt,
+            "each provisioning must draw a fresh salt"
+        );
+        assert_ne!(
+            first.digest, second.digest,
+            "a fresh salt must yield a different digest for the same PIN"
+        );
+        assert!(
+            first.verify(b"123456"),
+            "a provisioned record must verify the PIN it was made from"
+        );
+    }
+
+    #[test]
+    fn provisioning_fails_closed_when_entropy_is_unavailable() {
+        // No seed_for_test call: the CSPRNG is unseeded in this process.
+        // Provisioning must refuse rather than fall back to a constant or a
+        // zero-filled salt, which is the whole point of #272.
+        assert_eq!(
+            PinVerifier::provision(b"123456"),
+            Err(PinProvisionError::Entropy),
+            "provisioning must fail closed when the CSPRNG is not seeded"
+        );
+    }
+
+    #[test]
+    fn verifier_records_the_kdf_that_produced_it() {
+        // The record is versioned: it names its KDF and that KDF's
+        // parameters, so a later migration to a memory-hard function can
+        // verify pre-migration records instead of forcing a PIN reset.
+        let verifier = derive_test_pin_verifier(b"123456");
+        assert_eq!(
+            verifier.kdf,
+            PinKdf::Pbkdf2Sha256 {
+                iterations: crate::security::PBKDF2_ITERATIONS
+            },
+            "the verifier must record which KDF and parameters produced its digest"
         );
     }
 

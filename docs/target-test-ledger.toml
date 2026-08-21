@@ -588,7 +588,7 @@ mechanism = "host"
 
 [[module]]
 name = "security_mode"
-tests = 38
+tests = 44
 mechanism = "both"
 witness = "boot.sh"
 fidelity = "Policy transitions are host/QEMU-covered, but #874 blocks automatic modem-cut semantics and requested/applied/observed conflation; #881 owns the absent physical side-button/PTT producer and safe gesture policy"
