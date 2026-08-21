@@ -214,8 +214,13 @@ mod tests {
     use super::*;
 
     /// A valid secret: six in-range indices, fixed width.
+    ///
+    /// Each group is visibly distinct so a reader can check the expected
+    /// indices against the literal without counting -- the first version of
+    /// this fixture read `0775` where its assertion claimed `7750`, and the
+    /// test caught the assertion rather than the parser.
     fn valid_digits() -> [u8; SECRET_DIGITS] {
-        *b"000107750001000200030004"
+        *b"000100020003000400057775"
     }
 
     #[test]
@@ -253,7 +258,7 @@ mod tests {
     #[test]
     fn a_complete_secret_parses_to_its_indices() {
         let words = parse_secret(&valid_digits()).unwrap_or([0; REQUIRED_WORDS]);
-        assert_eq!(words, [1, 7750, 1, 2, 3, 4]);
+        assert_eq!(words, [1, 2, 3, 4, 5, 7775]);
     }
 
     #[test]
