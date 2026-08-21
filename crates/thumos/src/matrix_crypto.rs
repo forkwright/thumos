@@ -358,40 +358,34 @@ impl fmt::Display for DeviceKeys {
 // Olm session (1:1)
 // ---------------------------------------------------------------------------
 
-/// Simplified Olm session for 1:1 encrypted messaging.
+/// A record that an inbound Olm pre-key handshake completed with a peer.
 ///
-/// Tracks a symmetric ratchet key and chain index established at session
-/// creation ([`derive_olm_initial_ratchet_key`]).
+/// WHY this holds an identifier and no key material (#844): a session carries
+/// a ratchet only if something advances it, and there is no per-message Olm
+/// encrypt/decrypt path in this kernel -- `grep "fn encrypt_olm"` returns
+/// nothing. A ratchet key or chain index stored here would be written once at
+/// construction and never again, which is worse than absent in two ways: it
+/// leaves key-derived material resident for the session's lifetime with no way
+/// to use it, and it offers an interface whose most natural completion --
+/// deriving per-message keys from a static root -- is the defect #830 fixed
+/// one layer up in Megolm.
 ///
-/// WARNING: unlike [`MegolmSession`] (#830), `ratchet_key` does NOT
-/// currently advance per message -- no production code path mutates it or
-/// `chain_index` after [`MatrixCrypto::process_olm_prekey_message`]
-/// constructs the session. There is no per-message Olm encrypt/decrypt path
-/// yet (#844 tracks the missing per-message ratchet/encrypt/decrypt path), so
-/// this session provides no forward secrecy within
-/// itself today -- `chain_index` is retained for that future ratchet step.
-// WHY: no derived `Debug` — a derive would print `ratchet_key` in the clear
-// (audit #268). Fields are `pub(crate)`, not `pub`, so key material cannot
-// escape the crate. The manual `Debug`/`Display` impls redact the key.
+/// So do not add ratchet state here ahead of the step that advances it. #437
+/// owns the per-message path and introduces both together.
+// WHY: no derived `Debug` — `session_id` is a hash of key material and is
+// rendered as a two-byte prefix rather than in full (audit #268).
 #[derive(Clone, PartialEq, Eq)]
 #[must_use]
 #[non_exhaustive]
 pub struct OlmSession {
-    /// Unique session identifier (SHA-256 of initial key material).
+    /// Unique session identifier (SHA-256 over the handshake inputs).
     pub(crate) session_id: [u8; KEY_SIZE],
-    /// Initial ratchet key (256 bits); per-message advancement is not implemented (#844).
-    pub(crate) ratchet_key: [u8; KEY_SIZE],
-    /// Number of messages sent/received in this session.
-    pub(crate) chain_index: u32,
 }
 
 impl fmt::Debug for OlmSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // WARNING: never print `ratchet_key` — redacted to prevent key leakage.
         f.debug_struct("OlmSession")
             .field("session_id", &SessionIdRedact(&self.session_id))
-            .field("ratchet_key", &"<redacted>")
-            .field("chain_index", &self.chain_index)
             .finish()
     }
 }
@@ -400,8 +394,8 @@ impl fmt::Display for OlmSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "OlmSession(id:{:02x}{:02x}..., chain:{})",
-            self.session_id[0], self.session_id[1], self.chain_index,
+            "OlmSession(id:{:02x}{:02x}...)",
+            self.session_id[0], self.session_id[1],
         )
     }
 }
@@ -463,7 +457,9 @@ impl Drop for MegolmSession {
     fn drop(&mut self) {
         // WHY: write_volatile prevents the compiler from eliding the zeroing
         // as a dead store (audit #268 zeroization idiom, matching
-        // `wifi::Ptk`'s `Drop`). Covers the live ratchet key AND every
+        // `aither_core::wpa::Ptk`'s `Drop` -- that type moved out of
+        // `wifi.rs` when #845 extracted the WPA/EAPOL core). Covers the live
+        // ratchet key AND every
         // cached skipped-message key -- #830's out-of-order support means
         // key material for not-yet-delivered messages also lives on this
         // struct, and it must not outlive the session either.
@@ -532,10 +528,17 @@ impl MatrixCrypto {
     pub(crate) fn new() -> Result<Self, CryptoError> {
         Ok(Self {
             device_keys: generate_device_keys()?,
-            olm_sessions: Vec::new(),
-            megolm_outbound: Vec::new(),
-            megolm_inbound: Vec::new(),
-            one_time_keys: Vec::new(),
+            // WHY capacity is reserved up front (#831): a `Vec` that grows
+            // memcpys its contents to a fresh allocation and frees the old one
+            // WITHOUT running `Drop` on anything -- so no `Drop` impl, however
+            // careful, can scrub the copy left behind. Every one of these
+            // vectors is bounded by a MAX_* constant that is already enforced
+            // on push, so allocating that bound once means the reallocation
+            // path is never taken and there is no abandoned copy to scrub.
+            olm_sessions: Vec::with_capacity(MAX_OLM_SESSIONS),
+            megolm_outbound: Vec::with_capacity(MAX_MEGOLM_OUTBOUND),
+            megolm_inbound: Vec::with_capacity(MAX_MEGOLM_INBOUND),
+            one_time_keys: Vec::with_capacity(MAX_ONE_TIME_KEYS),
         })
     }
 
@@ -611,6 +614,12 @@ impl MatrixCrypto {
     /// Returns `true` if `key` was present and removed.
     pub(crate) fn consume_one_time_key(&mut self, key: &[u8; KEY_SIZE]) -> bool {
         if let Some(idx) = self.one_time_keys.iter().position(|k| k == key) {
+            // WHY scrub before removing (#831): `swap_remove` returns the value
+            // and lets it drop, and a `[u8; 32]` has no `Drop`, so the bytes
+            // would simply be abandoned in place. Zeroing through the vector's
+            // own storage is what actually clears them -- scrubbing the moved
+            // copy afterwards would leave the original slot untouched.
+            zeroize_bytes(&mut self.one_time_keys[idx]);
             self.one_time_keys.swap_remove(idx);
             true
         } else {
@@ -682,23 +691,38 @@ impl MatrixCrypto {
         // WHY (capacity before consume): see the doc comment above -- a
         // session we cannot record must not cost this device a one-time key
         // it cannot recover.
+        //
+        // WHY the scrubs on these error paths (#831): `base_key` and
+        // `one_time_key` are already populated here, so returning without
+        // clearing them abandons key material in this frame exactly as the
+        // success path would. stegnos's unseal path applies the same
+        // discipline on every exit rather than only the happy one.
         if self.olm_sessions.len() >= MAX_OLM_SESSIONS {
+            zeroize_bytes(&mut base_key);
+            zeroize_bytes(&mut one_time_key);
             return Err(CryptoError::SessionCapacityReached);
         }
 
         if !self.consume_one_time_key(&one_time_key) {
+            zeroize_bytes(&mut base_key);
+            zeroize_bytes(&mut one_time_key);
             return Err(CryptoError::UnknownOneTimeKey);
         }
 
-        let ratchet_key =
+        let mut ratchet_key =
             derive_olm_initial_ratchet_key(sender_identity_key, &base_key, &one_time_key)?;
         let session_id = security::sha256(&ratchet_key);
 
-        self.olm_sessions.push(OlmSession {
-            session_id,
-            ratchet_key,
-            chain_index: 0,
-        });
+        // WHY all three are scrubbed here (#831/#844): the session records only
+        // `session_id`, so every other value in this frame is key-derived
+        // material with no remaining consumer. `base_key` and `one_time_key`
+        // are copies this function made out of `body`; the derived key is not
+        // stored at all now that nothing can advance it.
+        zeroize_bytes(&mut ratchet_key);
+        zeroize_bytes(&mut base_key);
+        zeroize_bytes(&mut one_time_key);
+
+        self.olm_sessions.push(OlmSession { session_id });
         Ok(())
     }
 
@@ -1473,8 +1497,11 @@ fn derive_olm_initial_ratchet_key(
     ikm[KEY_SIZE * 2..].copy_from_slice(one_time_key);
 
     let mut ratchet_key = [0u8; KEY_SIZE];
-    security::hkdf_sha256(&ikm, &[], LABEL, &mut ratchet_key)
-        .map_err(|_| CryptoError::KeyDerivationFailed)?;
+    let derived = security::hkdf_sha256(&ikm, &[], LABEL, &mut ratchet_key);
+    // The concatenation holds all three handshake values; clear it before
+    // returning on either path (#831).
+    zeroize_bytes(&mut ikm);
+    derived.map_err(|_| CryptoError::KeyDerivationFailed)?;
     Ok(ratchet_key)
 }
 
@@ -2040,6 +2067,120 @@ mod tests {
             crypto.olm_sessions().len(),
             1,
             "a valid pre-key message must establish exactly one session"
+        );
+    }
+
+    #[test]
+    fn olm_session_retains_no_key_material() {
+        // #844: the session must carry an identifier and nothing else. A
+        // ratchet field here would be written once and never advanced, and
+        // the natural completion of that interface is a static-root key
+        // schedule -- the defect #830 fixed in Megolm.
+        //
+        // WHY sizeof and not a field read: a field that no longer exists
+        // cannot be named, so a compile-time size check is the only assertion
+        // that survives its removal and still fails if it comes back.
+        assert_eq!(
+            core::mem::size_of::<OlmSession>(),
+            KEY_SIZE,
+            "OlmSession must hold exactly its session id -- no ratchet state \
+             ahead of the step that would advance it (#844)"
+        );
+    }
+
+    #[test]
+    fn session_id_is_not_the_derived_key() {
+        // The identifier is a hash of the derived value, not the value. If
+        // these ever coincided, publishing or logging a session id would
+        // publish the key material the handshake produced.
+        let sender_identity_key = [0x11u8; KEY_SIZE];
+        let base_key = [0x22u8; KEY_SIZE];
+        let one_time_key = [0x33u8; KEY_SIZE];
+        let derived =
+            derive_olm_initial_ratchet_key(&sender_identity_key, &base_key, &one_time_key)
+                .expect("derivation must succeed");
+        let session_id = security::sha256(&derived);
+        assert_ne!(
+            derived, session_id,
+            "the session id must not be the derived key itself"
+        );
+    }
+
+    #[test]
+    fn consuming_a_one_time_key_clears_its_slot() {
+        // #831: `swap_remove` returns the value and lets it drop, and a
+        // `[u8; 32]` has no `Drop` -- so without an explicit scrub the bytes
+        // are abandoned in place. Proven by consuming the FIRST of two keys:
+        // swap_remove moves the last element into that slot, so the surviving
+        // key must be intact while the consumed one is gone from the pool.
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let keys = crypto
+            .generate_one_time_keys(2)
+            .expect("seeding must succeed")
+            .to_vec();
+        let consumed = keys[0];
+        let survivor = keys[1];
+
+        assert!(crypto.consume_one_time_key(&consumed));
+
+        assert!(
+            !crypto.one_time_keys().contains(&consumed),
+            "a consumed key must not remain in the pool"
+        );
+        assert!(
+            crypto.one_time_keys().contains(&survivor),
+            "consuming one key must not disturb the others"
+        );
+        assert!(
+            !crypto.one_time_keys().iter().any(|k| *k == [0u8; KEY_SIZE]),
+            "scrubbing must not leave a zero key live in the pool"
+        );
+    }
+
+    #[test]
+    fn key_vectors_never_reallocate() {
+        // #831: a `Vec` that grows memcpys its contents and frees the old
+        // allocation WITHOUT running `Drop`, so no `Drop` impl can scrub the
+        // abandoned copy. Reserving each bound up front is what removes that
+        // path, and this asserts the capacity actually covers the maximum the
+        // push guards allow.
+        setup_test_rng();
+        let crypto = MatrixCrypto::new().expect("test csprng seeded");
+        assert!(
+            crypto.one_time_keys().capacity() >= MAX_ONE_TIME_KEYS,
+            "the one-time key pool must be allocated at its bound"
+        );
+        assert!(
+            crypto.olm_sessions().capacity() >= MAX_OLM_SESSIONS,
+            "the Olm session list must be allocated at its bound"
+        );
+    }
+
+    #[test]
+    fn a_full_one_time_key_pool_does_not_grow_its_allocation() {
+        // The property the test above bounds, exercised: fill the pool to its
+        // maximum and confirm the backing allocation never moved.
+        setup_test_rng();
+        let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
+        let before = crypto.one_time_keys().as_ptr();
+        while crypto.one_time_keys().len() < MAX_ONE_TIME_KEYS {
+            let room = MAX_ONE_TIME_KEYS - crypto.one_time_keys().len();
+            let batch = room.min(MAX_GENERATED_KEYS);
+            crypto
+                .generate_one_time_keys(u32::try_from(batch).expect("batch fits u32"))
+                .expect("seeding must succeed");
+        }
+        assert_eq!(
+            crypto.one_time_keys().len(),
+            MAX_ONE_TIME_KEYS,
+            "the pool must reach its bound for this to prove anything"
+        );
+        assert_eq!(
+            crypto.one_time_keys().as_ptr(),
+            before,
+            "filling the pool to its bound must not reallocate, or a copy of \
+             every key is abandoned unscrubbed (#831)"
         );
     }
 
