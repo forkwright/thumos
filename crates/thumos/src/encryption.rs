@@ -597,7 +597,7 @@ mod tests {
         // to 12, into exactly the region it says it cannot encrypt.
         let mut dev = MemBlockDevice::new(13).expect("create device");
         let key = sample_xts_key();
-        let enc = EncryptedBlockDevice::new(&mut dev, &key).expect("wrap device");
+        let enc = EncryptedBlockDevice::new(&mut dev, key);
 
         let usable = enc.sector_count();
         assert_eq!(usable, 8, "13 sectors round down to one full block");
