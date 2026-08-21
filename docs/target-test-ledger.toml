@@ -110,7 +110,7 @@ mechanism = "host"
 
 [[module]]
 name = "clock"
-tests = 18
+tests = 27
 mechanism = "both"
 witness = "boot.sh"
 
@@ -613,7 +613,7 @@ fidelity = "allocator-on-real-tables is brk-witnessed; host tests cover size-cla
 
 [[module]]
 name = "sms"
-tests = 27
+tests = 32
 mechanism = "both"
 witness = "boot.sh"
 
