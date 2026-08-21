@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 aes = { workspace = true }
 zeroize = { workspace = true }
+subtle = { workspace = true }
 jiff = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }

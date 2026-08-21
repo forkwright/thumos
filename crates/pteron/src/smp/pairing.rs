@@ -128,6 +128,19 @@ pub(crate) enum PairingState {
     Failed(PairingFailReason),
 }
 
+/// Constant-time comparison of two `DHKey` Check values.
+///
+/// WHY not `==` (#835): `Ea`/`Eb` are authentication tags. A variable-time
+/// comparison returns early at the first differing byte, so the time it takes
+/// reports how much of a forged tag was correct -- which is the measurement an
+/// attacker needs to build the rest one byte at a time. `subtle` inserts
+/// optimisation barriers the compiler cannot elide, which a hand-rolled loop
+/// cannot promise.
+fn check_values_match(expected: &[u8; 16], received: &[u8; 16]) -> bool {
+    use subtle::ConstantTimeEq;
+    expected.ct_eq(received).unwrap_u8() == 1
+}
+
 /// A bonded peer's identity, once Phase 3 key distribution has completed
 /// the receive direction: the address a resolvable private address must
 /// be checked against, and the IRK to check it with.
@@ -343,6 +356,30 @@ impl<'a> PairingSession<'a> {
         }
     }
 
+    /// The Long Term Key this pairing derived, once both `DHKey` Checks have
+    /// passed.
+    ///
+    /// WHY this exists at all (#835): `f5` produced an LTK that no caller
+    /// could reach, so [`Self::confirm_link_encrypted`]'s contract -- "the
+    /// link is now encrypted with this session's derived LTK" -- named a key
+    /// the caller had no way to obtain. Pairing could complete every
+    /// cryptographic step and still never encrypt a link.
+    ///
+    /// WHY it is gated on state rather than simply returned when present:
+    /// `f5` sets the LTK BEFORE either `DHKey` Check is verified, so a caller
+    /// reading it earlier would be handed a key derived with a peer that has
+    /// not yet proved it holds the same one. From
+    /// [`PairingState::AwaitingEncryption`] onward both checks have passed,
+    /// which is precisely the point the link may be encrypted.
+    pub(crate) const fn long_term_key(&self) -> Option<&[u8; 16]> {
+        match self.state {
+            PairingState::AwaitingEncryption
+            | PairingState::ExchangingKeys
+            | PairingState::Complete => self.secrets.ltk.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Caller confirms the link is now encrypted with this session's
     /// derived LTK (via the HCI encryption round trip — see module
     /// docs). Produces this device's own Phase 3 PDUs, if the negotiated
@@ -462,7 +499,13 @@ impl<'a> PairingSession<'a> {
         if !features.auth_req.secure_connections {
             return Some(PairingFailReason::AuthenticationRequirements);
         }
-        if features.max_key_size < REQUIRED_MAX_ENC_KEY_SIZE {
+        // WHY `!=` and not `<` (#835): the field is peer-supplied and the
+        // spec defines it over 7..=16 octets, so a value ABOVE 16 is not a
+        // larger key -- it is outside the field's domain entirely, and a
+        // lower-bound test accepts it. This implementation requires the full
+        // 16 either way, so demanding exactly that closes the upper end
+        // without inventing a policy.
+        if features.max_key_size != REQUIRED_MAX_ENC_KEY_SIZE {
             return Some(PairingFailReason::EncryptionKeySize);
         }
         None
@@ -652,7 +695,7 @@ impl<'a> PairingSession<'a> {
         };
         // Eb = f6(MacKey, Nb, Na, ra=0, IOcapB, A2, A1)
         let expected_eb = toolbox::f6(&mackey, &nb, &na, &ASSOCIATION_R, &io_cap_b, &a2, &a1);
-        if expected_eb != check.value {
+        if !check_values_match(&expected_eb, &check.value) {
             return self.fail(PairingFailReason::DhKeyCheckFailed);
         }
         self.state = PairingState::AwaitingEncryption;
@@ -674,7 +717,7 @@ impl<'a> PairingSession<'a> {
             return self.fail(PairingFailReason::Unspecified);
         };
         let expected_ea = toolbox::f6(&mackey, &na, &nb, &ASSOCIATION_R, &io_cap_a, &a1, &a2);
-        if expected_ea != check.value {
+        if !check_values_match(&expected_ea, &check.value) {
             return self.fail(PairingFailReason::DhKeyCheckFailed);
         }
         // Eb = f6(MacKey, Nb, Na, ra=0, IOcapB, A2, A1)
@@ -961,6 +1004,43 @@ mod tests {
         assert_eq!(
             bob.state(),
             PairingState::Failed(PairingFailReason::EncryptionKeySize)
+        );
+    }
+
+    #[test]
+    fn responder_rejects_an_encryption_key_size_above_the_defined_domain() {
+        // #835: the check tested only the LOWER bound, so a peer claiming a
+        // size the spec does not define -- anything above 16 octets -- passed
+        // feature validation. The field is peer-supplied; a value outside its
+        // domain is not a stronger key, it is an unparsed byte.
+        let irk = fixed_irk(0x10);
+        for oversized in [REQUIRED_MAX_ENC_KEY_SIZE + 1, 32, u8::MAX] {
+            let mut bob =
+                PairingSession::new(Role::Responder, test_addr(0x02), test_addr(0x01), &irk);
+            let mut features = PairingFeatures::OURS;
+            features.max_key_size = oversized;
+            let wire = pdu::encode_pairing_request(features);
+            let mut rng = fixed_stream(0x01);
+            let _ = bob.handle_pdu(&wire, &mut rng);
+
+            assert_eq!(
+                bob.state(),
+                PairingState::Failed(PairingFailReason::EncryptionKeySize),
+                "max_key_size {oversized} is outside 7..=16 and must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn the_long_term_key_is_unreachable_until_both_dhkey_checks_pass() {
+        // #835: `f5` sets the LTK before either check is verified, so an
+        // accessor that simply returned it when present would hand out a key
+        // derived with a peer that has not yet proved it holds the same one.
+        let irk = fixed_irk(0x10);
+        let alice = PairingSession::new(Role::Initiator, test_addr(0x01), test_addr(0x02), &irk);
+        assert!(
+            alice.long_term_key().is_none(),
+            "a session that has not started cannot have an agreed LTK"
         );
     }
 
