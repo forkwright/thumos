@@ -1488,6 +1488,60 @@ pub(crate) fn current_page_table() -> usize {
     }
 }
 
+/// The current process's own user L1 page table, or `None` when no user address
+/// space is active.
+///
+/// Used by `memguard::validate_user_range` to decide whether a caller-VAS check
+/// is answerable at all.
+///
+/// WHY this is not `current_page_table() != 0`: PID 0 (kinit) is a real process
+/// entry whose `page_table_phys` is `mmu::table_base()`, the kernel global L1.
+/// A bare non-zero test would hand that table to the caller, and user pointers
+/// would then be validated against the kernel's own mappings — accepting
+/// exactly the kernel addresses the check exists to reject. The determination
+/// here is positive on all three counts: a non-zero PID, a non-zero table, and
+/// a table that is not the kernel's.
+pub(crate) fn current_user_page_table() -> Option<usize> {
+    let pt = current_page_table();
+    if current_pid() == 0 || pt == 0 || pt == mmu::table_base() {
+        return None;
+    }
+    Some(pt)
+}
+
+/// Identity-map `[ptr, ptr+len)` into the CURRENT process's address space as a
+/// user read/write region.
+///
+/// WHY this exists: `memguard::validate_user_range` checks syscall buffers
+/// against the calling process's page tables. A host fixture that installs a
+/// process with `set_current_for_test` must therefore give that process the
+/// mappings a real one would already have, or every syscall it makes returns
+/// `EFAULT`. Before that check existed a fixture could hand the kernel any host
+/// address and have it accepted — which is precisely the behaviour the check
+/// removes, so the fixtures have to model ownership now.
+///
+/// Panics rather than returning a failure: a fixture that silently failed to
+/// map its own buffer would produce an `EFAULT` that reads as a defect in the
+/// code under test.
+#[cfg(test)]
+pub(crate) fn map_user_buffer_for_test(ptr: usize, len: usize) {
+    let l1 = current_page_table();
+    if l1 == 0 || len == 0 {
+        return;
+    }
+    let attrs = mmu::prot_to_l2_flags(mmu::prot::PROT_READ | mmu::prot::PROT_WRITE);
+    let mut page = ptr - (ptr % crate::page::PAGE_SIZE);
+    let end = ptr.saturating_add(len);
+    while page < end {
+        // SAFETY: test-only. `l1` is a live pool L1 table and `page` is page
+        // aligned by construction.
+        let mapped =
+            unsafe { mmu::ensure_page_mappable(l1, page) && mmu::map_page(l1, page, page, attrs) };
+        assert!(mapped, "test fixture could not map user page {page:#x}");
+        page += crate::page::PAGE_SIZE;
+    }
+}
+
 /// Get the current process's heap break.
 pub(crate) fn current_heap_break() -> usize {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on

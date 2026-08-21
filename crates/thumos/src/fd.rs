@@ -24,7 +24,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 
-use crate::memguard::validate_user_buffer;
+use crate::memguard::{Access, validate_user_range};
 use crate::vfs::{self, Filesystem, InodeType, MountTable, VfsError};
 
 /// Maximum number of open file descriptors per process.
@@ -715,7 +715,8 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
         return ENOENT;
     }
 
-    if !validate_user_buffer(path_ptr as usize, len) {
+    // Read: the path bytes are copied OUT of user memory.
+    if !validate_user_range(path_ptr as usize, len, Access::Read) {
         return EFAULT;
     }
 
@@ -781,10 +782,10 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
-    // Validated ahead of the fd/mount-table lookups below (an early-reject,
-    // rather than right at the deref) so a bad buf_ptr is rejected regardless
-    // of fd/mount state.
-    if !validate_user_buffer(buf_ptr as usize, count) {
+    // Write: file data is copied INTO this buffer. Validated ahead of the
+    // fd/mount-table lookups below (an early-reject, rather than right at the
+    // deref) so a bad buf_ptr is rejected regardless of fd/mount state.
+    if !validate_user_range(buf_ptr as usize, count, Access::Write) {
         return EFAULT;
     }
 
@@ -851,10 +852,11 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
-    // Validated ahead of the fd/mount-table lookups below (an early-reject,
-    // rather than right at the deref) so a bad buf_ptr is rejected regardless
-    // of fd/mount state.
-    if !validate_user_buffer(buf_ptr as usize, count) {
+    // Read: the payload is copied OUT of this buffer, so a read-only mapping
+    // is acceptable. Validated ahead of the fd/mount-table lookups below (an
+    // early-reject, rather than right at the deref) so a bad buf_ptr is
+    // rejected regardless of fd/mount state.
+    if !validate_user_range(buf_ptr as usize, count, Access::Read) {
         return EFAULT;
     }
 
@@ -944,8 +946,14 @@ pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
     if stat_buf_ptr == 0 {
         return EFAULT;
     }
-    if !validate_user_buffer(path_ptr as usize, len)
-        || !validate_user_buffer(stat_buf_ptr as usize, core::mem::size_of::<StatBuf>())
+    // The path is read out of user memory; the StatBuf is written into it, so
+    // the two halves carry different permission requirements.
+    if !validate_user_range(path_ptr as usize, len, Access::Read)
+        || !validate_user_range(
+            stat_buf_ptr as usize,
+            core::mem::size_of::<StatBuf>(),
+            Access::Write,
+        )
     {
         return EFAULT;
     }
@@ -1025,10 +1033,14 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
         }
     };
 
-    // Validated once the fd is confirmed to exist — every return path below
-    // (mount-absent, fs-absent, fs.stat() error, and success) writes through
-    // stat_buf_ptr, so this one guard covers all four unsafe writes.
-    if !validate_user_buffer(stat_buf_ptr as usize, core::mem::size_of::<StatBuf>()) {
+    // Write: validated once the fd is confirmed to exist — every return path
+    // below (mount-absent, fs-absent, fs.stat() error, and success) writes
+    // through stat_buf_ptr, so this one guard covers all four unsafe writes.
+    if !validate_user_range(
+        stat_buf_ptr as usize,
+        core::mem::size_of::<StatBuf>(),
+        Access::Write,
+    ) {
         return EFAULT;
     }
 
@@ -1369,7 +1381,8 @@ pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
-    if !validate_user_buffer(buf_ptr as usize, size as usize) {
+    // Write: the resolved path is copied INTO this buffer.
+    if !validate_user_range(buf_ptr as usize, size as usize, Access::Write) {
         return EFAULT;
     }
 
@@ -1421,7 +1434,8 @@ pub(crate) fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
         return ENOENT;
     }
 
-    if !validate_user_buffer(path_ptr as usize, len) {
+    // Read: the path bytes are copied OUT of user memory.
+    if !validate_user_range(path_ptr as usize, len, Access::Read) {
         return EFAULT;
     }
 
@@ -1482,7 +1496,8 @@ pub(crate) fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
         return ENOENT;
     }
 
-    if !validate_user_buffer(path_ptr as usize, len) {
+    // Read: the path bytes are copied OUT of user memory.
+    if !validate_user_range(path_ptr as usize, len, Access::Read) {
         return EFAULT;
     }
 
@@ -1540,7 +1555,8 @@ pub(crate) fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
         return ENOENT;
     }
 
-    if !validate_user_buffer(path_ptr as usize, len) {
+    // Read: the path bytes are copied OUT of user memory.
+    if !validate_user_range(path_ptr as usize, len, Access::Read) {
         return EFAULT;
     }
 
@@ -2896,6 +2912,12 @@ mod tests {
 
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        // The spawned process owns an address space of its own, and syscall
+        // buffers are now validated against it — so this fixture must map the
+        // buffer it hands to sys_read/sys_write, exactly as a real process
+        // would already own it. Without this the calls return EFAULT and the
+        // fd-isolation assertion below never gets to run.
+        crate::process::map_user_buffer_for_test(buf.as_ptr() as usize, buf.len());
         assert_eq!(
             sys_read(fd, buf.as_mut_ptr() as u32, 8),
             EBADF,
@@ -2951,6 +2973,12 @@ mod tests {
 
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
+        // The child owns its own address space; map both buffers it will use
+        // (the mapping persists across the later switch back to this child).
+        crate::process::map_user_buffer_for_test(buf2.as_ptr() as usize, buf2.len());
+        // Taking the address of a static is safe; only dereferencing it is not.
+        let buf3_addr = core::ptr::addr_of!(BUF3) as usize;
+        crate::process::map_user_buffer_for_test(buf3_addr, 2);
         let n2 = sys_read(fd, buf2.as_mut_ptr() as u32, 7);
         assert_eq!(
             n2, 7,
@@ -3007,6 +3035,13 @@ mod tests {
         unsafe {
             crate::process::set_current_for_test(child_pid);
         }
+
+        // The child owns its own address space, so both the path it passes to
+        // open() and the buffer it reads into have to be mapped in it.
+        crate::process::map_user_buffer_for_test(path.as_ptr() as usize, path.len());
+        // Taking the address of a static is safe; only dereferencing it is not.
+        let buf2_addr = core::ptr::addr_of!(BUF2) as usize;
+        crate::process::map_user_buffer_for_test(buf2_addr, 5);
 
         // Child opens the SAME path fresh -- a brand-new OFD at offset 0,
         // not the parent's shared, already-advanced descriptor.
@@ -3112,6 +3147,8 @@ mod tests {
         assert_eq!(vfs_chdir("/"), 0);
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUFCWD2) };
+        // The child owns its own address space; getcwd writes into this buffer.
+        crate::process::map_user_buffer_for_test(buf2.as_ptr() as usize, buf2.len());
         assert_eq!(sys_getcwd(buf2.as_mut_ptr() as u32, 8), 0);
         assert_eq!(&buf2[..1], b"/", "child reads its own cwd");
 

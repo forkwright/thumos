@@ -300,6 +300,14 @@ fn validate(data: &[u8]) -> Result<(usize, ValidatedElf), ElfError> {
         // segment whose [vaddr, vaddr+memsz) falls outside sanctioned
         // user-accessible DRAM before a single byte is written, closing the
         // arbitrary-write primitive.
+        //
+        // WHY the numeric guard and not `validate_user_range`: this is the one
+        // caller with no caller VAS to validate against. The image is being
+        // placed for a process that does not have a page table yet, and the
+        // write goes through the kernel identity map — so a caller-VAS check
+        // here would test the *loading* process's mappings against the *loaded*
+        // process's addresses and reject every legitimate segment. The bound
+        // that matters at this point is the numeric one.
         if !validate_user_buffer(vaddr, memsz) {
             return Err(ElfError::InvalidSegment);
         }

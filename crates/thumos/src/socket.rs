@@ -442,13 +442,18 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     if (addr_len as usize) < addr_size || addr_ptr == 0 {
         return fd::EINVAL;
     }
-    if !crate::memguard::validate_user_buffer(addr_ptr as usize, addr_size) {
+    // Read: the sockaddr is copied OUT of user memory.
+    if !crate::memguard::validate_user_range(
+        addr_ptr as usize,
+        addr_size,
+        crate::memguard::Access::Read,
+    ) {
         return fd::EFAULT;
     }
 
     // Read the sockaddr_in.
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS/read-permission validation.
+    // SAFETY: validated above against the caller's own page tables with PL0
+    // read permission, so the whole struct is mapped and readable.
     let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
 
     if sockaddr.sin_family != AF_INET as u16 {
@@ -582,13 +587,18 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     if (addr_len as usize) < addr_size || addr_ptr == 0 {
         return fd::EINVAL;
     }
-    if !crate::memguard::validate_user_buffer(addr_ptr as usize, addr_size) {
+    // Read: the sockaddr is copied OUT of user memory.
+    if !crate::memguard::validate_user_range(
+        addr_ptr as usize,
+        addr_size,
+        crate::memguard::Access::Read,
+    ) {
         return fd::EFAULT;
     }
 
     // Read the sockaddr_in.
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS/read-permission validation.
+    // SAFETY: validated above against the caller's own page tables with PL0
+    // read permission, so the whole struct is mapped and readable.
     let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
 
     if sockaddr.sin_family != AF_INET as u16 {
@@ -750,7 +760,12 @@ pub(crate) fn sys_sendto(
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
-    if !crate::memguard::validate_user_buffer(buf_ptr as usize, len as usize) {
+    // Read: the payload is copied OUT of this buffer and sent.
+    if !crate::memguard::validate_user_range(
+        buf_ptr as usize,
+        len as usize,
+        crate::memguard::Access::Read,
+    ) {
         return fd::EFAULT;
     }
 
@@ -805,12 +820,13 @@ pub(crate) fn sys_sendto(
             // Determine destination: explicit addr or connected peer.
             let dest = if dest_addr_ptr != 0
                 && (addr_len as usize) >= core::mem::size_of::<SockaddrIn>()
-                && crate::memguard::validate_user_buffer(
+                && crate::memguard::validate_user_range(
                     dest_addr_ptr as usize,
                     core::mem::size_of::<SockaddrIn>(),
+                    crate::memguard::Access::Read,
                 ) {
-                // SAFETY: the current guard bounds this to configured DRAM;
-                // #871 owns caller-VAS/read-permission validation.
+                // SAFETY: validated above against the caller's own page tables
+                // with PL0 read permission.
                 let sa = unsafe { core::ptr::read_unaligned(dest_addr_ptr as *const SockaddrIn) };
                 IpEndpoint::new(IpAddress::Ipv4(sa.ipv4_addr()), sa.port())
             } else if let Some((ip, port)) = info.peer_addr {
@@ -882,7 +898,12 @@ pub(crate) fn sys_recvfrom(
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
-    if !crate::memguard::validate_user_buffer(buf_ptr as usize, len as usize) {
+    // Write: received bytes are copied INTO this buffer.
+    if !crate::memguard::validate_user_range(
+        buf_ptr as usize,
+        len as usize,
+        crate::memguard::Access::Write,
+    ) {
         return fd::EFAULT;
     }
 
@@ -943,9 +964,10 @@ pub(crate) fn sys_recvfrom(
                     // src_addr_ptr does not fail the read — the data is
                     // already received — it just skips the writeback.
                     if src_addr_ptr != 0
-                        && crate::memguard::validate_user_buffer(
+                        && crate::memguard::validate_user_range(
                             src_addr_ptr as usize,
                             core::mem::size_of::<SockaddrIn>(),
+                            crate::memguard::Access::Write,
                         )
                     {
                         let src_ip = match meta.endpoint.addr {
@@ -1277,7 +1299,7 @@ mod tests {
     /// Pointer-dependent test: only runs on 32-bit targets.
     ///
     /// WHY function-local `static mut`: `sys_bind` now validates `addr_ptr` via
-    /// `validate_user_buffer` before dereferencing it. A stack address (e.g.
+    /// `validate_user_range` before dereferencing it. A stack address (e.g.
     /// `&addr`) falls outside [`board::KERNEL_END`, `board::RAM_END`) on
     /// this host binary and would be rejected before bind logic runs; a
     /// function-local static lands inside that window (see fd.rs tests for
@@ -1359,7 +1381,7 @@ mod tests {
 
     #[test]
     fn bind_rejects_kernel_range_addr_ptr() {
-        // No socket setup needed: validate_user_buffer runs before the
+        // No socket setup needed: validate_user_range runs before the
         // FD_TABLE is-a-socket check, so fd=0 (< MAX_FDS) is sufficient.
         let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_bind(0, kernel_ptr, core::mem::size_of::<SockaddrIn>() as u32);
@@ -1421,7 +1443,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     fn tcp_bind_then_connect_succeeds() {
         // WHY function-local `static mut`: sys_bind/sys_connect now validate
-        // addr_ptr via validate_user_buffer (issue #291) before
+        // addr_ptr via validate_user_range (issue #291) before
         // dereferencing it. A stack address falls outside
         // [board::KERNEL_END, board::RAM_END) on this host binary and
         // would be rejected before bind/connect logic runs.
@@ -1879,6 +1901,17 @@ mod tests {
         }
 
         let data = b"x";
+        // The spawned process owns an address space of its own, and syscall
+        // buffers are validated against it — so every pointer this fixture
+        // hands to a syscall below has to be mapped in it, exactly as a real
+        // process would already own them. Without this each call returns
+        // EFAULT and the fd-isolation assertions never get to run.
+        crate::process::map_user_buffer_for_test(data.as_ptr() as usize, data.len());
+        // Taking the address of a static is safe; only dereferencing it is not.
+        let recv_addr = core::ptr::addr_of!(RECV_BUF) as usize;
+        let addr2_addr = core::ptr::addr_of!(ADDR2) as usize;
+        crate::process::map_user_buffer_for_test(recv_addr, 4);
+        crate::process::map_user_buffer_for_test(addr2_addr, core::mem::size_of::<SockaddrIn>());
         assert_eq!(
             sys_sendto(fd, data.as_ptr() as u32, 1, 0, 0, 0),
             fd::EBADF,
