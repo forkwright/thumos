@@ -1015,6 +1015,7 @@ dependencies = [
  "sha2",
  "snafu",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

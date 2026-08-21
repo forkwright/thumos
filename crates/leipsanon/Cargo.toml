@@ -12,7 +12,7 @@ getrandom = { workspace = true }
 log = { workspace = true }
 rustix = { workspace = true }
 snafu = { workspace = true }
-zeroize = "1"
+zeroize = { workspace = true }
 
 [lints]
 workspace = true
