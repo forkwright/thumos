@@ -619,6 +619,18 @@ fn load_impl(data: &[u8], placement: Option<(usize, usize)>) -> Result<LoadedElf
 mod tests {
     use super::*;
 
+    /// The lowest address a user segment may load at: the first byte past the
+    /// kernel-reserved window.
+    ///
+    /// WHY derived rather than written (#917): every fixture below that uses
+    /// this meant "just inside the allowed load region", and each wrote the
+    /// literal `0x4010_0000` instead. When the kernel window grew to two L1
+    /// sections that literal moved OUTSIDE the region, and two fixtures written
+    /// to prove a valid ELF parses began proving the opposite -- still passing
+    /// their own assertions right up until they did not. A fixture whose
+    /// meaning depends on a constant has to read that constant.
+    const LOAD_BASE: u32 = crate::board::KERNEL_END as u32;
+
     /// Size of an ELF32 header in bytes.
     const ELF32_EHDR_SIZE: usize = 52;
     /// Size of an ELF32 program header in bytes.
@@ -789,9 +801,9 @@ mod tests {
 
         // Elf32Phdr at offset 52: p_type = PT_LOAD (1).
         buf[52..56].copy_from_slice(&1u32.to_le_bytes());
-        // p_vaddr (offset 60): board::KERNEL_END, inside the allowed load
-        // region so #318's check does not fire first.
-        buf[60..64].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+        // p_vaddr (offset 60): the first byte past the kernel window, inside
+        // the allowed load region so #318's check does not fire first.
+        buf[60..64].copy_from_slice(&LOAD_BASE.to_le_bytes());
         // p_memsz (offset 72): 32 MB, comfortably inside RAM but four times
         // over MAX_ELF_PAGES (2048 pages = 8 MB).
         buf[72..76].copy_from_slice(&0x0200_0000u32.to_le_bytes());
@@ -818,7 +830,7 @@ mod tests {
             // p_type = PT_LOAD (1).
             buf[off..off + 4].copy_from_slice(&1u32.to_le_bytes());
             // p_vaddr: inside the allowed load region.
-            buf[off + 8..off + 12].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+            buf[off + 8..off + 12].copy_from_slice(&LOAD_BASE.to_le_bytes());
             // p_memsz: 1 page, well under the MAX_ELF_PAGES budget even x17.
             buf[off + 20..off + 24].copy_from_slice(&0x1000u32.to_le_bytes());
         }
@@ -844,18 +856,22 @@ mod tests {
         buf[..ELF32_EHDR_SIZE].copy_from_slice(&h);
         buf[44] = 1; // e_phnum = 1
         // e_entry (offset 24): moved to the start of the PT_LOAD segment below.
-        buf[24..28].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+        buf[24..28].copy_from_slice(&LOAD_BASE.to_le_bytes());
 
         // Elf32Phdr at offset 52: p_type = PT_LOAD (1).
         buf[52..56].copy_from_slice(&1u32.to_le_bytes());
         // p_vaddr (offset 60): inside the allowed load region, matching e_entry.
-        buf[60..64].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+        buf[60..64].copy_from_slice(&LOAD_BASE.to_le_bytes());
         // p_memsz (offset 72): small, just needs to contain e_entry.
         buf[72..76].copy_from_slice(&0x1000u32.to_le_bytes());
 
         let (entry, validated) =
             validate(&buf).expect("valid ELF with entry inside a loaded segment must parse");
-        assert_eq!(entry, 0x4010_0000, "entry point must match e_entry");
+        assert_eq!(
+            entry,
+            crate::board::KERNEL_END,
+            "entry point must match e_entry"
+        );
         assert_eq!(validated.count, 1, "one PT_LOAD segment expected");
     }
 
@@ -873,17 +889,19 @@ mod tests {
         let mut buf = [0u8; ELF32_EHDR_SIZE + 2 * ELF32_PHDR_SIZE];
         buf[..ELF32_EHDR_SIZE].copy_from_slice(&make_valid_ehdr());
         buf[44] = 2; // e_phnum = 2
-        buf[24..28].copy_from_slice(&0x4010_0000u32.to_le_bytes()); // e_entry in seg 0
+        buf[24..28].copy_from_slice(&LOAD_BASE.to_le_bytes()); // e_entry in seg 0
 
-        // Segment 0: PT_LOAD, vaddr 0x40100000, memsz 0x1000.
+        // Segment 0: PT_LOAD, vaddr LOAD_BASE, memsz 0x1000.
         let off0 = ELF32_EHDR_SIZE;
         buf[off0..off0 + 4].copy_from_slice(&1u32.to_le_bytes());
-        buf[off0 + 8..off0 + 12].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+        buf[off0 + 8..off0 + 12].copy_from_slice(&LOAD_BASE.to_le_bytes());
         buf[off0 + 20..off0 + 24].copy_from_slice(&0x1000u32.to_le_bytes());
-        // Segment 1: PT_LOAD, vaddr 0x40102000, memsz 0x2000 (distinct values).
+        // Segment 1: PT_LOAD, one page past segment 0's end, memsz 0x2000 --
+        // distinct values from segment 0, and still inside the load region
+        // wherever that region begins.
         let off1 = ELF32_EHDR_SIZE + ELF32_PHDR_SIZE;
         buf[off1..off1 + 4].copy_from_slice(&1u32.to_le_bytes());
-        buf[off1 + 8..off1 + 12].copy_from_slice(&0x4010_2000u32.to_le_bytes());
+        buf[off1 + 8..off1 + 12].copy_from_slice(&(LOAD_BASE + 0x2000).to_le_bytes());
         buf[off1 + 20..off1 + 24].copy_from_slice(&0x2000u32.to_le_bytes());
 
         let (_e1, v1) = validate(&buf).expect("first validate must succeed");
@@ -895,13 +913,13 @@ mod tests {
         let (v0, m0, _, _, _) = v1.segments[0];
         assert_eq!(
             (v0, m0),
-            (0x4010_0000, 0x1000),
+            (crate::board::KERNEL_END, 0x1000),
             "segment 0 (vaddr, memsz) must read unshifted in a standalone pre-pass (#501)"
         );
         let (v1a, m1, _, _, _) = v1.segments[1];
         assert_eq!(
             (v1a, m1),
-            (0x4010_2000, 0x2000),
+            (crate::board::KERNEL_END + 0x2000, 0x2000),
             "segment 1 (vaddr, memsz) must read unshifted in a standalone pre-pass (#501)"
         );
 
@@ -937,7 +955,7 @@ mod tests {
         buf[52..56].copy_from_slice(&1u32.to_le_bytes());
         // p_vaddr (offset 60): inside the allowed load region, but does not
         // contain e_entry (0x8000).
-        buf[60..64].copy_from_slice(&0x4010_0000u32.to_le_bytes());
+        buf[60..64].copy_from_slice(&LOAD_BASE.to_le_bytes());
         buf[72..76].copy_from_slice(&0x1000u32.to_le_bytes());
 
         assert_eq!(validate(&buf).unwrap_err(), ElfError::InvalidSegment);

@@ -51,11 +51,22 @@ pub(crate) const RAM_END: usize = 0x8000_0000;
 /// Kernel load address.
 pub(crate) const KERNEL_LOAD: usize = 0x4000_8000;
 
-/// Kernel reserved size (992 KB).
-/// WHY: kernel image + reserved region spans `0x4000_8000..0x400F_FFFF`
-/// (see the memory map in `memguard.rs`), so `KERNEL_END` lands on the
-/// `0x4010_0000` page boundary rather than a full 1 MB past `KERNEL_LOAD`.
-pub(crate) const KERNEL_RESERVED: usize = 0xF_8000;
+/// Kernel reserved size (2016 KB).
+///
+/// WHY the window is measured to `KERNEL_LOAD` but sized in whole megabytes
+/// from `RAM_START`: the region is mapped by coarse L2 tables, one per 1 MB
+/// L1 section, so `KERNEL_END` must land on a megabyte boundary. The image
+/// loads 32 KB in, at `KERNEL_LOAD`, which is why this constant is 32 KB short
+/// of a round figure.
+///
+/// WHY two sections rather than one (#917): the image, its statics and all
+/// five stacks share this window, and at one section they occupied 96.4% of
+/// it -- 36,958 bytes of headroom, against features that cost tens of
+/// kilobytes each. `mmu::KERNEL_SECTIONS` derives the table count from this
+/// value, so raising it further needs no second edit there; what it does need
+/// is `link.ld`'s bound, which `scripts/check-kernel-window.sh` holds to this
+/// definition because a linker script cannot read a Rust constant.
+pub(crate) const KERNEL_RESERVED: usize = 0x1F_8000;
 
 /// Kernel end address (load + reserved).
 pub(crate) const KERNEL_END: usize = KERNEL_LOAD + KERNEL_RESERVED;
@@ -90,7 +101,10 @@ mod tests {
     #[allow(clippy::assertions_on_constants)]
     fn shared_memory_map_is_self_consistent() {
         assert_eq!(RAM_END - RAM_START, 1024 * 1024 * 1024);
-        assert_eq!(KERNEL_END, 0x4010_0000);
+        assert_eq!(KERNEL_END, 0x4020_0000);
+        // The window must be a whole number of 1 MB sections measured from
+        // RAM_START, because coarse L2 tables cannot map a partial one.
+        assert_eq!((KERNEL_END - RAM_START) % (1 << 20), 0);
         assert_eq!(KERNEL_END, KERNEL_LOAD + KERNEL_RESERVED);
         assert_eq!(DISPLAY_WIDTH * DISPLAY_HEIGHT * 2, 153_600); // RGB565 framebuffer size
         assert!(USER_TEXT_BASE < RAM_END);

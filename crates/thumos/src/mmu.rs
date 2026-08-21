@@ -92,9 +92,36 @@ pub(crate) struct L2Table {
     pub entries: [u32; 256],
 }
 
-/// Dedicated L2 table for the kernel's 1 MB region at `0x4000_0000`, mapped with
-/// W^X page permissions (#417). Permanent (not drawn from the userspace pool).
-static mut KERNEL_L2: L2Table = L2Table { entries: [0; 256] };
+/// Virtual base of the kernel image region.
+const KERNEL_BASE: usize = crate::board::RAM_START;
+
+/// Bytes one L1 section maps.
+const SECTION_SIZE: usize = 1 << 20;
+
+/// How many 1 MB L1 sections the kernel image region spans (#917).
+///
+/// One coarse L2 table maps exactly one section, so this is also the number of
+/// kernel L2 tables and the number of L1 entries the boot map fills before the
+/// flat-RAM sections begin. It is DERIVED from `board::KERNEL_END` rather than
+/// written down, because the two must agree and a second written copy is a
+/// second thing to forget: raising `KERNEL_RESERVED` without adding a table
+/// leaves the top of the reserved window with no valid mapping, and the first
+/// symptom is a data abort at whatever happens to be linked up there.
+const KERNEL_SECTIONS: usize = (crate::board::KERNEL_END - KERNEL_BASE) / SECTION_SIZE;
+
+/// L1 index of the kernel region's first section.
+const KERNEL_MB: usize = KERNEL_BASE / SECTION_SIZE;
+
+// INVARIANT: the reserved window is a whole number of sections. A partial one
+// cannot be mapped by coarse tables, and the remainder would be silently
+// unmapped rather than rejected.
+const _: () = assert!((crate::board::KERNEL_END - KERNEL_BASE).is_multiple_of(SECTION_SIZE));
+
+/// Dedicated L2 tables for the kernel image region at `0x4000_0000`, mapped
+/// with W^X page permissions (#417). Permanent (not drawn from the userspace
+/// pool).
+static mut KERNEL_L2: [L2Table; KERNEL_SECTIONS] =
+    [const { L2Table { entries: [0; 256] } }; KERNEL_SECTIONS];
 
 /// Pool of L2 page tables for userspace mappings.
 /// WHY: 64 tables supports up to ~64 MB of page-mapped address space
@@ -736,12 +763,17 @@ fn wx_page_attrs(va: usize, text_start: usize, etext: usize, erodata: usize) -> 
     }
 }
 
-/// Fill the kernel L2 table with W^X page permissions (#417).
+/// Fill the kernel L2 tables with W^X page permissions (#417).
 ///
-/// link.ld page-aligns the image boundaries so each 4 KB page of the kernel's
-/// 1 MB region falls entirely in one region (see [`wx_page_attrs`]). Gated to
-/// the real target: the linker symbols do not exist in the i686 host-test link
+/// link.ld page-aligns the image boundaries so each 4 KB page of the kernel
+/// region falls entirely in one region (see [`wx_page_attrs`]). Gated to the
+/// real target: the linker symbols do not exist in the i686 host-test link
 /// (the wx policy itself is unit-tested via `wx_page_attrs`).
+///
+/// Every section is filled by the same rule, so the W^X boundary does not
+/// depend on which section a page lands in -- pages past `__erodata` come out
+/// writable and execute-never wherever they are, which is what the second
+/// section holds (#917).
 ///
 /// # Safety
 /// Called once during early boot on `KERNEL_L2`, interrupts disabled, before
@@ -753,22 +785,24 @@ unsafe fn map_kernel_wx() {
         static __etext: u8;
         static __erodata: u8;
     }
-    const KERNEL_BASE: usize = 0x4000_0000;
     const PAGE: usize = 4096;
+    const PAGES_PER_SECTION: usize = SECTION_SIZE / PAGE;
 
     let text_start = core::ptr::addr_of!(__text_start) as usize;
     let etext = core::ptr::addr_of!(__etext) as usize;
     let erodata = core::ptr::addr_of!(__erodata) as usize;
     // SAFETY: KERNEL_L2 is a static mut written once here during early boot
     // with interrupts disabled and no concurrent access.
-    let l2 = unsafe { &mut *core::ptr::addr_of_mut!(KERNEL_L2) };
-    for (i, entry) in l2.entries.iter_mut().enumerate() {
-        let va = KERNEL_BASE + i * PAGE;
-        *entry = u32::try_from(va).unwrap_or_default()
-            | page_flags::SMALL_PAGE
-            | page_flags::SHAREABLE
-            | page_flags::NORMAL_WB_WA
-            | wx_page_attrs(va, text_start, etext, erodata);
+    let tables = unsafe { &mut *core::ptr::addr_of_mut!(KERNEL_L2) };
+    for (section, table) in tables.iter_mut().enumerate() {
+        for (i, entry) in table.entries.iter_mut().enumerate() {
+            let va = KERNEL_BASE + (section * PAGES_PER_SECTION + i) * PAGE;
+            *entry = u32::try_from(va).unwrap_or_default()
+                | page_flags::SMALL_PAGE
+                | page_flags::SHAREABLE
+                | page_flags::NORMAL_WB_WA
+                | wx_page_attrs(va, text_start, etext, erodata);
+        }
     }
 }
 
@@ -831,30 +865,40 @@ pub unsafe fn init_and_enable() {
         map_section(mb, mb, MemoryType::Device);
     }
 
-    // Kernel image region (0x4000_0000 - 0x4010_0000): W^X via the kernel L2
-    // table (#417) -- .text read-only+executable, .rodata read-only+XN,
+    // Kernel image region ([RAM_START, KERNEL_END)): W^X via the kernel L2
+    // tables (#417) -- .text read-only+executable, .rodata read-only+XN,
     // data/bss/stacks writable+XN. The rest of DRAM below is flat RAM sections,
     // now execute-never.
-    // On the real target the kernel image is W^X-mapped via its L2 table;
-    // under host test the linker symbols do not exist, so map mb 0x400 as a
-    // flat RAM section (the wx policy is unit-tested via wx_page_attrs).
+    // On the real target the kernel image is W^X-mapped via its L2 tables;
+    // under host test the linker symbols do not exist, so map the same
+    // megabytes as flat RAM sections (the wx policy is unit-tested via
+    // wx_page_attrs).
     #[cfg(not(test))]
     {
         // SAFETY: KERNEL_L2 is filled once here during early boot with
-        // interrupts disabled, before the MMU is enabled; L1[0x400] then
-        // points at it as a coarse page table (domain 0, checked by DACR per
-        // #323).
+        // interrupts disabled, before the MMU is enabled; each L1 entry then
+        // points at one of its tables as a coarse page table (domain 0,
+        // checked by DACR per #323).
         unsafe {
             map_kernel_wx();
         }
-        table.entries[0x400] = u32::try_from(core::ptr::addr_of!(KERNEL_L2) as usize)
-            .unwrap_or_default()
-            | page_flags::L1_PAGE_TABLE;
+        // SAFETY: KERNEL_L2 was filled by map_kernel_wx above and is not
+        // written again; this is early boot with interrupts disabled, so no
+        // other reference to it exists. Each element is 1 KB aligned by
+        // L2Table's repr, which the L1 coarse descriptor requires.
+        let kernel_tables = unsafe { &*core::ptr::addr_of!(KERNEL_L2) };
+        for (section, l2) in kernel_tables.iter().enumerate() {
+            let table_addr = core::ptr::from_ref(l2) as usize;
+            table.entries[KERNEL_MB + section] =
+                u32::try_from(table_addr).unwrap_or_default() | page_flags::L1_PAGE_TABLE;
+        }
     }
     #[cfg(test)]
-    map_section(0x400, 0x400, MemoryType::Ram);
+    for section in 0..KERNEL_SECTIONS {
+        map_section(KERNEL_MB + section, KERNEL_MB + section, MemoryType::Ram);
+    }
 
-    // DRAM beyond the kernel image: 0x4010_0000 - 0x7FFF_FFFF, RAM + XN.
+    // DRAM beyond the kernel image: [KERNEL_END, 0x8000_0000), RAM + XN.
     // WHY (#482): this INCLUDES the userspace text region (0x7FF0_0000, still
     // excluded from the page allocator as the fixed /init load address). The
     // kernel never executes user code from its own address space anymore --
@@ -863,7 +907,7 @@ pub unsafe fn init_and_enable() {
     // kernel .text, completing #417's W^X: a kernel control-flow hijack into
     // the attacker-influenced /init image region now prefetch-aborts (XN)
     // instead of executing. (Retires MemoryType::UserText.)
-    for mb in 0x401..0x800 {
+    for mb in (KERNEL_MB + KERNEL_SECTIONS)..0x800 {
         map_section(mb, mb, MemoryType::Ram);
     }
 
@@ -1058,13 +1102,14 @@ pub fn alloc_addr_space() -> Option<usize> {
 /// never individually unmapped before exit -- so a process that exits
 /// without tearing down its own mappings cannot permanently strand pool
 /// slots (#330). Cloned kernel identity-map entries are section descriptors,
-/// so the walk skips them. The ONE cloned kernel entry that IS an
-/// `L1_PAGE_TABLE` -- the shared `KERNEL_L2` at L1[0x400] (#417 W^X) -- is
-/// visited by this walk, but `free_l2_table` rejects it: it only frees an
-/// address that matches an `L2_TABLES` pool slot, and `KERNEL_L2` is a separate
-/// static, never a pool member. So the kernel's own mappings are never freed --
-/// safety here rests on that pool-membership check, not on the descriptor type
-/// alone.
+/// so the walk skips them. The cloned kernel entries that ARE `L1_PAGE_TABLE`
+/// -- the shared `KERNEL_L2` tables at L1[0x400..] (#417 W^X, one per section
+/// since #917) -- are visited by this walk, but `free_l2_table` rejects them:
+/// it only frees an address that matches an `L2_TABLES` pool slot, and
+/// `KERNEL_L2` is a separate static, never a pool member. So the kernel's own
+/// mappings are never freed -- safety here rests on that pool-membership
+/// check, not on the descriptor type alone, and it therefore did not need
+/// revisiting when the kernel grew from one such entry to two.
 ///
 /// Returns `true` if `phys_addr` matched an allocated pool slot and was
 /// freed, `false` if it matched no slot -- WHY (finding 8): the caller can
@@ -1159,6 +1204,29 @@ mod tests {
 
     fn reset() {
         reset_addr_space_pool();
+    }
+
+    #[test]
+    fn the_kernel_window_has_one_l2_table_per_section() {
+        // #917: the table count and the window size are one fact. A window
+        // raised without a table leaves its top megabyte pointing at nothing,
+        // and the first report of that is a data abort on device -- so this
+        // pins the derivation rather than the number it currently produces.
+        let tables = core::mem::size_of::<[L2Table; KERNEL_SECTIONS]>() / size_of::<L2Table>();
+        assert_eq!(
+            tables, KERNEL_SECTIONS,
+            "one coarse L2 table maps one 1 MB section, so the counts are the same number"
+        );
+        assert_eq!(
+            KERNEL_SECTIONS * SECTION_SIZE,
+            crate::board::KERNEL_END - KERNEL_BASE,
+            "the tables must span exactly the reserved window, with nothing left over"
+        );
+        assert_eq!(
+            size_of::<L2Table>(),
+            SECTION_SIZE / 4096 * 4,
+            "a coarse table is one 4-byte entry per 4 KB page of its section"
+        );
     }
 
     #[test]
