@@ -525,6 +525,13 @@ mod tests {
 
     #[test]
     fn pipe_writes_fds_to_unaligned_userspace_pointer() {
+        // Static rather than stack for the reason given in
+        // `pipe_creates_two_fds`; the +1 offset below stays inside the same
+        // page. Declared before any statement: an item after a statement is
+        // scoped from the top of the block anyway, which clippy rejects as
+        // misleading.
+        static mut FDS_BUF: [u8; 9] = [0u8; 9];
+
         reset_pool();
         unsafe {
             crate::fd::reset_fd_state_for_test();
@@ -533,9 +540,6 @@ mod tests {
         // Deliberately misaligned: offset 1 byte into the buffer, so a
         // plain core::ptr::write (which requires u32 alignment) would be
         // undefined behavior. write_unaligned must handle this correctly.
-        // Static rather than stack for the reason given in
-        // `pipe_creates_two_fds`; the +1 offset stays inside the same page.
-        static mut FDS_BUF: [u8; 9] = [0u8; 9];
         let unaligned_ptr = core::ptr::addr_of_mut!(FDS_BUF)
             .cast::<u8>()
             .wrapping_add(1);
