@@ -803,6 +803,14 @@ pub enum ScreenAction {
     /// The unlock looks normal on screen; this is the only navigation-channel
     /// signal that carries the duress event to the privileged event loop.
     Duress,
+    /// A passphrase entry was submitted and is waiting to be verified.
+    ///
+    /// The lock screen deliberately does not verify it. Boot-strength
+    /// verification derives the master key from the entered bytes and compares
+    /// `KeyManager::derive_boot_verifier`'s output, so it belongs to the layer
+    /// that owns the `KeyManager`; that layer calls
+    /// `LockScreen::submit_passphrase_with` on receiving this (#841).
+    PassphraseSubmitted,
 }
 
 /// Screen trait -- each screen implements this.
@@ -900,13 +908,13 @@ impl UiManager {
     ///
     /// Applies the navigation action (navigate, back, or exit).
     /// Returns `true` if the UI should exit (e.g., from `ScreenAction::Exit`).
-    // WHY: Exit, KillModem, and Duress all return true, but each does so for
-    // a different reason (documented per-arm below: real UI exit vs. a
-    // privileged policy request vs. yielding to the panic sequence).
-    // Merging them into one arm would blur those distinct rationales.
+    // WHY: several arms share a return value while meaning different things
+    // (documented per-arm below: real UI exit vs. a privileged policy request
+    // vs. yielding to the panic sequence vs. a submission the privileged layer
+    // still has to adjudicate). Merging them would blur those rationales.
     #[expect(
         clippy::match_same_arms,
-        reason = "Exit, KillModem, and Duress all return true for different reasons -- real UI exit vs. a privileged policy request vs. yielding to the panic sequence; merging would blur those distinct rationales"
+        reason = "arms sharing a return value mean different things -- real UI exit vs. a privileged policy request vs. yielding to the panic sequence vs. a submission awaiting privileged verification; merging would blur those rationales"
     )]
     pub(crate) fn apply_action(&mut self, action: ScreenAction) -> bool {
         match action {
@@ -931,6 +939,10 @@ impl UiManager {
             // Duress before applying it; apply_action returns true so the UI
             // yields to the panic sequence.
             ScreenAction::Duress => true,
+            // WHY false: submission is not navigation. The UI stays on the
+            // lock screen while the privileged layer verifies, and moves only
+            // once that verification returns a result (#841).
+            ScreenAction::PassphraseSubmitted => false,
         }
     }
 
