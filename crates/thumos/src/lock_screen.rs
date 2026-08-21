@@ -119,6 +119,14 @@ pub enum UnlockResult {
     },
     /// Ten wrong attempts — triggers full wipe.
     WipeTrigger,
+    /// The entered secret could not be checked -- the KDF's memory was
+    /// unavailable, or a record carries invalid parameters.
+    ///
+    /// WHY this is not `WrongPin`: the failure path counts attempts and wipes
+    /// the device at the limit. Reporting an unrunnable check as a wrong guess
+    /// would let anyone able to exhaust the page allocator drive the device to
+    /// a wipe without ever guessing (#272).
+    VerifierUnavailable,
 }
 
 impl fmt::Display for UnlockResult {
@@ -130,6 +138,7 @@ impl fmt::Display for UnlockResult {
             Self::DuressDetected => write!(f, "Duress detected"),
             Self::Throttled { wait_secs } => write!(f, "Throttled ({wait_secs}s remaining)"),
             Self::WipeTrigger => write!(f, "Wipe triggered"),
+            Self::VerifierUnavailable => write!(f, "Could not check secret"),
         }
     }
 }
@@ -450,9 +459,24 @@ impl LockScreen {
         // `verify` is a full KDF run, so short-circuiting on the duress match
         // would make duress and a wrong PIN distinguishable by wall time --
         // the tell the duress PIN exists to avoid. Both always run, and the
-        // branch below reads two already-computed booleans (#841).
-        let is_duress = self.duress_pin.is_some_and(|v| v.verify(entered));
-        let is_real = self.pin.is_some_and(|v| v.verify(entered));
+        // branches below read two already-computed results (#841).
+        let duress_check = self.duress_pin.map(|v| v.verify(entered));
+        let real_check = self.pin.map(|v| v.verify(entered));
+
+        // A check that could not run is not a failed guess, and must not reach
+        // `on_failure` -- that path increments the attempt counter and wipes at
+        // the limit (#272). Both KDF runs have already happened, so returning
+        // here costs no timing distinguishability.
+        if matches!(duress_check, Some(Err(_))) || matches!(real_check, Some(Err(_))) {
+            // Report it and clear the buffer, but leave `attempts` and the
+            // throttle untouched: no guess was made, so none may be counted.
+            self.last_result = Some(UnlockResult::VerifierUnavailable);
+            self.clear_input();
+            return UnlockResult::VerifierUnavailable;
+        }
+
+        let is_duress = matches!(duress_check, Some(Ok(true)));
+        let is_real = matches!(real_check, Some(Ok(true)));
 
         if is_duress {
             // Duress detected — visual feedback is identical to success.
@@ -677,6 +701,10 @@ impl Screen for LockScreen {
                 }
                 UnlockResult::Throttled { .. } => ("WAIT...", color::YELLOW),
                 UnlockResult::WipeTrigger => ("WIPING DEVICE", color::RED),
+                // Not red: nothing was judged wrong. Telling the operator
+                // their secret was rejected when it was never tested is the
+                // failure this variant exists to avoid (#272).
+                UnlockResult::VerifierUnavailable => ("CANNOT CHECK - RETRY", color::YELLOW),
             };
             ui::draw_str_centered(fb, w, 0, w, STATUS_Y, msg, msg_color, color::BLACK);
         }

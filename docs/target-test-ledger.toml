@@ -589,8 +589,9 @@ fidelity = "Provision/read is proven on the RAM double; #866 blocks plaintext us
 
 [[module]]
 name = "security"
-tests = 27
+tests = 35
 mechanism = "host"
+notes = "The Argon2id block matrix comes from a host allocation under cfg(test): the page allocator's addresses are not mapped on this target, so the page-backed production path is exercised only on device. What the host does cover is the body around it -- page-count arithmetic, the scrub before release, and the refusal when the matrix is unavailable (#272)."
 
 [[module]]
 name = "security_mode"

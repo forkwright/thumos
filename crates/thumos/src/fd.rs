@@ -1715,7 +1715,6 @@ mod tests {
     }
 
     use super::*;
-    use crate::vfs::InodeType;
 
     /// Reset global state for test isolation.
     ///
