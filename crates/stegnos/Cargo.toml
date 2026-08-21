@@ -8,8 +8,9 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-aes = "0.9"
+aes = { workspace = true }
 aes-gcm = { workspace = true }
+ghash = { workspace = true }
 getrandom = { workspace = true }
 jiff = { workspace = true }
 pbkdf2 = { workspace = true }

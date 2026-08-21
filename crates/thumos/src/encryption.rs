@@ -20,6 +20,17 @@ extern crate alloc;
 use aes::{Aes256, cipher::KeyInit};
 use xts_mode::Xts128;
 
+// WHY an assertion rather than a comment (#835/#836): an AES round-key
+// schedule is reversible to the key that produced it, and `aes/zeroize` is
+// what supplies the `Drop` that scrubs it. A build without that feature
+// compiles everything here unchanged and silently leaves the schedule
+// resident -- once per XTS cipher and once per Megolm cipher -- so nothing but
+// a type-level demand would notice the regression. This one fails the build.
+const _: fn() = || {
+    const fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+    assert_zeroize_on_drop::<Aes256>();
+};
+
 use crate::block::{BLOCK_SIZE, BlockDevice, BlockError, SECTOR_SIZE, SECTORS_PER_BLOCK};
 use crate::key_manager::SecureKey;
 use crate::security::{SecurityError, XTS_KEY_SIZE};
