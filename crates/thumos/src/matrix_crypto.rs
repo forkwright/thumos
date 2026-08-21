@@ -531,10 +531,13 @@ impl MatrixCrypto {
             // WHY capacity is reserved up front (#831): a `Vec` that grows
             // memcpys its contents to a fresh allocation and frees the old one
             // WITHOUT running `Drop` on anything -- so no `Drop` impl, however
-            // careful, can scrub the copy left behind. Every one of these
-            // vectors is bounded by a MAX_* constant that is already enforced
-            // on push, so allocating that bound once means the reallocation
-            // path is never taken and there is no abandoned copy to scrub.
+            // careful, can scrub the copy left behind. `one_time_keys` and the
+            // two megolm vectors hold key material and are the reason this
+            // matters; each is bounded by a MAX_* constant already enforced on
+            // push, so allocating that bound once means the reallocation path
+            // is never taken. `olm_sessions` holds only session identifiers
+            // (#844) and is reserved alongside them for consistency rather
+            // than for secrecy.
             olm_sessions: Vec::with_capacity(MAX_OLM_SESSIONS),
             megolm_outbound: Vec::with_capacity(MAX_MEGOLM_OUTBOUND),
             megolm_inbound: Vec::with_capacity(MAX_MEGOLM_INBOUND),
@@ -2139,28 +2142,12 @@ mod tests {
     }
 
     #[test]
-    fn key_vectors_never_reallocate() {
+    fn a_full_one_time_key_pool_does_not_grow_its_allocation() {
         // #831: a `Vec` that grows memcpys its contents and frees the old
         // allocation WITHOUT running `Drop`, so no `Drop` impl can scrub the
-        // abandoned copy. Reserving each bound up front is what removes that
-        // path, and this asserts the capacity actually covers the maximum the
-        // push guards allow.
-        setup_test_rng();
-        let crypto = MatrixCrypto::new().expect("test csprng seeded");
-        assert!(
-            crypto.one_time_keys().capacity() >= MAX_ONE_TIME_KEYS,
-            "the one-time key pool must be allocated at its bound"
-        );
-        assert!(
-            crypto.olm_sessions().capacity() >= MAX_OLM_SESSIONS,
-            "the Olm session list must be allocated at its bound"
-        );
-    }
-
-    #[test]
-    fn a_full_one_time_key_pool_does_not_grow_its_allocation() {
-        // The property the test above bounds, exercised: fill the pool to its
-        // maximum and confirm the backing allocation never moved.
+        // abandoned copy of every key. Reserving the bound up front removes
+        // that path; this proves it by pointer identity rather than by
+        // reading a capacity, because not moving is the actual property.
         setup_test_rng();
         let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let before = crypto.one_time_keys().as_ptr();
