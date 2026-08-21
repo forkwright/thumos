@@ -671,19 +671,20 @@ pub unsafe fn run() -> ! {
     }
 
     // -----------------------------------------------------------------------
-    // Step 5b: CSPRNG (ChaCha20, provisional timer-derived gate with timeout;
-    // #840 blocks treating it as production entropy acceptance)
+    // Step 5b: CSPRNG (ChaCha20, timer cadence-departure gate with timeout)
     // -----------------------------------------------------------------------
     serial.log("[init] CSPRNG (ChaCha20)\r\n");
     // SAFETY: called once after exceptions::init() (timer running, IRQs enabled).
-    // csprng::init() spins on WFI until the provisional credit counter reaches
-    // SEED_ENTROPY_BITS, then seeds ChaCha20Rng and sets INITIALIZED. #840
-    // establishes that deterministic timer increments can satisfy that counter;
-    // the wall-clock bound only prevents a dead timer ISR from hanging boot.
+    // csprng::init() spins on WFI until credited cadence departure reaches
+    // SEED_ENTROPY_BITS, then seeds ChaCha20Rng and sets INITIALIZED. A
+    // deterministic timer -- stuck, fixed-reload, or periodic -- credits
+    // nothing and times out here rather than seeding. The gate bounds
+    // unpredictability against a known cadence; it is not a min-entropy
+    // measurement, and no device-bound health receipt exists yet (#873).
     // Must complete before any radio driver init.
     state.csprng_ok = unsafe { csprng::init() };
     if state.csprng_ok {
-        serial.log(" CSPRNG gate reached (entropy UNQUALIFIED, #840)\r\n");
+        serial.log(" CSPRNG gate reached (no device entropy receipt, #873)\r\n");
     } else {
         serial.log(" WARN CSPRNG timed out waiting for timer credits -- bytes unavailable\r\n");
         serial.log(" Radio identity randomization disabled\r\n");
