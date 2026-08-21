@@ -65,8 +65,8 @@ mod hex;
 mod udh;
 
 pub use at_response::{
-    FinalResult, RegStatus, SimPinState, dbm_to_bars, is_ring, is_valid_dial_byte, parse_cpin,
-    parse_csq, parse_final_result, rssi_to_dbm,
+    FinalResult, RSSI_DBM_UNKNOWN, RegStatus, SimPinState, dbm_to_bars, is_ring,
+    is_valid_dial_byte, parse_cpin, parse_csq, parse_final_result, rssi_to_dbm,
 };
 pub use bcd_address::{
     MAX_ADDRESS_DIGITS, TOA_INTERNATIONAL, decode_bcd_address, encode_bcd_address, pack_bcd_digits,
