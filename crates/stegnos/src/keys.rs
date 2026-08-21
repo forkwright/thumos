@@ -10,7 +10,7 @@ use sha2::Sha256;
 use snafu::Snafu;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::config::{Config, MIN_PBKDF2_ITERATIONS};
+use crate::config::{Config, MAX_PBKDF2_ITERATIONS, MIN_PBKDF2_ITERATIONS};
 
 const SALT_LEN: usize = 32;
 const KEY_LEN: usize = 32;
@@ -41,6 +41,23 @@ pub(crate) enum Error {
         iterations: u32,
         /// The enforced minimum ([`crate::config::MIN_PBKDF2_ITERATIONS`]).
         min: u32,
+        /// Source location.
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    /// The persisted iteration count on an unseal attempt was above the
+    /// configured maximum -- the same tampered-header class as
+    /// [`Error::WeakIterations`], from the other side of the range (#829).
+    #[snafu(display(
+        "stored iteration count {iterations} is above the maximum {max} \
+         (possible tampering)"
+    ))]
+    ExcessiveIterations {
+        /// The rejected, tampered-high iteration count read from the slot.
+        iterations: u32,
+        /// The enforced maximum ([`crate::config::MAX_PBKDF2_ITERATIONS`]).
+        max: u32,
         /// Source location.
         #[snafu(implicit)]
         location: snafu::Location,
@@ -230,6 +247,34 @@ pub(crate) fn seal_key_with_config(
     })
 }
 
+/// Reject a persisted iteration count outside the range the seal path clamps
+/// into, before it reaches key derivation (#357, #829).
+fn check_iteration_bounds(iterations: u32) -> Result<()> {
+    if iterations < MIN_PBKDF2_ITERATIONS {
+        return WeakIterationsSnafu {
+            iterations,
+            min: MIN_PBKDF2_ITERATIONS,
+        }
+        .fail();
+    }
+    // WHY the upper bound is checked on the READ path and not only on the seal
+    // path: an attacker who can rewrite the header to a value below the
+    // minimum can equally write one above the maximum, and `iterations` is a
+    // `u32`. At `u32::MAX` each attempt runs ~430x the count
+    // MAX_PBKDF2_ITERATIONS already pegs at over 30 s on the MT6739's A53, so
+    // the unlock path blocks for hours before it can even fail -- a denial of
+    // service that presents as a bricked device rather than as a rejected
+    // header (#829).
+    if iterations > MAX_PBKDF2_ITERATIONS {
+        return ExcessiveIterationsSnafu {
+            iterations,
+            max: MAX_PBKDF2_ITERATIONS,
+        }
+        .fail();
+    }
+    Ok(())
+}
+
 /// Unseal a primary key from `slot` using `passphrase`.
 ///
 /// Re-derives the wrapping key from the passphrase and stored salt, then
@@ -238,21 +283,17 @@ pub(crate) fn seal_key_with_config(
 /// # Errors
 ///
 /// Returns [`Error::KeyUnseal`] if the passphrase is wrong or the slot is corrupted.
-/// Returns [`Error::WeakIterations`] if the stored iteration count is below
-/// [`crate::config::MIN_PBKDF2_ITERATIONS`] -- the seal path always clamps
-/// into range, so a weakened stored value indicates a tampered header (#357).
+/// Returns [`Error::WeakIterations`] or [`Error::ExcessiveIterations`] if the
+/// stored iteration count falls outside
+/// `MIN_PBKDF2_ITERATIONS..=MAX_PBKDF2_ITERATIONS` -- the seal path always
+/// clamps into that range, so any stored value outside it indicates a tampered
+/// header (#357, #829).
 /// Returns [`Error::ZeroIterations`] if the stored iteration count is zero
 /// (subsumed by the `WeakIterations` check above; kept for `derive_key`
 /// callers that bypass `unseal_key`).
 /// Returns [`Error::InvalidKey`] if key construction fails.
 pub(crate) fn unseal_key(slot: &KeySlot, passphrase: &[u8]) -> Result<[u8; KEY_LEN]> {
-    if slot.iterations < MIN_PBKDF2_ITERATIONS {
-        return WeakIterationsSnafu {
-            iterations: slot.iterations,
-            min: MIN_PBKDF2_ITERATIONS,
-        }
-        .fail();
-    }
+    check_iteration_bounds(slot.iterations)?;
 
     let derived = derive_key(passphrase, &slot.salt, slot.iterations)?;
 
@@ -383,6 +424,53 @@ mod tests {
             "tampered slot with iterations=1 must be rejected as WeakIterations"
         );
         Ok(())
+    }
+
+    #[test]
+    fn unseal_rejects_tampered_high_iteration_slot() -> Result<()> {
+        // #829: the other half of the same tampered-header class. A rewritten
+        // u32::MAX makes the unlock path grind for hours before failing, so it
+        // must be refused before any derivation, exactly as the low side is.
+        let primary_key = [0x77u8; KEY_LEN];
+        let passphrase = b"correct passphrase";
+        let mut slot = seal_key(&primary_key, passphrase)?;
+        slot.iterations = u32::MAX;
+
+        let result = unseal_key(&slot, passphrase);
+        assert!(
+            matches!(
+                result,
+                Err(Error::ExcessiveIterations {
+                    iterations: u32::MAX,
+                    ..
+                })
+            ),
+            "tampered slot with iterations=u32::MAX must be rejected as ExcessiveIterations"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn iteration_bounds_are_inclusive_on_both_ends() {
+        // The read path must accept exactly what the seal path's
+        // `(MIN..=MAX).contains(&v)` can write. A predicate that excluded its
+        // own endpoints would reject a legitimately sealed header and report
+        // it as tampering.
+        //
+        // WHY this tests the predicate rather than driving `unseal_key`: an
+        // end-to-end check at MAX_PBKDF2_ITERATIONS would run ten million
+        // PBKDF2 rounds -- the very cost that bound exists to cap -- so the
+        // test would be slower than the attack it guards against.
+        assert!(check_iteration_bounds(MIN_PBKDF2_ITERATIONS).is_ok());
+        assert!(check_iteration_bounds(MAX_PBKDF2_ITERATIONS).is_ok());
+        assert!(matches!(
+            check_iteration_bounds(MIN_PBKDF2_ITERATIONS - 1),
+            Err(Error::WeakIterations { .. })
+        ));
+        assert!(matches!(
+            check_iteration_bounds(MAX_PBKDF2_ITERATIONS + 1),
+            Err(Error::ExcessiveIterations { .. })
+        ));
     }
 
     #[test]
