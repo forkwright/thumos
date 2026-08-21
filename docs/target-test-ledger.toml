@@ -448,6 +448,12 @@ tests = 18
 mechanism = "host"
 
 [[module]]
+name = "passphrase_policy"
+tests = 11
+mechanism = "host"
+fidelity = "The policy is pure arithmetic over typed digits, so host tests prove acceptance and refusal exactly. What they cannot reach is the boot-setup arm that feeds it: kinit.rs's first-boot loop runs only on non-QEMU hardware under secure_boot_ok, which no host or QEMU profile executes -- the same limit kinit_plan's row records. Generation is exercised against the seeded test CSPRNG, not device entropy."
+
+[[module]]
 name = "pipe"
 tests = 14
 mechanism = "host"
