@@ -65,7 +65,20 @@ pub(crate) struct RatchetState {
     pub(crate) counter: u32,
     /// Bounded cache of message keys for skipped/out-of-order messages (#212).
     /// Only the receive path populates this; the send path leaves it empty.
-    skipped: Vec<SkippedKey>,
+    ///
+    /// WHY boxed (#828): a `Vec` that grows memcpys its contents to a fresh
+    /// allocation and frees the old one WITHOUT running `Drop` on anything, so
+    /// no wrapper on the element can reach the copy left behind -- that is a
+    /// property of `Vec`, not of the element type. Behind a `Box` the vector
+    /// moves 8-byte pointers and the key material never moves at all. The
+    /// alternative, reserving `MAX_SKIPPED_KEYS` up front, costs ~36 KB per
+    /// ratchet state for a cache that is usually empty, and there is one
+    /// ratchet per direction per peer.
+    #[expect(
+        clippy::vec_box,
+        reason = "the indirection IS the point (#828) -- the lint's premise, that the Vec is already on the heap, is what makes the boxing necessary rather than redundant: a realloc memcpys the elements and frees the old allocation without running Drop, so key material must not live inline"
+    )]
+    skipped: Vec<Box<SkippedKey>>,
 }
 
 impl RatchetState {
@@ -175,6 +188,8 @@ pub(crate) fn decrypt(state: &mut RatchetState, msg: &CiphertextMessage) -> Resu
     // The copy is as sensitive as the field it came from, and it is superseded
     // once per skipped counter, so it carries the same wrapper (#828).
     let mut work_chain_key = state.chain_key.clone();
+    // Exact capacity, so this one never reallocates and needs no indirection:
+    // the gap is known before the loop starts (#828).
     let mut pending: Vec<SkippedKey> = Vec::with_capacity(gap as usize);
     let mut counter = state.counter;
     while counter < msg.counter {
@@ -222,8 +237,11 @@ fn decrypt_from_skipped(state: &mut RatchetState, msg: &CiphertextMessage) -> Re
 }
 
 /// Inserts a skipped key, evicting the oldest entries beyond [`MAX_SKIPPED_KEYS`].
+///
+/// Both the push and the eviction move a pointer; the key itself stays put in
+/// its own allocation until the entry is dropped, which is what scrubs it.
 fn store_skipped(state: &mut RatchetState, key: SkippedKey) {
-    state.skipped.push(key);
+    state.skipped.push(Box::new(key));
     while state.skipped.len() > MAX_SKIPPED_KEYS {
         state.skipped.remove(0);
     }
