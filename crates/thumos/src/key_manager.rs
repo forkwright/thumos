@@ -229,19 +229,29 @@ impl KeyManager {
     /// salt is public by design), and read back on every boot. It is what
     /// makes brute-force resistance per-DEVICE rather than per-image.
     ///
-    /// Uses [`PBKDF2_ITERATIONS`] rounds.
+    /// `kdf` comes from the device's own secrets preamble (#914), never from a
+    /// policy constant. The master key IS this derivation's output, so deriving
+    /// under different parameters than the ones that produced it yields a
+    /// different key and an unreadable partition -- the failure would surface
+    /// as a rejected passphrase, which is the most misleading form it could
+    /// take.
     ///
     /// # Errors
     ///
-    /// Returns [`SecurityError`] if key derivation fails.
+    /// Returns [`SecurityError`] if key derivation fails, including when
+    /// Argon2id's memory was unavailable -- never a silently cheaper key.
     pub(crate) fn derive_from_passphrase(
         passphrase: &[u8],
         salt: &[u8],
+        kdf: security::PinKdf,
     ) -> Result<SecureKey<KEY_SIZE>, SecurityError> {
-        let mut key_bytes = [0u8; KEY_SIZE];
-        let derive_result =
-            security::pbkdf2_sha256(passphrase, salt, PBKDF2_ITERATIONS, &mut key_bytes);
-        let result = derive_result.map(|()| SecureKey::new(key_bytes));
+        let derive_result = security::derive_under(kdf, passphrase, salt);
+        let mut key_bytes = derive_result.unwrap_or([0u8; KEY_SIZE]);
+        let result = if derive_result.is_ok() {
+            Ok(SecureKey::new(key_bytes))
+        } else {
+            Err(SecurityError::KeyDerivationFailed)
+        };
         // WHY: zero the stack copy on every path (success or error) — see
         // volatile_zero's doc comment. key_bytes is Copy, so SecureKey::new
         // above (on success) left this array fully populated (#325).
