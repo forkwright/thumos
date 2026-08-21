@@ -2120,8 +2120,7 @@ mod tests {
         let mut crypto = MatrixCrypto::new().expect("test csprng seeded");
         let keys = crypto
             .generate_one_time_keys(2)
-            .expect("seeding must succeed")
-            .to_vec();
+            .expect("seeding must succeed");
         let consumed = keys[0];
         let survivor = keys[1];
 
@@ -2136,7 +2135,7 @@ mod tests {
             "consuming one key must not disturb the others"
         );
         assert!(
-            !crypto.one_time_keys().iter().any(|k| *k == [0u8; KEY_SIZE]),
+            !crypto.one_time_keys().contains(&[0u8; KEY_SIZE]),
             "scrubbing must not leave a zero key live in the pool"
         );
     }
