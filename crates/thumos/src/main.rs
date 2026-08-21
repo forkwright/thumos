@@ -144,12 +144,17 @@ mod emmc;
 mod encryption;
 #[cfg(not(test))]
 mod exceptions;
+// WHY not test-gated: the watchdog pet gate is pure decision logic with no
+// MMIO, and it is the only place the liveness contract is written down --
+// host tests are where its rules are actually exercised, since the timer IRQ
+// and service loop that drive it are both ARM-only (#875).
 mod lfs;
 mod lfs_checkpoint;
 mod lfs_compact;
 mod lfs_imap;
 mod lfs_segment;
 mod lfs_writer;
+mod liveness;
 // WHY(host-test): process.rs calls exceptions::ticks() (the timer-IRQ tick
 // counter). The real exceptions module is ARM-only (CP15 vector table, GIC).
 // Under test a stub supplies the tick source so process is host-testable
@@ -224,6 +229,7 @@ mod net;
 mod nous;
 mod page;
 mod panic_wipe;
+mod passphrase_policy;
 mod pipe;
 mod power;
 mod process;

@@ -735,16 +735,15 @@ impl MatrixCrypto {
             return Err(CryptoError::UnknownOneTimeKey);
         }
 
-        let mut ratchet_key =
-            derive_olm_initial_ratchet_key(sender_identity_key, &base_key, &one_time_key)?;
-        let session_id = security::sha256(&ratchet_key);
+        let mut binding = derive_olm_prekey_binding(sender_identity_key, &base_key, &one_time_key)?;
+        let session_id = security::sha256(&binding);
 
         // WHY all three are scrubbed here (#831/#844): the session records only
-        // `session_id`, so every other value in this frame is key-derived
-        // material with no remaining consumer. `base_key` and `one_time_key`
-        // are copies this function made out of `body`; the derived key is not
-        // stored at all now that nothing can advance it.
-        zeroize_bytes(&mut ratchet_key);
+        // `session_id`, so every other value in this frame has no remaining
+        // consumer. `base_key` and `one_time_key` are copies this function
+        // made out of `body`; the binding is not stored at all, since nothing
+        // could advance it and it protects nothing (#902).
+        zeroize_bytes(&mut binding);
         zeroize_bytes(&mut base_key);
         zeroize_bytes(&mut one_time_key);
 
@@ -1505,21 +1504,43 @@ fn advance_megolm_ratchet_key(ratchet_key: &[u8; KEY_SIZE]) -> Result<[u8; KEY_S
     Ok(next)
 }
 
-/// Derive a new Olm session's initial ratchet key from an inbound pre-key
-/// message's key material (#437).
+/// Bind an inbound pre-key handshake to a reproducible identifier.
 ///
-/// A simplified X3DH substitute: this module's device/one-time keys are
-/// CSPRNG-derived values used directly as HKDF input rather than real
-/// Curve25519 points (module docs), so there are no DH outputs to combine --
-/// the three key values (sender identity, sender ephemeral, and the
-/// consumed local one-time key) are concatenated as HKDF input key material
-/// instead, matching this module's existing departure from full X3DH.
+/// # This value carries NO confidentiality and must never encrypt anything
+///
+/// It is HKDF over three concatenated inputs, and **the homeserver holds all
+/// three** (#902):
+///
+/// - `sender_identity_key` is the peer's `curve25519` key, published by every
+///   device through [`build_device_keys_json`] and read back from a
+///   `/keys/query` response;
+/// - `one_time_key` is one of this device's own, uploaded verbatim by
+///   [`build_one_time_keys_json`];
+/// - `base_key` arrives in a `to_device` event, which the homeserver relays.
+///
+/// The label is a compile-time constant. So a homeserver can recompute this
+/// value exactly, and `binding_is_reproducible_from_public_inputs_alone` below
+/// demonstrates that rather than asserting it.
+///
+/// The reason is structural, not a weak parameter choice: this module's
+/// device and one-time keys are CSPRNG-derived values used directly as HKDF
+/// input rather than real Curve25519 points, so there are no DH outputs to
+/// combine. A key agreement is what makes a shared secret secret; without one
+/// there is nothing here an observer cannot derive. Calling the result a
+/// "ratchet key" invited exactly the completion that would encrypt traffic
+/// under it, so it is named for what it is.
+///
+/// Making it confidential needs a real X25519 agreement against a private
+/// scalar this device does not hold — and holding one needs an identity that
+/// survives a reboot, which needs key-slot provisioning and #878's
+/// authenticated persistent storage. #902 tracks that; #437 owns the
+/// per-message path that would consume it.
 ///
 /// # Errors
 ///
 /// Returns [`CryptoError::KeyDerivationFailed`] if HKDF fails (defensive;
 /// unreachable at this fixed 32-byte output length).
-fn derive_olm_initial_ratchet_key(
+fn derive_olm_prekey_binding(
     sender_identity_key: &[u8; KEY_SIZE],
     base_key: &[u8; KEY_SIZE],
     one_time_key: &[u8; KEY_SIZE],
@@ -1530,13 +1551,14 @@ fn derive_olm_initial_ratchet_key(
     ikm[KEY_SIZE..KEY_SIZE * 2].copy_from_slice(base_key);
     ikm[KEY_SIZE * 2..].copy_from_slice(one_time_key);
 
-    let mut ratchet_key = [0u8; KEY_SIZE];
-    let derived = security::hkdf_sha256(&ikm, &[], LABEL, &mut ratchet_key);
+    let mut binding = [0u8; KEY_SIZE];
+    let derived = security::hkdf_sha256(&ikm, &[], LABEL, &mut binding);
     // The concatenation holds all three handshake values; clear it before
-    // returning on either path (#831).
+    // returning on either path (#831). They are public, but the discipline is
+    // uniform so a later input that is NOT public inherits it.
     zeroize_bytes(&mut ikm);
     derived.map_err(|_| CryptoError::KeyDerivationFailed)?;
-    Ok(ratchet_key)
+    Ok(binding)
 }
 
 // ---------------------------------------------------------------------------
@@ -2130,9 +2152,8 @@ mod tests {
         let sender_identity_key = [0x11u8; KEY_SIZE];
         let base_key = [0x22u8; KEY_SIZE];
         let one_time_key = [0x33u8; KEY_SIZE];
-        let derived =
-            derive_olm_initial_ratchet_key(&sender_identity_key, &base_key, &one_time_key)
-                .expect("derivation must succeed");
+        let derived = derive_olm_prekey_binding(&sender_identity_key, &base_key, &one_time_key)
+            .expect("derivation must succeed");
         let session_id = security::sha256(&derived);
         assert_ne!(
             derived, session_id,
@@ -2894,6 +2915,49 @@ mod tests {
         assert_eq!(devices[0].keys.curve25519_key, [0xBB; KEY_SIZE]);
         assert_eq!(devices[0].user_id, user);
         assert_eq!(devices[0].device_id, device);
+    }
+
+    #[test]
+    fn binding_is_reproducible_from_public_inputs_alone() {
+        // #902, demonstrated rather than argued. Every input to the pre-key
+        // binding is a value the homeserver holds: the peer's curve25519 key
+        // is published by `build_device_keys_json`, the one-time key by
+        // `build_one_time_keys_json`, and the base key arrives in a to_device
+        // event the homeserver relays. The label is a compile-time constant.
+        //
+        // So an observer with only those three bytes strings reproduces the
+        // binding exactly. This test IS that observer.
+        let sender_identity_key = [0x11u8; KEY_SIZE];
+        let base_key = [0x22u8; KEY_SIZE];
+        let one_time_key = [0x33u8; KEY_SIZE];
+
+        let ours = derive_olm_prekey_binding(&sender_identity_key, &base_key, &one_time_key)
+            .expect("derivation must succeed");
+        let observer = derive_olm_prekey_binding(&sender_identity_key, &base_key, &one_time_key)
+            .expect("an observer runs the same public computation");
+
+        assert_eq!(
+            ours, observer,
+            "the binding is a function of public inputs, so it carries no \
+             confidentiality -- it must never be used to encrypt"
+        );
+    }
+
+    #[test]
+    fn the_binding_still_separates_distinct_handshakes() {
+        // What it IS good for: distinguishing sessions. Changing any input
+        // changes the identifier, which is the whole of its job now that it
+        // is not pretending to be a key.
+        let base = [0x22u8; KEY_SIZE];
+        let otk = [0x33u8; KEY_SIZE];
+        let first = derive_olm_prekey_binding(&[0x11u8; KEY_SIZE], &base, &otk)
+            .expect("derivation must succeed");
+        let second = derive_olm_prekey_binding(&[0x12u8; KEY_SIZE], &base, &otk)
+            .expect("derivation must succeed");
+        assert_ne!(
+            first, second,
+            "a different peer identity must yield a different binding"
+        );
     }
 
     #[test]

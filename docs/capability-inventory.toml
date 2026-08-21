@@ -21,7 +21,7 @@ notes = "Selected PL0 image, fault, graceful-kill, fork/exec/brk, and guard-page
 id = "memory-fs"
 modules = ["block", "cache", "vfs", "devfs", "lfs", "lfs_imap", "lfs_segment", "lfs_checkpoint", "lfs_writer", "lfs_compact", "emmc", "ramfs", "encryption"]
 tier = "kernel-wired"
-notes = "LFS mounts at boot, encrypted when provisioned but still plaintext under the live Unprovisioned compatibility path (#866); no witness marker asserts persistence behavior. #360 owns the current ambiguous InvalidSuperblock auto-format/data-loss path, #867 owns the 48 KiB direct-block file ceiling, #870 owns unverified MSDC RX-count semantics, #837 owns the XTS logical-block/tweak description, and #878 owns authenticated/versioned integrity and rollback rejection beyond XTS confidentiality."
+notes = "LFS mounts at boot only through the AES-XTS wrapper; the plaintext Unprovisioned compatibility mount is gone (#866), so an unprovisioned device with no verified passphrase falls back to the initramfs rather than creating a plaintext root. No witness marker asserts persistence behavior. #360 owns the current ambiguous InvalidSuperblock auto-format/data-loss path, #867 owns the 48 KiB direct-block file ceiling, #870 owns unverified MSDC RX-count semantics, #837 owns the XTS logical-block/tweak description, and #878 owns authenticated/versioned integrity and rollback rejection beyond XTS confidentiality."
 
 [[capability]]
 id = "time"
@@ -74,9 +74,9 @@ notes = "The in-kernel Ed25519 checks gate later behavior only if the already ex
 
 [[capability]]
 id = "security-subsystems"
-modules = ["security", "security_mode", "lock_screen", "key_manager", "audit", "capability", "panic_wipe", "csprng", "secrets", "gpt"]
+modules = ["security", "security_mode", "lock_screen", "key_manager", "audit", "capability", "panic_wipe", "csprng", "secrets", "gpt", "passphrase_policy"]
 tier = "kernel-wired"
-notes = "Boot passphrase, salt/preamble, key hierarchy, security modes, and the dry-run/key-zeroization panic path are reachable. #872 owns the offline-resistant boot-secret/KDF policy; #873 owns non-repeating CSPRNG wake/reboot reseeding; #841 owns the weak latent lock-screen verifier; #863 owns persisted wipe/distress/reflex/audit-head work; #878 owns authenticated/versioned persistent-data rollback resistance; #881 owns physical side-button/PTT producers and safe gestures. None is discharged by eMMC or sensor qualification."
+notes = "Boot passphrase, salt/preamble, key hierarchy, security modes, and the dry-run/key-zeroization panic path are reachable. passphrase_policy enforces the ~77-bit boot-secret floor at first-boot setup, which is the half of #872 that is code; that issue still owns bundling the wordlist those indices name and the recovery boundary. #873 owns non-repeating CSPRNG wake/reboot reseeding; #863 owns persisted wipe/distress/reflex/audit-head work; #878 owns authenticated/versioned persistent-data rollback resistance; #881 owns physical side-button/PTT producers and safe gestures. None is discharged by eMMC or sensor qualification."
 
 [[capability]]
 id = "bfu-timer"
@@ -93,9 +93,9 @@ notes = "PowerManager policy state is boot/service-loop reachable, but radio sta
 
 [[capability]]
 id = "watchdog"
-modules = ["watchdog"]
+modules = ["watchdog", "liveness"]
 tier = "kernel-wired"
-notes = "The MT6739 watchdog path is boot-reachable, but the timer IRQ currently pets it before scheduler/service-loop progress; #875 owns progress-coupled liveness so a deadlocked kernel is not kept alive."
+notes = "The MT6739 watchdog path is boot-reachable and the timer IRQ pets it only while every liveness owner is still advancing (#875) -- the scheduler round and the PID-0 service loop, each with its own stall deadline well inside the 5-second hardware period. Withholding is how the reset happens; the gate never disables the watchdog. No live-hardware receipt asserts the physical reset."
 hardware_reason = "After #875 lands, an operator-owned physical reset/deadline receipt is still required."
 
 [[capability]]
@@ -134,7 +134,7 @@ notes = "kinit constructs and readiness-checks the non-test WiFi, Bluetooth, and
 id = "comms-matrix"
 modules = ["matrix_crypto", "http_client", "json_mini", "harmostes", "matrix_ids"]
 tier = "compiled-only"
-notes = "HTTP/JSON plus this kernel's simplified, non-interoperable Olm/Megolm surfaces are compiled and host-tested. The inbound to-device pre-key path consumes a local one-time key and establishes an OlmSession, but MatrixClient is never constructed from kernel_main, so no production boot/service-loop path reaches it. Per-message Olm ratchet advancement remains absent (#844)."
+notes = "HTTP/JSON plus this kernel's simplified, non-interoperable Olm/Megolm surfaces are compiled and host-tested. The inbound to-device pre-key path consumes a local one-time key and establishes an OlmSession, but MatrixClient is never constructed from kernel_main, so no production boot/service-loop path reaches it. Per-message Olm ratchet advancement remains absent (#844), and the pre-key handshake produces only a session identifier derived from values the homeserver holds -- it is not a key agreement and encrypts nothing (#902)."
 tracking_reason = "Unified-inbox and MatrixClient integration is software work tracked by #753."
 
 [[capability]]

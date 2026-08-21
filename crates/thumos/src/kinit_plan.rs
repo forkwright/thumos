@@ -183,10 +183,6 @@ pub(crate) enum MountPlan {
     /// Wrap the payload view in `EncryptedBlockDevice` with the derived
     /// data key; LFS mounts one sector past the preamble.
     Encrypted,
-    /// Unprovisioned device: the plain LFS mount at the partition head.
-    /// This legacy dev/transition path is not protected-storage acceptance and
-    /// must be removed or made impossible in production under #866.
-    Plain,
     /// No persistent mount; the VFS root falls back to the initramfs.
     RamfsFallback,
 }
@@ -194,11 +190,22 @@ pub(crate) enum MountPlan {
 /// Decide the userdata mount. Fail-closed invariants:
 /// - no eMMC or no verified boot: nothing persistent mounts (the #217 gate
 ///   today's code already enforces);
-/// - a provisioned (locked) payload is NEVER plain-mounted or formatted —
-///   without the derived key the only honest mount is none;
+/// - a provisioned (locked) payload is NEVER mounted or formatted without its
+///   key — without the derived key the only honest mount is none;
 /// - an unreadable OR corrupt preamble is treated as provisioned (unknown
-///   = locked, #621) — never as unprovisioned, which would plain-mount
-///   and then format on the resulting `InvalidSuperblock`.
+///   = locked, #621) — never as unprovisioned;
+/// - **an unprovisioned device with no verified passphrase mounts nothing**
+///   (#866). There is no plaintext arm to select. The persistent root is the
+///   AES-XTS payload or it is the initramfs.
+///
+/// WHY the plaintext arm was removed outright rather than gated behind a
+/// non-production feature, which is what #866 offered as the minimum: it was
+/// reachable ONLY in production. `secure_boot_ok` is set at exactly one place
+/// in `kinit`, and only when `BOOT_KEY_IS_PRODUCTION` — a dev-anchor build
+/// boots degraded with it false, so it could never reach past the gate above.
+/// A compatibility path that exists in no configuration but the one it is
+/// forbidden in has nothing left to be compatible with, and gating it would
+/// have produced a branch that no build can execute and no test can reach.
 pub(crate) const fn mount_plan(
     emmc_ok: bool,
     secure_boot_ok: bool,
@@ -208,16 +215,26 @@ pub(crate) const fn mount_plan(
     if !emmc_ok || !secure_boot_ok {
         return MountPlan::RamfsFallback;
     }
-    if passphrase_ok {
+    // WHY the preamble is re-checked here rather than trusted through
+    // `passphrase_ok`: today only `Provisioned` and `Unprovisioned` can produce
+    // a key at all -- `boot_passphrase_plan` answers `Skip` for the other three
+    // -- so this condition is currently implied. It is stated anyway because
+    // the implication lives in a DIFFERENT function, and the cost of it ever
+    // ceasing to hold is mounting the payload of a device whose preamble could
+    // not be read. Unknown stays locked (#621) whatever else changes.
+    if passphrase_ok
+        && matches!(
+            preamble,
+            PreambleLoad::Provisioned | PreambleLoad::Unprovisioned
+        )
+    {
         return MountPlan::Encrypted;
     }
-    match preamble {
-        PreambleLoad::Unprovisioned => MountPlan::Plain,
-        PreambleLoad::Provisioned
-        | PreambleLoad::ReadFailed
-        | PreambleLoad::NotRead
-        | PreambleLoad::Corrupt => MountPlan::RamfsFallback,
-    }
+    // Every remaining state mounts nothing. `Unprovisioned` reaches here only
+    // when first-boot setup did not produce a verified passphrase -- skipped,
+    // interrupted, or unable to reach the operator -- and a device that has
+    // never held a secret has no userdata to lose by declining to mount.
+    MountPlan::RamfsFallback
 }
 
 /// Whether an ambiguous LFS superblock on the ENCRYPTED payload may be
@@ -245,13 +262,6 @@ pub(crate) const fn may_format_encrypted_lfs(
 ) -> bool {
     provisioned_this_boot && matches!(preamble, PreambleLoad::Provisioned)
 }
-
-/// Minimum boot passphrase length (digits) accepted at first-boot setup
-/// (#446). The boot pad alphabet is digits-only (Star/Hash are the
-/// backspace/submit control keys). Six digits is only the current compatibility
-/// floor, not an offline brute-force margin: #872 owns the effective-entropy,
-/// recovery, input, and KDF policy needed before production acceptance.
-pub(crate) const MIN_BOOT_PASSPHRASE_LEN: u8 = 6;
 
 /// The boot-log line for a skipped passphrase step (#446) — one source for
 /// the M7 and QEMU arms. The QEMU boot witness greps the refusal wording
@@ -1039,14 +1049,27 @@ mod tests {
             mount_plan(true, true, PreambleLoad::NotRead, false),
             MountPlan::RamfsFallback
         );
-        // #621: a corrupted-but-present preamble reaches neither the
-        // plain-mount arm nor a reformat -- it is locked on the same
-        // footing as an unreadable one, never treated as unprovisioned.
+        // #621: a corrupted-but-present preamble is locked on the same footing
+        // as an unreadable one, never treated as unprovisioned.
         assert_eq!(
             mount_plan(true, true, PreambleLoad::Corrupt, false),
             MountPlan::RamfsFallback,
-            "corrupt preamble is locked, never plain-mounted or formatted (#621)"
+            "corrupt preamble is locked, never mounted or formatted (#621)"
         );
+        // An unreadable preamble stays locked even if a key somehow exists --
+        // the check does not depend on boot_passphrase_plan continuing to
+        // refuse one (#621).
+        for locked in [
+            PreambleLoad::Corrupt,
+            PreambleLoad::ReadFailed,
+            PreambleLoad::NotRead,
+        ] {
+            assert_eq!(
+                mount_plan(true, true, locked, true),
+                MountPlan::RamfsFallback,
+                "{locked:?} must not mount even with passphrase_ok"
+            );
+        }
         // The two real mounts.
         assert_eq!(
             mount_plan(true, true, PreambleLoad::Provisioned, true),
@@ -1058,11 +1081,52 @@ mod tests {
             MountPlan::Encrypted,
             "first-boot setup also ends in the encrypted mount"
         );
+        // #866: the one state that used to select a plaintext root. Setup was
+        // skipped, interrupted, or could not reach the operator -- so there is
+        // no key, and the only honest answer is no persistent mount.
         assert_eq!(
             mount_plan(true, true, PreambleLoad::Unprovisioned, false),
-            MountPlan::Plain,
-            "unprovisioned dev path stays byte-compatible"
+            MountPlan::RamfsFallback,
+            "unprovisioned with no verified passphrase mounts nothing (#866)"
         );
+    }
+
+    #[test]
+    fn no_input_state_selects_a_persistent_mount_without_a_key() {
+        // The property #866 asks for, stated over the WHOLE input space rather
+        // than the states someone remembered to enumerate: every combination of
+        // the four inputs either produces the AES-XTS mount or produces no
+        // persistent mount at all. `MountPlan` no longer has a third answer,
+        // and this fails to compile rather than fails to assert if one returns.
+        for emmc_ok in [false, true] {
+            for secure_boot_ok in [false, true] {
+                for preamble in [
+                    PreambleLoad::NotRead,
+                    PreambleLoad::ReadFailed,
+                    PreambleLoad::Corrupt,
+                    PreambleLoad::Unprovisioned,
+                    PreambleLoad::Provisioned,
+                ] {
+                    for passphrase_ok in [false, true] {
+                        let plan = mount_plan(emmc_ok, secure_boot_ok, preamble, passphrase_ok);
+                        if plan == MountPlan::Encrypted {
+                            assert!(
+                                passphrase_ok
+                                    && emmc_ok
+                                    && secure_boot_ok
+                                    && matches!(
+                                        preamble,
+                                        PreambleLoad::Provisioned | PreambleLoad::Unprovisioned
+                                    ),
+                                "encrypted mount requires a derived key on a verified boot \
+                                 over a readable preamble: emmc={emmc_ok} \
+                                 secure={secure_boot_ok} pre={preamble:?} pass={passphrase_ok}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
