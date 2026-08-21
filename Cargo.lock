@@ -1310,6 +1310,7 @@ dependencies = [
  "p256",
  "rand_core 0.10.1",
  "snafu",
+ "subtle",
  "zeroize",
 ]
 
