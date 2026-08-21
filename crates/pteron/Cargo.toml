@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 aes = { workspace = true }
-zeroize = "1"
+zeroize = { workspace = true }
 jiff = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }

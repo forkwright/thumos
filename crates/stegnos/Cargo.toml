@@ -19,7 +19,7 @@ sha2 = { workspace = true }
 snafu = { workspace = true }
 log = { workspace = true }
 xts-mode = "0.6"
-zeroize = "1"
+zeroize = { workspace = true }
 
 [lints]
 workspace = true
