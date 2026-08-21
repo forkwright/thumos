@@ -21,17 +21,26 @@
 
 use core::fmt;
 
+use argon2::{Algorithm, Argon2, Block, Params, Version};
 use subtle::ConstantTimeEq;
 
 // ---------------------------------------------------------------------------
 // Public constants
 // ---------------------------------------------------------------------------
 
-/// Current compatibility PBKDF2 iteration count.
+/// PBKDF2 iteration count for the derivations that still use it.
 ///
-/// This fixed value is not an accepted security minimum. #872 owns versioned
-/// KDF parameters derived from the offline-attack model and measured platform
-/// cost; no work factor repairs a low-entropy boot secret.
+/// Not an accepted security minimum, and deliberately not the secret-verifier
+/// path any more -- [`PinVerifier::provision`] writes Argon2id, whose cost is
+/// carried in the record rather than read from a constant like this one (#272).
+/// What remains here is `KeyManager::derive_from_passphrase`, where the value
+/// cannot simply be raised: the master key IS the derivation output, so a
+/// different iteration count yields a different key and an unreadable
+/// partition. That path needs a versioned parameter record of its own before
+/// its cost can move at all.
+///
+/// No work factor repairs a low-entropy boot secret; the entropy floor is
+/// enforced by `passphrase_policy` (#872).
 pub(crate) const PBKDF2_ITERATIONS: u32 = 100_000;
 
 /// Symmetric key size in bytes (AES-256).
@@ -299,16 +308,31 @@ pub(crate) const PIN_SALT_LEN: usize = 16;
 /// Carrying the parameters makes the cost a value that can change while old
 /// records stay verifiable.
 ///
-/// This is also the seam for Argon2id: it lands as a second variant with its
-/// own cost parameters, and `v1` records keep verifying against PBKDF2 through
-/// the same dispatch. See #272 for the operator decision and the page-allocator
-/// memory constraint that governs it.
+/// [`PinVerifier::provision`] writes `Argon2id`; `Pbkdf2Sha256` records stay
+/// verifiable through the same dispatch, which is the whole point of carrying
+/// the parameters rather than assuming them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PinKdf {
     /// PBKDF2-HMAC-SHA256 (RFC 8018) at the recorded iteration count.
+    ///
+    /// Not written by any production path. PBKDF2's work factor is a linear
+    /// multiplier against an attacker whose advantage is parallel hardware, so
+    /// it buys far less than its iteration count suggests (#272).
     Pbkdf2Sha256 {
         /// Iterations this record's digest was derived with.
         iterations: u32,
+    },
+    /// Argon2id (RFC 9106) at the recorded cost.
+    ///
+    /// Memory-hard, which is the property that prices an attacker's hardware
+    /// rather than merely inconveniencing it.
+    Argon2id {
+        /// Memory cost in KiB this record's digest was derived with.
+        m_cost_kib: u32,
+        /// Passes over the block matrix.
+        t_cost: u32,
+        /// Lane count.
+        p_cost: u32,
     },
 }
 
@@ -337,6 +361,241 @@ impl fmt::Display for PinProvisionError {
             Self::Derivation => write!(f, "secret key derivation failed"),
         }
     }
+}
+
+/// Why a secret could not be checked against its record (#272).
+///
+/// Distinct from "the secret did not match", and the distinction is a security
+/// property rather than tidiness. Argon2id needs a 64 MiB block matrix from the
+/// page allocator, so verification can fail for reasons that have nothing to do
+/// with what was typed. Collapsing that into `false` would route it through the
+/// lock screen's failure path, where it increments the attempt counter and, at
+/// the limit, triggers a full wipe -- handing anyone who can exhaust the page
+/// pool a way to wipe or lock out the device without guessing anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum PinVerifyError {
+    /// The KDF's block matrix could not be obtained. The check did not run.
+    Memory,
+    /// The recorded parameters are not a valid configuration for the KDF.
+    Parameters,
+    /// The KDF rejected the inputs it was given.
+    Derivation,
+}
+
+impl fmt::Display for PinVerifyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Memory => write!(f, "key-derivation memory unavailable"),
+            Self::Parameters => write!(f, "recorded key-derivation parameters are invalid"),
+            Self::Derivation => write!(f, "key derivation failed"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Argon2id memory (#272)
+// ---------------------------------------------------------------------------
+
+/// Argon2id memory cost for a provisioned secret verifier, in KiB.
+///
+/// 64 MiB is RFC 9106's second recommended configuration, and it is sized here
+/// against a budget that was measured rather than assumed. `kinit` initialises
+/// the page allocator over `[KERNEL_END, USER_TEXT_BASE)` -- 1021 MiB -- so one
+/// derivation borrows 6.3% of the pool for its duration. The slab heap is not
+/// an option at any useful cost: it is 1 MiB in total and every kernel
+/// allocation shares it.
+///
+/// What this buys, first-hand rather than from a recommendation table: a
+/// release build on an `x86_64` server computes one derivation at these
+/// parameters in 63 ms. That figure is the *attacker's* per-candidate cost,
+/// and it is the reason #872 raised the boot secret to ~77 bits -- against a
+/// six-digit PIN, 64 MiB of memory hardness limits a 24 GB GPU to a few
+/// hundred parallel candidates and the whole space still falls in minutes. A
+/// KDF prices an attacker's hardware; it does not make a short secret good.
+///
+/// The *defender's* cost on the M7 is not measured and cannot be from here --
+/// it needs the hardware. That is precisely why [`PinKdf`] carries the
+/// parameters: raising them after measurement migrates rather than invalidating
+/// every provisioned device.
+pub(crate) const PIN_ARGON2ID_M_COST_KIB: u32 = 65_536;
+
+/// Argon2id time cost (passes) for a provisioned secret verifier.
+pub(crate) const PIN_ARGON2ID_T_COST: u32 = 3;
+
+/// Argon2id parallelism for a provisioned secret verifier.
+///
+/// WHY 1 rather than RFC 9106's recommended 4: parallelism is a lane count,
+/// and the kernel derives on one core. A defender who computes four lanes
+/// serially pays the same total work as one lane of four times the length,
+/// while an attacker with four cores per candidate finishes in a quarter of
+/// the time. RFC 9106 recommends 4 because a server has threads to spend; this
+/// device does not, so raising `p` would hand the attacker parallelism the
+/// defender cannot use.
+pub(crate) const PIN_ARGON2ID_P_COST: u32 = 1;
+
+/// Bytes in one Argon2 block.
+const ARGON2_BLOCK_BYTES: usize = core::mem::size_of::<Block>();
+
+/// Argon2 blocks that fit in one page of the kernel's page allocator.
+const BLOCKS_PER_PAGE: usize = crate::page::PAGE_SIZE / ARGON2_BLOCK_BYTES;
+
+// INVARIANT: a page holds a whole number of blocks and is aligned strongly
+// enough for one. Both hold today (4096 / 1024 = 4, align 64) and both are
+// properties of the `argon2` crate rather than of this file, so a version bump
+// that changed either must fail to build here instead of silently
+// under-allocating or producing a misaligned slice.
+const _: () =
+    assert!(ARGON2_BLOCK_BYTES > 0 && crate::page::PAGE_SIZE.is_multiple_of(ARGON2_BLOCK_BYTES));
+const _: () = assert!(crate::page::PAGE_SIZE.is_multiple_of(core::mem::align_of::<Block>()));
+
+/// Obtains the page-backed block matrix for one Argon2id derivation.
+type KdfAlloc = fn(usize) -> Option<usize>;
+
+/// Returns the block matrix to the pool it came from.
+type KdfFree = unsafe fn(usize, usize) -> bool;
+
+/// Run `f` over a zeroed block matrix of `block_count` blocks, then scrub and
+/// release it.
+///
+/// Returns `None` when the matrix could not be obtained, and **never** retries
+/// at a smaller size. That refusal is a security property, not an ergonomic
+/// choice: a KDF that shrank its own memory cost under pressure would let an
+/// attacker exhaust the pool and then attack a digest derived with parameters
+/// far weaker than the ones the record claims, with nothing distinguishing the
+/// two afterwards.
+///
+/// The allocator is injected so the body under test is the body that ships --
+/// the same pattern `slab.rs` uses for its own large-allocation path. Host
+/// tests cannot call the page allocator, whose addresses are not mapped there.
+fn with_pin_kdf_blocks<R>(
+    block_count: usize,
+    alloc_fn: KdfAlloc,
+    free_fn: KdfFree,
+    f: impl FnOnce(&mut [Block]) -> R,
+) -> Option<R> {
+    let pages = block_count.div_ceil(BLOCKS_PER_PAGE);
+    let addr = alloc_fn(pages)?;
+    let bytes = pages * crate::page::PAGE_SIZE;
+    // WHY zero through the pointer BEFORE any reference exists: the page
+    // allocator hands back whatever the previous owner left, and forming a
+    // `&mut [Block]` over uninitialised memory is undefined behaviour no
+    // subsequent `fill` can undo. All-zero is a valid `Block`, so writing it
+    // first is what makes the reference below sound.
+    // SAFETY: `alloc_fn` returned `pages` contiguous pages at `addr`, so the
+    // whole range is ours and writable.
+    unsafe { core::ptr::write_bytes(addr as *mut u8, 0, bytes) };
+    let out = {
+        // SAFETY: the range is initialised above, `addr` is page-aligned and
+        // therefore aligned for `Block` (asserted above), and
+        // `pages * BLOCKS_PER_PAGE >= block_count` keeps the slice inside the
+        // allocation. No other reference to this memory exists.
+        let blocks = unsafe { core::slice::from_raw_parts_mut(addr as *mut Block, block_count) };
+        f(blocks)
+    };
+    // The matrix holds the full Argon2id state, which is secret-derived, and
+    // these pages go straight back to a pool the next allocator reads (#836).
+    // SAFETY: same allocation, still live; the `blocks` reference above ended
+    // with the block that produced `out`.
+    let raw = unsafe { core::slice::from_raw_parts_mut(addr as *mut u8, bytes) };
+    crate::key_manager::volatile_zero_slice(raw);
+    // SAFETY: `addr`/`pages` are exactly what `alloc_fn` returned, freed once.
+    unsafe { free_fn(addr, pages) };
+    Some(out)
+}
+
+/// Production block matrix: the page allocator, never the slab.
+#[cfg(not(test))]
+fn pin_kdf_alloc(pages: usize) -> Option<usize> {
+    crate::page::alloc_contiguous(pages)
+}
+
+/// Production release path for [`pin_kdf_alloc`].
+///
+/// # Safety
+///
+/// `addr` and `pages` must be exactly what [`pin_kdf_alloc`] returned.
+#[cfg(not(test))]
+unsafe fn pin_kdf_free(addr: usize, pages: usize) -> bool {
+    // SAFETY: delegated to the caller's contract above.
+    unsafe { crate::page::free_contiguous(addr, pages) }
+}
+
+/// Host-test block matrix.
+///
+/// WHY a real aligned allocation rather than a stub that returns a fake
+/// address: the page allocator hands out addresses that are not mapped on the
+/// host, so a host test cannot dereference them -- but the code under test
+/// dereferences its matrix by construction. This gives the same shape (page
+/// count in, page-aligned address out) over memory the host owns, so
+/// `with_pin_kdf_blocks` runs its real body here.
+#[cfg(test)]
+fn pin_kdf_alloc(pages: usize) -> Option<usize> {
+    let layout = core::alloc::Layout::from_size_align(
+        pages * crate::page::PAGE_SIZE,
+        crate::page::PAGE_SIZE,
+    )
+    .ok()?;
+    // SAFETY: `layout` has non-zero size (`pages` is non-zero for every caller
+    // here) and the pointer is checked before use.
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        None
+    } else {
+        Some(ptr as usize)
+    }
+}
+
+/// Host-test release path for [`pin_kdf_alloc`].
+///
+/// # Safety
+///
+/// `addr` and `pages` must be exactly what [`pin_kdf_alloc`] returned.
+#[cfg(test)]
+unsafe fn pin_kdf_free(addr: usize, pages: usize) -> bool {
+    let Ok(layout) = core::alloc::Layout::from_size_align(
+        pages * crate::page::PAGE_SIZE,
+        crate::page::PAGE_SIZE,
+    ) else {
+        return false;
+    };
+    // SAFETY: delegated to the caller's contract above.
+    unsafe { alloc::alloc::dealloc(addr as *mut u8, layout) };
+    true
+}
+
+/// Derive an Argon2id digest for `secret` under `salt` into a matrix taken
+/// from `alloc_fn`.
+///
+/// WHY the matrix is not the whole memory story: the algorithm also keeps
+/// `Block` temporaries on the **caller's stack** -- three for the
+/// data-independent addressing pass, plus a block copy and its byte view at
+/// finalisation. Measured high-water for a release build is just under 5 KiB.
+/// That is comfortable on the 64 KB SYS stack this runs on today (boot unseal
+/// and the service loop), but it is roughly a third of the 16 KB SVC stack, so
+/// a caller reaching this through a syscall needs that checked rather than
+/// assumed.
+fn argon2id_digest(
+    secret: &[u8],
+    salt: &[u8],
+    m_cost_kib: u32,
+    t_cost: u32,
+    p_cost: u32,
+    alloc_fn: KdfAlloc,
+    free_fn: KdfFree,
+) -> Result<[u8; KEY_SIZE], PinVerifyError> {
+    let params = Params::new(m_cost_kib, t_cost, p_cost, Some(KEY_SIZE))
+        .map_err(|_| PinVerifyError::Parameters)?;
+    let block_count = params.block_count();
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    with_pin_kdf_blocks(block_count, alloc_fn, free_fn, |blocks| {
+        let mut digest = [0u8; KEY_SIZE];
+        argon2
+            .hash_password_into_with_memory(secret, salt, &mut digest, blocks)
+            .map(|()| digest)
+            .map_err(|_| PinVerifyError::Derivation)
+    })
+    .ok_or(PinVerifyError::Memory)?
 }
 
 /// A provisioned secret verifier: the salt, the parameters, and the digest
@@ -374,20 +633,66 @@ impl PinVerifier {
         })
     }
 
+    /// Derive a verifier for `secret` under `salt` using Argon2id, taking the
+    /// block matrix from `alloc_fn`.
+    ///
+    /// # Errors
+    ///
+    /// [`PinVerifyError::Memory`] when the matrix could not be obtained. It is
+    /// **not** retried at a lower cost -- see [`with_pin_kdf_blocks`].
+    fn derive_argon2id_using(
+        secret: &[u8],
+        salt: [u8; PIN_SALT_LEN],
+        m_cost_kib: u32,
+        t_cost: u32,
+        p_cost: u32,
+        alloc_fn: KdfAlloc,
+        free_fn: KdfFree,
+    ) -> Result<Self, PinVerifyError> {
+        let digest = argon2id_digest(secret, &salt, m_cost_kib, t_cost, p_cost, alloc_fn, free_fn)?;
+        Ok(Self {
+            kdf: PinKdf::Argon2id {
+                m_cost_kib,
+                t_cost,
+                p_cost,
+            },
+            salt,
+            digest,
+        })
+    }
+
     /// Provision a verifier for `secret` with a fresh per-device salt drawn
     /// from the kernel CSPRNG.
     ///
     /// This is the production path: the salt is device-specific and never a
     /// compile-time value, which is what stops one precomputed table covering
-    /// every device (CWE-760, #272).
+    /// every device (CWE-760, #272). It writes an Argon2id record at the
+    /// constants above -- there is deliberately no parameter to pass, so no
+    /// caller can provision at a cost of its own choosing.
     ///
     /// # Errors
     ///
     /// [`PinProvisionError::Entropy`] when the CSPRNG is not seeded,
     /// [`PinProvisionError::WeakSalt`] when the drawn salt fails validation,
-    /// and [`PinProvisionError::Derivation`] when the KDF itself fails. Every
-    /// arm leaves the caller with no verifier rather than a weak one.
+    /// and [`PinProvisionError::Derivation`] when the KDF itself fails --
+    /// including when its memory was unavailable. Every arm leaves the caller
+    /// with no verifier rather than a weak one.
     pub(crate) fn provision(secret: &[u8]) -> Result<Self, PinProvisionError> {
+        let salt = Self::draw_salt()?;
+        Self::derive_argon2id_using(
+            secret,
+            salt,
+            PIN_ARGON2ID_M_COST_KIB,
+            PIN_ARGON2ID_T_COST,
+            PIN_ARGON2ID_P_COST,
+            pin_kdf_alloc,
+            pin_kdf_free,
+        )
+        .map_err(|_| PinProvisionError::Derivation)
+    }
+
+    /// Draw and validate a per-device salt.
+    fn draw_salt() -> Result<[u8; PIN_SALT_LEN], PinProvisionError> {
         let mut salt = [0u8; PIN_SALT_LEN];
         crate::csprng::kernel_random_bytes(&mut salt).map_err(|_| PinProvisionError::Entropy)?;
         // WHY reject all-zero: as a CSPRNG draw it is a 2^-128 event, so
@@ -397,7 +702,7 @@ impl PinVerifier {
         if salt.iter().all(|&b| b == 0) {
             return Err(PinProvisionError::WeakSalt);
         }
-        Self::derive_pbkdf2(secret, salt).ok_or(PinProvisionError::Derivation)
+        Ok(salt)
     }
 
     /// Test-only: derive under a fixed salt so a fixture round-trips
@@ -415,18 +720,43 @@ impl PinVerifier {
     /// caller checking a secret against two records -- the lock screen's real
     /// and duress PINs -- must bind both results before branching, or the
     /// timing difference reports which record matched (#841).
-    pub(crate) fn verify(&self, secret: &[u8]) -> bool {
-        match self.kdf {
+    ///
+    /// # Errors
+    ///
+    /// A [`PinVerifyError`] means the check did not run. It is not a failed
+    /// guess and a caller must not count it as one -- see that type for the
+    /// wipe an attacker would otherwise be able to provoke.
+    pub(crate) fn verify(&self, secret: &[u8]) -> Result<bool, PinVerifyError> {
+        self.verify_using(secret, pin_kdf_alloc, pin_kdf_free)
+    }
+
+    /// [`Self::verify`] against an injected block-matrix allocator.
+    fn verify_using(
+        &self,
+        secret: &[u8],
+        alloc_fn: KdfAlloc,
+        free_fn: KdfFree,
+    ) -> Result<bool, PinVerifyError> {
+        let mut derived = match self.kdf {
             PinKdf::Pbkdf2Sha256 { iterations } => {
-                let mut derived = [0u8; KEY_SIZE];
-                let ok = pbkdf2_sha256(secret, &self.salt, iterations, &mut derived).is_ok();
-                let matched = ok && constant_time_eq(&derived, &self.digest);
-                // The derived value is secret-equivalent material; do not leave
-                // it on the stack for the next frame to inherit (#828/#836).
-                crate::key_manager::volatile_zero(&mut derived);
-                matched
+                let mut out = [0u8; KEY_SIZE];
+                pbkdf2_sha256(secret, &self.salt, iterations, &mut out)
+                    .map_err(|_| PinVerifyError::Derivation)?;
+                out
             }
-        }
+            PinKdf::Argon2id {
+                m_cost_kib,
+                t_cost,
+                p_cost,
+            } => argon2id_digest(
+                secret, &self.salt, m_cost_kib, t_cost, p_cost, alloc_fn, free_fn,
+            )?,
+        };
+        let matched = constant_time_eq(&derived, &self.digest);
+        // The derived value is secret-equivalent material; do not leave it on
+        // the stack for the next frame to inherit (#828/#836).
+        crate::key_manager::volatile_zero(&mut derived);
+        Ok(matched)
     }
 }
 
@@ -436,6 +766,8 @@ impl PinVerifier {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
     use alloc::string::ToString;
 
     use super::*;
@@ -497,9 +829,14 @@ mod tests {
         let verifier = PinVerifier::derive_pbkdf2(b"123456", *b"device-a-saltxxx")
             .expect("pbkdf2 derivation failed in test");
 
-        assert!(verifier.verify(b"123456"), "correct PIN must verify");
-        assert!(
-            !verifier.verify(b"654321"),
+        assert_eq!(
+            verifier.verify(b"123456"),
+            Ok(true),
+            "correct PIN must verify"
+        );
+        assert_eq!(
+            verifier.verify(b"654321"),
+            Ok(false),
             "a different PIN must not verify"
         );
     }
@@ -523,8 +860,9 @@ mod tests {
             first.digest, second.digest,
             "a fresh salt must yield a different digest for the same PIN"
         );
-        assert!(
+        assert_eq!(
             first.verify(b"123456"),
+            Ok(true),
             "a provisioned record must verify the PIN it was made from"
         );
     }
@@ -835,5 +1173,230 @@ mod tests {
     fn sleep_tier_display() {
         assert_eq!(SleepTier::Short.to_string(), "Short (PIN unlock)");
         assert_eq!(SleepTier::Long.to_string(), "Long (passphrase required)");
+    }
+
+    // -----------------------------------------------------------------------
+    // Argon2id (#272)
+    // -----------------------------------------------------------------------
+
+    /// Argon2id cost for the behavioural tests below.
+    ///
+    /// WHY not the production constants: every property here is independent of
+    /// the cost, and one 64 MiB derivation costs over a second in a debug
+    /// build. `provisioning_writes_the_production_argon2id_cost` pays that once
+    /// so the shipped numbers are still exercised end to end. That these tests
+    /// pass at a cost the production path never writes is itself the point --
+    /// a record verifies against its own recorded parameters, not an ambient
+    /// constant.
+    const TEST_M_COST_KIB: u32 = 64;
+    const TEST_T_COST: u32 = 1;
+    const TEST_P_COST: u32 = 1;
+
+    fn argon2id_test_record(secret: &[u8], salt: [u8; PIN_SALT_LEN]) -> PinVerifier {
+        PinVerifier::derive_argon2id_using(
+            secret,
+            salt,
+            TEST_M_COST_KIB,
+            TEST_T_COST,
+            TEST_P_COST,
+            pin_kdf_alloc,
+            pin_kdf_free,
+        )
+        .expect("argon2id derivation failed in test")
+    }
+
+    static REFUSED_ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn refusing_alloc(_pages: usize) -> Option<usize> {
+        REFUSED_ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    /// # Safety
+    ///
+    /// Never called: [`refusing_alloc`] hands out nothing to free.
+    unsafe fn unreachable_free(_addr: usize, _pages: usize) -> bool {
+        unreachable!("nothing was allocated, so nothing can be released")
+    }
+
+    static RELEASED_SCRUBBED: AtomicBool = AtomicBool::new(false);
+    static RELEASED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+    /// # Safety
+    ///
+    /// Same contract as [`pin_kdf_free`], which it delegates to.
+    unsafe fn scrub_observing_free(addr: usize, pages: usize) -> bool {
+        let bytes = pages * crate::page::PAGE_SIZE;
+        // SAFETY: the caller's contract gives us exactly this allocation, and
+        // it is still live until the delegate below releases it.
+        let raw = unsafe { core::slice::from_raw_parts(addr as *const u8, bytes) };
+        RELEASED_SCRUBBED.store(raw.iter().all(|&b| b == 0), Ordering::Relaxed);
+        RELEASED_BYTES.store(bytes, Ordering::Relaxed);
+        // SAFETY: delegated to the caller's contract.
+        unsafe { pin_kdf_free(addr, pages) }
+    }
+
+    #[test]
+    fn an_argon2id_record_accepts_only_the_secret_it_was_derived_from() {
+        let record = argon2id_test_record(b"123456", *b"device-a-saltxxx");
+
+        assert_eq!(
+            record.verify_using(b"123456", pin_kdf_alloc, pin_kdf_free),
+            Ok(true),
+            "the correct secret must verify"
+        );
+        assert_eq!(
+            record.verify_using(b"654321", pin_kdf_alloc, pin_kdf_free),
+            Ok(false),
+            "a different secret must not verify"
+        );
+    }
+
+    #[test]
+    fn two_devices_derive_different_argon2id_digests_from_one_secret() {
+        // The property a salt exists for: one precomputed table must not cover
+        // the fleet (CWE-760).
+        let first = argon2id_test_record(b"123456", *b"device-a-saltxxx");
+        let second = argon2id_test_record(b"123456", *b"device-b-saltxxx");
+
+        assert_ne!(
+            first.digest, second.digest,
+            "the same secret under two salts must not produce one digest"
+        );
+    }
+
+    #[test]
+    fn a_pbkdf2_record_still_verifies_through_the_same_dispatch() {
+        // Carrying the parameters in the record is what makes the KDF a value
+        // that can change. A record written before Argon2id must keep working,
+        // or raising cost would mean resetting every provisioned device.
+        let legacy = PinVerifier::derive_pbkdf2(b"123456", *b"device-a-saltxxx")
+            .expect("pbkdf2 derivation failed in test");
+
+        assert!(
+            matches!(legacy.kdf, PinKdf::Pbkdf2Sha256 { .. }),
+            "fixture must be a PBKDF2 record"
+        );
+        assert_eq!(
+            legacy.verify_using(b"123456", refusing_alloc, unreachable_free),
+            Ok(true),
+            "a PBKDF2 record must verify without ever asking for Argon2id memory"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_block_matrix_refuses_instead_of_deriving_weakly() {
+        // The downgrade this forbids: exhaust the page pool, and a KDF that
+        // shrank to fit would produce a digest at a cost far below the one its
+        // own record claims, with nothing afterwards able to tell the two
+        // apart.
+        REFUSED_ALLOC_CALLS.store(0, Ordering::Relaxed);
+
+        let refused = PinVerifier::derive_argon2id_using(
+            b"123456",
+            *b"device-a-saltxxx",
+            TEST_M_COST_KIB,
+            TEST_T_COST,
+            TEST_P_COST,
+            refusing_alloc,
+            unreachable_free,
+        );
+
+        assert_eq!(
+            refused,
+            Err(PinVerifyError::Memory),
+            "an unavailable matrix must refuse, not derive"
+        );
+        assert_eq!(
+            REFUSED_ALLOC_CALLS.load(Ordering::Relaxed),
+            1,
+            "exactly one request, so there is no smaller size to fall back to"
+        );
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_checked_is_not_a_failed_guess() {
+        // `verify` returns three outcomes, not two. A caller that collapsed the
+        // error into `false` would count memory pressure as a wrong secret,
+        // which the lock screen answers by counting attempts and eventually
+        // wiping.
+        let record = argon2id_test_record(b"123456", *b"device-a-saltxxx");
+
+        assert_eq!(
+            record.verify_using(b"123456", refusing_alloc, unreachable_free),
+            Err(PinVerifyError::Memory),
+            "the correct secret must still report Err when the check cannot run"
+        );
+    }
+
+    #[test]
+    fn the_block_matrix_is_scrubbed_before_it_returns_to_the_pool() {
+        // These pages go back to a pool the next allocator reads, and they hold
+        // the full Argon2id state, which is derived from the secret (#836).
+        RELEASED_SCRUBBED.store(false, Ordering::Relaxed);
+        RELEASED_BYTES.store(0, Ordering::Relaxed);
+
+        PinVerifier::derive_argon2id_using(
+            b"123456",
+            *b"device-a-saltxxx",
+            TEST_M_COST_KIB,
+            TEST_T_COST,
+            TEST_P_COST,
+            pin_kdf_alloc,
+            scrub_observing_free,
+        )
+        .expect("argon2id derivation failed in test");
+
+        assert!(
+            RELEASED_BYTES.load(Ordering::Relaxed) > 0,
+            "the observing release path must actually have run"
+        );
+        assert!(
+            RELEASED_SCRUBBED.load(Ordering::Relaxed),
+            "every byte of the matrix must be zero before release"
+        );
+    }
+
+    #[test]
+    fn the_page_count_covers_the_whole_block_matrix() {
+        // The conversion the issue warns about: `m_cost` is KiB, a `Block` is
+        // 1 KiB, and a page is 4 KiB, so a matrix needs a quarter as many pages
+        // as blocks. Getting it wrong under-allocates, and the crate answers
+        // with a parameter error that reads as a bad cost rather than a bad
+        // page count.
+        assert_eq!(BLOCKS_PER_PAGE, 4, "4 KiB page holds four 1 KiB blocks");
+
+        for block_count in [8usize, 64, 4096, 65_536] {
+            let pages = block_count.div_ceil(BLOCKS_PER_PAGE);
+            assert!(
+                pages * crate::page::PAGE_SIZE >= block_count * ARGON2_BLOCK_BYTES,
+                "{block_count} blocks must fit in {pages} pages"
+            );
+        }
+    }
+
+    #[test]
+    fn provisioning_writes_the_production_argon2id_cost() {
+        // The one test that pays the shipped cost, so the constants are
+        // exercised rather than merely declared. Under nextest each test is its
+        // own process, so seeding here cannot leak into another test.
+        crate::csprng::seed_for_test(&[0x42u8; 32], &[0u8; 8], 0);
+
+        let record = PinVerifier::provision(b"123456").expect("provisioning failed");
+
+        assert_eq!(
+            record.kdf,
+            PinKdf::Argon2id {
+                m_cost_kib: PIN_ARGON2ID_M_COST_KIB,
+                t_cost: PIN_ARGON2ID_T_COST,
+                p_cost: PIN_ARGON2ID_P_COST,
+            },
+            "the production path must record the production cost"
+        );
+        assert_eq!(
+            record.verify(b"123456"),
+            Ok(true),
+            "a provisioned record must verify the secret it was made from"
+        );
     }
 }

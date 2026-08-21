@@ -338,6 +338,12 @@ mechanism = "host"
 fidelity = "The boot decisions here are pure functions over observed state, so host tests prove them exactly — including #360's encrypted-format gate, whose load-bearing case is a device provisioned in an EARLIER boot being refused. What host tests cannot reach is whether kinit.rs feeds these functions the right state on real hardware: `provisioned_this_boot` is set inside the non-QEMU first-boot-setup arm, which no host or QEMU profile executes. boot.sh witnesses kinit, not that arm."
 
 [[module]]
+name = "liveness"
+tests = 12
+mechanism = "host"
+notes = "The gate is pure and fully host-tested; what the host cannot reach is the timer IRQ and service loop that feed it, both ARM-only. So these tests prove the RULES -- deadline, per-owner stall, recovery, wrap, shutdown bound -- and the QEMU boot witness proves the wiring by booting at all, since a gate that never pets resets the board."
+
+[[module]]
 name = "lfs"
 tests = 49
 mechanism = "host"
@@ -589,8 +595,9 @@ fidelity = "Provision/read is proven on the RAM double; #866 blocks plaintext us
 
 [[module]]
 name = "security"
-tests = 27
+tests = 35
 mechanism = "host"
+notes = "The Argon2id block matrix comes from a host allocation under cfg(test): the page allocator's addresses are not mapped on this target, so the page-backed production path is exercised only on device. What the host does cover is the body around it -- page-count arithmetic, the scrub before release, and the refusal when the matrix is unavailable (#272)."
 
 [[module]]
 name = "security_mode"

@@ -231,6 +231,13 @@ pub enum ModeTransitionError {
     /// permanently masquerading as a wrong-PIN lockout (issue #282,
     /// `security_mode.rs`).
     NotProvisioned,
+    /// The PIN could not be checked at all -- Argon2id's block matrix was
+    /// unavailable, or the record's parameters are invalid. Distinct from
+    /// `PinMismatch` because the entered PIN was never tested: reporting a
+    /// mismatch would tell the operator their PIN is wrong when it may be
+    /// right, and would let memory pressure masquerade as a failed guess
+    /// (#272).
+    VerifierUnavailable,
 }
 
 impl fmt::Display for ModeTransitionError {
@@ -243,6 +250,7 @@ impl fmt::Display for ModeTransitionError {
             Self::AlreadyInMode => write!(f, "already in the requested mode"),
             Self::NotInPanic => write!(f, "not currently in Panic mode"),
             Self::NotProvisioned => write!(f, "Sentinel exit PIN not yet provisioned"),
+            Self::VerifierUnavailable => write!(f, "PIN could not be checked"),
         }
     }
 }
@@ -383,12 +391,23 @@ impl ModeManager {
     /// over the PIN's small candidate space (CWE-916 / CWE-759), and a shared
     /// salt makes one precomputed table serve every device (CWE-760).
     ///
+    /// **There is no attempt throttle on this transition.** The lock screen
+    /// counts attempts and escalates; this path does not, and nothing else in
+    /// the kernel bounds how often it may be called. Stating that rather than
+    /// leaving it to be inferred, because the KDF's cost is then the *whole* of
+    /// the resistance here -- and a throttle would only ever have bounded an
+    /// online attacker anyway, while one holding the stored record attacks it
+    /// offline at full speed where no throttle exists (#272, #872).
+    ///
     /// # Errors
     ///
     /// Returns [`ModeTransitionError::PinRequired`] if `pin` is empty.
     /// Returns [`ModeTransitionError::NotProvisioned`] if no PIN has ever
     /// been set for this manager.
     /// Returns [`ModeTransitionError::PinMismatch`] if the PIN is wrong.
+    /// Returns [`ModeTransitionError::VerifierUnavailable`] if the PIN could
+    /// not be checked at all -- distinct from a wrong PIN, and not a signal
+    /// that the entered value was rejected.
     /// Returns [`ModeTransitionError::PanicIsTerminal`] if in Panic.
     /// Returns [`ModeTransitionError::AlreadyInMode`] if already in Daily.
     pub(crate) fn exit_sentinel(
@@ -421,10 +440,15 @@ impl ModeManager {
         // constant, which made every device's digest identical for a given PIN
         // and one precomputed table sufficient for the fleet (#272).
         //
-        // A derivation failure is mapped to PinMismatch rather than unwrapped:
-        // fail-closed, and indistinguishable from a wrong guess to a caller.
-        if !verifier.verify(pin) {
-            return Err(ModeTransitionError::PinMismatch);
+        // WHY three arms rather than a boolean: a check that could not run is
+        // not a wrong PIN. Sentinel exit is the transition an attacker wants,
+        // and collapsing "no memory for the KDF" into PinMismatch would let
+        // them exhaust the page pool to make a correct PIN read as wrong
+        // (#272).
+        match verifier.verify(pin) {
+            Ok(true) => {}
+            Ok(false) => return Err(ModeTransitionError::PinMismatch),
+            Err(_) => return Err(ModeTransitionError::VerifierUnavailable),
         }
 
         self.mode = SecurityMode::Daily;

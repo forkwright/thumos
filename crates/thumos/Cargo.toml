@@ -85,6 +85,22 @@ aes = { version = "0.9", default-features = false, features = ["zeroize"] }
 # only thing that notices if the feature above is ever dropped. No additional
 # code is compiled.
 zeroize = { version = "1", default-features = false }
+# WHY (#272) `default-features = false` with `alloc` deliberately OFF: without
+# that feature the crate has no self-allocating entry point, so
+# `hash_password_into_with_memory` -- which takes the caller's buffer -- is the
+# only way in. The kernel slab heap is 1 MiB total (`kconfig::HEAP_PAGES`) and
+# every `Box`/`Vec` shares it, so a self-allocating Argon2id would OOM at any
+# memory cost worth having. The page allocator holds the block matrix instead
+# (see `security::pin_kdf_blocks`), and dropping the feature is what makes the
+# type system enforce that rather than a reader remembering it.
+#
+# Version 0.5.3 is the newest STABLE release. It brings a second RustCrypto
+# core generation (digest 0.10 beside the kernel's 0.11), which `cargo deny`
+# reports as a duplicate warning. That warning is left visible on purpose: it
+# is the signal to collapse the split when argon2 0.6 leaves release-candidate.
+# The alternative -- pinning 0.6.0-rc -- would make this the kernel's first
+# pre-release dependency, in the path that verifies the Sentinel-exit secret.
+argon2 = { version = "0.5.3", default-features = false }
 # WHY (#545, #819): the canonical EAPOL frame parse/encode, PMK/PTK
 # derivation, MIC, and 4-way handshake state machine live in aither-core,
 # shared no_std+alloc with the `aither` workspace crate -- one
