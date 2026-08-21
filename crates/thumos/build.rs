@@ -70,6 +70,9 @@ const RFC8032_TEST_PUBLIC_KEYS: [[u8; KEY_LEN]; 5] = [
 /// Env var naming the provisioned public-key file (64 hex chars).
 const KEY_ENV: &str = "THUMOS_BOOT_KEY_PUB";
 
+/// Env var naming the provisioning-authority public-key file (64 hex chars).
+const PROVISION_KEY_ENV: &str = "THUMOS_PROVISION_KEY_PUB";
+
 fn main() {
     println!("cargo:rerun-if-env-changed={KEY_ENV}");
 
@@ -102,14 +105,7 @@ fn main() {
         Err(_) => (dev_key, dev_pub_path.clone()),
     };
 
-    if RFC8032_TEST_PUBLIC_KEYS.contains(&key) {
-        die(&format!(
-            "#233: {} is an RFC 8032 section 7.1 test-vector public key -- its private \
-             half is published in the RFC, so this anchor is forgeable by anyone. \
-             Refused in every configuration.",
-            key_path.display()
-        ));
-    }
+    reject_unusable_anchor(&key, &key_path, "#233");
     if production && key == dev_key {
         die(&format!(
             "#233: {} is the committed dev key -- its seed is public by design and it \
@@ -117,14 +113,6 @@ fn main() {
             key_path.display()
         ));
     }
-    if VerifyingKey::from_bytes(&key).is_err() {
-        die(&format!(
-            "#233: {} is not a decompressable Ed25519 point -- a corrupted anchor \
-             would make every image unverifiable.",
-            key_path.display()
-        ));
-    }
-
     // WHY: the dev seed is emitted (test-only) so host tests can sign
     // round-trips against the real embedded anchor; its derivation is
     // re-checked here so a corrupted committed keypair fails the build, not
@@ -148,18 +136,23 @@ fn main() {
         die(&format!("#233: cannot write boot_key.rs: {e}"));
     }
 
+    emit_provision_key(&out_dir, production, &key);
+
     generate_initramfs(&manifest_dir, &out_dir);
 }
 
 /// Compile the userspace /init (#474) to a static armv7a ELF linked at
-/// 0x40100000 (`kconfig::KERNEL_END`) and wrap it in a newc CPIO the kernel
-/// embeds and mounts as the image-resident boot root ramfs.
+/// `board::USER_TEXT_BASE` (`0x7FF0_0000`, see init/init.ld) and wrap it in a
+/// newc CPIO the kernel embeds and mounts as the image-resident boot root
+/// ramfs.
 ///
 /// WHY rustc-direct (not a sub-crate): /init is one `no_std` `no_main` file,
 /// so a raw rustc invocation for armv7a-none-eabi produces the `ET_EXEC` ELF
 /// `elf::load` parses without a nested cargo build or workspace membership.
-/// -Ttext places all `PT_LOAD` >= `KERNEL_END` so the identity-mapping loader
-/// writes them into the sanctioned user-DRAM window [`KERNEL_END`, `RAM_END`).
+/// init.ld places all `PT_LOAD` at `USER_TEXT_BASE` so the identity-mapping
+/// loader writes them into the sanctioned user-DRAM window
+/// [`KERNEL_END`, `RAM_END`) -- the top 1 MB of it, which the kernel maps
+/// executable and excludes from the page allocator.
 /// Compile one userspace program (init.rs / init2.rs) to a static armv7a ELF
 /// linked by init.ld (#474/#489). `variant_cfg` optionally adds a
 /// `thumos_init_<variant>` cfg.
@@ -562,4 +555,114 @@ fn emit_kernel_window(manifest_dir: &Path, out_dir: &Path) {
 
     // link.ld reaches the fragment through the linker's search path.
     println!("cargo:rustc-link-arg=-L{}", out_dir.display());
+}
+
+/// Emit the provisioning trust anchor as a generated source file (#869).
+///
+/// The same treatment #233 gives the boot anchor, for the second anchor in the
+/// image. It had been RFC 8032 test vector 2 -- whose private half is published
+/// in the RFC -- while the module doc described operator offline custody. A
+/// comment cannot turn a public vector into an authentic anchor, and
+/// `try_finalize` verified against it as the sole authenticity gate.
+///
+/// WHY a non-production build gets NO anchor rather than a committed dev one:
+/// the provisioning path is not needed to boot, so there is nothing to keep
+/// working. `None` makes the refusal structural -- there is no key to verify
+/// against, so no surface can present a bundle as operator-authenticated, and
+/// that holds without anyone remembering to check a flag. Tests inject their
+/// own key through `Provisioner::new_with_key`, which is why removing the
+/// constant costs them nothing.
+fn emit_provision_key(out_dir: &Path, production: bool, boot_key: &[u8; KEY_LEN]) {
+    println!("cargo:rerun-if-env-changed={PROVISION_KEY_ENV}");
+
+    let anchor = match env::var(PROVISION_KEY_ENV) {
+        Ok(path) => {
+            let path = PathBuf::from(path);
+            println!("cargo:rerun-if-changed={}", path.display());
+            let key = read_hex_key(&path);
+            reject_unusable_anchor(&key, &path, "#869");
+            // WHY refuse the boot key specifically: kernel-image authenticity
+            // and provisioning-bundle authenticity are separate trust domains,
+            // and one key serving both collapses them -- an authority able to
+            // sign an image could then also sign credentials, which is not the
+            // delegation anyone chose.
+            if &key == boot_key {
+                die(&format!(
+                    "#869: {} is this image's BOOT anchor. Kernel-image authenticity and \
+                     provisioning-bundle authenticity are separate trust domains; reusing one \
+                     key for both silently merges them.",
+                    path.display()
+                ));
+            }
+            Some(key)
+        }
+        Err(_) if production => die(&format!(
+            "#869: a production image needs a provisioning trust anchor. Set \
+             {PROVISION_KEY_ENV} to the hex-encoded Ed25519 public key file produced by the \
+             operator-accepted authority, or the device would accept credential bundles \
+             signed by nobody in particular. No production key is ever committed to this repo."
+        )),
+        Err(_) => None,
+    };
+
+    let rendered = render_provision_key_rs(anchor.as_ref(), production);
+    if let Err(e) = fs::write(out_dir.join("provision_key.rs"), rendered) {
+        die(&format!("#869: cannot write provision_key.rs: {e}"));
+    }
+}
+
+/// Refuse anchors that cannot authenticate anyone, whatever they are for.
+///
+/// One implementation for both anchors (#233 boot, #869 provisioning): the
+/// reasons a key is unusable do not depend on which trust domain it serves, and
+/// a second copy would be a second thing to keep in step with the RFC list.
+fn reject_unusable_anchor(key: &[u8; KEY_LEN], key_path: &Path, issue: &str) {
+    if RFC8032_TEST_PUBLIC_KEYS.contains(key) {
+        die(&format!(
+            "{issue}: {} is an RFC 8032 section 7.1 test-vector public key -- its private \
+             half is published in the RFC, so this anchor is forgeable by anyone. \
+             Refused in every configuration.",
+            key_path.display()
+        ));
+    }
+    if VerifyingKey::from_bytes(key).is_err() {
+        die(&format!(
+            "{issue}: {} is not a decompressable Ed25519 point -- a corrupted anchor \
+             would make every signature unverifiable.",
+            key_path.display()
+        ));
+    }
+}
+
+/// Render `provision_key.rs`.
+fn render_provision_key_rs(anchor: Option<&[u8; KEY_LEN]>, production: bool) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "// GENERATED by build.rs (#869). Do not edit.\n\
+         //\n\
+         // `None` means this build carries no provisioning trust anchor, so every\n\
+         // bundle is refused. That is the non-production state and it is structural:\n\
+         // there is no key to verify against rather than a weak key that verifies.\n",
+    );
+    match anchor {
+        Some(key) => {
+            let _ = writeln!(
+                out,
+                "pub(crate) const PROVISION_PUBLIC_KEY: Option<[u8; {KEY_LEN}]> = Some([{}]);",
+                byte_list(key)
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "pub(crate) const PROVISION_PUBLIC_KEY: Option<[u8; {KEY_LEN}]> = None;"
+            );
+        }
+    }
+    let _ = writeln!(
+        out,
+        "/// Whether this image was built as the shippable artifact.\n\
+         pub(crate) const PROVISION_KEY_IS_PRODUCTION: bool = {production};"
+    );
+    out
 }

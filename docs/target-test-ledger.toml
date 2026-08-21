@@ -479,7 +479,7 @@ witness = "boot.sh+fork.sh+exec.sh+forkexec.sh+guard.sh+brk.sh+crashloop.sh"
 
 [[module]]
 name = "provision"
-tests = 29
+tests = 33
 mechanism = "host"
 
 [[module]]
