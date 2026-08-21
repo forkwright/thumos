@@ -202,27 +202,73 @@ fn render(salt: &[u8; SALT_LEN], verifier: Option<&[u8; VERIFIER_LEN]>) -> [u8; 
 ///
 /// # Errors
 ///
-/// Returns [`BlockError`] only when a REQUIRED block I/O fails — the read
-/// probe, or the provisioning write. A corrupt header is not an error: it
+/// Returns [`ProvisionError::Io`] only when a REQUIRED block I/O fails — the
+/// read probe, or the provisioning write. A corrupt header is not an error: it
 /// is the re-provision signal.
+///
+/// Returns [`ProvisionError::Entropy`] when `random` reports failure,
+/// [`ProvisionError::ShortFill`] when it reports fewer than [`SALT_LEN`]
+/// bytes, and [`ProvisionError::DegenerateSalt`] when it reports success and
+/// leaves the salt all-zero. **No preamble is written on any of those paths**
+/// (#842).
+///
+/// WHY `random` reports a byte count instead of simply filling the buffer: the
+/// previous signature was infallible and returned nothing, so a closure that
+/// wrote nothing at all was indistinguishable from one that succeeded — and
+/// the all-zero salt it left behind was then persisted as this device's
+/// permanent identity. A fallible source that must state how much it wrote
+/// makes "did not fill it" a value this function can refuse rather than a
+/// silence it cannot see.
 pub(crate) fn load_or_provision<D: BlockDevice>(
     dev: &mut D,
-    random: impl FnOnce(&mut [u8; SALT_LEN]),
-) -> Result<DeviceSecrets, BlockError> {
+    random: impl FnOnce(&mut [u8; SALT_LEN]) -> Result<usize, ()>,
+) -> Result<DeviceSecrets, ProvisionError> {
     let mut sector = [0u8; SECTOR_SIZE];
-    dev.read_sectors(0, 1, &mut sector)?;
+    dev.read_sectors(0, 1, &mut sector)
+        .map_err(ProvisionError::Io)?;
     if let PreambleStatus::Valid(secrets) = parse(&sector) {
         return Ok(secrets);
     }
 
     let mut salt = [0u8; SALT_LEN];
-    random(&mut salt);
+    let filled = random(&mut salt).map_err(|()| ProvisionError::Entropy)?;
+    if filled != SALT_LEN {
+        return Err(ProvisionError::ShortFill { filled });
+    }
+    // WHY all-zero is refused even when the source claims success: as a draw
+    // from a real CSPRNG it is a 2^-256 event, and as a symptom it is what a
+    // stuck or zero-filling source produces. Persisting it would fix this
+    // device's salt at a value every other device can guess.
+    if salt.iter().all(|&b| b == 0) {
+        return Err(ProvisionError::DegenerateSalt);
+    }
+
     let rendered = render(&salt, None);
-    dev.write_sectors(0, 1, &rendered)?;
+    dev.write_sectors(0, 1, &rendered)
+        .map_err(ProvisionError::Io)?;
     Ok(DeviceSecrets {
         salt,
         boot_verifier: None,
     })
+}
+
+/// Why provisioning a device salt could not complete (#842).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum ProvisionError {
+    /// A required block read or write failed.
+    Io(BlockError),
+    /// The entropy source reported failure.
+    Entropy,
+    /// The entropy source succeeded but filled fewer bytes than the salt
+    /// needs. Distinct from [`Self::Entropy`]: the source believed it had
+    /// worked.
+    ShortFill {
+        /// How many bytes it reported writing.
+        filled: usize,
+    },
+    /// The entropy source reported a full fill and left the salt all-zero.
+    DegenerateSalt,
 }
 
 /// Read-only load: parse the preamble WITHOUT provisioning (#446).
@@ -286,11 +332,69 @@ mod tests {
     use crate::block::MemBlockDevice;
 
     /// Deterministic distinct random streams per test device.
-    fn stream(seed: u8) -> impl FnOnce(&mut [u8; SALT_LEN]) {
+    /// A device whose sector 0 is blank, so `load_or_provision` takes the
+    /// provisioning branch.
+    fn blank_device() -> crate::block::MemBlockDevice {
+        crate::block::MemBlockDevice::new(8).expect("test device")
+    }
+
+    #[test]
+    fn provisioning_refuses_an_entropy_source_that_reports_failure() {
+        // #842: the source failing must not persist anything at all.
+        let mut dev = blank_device();
+        let result = load_or_provision(&mut dev, |_| Err(()));
+        assert_eq!(result, Err(ProvisionError::Entropy));
+        assert!(
+            matches!(load(&mut dev), Ok(PreambleStatus::Absent)),
+            "a refused provisioning must leave sector 0 unwritten"
+        );
+    }
+
+    #[test]
+    fn provisioning_refuses_a_source_that_writes_nothing() {
+        // The original defect: an infallible closure that did nothing left the
+        // salt all-zero and that zero was persisted as the device identity.
+        // Reporting a byte count is what makes "did nothing" visible.
+        let mut dev = blank_device();
+        let result = load_or_provision(&mut dev, |_| Ok(0));
+        assert_eq!(result, Err(ProvisionError::ShortFill { filled: 0 }));
+        assert!(
+            matches!(load(&mut dev), Ok(PreambleStatus::Absent)),
+            "a refused provisioning must leave sector 0 unwritten"
+        );
+    }
+
+    #[test]
+    fn provisioning_refuses_a_partial_fill() {
+        let mut dev = blank_device();
+        let result = load_or_provision(&mut dev, |buf| {
+            buf[0] = 0xAB;
+            Ok(1)
+        });
+        assert_eq!(result, Err(ProvisionError::ShortFill { filled: 1 }));
+    }
+
+    #[test]
+    fn provisioning_refuses_an_all_zero_salt_reported_as_a_full_fill() {
+        // A source can lie by omission: claim it filled the buffer while
+        // leaving it zero. As a real draw that is a 2^-256 event; as a symptom
+        // it is a stuck source, and persisting it fixes this device's salt at
+        // a value every other device can guess.
+        let mut dev = blank_device();
+        let result = load_or_provision(&mut dev, |_| Ok(SALT_LEN));
+        assert_eq!(result, Err(ProvisionError::DegenerateSalt));
+        assert!(
+            matches!(load(&mut dev), Ok(PreambleStatus::Absent)),
+            "a refused provisioning must leave sector 0 unwritten"
+        );
+    }
+
+    fn stream(seed: u8) -> impl FnOnce(&mut [u8; SALT_LEN]) -> Result<usize, ()> {
         move |buf: &mut [u8; SALT_LEN]| {
             for (i, b) in buf.iter_mut().enumerate() {
                 *b = seed.wrapping_add(i as u8);
             }
+            Ok(SALT_LEN)
         }
     }
 

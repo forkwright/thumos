@@ -101,6 +101,17 @@ pub(crate) fn disable() {
 /// arithmetic.
 pub(crate) fn set_ms(ms: u32) {
     let freq = frequency();
+    // WHY the zero guard (#842): `elapsed_ms` a few lines below already
+    // refuses a zero CNTFRQ. Without the same refusal here, `freq / 1000` is
+    // 0, so `ticks` is 0 and `set_timer(0)` fires the IRQ immediately -- on
+    // the scheduler tick and watchdog-pet source, which turns an unreadable
+    // CNTFRQ into a boot-time interrupt storm rather than a slow clock.
+    // Leaving the timer unarmed is the safer failure: the watchdog then
+    // expires and resets, which is visible, instead of the CPU never leaving
+    // the handler.
+    if freq == 0 {
+        return;
+    }
     let ticks = (freq / 1000).saturating_mul(ms);
     set_timer(ticks);
 }
