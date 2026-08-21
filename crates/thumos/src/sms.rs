@@ -555,9 +555,27 @@ fn write_cmgs_command(buf: &mut [u8; 32], tpdu_len: usize) -> usize {
 // SCTS timestamp helper
 // ---------------------------------------------------------------------------
 
-/// Decode a 7-byte SCTS field into a rough Unix epoch timestamp.
+/// Largest timezone offset any network may legitimately signal, in quarter
+/// hours (3GPP TS 23.040 section 9.2.3.11): 14 hours.
 ///
-/// Each byte contains two BCD digits packed low-nibble-first.
+/// WHY a bound at all: the SCTS arrives inside an attacker-supplied PDU, and
+/// the field's two BCD digits can encode 79 quarter hours -- almost twenty
+/// hours -- which no network can legitimately mean. An out-of-range value is
+/// not a timezone, so it is ignored rather than clamped: clamping would invent
+/// an offset the sender did not send, and both choices bound the shift a
+/// hostile PDU can produce to what a real network could have produced anyway.
+const MAX_SCTS_TZ_QUARTERS: u64 = 14 * 4;
+
+/// Decode a 7-byte SCTS field into a Unix epoch timestamp in UTC.
+///
+/// Each byte contains two BCD digits packed low-nibble-first. The seventh
+/// octet is the signed timezone offset in quarter hours, and TS 23.040
+/// specifies the first six as the SMSC's LOCAL time -- so the offset is
+/// subtracted to reach UTC rather than being cosmetic. Without that step every
+/// SMS timestamp is wrong by the sending network's offset, which for a carrier
+/// at +/-14 hours is more than half a day, and the same inbox mixes these with
+/// Matrix timestamps that are already true epochs (#832).
+///
 /// Returns 0 if the timestamp cannot be decoded.
 fn decode_scts_epoch(scts: &[u8]) -> u64 {
     if scts.len() < 7 {
@@ -578,7 +596,29 @@ fn decode_scts_epoch(scts: &[u8]) -> u64 {
     // Simplified epoch calculation (no leap second precision needed).
     // Days from 1970-01-01 to the given date, approximate.
     let days = days_from_epoch(year, month, day);
-    days * 86400 + hour * 3600 + minute * 60 + second
+    let local = days * 86400 + hour * 3600 + minute * 60 + second;
+
+    // TS 23.040 section 9.2.3.11: the octet is BCD like the others, but bit 3
+    // of the FIRST semi-octet -- the tens digit, which occupies the low nibble
+    // under this field's swapped-nibble encoding -- carries the sign rather
+    // than a digit value. Masking it off before forming the number is what
+    // separates "-8 quarters" from "88 quarters".
+    let tz = scts[6];
+    let negative = tz & 0x08 != 0;
+    let quarters = u64::from((tz & 0x07) * 10 + hi(tz));
+    if quarters > MAX_SCTS_TZ_QUARTERS {
+        return local;
+    }
+    let offset = quarters * 15 * 60;
+
+    // Local = UTC + offset, so UTC = local - offset. Saturating because a
+    // date early enough for the subtraction to underflow predates the epoch
+    // and has no representation here either way.
+    if negative {
+        local.saturating_add(offset)
+    } else {
+        local.saturating_sub(offset)
+    }
 }
 
 /// Approximate days from Unix epoch (1970-01-01) to a given date.
@@ -1171,6 +1211,85 @@ mod tests {
         // Must not panic.
         manager.delete(999);
         assert!(manager.inbox().is_empty());
+    }
+
+    /// Build an SCTS field for a fixed date/time with the given timezone
+    /// octet. The six time fields are swapped-nibble BCD, matching the
+    /// decoder: `0x52` reads as 25, `0x21` as 12, and so on.
+    fn scts_with_tz(tz: u8) -> [u8; 7] {
+        // 2025-12-31 23:45:06, chosen so a positive offset crosses back over a
+        // day boundary and a negative one crosses forward over a year one.
+        [0x52, 0x21, 0x13, 0x32, 0x54, 0x60, tz]
+    }
+
+    #[test]
+    fn scts_positive_timezone_shifts_back_to_utc() {
+        // #832: TS 23.040 gives the first six octets as the SMSC's LOCAL
+        // time, so a network at +02:00 means UTC is two hours EARLIER. The
+        // decoder used to ignore octet 6 entirely and return local time as if
+        // it were UTC.
+        let utc = decode_scts_epoch(&scts_with_tz(0x00));
+        // +8 quarters = +02:00. Swapped-nibble BCD: tens 0, units 8 -> 0x80.
+        let plus_two = decode_scts_epoch(&scts_with_tz(0x80));
+        assert_eq!(
+            utc.saturating_sub(plus_two),
+            2 * 3600,
+            "a +02:00 SCTS must decode two hours earlier than the same fields at UTC"
+        );
+    }
+
+    #[test]
+    fn scts_negative_timezone_shifts_forward_to_utc() {
+        // The sign lives in bit 3 of the tens semi-octet, which the
+        // swapped-nibble encoding puts in the LOW nibble: 0x08 | (units << 4).
+        let utc = decode_scts_epoch(&scts_with_tz(0x00));
+        let minus_two = decode_scts_epoch(&scts_with_tz(0x88));
+        assert_eq!(
+            minus_two.saturating_sub(utc),
+            2 * 3600,
+            "a -02:00 SCTS must decode two hours later than the same fields at UTC"
+        );
+    }
+
+    #[test]
+    fn scts_sign_bit_is_not_read_as_a_digit() {
+        // The failure this pins: masking the sign bit into the tens digit
+        // turns -02:00 (0x88) into +82 quarters. The two must differ by
+        // exactly 4 hours -- +02:00 either side of UTC -- not by 22.5.
+        let plus_two = decode_scts_epoch(&scts_with_tz(0x80));
+        let minus_two = decode_scts_epoch(&scts_with_tz(0x88));
+        assert_eq!(
+            minus_two.saturating_sub(plus_two),
+            4 * 3600,
+            "the sign bit must not be counted as part of the tens digit"
+        );
+    }
+
+    #[test]
+    fn scts_offset_beyond_the_legal_range_is_ignored() {
+        // The field can encode 79 quarter hours; no network means that. An
+        // SCTS arrives inside an attacker-supplied PDU, so an out-of-range
+        // value must not move the timestamp by almost twenty hours.
+        let utc = decode_scts_epoch(&scts_with_tz(0x00));
+        // 79 quarters: tens 7, units 9 -> 0x97.
+        let absurd = decode_scts_epoch(&scts_with_tz(0x97));
+        assert_eq!(
+            absurd, utc,
+            "an offset outside the +/-14h range is not a timezone and must be ignored"
+        );
+    }
+
+    #[test]
+    fn scts_maximum_legal_offset_is_applied() {
+        // The boundary is inclusive: +14:00 is legal and must still shift.
+        // 56 quarters: tens 5, units 6 -> 0x65.
+        let utc = decode_scts_epoch(&scts_with_tz(0x00));
+        let plus_fourteen = decode_scts_epoch(&scts_with_tz(0x65));
+        assert_eq!(
+            utc.saturating_sub(plus_fourteen),
+            14 * 3600,
+            "+14:00 is within the legal range and must be applied"
+        );
     }
 
     #[test]
