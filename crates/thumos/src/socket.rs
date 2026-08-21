@@ -442,13 +442,18 @@ pub(crate) fn sys_bind(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     if (addr_len as usize) < addr_size || addr_ptr == 0 {
         return fd::EINVAL;
     }
-    if !crate::memguard::validate_user_buffer(addr_ptr as usize, addr_size) {
+    // Read: the sockaddr is copied OUT of user memory.
+    if !crate::memguard::validate_user_range(
+        addr_ptr as usize,
+        addr_size,
+        crate::memguard::Access::Read,
+    ) {
         return fd::EFAULT;
     }
 
     // Read the sockaddr_in.
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS/read-permission validation.
+    // SAFETY: validated above against the caller's own page tables with PL0
+    // read permission, so the whole struct is mapped and readable.
     let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
 
     if sockaddr.sin_family != AF_INET as u16 {
@@ -582,13 +587,18 @@ pub(crate) fn sys_connect(fd: u32, addr_ptr: u32, addr_len: u32) -> u32 {
     if (addr_len as usize) < addr_size || addr_ptr == 0 {
         return fd::EINVAL;
     }
-    if !crate::memguard::validate_user_buffer(addr_ptr as usize, addr_size) {
+    // Read: the sockaddr is copied OUT of user memory.
+    if !crate::memguard::validate_user_range(
+        addr_ptr as usize,
+        addr_size,
+        crate::memguard::Access::Read,
+    ) {
         return fd::EFAULT;
     }
 
     // Read the sockaddr_in.
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS/read-permission validation.
+    // SAFETY: validated above against the caller's own page tables with PL0
+    // read permission, so the whole struct is mapped and readable.
     let sockaddr = unsafe { core::ptr::read_unaligned(addr_ptr as *const SockaddrIn) };
 
     if sockaddr.sin_family != AF_INET as u16 {
@@ -750,7 +760,12 @@ pub(crate) fn sys_sendto(
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
-    if !crate::memguard::validate_user_buffer(buf_ptr as usize, len as usize) {
+    // Read: the payload is copied OUT of this buffer and sent.
+    if !crate::memguard::validate_user_range(
+        buf_ptr as usize,
+        len as usize,
+        crate::memguard::Access::Read,
+    ) {
         return fd::EFAULT;
     }
 
@@ -805,12 +820,13 @@ pub(crate) fn sys_sendto(
             // Determine destination: explicit addr or connected peer.
             let dest = if dest_addr_ptr != 0
                 && (addr_len as usize) >= core::mem::size_of::<SockaddrIn>()
-                && crate::memguard::validate_user_buffer(
+                && crate::memguard::validate_user_range(
                     dest_addr_ptr as usize,
                     core::mem::size_of::<SockaddrIn>(),
+                    crate::memguard::Access::Read,
                 ) {
-                // SAFETY: the current guard bounds this to configured DRAM;
-                // #871 owns caller-VAS/read-permission validation.
+                // SAFETY: validated above against the caller's own page tables
+                // with PL0 read permission.
                 let sa = unsafe { core::ptr::read_unaligned(dest_addr_ptr as *const SockaddrIn) };
                 IpEndpoint::new(IpAddress::Ipv4(sa.ipv4_addr()), sa.port())
             } else if let Some((ip, port)) = info.peer_addr {
@@ -882,7 +898,12 @@ pub(crate) fn sys_recvfrom(
     if buf_ptr == 0 || len == 0 {
         return 0;
     }
-    if !crate::memguard::validate_user_buffer(buf_ptr as usize, len as usize) {
+    // Write: received bytes are copied INTO this buffer.
+    if !crate::memguard::validate_user_range(
+        buf_ptr as usize,
+        len as usize,
+        crate::memguard::Access::Write,
+    ) {
         return fd::EFAULT;
     }
 
@@ -943,9 +964,10 @@ pub(crate) fn sys_recvfrom(
                     // src_addr_ptr does not fail the read — the data is
                     // already received — it just skips the writeback.
                     if src_addr_ptr != 0
-                        && crate::memguard::validate_user_buffer(
+                        && crate::memguard::validate_user_range(
                             src_addr_ptr as usize,
                             core::mem::size_of::<SockaddrIn>(),
+                            crate::memguard::Access::Write,
                         )
                     {
                         let src_ip = match meta.endpoint.addr {

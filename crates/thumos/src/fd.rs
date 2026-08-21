@@ -24,7 +24,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 
-use crate::memguard::validate_user_buffer;
+use crate::memguard::{Access, validate_user_range};
 use crate::vfs::{self, Filesystem, InodeType, MountTable, VfsError};
 
 /// Maximum number of open file descriptors per process.
@@ -715,7 +715,8 @@ pub(crate) fn sys_open(path_ptr: u32, path_len: u32, flags: u32) -> u32 {
         return ENOENT;
     }
 
-    if !validate_user_buffer(path_ptr as usize, len) {
+    // Read: the path bytes are copied OUT of user memory.
+    if !validate_user_range(path_ptr as usize, len, Access::Read) {
         return EFAULT;
     }
 
@@ -781,10 +782,10 @@ pub(crate) fn sys_read(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
-    // Validated ahead of the fd/mount-table lookups below (an early-reject,
-    // rather than right at the deref) so a bad buf_ptr is rejected regardless
-    // of fd/mount state.
-    if !validate_user_buffer(buf_ptr as usize, count) {
+    // Write: file data is copied INTO this buffer. Validated ahead of the
+    // fd/mount-table lookups below (an early-reject, rather than right at the
+    // deref) so a bad buf_ptr is rejected regardless of fd/mount state.
+    if !validate_user_range(buf_ptr as usize, count, Access::Write) {
         return EFAULT;
     }
 
@@ -851,10 +852,11 @@ pub(crate) fn sys_write(fd: u32, buf_ptr: u32, count: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
-    // Validated ahead of the fd/mount-table lookups below (an early-reject,
-    // rather than right at the deref) so a bad buf_ptr is rejected regardless
-    // of fd/mount state.
-    if !validate_user_buffer(buf_ptr as usize, count) {
+    // Read: the payload is copied OUT of this buffer, so a read-only mapping
+    // is acceptable. Validated ahead of the fd/mount-table lookups below (an
+    // early-reject, rather than right at the deref) so a bad buf_ptr is
+    // rejected regardless of fd/mount state.
+    if !validate_user_range(buf_ptr as usize, count, Access::Read) {
         return EFAULT;
     }
 
@@ -944,8 +946,14 @@ pub(crate) fn sys_stat(path_ptr: u32, path_len: u32, stat_buf_ptr: u32) -> u32 {
     if stat_buf_ptr == 0 {
         return EFAULT;
     }
-    if !validate_user_buffer(path_ptr as usize, len)
-        || !validate_user_buffer(stat_buf_ptr as usize, core::mem::size_of::<StatBuf>())
+    // The path is read out of user memory; the StatBuf is written into it, so
+    // the two halves carry different permission requirements.
+    if !validate_user_range(path_ptr as usize, len, Access::Read)
+        || !validate_user_range(
+            stat_buf_ptr as usize,
+            core::mem::size_of::<StatBuf>(),
+            Access::Write,
+        )
     {
         return EFAULT;
     }
@@ -1025,10 +1033,14 @@ pub(crate) fn sys_fstat(fd: u32, stat_buf_ptr: u32) -> u32 {
         }
     };
 
-    // Validated once the fd is confirmed to exist — every return path below
-    // (mount-absent, fs-absent, fs.stat() error, and success) writes through
-    // stat_buf_ptr, so this one guard covers all four unsafe writes.
-    if !validate_user_buffer(stat_buf_ptr as usize, core::mem::size_of::<StatBuf>()) {
+    // Write: validated once the fd is confirmed to exist — every return path
+    // below (mount-absent, fs-absent, fs.stat() error, and success) writes
+    // through stat_buf_ptr, so this one guard covers all four unsafe writes.
+    if !validate_user_range(
+        stat_buf_ptr as usize,
+        core::mem::size_of::<StatBuf>(),
+        Access::Write,
+    ) {
         return EFAULT;
     }
 
@@ -1369,7 +1381,8 @@ pub(crate) fn sys_getcwd(buf_ptr: u32, size: u32) -> u32 {
     if buf_ptr == 0 {
         return EFAULT;
     }
-    if !validate_user_buffer(buf_ptr as usize, size as usize) {
+    // Write: the resolved path is copied INTO this buffer.
+    if !validate_user_range(buf_ptr as usize, size as usize, Access::Write) {
         return EFAULT;
     }
 
@@ -1421,7 +1434,8 @@ pub(crate) fn sys_mkdir(path_ptr: u32, path_len: u32) -> u32 {
         return ENOENT;
     }
 
-    if !validate_user_buffer(path_ptr as usize, len) {
+    // Read: the path bytes are copied OUT of user memory.
+    if !validate_user_range(path_ptr as usize, len, Access::Read) {
         return EFAULT;
     }
 
@@ -1482,7 +1496,8 @@ pub(crate) fn sys_unlink(path_ptr: u32, path_len: u32) -> u32 {
         return ENOENT;
     }
 
-    if !validate_user_buffer(path_ptr as usize, len) {
+    // Read: the path bytes are copied OUT of user memory.
+    if !validate_user_range(path_ptr as usize, len, Access::Read) {
         return EFAULT;
     }
 
@@ -1540,7 +1555,8 @@ pub(crate) fn sys_chdir(path_ptr: u32, path_len: u32) -> u32 {
         return ENOENT;
     }
 
-    if !validate_user_buffer(path_ptr as usize, len) {
+    // Read: the path bytes are copied OUT of user memory.
+    if !validate_user_range(path_ptr as usize, len, Access::Read) {
         return EFAULT;
     }
 

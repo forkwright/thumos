@@ -28,7 +28,7 @@
 //! This matches the 32-bit ABI layout used by musl on `ARMv7`.
 
 use crate::exceptions;
-use crate::memguard::validate_user_buffer;
+use crate::memguard::{Access, validate_user_range};
 use crate::process;
 use crate::syscall::EFAULT;
 use crate::timer;
@@ -181,8 +181,10 @@ fn counter_to_timespec(count: u64, freq: u64) -> (u32, u32) {
 /// 0 on success, EFAULT if `ts_ptr` is invalid, EINVAL for unknown `clock_id`.
 pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
     // Validate the user pointer: timespec is 8 bytes (two u32 fields).
+    // Write: the kernel stores the time INTO this buffer, so a read-only user
+    // mapping is a legitimate source but not a legitimate destination.
     let ptr = ts_ptr as usize;
-    if !validate_user_buffer(ptr, 8) {
+    if !validate_user_range(ptr, 8, Access::Write) {
         return EFAULT;
     }
 
@@ -208,10 +210,11 @@ pub(crate) fn sys_clock_gettime(clock_id: u32, ts_ptr: u32) -> u32 {
     };
 
     // Write the two u32 fields to user space.
-    // SAFETY: the current guard bounds [ptr, ptr+8) to configured DRAM only;
-    // #871 owns caller-VAS/write-permission validation. The pointer
-    // alignment is NOT guaranteed by the ABI (POSIX allows any alignment for
-    // char-typed buffers), so we use write_unaligned to be safe.
+    // SAFETY: [ptr, ptr+8) was validated above against the caller's own page
+    // tables with PL0 write permission, so every byte is mapped and writable
+    // by this process. The pointer alignment is NOT guaranteed by the ABI
+    // (POSIX allows any alignment for char-typed buffers), so we use
+    // write_unaligned to be safe.
     unsafe {
         core::ptr::write_unaligned(ptr as *mut u32, secs);
         core::ptr::write_unaligned((ptr + 4) as *mut u32, nanos);
@@ -239,14 +242,16 @@ pub(crate) fn sys_nanosleep(ts_ptr: u32) -> u32 {
     // tick period = TICK_MS ms = 10 ms. scheduler tick rate = 100 Hz.
     const TICK_MS: u64 = 10;
 
+    // Read: the requested duration is read OUT of this buffer.
     let ptr = ts_ptr as usize;
-    if !validate_user_buffer(ptr, 8) {
+    if !validate_user_range(ptr, 8, Access::Read) {
         return EFAULT;
     }
 
     // Read duration from user space.
-    // SAFETY: the current guard bounds [ptr, ptr+8) to configured DRAM only;
-    // #871 owns caller-VAS/read-permission validation. The unaligned-write
+    // SAFETY: [ptr, ptr+8) was validated above against the caller's own page
+    // tables with PL0 read permission, so every byte is mapped and readable
+    // by this process. The unaligned-write
     // reasoning applies in reverse for read_unaligned.
     let (req_secs, req_nanos): (u32, u32) = unsafe {
         let s = core::ptr::read_unaligned(ptr as *const u32);

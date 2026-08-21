@@ -1488,6 +1488,27 @@ pub(crate) fn current_page_table() -> usize {
     }
 }
 
+/// The current process's own user L1 page table, or `None` when no user address
+/// space is active.
+///
+/// Used by `memguard::validate_user_range` to decide whether a caller-VAS check
+/// is answerable at all.
+///
+/// WHY this is not `current_page_table() != 0`: PID 0 (kinit) is a real process
+/// entry whose `page_table_phys` is `mmu::table_base()`, the kernel global L1.
+/// A bare non-zero test would hand that table to the caller, and user pointers
+/// would then be validated against the kernel's own mappings — accepting
+/// exactly the kernel addresses the check exists to reject. The determination
+/// here is positive on all three counts: a non-zero PID, a non-zero table, and
+/// a table that is not the kernel's.
+pub(crate) fn current_user_page_table() -> Option<usize> {
+    let pt = current_page_table();
+    if current_pid() == 0 || pt == 0 || pt == mmu::table_base() {
+        return None;
+    }
+    Some(pt)
+}
+
 /// Get the current process's heap break.
 pub(crate) fn current_heap_break() -> usize {
     // SAFETY: current process PCB pointer is valid; set by the scheduler on

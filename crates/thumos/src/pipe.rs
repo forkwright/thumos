@@ -349,16 +349,19 @@ pub(crate) fn sys_pipe_read(pipe_idx: usize, buf_ptr: u32, count: u32) -> u32 {
         return EAGAIN;
     }
 
-    // Bound [buf_ptr, buf_ptr+count) to the broad configured DRAM window
-    // before constructing the slice; #871 still owns caller-VAS/permission
-    // validation. Placed after the
-    // EOF/EAGAIN early returns so a bad pointer is only rejected once the read
-    // would actually dereference it.
-    if !crate::memguard::validate_user_buffer(buf_ptr as usize, count) {
+    // Write: pipe data is copied INTO the caller's buffer, so every page must
+    // be mapped by this process and PL0-writable. Placed after the EOF/EAGAIN
+    // early returns so a bad pointer is only rejected once the read would
+    // actually dereference it.
+    if !crate::memguard::validate_user_range(
+        buf_ptr as usize,
+        count,
+        crate::memguard::Access::Write,
+    ) {
         return EFAULT;
     }
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS/write-permission validation. Count bytes are available.
+    // SAFETY: validated above against the caller's own page tables with PL0
+    // write permission, so all `count` bytes are mapped and writable.
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count) };
     buf.read(dst) as u32
 }
@@ -401,14 +404,15 @@ pub(crate) fn sys_pipe_write(pipe_idx: usize, buf_ptr: u32, count: u32, writer_p
         return EAGAIN;
     }
 
-    // Bound [buf_ptr, buf_ptr+count) to the broad configured DRAM window
-    // before constructing the slice; #871 still owns caller-VAS/permission
-    // validation. Placed after the EPIPE/EAGAIN early returns.
-    if !crate::memguard::validate_user_buffer(buf_ptr as usize, count) {
+    // Read: the payload is copied OUT of the caller's buffer, so every page
+    // must be mapped by this process and PL0-readable. Placed after the
+    // EPIPE/EAGAIN early returns.
+    if !crate::memguard::validate_user_range(buf_ptr as usize, count, crate::memguard::Access::Read)
+    {
         return EFAULT;
     }
-    // SAFETY: the current guard bounds this to configured DRAM only; #871
-    // owns caller-VAS/read-permission validation. Count bytes are available.
+    // SAFETY: validated above against the caller's own page tables with PL0
+    // read permission, so all `count` bytes are mapped and readable.
     let src = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, count) };
     buf.write(src) as u32
 }

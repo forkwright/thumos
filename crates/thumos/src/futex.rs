@@ -61,26 +61,26 @@ static mut FUTEX_WAITERS: [Option<FutexWaiter>; MAX_FUTEX_WAITERS] = {
 
 /// `FUTEX_WAIT`: if `*addr == val`, block the current process.
 ///
-/// Returns 0 after being woken, EAGAIN if `*addr != val`, or EINVAL if
-/// `addr` does not lie within the configured DRAM window (see
-/// `memguard::validate_user_buffer`). #871 owns caller-VAS/permission checks.
+/// Returns 0 after being woken, EAGAIN if `*addr != val`, or EINVAL if `addr`
+/// is not a readable user mapping of the calling process (see
+/// `memguard::validate_user_range`).
 ///
 /// WHY split: the value-mismatch fast path does not call `crate::process` and
 /// is therefore testable on the host. The register-and-block path is gated
 /// `#[cfg(not(test))]` because `crate::process` is not compiled under test
 /// (it requires ARM-specific code and the full kernel environment).
 pub(crate) fn sys_futex_wait(addr: u32, val: u32) -> u32 {
-    // validate_user_buffer rejects null, kernel-space, MMIO, and
-    // above-RAM addresses in one gate (see memguard.rs) — this also covers
-    // the waiter registration below, which stores this same `addr` for
-    // later comparison in sys_futex_wake without ever dereferencing it.
-    if !crate::memguard::validate_user_buffer(addr as usize, 4) {
+    // Read: the futex word is compared, never written, so a read-only mapping
+    // is acceptable here. The check also covers the waiter registration below,
+    // which stores this same `addr` for later comparison in `sys_futex_wake`
+    // without ever dereferencing it.
+    if !crate::memguard::validate_user_range(addr as usize, 4, crate::memguard::Access::Read) {
         return EINVAL;
     }
 
     // Read the current value atomically (single-core: no racing stores).
-    // SAFETY: the current guard bounds [addr, addr+4) to configured DRAM only;
-    // #871 owns caller-VAS/read-permission validation.
+    // SAFETY: [addr, addr+4) was validated above against the caller's own page
+    // tables with PL0 read permission, so it is mapped and readable.
     let current_val = unsafe { core::ptr::read_volatile(addr as *const u32) };
 
     if current_val != val {

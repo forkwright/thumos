@@ -29,7 +29,7 @@ use crate::capability;
 use crate::fd;
 use crate::futex;
 use crate::ipc;
-use crate::memguard::validate_user_buffer;
+use crate::memguard::{Access, validate_user_buffer, validate_user_range};
 use crate::mmu;
 use crate::page;
 use crate::pipe;
@@ -496,11 +496,11 @@ pub(crate) fn dispatch(num: u32, arg0: u32, arg1: u32, arg2: u32, arg3: u32) -> 
             };
             let payload = if len > 0 && ptr != 0 {
                 let capped_len = len.min(ipc::MSG_MAX_SIZE);
-                if !validate_user_buffer(ptr, capped_len) {
+                if !validate_user_range(ptr, capped_len, Access::Read) {
                     return EFAULT;
                 }
-                // SAFETY: the current guard bounds this to configured DRAM;
-                // #871 owns caller-VAS/read-permission validation.
+                // SAFETY: validated above against the caller's own page tables
+                // with PL0 read permission.
                 unsafe { core::slice::from_raw_parts(ptr as *const u8, capped_len) }
             } else {
                 &[]
@@ -676,11 +676,11 @@ fn sys_write_dispatch(fd: u32, buf_ptr: u32, count: u32) -> u32 {
             let Ok(len) = usize::try_from(count) else {
                 return EINVAL;
             };
-            if !validate_user_buffer(ptr, len) {
+            if !validate_user_range(ptr, len, Access::Read) {
                 return EFAULT;
             }
-            // SAFETY: the current guard bounds this to configured DRAM;
-            // #871 owns caller-VAS/read-permission validation.
+            // SAFETY: validated above against the caller's own page tables
+            // with PL0 read permission.
             let slice = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
             let serial = Uart::new();
             for &byte in slice {
@@ -746,7 +746,7 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
     // RAM_END for a path_ptr within MAX_PATH bytes of the top of DRAM,
     // reading unmapped/device memory. A path within MAX_PATH bytes of
     // RAM_END is rejected outright as a safe conservative policy.
-    if !validate_user_buffer(path_ptr as usize, MAX_PATH) {
+    if !validate_user_range(path_ptr as usize, MAX_PATH, Access::Read) {
         return EFAULT;
     }
 
@@ -826,25 +826,29 @@ fn sys_execve(path_ptr: u32, argv_ptr: u32, _envp_ptr: u32) -> u32 {
         for i in 0..MAX_ARGS {
             // Read the i-th argv[] entry (u32 user pointer to a string).
             let entry_addr = argv_base + i * 4;
-            if !validate_user_buffer(entry_addr, 4) {
+            if !validate_user_range(entry_addr, 4, Access::Read) {
                 break;
             }
-            // SAFETY: the current guard bounds this four-byte entry to
-            // configured DRAM; #871 owns caller-VAS/read-permission validation.
+            // SAFETY: this four-byte entry was validated above against the
+            // caller's own page tables with PL0 read permission.
             let str_ptr = unsafe { core::ptr::read_unaligned(entry_addr as *const u32) } as usize;
             if str_ptr == 0 {
                 break; // null terminator of argv[]
             }
-            if !validate_user_buffer(str_ptr, 1) {
+            // Validate the FULL scan window, not just the first byte: the loop
+            // below reads up to MAX_ARG_LEN - 1 bytes, so a one-byte check let
+            // a string starting near the end of a mapping be scanned past it.
+            // Rejecting a string within MAX_ARG_LEN of the end of its mapping
+            // is the same conservative policy `path_ptr` already uses above.
+            if !validate_user_range(str_ptr, MAX_ARG_LEN, Access::Read) {
                 break; // bad string pointer — stop collecting args
             }
             // Copy up to MAX_ARG_LEN-1 bytes of the string.
             let mut slen = 0usize;
             while slen < MAX_ARG_LEN - 1 {
-                // SAFETY DEBT (#871): only the first byte is numerically bounded
-                // above, while this loop may read up to MAX_ARG_LEN - 1 bytes.
-                // #871 owns a full-range, fault-contained copyin replacement;
-                // current source has no complete safety argument for this read.
+                // SAFETY: the whole [str_ptr, str_ptr+MAX_ARG_LEN) window was
+                // validated above against the caller's own page tables with PL0
+                // read permission, and this loop cannot leave it.
                 let byte = unsafe { (str_ptr as *const u8).add(slen).read_volatile() };
                 if byte == 0 {
                     break;

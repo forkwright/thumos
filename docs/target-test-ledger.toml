@@ -393,8 +393,9 @@ mechanism = "host"
 
 [[module]]
 name = "memguard"
-tests = 13
+tests = 28
 mechanism = "host"
+fidelity = "The numeric gate and the permission logic are fully host-covered: `pl0_grants` is exercised against descriptors minted by the real `prot_to_l2_flags`, and `range_grants` is driven over a descriptor-reader closure, so hole detection, unaligned starts and mid-page ends are proved without an MMU. What host tests cannot reach is the live walk itself — `validate_user_range` reads the caller's real L2 entries, and on host there is no user address space, so it takes the numeric path. A target witness that proves a PROT_NONE or read-only user buffer is refused on device is still owed; #871 owns it."
 
 [[module]]
 name = "meshtastic"
