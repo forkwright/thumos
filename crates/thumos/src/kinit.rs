@@ -320,7 +320,8 @@ fn boot_setup_loop(
     preamble_view: &mut crate::block::PartitionBlockDevice<MsdcBlockDevice>,
     key_manager: &mut crate::key_manager::KeyManager,
 ) -> bool {
-    serial.log(" Set boot passphrase (6+ digits; Star backspace; Hash confirm)\r\n");
+    serial
+        .log(" Set boot passphrase (24 digits = 6 word indices; Star backspace; Hash confirm)\r\n");
     let mut confirming = false;
     let mut first = [0u8; crate::lock_screen::MAX_PASSPHRASE_LEN];
     let mut first_len = 0usize;
@@ -378,15 +379,43 @@ fn boot_setup_loop(
                             confirming = false;
                             crate::key_manager::volatile_zero(&mut first);
                             first_len = 0;
-                        } else if entered_len >= crate::kinit_plan::MIN_BOOT_PASSPHRASE_LEN as usize
-                        {
-                            first[..entered_len].copy_from_slice(lock.passphrase_bytes());
-                            first_len = entered_len;
-                            lock.clear_passphrase();
-                            confirming = true;
-                            serial.log(" Confirm passphrase\r\n");
                         } else {
-                            serial.log(" Passphrase too short (6+ digits)\r\n");
+                            // WHY the policy parses rather than measures
+                            // length (#872): the floor is an entropy claim,
+                            // and only a complete set of in-range word
+                            // indices delivers it. A digit count cannot tell
+                            // `777600000000000000000000` -- four typed digits
+                            // that name no word -- from a real secret.
+                            match crate::passphrase_policy::parse_secret(lock.passphrase_bytes()) {
+                                Ok(_) => {
+                                    first[..entered_len].copy_from_slice(lock.passphrase_bytes());
+                                    first_len = entered_len;
+                                    lock.clear_passphrase();
+                                    confirming = true;
+                                    serial.log(" Confirm passphrase\r\n");
+                                }
+                                Err(reason) => {
+                                    // Surfaced, not silently accepted: the
+                                    // acceptance requires the refusal be
+                                    // visible, and the three refusals are
+                                    // different mistakes with different
+                                    // corrections.
+                                    serial.log(match reason {
+                                        crate::passphrase_policy::SecretRejected::TooShort {
+                                            ..
+                                        } => " Passphrase incomplete (24 digits: 6 words x 4)\r\n",
+                                        crate::passphrase_policy::SecretRejected::TooLong {
+                                            ..
+                                        } => " Passphrase too long (24 digits: 6 words x 4)\r\n",
+                                        crate::passphrase_policy::SecretRejected::NotNumeric => {
+                                            " Passphrase must be digits only\r\n"
+                                        }
+                                        crate::passphrase_policy::SecretRejected::IndexOutOfRange {
+                                            ..
+                                        } => " Word index out of range (0000-7775)\r\n",
+                                    });
+                                }
+                            }
                         }
                     }
                     // NOTE: D-pad/softkey/call/end/power -- every UI key

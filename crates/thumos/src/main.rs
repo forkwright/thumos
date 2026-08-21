@@ -229,6 +229,7 @@ mod net;
 mod nous;
 mod page;
 mod panic_wipe;
+mod passphrase_policy;
 mod pipe;
 mod power;
 mod process;

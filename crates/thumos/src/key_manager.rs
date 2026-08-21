@@ -120,6 +120,16 @@ impl<const N: usize> fmt::Display for SecureKey<N> {
 /// `SecureKey` from them leaves the original array un-zeroized; this
 /// closes that gap explicitly on every return path (#325).
 pub(crate) fn volatile_zero<const N: usize>(buf: &mut [u8; N]) {
+    volatile_zero_slice(buf);
+}
+
+/// [`volatile_zero`] for a buffer whose length is not known at compile time.
+///
+/// The Argon2id block matrix is sized from a record's recorded cost and lives
+/// in pages borrowed from the page allocator, so it cannot be an array (#272).
+/// One implementation rather than two, because a scrub that silently stopped
+/// working would leave no symptom.
+pub(crate) fn volatile_zero_slice(buf: &mut [u8]) {
     for byte in buf.iter_mut() {
         // SAFETY: write_volatile prevents dead-store elimination; byte
         // points into the caller-owned stack array.
