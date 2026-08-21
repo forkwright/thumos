@@ -383,7 +383,7 @@ fidelity = "module wiring only — the boot witness is its proof"
 
 [[module]]
 name = "matrix_crypto"
-tests = 51
+tests = 52
 mechanism = "host"
 fidelity = "the target-sensitive marker is write_volatile used ONLY to scrub superseded ratchet and skipped-key material (#830) -- not MMIO, page tables, or any address layout -- so the host run executes the same code with the same semantics and there is no target-only behaviour a boot witness would expose. What a host test genuinely cannot prove is that no copy survives elsewhere (a spilled register, a moved-from temporary): write_volatile bounds the store it is given, not the liveness of the value. That limit is identical on host and target, which is why this stays host-only."
 
@@ -613,7 +613,7 @@ fidelity = "allocator-on-real-tables is brk-witnessed; host tests cover size-cla
 
 [[module]]
 name = "sms"
-tests = 25
+tests = 27
 mechanism = "both"
 witness = "boot.sh"
 

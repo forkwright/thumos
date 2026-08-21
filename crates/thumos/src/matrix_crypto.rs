@@ -340,6 +340,29 @@ pub struct DeviceKeys {
     pub curve25519_key: [u8; KEY_SIZE],
 }
 
+/// A device's published keys together with the identity they were verified
+/// against.
+///
+/// WHY the identity travels with the keys (#837): the self-signature check
+/// (#230) verifies a signature over the triple `(user_id, device_id, keys)`,
+/// so what it establishes is a statement about that triple. Returning the keys
+/// alone discards the half saying WHOSE they are, leaving a caller with
+/// verified material it cannot attribute -- and attribution is the one thing a
+/// key directory exists to provide. Flattening several users into one list
+/// also makes two users' devices indistinguishable, so a caller could match a
+/// message against a key belonging to someone else entirely.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+#[non_exhaustive]
+pub struct VerifiedDevice {
+    /// The Matrix user these keys belong to.
+    pub user_id: String,
+    /// The device within that user's account.
+    pub device_id: String,
+    /// The published keys, self-signature verified.
+    pub keys: DeviceKeys,
+}
+
 impl fmt::Display for DeviceKeys {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Display only the first 4 bytes of each key for identification.
@@ -768,15 +791,19 @@ impl MatrixCrypto {
         w.finish()
     }
 
-    /// Parse a `/keys/query` response and extract device keys.
+    /// Parse a `/keys/query` response into verified devices.
     ///
-    /// Returns a list of `DeviceKeys` for all devices found in the response.
+    /// Each entry carries the user and device the keys were verified for, not
+    /// just the keys: the response covers several users at once, and a bare
+    /// list of keys cannot say which is whose (#837).
     ///
     /// # Errors
     ///
     /// Returns [`CryptoError::InvalidKeyResponse`] if the JSON structure
     /// is not valid or is missing expected fields.
-    pub(crate) fn process_key_query_response(json: &str) -> Result<Vec<DeviceKeys>, CryptoError> {
+    pub(crate) fn process_key_query_response(
+        json: &str,
+    ) -> Result<Vec<VerifiedDevice>, CryptoError> {
         let root =
             JsonParser::parse(json.as_bytes()).map_err(|_| CryptoError::InvalidKeyResponse)?;
 
@@ -840,9 +867,13 @@ impl MatrixCrypto {
                     && found_curve
                     && verify_device_self_signature(device_info, user_id, device_id, &ed25519)
                 {
-                    result.push(DeviceKeys {
-                        ed25519_key: ed25519,
-                        curve25519_key: curve25519,
+                    result.push(VerifiedDevice {
+                        user_id: user_id.clone(),
+                        device_id: device_id.clone(),
+                        keys: DeviceKeys {
+                            ed25519_key: ed25519,
+                            curve25519_key: curve25519,
+                        },
                     });
                 }
             }
@@ -2771,6 +2802,30 @@ mod tests {
         (ed_hex, hex_encode(&sig.to_bytes()))
     }
 
+    /// Splice two single-user `/keys/query` responses into one covering both.
+    ///
+    /// WHY textual rather than a second builder: `key_query_response` is the
+    /// shape the verifier signs over, and re-deriving it for the multi-user
+    /// case risks the two drifting -- at which point the signatures stop
+    /// verifying and the test fails for a reason unrelated to what it asserts.
+    fn merge_key_query_users(first: &str, second: &str) -> String {
+        let open = "\"device_keys\":{";
+        let (_, first_users) = first
+            .split_once(open)
+            .expect("fixture must contain a device_keys object");
+        let (_, second_users) = second
+            .split_once(open)
+            .expect("fixture must contain a device_keys object");
+        // Each tail is `<users>}}`; join the two user maps into one object.
+        let mut merged = String::from("{");
+        merged.push_str(open);
+        merged.push_str(first_users.trim_end_matches("}}"));
+        merged.push(',');
+        merged.push_str(second_users.trim_end_matches("}}"));
+        merged.push_str("}}");
+        merged
+    }
+
     #[test]
     fn process_key_query_response_parses_signed_device_keys() {
         let user = "@alice:example.com";
@@ -2782,9 +2837,56 @@ mod tests {
         let json = key_query_response(user, device, &ed_hex, &curve_hex, Some(&sig_hex));
         let result = MatrixCrypto::process_key_query_response(&json);
         assert!(result.is_ok());
-        let keys = result.unwrap_or_default();
-        assert_eq!(keys.len(), 1, "a validly self-signed device key is trusted");
-        assert_eq!(keys[0].curve25519_key, [0xBB; KEY_SIZE]);
+        let devices = result.unwrap_or_default();
+        assert_eq!(
+            devices.len(),
+            1,
+            "a validly self-signed device key is trusted"
+        );
+        assert_eq!(devices[0].keys.curve25519_key, [0xBB; KEY_SIZE]);
+        assert_eq!(devices[0].user_id, user);
+        assert_eq!(devices[0].device_id, device);
+    }
+
+    #[test]
+    fn verified_keys_from_two_users_stay_attributed() {
+        // #837: a `/keys/query` covers several users at once. A flat list of
+        // keys cannot say which is whose, so a caller could match a message
+        // against a key belonging to someone else entirely -- the failure a
+        // key directory exists to prevent.
+        let alice = "@alice:example.com";
+        let bob = "@bob:example.com";
+        let device = "DEVICEID";
+        let alice_curve = hex_encode(&[0xA1; KEY_SIZE]);
+        let bob_curve = hex_encode(&[0xB2; KEY_SIZE]);
+        let (alice_ed, alice_sig) = sign_device(alice, device, &alice_curve, &[0x11u8; 32]);
+        let (bob_ed, bob_sig) = sign_device(bob, device, &bob_curve, &[0x22u8; 32]);
+
+        // Two single-user responses merged into one two-user object.
+        let alice_json =
+            key_query_response(alice, device, &alice_ed, &alice_curve, Some(&alice_sig));
+        let bob_json = key_query_response(bob, device, &bob_ed, &bob_curve, Some(&bob_sig));
+        let merged = merge_key_query_users(&alice_json, &bob_json);
+
+        let devices = MatrixCrypto::process_key_query_response(&merged).unwrap_or_default();
+        assert_eq!(devices.len(), 2, "both users' devices must verify");
+
+        let alice_entry = devices
+            .iter()
+            .find(|d| d.user_id == alice)
+            .expect("alice must be present and identifiable");
+        let bob_entry = devices
+            .iter()
+            .find(|d| d.user_id == bob)
+            .expect("bob must be present and identifiable");
+        assert_eq!(
+            alice_entry.keys.curve25519_key, [0xA1; KEY_SIZE],
+            "alice's entry must carry alice's key"
+        );
+        assert_eq!(
+            bob_entry.keys.curve25519_key, [0xB2; KEY_SIZE],
+            "bob's entry must carry bob's key"
+        );
     }
 
     #[test]

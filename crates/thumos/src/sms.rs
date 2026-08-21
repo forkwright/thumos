@@ -326,6 +326,14 @@ impl SmsManager {
             .map_err(|_| SmsError::TransportError)?;
 
         // Wait for the '>' prompt, then send PDU + Ctrl-Z.
+        //
+        // WHY the final-result check is here and not only after the PDU
+        // (#837): a modem that refuses the submit answers `+CMS ERROR: <n>`
+        // instead of prompting. A loop that tests only for `>` does not
+        // recognise that line, discards it, and keeps reading until it runs
+        // out of attempts -- so the caller is told the transport failed when
+        // the modem had already said precisely what was wrong. The two loops
+        // either side of this one already parse the same lines this way.
         let mut prompt_received = false;
         for _ in 0..16 {
             let n = transport
@@ -335,6 +343,13 @@ impl SmsManager {
             if !line.is_empty() && line[0] == b'>' {
                 prompt_received = true;
                 break;
+            }
+            if let Some(result) = crate::telephony::parse_final_result(line) {
+                return Err(match result {
+                    AtResponse::Ok | AtResponse::Error => SmsError::ModemError,
+                    AtResponse::CmeError(code) => SmsError::CmeError(code),
+                    AtResponse::CmsError(code) => SmsError::CmsError(code),
+                });
             }
         }
 
@@ -949,6 +964,46 @@ mod tests {
             result,
             Err(SmsError::CmsError(330)),
             "a +CMS ERROR final result on SMS submit must surface the code immediately, not TransportError after exhausting the wait loop"
+        );
+    }
+
+    #[test]
+    fn send_surfaces_a_cms_error_delivered_instead_of_the_prompt() {
+        use crate::telephony_mock::MockModemTransport;
+
+        // #837: a modem that refuses the submit answers `+CMS ERROR: <n>`
+        // where the `>` prompt would have gone. The wait loop used to test
+        // only for `>`, so it discarded that line, exhausted its sixteen
+        // attempts, and reported TransportError -- losing the one thing the
+        // modem had told it.
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok(); // AT+CMGF=0 -> OK
+        mock.queue_response(b"+CMS ERROR: 304"); // instead of the prompt
+
+        let result = SmsManager::send(&mut mock, "+15551234567", "Hi");
+        assert_eq!(
+            result,
+            Err(SmsError::CmsError(304)),
+            "an error delivered in place of the prompt must surface its code, \
+             not a generic TransportError"
+        );
+    }
+
+    #[test]
+    fn send_surfaces_a_cme_error_delivered_instead_of_the_prompt() {
+        use crate::telephony_mock::MockModemTransport;
+
+        // The same path for the equipment-error family, so a fix covering
+        // only the SMS-specific one would not pass.
+        let mut mock = MockModemTransport::new();
+        mock.queue_ok();
+        mock.queue_response(b"+CME ERROR: 10");
+
+        let result = SmsManager::send(&mut mock, "+15551234567", "Hi");
+        assert_eq!(
+            result,
+            Err(SmsError::CmeError(10)),
+            "a CME error in place of the prompt must surface its code too"
         );
     }
 
