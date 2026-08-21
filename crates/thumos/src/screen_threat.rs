@@ -121,6 +121,23 @@ const COLOR_ORANGE: u16 = color::from_rgb(255, 165, 0);
 /// below; semantics stay in one place.
 pub use sema_core::ThreatLevel;
 
+/// Whether the status bar should show the threat indicator (#874).
+///
+/// Two inputs, and both matter. An OFFLINE detector has no opinion, so its
+/// last-known level is stale rather than reassuring or alarming -- the
+/// indicator must be dark, not stuck at whatever it read before it stopped.
+/// An ONLINE detector's High/Critical band is the only thing that lights it.
+///
+/// WHY this is a function rather than the expression it replaced: the badge
+/// previously derived from CCCI boot-path absence, which is a boot artefact
+/// and not a threat observation at all. Correcting that in place left a fix
+/// nothing guarded -- reverting the expression would have passed the whole
+/// suite and the boot witness, because neither asserted on it. A named
+/// function with a cross-product test cannot regress silently.
+pub(crate) const fn threat_indicator(detector_online: bool, level: ThreatLevel) -> bool {
+    detector_online && matches!(level, ThreatLevel::High | ThreatLevel::Critical)
+}
+
 /// Screen-side presentation for the canonical [`ThreatLevel`].
 pub(crate) trait ThreatLevelScreenExt {
     /// RGB565 color for this threat level.
@@ -873,6 +890,28 @@ impl Screen for ThreatMonitor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_threat_indicator_lights_only_for_an_online_high_or_critical_detector() {
+        // The full cross product, not the cases someone remembered. The
+        // offline row is the one that matters: a detector that has stopped
+        // reporting must not leave the badge asserting whatever it last saw.
+        for level in [
+            ThreatLevel::Low,
+            ThreatLevel::Medium,
+            ThreatLevel::High,
+            ThreatLevel::Critical,
+        ] {
+            assert!(
+                !threat_indicator(false, level),
+                "an offline detector must never light the indicator, including at {level}"
+            );
+        }
+        assert!(!threat_indicator(true, ThreatLevel::Low));
+        assert!(!threat_indicator(true, ThreatLevel::Medium));
+        assert!(threat_indicator(true, ThreatLevel::High));
+        assert!(threat_indicator(true, ThreatLevel::Critical));
+    }
+
     use alloc::string::ToString;
 
     use super::*;
