@@ -127,10 +127,10 @@ mechanism = "host"
 
 [[module]]
 name = "csprng"
-tests = 15
+tests = 19
 mechanism = "both"
 witness = "boot.sh"
-fidelity = "Host tests use the deterministic seed path; #840 first owns the estimator that currently credits deterministic timer increments, and #873 owns non-repeating reseed state before any device-bound entropy health receipt"
+fidelity = "Host tests drive the estimator with synthetic sample sequences and the deterministic seed path, so they pin what it refuses and what it admits but never observe real ISR-latency jitter; #873 owns non-repeating reseed state before any device-bound entropy health receipt"
 
 [[module]]
 name = "devfs"
