@@ -448,9 +448,9 @@ mechanism = "host"
 
 [[module]]
 name = "pipe"
-tests = 12
+tests = 14
 mechanism = "host"
-fidelity = "#868 owns sys_pipe's unchecked output range; #871 owns caller-VAS and permission-aware copyin/copyout used by all pointer paths"
+fidelity = "sys_pipe validates its output range before allocating any state, and the ordering — not just the errno — is host-proven by asserting the pipe pool is untouched after a refused call. What host tests cannot reach is the caller-VAS half: with no MMU and no user address space they exercise only the numeric gate, so PROT_NONE and read-only destinations are covered by memguard's own tests rather than through sys_pipe. #871 owns the remaining fault-contained copyin/copyout."
 
 [[module]]
 name = "power"

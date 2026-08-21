@@ -40,6 +40,9 @@ pub(crate) const EBADF: u32 = crate::fd::EBADF;
 /// EFAULT — bad address (two's complement -14, Linux ARM convention).
 pub(crate) const EFAULT: u32 = crate::fd::EFAULT;
 
+/// Byte length of the two-`u32` fd pair `sys_pipe` writes back to the caller.
+const FDS_OUT_LEN: usize = 2 * core::mem::size_of::<u32>();
+
 /// A pipe's internal ring buffer.
 pub(crate) struct PipeBuffer {
     data: [u8; PIPE_BUF_SIZE],
@@ -245,9 +248,24 @@ pub(crate) fn is_write_end(flags: u32) -> bool {
     reason = "read_ofd/write_ofd (open-file-description table indices) and read_fd/write_fd (the per-process fd numbers derived from them) are standard POSIX fd/ofd terminology naming two genuinely distinct values -- renaming either pair to defeat the Levenshtein check would decouple the names from the concepts they name"
 )]
 pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
-    // FIXME(#868): null-only validation is insufficient. Validate the full
-    // writable caller-VAS range through #871 before allocating any state.
-    if fds_ptr == 0 {
+    // Write: both fd numbers are copied INTO the caller's buffer, so the whole
+    // eight-byte range must be mapped by this process and PL0-writable.
+    //
+    // WHY this precedes every allocation rather than sitting next to the write
+    // it guards: the ordering is the security property. Validating late would
+    // still reject the pointer, but only after a pipe slot, two open-file
+    // descriptions and two fd-table entries had been created and then had to be
+    // unwound — turning a bad pointer into a way to churn the pool. Rejecting
+    // first means a failed call costs nothing and leaves nothing behind.
+    //
+    // The null case is covered here too: the numeric gate inside
+    // `validate_user_range` rejects a null pointer, so a separate check would
+    // be a second answer to a question this one already answers.
+    if !crate::memguard::validate_user_range(
+        fds_ptr as usize,
+        FDS_OUT_LEN,
+        crate::memguard::Access::Write,
+    ) {
         return EFAULT;
     }
 
@@ -307,13 +325,14 @@ pub(crate) fn sys_pipe(fds_ptr: u32) -> u32 {
     let (read_fd, write_fd) = (read_fd as u32, write_fd as u32);
 
     // Write the two fd numbers to userspace.
-    // SAFETY DEBT (#868/#871): fds_ptr is only checked non-null above. We write 8 bytes (two
-    // u32s). The pointer alignment is NOT guaranteed by the ABI (POSIX
-    // allows any alignment for char-typed buffers -- the same reasoning
-    // time::sys_clock_gettime documents for its own userspace writes), so
-    // write_unaligned is required: a plain core::ptr::write on a
-    // misaligned fds_ptr is undefined behavior and can fault on ARM.
-    // Do not treat this as a valid userspace boundary until #868/#871 land.
+    // SAFETY: the whole eight-byte range was validated at entry against the
+    // caller's own page tables with PL0 write permission, so both stores land
+    // in memory this process maps and may write. The pointer alignment is NOT
+    // guaranteed by the ABI (POSIX allows any alignment for char-typed buffers
+    // -- the same reasoning time::sys_clock_gettime documents for its own
+    // userspace writes), so write_unaligned is required: a plain
+    // core::ptr::write on a misaligned fds_ptr is undefined behavior and can
+    // fault on ARM.
     unsafe {
         let fds = fds_ptr as *mut u32;
         core::ptr::write_unaligned(fds, read_fd);
@@ -450,6 +469,16 @@ mod tests {
         }
     }
 
+    /// Count occupied pipe slots — the observable that proves a rejected
+    /// `sys_pipe` allocated nothing (#868).
+    fn occupied_slots() -> usize {
+        // SAFETY: test-only; single-threaded per test.
+        unsafe {
+            let pool = &*core::ptr::addr_of!(PIPE_POOL);
+            pool.iter().filter(|slot| slot.is_some()).count()
+        }
+    }
+
     #[test]
     fn pipe_idx_from_flags_masks_out_of_range_bits() {
         // Bits 12-15 (which the old 0x7F mask would have included) must
@@ -469,16 +498,24 @@ mod tests {
 
     #[test]
     fn pipe_creates_two_fds() {
+        // WHY function-local `static mut` rather than a stack array (#868):
+        // sys_pipe now validates the full writable range, and this binary's PIE
+        // image -- hence any `static` -- loads inside
+        // [board::KERNEL_END, board::RAM_END) on this host toolchain, while the
+        // per-test-thread stack sits above RAM_END. A stack buffer would be
+        // rejected before pipe() ran. Same pattern as the fd/socket tests.
+        static mut FDS: [u32; 2] = [0u32; 2];
         // Reset the pipe pool and establish a fresh current process (#267).
         reset_pool();
         unsafe {
             crate::fd::reset_fd_state_for_test();
         }
 
-        let mut fds = [0u32; 2];
-        let result = sys_pipe(fds.as_mut_ptr() as u32);
+        let result = sys_pipe(core::ptr::addr_of_mut!(FDS) as u32);
         assert_eq!(result, 0, "pipe() should succeed");
 
+        // SAFETY: test-only static; single-threaded per test.
+        let fds = unsafe { &*core::ptr::addr_of!(FDS) };
         // Both fds should be valid (different) numbers in range [0, MAX_FDS).
         let (read_fd, write_fd) = (fds[0] as usize, fds[1] as usize);
         assert!(read_fd < crate::fd::MAX_FDS, "read fd must be in range");
@@ -488,6 +525,13 @@ mod tests {
 
     #[test]
     fn pipe_writes_fds_to_unaligned_userspace_pointer() {
+        // Static rather than stack for the reason given in
+        // `pipe_creates_two_fds`; the +1 offset below stays inside the same
+        // page. Declared before any statement: an item after a statement is
+        // scoped from the top of the block anyway, which clippy rejects as
+        // misleading.
+        static mut FDS_BUF: [u8; 9] = [0u8; 9];
+
         reset_pool();
         unsafe {
             crate::fd::reset_fd_state_for_test();
@@ -496,8 +540,9 @@ mod tests {
         // Deliberately misaligned: offset 1 byte into the buffer, so a
         // plain core::ptr::write (which requires u32 alignment) would be
         // undefined behavior. write_unaligned must handle this correctly.
-        let mut fds_buf = [0u8; 9];
-        let unaligned_ptr = fds_buf.as_mut_ptr().wrapping_add(1);
+        let unaligned_ptr = core::ptr::addr_of_mut!(FDS_BUF)
+            .cast::<u8>()
+            .wrapping_add(1);
         let result = sys_pipe(unaligned_ptr as u32);
         assert_eq!(
             result, 0,
@@ -582,6 +627,76 @@ mod tests {
         let more = [0u8; 1];
         let result = sys_pipe_write(pipe_idx, more.as_ptr() as u32, 1, 0);
         assert_eq!(result, EAGAIN, "write to full pipe → EAGAIN");
+    }
+
+    /// The property this issue is actually about: rejection happens BEFORE any
+    /// allocation. The return value alone does not establish that — validating
+    /// after allocation would return the same `EFAULT` while leaving a pipe
+    /// slot, two open-file descriptions and two fd-table entries to unwind. So
+    /// the assertion that carries the fix is the pool count, not the errno.
+    #[test]
+    fn pipe_rejects_a_bad_pointer_without_allocating_a_slot() {
+        reset_pool();
+        unsafe {
+            crate::fd::reset_fd_state_for_test();
+        }
+        assert_eq!(occupied_slots(), 0, "fixture must start with an empty pool");
+
+        assert_eq!(
+            sys_pipe(crate::board::KERNEL_LOAD as u32),
+            EFAULT,
+            "a kernel-range fds_ptr must be refused"
+        );
+        assert_eq!(
+            occupied_slots(),
+            0,
+            "a refused pipe() must leave no pipe slot behind"
+        );
+    }
+
+    #[test]
+    fn pipe_rejects_the_fds_pointer_range_adversarially() {
+        reset_pool();
+        unsafe {
+            crate::fd::reset_fd_state_for_test();
+        }
+
+        // Null: covered by the numeric gate inside validate_user_range, so no
+        // separate null check is needed in sys_pipe.
+        assert_eq!(sys_pipe(0), EFAULT, "null fds_ptr must be refused");
+        // Device MMIO.
+        assert_eq!(
+            sys_pipe(0x1100_2000),
+            EFAULT,
+            "MMIO fds_ptr must be refused"
+        );
+        // Kernel image.
+        assert_eq!(
+            sys_pipe(crate::board::KERNEL_LOAD as u32),
+            EFAULT,
+            "kernel-image fds_ptr must be refused"
+        );
+        // Straddling the top of DRAM: the first four bytes are in range and the
+        // second four are not. A check that validated only the starting address,
+        // or only one u32, would accept this and write past the end of RAM.
+        let straddle = (crate::board::RAM_END - 4) as u32;
+        assert_eq!(
+            sys_pipe(straddle),
+            EFAULT,
+            "a range crossing RAM_END must be refused even though its first word is in range"
+        );
+        // Wrapping: ptr + 8 overflows the 32-bit address space.
+        assert_eq!(
+            sys_pipe(u32::MAX - 3),
+            EFAULT,
+            "a wrapping fds_ptr range must be refused"
+        );
+
+        assert_eq!(
+            occupied_slots(),
+            0,
+            "none of the refused calls may allocate a slot"
+        );
     }
 
     #[test]
