@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.7](https://github.com/forkwright/thumos/compare/v0.8.6...v0.8.7) (2026-08-21)
+
+
+### Bug Fixes
+
+* **security:** refuse to format an encrypted LFS on a previously provisioned device ([#894](https://github.com/forkwright/thumos/issues/894)) ([b83511a](https://github.com/forkwright/thumos/commit/b83511aedab597d32567e2e5bf6ce31ba83cd9dd)), closes [#360](https://github.com/forkwright/thumos/issues/360)
+
 ## [0.8.6](https://github.com/forkwright/thumos/compare/v0.8.5...v0.8.6) (2026-08-21)
 
 
