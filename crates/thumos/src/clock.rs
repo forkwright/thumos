@@ -1,20 +1,55 @@
-//! Clock source selector: GPS > NTP > modem RTC (provisional; #861).
+//! Clock source selection over four independent axes.
 //!
-//! Provides wall-clock time to the kernel using the current freshness-based
-//! selector. The implemented order is not a validated security trust model:
-//! GPS/NMEA and plain NTP are unauthenticated, and either may be spoofed or
-//! supplied by hostile firmware. #861 owns separating authentication,
-//! freshness, precision, and disagreement handling before automatic source
-//! acquisition is wired.
+//! ## Why four axes and not one ordering
+//!
+//! A single precedence list answers "which source wins" by conflating
+//! questions that have different answers. This module keeps them apart:
+//!
+//! - **Authentication** — can a reading be attributed to a party an attacker
+//!   in the signal path cannot impersonate? Nothing here can, yet.
+//! - **Freshness** — how long ago did the source last report?
+//! - **Precision** — what granularity does *this implementation* extract,
+//!   which is not the same as what the protocol can carry.
+//! - **Agreement** — do the sources that are fresh tell the same story?
+//!
+//! Being first in an ordering is a statement about preference. It is not a
+//! statement about any of the four, and the previous single list read as
+//! though it were.
 //!
 //! ## Trust model
 //!
-//! | Source     | Trust   | Rationale                                          |
-//! |------------|---------|---------------------------------------------------|
-//! | GPS        | Unauthenticated | Current selector prefers a fresh fix; #861 |
-//! | NTP        | Unauthenticated | Packet validation only; NTS is not implemented |
-//! | Modem RTC  | Unauthenticated | Carrier/firmware supplied                  |
-//! | Manual     | Seed            | User/build supplied; no external freshness |
+//! | Source    | Authentication  | Precision | Why                                    |
+//! |-----------|-----------------|-----------|----------------------------------------|
+//! | GPS       | Unauthenticated | 1 s       | Civilian NMEA carries no signature, the M7's GPS firmware is proprietary, and the parser keeps whole seconds |
+//! | NTP       | Unauthenticated | 1 s       | Plain NTP; NTS is not implemented, and this parser discards the 32-bit fraction the protocol does carry |
+//! | Modem RTC | Unauthenticated | 1 s       | Carrier- and firmware-supplied          |
+//! | Manual    | Unauthenticated | 1 s       | Operator-supplied on a device an adversary may be holding |
+//!
+//! Every row says `Unauthenticated`, and that uniformity is the finding rather
+//! than a placeholder: no clock input this kernel accepts is authenticated
+//! today. The axis exists so that adding NTS changes one value instead of
+//! requiring the policy to be rewritten around it.
+//!
+//! ## Fail-closed policy
+//!
+//! Two rules apply before any reading is adopted, because a spoofed fix that
+//! merely has to be *fresh* would otherwise move wall time at will and take
+//! expiry checks, audit ordering and every time-dependent policy with it:
+//!
+//! - **A step no source may take alone.** A reading that disagrees with a
+//!   fresh established clock by more than [`MAX_STEP_SECS`] is refused, and
+//!   the clock is marked disputed. Checked only against a *fresh* established
+//!   source: a first fix after a long power-off is a legitimate large step,
+//!   and refusing it would leave the device with no clock at all.
+//! - **Agreement between independent sources.** When two fresh sources differ
+//!   by more than [`MAX_DISAGREEMENT_SECS`], neither is preferred over the
+//!   other and the clock is marked disputed. One of them is lying and nothing
+//!   here can say which.
+//!
+//! A disputed clock keeps serving the time it already had. It does not fall
+//! back to zero -- a caller that asked for the time and got 1970 would be
+//! worse off than one that got a slightly stale reading and can see the
+//! dispute flag.
 //!
 //! ## NTP client
 //!
@@ -57,20 +92,63 @@ const NTP_PORT: u16 = 123;
 /// Number of seconds between 1900-01-01 (NTP epoch) and 1970-01-01 (Unix epoch).
 const NTP_UNIX_OFFSET: u64 = 2_208_988_800;
 
+/// Largest jump a single reading may make against a fresh established clock
+/// before it is refused as implausible.
+///
+/// WHY 15 minutes: it is far wider than the drift any of these sources
+/// accumulates between updates -- an uncorrected crystal is off by seconds a
+/// day -- and far narrower than the shifts that make time-dependent policy
+/// fail: certificate not-before/expiry windows, audit ordering, and the
+/// hour-scale offsets a spoofed GPS fix would need to be useful.
+const MAX_STEP_SECS: u64 = 15 * 60;
+
+/// Largest difference between two fresh sources before neither is believed.
+///
+/// WHY tighter than [`MAX_STEP_SECS`]: a step is one source moving over time,
+/// where some slack is ordinary. This is two independent sources describing
+/// the same instant, where any real disagreement beyond transport delay means
+/// one of them is wrong.
+const MAX_DISAGREEMENT_SECS: u64 = 60;
+
+// ---------------------------------------------------------------------------
+// Trust axes
+// ---------------------------------------------------------------------------
+
+/// Whether a reading can be attributed to a party an attacker in the signal
+/// path cannot impersonate.
+///
+/// WHY this is separate from precedence (#861): "GPS is checked first" and
+/// "GPS is trustworthy" are different claims, and collapsing them is what let
+/// an unauthenticated satellite fix outrank everything else on the strength of
+/// its provenance story. Satellite atomic clocks are accurate; the civilian
+/// signal carrying their time to this device is unsigned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SourceAuthentication {
+    /// The reading could have been produced by anyone able to reach the
+    /// device -- a spoofed transmitter, hostile modem firmware, or whoever
+    /// is holding it.
+    Unauthenticated,
+    /// The reading is bound to a key this device trusts. Nothing produces
+    /// this yet; NTS would be the first (#861).
+    Authenticated,
+}
+
 // ---------------------------------------------------------------------------
 // Clock source precedence
 // ---------------------------------------------------------------------------
 
-/// Clock source with provisional precedence.
+/// Where a wall-clock reading came from.
 ///
-/// Variants are ordered by selection priority (highest first). GPS, NTP, and
-/// modem RTC are unauthenticated; ordering does not confer trust (#861).
+/// Variants are ordered by selection *preference*, highest first. Preference
+/// is not trust: see [`Self::authentication`] for the axis that is, and the
+/// module docs for why they are kept apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum ClockSource {
-    /// GPS-derived time — currently first in the selector, but unauthenticated (#861).
+    /// GPS-derived time — preferred when fresh, and unauthenticated.
     Gps,
-    /// Plain-NTP-derived time — unauthenticated; NTS remains future work (#861).
+    /// Plain-NTP-derived time — unauthenticated; NTS remains future work.
     Ntp,
     /// Modem RTC — carrier-provided, potentially hostile.
     ModemRtc,
@@ -102,6 +180,47 @@ impl core::fmt::Display for ClockSource {
 /// NTP, and modem RTC are unauthenticated inputs; precedence is not trust (#861).
 /// The monotonic kernel tick counter is used to determine when sources
 /// become stale.
+impl ClockSource {
+    /// Whether a reading from this source is bound to a key this device
+    /// trusts.
+    ///
+    /// Every arm answers `Unauthenticated` today. That is the finding, not an
+    /// unfinished table: no clock input this kernel accepts carries a
+    /// signature it can check. Adding NTS changes one arm.
+    #[must_use]
+    pub(crate) const fn authentication(self) -> SourceAuthentication {
+        match self {
+            // Civilian GPS is unsigned, and the M7's receiver firmware is
+            // proprietary -- a fix is whatever the hardware says it is.
+            Self::Gps
+            // Plain NTP: the packet is validated for shape, not origin.
+            | Self::Ntp
+            // Supplied by the carrier through firmware the kernel contains
+            // rather than trusts.
+            | Self::ModemRtc
+            // Typed on a device an adversary may be holding.
+            | Self::Manual
+            | Self::None => SourceAuthentication::Unauthenticated,
+        }
+    }
+
+    /// The granularity this implementation extracts from the source, in
+    /// seconds.
+    ///
+    /// WHY "this implementation" and not "this protocol": NTP carries a 32-bit
+    /// fraction that the parser here discards, so the protocol's precision and
+    /// the kernel's are different numbers. Recording the one that is true of
+    /// the code keeps a future accuracy policy from being written against a
+    /// precision nothing actually delivers.
+    #[must_use]
+    pub(crate) const fn precision_secs(self) -> u32 {
+        match self {
+            Self::Gps | Self::Ntp | Self::ModemRtc | Self::Manual => 1,
+            Self::None => 0,
+        }
+    }
+}
+
 pub(crate) struct ClockManager {
     /// Current active time source.
     current_source: ClockSource,
@@ -122,6 +241,9 @@ pub(crate) struct ClockManager {
     ntp_update_tick: u64,
     /// Kernel tick (ms) when RTC time was last updated.
     rtc_update_tick: u64,
+    /// Set when a reading was refused as an implausible step, or when two
+    /// fresh sources disagreed. Cleared only when the sources agree again.
+    disputed: bool,
 }
 
 impl ClockManager {
@@ -138,6 +260,7 @@ impl ClockManager {
             gps_update_tick: 0,
             ntp_update_tick: 0,
             rtc_update_tick: 0,
+            disputed: false,
         }
     }
 
@@ -153,15 +276,86 @@ impl ClockManager {
         self.last_update
     }
 
+    /// Whether the clock is currently in dispute: a reading was refused as an
+    /// implausible step, or two fresh sources disagreed beyond
+    /// [`MAX_DISAGREEMENT_SECS`].
+    ///
+    /// A disputed clock still serves the time it had. Callers that need to
+    /// know whether time can be relied on -- expiry checks, audit ordering --
+    /// read this rather than inferring trust from [`Self::current_source`].
+    #[must_use]
+    pub(crate) fn is_disputed(&self) -> bool {
+        self.disputed
+    }
+
+    /// Whether `candidate` may replace the currently selected source.
+    ///
+    /// The rule that matters is the one that is vacuous today and must not be
+    /// written later under pressure: an unauthenticated source may never
+    /// displace an authenticated one. Every source is unauthenticated now, so
+    /// this always permits -- but when NTS lands, GPS cannot silently take the
+    /// clock back off it.
+    fn authentication_permits(&self, candidate: ClockSource) -> bool {
+        matches!(
+            (
+                self.current_source.authentication(),
+                candidate.authentication()
+            ),
+            (SourceAuthentication::Unauthenticated, _)
+                | (
+                    SourceAuthentication::Authenticated,
+                    SourceAuthentication::Authenticated
+                )
+        )
+    }
+
+    /// Whether `epoch` is a plausible reading given the clock already held.
+    ///
+    /// Returns true when there is nothing to compare against: no established
+    /// source, or an established source that has gone stale. A first fix after
+    /// a long power-off is a legitimate large step, and refusing it would
+    /// leave the device with no clock rather than a wrong one.
+    fn step_is_plausible(&self, epoch: u64, current_tick_ms: u64) -> bool {
+        if self.current_source == ClockSource::None {
+            return true;
+        }
+        if !self.gps_is_fresh(current_tick_ms) && !self.ntp_is_fresh(current_tick_ms) {
+            return true;
+        }
+        let established = self.get_wall_clock(current_tick_ms);
+        if established == 0 {
+            return true;
+        }
+        established.abs_diff(epoch) <= MAX_STEP_SECS
+    }
+
     /// Update from GPS time.
     ///
-    /// GPS currently has first priority and is accepted regardless of other
-    /// sources. This is provisional, not an authentication claim (#861).
-    pub(crate) fn update_from_gps(&mut self, time: GpsTime, current_tick_ms: u64) {
+    /// GPS is preferred when fresh, and unauthenticated. The reading is
+    /// refused when it would step the clock further than [`MAX_STEP_SECS`]
+    /// against a fresh established source, or when the tick has gone backwards
+    /// -- an out-of-order update would otherwise make a stale source look
+    /// fresh, which is the cheapest way to promote a spoofed reading.
+    ///
+    /// Returns `true` if the update was accepted.
+    pub(crate) fn update_from_gps(&mut self, time: GpsTime, current_tick_ms: u64) -> bool {
+        if current_tick_ms < self.gps_update_tick {
+            return false;
+        }
+        if !self.authentication_permits(ClockSource::Gps) {
+            return false;
+        }
+        if !self.step_is_plausible(time.to_epoch_secs(), current_tick_ms) {
+            self.disputed = true;
+            return false;
+        }
+
         self.gps_time = Some(time);
         self.gps_update_tick = current_tick_ms;
         self.current_source = ClockSource::Gps;
         self.last_update = current_tick_ms;
+        self.check_agreement(current_tick_ms);
+        true
     }
 
     /// Update from NTP offset.
@@ -172,7 +366,24 @@ impl ClockManager {
     ///
     /// Returns `true` if the update was accepted.
     pub(crate) fn update_from_ntp(&mut self, offset: i64, current_tick_ms: u64) -> bool {
+        if current_tick_ms < self.ntp_update_tick {
+            return false;
+        }
         if self.gps_is_fresh(current_tick_ms) {
+            // GPS holds the clock, but a fresh NTP reading is still evidence:
+            // record it so agreement can be checked, without letting it take
+            // the selection.
+            self.ntp_offset = Some(offset);
+            self.ntp_update_tick = current_tick_ms;
+            self.check_agreement(current_tick_ms);
+            return false;
+        }
+        if !self.authentication_permits(ClockSource::Ntp) {
+            return false;
+        }
+        let candidate = Self::ntp_epoch(offset, current_tick_ms);
+        if !self.step_is_plausible(candidate, current_tick_ms) {
+            self.disputed = true;
             return false;
         }
 
@@ -180,6 +391,7 @@ impl ClockManager {
         self.ntp_update_tick = current_tick_ms;
         self.current_source = ClockSource::Ntp;
         self.last_update = current_tick_ms;
+        self.check_agreement(current_tick_ms);
         true
     }
 
@@ -190,7 +402,17 @@ impl ClockManager {
     ///
     /// Returns `true` if the update was accepted.
     pub(crate) fn update_from_rtc(&mut self, epoch: u64, current_tick_ms: u64) -> bool {
+        if current_tick_ms < self.rtc_update_tick {
+            return false;
+        }
         if self.gps_is_fresh(current_tick_ms) || self.ntp_is_fresh(current_tick_ms) {
+            return false;
+        }
+        if !self.authentication_permits(ClockSource::ModemRtc) {
+            return false;
+        }
+        if !self.step_is_plausible(epoch, current_tick_ms) {
+            self.disputed = true;
             return false;
         }
 
@@ -220,6 +442,10 @@ impl ClockManager {
     /// Should be called periodically. Demotes the current source if it
     /// has become stale, falling back to the next-best available source.
     pub(crate) fn evaluate(&mut self, current_tick_ms: u64) {
+        // Agreement is re-checked here, not only on update: two sources can
+        // fall out of agreement by one of them going stale, with no update to
+        // trigger the check.
+        self.check_agreement(current_tick_ms);
         if self.gps_is_fresh(current_tick_ms) {
             self.current_source = ClockSource::Gps;
         } else if self.ntp_is_fresh(current_tick_ms) {
@@ -253,14 +479,7 @@ impl ClockManager {
         if let Some(offset) = self.ntp_offset
             && self.ntp_is_fresh(current_tick_ms)
         {
-            // NTP offset is relative to monotonic clock.
-            //
-            // INVARIANT: `monotonic_secs` is device uptime in seconds
-            // (`current_tick_ms / 1000`, a `u64` millisecond tick count).
-            // `i64::MAX` seconds is ~292 billion years -- no device uptime
-            // reaches that, so this bit-reinterpretation cannot flip sign.
-            let monotonic_secs = current_tick_ms / 1000;
-            return (monotonic_secs.cast_signed() + offset).cast_unsigned();
+            return Self::ntp_epoch(offset, current_tick_ms);
         }
 
         if let Some(epoch) = self.rtc_epoch {
@@ -273,6 +492,40 @@ impl ClockManager {
         }
 
         0
+    }
+
+    /// The wall clock an NTP offset implies at `current_tick_ms`.
+    ///
+    /// Factored out because both the accessor and the plausibility check need
+    /// it, and two copies of a signed/unsigned conversion is two chances to
+    /// get the sign wrong.
+    fn ntp_epoch(offset: i64, current_tick_ms: u64) -> u64 {
+        // INVARIANT: `monotonic_secs` is device uptime in seconds, and
+        // `i64::MAX` seconds is ~292 billion years -- no uptime reaches that,
+        // so this bit-reinterpretation cannot flip sign.
+        let monotonic_secs = current_tick_ms / 1000;
+        (monotonic_secs.cast_signed() + offset).cast_unsigned()
+    }
+
+    /// Mark the clock disputed when two fresh sources describe the same
+    /// instant differently by more than [`MAX_DISAGREEMENT_SECS`].
+    ///
+    /// WHY this cannot pick a winner: the disagreement means one source is
+    /// lying, and nothing available here distinguishes which. Preferring
+    /// either would be choosing by precedence, which is exactly the reasoning
+    /// #861 exists to remove. The clock keeps the time it has and says it is
+    /// in dispute.
+    fn check_agreement(&mut self, current_tick_ms: u64) {
+        let (Some(gps), Some(offset)) = (self.gps_time.as_ref(), self.ntp_offset) else {
+            return;
+        };
+        if !self.gps_is_fresh(current_tick_ms) || !self.ntp_is_fresh(current_tick_ms) {
+            return;
+        }
+        let gps_epoch =
+            gps.to_epoch_secs() + current_tick_ms.saturating_sub(self.gps_update_tick) / 1000;
+        let ntp = Self::ntp_epoch(offset, current_tick_ms);
+        self.disputed = gps_epoch.abs_diff(ntp) > MAX_DISAGREEMENT_SECS;
     }
 
     /// Check if GPS time is fresh (within staleness threshold).
@@ -425,12 +678,194 @@ mod tests {
         }
     }
 
+    /// The epoch `gps_time_2026()` describes.
+    fn gps_epoch_2026() -> u64 {
+        gps_time_2026().to_epoch_secs()
+    }
+
+    /// An NTP offset that puts the wall clock at the same instant
+    /// `gps_time_2026()` describes, for a reading taken at `tick_ms`.
+    ///
+    /// WHY fixtures have to agree now: the disagreement and step policies
+    /// refuse a source that contradicts an established one, so a test mixing a
+    /// 1970 NTP offset with a 2026 GPS fix would be measuring the refusal
+    /// rather than the precedence it meant to assert (#861).
+    fn ntp_offset_agreeing_with_gps(tick_ms: u64) -> i64 {
+        gps_epoch_2026().cast_signed() - (tick_ms / 1000).cast_signed()
+    }
+
+    #[test]
+    fn no_clock_source_is_authenticated() {
+        // #861: the axis exists so that "checked first" stops reading as
+        // "trusted". Every source answering the same way is the finding, and
+        // this pins it so that adding an authenticated source is a deliberate
+        // edit here rather than a silent one.
+        for source in [
+            ClockSource::Gps,
+            ClockSource::Ntp,
+            ClockSource::ModemRtc,
+            ClockSource::Manual,
+            ClockSource::None,
+        ] {
+            assert_eq!(
+                source.authentication(),
+                SourceAuthentication::Unauthenticated,
+                "{source:?} must not claim authentication this kernel cannot check"
+            );
+        }
+    }
+
+    #[test]
+    fn precedence_is_not_authentication() {
+        // GPS outranks modem RTC in the selector and is no better attested.
+        // If these ever differ, it must be because a source gained a signature
+        // rather than because it moved up the list.
+        assert!(
+            ClockSource::Gps < ClockSource::ModemRtc,
+            "GPS must still be preferred over modem RTC"
+        );
+        assert_eq!(
+            ClockSource::Gps.authentication(),
+            ClockSource::ModemRtc.authentication(),
+            "being preferred must not imply being better attested"
+        );
+    }
+
+    #[test]
+    fn a_spoofed_gps_jump_is_refused_and_disputes_the_clock() {
+        // The attack #861 names: a forged fix moves wall time far enough to
+        // defeat expiry and not-before checks. Against a fresh established
+        // clock the reading must be refused outright, not merely deprioritised.
+        let mut clock = ClockManager::new();
+        assert!(clock.update_from_ntp(ntp_offset_agreeing_with_gps(0), 0));
+        let before = clock.get_wall_clock(1_000);
+
+        let mut forged = gps_time_2026();
+        forged.hour = 20; // eight hours ahead
+        assert!(
+            !clock.update_from_gps(forged, 1_000),
+            "a reading beyond MAX_STEP_SECS from a fresh clock must be refused"
+        );
+        assert!(
+            clock.is_disputed(),
+            "the refusal must mark the clock disputed"
+        );
+        assert_eq!(
+            clock.get_wall_clock(1_000),
+            before,
+            "a refused reading must not move the clock it was refused against"
+        );
+        assert_eq!(
+            clock.current_source(),
+            ClockSource::Ntp,
+            "a refused reading must not take the selection either"
+        );
+    }
+
+    #[test]
+    fn a_large_step_is_accepted_when_no_fresh_source_contradicts_it() {
+        // The other half, and the reason the guard is conditional: a first fix
+        // after a long power-off IS a large step, and refusing it would leave
+        // the device with no clock rather than a wrong one.
+        let mut clock = ClockManager::new();
+        assert!(
+            clock.update_from_gps(gps_time_2026(), 0),
+            "the first reading has nothing to contradict and must be accepted"
+        );
+
+        // Let GPS go stale, then arrive somewhere far away.
+        let mut later = gps_time_2026();
+        later.year = 2027;
+        assert!(
+            clock.update_from_gps(later, 120_000),
+            "a large step against a STALE clock must still be accepted"
+        );
+    }
+
+    #[test]
+    fn fresh_sources_that_disagree_dispute_the_clock() {
+        // Neither source can be preferred: one of them is lying and nothing
+        // here distinguishes which. Preferring either would be deciding by
+        // precedence, which is the reasoning #861 removes.
+        let mut clock = ClockManager::new();
+        assert!(clock.update_from_gps(gps_time_2026(), 0));
+        assert!(!clock.is_disputed(), "one source alone cannot disagree");
+
+        // A fresh NTP reading two hours off, delivered while GPS still holds
+        // the selection. It does not take the clock, but it is evidence.
+        clock.update_from_ntp(ntp_offset_agreeing_with_gps(1_000) + 7_200, 1_000);
+        assert!(
+            clock.is_disputed(),
+            "two fresh sources beyond MAX_DISAGREEMENT_SECS apart must dispute the clock"
+        );
+    }
+
+    #[test]
+    fn agreement_within_tolerance_does_not_dispute() {
+        // The boundary matters in the other direction too: ordinary skew
+        // between two honest sources must not read as an attack, or the flag
+        // means nothing.
+        let mut clock = ClockManager::new();
+        assert!(clock.update_from_gps(gps_time_2026(), 0));
+        clock.update_from_ntp(ntp_offset_agreeing_with_gps(1_000) + 5, 1_000);
+        assert!(
+            !clock.is_disputed(),
+            "a five-second skew is not disagreement"
+        );
+    }
+
+    #[test]
+    fn a_dispute_clears_when_the_sources_agree_again() {
+        // Source recovery: a disputed clock is a state, not a latch. A latch
+        // would mean one bad reading permanently degrades the device.
+        let mut clock = ClockManager::new();
+        assert!(clock.update_from_gps(gps_time_2026(), 0));
+        clock.update_from_ntp(ntp_offset_agreeing_with_gps(1_000) + 7_200, 1_000);
+        assert!(clock.is_disputed());
+
+        clock.update_from_ntp(ntp_offset_agreeing_with_gps(2_000), 2_000);
+        assert!(
+            !clock.is_disputed(),
+            "sources agreeing again must clear the dispute"
+        );
+    }
+
+    #[test]
+    fn an_out_of_order_update_is_refused() {
+        // A tick that has gone backwards would make a stale source look fresh,
+        // which is the cheapest way to promote a reading the staleness policy
+        // had already retired.
+        let mut clock = ClockManager::new();
+        assert!(clock.update_from_gps(gps_time_2026(), 10_000));
+        assert!(
+            !clock.update_from_gps(gps_time_2026(), 9_000),
+            "a reading stamped before the last one must be refused"
+        );
+        assert!(
+            !clock.update_from_ntp(ntp_offset_agreeing_with_gps(10_000), 9_000),
+            "the same rule applies to every source"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_update_at_the_same_tick_is_accepted() {
+        // Duplicates are not out-of-order: a source re-reporting at the same
+        // tick is reporting, and refusing it would make the rule above reject
+        // ordinary repeated reads.
+        let mut clock = ClockManager::new();
+        assert!(clock.update_from_gps(gps_time_2026(), 10_000));
+        assert!(
+            clock.update_from_gps(gps_time_2026(), 10_000),
+            "a repeated reading at the same tick must still be accepted"
+        );
+    }
+
     #[test]
     fn gps_overrides_ntp() {
         let mut clock = ClockManager::new();
 
         // Set NTP first.
-        let accepted = clock.update_from_ntp(1_000_000, 0);
+        let accepted = clock.update_from_ntp(ntp_offset_agreeing_with_gps(0), 0);
         assert!(accepted, "NTP must be accepted when no GPS");
         assert_eq!(clock.current_source(), ClockSource::Ntp);
 
@@ -452,12 +887,12 @@ mod tests {
         assert_eq!(clock.current_source(), ClockSource::Gps);
 
         // NTP at tick 1000 (GPS still fresh, within 60s).
-        let accepted = clock.update_from_ntp(1_000_000, 1_000);
+        let accepted = clock.update_from_ntp(ntp_offset_agreeing_with_gps(1_000), 1_000);
         assert!(!accepted, "NTP must be rejected when GPS is fresh");
         assert_eq!(clock.current_source(), ClockSource::Gps);
 
         // NTP at tick 61_000 (GPS now stale, > 60s).
-        let accepted = clock.update_from_ntp(1_000_000, 61_000);
+        let accepted = clock.update_from_ntp(ntp_offset_agreeing_with_gps(61_000), 61_000);
         assert!(accepted, "NTP must be accepted when GPS is stale");
         assert_eq!(clock.current_source(), ClockSource::Ntp);
     }
@@ -470,15 +905,15 @@ mod tests {
         clock.update_from_gps(gps_time_2026(), 0);
 
         // NTP at tick 61_000 — GPS is now stale (>60s), so NTP is accepted.
-        let ntp_ok = clock.update_from_ntp(1_000_000, 61_000);
+        let ntp_ok = clock.update_from_ntp(ntp_offset_agreeing_with_gps(61_000), 61_000);
         assert!(ntp_ok, "NTP must be accepted when GPS is stale");
 
         // RTC at tick 200_000 — GPS stale but NTP fresh (200_000 - 61_000 = 139s < 300s).
-        let accepted = clock.update_from_rtc(1_700_000_000, 200_000);
+        let accepted = clock.update_from_rtc(gps_epoch_2026(), 200_000);
         assert!(!accepted, "RTC must be rejected when NTP is fresh");
 
         // RTC at tick 400_000 — both GPS and NTP stale (400_000 - 61_000 = 339s > 300s).
-        let accepted = clock.update_from_rtc(1_700_000_000, 400_000);
+        let accepted = clock.update_from_rtc(gps_epoch_2026(), 400_000);
         assert!(
             accepted,
             "RTC must be accepted when both GPS and NTP are stale"
@@ -496,7 +931,7 @@ mod tests {
         );
 
         // Manual set.
-        clock.set_manual(1_700_000_000, 0);
+        clock.set_manual(gps_epoch_2026(), 0);
         assert_eq!(
             clock.current_source(),
             ClockSource::Manual,
@@ -504,7 +939,7 @@ mod tests {
         );
 
         // RTC overrides manual (via evaluate).
-        clock.update_from_rtc(1_700_000_000, 1_000);
+        clock.update_from_rtc(gps_epoch_2026(), 1_000);
         assert_eq!(
             clock.current_source(),
             ClockSource::ModemRtc,
@@ -512,7 +947,7 @@ mod tests {
         );
 
         // NTP overrides RTC.
-        clock.update_from_ntp(1_000_000, 2_000);
+        clock.update_from_ntp(ntp_offset_agreeing_with_gps(2_000), 2_000);
         assert_eq!(
             clock.current_source(),
             ClockSource::Ntp,
@@ -539,7 +974,7 @@ mod tests {
         // Set NTP at tick 1000.
         // GPS is still fresh, so NTP is rejected via update_from_ntp.
         // Set it directly to simulate a past NTP update.
-        clock.ntp_offset = Some(1_000_000);
+        clock.ntp_offset = Some(ntp_offset_agreeing_with_gps(1_000));
         clock.ntp_update_tick = 1_000;
 
         // Evaluate at tick 70_000 — GPS stale, NTP fresh.
