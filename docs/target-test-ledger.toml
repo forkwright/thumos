@@ -583,12 +583,12 @@ fidelity = "Provision/read is proven on the RAM double; #866 blocks plaintext us
 
 [[module]]
 name = "security"
-tests = 19
+tests = 27
 mechanism = "host"
 
 [[module]]
 name = "security_mode"
-tests = 44
+tests = 36
 mechanism = "both"
 witness = "boot.sh"
 fidelity = "Policy transitions are host/QEMU-covered, but #874 blocks automatic modem-cut semantics and requested/applied/observed conflation; #881 owns the absent physical side-button/PTT producer and safe gesture policy"

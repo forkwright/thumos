@@ -32,8 +32,7 @@
     )
 )]
 
-use crate::lock_screen::constant_time_eq;
-use crate::security::{self, SHA256_DIGEST_LEN};
+use crate::security::PinVerifier;
 use crate::ui::{
     self, CHAR_HEIGHT, CHAR_WIDTH, CONTENT_HEIGHT, Key, SCREEN_WIDTH, Screen, ScreenAction, color,
 };
@@ -456,19 +455,25 @@ pub(crate) struct PrivacyScreen {
     purge_state: Option<PurgeConfirmState>,
     /// Total storage usage across all categories (cached).
     total_bytes: u64,
-    /// SHA-256 hash of the configured purge confirmation code (#395). The
-    /// purge dialog requires this exact code, not merely non-empty input.
-    purge_passphrase_hash: [u8; SHA256_DIGEST_LEN],
+    /// Verifier for the configured purge confirmation code (#395), or `None`
+    /// when no code has been provisioned.
+    ///
+    /// A salted, iterated record rather than a bare digest: this code guards
+    /// a data purge, so a stored value an attacker can reach must cost a full
+    /// KDF run per guess (#841). `None` rather than an all-zero placeholder,
+    /// for the reason `lock_screen` states.
+    purge_code: Option<PinVerifier>,
 }
 
 impl PrivacyScreen {
     /// Create a new privacy dashboard with default category data.
     ///
     /// In production, category sizes would be populated from `lfs.rs`
-    /// inode metadata on screen entry. `purge_passphrase_hash` is the
-    /// SHA-256 hash of the configured purge confirmation code (#395); the
-    /// purge dialog rejects any input that does not hash-match it.
-    pub(crate) fn new(purge_passphrase_hash: [u8; SHA256_DIGEST_LEN]) -> Self {
+    /// inode metadata on screen entry. `purge_code` is the provisioned
+    /// verifier for the purge confirmation code (#395); the purge dialog
+    /// rejects any input that does not verify against it, and rejects
+    /// everything when it is `None`.
+    pub(crate) fn new(purge_code: Option<PinVerifier>) -> Self {
         let categories = default_categories();
         let total_bytes = categories.iter().map(|c| c.size_bytes).sum();
         Self {
@@ -478,14 +483,14 @@ impl PrivacyScreen {
             view: PrivacyView::List,
             purge_state: None,
             total_bytes,
-            purge_passphrase_hash,
+            purge_code,
         }
     }
 
     /// Create a privacy dashboard for tests with a known purge code.
     #[cfg(test)]
     pub(crate) fn new_for_test(purge_code: &[u8]) -> Self {
-        Self::new(security::sha256(purge_code))
+        Self::new(Some(PinVerifier::derive_for_test(purge_code)))
     }
 
     /// Update a category's size (called when refreshing from filesystem).
@@ -1012,14 +1017,17 @@ impl PrivacyScreen {
             }
 
             Key::Ok => {
-                // Confirm purge only when the entered code hash-matches the
-                // configured purge_passphrase_hash (#395) — a bare
+                // Confirm purge only when the entered code verifies against
+                // the provisioned `purge_code` record (#395) — a bare
                 // non-empty check let a single keypress destroy data with
                 // no real verification.
                 if let Some(state) = &self.purge_state {
                     let entered = &state.passphrase[..state.passphrase_len];
-                    let hash = security::sha256(entered);
-                    if constant_time_eq(&hash, &self.purge_passphrase_hash) {
+                    // An unprovisioned screen (`None`) confirms nothing, so a
+                    // device with no purge code cannot have data destroyed by
+                    // a keypress (#395/#841).
+                    let confirmed = self.purge_code.is_some_and(|v| v.verify(entered));
+                    if confirmed {
                         let idx = state.category_idx;
                         self.execute_purge(idx);
                     }

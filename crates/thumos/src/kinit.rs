@@ -235,8 +235,7 @@ fn boot_verify_loop(
                             else {
                                 return false;
                             };
-                            let matches =
-                                crate::lock_screen::constant_time_eq(&candidate, &verifier);
+                            let matches = crate::security::constant_time_eq(&candidate, &verifier);
                             if matches {
                                 primary_out = Some(primary);
                             }
@@ -999,11 +998,10 @@ pub unsafe fn run() -> ! {
                 fb.fill(0);
                 let mut keypad = crate::keypad::BootKeypad::new();
                 keypad.init();
-                // WHY zero hashes: the boot gate never uses the raw
-                // SHA-256 compare — submit goes through
-                // submit_passphrase_with at PBKDF2 strength, so the
-                // stored-hash fields are inert in this construction.
-                let mut lock = crate::lock_screen::LockScreen::new([0u8; 32], [0u8; 32], [0u8; 32]);
+                // WHY None: no PIN is provisioned at this point, and the
+                // boot gate does not need one — submit goes through
+                // submit_passphrase_with at PBKDF2 strength (#841).
+                let mut lock = crate::lock_screen::LockScreen::new(None, None);
                 if boot_verify_loop(
                     &mut serial,
                     &mut lock,
@@ -1028,7 +1026,7 @@ pub unsafe fn run() -> ! {
                 fb.fill(0);
                 let mut keypad = crate::keypad::BootKeypad::new();
                 keypad.init();
-                let mut lock = crate::lock_screen::LockScreen::new([0u8; 32], [0u8; 32], [0u8; 32]);
+                let mut lock = crate::lock_screen::LockScreen::new(None, None);
                 if boot_setup_loop(
                     &mut serial,
                     &mut lock,

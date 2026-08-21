@@ -60,7 +60,7 @@ use crate::screen_threat::{ThreatLevel, ThreatMonitor};
 #[cfg(feature = "qemu")]
 use crate::screen_threat::{ThreatAlert, ThreatAlertType};
 use crate::screen_unimplemented::UnimplementedScreen;
-use crate::security::{KEY_SIZE, SHA256_DIGEST_LEN};
+use crate::security::KEY_SIZE;
 use crate::security_mode::ModeManager;
 use crate::sim::SimManager;
 use crate::sms::SmsManager;
@@ -166,16 +166,14 @@ pub(crate) struct KernelState {
     /// Privacy dashboard (#737): the data-category list is self-managed
     /// (no subsystem feeds it yet -- populating sizes from `lfs.rs` inode
     /// metadata is separate follow-on work). The purge-confirmation gate
-    /// needs a SHA-256 hash of the device's configured purge passphrase to
-    /// compare against; no such passphrase reaches `KernelState` today (the
-    /// boot-time passphrase subsystem, #446/#618, runs only on real
-    /// hardware under `secure_boot_ok` and never persists its key material
-    /// past `kinit`'s local scope -- see `kinit.rs`'s own `LockScreen::new`
-    /// call sites, which face the identical gap and use the same all-zero
-    /// placeholder for the same reason). `[0u8; SHA256_DIGEST_LEN]` cannot
-    /// be produced by hashing any digit sequence a user could enter, so the
-    /// gate fails closed (purge permanently refused) rather than accepting
-    /// a fabricated credential.
+    /// needs a provisioned verifier for the device's purge code to compare
+    /// against; no such code reaches `KernelState` today (the boot-time
+    /// passphrase subsystem, #446/#618, runs only on real hardware under
+    /// `secure_boot_ok` and never persists its key material past `kinit`'s
+    /// local scope -- see `kinit.rs`'s own `LockScreen::new` call sites,
+    /// which face the identical gap and pass `None` for the same reason).
+    /// `None` is the unprovisioned state itself rather than a credential
+    /// nothing can satisfy, so the gate fails closed and says why.
     privacy: PrivacyScreen,
     /// Radio control panel (#737): sets a DESIRED radio preset
     /// (COVERT LOCK / STEALTH / RESTORE); genuinely self-contained --
@@ -326,11 +324,11 @@ impl KernelState {
             calendar: CalendarScreen::new(),
             fm: FmRadio::new(BootFmHw::new()),
             fm_screen: FmScreen::new(),
-            // WHY the all-zero hash: see the `privacy` field doc above --
-            // no provisioned purge/unlock passphrase reaches KernelState,
-            // so this is an intentionally unsatisfiable placeholder, not a
-            // working credential.
-            privacy: PrivacyScreen::new([0u8; SHA256_DIGEST_LEN]),
+            // WHY None: see the `privacy` field doc above -- no provisioned
+            // purge code reaches KernelState, and an unprovisioned verifier
+            // confirms nothing rather than standing in as a credential that
+            // can never be satisfied (#841).
+            privacy: PrivacyScreen::new(None),
             radio: RadioControlScreen::new(),
             threat,
             not_implemented: UnimplementedScreen::new(),
