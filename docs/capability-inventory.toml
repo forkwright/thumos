@@ -134,7 +134,7 @@ notes = "kinit constructs and readiness-checks the non-test WiFi, Bluetooth, and
 id = "comms-matrix"
 modules = ["matrix_crypto", "http_client", "json_mini", "harmostes", "matrix_ids"]
 tier = "compiled-only"
-notes = "HTTP/JSON plus this kernel's simplified, non-interoperable Olm/Megolm surfaces are compiled and host-tested. The inbound to-device pre-key path consumes a local one-time key and establishes an OlmSession, but MatrixClient is never constructed from kernel_main, so no production boot/service-loop path reaches it. Per-message Olm ratchet advancement remains absent (#844)."
+notes = "HTTP/JSON plus this kernel's simplified, non-interoperable Olm/Megolm surfaces are compiled and host-tested. The inbound to-device pre-key path consumes a local one-time key and establishes an OlmSession, but MatrixClient is never constructed from kernel_main, so no production boot/service-loop path reaches it. Per-message Olm ratchet advancement remains absent (#844), and the pre-key handshake produces only a session identifier derived from values the homeserver holds -- it is not a key agreement and encrypts nothing (#902)."
 tracking_reason = "Unified-inbox and MatrixClient integration is software work tracked by #753."
 
 [[capability]]
