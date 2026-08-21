@@ -1299,7 +1299,7 @@ mod tests {
     /// Pointer-dependent test: only runs on 32-bit targets.
     ///
     /// WHY function-local `static mut`: `sys_bind` now validates `addr_ptr` via
-    /// `validate_user_buffer` before dereferencing it. A stack address (e.g.
+    /// `validate_user_range` before dereferencing it. A stack address (e.g.
     /// `&addr`) falls outside [`board::KERNEL_END`, `board::RAM_END`) on
     /// this host binary and would be rejected before bind logic runs; a
     /// function-local static lands inside that window (see fd.rs tests for
@@ -1381,7 +1381,7 @@ mod tests {
 
     #[test]
     fn bind_rejects_kernel_range_addr_ptr() {
-        // No socket setup needed: validate_user_buffer runs before the
+        // No socket setup needed: validate_user_range runs before the
         // FD_TABLE is-a-socket check, so fd=0 (< MAX_FDS) is sufficient.
         let kernel_ptr = crate::board::KERNEL_LOAD as u32;
         let result = sys_bind(0, kernel_ptr, core::mem::size_of::<SockaddrIn>() as u32);
@@ -1443,7 +1443,7 @@ mod tests {
     #[cfg(target_pointer_width = "32")]
     fn tcp_bind_then_connect_succeeds() {
         // WHY function-local `static mut`: sys_bind/sys_connect now validate
-        // addr_ptr via validate_user_buffer (issue #291) before
+        // addr_ptr via validate_user_range (issue #291) before
         // dereferencing it. A stack address falls outside
         // [board::KERNEL_END, board::RAM_END) on this host binary and
         // would be rejected before bind/connect logic runs.

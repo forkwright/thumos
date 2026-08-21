@@ -2912,6 +2912,12 @@ mod tests {
 
         // SAFETY: test-only static; single-threaded per test.
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        // The spawned process owns an address space of its own, and syscall
+        // buffers are now validated against it — so this fixture must map the
+        // buffer it hands to sys_read/sys_write, exactly as a real process
+        // would already own it. Without this the calls return EFAULT and the
+        // fd-isolation assertion below never gets to run.
+        crate::process::map_user_buffer_for_test(buf.as_ptr() as usize, buf.len());
         assert_eq!(
             sys_read(fd, buf.as_mut_ptr() as u32, 8),
             EBADF,
@@ -2967,6 +2973,12 @@ mod tests {
 
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUF2) };
+        // The child owns its own address space; map both buffers it will use
+        // (the mapping persists across the later switch back to this child).
+        crate::process::map_user_buffer_for_test(buf2.as_ptr() as usize, buf2.len());
+        // SAFETY: test-only static; single-threaded per test.
+        let buf3_addr = unsafe { core::ptr::addr_of!(BUF3) } as usize;
+        crate::process::map_user_buffer_for_test(buf3_addr, 2);
         let n2 = sys_read(fd, buf2.as_mut_ptr() as u32, 7);
         assert_eq!(
             n2, 7,
@@ -3023,6 +3035,13 @@ mod tests {
         unsafe {
             crate::process::set_current_for_test(child_pid);
         }
+
+        // The child owns its own address space, so both the path it passes to
+        // open() and the buffer it reads into have to be mapped in it.
+        crate::process::map_user_buffer_for_test(path.as_ptr() as usize, path.len());
+        // SAFETY: test-only static; single-threaded per test.
+        let buf2_addr = unsafe { core::ptr::addr_of!(BUF2) } as usize;
+        crate::process::map_user_buffer_for_test(buf2_addr, 5);
 
         // Child opens the SAME path fresh -- a brand-new OFD at offset 0,
         // not the parent's shared, already-advanced descriptor.
@@ -3128,6 +3147,8 @@ mod tests {
         assert_eq!(vfs_chdir("/"), 0);
         // SAFETY: test-only static; single-threaded per test.
         let buf2 = unsafe { &mut *core::ptr::addr_of_mut!(BUFCWD2) };
+        // The child owns its own address space; getcwd writes into this buffer.
+        crate::process::map_user_buffer_for_test(buf2.as_ptr() as usize, buf2.len());
         assert_eq!(sys_getcwd(buf2.as_mut_ptr() as u32, 8), 0);
         assert_eq!(&buf2[..1], b"/", "child reads its own cwd");
 

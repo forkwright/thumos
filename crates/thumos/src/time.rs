@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn clock_gettime_null_ptr_returns_efault() {
         // We verify the clock ID constants; the actual EFAULT path requires
-        // the production syscall machinery (validate_user_buffer, MMIO timer).
+        // the production syscall machinery (validate_user_range, MMIO timer).
         // The EFAULT value is defined in syscall.rs (-14 as u32).
         assert_eq!(CLOCK_REALTIME, 0, "CLOCK_REALTIME must be 0");
         assert_eq!(CLOCK_MONOTONIC, 1, "CLOCK_MONOTONIC must be 1");
@@ -469,7 +469,7 @@ mod tests {
     /// POSIX requires EINVAL when `tv_nsec` is out of [0, `999_999_999`]; the
     /// kernel must not silently fold an out-of-range value into extra
     /// whole seconds of sleep. A `static mut` buffer is used (not a stack
-    /// array) so its address lands inside `validate_user_buffer`'s accepted
+    /// array) so its address lands inside `validate_user_range`'s accepted
     /// user-DRAM range on the 32-bit test target.
     #[cfg(target_pointer_width = "32")]
     #[test]

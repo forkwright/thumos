@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn futex_wait_returns_eagain_on_mismatch() {
         // WHY function-local `static mut`: sys_futex_wait now validates
-        // `addr` via validate_user_buffer before dereferencing it. A stack
+        // `addr` via validate_user_range before dereferencing it. A stack
         // address (e.g. `&word`) falls outside
         // [board::KERNEL_END, board::RAM_END) on this host binary and
         // would be rejected before the mismatch check is ever reached; a
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn futex_wait_rejects_kernel_range_addr() {
         reset_waiters();
-        // A kernel-range addr must be rejected by validate_user_buffer
+        // A kernel-range addr must be rejected by validate_user_range
         // before any read_volatile — verified by never reaching the mismatch
         // path (which would return EAGAIN, not EINVAL).
         let result = sys_futex_wait(crate::board::KERNEL_LOAD as u32, 0);
