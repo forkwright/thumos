@@ -156,4 +156,33 @@ mod tests {
             "a non-decimal nibble must be rejected, not silently rendered"
         );
     }
+
+    #[test]
+    fn decode_rejects_a_length_beyond_the_address_bound() {
+        // #833: the guard runs before the loop and before the allocation, so
+        // a claimed length cannot drive either. Without it a hostile length
+        // byte sizes a String and a decode loop from attacker input.
+        let err = decode_bcd_address(
+            u8::try_from(MAX_ADDRESS_DIGITS + 1).unwrap_or(u8::MAX),
+            TOA_INTERNATIONAL,
+            &[0x21; 16],
+        );
+        assert!(
+            matches!(err, Err(CoreError::AddressTooLong { .. })),
+            "a length above MAX_ADDRESS_DIGITS must be rejected as AddressTooLong"
+        );
+    }
+
+    #[test]
+    fn decode_accepts_the_address_bound_exactly() {
+        // The bound is inclusive; rejecting it would drop legitimate
+        // maximum-length numbers as malformed.
+        let bcd = [0x21u8; MAX_ADDRESS_DIGITS / 2];
+        let ok = decode_bcd_address(
+            u8::try_from(MAX_ADDRESS_DIGITS).unwrap_or(u8::MAX),
+            TOA_INTERNATIONAL,
+            &bcd,
+        );
+        assert!(ok.is_ok(), "exactly MAX_ADDRESS_DIGITS must decode");
+    }
 }
