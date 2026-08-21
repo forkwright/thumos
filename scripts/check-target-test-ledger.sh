@@ -39,10 +39,21 @@ WITNESS_DIR="$REPO_ROOT/scripts/witness"
 KERNEL_DIR="$REPO_ROOT/crates/thumos"
 MAIN_RS="$SRC/main.rs"
 
-command -v cargo-nextest >/dev/null || {
-    echo "LEDGER DRIFT: cargo-nextest not installed -- cannot derive runnable test counts (#645)" >&2
-    exit 1
-}
+# --self-test runs only the hermetic profile-union fixture (#855) and exits.
+# It needs no toolchain, no build and no source tree, so it is the one form of
+# this check that is cheap enough to run anywhere -- and the expensive nextest
+# passes below must not gate it.
+SELF_TEST_ONLY=""
+if [ "${1:-}" = "--self-test" ]; then
+    SELF_TEST_ONLY="--self-test"
+fi
+
+if [ -z "$SELF_TEST_ONLY" ]; then
+    command -v cargo-nextest >/dev/null || {
+        echo "LEDGER DRIFT: cargo-nextest not installed -- cannot derive runnable test counts (#645)" >&2
+        exit 1
+    }
+fi
 
 LIST_DEFAULT=$(mktemp)
 LIST_DEBUG=$(mktemp)
@@ -52,23 +63,28 @@ trap 'rm -f "$LIST_DEFAULT" "$LIST_DEBUG" "$LIST_DEFAULT.err" "$LIST_DEBUG.err"'
 # default features, then --features debug-console (the only feature that
 # gates in extra host-testable modules -- console). Their union is the
 # runnable set this ledger is checked against.
-if ! (cd "$KERNEL_DIR" && cargo nextest list --bin thumos --target i686-unknown-linux-gnu --locked \
+if [ -z "$SELF_TEST_ONLY" ] && ! (cd "$KERNEL_DIR" && cargo nextest list --bin thumos --target i686-unknown-linux-gnu --locked \
         --build-jobs "${THUMOS_BUILD_JOBS:-8}" --message-format json) >"$LIST_DEFAULT" 2>"$LIST_DEFAULT.err"; then
     cat "$LIST_DEFAULT.err" >&2
     echo "LEDGER DRIFT: cargo nextest list (default features) failed -- cannot derive runnable test counts" >&2
     exit 1
 fi
-if ! (cd "$KERNEL_DIR" && cargo nextest list --bin thumos --target i686-unknown-linux-gnu --locked \
+if [ -z "$SELF_TEST_ONLY" ] && ! (cd "$KERNEL_DIR" && cargo nextest list --bin thumos --target i686-unknown-linux-gnu --locked \
         --features debug-console --build-jobs "${THUMOS_BUILD_JOBS:-8}" --message-format json) >"$LIST_DEBUG" 2>"$LIST_DEBUG.err"; then
     cat "$LIST_DEBUG.err" >&2
     echo "LEDGER DRIFT: cargo nextest list (--features debug-console) failed -- cannot derive runnable test counts" >&2
     exit 1
 fi
 
-python3 - "$LEDGER" "$SRC" "$WITNESS_DIR" "$MAIN_RS" "$LIST_DEFAULT" "$LIST_DEBUG" <<'PYEOF'
+python3 - "$LEDGER" "$SRC" "$WITNESS_DIR" "$MAIN_RS" "$LIST_DEFAULT" "$LIST_DEBUG" "$SELF_TEST_ONLY" <<'PYEOF'
 import re, sys, tomllib, glob, os, json
 
 ledger_path, src_dir, wit_dir, main_rs_path, list_default_path, list_debug_path = sys.argv[1:7]
+self_test_only = len(sys.argv) > 7 and sys.argv[7] == "--self-test"
+
+def load_list(path):
+    return json.load(open(path))
+
 try:
     rows = tomllib.load(open(ledger_path, "rb")).get("module", [])
 except Exception as e:
@@ -221,37 +237,93 @@ def module_path_to_row_name(mod_path, env):
 # every entry in `testcases` keeps this check's semantics aligned with what
 # it replaces: "how many #[test] fns does this module contain," not "how
 # many run by default."
-def iter_test_names(list_json_path):
-    data = json.load(open(list_json_path))
-    suites = data.get("rust-suites") or data.get("rust-binaries") or {}
+def iter_test_names(list_json):
+    suites = list_json.get("rust-suites") or list_json.get("rust-binaries") or {}
     for suite in suites.values():
         cases = suite.get("test-cases") or suite.get("testcases") or {}
         yield from cases.keys()
 
 TEST_SUFFIX_RE = re.compile(r'^(.*)::tests::[^:]+$')
 
-def runnable_row_counts(list_json_path, env):
-    seen = set()
-    for name in iter_test_names(list_json_path):
+# WHY this returns PAIRS and not counts (#855): the two profiles are combined
+# into the runnable set, and combining counts is not a union. Two profiles that
+# each contain two tests, one shared and one unique, hold three tests between
+# them -- a per-profile count of 2 on each side combines to 2 under `max` and to
+# 3 under a set union. The count must therefore be taken AFTER the profiles are
+# combined, never before, because the identity of each test is the only thing
+# that can tell a shared test from a distinct one, and a count has already
+# discarded it.
+#
+# The row name is part of the key rather than folded in afterwards, because a
+# module's row can legitimately differ between profiles: `module_path_to_row_name`
+# resolves `#[cfg]`-selected `#[path]` overrides, so one test ident can attribute
+# to different rows under different features. Those are two rows' obligations and
+# each must be counted.
+def runnable_row_pairs(list_json, env, resolve=None):
+    resolve = resolve or module_path_to_row_name
+    pairs = set()
+    for name in iter_test_names(list_json):
         m = TEST_SUFFIX_RE.match(name)
         if not m:
             fail(f"nextest test id '{name}' does not match MODULE::tests::FN -- cannot attribute it to a ledger row")
             continue
-        row_name = module_path_to_row_name(m.group(1), env)
-        seen.add((row_name, name))
+        pairs.add((resolve(m.group(1), env), name))
+    return pairs
+
+def count_by_row(pairs):
     counts = {}
-    for row_name, _name in seen:
+    for row_name, _test_name in pairs:
         counts[row_name] = counts.get(row_name, 0) + 1
     return counts
 
 env_default = {"test": True, "features": frozenset()}
 env_debug = {"test": True, "features": frozenset({"debug-console"})}
 
-runnable = {}
-for row_name, n in runnable_row_counts(list_default_path, env_default).items():
-    runnable[row_name] = max(runnable.get(row_name, 0), n)
-for row_name, n in runnable_row_counts(list_debug_path, env_debug).items():
-    runnable[row_name] = max(runnable.get(row_name, 0), n)
+# --- (#855) the fixture that proves the union is a union --------------------
+# Runs on every invocation rather than as a separate CI step, so the check
+# cannot be shipped with its own aggregation broken and nobody notice. It is
+# hermetic: synthetic nextest payloads, an identity row resolver, no ledger, no
+# source tree, no build.
+#
+# The second assertion is the one that gives the first any weight. It computes
+# what the superseded `max`-of-counts aggregation would have answered on the
+# same fixture and requires it to be WRONG -- so the fixture is proved to
+# discriminate between the two algorithms rather than merely agreeing with the
+# current one, which any fixture does.
+def self_test():
+    def payload(names):
+        return {"rust-suites": {"thumos": {"test-cases": {n: {} for n in names}}}}
+    identity = lambda head, _env: head
+    default = runnable_row_pairs(
+        payload(["m::tests::shared", "m::tests::default_only"]), env_default, identity)
+    debug = runnable_row_pairs(
+        payload(["m::tests::shared", "m::tests::debug_only"]), env_debug, identity)
+
+    union = count_by_row(default | debug)
+    if union != {"m": 3}:
+        print(f"LEDGER DRIFT: self-test: profile union counted {union}, expected {{'m': 3}} "
+              f"-- this checker's own aggregation is broken (#855)", file=sys.stderr)
+        sys.exit(1)
+
+    superseded = {}
+    for profile in (default, debug):
+        for row_name, n in count_by_row(profile).items():
+            superseded[row_name] = max(superseded.get(row_name, 0), n)
+    if superseded != {"m": 2}:
+        print(f"LEDGER DRIFT: self-test: the fixture no longer discriminates -- the superseded "
+              f"max-of-counts aggregation answered {superseded}, which is not the wrong answer "
+              f"it must give for this fixture to be a regression test (#855)", file=sys.stderr)
+        sys.exit(1)
+
+self_test()
+if self_test_only:
+    print("target-test ledger: self-test passed (profile union, #855)")
+    sys.exit(0)
+
+runnable = count_by_row(
+    runnable_row_pairs(load_list(list_default_path), env_default)
+    | runnable_row_pairs(load_list(list_debug_path), env_debug)
+)
 
 # --- (a)/(b)/(c)/(e): unchanged, source-level -------------------------------
 TARGET_PAT = re.compile(r'asm!|core::arch|global_asm|0x[0-9A-Fa-f]{6,}|read_volatile|write_volatile|page_table|l1_section|l2_entry|ttbr|cp15', re.I)
