@@ -59,7 +59,18 @@ pub(crate) struct CiphertextMessage {
 /// handing a memory-dump attacker exactly the keys forward secrecy is supposed
 /// to have put beyond reach. The wrapper makes the existing assignments scrub
 /// the outgoing key with no separate step to remember.
-#[derive(Clone)]
+///
+/// WHY this is deliberately NOT `Clone` (#834): the AEAD nonce is derived from
+/// `counter` alone (see [`counter_nonce`]), so two copies of one state encrypt
+/// two different plaintexts under the same key and the same nonce. For
+/// AES-256-GCM that does not degrade confidentiality gracefully -- it leaks the
+/// XOR of the plaintexts and, through the repeated authentication key, allows
+/// forgery. A ratchet is a linear object; making it duplicable at all offers an
+/// interface whose obvious use is catastrophic.
+///
+/// `same_root_and_counter_produce_same_ciphertext` below is that hazard shown
+/// rather than argued: two states holding the same root at the same counter
+/// already produce byte-identical output.
 pub(crate) struct RatchetState {
     chain_key: Zeroizing<[u8; 32]>,
     pub(crate) counter: u32,
@@ -205,11 +216,20 @@ pub(crate) fn decrypt(state: &mut RatchetState, msg: &CiphertextMessage) -> Resu
     let message_key = derive_message_key(&work_chain_key)?;
     let plaintext = aead_open(&message_key, msg)?;
 
-    // Authenticated: commit skipped keys and advance the receive chain.
+    // WHY the successor is derived BEFORE anything is committed (#834): the
+    // `?` here can fail, and it used to sit after the loop that caches the
+    // skipped keys. A failure there left the cache populated while the chain
+    // key and counter stayed put -- a half-applied update that no caller can
+    // see and no later call repairs, since the next message finds keys cached
+    // for counters the chain has not reached. Deriving first makes the commit
+    // below infallible, so the state either moves entirely or not at all.
+    let next_chain_key = derive_next_chain_key(&work_chain_key)?;
+
+    // Authenticated and fully derived: commit.
     for skipped in pending {
         store_skipped(state, skipped);
     }
-    state.chain_key = derive_next_chain_key(&work_chain_key)?;
+    state.chain_key = next_chain_key;
     state.counter = msg.counter.wrapping_add(1);
     Ok(plaintext)
 }
@@ -645,6 +665,47 @@ mod tests {
             recv.skipped.len(),
             0,
             "cache must not be polluted by a forged message"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cached_counters_never_outrun_the_chain() -> Result<()> {
+        // #834: `decrypt` used to cache the skipped keys and only THEN derive
+        // the successor chain key through a `?`. A failure at that point left
+        // the cache populated while the counter stayed behind -- keys held for
+        // counters the chain had not reached, which no later call repairs.
+        //
+        // WHY this pins the invariant rather than the failure: the derivation
+        // only fails if HMAC rejects the key, which cannot happen for a fixed
+        // 32-byte input, so the bad path is unreachable through the public
+        // API today. What IS reachable is the state it would have produced,
+        // and this is the assertion that state violates.
+        let root = root_key(0x6B);
+        let mut send = RatchetState::new(root);
+        let mut recv = RatchetState::new(root);
+
+        let first = encrypt(&mut send, b"one")?;
+        let second = encrypt(&mut send, b"two")?;
+        let third = encrypt(&mut send, b"three")?;
+
+        // Deliver out of order so the cache fills, then drain it.
+        decrypt(&mut recv, &third)?;
+        for cached in &recv.skipped {
+            assert!(
+                cached.counter < recv.counter,
+                "a cached key at {} is at or beyond the chain counter {} -- the \
+                 commit was applied in halves",
+                cached.counter,
+                recv.counter
+            );
+        }
+
+        decrypt(&mut recv, &first)?;
+        decrypt(&mut recv, &second)?;
+        assert!(
+            recv.skipped.is_empty(),
+            "draining every cached key must leave the cache empty"
         );
         Ok(())
     }
