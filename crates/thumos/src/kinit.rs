@@ -1920,6 +1920,17 @@ pub unsafe fn run() -> ! {
     // scheduled process and a mid-init switch would abandon it).
     process::enable_scheduling();
 
+    // Arm the watchdog's progress gate at the same moment, and not before:
+    // until scheduling is on there is no scheduler round to observe, and a gate
+    // demanding one would reset the device partway through every boot. From
+    // here the pet is evidence-backed rather than automatic (#875).
+    //
+    // SAFETY: single-core kernel context at the end of kinit; the timer IRQ is
+    // the only other toucher and this runs between ticks.
+    unsafe {
+        crate::liveness::arm(exceptions::ticks());
+    }
+
     // -----------------------------------------------------------------------
     // QEMU milestone: full boot sequence attempted
     // -----------------------------------------------------------------------
