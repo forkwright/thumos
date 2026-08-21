@@ -1143,6 +1143,17 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
             }
         }
 
+        // This loop is one of the watchdog's two liveness owners (#875).
+        // Recorded at the TOP of the body rather than the bottom, because the
+        // body has `continue` paths: recording at the end would make a busy
+        // reflex-drain sequence -- which is the loop working hard, not
+        // stalling -- read as no progress at all.
+        //
+        // An idle iteration counts. A device asleep with nothing queued is
+        // healthy, and a gate that could not tell that from a hang would reset
+        // an idle phone every two seconds.
+        crate::liveness::record_progress(crate::liveness::ProgressOwner::ServiceLoop);
+
         // Reflex fast-path FIRST -- drained on every wake, ahead of the tick
         // test, so a raised flag is handled promptly. Re-loop after handling
         // so a reflex handler that raises another is serviced immediately.

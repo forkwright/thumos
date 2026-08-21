@@ -93,9 +93,9 @@ notes = "PowerManager policy state is boot/service-loop reachable, but radio sta
 
 [[capability]]
 id = "watchdog"
-modules = ["watchdog"]
+modules = ["watchdog", "liveness"]
 tier = "kernel-wired"
-notes = "The MT6739 watchdog path is boot-reachable, but the timer IRQ currently pets it before scheduler/service-loop progress; #875 owns progress-coupled liveness so a deadlocked kernel is not kept alive."
+notes = "The MT6739 watchdog path is boot-reachable and the timer IRQ pets it only while every liveness owner is still advancing (#875) -- the scheduler round and the PID-0 service loop, each with its own stall deadline well inside the 5-second hardware period. Withholding is how the reset happens; the gate never disables the watchdog. No live-hardware receipt asserts the physical reset."
 hardware_reason = "After #875 lands, an operator-owned physical reset/deadline receipt is still required."
 
 [[capability]]

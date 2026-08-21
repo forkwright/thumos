@@ -339,16 +339,6 @@ fn irq_handler_body() {
             csprng::collect_timer_entropy();
         }
 
-        // Current blind spot: this unconditional pre-scheduler pet keeps the
-        // watchdog alive even if scheduler/service-loop progress is deadlocked.
-        // #875 owns moving to a verified progress-coupled pet.
-        // SAFETY: watchdog::pet() writes to WDT_RESTART MMIO. Called from
-        // the timer IRQ handler at 100 Hz, well within the 5-second WDT
-        // timeout. Safe after watchdog::init(), but not yet a liveness proof.
-        unsafe {
-            watchdog::pet();
-        }
-
         // Reset timer for next tick
         timer::set_ms(TICK_MS);
 
@@ -382,6 +372,33 @@ fn irq_handler_body() {
             // interrupted context (the service loop) is the correct idle
             // point and issues power::idle() itself when no tick work
             // remains.
+
+            // The scheduler round is complete, so this tick is evidence.
+            // `switch_to` rewrites the exception frame rather than jumping,
+            // which is what lets the rest of this handler run after it (#875).
+            crate::liveness::record_progress(crate::liveness::ProgressOwner::Scheduler);
+        }
+
+        // WHY the pet is HERE, after the scheduler block, and conditional:
+        // feeding the watchdog on the timer IRQ alone proves only that timer
+        // interrupts are still delivered -- which they are during every
+        // deadlock the watchdog exists to bound, because this handler is
+        // exactly what keeps running when everything else has stopped. The
+        // gate feeds it only while every liveness owner is still advancing
+        // (#875). Withholding is how the reset happens; nothing here disables
+        // the watchdog.
+        //
+        // SAFETY: decide() touches only the IRQ-exclusive gate, and
+        // watchdog::pet() writes WDT_RESTART MMIO -- both from the timer IRQ
+        // at 100 Hz, non-reentrant on this single core, after watchdog::init().
+        unsafe {
+            match crate::liveness::decide(now) {
+                crate::liveness::PetDecision::Pet => watchdog::pet(),
+                crate::liveness::PetDecision::Withhold {
+                    owner,
+                    stalled_ticks,
+                } => crate::liveness::report_withheld(owner, stalled_ticks),
+            }
         }
 
         // NOTE: signal delivery is consumed by irq_handler_rust at the
