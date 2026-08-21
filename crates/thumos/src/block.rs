@@ -111,6 +111,14 @@ impl<D: BlockDevice + ?Sized> BlockDevice for &mut D {
     fn sector_count(&self) -> u64 {
         (**self).sector_count()
     }
+    // WHY this forward is not optional (#842): without it `sector_size`
+    // falls through to the trait's own default of SECTOR_SIZE, so a view
+    // over a device with a different sector size reports 512 and every
+    // length computed from it is wrong -- silently, because a forwarding
+    // impl that answers is indistinguishable from one that forwards.
+    fn sector_size(&self) -> usize {
+        (**self).sector_size()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +169,16 @@ impl<D: BlockDevice> PartitionBlockDevice<D> {
     }
 
     /// Translate a view `[lba, lba+count)` to its physical base LBA,
-    /// bounds-checked against the partition length (and u64 overflow).
+    /// bounds-checked against the partition length, the inner device's real
+    /// extent, and u64 overflow.
+    ///
+    /// WHY the inner extent is checked here rather than at construction
+    /// (#842): `new` stores `base_lba`/`sector_count` unvalidated, so a
+    /// partition declared past the end of its device satisfies the
+    /// partition-length test on every access and forwards an out-of-range LBA
+    /// to the inner device, which may not check it either. Validating per-I/O
+    /// rather than once also survives an inner device whose reported size
+    /// changes, which a constructor-time check could not.
     fn translate(&self, lba: u64, count: u32) -> Result<u64, BlockError> {
         let end = lba
             .checked_add(u64::from(count))
@@ -169,9 +186,17 @@ impl<D: BlockDevice> PartitionBlockDevice<D> {
         if end > self.sector_count {
             return Err(BlockError::OutOfBounds);
         }
-        self.base_lba
+        let phys = self
+            .base_lba
             .checked_add(lba)
-            .ok_or(BlockError::OutOfBounds)
+            .ok_or(BlockError::OutOfBounds)?;
+        let phys_end = phys
+            .checked_add(u64::from(count))
+            .ok_or(BlockError::OutOfBounds)?;
+        if phys_end > self.inner.sector_count() {
+            return Err(BlockError::OutOfBounds);
+        }
+        Ok(phys)
     }
 }
 
@@ -502,7 +527,13 @@ pub(crate) fn read_block(
     block_num: u64,
     buf: &mut [u8; BLOCK_SIZE],
 ) -> Result<(), BlockError> {
-    let lba = block_num * SECTORS_PER_BLOCK as u64;
+    // WHY checked (#842): `block_num` comes from on-disk LFS metadata, so a
+    // value near u64::MAX / SECTORS_PER_BLOCK wraps and the read lands on an
+    // unrelated LBA -- reading one region while believing it read another.
+    // OutOfBounds is the honest answer: no such block exists.
+    let lba = block_num
+        .checked_mul(SECTORS_PER_BLOCK as u64)
+        .ok_or(BlockError::OutOfBounds)?;
     dev.read_sectors(lba, SECTORS_PER_BLOCK as u32, buf)
 }
 
@@ -520,7 +551,10 @@ pub(crate) fn write_block(
     block_num: u64,
     buf: &[u8; BLOCK_SIZE],
 ) -> Result<(), BlockError> {
-    let lba = block_num * SECTORS_PER_BLOCK as u64;
+    // Checked for the same reason as `read_block` above (#842).
+    let lba = block_num
+        .checked_mul(SECTORS_PER_BLOCK as u64)
+        .ok_or(BlockError::OutOfBounds)?;
     dev.write_sectors(lba, SECTORS_PER_BLOCK as u32, buf)
 }
 
@@ -545,6 +579,75 @@ pub(crate) mod tests {
     #[cfg(not(feature = "qemu"))]
     fn pattern(fill: u8) -> alloc::vec::Vec<u8> {
         vec![fill; SECTOR_SIZE]
+    }
+
+    #[test]
+    fn a_mutable_view_reports_the_inner_sector_size() {
+        // #842: without an explicit forward, `sector_size` falls through to
+        // the trait default of SECTOR_SIZE, so a view over a device with a
+        // different sector size answers 512 -- and every length derived from
+        // it is wrong, silently, because a forwarding impl that answers looks
+        // exactly like one that forwards.
+        let mut dev = MemBlockDevice::new(8).expect("test device");
+        let inner_size = dev.sector_size();
+        let view = &mut dev;
+        assert_eq!(
+            view.sector_size(),
+            inner_size,
+            "a &mut view must report the inner device's sector size"
+        );
+    }
+
+    #[test]
+    fn block_addressing_refuses_a_block_number_that_overflows_its_lba() {
+        // #842: `block_num * SECTORS_PER_BLOCK` was unchecked, and block_num
+        // comes from on-disk LFS metadata. Near u64::MAX it wraps, and the
+        // access lands on an unrelated LBA -- reading one region while
+        // believing it read another.
+        let mut dev = MemBlockDevice::new(8).expect("test device");
+        let overflowing = u64::MAX / SECTORS_PER_BLOCK as u64 + 1;
+
+        let mut buf = [0u8; BLOCK_SIZE];
+        assert_eq!(
+            read_block(&dev, overflowing, &mut buf),
+            Err(BlockError::OutOfBounds),
+            "a block number whose LBA overflows must be refused, not wrapped"
+        );
+        assert_eq!(
+            write_block(&mut dev, overflowing, &buf),
+            Err(BlockError::OutOfBounds),
+            "the write path must refuse it too"
+        );
+    }
+
+    #[cfg(not(feature = "qemu"))]
+    #[test]
+    fn a_partition_declared_past_the_device_end_refuses_io() {
+        // #842: `new` stores base_lba/sector_count unvalidated and `translate`
+        // checked only the PARTITION length, so a partition declared beyond
+        // the device satisfied every check and forwarded an out-of-range LBA
+        // to the inner device -- which may not check it either.
+        let phys = MemBlockDevice::new(8).expect("phys device");
+        let mut view = PartitionBlockDevice::new(phys, 6, 8);
+
+        let mut got = vec![0u8; SECTOR_SIZE];
+        assert_eq!(
+            view.read_sectors(4, 1, &mut got),
+            Err(BlockError::OutOfBounds),
+            "an access inside the declared partition but past the device end \
+             must be refused"
+        );
+        assert_eq!(
+            view.write_sectors(4, 1, &got),
+            Err(BlockError::OutOfBounds),
+            "the write path must refuse it too"
+        );
+
+        // The part of the declared partition that IS on the device still works.
+        assert!(
+            view.read_sectors(0, 1, &mut got).is_ok(),
+            "the in-bounds portion must stay usable"
+        );
     }
 
     #[cfg(not(feature = "qemu"))]

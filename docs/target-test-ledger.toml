@@ -62,7 +62,7 @@ mechanism = "host"
 
 [[module]]
 name = "block"
-tests = 20
+tests = 23
 mechanism = "host"
 
 [[module]]
@@ -202,7 +202,7 @@ fidelity = "Host tests cover protocol logic; #870 must source-ground FIFOCS.RXCN
 
 [[module]]
 name = "encryption"
-tests = 14
+tests = 15
 mechanism = "host"
 fidelity = "XTS confidentiality mechanics are host+fuzz covered; #866 owns the plaintext compatibility mount and #878 owns persistent integrity/freshness/rollback resistance before device qualification"
 
@@ -583,7 +583,7 @@ witness = "boot.sh"
 
 [[module]]
 name = "secrets"
-tests = 10
+tests = 14
 mechanism = "host"
 fidelity = "Provision/read is proven on the RAM double; #866 blocks plaintext userdata setup, #870 blocks the ungrounded eMMC read field, #878 owns authenticated/versioned rollback-resistant persistence, and #872 owns boot-secret acceptance before an operator-owned M7 receipt"
 
