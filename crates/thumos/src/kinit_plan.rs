@@ -263,13 +263,6 @@ pub(crate) const fn may_format_encrypted_lfs(
     provisioned_this_boot && matches!(preamble, PreambleLoad::Provisioned)
 }
 
-/// Minimum boot passphrase length (digits) accepted at first-boot setup
-/// (#446). The boot pad alphabet is digits-only (Star/Hash are the
-/// backspace/submit control keys). Six digits is only the current compatibility
-/// floor, not an offline brute-force margin: #872 owns the effective-entropy,
-/// recovery, input, and KDF policy needed before production acceptance.
-pub(crate) const MIN_BOOT_PASSPHRASE_LEN: u8 = 6;
-
 /// The boot-log line for a skipped passphrase step (#446) — one source for
 /// the M7 and QEMU arms. The QEMU boot witness greps the refusal wording
 /// verbatim (`Passphrase entry refused`), so these strings are a contract,

@@ -136,6 +136,15 @@ timeout_secs = 120
 cmd = "scripts/check-board-seam.sh"
 timeout_secs = 300
 
+# WHY (#917): board/mod.rs and link.ld each state the kernel window's upper
+# bound, in languages that cannot read each other. The larger-link.ld direction
+# is the dangerous one -- the linker accepts an image past the last mapped
+# section, and the first symptom is a data abort on device, not a build error.
+# Also reports remaining headroom when a release ELF is present.
+[stages."kernel window"]
+cmd = "scripts/check-kernel-window.sh"
+timeout_secs = 120
+
 # WHY (#545): convergence is a ratchet, not a wish — port markers and
 # stale expectations only ever decrease, and every duplicated pair names
 # its disposition. Source-level, cheap.

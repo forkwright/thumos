@@ -74,9 +74,9 @@ notes = "The in-kernel Ed25519 checks gate later behavior only if the already ex
 
 [[capability]]
 id = "security-subsystems"
-modules = ["security", "security_mode", "lock_screen", "key_manager", "audit", "capability", "panic_wipe", "csprng", "secrets", "gpt"]
+modules = ["security", "security_mode", "lock_screen", "key_manager", "audit", "capability", "panic_wipe", "csprng", "secrets", "gpt", "passphrase_policy"]
 tier = "kernel-wired"
-notes = "Boot passphrase, salt/preamble, key hierarchy, security modes, and the dry-run/key-zeroization panic path are reachable. #872 owns the offline-resistant boot-secret/KDF policy; #873 owns non-repeating CSPRNG wake/reboot reseeding; #841 owns the weak latent lock-screen verifier; #863 owns persisted wipe/distress/reflex/audit-head work; #878 owns authenticated/versioned persistent-data rollback resistance; #881 owns physical side-button/PTT producers and safe gestures. None is discharged by eMMC or sensor qualification."
+notes = "Boot passphrase, salt/preamble, key hierarchy, security modes, and the dry-run/key-zeroization panic path are reachable. passphrase_policy enforces the ~77-bit boot-secret floor at first-boot setup, which is the half of #872 that is code; that issue still owns bundling the wordlist those indices name and the recovery boundary. #873 owns non-repeating CSPRNG wake/reboot reseeding; #863 owns persisted wipe/distress/reflex/audit-head work; #878 owns authenticated/versioned persistent-data rollback resistance; #881 owns physical side-button/PTT producers and safe gestures. None is discharged by eMMC or sensor qualification."
 
 [[capability]]
 id = "bfu-timer"
@@ -134,7 +134,7 @@ notes = "kinit constructs and readiness-checks the non-test WiFi, Bluetooth, and
 id = "comms-matrix"
 modules = ["matrix_crypto", "http_client", "json_mini", "harmostes", "matrix_ids"]
 tier = "compiled-only"
-notes = "HTTP/JSON plus this kernel's simplified, non-interoperable Olm/Megolm surfaces are compiled and host-tested. The inbound to-device pre-key path consumes a local one-time key and establishes an OlmSession, but MatrixClient is never constructed from kernel_main, so no production boot/service-loop path reaches it. Per-message Olm ratchet advancement remains absent (#844)."
+notes = "HTTP/JSON plus this kernel's simplified, non-interoperable Olm/Megolm surfaces are compiled and host-tested. The inbound to-device pre-key path consumes a local one-time key and establishes an OlmSession, but MatrixClient is never constructed from kernel_main, so no production boot/service-loop path reaches it. Per-message Olm ratchet advancement remains absent (#844), and the pre-key handshake produces only a session identifier derived from values the homeserver holds -- it is not a key agreement and encrypts nothing (#902)."
 tracking_reason = "Unified-inbox and MatrixClient integration is software work tracked by #753."
 
 [[capability]]
