@@ -40,15 +40,6 @@ pub(crate) const KEY_SIZE: usize = 32;
 /// XTS key size in bytes (two AES-256 keys).
 pub(crate) const XTS_KEY_SIZE: usize = 64;
 
-/// Filesystem block size in bytes.
-pub(crate) const BLOCK_SIZE: usize = 4096;
-
-/// Sector size in bytes (eMMC standard).
-pub(crate) const SECTOR_SIZE: usize = 512;
-
-/// Number of 512-byte sectors per 4 KiB block.
-pub(crate) const SECTORS_PER_BLOCK: usize = BLOCK_SIZE / SECTOR_SIZE;
-
 /// SHA-256 digest length in bytes.
 pub(crate) const SHA256_DIGEST_LEN: usize = 32;
 
