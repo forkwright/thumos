@@ -421,7 +421,7 @@ fidelity = "register access helpers — production paths are board/hardware-gate
 
 [[module]]
 name = "mmu"
-tests = 35
+tests = 36
 mechanism = "both"
 witness = "fork.sh+exec.sh+guard.sh+brk.sh"
 

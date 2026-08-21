@@ -29,8 +29,8 @@ use crate::board;
 ///
 /// - `0x0000_0000 - 0x3FFF_FFFF`: device MMIO (boot ROM, peripherals, modem)
 /// - `0x4000_0000 - 0x4000_7FFF`: DRAM below kernel load (reserved)
-/// - `0x4000_8000 - 0x400F_FFFF`: kernel image + reserved (`KERNEL_LOAD..KERNEL_END`)
-/// - `0x4010_0000 - 0x7FFF_FFFF`: broad allocatable DRAM window
+/// - `0x4000_8000 - 0x401F_FFFF`: kernel image + reserved (`KERNEL_LOAD..KERNEL_END`)
+/// - `0x4020_0000 - 0x7FFF_FFFF`: broad allocatable DRAM window
 /// - `0x8000_0000 - 0xFFFF_FFFF`: unmapped
 ///
 /// Returns `true` if the entire numeric buffer falls within that broad window.

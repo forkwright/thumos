@@ -242,6 +242,13 @@ jobs:
         # config.toml's rustflags; scripts/kernel-build.sh builds through it
         # and never lets an env RUSTFLAGS clobber it (#546).
         run: scripts/kernel-build.sh
+      - name: Kernel image window + headroom (#917)
+        # WHY here rather than with the cheap source checks: it runs the drift
+        # check either way, but placed AFTER the cross-compile it can also read
+        # __svc_stack_top out of the ELF and report how much of the window is
+        # left. link.ld's ASSERT is a cliff -- silent at 99%, a build failure at
+        # 101% -- so the number is the only warning anyone gets.
+        run: scripts/check-kernel-window.sh
       - name: Trust-anchor build guard (#233)
         # WHY (#233): production must FAIL keyless, REFUSE the dev key, and
         # BUILD with a real (ephemeral) key — the script carries the 3-part check.
