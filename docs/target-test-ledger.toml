@@ -110,7 +110,7 @@ mechanism = "host"
 
 [[module]]
 name = "clock"
-tests = 18
+tests = 27
 mechanism = "both"
 witness = "boot.sh"
 
