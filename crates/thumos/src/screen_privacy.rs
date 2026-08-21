@@ -1025,8 +1025,13 @@ impl PrivacyScreen {
                     let entered = &state.passphrase[..state.passphrase_len];
                     // An unprovisioned screen (`None`) confirms nothing, so a
                     // device with no purge code cannot have data destroyed by
-                    // a keypress (#395/#841).
-                    let confirmed = self.purge_code.is_some_and(|v| v.verify(entered));
+                    // a keypress (#395/#841). A check that could not run
+                    // confirms nothing either: purge is destructive and
+                    // irreversible, so the only safe reading of "the verifier
+                    // did not run" is that the code was not entered (#272).
+                    let confirmed = self
+                        .purge_code
+                        .is_some_and(|v| v.verify(entered) == Ok(true));
                     if confirmed {
                         let idx = state.category_idx;
                         self.execute_purge(idx);
