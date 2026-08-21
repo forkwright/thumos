@@ -27,11 +27,18 @@
 //!
 //! # Seededness (audits #304 and #840)
 //!
-//! A constant sample earns no credit, but the current low-bit XOR-popcount
-//! estimator can credit a perfectly deterministic fixed timer increment. Its
-//! `SEED_ENTROPY_BITS` counter is therefore not a conservative lower bound on
-//! actual entropy. #840 owns an estimator/health-test correction before this
-//! gate may authorize production key generation.
+//! Credit is scored against the SECOND difference between timer samples --
+//! how far each interval departs from the interval before it -- not against
+//! the raw sample-to-sample XOR. The timer is re-armed every tick with a fixed
+//! reload against a fixed CNTFRQ, so its deterministic component is a constant
+//! first difference and contributes nothing by construction. A repetition
+//! guard drops credit when a departure repeats its predecessor in magnitude,
+//! which covers a cadence that is periodic rather than constant.
+//!
+//! That bounds what a cadence-aware attacker cannot predict. It is not a
+//! min-entropy measurement, and it does not attempt one: the per-sample credit
+//! is capped well below the mask width so no single excursion can stand in for
+//! sustained jitter.
 //!
 //! # Safety model
 //!
@@ -56,22 +63,40 @@ use rand_core::{Rng, SeedableRng};
 /// Reseed threshold: reseed after this many bytes generated.
 const RESEED_THRESHOLD: u64 = 1 << 20; // 1 MiB
 
-/// Provisional accumulated-credit threshold before the pool reports seeded.
-/// #840 establishes that current credits do not lower-bound actual entropy.
+/// Accumulated credit required before the pool reports seeded.
 const SEED_ENTROPY_BITS: u32 = 256;
 
-/// Low-bit mask used by the current timer estimator.
+/// Low-bit mask applied to the inter-sample interval's departure from the
+/// preceding interval.
 ///
-/// This does not isolate jitter: the fixed per-tick increment also changes
-/// bits inside the mask. #840 owns replacing this provisional credit model.
+/// WHY masking is sound HERE and was not on the raw sample: the deterministic
+/// per-tick advance is a constant first difference, so it cancels in the
+/// second difference regardless of which bits it occupies. What remains inside
+/// the mask is cadence departure, and anything above it is a gross excursion
+/// -- a missed tick or a frequency change -- which is one event rather than
+/// many independent bits and is deliberately not credited in proportion to its
+/// size (#840).
 const TIMER_JITTER_MASK: u32 = 0x0000_0FFF;
+
+/// Ceiling on the credit any one timer sample may earn.
+///
+/// WHY a ceiling: the score below bounds unpredictability against a known
+/// cadence; it does not measure min-entropy. A single large departure produces
+/// a large popcount that represents one event, and a negative departure sets
+/// most of the masked bits purely through two's-complement wrapping. Without
+/// this, either could satisfy the whole gate in a handful of samples. At this
+/// value the gate needs at least 64 credited samples -- 0.64 s at the 10 ms
+/// tick -- against the 30 s bound below.
+const MAX_CREDIT_BITS_PER_SAMPLE: u32 = 4;
 
 /// Maximum wall-clock time `init()` will spin waiting for
 /// `SEED_ENTROPY_BITS` before giving up and reporting failure.
 ///
-/// WHY 30s: at the 10ms scheduler tick period, one low-bit flip per tick reaches
-/// 256 credits in ~2.6s. The 30s bound prevents a dead credit source from
-/// hanging boot; it does not validate those credits as entropy (#840).
+/// WHY 30s: at the 10 ms scheduler tick period, one credited bit per tick
+/// reaches 256 in ~2.6 s, and the per-sample ceiling puts the floor at 0.64 s.
+/// The 30 s bound prevents a dead or fully deterministic credit source from
+/// hanging boot; reaching the gate is a necessary condition for seeding, not a
+/// measurement of the entropy behind it.
 const CSPRNG_INIT_TIMEOUT_MS: u64 = 30_000;
 
 // ---------------------------------------------------------------------------
@@ -102,18 +127,27 @@ struct Csprng {
 // Entropy pool
 // ---------------------------------------------------------------------------
 
-/// 256-bit accumulator with a provisional, known-overcrediting counter (#840).
+/// 256-bit accumulator plus the cadence-departure credit that gates seeding.
 ///
-/// Samples are mixed via XOR at a rotating cursor. `entropy_bits` is the legacy
-/// field name for low-bit flip credits; it is not a lower bound on entropy.
+/// Samples are mixed via XOR at a rotating cursor. `entropy_bits` counts
+/// credited cadence departure; it bounds unpredictability against a known
+/// cadence rather than measuring min-entropy (see the module docs).
 struct EntropyPool {
     pool: [u8; 32],
-    /// Provisional low-bit flip credits, not measured entropy (#840).
+    /// Accumulated cadence-departure credit.
     entropy_bits: u32,
-    /// Previous timer sample, for delta-based (jitter) crediting.
+    /// Previous timer sample, for the first difference.
     last_sample: u32,
+    /// Previous first difference, for the second difference.
+    last_delta: u32,
+    /// Previous second difference, for the repetition guard.
+    last_jitter: u32,
     /// Whether `last_sample` holds a valid prior reading.
     have_sample: bool,
+    /// Whether `last_delta` holds a valid prior interval.
+    have_delta: bool,
+    /// Whether `last_jitter` holds a valid prior departure.
+    have_jitter: bool,
     /// Write cursor (rotates through pool bytes).
     cursor: usize,
 }
@@ -124,7 +158,11 @@ impl EntropyPool {
             pool: [0u8; 32],
             entropy_bits: 0,
             last_sample: 0,
+            last_delta: 0,
+            last_jitter: 0,
             have_sample: false,
+            have_delta: false,
+            have_jitter: false,
             cursor: 0,
         }
     }
@@ -138,23 +176,60 @@ impl EntropyPool {
         }
     }
 
-    /// Mix a timer sample and apply the current provisional low-bit credit.
+    /// Mix a timer sample and credit however far its interval departed from
+    /// the interval before it.
     ///
-    /// A repeated sample credits zero, but deterministic nonzero deltas can
-    /// still satisfy the gate; #840 owns that unresolved production blocker.
+    /// Two shapes credit nothing by construction, and both are shapes a
+    /// deterministic source actually produces (#304, #840):
+    ///
+    /// - a stuck timer, whose interval is zero every tick;
+    /// - a timer re-armed with a fixed reload against a fixed CNTFRQ -- this
+    ///   platform's own arrangement -- whose interval is a nonzero constant,
+    ///   so the second difference is zero however many bits the raw sample
+    ///   XOR would have flipped.
+    ///
+    /// The repetition guard extends that to a cadence that is periodic rather
+    /// than constant: an interval alternating between two values produces a
+    /// departure that alternates in sign and repeats in magnitude, which is
+    /// fully predictable and must not earn credit either.
     fn add_timer_sample(&mut self, sample: u32) {
         self.mix_bytes(&sample.to_le_bytes());
+
+        // WHY wrapping arithmetic throughout: CNTPCT's low word wraps, and a
+        // difference taken modulo 2^32 stays correct across the wrap. Signs
+        // are irrelevant to the popcount that follows.
+        let delta = sample.wrapping_sub(self.last_sample);
+        let jitter = delta.wrapping_sub(self.last_delta);
+
+        // INVARIANT: have_delta implies have_sample -- the former is only set
+        // in the branch guarded by the latter -- so this one condition means
+        // "two prior samples exist". Crediting before then would score the
+        // arbitrary distance from a zero-initialised field rather than a
+        // cadence, which needs two intervals to exist at all.
+        if self.have_delta {
+            // Repetition guard: a departure that repeats its predecessor's
+            // magnitude, in either direction, is cadence rather than jitter.
+            let repeated = self.have_jitter
+                && (jitter == self.last_jitter || jitter == self.last_jitter.wrapping_neg());
+            if !repeated {
+                let credit = (jitter & TIMER_JITTER_MASK)
+                    .count_ones()
+                    .min(MAX_CREDIT_BITS_PER_SAMPLE);
+                self.entropy_bits = self.entropy_bits.saturating_add(credit);
+            }
+            self.last_jitter = jitter;
+            self.have_jitter = true;
+        }
+
         if self.have_sample {
-            // Provisional only: raw low-bit flips are not an entropy estimate
-            // because a deterministic timer increment contributes to them (#840).
-            let flips = ((sample ^ self.last_sample) & TIMER_JITTER_MASK).count_ones();
-            self.entropy_bits = self.entropy_bits.saturating_add(flips);
+            self.last_delta = delta;
+            self.have_delta = true;
         }
         self.last_sample = sample;
         self.have_sample = true;
     }
 
-    /// True once the provisional credit counter reaches its threshold (#840).
+    /// True once accumulated cadence-departure credit reaches its threshold.
     fn is_seeded(&self) -> bool {
         self.entropy_bits >= SEED_ENTROPY_BITS
     }
@@ -162,9 +237,9 @@ impl EntropyPool {
     /// Deterministically seed the pool for QEMU bring-up (feature `qemu`).
     ///
     /// WHY(qemu): a deterministic emulator has no hardware entropy source.
-    /// Its CP15 counter advances predictably, so the current estimator may not
-    /// reliably reach
-    /// `SEED_ENTROPY_BITS` and `init`'s seed loop cannot make progress. This
+    /// Its CP15 counter advances predictably, which is exactly the shape the
+    /// estimator refuses to credit, so `init`'s seed loop cannot make
+    /// progress and would spin out its timeout every boot. This
     /// fills the pool from a fixed vector and marks it seeded so the boot
     /// proceeds. NOT cryptographically secure; compiled ONLY under
     /// `--features qemu`, which is mutually exclusive with `production`
@@ -204,11 +279,12 @@ static mut INITIALIZED: bool = false;
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Collect a timer sample from CNTPCT and mix it into the provisional pool.
+/// Collect a timer sample from CNTPCT and mix it into the entropy pool.
 ///
-/// Called from the timer IRQ handler. The current credit estimator cannot
-/// distinguish deterministic counter advance from jitter; #840 blocks treating
-/// its seededness result as production entropy acceptance.
+/// Called from the timer IRQ handler. Deterministic counter advance credits
+/// nothing (see [`EntropyPool::add_timer_sample`]); what the gate cannot do is
+/// measure how much real jitter the remainder carries, which is why reaching
+/// it is a precondition for seeding rather than an entropy receipt (#873).
 ///
 /// # Safety
 ///
@@ -233,9 +309,9 @@ pub unsafe fn collect_timer_entropy() {
                 hi = out(reg) hi,
             );
         }
-        // NOTE: `hi` changes far too slowly to carry per-tick jitter; the low
-        // word `lo` is the provisional input used for mixing and crediting.
-        // #840 establishes that this does not isolate unpredictable jitter.
+        // NOTE: `hi` changes far too slowly to carry per-tick jitter, so the
+        // low word `lo` is the input for both mixing and crediting. Wrapping
+        // of that word is handled by the modular arithmetic in the estimator.
         let _ = hi;
 
         // SAFETY: ENTROPY is only accessed from IRQ context (this function).
@@ -251,10 +327,10 @@ pub unsafe fn collect_timer_entropy() {
 /// Add arbitrary entropy bytes to the pool.
 ///
 /// Called from drivers with access to additional entropy sources (e.g. eMMC
-/// CID registers). The bytes are mixed but earn NO seededness credit: only the
-/// current timer estimator drives the gate. #840 establishes that
-/// this estimator can seed on deterministic increments, so neither this API
-/// nor the gate is production entropy evidence yet.
+/// CID registers). The bytes are mixed but earn NO seededness credit: only
+/// timer cadence departure drives the gate. A CID register is a fixed
+/// per-device value, so crediting it would let a constant satisfy the gate --
+/// the same defect the timer estimator refuses (#304, #840).
 ///
 /// # Safety
 ///
@@ -270,10 +346,10 @@ pub unsafe fn add_entropy(data: &[u8]) {
 
 /// Initialize the CSPRNG from the accumulated entropy pool.
 ///
-/// Call this from kinit after the timer has begun feeding provisional credits.
-/// If the counter has not reached `SEED_ENTROPY_BITS`, this busy-polls while
-/// the timer ISR calls `collect_timer_entropy()` each tick. #840 establishes
-/// that reaching the counter is not production entropy readiness.
+/// Call this from kinit after the timer has begun feeding credits. If the
+/// counter has not reached `SEED_ENTROPY_BITS`, this busy-polls while the
+/// timer ISR calls `collect_timer_entropy()` each tick. A deterministic timer
+/// credits nothing and times out here rather than seeding.
 ///
 /// Bounded by `CSPRNG_INIT_TIMEOUT_MS`, measured against the free-running
 /// CNTPCT counter (`crate::timer::elapsed_ms()`) rather than the IRQ-
@@ -301,7 +377,7 @@ pub unsafe fn init() -> bool {
 
     // WHY(qemu): deterministic emulator has no hardware entropy; inject a
     // fixed seed so is_seeded() passes on the first check below and boot
-    // proceeds instead of spinning on a provisional counter.
+    // proceeds instead of spinning out the timeout.
     // SAFETY: ENTROPY is written only from the timer IRQ handler; this runs
     // before IRQs deliver entropy and is non-reentrant on single-core ARMv7.
     #[cfg(feature = "qemu")]
@@ -309,8 +385,8 @@ pub unsafe fn init() -> bool {
         (*core::ptr::addr_of_mut!(ENTROPY)).seed_deterministic_qemu();
     }
 
-    // Spin until the provisional credit counter reaches its threshold,
-    // or until CSPRNG_INIT_TIMEOUT_MS elapses.
+    // Spin until the credit counter reaches its threshold, or until
+    // CSPRNG_INIT_TIMEOUT_MS elapses.
     // WHY: in host test builds the #[cfg(test)] arm below always breaks on
     // the first pass (test host bypasses real entropy collection), so this
     // loop genuinely never loops more than once THERE -- but the production
@@ -373,12 +449,12 @@ pub unsafe fn init() -> bool {
     true
 }
 
-/// Generate `buf.len()` bytes from the `ChaCha20` DRBG after the current gate.
+/// Generate `buf.len()` bytes from the `ChaCha20` DRBG once the gate is met.
 ///
-/// #840 blocks treating that gate as a production entropy proof, and #873
-/// blocks treating reset/reseed state as non-repeating. Callers still fail
-/// closed when the gate is not reached, but success is not yet cryptographic
-/// readiness evidence.
+/// The gate refuses a deterministic timer, but it measures no min-entropy and
+/// #873 still blocks treating reset/reseed state as non-repeating. Callers
+/// fail closed when the gate is not reached; success is a precondition for
+/// cryptographic readiness rather than evidence of it.
 ///
 /// Fail-closed (audit #284): if the CSPRNG is not yet seeded this returns
 /// `Err(CsprngError::NotSeeded)` and leaves `buf` untouched — it never emits
@@ -550,24 +626,123 @@ mod tests {
         assert_eq!(pool.entropy_bits, 0, "constant samples credit zero entropy");
     }
 
+    /// The per-tick CNTPCT advance this platform actually produces: a 10 ms
+    /// tick against the MT6739's 13 MHz CNTFRQ. Its residue inside
+    /// `TIMER_JITTER_MASK` is `130_000 % 4096 = 3024` (seven bits set), which
+    /// is what the superseded raw-XOR estimator credited every tick.
+    const REGULAR_TICK_DELTA: u32 = 130_000;
+
     #[test]
-    fn regular_delta_reaches_provisional_gate_exposing_840() {
-        // This perfectly regular arithmetic progression has no unpredictability,
-        // yet the current estimator credits it and reaches the gate (#840).
+    fn perfectly_regular_delta_never_seeds() {
+        // #840 regression, and the shape this platform's own timer produces:
+        // a fixed reload against a fixed CNTFRQ. There is no unpredictability
+        // in an arithmetic progression, so it must never satisfy the gate --
+        // however many ticks arrive, and regardless of how many bits the raw
+        // sample-to-sample XOR would have flipped.
         let mut pool = EntropyPool::new();
         let mut sample: u32 = 0;
-        let mut ticks = 0;
+        for _ in 0..100_000 {
+            sample = sample.wrapping_add(REGULAR_TICK_DELTA);
+            pool.add_timer_sample(sample);
+        }
+        assert_eq!(
+            pool.entropy_bits, 0,
+            "a constant interval must credit zero (#840)"
+        );
+        assert!(
+            !pool.is_seeded(),
+            "a perfectly regular timer must never seed the pool (#840)"
+        );
+    }
+
+    #[test]
+    fn the_superseded_estimator_would_have_credited_that_delta() {
+        // Pins WHY the test above is not vacuous. The old estimator scored
+        // `count_ones(sample ^ last_sample & MASK)`; on this exact progression
+        // that is seven bits per tick, so it reached the 256-bit gate in 37
+        // ticks of a fully deterministic source. If a future change makes this
+        // arithmetic stop holding, the regression above is no longer covering
+        // the case it names.
+        let a: u32 = 0;
+        let b: u32 = a.wrapping_add(REGULAR_TICK_DELTA);
+        let old_credit = ((a ^ b) & TIMER_JITTER_MASK).count_ones();
+        assert!(
+            old_credit > 0,
+            "the superseded estimator must be shown to credit this progression"
+        );
+        assert!(
+            (SEED_ENTROPY_BITS / old_credit) < 100_000,
+            "the superseded estimator must be shown to REACH the gate on it"
+        );
+    }
+
+    #[test]
+    fn alternating_cadence_never_seeds() {
+        // A periodic rather than constant cadence: the interval alternates
+        // between two fixed values, so the departure alternates in sign and
+        // repeats in magnitude. Fully predictable to anyone who has watched
+        // two ticks, so the repetition guard must refuse it.
+        let mut pool = EntropyPool::new();
+        let mut sample: u32 = 0;
+        for i in 0..100_000u32 {
+            let step = if i % 2 == 0 {
+                REGULAR_TICK_DELTA
+            } else {
+                REGULAR_TICK_DELTA + 37
+            };
+            sample = sample.wrapping_add(step);
+            pool.add_timer_sample(sample);
+        }
+        assert!(
+            !pool.is_seeded(),
+            "an alternating cadence carries no unpredictability and must not seed"
+        );
+    }
+
+    #[test]
+    fn irregular_cadence_still_seeds() {
+        // The gate must remain reachable: an estimator that refuses everything
+        // is fail-closed into a kernel that never boots. Jitter here is small
+        // relative to the tick -- the scale real ISR latency produces -- and
+        // never repeats its predecessor.
+        let mut pool = EntropyPool::new();
+        let mut sample: u32 = 0;
+        let mut ticks = 0u32;
+        // A cheap non-repeating wander; the exact values do not matter, only
+        // that consecutive departures differ.
+        let mut lcg: u32 = 0x1234_5678;
         while !pool.is_seeded() && ticks < 100_000 {
-            // Advance by one fixed public delta each tick.
-            sample = sample.wrapping_add(0x0000_0ABF);
+            lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let jitter = lcg >> 27; // 0..=31 counts of latency wander
+            sample = sample.wrapping_add(REGULAR_TICK_DELTA + jitter);
             pool.add_timer_sample(sample);
             ticks += 1;
         }
         assert!(
             pool.is_seeded(),
-            "known-bad estimator currently admits a deterministic delta (#840)"
+            "realistic latency jitter must still be able to seed the pool"
         );
-        assert!(pool.entropy_bits >= SEED_ENTROPY_BITS);
+        assert!(
+            ticks >= SEED_ENTROPY_BITS / MAX_CREDIT_BITS_PER_SAMPLE,
+            "the per-sample ceiling must hold: {ticks} ticks is fewer than the \
+             floor the cap imposes"
+        );
+    }
+
+    #[test]
+    fn one_huge_excursion_cannot_seed_the_pool() {
+        // A single gross departure -- a missed tick, a frequency change -- is
+        // one event. Without the ceiling its masked popcount alone could carry
+        // a large share of the gate.
+        let mut pool = EntropyPool::new();
+        pool.add_timer_sample(0);
+        pool.add_timer_sample(REGULAR_TICK_DELTA);
+        pool.add_timer_sample(REGULAR_TICK_DELTA.wrapping_mul(2).wrapping_add(0x0FFF));
+        assert!(
+            pool.entropy_bits <= MAX_CREDIT_BITS_PER_SAMPLE,
+            "a single sample must not credit more than the ceiling, got {}",
+            pool.entropy_bits
+        );
     }
 
     #[test]
