@@ -126,12 +126,21 @@ PRODUCTION_KEY_DIR=""
 # the 9 feature passes compiled clean, then the script still exited 1).
 # Call ensure_production_key as a bare statement so the assignment lands
 # in this shell, then read PRODUCTION_KEY_DIR directly.
+#
+# WHY two keys (#869): the provisioning anchor is refused the same way the boot
+# anchor is, and build.rs additionally refuses a provisioning key EQUAL to the
+# boot key -- kernel-image authenticity and provisioning-bundle authenticity are
+# separate trust domains. Two independent ephemeral keys are therefore the only
+# shape that builds, which is the point: the harness cannot accidentally prove
+# the guard passes by handing it one key twice.
 ensure_production_key() {
     if [[ -z "$PRODUCTION_KEY_DIR" ]]; then
         PRODUCTION_KEY_DIR=$(mktemp -d)
-        openssl genpkey -algorithm ed25519 -out "$PRODUCTION_KEY_DIR/ci-boot.pem" 2>/dev/null
-        openssl pkey -in "$PRODUCTION_KEY_DIR/ci-boot.pem" -pubout -outform DER \
-            | tail -c 32 | od -An -tx1 | tr -d ' \n' > "$PRODUCTION_KEY_DIR/ci-boot.pub"
+        for role in boot provision; do
+            openssl genpkey -algorithm ed25519 -out "$PRODUCTION_KEY_DIR/ci-$role.pem" 2>/dev/null
+            openssl pkey -in "$PRODUCTION_KEY_DIR/ci-$role.pem" -pubout -outform DER \
+                | tail -c 32 | od -An -tx1 | tr -d ' \n' > "$PRODUCTION_KEY_DIR/ci-$role.pub"
+        done
     fi
 }
 cleanup() {
@@ -164,7 +173,10 @@ for i in "${!PASS_TAGS[@]}"; do
     rc=0
     if [[ "$tag" = "production" ]]; then
         ensure_production_key
-        out=$(cd "$KERNEL_DIR" && THUMOS_BOOT_KEY_PUB="$PRODUCTION_KEY_DIR/ci-boot.pub" cargo clippy --bin thumos --tests --locked \
+        out=$(cd "$KERNEL_DIR" \
+            && THUMOS_BOOT_KEY_PUB="$PRODUCTION_KEY_DIR/ci-boot.pub" \
+               THUMOS_PROVISION_KEY_PUB="$PRODUCTION_KEY_DIR/ci-provision.pub" \
+               cargo clippy --bin thumos --tests --locked \
             --features "$features" --target i686-unknown-linux-gnu -- -D warnings 2>&1) || rc=$?
     elif [ -n "$features" ]; then
         out=$(cd "$KERNEL_DIR" && cargo clippy --bin thumos --tests --locked \
