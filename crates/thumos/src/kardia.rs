@@ -53,7 +53,7 @@ use crate::screen_privacy::PrivacyScreen;
 use crate::screen_radio::RadioControlScreen;
 use crate::screen_search::SearchScreen;
 use crate::screen_settings::SettingsMenuScreen;
-use crate::screen_threat::{ThreatLevel, ThreatMonitor};
+use crate::screen_threat::ThreatMonitor;
 // WHY(#737): the alert constructors are reachable only from the qemu boot
 // smoke; production has no detector feeding this screen yet (see the
 // no-detector-vs-no-alerts gap filed alongside this change).
@@ -531,13 +531,13 @@ impl KernelState {
             mode_badge: Some(self.mode.status_badge()),
             mode_badge_color: Some(self.mode.status_badge_color()),
             // #874: CCCI boot-path availability is not a threat level or a
-            // modem-rail observation. Only an online detector's High/Critical
-            // state drives the threat indicator.
-            threat_high: self.threat.detector_online()
-                && matches!(
-                    self.threat.threat_level(),
-                    ThreatLevel::High | ThreatLevel::Critical
-                ),
+            // modem-rail observation. The rule lives in screen_threat, where a
+            // cross-product test guards it -- inline here it was a correct
+            // expression nothing could catch reverting.
+            threat_high: crate::screen_threat::threat_indicator(
+                self.threat.detector_online(),
+                self.threat.threat_level(),
+            ),
             ..StatusBarState::default()
         };
         self.home.update_state(HomeScreenState {
