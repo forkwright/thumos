@@ -77,6 +77,13 @@ const KEY_DIST_LINK_KEY: u8 = 0x08;
 /// surface, not just a compatibility knob.
 pub(crate) const REQUIRED_MAX_ENC_KEY_SIZE: u8 = 16;
 
+/// Identity Address Information address type: public device address.
+pub(crate) const ADDRESS_TYPE_PUBLIC: u8 = 0x00;
+
+/// Identity Address Information address type: random static device address.
+/// The Core spec defines no third value for this field.
+pub(crate) const ADDRESS_TYPE_RANDOM_STATIC: u8 = 0x01;
+
 // ── Error type ─────────────────────────────────────────────────────────────────
 
 /// Errors FROM SMP PDU decoding. Every variant means "reject this PDU
@@ -109,6 +116,21 @@ pub(crate) enum Error {
     UnknownOpcode {
         /// The unrecognised opcode byte.
         opcode: u8,
+    },
+
+    /// A fixed-domain field carried a value the specification does not
+    /// define.
+    ///
+    /// Distinct from [`Self::WrongLength`]: the PDU is exactly the size its
+    /// opcode requires, and a byte inside it is not one of the values that
+    /// field may hold. Collapsing the two would report a well-formed PDU
+    /// carrying an illegal value as a truncated one.
+    #[snafu(display("SMP PDU (opcode 0x{opcode:02X}) field value 0x{value:02X} is not defined"))]
+    InvalidFieldValue {
+        /// The opcode whose field was out of domain.
+        opcode: u8,
+        /// The rejected value.
+        value: u8,
     },
 }
 
@@ -648,6 +670,17 @@ pub(crate) fn decode(data: &[u8]) -> Result<PairingPdu> {
         }
         OP_IDENTITY_ADDRESS_INFORMATION => {
             expect(7)?;
+            // WHY the type is validated here (#835): the Core spec defines
+            // exactly two values, and this field decides how the address is
+            // interpreted for the rest of the bond. Accepting a third would
+            // store an identity whose kind nothing downstream can name, so the
+            // check belongs at the parse boundary rather than at each reader.
+            if body[0] != ADDRESS_TYPE_PUBLIC && body[0] != ADDRESS_TYPE_RANDOM_STATIC {
+                return Err(Error::InvalidFieldValue {
+                    opcode,
+                    value: body[0],
+                });
+            }
             let mut addr_le = [0u8; 6];
             addr_le.copy_from_slice(&body[1..7]);
             Ok(PairingPdu::IdentityAddressInformation(
@@ -830,6 +863,44 @@ mod tests {
         };
         assert_eq!(decoded.address_type, 0x01);
         assert_eq!(decoded.address, address);
+    }
+
+    #[test]
+    fn identity_address_information_rejects_an_undefined_address_type() {
+        // #835: the Core spec defines exactly two values for this field, and
+        // it decides how the address is interpreted for the whole bond.
+        // Accepting a third stores an identity whose kind nothing downstream
+        // can name.
+        let Ok(address) = BdAddr::parse("AA:BB:CC:DD:EE:FF") else {
+            unreachable!("valid test address");
+        };
+        for undefined in [0x02u8, 0x03, 0xFF] {
+            let wire = encode_identity_address_information(undefined, &address);
+            assert_eq!(
+                decode(&wire),
+                Err(Error::InvalidFieldValue {
+                    opcode: OP_IDENTITY_ADDRESS_INFORMATION,
+                    value: undefined,
+                }),
+                "address type 0x{undefined:02X} is not one the spec defines"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_address_information_accepts_both_defined_address_types() {
+        // The two legal values must both survive, or the check has replaced
+        // one defect with a stricter one.
+        let Ok(address) = BdAddr::parse("AA:BB:CC:DD:EE:FF") else {
+            unreachable!("valid test address");
+        };
+        for defined in [ADDRESS_TYPE_PUBLIC, ADDRESS_TYPE_RANDOM_STATIC] {
+            let wire = encode_identity_address_information(defined, &address);
+            let Ok(PairingPdu::IdentityAddressInformation(decoded)) = decode(&wire) else {
+                unreachable!("a defined address type must decode");
+            };
+            assert_eq!(decoded.address_type, defined);
+        }
     }
 
     #[test]

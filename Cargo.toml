@@ -104,6 +104,10 @@ ghash = { version = "0.6", features = ["zeroize"] }
 # each needs the same scrubbing primitive. A version this repo pins in five
 # places is a version it can disagree with itself about.
 zeroize = { version = "1", default-features = false }
+# WHY declared rather than reached for ad hoc: a constant-time comparison is
+# only constant-time if it is the same one everywhere, and `subtle` inserts the
+# optimisation barriers a hand-rolled loop cannot promise.
+subtle = { version = "2", default-features = false }
 ed25519-dalek = "3"
 getrandom = "0.4"
 hkdf = "0.13"
