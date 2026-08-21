@@ -326,4 +326,58 @@ mod tests {
             other => unreachable!("expected Gsm7Encode, got {other:?}"),
         }
     }
+
+    #[test]
+    fn count_septets_charges_two_for_an_extension_character() {
+        // #833: an extension character occupies ESC plus its code, so a
+        // length computed at one septet each under-counts and the PDU is
+        // built with a UDL smaller than the data it carries.
+        let plain = count_septets("abc").unwrap_or(0);
+        assert_eq!(plain, 3, "plain characters are one septet each");
+
+        // '€' is in the GSM-7 extension table.
+        let with_ext = count_septets("ab\u{20ac}").unwrap_or(0);
+        assert_eq!(
+            with_ext, 4,
+            "an extension character must count as two septets, not one"
+        );
+    }
+
+    #[test]
+    fn count_septets_rejects_a_character_gsm7_cannot_hold() {
+        let err = count_septets("ab\u{4e2d}");
+        assert!(
+            matches!(err, Err(CoreError::Gsm7Encode { .. })),
+            "a character with no GSM-7 representation must be reported, not counted"
+        );
+    }
+
+    #[test]
+    fn a_literal_escape_character_is_not_encodable() {
+        // #833: septet 0x1B holds '\x1b' as a placeholder for the extension
+        // mechanism. Without the guard, a literal ESC in user text encodes as
+        // a bare escape and silently reinterprets the NEXT character as an
+        // extension code -- the message decodes as something else entirely.
+        assert!(
+            char_to_septet('\u{1b}').is_none(),
+            "a literal ESC must not encode to the escape septet"
+        );
+    }
+
+    #[test]
+    fn an_unknown_extension_code_renders_as_a_space() {
+        // #833: 3GPP reserves extension codes for future characters, so a
+        // reserved one is a display gap rather than a malformed message.
+        // Failing the whole decode would discard a message that is otherwise
+        // entirely readable.
+        // ESC followed by 0x00, which the extension table does not define.
+        // Packed LSB-first: septet 0 occupies bits 0-6 of byte 0, septet 1
+        // starts at bit 7, so [0x1B, 0x00] is exactly ESC then 0x00.
+        let packed = [ESC_SEPTET, 0x00];
+        let decoded = decode(&packed, 2).unwrap_or_default();
+        assert_eq!(
+            decoded, " ",
+            "an unknown extension code must render as a space"
+        );
+    }
 }

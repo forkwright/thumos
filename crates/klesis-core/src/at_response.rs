@@ -222,13 +222,27 @@ pub const fn is_valid_dial_byte(b: u8) -> bool {
     matches!(b, b'0'..=b'9' | b'+' | b'*' | b'#' | b'A'..=b'D')
 }
 
+/// Largest RSSI index 3GPP TS 27.007 defines for `+CSQ`. 31 maps to -51 dBm;
+/// 99 is the separate "not known or not detectable" value.
+const CSQ_RSSI_MAX: u8 = 31;
+
+/// dBm value reported when the RSSI is unknown or outside its defined domain.
+pub const RSSI_DBM_UNKNOWN: i16 = -999;
+
 /// Convert a raw AT+CSQ RSSI value (0-31, 99=unknown) to dBm.
 ///
 /// Formula: dBm = -113 + (rssi * 2), per 3GPP TS 27.007.
+///
+/// WHY anything outside 0-31 returns the unknown sentinel rather than the
+/// formula's output: the formula is only defined on that domain, and applying
+/// it to, say, 200 yields +287 dBm -- which [`dbm_to_bars`] then classifies as
+/// four bars. A malformed or hostile modem line would report *excellent*
+/// signal, and a wrong answer delivered confidently is worse than the absence
+/// this sentinel already exists to express.
 #[must_use]
 pub fn rssi_to_dbm(rssi: u8) -> i16 {
-    if rssi == 99 {
-        return -999; // NOTE: unknown sentinel
+    if rssi > CSQ_RSSI_MAX {
+        return RSSI_DBM_UNKNOWN;
     }
     -113 + (i16::from(rssi) * 2)
 }
@@ -615,5 +629,37 @@ mod tests {
         assert_eq!(dbm_to_bars(-110), 1, "-110 dBm must be 1 bar");
         assert_eq!(dbm_to_bars(-111), 0, "-111 dBm must be 0 bars");
         assert_eq!(dbm_to_bars(-999), 0, "unknown signal must be 0 bars");
+    }
+
+    #[test]
+    fn rssi_outside_its_defined_domain_is_unknown_not_a_strong_signal() {
+        // #833: the TS 27.007 formula is defined on 0-31. Applied to a value
+        // above that it produces a POSITIVE dBm, which `dbm_to_bars` then
+        // classifies as four bars -- so a malformed or hostile modem line
+        // reported excellent signal.
+        for rssi in [32u8, 98, 100, 200, 255] {
+            assert_eq!(
+                rssi_to_dbm(rssi),
+                RSSI_DBM_UNKNOWN,
+                "RSSI {rssi} is outside 0-31 and must read as unknown"
+            );
+            assert_eq!(
+                dbm_to_bars(rssi_to_dbm(rssi)),
+                0,
+                "an unknown RSSI must render as no signal, not full bars"
+            );
+        }
+    }
+
+    #[test]
+    fn rssi_domain_boundaries_still_convert() {
+        // The bound is inclusive at both ends, and 99 keeps its own meaning.
+        assert_eq!(rssi_to_dbm(0), -113, "0 is the weakest defined reading");
+        assert_eq!(rssi_to_dbm(31), -51, "31 is the strongest defined reading");
+        assert_eq!(
+            rssi_to_dbm(99),
+            RSSI_DBM_UNKNOWN,
+            "99 is the standard's own unknown value"
+        );
     }
 }

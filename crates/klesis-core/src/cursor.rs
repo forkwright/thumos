@@ -83,4 +83,19 @@ mod tests {
             "reading past the end must error, not panic"
         );
     }
+
+    #[test]
+    fn read_slice_rejects_a_length_that_overflows_the_position() {
+        // #833: `pos + n` is a checked add. Without it, a length near
+        // usize::MAX wraps to a small end offset and the slice read succeeds
+        // against a range the caller never asked for.
+        let data = [0u8; 8];
+        let mut cur = Cursor::new(&data);
+        let _ = ok(cur.read_slice(4));
+        let err = cur.read_slice(usize::MAX);
+        assert!(
+            matches!(err, Err(CoreError::Truncated { .. })),
+            "a length that overflows the cursor position must be Truncated, not a wrapped read"
+        );
+    }
 }
