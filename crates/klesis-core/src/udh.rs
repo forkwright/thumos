@@ -311,4 +311,30 @@ mod tests {
             .is_covert()
         );
     }
+
+    #[test]
+    fn parse_udh_ports_stops_at_an_ie_claiming_more_than_the_header_holds() {
+        // #833: an IE length is attacker-supplied. One claiming more bytes
+        // than the header contains must end the walk, not read past it or
+        // wrap `pos` into a rescan.
+        //
+        // UDHL=3, then IEI=0x05 (16-bit ports) with ie_len=0xFF and a single
+        // data byte -- the claimed extent runs far past the header.
+        let ud = [0x03u8, 0x05, 0xFF, 0x00, b'x'];
+        assert!(
+            parse_udh_ports(&ud).is_none(),
+            "an IE longer than the header must yield no ports rather than a read past it"
+        );
+    }
+
+    #[test]
+    fn parse_udh_ports_ignores_a_port_ie_of_the_wrong_length() {
+        // A 16-bit-port IE is exactly four bytes. One claiming a different
+        // length is not that IE, and must not be read as though it were.
+        let ud = [0x04u8, 0x05, 0x02, 0x12, 0x34];
+        assert!(
+            parse_udh_ports(&ud).is_none(),
+            "a port IE with the wrong length must be skipped, not partially decoded"
+        );
+    }
 }
