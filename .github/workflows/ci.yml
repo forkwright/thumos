@@ -180,6 +180,16 @@ jobs:
         # built this exact i686 target, so this is a cache hit, not a
         # separate compile — placement in the job matters.
         run: scripts/check-target-test-ledger.sh
+      - name: Crypto zeroize feature check (#835/#836)
+        # WHY: the `zeroize` feature on a keyed crypto crate has no
+        # behavioural signature -- without it everything compiles and runs
+        # identically and the AES round-key schedule is left resident after
+        # use. No test fails and no warning fires, so a crate added with a
+        # bare `aes = "0.9"` regresses the guarantee silently. Reads the
+        # manifests rather than the resolved graph, because `cargo metadata`'s
+        # resolve over-approximates what any one build enables. Cheap,
+        # source-level, no toolchain beyond python3.
+        run: scripts/check-crypto-zeroize-features.sh
       - name: Board-seam invariant check (#534)
         # WHY: #534 makes the two-board reality structural, not prose — reds
         # on any MT6739_* identifier outside board::m7, any board-MMIO value

@@ -31,6 +31,7 @@ stages = [
     "kernel build",
     "kernel trust anchor",
     "kernel host tests",
+    "crypto zeroize features",
     "board seam",
     "convergence",
     "kernel qemu witnesses",
@@ -122,6 +123,15 @@ timeout_secs = 300
 # value re-declared outside board/, or known exact-form PWRAP/legacy CPU-power
 # spellings and common two-literal expressions before an accepted transaction
 # exists. Source-level, cheap.
+# WHY (#835/#836): the `zeroize` feature on a keyed crypto crate has no
+# behavioural signature -- without it everything compiles and runs identically
+# and the AES round-key schedule is simply left resident after use. No test
+# fails and no warning fires, so a manifest added without it regresses the
+# guarantee silently. Source-level, cheap.
+[stages."crypto zeroize features"]
+cmd = "scripts/check-crypto-zeroize-features.sh"
+timeout_secs = 120
+
 [stages."board seam"]
 cmd = "scripts/check-board-seam.sh"
 timeout_secs = 300

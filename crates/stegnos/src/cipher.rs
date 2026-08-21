@@ -4,6 +4,17 @@ use aes::{Aes256, cipher::KeyInit};
 use snafu::Snafu;
 use xts_mode::Xts128;
 
+// WHY an assertion rather than a comment (#835/#836): an AES round-key
+// schedule is reversible to the key that produced it, and `aes/zeroize` is
+// what supplies the `Drop` that scrubs it. A build without that feature
+// compiles everything here unchanged and silently leaves the schedule
+// resident, so nothing but a type-level demand would notice the regression.
+// This one fails the build instead.
+const _: fn() = || {
+    const fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+    assert_zeroize_on_drop::<Aes256>();
+};
+
 /// Block size in bytes  -  matches the OS page size and dm-crypt sector size.
 pub(crate) const BLOCK_SIZE: usize = 4096;
 

@@ -73,7 +73,18 @@ metaxu-probe-expired-grant = ["metaxu-probe"]
 metaxu-probe-no-capability = ["metaxu-probe"]
 
 [dependencies]
-aes = { version = "0.9", default-features = false }
+# WHY `zeroize` (#835/#836): `Aes256`'s expanded key schedule is reversible to
+# the key, and this crate holds one per XTS and Megolm cipher. The feature is
+# what supplies `ZeroizeOnDrop`; `encryption.rs` asserts it at compile time.
+# This crate is workspace-excluded, so it cannot inherit the root declaration
+# and states the same decision itself -- kept honest by
+# scripts/check-crypto-zeroize-features.sh, which reads every manifest.
+aes = { version = "0.9", default-features = false, features = ["zeroize"] }
+# WHY a direct edge to a package `aes` already pulls in: naming it is what lets
+# `encryption.rs` demand `Aes256: ZeroizeOnDrop` at compile time, which is the
+# only thing that notices if the feature above is ever dropped. No additional
+# code is compiled.
+zeroize = { version = "1", default-features = false }
 # WHY (#545, #819): the canonical EAPOL frame parse/encode, PMK/PTK
 # derivation, MIC, and 4-way handshake state machine live in aither-core,
 # shared no_std+alloc with the `aither` workspace crate -- one
