@@ -118,7 +118,7 @@ sha2 = "0.11"
 x25519-dalek = { version = "3", features = ["static_secrets", "zeroize"] }
 
 # Networking
-smoltcp = { version = "0.13", default-features = false, features = [
+smoltcp = { version = "0.14", default-features = false, features = [
     "medium-ethernet",
     "proto-ipv4",
     "proto-ipv6",
