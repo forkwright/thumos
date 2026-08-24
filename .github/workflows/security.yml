@@ -67,7 +67,7 @@ jobs:
         # couples cargo-deny's climbing MSRV to this repo's pinned toolchain.
         # Exact version pinned deliberately -- a database-format bump must be
         # a reviewed change, never an implicit floor from a caret range.
-        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
           tool: cargo-deny@0.20.2
       - name: cargo deny (all graphs)
@@ -98,7 +98,7 @@ jobs:
         # couples cargo-audit's climbing MSRV to this repo's pinned toolchain.
         # Exact version pinned deliberately -- a database-format bump must be
         # a reviewed change, never an implicit floor from a caret range.
-        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
           tool: cargo-audit@0.22.2
       - name: cargo audit (all graphs)
