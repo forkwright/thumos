@@ -19,7 +19,7 @@ extern crate alloc;
 
 use core::fmt;
 
-use crate::security::{self, KEY_SIZE, PBKDF2_ITERATIONS, SecurityError, SleepTier, XTS_KEY_SIZE};
+use crate::security::{self, KEY_SIZE, SecurityError, SleepTier, XTS_KEY_SIZE};
 
 // ---------------------------------------------------------------------------
 // HKDF labels
@@ -616,11 +616,11 @@ mod tests {
         // point -- 100k PBKDF2 iterations with the injected device salt --
         // not just the low-iteration derive_test_primary helper every other
         // test in this module uses for speed.
-        let key1 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT)
+        let key1 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT, crate::secrets::V1_KDF)
             .expect("derive_from_passphrase must succeed");
         assert!(!key1.is_zero(), "derived primary key must not be all zeros");
 
-        let key2 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT)
+        let key2 = KeyManager::derive_from_passphrase(b"production entry point test", TEST_SALT, crate::secrets::V1_KDF)
             .expect("derive_from_passphrase must succeed");
         assert_eq!(
             key1.as_bytes(),
@@ -636,14 +636,35 @@ mod tests {
         // brute-force/rainbow resistance is per-device, not per-image.
         let salt_a: &[u8] = b"device-a-persisted-salt";
         let salt_b: &[u8] = b"device-b-persisted-salt";
-        let key_a = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_a)
+        let key_a = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_a, crate::secrets::V1_KDF)
             .expect("derive with salt A");
-        let key_b = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_b)
+        let key_b = KeyManager::derive_from_passphrase(b"the same user passphrase", salt_b, crate::secrets::V1_KDF)
             .expect("derive with salt B");
         assert_ne!(
             key_a.as_bytes(),
             key_b.as_bytes(),
             "same passphrase + different device salts must derive different primary keys"
+        );
+    }
+
+    #[test]
+    fn derive_from_passphrase_differs_per_kdf_parameters() {
+        // #914's own done-when: the KDF record is pointless if two different
+        // recorded parameter sets, for the same passphrase and salt, could
+        // silently derive the same key -- that would mean the record is
+        // decorative, not load-bearing.
+        let low = security::PinKdf::Pbkdf2Sha256 { iterations: 1 };
+        let high = security::PinKdf::Pbkdf2Sha256 { iterations: 2 };
+        let key_low =
+            KeyManager::derive_from_passphrase(b"same passphrase, same salt", TEST_SALT, low)
+                .expect("derive under the low-iteration record");
+        let key_high =
+            KeyManager::derive_from_passphrase(b"same passphrase, same salt", TEST_SALT, high)
+                .expect("derive under the high-iteration record");
+        assert_ne!(
+            key_low.as_bytes(),
+            key_high.as_bytes(),
+            "same passphrase + same salt + different recorded KDF parameters must derive different keys (#914 done-when)"
         );
     }
 

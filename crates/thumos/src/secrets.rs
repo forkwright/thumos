@@ -326,8 +326,10 @@ fn render_kdf(sector: &mut [u8; SECTOR_SIZE], kdf: crate::security::PinKdf) {
     }
 }
 
-/// Render a header sector around `salt`, optionally carrying the boot
-/// verifier (slot count 2 when present, 1 otherwise).
+/// Render a header sector around `salt` and its v2 master-KDF record,
+/// optionally carrying the boot verifier (slot count 3 when the verifier is
+/// present, 2 otherwise -- v2 always carries the KDF record, so the count
+/// never drops to the v1 1-or-2).
 fn render(
     salt: &[u8; SALT_LEN],
     verifier: Option<&[u8; VERIFIER_LEN]>,
@@ -589,6 +591,7 @@ mod tests {
             PreambleStatus::Valid(DeviceSecrets {
                 salt: secrets.salt,
                 boot_verifier: None,
+                kdf: MASTER_KDF,
             }),
             "header parses to the provisioned salt, no verifier yet"
         );
@@ -703,12 +706,67 @@ mod tests {
         v
     }
 
+    /// A literal v1-format sector, built byte-for-byte from the documented
+    /// layout rather than through [`render`], which only ever writes v2
+    /// today. A specimen produced by calling this file's own writer would
+    /// still pass even if the writer and the reader had drifted together --
+    /// this one is independent of both, the way a real pre-#914 device on
+    /// disk is.
+    fn v1_sector(salt: [u8; SALT_LEN], verifier: Option<[u8; VERIFIER_LEN]>) -> [u8; SECTOR_SIZE] {
+        let mut sector = [0u8; SECTOR_SIZE];
+        sector[..8].copy_from_slice(b"THSECR\0\0");
+        sector[VERSION_OFFSET..VERSION_OFFSET + 4].copy_from_slice(&1u32.to_le_bytes());
+        let count: u32 = if verifier.is_some() { 2 } else { 1 };
+        sector[SLOT_COUNT_OFFSET..SLOT_COUNT_OFFSET + 4].copy_from_slice(&count.to_le_bytes());
+        sector[SALT_OFFSET..SALT_OFFSET + SALT_LEN].copy_from_slice(&salt);
+        if let Some(v) = verifier {
+            sector[VERIFIER_OFFSET..VERIFIER_OFFSET + VERIFIER_LEN].copy_from_slice(&v);
+        }
+        let tag = integrity_of(&sector);
+        sector[INTEGRITY_OFFSET..INTEGRITY_OFFSET + 32].copy_from_slice(&tag);
+        sector
+    }
+
+    #[test]
+    fn v1_preamble_bytes_parse_under_v1_kdf() {
+        // A real pre-#914 device wrote no KDF record and no slot 5 -- salt
+        // only (slot count 1) before any passphrase was set, salt + verifier
+        // (slot count 2) after. Both must still parse, and both must resolve
+        // exactly [`V1_KDF`]: that is the whole backward-compatibility claim
+        // this change makes, and until this test, nothing checked it against
+        // bytes the current writer never produces.
+        let salt = [0x77u8; SALT_LEN];
+
+        let salt_only = v1_sector(salt, None);
+        assert_eq!(
+            parse(&salt_only),
+            PreambleStatus::Valid(DeviceSecrets {
+                salt,
+                boot_verifier: None,
+                kdf: V1_KDF,
+            }),
+            "a genuine v1 salt-only header (version 1, slot count 1) must parse and resolve V1_KDF"
+        );
+
+        let verifier = sample_verifier();
+        let with_verifier = v1_sector(salt, Some(verifier));
+        assert_eq!(
+            parse(&with_verifier),
+            PreambleStatus::Valid(DeviceSecrets {
+                salt,
+                boot_verifier: Some(verifier),
+                kdf: V1_KDF,
+            }),
+            "a genuine fully-provisioned v1 header (version 1, slot count 2) must parse, verifier and all, and resolve V1_KDF"
+        );
+    }
+
     #[test]
     fn stored_verifier_reads_back_with_the_salt_unchanged() {
         let mut dev = MemBlockDevice::new(1).expect("device");
         let first = load_or_provision(&mut dev, stream(0xA0)).expect("provision");
         let verifier = sample_verifier();
-        let stored = store_boot_verifier(&mut dev, &first.salt, &verifier).expect("store verifier");
+        let stored = store_boot_verifier(&mut dev, &first.salt, &verifier, MASTER_KDF).expect("store verifier");
         assert_eq!(stored.boot_verifier, Some(verifier));
         assert_eq!(stored.salt, first.salt, "store preserves the salt");
 
@@ -718,7 +776,7 @@ mod tests {
         assert_eq!(loaded.salt, first.salt, "salt stable across store+load");
         assert_eq!(loaded.boot_verifier, Some(verifier), "verifier persists");
 
-        // The on-disk header declares two slots.
+        // The on-disk header declares three slots: salt, KDF record, verifier.
         let mut sector = [0u8; SECTOR_SIZE];
         dev.read_sectors(0, 1, &mut sector).expect("read back");
         assert_eq!(
@@ -727,8 +785,8 @@ mod tests {
                     .try_into()
                     .unwrap_or_else(|_| unreachable!("4-byte slice"))
             ),
-            2,
-            "slot count 2 on disk"
+            3,
+            "slot count 3 on disk (salt + KDF + verifier)"
         );
     }
 
@@ -738,7 +796,7 @@ mod tests {
         // verifier must not parse — the zero guard, not the integrity tag,
         // is what rejects it here.
         let salt = [0x11u8; SALT_LEN];
-        let sector = render(&salt, Some(&[0u8; VERIFIER_LEN]));
+        let sector = render(&salt, Some(&[0u8; VERIFIER_LEN]), MASTER_KDF);
         assert_eq!(
             parse(&sector),
             PreambleStatus::Corrupt,
@@ -770,7 +828,7 @@ mod tests {
         let mut dev = MemBlockDevice::new(1).expect("device");
         let first = load_or_provision(&mut dev, stream(0xA0)).expect("provision");
         let verifier = sample_verifier();
-        store_boot_verifier(&mut dev, &first.salt, &verifier).expect("store");
+        store_boot_verifier(&mut dev, &first.salt, &verifier, MASTER_KDF).expect("store");
         let loaded = match load(&mut dev).expect("load") {
             PreambleStatus::Valid(secrets) => secrets,
             other => unreachable!("a stored preamble parses as Valid, got {other:?}"),
@@ -784,7 +842,7 @@ mod tests {
         let mut dev = MemBlockDevice::new(1).expect("device");
         let first = load_or_provision(&mut dev, stream(0xA0)).expect("provision");
         let verifier = sample_verifier();
-        store_boot_verifier(&mut dev, &first.salt, &verifier).expect("store");
+        store_boot_verifier(&mut dev, &first.salt, &verifier, MASTER_KDF).expect("store");
 
         let mut sector = [0u8; SECTOR_SIZE];
         dev.read_sectors(0, 1, &mut sector).expect("read");
