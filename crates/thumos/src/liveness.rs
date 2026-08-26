@@ -81,8 +81,7 @@ pub(crate) const WATCHDOG_TIMEOUT_SECONDS: u64 = 5;
 const TIMER_TICKS_PER_SECOND: u64 = 100;
 
 /// The canonical watchdog period expressed in timer ticks.
-pub(crate) const WATCHDOG_TIMEOUT_TICKS: u64 =
-    WATCHDOG_TIMEOUT_SECONDS * TIMER_TICKS_PER_SECOND;
+pub(crate) const WATCHDOG_TIMEOUT_TICKS: u64 = WATCHDOG_TIMEOUT_SECONDS * TIMER_TICKS_PER_SECOND;
 
 /// Ticks an intentional shutdown may take before the gate stops covering it.
 ///

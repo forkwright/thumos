@@ -107,8 +107,7 @@ const WDT_LENGTH_KEY: u64 = 0x08;
 const WDT_UNITS_PER_SECOND: u64 = 64;
 
 /// Timeout units mechanically derived from the canonical watchdog duration.
-const WDT_TIMEOUT_UNITS: u64 =
-    crate::liveness::WATCHDOG_TIMEOUT_SECONDS * WDT_UNITS_PER_SECOND;
+const WDT_TIMEOUT_UNITS: u64 = crate::liveness::WATCHDOG_TIMEOUT_SECONDS * WDT_UNITS_PER_SECOND;
 
 /// Encoded `WDT_LENGTH` register value: timeout units in [15:5] | key in [4:0].
 const WDT_LENGTH_VAL: u64 = (WDT_TIMEOUT_UNITS << 5) | WDT_LENGTH_KEY;
