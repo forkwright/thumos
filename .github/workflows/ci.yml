@@ -151,7 +151,10 @@ jobs:
     # cold cache puts the cross-compile past the budget (kanon#10081 audit).
     timeout-minutes: 60
     env:
-      DOCS_ONLY: ${{ needs.docs-only.outputs.docs_only }}
+      # WHY: even a literal true is not trusted from a failed reusable job
+      # (for example, a post-job failure after the output was written). Every
+      # combination except success + literal true takes the full build path.
+      DOCS_ONLY: ${{ needs.docs-only.result == 'success' && needs.docs-only.outputs.docs_only == 'true' }}
     steps:
       - name: Report docs-only kernel exemption (#775)
         if: env.DOCS_ONLY == 'true'
