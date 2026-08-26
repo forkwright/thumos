@@ -29,6 +29,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  docs-only:
+    # WHY (#775): this standalone fleet preflight is the sole implementation
+    # of the docs-only verdict. Keeping it in this workflow makes the result
+    # reachable by the required kernel job without serialising that job behind
+    # the much longer gate-attestation workflow.
+    uses: forkwright/.github/.github/workflows/docs-only.yml@bf948dfbfefa9b59c2d5f6b10b5eb0df3f24fb52 # main
+    with:
+      docs_only_exemption: true
+
   fmt:
     # WHY: fastest check first — a formatting miss fails in seconds without
     # spending build minutes. Covers both the workspace crates and the
@@ -132,15 +141,29 @@ jobs:
     # check name is not required until branch protection is updated
     # separately, and this job already has the toolchain fuzz/'s check needs.
     name: kernel (i686 tests + armv7a build)
+    needs: docs-only
+    # WHY (#775): a failed preflight leaves its output indeterminate. Run this
+    # required job anyway so indeterminate means a full build, not a vacuous
+    # success. A cancelled superseded workflow does not need to keep building.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     # WHY 60m: warm p95 is already 26m of 30m (measured across six runs); a
     # cold cache puts the cross-compile past the budget (kanon#10081 audit).
     timeout-minutes: 60
+    env:
+      DOCS_ONLY: ${{ needs.docs-only.outputs.docs_only }}
     steps:
+      - name: Report docs-only kernel exemption (#775)
+        if: env.DOCS_ONLY == 'true'
+        # WHY: the required check context must still report. Every build and
+        # witness step below runs unless the shared preflight says literal true.
+        run: echo "Shared preflight classified this changeset as docs-only; kernel build and witnesses skipped."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.DOCS_ONLY != 'true'
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        if: env.DOCS_ONLY != 'true'
         with:
           target: i686-unknown-linux-gnu, armv7a-none-eabi
           cache: false
@@ -157,19 +180,24 @@ jobs:
           # to nothing, which would clobber just the same.
           rustflags: ""
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        if: env.DOCS_ONLY != 'true'
         with:
           key: kernel
           workspaces: crates/thumos
       - name: Install 32-bit link support
+        if: env.DOCS_ONLY != 'true'
         # WHY: linking the i686 test binary needs the multilib crt objects.
         run: sudo apt-get update && sudo apt-get install -y gcc-multilib
       - name: Install cargo-nextest
+        if: env.DOCS_ONLY != 'true'
         run: cargo install cargo-nextest --locked --version ^0.9
       - name: Kernel host tests (i686)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#546): canonical script shared with the forge admission gate —
         # both surfaces execute the identical suite.
         run: scripts/kernel-host-tests.sh
       - name: Target-test ledger check (#551)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#551, restoring #124; #645): declared-vs-executed must be
         # auditable — reds when a test-bearing or target-sensitive module has
         # no ledger row, a witness name rots, a sensitive host-only row loses
@@ -181,6 +209,7 @@ jobs:
         # separate compile — placement in the job matters.
         run: scripts/check-target-test-ledger.sh
       - name: Crypto zeroize feature check (#835/#836)
+        if: env.DOCS_ONLY != 'true'
         # WHY: the `zeroize` feature on a keyed crypto crate has no
         # behavioural signature -- without it everything compiles and runs
         # identically and the AES round-key schedule is left resident after
@@ -191,6 +220,7 @@ jobs:
         # source-level, no toolchain beyond python3.
         run: scripts/check-crypto-zeroize-features.sh
       - name: Board-seam invariant check (#534)
+        if: env.DOCS_ONLY != 'true'
         # WHY: #534 makes the two-board reality structural, not prose — reds
         # on any MT6739_* identifier outside board::m7, any board-MMIO value
         # re-declared as a const outside board/, or known exact-form PWRAP/
@@ -198,11 +228,13 @@ jobs:
         # #862/#879 land. Cheap, source-level.
         run: scripts/check-board-seam.sh
       - name: Convergence ratchet check (#545)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#545): kernel↔workspace duplication only ever burns down —
         # reds on an unclassified pair, a rising port-marker count, or a
         # stale #126 pointer. Cheap, source-level.
         run: scripts/check-convergence.sh
       - name: Kernel lockfile version drift (#688)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#688): crates/thumos is excluded from the workspace and keeps its
         # own lockfile. release-please updates it via an explicit selector that
         # once named a single crate by hand, so six first-party versions sat
@@ -210,6 +242,7 @@ jobs:
         # build. An enumeration of things that grow goes stale quietly.
         run: scripts/check-external-lockfile-versions.sh crates/thumos/Cargo.lock
       - name: Fuzz lockfile version drift (#768)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#768): fuzz/ is a THIRD standalone lockfile (its own
         # `[workspace]`, excluded from both the root workspace and
         # crates/thumos) parked in this job for the same reason the kernel
@@ -223,6 +256,7 @@ jobs:
         # ephemeral runner that never commits the drift back.
         run: scripts/check-external-lockfile-versions.sh fuzz/Cargo.lock
       - name: Fuzz target coverage check (#819)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#819): the WPA, EAPOL and CCCI targets fuzz implementations the
         # kernel does not link, so the shipped radio and modem-boundary parsers
         # have no fuzz coverage while a green run reads as though they do. Graded
@@ -231,6 +265,7 @@ jobs:
         # with its cause, and on any listed gap that has since been closed.
         run: scripts/check-fuzz-target-coverage.sh
       - name: Kernel build entrypoint check (#546)
+        if: env.DOCS_ONLY != 'true'
         # WHY it runs BEFORE the build: it is a source-level grep that names the
         # CAUSE of the failure the next steps would otherwise report as
         # undefined linker symbols. A kernel build that inherits an env
@@ -238,11 +273,13 @@ jobs:
         # only the link loss is loud.
         run: scripts/check-kernel-build-entrypoint.sh
       - name: Kernel cross-compile (armv7a) + zero-warning gate (#431)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#431): the zero-warning gate lives in crates/thumos/.cargo/
         # config.toml's rustflags; scripts/kernel-build.sh builds through it
         # and never lets an env RUSTFLAGS clobber it (#546).
         run: scripts/kernel-build.sh
       - name: Kernel image window + headroom (#917)
+        if: env.DOCS_ONLY != 'true'
         # WHY here rather than with the cheap source checks: it runs the drift
         # check either way, but placed AFTER the cross-compile it can also read
         # __svc_stack_top out of the ELF and report how much of the window is
@@ -250,41 +287,55 @@ jobs:
         # 101% -- so the number is the only warning anyone gets.
         run: scripts/check-kernel-window.sh
       - name: Trust-anchor build guard (#233)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#233): production must FAIL keyless, REFUSE the dev key, and
         # BUILD with a real (ephemeral) key — the script carries the 3-part check.
         run: scripts/witness/trust-anchor.sh
       - name: Install qemu-system-arm
+        if: env.DOCS_ONLY != 'true'
         run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
       - name: Kernel QEMU boot + service loop (real kinit -> boot-complete -> loop)
+        if: env.DOCS_ONLY != 'true'
         # WHY: the REAL kinit under qemu-system-arm, the kardia service loop,
         # and the four PL0 isolation probes. Assertions live ONLY in the
         # script (#546); runner exit codes: 0=loop ran; 5=loop-stall (#461);
         # 1=panic; 2/3/4=aborts; 124=hang.
         run: scripts/witness/boot.sh
       - name: Capability-reachability inventory check (#550)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#550): the inventory is the SSOT for what is wired; reds when a
         # module is unclassified, a witness is claimed but not asserted, or an
         # asserted witness did not fire in the boot.log just produced above.
         run: scripts/check-wiring-inventory.sh
       - name: Kernel-fault halts (PL1 fault must NEVER be recovered)
+        if: env.DOCS_ONLY != 'true'
         run: scripts/witness/kfault.sh
       - name: Userspace sleep really yields (#477, no busy-wait deadlock)
+        if: env.DOCS_ONLY != 'true'
         run: scripts/witness/sleep.sh
       - name: QEMU fork correctness + isolation (#478)
+        if: env.DOCS_ONLY != 'true'
         run: scripts/witness/fork.sh
       - name: QEMU exec correctness + PL0 (#489)
+        if: env.DOCS_ONLY != 'true'
         run: scripts/witness/exec.sh
       - name: QEMU fork+exec composes -- per-process images (#502)
+        if: env.DOCS_ONLY != 'true'
         run: scripts/witness/forkexec.sh
       - name: QEMU PROT_NONE guard pages survive fork (#496)
+        if: env.DOCS_ONLY != 'true'
         run: scripts/witness/guard.sh
       - name: QEMU brk heap growth on a real page table (#533)
+        if: env.DOCS_ONLY != 'true'
         run: scripts/witness/brk.sh
       - name: QEMU userspace signal delivery + sigreturn (#446)
+        if: env.DOCS_ONLY != 'true'
         run: scripts/witness/signal.sh
       - name: QEMU PID-0 fault supervisor + crash-loop rate limit (#492)
+        if: env.DOCS_ONLY != 'true'
         run: scripts/witness/crashloop.sh
       - name: Authenticated Aletheia round trip over the second UART (#544)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#544 on-device leg): a real Thumos userspace process
         # (/metaxu_probe) drives a metaxu-core authenticated request over
         # board::UART1_BASE to a real host pylon-bridge process and back --
@@ -292,6 +343,7 @@ jobs:
         # runs against, not a second implementation.
         run: scripts/witness/metaxu.sh
       - name: Authenticated Aletheia round trip -- negative cases (#544)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#544 negative-case witness): metaxu.sh proves only the happy
         # path, which passes against a bridge that accepts anything. Three
         # distinct typed outcomes: a tampered response reaches MAC_FAILED,
@@ -300,10 +352,12 @@ jobs:
         # bridge.
         run: scripts/witness/metaxu-negative.sh
       - name: Witness-extraction drift guard (#546)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#546): reds if witness assertions ever re-inline into a CI
         # surface or a stage stops calling the canonical scripts.
         run: scripts/check-witness-extraction.sh
       - name: Kernel clippy (i686) -- zero-warning gate (#663)
+        if: env.DOCS_ONLY != 'true'
         # WHY (#663): the kernel crate is excluded from the workspace, so no
         # --workspace clippy invocation in the repo ever reaches crates/thumos.
         #
