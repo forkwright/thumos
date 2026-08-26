@@ -42,6 +42,11 @@ brew install qemu
 |------|---------------------------------------------------------------|
 | 0    | Guest called semihosting `SYS_EXIT` with status `0` (passed). |
 | 1    | Guest panicked or exited with a non-zero status (failed).     |
+| 2-4  | Kernel data/prefetch/undefined fault diagnostic.              |
+| 5-6  | Service-loop stall or secure-boot halt diagnostic.            |
+| 7    | QEMU watchdog model expired after pets were withheld.         |
+| 8    | Controlled shutdown coordinator requested a reboot.           |
+| 9    | Watchdog fault-injection invariant failed before expiry.       |
 | 64   | Runner called without a binary argument.                      |
 | 66   | Binary path does not exist.                                   |
 | 124  | `timeout` killed a hung guest.                                |

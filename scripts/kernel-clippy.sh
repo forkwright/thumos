@@ -84,6 +84,12 @@ mapfile -t KERNEL_FEATURES < <(
 declare -A REQUIRES=(
     [kfault-probe]="qemu"
     [crashloop-probe]="qemu"
+    # WHY (#875): both watchdog probes are structurally refused without the
+    # observable QEMU backend; a solo pass would stop at compile_error! before
+    # clippy reached their injection sites.
+    [watchdog-stall-probe]="qemu"
+    [watchdog-reboot-probe]="qemu"
+    [watchdog-shutdown-hang-probe]="qemu"
     [metaxu-probe]="qemu"
     # WHY (#544 negative-case witness): both imply metaxu-probe (Cargo.toml
     # feature dependency), which itself CANNOT build without qemu (main.rs

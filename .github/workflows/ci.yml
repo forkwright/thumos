@@ -310,6 +310,15 @@ jobs:
         # module is unclassified, a witness is claimed but not asserted, or an
         # asserted witness did not fire in the boot.log just produced above.
         run: scripts/check-wiring-inventory.sh
+      - name: Watchdog liveness refusal + controlled reboot (#875)
+        if: env.DOCS_ONLY != 'true'
+        # WHY: qemu-virt has no MT6739 WDT. The injected witness requires the
+        # board-neutral gate to withhold for a frozen PID-0 owner and the
+        # observable software countdown to expire; a normal boot cannot pass it.
+        # Separate boots invoke the production reboot coordinator for a
+        # successful reset and a reset-failure injection. The latter must pet
+        # only through the immutable grace, reject late re-entry, then expire.
+        run: scripts/witness/watchdog.sh
       - name: Kernel-fault halts (PL1 fault must NEVER be recovered)
         if: env.DOCS_ONLY != 'true'
         run: scripts/witness/kfault.sh

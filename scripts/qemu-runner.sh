@@ -16,9 +16,11 @@ set -euo pipefail
 #   - The kernel is expected to trigger a QEMU shutdown via the ARM
 #     `semihosting` SYS_EXIT call (via the `semihosting` crate) to
 #     communicate pass/fail back to QEMU.
-#   - QEMU exit code 0  -> tests passed.
-#   - QEMU exit code 1  -> tests failed (panic or explicit non-zero exit).
-#   - Anything else     -> runner/infra failure.
+#   - QEMU exit code 0  -> ordinary boot/tests passed.
+#   - QEMU exit code 1  -> panic.
+#   - QEMU exit codes 2-9 -> named kernel/witness outcomes; the owning witness
+#                            decides which code is expected.
+#   - 64/66/124/127     -> runner/infra failure.
 #
 # Requirements:
 #   - qemu-system-arm (Fedora package: qemu-system-arm). If missing, the

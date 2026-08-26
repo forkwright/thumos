@@ -23,14 +23,31 @@ debug-console = []
 # this crate-local edit set).
 production = []
 # WHY: QEMU `-machine virt` bring-up harness -- remaps UART/GIC base constants
-# (kconfig.rs), swaps the MTK UART driver for a PL011 (uart_pl011.rs), no-ops
-# modeled watchdog/display operations, skips init of hardware virt does not
-# model (eMMC/display/keypad/USB/CCCI), and reports
+# (kconfig.rs), swaps the MTK UART driver for a PL011 (uart_pl011.rs), models
+# the watchdog countdown in software, no-ops display operations, skips init of
+# hardware virt does not model (eMMC/display/keypad/USB/CCCI), and reports
 # boot outcome via semihosting exit codes. Never enabled by default; the
 # MT6739 build is unchanged without it. CPU DVFS/core-parking actuation is
 # absent from every runtime build pending #879. Mutually exclusive with
 # `production` (see main.rs compile_error!).
 qemu = []
+# WHY (#875 negative witness): QEMU-only liveness fault injection. PID 0 stops
+# recording its service-loop epoch after a bounded healthy prefix while the
+# scheduler keeps advancing. The observable watchdog model must then refuse
+# pets and terminate with its expiry status. main.rs requires `qemu` and
+# excludes combination with the controlled-reboot probe.
+watchdog-stall-probe = []
+# WHY (#875 integration witness): QEMU-only controlled-reboot injection. The
+# live service loop invokes the same shutdown coordinator as the console path,
+# and the QEMU reset backend terminates with a distinct status. main.rs requires
+# `qemu` and excludes combination with the stall probe.
+watchdog-reboot-probe = []
+# WHY (#875 hung-shutdown witness): QEMU-only reset-failure injection. The live
+# service loop enters the production shutdown coordinator, but the QEMU reset
+# backend deliberately returns. Timer IRQs must pet only through the immutable
+# shutdown grace, reject a late re-entry, then let the modeled watchdog expire.
+# main.rs requires `qemu` and excludes combination with the other probes.
+watchdog-shutdown-hang-probe = []
 # WHY (#487 fault-handling): CI fault-injection harness -- executes a deliberate
 # PL1 `udf` after boot-complete so CI permanently pins the kernel-fault-HALTS
 # branch (qemu exit 4, no service-loop resume). Only meaningful with `qemu`;

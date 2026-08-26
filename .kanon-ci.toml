@@ -152,9 +152,9 @@ timeout_secs = 120
 cmd = "scripts/check-convergence.sh"
 timeout_secs = 300
 
-# WHY (#546): the full QEMU witness matrix (boot + fault + sleep + fork +
-# exec + forkexec + guard + brk + signal + crashloop) as one canonical runner — the
-# exact scripts ci.yml executes step-by-step.
+# WHY (#546/#875): the full QEMU witness matrix (boot + watchdog + fault +
+# sleep + fork + exec + forkexec + guard + brk + signal + crashloop) as one
+# canonical runner — the exact scripts ci.yml executes step-by-step.
 [stages."kernel qemu witnesses"]
 cmd = "scripts/witness-run-all.sh"
 timeout_secs = 3600

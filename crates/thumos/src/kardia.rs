@@ -91,8 +91,29 @@ const BOOT_WALL_EPOCH: u64 = 1_735_603_200;
 /// NOTE: this is 50 *serviced ticks*, NOT a wall-clock duration. Under
 /// qemu-virt the generic-timer CNTFRQ is uncalibrated (#461), so the tick
 /// rate is not a true 100 Hz; do not read this as "500 ms".
-#[cfg(feature = "qemu")]
+#[cfg(all(
+    feature = "qemu",
+    not(any(
+        feature = "watchdog-stall-probe",
+        feature = "watchdog-reboot-probe",
+        feature = "watchdog-shutdown-hang-probe"
+    ))
+))]
 const QEMU_TICK_CAP: u32 = 50;
+
+/// Healthy serviced ticks before the negative watchdog witness freezes PID 0.
+#[cfg(all(feature = "qemu", feature = "watchdog-stall-probe"))]
+const WATCHDOG_STALL_AFTER_TICKS: u32 = 5;
+
+/// Healthy serviced ticks before a shutdown witness enters the coordinator.
+#[cfg(all(
+    feature = "qemu",
+    any(
+        feature = "watchdog-reboot-probe",
+        feature = "watchdog-shutdown-hang-probe"
+    )
+))]
+const WATCHDOG_SHUTDOWN_AFTER_TICKS: u32 = 5;
 
 /// QEMU stall escape: a hard ceiling on total loop wakes. Under qemu the idle
 /// is a busy-poll (not WFI -- see [`service_loop`]) so the loop always keeps
@@ -101,7 +122,7 @@ const QEMU_TICK_CAP: u32 = 50;
 /// this ceiling forces a FAST exit with a distinct diagnostic code instead of
 /// a 60 s runner timeout (which is indistinguishable from CI infra flake).
 /// Far above `QEMU_TICK_CAP` so healthy runs never hit it.
-#[cfg(feature = "qemu")]
+#[cfg(all(feature = "qemu", not(feature = "watchdog-stall-probe")))]
 const QEMU_WAKE_CEILING: u32 = 5_000_000;
 
 /// Owned post-boot kernel state: every subsystem that must outlive
@@ -1120,8 +1141,10 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
     let mut last_tick = exceptions::ticks();
     #[cfg(feature = "qemu")]
     let mut serviced: u32 = 0;
-    #[cfg(feature = "qemu")]
+    #[cfg(all(feature = "qemu", not(feature = "watchdog-stall-probe")))]
     let mut wakes: u32 = 0;
+    #[cfg(all(feature = "qemu", feature = "watchdog-stall-probe"))]
+    let mut watchdog_stall_logged = false;
     // #398: emit the ring->audio CI witness once, when the seeded RING URC has
     // driven the loop to open a ringtone session.
     #[cfg(feature = "qemu")]
@@ -1129,7 +1152,7 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
     #[cfg(feature = "qemu")]
     let mut realtime_logged = false;
     loop {
-        #[cfg(feature = "qemu")]
+        #[cfg(all(feature = "qemu", not(feature = "watchdog-stall-probe")))]
         {
             wakes += 1;
             if wakes >= QEMU_WAKE_CEILING {
@@ -1152,7 +1175,20 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
         // An idle iteration counts. A device asleep with nothing queued is
         // healthy, and a gate that could not tell that from a hang would reset
         // an idle phone every two seconds.
+        #[cfg(not(feature = "watchdog-stall-probe"))]
         crate::liveness::record_progress(crate::liveness::ProgressOwner::ServiceLoop);
+        #[cfg(all(feature = "qemu", feature = "watchdog-stall-probe"))]
+        if serviced < WATCHDOG_STALL_AFTER_TICKS {
+            crate::liveness::record_progress(crate::liveness::ProgressOwner::ServiceLoop);
+        } else if !watchdog_stall_logged {
+            watchdog_stall_logged = true;
+            emit_marker(
+                &mut serial,
+                format_args!(
+                    "THUMOS-QEMU: watchdog probe froze service-loop at tick={serviced}\r\n"
+                ),
+            );
+        }
 
         // Reflex fast-path FIRST -- drained on every wake, ahead of the tick
         // test, so a raised flag is handled promptly. Re-loop after handling
@@ -1290,6 +1326,24 @@ pub(crate) fn service_loop(mut kernel: KernelState, mut serial: Uart) -> ! {
             #[cfg(feature = "qemu")]
             {
                 serviced += 1;
+                #[cfg(any(
+                    feature = "watchdog-reboot-probe",
+                    feature = "watchdog-shutdown-hang-probe"
+                ))]
+                if serviced >= WATCHDOG_SHUTDOWN_AFTER_TICKS {
+                    emit_marker(
+                        &mut serial,
+                        format_args!(
+                            "THUMOS-QEMU: watchdog probe entering controlled reboot at tick={serviced}\r\n"
+                        ),
+                    );
+                    crate::shutdown::reboot();
+                }
+                #[cfg(not(any(
+                    feature = "watchdog-stall-probe",
+                    feature = "watchdog-reboot-probe",
+                    feature = "watchdog-shutdown-hang-probe"
+                )))]
                 if serviced >= QEMU_TICK_CAP {
                     let _ = write!(serial, "THUMOS-QEMU: service-loop ticks={serviced}\r\n"); // WHY: best-effort CI marker; exit follows regardless
                     crate::qemu::request_exit(0);

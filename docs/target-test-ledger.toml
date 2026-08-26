@@ -339,9 +339,10 @@ fidelity = "The boot decisions here are pure functions over observed state, so h
 
 [[module]]
 name = "liveness"
-tests = 12
-mechanism = "host"
-notes = "The gate is pure and fully host-tested; what the host cannot reach is the timer IRQ and service loop that feed it, both ARM-only. So these tests prove the RULES -- deadline, per-owner stall, recovery, wrap, shutdown bound -- and the QEMU boot witness proves the wiring by booting at all, since a gate that never pets resets the board."
+tests = 13
+mechanism = "both"
+witness = "watchdog.sh"
+notes = "Host tests prove deadline, per-owner stall, recovery, wrap, immutable shutdown grace, and hung-shutdown expiry. QEMU then freezes PID 0 behind the real timer-IRQ gate and separately injects reset failure after the production shutdown boundary; both require observable modeled expiry, so an ordinary successful boot is not credited as liveness evidence."
 
 [[module]]
 name = "lfs"
@@ -607,6 +608,13 @@ witness = "boot.sh"
 fidelity = "Policy transitions are host/QEMU-covered, but #874 blocks automatic modem-cut semantics and requested/applied/observed conflation; #881 owns the absent physical side-button/PTT producer and safe gesture policy"
 
 [[module]]
+name = "shutdown"
+tests = 2
+mechanism = "both"
+witness = "watchdog.sh"
+fidelity = "Host injection pins grace-before-reset ordering and repeated-request behavior. QEMU invokes the production coordinator from the live service loop for both reset success and injected reset failure; the latter proves late entry cannot renew the grace. Physical MT6739 reset remains operator-owned and unverified."
+
+[[module]]
 name = "signal"
 tests = 15
 mechanism = "both"
@@ -733,13 +741,16 @@ mechanism = "host"
 [[module]]
 name = "watchdog"
 tests = 4
-mechanism = "host"
-fidelity = "Host tests cover register/arming logic; #875 must couple petting to scheduler/service-loop progress before a physical reset/deadline receipt"
+mechanism = "both"
+witness = "watchdog.sh"
+fidelity = "Host tests cover MT6739 register encodings. Three QEMU paths prove the board-neutral call chain through controlled reset, frozen-owner expiry, and hung-shutdown expiry, not the physical MT6739 reset/deadline path."
 
 [[module]]
 name = "watchdog_qemu"
-tests = 0
-mechanism = "host"
+tests = 4
+mechanism = "both"
+witness = "watchdog.sh"
+fidelity = "The model shares the five-second tick deadline with liveness policy. Its end-to-end negative witnesses prove owner-stall expiry and that a failed reset remains bounded after the final immutable-grace pet. It is deliberately not evidence that MT6739 WDT MMIO resets an AGM M7."
 
 [[module]]
 name = "wifi"
