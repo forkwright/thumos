@@ -69,4 +69,4 @@ SECTIONS
    this file -- edit board/mod.rs and both sides move together.
    scripts/check-kernel-window.sh enforces that shape. */
 INCLUDE kernel_window.ld
-ASSERT(__svc_stack_top <= __kernel_end, "kernel image + stacks exceed KERNEL_RESERVED; raise board::KERNEL_RESERVED and __kernel_end together (see scripts/check-kernel-window.sh, issue #917)")
+ASSERT(__svc_stack_top <= __kernel_end, "kernel image + stacks exceed KERNEL_RESERVED; raise board::KERNEL_RESERVED, the sole window-size knob, or reclaim space (run scripts/check-kernel-window.sh for nm --size-sort diagnostics; issue #917)")
